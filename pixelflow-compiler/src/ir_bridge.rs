@@ -982,7 +982,9 @@ mod expansion_derivative_tests {
 #[cfg(test)]
 mod production_telemetry {
     use super::*;
-    use pixelflow_search::egraph::{CostModel, EGraph, SaturationStats, extract};
+    use pixelflow_search::egraph::{
+        CostModel, EGraph, SaturationStats, SaturationStopReason, extract,
+    };
     use std::time::{Duration, Instant};
 
     /// Verbatim closure body from
@@ -1043,9 +1045,13 @@ mod production_telemetry {
             }
             let kind = match arena.node(id) {
                 ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Buffer(_) => None,
-                ExprNode::Unary(k, _) | ExprNode::Binary(k, _, _) | ExprNode::Ternary(k, _, _, _) => Some(*k),
+                ExprNode::Unary(k, _)
+                | ExprNode::Binary(k, _, _)
+                | ExprNode::Ternary(k, _, _, _) => Some(*k),
                 other @ (ExprNode::Param(_) | ExprNode::Nary(..)) => {
-                    panic!("winding-kernel Dwrt arena contains {other:?}, unexpected pre-extraction")
+                    panic!(
+                        "winding-kernel Dwrt arena contains {other:?}, unexpected pre-extraction"
+                    )
                 }
             };
             if let Some(k) = kind {
@@ -1057,6 +1063,7 @@ mod production_telemetry {
     }
 
     struct DwrtRun {
+        stop: SaturationStopReason,
         iterations: usize,
         total_unions: usize,
         classes_after: usize,
@@ -1078,7 +1085,9 @@ mod production_telemetry {
             .nodes_raw()
             .iter()
             .filter_map(|n| match n {
-                ExprNode::Unary(op, _) | ExprNode::Binary(op, _, _) | ExprNode::Ternary(op, _, _, _) => {
+                ExprNode::Unary(op, _)
+                | ExprNode::Binary(op, _, _)
+                | ExprNode::Ternary(op, _, _, _) => {
                     (pixelflow_search::egraph::ops::op_from_kind(*op).is_none()).then_some(*op)
                 }
                 ExprNode::Buffer(_) => Some(OpKind::Buffer), // ir_bridge.rs:690: Buffer => false unconditionally
@@ -1121,7 +1130,10 @@ mod production_telemetry {
             .iter()
             .map(|n| match n {
                 ExprNode::Param(i) => {
-                    assert!(PARAM_VAR_BASE + i < MANIFOLD_SLOT_BASE, "too many scalar params to encode");
+                    assert!(
+                        PARAM_VAR_BASE + i < MANIFOLD_SLOT_BASE,
+                        "too many scalar params to encode"
+                    );
                     ExprNode::Var(PARAM_VAR_BASE + i)
                 }
                 other => other.clone(),
@@ -1153,6 +1165,7 @@ mod production_telemetry {
         };
 
         Ok(DwrtRun {
+            stop: stats.stop_reason,
             iterations: stats.iterations,
             total_unions: stats.total_unions,
             classes_after: eg.num_classes(),
@@ -1179,7 +1192,9 @@ mod production_telemetry {
         );
 
         // lib.rs:224-227
-        let tokens: TokenStream = WINDING_KERNEL_SRC.parse().expect("lex winding kernel source");
+        let tokens: TokenStream = WINDING_KERNEL_SRC
+            .parse()
+            .expect("lex winding kernel source");
         let kernel_ast = crate::parser::parse(tokens).expect("parse winding kernel source");
         // lib.rs:228-231
         let analyzed = crate::sema::analyze(kernel_ast).expect("sema winding kernel");
@@ -1190,22 +1205,43 @@ mod production_telemetry {
 
         // jit_backend.rs:307-325 gates (must all pass, or emit_kernel_value
         // would never reach ast_to_runtime_arena for this kernel).
-        assert!(analyzed.def.struct_decl.is_none(), "winding kernel must be a named-struct-free fragment");
+        assert!(
+            analyzed.def.struct_decl.is_none(),
+            "winding kernel must be a named-struct-free fragment"
+        );
         let param_map = scalar_param_indices(&analyzed);
         let manifold_map = manifold_param_indices(&analyzed);
-        assert!(manifold_map.is_empty(), "winding kernel takes no manifold params");
-        assert_eq!(param_map.len(), 7, "winding kernel has 7 scalar params (x0,y0,dx_over_dy,dir,y_min,y_max,min_grad)");
+        assert!(
+            manifold_map.is_empty(),
+            "winding kernel takes no manifold params"
+        );
+        assert_eq!(
+            param_map.len(),
+            7,
+            "winding kernel has 7 scalar params (x0,y0,dx_over_dy,dir,y_min,y_max,min_grad)"
+        );
 
         // ir_bridge.rs:471-472 — the arena differentiate_in_optimizer receives.
         let mut arena = ExprArena::new();
         let (root, plan) = ast_to_arena(&analyzed.def.body, &param_map, &manifold_map, &mut arena)
             .expect("ast_to_arena on winding kernel body");
-        assert!(plan.is_empty(), "winding kernel is non-composing; a non-empty plan would make ast_to_runtime_arena SKIP differentiate_in_optimizer entirely (ir_bridge.rs:477)");
-        assert!(contains_dwrt(&arena), "winding kernel body must contain Dwrt (DX/DY) after e-graph #1 — nothing to measure otherwise");
+        assert!(
+            plan.is_empty(),
+            "winding kernel is non-composing; a non-empty plan would make ast_to_runtime_arena SKIP differentiate_in_optimizer entirely (ir_bridge.rs:477)"
+        );
+        assert!(
+            contains_dwrt(&arena),
+            "winding kernel body must contain Dwrt (DX/DY) after e-graph #1 — nothing to measure otherwise"
+        );
 
         let node_count = reachable_count(&arena, root);
-        println!("winding kernel Dwrt arena: {node_count} reachable nodes (post-algebra-e-graph, pre-Dwrt-resolution)");
-        println!("algebra e-graph (#1, AST-level) wall-clock: {:.1}ms", algebra_elapsed.as_secs_f64() * 1e3);
+        println!(
+            "winding kernel Dwrt arena: {node_count} reachable nodes (post-algebra-e-graph, pre-Dwrt-resolution)"
+        );
+        println!(
+            "algebra e-graph (#1, AST-level) wall-clock: {:.1}ms",
+            algebra_elapsed.as_secs_f64() * 1e3
+        );
 
         // Production budget (ir_bridge.rs:718-722): NOT config_for_node_count
         // -tiered, the hardcoded EGraph::saturate() default.
@@ -1227,7 +1263,13 @@ mod production_telemetry {
         // not a truncated one. Check once; all three runs would bail
         // identically since the guard depends only on the (budget-independent)
         // arena contents.
-        if let Err(bad_ops) = run_dwrt_egraph(&arena, root, PROD_MAX_ITERS, PROD_MAX_CLASSES, Duration::from_millis(PROD_TIMEOUT_MS)) {
+        if let Err(bad_ops) = run_dwrt_egraph(
+            &arena,
+            root,
+            PROD_MAX_ITERS,
+            PROD_MAX_CLASSES,
+            Duration::from_millis(PROD_TIMEOUT_MS),
+        ) {
             println!(
                 "RESULT: differentiate_in_optimizer bails at the representable guard (ir_bridge.rs:687-694) \
                  BEFORE constructing an EGraph — blocking op(s): {bad_ops:?}. Zero saturation happens for this \
@@ -1240,42 +1282,80 @@ mod production_telemetry {
             );
             return;
         }
-        let prod = run_dwrt_egraph(&arena, root, PROD_MAX_ITERS, PROD_MAX_CLASSES, Duration::from_millis(PROD_TIMEOUT_MS))
-            .expect("guard already checked representable");
-        let refr = run_dwrt_egraph(&arena, root, PROD_MAX_ITERS * mult, PROD_MAX_CLASSES, ceiling)
-            .expect("guard already checked representable");
-        assert!(refr.elapsed < ceiling, "reference run hit its {ceiling:?} safety ceiling — raise PIXELFLOW_TELEMETRY_REF_CEILING_S and re-run");
-        let lifted = run_dwrt_egraph(&arena, root, PROD_MAX_ITERS * mult, PROD_MAX_CLASSES * mult, ceiling)
-            .expect("guard already checked representable");
-        assert!(lifted.elapsed < ceiling, "cap-lifted run hit its {ceiling:?} safety ceiling — raise PIXELFLOW_TELEMETRY_REF_CEILING_S and re-run");
+        let prod = run_dwrt_egraph(
+            &arena,
+            root,
+            PROD_MAX_ITERS,
+            PROD_MAX_CLASSES,
+            Duration::from_millis(PROD_TIMEOUT_MS),
+        )
+        .expect("guard already checked representable");
+        let refr = run_dwrt_egraph(
+            &arena,
+            root,
+            PROD_MAX_ITERS * mult,
+            PROD_MAX_CLASSES,
+            ceiling,
+        )
+        .expect("guard already checked representable");
+        assert!(
+            refr.elapsed < ceiling,
+            "reference run hit its {ceiling:?} safety ceiling — raise PIXELFLOW_TELEMETRY_REF_CEILING_S and re-run"
+        );
+        let lifted = run_dwrt_egraph(
+            &arena,
+            root,
+            PROD_MAX_ITERS * mult,
+            PROD_MAX_CLASSES * mult,
+            ceiling,
+        )
+        .expect("guard already checked representable");
+        assert!(
+            lifted.elapsed < ceiling,
+            "cap-lifted run hit its {ceiling:?} safety ceiling — raise PIXELFLOW_TELEMETRY_REF_CEILING_S and re-run"
+        );
 
-        assert!(!prod.dwrt_survived, "production run left Dwrt unresolved (budget miss) — the runtime lower_dwrt fallback would fire for every glyph; this changes the flat-answer conclusion, do not treat as a normal row");
-        assert!(!refr.dwrt_survived && !lifted.dwrt_survived, "reference/lifted run left Dwrt unresolved despite a larger budget — investigate before trusting cost numbers");
+        assert!(
+            !prod.dwrt_survived,
+            "production run left Dwrt unresolved (budget miss) — the runtime lower_dwrt fallback would fire for every glyph; this changes the flat-answer conclusion, do not treat as a normal row"
+        );
+        assert!(
+            !refr.dwrt_survived && !lifted.dwrt_survived,
+            "reference/lifted run left Dwrt unresolved despite a larger budget — investigate before trusting cost numbers"
+        );
 
-        let stopped_on_its_own = refr.iterations == prod.iterations;
-        let cap_bound = (refr.total_unions, refr.classes_after, refr.applications, refr.cost)
-            != (lifted.total_unions, lifted.classes_after, lifted.applications, lifted.cost);
-        let stop = if stopped_on_its_own {
-            if cap_bound { "ClassCap" } else { "Quiesced" }
-        } else if prod.elapsed >= Duration::from_millis(PROD_TIMEOUT_MS) {
-            "Timeout"
-        } else {
-            "IterationCap"
-        };
+        // Read off the loop's own decision (`SaturationStats::stop_reason`),
+        // never inferred from the reference runs; those exist only to price
+        // the truncation.
+        let stop = prod.stop;
         let loss_vs_ref = (prod.cost as f64 - refr.cost as f64) / refr.cost as f64 * 100.0;
         let loss_vs_lifted = (prod.cost as f64 - lifted.cost as f64) / lifted.cost as f64 * 100.0;
 
         println!(
-            "prod:   stop={stop} iters={}/{PROD_MAX_ITERS} classes={} apps={} unions={} journal_unions={} elapsed_ms={:.1} cost={}",
-            prod.iterations, prod.classes_after, prod.applications, prod.total_unions, prod.journal_unions, prod.elapsed.as_secs_f64() * 1e3, prod.cost
+            "prod:   stop={stop:?} iters={}/{PROD_MAX_ITERS} classes={} apps={} unions={} journal_unions={} elapsed_ms={:.1} cost={}",
+            prod.iterations,
+            prod.classes_after,
+            prod.applications,
+            prod.total_unions,
+            prod.journal_unions,
+            prod.elapsed.as_secs_f64() * 1e3,
+            prod.cost
         );
         println!(
             "ref({mult}x iters, same class cap): iters={} classes={} apps={} elapsed_ms={:.1} cost={} loss_vs_ref={loss_vs_ref:.2}%",
-            refr.iterations, refr.classes_after, refr.applications, refr.elapsed.as_secs_f64() * 1e3, refr.cost
+            refr.iterations,
+            refr.classes_after,
+            refr.applications,
+            refr.elapsed.as_secs_f64() * 1e3,
+            refr.cost
         );
         println!(
             "lifted({mult}x iters, {mult}x classes): iters={} classes={} apps={} elapsed_ms={:.1} cost={} loss_vs_lifted={loss_vs_lifted:.2}%",
-            lifted.iterations, lifted.classes_after, lifted.applications, lifted.elapsed.as_secs_f64() * 1e3, lifted.cost
+            lifted.iterations,
+            lifted.classes_after,
+            lifted.applications,
+            lifted.elapsed.as_secs_f64() * 1e3,
+            lifted.cost
         );
     }
 }

@@ -1654,7 +1654,11 @@ mod tests {
             let name = alloc::format!("cellgrid:{label}");
             let path = dir.join(alloc::format!("cellgrid_{label}.arena"));
             dump_arena(arena, root, &name, &path);
-            std::println!("{name}: {} reachable nodes -> {}", reachable_nodes(arena, root), path.display());
+            std::println!(
+                "{name}: {} reachable nodes -> {}",
+                reachable_nodes(arena, root),
+                path.display()
+            );
         }
     }
 
@@ -1665,7 +1669,12 @@ mod tests {
     /// verbatim in `pixelflow-graphics/tests/production_glyph_arena_dump.rs`
     /// rather than shared, because the only crate both dumpers can see is
     /// `pixelflow-ir`, which must not grow a test-only serializer.
-    fn dump_arena(arena: &ExprArena, root: pixelflow_ir::ExprId, name: &str, path: &std::path::Path) {
+    fn dump_arena(
+        arena: &ExprArena,
+        root: pixelflow_ir::ExprId,
+        name: &str,
+        path: &std::path::Path,
+    ) {
         use core::fmt::Write as _;
         use pixelflow_ir::arena::ExprNode;
         let len = arena.nodes_raw().len();
@@ -1680,7 +1689,8 @@ mod tests {
         let mut out = std::string::String::new();
         writeln!(out, "# pixelflow arena dump v1").expect("fmt");
         writeln!(out, "name {name}").expect("fmt");
-        let mut idents: alloc::vec::Vec<pixelflow_ir::arena::BufferIdentity> = alloc::vec::Vec::new();
+        let mut idents: alloc::vec::Vec<pixelflow_ir::arena::BufferIdentity> =
+            alloc::vec::Vec::new();
         for decl in arena.buffers() {
             let ord = match idents.iter().position(|i| *i == decl.id) {
                 Some(p) => p,
