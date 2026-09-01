@@ -59,19 +59,35 @@
 //! global rule masking is the mechanism the thesis names, not a
 //! simplification of it.
 //!
-//! # Over-approximation looseness (redesign.md lines 88-90 follow-up)
+//! # Non-direct-creator share (redesign.md lines 88-90 follow-up)
 //!
 //! Additive, read-only measurement, no change to `derivation_ancestors`'s
 //! logic: for every application the labeler marks `LoadBearing` (against the
 //! unguided run's best-found extraction), this harness checks whether the
 //! e-node(s) that application actually CREATED are among the literal
 //! chosen-extraction tags (walked the same way `labeler::chosen_tagged_nodes`
-//! does, via the public `find`/`nodes`/`tags` API) or were pulled in only
-//! because they share a class with a chosen node (over-approximation #1 in
-//! `provenance.rs`'s doc comment). The fraction in the second bucket is
-//! reported as `credited_via_class_only_ratio`. The one new API surface,
-//! `Provenance::origins()`, is a read-only iterator mirroring the existing
-//! `applications()`/`union_events()` accessors — no semantic change.
+//! does, via the public `find`/`nodes`/`tags` API). The fraction that are
+//! NOT is reported as `credited_non_direct_ratio`.
+//!
+//! **This does not isolate any single over-approximation axis** (a PR
+//! review caught an earlier version of this doc/code claiming it did).
+//! `derivation_ancestors` documents three (`provenance.rs`): (1) crediting
+//! every node in a class, not just the chosen one, (2) pulling in union
+//! events by class membership, (3) no fixed-point pruning. A load-bearing
+//! application whose created node isn't on the literal chosen path could be
+//! there via any of the three, OR because it is a genuine transitive
+//! enabler the labeler is *correctly* crediting (real "A enables B" credit
+//! chess-style provenance can't observe any other way — see the redesign
+//! plan's "observed credit" section). This measurement cannot tell those
+//! apart; it answers "what fraction of load-bearing applications are not the
+//! literal creator of a chosen node," not "what fraction is over-crediting
+//! via class membership specifically." Distinguishing genuine transitive
+//! credit from each named over-approximation axis would need per-application
+//! provenance of *why* it entered the ancestry closure, which
+//! `derivation_ancestors` does not currently record and this round does not
+//! add. The one new API surface, `Provenance::origins()`, is a read-only
+//! iterator mirroring the existing `applications()`/`union_events()`
+//! accessors — no semantic change.
 //!
 //! # "Quiesced before cap" — a diagnostic, not an organizing axis
 //!
@@ -489,7 +505,19 @@ fn run_anytime_curve(
         "FRACS must produce strictly increasing iteration targets for n_iters_nominal={n_iters_nominal}, got {target_iters:?}"
     );
     let ceiling_iters = *target_iters.last().expect("FRACS must be non-empty");
-    let ceiling_classes = (*FRACS.last().unwrap() * n_classes_nominal as f64).round() as usize;
+    // Per-checkpoint class caps (parallel to `target_iters`), not one fixed
+    // `ceiling_classes` reused for the whole curve. A PR review caught this:
+    // reusing the final (3x) class cap throughout meant a checkpoint labeled
+    // "frac=1.0" could actually reflect an e-graph that grew to the 3x class
+    // allowance -- iteration count alone doesn't bound class growth, since a
+    // rule sweep can pack far more class growth into few iterations than the
+    // nominal tier budget intends. Verified against the committed data: 59
+    // of 225 unguided rows exceeded their tier's nominal class cap at
+    // frac=1.0, some reaching close to 3x it.
+    let target_classes: Vec<usize> = FRACS
+        .iter()
+        .map(|f| ((*f * n_classes_nominal as f64).round() as usize).max(1))
+        .collect();
 
     let mut egraph = EGraph::with_rules(rules);
     let root_class = egraph.add_arena(arena, root);
@@ -511,7 +539,11 @@ fn run_anytime_curve(
              was expected to never bind at this corpus's scale; fail loud rather than \
              silently truncate and report a partial curve"
         );
-        let stats = egraph.saturate_with_limits(1, ceiling_classes, remaining);
+        // Cap growth at the class budget of the NEXT checkpoint not yet
+        // reached -- once that checkpoint is sampled below, `target_idx`
+        // advances and the cap grows for the next one.
+        let active_class_cap = target_classes[target_idx.min(target_classes.len() - 1)];
+        let stats = egraph.saturate_with_limits(1, active_class_cap, remaining);
         if target_idx < target_iters.len() && iter == target_iters[target_idx] {
             let extraction = extract_dag(&egraph, root_class, &costs);
             checkpoints.push(make_checkpoint(
@@ -522,7 +554,17 @@ fn run_anytime_curve(
             ));
             target_idx += 1;
         }
-        if stats.total_unions == 0 {
+        // `stats.iterations == 0` means the ACTIVE checkpoint's class cap
+        // was already exceeded before this round could run at all -- not
+        // genuine quiescence (the next checkpoint's larger cap may still
+        // allow growth once `target_idx` advances past it). Only a round
+        // that actually ran and found nothing (`iterations > 0 &&
+        // total_unions == 0`) is real quiescence -- the same distinction
+        // `guide_scope_saturation_delta.rs` makes for its own class-cap
+        // guard, for the same underlying reason (allocated vs. requested
+        // class count are different quantities `saturate_with_limits`
+        // enforces internally).
+        if stats.iterations > 0 && stats.total_unions == 0 {
             quiesced_at = Some(iter);
             break;
         }
@@ -572,7 +614,7 @@ struct ExprMeasurement {
     better_form_gap_pct: f64,
     load_bearing: usize,
     total_applications: usize,
-    credited_via_class_only: usize,
+    credited_non_direct: usize,
 }
 
 fn measure_expression(item: &CorpusItem) -> ExprMeasurement {
@@ -615,14 +657,14 @@ fn measure_expression(item: &CorpusItem) -> ExprMeasurement {
                 .push(enode_id);
         }
     }
-    let mut credited_via_class_only = 0usize;
+    let mut credited_non_direct = 0usize;
     for app_id in &labels.load_bearing {
         let created = created_by.get(&app_id.as_u64());
         let on_chosen_path = created
             .map(|nodes| nodes.iter().any(|n| chosen.contains(n)))
             .unwrap_or(false);
         if !on_chosen_path {
-            credited_via_class_only += 1;
+            credited_non_direct += 1;
         }
     }
 
@@ -711,7 +753,7 @@ fn measure_expression(item: &CorpusItem) -> ExprMeasurement {
         better_form_gap_pct,
         load_bearing: labels.load_bearing.len(),
         total_applications: uc_egraph.provenance().application_count(),
-        credited_via_class_only,
+        credited_non_direct,
     }
 }
 
@@ -770,7 +812,7 @@ fn main() {
             tier,
             m.load_bearing,
             m.total_applications,
-            m.credited_via_class_only,
+            m.credited_non_direct,
         ));
         if (i + 1) % 40 == 0 {
             eprintln!("... {}/{} expressions done", i + 1, corpus.len());
@@ -923,11 +965,13 @@ fn main() {
         .collect();
     let total_lb: usize = synth_loose.iter().map(|(_, _, lb, _, _)| lb).sum();
     let total_credited: usize = synth_loose.iter().map(|(_, _, _, _, c)| c).sum();
-    println!("\n=== union-causality over-approximation looseness (redesign.md 88-90) ===");
+    println!("\n=== non-direct-creator share of load-bearing applications (redesign.md 88-90) ===");
     println!(
-        "  overall: {total_credited}/{total_lb} ({:.2}%) of load-bearing applications are \
-         credited only via class-membership (over-approximation #1), not on the literal \
-         chosen-extraction path",
+        "  overall: {total_credited}/{total_lb} ({:.2}%) of load-bearing applications did not \
+         literally create a node on the chosen-extraction path (does NOT isolate class-membership \
+         over-approximation specifically -- see module doc's \"Non-direct-creator share\" section; \
+         genuine transitive-enabler credit and all three named over-approximation axes are lumped \
+         together here)",
         total_credited as f64 / total_lb.max(1) as f64 * 100.0,
     );
     for t in tiers {

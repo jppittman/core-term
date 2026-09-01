@@ -24,8 +24,7 @@ worktree's timed benchmark may be live; check `pgrep -fl "bootstrap_extraction_h
 first.
 
 **Revision note (2026-09-01):** an automated review of PR #1067 (`chatgpt-codex-connector`) found
-two defects in this harness, both fixed but neither re-run (the CSV above is unaffected by either
-— see why for each):
+four defects in this harness across two review passes, all now fixed:
 
 1. *Safety timeout scoped per-iteration, not per-curve.* `run_anytime_curve` re-passed the same
    300s `Duration` to every single-iteration `saturate_with_limits` call, and that function starts
@@ -45,6 +44,37 @@ two defects in this harness, both fixed but neither re-run (the CSV above is una
    masking scenario requires cost to *vary* within an expression's checkpoint set, which does not
    happen anywhere in this dataset. This is exactly the failure mode a recalibrated,
    finer-grained re-run (§ "Design implications", point 1) would be vulnerable to if left unfixed.
+3. *(P1) Class cap not scaled per checkpoint — this one DOES affect the existing data's
+   interpretation.* `run_anytime_curve` capped growth at `ceiling_classes` (the FINAL, 3x-nominal
+   class allowance) for every single-iteration call throughout the whole curve, including rounds
+   working toward the smaller checkpoints (0.25x/0.5x/1.0x). Since iteration count doesn't bound
+   class growth on its own (a rule sweep can pack far more class growth into few iterations than a
+   tier's nominal budget intends), a checkpoint labeled "frac=1.0" could reflect an e-graph that
+   had already grown to the 3x class allowance. Verified in the review against the committed CSV:
+   **59 of 225 unguided rows exceed their tier's nominal class cap at frac=1.0**, some reaching
+   close to 3x it — the "standardized budget" comparison this report's methodology section
+   describes was not actually enforced for those rows. Fixed: each checkpoint now has its own
+   class cap (`target_classes`, parallel to the existing `target_iters`), and growth is capped to
+   the *current* unreached checkpoint's budget, growing only once that checkpoint is sampled and
+   the next (larger) target's cap takes over. **Not re-run** (same compute-contention constraint
+   as the rest of this report), so the existing CSV's frac<3.0 rows carry this confound as
+   originally measured. This does not overturn this report's null/inconclusive finding — a
+   *looser* class budget than intended could only have made it easier, not harder, for the two
+   curves to reach the same cost, so it cannot be hiding a regret difference the tighter, corrected
+   budget would show. It sharpens the same "checkpoint-grid miscalibration" diagnosis this report
+   already reached: the existing run measured curves that were freer than their labels claimed,
+   in both the iteration and (now confirmed) the class dimension, and the recalibrated re-run this
+   report already recommends must respect both budgets, not just iteration count.
+4. *(P2) The "over-approximation looseness" diagnostic over-claimed what it isolates.* The
+   `credited_via_class_only` diagnostic (console-only, never captured into this report — see
+   below) was documented as isolating `derivation_ancestors`'s class-membership over-approximation
+   specifically, but its check (created node not literally on the chosen path) can't distinguish
+   that from the other two named over-approximation axes, or from genuine transitive-enabler
+   credit the labeler is correctly assigning. Fixed: renamed to `credited_non_direct` throughout,
+   with the module doc and console output corrected to describe what it actually measures ("not
+   the literal creator of a chosen node," not "class-membership over-approximation"). This
+   diagnostic was never reported in this document (see the top-of-file note on what the CSV vs.
+   console output contains), so no numbers here needed correcting.
 
 ## Methodology, from the harness's own module doc
 
@@ -135,7 +165,10 @@ budget — that is exactly the question the flat curves above failed to test.
    "the Guide has nothing to offer." Recommend this as explicit follow-up work, not blocking Phase
    3's design (the design doc's go/no-go leans on `guide_headroom` and the saturation-delta
    measurement instead, both of which are decisive and use deterministic per-application counts
-   rather than budget-fraction checkpoints).
+   rather than budget-fraction checkpoints). The re-run should also now enforce a **per-checkpoint
+   class cap** (fixed in source this round, see "Revision note" item 3 above, not yet exercised by
+   a re-run) — absolute-iteration checkpointing alone is not sufficient if class growth per round
+   is left uncapped relative to each checkpoint's own tier budget.
 2. **The oracle rule-count-kept table (3/7/24 median by tier) is usable now** as a rough sizing
    prior for how aggressively a Guide might restrict the candidate rule set at each tier, but
    should be corroborated once a properly-calibrated anytime run exists.
