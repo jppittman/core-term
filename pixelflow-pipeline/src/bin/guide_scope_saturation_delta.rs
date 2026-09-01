@@ -698,7 +698,7 @@ fn main() {
     println!();
     println!("{:<28} {:>10}", "rule", "applications");
     let mut rows: Vec<(usize, usize)> = per_rule_fired.iter().map(|(&k, &v)| (k, v)).collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    rows.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
     for (idx, count) in rows.iter().take(20) {
         let name = rule_names
             .get(*idx)
