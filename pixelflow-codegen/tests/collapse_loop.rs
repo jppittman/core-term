@@ -13,9 +13,8 @@
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
-use pixelflow_codegen::JIT_VECTOR_BYTES;
-use pixelflow_codegen::emit::executable::CollapseKernelFn;
 use pixelflow_codegen::emit::{CompileResult, compile_arena_dag, compile_collapse};
+use pixelflow_codegen::{JIT_VECTOR_BYTES, Point4, TileSlice};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
@@ -24,139 +23,109 @@ use pixelflow_ir::eval_scalar;
 const LANES: usize = JIT_VECTOR_BYTES / 4;
 
 /// One collapse call: fill `out` (whose length must be `groups * LANES`)
-/// from lane-sequential X starting at `x0`, with loop-invariant y/z/w.
-#[allow(clippy::too_many_arguments)] // ctx + out + the four coordinates: the ABI's shape
+/// from lane-sequential X starting at `origin.x`, with loop-invariant y/z/w.
 fn run_collapse_grid(
     res: &CompileResult,
     ctx: &[*const f32],
-    out: &mut [f32],
-    groups: usize,
-    rows: usize,
-    row_skip_bytes: usize,
-    x0: f32,
-    y: f32,
-    z: f32,
-    w: f32,
+    tile: TileSlice,
+    origin: Point4<f32>,
 ) {
-    let seq: Vec<f32> = (0..LANES).map(|i| x0 + i as f32).collect();
-
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    unsafe {
-        use core::arch::x86_64::*;
-        let f: CollapseKernelFn = res.code.as_fn();
-        f(
-            ctx.as_ptr(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            row_skip_bytes,
-            _mm512_loadu_ps(seq.as_ptr()),
-            _mm512_set1_ps(y),
-            _mm512_set1_ps(z),
-            _mm512_set1_ps(w),
-        );
+    let mut x0_vec = [0.0f32; LANES];
+    for (i, lane) in x0_vec.iter_mut().enumerate() {
+        *lane = origin.x + i as f32;
     }
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        not(target_feature = "avx512f")
-    ))]
     unsafe {
-        use core::arch::x86_64::*;
-        let f: CollapseKernelFn = res.code.as_fn();
-        f(
+        res.code.call_collapse(
             ctx.as_ptr(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            row_skip_bytes,
-            _mm256_loadu_ps(seq.as_ptr()),
-            _mm256_set1_ps(y),
-            _mm256_set1_ps(z),
-            _mm256_set1_ps(w),
-        );
-    }
-    #[cfg(all(
-        target_arch = "x86_64",
-        not(target_feature = "avx512f"),
-        not(target_feature = "avx2")
-    ))]
-    unsafe {
-        use core::arch::x86_64::*;
-        let f: CollapseKernelFn = res.code.as_fn();
-        f(
-            ctx.as_ptr(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            row_skip_bytes,
-            _mm_loadu_ps(seq.as_ptr()),
-            _mm_set1_ps(y),
-            _mm_set1_ps(z),
-            _mm_set1_ps(w),
-        );
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        use core::arch::aarch64::*;
-        let f: CollapseKernelFn = res.code.as_fn();
-        f(
-            ctx.as_ptr(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            row_skip_bytes,
-            vld1q_f32(seq.as_ptr()),
-            vdupq_n_f32(y),
-            vdupq_n_f32(z),
-            vdupq_n_f32(w),
+            tile,
+            Point4::new(
+                x0_vec,
+                [origin.y; LANES],
+                [origin.z; LANES],
+                [origin.w; LANES],
+            ),
         );
     }
 }
 
-#[allow(clippy::too_many_arguments)] // same coordinate shape as the JIT ABI
-fn run_collapse(
-    res: &CompileResult,
-    ctx: &[*const f32],
-    out: &mut [f32],
-    x0: f32,
-    y: f32,
-    z: f32,
-    w: f32,
-) {
+fn run_collapse(res: &CompileResult, ctx: &[*const f32], out: &mut [f32], origin: Point4<f32>) {
     assert_eq!(out.len() % LANES, 0);
     let groups = out.len() / LANES;
-    run_collapse_grid(res, ctx, out, groups, 1, 0, x0, y, z, w);
+    run_collapse_grid(
+        res,
+        ctx,
+        TileSlice::contiguous(out.as_mut_ptr(), groups, 1),
+        origin,
+    );
 }
+
+#[allow(improper_ctypes_definitions)]
+#[cfg(target_arch = "aarch64")]
+type CtxKernelFn = extern "C" fn(
+    *const *const f32,
+    core::arch::aarch64::float32x4_t,
+    core::arch::aarch64::float32x4_t,
+    core::arch::aarch64::float32x4_t,
+    core::arch::aarch64::float32x4_t,
+) -> core::arch::aarch64::float32x4_t;
+
+#[allow(improper_ctypes_definitions)]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+type CtxKernelFn = extern "C" fn(
+    *const *const f32,
+    core::arch::x86_64::__m512,
+    core::arch::x86_64::__m512,
+    core::arch::x86_64::__m512,
+    core::arch::x86_64::__m512,
+) -> core::arch::x86_64::__m512;
+
+#[allow(improper_ctypes_definitions)]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
+type CtxKernelFn = extern "C" fn(
+    *const *const f32,
+    core::arch::x86_64::__m256,
+    core::arch::x86_64::__m256,
+    core::arch::x86_64::__m256,
+    core::arch::x86_64::__m256,
+) -> core::arch::x86_64::__m256;
+
+#[allow(improper_ctypes_definitions)]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
+type CtxKernelFn = extern "C" fn(
+    *const *const f32,
+    core::arch::x86_64::__m128,
+    core::arch::x86_64::__m128,
+    core::arch::x86_64::__m128,
+    core::arch::x86_64::__m128,
+) -> core::arch::x86_64::__m128;
 
 /// The per-batch oracle: evaluate the same arena batch by batch through the
 /// per-batch entry (`CtxKernelFn` shape — a buffer-free kernel never reads
 /// the context, so passing it unconditionally is sound) over the same row.
-#[allow(clippy::too_many_arguments)] // same ABI shape as run_collapse
-fn run_per_batch(
-    res: &CompileResult,
-    ctx: &[*const f32],
-    out: &mut [f32],
-    x0: f32,
-    y: f32,
-    z: f32,
-    w: f32,
-) {
+fn run_per_batch(res: &CompileResult, ctx: &[*const f32], out: &mut [f32], origin: Point4<f32>) {
     assert_eq!(out.len() % LANES, 0);
     for (g, chunk) in out.as_chunks_mut::<LANES>().0.iter_mut().enumerate() {
-        let base = x0 + (g * LANES) as f32;
+        let base = origin.x + (g * LANES) as f32;
         let seq: Vec<f32> = (0..LANES).map(|i| base + i as f32).collect();
 
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
         unsafe {
             use core::arch::x86_64::*;
-            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
+            let f: CtxKernelFn = res.code.as_fn();
             let r = f(
                 ctx.as_ptr(),
                 _mm512_loadu_ps(seq.as_ptr()),
-                _mm512_set1_ps(y),
-                _mm512_set1_ps(z),
-                _mm512_set1_ps(w),
+                _mm512_set1_ps(origin.y),
+                _mm512_set1_ps(origin.z),
+                _mm512_set1_ps(origin.w),
             );
             _mm512_storeu_ps(chunk.as_mut_ptr(), r);
         }
@@ -167,13 +136,13 @@ fn run_per_batch(
         ))]
         unsafe {
             use core::arch::x86_64::*;
-            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
+            let f: CtxKernelFn = res.code.as_fn();
             let r = f(
                 ctx.as_ptr(),
                 _mm256_loadu_ps(seq.as_ptr()),
-                _mm256_set1_ps(y),
-                _mm256_set1_ps(z),
-                _mm256_set1_ps(w),
+                _mm256_set1_ps(origin.y),
+                _mm256_set1_ps(origin.z),
+                _mm256_set1_ps(origin.w),
             );
             _mm256_storeu_ps(chunk.as_mut_ptr(), r);
         }
@@ -184,26 +153,26 @@ fn run_per_batch(
         ))]
         unsafe {
             use core::arch::x86_64::*;
-            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
+            let f: CtxKernelFn = res.code.as_fn();
             let r = f(
                 ctx.as_ptr(),
                 _mm_loadu_ps(seq.as_ptr()),
-                _mm_set1_ps(y),
-                _mm_set1_ps(z),
-                _mm_set1_ps(w),
+                _mm_set1_ps(origin.y),
+                _mm_set1_ps(origin.z),
+                _mm_set1_ps(origin.w),
             );
             _mm_storeu_ps(chunk.as_mut_ptr(), r);
         }
         #[cfg(target_arch = "aarch64")]
         unsafe {
             use core::arch::aarch64::*;
-            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
+            let f: CtxKernelFn = res.code.as_fn();
             let r = f(
                 ctx.as_ptr(),
                 vld1q_f32(seq.as_ptr()),
-                vdupq_n_f32(y),
-                vdupq_n_f32(z),
-                vdupq_n_f32(w),
+                vdupq_n_f32(origin.y),
+                vdupq_n_f32(origin.z),
+                vdupq_n_f32(origin.w),
             );
             vst1q_f32(chunk.as_mut_ptr(), r);
         }
@@ -231,8 +200,8 @@ fn assert_collapse_matches_per_batch(
     ] {
         let mut got = vec![0.0f32; groups * LANES];
         let mut want = vec![0.0f32; groups * LANES];
-        run_collapse(&collapse, ctx, &mut got, x0, y, z, w);
-        run_per_batch(&batch, ctx, &mut want, x0, y, z, w);
+        run_collapse(&collapse, ctx, &mut got, Point4::new(x0, y, z, w));
+        run_per_batch(&batch, ctx, &mut want, Point4::new(x0, y, z, w));
         for (i, (g, e)) in got.iter().zip(want.iter()).enumerate() {
             assert!(
                 g == e || (g.is_nan() && e.is_nan()),
@@ -259,7 +228,7 @@ fn arithmetic_row_matches_per_batch_and_interpreter() {
 
     // And anchor to the reference semantics.
     let mut out = vec![0.0f32; 5 * LANES];
-    run_collapse(&res, &[], &mut out, 2.0, 3.0, 0.0, 0.0);
+    run_collapse(&res, &[], &mut out, Point4::new(2.0, 3.0, 0.0, 0.0));
     for (i, &got) in out.iter().enumerate() {
         let xi = 2.0 + i as f32;
         let want = eval_scalar(&a, root, &[xi, 3.0, 0.0, 0.0], &BindingTable::empty());
@@ -302,14 +271,13 @@ fn two_dimensional_collapse_advances_y_preserves_stride_and_hoists_both_scopes()
     run_collapse_grid(
         &compiled,
         &[],
-        &mut out,
-        GROUPS,
-        ROWS,
-        TAIL * core::mem::size_of::<f32>(),
-        x0,
-        y0,
-        z0,
-        w0,
+        TileSlice::new(
+            out.as_mut_ptr(),
+            GROUPS,
+            ROWS,
+            TAIL * core::mem::size_of::<f32>(),
+        ),
+        Point4::new(x0, y0, z0, w0),
     );
 
     for row in 0..ROWS {
@@ -392,7 +360,7 @@ fn gather_reads_ctx_every_iteration() {
     // Interpreter anchor over one row.
     let bindings = BindingTable::bind(&a, &[buf.as_slice()]).unwrap();
     let mut out = vec![0.0f32; 4 * LANES];
-    run_collapse(&res, &ctx, &mut out, 0.0, 1.0, 0.0, 0.0);
+    run_collapse(&res, &ctx, &mut out, Point4::new(0.0, 1.0, 0.0, 0.0));
     for (i, &got) in out.iter().enumerate() {
         let want = eval_scalar(&a, root, &[i as f32, 1.0, 0.0, 0.0], &bindings);
         assert_eq!(got, want, "gather vs interp at lane {i}");
@@ -430,7 +398,7 @@ fn matmul_reduce_one_call_fills_output() {
     let res = compile_collapse(&a, root).expect("matmul collapse compile");
 
     let mut out = vec![0.0f32; out_dim];
-    run_collapse(&res, &ctx, &mut out, 0.0, 0.0, 0.0, 0.0);
+    run_collapse(&res, &ctx, &mut out, Point4::new(0.0, 0.0, 0.0, 0.0));
 
     let bindings = BindingTable::bind(&a, &[w.as_slice(), input.as_slice()]).unwrap();
     for (j, &got) in out.iter().enumerate() {

@@ -69,6 +69,184 @@ impl ExecutableCode {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Execute the collapse kernel over a 2D tile destination.
+    ///
+    /// # Safety
+    ///
+    /// - The compiled code must match the [`CollapseKernelFn`] ABI.
+    /// - `tile.out` must have space for `tile.rows * (tile.groups * LANES)` floats plus row skip padding.
+    /// - `size_of::<V>() == JIT_VECTOR_BYTES`.
+    #[inline(always)]
+    pub unsafe fn call_collapse<V: Copy>(
+        &self,
+        ctx: *const *const f32,
+        tile: TileSlice,
+        origin: Point4<V>,
+    ) {
+        debug_assert_eq!(core::mem::size_of::<V>(), crate::JIT_VECTOR_BYTES);
+        let func: CollapseKernelFn = unsafe { self.as_fn() };
+        unsafe {
+            func(
+                ctx,
+                tile.out,
+                tile.groups,
+                tile.rows,
+                tile.row_skip_bytes,
+                core::mem::transmute_copy(&origin.x),
+                core::mem::transmute_copy(&origin.y),
+                core::mem::transmute_copy(&origin.z),
+                core::mem::transmute_copy(&origin.w),
+            )
+        }
+    }
+}
+
+/// A coordinate point in 4-dimensional space `(X, Y, Z, W)`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub struct Point4<T> {
+    /// X coordinate (1st manifold dimension).
+    pub x: T,
+    /// Y coordinate (2nd manifold dimension).
+    pub y: T,
+    /// Z coordinate (3rd manifold dimension).
+    pub z: T,
+    /// W coordinate (4th manifold dimension).
+    pub w: T,
+}
+
+impl<T> Point4<T> {
+    /// Create a new 4D point with coordinates `(x, y, z, w)`.
+    #[must_use]
+    #[inline(always)]
+    pub const fn new(x: T, y: T, z: T, w: T) -> Self {
+        Self { x, y, z, w }
+    }
+}
+
+impl<T: Copy> Point4<T> {
+    /// Create a 4D point by splatting a single value to all coordinates.
+    #[must_use]
+    #[inline(always)]
+    pub const fn splat(val: T) -> Self {
+        Self {
+            x: val,
+            y: val,
+            z: val,
+            w: val,
+        }
+    }
+}
+
+impl<T> From<(T, T, T, T)> for Point4<T> {
+    #[inline(always)]
+    fn from((x, y, z, w): (T, T, T, T)) -> Self {
+        Self { x, y, z, w }
+    }
+}
+
+impl<T> From<[T; 4]> for Point4<T> {
+    #[inline(always)]
+    fn from([x, y, z, w]: [T; 4]) -> Self {
+        Self { x, y, z, w }
+    }
+}
+
+/// 2D rectangular grid dimensions.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub struct Extent2D {
+    /// Width in elements.
+    pub width: usize,
+    /// Height in elements.
+    pub height: usize,
+}
+
+impl Extent2D {
+    /// Create new 2D grid dimensions.
+    #[must_use]
+    #[inline(always)]
+    pub const fn new(width: usize, height: usize) -> Self {
+        Self { width, height }
+    }
+
+    /// Total number of elements (`width * height`).
+    #[must_use]
+    #[inline(always)]
+    pub const fn len(self) -> usize {
+        self.width * self.height
+    }
+
+    /// True if either dimension is 0.
+    #[must_use]
+    #[inline(always)]
+    pub const fn is_empty(self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+}
+
+impl From<(usize, usize)> for Extent2D {
+    #[inline(always)]
+    fn from((width, height): (usize, usize)) -> Self {
+        Self { width, height }
+    }
+}
+
+impl From<[usize; 2]> for Extent2D {
+    #[inline(always)]
+    fn from([width, height]: [usize; 2]) -> Self {
+        Self { width, height }
+    }
+}
+
+/// Destination layout for a 2D collapse evaluation pass.
+#[derive(Copy, Clone, Debug)]
+pub struct TileSlice {
+    /// Pointer to the beginning of the writable output buffer.
+    pub out: *mut f32,
+    /// Number of full SIMD groups per row.
+    pub groups: usize,
+    /// Number of rows in the tile.
+    pub rows: usize,
+    /// Padding bytes to skip after each row before starting the next row.
+    pub row_skip_bytes: usize,
+}
+
+impl TileSlice {
+    /// Create a new tile destination layout.
+    #[must_use]
+    #[inline]
+    pub const fn new(out: *mut f32, groups: usize, rows: usize, row_skip_bytes: usize) -> Self {
+        Self {
+            out,
+            groups,
+            rows,
+            row_skip_bytes,
+        }
+    }
+
+    /// Create a contiguous tile destination layout (zero padding bytes between rows).
+    #[must_use]
+    #[inline]
+    pub const fn contiguous(out: *mut f32, groups: usize, rows: usize) -> Self {
+        Self {
+            out,
+            groups,
+            rows,
+            row_skip_bytes: 0,
+        }
+    }
+
+    /// Create a single-batch destination layout (1 group, 1 row, 0 padding).
+    #[must_use]
+    #[inline]
+    pub const fn single(out: *mut f32) -> Self {
+        Self {
+            out,
+            groups: 1,
+            rows: 1,
+            row_skip_bytes: 0,
+        }
+    }
 }
 
 impl Drop for ExecutableCode {
@@ -315,33 +493,6 @@ use core::arch::x86_64::__m256;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 use core::arch::x86_64::__m512;
 
-/// JIT-compiled kernel signature for ARM64.
-/// Args: X in v0, Y in v1, Z in v2, W in v3; returns result in v0.
-/// Each arg/result is a SIMD vector, so one call computes one pixel per lane
-/// (4 pixels for a 128-bit vector), not a single pixel; the caller loops.
-#[allow(improper_ctypes_definitions)]
-#[cfg(target_arch = "aarch64")]
-pub type KernelFn =
-    extern "C" fn(float32x4_t, float32x4_t, float32x4_t, float32x4_t) -> float32x4_t;
-
-/// JIT-compiled kernel that reads bound memory (ARM64).
-///
-/// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
-/// base pointers, one per declared [`BufferId`](pixelflow_ir::arena::BufferId) in slot
-/// order. AAPCS64 places this integer-class pointer in `x0`, disjoint from the
-/// coordinate vectors in `v0..3`, so the emitted body is byte-for-byte the same
-/// as a `KernelFn` — only kernels containing a `Gather` read `x0`. The caller
-/// picks this type iff the arena declared buffers.
-#[allow(improper_ctypes_definitions)]
-#[cfg(target_arch = "aarch64")]
-pub type CtxKernelFn = extern "C" fn(
-    *const *const f32,
-    float32x4_t,
-    float32x4_t,
-    float32x4_t,
-    float32x4_t,
-) -> float32x4_t;
-
 /// JIT-compiled *collapse* kernel (ARM64). See the AVX-512
 /// [`CollapseKernelFn`] doc for the contract. AAPCS64 argument registers:
 /// `x0` = context, `x1` = `out`, `x2` = `groups`, `x3` = `rows`, `x4` =
@@ -361,33 +512,6 @@ pub type CollapseKernelFn = extern "C" fn(
     float32x4_t,
 );
 
-/// JIT-compiled per-batch kernel signature for x86-64.
-///
-/// Args: X/Y/Z/W in the first four vector registers; returns the result in the
-/// first. One call computes one pixel per lane; the caller loops.
-///
-/// The width tracks the build's selected SIMD: 512-bit `__m512` (16 lanes) with
-/// AVX-512, 256-bit `__m256` (8 lanes) with AVX2 (and not AVX-512), else
-/// 128-bit `__m128` (4 lanes, SSE2). This MUST match `pixelflow-core`'s
-/// `Field`; the `kernel_jit!` wrapper const-asserts
-/// `size_of::<Field>() == JIT_VECTOR_BYTES`. The looping variant is
-/// [`CollapseKernelFn`], at the same width.
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-pub type KernelFn = extern "C" fn(__m512, __m512, __m512, __m512) -> __m512;
-
-/// JIT-compiled kernel that reads bound memory (x86-64 AVX-512).
-///
-/// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
-/// base pointers, one per declared [`BufferId`](pixelflow_ir::arena::BufferId) in slot
-/// order. System V places this integer-class pointer in `rdi`, disjoint from the
-/// coordinate vectors in `zmm0..3`, so the emitted body is byte-for-byte the
-/// same as a `KernelFn` — only kernels containing a `Gather` read `rdi`. The
-/// caller picks this type iff the arena declared buffers.
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-pub type CtxKernelFn = extern "C" fn(*const *const f32, __m512, __m512, __m512, __m512) -> __m512;
-
 /// JIT-compiled *collapse* kernel (x86-64 AVX-512): the whole 2D loop nest is
 /// inside the emitted code, so one call fills `rows * groups` output batches —
 /// no per-row or per-batch Rust↔JIT boundary. X is an induction value reset at
@@ -406,29 +530,6 @@ pub type CtxKernelFn = extern "C" fn(*const *const f32, __m512, __m512, __m512, 
 pub type CollapseKernelFn =
     extern "C" fn(*const *const f32, *mut f32, usize, usize, usize, __m512, __m512, __m512, __m512);
 
-/// JIT-compiled per-batch kernel signature for x86-64 AVX2 (256-bit, 8 lanes).
-/// See [`KernelFn`] (the AVX-512 variant) for the ABI contract; this is the
-/// same shape at the AVX2 width, selected when the build has `avx2` but not
-/// `avx512f`.
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-pub type KernelFn = extern "C" fn(__m256, __m256, __m256, __m256) -> __m256;
-
-/// JIT-compiled kernel that reads bound memory (x86-64 AVX2). See the
-/// AVX-512 [`CtxKernelFn`] doc for the context-pointer contract; `rdi` is
-/// still disjoint from the coordinate vectors (now `ymm0..3`).
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-pub type CtxKernelFn = extern "C" fn(*const *const f32, __m256, __m256, __m256, __m256) -> __m256;
-
 /// JIT-compiled *collapse* kernel (x86-64 AVX2). See the AVX-512
 /// [`CollapseKernelFn`] doc for the contract; batch width is 8 lanes and the
 /// per-iteration X step is 8.0.
@@ -440,30 +541,6 @@ pub type CtxKernelFn = extern "C" fn(*const *const f32, __m256, __m256, __m256, 
 ))]
 pub type CollapseKernelFn =
     extern "C" fn(*const *const f32, *mut f32, usize, usize, usize, __m256, __m256, __m256, __m256);
-
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
-pub type KernelFn = extern "C" fn(__m128, __m128, __m128, __m128) -> __m128;
-
-/// JIT-compiled kernel that reads bound memory (x86-64, 128-bit).
-///
-/// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
-/// base pointers, one per declared [`BufferId`](pixelflow_ir::arena::BufferId) in slot
-/// order. System V places this integer-class pointer in `rdi`, disjoint from the
-/// coordinate vectors in `xmm0..3`, so the emitted body is byte-for-byte the
-/// same as a `KernelFn` — only kernels containing a `Gather` read `rdi`. The
-/// caller picks this type iff the arena declared buffers.
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
-pub type CtxKernelFn = extern "C" fn(*const *const f32, __m128, __m128, __m128, __m128) -> __m128;
 
 /// JIT-compiled *collapse* kernel (x86-64, 128-bit). See the AVX-512
 /// [`CollapseKernelFn`] doc for the contract; batch width is 4 lanes and the
@@ -565,7 +642,6 @@ mod page_tests {
     }
 }
 
-// `avx512`/`avx2` tests in `mod.rs`.
 #[cfg(all(test, not(target_feature = "avx512f"), not(target_feature = "avx2")))]
 mod tests {
     // These tests hand-assemble instruction words as `base | Rd | (Rn << 5) | ...`;
@@ -573,6 +649,24 @@ mod tests {
     #![allow(clippy::identity_op)]
 
     use super::*;
+
+    #[allow(improper_ctypes_definitions)]
+    #[cfg(target_arch = "aarch64")]
+    type KernelFn = extern "C" fn(
+        core::arch::aarch64::float32x4_t,
+        core::arch::aarch64::float32x4_t,
+        core::arch::aarch64::float32x4_t,
+        core::arch::aarch64::float32x4_t,
+    ) -> core::arch::aarch64::float32x4_t;
+
+    #[allow(improper_ctypes_definitions)]
+    #[cfg(target_arch = "x86_64")]
+    type KernelFn = extern "C" fn(
+        core::arch::x86_64::__m128,
+        core::arch::x86_64::__m128,
+        core::arch::x86_64::__m128,
+        core::arch::x86_64::__m128,
+    ) -> core::arch::x86_64::__m128;
 
     #[test]
     #[cfg(target_arch = "aarch64")]

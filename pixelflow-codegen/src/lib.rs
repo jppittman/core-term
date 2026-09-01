@@ -20,6 +20,7 @@ extern crate alloc;
 pub mod emit;
 
 pub mod jit_manifold;
+pub use emit::executable::{Extent2D, Point4, TileSlice};
 pub use jit_manifold::JitManifold;
 
 // x86-64 and aarch64 are the architectures with emitters.
@@ -27,15 +28,14 @@ pub use jit_manifold::JitManifold;
 pub mod jit_cache;
 
 /// Byte width of the SIMD vector this build's JIT emits and calls — i.e. the
-/// size of one [`KernelFn`](backend::emit::executable::KernelFn) argument and
-/// return value.
+/// size of one [`CollapseKernelFn`](emit::executable::CollapseKernelFn) argument vector.
 ///
 /// The JIT has no dependency on `pixelflow-core`, so it cannot name `Field`
 /// directly. This const is the single source of truth for the width the emitter
-/// and the `KernelFn` ABI agree on. Callers that bridge `Field` to a JIT kernel
-/// (the `kernel_jit!` wrapper) assert `size_of::<Field>() == JIT_VECTOR_BYTES`
-/// at compile time, turning any width disagreement into a clear build error
-/// rather than a raw `transmute` size error (or, worse, a silent miscompile).
+/// and the `CollapseKernelFn` ABI agree on. Callers that bridge `Field` to a JIT kernel
+/// assert `size_of::<Field>() == JIT_VECTOR_BYTES` at compile time, turning any
+/// width disagreement into a clear build error rather than a raw `transmute` size
+/// error (or, worse, a silent miscompile).
 ///
 /// A genuine 3-way split, checked against `target_feature` — the flag that
 /// actually governs what the compiler may emit. `pixelflow-core` gates
@@ -54,12 +54,10 @@ pub mod jit_cache;
 /// which builds every level and runs only what `host_has_feature` allows.
 ///
 /// 64 (512-bit, AVX-512) when compiled with `target_feature = "avx512f"`,
-/// where `compile_arena_dag` routes to `Avx512Backend` and `KernelFn` is
-/// `__m512`; 32 (256-bit, AVX2) when compiled with `target_feature = "avx2"`
-/// and not `"avx512f"`, routing to `Avx2Backend` (`KernelFn` = `__m256`);
+/// routing to `Avx512Backend`; 32 (256-bit, AVX2) when compiled with
+/// `target_feature = "avx2"` and not `"avx512f"`, routing to `Avx2Backend`;
 /// otherwise 16 (128-bit, SSE2/NEON). This matches `pixelflow-core`'s
-/// `Field` width under the same build flags, so the `kernel_jit!` assert
-/// holds.
+/// `Field` width under the same build flags.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub const JIT_VECTOR_BYTES: usize = 64;
 /// See the AVX-512 variant above.

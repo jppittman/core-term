@@ -8,7 +8,7 @@
 //!
 //! `Kernel` values composed directly at runtime — `Kernel::over`, `.at()`,
 //! `.select()`, arithmetic — never go through that macro, so their arenas hit
-//! [`pixelflow_codegen::jit_cache::compile_cached`]/`compile_collapse_cached` raw:
+//! [`pixelflow_codegen::jit_cache::compile`] raw:
 //! no CSE, no FMA fusion, no algebraic simplification. [`optimize_runtime_arena`]
 //! is the same pipeline applied to an arena directly, for exactly that gap —
 //! today's highest-volume instance is the font glyph bake
