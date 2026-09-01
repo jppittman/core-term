@@ -62,6 +62,27 @@ use pixelflow_ir::arena::BufferDecl;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 
+/// The pre-registered Phase 3 primary budget tier B for the classical band
+/// (`docs/plans/2026-09-01-phase3-registration.md` §4: "classical: B = 100
+/// (primary), B = 200 (secondary)"). This is the ONE denominator
+/// [`Firing::registered_budget`]/[`CandidateFeatures::budget_fraction`] means
+/// when the design doc talks about "budget spent, in units of B": both the
+/// offline label-minting replay (`gen_strict_labels`, which has no live
+/// per-call budget to report) and the live guided saturation loop
+/// (`super::saturate::saturate_guided_until_applications`) import this same
+/// constant rather than each supplying their own call's budget argument as
+/// the denominator.
+///
+/// This is deliberately NOT the same thing as a caller's own
+/// `max_total_applications`/budget-tier argument: evaluating a trained Guide
+/// at the secondary tier (B=200) or at any other budget must not silently
+/// change what `budget_fraction` *means* for a feature the Guide was
+/// trained on — the feature's units are fixed at mint time (this constant),
+/// and a fraction past `1.0` at a larger evaluation budget is the correct,
+/// expected reading of "further past the primary tier than training data
+/// ever went," not a unit change.
+pub const REGISTERED_PRIMARY_BUDGET_APPLICATIONS: usize = 100;
+
 /// One node's shape, canonicalized against the current union-find so two
 /// structurally-equal nodes compare equal regardless of which class holds
 /// them or where they sit in that class's node vector.

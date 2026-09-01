@@ -18,7 +18,9 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use super::candidate::{CandidateFeatures, CandidateKey, Firing};
+use super::candidate::{
+    CandidateFeatures, CandidateKey, Firing, REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
+};
 use super::graph::{AppBudgetSaturationStats, EGraph, RewriteTarget, SaturationStop};
 use super::node::EClassId;
 use crate::nnue::factored::EMBED_DIM;
@@ -318,6 +320,19 @@ pub fn achievable_cost_within_budget(
 /// - If a match fires a `rule_idx` for which `rule_embeds` has no entry —
 ///   the caller is responsible for supplying one embedding per registered
 ///   rule.
+///
+/// # `budget_fraction`'s denominator is fixed, not `max_total_applications`
+///
+/// Every [`Firing`] built here uses
+/// [`REGISTERED_PRIMARY_BUDGET_APPLICATIONS`] as `registered_budget`, never
+/// this call's own `max_total_applications` argument. A Guide is trained
+/// once against a fixed feature space (`gen_strict_labels` mints
+/// `budget_fraction` against the same constant); calling this function with
+/// a different `max_total_applications` — e.g. to evaluate the registered
+/// secondary tier, B=200 — must change how far a curve runs, never what
+/// `budget_fraction` *means* to an already-trained Guide. `max_total_
+/// applications` remains exactly the stopping condition (unchanged); only
+/// the feature denominator is decoupled from it.
 pub fn saturate_guided_until_applications<G: SaturationGuide>(
     egraph: &mut EGraph,
     guide: &G,
@@ -331,6 +346,12 @@ pub fn saturate_guided_until_applications<G: SaturationGuide>(
     let mut iterations = 0usize;
     let mut total_unions = 0usize;
     let mut seen_keys: HashSet<CandidateKey> = HashSet::new();
+    // Episode-level constant for `CandidateSummary::new`'s `expr_node_count`
+    // (see that constructor's doc): the graph's node count at the moment
+    // this call started, before any guided round has fired — the live-loop
+    // analogue of the offline label-minting replay's `arena.nodes_raw().len()`
+    // snapshot taken before `saturate_with_limits` runs.
+    let expr_node_count = egraph.node_count();
 
     let stop = 'outer: loop {
         if egraph.provenance().application_count() >= max_total_applications {
@@ -362,7 +383,7 @@ pub fn saturate_guided_until_applications<G: SaturationGuide>(
                 rule_idx: target.rule_idx,
                 match_root: target.class_id,
                 application_ordinal: ordinal,
-                registered_budget: max_total_applications,
+                registered_budget: REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
             };
             let features = CandidateFeatures::observe(egraph, &firing);
             if seen_keys.insert(features.key.clone()) {
@@ -387,7 +408,7 @@ pub fn saturate_guided_until_applications<G: SaturationGuide>(
                         target.rule_idx
                     )
                 });
-                CandidateSummary::new(features, rule_embed)
+                CandidateSummary::new(features, rule_embed, expr_node_count)
             })
             .collect();
         let scores = guide.score_candidates(&summaries);
