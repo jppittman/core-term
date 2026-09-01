@@ -640,15 +640,7 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 /// Emit unary operation - dispatches to appropriate instruction(s)
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_unary(
-    code: &mut Vec<u8>,
-    _pool: &mut driver::ConstPool,
-    op: OpKind,
-    dst: Reg,
-    src: Reg,
-    scratch: [Reg; 4],
-) {
+pub(crate) fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: [Reg; 4]) {
     match op {
         OpKind::Neg => emit_fneg(code, dst, src),
         OpKind::Abs => emit_fabs(code, dst, src),
@@ -1954,7 +1946,7 @@ pub(crate) mod driver {
             }
             ResolvedOp::Unary { op, dst, src } => {
                 let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
-                emit_unary(code, pool, *op, *dst, *src, scratch);
+                emit_unary(code, *op, *dst, *src, scratch);
             }
             ResolvedOp::ShiftImm {
                 op,

@@ -17,21 +17,164 @@ use pixelflow_ir::kind::OpKind;
 // Encoding Helpers
 // =============================================================================
 
-/// Emit a VEX-encoded 3-operand instruction (AVX style).
-/// VEX.128.0F: dst = op(src1, src2)
-fn emit_vex_128_0f(code: &mut Vec<u8>, opcode: u8, dst: Reg, src1: Reg, src2: Reg) {
-    // 3-byte VEX prefix for xmm0-xmm15
-    // VEX.128.0F: C4 RXB.01111 W.vvvv.L.pp
-    let r = if dst.0 >= 8 { 0 } else { 0x80 };
-    let x = 0x40; // X not used for register-register
-    let b = if src2.0 >= 8 { 0 } else { 0x20 };
-    let vvvv = (!src1.0 & 0xF) << 3;
+/// Which legacy-prefix byte the VEX prefix implies (the `pp` field).
+#[derive(Clone, Copy)]
+enum Pp {
+    /// No implied prefix.
+    None = 0,
+    /// `66`
+    P66 = 1,
+    /// `F3`
+    F3 = 2,
+}
 
-    code.push(0xC4);
-    code.push(r | x | b | 0x01); // map = 0F
-    code.push(vvvv); // W=0, L=0 (128-bit), pp=00
-    code.push(opcode);
-    code.push(0xC0 | ((dst.0 & 7) << 3) | (src2.0 & 7)); // ModRM
+/// Which opcode map the instruction lives in (the field Intel calls
+/// `mmmmm` — a map *selector*, nothing more).
+#[derive(Clone, Copy)]
+enum Map {
+    /// `0F`
+    M0F = 1,
+    /// `0F3A`
+    M0F3A = 3,
+}
+
+/// A `/digit` opcode extension: the ModRM.reg field carries an opcode bit
+/// group where a register would otherwise go. Distinct from [`Reg`] because
+/// it names no register at all.
+#[derive(Clone, Copy)]
+struct Digit(u8);
+
+/// The identity of one VEX-128 instruction: opcode map, implied legacy
+/// prefix, W bit, opcode byte. This quadruple is *which instruction* — it is
+/// constant per mnemonic, so each mnemonic below states it exactly once and
+/// the operand form (`rrr`/`rr`/`digit_rm`/...) supplies the per-call parts.
+///
+/// The 256-bit twin of this type is `avx2::Vex`; the only encoding difference
+/// is VEX.L, which is 0 here.
+#[derive(Clone, Copy)]
+struct Vex {
+    map: Map,
+    pp: Pp,
+    w: bool,
+    opcode: u8,
+}
+
+/// Sentinel for an unused VEX.vvvv source (2-operand forms): index 0 inverts
+/// to `1111`, the required "unused" encoding.
+const UNUSED_VVVV: u8 = 0;
+
+impl Vex {
+    const fn new(map: Map, pp: Pp, opcode: u8) -> Self {
+        Self {
+            map,
+            pp,
+            w: false,
+            opcode,
+        }
+    }
+    /// Map `0F`, no prefix — the packed-single family.
+    const fn m0f(opcode: u8) -> Self {
+        Self::new(Map::M0F, Pp::None, opcode)
+    }
+    /// Map `0F`, `66` — the integer-domain family.
+    const fn m0f_66(opcode: u8) -> Self {
+        Self::new(Map::M0F, Pp::P66, opcode)
+    }
+    /// Map `0F`, `F3`.
+    const fn m0f_f3(opcode: u8) -> Self {
+        Self::new(Map::M0F, Pp::F3, opcode)
+    }
+    /// Map `0F3A`, `66` — the imm8 family (round, insert/extract).
+    const fn m0f3a_66(opcode: u8) -> Self {
+        Self::new(Map::M0F3A, Pp::P66, opcode)
+    }
+
+    /// Attach an imm8 (rounding mode, shift count, lane index); the returned
+    /// value emits it after the instruction.
+    const fn imm(self, imm: u8) -> VexImm {
+        VexImm { vex: self, imm }
+    }
+
+    /// Register-register-register form: `op reg, vvvv, rm`.
+    fn rrr(self, code: &mut Vec<u8>, reg: Reg, vvvv: Reg, rm: Reg) {
+        self.head(code, reg.0, vvvv.0, rm.0);
+        code.push(0xC0 | ((reg.0 & 7) << 3) | (rm.0 & 7));
+    }
+
+    /// Two-operand form: `op reg, rm`, VEX.vvvv unused.
+    fn rr(self, code: &mut Vec<u8>, reg: Reg, rm: Reg) {
+        self.head(code, reg.0, UNUSED_VVVV, rm.0);
+        code.push(0xC0 | ((reg.0 & 7) << 3) | (rm.0 & 7));
+    }
+
+    /// `/digit` form: `op vvvv, rm, ...` with the opcode extension in
+    /// ModRM.reg (the shift-by-immediate group).
+    fn digit_rm(self, code: &mut Vec<u8>, ext: Digit, vvvv: Reg, rm: Reg) {
+        self.head(code, ext.0, vvvv.0, rm.0);
+        code.push(0xC0 | ((ext.0 & 7) << 3) | (rm.0 & 7));
+    }
+
+    /// `op reg, rmGPR` — the r/m operand names a *general* register, the
+    /// reverse of the usual direction (`vpextrd`).
+    fn rr_gpr(self, code: &mut Vec<u8>, reg: Reg, rm_gpr: u8) {
+        debug_assert!(rm_gpr < 8, "Vex::rr_gpr: GPR8 only");
+        self.head(code, reg.0, UNUSED_VVVV, rm_gpr);
+        code.push(0xC0 | ((reg.0 & 7) << 3) | (rm_gpr & 7));
+    }
+
+    /// `op reg, [baseGPR + indexGPR*4]` — SIB, scale 4, no displacement.
+    fn rm_scaled4(self, code: &mut Vec<u8>, reg: Reg, base_gpr: u8, index_gpr: u8) {
+        debug_assert!(base_gpr < 8 && index_gpr < 8, "Vex::rm_scaled4: GPR8 only");
+        debug_assert!(base_gpr != 5, "base rbp/r13 would force a disp form");
+        self.head(code, reg.0, UNUSED_VVVV, base_gpr);
+        code.push(((reg.0 & 7) << 3) | 0b100); // mod=00, rm=SIB
+        code.push((0b10 << 6) | ((index_gpr & 7) << 3) | (base_gpr & 7)); // scale=4
+    }
+
+    /// The 3-byte VEX prefix plus the opcode byte, shared by every form
+    /// above: `C4 RXB.mmmmm W.vvvv.L.pp opcode`, with L=0 (128-bit).
+    fn head(self, code: &mut Vec<u8>, reg: u8, vvvv: u8, rm: u8) {
+        let rbit = if reg >= 8 { 0x00 } else { 0x80 };
+        let xbit = 0x40; // X unused: no index register in these forms
+        let bbit = if rm >= 8 { 0x00 } else { 0x20 };
+        code.push(0xC4);
+        code.push(rbit | xbit | bbit | self.map as u8);
+        code.push(((self.w as u8) << 7) | ((!vvvv & 0xF) << 3) | self.pp as u8);
+        code.push(self.opcode);
+    }
+}
+
+/// A [`Vex`] instruction carrying its imm8.
+#[derive(Clone, Copy)]
+struct VexImm {
+    vex: Vex,
+    imm: u8,
+}
+
+impl VexImm {
+    /// Two-operand form with the imm8 appended.
+    fn rr(self, code: &mut Vec<u8>, reg: Reg, rm: Reg) {
+        self.vex.rr(code, reg, rm);
+        code.push(self.imm);
+    }
+
+    /// Register-register-register form with the imm8 appended.
+    fn rrr(self, code: &mut Vec<u8>, reg: Reg, vvvv: Reg, rm: Reg) {
+        self.vex.rrr(code, reg, vvvv, rm);
+        code.push(self.imm);
+    }
+
+    /// `/digit` form with the imm8 appended.
+    fn digit_rm(self, code: &mut Vec<u8>, ext: Digit, vvvv: Reg, rm: Reg) {
+        self.vex.digit_rm(code, ext, vvvv, rm);
+        code.push(self.imm);
+    }
+
+    /// `op reg, rmGPR, imm8` — see [`Vex::rr_gpr`].
+    fn rr_gpr(self, code: &mut Vec<u8>, reg: Reg, rm_gpr: u8) {
+        self.vex.rr_gpr(code, reg, rm_gpr);
+        code.push(self.imm);
+    }
 }
 
 /// Emit SSE instruction (legacy encoding, 2-operand: dst op= src)
@@ -118,22 +261,22 @@ pub fn emit_maxps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 
 /// VANDPS dst, src1, src2 — bitwise AND
 fn emit_vandps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit_vex_128_0f(code, 0x54, dst, src1, src2);
+    Vex::m0f(0x54).rrr(code, dst, src1, src2);
 }
 
 /// VANDNPS dst, src1, src2 — bitwise NOT(src1) AND src2
 fn emit_vandnps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit_vex_128_0f(code, 0x55, dst, src1, src2);
+    Vex::m0f(0x55).rrr(code, dst, src1, src2);
 }
 
 /// VORPS dst, src1, src2 — bitwise OR
 fn emit_vorps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit_vex_128_0f(code, 0x56, dst, src1, src2);
+    Vex::m0f(0x56).rrr(code, dst, src1, src2);
 }
 
 /// VXORPS dst, src1, src2 — bitwise XOR
 fn emit_vxorps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit_vex_128_0f(code, 0x57, dst, src1, src2);
+    Vex::m0f(0x57).rrr(code, dst, src1, src2);
 }
 
 // =============================================================================
@@ -215,47 +358,19 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32, _scratch: [Reg; 4]) {
 // with AVX (VEX.128) encodings. AVX gives us `vroundps` plus 128-bit integer
 // ops (`vcvttps2dq`, `vpslld`, `vpaddd`, ...) needed for exp/log bit twiddling.
 
-/// General 3-byte VEX encoder for 128-bit ops.
-///
-/// `pp`: 0=none, 1=0x66, 2=0xF3, 3=0xF2. `mmmmm`: 1=0F, 2=0F38, 3=0F3A.
-/// `reg` is the ModRM.reg operand (a register, or a `/digit` opcode extension
-/// passed as `Reg(digit)`); `vvvv` is the inverted extra source (pass `Reg(0)`
-/// when unused — that encodes the required `1111`); `rm` is the ModRM.rm reg.
-#[allow(clippy::too_many_arguments)]
-fn emit_vex(
-    code: &mut Vec<u8>,
-    pp: u8,
-    mmmmm: u8,
-    w: u8,
-    reg: Reg,
-    vvvv: Reg,
-    rm: Reg,
-    opcode: u8,
-) {
-    let rbit = if reg.0 >= 8 { 0x00 } else { 0x80 };
-    let xbit = 0x40;
-    let bbit = if rm.0 >= 8 { 0x00 } else { 0x20 };
-    code.push(0xC4);
-    code.push(rbit | xbit | bbit | mmmmm);
-    code.push((w << 7) | ((!vvvv.0 & 0xF) << 3) | pp);
-    code.push(opcode);
-    code.push(0xC0 | ((reg.0 & 7) << 3) | (rm.0 & 7));
-}
-
 /// VROUNDPS dst, src, imm8 — round packed f32 (imm: 0=nearest, 1=floor, 2=ceil, 3=trunc).
 fn emit_vroundps(code: &mut Vec<u8>, dst: Reg, src: Reg, imm: u8) {
-    emit_vex(code, 1, 3, 0, dst, Reg(0), src, 0x08); // VEX.128.66.0F3A.WIG 08 /r ib
-    code.push(imm);
+    Vex::m0f3a_66(0x08).imm(imm).rr(code, dst, src); // VEX.128.66.0F3A.WIG 08 /r ib
 }
 
 /// VCVTTPS2DQ dst, src — convert packed f32 → i32 with truncation.
 fn emit_vcvttps2dq(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_vex(code, 2, 1, 0, dst, Reg(0), src, 0x5B); // VEX.128.F3.0F.WIG 5B /r
+    Vex::m0f_f3(0x5B).rr(code, dst, src); // VEX.128.F3.0F.WIG 5B /r
 }
 
 /// VCVTDQ2PS dst, src — convert packed i32 → f32.
 fn emit_vcvtdq2ps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_vex(code, 0, 1, 0, dst, Reg(0), src, 0x5B); // VEX.128.0F.WIG 5B /r
+    Vex::m0f(0x5B).rr(code, dst, src); // VEX.128.0F.WIG 5B /r
 }
 
 // ─────────────────────────── bound-memory gather ────────────────────────────
@@ -266,14 +381,6 @@ fn emit_vcvtdq2ps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 // into the destination lane. All four instructions below are plain AVX (the
 // VEX encodings of SSE4.1 ops), the same tier the rest of this backend already
 // emits (`vroundps`, `vandnps`).
-
-/// Third VEX byte with W=0 and `vvvv` unused (encoded inverted, so all ones);
-/// OR in the `pp` field for the operand-size prefix.
-const VEX_W0_NO_VVVV: u8 = 0xF << 3;
-/// `pp = 01` — the `66` prefix.
-const PP_66: u8 = 1;
-/// `pp = 10` — the `F3` prefix.
-const PP_F3: u8 = 2;
 
 /// `mov dstGPR, [ctxGPR + disp32]` — load a buffer base pointer out of the
 /// context struct. Mirrors the AVX-512 backend's loader.
@@ -291,32 +398,17 @@ pub fn emit_load_ptr_from_ctx(code: &mut Vec<u8>, dst_gpr: u8, ctx_gpr: u8, disp
 
 /// `vpextrd r32, xmmSRC, lane` — move one 32-bit lane into a GP register.
 fn emit_vpextrd_to_gpr(code: &mut Vec<u8>, dst_gpr: u8, src: Reg, lane: u8) {
-    debug_assert!(dst_gpr < 8, "emit_vpextrd_to_gpr: GPR8 only");
     debug_assert!(lane < 4, "vpextrd lane must be 0..4");
     // VEX.128.66.0F3A.W0 16 /r ib — note the *xmm* is the ModRM.reg operand and
     // the GPR is r/m, the reverse of the usual direction.
-    let rbit = if src.0 >= 8 { 0x00 } else { 0x80 };
-    code.push(0xC4);
-    code.push(rbit | 0x40 | 0x20 | 3); // R X B mmmmm=0F3A (GPR8 => B set)
-    code.push(VEX_W0_NO_VVVV | PP_66);
-    code.push(0x16);
-    code.push(0xC0 | ((src.0 & 7) << 3) | (dst_gpr & 7));
-    code.push(lane);
+    Vex::m0f3a_66(0x16).imm(lane).rr_gpr(code, src, dst_gpr);
 }
 
 /// `vmovss xmmDST, [baseGPR + indexGPR*4]` — load one f32 element, zeroing the
 /// upper lanes.
 fn emit_vmovss_load_scaled(code: &mut Vec<u8>, dst: Reg, base_gpr: u8, index_gpr: u8) {
-    debug_assert!(base_gpr < 8 && index_gpr < 8, "GPR8 only");
-    debug_assert!(base_gpr != 5, "base rbp/r13 would force a disp form");
     // VEX.LIG.F3.0F.WIG 10 /r, mod=00 rm=100 (SIB), SIB scale=4.
-    let rbit = if dst.0 >= 8 { 0x00 } else { 0x80 };
-    code.push(0xC4);
-    code.push(rbit | 0x40 | 0x20 | 1); // mmmmm=0F
-    code.push(VEX_W0_NO_VVVV | PP_F3);
-    code.push(0x10);
-    code.push(((dst.0 & 7) << 3) | 0b100); // mod=00, rm=SIB
-    code.push((0b10 << 6) | ((index_gpr & 7) << 3) | (base_gpr & 7)); // scale=4
+    Vex::m0f_f3(0x10).rm_scaled4(code, dst, base_gpr, index_gpr);
 }
 
 /// `vinsertps xmmDST, xmmSRC1, xmmSRC2, imm8` — place lane 0 of `src2` into
@@ -325,8 +417,9 @@ fn emit_vinsertps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg, dst_lane: 
     debug_assert!(dst_lane < 4, "vinsertps lane must be 0..4");
     // VEX.128.66.0F3A.WIG 21 /r ib. imm8: [7:6] source lane, [5:4] dest lane,
     // [3:0] zero mask (none).
-    emit_vex(code, 1, 3, 0, dst, src1, src2, 0x21);
-    code.push(dst_lane << 4);
+    Vex::m0f3a_66(0x21)
+        .imm(dst_lane << 4)
+        .rrr(code, dst, src1, src2);
 }
 
 /// Scratch the scalar gather sequence clobbers. The vector pair must be
@@ -369,31 +462,23 @@ pub fn emit_gather_scalar(code: &mut Vec<u8>, dst: Reg, idx: Reg, slot: u16, s: 
 
 /// VPADDD dst, src1, src2 — packed i32 add.
 fn emit_vpaddd(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit_vex(code, 1, 1, 0, dst, src1, src2, 0xFE); // VEX.128.66.0F.WIG FE /r
+    Vex::m0f_66(0xFE).rrr(code, dst, src1, src2); // VEX.128.66.0F.WIG FE /r
 }
 
 /// VPSLLD dst, src, imm8 — packed i32 shift-left-logical by immediate.
 fn emit_vpslld_imm(code: &mut Vec<u8>, dst: Reg, src: Reg, imm: u8) {
     // VEX.128.66.0F.WIG 72 /6 ib ; dst = vvvv, src = rm, /6 in ModRM.reg.
-    emit_vex(code, 1, 1, 0, Reg(6), dst, src, 0x72);
-    code.push(imm);
+    Vex::m0f_66(0x72)
+        .imm(imm)
+        .digit_rm(code, Digit(6), dst, src);
 }
 
 /// VPSRLD dst, src, imm8 — packed i32 shift-right-logical by immediate.
 fn emit_vpsrld_imm(code: &mut Vec<u8>, dst: Reg, src: Reg, imm: u8) {
     // VEX.128.66.0F.WIG 72 /2 ib.
-    emit_vex(code, 1, 1, 0, Reg(2), dst, src, 0x72);
-    code.push(imm);
-}
-
-/// Bit-select (NEON BSL analogue): `dst = (mask & if_true) | (~mask & if_false)`.
-///
-/// `tmp` must differ from `dst`, `mask`, `if_true`, and `if_false`.
-#[allow(clippy::too_many_arguments)]
-fn emit_blend(code: &mut Vec<u8>, dst: Reg, mask: Reg, if_true: Reg, if_false: Reg, tmp: Reg) {
-    emit_vandps(code, tmp, mask, if_true); // tmp = mask & if_true
-    emit_vandnps(code, dst, mask, if_false); // dst = ~mask & if_false
-    emit_vorps(code, dst, tmp, dst); // dst = blended
+    Vex::m0f_66(0x72)
+        .imm(imm)
+        .digit_rm(code, Digit(2), dst, src);
 }
 
 // VCMPPS ordered predicates (subset).
@@ -509,12 +594,22 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     emit_vroundps(code, dst, src, 0); // round to nearest (even)
 }
 
-/// select(cond, if_true, if_false) — bit blend (`cond` is an all-ones/zeros mask).
-///
-/// `tmp` must differ from `cond`, `if_true`, and `if_false`.
-#[allow(clippy::too_many_arguments)]
-pub fn emit_select(code: &mut Vec<u8>, dst: Reg, cond: Reg, if_true: Reg, if_false: Reg, tmp: Reg) {
-    emit_blend(code, dst, cond, if_true, if_false, tmp);
+/// Fixed scratch outside the allocatable range / reload regs: used for the
+/// binary two-operand hazard and as the select blend temp. The AVX2 and
+/// AVX-512 backends spell the same role `UNARY_SCRATCH`.
+const X86_SCRATCH: Reg = Reg(10);
+
+/// `dst = mask ? if_true : if_false` (bit-select; mask already in `dst`, same
+/// convention as AVX2/AVX-512). The blend temp is this backend's fixed
+/// scratch, which the register file keeps outside the allocatable range —
+/// so it is the encoder's to spend, not a parameter for the caller to get
+/// right.
+pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
+    let tmp = X86_SCRATCH;
+    debug_assert!(tmp.0 != dst.0 && tmp.0 != if_true.0 && tmp.0 != if_false.0);
+    emit_vandps(code, tmp, dst, if_true); // tmp = mask & if_true
+    emit_vandnps(code, dst, dst, if_false); // dst = ~mask & if_false
+    emit_vorps(code, dst, tmp, dst); // dst = blended
 }
 
 // =============================================================================
@@ -823,16 +918,6 @@ pub(crate) mod driver {
     }
     .checked();
 
-    /// Fixed scratch outside the allocatable range / reload regs: used for the
-    /// binary two-operand hazard and as the select blend temp.
-    ///
-    /// SSE2-only (like the rest of this section down to `X86Backend`): dead under
-    /// a build that selects `Avx2Backend`/`Avx512Backend` instead, so gated off
-    /// those widths — otherwise it (and `X86Backend`) would be unreachable dead
-    /// code under `+avx2`/`+avx512f`, which the test-matrix's per-ISA clippy pass
-    /// would then flag as a *new* failure on those levels only.
-    const X86_SCRATCH: Reg = Reg(10);
-
     /// Scratch quad for builtins (sin/cos/exp/atan2/...), which need FOUR distinct
     /// scratch registers. Clear of the allocatable range (4-9) and the reload regs
     /// (11,12). Includes `X86_SCRATCH` (xmm10): builtins don't use it for the
@@ -1015,7 +1100,7 @@ pub(crate) mod driver {
                     if_false,
                 } => {
                     // setup_mov already placed the mask in `dst`; blend in place.
-                    emit_select(code, *dst, *dst, *if_true, *if_false, X86_SCRATCH);
+                    emit_select(code, *dst, *if_true, *if_false);
                 }
                 ResolvedOp::FusedMulAdd { dst, a, b } => {
                     // No hardware FMA assumed: `dst` already holds c (setup_mov);
