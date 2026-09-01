@@ -33,7 +33,7 @@
 use std::io::Write as _;
 use std::time::Duration;
 
-use crate::egraph::{CostModel, SaturationResult, SaturationStopReason};
+use crate::egraph::{CostModel, SaturationResult, SaturationStop};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
 /// Everything one production optimizer invocation — one
@@ -94,7 +94,7 @@ pub fn record(inv: SaturationInvocation<'_>) {
         max_iterations = inv.max_iterations,
         max_classes = inv.max_classes,
         hard_timeout_us = inv.hard_timeout.as_micros(),
-        stop_reason = stop_reason_str(inv.result.stop_reason),
+        stop_reason = stop_str(inv.result.stop),
         iterations = inv.result.iterations,
         classes_at_stop = inv.result.classes_after,
         application_count = inv.application_count,
@@ -106,12 +106,12 @@ pub fn record(inv: SaturationInvocation<'_>) {
     write_line(&line);
 }
 
-fn stop_reason_str(reason: SaturationStopReason) -> &'static str {
-    match reason {
-        SaturationStopReason::Converged => "converged",
-        SaturationStopReason::IterationLimit => "iteration_limit",
-        SaturationStopReason::ClassLimit => "class_limit",
-        SaturationStopReason::Timeout => "timeout",
+fn stop_str(stop: SaturationStop) -> &'static str {
+    match stop {
+        SaturationStop::Quiesced => "quiesced",
+        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::IterationCeiling => "iteration_ceiling",
+        SaturationStop::Timeout => "timeout",
     }
 }
 
