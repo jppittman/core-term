@@ -4356,10 +4356,11 @@ mod tests {
         /// a completeness gap is much cheaper to fix as an itemized list
         /// than rediscovered one `cargo test` run per missing op.
         fn assert_covers_required_ops<B: IsaBackend>(backend_name: &str, backend: &mut B) {
-            // The two explicit `try_emit` calls below for MulAdd/Select are
-            // this constant, unrolled by hand (each needs its own
-            // `ResolvedOp` shape, so they aren't worth a generic loop) — kept
-            // in sync deliberately rather than by a shared loop.
+            // The explicit `try_emit` calls below for MulAdd/Select are this
+            // constant, unrolled by hand (each needs its own `ResolvedOp`
+            // shape, so they aren't worth a generic loop) — kept in sync
+            // deliberately rather than by a shared loop. `MulAdd` unrolls to
+            // four: one fused plus one per `DecomposedMulAdd` spelling.
             debug_assert_eq!(REQUIRED_TERNARY_OPS, &[OpKind::MulAdd, OpKind::Select]);
             let mut missing = alloc::vec::Vec::new();
 
@@ -4409,7 +4410,34 @@ mod tests {
                     b: Reg(6),
                 },
             ) {
-                missing.push(alloc::string::String::from("ternary MulAdd"));
+                missing.push(alloc::string::String::from("ternary MulAdd (fused)"));
+            }
+            // `MulAdd` reaches a backend as EITHER shape depending only on how
+            // the allocator placed `a` and `b` (see `resolve_operands`), so a
+            // backend owes both. Each `c_deferred` spelling is its own arm.
+            for (tag, c_deferred) in [
+                ("c in a register", None),
+                (
+                    "c reloaded from the stack",
+                    Some(DeferredReload::FromStack(32)),
+                ),
+                (
+                    "c rematerialized",
+                    Some(DeferredReload::Const(1.0f32.to_bits())),
+                ),
+            ] {
+                if !try_emit(
+                    backend,
+                    ResolvedOp::DecomposedMulAdd {
+                        dst: Reg(4),
+                        a: Reg(5),
+                        b: Reg(6),
+                        c: Reg(7),
+                        c_deferred,
+                    },
+                ) {
+                    missing.push(alloc::format!("ternary MulAdd (decomposed, {tag})"));
+                }
             }
             if !try_emit(
                 backend,
@@ -4465,6 +4493,266 @@ mod tests {
         fn aarch64_backend_covers_required_ops() {
             let mut backend = aarch64::driver::Aarch64Backend::new(EmitCtx::default());
             assert_covers_required_ops("Aarch64Backend", &mut backend);
+        }
+    }
+
+    // =========================================================================
+    // MulAdd: the encodings behind the two `ResolvedOp` shapes.
+    //
+    // `MulAdd` is the one row of CLAUDE.md's platform-divergence table whose
+    // two answers live inside a single build: `FusedMulAdd` rounds once where
+    // the hardware has an FMA, `DecomposedMulAdd` is architecturally a
+    // multiply then an add and rounds twice, and which one a node gets is
+    // decided by register pressure alone (`resolve_operands`). So the shapes
+    // are pinned as *bytes*, not just as "it emitted something": a backend
+    // that quietly encoded one where the driver asked for the other would
+    // still satisfy `backend_op_coverage`, still pass every ULP-tolerant
+    // equivalence test, and change the last bit of the answer.
+    //
+    // Ungated, like `backend_op_coverage`: encoding is a pure function into a
+    // `Vec<u8>`, so all four backends are checked from whichever host runs the
+    // tests — including the two (aarch64, AVX-512 decomposed) that no
+    // execution test on any single host reaches.
+    // =========================================================================
+    mod muladd_encoding {
+        use super::*;
+
+        const DST: Reg = Reg(4);
+        const SRC_A: Reg = Reg(5);
+        const SRC_B: Reg = Reg(6);
+        const ADDEND: Reg = Reg(7);
+
+        /// A bare plan: no reloads, no setup mov, no store — just the op, so
+        /// the bytes below are the op's encoding and nothing else.
+        fn plan(op: ResolvedOp) -> InstructionPlan {
+            InstructionPlan {
+                reloads: alloc::vec::Vec::new(),
+                op,
+                setup_mov: None,
+                store: None,
+            }
+        }
+
+        fn encode<B: IsaBackend>(backend: &mut B, op: ResolvedOp) -> Vec<u8> {
+            let mut code = Vec::new();
+            backend.emit_plan(&mut code, &plan(op)).expect("emit_plan");
+            code
+        }
+
+        fn fused() -> ResolvedOp {
+            ResolvedOp::FusedMulAdd {
+                dst: DST,
+                a: SRC_A,
+                b: SRC_B,
+            }
+        }
+
+        fn decomposed(c_deferred: Option<DeferredReload>) -> ResolvedOp {
+            ResolvedOp::DecomposedMulAdd {
+                dst: DST,
+                a: SRC_A,
+                b: SRC_B,
+                c: ADDEND,
+                c_deferred,
+            }
+        }
+
+        /// `dst += a * b` in one instruction, one rounding, on the three
+        /// targets that have an FMA — and the SSE2 baseline's honest
+        /// three-instruction stand-in, which rounds twice because that is all
+        /// the hardware offers.
+        #[test]
+        fn fused_encodes_to_the_targets_fma() {
+            // VEX.256.66.0F38.W0 B8 /r — vfmadd231ps ymm4, ymm5, ymm6.
+            assert_eq!(
+                encode(
+                    &mut avx2::driver::Avx2Backend::new(EmitCtx::default()),
+                    fused()
+                ),
+                alloc::vec![0xc4, 0xe2, 0x55, 0xb8, 0xe6],
+                "AVX2 fused MulAdd"
+            );
+            // EVEX.512.66.0F38.W0 B8 /r — vfmadd231ps zmm4, zmm5, zmm6.
+            assert_eq!(
+                encode(
+                    &mut avx512::driver::Avx512Backend::new(EmitCtx::default()),
+                    fused()
+                ),
+                alloc::vec![0x62, 0xf2, 0x55, 0x48, 0xb8, 0xe6],
+                "AVX-512 fused MulAdd"
+            );
+            // FMLA V4.4S, V5.4S, V6.4S.
+            let neon = encode(
+                &mut aarch64::driver::Aarch64Backend::new(EmitCtx::default()),
+                fused(),
+            );
+            assert_eq!(
+                aarch64::disassemble_code(&neon).trim_end(),
+                "   0: 4e26cca4  fmla v4.4s, v5.4s, v6.4s",
+                "aarch64 fused MulAdd"
+            );
+            // No FMA at the SSE2 baseline: movaps/mulps into the fixed scratch
+            // (xmm10), then addps into dst. Two roundings, and the only reason
+            // CLAUDE.md's `MulAdd` row still has a second column.
+            assert_eq!(
+                encode(
+                    &mut x86_64::driver::X86Backend::new(EmitCtx::default()),
+                    fused()
+                ),
+                alloc::vec![
+                    0x44, 0x0f, 0x28, 0xd5, // movaps xmm10, xmm5
+                    0x44, 0x0f, 0x59, 0xd6, // mulps  xmm10, xmm6
+                    0x41, 0x0f, 0x58, 0xe2, // addps  xmm4,  xmm10
+                ],
+                "SSE2 fused MulAdd"
+            );
+        }
+
+        /// The decomposed shape is a multiply and an add — never an FMA, on
+        /// any target. A backend that "optimized" it back into one instruction
+        /// would change the result's last bit while every tolerant test kept
+        /// passing.
+        #[test]
+        fn decomposed_encodes_to_a_multiply_and_an_add() {
+            assert_eq!(
+                encode(
+                    &mut avx2::driver::Avx2Backend::new(EmitCtx::default()),
+                    decomposed(None)
+                ),
+                alloc::vec![
+                    0xc4, 0xe1, 0x54, 0x59, 0xe6, // vmulps ymm4, ymm5, ymm6
+                    0xc4, 0xe1, 0x5c, 0x58, 0xe7, // vaddps ymm4, ymm4, ymm7
+                ],
+                "AVX2 decomposed MulAdd"
+            );
+            assert_eq!(
+                encode(
+                    &mut avx512::driver::Avx512Backend::new(EmitCtx::default()),
+                    decomposed(None)
+                ),
+                alloc::vec![
+                    0x62, 0xf1, 0x54, 0x48, 0x59, 0xe6, // vmulps zmm4, zmm5, zmm6
+                    0x62, 0xf1, 0x5c, 0x48, 0x58, 0xe7, // vaddps zmm4, zmm4, zmm7
+                ],
+                "AVX-512 decomposed MulAdd"
+            );
+            let neon = encode(
+                &mut aarch64::driver::Aarch64Backend::new(EmitCtx::default()),
+                decomposed(None),
+            );
+            assert_eq!(
+                aarch64::disassemble_code(&neon).trim_end(),
+                "   0: 6e26dca4  fmul v4.4s, v5.4s, v6.4s\n   4: 4e27d484  fadd v4.4s, v4.4s, v7.4s",
+                "aarch64 decomposed MulAdd"
+            );
+            assert_eq!(
+                encode(
+                    &mut x86_64::driver::X86Backend::new(EmitCtx::default()),
+                    decomposed(None)
+                ),
+                alloc::vec![
+                    0x0f, 0x28, 0xe5, // movaps xmm4, xmm5
+                    0x0f, 0x59, 0xe6, // mulps  xmm4, xmm6
+                    0x0f, 0x58, 0xe7, // addps  xmm4, xmm7
+                ],
+                "SSE2 decomposed MulAdd"
+            );
+        }
+
+        /// A deferred `c` must be reloaded *between* the multiply and the add.
+        ///
+        /// That ordering is the whole reason `DeferredReload` exists: `c`'s
+        /// reload target is the same scratch register `b` was loaded into, so
+        /// hoisting it up with the other reloads would destroy `b` before the
+        /// multiply reads it. The invariant is checked structurally rather
+        /// than as another byte literal — the multiply and the add are already
+        /// pinned above, so what is left to prove is that the reload landed
+        /// strictly between them, on every backend.
+        #[test]
+        fn a_deferred_c_is_reloaded_between_the_multiply_and_the_add() {
+            fn check<B: IsaBackend>(name: &str, backend: &mut B) {
+                let undeferred = encode(backend, decomposed(None));
+                // `dst = a*b` is everything before the final add; on SSE2 the
+                // add is 3 bytes, on VEX 5, on EVEX 6, on NEON 4 — so split by
+                // the tail rather than by a per-backend length.
+                let (mul, add) = undeferred.split_at(undeferred.len() - tail_len(name));
+                for deferred in [
+                    DeferredReload::FromStack(32),
+                    DeferredReload::Const(1.0f32.to_bits()),
+                ] {
+                    let got = encode(backend, decomposed(Some(deferred.clone())));
+                    assert!(
+                        got.starts_with(mul),
+                        "{name}/{deferred:?}: the multiply is no longer first"
+                    );
+                    assert!(
+                        got.ends_with(add),
+                        "{name}/{deferred:?}: the add is no longer last"
+                    );
+                    assert!(
+                        got.len() > undeferred.len(),
+                        "{name}/{deferred:?}: nothing was emitted for the reload"
+                    );
+                }
+            }
+
+            /// Byte length of the trailing add in `decomposed(None)`.
+            fn tail_len(name: &str) -> usize {
+                match name {
+                    "SSE2" => 3,
+                    "AVX2" => 5,
+                    "AVX-512" => 6,
+                    "aarch64" => 4,
+                    other => panic!("unknown backend {other}"),
+                }
+            }
+
+            check(
+                "SSE2",
+                &mut x86_64::driver::X86Backend::new(EmitCtx::default()),
+            );
+            check(
+                "AVX2",
+                &mut avx2::driver::Avx2Backend::new(EmitCtx::default()),
+            );
+            check(
+                "AVX-512",
+                &mut avx512::driver::Avx512Backend::new(EmitCtx::default()),
+            );
+            check(
+                "aarch64",
+                &mut aarch64::driver::Aarch64Backend::new(EmitCtx::default()),
+            );
+        }
+
+        /// A `MulAdd` node really does reach a backend as `FusedMulAdd` when
+        /// nothing spills — the property the byte tests above assume, and the
+        /// one an upstream change (a legalization pass that decomposed it, an
+        /// arena builder that never emitted it) would silently take away.
+        #[test]
+        fn a_muladd_dag_emits_the_fused_encoding() {
+            use pixelflow_ir::arena::ExprArena;
+
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let z = a.push_var(2);
+            let root = a.push_ternary(OpKind::MulAdd, x, y, z);
+            let (a, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
+
+            let (code, _, _, _) = emit_dag_body(
+                arena_to_schedule(&a, root),
+                &mut avx2::driver::Avx2Backend::new(EmitCtx::default()),
+            )
+            .expect("AVX2 emit");
+            // vfmadd231ps: VEX.256.66.0F38 B8 — the opcode byte after the
+            // 3-byte prefix. Nothing else this body emits uses it.
+            assert!(
+                code.windows(4)
+                    .any(|w| w[0] == 0xc4 && w[1] == 0xe2 && w[3] == 0xb8),
+                "a MulAdd DAG did not reach the AVX2 backend as FusedMulAdd \
+                 (no VEX.0F38 B8 in {code:02x?})"
+            );
         }
     }
 }

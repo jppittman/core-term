@@ -455,9 +455,15 @@ fn vfmadd231ps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
 /// interpreter under `fp-contract=fast` — `eval_scalar`'s scalar `a*b+c` gets
 /// contracted to an `fma` instruction by LLVM under `+fma` too, so a
 /// software two-step mul-then-add would round twice and disagree in the last
-/// bit. The two-roundings case still exists, just not here: it's the SSE2
-/// *baseline* tier's only option (`pixelflow-core`'s x86 backend, no `avx2`
-/// set), where mul+add genuinely is all the hardware offers.
+/// bit.
+///
+/// The two-roundings case still exists, just not in *this* function. It is
+/// the SSE2 baseline's only option — `x86_64.rs`'s own `FusedMulAdd` arm is a
+/// `movaps`/`mulps`/`addps` stand-in, as is `pixelflow-core`'s x86 backend —
+/// and it is also what `DecomposedMulAdd` does on every tier, this one
+/// included, whenever register pressure pulls `a` and `b` apart from `c`.
+/// Both are pinned as bytes by `emit::tests::muladd_encoding` and as values
+/// by `tests/muladd_rounding.rs`.
 pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
     vfmadd231ps(code, dst.0, a.0, b.0);
 }
@@ -652,6 +658,42 @@ mod tests {
             emit_fmadd_c_in_dst(&mut c, Reg(5), X, Y);
             emit_mov(&mut c, X, Reg(5));
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i] + zs[i], "fma sw");
+        }
+
+        /// The FMA bytes really are an FMA: **one** rounding, not a multiply
+        /// followed by an add.
+        ///
+        /// `const_broadcast_and_fma`'s 1e-3 tolerance cannot tell those apart — the whole
+        /// difference is the last mantissa bit — so a stand-in built out of a
+        /// multiply and an add would pass it. `1.0000001 * 4097 + 4097` is one
+        /// of the inputs CLAUDE.md's `MulAdd` row is about, where the two
+        /// forms genuinely disagree, and this asserts the bits.
+        #[test]
+        fn fma_rounds_once() {
+            let xs = [1.000_000_1f32; 8];
+            let ys = [4097.0f32; 8];
+            let zs = [4097.0f32; 8];
+            let one = xs[0].mul_add(ys[0], zs[0]);
+            // `black_box` stops LLVM contracting the reference into the very
+            // instruction it exists to be different from.
+            let two = core::hint::black_box(xs[0] * ys[0]) + zs[0];
+            assert_ne!(
+                one.to_bits(),
+                two.to_bits(),
+                "this input no longer separates one rounding from two"
+            );
+
+            let mut c = Vec::new();
+            emit_mov(&mut c, Reg(5), Z);
+            emit_fmadd_c_in_dst(&mut c, Reg(5), X, Y);
+            emit_mov(&mut c, X, Reg(5));
+            for (i, &g) in run(&c, xs, ys, zs).iter().enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    one.to_bits(),
+                    "lane {i}: {g} rounded twice; the fused answer is {one}"
+                );
+            }
         }
 
         #[test]
