@@ -4,6 +4,8 @@
 
 use core::ptr;
 
+use crate::error::CompileError;
+
 /// A region of executable memory containing JIT-compiled code.
 ///
 /// The memory is allocated as read-write, code is written to it,
@@ -25,9 +27,9 @@ impl ExecutableCode {
     /// The caller must ensure the code buffer contains valid machine code
     /// for the current architecture.
     #[cfg(unix)]
-    pub unsafe fn from_code(code: &[u8]) -> Result<Self, &'static str> {
+    pub unsafe fn from_code(code: &[u8]) -> Result<Self, CompileError> {
         if code.is_empty() {
-            return Err("empty code buffer");
+            return Err(CompileError::EmptyCodeBuffer);
         }
 
         let page_size = page_size();
@@ -316,7 +318,7 @@ struct CodePages {
 #[cfg(unix)]
 impl CodePages {
     /// Map `capacity` bytes readable and writable.
-    fn map(capacity: usize) -> Result<Self, &'static str> {
+    fn map(capacity: usize) -> Result<Self, CompileError> {
         use libc::{MAP_ANON, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap};
 
         // SAFETY: a null hint with a non-zero length and no backing fd is the
@@ -332,7 +334,7 @@ impl CodePages {
             )
         };
         if ptr == libc::MAP_FAILED {
-            return Err("mmap failed");
+            return Err(CompileError::Mmap);
         }
         Ok(Self {
             ptr: ptr.cast::<u8>(),
@@ -349,7 +351,7 @@ impl CodePages {
 
     /// Flip to read-execute, make the written bytes visible to instruction
     /// fetch, and hand the mapping to an [`ExecutableCode`].
-    fn finish(self, len: usize) -> Result<ExecutableCode, &'static str> {
+    fn finish(self, len: usize) -> Result<ExecutableCode, CompileError> {
         use libc::{PROT_EXEC, PROT_READ, mprotect};
 
         // SAFETY: `self` owns this mapping and `capacity` is its length.
@@ -362,7 +364,7 @@ impl CodePages {
         };
         if rc != 0 {
             // `self` is still live, so `Drop` unmaps on the way out.
-            return Err("mprotect failed");
+            return Err(CompileError::Mprotect);
         }
 
         sync_instruction_cache(self.ptr, len);
@@ -664,7 +666,7 @@ mod page_tests {
     fn an_empty_buffer_is_refused() {
         // SAFETY: empty slice; rejected before anything is mapped.
         match unsafe { ExecutableCode::from_code(&[]) } {
-            Err(e) => assert_eq!(e, "empty code buffer"),
+            Err(e) => assert_eq!(e, CompileError::EmptyCodeBuffer),
             Ok(_) => panic!("an empty buffer must not map"),
         }
     }

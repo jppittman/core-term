@@ -58,6 +58,8 @@ use pixelflow_ir::kind::OpKind;
 
 use alloc::vec::Vec;
 
+use crate::error::CompileError;
+
 /// Physical register index.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Reg(pub u8);
@@ -115,7 +117,7 @@ impl FrameLayout {
     pub fn resolve(
         allocation: &regalloc::Allocation,
         vector_bytes: u32,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, CompileError> {
         // 2MB max frame — generous but prevents runaway allocations.
         const MAX_FRAME: u32 = 2 * 1024 * 1024;
 
@@ -134,7 +136,9 @@ impl FrameLayout {
                 regalloc::Placement::Remat(bits) => Loc::Remat(bits),
                 regalloc::Placement::Spilled => {
                     if offset > MAX_FRAME - vector_bytes {
-                        return Err("spill frame overflow: exceeds 2MB stack limit");
+                        return Err(CompileError::BudgetExceeded(
+                            "spill frame overflow: exceeds 2MB stack limit",
+                        ));
                     }
                     let at = offset;
                     offset += vector_bytes;
@@ -316,8 +320,9 @@ impl EmitCtx {
         self,
         arena: &pixelflow_ir::arena::ExprArena,
         root: pixelflow_ir::arena::ExprId,
-    ) -> Result<CompileResult, &'static str> {
-        let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
+    ) -> Result<CompileResult, CompileError> {
+        let (arena, root) =
+            pixelflow_ir::passes::legalize(arena, root).map_err(CompileError::Legalize)?;
         let schedule = arena_to_schedule(&arena, root);
         compile_via_backend(schedule, &mut Native::new(self))
     }
@@ -378,7 +383,7 @@ trait IsaBackend {
     fn register_file(&self) -> regalloc::RegisterFile;
 
     /// Per-compile setup before any code is emitted (e.g. seed a constant pool).
-    fn begin(&mut self, schedule: &[regalloc::Def]) -> Result<(), &'static str>;
+    fn begin(&mut self, schedule: &[regalloc::Def]) -> Result<(), CompileError>;
 
     /// Called once the frame layout is known, BEFORE any body instruction is
     /// emitted. Backends whose spill addressing depends on the frame mode
@@ -388,14 +393,14 @@ trait IsaBackend {
 
     /// Emit one resolved instruction (with its reloads/store).
     fn emit_plan(&mut self, code: &mut Vec<u8>, plan: &InstructionPlan)
-    -> Result<(), &'static str>;
+    -> Result<(), CompileError>;
 
     /// Register-to-register move.
     fn emit_mov(&mut self, code: &mut Vec<u8>, dst: Reg, src: Reg);
 
     /// Spill a register to a frame slot.
     fn emit_store(&mut self, code: &mut Vec<u8>, src: Reg, offset: u32)
-    -> Result<(), &'static str>;
+    -> Result<(), CompileError>;
 
     /// Resolve a value to a register, reloading or rematerializing into
     /// `target` if it is not already in one.
@@ -657,7 +662,7 @@ const SCAFFOLD_SCRATCH: Reg = Reg(1);
 fn emit_dag_body<B: IsaBackend>(
     schedule: Vec<regalloc::Def>,
     backend: &mut B,
-) -> Result<(Vec<u8>, Reg, u32, u32), &'static str> {
+) -> Result<(Vec<u8>, Reg, u32, u32), CompileError> {
     emit_dag_body_hoisted(schedule, backend, HoistCtx::None, None)
 }
 
@@ -672,7 +677,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
     backend: &mut B,
     hoist: HoistCtx<'_>,
     frame_override: Option<u32>,
-) -> Result<(Vec<u8>, Reg, u32, u32), &'static str> {
+) -> Result<(Vec<u8>, Reg, u32, u32), CompileError> {
     use alloc::collections::BTreeMap;
     use regalloc::RegisterAllocator;
 
@@ -696,7 +701,9 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
 
     let frame_size = frame_override.unwrap_or(layout.frame_size);
     if frame_size < layout.frame_size {
-        return Err("frame override smaller than the layout's frame");
+        return Err(CompileError::Internal(
+            "frame override smaller than the layout's frame",
+        ));
     }
     backend.frame_ready(frame_size);
 
@@ -1252,7 +1259,7 @@ fn plan_collapse_hoist(
 fn presize_frame(
     schedule: &[regalloc::Def],
     file: &regalloc::RegisterFile,
-) -> Result<u32, &'static str> {
+) -> Result<u32, CompileError> {
     use regalloc::RegisterAllocator;
     let allocation = regalloc::LinearScan.allocate(schedule.to_vec(), file);
     Ok(FrameLayout::resolve(&allocation, file.vector_bytes)?.frame_size)
@@ -1575,7 +1582,7 @@ pub fn resolve_operands(
     dst_loc: Loc,
     locs: &[Option<Loc>],
     file: &regalloc::RegisterFile,
-) -> Result<InstructionPlan, &'static str> {
+) -> Result<InstructionPlan, CompileError> {
     let tmp_op = file.reload[1]; // always safe for operand reload
 
     // Compute destination: a real register, or reload[0] if the value has
@@ -1761,7 +1768,7 @@ pub fn resolve_operands(
                         if_false: c_reg,
                     }
                 }
-                _ => return Err("unsupported ternary op in DAG compilation"),
+                _ => return Err(CompileError::UnsupportedOp(*op_kind)),
             }
         }
     };
@@ -1850,7 +1857,7 @@ type Native = x86_64::driver::X86Backend;
 pub fn compile(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
-) -> Result<CompileResult, &'static str> {
+) -> Result<CompileResult, CompileError> {
     EmitCtx::default().compile(arena, root)
 }
 
@@ -1860,7 +1867,7 @@ pub fn compile(
 fn compile_via_backend<B: IsaBackend>(
     schedule: Vec<regalloc::Def>,
     backend: &mut B,
-) -> Result<CompileResult, &'static str> {
+) -> Result<CompileResult, CompileError> {
     let file = backend.register_file();
     let variance = schedule_variance(&schedule);
     const X_SCOPE: u8 = 1 << 0;
