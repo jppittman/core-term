@@ -19,7 +19,7 @@
 //! all four backends from any host by `emit::tests::muladd_encoding`.
 #![cfg(target_arch = "x86_64")]
 
-use pixelflow_codegen::emit::executable::ExecutableCode;
+use pixelflow_codegen::emit::executable::{ExecutableCode, PerBatch};
 use pixelflow_codegen::emit::{EmitCtx, compile_arena_dag, compile_arena_dag_with_ctx};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
@@ -69,7 +69,7 @@ type KernelFn = extern "C" fn(
 ) -> core::arch::x86_64::__m512;
 
 #[cfg(target_feature = "avx512f")]
-fn jit_eval(code: &ExecutableCode, x: f32, y: f32, z: f32) -> f32 {
+fn jit_eval(code: &ExecutableCode<PerBatch>, x: f32, y: f32, z: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let f: KernelFn = code.as_fn();
@@ -92,7 +92,7 @@ type KernelFn = extern "C" fn(
 ) -> core::arch::x86_64::__m256;
 
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
-fn jit_eval(code: &ExecutableCode, x: f32, y: f32, z: f32) -> f32 {
+fn jit_eval(code: &ExecutableCode<PerBatch>, x: f32, y: f32, z: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let f: KernelFn = code.as_fn();
@@ -115,7 +115,7 @@ type KernelFn = extern "C" fn(
 ) -> core::arch::x86_64::__m128;
 
 #[cfg(not(target_feature = "avx2"))]
-fn jit_eval(code: &ExecutableCode, x: f32, y: f32, z: f32) -> f32 {
+fn jit_eval(code: &ExecutableCode<PerBatch>, x: f32, y: f32, z: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let f: KernelFn = code.as_fn();
