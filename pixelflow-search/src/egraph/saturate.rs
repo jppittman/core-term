@@ -54,6 +54,14 @@ pub struct SaturationResult {
 
     /// The rewrite budget that was used.
     pub budget: usize,
+
+    /// Which condition ended the run, read from
+    /// [`EGraph::saturate_with_limits`]'s own loop — the production caller
+    /// (`crate::runtime::optimize_runtime_arena`) discards this, but an
+    /// offline harness reproducing the production call must be able to
+    /// report "quiesced / iteration cap / class cap / timeout" without
+    /// inferring it from `saturated`.
+    pub stop: SaturationStop,
 }
 
 impl SaturationResult {
@@ -137,6 +145,7 @@ pub fn saturate_with_full_budget(
         classes_after,
         rule_matches,
         budget: max_iterations,
+        stop: stats.stop,
     }
 }
 
@@ -342,126 +351,216 @@ pub fn saturate_guided_until_applications<G: SaturationGuide>(
     max_classes: usize,
     timeout: Duration,
 ) -> AppBudgetSaturationStats {
-    let start = Instant::now();
-    let mut iterations = 0usize;
-    let mut total_unions = 0usize;
-    let mut seen_keys: HashSet<CandidateKey> = HashSet::new();
-    // Episode-level constant for `CandidateSummary::new`'s `expr_node_count`
-    // (see that constructor's doc): the graph's node count at the moment
-    // this call started, before any guided round has fired — the live-loop
-    // analogue of the offline label-minting replay's `arena.nodes_raw().len()`
-    // snapshot taken before `saturate_with_limits` runs.
-    let expr_node_count = egraph.node_count();
+    GuidedSaturation::new(guide, rule_embeds).until_applications(
+        egraph,
+        max_total_applications,
+        max_iters,
+        max_classes,
+        timeout,
+    )
+}
 
-    let stop = 'outer: loop {
-        if egraph.provenance().application_count() >= max_total_applications {
-            break SaturationStop::ApplicationBudget;
-        }
-        if iterations >= max_iters {
-            break SaturationStop::IterationCeiling;
-        }
-        if start.elapsed() >= timeout {
-            break SaturationStop::Timeout;
-        }
-        if egraph.num_classes() > max_classes {
-            break SaturationStop::ClassCap;
-        }
-        iterations += 1;
+/// One guided-saturation *episode*: the Guide, its per-rule embeddings, and
+/// the candidate-key dedup set, kept together so a caller that advances the
+/// same e-graph through several successive application budgets (an anytime
+/// curve sampled at 25, 50, 100, ... applications —
+/// [`super::anytime::run_anytime_curve_with`]) sees ONE continuous guided
+/// run, not a fresh episode per checkpoint.
+///
+/// Why this must be a struct and not a per-call local: with the dedup set
+/// re-created on every call, the second checkpoint's first round would
+/// re-score and re-fire every already-resolved `(rule, class content)` key
+/// from the first — each an idempotent re-fire that still *records* an
+/// application, i.e. spends the budget on exactly the 90% no-op traffic
+/// dedup exists to eliminate. Unguided saturation has no per-call state, so
+/// its curve was never exposed to this; the guided curve would have been
+/// silently handicapped at every checkpoint after the first.
+///
+/// `expr_node_count` (the episode-level feature constant, see
+/// [`CandidateSummary::new`]) is captured on the FIRST `until_applications`
+/// call — the graph's node count before any guided round has fired — and
+/// reused by later calls, matching the single-call semantics exactly.
+pub struct GuidedSaturation<'a, G: SaturationGuide> {
+    guide: &'a G,
+    rule_embeds: &'a [[f32; EMBED_DIM]],
+    seen_keys: HashSet<CandidateKey>,
+    expr_node_count: Option<usize>,
+}
 
-        let matches = egraph.find_rewrite_matches();
-        if matches.is_empty() {
-            break SaturationStop::Quiesced;
+impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
+    /// Start an episode: empty dedup set, feature constant not yet captured.
+    #[must_use]
+    pub fn new(guide: &'a G, rule_embeds: &'a [[f32; EMBED_DIM]]) -> Self {
+        Self {
+            guide,
+            rule_embeds,
+            seen_keys: HashSet::new(),
+            expr_node_count: None,
         }
+    }
 
-        // Dedup BEFORE scoring (§2.2/§4): the ordinal recorded is a
-        // per-round approximation (see doc above), used only for the
-        // budget_fraction feature, never for correctness.
-        let ordinal = egraph.provenance().application_count() as u64;
-        let mut survivors: Vec<(RewriteTarget, CandidateFeatures)> = Vec::new();
-        for target in matches {
-            let firing = Firing {
-                rule_idx: target.rule_idx,
-                match_root: target.class_id,
-                application_ordinal: ordinal,
-                registered_budget: REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
-            };
-            let features = CandidateFeatures::observe(egraph, &firing);
-            if seen_keys.insert(features.key.clone()) {
-                survivors.push((target, features));
-            }
-        }
+    /// Number of distinct candidate keys this episode has scored so far
+    /// (diagnostic: dedup coverage).
+    #[must_use]
+    pub fn seen_key_count(&self) -> usize {
+        self.seen_keys.len()
+    }
 
-        if survivors.is_empty() {
-            break SaturationStop::Quiesced;
-        }
+    /// Advance `egraph` until the cumulative recorded application count
+    /// reaches `max_total_applications` (or quiescence / `max_iters` rounds
+    /// for THIS call / class cap / timeout) — the body documented on
+    /// [`saturate_guided_until_applications`], with the dedup set and
+    /// feature constant carried across calls.
+    pub fn until_applications(
+        &mut self,
+        egraph: &mut EGraph,
+        max_total_applications: usize,
+        max_iters: usize,
+        max_classes: usize,
+        timeout: Duration,
+    ) -> AppBudgetSaturationStats {
+        let guide = self.guide;
+        let rule_embeds = self.rule_embeds;
+        let seen_keys = &mut self.seen_keys;
+        let start = Instant::now();
+        let mut iterations = 0usize;
+        let mut total_unions = 0usize;
+        // Episode-level constant for `CandidateSummary::new`'s `expr_node_count`
+        // (see that constructor's doc): the graph's node count at the moment
+        // the episode started, before any guided round has fired — the
+        // live-loop analogue of the offline label-minting replay's
+        // `arena.nodes_raw().len()` snapshot taken before
+        // `saturate_with_limits` runs.
+        let expr_node_count = *self
+            .expr_node_count
+            .get_or_insert_with(|| egraph.node_count());
 
-        // Batch-score (never one candidate at a time — binding rule).
-        let summaries: Vec<CandidateSummary> = survivors
-            .iter()
-            .map(|(target, features)| {
-                let rule_embed = *rule_embeds.get(target.rule_idx).unwrap_or_else(|| {
-                    panic!(
-                        "saturate_guided_until_applications: rule_embeds has {} entries, \
-                         but a match fired rule_idx {} — the caller must supply one \
-                         embedding per registered rule",
-                        rule_embeds.len(),
-                        target.rule_idx
-                    )
-                });
-                CandidateSummary::new(features, rule_embed, expr_node_count)
-            })
-            .collect();
-        let scores = guide.score_candidates(&summaries);
-        assert_eq!(
-            scores.len(),
-            survivors.len(),
-            "SaturationGuide::score_candidates must return exactly one score per \
-             candidate — got {} scores for {} candidates",
-            scores.len(),
-            survivors.len()
-        );
-        for &s in &scores {
-            assert!(
-                s.is_finite(),
-                "SaturationGuide produced a non-finite score ({s}) — fail loud rather \
-                 than let NaN/inf silently corrupt move ordering"
-            );
-        }
-
-        // Order descending by score; ties keep match-enumeration order
-        // (`sort_by` is stable) for determinism given a fixed guide.
-        let mut order: Vec<usize> = (0..survivors.len()).collect();
-        order.sort_by(|&a, &b| {
-            scores[b]
-                .partial_cmp(&scores[a])
-                .expect("scores were just asserted finite above")
-        });
-
-        // Apply in that order, budget/deadline/cap-checked per application —
-        // see the doc's "Approximation, stated plainly" section for why a
-        // stale `node_idx` mid-round is safe rather than silently wrong.
-        for idx in order {
+        let stop = 'outer: loop {
             if egraph.provenance().application_count() >= max_total_applications {
-                break 'outer SaturationStop::ApplicationBudget;
+                break SaturationStop::ApplicationBudget;
+            }
+            if iterations >= max_iters {
+                break SaturationStop::IterationCeiling;
             }
             if start.elapsed() >= timeout {
-                break 'outer SaturationStop::Timeout;
-            }
-            let target = survivors[idx].0;
-            if egraph.apply_single_rule(target.rule_idx, target.class_id, target.node_idx) {
-                total_unions += 1;
+                break SaturationStop::Timeout;
             }
             if egraph.num_classes() > max_classes {
-                break 'outer SaturationStop::ClassCap;
+                break SaturationStop::ClassCap;
             }
-        }
-    };
+            iterations += 1;
 
-    AppBudgetSaturationStats {
-        iterations,
-        total_unions,
-        applications: egraph.provenance().application_count(),
-        stop,
+            let matches = egraph.find_rewrite_matches();
+            if matches.is_empty() {
+                break SaturationStop::Quiesced;
+            }
+
+            // Dedup BEFORE scoring (§2.2/§4): the ordinal recorded is a
+            // per-round approximation (see doc above), used only for the
+            // budget_fraction feature, never for correctness.
+            let ordinal = egraph.provenance().application_count() as u64;
+            let mut survivors: Vec<(RewriteTarget, CandidateFeatures)> = Vec::new();
+            for target in matches {
+                let firing = Firing {
+                    rule_idx: target.rule_idx,
+                    match_root: target.class_id,
+                    application_ordinal: ordinal,
+                    registered_budget: REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
+                };
+                let features = CandidateFeatures::observe(egraph, &firing);
+                if seen_keys.insert(features.key.clone()) {
+                    survivors.push((target, features));
+                }
+            }
+
+            if survivors.is_empty() {
+                break SaturationStop::Quiesced;
+            }
+
+            // Batch-score (never one candidate at a time — binding rule).
+            let summaries: Vec<CandidateSummary> = survivors
+                .iter()
+                .map(|(target, features)| {
+                    let rule_embed = *rule_embeds.get(target.rule_idx).unwrap_or_else(|| {
+                        panic!(
+                            "saturate_guided_until_applications: rule_embeds has {} entries, \
+                         but a match fired rule_idx {} — the caller must supply one \
+                         embedding per registered rule",
+                            rule_embeds.len(),
+                            target.rule_idx
+                        )
+                    });
+                    CandidateSummary::new(features, rule_embed, expr_node_count)
+                })
+                .collect();
+            let scores = guide.score_candidates(&summaries);
+            assert_eq!(
+                scores.len(),
+                survivors.len(),
+                "SaturationGuide::score_candidates must return exactly one score per \
+             candidate — got {} scores for {} candidates",
+                scores.len(),
+                survivors.len()
+            );
+            for &s in &scores {
+                assert!(
+                    s.is_finite(),
+                    "SaturationGuide produced a non-finite score ({s}) — fail loud rather \
+                 than let NaN/inf silently corrupt move ordering"
+                );
+            }
+
+            // Order descending by score; ties keep match-enumeration order
+            // (`sort_by` is stable) for determinism given a fixed guide.
+            let mut order: Vec<usize> = (0..survivors.len()).collect();
+            order.sort_by(|&a, &b| {
+                scores[b]
+                    .partial_cmp(&scores[a])
+                    .expect("scores were just asserted finite above")
+            });
+
+            // Apply in that order, budget/deadline/cap-checked per application —
+            // see the doc's "Approximation, stated plainly" section for why a
+            // stale `node_idx` mid-round is safe rather than silently wrong.
+            for idx in order {
+                if egraph.provenance().application_count() >= max_total_applications {
+                    break 'outer SaturationStop::ApplicationBudget;
+                }
+                if start.elapsed() >= timeout {
+                    break 'outer SaturationStop::Timeout;
+                }
+                let target = survivors[idx].0;
+                if egraph.apply_single_rule(target.rule_idx, target.class_id, target.node_idx) {
+                    total_unions += 1;
+                }
+                if egraph.num_classes() > max_classes {
+                    break 'outer SaturationStop::ClassCap;
+                }
+            }
+        };
+
+        AppBudgetSaturationStats {
+            iterations,
+            total_unions,
+            applications: egraph.provenance().application_count(),
+            stop,
+        }
+    }
+}
+
+impl<G: SaturationGuide> super::anytime::AnytimeStepper for GuidedSaturation<'_, G> {
+    fn advance(
+        &mut self,
+        egraph: &mut EGraph,
+        step: super::anytime::AnytimeStep,
+    ) -> AppBudgetSaturationStats {
+        self.until_applications(
+            egraph,
+            step.app_target,
+            step.sweeps_left,
+            step.max_classes,
+            step.remaining,
+        )
     }
 }
 
@@ -565,6 +664,7 @@ mod tests {
             classes_after: 15,
             rule_matches: HashMap::new(),
             budget: 100,
+            stop: SaturationStop::Quiesced,
         };
 
         assert!((result.growth_ratio() - 1.5).abs() < 0.01);

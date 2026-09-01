@@ -50,7 +50,7 @@ use pixelflow_ir::{ExprArena, ExprId};
 
 use super::cost::CostModel;
 use super::extract::{ExtractedDAG, extract_dag};
-use super::graph::{EGraph, SaturationStop};
+use super::graph::{AppBudgetSaturationStats, EGraph, SaturationStop};
 use super::rewrite::Rewrite;
 
 /// Geometric application-count checkpoint grid: resolves the median-~195
@@ -109,6 +109,48 @@ pub struct AnytimeCurveOutput {
     pub extraction: ExtractedDAG,
 }
 
+/// One "advance to the next checkpoint" request handed to an
+/// [`AnytimeStepper`]: the same four stop conditions
+/// [`EGraph::saturate_until_applications`] takes, so a guided stepper and
+/// the unguided one are held to an identical contract.
+#[derive(Clone, Copy, Debug)]
+pub struct AnytimeStep {
+    /// Cumulative-application target for this checkpoint.
+    pub app_target: usize,
+    /// Rounds/sweeps still allowed under the curve's safety ceiling.
+    pub sweeps_left: usize,
+    /// The fixed environment class cap.
+    pub max_classes: usize,
+    /// Wall-clock remaining under the curve's safety ceiling (the curve
+    /// runner PANICS if the stepper reports [`SaturationStop::Timeout`]).
+    pub remaining: Duration,
+}
+
+/// How a curve advances its e-graph between checkpoints. The unguided
+/// stepper is [`EGraph::saturate_until_applications`]; a guided one is
+/// [`super::saturate::GuidedSaturation::until_applications`]. Everything
+/// else about the curve — grid, sampling, clamping, extraction, the regret
+/// reference convention — is shared, which is the whole point: guided and
+/// unguided arms must differ ONLY in how the graph is advanced.
+pub trait AnytimeStepper {
+    fn advance(&mut self, egraph: &mut EGraph, step: AnytimeStep) -> AppBudgetSaturationStats;
+}
+
+/// The unguided stepper: one fixed rule-then-class sweep order, budget
+/// checked between rules ([`EGraph::saturate_until_applications`]).
+pub struct UnguidedStepper;
+
+impl AnytimeStepper for UnguidedStepper {
+    fn advance(&mut self, egraph: &mut EGraph, step: AnytimeStep) -> AppBudgetSaturationStats {
+        egraph.saturate_until_applications(
+            step.app_target,
+            step.sweeps_left,
+            step.max_classes,
+            step.remaining,
+        )
+    }
+}
+
 /// Run one incremental saturation of `(arena, root)` under `rules`, sampling
 /// extraction cost at each application-count target in `grid`.
 ///
@@ -117,6 +159,9 @@ pub struct AnytimeCurveOutput {
 /// `safety_timeout` a per-curve wall-clock ceiling that PANICS if exceeded
 /// (offline measurement must fail loud, never silently truncate — the
 /// 2026-09-01 review round caught exactly that failure mode twice).
+///
+/// This is the unguided curve; it is [`run_anytime_curve_with`] driven by
+/// [`UnguidedStepper`], nothing more.
 pub fn run_anytime_curve(
     arena: &ExprArena,
     root: ExprId,
@@ -126,6 +171,36 @@ pub fn run_anytime_curve(
     max_sweeps: usize,
     safety_timeout: Duration,
     costs: &CostModel,
+) -> AnytimeCurveOutput {
+    run_anytime_curve_with(
+        arena,
+        root,
+        rules,
+        grid,
+        max_classes,
+        max_sweeps,
+        safety_timeout,
+        costs,
+        &mut UnguidedStepper,
+    )
+}
+
+/// The ONE anytime-curve definition, parameterized over how the graph is
+/// advanced between checkpoints (see [`AnytimeStepper`]). Guided arms of the
+/// pre-registered experiment call this with a
+/// [`super::saturate::GuidedSaturation`]; the unguided arm is
+/// [`run_anytime_curve`].
+#[allow(clippy::too_many_arguments)]
+pub fn run_anytime_curve_with(
+    arena: &ExprArena,
+    root: ExprId,
+    rules: Vec<Box<dyn Rewrite>>,
+    grid: &[usize],
+    max_classes: usize,
+    max_sweeps: usize,
+    safety_timeout: Duration,
+    costs: &CostModel,
+    stepper: &mut impl AnytimeStepper,
 ) -> AnytimeCurveOutput {
     assert!(!grid.is_empty(), "anytime: empty checkpoint grid");
     assert!(
@@ -162,7 +237,15 @@ pub fn run_anytime_curve(
         let sweeps_left = max_sweeps.checked_sub(sweeps_total).unwrap_or_else(|| {
             panic!("anytime: sweep accounting underflow (sweeps_total={sweeps_total})")
         });
-        let stats = egraph.saturate_until_applications(target, sweeps_left, max_classes, remaining);
+        let stats = stepper.advance(
+            &mut egraph,
+            AnytimeStep {
+                app_target: target,
+                sweeps_left,
+                max_classes,
+                remaining,
+            },
+        );
         assert!(
             stats.stop != SaturationStop::Timeout,
             "anytime: saturation hit the wall-clock safety ceiling at target {target} — \
