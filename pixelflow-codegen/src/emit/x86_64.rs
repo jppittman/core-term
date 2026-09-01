@@ -856,31 +856,63 @@ mod tests {
         assert_eq!(code, vec![0xC4, 0xE1, 0xF8, 0x11, 0xC0]);
     }
 
+    /// `emit_movups_store_base` (a raw `[base]`-only store, no displacement)
+    /// no longer exists as its own function post-refactor — it is
+    /// `emit_movups_store` called with a `NoDisp` address, which is exactly
+    /// what these tests now drive it through.
     #[test]
-    fn emit_movups_store_base_omits_rex_when_both_registers_are_low() {
+    fn emit_movups_store_omits_rex_for_a_no_disp_address_when_both_registers_are_low() {
         let mut code = Vec::new();
-        emit_movups_store_base(&mut code, Reg(3), 3);
+        emit_movups_store(
+            &mut code,
+            Mem {
+                base: Gpr(3),
+                disp: NoDisp,
+            },
+            Reg(3),
+        );
         assert_eq!(code, vec![0x0F, 0x11, ((3 & 7) << 3) | 3]);
     }
 
     #[test]
-    fn emit_movups_store_base_sets_rex_r_when_only_the_source_register_is_high() {
+    fn emit_movups_store_sets_rex_r_for_a_no_disp_address_when_only_the_source_register_is_high() {
         let mut code = Vec::new();
-        emit_movups_store_base(&mut code, Reg(9), 3);
+        emit_movups_store(
+            &mut code,
+            Mem {
+                base: Gpr(3),
+                disp: NoDisp,
+            },
+            Reg(9),
+        );
         assert_eq!(code, vec![0x44, 0x0F, 0x11, ((9 & 7) << 3) | 3]);
     }
 
     #[test]
-    fn emit_movups_store_base_sets_rex_b_when_only_the_base_register_is_high() {
+    fn emit_movups_store_sets_rex_b_for_a_no_disp_address_when_only_the_base_register_is_high() {
         let mut code = Vec::new();
-        emit_movups_store_base(&mut code, Reg(2), 11);
+        emit_movups_store(
+            &mut code,
+            Mem {
+                base: Gpr(11),
+                disp: NoDisp,
+            },
+            Reg(2),
+        );
         assert_eq!(code, vec![0x41, 0x0F, 0x11, ((2 & 7) << 3) | (11 & 7)]);
     }
 
     #[test]
-    fn emit_movups_store_base_sets_both_rex_bits_when_both_registers_are_high() {
+    fn emit_movups_store_sets_both_rex_bits_for_a_no_disp_address_when_both_registers_are_high() {
         let mut code = Vec::new();
-        emit_movups_store_base(&mut code, Reg(11), 14);
+        emit_movups_store(
+            &mut code,
+            Mem {
+                base: Gpr(14),
+                disp: NoDisp,
+            },
+            Reg(11),
+        );
         assert_eq!(code, vec![0x45, 0x0F, 0x11, ((11 & 7) << 3) | (14 & 7)]);
     }
 
@@ -1340,7 +1372,9 @@ pub(crate) mod driver {
             assert_eq!(x86_redzone_disp(112), Ok(-128));
             assert_eq!(
                 x86_redzone_disp(113),
-                Err("x86 spill: red-zone displacement out of range (prologue mode bug)")
+                Err(CompileError::Internal(
+                    "x86 spill: red-zone displacement out of range (prologue mode bug)"
+                ))
             );
         }
 
@@ -1382,53 +1416,17 @@ pub(crate) mod driver {
             assert_eq!(code, expected);
         }
 
-        #[test]
-        fn prologue_omits_the_stack_adjustment_when_the_frame_fits_the_red_zone() {
-            let mut backend = X86Backend::new(EmitCtx::default());
-            backend.frame_ready(128); // <= 128: red zone, frame_bytes stays 0
-            let mut code = Vec::new();
-            backend.prologue(&mut code, 128);
-            assert!(
-                code.is_empty(),
-                "a frame that fits the red zone needs no `sub rsp`"
-            );
-        }
-
-        #[test]
-        fn prologue_allocates_the_frame_when_it_does_not_fit_the_red_zone() {
-            let mut backend = X86Backend::new(EmitCtx::default());
-            backend.frame_ready(129);
-            let mut code = Vec::new();
-            backend.prologue(&mut code, 129);
-            let mut expected = Vec::new();
-            super::super::emit_sub_rsp(&mut expected, 129);
-            assert_eq!(code, expected);
-        }
-
-        #[test]
-        fn epilogue_omits_the_stack_adjustment_when_the_frame_fits_the_red_zone() {
-            let mut backend = X86Backend::new(EmitCtx::default());
-            backend.frame_ready(128);
-            let mut code = Vec::new();
-            backend.epilogue(&mut code, Reg(0), 128);
-            assert_eq!(
-                code,
-                vec![0xC3],
-                "a frame that fits the red zone needs no `add rsp`"
-            );
-        }
-
-        #[test]
-        fn epilogue_releases_the_allocated_frame_before_returning() {
-            let mut backend = X86Backend::new(EmitCtx::default());
-            backend.frame_ready(129);
-            let mut code = Vec::new();
-            backend.epilogue(&mut code, Reg(0), 129);
-            let mut expected = Vec::new();
-            super::super::emit_add_rsp(&mut expected, 129);
-            expected.push(0xC3);
-            assert_eq!(code, expected);
-        }
+        // `X86Backend::prologue`/`epilogue` — and the `if self.frame_bytes > 0`
+        // conditional they gated — were deleted outright by main's #1082
+        // ("one kernel ABI, one compile entry"), which replaced them with
+        // `frame_alloc`/`frame_free`: unconditional `emit_sub_rsp`/`emit_add_rsp`
+        // delegations called by the shared collapse-loop scaffold on a `total`
+        // that always includes the scaffold's own coordinate slots and so is
+        // never zero. There is no surviving red-zone-omits-the-adjustment
+        // branch to test; `frame_ready`'s red-zone bookkeeping now only feeds
+        // `red_zone_slot`'s body-spill addressing (covered by
+        // `x86_redzone_disp`'s tests above), not whether a prologue/epilogue is
+        // emitted at all. Removed rather than rewritten against a coincidence.
     }
 }
 
