@@ -462,34 +462,37 @@ pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
 // xmm0), then recombine with vinsertf128.
 // =============================================================================
 
+/// Scratch the 256-bit gather clobbers: the 128-bit sequence's own scratch,
+/// which both halves reuse, plus the two vector registers that carry the high
+/// half while the low half is being assembled. All of it must be distinct from
+/// the gather's `dst` and `idx`.
+#[derive(Clone, Copy)]
+pub struct GatherScratch {
+    /// Scratch for one 128-bit half — see [`x86_64::GatherScratch`].
+    pub half: x86_64::GatherScratch,
+    /// Vector register receiving lanes 4..8 of the float indices.
+    pub idx_hi: Reg,
+    /// Vector register receiving the high half's gathered values.
+    pub res_hi: Reg,
+}
+
 /// `dst = buffer[slot][idx_lane]` for 8 lanes. `idx` holds FLOAT indices
 /// (already clamped in range by the `Gather` lowering — `x86_64::emit_gather_scalar`
 /// does its own float->int truncation per half, so `idx` must not be
-/// pre-truncated here). Clobbers the GPRs and vector scratch in `s`, plus
-/// `idx_hi`/`res_hi` (backend-reserved scratch distinct from `s`'s fields and
-/// from `dst`/`idx`).
-#[allow(clippy::too_many_arguments)]
-pub fn emit_gather_scalar(
-    code: &mut Vec<u8>,
-    dst: Reg,
-    idx: Reg,
-    slot: u16,
-    s: x86_64::GatherScratch,
-    idx_hi: Reg,
-    res_hi: Reg,
-) {
+/// pre-truncated here). Clobbers everything in `s`.
+pub fn emit_gather_scalar(code: &mut Vec<u8>, dst: Reg, idx: Reg, slot: u16, s: GatherScratch) {
     // idx's low 128 already holds lanes 0..4 (float); split off lanes 4..8
     // into idx_hi before either gather call touches idx/dst (which may alias).
-    vextractf128(code, idx_hi.0, idx.0, 1);
+    vextractf128(code, s.idx_hi.0, idx.0, 1);
 
     // Low half: lanes 0..4. May write dst == idx (the callee handles that:
     // it converts idx to int in scratch before ever writing dst).
-    x86_64::emit_gather_scalar(code, dst, idx, slot, s);
+    x86_64::emit_gather_scalar(code, dst, idx, slot, s.half);
     // High half: lanes 4..8, into res_hi (a 128-bit scratch distinct from dst).
-    x86_64::emit_gather_scalar(code, res_hi, idx_hi, slot, s);
+    x86_64::emit_gather_scalar(code, s.res_hi, s.idx_hi, slot, s.half);
 
     // Recombine: dst[0..4] already holds the low half; splice in the high.
-    vinsertf128(code, dst.0, dst.0, res_hi.0, 1);
+    vinsertf128(code, dst.0, dst.0, s.res_hi.0, 1);
 }
 
 #[cfg(test)]
@@ -673,7 +676,17 @@ mod tests {
                 idx_lanes: Reg(13),
                 value: Reg(14),
             };
-            emit_gather_scalar(&mut c, Reg(0), Reg(0), 0, s, Reg(9), Reg(8));
+            emit_gather_scalar(
+                &mut c,
+                Reg(0),
+                Reg(0),
+                0,
+                GatherScratch {
+                    half: s,
+                    idx_hi: Reg(9),
+                    res_hi: Reg(8),
+                },
+            );
             crate::emit::x86_64::ret(&mut c);
 
             let buf: Vec<f32> = (0..64).map(|i| (i as f32) * 1.5 + 0.25).collect();
@@ -842,15 +855,17 @@ pub(crate) mod driver {
                         *dst,
                         *idx,
                         *slot,
-                        x86_64::GatherScratch {
-                            base_gpr: 0,  // rax
-                            index_gpr: 1, // rcx
-                            ctx_gpr: 7,   // rdi
-                            idx_lanes: Reg(13),
-                            value: Reg(14),
+                        super::GatherScratch {
+                            half: x86_64::GatherScratch {
+                                base_gpr: 0,  // rax
+                                index_gpr: 1, // rcx
+                                ctx_gpr: 7,   // rdi
+                                idx_lanes: Reg(13),
+                                value: Reg(14),
+                            },
+                            idx_hi: Reg(9),
+                            res_hi: Reg(8),
                         },
-                        Reg(9),
-                        Reg(8),
                     );
                 }
                 ResolvedOp::Binary {

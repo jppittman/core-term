@@ -50,103 +50,156 @@ enum Pp {
     F3 = 2,
 }
 
-/// Emit a 512-bit EVEX 3-operand register form: `op zmmDST, zmmSRC1, zmmSRC2`,
-/// where SRC1 is the non-destructive EVEX.vvvv source and SRC2 is the ModRM
-/// r/m. Any of `zmm0..zmm31` is valid. `w` sets EVEX.W.
-#[allow(clippy::too_many_arguments)]
-fn evex_rrr(
-    code: &mut Vec<u8>,
+/// The identity of one EVEX-512 instruction: opcode map, mandatory prefix, W
+/// bit, opcode byte. This quadruple is *which instruction* — it is constant
+/// per mnemonic, so each mnemonic below states it exactly once and the
+/// operand form (`rrr`/`rm_rsp`) supplies the per-call parts.
+///
+/// The 128- and 256-bit twins are `x86_64::Vex` and `avx2::Vex`.
+#[derive(Clone, Copy)]
+struct Evex {
     map: Map,
     pp: Pp,
     w: bool,
     opcode: u8,
-    dst: u8,
-    src1: u8,
-    src2: u8,
-) {
-    // EVEX stores the high register bits inverted.
-    let r = ((dst >> 3) & 1) ^ 1; // ModRM.reg bit3
-    let rp = ((dst >> 4) & 1) ^ 1; // ModRM.reg bit4 (R')
-    let b = ((src2 >> 3) & 1) ^ 1; // ModRM.r/m bit3
-    let x = ((src2 >> 4) & 1) ^ 1; // ModRM.r/m bit4 (EVEX.X extends r/m reg)
-    let vvvv = (!src1) & 0x0F;
-    let vp = ((src1 >> 4) & 1) ^ 1; // vvvv bit4 (V')
-
-    let p0 = (r << 7) | (x << 6) | (b << 5) | (rp << 4) | (map as u8);
-    let p1 = ((w as u8) << 7) | (vvvv << 3) | (1 << 2) | (pp as u8);
-    // z=0, L'L=10 (512-bit), b(roadcast)=0, V', aaa=0 (no mask).
-    let p2 = (0b10 << 5) | (vp << 3);
-
-    code.push(0x62);
-    code.push(p0);
-    code.push(p1);
-    code.push(p2);
-    code.push(opcode);
-    code.push(0xC0 | ((dst & 7) << 3) | (src2 & 7));
 }
 
-/// Emit a 512-bit EVEX `op zmmDST, [rsp + disp32]` (load/store reg + memory).
-/// Used for spills/reloads and constant broadcast from the stack. `disp` is a
-/// signed displacement from `rsp`.
-#[allow(clippy::too_many_arguments)]
-fn evex_rm_rsp(code: &mut Vec<u8>, map: Map, pp: Pp, w: bool, opcode: u8, reg: u8, disp: i32) {
-    let r = ((reg >> 3) & 1) ^ 1;
-    let rp = ((reg >> 4) & 1) ^ 1;
-    // Memory operand via SIB with base = rsp (encoding 4, bit3 = 0) and no
-    // index. EVEX.B/X are stored INVERTED: base bit3 = 0 -> B encoded 1; the
-    // "no index" SIB index field is 4 -> X encoded 1. (Encoding B = 0 here was
-    // the spill-path bug: it set the base's bit3, addressing r12 instead of
-    // rsp and faulting on a garbage pointer.)
-    let b = 1u8; // base rsp: logical bit3 0 -> encoded 1
-    let x = 1u8; // no index -> encoded 1
-    let vvvv = 0x0F; // unused -> all ones
-    let vp = 1u8; // V' unused -> 1
+impl Evex {
+    const fn new(map: Map, pp: Pp, opcode: u8) -> Self {
+        Self {
+            map,
+            pp,
+            w: false,
+            opcode,
+        }
+    }
+    /// Map `0F`, no prefix — the packed-single family.
+    const fn m0f(opcode: u8) -> Self {
+        Self::new(Map::M0F, Pp::None, opcode)
+    }
+    /// Map `0F`, `66` — the integer-domain family.
+    const fn m0f_66(opcode: u8) -> Self {
+        Self::new(Map::M0F, Pp::P66, opcode)
+    }
+    /// Map `0F`, `F3`.
+    const fn m0f_f3(opcode: u8) -> Self {
+        Self::new(Map::M0F, Pp::F3, opcode)
+    }
+    /// Map `0F38`, `66`.
+    const fn m0f38_66(opcode: u8) -> Self {
+        Self::new(Map::M0F38, Pp::P66, opcode)
+    }
+    /// Map `0F38`, `F3` — the mask-to-vector widening family.
+    const fn m0f38_f3(opcode: u8) -> Self {
+        Self::new(Map::M0F38, Pp::F3, opcode)
+    }
+    /// Map `0F3A`, `66` — the imm8 family (round, ternlog).
+    const fn m0f3a_66(opcode: u8) -> Self {
+        Self::new(Map::M0F3A, Pp::P66, opcode)
+    }
 
-    let p0 = (r << 7) | (x << 6) | (b << 5) | (rp << 4) | (map as u8);
-    let p1 = ((w as u8) << 7) | (vvvv << 3) | (1 << 2) | (pp as u8);
-    let p2 = (0b10 << 5) | (vp << 3);
+    /// Attach an imm8 (`vcmpps` predicate, rounding mode, shift count,
+    /// `vpternlogd` truth table); the returned value emits it after the
+    /// instruction.
+    const fn imm(self, imm: u8) -> EvexImm {
+        EvexImm { evex: self, imm }
+    }
 
-    code.push(0x62);
-    code.push(p0);
-    code.push(p1);
-    code.push(p2);
-    code.push(opcode);
-    // ModRM: mod=10 (disp32), reg=reg, r/m=100 (SIB follows).
-    code.push(0x80 | ((reg & 7) << 3) | 0b100);
-    // SIB: scale=0, index=100 (none), base=100 (rsp).
-    code.push(0x24);
-    code.extend_from_slice(&disp.to_le_bytes());
+    /// 3-operand register form: `op zmmDST, zmmSRC1, zmmSRC2`, where SRC1 is
+    /// the non-destructive EVEX.vvvv source and SRC2 is the ModRM r/m. Any of
+    /// `zmm0..zmm31` is valid.
+    fn rrr(self, code: &mut Vec<u8>, dst: u8, src1: u8, src2: u8) {
+        // EVEX stores the high register bits inverted.
+        let r = ((dst >> 3) & 1) ^ 1; // ModRM.reg bit3
+        let rp = ((dst >> 4) & 1) ^ 1; // ModRM.reg bit4 (R')
+        let b = ((src2 >> 3) & 1) ^ 1; // ModRM.r/m bit3
+        let x = ((src2 >> 4) & 1) ^ 1; // ModRM.r/m bit4 (EVEX.X extends r/m reg)
+        let vvvv = (!src1) & 0x0F;
+        let vp = ((src1 >> 4) & 1) ^ 1; // vvvv bit4 (V')
+
+        self.prefix(code, (r << 7) | (x << 6) | (b << 5) | (rp << 4), vvvv, vp);
+        code.push(0xC0 | ((dst & 7) << 3) | (src2 & 7));
+    }
+
+    /// `op zmmREG, [rsp + disp32]` — the memory form used for spills, reloads
+    /// and constant broadcast. `disp` is a signed displacement from `rsp`.
+    fn rm_rsp(self, code: &mut Vec<u8>, reg: u8, disp: i32) {
+        let r = ((reg >> 3) & 1) ^ 1;
+        let rp = ((reg >> 4) & 1) ^ 1;
+        // Memory operand via SIB with base = rsp (encoding 4, bit3 = 0) and no
+        // index. EVEX.B/X are stored INVERTED: base bit3 = 0 -> B encoded 1; the
+        // "no index" SIB index field is 4 -> X encoded 1. (Encoding B = 0 here was
+        // the spill-path bug: it set the base's bit3, addressing r12 instead of
+        // rsp and faulting on a garbage pointer.)
+        let b = 1u8; // base rsp: logical bit3 0 -> encoded 1
+        let x = 1u8; // no index -> encoded 1
+
+        self.prefix(code, (r << 7) | (x << 6) | (b << 5) | (rp << 4), 0x0F, 1);
+        // ModRM: mod=10 (disp32), reg=reg, r/m=100 (SIB follows).
+        code.push(0x80 | ((reg & 7) << 3) | 0b100);
+        // SIB: scale=0, index=100 (none), base=100 (rsp).
+        code.push(0x24);
+        code.extend_from_slice(&disp.to_le_bytes());
+    }
+
+    /// The 4-byte EVEX prefix plus the opcode byte, shared by both forms.
+    /// `reg_ext` is the assembled `R X B R'` nibble of P0; `vvvv`/`vp` are the
+    /// extra-source fields. Every one of them is already inverted by the
+    /// caller, as the encoding requires.
+    fn prefix(self, code: &mut Vec<u8>, reg_ext: u8, vvvv: u8, vp: u8) {
+        code.push(0x62);
+        code.push(reg_ext | (self.map as u8));
+        code.push(((self.w as u8) << 7) | (vvvv << 3) | (1 << 2) | (self.pp as u8));
+        // z=0, L'L=10 (512-bit), b(roadcast)=0, V', aaa=0 (no mask).
+        code.push((0b10 << 5) | (vp << 3));
+        code.push(self.opcode);
+    }
+}
+
+/// An [`Evex`] instruction carrying its imm8.
+#[derive(Clone, Copy)]
+struct EvexImm {
+    evex: Evex,
+    imm: u8,
+}
+
+impl EvexImm {
+    /// Register form with the imm8 appended.
+    fn rrr(self, code: &mut Vec<u8>, dst: u8, src1: u8, src2: u8) {
+        self.evex.rrr(code, dst, src1, src2);
+        code.push(self.imm);
+    }
 }
 
 // --- packed-single arithmetic (0F, no prefix, W0) ---
 fn vaddps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x58, d, s1, s2);
+    Evex::m0f(0x58).rrr(c, d, s1, s2);
 }
 fn vsubps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x5C, d, s1, s2);
+    Evex::m0f(0x5C).rrr(c, d, s1, s2);
 }
 fn vmulps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x59, d, s1, s2);
+    Evex::m0f(0x59).rrr(c, d, s1, s2);
 }
 fn vdivps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x5E, d, s1, s2);
+    Evex::m0f(0x5E).rrr(c, d, s1, s2);
 }
 fn vminps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x5D, d, s1, s2);
+    Evex::m0f(0x5D).rrr(c, d, s1, s2);
 }
 fn vmaxps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x5F, d, s1, s2);
+    Evex::m0f(0x5F).rrr(c, d, s1, s2);
 }
 
 // --- bitwise (0F, 66 prefix for the integer-domain forms; use ps forms) ---
 fn vandps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x54, d, s1, s2);
+    Evex::m0f(0x54).rrr(c, d, s1, s2);
 }
 fn vorps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x56, d, s1, s2);
+    Evex::m0f(0x56).rrr(c, d, s1, s2);
 }
 fn vxorps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x57, d, s1, s2);
+    Evex::m0f(0x57).rrr(c, d, s1, s2);
 }
 /// Sentinel for the EVEX `vvvv`/`V'` source field on instructions that have no
 /// second source (2-operand forms): the field must read as *unused*, which the
@@ -164,14 +217,14 @@ const UNARY_SCRATCH: Reg = Reg(15);
 // --- unary (one source; no second source -> UNUSED_VVVV) ---
 /// vsqrtps zmmD, zmmS — EVEX.512.0F.W0 51 /r ; vvvv unused.
 fn vsqrtps(c: &mut Vec<u8>, d: u8, s: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x51, d, UNUSED_VVVV, s);
+    Evex::m0f(0x51).rrr(c, d, UNUSED_VVVV, s);
 }
 
 /// vrndscaleps zmmD, zmmS, imm8 — EVEX.512.66.0F3A.W0 08 /r ib ; vvvv unused.
 /// (Opcode 08 = packed-single; 09 is packed-double and needs W1.) Round each
 /// lane per `imm8` (see the Floor/Ceil/Round arms for the bit layout).
 fn vrndscaleps(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
-    evex_rrr_imm(c, Map::M0F3A, Pp::P66, false, 0x08, d, UNUSED_VVVV, s, imm);
+    Evex::m0f3a_66(0x08).imm(imm).rrr(c, d, UNUSED_VVVV, s);
 }
 
 /// vrcp14ps zmmD, zmmS — EVEX.512.66.0F38.W0 4C /r ; vvvv unused. AVX-512F's
@@ -179,14 +232,14 @@ fn vrndscaleps(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
 /// error, matching `Recip`'s existing "approximate reciprocal" contract on
 /// every other backend (SSE2's `rcpps`, AVX2's `vrcpps`).
 fn vrcp14ps(c: &mut Vec<u8>, d: u8, s: u8) {
-    evex_rrr(c, Map::M0F38, Pp::P66, false, 0x4C, d, UNUSED_VVVV, s);
+    Evex::m0f38_66(0x4C).rrr(c, d, UNUSED_VVVV, s);
 }
 
 /// vrsqrt14ps zmmD, zmmS — EVEX.512.66.0F38.W0 4E /r ; vvvv unused.
 /// AVX-512F's replacement for AVX's `vrsqrtps`, same accuracy tier as
 /// `vrcp14ps` above.
 fn vrsqrt14ps(c: &mut Vec<u8>, d: u8, s: u8) {
-    evex_rrr(c, Map::M0F38, Pp::P66, false, 0x4E, d, UNUSED_VVVV, s);
+    Evex::m0f38_66(0x4E).rrr(c, d, UNUSED_VVVV, s);
 }
 
 // --- integer-domain primitives (exp/log lowering) ---
@@ -194,29 +247,29 @@ fn vrsqrt14ps(c: &mut Vec<u8>, d: u8, s: u8) {
 
 /// vcvttps2dq zmmD, zmmS — EVEX.512.F3.0F.W0 5B /r ; vvvv unused.
 fn vcvttps2dq(c: &mut Vec<u8>, d: u8, s: u8) {
-    evex_rrr(c, Map::M0F, Pp::F3, false, 0x5B, d, UNUSED_VVVV, s);
+    Evex::m0f_f3(0x5B).rrr(c, d, UNUSED_VVVV, s);
 }
 
 /// vcvtdq2ps zmmD, zmmS — EVEX.512.0F.W0 5B /r ; vvvv unused.
 fn vcvtdq2ps(c: &mut Vec<u8>, d: u8, s: u8) {
-    evex_rrr(c, Map::M0F, Pp::None, false, 0x5B, d, UNUSED_VVVV, s);
+    Evex::m0f(0x5B).rrr(c, d, UNUSED_VVVV, s);
 }
 
 /// vpaddd zmmD, zmmS1, zmmS2 — EVEX.512.66.0F.W0 FE /r.
 fn vpaddd(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    evex_rrr(c, Map::M0F, Pp::P66, false, 0xFE, d, s1, s2);
+    Evex::m0f_66(0xFE).rrr(c, d, s1, s2);
 }
 
 /// vpslld zmmD, zmmS, imm8 — EVEX.512.66.0F.W0 72 /6 ib. The shift-by-imm
 /// group encodes the operation in ModRM.reg (/6 = left) and the DESTINATION
 /// in vvvv, with the source in r/m — reg/vvvv swap roles vs. ordinary rrr.
 fn vpslld_imm(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
-    evex_rrr_imm(c, Map::M0F, Pp::P66, false, 0x72, 6, d, s, imm);
+    Evex::m0f_66(0x72).imm(imm).rrr(c, 6, d, s);
 }
 
 /// vpsrld zmmD, zmmS, imm8 — EVEX.512.66.0F.W0 72 /2 ib (logical, zero-fill).
 fn vpsrld_imm(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
-    evex_rrr_imm(c, Map::M0F, Pp::P66, false, 0x72, 2, d, s, imm);
+    Evex::m0f_66(0x72).imm(imm).rrr(c, 2, d, s);
 }
 
 /// vmovaps zmmDST, zmmSRC — register copy (EVEX.512.0F.W0 28 /r).
@@ -224,29 +277,20 @@ pub fn emit_mov(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     if dst.0 == src.0 {
         return;
     }
-    evex_rrr(
-        code,
-        Map::M0F,
-        Pp::None,
-        false,
-        0x28,
-        dst.0,
-        UNUSED_VVVV,
-        src.0,
-    );
+    Evex::m0f(0x28).rrr(code, dst.0, UNUSED_VVVV, src.0);
 }
 
 /// vmovups zmmDST, [rsp+disp] — 512-bit reload (EVEX.512.0F.W0 10 /r).
 /// `vmovups` has NO mandatory prefix; `F3 0F 10` would be the *scalar* `vmovss`.
 pub fn emit_load_rsp(code: &mut Vec<u8>, dst: Reg, disp: i32) {
-    evex_rm_rsp(code, Map::M0F, Pp::None, false, 0x10, dst.0, disp);
+    Evex::m0f(0x10).rm_rsp(code, dst.0, disp);
 }
 
 /// vmovups [rsp+disp], zmmSRC — 512-bit spill store (EVEX.512.0F.W0 11 /r).
 /// `vmovups` has NO mandatory prefix; `F3 0F 11` would be the *scalar* `vmovss`
 /// (which caused the spill-path SIGSEGV: a scalar store to a garbage SIB base).
 pub fn emit_store_rsp(code: &mut Vec<u8>, src: Reg, disp: i32) {
-    evex_rm_rsp(code, Map::M0F, Pp::None, false, 0x11, src.0, disp);
+    Evex::m0f(0x11).rm_rsp(code, src.0, disp);
 }
 
 /// Broadcast an f32 constant to all 16 lanes of `dst`.
@@ -261,30 +305,11 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
     code.extend_from_slice(&[0xC7, 0x44, 0x24, 0xFC]);
     code.extend_from_slice(&bits.to_le_bytes());
     // vbroadcastss zmm, [rsp-4]
-    evex_rm_rsp_broadcast(code, dst.0, -4);
-}
-
-/// `vbroadcastss zmm, [rsp+disp32]` (EVEX.512.66.0F38.W0 18 /r).
-///
-/// Uses a full `disp32` (`mod=10`) rather than EVEX compressed `disp8`: the
-/// compressed form scales the byte by the tuple element size (4 for a
-/// `vbroadcastss` scalar source), so a `disp8` of `-4` would address `[rsp-16]`,
-/// not `[rsp-4]`. `disp32` is never scaled, so the displacement is literal.
-fn evex_rm_rsp_broadcast(code: &mut Vec<u8>, reg: u8, disp: i32) {
-    let r = ((reg >> 3) & 1) ^ 1;
-    let rp = ((reg >> 4) & 1) ^ 1;
-    let p0 = (r << 7) | (1 << 6) | (1 << 5) | (rp << 4) | (Map::M0F38 as u8);
-    let p1 = (0x0F << 3) | (1 << 2) | (Pp::P66 as u8);
-    let p2 = (0b10 << 5) | (1 << 3);
-    code.push(0x62);
-    code.push(p0);
-    code.push(p1);
-    code.push(p2);
-    code.push(0x18);
-    // mod=10 (disp32), reg=reg, r/m=100 (SIB) ; SIB base=rsp ; disp32
-    code.push(0x80 | ((reg & 7) << 3) | 0b100);
-    code.push(0x24);
-    code.extend_from_slice(&disp.to_le_bytes());
+    // A full `disp32` (`mod=10`), not EVEX compressed `disp8`: the compressed
+    // form scales the byte by the tuple element size (4 for a `vbroadcastss`
+    // scalar source), so a `disp8` of -4 would address `[rsp-16]`. `disp32` is
+    // never scaled, so the displacement is literal.
+    Evex::m0f38_66(0x18).rm_rsp(code, dst.0, -4);
 }
 
 // =============================================================================
@@ -337,23 +362,6 @@ const CMP_GT: u8 = 6;
 /// to a vector mask. Never allocated — scratch internal to compare emission.
 const SCRATCH_K: u8 = 1;
 
-/// Like [`evex_rrr`] but appends an `imm8` (for `vcmpps`, `vpternlogd`).
-#[allow(clippy::too_many_arguments)]
-fn evex_rrr_imm(
-    code: &mut Vec<u8>,
-    map: Map,
-    pp: Pp,
-    w: bool,
-    opcode: u8,
-    dst: u8,
-    src1: u8,
-    src2: u8,
-    imm: u8,
-) {
-    evex_rrr(code, map, pp, w, opcode, dst, src1, src2);
-    code.push(imm);
-}
-
 /// Map a comparison `OpKind` to its `vcmpps` predicate imm8.
 fn cmp_pred(op: OpKind) -> Option<u8> {
     Some(match op {
@@ -383,28 +391,11 @@ pub fn emit_compare(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: R
         unimplemented_op("avx-512", op)
     };
     // vcmpps k1, src1, src2, pred  (k-dest in ModRM.reg)
-    evex_rrr_imm(
-        code,
-        Map::M0F,
-        Pp::None,
-        false,
-        0xC2,
-        SCRATCH_K,
-        src1.0,
-        src2.0,
-        pred,
-    );
+    Evex::m0f(0xC2)
+        .imm(pred)
+        .rrr(code, SCRATCH_K, src1.0, src2.0);
     // vpmovm2d dst, k1  (widen mask -> vector)
-    evex_rrr(
-        code,
-        Map::M0F38,
-        Pp::F3,
-        false,
-        0x38,
-        dst.0,
-        UNUSED_VVVV,
-        SCRATCH_K,
-    );
+    Evex::m0f38_f3(0x38).rrr(code, dst.0, UNUSED_VVVV, SCRATCH_K);
 }
 
 /// Emit `dst = mask ? if_true : if_false`, with the vector mask already in
@@ -414,17 +405,9 @@ pub fn emit_compare(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: R
 /// the truth table 0xCA computes `A?B:C` per bit with A=dst(mask), B=if_true,
 /// C=if_false, i.e. a per-lane select for an all-ones/all-zeros mask.
 pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
-    evex_rrr_imm(
-        code,
-        Map::M0F3A,
-        Pp::P66,
-        false,
-        0x25,
-        dst.0,
-        if_true.0,
-        if_false.0,
-        0xCA,
-    );
+    Evex::m0f3a_66(0x25)
+        .imm(0xCA)
+        .rrr(code, dst.0, if_true.0, if_false.0);
 }
 
 /// Set flags from a vector mask for the Select short-circuit guards.
@@ -434,16 +417,7 @@ pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
 /// 16 lanes true). The caller follows with `jz` (all-false) or `jc` (all-true).
 pub fn emit_mask_flags(code: &mut Vec<u8>, mask: Reg) {
     // vptestmd k1, mask, mask  (EVEX.512.66.0F38.W0 27 /r)
-    evex_rrr(
-        code,
-        Map::M0F38,
-        Pp::P66,
-        false,
-        0x27,
-        SCRATCH_K,
-        mask.0,
-        mask.0,
-    );
+    Evex::m0f38_66(0x27).rrr(code, SCRATCH_K, mask.0, mask.0);
     // kortestw k1, k1  (VEX.L0.0F.W0 98 /r) -> C5 F8 98 C9
     code.extend_from_slice(&[0xC5, 0xF8, 0x98, 0xC9]);
 }
@@ -497,7 +471,7 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) {
 pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
     // dst currently = c. We want a*b + c. vfmadd231ps dst, a, b => dst = a*b + dst.
     // 231: EVEX.512.66.0F38.W0 B8 /r.
-    evex_rrr(code, Map::M0F38, Pp::P66, false, 0xB8, dst.0, a.0, b.0);
+    Evex::m0f38_66(0xB8).rrr(code, dst.0, a.0, b.0);
 }
 
 /// Bitwise helpers exposed for completeness / future mask emulation.
@@ -519,16 +493,7 @@ pub fn emit_and(code: &mut Vec<u8>, dst: Reg, s1: Reg, s2: Reg) {
 /// integer in float form, so truncation is lossless and matches the reference
 /// interpreter's `floorf(index) as usize`.
 pub fn emit_cvttps2dq(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    evex_rrr(
-        code,
-        Map::M0F,
-        Pp::F3,
-        false,
-        0x5B,
-        dst.0,
-        UNUSED_VVVV,
-        src.0,
-    );
+    Evex::m0f_f3(0x5B).rrr(code, dst.0, UNUSED_VVVV, src.0);
 }
 
 /// Set the gather writemask `k1` to all-ones (`mov eax, 0xFFFF; kmovw k1, eax`).
