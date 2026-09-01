@@ -498,7 +498,7 @@ mod tests {
     #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
     mod runtime {
         use super::super::*;
-        use crate::emit::executable::ExecutableCode;
+        use crate::emit::executable::{ExecutableCode, PerBatch};
         use core::arch::x86_64::*;
 
         #[allow(improper_ctypes_definitions)]
@@ -507,7 +507,7 @@ mod tests {
         fn run(body: &[u8], xs: [f32; 8], ys: [f32; 8], zs: [f32; 8]) -> [f32; 8] {
             let mut code = body.to_vec();
             crate::emit::x86_64::ret(&mut code);
-            let exec = unsafe { ExecutableCode::from_code(&code).expect("mmap") };
+            let exec = unsafe { ExecutableCode::<PerBatch>::from_code(&code).expect("mmap") };
             unsafe {
                 let f: K = exec.as_fn();
                 let r = f(
@@ -689,7 +689,7 @@ mod tests {
             let idx: [f32; 8] = [0.0, 63.0, 1.0, 2.0, 10.0, 5.0, 32.0, 7.0];
             let ctx: [*const f32; 1] = [buf.as_ptr()];
 
-            let exec = unsafe { ExecutableCode::from_code(&c).expect("mmap") };
+            let exec = unsafe { ExecutableCode::<PerBatch>::from_code(&c).expect("mmap") };
             let out = unsafe {
                 let f: G = exec.as_fn();
                 let r = f(ctx.as_ptr(), _mm256_loadu_ps(idx.as_ptr()));

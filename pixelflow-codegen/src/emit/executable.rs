@@ -2,28 +2,75 @@
 //!
 //! This module handles the mmap/mprotect dance to create executable code at runtime.
 
+use core::marker::PhantomData;
 use core::ptr;
+
+/// Which calling convention a block of compiled code implements.
+///
+/// This is a property of the *code*, not of the memory holding it. The two
+/// ABIs disagree about everything an ABI can disagree about — arguments,
+/// where the result lands, whether one call produces one batch or a whole
+/// loop nest — so invoking one through the other's signature is undefined
+/// behavior, not a mismatch anything downstream can detect. Carrying it as a
+/// type parameter is what makes the wrong pairing a compile error instead of
+/// a bug hunt: an emitter has to say which convention it emitted, and a
+/// caller can only reach the matching entry point.
+pub trait KernelAbi: 'static + sealed::Sealed {}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::PerBatch {}
+    impl Sealed for super::Collapse {}
+}
+
+/// One SIMD batch per call: coordinates arrive in the vector argument
+/// registers and the result comes back in the return register.
+///
+/// A kernel that reads bound memory takes its buffer bases in the first
+/// integer register; the emitted body is identical either way, so that is the
+/// same ABI called through a wider signature, not a third one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PerBatch;
+impl KernelAbi for PerBatch {}
+
+/// A whole 2D loop nest per call: results are written through the output
+/// pointer and nothing comes back in a register.
+///
+/// See [`CollapseKernelFn`] for the signature.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Collapse;
+impl KernelAbi for Collapse {}
 
 /// A region of executable memory containing JIT-compiled code.
 ///
 /// The memory is allocated as read-write, code is written to it,
 /// then it's flipped to read-execute (W^X security).
-pub struct ExecutableCode {
+pub struct ExecutableCode<A: KernelAbi> {
     ptr: *mut u8,
     len: usize,
     capacity: usize,
+    // `fn() -> A` rather than `A`: the marker names a calling convention, it
+    // is never stored, so it must not drag auto-trait obligations onto a type
+    // whose thread-safety comes from the mapping being read-only.
+    abi: PhantomData<fn() -> A>,
 }
 
 // SAFETY: The code is immutable after compilation and can be shared across threads.
-unsafe impl Send for ExecutableCode {}
-unsafe impl Sync for ExecutableCode {}
+unsafe impl<A: KernelAbi> Send for ExecutableCode<A> {}
+unsafe impl<A: KernelAbi> Sync for ExecutableCode<A> {}
 
-impl ExecutableCode {
+impl<A: KernelAbi> ExecutableCode<A> {
     /// Compile a code buffer into executable memory.
+    ///
+    /// The ABI parameter `A` is a claim about what was emitted, so it is part
+    /// of the safety contract rather than something inference should guess:
+    /// name it at the call site (a turbofish, or the declared return type of
+    /// the compile function this is the tail of).
     ///
     /// # Safety
     /// The caller must ensure the code buffer contains valid machine code
-    /// for the current architecture.
+    /// for the current architecture, and that it implements the calling
+    /// convention named by `A`.
     #[cfg(unix)]
     pub unsafe fn from_code(code: &[u8]) -> Result<Self, &'static str> {
         if code.is_empty() {
@@ -69,12 +116,18 @@ impl ExecutableCode {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+}
 
+/// The collapse entry point, reachable only on code compiled for it.
+///
+/// The ABI parameter is what makes that true: an `ExecutableCode<PerBatch>`
+/// has no `call_collapse` to call, so the pairing that used to read stack
+/// garbage as a result no longer type checks.
+impl ExecutableCode<Collapse> {
     /// Execute the collapse kernel over a 2D tile destination.
     ///
     /// # Safety
     ///
-    /// - The compiled code must match the [`CollapseKernelFn`] ABI.
     /// - `tile.out` must have space for `tile.rows * (tile.groups * LANES)` floats plus row skip padding.
     /// - `size_of::<V>() == JIT_VECTOR_BYTES`.
     #[inline(always)]
@@ -170,10 +223,19 @@ impl Extent2D {
     }
 
     /// Total number of elements (`width * height`).
+    ///
+    /// # Panics
+    ///
+    /// If the product overflows `usize`. Callers size buffers by this figure,
+    /// so a wrapped one is a buffer-too-small check that passes on a buffer
+    /// that is too small — the one failure mode the check exists to stop.
     #[must_use]
     #[inline(always)]
     pub const fn len(self) -> usize {
-        self.width * self.height
+        match self.width.checked_mul(self.height) {
+            Some(n) => n,
+            None => panic!("Extent2D::len overflowed usize"),
+        }
     }
 
     /// True if either dimension is 0.
@@ -249,7 +311,7 @@ impl TileSlice {
     }
 }
 
-impl Drop for ExecutableCode {
+impl<A: KernelAbi> Drop for ExecutableCode<A> {
     fn drop(&mut self) {
         #[cfg(unix)]
         unsafe {
@@ -339,7 +401,7 @@ impl CodePages {
 
     /// Flip to read-execute, make the written bytes visible to instruction
     /// fetch, and hand the mapping to an [`ExecutableCode`].
-    fn finish(self, len: usize) -> Result<ExecutableCode, &'static str> {
+    fn finish<A: KernelAbi>(self, len: usize) -> Result<ExecutableCode<A>, &'static str> {
         use libc::{PROT_EXEC, PROT_READ, mprotect};
 
         // SAFETY: `self` owns this mapping and `capacity` is its length.
@@ -363,6 +425,7 @@ impl CodePages {
             ptr: me.ptr,
             len,
             capacity: me.capacity,
+            abi: PhantomData,
         })
     }
 }
@@ -562,6 +625,32 @@ pub type CollapseKernelFn =
 // 128-bit `KernelFn`, so they are specific to the SSE2 (no AVX2, no AVX-512)
 // ABI. Under `+avx512f` or `+avx2`, `KernelFn` is `__m512`/`__m256` and these
 // `__m128` call sites don't type check; those paths are covered by the
+/// `Extent2D` arithmetic, independent of ISA level and architecture.
+#[cfg(test)]
+mod extent_tests {
+    use super::*;
+
+    #[test]
+    fn len_is_the_product() {
+        assert_eq!(Extent2D::new(7, 5).len(), 35);
+        assert_eq!(Extent2D::new(0, 5).len(), 0);
+    }
+
+    /// A wrapped product is the failure this check exists to prevent: callers
+    /// size output buffers by `len()` and assert against it, so `2^32 x 2^32`
+    /// wrapping to 0 let an empty buffer satisfy a request for 2^64 pixels
+    /// while the kernel was still told to fill 2^32 rows.
+    #[test]
+    #[should_panic(expected = "Extent2D::len overflowed usize")]
+    fn len_refuses_to_wrap() {
+        assert_eq!(
+            Extent2D::new(1 << 32, 1 << 32).len(),
+            0,
+            "unreachable: len panics"
+        );
+    }
+}
+
 /// Page preparation, independent of ISA level and architecture.
 ///
 /// Ungated on purpose: `CodePages`, `page_size` and `sync_instruction_cache`
@@ -601,7 +690,7 @@ mod page_tests {
     fn code_survives_the_w_xor_x_flip() {
         let code = host_ret();
         // SAFETY: `code` is a single valid `ret` for this architecture.
-        let exec = unsafe { ExecutableCode::from_code(&code) }.expect("map + flip");
+        let exec = unsafe { ExecutableCode::<PerBatch>::from_code(&code) }.expect("map + flip");
         assert_eq!(exec.len(), code.len());
         assert!(!exec.is_empty());
         assert_eq!(
@@ -620,14 +709,14 @@ mod page_tests {
         code.resize(page_size() + ret_len, 0);
         code.rotate_right(ret_len); // keep the `ret` first
         // SAFETY: entry point is a valid `ret`; the padding is never executed.
-        let exec = unsafe { ExecutableCode::from_code(&code) }.expect("map + flip");
+        let exec = unsafe { ExecutableCode::<PerBatch>::from_code(&code) }.expect("map + flip");
         assert_eq!(exec.len(), code.len(), "len must be the code, not the page");
     }
 
     #[test]
     fn an_empty_buffer_is_refused() {
         // SAFETY: empty slice; rejected before anything is mapped.
-        match unsafe { ExecutableCode::from_code(&[]) } {
+        match unsafe { ExecutableCode::<PerBatch>::from_code(&[]) } {
             Err(e) => assert_eq!(e, "empty code buffer"),
             Ok(_) => panic!("an empty buffer must not map"),
         }
@@ -679,7 +768,8 @@ mod tests {
         crate::emit::aarch64::ret(&mut code);
 
         unsafe {
-            let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
+            let exec =
+                ExecutableCode::<PerBatch>::from_code(&code).expect("failed to create executable");
             let func: KernelFn = exec.as_fn();
 
             use core::arch::aarch64::*;
@@ -712,7 +802,8 @@ mod tests {
         crate::emit::aarch64::ret(&mut code);
 
         unsafe {
-            let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
+            let exec =
+                ExecutableCode::<PerBatch>::from_code(&code).expect("failed to create executable");
             let func: KernelFn = exec.as_fn();
 
             use core::arch::aarch64::*;
@@ -750,7 +841,8 @@ mod tests {
         crate::emit::aarch64::ret(&mut code);
 
         unsafe {
-            let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
+            let exec =
+                ExecutableCode::<PerBatch>::from_code(&code).expect("failed to create executable");
             let func: KernelFn = exec.as_fn();
 
             use core::arch::aarch64::*;
@@ -792,7 +884,8 @@ mod tests {
         crate::emit::aarch64::ret(&mut code);
 
         unsafe {
-            let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
+            let exec =
+                ExecutableCode::<PerBatch>::from_code(&code).expect("failed to create executable");
             let func: KernelFn = exec.as_fn();
 
             use core::arch::aarch64::*;
@@ -816,7 +909,8 @@ mod tests {
         crate::emit::x86_64::ret(&mut code);
 
         unsafe {
-            let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
+            let exec =
+                ExecutableCode::<PerBatch>::from_code(&code).expect("failed to create executable");
             let func: KernelFn = exec.as_fn();
 
             use core::arch::x86_64::*;
@@ -843,7 +937,8 @@ mod tests {
         crate::emit::x86_64::ret(&mut code);
 
         unsafe {
-            let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
+            let exec =
+                ExecutableCode::<PerBatch>::from_code(&code).expect("failed to create executable");
             let func: KernelFn = exec.as_fn();
 
             use core::arch::x86_64::*;

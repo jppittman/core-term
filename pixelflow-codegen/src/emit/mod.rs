@@ -319,9 +319,13 @@ const INPUT_REGS: [Reg; 4] = [Reg(0), Reg(1), Reg(2), Reg(3)];
 // =============================================================================
 
 /// Compile result with metadata for ML training.
-pub struct CompileResult {
+///
+/// `A` is the calling convention the emitter produced. It rides along on
+/// `code` so a consumer cannot pick the wrong entry point: see
+/// [`executable::KernelAbi`].
+pub struct CompileResult<A: executable::KernelAbi> {
     /// The executable code.
-    pub code: executable::ExecutableCode,
+    pub code: executable::ExecutableCode<A>,
     /// Number of spills performed.
     pub spill_count: u32,
     /// Total stack space used for spills (bytes).
@@ -866,7 +870,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
 fn compile_dag_via_backend<B: IsaBackend>(
     schedule: Vec<regalloc::Def>,
     backend: &mut B,
-) -> Result<CompileResult, &'static str> {
+) -> Result<CompileResult<executable::PerBatch>, &'static str> {
     let (body, result_reg, frame_size, spill_count) = emit_dag_body(schedule, backend)?;
 
     let mut code: Vec<u8> = Vec::new();
@@ -1856,7 +1860,7 @@ type Native = x86_64::driver::X86Backend;
 pub fn compile_arena(
     arena: &ExprArena,
     root: ExprId,
-) -> Result<executable::ExecutableCode, &'static str> {
+) -> Result<executable::ExecutableCode<executable::PerBatch>, &'static str> {
     compile_arena_dag(arena, root).map(|r| r.code)
 }
 
@@ -1865,7 +1869,10 @@ pub fn compile_arena(
 /// Walks the arena directly — no intermediate `Expr` tree is materialized, and
 /// the arena IS the linearized schedule, so linearization is free. Every
 /// target runs this same schedule → allocate → emit driver.
-pub fn compile_arena_dag(arena: &ExprArena, root: ExprId) -> Result<CompileResult, &'static str> {
+pub fn compile_arena_dag(
+    arena: &ExprArena,
+    root: ExprId,
+) -> Result<CompileResult<executable::PerBatch>, &'static str> {
     compile_arena_dag_with_ctx(arena, root, EmitCtx::default())
 }
 
@@ -1881,7 +1888,7 @@ pub fn compile_arena_dag_with_ctx(
     arena: &ExprArena,
     root: ExprId,
     ctx: EmitCtx,
-) -> Result<CompileResult, &'static str> {
+) -> Result<CompileResult<executable::PerBatch>, &'static str> {
     // After this the emitter sees only ops it can encode — no Dwrt, Reduce,
     // Gather or transcendentals. The passes and their order live in
     // `pixelflow_ir::passes::legalize`.
@@ -1962,7 +1969,7 @@ pub fn compile_arena_dag_with_ctx(
 pub fn compile_arena_dag_avx2(
     arena: &ExprArena,
     root: ExprId,
-) -> Result<CompileResult, &'static str> {
+) -> Result<CompileResult<executable::PerBatch>, &'static str> {
     let ctx = EmitCtx::default();
     let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let schedule = arena_to_schedule(&arena, root);
@@ -1980,7 +1987,7 @@ pub fn compile_arena_dag_avx2(
 pub fn compile_arena_dag_avx512(
     arena: &ExprArena,
     root: ExprId,
-) -> Result<CompileResult, &'static str> {
+) -> Result<CompileResult<executable::PerBatch>, &'static str> {
     let ctx = EmitCtx::default();
     let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let schedule = arena_to_schedule(&arena, root);
@@ -2004,7 +2011,7 @@ pub fn compile_arena_dag_avx512(
 pub fn compile_collapse(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
-) -> Result<CompileResult, &'static str> {
+) -> Result<CompileResult<executable::Collapse>, &'static str> {
     let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let schedule = arena_to_schedule(&arena, root);
     compile_collapse_via_backend(schedule, &mut Native::new(EmitCtx::default()))
@@ -2016,7 +2023,7 @@ pub fn compile_collapse(
 fn compile_collapse_via_backend<B: IsaBackend>(
     schedule: Vec<regalloc::Def>,
     backend: &mut B,
-) -> Result<CompileResult, &'static str> {
+) -> Result<CompileResult<executable::Collapse>, &'static str> {
     let file = backend.register_file();
     let variance = schedule_variance(&schedule);
     const X_SCOPE: u8 = 1 << 0;
@@ -3510,7 +3517,7 @@ mod tests {
         use super::*;
         use pixelflow_ir::arena::ExprArena;
 
-        fn run(res: &CompileResult, x: f32, y: f32, z: f32, w: f32) -> f32 {
+        fn run(res: &CompileResult<executable::PerBatch>, x: f32, y: f32, z: f32, w: f32) -> f32 {
             unsafe {
                 use core::arch::x86_64::*;
                 let f: KernelFn = res.code.as_fn();
@@ -3666,7 +3673,7 @@ mod tests {
         /// rdi), coords in the first four vector registers.
         #[cfg(target_arch = "aarch64")]
         fn run4_ctx(
-            res: &CompileResult,
+            res: &CompileResult<executable::PerBatch>,
             ctx: &[*const f32],
             xs: [f32; 4],
             ys: [f32; 4],
@@ -3690,7 +3697,7 @@ mod tests {
         /// See the aarch64 variant above.
         #[cfg(target_arch = "x86_64")]
         fn run4_ctx(
-            res: &CompileResult,
+            res: &CompileResult<executable::PerBatch>,
             ctx: &[*const f32],
             xs: [f32; 4],
             ys: [f32; 4],
@@ -3897,7 +3904,12 @@ mod tests {
         ) -> core::arch::x86_64::__m512;
 
         /// Run a compiled zmm kernel over 16 distinct lanes per coordinate.
-        fn run16(res: &CompileResult, xs: [f32; 16], ys: [f32; 16], zs: [f32; 16]) -> [f32; 16] {
+        fn run16(
+            res: &CompileResult<executable::PerBatch>,
+            xs: [f32; 16],
+            ys: [f32; 16],
+            zs: [f32; 16],
+        ) -> [f32; 16] {
             unsafe {
                 use core::arch::x86_64::*;
                 let f: K = res.code.as_fn();
@@ -3953,7 +3965,7 @@ mod tests {
         /// Run a compiled gather kernel as a `CtxKernelFn`: the context (array of
         /// buffer base pointers) goes in rdi, coords in zmm0..3.
         fn run16_ctx(
-            res: &CompileResult,
+            res: &CompileResult<executable::PerBatch>,
             ctx: &[*const f32],
             xs: [f32; 16],
             ys: [f32; 16],

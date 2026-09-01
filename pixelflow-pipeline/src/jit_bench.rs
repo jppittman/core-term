@@ -9,7 +9,7 @@
 use std::fmt;
 
 use pixelflow_codegen::emit::compile_collapse;
-use pixelflow_codegen::emit::executable::ExecutableCode;
+use pixelflow_codegen::emit::executable::{Collapse, ExecutableCode};
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 
 /// Number of timed samples per expression. Take the median.
@@ -752,7 +752,7 @@ const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
 /// samples reduced to median + IQR (audit M5).
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn measure_exec_code(
-    exec_code: &ExecutableCode,
+    exec_code: &ExecutableCode<Collapse>,
     start_batches: usize,
     mode: BenchMode,
 ) -> Result<RawMeasurement, BenchError> {
@@ -893,7 +893,7 @@ fn measure_exec_code(
 
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 fn measure_exec_code(
-    exec_code: &ExecutableCode,
+    exec_code: &ExecutableCode<Collapse>,
     start_batches: usize,
     mode: BenchMode,
 ) -> Result<RawMeasurement, BenchError> {
@@ -1019,7 +1019,7 @@ fn identity_arena() -> (ExprArena, ExprId) {
 /// E-core-placement class of shift that no scalar correction can repair; see
 /// that constant's doc for the full three-tier drift policy.
 pub struct BenchSession {
-    sentinel_code: ExecutableCode,
+    sentinel_code: ExecutableCode<Collapse>,
     calibration_ns: f64,
     sentinel_samples: Vec<SentinelSample>,
     overhead_throughput_ns: f64,
@@ -1177,7 +1177,7 @@ impl BenchSession {
     /// per-expression plausibility floor (audit M4).
     pub fn benchmark_compiled(
         &mut self,
-        code: &ExecutableCode,
+        code: &ExecutableCode<Collapse>,
         arena: &ExprArena,
         root: ExprId,
         mode: BenchMode,
@@ -1194,7 +1194,7 @@ impl BenchSession {
     /// one delegating to the other.
     fn measure_gated(
         &mut self,
-        code: &ExecutableCode,
+        code: &ExecutableCode<Collapse>,
         arena: &ExprArena,
         root: ExprId,
         mode: BenchMode,

@@ -593,7 +593,7 @@ mod tests {
     #[cfg(target_feature = "avx512f")]
     mod runtime {
         use super::super::*;
-        use crate::emit::executable::ExecutableCode;
+        use crate::emit::executable::{ExecutableCode, PerBatch};
         use core::arch::x86_64::*;
 
         // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
@@ -604,7 +604,7 @@ mod tests {
         fn run(body: &[u8], xs: [f32; 16], ys: [f32; 16], zs: [f32; 16]) -> [f32; 16] {
             let mut code = body.to_vec();
             crate::emit::x86_64::ret(&mut code);
-            let exec = unsafe { ExecutableCode::from_code(&code).expect("mmap") };
+            let exec = unsafe { ExecutableCode::<PerBatch>::from_code(&code).expect("mmap") };
             unsafe {
                 let f: K = exec.as_fn();
                 let r = f(
@@ -740,7 +740,7 @@ mod tests {
                 41.0,
             ];
 
-            let exec = unsafe { ExecutableCode::from_code(&c).expect("mmap") };
+            let exec = unsafe { ExecutableCode::<PerBatch>::from_code(&c).expect("mmap") };
             let out = unsafe {
                 let f: G = exec.as_fn();
                 let r = f(buf.as_ptr(), _mm512_loadu_ps(idx.as_ptr()));

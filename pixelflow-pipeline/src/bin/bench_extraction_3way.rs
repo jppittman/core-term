@@ -111,7 +111,7 @@ use clap::Parser;
 use serde::Serialize;
 
 use pixelflow_codegen::emit::compile_collapse;
-use pixelflow_codegen::emit::executable::ExecutableCode;
+use pixelflow_codegen::emit::executable::{Collapse, ExecutableCode};
 use pixelflow_ir::{
     BindingTable, DifferentialCheck, ExprArena, ExprId, MaskComparison, MaskVerdict, PointCheck,
     PointVerdict, compare_mask_root,
@@ -804,7 +804,7 @@ fn check_policy(
     original: (&ExprArena, ExprId),
     candidate: (&ExprArena, ExprId),
     grid: &CheckGrid,
-) -> Result<(ExecutableCode, PolicyCheck), GateFailure> {
+) -> Result<(ExecutableCode<Collapse>, PolicyCheck), GateFailure> {
     let (orig_arena, orig_root) = original;
     let (cand_arena, cand_root) = candidate;
 
@@ -1067,7 +1067,7 @@ fn verify_repeat_outputs(label: &str, repeat: usize, check: &PolicyCheck, output
 struct PreparedPolicy {
     arena: ExprArena,
     root: ExprId,
-    code: ExecutableCode,
+    code: ExecutableCode<Collapse>,
     check: PolicyCheck,
 }
 
