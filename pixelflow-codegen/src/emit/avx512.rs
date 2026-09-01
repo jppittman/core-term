@@ -828,7 +828,14 @@ pub(crate) mod driver {
     const AVX512_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         // zmm13: outside the allocatable range and the reload pair; `vpternlogd`
         // consumes its three operands with no temp.
+        // zmm4-10 plus zmm17-31: AVX-512 has thirty-two registers and the
+        // pool was six of them, because a contiguous range could not reach
+        // past the reload pair and the gather's scratch.
+        scratch: regalloc::RegSet::range(4, 7).union(regalloc::RegSet::range(17, 15)),
         select_reload: Reg(13),
+        // zmm15: `emit_unary`'s sign-mask temp. zmm14/zmm16: the gather's
+        // destination and truncated-index registers.
+        fixed: &[super::UNARY_SCRATCH, Reg(14), Reg(16)],
         vector_bytes: 64,
         ..SSE2_FILE
     }
@@ -906,9 +913,11 @@ pub(crate) mod driver {
                 ResolvedOp::Gather { dst, idx, slot } => {
                     // dst = buffer[slot][idx]. The context pointer (array of buffer
                     // base pointers) is caller-provided in rdi; arithmetic/const emit
-                    // never touches rdi, so it survives to here. zmm13/zmm14 are the
-                    // backend's reserved non-allocatable scratch (see UNARY_SCRATCH).
-                    const IDX_INT: Reg = Reg(13);
+                    // never touches rdi, so it survives to here. Both are
+                    // declared in AVX512_FILE.fixed, so `RegisterFile::checked`
+                    // proves they miss the pool, the reload pair and
+                    // `select_reload`.
+                    const IDX_INT: Reg = Reg(16);
                     const GATHER_DST: Reg = Reg(14);
                     const RAX: u8 = 0;
                     const RDI: u8 = 7;

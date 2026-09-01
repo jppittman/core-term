@@ -279,32 +279,28 @@ pub struct InstructionPlan {
 }
 
 /// Emission context with register budget for ML training.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct EmitCtx {
-    /// Cap on the allocatable scratch pool.
+    /// Cap on the allocatable scratch pool, or `None` to use the whole thing.
     ///
     /// Only ever *shrinks* the selected backend's own pool (see
-    /// [`regalloc::RegisterFile::capped`]) — a budget above what the target
-    /// has would hand the allocator registers reserved for reloads or
-    /// builtins. Setting it low is how a caller forces spilling deliberately.
-    pub max_regs: u8,
-}
-
-impl Default for EmitCtx {
-    fn default() -> Self {
-        Self {
-            // At or above every backend's own pool (aarch64's 10 is the
-            // largest), so the default caps nothing.
-            max_regs: 10,
-        }
-    }
+    /// [`regalloc::RegisterFile::capped`]); setting it low is how a caller
+    /// forces spilling deliberately.
+    ///
+    /// `None` rather than "a number at least as large as every pool": that
+    /// spelling was a convention no type enforced, and it broke the moment the
+    /// pools grew — a default of 10 silently capped AVX-512's 22 registers
+    /// back to 10 while its doc comment still claimed it "caps nothing".
+    pub max_regs: Option<u8>,
 }
 
 impl EmitCtx {
     /// Create context with custom register budget.
     #[must_use]
     pub fn with_max_regs(max_regs: u8) -> Self {
-        Self { max_regs }
+        Self {
+            max_regs: Some(max_regs),
+        }
     }
 }
 
@@ -888,7 +884,7 @@ fn compile_dag_via_backend<B: IsaBackend>(
         // number feeds the cost model's training metadata and frame-size
         // thresholds, so the discrepancy was silently mistraining them.
         spill_bytes: frame_size,
-        max_regs: backend.register_file().scratch_count,
+        max_regs: backend.register_file().scratch.len(),
         hoisted_values: 0,
     })
 }
@@ -2056,7 +2052,7 @@ fn compile_collapse_via_backend<B: IsaBackend>(
             code: exec,
             spill_count,
             spill_bytes: frame_size,
-            max_regs: backend.register_file().scratch_count,
+            max_regs: backend.register_file().scratch.len(),
             hoisted_values: 0,
         });
     };
@@ -2159,7 +2155,7 @@ fn compile_collapse_via_backend<B: IsaBackend>(
         code: exec,
         spill_count: frame_spills + row_spills + body_spills,
         spill_bytes: m,
-        max_regs: file.scratch_count,
+        max_regs: file.scratch.len(),
         hoisted_values,
     })
 }
@@ -2459,9 +2455,9 @@ mod tests {
     /// The register file these `resolve_operands` tests are written against:
     /// reload[1] is the operand temp, reload[0] the spilled destination.
     const TEST_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
+        fixed: &[],
         inputs: INPUT_REGS,
-        scratch_base: 4,
-        scratch_count: 6,
+        scratch: regalloc::RegSet::range(4, 6),
         reload: [Reg(11), Reg(12)],
         select_reload: Reg(13),
         vector_bytes: 16,
@@ -4065,8 +4061,14 @@ mod tests {
             );
         }
 
-        /// A wide expression that exceeds the 6 allocatable zmm regs, forcing a
-        /// real 64-byte-slot stack frame (the SSE2 red zone cannot hold a zmm).
+        /// Spilling on AVX-512 must use a real stack frame: a zmm is 64 bytes
+        /// and the SSE2 red zone cannot hold one.
+        ///
+        /// The pool is capped rather than out-sized by the expression. This
+        /// test used to lean on a wide DAG "exceeding the 6 allocatable zmm
+        /// regs" and stopped spilling the moment the pool grew to 22 — the
+        /// subject here is what spilling *does*, not when it happens, so say
+        /// so with `with_max_regs` instead of racing the allocator.
         #[test]
         fn avx512_spills_to_real_frame() {
             let mut a = ExprArena::new();
@@ -4092,7 +4094,13 @@ mod tests {
             }
             let root = terms[0];
 
-            let res = compile_arena_dag_avx512(&a, root).expect("avx512 compile");
+            let (legal, legal_root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
+            let schedule = arena_to_schedule(&legal, legal_root);
+            let res = compile_dag_via_backend(
+                schedule,
+                &mut avx512::driver::Avx512Backend::new(EmitCtx::with_max_regs(4)),
+            )
+            .expect("avx512 compile");
             assert!(res.spill_count > 0, "expected spilling");
 
             let (xs, ys, zs) = lanes();

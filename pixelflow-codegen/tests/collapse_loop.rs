@@ -572,11 +572,16 @@ fn spill_frame_coexists_with_coordinate_slots() {
     // Force spilling (more simultaneously-live values than the allocator's
     // budget) so the body's spill frame and the scaffold's coordinate slots
     // must share the stack without aliasing — in both x86 frame modes.
+    //
+    // The width must beat the LARGEST pool any backend has, not the one this
+    // host happens to select: AVX-512 allocates 22 registers. Twelve products
+    // sufficed when every pool was six and silently stopped proving anything
+    // when the pools grew, which is what the assertion below now catches.
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
     let mut products = Vec::new();
-    for k in 0..12 {
+    for k in 0..48 {
         let c = a.push_const(1.0 + k as f32 * 0.37);
         let xk = a.push_binary(OpKind::Add, x, c);
         let yk = a.push_binary(OpKind::Mul, y, c);
