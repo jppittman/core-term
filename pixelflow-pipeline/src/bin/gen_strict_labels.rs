@@ -26,19 +26,24 @@
 //! this out explicitly), so this binary calls it directly rather than
 //! restating the walk a third time.
 //!
-//! # Budget placeholder (binding caveat)
+//! # Budget denominator (now the registered constant, not a placeholder)
 //!
 //! [`Firing::registered_budget`] is documented as "the pre-registered
 //! rule-application budget this episode's saturation is being measured
 //! against" — a live guided loop's budget tier `B`. This offline,
-//! full-saturation replay has no live budget to report: [`PLACEHOLDER_BUDGET_B`]
-//! stands in for it, set to this round's measured per-expression median
-//! application count (`docs/results/2026-08-30-guide-headroom.md` §2.1,
-//! ~195) per design doc §5's own sizing note. This is explicitly a
-//! placeholder — §5 requires Y and B to be pre-committed before the first
-//! training run, not decided here — so `budget_fraction` in this dataset
-//! must be treated as "position relative to a provisional 195-application
-//! tier," not the final pre-registered value.
+//! full-saturation replay has no live per-call budget to report, so it uses
+//! [`REGISTERED_PRIMARY_BUDGET_APPLICATIONS`] — the classical-band primary
+//! tier B=100 fixed by `docs/plans/2026-09-01-phase3-registration.md` §4 —
+//! exactly the same constant [`saturate_guided_until_applications`] imports
+//! for the live guided loop. This dataset's earlier mint (see git history)
+//! used a 195-application placeholder (this round's measured per-expression
+//! median application count, before B was registered); that was a
+//! train/deploy denominator skew — evaluating a Guide trained on one
+//! denominator against a loop that divided by a different one would
+//! silently change what `budget_fraction` means — caught and fixed before
+//! any guided-saturation evaluation ran. `budget_fraction` in this dataset
+//! is now "position relative to the registered primary tier B=100," the
+//! same units a live guided loop uses.
 //!
 //! # Fence check
 //!
@@ -72,7 +77,8 @@ use pixelflow_ir::ExprArena;
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_pipeline::training::split::{Family, SplitManifest, Tier};
 use pixelflow_search::egraph::{
-    CandidateFeatures, CostModel, EGraph, EpisodeLabels, Firing, Label, extract_dag,
+    CandidateFeatures, CostModel, EGraph, EpisodeLabels, Firing, Label,
+    REGISTERED_PRIMARY_BUDGET_APPLICATIONS, extract_dag,
 };
 use pixelflow_search::math::all_rules;
 
@@ -141,7 +147,7 @@ struct Args {
 
     /// Per-expression e-class cap passed to `saturate_with_limits`.
     /// `guide_headroom` uses production's 10,000; this binary defaults
-    /// lower (see module doc "Budget placeholder") because class-count
+    /// lower (see module doc "Budget denominator") because class-count
     /// growth dominates this binary's own wall-clock cost on the corpus's
     /// heavy tail, and the strict label / dedup-key measurements this
     /// binary reports do not depend on matching guide_headroom's cap
@@ -161,12 +167,6 @@ const SATURATE_MAX_ITERS: usize = 100;
 /// module doc): this is an offline batch measurement, not the interactive
 /// compiler path, so production's 500ms deadline does not apply here.
 const SATURATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// See the module doc's "Budget placeholder" section: this round's measured
-/// per-expression median application count
-/// (`docs/results/2026-08-30-guide-headroom.md` §2.1), NOT a pre-committed
-/// Phase 3 budget tier.
-const PLACEHOLDER_BUDGET_B: usize = 195;
 
 /// Parse `gen_bench_corpus`'s `{tier}_b{band:02}_f{seed:02}_{idx:05}` name
 /// format back into a [`Family`]. Panics on a name that doesn't match — a
@@ -411,7 +411,7 @@ fn mint_split(
                 rule_idx: record.rule_idx,
                 match_root: record.match_root,
                 application_ordinal: app_id.as_u64(),
-                registered_budget: PLACEHOLDER_BUDGET_B,
+                registered_budget: REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
             };
             let features = CandidateFeatures::observe(&egraph, &firing);
             let is_repeat = !seen_keys.insert(features.key.clone());
@@ -607,7 +607,7 @@ fn write_json_report(path: &str, train: &SplitStats, dev: &SplitStats, rule_name
     let mut json = String::new();
     json.push_str("{\n");
     json.push_str(&format!(
-        "  \"placeholder_budget_b\": {PLACEHOLDER_BUDGET_B},\n"
+        "  \"registered_budget_b\": {REGISTERED_PRIMARY_BUDGET_APPLICATIONS},\n"
     ));
 
     let write_split = |json: &mut String, s: &SplitStats| {
@@ -712,7 +712,7 @@ fn main() {
     let dev_entries = stride_sample(dev_entries, args.dev_limit);
 
     eprintln!(
-        "gen_strict_labels: minting {} TRAIN, {} DEV expressions (placeholder budget B={PLACEHOLDER_BUDGET_B})",
+        "gen_strict_labels: minting {} TRAIN, {} DEV expressions (registered budget B={REGISTERED_PRIMARY_BUDGET_APPLICATIONS})",
         train_entries.len(),
         dev_entries.len()
     );
