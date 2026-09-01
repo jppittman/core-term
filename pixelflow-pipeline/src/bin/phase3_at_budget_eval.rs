@@ -602,6 +602,7 @@ struct Guides {
 }
 
 /// One expression's fixed curve environment, shared by every arm.
+#[derive(Clone, Copy)]
 struct CurveInput<'a> {
     arena: &'a ExprArena,
     root: ExprId,
@@ -631,16 +632,15 @@ fn run_guided<G: SaturationGuide>(
     (out, seen)
 }
 
-fn evaluate_expression(
-    name: &str,
-    arena: &ExprArena,
-    root: ExprId,
-    guides: &Guides,
-    costs: &CostModel,
-    guided_grid: &[usize],
-) -> ExprRow {
+fn evaluate_expression(name: &str, input: &CurveInput<'_>, guides: &Guides) -> ExprRow {
+    let CurveInput {
+        arena,
+        root,
+        class_cap,
+        costs,
+        ..
+    } = *input;
     let node_count = arena.nodes_raw().len();
-    let class_cap = config_for_node_count(node_count).max_classes;
 
     let unguided = run_anytime_curve(
         arena,
@@ -652,15 +652,8 @@ fn evaluate_expression(
         SAFETY_TIMEOUT,
         costs,
     );
-    let input = CurveInput {
-        arena,
-        root,
-        class_cap,
-        costs,
-        guided_grid,
-    };
-    let (control, control_seen) = run_guided(&guides.control, &guides.embeds, &input);
-    let (linear, linear_seen) = run_guided(&guides.linear, &guides.embeds, &input);
+    let (control, control_seen) = run_guided(&guides.control, &guides.embeds, input);
+    let (linear, linear_seen) = run_guided(&guides.linear, &guides.embeds, input);
 
     let outs: [(&str, &AnytimeCurveOutput, Option<usize>); 3] = [
         ("unguided", &unguided, None),
@@ -1664,7 +1657,14 @@ fn main() {
                 arena.nodes_raw().len(),
                 tier_name(arena.nodes_raw().len())
             );
-            let row = evaluate_expression(name, arena, *root, &guides, &costs, &guided_grid);
+            let input = CurveInput {
+                arena,
+                root: *root,
+                class_cap: config_for_node_count(arena.nodes_raw().len()).max_classes,
+                costs: &costs,
+                guided_grid: &guided_grid,
+            };
+            let row = evaluate_expression(name, &input, &guides);
             let line = serde_json::to_string(&row).expect("serialize row");
             writeln!(out, "{line}")
                 .unwrap_or_else(|e| panic!("write {}: {e}", jsonl_path.display()));
