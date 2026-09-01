@@ -67,11 +67,17 @@ struct Args {
     samples: usize,
 
     /// Full per-expression, per-checkpoint curve CSV.
-    #[arg(long, default_value = "docs/results/2026-09-01-phase3-unguided-baseline.csv")]
+    #[arg(
+        long,
+        default_value = "docs/results/2026-09-01-phase3-unguided-baseline.csv"
+    )]
     out_csv: String,
 
     /// Aggregate truncation-loss tables as JSON.
-    #[arg(long, default_value = "docs/results/2026-09-01-phase3-unguided-baseline.json")]
+    #[arg(
+        long,
+        default_value = "docs/results/2026-09-01-phase3-unguided-baseline.json"
+    )]
     out_json: String,
 }
 
@@ -359,12 +365,12 @@ fn main() {
     let candidates: Vec<usize> = grid
         .iter()
         .copied()
-        .filter(|b| {
-            b % 2 == 0 && idx_of.contains_key(&(b / 2)) && idx_of.contains_key(&(b * 4))
-        })
+        .filter(|b| b % 2 == 0 && idx_of.contains_key(&(b / 2)) && idx_of.contains_key(&(b * 4)))
         .collect();
 
-    println!("\n=== truncation loss: unguided-at-B vs unguided-at-4B (loss% = (cost@B - cost@4B)/cost@4B) ===");
+    println!(
+        "\n=== truncation loss: unguided-at-B vs unguided-at-4B (loss% = (cost@B - cost@4B)/cost@4B) ==="
+    );
     let mut json_cells: Vec<String> = Vec::new();
     for scope in ["ALL"].iter().chain(tiers.iter()) {
         let sub: Vec<&ExprCurve> = curves
@@ -395,12 +401,7 @@ fn main() {
             let fi = idx_of[&(b * 4)];
             let rows: Vec<(f64, bool)> = sub
                 .iter()
-                .map(|c| {
-                    (
-                        loss_pct(c.cost_at[bi], c.cost_at[fi]),
-                        c.ended_at_apps > b,
-                    )
-                })
+                .map(|c| (loss_pct(c.cost_at[bi], c.cost_at[fi]), c.ended_at_apps > b))
                 .collect();
             let half_rows: Vec<(f64, bool)> = sub
                 .iter()
@@ -481,7 +482,9 @@ fn main() {
     let mut json = String::new();
     json.push_str("{\n");
     json.push_str(&format!("  \"num_expressions\": {},\n", curves.len()));
-    json.push_str(&format!("  \"corpus_train_dev_total\": {total_available},\n"));
+    json.push_str(&format!(
+        "  \"corpus_train_dev_total\": {total_available},\n"
+    ));
     json.push_str(&format!("  \"grid\": {grid:?},\n"));
     json.push_str(&format!("  \"any_truncation_loss\": {any_loss},\n"));
     json.push_str("  \"per_expression\": [\n");
