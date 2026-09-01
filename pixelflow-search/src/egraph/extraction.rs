@@ -23,7 +23,35 @@ use super::extract::{Extraction, extract_dag_scoped};
 use super::graph::EGraph;
 use super::node::EClassId;
 use alloc::vec::Vec;
+use super::saturate::{SaturationResult, config_for_node_count, saturate_with_full_budget};
 use pixelflow_ir::LatticeShape;
+
+/// Saturate `egraph` under the ONE production budget policy —
+/// [`config_for_node_count`] picks the [`SaturationConfig`](super::saturate::SaturationConfig)
+/// preset from `node_count` (an AST-node count for the macro tier, a
+/// reachable-arena-node count for the runtime and `Dwrt`-differentiation
+/// tiers — [`config_for_node_count`]'s own doc names both as equally valid
+/// proxies), then [`saturate_with_full_budget`] runs it.
+///
+/// `pixelflow-compiler`'s `kernel!`/`kernel_jit!` macro optimizer, its
+/// `Dwrt`-differentiation pass, and [`crate::runtime::optimize_runtime_arena`]
+/// all call this rather than each re-deciding a budget — a second copy of it
+/// is exactly the drift the domain model doc
+/// (docs/plans/2026-08-17-cost-model-domain.md) warns about. Extraction is a
+/// separate step: call [`ExtractionPolicy::extraction`] (or `::choices`)
+/// afterward with whatever policy the caller selected, normally via
+/// [`env_extraction_policy`]. Returns the run's [`SaturationResult`] for
+/// callers that want to observe it (measurement/instrumentation); ordinary
+/// compile-tier callers ignore it.
+pub fn saturate_for_extraction(egraph: &mut EGraph, node_count: usize) -> SaturationResult {
+    let config = config_for_node_count(node_count);
+    saturate_with_full_budget(
+        egraph,
+        config.max_iterations,
+        config.max_classes,
+        config.hard_timeout,
+    )
+}
 
 /// The cost model that drives e-graph extraction: a static per-op cost table,
 /// priced against the lattice the kernel will run over.

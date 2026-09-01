@@ -29,8 +29,8 @@ use crate::ast::{
 use crate::sema::AnalyzedKernel;
 use pixelflow_search::egraph::{
     EClassId, EGraph, ENode, ExtractedDAG, ExtractionPolicy, Rewrite,
-    build_extracted_dag_from_choices, compute_ref_counts, config_for_node_count,
-    env_extraction_policy, ops, saturate_with_full_budget,
+    build_extracted_dag_from_choices, compute_ref_counts, env_extraction_policy, ops,
+    saturate_for_extraction,
 };
 use pixelflow_search::math::all_rules as search_all_rules;
 use proc_macro2::Span;
@@ -155,15 +155,9 @@ fn optimize_via_model(
     let root = ctx.expr_to_egraph(expr);
 
     let node_count = count_ast_nodes(expr);
-    let config = config_for_node_count(node_count);
     #[cfg(feature = "saturation-telemetry")]
     let telemetry_start = std::time::Instant::now();
-    let _saturation_result = saturate_with_full_budget(
-        &mut ctx.egraph,
-        config.max_iterations,
-        config.max_classes,
-        config.hard_timeout,
-    );
+    let _saturation_result = saturate_for_extraction(&mut ctx.egraph, node_count);
 
     // Extract via arena path (CSE-preserving) then convert choices → DAG.
     let choices = extraction.choices(&ctx.egraph, root);

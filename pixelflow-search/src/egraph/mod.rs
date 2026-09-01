@@ -46,7 +46,7 @@ pub use extract::{
     ExtractedDAG, Extraction, build_extracted_dag_from_choices, choices_to_arena,
     compute_ref_counts, extract, extract_dag,
 };
-pub use extraction::{ExtractionPolicy, env_extraction_policy};
+pub use extraction::{ExtractionPolicy, env_extraction_policy, saturate_for_extraction};
 pub use graph::{
     ApplyResult, EGraph, EGraphBatch, RewriteTarget, SaturationStats, SaturationStop, ScanStop,
 };
