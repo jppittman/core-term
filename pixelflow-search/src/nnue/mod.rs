@@ -26,7 +26,7 @@ pub use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 pub use factored::ExprNnue;
 
 /// Re-export key types from factored module.
-pub use factored::{EdgeAccumulator, OpEmbeddings};
+pub use factored::{CostEdge, EdgeAccumulator, EdgeTrace, OpEmbeddings, PeSlot};
 
 /// Re-export shared embedding-space constants and rule-template types.
 ///
