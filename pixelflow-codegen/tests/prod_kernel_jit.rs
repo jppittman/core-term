@@ -19,7 +19,7 @@
 //! with the no-op zero-weight cost model — extraction keeps the original
 //! form; peephole/CSE still run. The point is the *pipeline*, end to end.
 
-use pixelflow_codegen::emit::compile_arena_dag;
+use pixelflow_codegen::emit::compile;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 use pixelflow_search::egraph::{EGraph, IncrementalExtractor, choices_to_arena};
 use pixelflow_search::math::all_rules;
@@ -74,83 +74,12 @@ fn optimize(arena: &ExprArena, root: ExprId, tag: &str) -> (ExprArena, ExprId) {
 
 // ---------------------------------------------------------------------------
 // Executing JIT code: broadcast one coordinate to all lanes, read lane 0.
-// Gated to match the width-specific `KernelFn` ABI the backend emits.
 // ---------------------------------------------------------------------------
 
-use pixelflow_codegen::emit::executable::{ExecutableCode, KernelFn};
+use pixelflow_codegen::JIT_VECTOR_BYTES;
+use pixelflow_codegen::emit::executable::{Point4, TileSlice};
 
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::{_mm_cvtss_f32, _mm_set1_ps};
-    // SAFETY: SSE2 is the baseline on x86-64; the JIT emitted `__m128` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            _mm_set1_ps(x),
-            _mm_set1_ps(y),
-            _mm_set1_ps(z),
-            _mm_set1_ps(w),
-        );
-        _mm_cvtss_f32(r)
-    }
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::{_mm256_cvtss_f32, _mm256_set1_ps};
-    // SAFETY: built with +avx2 (not +avx512f), so the JIT emitted the
-    // `__m256` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            _mm256_set1_ps(x),
-            _mm256_set1_ps(y),
-            _mm256_set1_ps(z),
-            _mm256_set1_ps(w),
-        );
-        _mm256_cvtss_f32(r)
-    }
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::{_mm512_cvtss_f32, _mm512_set1_ps};
-    // SAFETY: built with +avx512f, so the JIT emitted the `__m512` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            _mm512_set1_ps(x),
-            _mm512_set1_ps(y),
-            _mm512_set1_ps(z),
-            _mm512_set1_ps(w),
-        );
-        _mm512_cvtss_f32(r)
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::aarch64::{vdupq_n_f32, vgetq_lane_f32};
-    // SAFETY: NEON is mandatory on aarch64; the JIT emitted the `float32x4_t` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            vdupq_n_f32(x),
-            vdupq_n_f32(y),
-            vdupq_n_f32(z),
-            vdupq_n_f32(w),
-        );
-        vgetq_lane_f32(r, 0)
-    }
-}
+const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
 #[test]
 fn prod_swirl_kernel_through_nnue_and_jit() {
@@ -161,8 +90,8 @@ fn prod_swirl_kernel_through_nnue_and_jit() {
 
     // JIT both the original and the NNUE-optimized DAG. Both paths run the
     // shared transcendental-lowering + regalloc + codegen pipeline.
-    let orig_jit = compile_arena_dag(&orig, orig_root).expect("JIT original");
-    let opt_jit = compile_arena_dag(&opt, opt_root).expect("JIT optimized");
+    let orig_jit = compile(&orig, orig_root).expect("JIT original");
+    let opt_jit = compile(&opt, opt_root).expect("JIT optimized");
     eprintln!(
         "[swirl] spills: original = {}, optimized = {}",
         orig_jit.spill_count, opt_jit.spill_count
@@ -186,28 +115,51 @@ fn prod_swirl_kernel_through_nnue_and_jit() {
     // certifies that NNUE extraction preserved semantics.
     let mut max_ref_err = 0.0_f32;
     let mut max_cross_err = 0.0_f32;
-    for &(x, y) in &coords {
-        let want = reference(x, y, freq, amp, bias);
-        let got_orig = run_scalar(&orig_jit.code, x, y, 0.0, 0.0);
-        let got_opt = run_scalar(&opt_jit.code, x, y, 0.0, 0.0);
+    for chunk in coords.chunks(LANES) {
+        let mut xs = [0.0f32; LANES];
+        let mut ys = [0.0f32; LANES];
+        for (i, &(x, y)) in chunk.iter().enumerate() {
+            xs[i] = x;
+            ys[i] = y;
+        }
+        let p = Point4::new(xs, ys, [0.0; LANES], [0.0; LANES]);
+        let mut out_orig = [0.0f32; LANES];
+        let mut out_opt = [0.0f32; LANES];
+        unsafe {
+            orig_jit.code.call_collapse(
+                core::ptr::null(),
+                TileSlice::single(out_orig.as_mut_ptr()),
+                p,
+            );
+            opt_jit.code.call_collapse(
+                core::ptr::null(),
+                TileSlice::single(out_opt.as_mut_ptr()),
+                p,
+            );
+        }
+        for (i, &(x, y)) in chunk.iter().enumerate() {
+            let want = reference(x, y, freq, amp, bias);
+            let got_orig = out_orig[i];
+            let got_opt = out_opt[i];
 
-        max_ref_err = max_ref_err.max((got_orig - want).abs());
-        max_ref_err = max_ref_err.max((got_opt - want).abs());
-        max_cross_err = max_cross_err.max((got_orig - got_opt).abs());
+            max_ref_err = max_ref_err.max((got_orig - want).abs());
+            max_ref_err = max_ref_err.max((got_opt - want).abs());
+            max_cross_err = max_cross_err.max((got_orig - got_opt).abs());
 
-        assert!(
-            (got_orig - want).abs() <= 6e-2,
-            "original JIT at ({x},{y}): got {got_orig}, want {want}"
-        );
-        assert!(
-            (got_opt - want).abs() <= 6e-2,
-            "optimized JIT at ({x},{y}): got {got_opt}, want {want}"
-        );
-        assert!(
-            (got_orig - got_opt).abs() <= 1e-1,
-            "NNUE extraction changed semantics at ({x},{y}): \
-             original {got_orig} vs optimized {got_opt}"
-        );
+            assert!(
+                (got_orig - want).abs() <= 6e-2,
+                "original JIT at ({x},{y}): got {got_orig}, want {want}"
+            );
+            assert!(
+                (got_opt - want).abs() <= 6e-2,
+                "optimized JIT at ({x},{y}): got {got_opt}, want {want}"
+            );
+            assert!(
+                (got_orig - got_opt).abs() <= 1e-1,
+                "NNUE extraction changed semantics at ({x},{y}): \
+                 original {got_orig} vs optimized {got_opt}"
+            );
+        }
     }
     eprintln!(
         "[swirl] max error vs analytic f32 = {max_ref_err:.4}, \

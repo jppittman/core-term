@@ -178,11 +178,7 @@ impl VexImm {
 }
 
 /// Emit SSE instruction (legacy encoding, 2-operand: dst op= src)
-fn emit_sse_rr(code: &mut Vec<u8>, prefix: Option<u8>, opcode: &[u8], dst: Reg, src: Reg) {
-    if let Some(p) = prefix {
-        code.push(p);
-    }
-
+fn emit_sse_rr(code: &mut Vec<u8>, opcode: &[u8], dst: Reg, src: Reg) {
     // REX prefix if needed (for xmm8-xmm15)
     let rex = 0x40 | (if dst.0 >= 8 { 0x04 } else { 0 }) | (if src.0 >= 8 { 0x01 } else { 0 });
     if rex != 0x40 {
@@ -199,7 +195,53 @@ fn emit_sse_rr(code: &mut Vec<u8>, prefix: Option<u8>, opcode: &[u8], dst: Reg, 
 
 /// MOVAPS xmm, xmm - Register-to-register copy
 pub fn emit_movaps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x28], dst, src);
+    emit_sse_rr(code, &[0x0F, 0x28], dst, src);
+}
+
+/// `movups` between `xmm<reg>` and `[addr]`. Load and store are one encoding
+/// a single opcode byte apart, so they share everything below.
+fn movups<D: Disp>(code: &mut Vec<u8>, opcode: u8, reg: Reg, addr: Mem<D>) {
+    // REX only when an operand needs extending: R for the xmm, B for the base.
+    let rex = 0x40 | (u8::from(reg.0 >= 8) << 2) | u8::from(addr.base.0 >= 8);
+    if rex != 0x40 {
+        code.push(rex);
+    }
+    code.push(0x0F);
+    code.push(opcode);
+    mem_operand(code, reg.0, addr);
+}
+
+/// `movups xmm<dst>, [addr]` — unaligned 128-bit load.
+pub fn emit_movups_load<D: Disp>(code: &mut Vec<u8>, dst: Reg, addr: Mem<D>) {
+    movups(code, 0x10, dst, addr);
+}
+
+/// `movups [addr], xmm<src>` — unaligned 128-bit store.
+///
+/// The address comes first because that is where it sits in the instruction:
+/// the direction is the operand *order*, and `0F 10` versus `0F 11` is the
+/// only thing the two mnemonics do not share.
+pub fn emit_movups_store<D: Disp>(code: &mut Vec<u8>, addr: Mem<D>, src: Reg) {
+    movups(code, 0x11, src, addr);
+}
+
+// =============================================================================
+// Stack frame
+// =============================================================================
+
+/// `sub rsp, imm32` — allocate a spill frame (kernels stay leaf functions;
+/// no base pointer, offsets are rsp-relative).
+///
+/// Spelled through the shared vocabulary: stack adjustment is a general-register
+/// instruction and is identical at every vector width, so it is defined once
+/// here rather than once per width.
+pub fn emit_sub_rsp(code: &mut Vec<u8>, size: u32) {
+    sub(code, gpr::RSP, Imm32(size as i32));
+}
+
+/// `add rsp, imm32` — release the spill frame before `ret`.
+pub fn emit_add_rsp(code: &mut Vec<u8>, size: u32) {
+    add(code, gpr::RSP, Imm32(size as i32));
 }
 
 // =============================================================================
@@ -208,47 +250,47 @@ pub fn emit_movaps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 
 /// ADDPS xmm, xmm
 pub fn emit_addps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x58], dst, src);
+    emit_sse_rr(code, &[0x0F, 0x58], dst, src);
 }
 
 /// SUBPS xmm, xmm
 pub fn emit_subps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x5C], dst, src);
+    emit_sse_rr(code, &[0x0F, 0x5C], dst, src);
 }
 
 /// MULPS xmm, xmm
 pub fn emit_mulps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x59], dst, src);
+    emit_sse_rr(code, &[0x0F, 0x59], dst, src);
 }
 
 /// DIVPS xmm, xmm
 pub fn emit_divps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x5E], dst, src);
+    emit_sse_rr(code, &[0x0F, 0x5E], dst, src);
 }
 
 /// SQRTPS xmm, xmm
 pub fn emit_sqrtps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x51], dst, src);
+    emit_sse_rr(code, &[0x0F, 0x51], dst, src);
 }
 
 /// RSQRTPS xmm, xmm (approximate)
 pub fn emit_rsqrtps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x52], dst, src);
+    emit_sse_rr(code, &[0x0F, 0x52], dst, src);
 }
 
 /// RCPPS xmm, xmm (approximate reciprocal)
 pub fn emit_rcpps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x53], dst, src);
+    emit_sse_rr(code, &[0x0F, 0x53], dst, src);
 }
 
 /// MINPS xmm, xmm
 pub fn emit_minps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x5D], dst, src);
+    emit_sse_rr(code, &[0x0F, 0x5D], dst, src);
 }
 
 /// MAXPS xmm, xmm
 pub fn emit_maxps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x5F], dst, src);
+    emit_sse_rr(code, &[0x0F, 0x5F], dst, src);
 }
 
 // =============================================================================
@@ -498,86 +540,6 @@ const CMP_GE: u8 = 5; // NLT_US (>=)
 //   src  — input register (read-only; never clobbered)
 //   scratch[0..4] — clobbered scratch (4 distinct registers)
 
-/// MOVUPS [rsp+disp8], xmm — red-zone spill store (unaligned, leaf-safe).
-pub fn emit_movups_store_rsp(code: &mut Vec<u8>, src: Reg, disp: i8) {
-    if src.0 >= 8 {
-        code.push(0x44); // REX.R
-    }
-    code.push(0x0F);
-    code.push(0x11);
-    code.push(0x44 | ((src.0 & 7) << 3)); // mod=01, reg=src, rm=100 (SIB)
-    code.push(0x24); // SIB: base=rsp, no index
-    code.push(disp as u8);
-}
-
-/// MOVUPS [rsp+disp32], xmm — spill store into an allocated frame.
-pub fn emit_movups_store_rsp32(code: &mut Vec<u8>, src: Reg, disp: i32) {
-    if src.0 >= 8 {
-        code.push(0x44); // REX.R
-    }
-    code.push(0x0F);
-    code.push(0x11);
-    code.push(0x84 | ((src.0 & 7) << 3)); // mod=10, reg=src, rm=100 (SIB)
-    code.push(0x24); // SIB: base=rsp, no index
-    code.extend_from_slice(&disp.to_le_bytes());
-}
-
-/// MOVUPS xmm, [rsp+disp32] — reload from an allocated frame.
-pub fn emit_movups_load_rsp32(code: &mut Vec<u8>, dst: Reg, disp: i32) {
-    if dst.0 >= 8 {
-        code.push(0x44); // REX.R
-    }
-    code.push(0x0F);
-    code.push(0x10);
-    code.push(0x84 | ((dst.0 & 7) << 3)); // mod=10, reg=dst, rm=100 (SIB)
-    code.push(0x24); // SIB: base=rsp, no index
-    code.extend_from_slice(&disp.to_le_bytes());
-}
-
-/// `sub rsp, imm32` — allocate a spill frame (kernels stay leaf functions;
-/// no base pointer, offsets are rsp-relative).
-///
-/// Spelled through the shared vocabulary: stack adjustment is a general-register
-/// instruction and is identical at every vector width, so it is defined once
-/// here rather than once per width.
-pub fn emit_sub_rsp(code: &mut Vec<u8>, size: u32) {
-    sub(code, gpr::RSP, Imm32(size as i32));
-}
-
-/// `add rsp, imm32` — release the spill frame before `ret`.
-pub fn emit_add_rsp(code: &mut Vec<u8>, size: u32) {
-    add(code, gpr::RSP, Imm32(size as i32));
-}
-
-/// MOVUPS xmm, [rsp+disp8] — red-zone reload (unaligned, leaf-safe).
-pub fn emit_movups_load_rsp(code: &mut Vec<u8>, dst: Reg, disp: i8) {
-    if dst.0 >= 8 {
-        code.push(0x44);
-    }
-    code.push(0x0F);
-    code.push(0x10);
-    code.push(0x44 | ((dst.0 & 7) << 3));
-    code.push(0x24);
-    code.push(disp as u8);
-}
-
-/// MOVUPS [base64], xmm — unaligned store to a GP-register base (mod=00).
-///
-/// `base_gpr` must not be rsp/rbp/r12/r13 (those encodings require SIB or a
-/// displacement form).
-pub fn emit_movups_store_base(code: &mut Vec<u8>, src: Reg, base_gpr: u8) {
-    debug_assert!(
-        base_gpr & 7 != 4 && base_gpr & 7 != 5,
-        "emit_movups_store_base: base must not be rsp/rbp/r12/r13"
-    );
-    if src.0 >= 8 || base_gpr >= 8 {
-        code.push(0x40 | (((src.0 >> 3) & 1) << 2) | ((base_gpr >> 3) & 1)); // REX.R/B
-    }
-    code.push(0x0F);
-    code.push(0x11);
-    code.push(((src.0 & 7) << 3) | (base_gpr & 7)); // mod=00
-}
-
 // ---------------------------------------------------------------------------
 // Public unary builtin entry points
 // ---------------------------------------------------------------------------
@@ -776,7 +738,7 @@ impl X86BinaryInsn {
 pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Reg) {
     // SSE is 2-operand, so we may need to move first
     if dst.0 != src1.0 {
-        emit_sse_rr(code, None, &[0x0F, 0x28], dst, src1); // MOVAPS dst, src1
+        emit_sse_rr(code, &[0x0F, 0x28], dst, src1); // MOVAPS dst, src1
     }
 
     match X86BinaryInsn::select(op) {
@@ -905,7 +867,8 @@ mod tests {
 )]
 pub(crate) mod driver {
     use super::super::*;
-    use super::scaffold;
+    use super::{Imm8, Imm32, Mem, NoDisp, gpr, scaffold};
+    use crate::error::CompileError;
     use alloc::vec::Vec;
     use pixelflow_ir::kind::OpKind;
 
@@ -932,15 +895,27 @@ pub(crate) mod driver {
     }
     .checked();
 
+    /// A slot in the allocated spill frame. Kernels are leaves with no base
+    /// pointer, so a slot *is* `rsp + offset`; the `disp32` is what makes the
+    /// frame mode able to address a frame the red zone could not.
+    const fn frame_slot(offset: u32) -> Mem<Imm32> {
+        Mem {
+            base: gpr::RSP,
+            disp: Imm32(offset as i32),
+        }
+    }
+
     /// Map a `FrameLayout` spill offset to a red-zone `[rsp+disp8]` displacement.
-    fn x86_redzone_disp(offset: u32) -> Result<i8, &'static str> {
+    fn x86_redzone_disp(offset: u32) -> Result<i8, CompileError> {
         // Slots live below rsp: offset 0 -> [rsp-16], 16 -> [rsp-32], ...
         // Only called in red-zone mode (the prologue switches to an allocated
         // frame when the layout exceeds the zone), so overflow here is an
         // internal invariant violation, not a kernel-size limit.
         let disp = -(offset as i64 + 16);
         if disp < -128 {
-            return Err("x86 spill: red-zone displacement out of range (prologue mode bug)");
+            return Err(CompileError::Internal(
+                "x86 spill: red-zone displacement out of range (prologue mode bug)",
+            ));
         }
         Ok(disp as i8)
     }
@@ -988,21 +963,31 @@ pub(crate) mod driver {
         }
 
         fn spill_store(&self, code: &mut Vec<u8>, src: Reg, offset: u32) {
-            if self.frame_bytes == 0 {
-                let disp = x86_redzone_disp(offset).expect("red-zone mode implies fitting offsets");
-                super::emit_movups_store_rsp(code, src, disp);
-            } else {
-                super::emit_movups_store_rsp32(code, src, offset as i32);
+            match self.red_zone_slot(offset) {
+                Some(addr) => super::emit_movups_store(code, addr, src),
+                None => super::emit_movups_store(code, frame_slot(offset), src),
             }
         }
 
         fn spill_load(&self, code: &mut Vec<u8>, dst: Reg, offset: u32) {
-            if self.frame_bytes == 0 {
-                let disp = x86_redzone_disp(offset).expect("red-zone mode implies fitting offsets");
-                super::emit_movups_load_rsp(code, dst, disp);
-            } else {
-                super::emit_movups_load_rsp32(code, dst, offset as i32);
+            match self.red_zone_slot(offset) {
+                Some(addr) => super::emit_movups_load(code, dst, addr),
+                None => super::emit_movups_load(code, dst, frame_slot(offset)),
             }
+        }
+
+        /// The slot at `offset` as a red-zone address, when the body is in
+        /// red-zone mode. `None` means an allocated frame, whose slots are
+        /// [`frame_slot`]s — a disp32 away, not a disp8 below `rsp`.
+        fn red_zone_slot(&self, offset: u32) -> Option<Mem<Imm8>> {
+            if self.frame_bytes != 0 {
+                return None;
+            }
+            let disp = x86_redzone_disp(offset).expect("red-zone mode implies fitting offsets");
+            Some(Mem {
+                base: gpr::RSP,
+                disp: Imm8(disp),
+            })
         }
     }
 
@@ -1014,7 +999,7 @@ pub(crate) mod driver {
             self.file
         }
 
-        fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), &'static str> {
+        fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), CompileError> {
             Ok(()) // x86 const loads are self-contained; no pool.
         }
 
@@ -1026,19 +1011,11 @@ pub(crate) mod driver {
             self.frame_bytes = if frame_size <= 128 { 0 } else { frame_size };
         }
 
-        fn prologue(&mut self, code: &mut Vec<u8>, _frame_size: u32) {
-            // movups is alignment-agnostic, so the frame only needs its
-            // 16-multiple size; red-zone mode needs no setup for a leaf.
-            if self.frame_bytes > 0 {
-                super::emit_sub_rsp(code, self.frame_bytes);
-            }
-        }
-
         fn emit_plan(
             &mut self,
             code: &mut Vec<u8>,
             plan: &InstructionPlan,
-        ) -> Result<(), &'static str> {
+        ) -> Result<(), CompileError> {
             use super::*;
             for reload in &plan.reloads {
                 match reload {
@@ -1150,7 +1127,7 @@ pub(crate) mod driver {
             code: &mut Vec<u8>,
             src: Reg,
             offset: u32,
-        ) -> Result<(), &'static str> {
+        ) -> Result<(), CompileError> {
             self.spill_store(code, src, offset);
             Ok(())
         }
@@ -1195,16 +1172,6 @@ pub(crate) mod driver {
             super::patch_rel32(code, branch, target);
         }
 
-        fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, _frame_size: u32) {
-            if result_reg.0 != 0 {
-                super::emit_movaps(code, Reg(0), result_reg);
-            }
-            if self.frame_bytes > 0 {
-                super::emit_add_rsp(code, self.frame_bytes);
-            }
-            super::ret(code);
-        }
-
         // SysV: rdi = ctx (read-only in the body's gathers), rsi = out,
         // rdx = groups, rcx = rows, r8 = row-skip bytes, xmm0..3 = x0/y0/z/w.
         // Loop registers: r9 = batch counter, r10 = preserved row count, r11 =
@@ -1229,11 +1196,11 @@ pub(crate) mod driver {
         // The scaffold's slots are always at a positive displacement, unlike
         // `emit_store`/`emit_resolve`, which follow the body's frame mode.
         fn slot_store(&mut self, code: &mut Vec<u8>, src: Reg, offset: u32) {
-            super::emit_movups_store_rsp32(code, src, offset as i32);
+            super::emit_movups_store(code, frame_slot(offset), src);
         }
 
         fn slot_load(&mut self, code: &mut Vec<u8>, dst: Reg, offset: u32) {
-            super::emit_movups_load_rsp32(code, dst, offset as i32);
+            super::emit_movups_load(code, dst, frame_slot(offset));
         }
 
         /// Preserve the row count away from `rcx`, which the body's gather and
@@ -1255,7 +1222,14 @@ pub(crate) mod driver {
         }
 
         fn store_result(&mut self, code: &mut Vec<u8>, src: Reg) {
-            super::emit_movups_store_base(code, src, scaffold::OUT_PTR);
+            super::emit_movups_store(
+                code,
+                Mem {
+                    base: scaffold::OUT_PTR,
+                    disp: NoDisp,
+                },
+                src,
+            );
         }
 
         fn advance_out(&mut self, code: &mut Vec<u8>, step: OutStep) {
@@ -1288,8 +1262,8 @@ pub(in crate::emit) mod scaffold {
     use super::{Counter, Gpr, OutStep};
     use alloc::vec::Vec;
 
-    /// `rsi` as a ModRM base — the output pointer the scaffold writes through.
-    pub(in crate::emit) const OUT_PTR: u8 = 6;
+    /// The output pointer the scaffold writes through.
+    pub(in crate::emit) const OUT_PTR: Gpr = RSI;
 
     /// The register each loop counter lives in.
     const fn counter_reg(counter: Counter) -> Gpr {
@@ -1561,6 +1535,98 @@ pub fn jmp(code: &mut Vec<u8>) -> Rel32 {
     Rel32(at)
 }
 
+// =============================================================================
+// Memory operands
+// =============================================================================
+
+/// The displacement half of a [`Mem`] — and, because x86 spells the
+/// displacement's *width* in the ModRM `mod` field, the addressing mode.
+///
+/// `mod = 00 / 01 / 10` are three modes rather than three spellings of one:
+/// they cost a different number of bytes, and `mod = 00` is not "a
+/// displacement of zero" (see [`NoDisp`]). So the width is picked by the
+/// operand's TYPE, exactly as [`AddSrc`] picks `83 /0 ib` over `81 /0 id` —
+/// never by the caller reaching for a differently-named function, which is
+/// where that choice used to live.
+pub trait Disp: Copy {
+    /// The ModRM `mod` field this displacement implies.
+    const MOD: u8;
+    /// Append the displacement bytes, if the mode has any.
+    fn emit(self, code: &mut Vec<u8>);
+}
+
+/// No displacement — the `mod = 00` form, `[base]`.
+///
+/// A mode of its own, not `Imm8(0)`: it is a byte shorter, and it is not
+/// available for every base. `mod = 00` with `rm = 101` (rbp/r13) means
+/// RIP-relative, a different address entirely, so those two registers have no
+/// bare `[base]` form and must spell it `Imm8(0)`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct NoDisp;
+
+impl Disp for NoDisp {
+    const MOD: u8 = 0x00;
+    #[inline(always)]
+    fn emit(self, _code: &mut Vec<u8>) {}
+}
+
+impl Disp for Imm8 {
+    const MOD: u8 = 0x40;
+    #[inline(always)]
+    fn emit(self, code: &mut Vec<u8>) {
+        code.push(self.0 as u8);
+    }
+}
+
+impl Disp for Imm32 {
+    const MOD: u8 = 0x80;
+    #[inline(always)]
+    fn emit(self, code: &mut Vec<u8>) {
+        code.extend_from_slice(&self.0.to_le_bytes());
+    }
+}
+
+/// An address spelled `[base + disp]`.
+///
+/// The base being a [`Gpr`] is the point: `rsp` is a value here. It used to be
+/// the `_rsp` and `_base` suffixes of five separate functions that all encoded
+/// the same `movups`, where nothing could check it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Mem<D> {
+    /// The register the displacement is measured from.
+    pub base: Gpr,
+    /// The displacement — and, through its type, the mode (see [`Disp`]).
+    pub disp: D,
+}
+
+/// ModRM `rm` meaning "a SIB byte follows" — also the low three bits of
+/// `rsp`/`r12`, which is why exactly those two bases always take one.
+const RM_SIB: u8 = 0b100;
+
+/// ModRM `rm` that means RIP-relative when `mod = 00` — also the low three
+/// bits of `rbp`/`r13`.
+const RM_RIP_AT_MOD0: u8 = 0b101;
+
+/// SIB naming the base register alone: scale 1, index `100` (none).
+const SIB_BASE_ONLY: u8 = 0x24;
+
+/// The ModRM byte, a SIB byte when the base needs one, then the displacement —
+/// the tail every memory-operand instruction shares, whatever prefix (legacy,
+/// VEX or EVEX) precedes it. `reg` is the ModRM.reg field: a vector register
+/// for the transfers here, an opcode extension elsewhere.
+pub(in crate::emit) fn mem_operand<D: Disp>(code: &mut Vec<u8>, reg: u8, addr: Mem<D>) {
+    let rm = addr.base.0 & 7;
+    debug_assert!(
+        D::MOD != NoDisp::MOD || rm != RM_RIP_AT_MOD0,
+        "[rbp]/[r13] has no mod=00 form: that encoding is RIP-relative"
+    );
+    code.push(D::MOD | ((reg & 7) << 3) | rm);
+    if rm == RM_SIB {
+        code.push(SIB_BASE_ONLY);
+    }
+    addr.disp.emit(code);
+}
+
 #[cfg(test)]
 mod gpr_tests {
     use super::gpr::*;
@@ -1635,6 +1701,102 @@ mod gpr_tests {
         c.resize(10, 0x90);
         br.patch(&mut c, 0);
         assert_eq!(&c[2..6], &(-6i32).to_le_bytes());
+    }
+
+    /// One instruction, three bases: `movups [rsp+8]`, `[rax+8]` and `[r10+8]`
+    /// differ only in ModRM.rm (plus the SIB `rsp` implies and the REX.B `r10`
+    /// does). That is why the base is an operand and not a name suffix.
+    #[test]
+    fn the_base_register_is_an_operand() {
+        let store = |base| {
+            asm(|c| {
+                emit_movups_store(
+                    c,
+                    Mem {
+                        base,
+                        disp: Imm8(8),
+                    },
+                    Reg(1),
+                )
+            })
+        };
+        // 0F 11 /r, mod=01: rsp takes a SIB byte, rax and r10 do not.
+        assert_eq!(store(RSP), [0x0F, 0x11, 0x4C, 0x24, 0x08]);
+        assert_eq!(store(RAX), [0x0F, 0x11, 0x48, 0x08]);
+        assert_eq!(store(R10), [0x41, 0x0F, 0x11, 0x4A, 0x08]);
+    }
+
+    /// The displacement's *type* picks the encoding, so the same address at the
+    /// same offset is a 5-byte or an 8-byte instruction depending on which
+    /// operand the caller built — and `NoDisp` is a third, shorter mode, not
+    /// `Imm8(0)`.
+    #[test]
+    fn the_displacement_type_picks_the_encoding() {
+        let d8 = asm(|c| {
+            emit_movups_load(
+                c,
+                Reg(0),
+                Mem {
+                    base: RSP,
+                    disp: Imm8(16),
+                },
+            )
+        });
+        let d32 = asm(|c| {
+            emit_movups_load(
+                c,
+                Reg(0),
+                Mem {
+                    base: RSP,
+                    disp: Imm32(16),
+                },
+            )
+        });
+        assert_eq!(d8, [0x0F, 0x10, 0x44, 0x24, 0x10], "mod=01, disp8");
+        assert_eq!(
+            d32,
+            [0x0F, 0x10, 0x84, 0x24, 0x10, 0x00, 0x00, 0x00],
+            "mod=10, disp32"
+        );
+
+        let bare = asm(|c| {
+            emit_movups_load(
+                c,
+                Reg(0),
+                Mem {
+                    base: RSI,
+                    disp: NoDisp,
+                },
+            )
+        });
+        let zero = asm(|c| {
+            emit_movups_load(
+                c,
+                Reg(0),
+                Mem {
+                    base: RSI,
+                    disp: Imm8(0),
+                },
+            )
+        });
+        assert_eq!(bare, [0x0F, 0x10, 0x06], "mod=00 is its own mode");
+        assert_eq!(zero, [0x0F, 0x10, 0x46, 0x00], "and a byte longer than it");
+    }
+
+    /// Load and store are the same encoding one opcode byte apart; the address
+    /// is on whichever side of the transfer the mnemonic puts it.
+    #[test]
+    fn load_and_store_differ_only_in_the_opcode() {
+        let addr = Mem {
+            base: RSP,
+            disp: Imm32(64),
+        };
+        let mut load = asm(|c| emit_movups_load(c, Reg(9), addr));
+        let store = asm(|c| emit_movups_store(c, addr, Reg(9)));
+        assert_eq!(load[2], 0x10);
+        assert_eq!(store[2], 0x11);
+        load[2] = 0x11;
+        assert_eq!(load, store);
     }
 
     /// `Gpr` and `Reg` name different files; the same index is a different

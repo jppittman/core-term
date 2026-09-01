@@ -53,7 +53,7 @@ use pixelflow_ir::kind::OpMap;
 ///
 /// The non-trivial entries below are **measured, not guessed**: serial chains
 /// of K=8 vs K=32 applications of each op, JIT-compiled through
-/// `compile_arena_dag` (so transcendentals are timed in their
+/// `compile` (so transcendentals are timed in their
 /// `expand_transcendentals` lowered form — the form this table is actually
 /// pricing) and timed under `BenchMode::Latency`; the per-stage slope cancels
 /// call overhead exactly. Units are normalized so `Add = 4` (the table's

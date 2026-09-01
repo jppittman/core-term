@@ -15,6 +15,8 @@ fn get_jit_mul_kernel() -> usize {
     let bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(code.as_ptr() as *const u8, code.len() * 4) };
 
+    // `fmul v0.4s, v0.4s, v1.4s; ret` takes its operands in vector argument
+    // registers and returns in v0; this test owns that ABI itself.
     let exec =
         unsafe { pixelflow_codegen::emit::executable::ExecutableCode::from_code(bytes).unwrap() };
 

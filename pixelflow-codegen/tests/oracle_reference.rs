@@ -14,7 +14,7 @@
 //! promises nothing (`fold_is_platform_specific`) are skipped, which is the
 //! documented caller protocol for these tolerances.
 
-use pixelflow_codegen::{JitManifold, jit_cache};
+use pixelflow_codegen::jit_cache;
 use pixelflow_ir::{
     BindingTable, ExprArena, ExprId, ExprNode, OpKind, Tolerance, equivalence_tolerance,
     eval_scalar,
@@ -22,62 +22,7 @@ use pixelflow_ir::{
 
 // ── JIT invocation at this build's width ─────────────────────────────────────
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-fn call4(jit: &JitManifold, v: &[f32; 4]) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        _mm512_cvtss_f32(jit.call(
-            _mm512_set1_ps(v[0]),
-            _mm512_set1_ps(v[1]),
-            _mm512_set1_ps(v[2]),
-            _mm512_set1_ps(v[3]),
-        ))
-    }
-}
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-fn call4(jit: &JitManifold, v: &[f32; 4]) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        _mm256_cvtss_f32(jit.call(
-            _mm256_set1_ps(v[0]),
-            _mm256_set1_ps(v[1]),
-            _mm256_set1_ps(v[2]),
-            _mm256_set1_ps(v[3]),
-        ))
-    }
-}
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx2"),
-    not(target_feature = "avx512f")
-))]
-fn call4(jit: &JitManifold, v: &[f32; 4]) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        _mm_cvtss_f32(jit.call(
-            _mm_set1_ps(v[0]),
-            _mm_set1_ps(v[1]),
-            _mm_set1_ps(v[2]),
-            _mm_set1_ps(v[3]),
-        ))
-    }
-}
-#[cfg(target_arch = "aarch64")]
-fn call4(jit: &JitManifold, v: &[f32; 4]) -> f32 {
-    use core::arch::aarch64::*;
-    unsafe {
-        vgetq_lane_f32::<0>(jit.call(
-            vdupq_n_f32(v[0]),
-            vdupq_n_f32(v[1]),
-            vdupq_n_f32(v[2]),
-            vdupq_n_f32(v[3]),
-        ))
-    }
-}
+const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
 
 // ── Sweep machinery ──────────────────────────────────────────────────────────
 
@@ -138,8 +83,8 @@ fn expression_tolerance(arena: &ExprArena, root: ExprId) -> Tolerance {
     tol
 }
 
-/// Compile once, then compare JIT lane 0 against the oracle at every
-/// non-skipped point, under the expression's folded tolerance.
+/// Compile once, then compare JIT vectors against the oracle across all
+/// non-skipped points in SIMD batches, under the expression's folded tolerance.
 fn assert_jit_matches_oracle(
     name: &str,
     arena: &ExprArena,
@@ -148,23 +93,34 @@ fn assert_jit_matches_oracle(
     skip: impl Fn(&[f32; 4]) -> bool,
 ) {
     let tol = expression_tolerance(arena, root);
-    let jit = jit_cache::compile_cached(arena, root)
+    let jit = jit_cache::compile(arena, root)
         .unwrap_or_else(|e| panic!("{name}: kernel failed to compile on this backend: {e}"));
     let bindings = BindingTable::empty();
     let mut checked = 0usize;
-    for p in points {
-        if skip(p) {
-            continue;
+    let valid_points: Vec<[f32; 4]> = points.iter().copied().filter(|p| !skip(p)).collect();
+    for chunk in valid_points.chunks(LANES) {
+        let mut x = [0.0f32; LANES];
+        let mut y = [0.0f32; LANES];
+        let mut z = [0.0f32; LANES];
+        let mut w = [0.0f32; LANES];
+        for (i, p) in chunk.iter().enumerate() {
+            x[i] = p[0];
+            y[i] = p[1];
+            z[i] = p[2];
+            w[i] = p[3];
         }
-        let got = call4(&jit, p);
-        let want = eval_scalar(arena, root, p, &bindings);
-        assert!(
-            tol.accepts(got, want),
-            "{name}{p:?}: JIT {got} ({:#010x}) vs oracle {want} ({:#010x}) exceeds {tol:?}",
-            got.to_bits(),
-            want.to_bits(),
-        );
-        checked += 1;
+        let res = unsafe { jit.call(pixelflow_codegen::Point4::new(x, y, z, w)) };
+        for (i, p) in chunk.iter().enumerate() {
+            let got = res[i];
+            let want = eval_scalar(arena, root, p, &bindings);
+            assert!(
+                tol.accepts(got, want),
+                "{name}{p:?}: JIT {got} ({:#010x}) vs oracle {want} ({:#010x}) exceeds {tol:?}",
+                got.to_bits(),
+                want.to_bits(),
+            );
+            checked += 1;
+        }
     }
     // A sweep that skipped everything verified nothing — fail loudly.
     assert!(checked > 0, "{name}: sweep skipped every point");

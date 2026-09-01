@@ -43,7 +43,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use pixelflow_codegen::emit::compile_arena_dag;
+use pixelflow_codegen::emit::compile;
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::{
     DifferentialCheck, ExprArena, ExprId, ExprNode, MaskVerdict, OpKind, PointVerdict,
@@ -130,11 +130,10 @@ impl QuarantineGrid {
     }
 }
 
-// ── JIT execution helper ─────────────────────────────────────────────────────
-// `run_scalar` (broadcast to all lanes, read lane 0) lives in
-// `crate::oracle_compare` — the one copy every JIT/oracle cross-check harness
-// imports (docs/plans/2026-08-17-cost-model-domain.md, J14).
-use crate::oracle_compare::run_scalar;
+use pixelflow_codegen::JIT_VECTOR_BYTES;
+use pixelflow_codegen::emit::executable::{Point4, TileSlice};
+
+const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
 // ── Exclusions ───────────────────────────────────────────────────────────────
 
@@ -447,7 +446,7 @@ pub fn quarantine_verdict(arena: &ExprArena, root: ExprId, grid: &QuarantineGrid
         };
     }
 
-    let compiled = match compile_arena_dag(arena, root) {
+    let compiled = match compile(arena, root) {
         Ok(c) => c,
         Err(e) => {
             return Verdict {
@@ -477,82 +476,103 @@ pub fn quarantine_verdict(arena: &ExprArena, root: ExprId, grid: &QuarantineGrid
     let mut mask_miscompile: Option<Exclusion> = None;
 
     conditioning.grid_points = grid.points().len();
-    for (idx, point) in grid.points().iter().enumerate() {
-        let p = check.at(point, &bindings);
-        if p.is_platform_divergent() {
-            // Contract, not a defect: no backend answer is "the" answer here.
-            conditioning.divergent_points.push(idx);
-            continue;
+    for (chunk_idx, points) in grid.points().chunks(LANES).enumerate() {
+        let mut xs = [0.0f32; LANES];
+        let mut ys = [0.0f32; LANES];
+        let mut zs = [0.0f32; LANES];
+        let mut ws = [0.0f32; LANES];
+        for (i, p) in points.iter().enumerate() {
+            xs[i] = p[0];
+            ys[i] = p[1];
+            zs[i] = p[2];
+            ws[i] = p[3];
         }
-        checkable += 1;
-
-        let rel = p.relative_error_bound();
-        if rel > conditioning.worst_relative_bound {
-            conditioning.worst_relative_bound = rel;
-        }
-        if !p.is_well_conditioned() {
-            conditioning.ill_conditioned_points.push(idx);
+        let p = Point4::new(xs, ys, zs, ws);
+        let mut out = [0.0f32; LANES];
+        unsafe {
+            compiled
+                .code
+                .call_collapse(core::ptr::null(), TileSlice::single(out.as_mut_ptr()), p);
         }
 
-        let expected = p.value();
-        let got = run_scalar(&compiled.code, point[0], point[1], point[2], point[3]);
-
-        if mask_root {
-            match p.classify_mask_root(got) {
-                MaskVerdict::Agree => bounded += 1,
-                MaskVerdict::NearThreshold => conditioning.mask_disagreement_points.push(idx),
-                MaskVerdict::Miscompile => {
-                    bounded += 1;
-                    if mask_miscompile.is_none() {
-                        mask_miscompile = Some(Exclusion::MaskMiscompile {
-                            point: *point,
-                            expected,
-                            got,
-                        });
-                    }
-                }
-                MaskVerdict::InvalidPattern {
-                    got_is_mask,
-                    want_is_mask,
-                } => {
-                    bounded += 1;
-                    if mask_invalid.is_none() {
-                        mask_invalid = Some(Exclusion::InvalidMaskPattern {
-                            point: *point,
-                            expected,
-                            got,
-                            got_is_mask,
-                            want_is_mask,
-                        });
-                    }
-                }
+        for (i, point) in points.iter().enumerate() {
+            let idx = chunk_idx * LANES + i;
+            let p = check.at(point, &bindings);
+            if p.is_platform_divergent() {
+                // Contract, not a defect: no backend answer is "the" answer here.
+                conditioning.divergent_points.push(idx);
+                continue;
             }
-            continue;
-        }
+            checkable += 1;
 
-        match p.verdict(got) {
-            PointVerdict::Accept => bounded += 1,
-            PointVerdict::Unbounded => conditioning.unbounded_points.push(idx),
-            PointVerdict::Reject => {
-                bounded += 1;
-                // Severity for "worst point": absolute diff, with non-finite
-                // disagreement ranked above any finite one.
-                let severity = if got.is_finite() && expected.is_finite() {
-                    (got - expected).abs()
-                } else {
-                    f32::INFINITY
-                };
-                if worst.as_ref().is_none_or(|(prev, _)| severity > *prev) {
-                    worst = Some((
-                        severity,
-                        Exclusion::Mismatch {
-                            point: *point,
-                            expected,
-                            got,
-                            bound: p.error_bound(),
-                            relative_bound: rel,
-                        },
-                    ));
+            let rel = p.relative_error_bound();
+            if rel > conditioning.worst_relative_bound {
+                conditioning.worst_relative_bound = rel;
+            }
+            if !p.is_well_conditioned() {
+                conditioning.ill_conditioned_points.push(idx);
+            }
+
+            let expected = p.value();
+            let got = out[i];
+
+            if mask_root {
+                match p.classify_mask_root(got) {
+                    MaskVerdict::Agree => bounded += 1,
+                    MaskVerdict::NearThreshold => conditioning.mask_disagreement_points.push(idx),
+                    MaskVerdict::Miscompile => {
+                        bounded += 1;
+                        if mask_miscompile.is_none() {
+                            mask_miscompile = Some(Exclusion::MaskMiscompile {
+                                point: *point,
+                                expected,
+                                got,
+                            });
+                        }
+                    }
+                    MaskVerdict::InvalidPattern {
+                        got_is_mask,
+                        want_is_mask,
+                    } => {
+                        bounded += 1;
+                        if mask_invalid.is_none() {
+                            mask_invalid = Some(Exclusion::InvalidMaskPattern {
+                                point: *point,
+                                expected,
+                                got,
+                                got_is_mask,
+                                want_is_mask,
+                            });
+                        }
+                    }
+                }
+                continue;
+            }
+
+            match p.verdict(got) {
+                PointVerdict::Accept => bounded += 1,
+                PointVerdict::Unbounded => conditioning.unbounded_points.push(idx),
+                PointVerdict::Reject => {
+                    bounded += 1;
+                    // Severity for "worst point": absolute diff, with non-finite
+                    // disagreement ranked above any finite one.
+                    let severity = if got.is_finite() && expected.is_finite() {
+                        (got - expected).abs()
+                    } else {
+                        f32::INFINITY
+                    };
+                    if worst.as_ref().is_none_or(|(prev, _)| severity > *prev) {
+                        worst = Some((
+                            severity,
+                            Exclusion::Mismatch {
+                                point: *point,
+                                expected,
+                                got,
+                                bound: p.error_bound(),
+                                relative_bound: rel,
+                            },
+                        ));
+                    }
                 }
             }
         }

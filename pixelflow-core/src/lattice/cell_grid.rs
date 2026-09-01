@@ -46,7 +46,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::{BilinearSampler, DiscreteManifold, JitVec};
+use super::{BilinearSampler, DiscreteManifold};
 use crate::Field;
 use pixelflow_codegen::JitManifold;
 use pixelflow_ir::arena::BufferIdentity;
@@ -390,7 +390,7 @@ impl CellGridProgram {
             // of rows for a channel. Bound-memory arenas are uncacheable
             // (the code bakes buffer slot metadata); the cache recognizes
             // that and compiles fresh.
-            pixelflow_codegen::jit_cache::compile_collapse_cached(arena, root)
+            pixelflow_codegen::jit_cache::compile(arena, root)
                 .expect("cell-grid channel failed to compile")
         });
         Self {
@@ -529,14 +529,8 @@ impl CellGridFrame {
         unsafe {
             self.jits[channel].call_collapse(
                 ctx.as_ptr(),
-                out.as_mut_ptr(),
-                groups,
-                rows,
-                0,
-                core::mem::transmute::<Field, JitVec>(x0),
-                core::mem::transmute::<Field, JitVec>(y),
-                core::mem::transmute::<Field, JitVec>(zero),
-                core::mem::transmute::<Field, JitVec>(zero),
+                pixelflow_codegen::TileSlice::contiguous(out.as_mut_ptr(), groups, rows),
+                pixelflow_codegen::Point4::new(x0, y, zero, zero),
             );
         }
     }
@@ -601,7 +595,7 @@ impl CellGridPackedProgram {
             "packed cell-grid kernel did not merge its atlas reads to one slot"
         );
         let (arena, root) = kernel.parts();
-        let jit = pixelflow_codegen::jit_cache::compile_collapse_cached(arena, root)
+        let jit = pixelflow_codegen::jit_cache::compile(arena, root)
             .expect("packed cell-grid kernel failed to compile");
         Self {
             geom,
@@ -742,14 +736,12 @@ impl CellGridPackedFrame {
         unsafe {
             self.jit.call_collapse(
                 ctx.as_ptr(),
-                out.as_mut_ptr().cast::<f32>(),
-                groups,
-                rows,
-                0,
-                core::mem::transmute::<Field, JitVec>(x0),
-                core::mem::transmute::<Field, JitVec>(y),
-                core::mem::transmute::<Field, JitVec>(zero),
-                core::mem::transmute::<Field, JitVec>(zero),
+                pixelflow_codegen::TileSlice::contiguous(
+                    out.as_mut_ptr().cast::<f32>(),
+                    groups,
+                    rows,
+                ),
+                pixelflow_codegen::Point4::new(x0, y, zero, zero),
             );
         }
     }
