@@ -123,3 +123,17 @@ path = "src/bin/train_guide.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "skew_test_linear_guide"
+path = "src/bin/skew_test_linear_guide.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "eval_control_guides"
+path = "src/bin/eval_control_guides.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
