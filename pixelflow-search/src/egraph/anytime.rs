@@ -242,8 +242,11 @@ mod tests {
                 "live checkpoint below target without the run having ended: {cp:?}"
             );
         }
-        // Anytime cost is non-increasing along the curve (append-only growth
-        // only ever adds extraction options).
+        // Pinned on THIS fixture only — not a general law. `extract_dag` is a
+        // heuristic DAG extraction, so anytime cost can rise before it falls
+        // (measured on 2026-09-01: classical median regret at B=100 exceeds
+        // B=25), which is why the registered regret reference is the
+        // empirical best over all checkpoints, never the final state.
         for w in out.curve.checkpoints.windows(2) {
             assert!(
                 w[1].cost <= w[0].cost,
