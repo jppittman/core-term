@@ -103,7 +103,27 @@ pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<Arc<(Ex
         .clone()
 }
 
-fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(ExprArena, ExprId)> {
+/// Everything the production saturation step produces before extraction —
+/// the seam [`optimize_runtime_arena`] and [`production_saturation_probe`]
+/// share so an offline harness reproducing "what production does to this
+/// arena" runs THIS code, not a line-for-line copy that drifts.
+struct ProductionSaturation {
+    /// The `Dwrt`-lowered arena saturation actually ran on.
+    arena: ExprArena,
+    egraph: EGraph,
+    root_class: EClassId,
+    /// `reachable_count` of the lowered arena — the size measure
+    /// `config_for_node_count` tiered on.
+    node_count: usize,
+    config: crate::egraph::SaturationConfig,
+    result: crate::egraph::SaturationResult,
+}
+
+/// The production saturation step, exactly as `optimize_runtime_arena`
+/// performs it: `Dwrt` lowering, e-graph construction, size-tiered
+/// `config_for_node_count`, `saturate_with_full_budget`. `None` for the
+/// same unrepresentable-construct cases `optimize_runtime_arena` documents.
+fn saturate_for_production(arena: &ExprArena, root: ExprId) -> Option<ProductionSaturation> {
     // Resolve `Dwrt` FIRST, with the same exact symbolic pass the compile
     // entries run — then the e-graph sees pure arithmetic. Order matters
     // enormously: differentiation manufactures constants (the winding
@@ -125,12 +145,82 @@ fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(E
 
     let node_count = reachable_count(&arena, root);
     let config = config_for_node_count(node_count);
-    crate::egraph::saturate_with_full_budget(
+    let result = crate::egraph::saturate_with_full_budget(
         &mut egraph,
         config.max_iterations,
         config.max_classes,
         config.hard_timeout,
     );
+    Some(ProductionSaturation {
+        arena,
+        egraph,
+        root_class,
+        node_count,
+        config,
+        result,
+    })
+}
+
+/// What the production saturation call did to one arena, for offline
+/// measurement (the 2026-09-01 integration audit's question: production
+/// budgets rounds/classes/milliseconds and never counts applications, so the
+/// pre-registered application budget is a proxy for a machine production does
+/// not literally run — this reports where that machine actually stops).
+///
+/// Every field is read from the run, never inferred: `stop` is the loop's
+/// own stop reason, `applications` the provenance count at stop, `cost` the
+/// `CostModel::latency_prior()` `extract_dag` cost of the saturated graph
+/// (the production default policy, pinned explicitly here so an opt-in
+/// `PIXELFLOW_NNUE_WEIGHTS` in the environment cannot change what this probe
+/// measures). `hard_timeout` is a stop CONDITION of the production call and
+/// is reported only so a `Timeout` stop can be flagged as machine-dependent —
+/// it is never a metric.
+#[derive(Clone, Debug)]
+pub struct ProductionSaturationProbe {
+    pub node_count: usize,
+    pub config: crate::egraph::SaturationConfig,
+    pub stop: crate::egraph::SaturationStop,
+    pub iterations: usize,
+    pub total_unions: usize,
+    pub applications: usize,
+    pub classes_after: usize,
+    pub cost: usize,
+}
+
+/// Run the production saturation step on `(arena, root)` and report what it
+/// did — see [`ProductionSaturationProbe`]. `None` exactly when
+/// [`optimize_runtime_arena`] would return `None` (unrepresentable construct).
+/// Uncached, so every call re-runs saturation.
+#[must_use]
+pub fn production_saturation_probe(
+    arena: &ExprArena,
+    root: ExprId,
+) -> Option<ProductionSaturationProbe> {
+    let sat = saturate_for_production(arena, root)?;
+    let extraction = crate::egraph::extract_dag(
+        &sat.egraph,
+        sat.root_class,
+        &crate::egraph::CostModel::latency_prior(),
+    );
+    Some(ProductionSaturationProbe {
+        node_count: sat.node_count,
+        config: sat.config,
+        stop: sat.result.stop,
+        iterations: sat.result.iterations,
+        total_unions: sat.result.total_unions,
+        applications: sat.egraph.provenance().application_count(),
+        classes_after: sat.result.classes_after,
+        cost: extraction.total_cost,
+    })
+}
+
+fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(ExprArena, ExprId)> {
+    let ProductionSaturation {
+        arena,
+        egraph,
+        root_class,
+        ..
+    } = saturate_for_production(arena, root)?;
 
     let policy = env_extraction_policy();
     let extraction = policy.extraction(&egraph, root_class);
