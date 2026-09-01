@@ -16,7 +16,9 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use pixelflow_search::egraph::{CostModel, EGraph, IncrementalExtractor, all_rules, choices_to_arena, extract};
+use pixelflow_search::egraph::{
+    CostModel, EGraph, IncrementalExtractor, all_rules, choices_to_arena, extract,
+};
 use pixelflow_search::nnue::ExprNnue;
 
 use pixelflow_pipeline::training::corpus::read_corpus;
@@ -44,7 +46,10 @@ fn main() {
     let args = Args::parse();
     let corpus = read_corpus(&args.corpus).expect("read corpus");
     let by_name: std::collections::HashMap<&str, (&pixelflow_ir::ExprArena, pixelflow_ir::ExprId)> =
-        corpus.iter().map(|(n, a, r)| (n.as_str(), (a, *r))).collect();
+        corpus
+            .iter()
+            .map(|(n, a, r)| (n.as_str(), (a, *r)))
+            .collect();
 
     let r2a_bytes = std::fs::read(&args.r2a_weights).expect("read r2a weights");
     let r3_bytes = std::fs::read(&args.r3_weights).expect("read r3 weights");
@@ -74,7 +79,10 @@ fn main() {
             continue;
         }
 
-        println!("\n=== {name} (orig nodes={}) ===", arena.node_count_subtree(root));
+        println!(
+            "\n=== {name} (orig nodes={}) ===",
+            arena.node_count_subtree(root)
+        );
         println!("ORIGINAL : {}", arena_to_kernel_code(arena, root));
 
         let (static_arena, static_root, static_cost) = extract(&eg, root_class, &static_costs);

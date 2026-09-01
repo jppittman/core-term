@@ -2193,7 +2193,10 @@ mod tests {
             var_x += dx * dx;
             var_y += dy * dy;
         }
-        assert!(var_x > 0.0 && var_y > 0.0, "degenerate input, correlation undefined");
+        assert!(
+            var_x > 0.0 && var_y > 0.0,
+            "degenerate input, correlation undefined"
+        );
         let corr = cov / (var_x.sqrt() * var_y.sqrt());
 
         assert!(
