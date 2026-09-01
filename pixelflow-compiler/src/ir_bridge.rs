@@ -902,49 +902,60 @@ mod expansion_derivative_tests {
         let Some((out, out_root)) = differentiate_in_optimizer(a, root) else {
             return; // fallback tier's job; nothing claimed, nothing to check
         };
-        assert_output_matches_runtime_tier(a, root, &out, out_root, params, pts);
+        RuntimeTierReference {
+            arena: a,
+            root,
+            params,
+            pts,
+        }
+        .assert_agrees(&out, out_root);
     }
 
-    /// The `Some` half of [`assert_matches_runtime_tier`], for callers that
-    /// already hold the optimizer's output (the deterministic-saturation
-    /// tests below, which bypass the wall-clock budget).
-    fn assert_output_matches_runtime_tier(
-        a: &ExprArena,
+    /// The original `Dwrt`-carrying arena plus the params and sample points
+    /// the optimizer's output is checked at — the `Some` half of
+    /// [`assert_matches_runtime_tier`], for callers that already hold that
+    /// output (the deterministic-saturation tests below, which bypass the
+    /// wall-clock budget).
+    struct RuntimeTierReference<'a> {
+        arena: &'a ExprArena,
         root: ExprId,
-        out: &ExprArena,
-        out_root: ExprId,
-        params: &[f32],
-        pts: &[[f32; 4]],
-    ) {
-        assert!(
-            !super::contains_dwrt(out),
-            "Some(..) must be Dwrt-free — that is the claim it makes"
-        );
-        assert!(
-            !out.nodes_raw()
-                .iter()
-                .any(|n| matches!(n, ExprNode::Var(i) if *i >= PARAM_VAR_BASE)),
-            "encoded param Var leaked through the round-trip undecoded"
-        );
+        params: &'a [f32],
+        pts: &'a [[f32; 4]],
+    }
 
-        // Reference: substitute params into the ORIGINAL arena and run the
-        // runtime lowering tier on it.
-        let mut reference = a.clone();
-        let ref_root = reference.substitute_params(root, params);
-        let (ref_arena, ref_root) =
-            lower_dwrt_owned(&reference, ref_root).expect("runtime tier lowers the reference");
-
-        let mut got = out.clone();
-        let got_root = got.substitute_params(out_root, params);
-
-        for p in pts {
-            let want = eval_scalar(&ref_arena, ref_root, p, &BindingTable::empty());
-            let g = eval_scalar(&got, got_root, p, &BindingTable::empty());
-            let tol = 1e-3 * want.abs().max(1.0);
+    impl RuntimeTierReference<'_> {
+        fn assert_agrees(&self, out: &ExprArena, out_root: ExprId) {
+            let (a, root, params, pts) = (self.arena, self.root, self.params, self.pts);
             assert!(
-                (g - want).abs() <= tol,
-                "at {p:?}: optimizer={g}, runtime tier={want} (tol {tol})"
+                !super::contains_dwrt(out),
+                "Some(..) must be Dwrt-free — that is the claim it makes"
             );
+            assert!(
+                !out.nodes_raw()
+                    .iter()
+                    .any(|n| matches!(n, ExprNode::Var(i) if *i >= PARAM_VAR_BASE)),
+                "encoded param Var leaked through the round-trip undecoded"
+            );
+
+            // Reference: substitute params into the ORIGINAL arena and run the
+            // runtime lowering tier on it.
+            let mut reference = a.clone();
+            let ref_root = reference.substitute_params(root, params);
+            let (ref_arena, ref_root) =
+                lower_dwrt_owned(&reference, ref_root).expect("runtime tier lowers the reference");
+
+            let mut got = out.clone();
+            let got_root = got.substitute_params(out_root, params);
+
+            for p in pts {
+                let want = eval_scalar(&ref_arena, ref_root, p, &BindingTable::empty());
+                let g = eval_scalar(&got, got_root, p, &BindingTable::empty());
+                let tol = 1e-3 * want.abs().max(1.0);
+                assert!(
+                    (g - want).abs() <= tol,
+                    "at {p:?}: optimizer={g}, runtime tier={want} (tol {tol})"
+                );
+            }
         }
     }
 
@@ -1193,28 +1204,26 @@ mod expansion_derivative_tests {
         )
         .expect("Static: Dwrt must not survive a converged rapid-tier saturation");
         eprintln!("[Static] extracted(dag) node_count={}", out.len());
-        assert_output_matches_runtime_tier(
-            &a,
+        RuntimeTierReference {
+            arena: &a,
             root,
-            &out,
-            out_root,
-            &WINDING_PARAMS,
-            &WINDING_POINTS,
-        );
+            params: &WINDING_PARAMS,
+            pts: &WINDING_POINTS,
+        }
+        .assert_agrees(&out, out_root);
 
         let nnue = ExprNnue::new();
         let (out, out_root) =
             super::extract_dwrt_free(&eg, root_class, &ExtractionPolicy::Nnue(&nnue))
                 .expect("Nnue: Dwrt must not survive a converged rapid-tier saturation");
         eprintln!("[Nnue] extracted(dag) node_count={}", out.len());
-        assert_output_matches_runtime_tier(
-            &a,
+        RuntimeTierReference {
+            arena: &a,
             root,
-            &out,
-            out_root,
-            &WINDING_PARAMS,
-            &WINDING_POINTS,
-        );
+            params: &WINDING_PARAMS,
+            pts: &WINDING_POINTS,
+        }
+        .assert_agrees(&out, out_root);
     }
 
     /// The real, wall-clock-budgeted production path on the same body. A
@@ -1236,14 +1245,13 @@ mod expansion_derivative_tests {
                     "[production] converged; extracted(dag) node_count={}",
                     out.len()
                 );
-                assert_output_matches_runtime_tier(
-                    &a,
+                RuntimeTierReference {
+                    arena: &a,
                     root,
-                    &out,
-                    out_root,
-                    &WINDING_PARAMS,
-                    &WINDING_POINTS,
-                );
+                    params: &WINDING_PARAMS,
+                    pts: &WINDING_POINTS,
+                }
+                .assert_agrees(&out, out_root);
             }
             None => eprintln!("[production] rapid's 50ms budget missed — graceful fallback"),
         }
@@ -1269,14 +1277,13 @@ mod expansion_derivative_tests {
             "quad_shaped_core should land in the classical tier (51+ nodes), got {node_count}"
         );
         if let Some((out, out_root)) = differentiate_in_optimizer(&a, root) {
-            assert_output_matches_runtime_tier(
-                &a,
+            RuntimeTierReference {
+                arena: &a,
                 root,
-                &out,
-                out_root,
-                &WINDING_PARAMS,
-                &WINDING_POINTS,
-            );
+                params: &WINDING_PARAMS,
+                pts: &WINDING_POINTS,
+            }
+            .assert_agrees(&out, out_root);
         }
     }
 
