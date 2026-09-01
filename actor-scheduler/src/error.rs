@@ -1,7 +1,5 @@
 //! Error types for the actor scheduler library.
 
-use std::sync::mpsc;
-
 /// Error returned when sending to an actor fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendError {
@@ -21,21 +19,6 @@ impl std::fmt::Display for SendError {
 }
 
 impl std::error::Error for SendError {}
-
-impl<T> From<mpsc::SendError<T>> for SendError {
-    fn from(_: mpsc::SendError<T>) -> Self {
-        SendError::Disconnected
-    }
-}
-
-impl<T> From<mpsc::TrySendError<T>> for SendError {
-    fn from(err: mpsc::TrySendError<T>) -> Self {
-        match err {
-            mpsc::TrySendError::Full(_) => SendError::Timeout,
-            mpsc::TrySendError::Disconnected(_) => SendError::Disconnected,
-        }
-    }
-}
 
 impl<T> From<crate::spsc::TrySendError<T>> for SendError {
     fn from(err: crate::spsc::TrySendError<T>) -> Self {

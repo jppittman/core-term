@@ -4,8 +4,9 @@
 //! - binary corpus I/O
 //! - the tiered split manifest (`split`, plan 0.2)
 //! - expression serialization helpers
-//! - value-head backward pass (`forward_cached` / `backward_value` /
-//!   `backward_through_accumulator`)
+//! - value-head backward pass (`forward_cached` / `backward_value`, which
+//!   differentiates through the recorded `EdgeTrace` into the op embeddings
+//!   via `backward_through_accumulator`)
 //! - budget-bounded episode generation (`episodes`)
 //! - the numeric quarantine every label source must pass (`quarantine`,
 //!   plan 0.4) — shared so the corpus build and the trainer's live synthetic

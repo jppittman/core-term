@@ -101,7 +101,7 @@ use serde::Serialize;
 
 use pixelflow_ir::{ExprArena, ExprId};
 use pixelflow_search::egraph::all_rules;
-use pixelflow_search::nnue::factored::{EdgeAccumulator, ExprNnue};
+use pixelflow_search::nnue::factored::{EdgeAccumulator, EdgeTrace, ExprNnue};
 use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator};
 
 use pixelflow_pipeline::extraction_head_weights_path;
@@ -117,7 +117,7 @@ use pixelflow_pipeline::training::mint::{
 use pixelflow_pipeline::training::quarantine::Quarantine;
 use pixelflow_pipeline::training::split::{DevSide, Fence, FinalSide, Tier, blocked_by_either};
 use pixelflow_pipeline::training::unified_backward::{
-    UnifiedGradients, apply_unified_sgd, backward_value, forward_cached,
+    UnifiedGradients, ValueObjective, apply_unified_sgd, backward_value, forward_cached,
 };
 
 /// The mode every target in this binary is minted with, recorded in the
@@ -234,11 +234,17 @@ struct Args {
     progress_every: usize,
 }
 
-/// A single training sample: accumulator state + ground-truth log-ns cost
-/// (overhead-adjusted, sentinel-normalized latency; see module docs for the
-/// mode choice).
+/// A single training sample: the typed edge record of the expression's
+/// feature walk + ground-truth log-ns cost (overhead-adjusted,
+/// sentinel-normalized latency; see module docs for the mode choice).
+///
+/// Deliberately NOT a cached `EdgeAccumulator`: the trace is realized
+/// against the LIVE `model.embeddings` on every forward pass, so trained
+/// features can never go stale while the embedding table moves (P1(a)'s
+/// successor invariant), and the same trace is what the backward pass
+/// differentiates through to move the table.
 struct ValueSample {
-    acc: EdgeAccumulator,
+    trace: EdgeTrace,
     target_log_ns: f32,
     /// The sentinel factor that produced `target_log_ns` from the raw
     /// measurement. Kept per sample, not just in aggregate: a label corrected
@@ -1282,19 +1288,23 @@ fn main() {
                         // factors in made the sidecar describe a population
                         // its own `samples` count does not.
                         normalization_factors.push(label.normalization);
-                        // DEPLOYMENT representation (from_arena_dag): register-
-                        // reload edges for shared nodes + populated variance
-                        // histogram — the same accumulator semantics
+                        // DEPLOYMENT representation (from_arena_dag_traced):
+                        // register-reload edges for shared nodes + populated
+                        // variance histogram — the same accumulator semantics
                         // `IncrementalExtractor` builds from DAG choices, so
                         // the trained function is the deployed function
-                        // (round-0 train/deploy skew fix).
-                        let acc = EdgeAccumulator::from_arena_dag(
+                        // (round-0 train/deploy skew fix). Only the TRACE is
+                        // kept: features are realized from the live
+                        // embeddings at every training step, so the released
+                        // arena is not needed and cached features cannot go
+                        // stale against the moving table.
+                        let (_, trace) = EdgeAccumulator::from_arena_dag_traced(
                             queue[idx].arena(),
                             root,
                             &model.embeddings,
                         );
                         samples.push(ValueSample {
-                            acc,
+                            trace,
                             target_log_ns: label.target_log_ns,
                             normalization: label.normalization as f32,
                         });
@@ -1420,13 +1430,21 @@ fn main() {
 
             for &idx in chunk {
                 let sample = &samples[idx];
-                let cache = forward_cached(&model, &sample.acc);
+                // Realize features from the LIVE embedding table — the
+                // whole point of storing the trace instead of a baked
+                // accumulator. O(edges × K), comparable to one layer of the
+                // forward pass itself.
+                let acc = sample.trace.realize(&model.embeddings);
+                let cache = forward_cached(&model, &acc);
 
                 backward_value(
                     &model,
                     &cache,
-                    sample.target_log_ns,
-                    args.value_coeff,
+                    &sample.trace,
+                    ValueObjective {
+                        target_log_ns: sample.target_log_ns,
+                        coeff: args.value_coeff,
+                    },
                     &mut grads,
                 );
 
@@ -1578,7 +1596,7 @@ fn main() {
         samples.len() - 1,
     ] {
         let sample = &samples[i];
-        let cache = forward_cached(&model, &sample.acc);
+        let cache = forward_cached(&model, &sample.trace.realize(&model.embeddings));
         let pred_ns = libm::expf(cache.value_pred) as f64;
         let actual_ns = libm::expf(sample.target_log_ns) as f64;
         eprintln!(

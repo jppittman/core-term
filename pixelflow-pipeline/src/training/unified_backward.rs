@@ -29,16 +29,24 @@
 //! chain-ruled through `value_mlp` → `expr_proj` → trunk → `w1` (edge tower).
 //! This is what `bootstrap_extraction_head` trains with.
 //!
-//! ## Op embeddings are frozen (P1(a))
+//! ## Op embeddings train through the recorded edge stream
 //!
-//! The chain above stops at `w1` — [`backward_value`] never reaches
-//! [`backward_through_accumulator`], which is the only function that turns a
-//! `d_acc_input` gradient into a `d_embeddings` one, and it has no live
-//! caller (grep it). So `grads.d_embeddings` is always exactly zero on the
-//! live path. [`apply_unified_sgd`] does not update `net.embeddings` from it
-//! — see that function's doc for why running weight decay and unit-sphere
-//! projection against an always-zero gradient was the confirmed defect
-//! (docs/plans/2026-08-17-cost-model-domain.md, P1(a)) this freeze closes.
+//! The chain no longer stops at `w1`: [`backward_value`] takes the sample's
+//! [`EdgeTrace`] — the typed record of the accumulator walk — computes
+//! `d_acc_input` through the edge tower, and hands it to
+//! [`backward_through_accumulator`], which differentiates the same fold
+//! [`EdgeTrace::realize`] runs forward. So `grads.d_embeddings` is real, and
+//! [`apply_unified_sgd`] applies it (momentum + clip, deliberately no weight
+//! decay — see the embeddings block there).
+//!
+//! History (P1(a), docs/plans/2026-08-17-cost-model-domain.md): before the
+//! trace existed, nothing produced `d_embeddings`, yet SGD decayed and
+//! unit-sphere-projected the table every batch — drift with no signal, and a
+//! train/DEV feature skew because `ValueSample` cached its accumulator
+//! against the pre-drift table. Both halves are now structural non-issues:
+//! embeddings move only under a real gradient, and the trainer keeps only
+//! the trace, realizing features from the LIVE table on every forward
+//! (`dev_and_train_path_features_match_when_realized_from_live_embeddings`).
 
 #![expect(
     clippy::needless_range_loop,
@@ -46,9 +54,9 @@
 )]
 
 use pixelflow_ir::OpKind;
-use pixelflow_ir::kind::{OpCode, OpMap};
+use pixelflow_ir::kind::OpMap;
 use pixelflow_search::nnue::factored::{
-    EMBED_DIM, EdgeAccumulator, ExprNnue, HIDDEN_DIM, INPUT_DIM, K, MLP_HIDDEN, depth_pe,
+    EMBED_DIM, EdgeAccumulator, EdgeTrace, ExprNnue, HIDDEN_DIM, INPUT_DIM, K, MLP_HIDDEN,
 };
 
 // ============================================================================
@@ -485,18 +493,36 @@ impl UnifiedGradients {
 // Backward Pass: Value Loss (MSE)
 // ============================================================================
 
-/// Backprop value loss through value_mlp → expr_proj → backbone.
+/// The value-loss objective for one sample: the label and its loss weight.
+#[derive(Clone, Copy, Debug)]
+pub struct ValueObjective {
+    /// Ground-truth log-nanosecond cost.
+    pub target_log_ns: f32,
+    /// Loss weight (`value_coeff`).
+    pub coeff: f32,
+}
+
+/// Backprop value loss through value_mlp → expr_proj → backbone → embeddings.
 ///
-/// Loss = (value_pred - target_cost)^2 * value_coeff
-/// d_value = 2.0 * (value_pred - target_cost) * value_coeff
+/// Loss = (value_pred - target_log_ns)^2 * coeff
+/// d_value = 2.0 * (value_pred - target_log_ns) * coeff
+///
+/// `trace` is the typed record of the walk that produced `cache.acc_input`
+/// ([`EdgeAccumulator::from_arena_dag_traced`]) — requiring it here is what
+/// forces every caller to carry feature provenance, so the embedding
+/// gradient is differentiated through exactly the fold the forward ran.
 pub fn backward_value(
     net: &ExprNnue,
     cache: &UnifiedForwardCache,
-    target_cost: f32,
-    value_coeff: f32,
+    trace: &EdgeTrace,
+    objective: ValueObjective,
     grads: &mut UnifiedGradients,
 ) {
-    let d_value = (2.0 * (cache.value_pred - target_cost) * value_coeff).clamp(-10.0, 10.0);
+    let ValueObjective {
+        target_log_ns,
+        coeff,
+    } = objective;
+    let d_value = (2.0 * (cache.value_pred - target_log_ns) * coeff).clamp(-10.0, 10.0);
 
     // ---- Value MLP backward ----
     grads.d_value_mlp_b2 += d_value;
@@ -528,7 +554,10 @@ pub fn backward_value(
     }
 
     // ---- Expr proj + backbone backward ----
-    backward_expr_proj_and_backbone(net, cache, &d_expr_embed, grads);
+    let d_acc_input = backward_expr_proj_and_backbone(net, cache, &d_expr_embed, grads);
+
+    // ---- Through the accumulator fold into the embedding table ----
+    backward_through_accumulator(&d_acc_input, trace, grads);
 }
 
 // ============================================================================
@@ -538,13 +567,16 @@ pub fn backward_value(
 /// Backprop from d_expr_embed through expr_proj, shared trunk, and edge tower.
 ///
 /// Chain: d_expr_embed -> expr_proj backward -> d_hidden -> trunk backward
-///        -> d_tower_out -> edge tower backward (d_w1)
+///        -> d_tower_out -> edge tower backward (d_w1, d_acc_input)
+///
+/// Returns `d_acc_input`, the gradient w.r.t. the network's input vector,
+/// for [`backward_through_accumulator`] to push into the embedding table.
 fn backward_expr_proj_and_backbone(
     net: &ExprNnue,
     cache: &UnifiedForwardCache,
     d_expr_embed: &[f32; EMBED_DIM],
     grads: &mut UnifiedGradients,
-) {
+) -> [f32; INPUT_DIM] {
     // ---- expr_proj backward ----
     // expr_embed = expr_proj_b + expr_proj_w^T @ hidden
     let mut d_hidden = [0.0f32; HIDDEN_DIM];
@@ -581,15 +613,19 @@ fn backward_expr_proj_and_backbone(
 
     // ---- Edge tower backward ----
     // edge_tower_out = ReLU(edge_tower_pre_relu), edge_tower_pre_relu = b1 + w1^T @ acc_input
-    backward_edge_tower_from_hidden(cache, &d_tower_out, grads);
+    backward_edge_tower_from_hidden(net, cache, &d_tower_out, grads)
 }
 
 /// Backprop through edge tower only, starting from d_tower_out.
+///
+/// Returns `d_acc_input = w1 @ d_pre_relu` — the gradient w.r.t. the input
+/// vector itself, which the embedding backward consumes.
 fn backward_edge_tower_from_hidden(
+    net: &ExprNnue,
     cache: &UnifiedForwardCache,
     d_tower_out: &[f32; HIDDEN_DIM],
     grads: &mut UnifiedGradients,
-) {
+) -> [f32; INPUT_DIM] {
     // ReLU gate
     let mut d_pre_relu = [0.0f32; HIDDEN_DIM];
     for j in 0..HIDDEN_DIM {
@@ -602,44 +638,45 @@ fn backward_edge_tower_from_hidden(
     for j in 0..HIDDEN_DIM {
         grads.d_b1[j] += d_pre_relu[j];
     }
+    let mut d_acc_input = [0.0f32; INPUT_DIM];
     for i in 0..INPUT_DIM {
         for j in 0..HIDDEN_DIM {
             grads.d_w1[i][j] += d_pre_relu[j] * cache.acc_input[i];
+            d_acc_input[i] += d_pre_relu[j] * net.w1[i][j];
         }
     }
+    d_acc_input
 }
 
 // ============================================================================
 // Embedding Backward: d_acc_input → d_embeddings
 // ============================================================================
 
-/// Flow gradients from d_acc_input through EdgeAccumulator construction to OpEmbeddings.
+/// Flow gradients from d_acc_input through the accumulator fold to OpEmbeddings.
 ///
-/// Given the gradient w.r.t. the scaled accumulator input (d_acc_input), this function
-/// reverses the accumulator construction to compute per-op embedding gradients.
+/// Given the gradient w.r.t. the scaled accumulator input (d_acc_input), this
+/// differentiates the fold [`EdgeTrace::realize`] runs forward — the same
+/// typed [`CostEdge`](pixelflow_search::nnue::factored::CostEdge) stream, so
+/// there is nothing to decode and nothing to re-validate: a `CostEdge` is
+/// ops and a PE row by construction.
 ///
 /// The forward path is:
 /// ```text
-/// for each edge (parent, child, depth):
-///   values[0..K]     += parent_emb
-///   values[K..2K]    += child_emb
-///   values[2K..3K]   += complex_mul(parent_emb, PE(depth))
-///   values[3K..4K]   += complex_mul(child_emb, PE(depth))
+/// for each CostEdge { parent, child, pe }:
+///   values[0..K]     += E[parent]
+///   values[K..2K]    += E[child]
+///   values[2K..3K]   += complex_mul(E[parent], pe)
+///   values[3K..4K]   += complex_mul(E[child], pe)
 /// acc_input[i] = values[i] * scale   (scale = 1/sqrt(node_count))
 /// ```
-///
-/// # Panics
-///
-/// Panics if any op byte in `edges` encodes no op.
 pub fn backward_through_accumulator(
     d_acc_input: &[f32; INPUT_DIM],
-    edges: &[(u8, u8, u16)],
-    node_count: u32,
+    trace: &EdgeTrace,
     grads: &mut UnifiedGradients,
 ) {
     // Undo the sqrt(node_count) scaling: d_values[i] = d_acc_input[i] * scale
-    let scale = if node_count > 0 {
-        1.0 / libm::sqrtf(node_count as f32)
+    let scale = if trace.node_count() > 0 {
+        1.0 / libm::sqrtf(trace.node_count() as f32)
     } else {
         1.0
     };
@@ -651,15 +688,10 @@ pub fn backward_through_accumulator(
     // d_acc_input[4*K..4*K+4] are the variance-histogram fractions — they
     // don't depend on embeddings, so we skip them.
 
-    for &(parent_op_u8, child_op_u8, depth_u16) in edges {
-        // Decoded once, loudly. These arrive as raw bytes from a serialized
-        // edge record, so "this byte names an op" is a claim about the data,
-        // not something the type system already knows.
-        let pi = OpKind::unmarshal(OpCode::from_bytes([parent_op_u8]))
-            .unwrap_or_else(|| panic!("parent op byte {parent_op_u8} names no OpKind"));
-        let ci = OpKind::unmarshal(OpCode::from_bytes([child_op_u8]))
-            .unwrap_or_else(|| panic!("child op byte {child_op_u8} names no OpKind"));
-        let pe = depth_pe(depth_u16 as u32);
+    for edge in trace.edges() {
+        let pi = edge.parent;
+        let ci = edge.child;
+        let pe = edge.pe.pe();
 
         // Flat parent half: values[i] += parent_emb[i]
         // d_parent_emb[i] += d_values[i]
@@ -759,11 +791,10 @@ pub fn apply_unified_sgd(
     } = config;
     // Per-group L2 norm clipping.  Each semantic pathway is clipped
     // independently so an explosion in one group cannot suppress others.
-    // (Embeddings are not among these groups — see the frozen-embeddings
-    // block below.)
     let clip_stats = grads.clip_stats(grad_clip);
     let scale_backbone = clip_stats.backbone_scale;
     let scale_value = clip_stats.value_scale;
+    let scale_embeddings = clip_stats.embeddings_scale;
     let scale_trunk = clip_stats.trunk_scale;
 
     // Macro to apply SGD update to a single scalar parameter.
@@ -864,32 +895,34 @@ pub fn apply_unified_sgd(
         scale_value
     );
 
-    // ── Embeddings: FROZEN (P1(a)) ───────────────────────────────────────────
+    // ── Embeddings (scale_embeddings; NO weight decay) ───────────────────────
     //
-    // `net.embeddings` is deliberately left untouched here — no SGD update,
-    // no weight decay, no momentum accumulation — because nothing in this
-    // trainer's live call graph computes a gradient for it: `backward_value`
-    // never calls `backward_through_accumulator` (the only function that
-    // turns a `d_acc_input` gradient into `d_embeddings`), so
-    // `grads.d_embeddings` is always exactly zero. Running weight decay
-    // against an always-zero gradient is not "no update", it is a slow decay
-    // toward zero with no opposing signal — pure drift, not training.
+    // `backward_value` now differentiates through the accumulator fold
+    // (`backward_through_accumulator` over the sample's `EdgeTrace`), so
+    // `grads.d_embeddings` carries a real signal and the P1(a) freeze is
+    // lifted: momentum + per-group clipping, same as every other group.
     //
-    // That drift was P1(a): `ValueSample::acc` is cached ONCE (from
-    // `model.embeddings` before any SGD step), but this function used to
-    // mutate `net.embeddings` every batch regardless, so the cached
-    // accumulator's baked-in embeddings silently diverged from the live
-    // `model.embeddings` used to build DEV-time features
-    // (`bootstrap_extraction_head`'s Phase 3) — a train/deploy skew with no
-    // training benefit behind it. Freezing embeddings makes both paths read
-    // the same (constant) embeddings by construction; see
-    // `embeddings_are_frozen_without_a_gradient_producer` and
-    // `dev_and_train_path_features_match_after_training_with_frozen_embeddings`
-    // below.
+    // Weight decay is deliberately EXCLUDED for this group. Dimension 0 of
+    // each op's embedding is initialized to its measured-latency prior — a
+    // full-scale feature, not a near-zero weight — and L2 decay pulls
+    // exactly that dimension toward zero hardest, eroding the one
+    // initialization signal the table carries (the same erosion P1(a)
+    // documented, now with a gradient that would mask it). Standard practice
+    // for embedding tables (no decay on lookups) agrees. Revisit only with
+    // evidence of embedding overfit, and prefer decay toward the PRIOR, not
+    // toward zero.
     //
-    // Unfreeze this block only once a real gradient producer exists (wiring
-    // `backward_through_accumulator` into `backward_value`) — mutation
-    // without a gradient is the defect, not the freeze.
+    // The P1(a) invariant survives in its sharpened form: with a zero
+    // gradient this block moves nothing (no decay term exists to drift on),
+    // pinned by `embeddings_hold_still_under_zero_gradient` below.
+    for op in OpKind::all() {
+        for i in 0..K {
+            let clipped = grads.d_embeddings[op][i] * scale_embeddings;
+            momentum_buf.d_embeddings[op][i] =
+                momentum * momentum_buf.d_embeddings[op][i] + clipped;
+            net.embeddings.e[op][i] -= lr * momentum_buf.d_embeddings[op][i];
+        }
+    }
 
     // ── Shared trunk (scale_trunk) ───────────────────────────────────────────
 
@@ -915,13 +948,13 @@ pub fn apply_unified_sgd(
         );
     }
 
-    // No post-SGD embedding normalization: the unit-sphere projection that
-    // used to run here unconditionally is itself a mutation, and P1(a)
-    // applies to it exactly as it does to the SGD update above — projecting
-    // a parameter every batch with no gradient behind it is drift, not
-    // training. Re-introduce it (as projected gradient descent on the
-    // embeddings' own update, not a blanket post-pass) only alongside a real
-    // gradient producer.
+    // Still no post-SGD embedding normalization, even now that a real
+    // gradient producer exists: a unit-sphere projection rescales every
+    // dimension uniformly, which flattens the measured-latency prior in
+    // dimension 0 relative to the noise dimensions — the same erosion the
+    // no-decay comment above declines. If embedding norms ever need
+    // controlling, control them in the update (projected gradient descent),
+    // never as a blanket post-pass over dimensions the gradient did not touch.
 }
 
 // ============================================================================
@@ -1025,6 +1058,48 @@ mod tests {
         diff * diff * value_coeff as f64
     }
 
+    /// Value loss with features realized from the net's LIVE embeddings —
+    /// the trainer's actual forward. Required wherever the perturbed
+    /// parameter is an embedding, since perturbing one changes the features.
+    fn value_loss_traced(net: &ExprNnue, trace: &EdgeTrace, target: (f32, f32)) -> f64 {
+        let acc = trace.realize(&net.embeddings);
+        value_loss(net, &acc, target)
+    }
+
+    /// An arena covering every feature the walker can emit: all four
+    /// variance classes (const / frame / scanline / pixel) so the histogram
+    /// slots are nonzero, plus a shared node so a register-reload edge
+    /// (child = Var) is on record.
+    ///
+    /// Returns its own random embedding table (make_test_net leaves
+    /// embeddings zero, and its LCG stream must not be perturbed — the
+    /// weight-path FD test's step sizes were verified against that exact
+    /// stream). Callers install it with `net.embeddings = emb`.
+    fn make_test_trace() -> (
+        pixelflow_search::nnue::OpEmbeddings,
+        EdgeAccumulator,
+        EdgeTrace,
+    ) {
+        use pixelflow_ir::ExprArena;
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0); // pixel
+        let y = arena.push_var(1); // scanline
+        let z = arena.push_var(2); // frame
+        let w = arena.push_var(3); // frame
+        let zw = arena.push_binary(OpKind::Add, z, w); // frame
+        let yy = arena.push_binary(OpKind::Mul, y, y); // scanline
+        let s = arena.push_unary(OpKind::Sqrt, yy); // scanline
+        let c = arena.push_const(2.0); // const
+        let p = arena.push_binary(OpKind::Add, x, zw); // pixel
+        let q = arena.push_binary(OpKind::Mul, p, s); // pixel
+        let shared = arena.push_binary(OpKind::Add, q, c); // pixel
+        let root = arena.push_binary(OpKind::Mul, shared, shared); // pixel + reload
+
+        let emb = pixelflow_search::nnue::OpEmbeddings::new_random(4242);
+        let (acc, trace) = EdgeAccumulator::from_arena_dag_traced(&arena, root, &emb);
+        (emb, acc, trace)
+    }
+
     /// Check analytical gradient against numerical gradient for a single parameter.
     ///
     /// Returns (analytical, numerical, relative_error).
@@ -1063,7 +1138,16 @@ mod tests {
 
         let cache = forward_cached(&net, &acc);
         let mut grads = Box::new(UnifiedGradients::zero());
-        backward_value(&net, &cache, target_cost, value_coeff, &mut grads);
+        backward_value(
+            &net,
+            &cache,
+            &EdgeTrace::default(),
+            ValueObjective {
+                target_log_ns: target_cost,
+                coeff: value_coeff,
+            },
+            &mut grads,
+        );
 
         let eps = 1e-3f32;
         let mut max_err = 0.0f64;
@@ -1343,7 +1427,16 @@ mod tests {
         let cache = forward_cached(&net, &acc);
 
         let mut grads = UnifiedGradients::zero();
-        backward_value(&net, &cache, 3.0, 1.0, &mut grads);
+        backward_value(
+            &net,
+            &cache,
+            &EdgeTrace::default(),
+            ValueObjective {
+                target_log_ns: 3.0,
+                coeff: 1.0,
+            },
+            &mut grads,
+        );
         let value_norm = grads.norm();
         assert!(
             value_norm > 1e-8,
@@ -1367,7 +1460,16 @@ mod tests {
 
         let cache = forward_cached(&net, &acc);
         let mut grads = UnifiedGradients::zero();
-        backward_value(&net, &cache, 3.0, 0.5, &mut grads);
+        backward_value(
+            &net,
+            &cache,
+            &EdgeTrace::default(),
+            ValueObjective {
+                target_log_ns: 3.0,
+                coeff: 0.5,
+            },
+            &mut grads,
+        );
 
         let mut momentum_buf = UnifiedGradients::zero();
         apply_unified_sgd(
@@ -1442,18 +1544,16 @@ mod tests {
     }
 
     // ========================================================================
-    // Test 8b: P1(a) — embeddings are frozen without a gradient producer
+    // Test 8b: embeddings move under their gradient, and ONLY under it
     // ========================================================================
 
     #[test]
-    fn embeddings_are_frozen_without_a_gradient_producer() {
-        // `backward_value` never populates `d_embeddings` on the live path
-        // (only `backward_through_accumulator` would, and it has no live
-        // caller — see this module's doc). `apply_unified_sgd` must
-        // therefore never decay, project, or otherwise move
-        // `net.embeddings`: with no opposing gradient, doing so anyway is
-        // pure drift, not training (P1(a)).
+    fn embeddings_hold_still_under_zero_gradient() {
+        // The sharpened P1(a) invariant: with `d_embeddings == 0`, SGD must
+        // leave the table bit-identical — no weight decay, no projection, no
+        // drift — even while every other group trains with nonzero decay.
         let mut net = make_test_net();
+        net.embeddings = pixelflow_search::nnue::OpEmbeddings::new_random(7);
         let init = net.embeddings.clone();
 
         let mut momentum_buf = UnifiedGradients::zero();
@@ -1464,39 +1564,66 @@ mod tests {
             grad_clip: 5.0,
         };
 
-        for step in 0..50u32 {
+        for _ in 0..50u32 {
             let mut grads = UnifiedGradients::zero();
             // Nonzero everywhere else, so this exercises the same
             // multi-group clipping/momentum path a real batch does.
             grads.d_w1[0][0] = 1.0;
             grads.d_trunk_w[3][4] = -2.0;
             grads.d_value_mlp_b2 = 0.7;
-            // Deliberately nonzero (unlike reality) to prove the freeze is
-            // unconditional — a decay-of-an-always-zero-gradient coincidence
-            // would not catch a regression that starts reading this field.
-            for op in OpKind::all() {
-                grads.d_embeddings[op][0] = 3.0 + step as f32;
-            }
             apply_unified_sgd(&mut net, &grads, &mut momentum_buf, config);
         }
 
         assert_eq!(
             net.embeddings.e.as_slice(),
             init.e.as_slice(),
-            "embeddings must be bit-identical to init after training batches: \
-             apply_unified_sgd must not decay, project, or otherwise update embeddings while \
-             nothing computes a gradient for them"
+            "embeddings must be bit-identical after zero-gradient batches: no decay term \
+             may exist for this group (it would erode the latency prior in dim 0)"
         );
     }
 
     #[test]
-    fn dev_and_train_path_features_match_after_training_with_frozen_embeddings() {
-        // P1(a)'s DEV-path/train-path skew: `ValueSample::acc` is built once
-        // (train-path snapshot), embeddings decayed/projected every batch
-        // with no gradient behind it, and `EdgeAccumulator::from_arena_dag`
-        // was rebuilt for DEV against the now-drifted `model.embeddings` —
-        // two different embeddings for the same expression. With embeddings
-        // frozen, the two paths must read identical features.
+    fn embeddings_follow_gradient_and_ignore_weight_decay() {
+        // With momentum 0 and a gradient under the clip norm, the update must
+        // be exactly -lr * grad — in particular UNAFFECTED by weight_decay,
+        // which is applied to every other group but excluded here.
+        let mut net = make_test_net();
+        net.embeddings = pixelflow_search::nnue::OpEmbeddings::new_random(7);
+        let op = OpKind::Mul;
+        let before = net.embeddings.e[op][3];
+
+        let mut grads = UnifiedGradients::zero();
+        grads.d_embeddings[op][3] = 2.0;
+
+        let mut momentum_buf = UnifiedGradients::zero();
+        apply_unified_sgd(
+            &mut net,
+            &grads,
+            &mut momentum_buf,
+            SgdConfig {
+                lr: 0.5,
+                momentum: 0.0,
+                weight_decay: 1e-2, // must NOT reach the embeddings
+                grad_clip: 100.0,
+            },
+        );
+
+        let delta = net.embeddings.e[op][3] - before;
+        assert!(
+            (delta + 1.0).abs() < 1e-6,
+            "embedding update must be exactly -lr*grad = -1.0 (no decay term), got {delta}"
+        );
+    }
+
+    #[test]
+    fn dev_and_train_path_features_match_when_realized_from_live_embeddings() {
+        // P1(a)'s successor invariant. The trainer keeps only the
+        // `EdgeTrace` and realizes features from the LIVE embeddings on
+        // every forward — so after training moves the table, the train-path
+        // features and a fresh DEV-path walk of the same arena must still
+        // agree exactly. (Under the old cached-accumulator scheme this was
+        // only true because embeddings were frozen; now it is true because
+        // staleness is unrepresentable.)
         use pixelflow_ir::ExprArena;
 
         let mut arena = ExprArena::new();
@@ -1507,9 +1634,12 @@ mod tests {
         let root = arena.push_binary(OpKind::Mul, sum, two);
 
         let mut net = make_test_net();
-        // TRAIN-path snapshot: built once, as `bootstrap_extraction_head`'s
-        // Phase 1d does, before any SGD step.
-        let train_acc = EdgeAccumulator::from_arena_dag(&arena, root, &net.embeddings);
+        net.embeddings = pixelflow_search::nnue::OpEmbeddings::new_random(7);
+        let init_embeddings = net.embeddings.clone();
+
+        // TRAIN-path: the trace is captured once (as `bootstrap_extraction_head`
+        // does at label minting)…
+        let (_, trace) = EdgeAccumulator::from_arena_dag_traced(&arena, root, &net.embeddings);
 
         let mut momentum_buf = UnifiedGradients::zero();
         let config = SgdConfig {
@@ -1519,23 +1649,129 @@ mod tests {
             grad_clip: 5.0,
         };
         for _ in 0..20 {
-            let cache = forward_cached(&net, &train_acc);
+            // …but features are REALIZED fresh each step.
+            let acc = trace.realize(&net.embeddings);
+            let cache = forward_cached(&net, &acc);
             let mut grads = UnifiedGradients::zero();
-            backward_value(&net, &cache, 4.0, 1.0, &mut grads);
+            backward_value(
+                &net,
+                &cache,
+                &trace,
+                ValueObjective {
+                    target_log_ns: 4.0,
+                    coeff: 1.0,
+                },
+                &mut grads,
+            );
             apply_unified_sgd(&mut net, &grads, &mut momentum_buf, config);
         }
 
-        // DEV-path: rebuilt from the SAME arena, AFTER training, against
-        // whatever `net.embeddings` training left behind — the deployed
-        // prediction path (`bootstrap_extraction_head`'s Phase 3).
+        // Training must actually have moved the table — otherwise this test
+        // would pass vacuously, proving frozen-ness rather than liveness.
+        assert_ne!(
+            net.embeddings.e.as_slice(),
+            init_embeddings.e.as_slice(),
+            "embedding gradient is wired: 20 steps on a nonzero loss must move the table"
+        );
+
+        // DEV-path: a fresh walk of the SAME arena with the trained table.
         let dev_acc = EdgeAccumulator::from_arena_dag(&arena, root, &net.embeddings);
 
         assert_eq!(
-            train_acc.extraction_input(),
+            trace.realize(&net.embeddings).extraction_input(),
             dev_acc.extraction_input(),
-            "train-path and DEV-path features diverged for the same expression — embeddings \
-             drifted between accumulator construction and DEV evaluation (P1(a))"
+            "train-path (trace realized from live embeddings) and DEV-path (fresh walk) \
+             features diverged for the same expression"
         );
+    }
+
+    // ========================================================================
+    // Test 8c: numerical gradient check for the embedding path
+    // ========================================================================
+
+    #[test]
+    fn numerical_gradient_check_embeddings() {
+        // Same stack-size note as `numerical_gradient_check_value`.
+        std::thread::Builder::new()
+            .name("numerical_gradient_check_embeddings".into())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(numerical_gradient_check_embeddings_body)
+            .expect("failed to spawn gradient-check thread")
+            .join()
+            .expect("gradient-check thread panicked");
+    }
+
+    fn numerical_gradient_check_embeddings_body() {
+        let (emb, _, trace) = make_test_trace();
+        let mut net = make_test_net();
+        net.embeddings = emb;
+        let target = (3.5f32, 0.5f32);
+
+        let acc = trace.realize(&net.embeddings);
+        let cache = forward_cached(&net, &acc);
+        let mut grads = Box::new(UnifiedGradients::zero());
+        backward_value(
+            &net,
+            &cache,
+            &trace,
+            ValueObjective {
+                target_log_ns: target.0,
+                coeff: target.1,
+            },
+            &mut grads,
+        );
+
+        // Ops actually present in the trace's arena. Ops absent from it must
+        // have exactly zero gradient — checked below.
+        let present = [
+            OpKind::Add,
+            OpKind::Mul,
+            OpKind::Sqrt,
+            OpKind::Var,
+            OpKind::Const,
+        ];
+        // Dim 0 (flat, latency-prior slot), an even/odd rotation pair, and a
+        // high dim — the complex backward differs between even and odd.
+        let dims = [0usize, 7, 8, 31];
+
+        let eps = 1e-3f32;
+        let mut max_err = 0.0f64;
+        let mut checked = 0;
+
+        for &op in &present {
+            for &d in &dims {
+                let mut net_p = net.clone();
+                net_p.embeddings.e[op][d] += eps;
+                let loss_plus = value_loss_traced(&net_p, &trace, target);
+
+                let mut net_m = net.clone();
+                net_m.embeddings.e[op][d] -= eps;
+                let loss_minus = value_loss_traced(&net_m, &trace, target);
+
+                let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
+                let (a, n, err) = check_gradient(grads.d_embeddings[op][d], num_grad);
+                if err > max_err {
+                    max_err = err;
+                }
+                let abs_diff = (a as f64 - n).abs();
+                assert!(
+                    err < 0.05 || abs_diff < 1e-5,
+                    "d_embeddings[{op:?}][{d}]: analytical={a:.8}, numerical={n:.8}, \
+                     rel_err={err:.6}, abs_diff={abs_diff:.6e}"
+                );
+                checked += 1;
+            }
+        }
+
+        // An op that never appears in the trace gets no gradient.
+        assert_eq!(
+            grads.d_embeddings[OpKind::Tan],
+            [0.0f32; K],
+            "ops absent from the trace must receive exactly zero gradient"
+        );
+
+        assert!(checked >= 20, "checked {checked} embedding entries");
+        eprintln!("  embedding path max rel error: {max_err:.6e}  ({checked} entries)");
     }
 
     // ========================================================================
@@ -1549,10 +1785,28 @@ mod tests {
         let cache = forward_cached(&net, &acc);
 
         let mut g1 = UnifiedGradients::zero();
-        backward_value(&net, &cache, 3.0, 1.0, &mut g1);
+        backward_value(
+            &net,
+            &cache,
+            &EdgeTrace::default(),
+            ValueObjective {
+                target_log_ns: 3.0,
+                coeff: 1.0,
+            },
+            &mut g1,
+        );
 
         let mut g2 = UnifiedGradients::zero();
-        backward_value(&net, &cache, 3.0, 1.0, &mut g2);
+        backward_value(
+            &net,
+            &cache,
+            &EdgeTrace::default(),
+            ValueObjective {
+                target_log_ns: 3.0,
+                coeff: 1.0,
+            },
+            &mut g2,
+        );
 
         // g2 should equal g1
         for i in 0..INPUT_DIM {

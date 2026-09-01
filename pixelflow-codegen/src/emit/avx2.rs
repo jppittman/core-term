@@ -31,6 +31,22 @@ use super::{Reg, unimplemented_op};
 use alloc::vec::Vec;
 use pixelflow_ir::OpKind;
 
+// The AVX2 tier requires FMA3. No shipping x86-64 CPU has ever offered AVX2
+// without it (Intel: both since Haswell; AMD: FMA3 predates AVX2 by a
+// generation) — the industry itself codifies the pairing as x86-64-v3. A
+// hypothetical AVX2-without-FMA build is not a smaller tier, it is a paper
+// configuration: it forked `emit_fmadd_c_in_dst` into a value-semantics
+// variant (one rounding vs. two, see CLAUDE.md's `MulAdd` platform-divergence
+// table) that no real machine ever exercised, and that fork was directly
+// responsible for a P2 (two materially different kernels sharing one
+// environment fingerprint — see `pixelflow-pipeline/src/journal.rs`). Fail
+// loudly at compile time rather than silently degrading precision.
+#[cfg(all(target_feature = "avx2", not(target_feature = "fma")))]
+compile_error!(
+    "the AVX2 backend requires FMA3 (no shipping CPU has AVX2 without it); \
+     build with `-C target-feature=+avx2,+fma` or `-C target-cpu=x86-64-v3`"
+);
+
 // =============================================================================
 // VEX.256 encoder
 // =============================================================================
@@ -332,18 +348,6 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
 // Stack frame (real frame; a ymm spill is 32 bytes)
 // =============================================================================
 
-pub fn emit_sub_rsp(code: &mut Vec<u8>, size: u32) {
-    code.extend_from_slice(&[0x48, 0x81, 0xEC]);
-    code.extend_from_slice(&size.to_le_bytes());
-}
-pub fn emit_add_rsp(code: &mut Vec<u8>, size: u32) {
-    code.extend_from_slice(&[0x48, 0x81, 0xC4]);
-    code.extend_from_slice(&size.to_le_bytes());
-}
-pub fn emit_ret(code: &mut Vec<u8>) {
-    code.push(0xC3);
-}
-
 // =============================================================================
 // Op dispatch
 // =============================================================================
@@ -435,33 +439,27 @@ pub fn emit_cmp_al_imm8(code: &mut Vec<u8>, imm: u8) {
 
 /// `vfmadd231ps ymmD, ymmA, ymmB` — `dst = a*b + dst` (231 form: dst is the
 /// addend going in, `a`/`b` the product). VEX.256.66.0F38.W0 B8 /r, same
-/// opcode as `avx512.rs`'s EVEX form, just VEX-encoded at 256 bits. Requires
-/// `target_feature = "fma"` (FMA3) — not implied by `avx2` alone.
-#[cfg(target_feature = "fma")]
+/// opcode as `avx512.rs`'s EVEX form, just VEX-encoded at 256 bits.
+/// `target_feature = "fma"` (FMA3) is not implied by `avx2` alone in rustc's
+/// feature model, which is why this file's own `compile_error!` pins the two
+/// together for this backend — see the module-top comment.
 fn vfmadd231ps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
     Vex::m0f38_66(0xB8).rrr(c, d, s1, s2);
 }
 
 /// Fused multiply-add: `dst` already holds `c`; computes `dst = a*b + dst`.
 ///
-/// Uses real hardware FMA when the build has `+fma` (rounds once, exactly
-/// matching the reference interpreter under `fp-contract=fast` — see the
-/// regression this fixed: `eval_scalar`'s scalar `a*b+c` gets contracted to
-/// an `fma` instruction by LLVM under `+fma` too, so a software two-step
-/// mul-then-add here would round twice and disagree in the last bit).
-/// Falls back to software mul+add otherwise (this backend is gated on `avx2`
-/// alone, not `avx2,fma` — VIA/older Zen chips shipped AVX2 without FMA3).
-#[cfg(target_feature = "fma")]
+/// Always real hardware FMA: the AVX2 tier requires `+fma` (see the
+/// module-top `compile_error!`), so there is no software mul+add fallback to
+/// choose between here. This rounds once, exactly matching the reference
+/// interpreter under `fp-contract=fast` — `eval_scalar`'s scalar `a*b+c` gets
+/// contracted to an `fma` instruction by LLVM under `+fma` too, so a
+/// software two-step mul-then-add would round twice and disagree in the last
+/// bit. The two-roundings case still exists, just not here: it's the SSE2
+/// *baseline* tier's only option (`pixelflow-core`'s x86 backend, no `avx2`
+/// set), where mul+add genuinely is all the hardware offers.
 pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
     vfmadd231ps(code, dst.0, a.0, b.0);
-}
-
-/// See the `+fma` variant above.
-#[cfg(not(target_feature = "fma"))]
-pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
-    let tmp = UNARY_SCRATCH;
-    vmulps(code, tmp.0, a.0, b.0);
-    vaddps(code, dst.0, dst.0, tmp.0);
 }
 
 // =============================================================================
@@ -474,34 +472,37 @@ pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
 // xmm0), then recombine with vinsertf128.
 // =============================================================================
 
+/// Scratch the 256-bit gather clobbers: the 128-bit sequence's own scratch,
+/// which both halves reuse, plus the two vector registers that carry the high
+/// half while the low half is being assembled. All of it must be distinct from
+/// the gather's `dst` and `idx`.
+#[derive(Clone, Copy)]
+pub struct GatherScratch {
+    /// Scratch for one 128-bit half — see [`x86_64::GatherScratch`].
+    pub half: x86_64::GatherScratch,
+    /// Vector register receiving lanes 4..8 of the float indices.
+    pub idx_hi: Reg,
+    /// Vector register receiving the high half's gathered values.
+    pub res_hi: Reg,
+}
+
 /// `dst = buffer[slot][idx_lane]` for 8 lanes. `idx` holds FLOAT indices
 /// (already clamped in range by the `Gather` lowering — `x86_64::emit_gather_scalar`
 /// does its own float->int truncation per half, so `idx` must not be
-/// pre-truncated here). Clobbers the GPRs and vector scratch in `s`, plus
-/// `idx_hi`/`res_hi` (backend-reserved scratch distinct from `s`'s fields and
-/// from `dst`/`idx`).
-#[allow(clippy::too_many_arguments)]
-pub fn emit_gather_scalar(
-    code: &mut Vec<u8>,
-    dst: Reg,
-    idx: Reg,
-    slot: u16,
-    s: x86_64::GatherScratch,
-    idx_hi: Reg,
-    res_hi: Reg,
-) {
+/// pre-truncated here). Clobbers everything in `s`.
+pub fn emit_gather_scalar(code: &mut Vec<u8>, dst: Reg, idx: Reg, slot: u16, s: GatherScratch) {
     // idx's low 128 already holds lanes 0..4 (float); split off lanes 4..8
     // into idx_hi before either gather call touches idx/dst (which may alias).
-    vextractf128(code, idx_hi.0, idx.0, 1);
+    vextractf128(code, s.idx_hi.0, idx.0, 1);
 
     // Low half: lanes 0..4. May write dst == idx (the callee handles that:
     // it converts idx to int in scratch before ever writing dst).
-    x86_64::emit_gather_scalar(code, dst, idx, slot, s);
+    x86_64::emit_gather_scalar(code, dst, idx, slot, s.half);
     // High half: lanes 4..8, into res_hi (a 128-bit scratch distinct from dst).
-    x86_64::emit_gather_scalar(code, res_hi, idx_hi, slot, s);
+    x86_64::emit_gather_scalar(code, s.res_hi, s.idx_hi, slot, s.half);
 
     // Recombine: dst[0..4] already holds the low half; splice in the high.
-    vinsertf128(code, dst.0, dst.0, res_hi.0, 1);
+    vinsertf128(code, dst.0, dst.0, s.res_hi.0, 1);
 }
 
 #[cfg(test)]
@@ -519,7 +520,7 @@ mod tests {
 
         fn run(body: &[u8], xs: [f32; 8], ys: [f32; 8], zs: [f32; 8]) -> [f32; 8] {
             let mut code = body.to_vec();
-            emit_ret(&mut code);
+            crate::emit::x86_64::ret(&mut code);
             let exec = unsafe { ExecutableCode::from_code(&code).expect("mmap") };
             unsafe {
                 let f: K = exec.as_fn();
@@ -657,12 +658,12 @@ mod tests {
         fn spill_frame_roundtrip() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_sub_rsp(&mut c, 32);
+            crate::emit::x86_64::emit_sub_rsp(&mut c, 32);
             emit_binary(&mut c, OpKind::Mul, Reg(6), X, Y);
             emit_store_rsp(&mut c, Reg(6), 0);
             emit_binary(&mut c, OpKind::Add, Reg(6), X, X); // clobber
             emit_load_rsp(&mut c, X, 0);
-            emit_add_rsp(&mut c, 32);
+            crate::emit::x86_64::emit_add_rsp(&mut c, 32);
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i], "spill roundtrip");
         }
 
@@ -685,8 +686,18 @@ mod tests {
                 idx_lanes: Reg(13),
                 value: Reg(14),
             };
-            emit_gather_scalar(&mut c, Reg(0), Reg(0), 0, s, Reg(9), Reg(8));
-            emit_ret(&mut c);
+            emit_gather_scalar(
+                &mut c,
+                Reg(0),
+                Reg(0),
+                0,
+                GatherScratch {
+                    half: s,
+                    idx_hi: Reg(9),
+                    res_hi: Reg(8),
+                },
+            );
+            crate::emit::x86_64::ret(&mut c);
 
             let buf: Vec<f32> = (0..64).map(|i| (i as f32) * 1.5 + 0.25).collect();
             let idx: [f32; 8] = [0.0, 63.0, 1.0, 2.0, 10.0, 5.0, 32.0, 7.0];
@@ -705,6 +716,344 @@ mod tests {
                 let want = buf[idx[i] as usize];
                 assert_eq!(out[i], want, "gather lane {i}: idx {}", idx[i]);
             }
+        }
+    }
+}
+
+// =============================================================================
+// The AVX2 `IsaBackend` driver
+// =============================================================================
+
+/// The AVX2 half of code generation.
+///
+/// **This file is where AVX2-specific bugs live, and the only place they
+/// can.** Emission is a pure function into `Vec<u8>`, so everything here
+/// compiles, typechecks and is swept for op coverage on every host, whatever
+/// CPU it has. Only [`Native`](super::super::Native) decides which backend a
+/// build instantiates, and only [`executable`](super::super::executable) needs
+/// the matching hardware.
+///
+/// The consequence worth stating: a change that does not touch an ISA file
+/// cannot introduce a platform-specific bug. That is the bargain `unsafe`
+/// makes — confine what cannot be checked, so the rest is checked by
+/// construction.
+///
+/// Dead only in a build that selected a *different* `Native`. The condition
+/// mirrors this backend's `Native` alias, so a genuinely unused item in the
+/// backend this build actually compiles still trips `dead_code`; an
+/// unconditional allow here would hide it from CI's `clippy -D warnings`.
+#[cfg_attr(
+    not(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    )),
+    allow(dead_code)
+)]
+pub(crate) mod driver {
+    use super::super::*;
+    use crate::emit::x86_64 as x86;
+    use crate::emit::x86_64::driver::SSE2_FILE;
+    use alloc::vec::Vec;
+    use pixelflow_ir::kind::OpKind;
+
+    /// The AVX2 register file (ymm, 256-bit).
+    ///
+    /// Same register roles as SSE2 (ymm0-15 is the same physical file as xmm0-15)
+    /// at twice the width, but with a pool of **four**, two fewer than SSE2's six.
+    /// AVX2's gather splits into 128-bit halves and so needs two scratch registers
+    /// beyond the pair SSE2 uses (ymm13/14) to hold the high-half indices and the
+    /// high-half result across the recombine. Those live in ymm8/ymm9, which must
+    /// therefore sit OUTSIDE the allocator's range: with six allocatable (ymm4-9)
+    /// the allocator could hand `dst` or `idx` an ymm8/9 that the gather then
+    /// overwrites mid-sequence, silently returning wrong lanes — reachable
+    /// whenever five values stay live across a gather.
+    ///
+    /// The cost is more spilling in AVX2 kernels generally, to fix a bug on the
+    /// gather path specifically. Spilling the two half-temporaries to the red zone
+    /// instead would restore the sixth register; that is a contained change to
+    /// `super::emit_gather_scalar` and is the better long-term fix.
+    const AVX2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
+        // ymm4-7. ymm8/ymm9 carry the gather's high half and ymm14/ymm15 its
+        // low half and the unary temp, so a sixteen-register file leaves four.
+        scratch: regalloc::RegSet::range(4, 4),
+        // ymm13: outside the allocatable range and the reload pair; the AVX2
+        // select is a VEX blend with no internal temp.
+        select_reload: Reg(13),
+        // ymm15: `emit_unary`'s sign-mask temp.
+        fixed: &[
+            super::UNARY_SCRATCH,
+            x86_64::GATHER_VALUE,
+            x86_64::GATHER_IDX,
+            Reg(8),
+            Reg(9),
+        ],
+        vector_bytes: 32,
+        ..SSE2_FILE
+    }
+    .checked();
+    /// AVX2 implementation of the shared driver's leaf operations.
+    pub(crate) struct Avx2Backend {
+        file: regalloc::RegisterFile,
+    }
+
+    impl Avx2Backend {
+        pub(crate) fn new(ctx: EmitCtx) -> Self {
+            Self {
+                file: AVX2_FILE.capped(ctx.max_regs),
+            }
+        }
+
+        fn reload(code: &mut Vec<u8>, reload: &Reload) {
+            match reload {
+                Reload::FromStack { target, offset } => {
+                    super::emit_load_rsp(code, *target, *offset as i32);
+                }
+                Reload::Const { target, val_bits } => {
+                    super::emit_const(code, *target, f32::from_bits(*val_bits));
+                }
+            }
+        }
+    }
+
+    impl IsaBackend for Avx2Backend {
+        type Branch = usize;
+
+        fn register_file(&self) -> regalloc::RegisterFile {
+            self.file
+        }
+
+        fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), &'static str> {
+            Ok(()) // const broadcast is self-contained; no pool.
+        }
+
+        fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32) {
+            let bytes = frame_size;
+            if bytes > 0 {
+                x86::emit_sub_rsp(code, bytes);
+            }
+        }
+
+        fn emit_plan(
+            &mut self,
+            code: &mut Vec<u8>,
+            plan: &InstructionPlan,
+        ) -> Result<(), &'static str> {
+            for r in &plan.reloads {
+                Self::reload(code, r);
+            }
+            if let Some((dst, src)) = plan.setup_mov {
+                super::emit_mov(code, dst, src);
+            }
+            match &plan.op {
+                ResolvedOp::Nop => {}
+                ResolvedOp::LoadConst { dst, val_bits } => {
+                    super::emit_const(code, *dst, f32::from_bits(*val_bits));
+                }
+                ResolvedOp::Unary { op, dst, src } => {
+                    super::emit_unary(code, *op, *dst, *src);
+                }
+                ResolvedOp::ShiftImm {
+                    op,
+                    dst,
+                    src,
+                    amount,
+                } => {
+                    super::emit_shift_imm(code, *op, *dst, *src, *amount);
+                }
+                ResolvedOp::Gather { dst, idx, slot } => {
+                    // Context pointer (array of buffer base pointers) arrives in
+                    // rdi; arithmetic/const emit never touches rdi, so it
+                    // survives to here. ymm13/14 mirror X86Backend's gather
+                    // scratch; ymm8/9 are the AVX2-only high-half scratch this
+                    // two-half gather needs (see `super::emit_gather_scalar`).
+                    // ymm8/9 are non-allocatable by construction — see
+                    // `AVX2_SCHED_NUM_REGS`, which caps the pool at ymm4-7 so the
+                    // allocator can never place `dst`/`idx` where this clobbers.
+                    super::emit_gather_scalar(
+                        code,
+                        *dst,
+                        *idx,
+                        *slot,
+                        super::GatherScratch {
+                            half: x86_64::GatherScratch {
+                                base_gpr: 0,  // rax
+                                index_gpr: 1, // rcx
+                                ctx_gpr: 7,   // rdi
+                                idx_lanes: x86_64::GATHER_IDX,
+                                value: x86_64::GATHER_VALUE,
+                            },
+                            idx_hi: Reg(9),
+                            res_hi: Reg(8),
+                        },
+                    );
+                }
+                ResolvedOp::Binary {
+                    op,
+                    dst,
+                    left,
+                    right,
+                } => {
+                    // VEX 3-operand: no two-operand hazard, emit directly.
+                    super::emit_binary(code, *op, *dst, *left, *right);
+                }
+                ResolvedOp::FusedMulAdd { dst, a, b } => {
+                    super::emit_fmadd_c_in_dst(code, *dst, *a, *b);
+                }
+                ResolvedOp::DecomposedMulAdd {
+                    dst,
+                    a,
+                    b,
+                    c,
+                    c_deferred,
+                } => {
+                    super::emit_binary(code, OpKind::Mul, *dst, *a, *b);
+                    match c_deferred {
+                        Some(DeferredReload::FromStack(off)) => {
+                            super::emit_load_rsp(code, *c, *off as i32);
+                        }
+                        Some(DeferredReload::Const(bits)) => {
+                            super::emit_const(code, *c, f32::from_bits(*bits));
+                        }
+                        None => {}
+                    }
+                    super::emit_binary(code, OpKind::Add, *dst, *dst, *c);
+                }
+                ResolvedOp::Select {
+                    dst,
+                    if_true,
+                    if_false,
+                } => {
+                    // setup_mov already placed the vector mask in dst.
+                    super::emit_select(code, *dst, *if_true, *if_false);
+                }
+            }
+            if let Some(store) = &plan.store {
+                super::emit_store_rsp(code, store.src, store.offset as i32);
+            }
+            Ok(())
+        }
+
+        fn emit_mov(&mut self, code: &mut Vec<u8>, dst: Reg, src: Reg) {
+            super::emit_mov(code, dst, src);
+        }
+
+        fn emit_store(
+            &mut self,
+            code: &mut Vec<u8>,
+            src: Reg,
+            offset: u32,
+        ) -> Result<(), &'static str> {
+            super::emit_store_rsp(code, src, offset as i32);
+            Ok(())
+        }
+
+        fn emit_resolve(
+            &mut self,
+            code: &mut Vec<u8>,
+            vid: regalloc::ValueId,
+            target: Reg,
+            locs: &[Option<Loc>],
+        ) -> Reg {
+            match location_of(locs, vid) {
+                Loc::Reg(reg) => reg,
+                Loc::Remat(bits) => {
+                    super::emit_const(code, target, f32::from_bits(bits));
+                    target
+                }
+                Loc::Spill(offset) => {
+                    super::emit_load_rsp(code, target, offset as i32);
+                    target
+                }
+            }
+        }
+
+        // Select short-circuit guards: vmovmskps -> eax[7:0], same shape as
+        // X86Backend's MOVMSKPS guards but 8 lanes wide (al == 0xFF for
+        // all-true, not 0x0F — see `super::emit_cmp_al_imm8`'s doc for why the
+        // sign-extending `cmp eax, imm8` X86Backend uses doesn't work here).
+        fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+            super::emit_movmskps_eax(code, mask_reg);
+            x86_64::emit_test_eax(code);
+            x86_64::je(code).field() // ZF set when eax == 0 (all lanes false)
+        }
+
+        fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+            super::emit_movmskps_eax(code, mask_reg);
+            super::emit_cmp_al_imm8(code, 0xFF);
+            x86_64::je(code).field() // ZF set when al == 0xFF (all lanes true)
+        }
+
+        fn emit_jump(&mut self, code: &mut Vec<u8>) -> usize {
+            x86_64::emit_jmp_rel32(code)
+        }
+        fn patch_branch(&mut self, code: &mut Vec<u8>, branch: usize, target: usize) {
+            x86_64::patch_rel32(code, branch, target);
+        }
+
+        fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32) {
+            if result_reg.0 != 0 {
+                super::emit_mov(code, Reg(0), result_reg);
+            }
+            let bytes = frame_size;
+            if bytes > 0 {
+                x86::emit_add_rsp(code, bytes);
+            }
+            x86::ret(code);
+        }
+
+        // Same scaffold register roles as SSE2 — see `x86_64::scaffold` — at
+        // this vector width. Unlike SSE2 there is no red-zone mode: the body
+        // always spills into an allocated frame, and the scaffold's coordinate
+        // slots sit above it.
+
+        fn frame_alloc(&mut self, code: &mut Vec<u8>, bytes: u32) {
+            x86::emit_sub_rsp(code, bytes);
+        }
+
+        fn frame_free(&mut self, code: &mut Vec<u8>, bytes: u32) {
+            x86::emit_add_rsp(code, bytes);
+        }
+
+        fn slot_store(&mut self, code: &mut Vec<u8>, src: Reg, offset: u32) {
+            super::emit_store_rsp(code, src, offset as i32);
+        }
+
+        fn slot_load(&mut self, code: &mut Vec<u8>, dst: Reg, offset: u32) {
+            super::emit_load_rsp(code, dst, offset as i32);
+        }
+
+        fn latch_bounds(&mut self, code: &mut Vec<u8>) {
+            x86::scaffold::latch_bounds(code);
+        }
+
+        fn counter_clear(&mut self, code: &mut Vec<u8>, counter: Counter) {
+            x86::scaffold::counter_clear(code, counter);
+        }
+
+        fn counter_step(&mut self, code: &mut Vec<u8>, counter: Counter) {
+            x86::scaffold::counter_step(code, counter);
+        }
+
+        fn branch_if_counter_done(&mut self, code: &mut Vec<u8>, counter: Counter) -> usize {
+            x86::scaffold::branch_if_counter_done(code, counter)
+        }
+
+        fn store_result(&mut self, code: &mut Vec<u8>, src: Reg) {
+            super::emit_store_base(code, src, x86::scaffold::OUT_PTR);
+        }
+
+        fn advance_out(&mut self, code: &mut Vec<u8>, step: OutStep) {
+            x86::scaffold::advance_out(code, step, self.file.vector_bytes);
+        }
+
+        fn add_scalar(&mut self, code: &mut Vec<u8>, dst: Reg, scratch: Reg, scalar: f32) {
+            super::emit_const(code, scratch, scalar);
+            super::emit_binary(code, OpKind::Add, dst, dst, scratch);
+        }
+
+        fn emit_ret(&mut self, code: &mut Vec<u8>) {
+            x86::ret(code);
         }
     }
 }

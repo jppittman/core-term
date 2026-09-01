@@ -957,29 +957,24 @@ mod tests {
             })
             .expect("forwarder thread should still be listening");
 
-        // The forwarder thread runs concurrently; poll until its send lands rather than
-        // asserting after a single pass.
-        let mut received = None;
-        for _ in 0..10_000 {
-            if let Ok(response) = coordinator_rx.try_recv() {
-                received = Some((response.meta.width_px, response.meta.height_px));
-                break;
-            }
-            std::thread::yield_now();
-        }
-        assert_eq!(
-            received,
-            Some((4, 4)),
-            "the forwarder must translate the rasterizer's response into a direct coordinator send"
-        );
-
         // Dropping the sender is exactly what the real bootstrap path does when the rasterizer
         // shuts down; the forwarder must notice and exit rather than parking on an empty
-        // doorbell forever.
+        // doorbell forever. Joining also proves the queued response was relayed before we read
+        // the coordinator channel: `mpsc` reports disconnection only after queued messages are
+        // drained.
         drop(response_tx);
         thread
             .join()
             .expect("forwarder must exit once the rasterizer disconnects");
+
+        let response = coordinator_rx
+            .try_recv()
+            .expect("the forwarder must relay the rasterizer response");
+        assert_eq!(
+            (response.meta.width_px, response.meta.height_px),
+            (4, 4),
+            "the forwarder must translate the rasterizer's response into a direct coordinator send"
+        );
     }
 
     #[test]

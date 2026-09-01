@@ -1,168 +1,103 @@
 # Test quality control follow-up — 2026-08-29
 
 Scope: scheduled continuation of
-`docs/bugs/2026-08-26-test-quality-audit-followup.md`. `main` had not moved
-on any of that pass's backlog since `b4cc51f`. This pass picks up backlog
-item 2: `pixelflow-codegen/src/emit/*` (~1,400 lines total across
-`mod.rs`/`x86_64.rs`/`aarch64.rs`/`avx2.rs`/`avx512.rs`/`regalloc.rs`/
-`executable.rs`/`coverage.rs`), flagged since 08-08 as never mutation-tested
-under its post-crate-split location. Of those, `regalloc.rs` (730 lines,
-graph-coloring + linear-scan register allocators) was the smallest
-self-contained file with real algorithmic logic and its own existing test
-module, so this pass scoped to it alone; the rest of `emit/` remains open
-(see Recommended next steps).
+`docs/bugs/2026-08-26-test-quality-audit-followup.md`, backlog item 2 —
+`pixelflow-codegen/src/emit/*`, flagged since 08-08 as never mutation-tested
+under its post-crate-split location. This pass scoped to `regalloc.rs` (then
+730 lines, a graph-coloring allocator and a linear-scan one) as the smallest
+self-contained file with real algorithmic logic and its own test module.
 
-## `pixelflow-codegen/src/emit/regalloc.rs`
+**Most of what this pass produced no longer applies, and the section below
+records why rather than deleting it.** While the branch was in flight, `main`
+merged #1055 ("give register allocation a trait and one platform description")
+and #1068 ("declare the registers backends take for themselves"), which
+rewrote `regalloc.rs` end to end and **deleted the graph-coloring allocator
+outright** — `InterferenceGraph`, `build_interference_graph`, `color_graph`
+and `simplicial_elimination_order` do not exist anywhere in the workspace any
+more. Roughly two thirds of this pass's tests, and both of the bugs it found,
+were against those functions. That work is superseded; it is not salvageable,
+because there is no longer any code for it to be about.
 
-The file's 6 pre-existing tests were bare noun phrases (`empty_graph`,
-`no_interference`, `chain_interference`, `clique_needs_more_colors`,
-`precolored`, `spilling`), violating STYLE.md's "it should" rule, and only
-exercised `InterferenceGraph`/`color_graph` — `build_interference_graph` and
-`linear_scan` (the allocator actually wired into the compiler; `color_graph`
-is reachable only from this file's own tests) had zero coverage.
+## What survived, and is in this branch
 
-### Renamed the 6 pre-existing tests to STYLE.md's "it should" form
+Four tests against `LinearScan`'s eviction rule — the one part of the old
+file's logic that #1055 carried forward intact, and the part `main`'s own
+rewritten test module still does not separate:
 
-E.g. `empty_graph` → `color_graph_should_assign_and_spill_nothing_for_an_empty_graph`,
-`spilling` → `color_graph_should_spill_the_excess_values_of_a_clique_too_large_for_the_register_budget`.
-All test only the public API (`InterferenceGraph`, `color_graph`,
-`build_interference_graph`, `linear_scan` — `simplicial_elimination_order`
-is private and is exercised indirectly through `color_graph`, per STYLE.md's
-guidance that a child `mod tests` may read a private field/call a private fn
-directly without that counting as a public-API violation, but here it's not
-even needed since `color_graph` covers it).
+- `a_constant_is_evicted_before_a_non_constant_needed_farther_out` — the
+  constant-beats-Belady preference. `main`'s
+  `belady_evicts_the_value_used_farthest_out` has no constant in play and
+  `constants_are_rematerialized_rather_than_spilled` has nothing *but*
+  constants, so neither scenario can tell the two rules apart.
+- `tied_constant_eviction_candidates_break_toward_the_first_seen` and
+  `tied_non_constant_eviction_candidates_break_toward_the_first_seen` — the
+  strict `>` in each candidate scan. Relaxed to `>=`, the allocator evicts the
+  later occupant instead: the same spill count, a different program, and both
+  runs of the collapse driver still agree with each other, so nothing
+  downstream notices.
+- `on_a_tied_last_use_the_arriving_value_is_evicted_not_the_resident` — the
+  `>=` in `evict_new`. Tightened to `>`, the resident is evicted for a value
+  with exactly the same next use, paying a store for nothing.
 
-### Found and fixed two real bugs while writing tests for the untested functions
+Each was verified to kill its mutant by re-applying the exact mutation by hand
+and confirming the test fails, which is the check that matters here: the four
+sit on branches a value-comparison test can otherwise reach without
+distinguishing.
 
-1. **`build_interference_graph` never killed a value's liveness.** Once any
-   value became live (via being used, or via its own "just defined" step),
-   it stayed in `live_list` for the rest of the backward walk and interfered
-   with *every* value scheduled earlier — regardless of whether their live
-   ranges ever actually overlapped. For any 2+-value schedule this made
-   every pair of values interfere unconditionally, which would have made
-   `color_graph`'s "optimal for chordal graphs" contract vacuous (every
-   schedule looks like a clique). Fixed by killing a value's liveness right
-   after using it to build edges for its own definition, matching standard
-   backward liveness analysis (kill def, gen uses).
-2. **`color_graph`'s elimination order was reversed.** MCS's visitation
-   order numbers vertices n, n-1, ..., 1 as visited; for a chordal graph
-   this is a valid ordering only when a vertex's *higher*-numbered (i.e.
-   *earlier*-visited) neighbors form a clique — coloring must therefore
-   proceed in that same visitation order, not its reverse. The existing
-   `order.reverse()` colored each vertex *before* its constraining neighbors
-   instead of after them. Confirmed with a brute-force-found counterexample
-   (two triangles joined by a single bridge edge, specific `ValueId`
-   labeling): the reversed order needed a 4th color where 3 always suffice
-   for this chordal graph. Since neither `color_graph` nor
-   `build_interference_graph` has any caller yet (`linear_scan` is what's
-   actually wired into the compiler), this had no runtime effect, but the
-   public contract was broken for any future caller.
+`cargo test -p pixelflow-codegen --lib emit::regalloc`: 24 passed, 0 failed.
 
-### Added coverage for the two previously-untested public functions
+## What the pass found in the deleted allocator (historical)
 
-`build_interference_graph`: connects two operands simultaneously live at a
-shared use, leaves unrelated single-use chains unconnected (the direct
-regression test for bug 1 above), sizes its live-set correctly against the
-highest `ValueId` (ids need not match schedule position), and doesn't panic
-when caller-supplied `uses_of` names a `ValueId` outside the schedule.
+Kept because it is the record of two genuine algorithmic breaks, and because
+the second is the sort of thing a future graph-coloring attempt would
+reintroduce:
 
-`linear_scan`: empty schedule, sufficient-register assignment, rematerializing
-a constant instead of spilling it, keeping a precolored value pinned, freeing
-a dead value's register for immediate reuse, and five tests pinning the
-eviction-priority logic (constant-over-non-constant preference, tie-breaking
-toward the first-seen candidate on both the constant and Belady paths, and
-the tied-with-the-incoming-value case) — this last group is what mutation
-testing showed the pre-existing tests couldn't distinguish.
+1. **`build_interference_graph` never killed a value's liveness.** Once a
+   value became live it stayed in `live_list` for the rest of the backward
+   walk and interfered with every value scheduled earlier, whether or not
+   their live ranges overlapped — so every schedule looked like a clique and
+   `color_graph`'s "optimal for chordal graphs" contract was vacuous.
+2. **`color_graph`'s elimination order was reversed.** MCS numbers vertices
+   n..1 as visited, and coloring must proceed in that visitation order, not
+   its reverse; the `order.reverse()` colored each vertex *before* its
+   constraining neighbors. A brute-force search found a chordal graph (two
+   triangles joined by a bridge) needing a 4th color where 3 suffice.
 
-## Mutation testing
+Neither had a caller — `LinearScan` was always what the compiler used — which
+is also why #1055 was able to delete the allocator rather than fix it. Its
+doc comment on `main` now records the reason: the graph-coloring allocator
+never learned to rematerialize constants, and on a 4–10 register pool that is
+the difference that decides the generated code.
 
-`cargo-mutants` v27.1.0 (freshly installed, consistent with every prior
-pass — not present in this environment beforehand).
-
-**First sweep** (post-STYLE-cleanup, pre-new-tests, i.e. just the two bug
-fixes applied): **102 mutants, 42 missed, 54 caught, 6 unviable.** Nearly
-all of `InterferenceGraph`'s direct accessors (`degree`, `dedup_edges`,
-`neighbors`/`is_precolored`/`precolor_of` bounds, `is_empty`) had zero direct
-tests; `build_interference_graph` and `linear_scan`'s eviction-priority
-branches were similarly wide open.
-
-**Round 2** (adding accessor tests, boundary tests, and the 5 eviction-priority
-tests): **9 missed** (down from 42). Two boundary tests initially used a
-far-out-of-range `ValueId` (e.g. `ValueId(5)` against a capacity-1 graph)
-which distinguishes a guard's presence but not `<` from `<=` — fixed by using
-the value exactly *at* the capacity boundary instead, which is the only input
-that actually differs between the two operators.
-
-**Round 3** (after the boundary fixes): **6 missed**, all in
-`simplicial_elimination_order` (2, one of them the real weight-tracking gap
-below), `build_interference_graph`'s kill-guard (2), `ensure_capacity` (1),
-and `linear_scan`'s running-max update (1).
-
-**Round 4**: closed the real gap — a search-found chordal graph (built from
-a random valid elimination ordering, so chordality is guaranteed by
-construction) where the real cardinality-weight MCS order needs 3 colors but
-the order MCS degenerates to if a remaining vertex's weight is never
-incremented (every vertex permanently tied at weight 0, ties broken by
-descending `ValueId` alone) needs 5. The bridge-graph regression test added
-for the reversed-order bug happens to produce the *same* order whether or
-not weights update for its specific graph, so it didn't cover this — a
-second, independent counterexample was needed.
-
-**Final: 102 mutants, 91 caught, 6 unviable, 5 missed — all 5 documented as
-equivalent mutants**, each verified by manually re-applying the exact
-mutation with `sed` and re-running the affected test to confirm it doesn't
-(and provably can't) observe a difference, with a proof sketch left as a
-comment at each site (matching the precedent in
-`pixelflow-compiler/src/codegen/util.rs` and the 08-26 audit's
-`spatial_bsp.rs` finding):
-
-- `ensure_capacity`'s `>`/`>=` boundary — at `idx == capacity`, the "grow"
-  body just resizes every `Vec` to its current length and reassigns
-  `capacity` to the value it already holds; both are no-ops.
-- `simplicial_elimination_order`'s stale-heap-entry check `&&`/`||` —
-  `in_remaining[vi]` and `w == weight[vi]` are provably always equal at that
-  point: a vertex's pushed weights strictly increase, so the max-heap always
-  surfaces a remaining vertex's single freshest entry (matching its current
-  weight) before any staler one, and once removed no entry can ever again
-  equal the now-frozen weight.
-- `build_interference_graph`'s kill-guard `vi < live_capacity` (both the
-  `&&`/`||` and `<`/`<=` variants) — `vi` is `v.0` for a `v` drawn directly
-  from `schedule`, the exact same source `live_capacity`'s max is computed
-  from, so `vi <= max_vid < live_capacity` always holds; no schedule can
-  violate it. (The mirroring guard on caller-supplied `uses_of`'s `ui`, which
-  has no such invariant, is real and is covered.)
-- `linear_scan`'s running-max update `>`/`>=` — assigning a value to itself
-  on a tie is a no-op, so both operators produce an identical final
-  `max_reg_used` for every input.
-
-## Verified
-
-- `cargo test -p pixelflow-codegen --lib`: 103 passed, 0 failed (31 in
-  `regalloc::tests`, up from 6).
-- `cargo test --workspace --lib`: 1,699 passed, 0 failed, 5 ignored, across
-  all 12 crates (final re-run against the fully finished state of this pass).
-- `cargo clippy -p pixelflow-codegen --lib --tests -- -D warnings`: clean.
-- `cargo fmt -p pixelflow-codegen -- --check`: clean.
-- `cargo mutants -p pixelflow-codegen --file pixelflow-codegen/src/emit/regalloc.rs`:
-  102 mutants, 91 caught, 6 unviable, 5 documented equivalents, 0 real gaps.
+A third finding from this pass is still open and does *not* apply to the
+deleted code: greedy coloring in MCS order is optimal only for
+*unconstrained* chordal coloring, and precolored vertices break the
+no-backtracking guarantee (raised by review on this PR, confirmed by
+hand-simulation on a `1—0—2` path with one pinned register). It is recorded
+here only so a future graph-coloring attempt does not rediscover it.
 
 ## Recommended next steps (not done here)
 
-Backlog carried forward from 2026-08-26, minus the item closed above:
+Backlog carried forward from 2026-08-26:
 
-1. `pixelflow-search/src/egraph/cost.rs` — per 08-26, likely already closed
-   by `#1027`; an in-flight PR (#1049, unmerged as of this pass) found and
-   corrected the same stale-backlog situation for a different file
-   (`graph.rs`) in the same crate. Worth confirming once that PR lands.
-2. `pixelflow-codegen/src/emit/*` — `regalloc.rs` (730 lines) is now closed
-   above; `mod.rs` (5,779 lines), `x86_64.rs` (863), `aarch64.rs` (2,168),
-   `avx2.rs` (710), `avx512.rs` (866), and `executable.rs` (550) remain
-   never mutation-tested under this location. `mod.rs` in particular is
-   large enough to need its own scoped pass (likely per-function-group, not
-   whole-file).
-3. `pixelflow-core/src/backend/x86.rs`'s `F32x8`/`F32x16`/`U32x8`/
-   `U32x16`/`Mask8`/`Mask16` (AVX2/AVX-512) impls, and `arm.rs`'s NEON
-   impls — never tested at the unit level under a build that actually
-   activates those ISA levels (`xtask isa-matrix`). Open since 08-08,
-   untouched by every intervening pass; likely needs the ISA-matrix build
-   infrastructure investigated rather than more test-writing per se.
+1. `pixelflow-codegen/src/emit/*` — `x86_64.rs` is being closed separately in
+   #1054. `mod.rs`, `aarch64.rs`, `avx2.rs`, `avx512.rs` and `executable.rs`
+   remain never mutation-tested under this location, and all of them were
+   reshaped by #1055/#1068, so a pass should be scoped against the current
+   file rather than a report from before that refactor.
+2. `regalloc.rs` itself is worth a fresh sweep against `main`'s rewritten
+   version: the four tests here were ported from a mutation report on code
+   that no longer exists, so they close the eviction branches and nothing
+   else. `RegSet`, `RegisterFile::checked` and `Allocation` are all new
+   surface.
+3. `pixelflow-core/src/backend/x86.rs`'s AVX2/AVX-512 impls — closed in
+   #1073, which found this sandbox now has the hardware.
+
+## Methodology note
+
+This branch is the second in this series (after #1049) to be invalidated by
+`main` moving underneath it, and the first to be invalidated by the code under
+test being *deleted*. A mutation report names functions; when the target file
+is under active refactor, the report expires with the function names. Cheap
+guard for the next pass: re-check `git log origin/main -- <file>` immediately
+before writing tests against a report, not only before pushing.

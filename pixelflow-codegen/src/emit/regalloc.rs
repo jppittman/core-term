@@ -1,1217 +1,1055 @@
-//! Graph coloring register allocator for DAG expressions.
+//! Register allocation for scheduled DAG expressions.
 //!
-//! Sethi-Ullman is optimal for trees but suboptimal for DAGs with sharing.
-//! Graph coloring handles shared subexpressions properly.
-//!
-//! ## Algorithm (Hack et al. 2006)
-//!
-//! Based on "Register Allocation for Programs in SSA Form" by Hack, Grund, and Goos.
-//! Key insight: SSA-form programs produce **chordal** interference graphs.
-//!
-//! 1. **Liveness analysis**: Compute live ranges for each value
-//! 2. **Build interference graph**: Values live at same point interfere
-//! 3. **Simplicial elimination ordering**: Maximum cardinality search (MCS)
-//! 4. **Greedy coloring**: Optimal for chordal graphs
-//!
-//! For chordal graphs, this produces an optimal coloring in O(V + E) time.
-//! Expression DAGs from e-graph extraction are always in SSA form.
+//! Allocation is one algorithm ([`LinearScan`]) parameterised by one
+//! description of the target ([`RegisterFile`]). Everything that differs
+//! between x86-64 and aarch64 — which registers hold the coordinate inputs,
+//! where the allocatable window starts and how wide it is, which fixed
+//! registers spilled operands reload into, how many bytes a spilled vector
+//! occupies — is a field of that struct and appears nowhere else. Backends
+//! declare one `const` and the allocator is architecture-independent.
 
-use alloc::collections::BTreeMap;
-use alloc::collections::BinaryHeap;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::Reg;
+use super::{Reg, ScheduledOp};
 
 /// A value in the program (SSA-style).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ValueId(pub u32);
 
-/// Interference graph for register allocation.
+/// One step of a schedule: a value, and the operation that defines it.
 ///
-/// Two values interfere if they're both live at the same program point.
-/// The graph is undirected - if A interferes with B, B interferes with A.
-///
-/// Internally uses dense Vecs indexed by `ValueId.0` for O(1) lookup.
-#[derive(Debug, Default)]
-pub struct InterferenceGraph {
-    /// All values in the graph, in insertion order.
-    values: Vec<ValueId>,
-    /// Adjacency list: `neighbors[vid.0]` = Vec of interfering ValueIds.
-    /// Empty Vec for values with no neighbors.
-    neighbors: Vec<Vec<ValueId>>,
-    /// Pre-colored values: `precolored[vid.0]` = Some(Reg) if pre-colored.
-    precolored: Vec<Option<Reg>>,
-    /// Capacity: `max(ValueId.0) + 1` across all inserted values.
-    capacity: usize,
+/// Every step defines exactly one value — the DAG is in SSA form — so a
+/// schedule is a sequence of these, and a value's program point is its index
+/// in that sequence.
+#[derive(Clone, Debug)]
+pub struct Def {
+    /// The value this step defines.
+    pub value: ValueId,
+    /// The operation that computes it.
+    pub op: ScheduledOp,
 }
 
-impl InterferenceGraph {
-    /// Create an empty interference graph.
+/// The complete platform-dependent surface of register allocation.
+///
+/// Allocation policy is target-independent; only these numbers are not. A
+/// backend declares one of these as a `const` next to its encodings, and
+/// [`RegisterFile::checked`] turns a layout that contradicts itself — a reload
+/// register inside the allocatable window, say — into a build error rather
+/// than a miscompile that shows up as wrong pixels.
+///
+/// The register file is described once and consulted everywhere: the emitter
+/// reads `reload`/`select_reload` for its spill choreography and
+/// `vector_bytes` for its frame arithmetic, so there is no second copy of any
+/// of it to drift.
+/// A set of registers from one file, as a bitmask over register numbers.
+///
+/// The allocatable pool used to be a base plus a count — a contiguous run. On
+/// every real target the free registers are *not* contiguous: on SSE2 `xmm14`
+/// and `xmm15` sit above `select_reload` at `xmm13`, and on AVX-512 fifteen
+/// free registers sit above the reload pair with the gather's scratch in
+/// between. A range can only ever name whichever free registers happen to be
+/// adjacent, so it silently rounded the pool down to a fraction of the machine.
+///
+/// A set says the true thing: these registers, whichever they are.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct RegSet(u32);
+
+impl RegSet {
+    /// The empty set.
+    pub const EMPTY: Self = Self(0);
+
+    /// The set containing exactly `regs`.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn of(regs: &[Reg]) -> Self {
+        let mut bits = 0u32;
+        let mut i = 0;
+        while i < regs.len() {
+            let r = regs[i].0;
+            assert!(
+                r < 32,
+                "register number out of range for a 32-register file"
+            );
+            bits |= 1 << r;
+            i += 1;
+        }
+        Self(bits)
     }
 
-    /// Grow dense Vecs to accommodate a ValueId.
-    fn ensure_capacity(&mut self, v: ValueId) {
-        let idx = v.0 as usize + 1;
-        // `>` vs `>=`: equivalent mutant. At idx == self.capacity, the body
-        // would just resize every Vec to its current length and reassign
-        // `capacity` to the value it already holds — both no-ops — so no
-        // test can observe a difference. No test targets this boundary.
-        if idx > self.capacity {
-            self.capacity = idx;
-            self.neighbors.resize_with(idx, Vec::new);
-            self.precolored.resize(idx, None);
-        }
-    }
-
-    /// Add a value to the graph (with no interferences yet).
-    pub fn add_value(&mut self, v: ValueId) {
-        self.ensure_capacity(v);
-        // Only push to the values list if not already present.
-        // The neighbors Vec already has an entry from ensure_capacity.
-        if !self.values.contains(&v) {
-            self.values.push(v);
-        }
-    }
-
-    /// Add an interference edge between two values.
-    pub fn add_edge(&mut self, a: ValueId, b: ValueId) {
-        if a == b {
-            return;
-        }
-        self.ensure_capacity(a);
-        self.ensure_capacity(b);
-
-        let ai = a.0 as usize;
-        let bi = b.0 as usize;
-
-        // Push unconditionally — dedup happens in finalize().
-        // The old code did .contains() which is O(degree) per insertion,
-        // making the entire build O(n × degree²). With push + sort/dedup
-        // at the end, it's O(edges × log(degree)).
-        self.neighbors[ai].push(b);
-        self.neighbors[bi].push(a);
-
-        // Ensure both appear in the values list.
-        if !self.values.contains(&a) {
-            self.values.push(a);
-        }
-        if !self.values.contains(&b) {
-            self.values.push(b);
-        }
-    }
-
-    /// Mark a value as pre-colored (must use specific register).
-    pub fn precolor(&mut self, v: ValueId, reg: Reg) {
-        self.add_value(v);
-        self.precolored[v.0 as usize] = Some(reg);
-    }
-
-    /// Get the degree of a value (number of interferences).
+    /// The contiguous run `base .. base + count`.
     #[must_use]
-    pub fn degree(&self, v: ValueId) -> usize {
-        let idx = v.0 as usize;
-        if idx < self.capacity {
-            self.neighbors[idx].len()
-        } else {
-            0
+    pub const fn range(base: u8, count: u8) -> Self {
+        let mut bits = 0u32;
+        let mut i = 0;
+        while i < count {
+            let r = base + i;
+            assert!(
+                r < 32,
+                "register number out of range for a 32-register file"
+            );
+            bits |= 1 << r;
+            i += 1;
         }
+        Self(bits)
     }
 
-    /// Get all values in the graph.
-    /// Sort and deduplicate all neighbor lists. Must be called after
-    /// all edges are added (add_edge pushes duplicates for speed).
-    pub fn dedup_edges(&mut self) {
-        for neighbors in &mut self.neighbors {
-            neighbors.sort_unstable();
-            neighbors.dedup();
-        }
+    /// This set plus every member of `other`.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 
     #[must_use]
-    pub fn values(&self) -> &[ValueId] {
-        &self.values
+    pub const fn contains(self, r: Reg) -> bool {
+        r.0 < 32 && self.0 & (1 << r.0) != 0
     }
 
-    /// Get neighbors of a value.
+    /// How many registers the set holds.
     #[must_use]
-    pub fn neighbors(&self, v: ValueId) -> &[ValueId] {
-        let idx = v.0 as usize;
-        if idx < self.capacity {
-            &self.neighbors[idx]
-        } else {
-            &[]
+    pub const fn len(self) -> u8 {
+        self.0.count_ones() as u8
+    }
+
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The lowest `n` members, or all of them if the set is smaller.
+    ///
+    /// This is how [`EmitCtx::max_regs`](super::EmitCtx) forces spilling for
+    /// pressure testing: it only ever shrinks.
+    #[must_use]
+    pub const fn take(self, n: u8) -> Self {
+        let mut kept = 0u32;
+        let mut taken = 0u8;
+        let mut r = 0u8;
+        while r < 32 {
+            if taken < n && self.0 & (1 << r) != 0 {
+                kept |= 1 << r;
+                taken += 1;
+            }
+            r += 1;
         }
+        Self(kept)
     }
 
-    /// Check if a value is pre-colored.
-    #[must_use]
-    pub fn is_precolored(&self, v: ValueId) -> bool {
-        let idx = v.0 as usize;
-        idx < self.capacity && self.precolored[idx].is_some()
-    }
-
-    /// Get the pre-assigned register for a value, if any.
-    #[must_use]
-    pub fn precolor_of(&self, v: ValueId) -> Option<Reg> {
-        let idx = v.0 as usize;
-        if idx < self.capacity {
-            self.precolored[idx]
-        } else {
-            None
-        }
-    }
-
-    /// Number of values in the graph.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    /// Check if graph is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
+    /// Members low to high.
+    pub fn iter(self) -> impl Iterator<Item = Reg> + use<> {
+        (0u8..32).filter(move |r| self.0 & (1 << r) != 0).map(Reg)
     }
 }
 
-/// Result of register allocation.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct RegisterFile {
+    /// Registers holding the coordinate inputs, in order: X, Y, Z, W.
+    ///
+    /// A `Var(i)` in the schedule is pre-colored to `inputs[i]`; a `Var` past
+    /// the end of this array is a value the target cannot supply.
+    pub inputs: [Reg; 4],
+
+    /// Every register the allocator may hand out.
+    ///
+    /// Everything outside it — inputs, callee-saved registers, the reload
+    /// registers, the backend's own `fixed` scratch — is off limits by
+    /// construction, and [`RegisterFile::checked`] proves the separation.
+    pub scratch: RegSet,
+
+    /// Fixed registers, outside the pool, that spilled operands reload into.
+    ///
+    /// Two suffice: every backend reads all of an instruction's sources before
+    /// writing its destination, so a spilled destination register doubles as
+    /// the temporary for one operand.
+    pub reload: [Reg; 2],
+
+    /// Registers the backend's own instruction emission clobbers, outside the
+    /// allocator's knowledge: an ISA-level temp for a two-operand form, a
+    /// gather's index register, and the like.
+    ///
+    /// The allocator never hands these out; declaring them is what lets
+    /// [`RegisterFile::checked`] prove they miss the pool, the inputs, the
+    /// reload pair and `select_reload` — rather than a comment in an ISA file
+    /// asserting it. Anything a backend takes for itself belongs here.
+    pub fixed: &'static [Reg],
+
+    /// A third fixed reload register, for a `Select` whose result and *both*
+    /// arms are spilled — `reload` is already fully committed there (the
+    /// result holds `reload[0]`, the true arm `reload[1]`).
+    ///
+    /// Must be untouched by the backend's own `Select` emission.
+    pub select_reload: Reg,
+
+    /// Bytes one register occupies when spilled — the backend's vector width.
+    ///
+    /// 16 for SSE2 and NEON, 32 for AVX2, 64 for AVX-512. This is the stride
+    /// [`FrameLayout`](super::FrameLayout) lays spill slots out at, so every
+    /// offset the emitter sees is already a real byte displacement. It was
+    /// once a universal 16 that each wide backend divided back out at its
+    /// every use site; a slot offset that failed to be a multiple of 16 would
+    /// then have truncated two live values onto the same stack slot.
+    pub vector_bytes: u32,
+}
+
+impl RegisterFile {
+    /// Reject a register file whose regions overlap.
+    ///
+    /// Call it on every backend's `const` declaration: const evaluation runs
+    /// the checks at build time, so an allocatable window that swallows a
+    /// reload register cannot reach a running kernel.
+    #[must_use]
+    pub const fn checked(self) -> Self {
+        assert!(
+            !self.scratch.is_empty(),
+            "register file has no scratch pool"
+        );
+
+        let mut i = 0;
+        while i < self.inputs.len() {
+            assert!(
+                !self.scratch.contains(self.inputs[i]),
+                "an input register is inside the allocatable pool: the \
+                 allocator would hand a pre-colored register out twice"
+            );
+            i += 1;
+        }
+
+        let mut i = 0;
+        while i < self.reload.len() {
+            assert!(
+                !self.scratch.contains(self.reload[i]),
+                "a reload register is inside the allocatable pool: reloading \
+                 a spilled operand would clobber another live value"
+            );
+            i += 1;
+        }
+        assert!(
+            self.reload[0].0 != self.reload[1].0,
+            "the two reload registers are the same register"
+        );
+
+        let sr = self.select_reload.0;
+        assert!(
+            !self.scratch.contains(self.select_reload),
+            "select_reload is inside the allocatable pool"
+        );
+        assert!(
+            sr != self.reload[0].0 && sr != self.reload[1].0,
+            "select_reload duplicates a reload register, so the all-spilled \
+             Select has only two registers for three operands"
+        );
+
+        assert!(
+            self.vector_bytes >= 16 && self.vector_bytes.is_power_of_two(),
+            "vector_bytes must be a power of two of at least 16"
+        );
+
+        // Everything a backend reserves for its own emission must miss every
+        // register the allocator reasons about. Without this the disjointness
+        // lives only in comments, and three backends had a fixed register whose
+        // number equalled `select_reload`.
+        let mut i = 0;
+        while i < self.fixed.len() {
+            assert!(
+                !self.scratch.contains(self.fixed[i]),
+                "a fixed backend scratch register is inside the allocatable \
+                 pool: emitting an instruction would clobber a live value"
+            );
+            assert!(
+                self.fixed[i].0 != sr,
+                "a fixed backend scratch register aliases select_reload, which \
+                 an all-spilled Select reloads into"
+            );
+            let mut k = 0;
+            while k < self.reload.len() {
+                assert!(
+                    self.fixed[i].0 != self.reload[k].0,
+                    "a fixed backend scratch register aliases a reload register"
+                );
+                k += 1;
+            }
+            let mut k = 0;
+            while k < self.inputs.len() {
+                assert!(
+                    self.fixed[i].0 != self.inputs[k].0,
+                    "a fixed backend scratch register aliases a coordinate input"
+                );
+                k += 1;
+            }
+            i += 1;
+        }
+
+        self
+    }
+
+    /// Cap the scratch pool at a smaller budget, leaving every other region
+    /// where it is.
+    ///
+    /// This is how [`EmitCtx::max_regs`](super::EmitCtx) forces spilling for
+    /// pressure testing. It only ever *shrinks* the pool: a budget above the
+    /// target's own count would hand the allocator registers this file has
+    /// reserved for reloads or builtins.
+    #[must_use]
+    pub const fn capped(self, max_scratch: Option<u8>) -> Self {
+        match max_scratch {
+            Some(n) => Self {
+                scratch: self.scratch.take(n),
+                ..self
+            },
+            None => self,
+        }
+    }
+
+    /// The allocatable scratch registers, low to high.
+    fn scratch(&self) -> impl Iterator<Item = Reg> + use<> {
+        self.scratch.iter()
+    }
+}
+
+/// Where the allocator decided a value lives.
+///
+/// Deliberately carries no stack address: choosing that a value spills and
+/// choosing *where* it spills are different decisions, and the second belongs
+/// to [`FrameLayout`](super::FrameLayout), which is what knows about frames.
+/// The emitter reads the composition of the two as [`Loc`](super::Loc).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// In this register, for the whole of the value's live range.
+    Reg(Reg),
+    /// Evicted to a stack slot.
+    Spilled,
+    /// Evicted, but it is a constant (these are the `f32` bits): it lives
+    /// nowhere and is re-emitted at each use, which beats a store plus a
+    /// reload.
+    Remat(u32),
+}
+
+/// A complete answer for one program: an evaluation order, and a placement for
+/// every value in it.
+///
+/// The schedule is an *output* because choosing it is part of allocating.
+/// [`LinearScan`] hands back the order it was given; an allocator whose
+/// register assignment falls out of evaluation order — Sethi-Ullman, where the
+/// heavier subtree is emitted first and the register is a function of tree
+/// position — hands back the order it chose. Downstream, program point *is*
+/// index into this schedule, so everything after allocation reads this one.
 #[derive(Debug)]
-pub struct RegAllocation {
-    /// Mapping from value to assigned register.
-    pub assignment: BTreeMap<ValueId, Reg>,
-    /// Values that couldn't be colored (need spilling to stack).
-    pub spilled: Vec<ValueId>,
-    /// Values that were evicted but can be rematerialized (constants).
-    /// These don't need spill slots — just re-emit the constant load.
-    pub rematerialize: BTreeMap<ValueId, u32>,
-    /// Number of registers used.
-    pub num_regs: u8,
+pub struct Allocation {
+    /// Evaluation order: the schedule the emitter walks.
+    pub schedule: Vec<Def>,
+    /// Dense by `ValueId.0`. Total over `schedule`; `None` only for values
+    /// that are not in this schedule at all.
+    placements: Vec<Option<Placement>>,
 }
 
-/// Greedy graph coloring with simplicial elimination ordering.
-///
-/// This is optimal for chordal graphs, which expression DAGs always produce.
-/// For non-chordal graphs, it's a good heuristic.
-///
-/// # Arguments
-/// * `graph` - The interference graph
-/// * `num_regs` - Number of available registers
-/// * `scratch_base` - First scratch register index
-#[must_use]
-pub fn color_graph(graph: &InterferenceGraph, num_regs: u8, scratch_base: u8) -> RegAllocation {
-    // Dense assignment Vec: assignment[vid.0] = Some(Reg) if colored.
-    let capacity = graph.capacity;
-    let mut assignment_dense: Vec<Option<Reg>> = vec![None; capacity.max(1)];
-    let mut spilled: Vec<ValueId> = Vec::new();
-
-    // Copy pre-colored assignments.
-    for &v in graph.values() {
-        if let Some(reg) = graph.precolor_of(v) {
-            assignment_dense[v.0 as usize] = Some(reg);
-        }
+impl Allocation {
+    /// Where `v` lives.
+    ///
+    /// Total over [`Allocation::schedule`] — every value the emitter walks has
+    /// an answer here, which is the invariant that used to be spread across
+    /// three parallel maps and defended by a runtime check that they jointly
+    /// covered every value.
+    ///
+    /// # Panics
+    /// If `v` is not in this schedule.
+    #[must_use]
+    pub fn placement(&self, v: ValueId) -> Placement {
+        self.placements
+            .get(v.0 as usize)
+            .copied()
+            .flatten()
+            .unwrap_or_else(|| panic!("{v:?} is not in this allocation's schedule"))
     }
 
-    // Build the MCS coloring order (see simplicial_elimination_order's doc
-    // comment for why it's used directly, without reversing).
-    let ordering = simplicial_elimination_order(graph);
-
-    // Greedy coloring in the computed order.
-    // used_colors[c] = true if color c is taken by a neighbor.
-    let mut used_colors: Vec<bool> = vec![false; (scratch_base as usize) + (num_regs as usize)];
-
-    for v in ordering {
-        if assignment_dense[v.0 as usize].is_some() {
-            continue; // Already pre-colored.
+    /// Override where a value lives.
+    ///
+    /// The collapse-loop LICM pins a hoisted value to the slot its prologue
+    /// parked it in, overriding whatever the allocator gave the placeholder
+    /// def. One write, so the placement cannot desync from itself.
+    pub fn place(&mut self, v: ValueId, placement: Placement) {
+        let idx = v.0 as usize;
+        if idx >= self.placements.len() {
+            self.placements.resize(idx + 1, None);
         }
-
-        // Mark colors used by neighbors.
-        let mut marked: Vec<usize> = Vec::new();
-        for &neighbor in graph.neighbors(v) {
-            if let Some(Reg(c)) = assignment_dense[neighbor.0 as usize] {
-                let ci = c as usize;
-                if ci < used_colors.len() && !used_colors[ci] {
-                    used_colors[ci] = true;
-                    marked.push(ci);
-                }
-            }
-        }
-
-        // Find first available color in scratch range.
-        let mut color = None;
-        for c in scratch_base..(scratch_base + num_regs) {
-            if !used_colors[c as usize] {
-                color = Some(c);
-                break;
-            }
-        }
-
-        // Clear marks for next iteration.
-        for ci in marked {
-            used_colors[ci] = false;
-        }
-
-        match color {
-            Some(c) => {
-                assignment_dense[v.0 as usize] = Some(Reg(c));
-            }
-            None => {
-                spilled.push(v);
-            }
-        }
+        self.placements[idx] = Some(placement);
     }
 
-    // Build the public BTreeMap assignment from the dense Vec.
-    let mut assignment: BTreeMap<ValueId, Reg> = BTreeMap::new();
-    for &v in graph.values() {
-        if let Some(reg) = assignment_dense[v.0 as usize] {
-            assignment.insert(v, reg);
-        }
-    }
-
-    // Count registers used.
-    let max_reg = assignment
-        .values()
-        .filter(|r| r.0 >= scratch_base)
-        .map(|r| r.0 - scratch_base + 1)
-        .max()
-        .unwrap_or(0);
-
-    RegAllocation {
-        assignment,
-        spilled,
-        rematerialize: BTreeMap::new(),
-        num_regs: max_reg,
+    /// The values that need a stack slot, in schedule order.
+    ///
+    /// [`FrameLayout`](super::FrameLayout) consumes exactly this.
+    pub fn spilled(&self) -> impl Iterator<Item = ValueId> + use<'_> {
+        self.schedule
+            .iter()
+            .map(|def| def.value)
+            .filter(|v| self.placement(*v) == Placement::Spilled)
     }
 }
 
-/// Compute a greedy-coloring order using maximum cardinality search (MCS).
+/// Assign physical registers to an expression DAG.
 ///
-/// MCS visits vertices in decreasing order of "neighbors visited so far",
-/// which numbers them n, n-1, ..., 1 in visitation order. For a chordal
-/// graph this numbering is a perfect elimination scheme: each vertex's
-/// higher-numbered (later-visited) neighbors form a clique. Coloring greedily
-/// in that same visitation order is then optimal — by the time a vertex is
-/// colored, its higher-numbered neighbors (a clique, already colored) bound
-/// how many colors it can possibly need. The visitation order returned here
-/// is used as-is; it must NOT be reversed before coloring, since reversing
-/// would color each vertex before its constraining (higher-numbered)
-/// neighbors instead of after them. Uses a max-heap for O(n log n) rather
-/// than the naive O(n²) scan.
-fn simplicial_elimination_order(graph: &InterferenceGraph) -> Vec<ValueId> {
-    let n = graph.len();
-    if n == 0 {
-        return vec![];
-    }
-
-    let capacity = graph.capacity;
-
-    // Dense weight and membership arrays indexed by ValueId.0.
-    let mut weight: Vec<usize> = vec![0; capacity];
-    let mut in_remaining: Vec<bool> = vec![false; capacity];
-
-    for &v in graph.values() {
-        in_remaining[v.0 as usize] = true;
-    }
-
-    // Max-heap of (weight, ValueId). Stale entries (weight mismatch) are skipped.
-    // ValueId derives Ord, so (usize, ValueId) is ordered lexicographically —
-    // weight is the primary key, ValueId is the tiebreaker.
-    let mut heap: BinaryHeap<(usize, ValueId)> =
-        graph.values().iter().map(|&v| (0usize, v)).collect();
-
-    let mut order = Vec::with_capacity(n);
-
-    for _ in 0..n {
-        // Pop max-weight vertex still in remaining; skip stale heap entries.
-        let v = loop {
-            let (w, v) = heap.pop().expect("heap must be non-empty during MCS");
-            let vi = v.0 as usize;
-            // `&&` vs `||`: equivalent mutant. `in_remaining[vi]` and
-            // `w == weight[vi]` always agree here: a vertex's pushed weights
-            // strictly increase, so the heap (max first) always surfaces a
-            // remaining vertex's single freshest entry (matching its current
-            // weight) before any of its staler, smaller ones; once removed,
-            // weight[vi] is frozen and no remaining entry can equal it again.
-            // No test can make the two operands disagree.
-            if in_remaining[vi] && w == weight[vi] {
-                break v;
-            }
-            // Stale entry — the real weight is higher; skip.
-        };
-
-        in_remaining[v.0 as usize] = false;
-        order.push(v);
-
-        // Increment weights of remaining neighbors and push updated entries.
-        for &neighbor in graph.neighbors(v) {
-            let ni = neighbor.0 as usize;
-            if in_remaining[ni] {
-                weight[ni] += 1;
-                heap.push((weight[ni], neighbor));
-            }
-        }
-    }
-
-    order
+/// A pure function from a program and a register file to a placement for every
+/// value in it. Purity is load-bearing, not incidental: the collapse-loop
+/// driver runs allocation once to size a stack frame and again to emit into
+/// that frame, and a disagreement between the two runs misplaces every spill.
+///
+/// Allocation is not a local decision. Liveness needs the whole program, and
+/// the eviction rule that makes the difference — Belady's, evict whatever is
+/// used farthest in the future — is *defined* in terms of the future. So an
+/// implementation sees the entire DAG, and owes an answer for every value in
+/// the schedule it returns.
+///
+/// Running out of registers is not a failure; it is a spill. There is no error
+/// case: a DAG this cannot allocate is a DAG the pipeline should never have
+/// produced, and it panics at the point of failure rather than handing a
+/// caller a string it can only propagate.
+pub trait RegisterAllocator {
+    /// Choose an evaluation order for `dag` and a placement for every value.
+    ///
+    /// Takes the DAG by value because choosing the order is part of the job:
+    /// an implementation is free to permute what it is handed, and returns the
+    /// order it settled on inside the [`Allocation`].
+    fn allocate(&self, dag: Vec<Def>, file: &RegisterFile) -> Allocation;
 }
 
-/// Build interference graph from a scheduled DAG.
+/// Linear scan with Belady eviction and constant rematerialization.
 ///
-/// # Arguments
-/// * `schedule` - Topologically sorted list of (value_id, definition)
-/// * `uses_of` - For each value, its operands (the values it uses)
+/// Two passes. The first walks the program computing each value's last use;
+/// the second walks it forward assigning registers, and at each definition:
+/// 1. Frees registers whose values have expired.
+/// 2. Takes a free scratch register if there is one.
+/// 3. Otherwise evicts — preferring a constant (free to rematerialize, no
+///    memory traffic) and otherwise the live value whose next use is farthest
+///    in the future.
 ///
-/// Returns an interference graph where two values interfere if
-/// their live ranges overlap.
-pub fn build_interference_graph<D, F>(schedule: &[(ValueId, D)], uses_of: F) -> InterferenceGraph
-where
-    F: Fn(ValueId) -> Vec<ValueId>,
-{
-    let mut graph = InterferenceGraph::new();
+/// The evaluation order it returns is the one it was given: the arena's
+/// append-only structure already guarantees a topological order, so there is
+/// nothing to linearize.
+///
+/// Coordinate inputs are pinned to `file.inputs` and never enter the scratch
+/// pool, which [`RegisterFile::checked`] keeps disjoint from them.
+///
+/// O(n × k) for n values and a k-register pool. For the pools here (4–10
+/// registers) that is effectively O(n).
+///
+/// The DAGs reaching this are in SSA form, which makes their interference
+/// graphs chordal — the shape on which greedy coloring is optimal. A
+/// graph-coloring allocator therefore lived beside this one, unused, for as
+/// long as this file existed: it never learned to rematerialize constants, and
+/// on a pool this small that is the difference that decides the generated code.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct LinearScan;
 
-    // Add all values.
-    for (v, _) in schedule {
-        graph.add_value(*v);
-    }
+impl RegisterAllocator for LinearScan {
+    fn allocate(&self, dag: Vec<Def>, file: &RegisterFile) -> Allocation {
+        let vec_len = dag
+            .iter()
+            .map(|def| def.value.0 as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let mut placements: Vec<Option<Placement>> = vec![None; vec_len];
 
-    // Compute max ValueId for the dense live bitvec.
-    let max_vid = schedule.iter().map(|(v, _)| v.0).max().unwrap_or(0) as usize;
-    let live_capacity = max_vid + 1;
-
-    // Dense live set: live[vid.0] = true if the value is currently live.
-    // live_list tracks which values are live for O(|live|) iteration.
-    let mut live: Vec<bool> = vec![false; live_capacity];
-    let mut live_list: Vec<ValueId> = Vec::new();
-
-    // Walk schedule in reverse (backward liveness analysis).
-    for (v, _) in schedule.iter().rev() {
-        let vi = v.0 as usize;
-
-        // All currently live values interfere with v.
-        for &other in &live_list {
-            graph.add_edge(*v, other);
+        if dag.is_empty() {
+            return Allocation {
+                schedule: dag,
+                placements,
+            };
         }
 
-        // v is defined here, so its live range (going backward) ends at this
-        // point — kill it before propagating its operands' liveness.
-        // Without this, a value that ever became live would stay in
-        // `live_list` for the rest of the walk and interfere with every
-        // value scheduled earlier, regardless of whether their live ranges
-        // actually overlapped.
-        //
-        // `vi < live_capacity` is an equivalent-mutant guard for both `&&`
-        // vs `||` and `<` vs `<=`: vi is v.0 for a v drawn directly from
-        // `schedule`, the same source live_capacity's max is computed from,
-        // so vi <= max_vid < live_capacity always holds — no schedule can
-        // make it false. (The mirroring guard below on `ui`, sourced from
-        // caller-supplied `uses_of`, has no such invariant and is covered by
-        // build_interference_graph_should_not_panic_when_uses_of_reports_a_value_outside_the_schedule.)
-        if vi < live_capacity && live[vi] {
-            live[vi] = false;
-            live_list.retain(|&other| other != *v);
-        }
-
-        // Add uses of v to the live set.
-        for used in uses_of(*v) {
-            let ui = used.0 as usize;
-            if ui < live_capacity && !live[ui] {
-                live[ui] = true;
-                live_list.push(used);
+        // Pass one: last use of each value — the latest schedule index of any
+        // operation that reads it. A value nothing reads (the root) is last
+        // used at its own definition.
+        let mut last_use: Vec<usize> = vec![usize::MAX; vec_len];
+        for (i, def) in dag.iter().enumerate() {
+            if last_use[def.value.0 as usize] == usize::MAX {
+                last_use[def.value.0 as usize] = i;
             }
         }
-    }
-
-    graph.dedup_edges();
-    graph
-}
-
-// ============================================================================
-// Linear scan register allocator
-// ============================================================================
-
-/// Linear scan register allocation for scheduled DAGs.
-///
-/// Walks the schedule forward in program order. At each definition:
-/// 1. Free registers holding values whose last use has passed.
-/// 2. Assign a free scratch register if available.
-/// 3. If no register is free, spill the currently-live value whose next use
-///    is farthest in the future (Belady's optimal eviction).
-///
-/// Pre-colored values (variables bound to input registers) are handled by
-/// marking those registers as occupied for the duration of the value's
-/// live range.
-///
-/// This is O(n * k) where n = schedule length, k = number of registers.
-/// For our use case (k=22 scratch regs), this is effectively O(n).
-#[must_use]
-pub fn linear_scan(
-    schedule: &[(ValueId, super::ScheduledOp)],
-    _uses_map: &[Vec<ValueId>],
-    precolored: &BTreeMap<ValueId, super::Reg>,
-    num_regs: u8,
-    scratch_base: u8,
-) -> RegAllocation {
-    use super::Reg;
-
-    let n = schedule.len();
-    if n == 0 {
-        return RegAllocation {
-            assignment: BTreeMap::new(),
-            spilled: Vec::new(),
-            rematerialize: BTreeMap::new(),
-            num_regs: 0,
-        };
-    }
-
-    // Dense Vec indexed by ValueId.0 for O(1) lookups.
-    // Find the maximum ValueId to size our vectors.
-    let max_vid = schedule.iter().map(|(v, _)| v.0).max().unwrap_or(0) as usize;
-    let vec_len = max_vid + 1;
-
-    // Build schedule index for each ValueId (definition point).
-    // usize::MAX means "not defined" (should never be read for undefined ids).
-    let mut def_idx: Vec<usize> = vec![usize::MAX; vec_len];
-    for (i, (vid, _)) in schedule.iter().enumerate() {
-        def_idx[vid.0 as usize] = i;
-    }
-
-    // Compute last-use index for each value.
-    // A value's last use is the latest schedule index of any operation that
-    // reads it. If nothing uses it (root), last use = its own definition.
-    let mut last_use: Vec<usize> = vec![usize::MAX; vec_len];
-    for (i, (vid, _)) in schedule.iter().enumerate() {
-        // Default: last use is own definition (covers the root).
-        if last_use[vid.0 as usize] == usize::MAX {
-            last_use[vid.0 as usize] = i;
-        }
-    }
-    // For each value, find which schedule entries use it as an operand.
-    // uses_map: definer → list of values that USE this definer.
-    // We need the reverse: for each value V, what schedule indices read V?
-    // Walk the schedule and inspect operands.
-    for (i, (_, sop)) in schedule.iter().enumerate() {
-        let operands: &[ValueId] = match sop {
-            super::ScheduledOp::Var(_) | super::ScheduledOp::Const(_) => &[],
-            super::ScheduledOp::Unary(_, a)
-            | super::ScheduledOp::ShiftImm(_, a, _)
-            | super::ScheduledOp::Gather(a, _) => core::slice::from_ref(a),
-            super::ScheduledOp::Binary(_, a, b) => {
-                // Can't make a slice from two refs, handle below
-                let lu_a = &mut last_use[a.0 as usize];
-                *lu_a = (*lu_a).max(i);
-                let lu_b = &mut last_use[b.0 as usize];
-                *lu_b = (*lu_b).max(i);
-                continue;
+        for (i, def) in dag.iter().enumerate() {
+            for operand in operands(&def.op) {
+                let lu = &mut last_use[operand.0 as usize];
+                *lu = (*lu).max(i);
             }
-            super::ScheduledOp::Ternary(_, a, b, c) => {
-                let lu_a = &mut last_use[a.0 as usize];
-                *lu_a = (*lu_a).max(i);
-                let lu_b = &mut last_use[b.0 as usize];
-                *lu_b = (*lu_b).max(i);
-                let lu_c = &mut last_use[c.0 as usize];
-                *lu_c = (*lu_c).max(i);
-                continue;
+        }
+
+        // A constant is never worth a spill slot: bringing it back is one
+        // instruction either way.
+        let mut const_bits: Vec<Option<u32>> = vec![None; vec_len];
+        for def in &dag {
+            if let ScheduledOp::Const(val) = def.op {
+                const_bits[def.value.0 as usize] = Some(val.to_bits());
             }
-        };
-        for operand in operands {
-            let lu = &mut last_use[operand.0 as usize];
-            *lu = (*lu).max(i);
-        }
-    }
-
-    // Identify rematerializable values (constants). These never need spill
-    // slots — just re-emit the constant load instruction on use.
-    // Dense Vec<Option<u32>> indexed by ValueId.0.
-    let mut const_bits: Vec<Option<u32>> = vec![None; vec_len];
-    for (vid, sop) in schedule {
-        if let super::ScheduledOp::Const(val) = sop {
-            const_bits[vid.0 as usize] = Some(val.to_bits());
-        }
-    }
-
-    let mut assignment: BTreeMap<ValueId, Reg> = BTreeMap::new();
-    let mut spilled: Vec<ValueId> = Vec::new();
-    let mut rematerialize: BTreeMap<ValueId, u32> = BTreeMap::new();
-
-    // reg_owner[r - scratch_base] = Some(vid) if register r holds value vid.
-    let mut reg_owner: Vec<Option<ValueId>> = vec![None; num_regs as usize];
-
-    // Handle pre-colored values (variables).
-    for (&vid, &reg) in precolored {
-        assignment.insert(vid, reg);
-    }
-
-    let mut max_reg_used: u8 = 0;
-
-    for (i, (vid, _sop)) in schedule.iter().enumerate() {
-        // Skip pre-colored (already assigned).
-        if assignment.contains_key(vid) {
-            continue;
         }
 
-        // Free registers whose values have expired (last use < i).
-        for slot in reg_owner.iter_mut() {
-            if let Some(owner) = *slot {
-                let lu = last_use[owner.0 as usize];
-                if lu < i {
+        // Coordinate inputs are pinned to the registers the ABI delivers them
+        // in. The scratch pool excludes those registers, so a pinned value
+        // never competes for one.
+        for def in &dag {
+            if let ScheduledOp::Var(i) = def.op {
+                placements[def.value.0 as usize] = Some(Placement::Reg(input_register(file, i)));
+            }
+        }
+
+        // reg_owner[i] = the value currently held in the i'th scratch register.
+        let mut reg_owner: Vec<Option<ValueId>> = vec![None; file.scratch.len() as usize];
+        let scratch: Vec<Reg> = file.scratch().collect();
+
+        // Pass two: forward over the program in evaluation order.
+        for (i, def) in dag.iter().enumerate() {
+            let vid = &def.value;
+            if placements[vid.0 as usize].is_some() {
+                continue; // Pre-colored.
+            }
+
+            for slot in reg_owner.iter_mut() {
+                if let Some(owner) = *slot
+                    && last_use[owner.0 as usize] < i
+                {
                     *slot = None;
                 }
             }
-        }
 
-        // Try to find a free scratch register.
-        let mut free_reg = None;
-        for r in 0..num_regs {
-            if reg_owner[r as usize].is_none() {
-                free_reg = Some(r);
-                break;
+            if let Some(free) = reg_owner.iter().position(Option::is_none) {
+                placements[vid.0 as usize] = Some(Placement::Reg(scratch[free]));
+                reg_owner[free] = Some(*vid);
+                continue;
             }
-        }
 
-        if let Some(r) = free_reg {
-            let reg = Reg(r + scratch_base);
-            assignment.insert(*vid, reg);
-            reg_owner[r as usize] = Some(*vid);
-            // `>` vs `>=`: equivalent mutant for a running-max update —
-            // when r + 1 == max_reg_used, assigning it to itself is a no-op,
-            // so `>` and `>=` produce identical final values of max_reg_used
-            // for every input.
-            if r + 1 > max_reg_used {
-                max_reg_used = r + 1;
-            }
-        } else {
-            // No free register — must evict.
-            //
-            // Eviction priority (prefer to evict cheap values):
-            // 1. Constants (rematerializable — free to recompute, no memory traffic)
-            // 2. Non-constants with farthest next use (Belady's optimal)
-
-            // First: try evicting a constant with farthest next use.
-            let mut best_const_slot: Option<usize> = None;
-            let mut best_const_lu = 0usize;
-            let mut best_any_slot = 0usize;
-            let mut best_any_lu = 0usize;
+            // Nothing free — evict. A constant goes first whatever its next
+            // use, because rematerializing it costs no memory traffic; among
+            // non-constants, Belady: whoever is used farthest out.
+            let mut best_const: Option<(usize, usize)> = None; // (slot, last use)
+            let mut best_any: (usize, usize) = (0, 0);
 
             for (slot_idx, slot) in reg_owner.iter().enumerate() {
-                if let Some(owner) = *slot {
-                    let lu = last_use[owner.0 as usize];
-                    if const_bits[owner.0 as usize].is_some() && lu > best_const_lu {
-                        best_const_lu = lu;
-                        best_const_slot = Some(slot_idx);
-                    }
-                    if lu > best_any_lu {
-                        best_any_lu = lu;
-                        best_any_slot = slot_idx;
-                    }
+                let Some(owner) = *slot else { continue };
+                let lu = last_use[owner.0 as usize];
+                if const_bits[owner.0 as usize].is_some()
+                    && best_const.is_none_or(|(_, best)| lu > best)
+                {
+                    best_const = Some((slot_idx, lu));
+                }
+                if lu > best_any.1 {
+                    best_any = (slot_idx, lu);
                 }
             }
 
-            // Prefer evicting a constant (free rematerialization) over a
-            // non-constant (expensive spill+reload).
-            let evict_slot = best_const_slot.unwrap_or(best_any_slot);
-            let evicted = reg_owner[evict_slot].expect("all slots occupied but none found");
-            let evicted_lu = last_use[evicted.0 as usize];
-            let my_lu = last_use[vid.0 as usize];
+            let evict_slot = best_const.map_or(best_any.0, |(slot, _)| slot);
+            let occupant = reg_owner[evict_slot].expect("all slots occupied but none found");
 
-            // Check if the new value itself should be evicted instead.
-            // But: if the new value is a constant, prefer evicting it (cheaper).
+            // Which of the two goes to memory: a constant always loses, and
+            // otherwise Belady decides.
             let evict_new = if const_bits[vid.0 as usize].is_some() {
-                // New value is a constant — always evict it (free to rematerialize).
                 true
-            } else if const_bits[evicted.0 as usize].is_some() {
-                // Occupant is a constant — evict it (free) to make room.
+            } else if const_bits[occupant.0 as usize].is_some() {
                 false
             } else {
-                // Neither is a constant — use Belady: evict whoever is used later.
-                my_lu >= evicted_lu
+                last_use[vid.0 as usize] >= last_use[occupant.0 as usize]
             };
 
-            if evict_new {
-                // Evict the new value.
-                if let Some(bits) = const_bits[vid.0 as usize] {
-                    rematerialize.insert(*vid, bits);
-                } else {
-                    spilled.push(*vid);
-                }
-            } else {
-                // Evict the occupant, take its register.
-                assignment.remove(&evicted);
-                if let Some(bits) = const_bits[evicted.0 as usize] {
-                    rematerialize.insert(evicted, bits);
-                } else {
-                    spilled.push(evicted);
-                }
+            let loser = if evict_new { *vid } else { occupant };
+            placements[loser.0 as usize] = Some(match const_bits[loser.0 as usize] {
+                Some(bits) => Placement::Remat(bits),
+                None => Placement::Spilled,
+            });
 
-                let reg = Reg(evict_slot as u8 + scratch_base);
-                assignment.insert(*vid, reg);
+            if !evict_new {
+                placements[vid.0 as usize] = Some(Placement::Reg(scratch[evict_slot]));
                 reg_owner[evict_slot] = Some(*vid);
             }
         }
-    }
 
-    RegAllocation {
-        assignment,
-        spilled,
-        rematerialize,
-        num_regs: max_reg_used,
+        Allocation {
+            schedule: dag,
+            placements,
+        }
     }
+}
+
+/// The register a `Var(i)` is pinned to.
+///
+/// A `Var` past the coordinate inputs is not a kernel the target cannot run;
+/// it is a `Var` that should have been lowered away (a reduce binder, a
+/// manifold-param slot) or an axis that does not exist. Both are bugs upstream
+/// of here, and neither is something a caller could act on — so it fails at
+/// the point of failure, with a stack trace, rather than as a string three
+/// frames up.
+#[cold]
+#[inline(never)]
+fn var_out_of_range(i: u8, inputs: usize) -> ! {
+    panic!(
+        "Var({i}) names coordinate {i} but the target supplies {inputs} \
+         (X, Y, Z, W) — `passes::legalize` lowers every other Var, so this is \
+         a bypassed pipeline or a missing lowering, not a bad kernel"
+    )
+}
+
+fn input_register(file: &RegisterFile, i: u8) -> Reg {
+    match file.inputs.get(i as usize) {
+        Some(&reg) => reg,
+        None => var_out_of_range(i, file.inputs.len()),
+    }
+}
+
+/// The values an operation reads.
+fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
+    let (a, b, c) = match sop {
+        ScheduledOp::Var(_) | ScheduledOp::Const(_) => (None, None, None),
+        ScheduledOp::Unary(_, a) | ScheduledOp::ShiftImm(_, a, _) | ScheduledOp::Gather(a, _) => {
+            (Some(*a), None, None)
+        }
+        ScheduledOp::Binary(_, a, b) => (Some(*a), Some(*b), None),
+        ScheduledOp::Ternary(_, a, b, c) => (Some(*a), Some(*b), Some(*c)),
+    };
+    [a, b, c].into_iter().flatten()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::ScheduledOp;
     use super::*;
-    use alloc::collections::BTreeSet;
     use pixelflow_ir::kind::OpKind;
 
-    #[test]
-    fn degree_should_count_deduplicated_neighbors_after_dedup_edges() {
-        let mut graph = InterferenceGraph::new();
-        graph.add_edge(ValueId(0), ValueId(1));
-        graph.add_edge(ValueId(0), ValueId(1)); // duplicate, pushed twice pre-dedup
-        graph.add_edge(ValueId(0), ValueId(2));
-        graph.dedup_edges();
-
-        assert_eq!(graph.degree(ValueId(0)), 2);
+    /// A four-register pool at base 4, mirroring the tightest real backend
+    /// (AVX2's ymm4-7) so pressure tests need only a handful of values.
+    const TEST_FILE: RegisterFile = RegisterFile {
+        fixed: &[],
+        inputs: [Reg(0), Reg(1), Reg(2), Reg(3)],
+        scratch: RegSet::range(4, 4),
+        reload: [Reg(11), Reg(12)],
+        select_reload: Reg(13),
+        vector_bytes: 16,
     }
+    .checked();
 
-    #[test]
-    fn degree_should_be_zero_for_a_value_never_added_to_the_graph() {
-        let graph = InterferenceGraph::new();
-        assert_eq!(graph.degree(ValueId(0)), 0);
-    }
-
-    #[test]
-    fn neighbors_should_be_empty_for_a_value_id_beyond_the_graphs_capacity() {
-        let mut graph = InterferenceGraph::new();
-        graph.add_value(ValueId(0));
-        assert!(graph.neighbors(ValueId(1)).is_empty());
-    }
-
-    #[test]
-    fn is_precolored_should_be_false_for_a_value_added_without_precoloring() {
-        let mut graph = InterferenceGraph::new();
-        graph.add_value(ValueId(0));
-        assert!(!graph.is_precolored(ValueId(0)));
-    }
-
-    #[test]
-    fn is_precolored_should_be_true_only_for_the_value_that_was_precolored() {
-        let mut graph = InterferenceGraph::new();
-        graph.precolor(ValueId(0), Reg(3));
-        graph.add_value(ValueId(1));
-        assert!(graph.is_precolored(ValueId(0)));
-        assert!(!graph.is_precolored(ValueId(1)));
-    }
-
-    #[test]
-    fn is_precolored_should_be_false_for_a_value_id_beyond_the_graphs_capacity() {
-        let mut graph = InterferenceGraph::new();
-        graph.add_value(ValueId(0));
-        // ValueId(1) sits exactly at the capacity boundary (capacity is 1
-        // after adding only ValueId(0)) — the case that distinguishes the
-        // bounds guard from an off-by-one variant that would index out of
-        // range instead of safely returning false.
-        assert!(!graph.is_precolored(ValueId(1)));
-    }
-
-    #[test]
-    fn precolor_of_should_return_none_for_a_value_id_beyond_the_graphs_capacity() {
-        let mut graph = InterferenceGraph::new();
-        graph.add_value(ValueId(0));
-        // See is_precolored's boundary test above for why ValueId(1) specifically.
-        assert_eq!(graph.precolor_of(ValueId(1)), None);
-    }
-
-    #[test]
-    fn is_empty_should_be_true_before_any_value_is_added_and_false_after() {
-        let mut graph = InterferenceGraph::new();
-        assert!(graph.is_empty());
-        graph.add_value(ValueId(0));
-        assert!(!graph.is_empty());
-    }
-
-    #[test]
-    fn color_graph_should_assign_and_spill_nothing_for_an_empty_graph() {
-        let graph = InterferenceGraph::new();
-        let alloc = color_graph(&graph, 8, 4);
-        assert!(alloc.assignment.is_empty());
-        assert!(alloc.spilled.is_empty());
-    }
-
-    #[test]
-    fn color_graph_should_assign_every_value_when_none_interfere() {
-        let mut graph = InterferenceGraph::new();
-        graph.add_value(ValueId(0));
-        graph.add_value(ValueId(1));
-        graph.add_value(ValueId(2));
-
-        let alloc = color_graph(&graph, 8, 4);
-        assert_eq!(alloc.assignment.len(), 3);
-        assert!(alloc.spilled.is_empty());
-    }
-
-    #[test]
-    fn color_graph_should_give_adjacent_chain_values_different_colors() {
-        let mut graph = InterferenceGraph::new();
-        // Linear chain: 0 -- 1 -- 2
-        graph.add_value(ValueId(0));
-        graph.add_value(ValueId(1));
-        graph.add_value(ValueId(2));
-        graph.add_edge(ValueId(0), ValueId(1));
-        graph.add_edge(ValueId(1), ValueId(2));
-
-        let alloc = color_graph(&graph, 8, 4);
-        assert_eq!(alloc.assignment.len(), 3);
-        assert!(alloc.spilled.is_empty());
-
-        // 0 and 2 can share a color, 1 needs different
-        let c0 = alloc.assignment[&ValueId(0)];
-        let c1 = alloc.assignment[&ValueId(1)];
-        let c2 = alloc.assignment[&ValueId(2)];
-
-        assert_ne!(c0, c1);
-        assert_ne!(c1, c2);
-        // c0 and c2 could be same or different
-    }
-
-    #[test]
-    fn color_graph_should_use_three_distinct_colors_for_a_triangle_clique() {
-        let mut graph = InterferenceGraph::new();
-        // Triangle (3-clique): all interfere with all
-        for i in 0..3 {
-            graph.add_value(ValueId(i));
+    fn def(value: u32, op: ScheduledOp) -> Def {
+        Def {
+            value: ValueId(value),
+            op,
         }
-        graph.add_edge(ValueId(0), ValueId(1));
-        graph.add_edge(ValueId(1), ValueId(2));
-        graph.add_edge(ValueId(0), ValueId(2));
+    }
 
-        let alloc = color_graph(&graph, 8, 4);
-        assert_eq!(alloc.assignment.len(), 3);
-        assert!(alloc.spilled.is_empty());
-        assert_eq!(alloc.num_regs, 3);
+    fn alloc(schedule: Vec<Def>) -> Allocation {
+        LinearScan.allocate(schedule, &TEST_FILE)
+    }
 
-        // All must have different colors
-        let colors: BTreeSet<_> = alloc.assignment.values().collect();
-        assert_eq!(colors.len(), 3);
+    /// `v2 = X + Y`.
+    fn add_xy() -> Vec<Def> {
+        vec![
+            def(0, ScheduledOp::Var(0)),
+            def(1, ScheduledOp::Var(1)),
+            def(2, ScheduledOp::Binary(OpKind::Add, ValueId(0), ValueId(1))),
+        ]
     }
 
     #[test]
-    fn color_graph_should_ignore_a_precolored_neighbor_whose_register_is_outside_the_scratch_range()
-    {
-        // Precolor value 0 with a register exactly at `scratch_base + num_regs`
-        // (one past the last valid scratch color). color_graph must not
-        // index `used_colors` with it — it's out of range for the scratch
-        // coloring space, so it must be silently ignored rather than panic.
-        let scratch_base = 4;
-        let num_regs = 4;
-        let mut graph = InterferenceGraph::new();
-        graph.precolor(ValueId(0), Reg(scratch_base + num_regs));
-        graph.add_value(ValueId(1));
-        graph.add_edge(ValueId(0), ValueId(1));
+    fn an_empty_schedule_allocates_nothing() {
+        let a = alloc(vec![]);
+        assert!(a.schedule.is_empty());
+        assert_eq!(a.spilled().count(), 0);
+    }
 
-        let alloc = color_graph(&graph, num_regs, scratch_base);
-
-        assert_eq!(alloc.assignment[&ValueId(0)], Reg(scratch_base + num_regs));
-        assert!(alloc.assignment.contains_key(&ValueId(1)));
-        assert!(alloc.spilled.is_empty());
+    /// The schedule is an output, and for linear scan it is the input order:
+    /// the arena's append-only structure already guarantees topological order.
+    #[test]
+    fn linear_scan_returns_the_order_it_was_given() {
+        let a = alloc(add_xy());
+        let order: Vec<ValueId> = a.schedule.iter().map(|d| d.value).collect();
+        assert_eq!(order, vec![ValueId(0), ValueId(1), ValueId(2)]);
     }
 
     #[test]
-    fn color_graph_should_keep_a_precolored_value_pinned_to_its_register() {
-        let mut graph = InterferenceGraph::new();
-        graph.precolor(ValueId(0), Reg(0)); // Input register
-        graph.add_value(ValueId(1));
-        graph.add_edge(ValueId(0), ValueId(1));
+    fn vars_are_pinned_to_the_input_registers() {
+        let a = alloc(add_xy());
+        assert_eq!(a.placement(ValueId(0)), Placement::Reg(Reg(0)), "X");
+        assert_eq!(a.placement(ValueId(1)), Placement::Reg(Reg(1)), "Y");
+        // The sum takes the pool, never an input register.
+        assert_eq!(a.placement(ValueId(2)), Placement::Reg(Reg(4)));
+        assert_eq!(a.spilled().count(), 0);
+    }
 
-        let alloc = color_graph(&graph, 8, 4);
-        assert_eq!(alloc.assignment[&ValueId(0)], Reg(0));
-        assert_ne!(alloc.assignment[&ValueId(1)], Reg(0));
+    /// Every value the emitter walks has a placement — the invariant that used
+    /// to be spread across three parallel maps and checked at runtime.
+    #[test]
+    fn placement_is_total_over_the_schedule() {
+        let a = alloc(add_xy());
+        let placed: Vec<Placement> = a.schedule.iter().map(|d| a.placement(d.value)).collect();
+        assert_eq!(placed.len(), a.schedule.len());
     }
 
     #[test]
-    fn color_graph_should_spill_the_excess_values_of_a_clique_too_large_for_the_register_budget() {
-        let mut graph = InterferenceGraph::new();
-        // 4-clique with only 2 registers available
-        for i in 0..4 {
-            graph.add_value(ValueId(i));
+    #[should_panic(expected = "names coordinate 4")]
+    fn a_var_past_the_input_registers_panics() {
+        let _ = alloc(vec![def(0, ScheduledOp::Var(4))]);
+    }
+
+    /// Two values whose live ranges do not overlap may share one register —
+    /// that is the whole point of tracking last use rather than defs.
+    #[test]
+    fn disjoint_live_ranges_share_a_register() {
+        let a = alloc(vec![
+            def(0, ScheduledOp::Var(0)),
+            def(1, ScheduledOp::Var(1)),
+            def(2, ScheduledOp::Binary(OpKind::Add, ValueId(0), ValueId(1))),
+            def(3, ScheduledOp::Unary(OpKind::Neg, ValueId(2))),
+            def(4, ScheduledOp::Unary(OpKind::Abs, ValueId(3))),
+        ]);
+        assert_eq!(a.spilled().count(), 0);
+        // v2's last use is v3, so v4 may reuse v2's register.
+        assert_eq!(a.placement(ValueId(2)), a.placement(ValueId(4)));
+    }
+
+    /// Six values live at once cannot fit a four-register pool.
+    #[test]
+    fn pressure_beyond_the_pool_spills() {
+        let mut schedule = vec![def(0, ScheduledOp::Var(0))];
+        for i in 1..=6u32 {
+            schedule.push(def(i, ScheduledOp::Unary(OpKind::Neg, ValueId(0))));
         }
-        for i in 0..4 {
-            for j in (i + 1)..4 {
-                graph.add_edge(ValueId(i), ValueId(j));
-            }
+        let mut acc = ValueId(1);
+        for i in 2..=6u32 {
+            schedule.push(def(
+                6 + i,
+                ScheduledOp::Binary(OpKind::Add, acc, ValueId(i)),
+            ));
+            acc = ValueId(6 + i);
         }
-
-        let alloc = color_graph(&graph, 2, 4); // Only 2 registers!
-        assert_eq!(alloc.spilled.len(), 2); // 2 must spill
-        assert_eq!(alloc.assignment.len(), 2); // 2 got colors
-        assert_eq!(alloc.num_regs, 2); // both available colors are in use
+        let a = alloc(schedule);
+        assert!(a.spilled().count() > 0);
+        // A placement is one choice, so nothing is both in a register and on
+        // the stack — the miscompile the three parallel maps could express.
+        for v in a.spilled() {
+            assert_eq!(a.placement(v), Placement::Spilled);
+        }
     }
 
+    /// A constant under pressure is rematerialized, never spilled: re-emitting
+    /// the load beats a store plus a reload.
     #[test]
-    fn build_interference_graph_should_connect_two_operands_simultaneously_live_at_their_shared_use()
-     {
-        // v0, v1: constants (no operands). v2 = v0 + v1, the only consumer of
-        // either. v0 and v1 are both live going into v2's definition, so they
-        // must interfere; v2 doesn't interfere with either operand, since an
-        // operand's live range can end exactly at the instruction consuming it.
-        let schedule = [(ValueId(0), ()), (ValueId(1), ()), (ValueId(2), ())];
-        let uses_of = |v: ValueId| match v.0 {
-            2 => alloc::vec![ValueId(0), ValueId(1)],
-            _ => alloc::vec![],
-        };
+    fn constants_are_rematerialized_rather_than_spilled() {
+        let mut schedule = vec![def(0, ScheduledOp::Var(0))];
+        for i in 1..=6u32 {
+            schedule.push(def(i, ScheduledOp::Const(i as f32)));
+        }
+        let mut acc = ValueId(1);
+        for i in 2..=6u32 {
+            schedule.push(def(
+                6 + i,
+                ScheduledOp::Binary(OpKind::Add, acc, ValueId(i)),
+            ));
+            acc = ValueId(6 + i);
+        }
+        let a = alloc(schedule);
 
-        let graph = build_interference_graph(&schedule, uses_of);
-
-        assert_eq!(graph.neighbors(ValueId(0)), &[ValueId(1)]);
-        assert_eq!(graph.neighbors(ValueId(1)), &[ValueId(0)]);
-        assert!(graph.neighbors(ValueId(2)).is_empty());
-    }
-
-    #[test]
-    fn build_interference_graph_should_not_connect_values_from_unrelated_def_use_chains() {
-        // Two independent single-use chains in the same schedule: v0 -> v1,
-        // and (unrelated) v2 -> v3. Every value dies at its sole use, so
-        // nothing should interfere with anything else — including values
-        // that are merely adjacent in schedule order but never simultaneously
-        // live (the bug this regression test targets: liveness that is never
-        // killed makes every later-scheduled value interfere with every
-        // earlier one, regardless of whether their live ranges ever overlap).
-        let schedule = [
-            (ValueId(0), ()),
-            (ValueId(1), ()),
-            (ValueId(2), ()),
-            (ValueId(3), ()),
-        ];
-        let uses_of = |v: ValueId| match v.0 {
-            1 => alloc::vec![ValueId(0)],
-            3 => alloc::vec![ValueId(2)],
-            _ => alloc::vec![],
-        };
-
-        let graph = build_interference_graph(&schedule, uses_of);
-
-        for v in [ValueId(0), ValueId(1), ValueId(2), ValueId(3)] {
-            assert!(
-                graph.neighbors(v).is_empty(),
-                "{v:?} should have no interferences, got {:?}",
-                graph.neighbors(v)
+        let remat: Vec<(ValueId, u32)> = (1..=6u32)
+            .filter_map(|i| match a.placement(ValueId(i)) {
+                Placement::Remat(bits) => Some((ValueId(i), bits)),
+                _ => None,
+            })
+            .collect();
+        assert!(!remat.is_empty(), "constants under pressure should remat");
+        assert_eq!(
+            a.spilled().count(),
+            0,
+            "no constant belongs in a spill slot"
+        );
+        for (vid, bits) in remat {
+            assert_eq!(
+                bits,
+                (vid.0 as f32).to_bits(),
+                "{vid:?} rematerializes the wrong constant"
             );
         }
     }
 
+    /// Belady: with no constants in play, the value used farthest in the
+    /// future is the one that goes to memory.
+    ///
+    /// The scenario separates Belady from FIFO and LRU deliberately. Four
+    /// values fill the pool in the order v1..v4, then v5 forces an eviction —
+    /// but they are *consumed* in that same order, so v1 is simultaneously the
+    /// oldest, the least recently used, and the one needed soonest. FIFO and
+    /// LRU both evict v1. Only a rule that looks forward evicts v4.
     #[test]
-    fn build_interference_graph_should_size_the_live_set_to_cover_the_highest_value_id() {
-        // v2 has the highest ValueId but is defined FIRST (ids need not match
-        // schedule position). v0 and v2 are both operands of v1, so they're
-        // simultaneously live and must interfere. A live-set sized one too
-        // small (an off-by-one in the capacity computation) would silently
-        // drop v2's liveness tracking instead of connecting it to v0.
-        let schedule = [(ValueId(2), ()), (ValueId(0), ()), (ValueId(1), ())];
-        let uses_of = |v: ValueId| match v.0 {
-            1 => alloc::vec![ValueId(0), ValueId(2)],
-            _ => alloc::vec![],
-        };
-
-        let graph = build_interference_graph(&schedule, uses_of);
-
-        assert_eq!(graph.neighbors(ValueId(0)), &[ValueId(2)]);
-        assert_eq!(graph.neighbors(ValueId(2)), &[ValueId(0)]);
-        assert!(graph.neighbors(ValueId(1)).is_empty());
-    }
-
-    #[test]
-    fn build_interference_graph_should_not_panic_when_uses_of_reports_a_value_outside_the_schedule()
-    {
-        // uses_of is caller-supplied and can name a ValueId the schedule
-        // never defines. The bounds guard on the live-set update must skip
-        // it rather than index out of range. ValueId(1) sits exactly at the
-        // live-set capacity boundary (1, from the sole schedule entry's
-        // ValueId(0)) — the case that distinguishes the guard from an
-        // off-by-one variant that would index out of range instead.
-        let schedule = [(ValueId(0), ())];
-        let out_of_range = ValueId(1);
-        let uses_of = move |_: ValueId| alloc::vec![out_of_range];
-
-        let graph = build_interference_graph(&schedule, uses_of);
-
-        assert!(graph.neighbors(ValueId(0)).is_empty());
-    }
-
-    #[test]
-    fn color_graph_should_use_cardinality_not_value_id_order_to_pick_the_elimination_sequence() {
-        // Two triangles {0,1,2} and {3,4,5} joined by a single bridge edge
-        // 2-5. Chordal (the only cycles are the two triangles), so a correct
-        // maximum-cardinality-search coloring order colors it optimally with
-        // 3 registers regardless of how ties are broken. This specific
-        // ValueId assignment was found by brute-force search over all vertex
-        // labelings for one where coloring in plain ascending-ValueId order
-        // instead needs a 4th color — which is what MCS's real order
-        // degenerates to if either a remaining vertex's weight is never
-        // actually incremented from its neighbors being visited, or the
-        // computed order is reversed before coloring (this test caught both:
-        // an actual `order.reverse()` bug that colored simplicial vertices
-        // first instead of last, discovered while building this test).
-        let mut graph = InterferenceGraph::new();
-        for i in 0..6 {
-            graph.add_value(ValueId(i));
+    fn belady_evicts_the_value_used_farthest_out() {
+        let mut schedule = vec![def(0, ScheduledOp::Var(0))];
+        for i in 1..=5u32 {
+            schedule.push(def(i, ScheduledOp::Unary(OpKind::Neg, ValueId(0))));
         }
-        for &(a, b) in &[(0, 1), (1, 2), (0, 2), (3, 5), (3, 4), (4, 5), (2, 5)] {
-            graph.add_edge(ValueId(a), ValueId(b));
+        // Consume v1 first, then v2, v3, and v4 last.
+        let mut acc = ValueId(5);
+        for i in 1..=4u32 {
+            schedule.push(def(
+                100 + i,
+                ScheduledOp::Binary(OpKind::Add, acc, ValueId(i)),
+            ));
+            acc = ValueId(100 + i);
         }
-
-        let alloc = color_graph(&graph, 3, 4);
-
-        assert!(alloc.spilled.is_empty(), "{alloc:?}");
-        assert_eq!(alloc.num_regs, 3, "{alloc:?}");
-    }
-
-    #[test]
-    fn color_graph_should_use_the_real_cardinality_weights_not_a_frozen_tie_break() {
-        // A chordal graph (built from a random simplicial elimination
-        // ordering, so chordality is guaranteed by construction) found by
-        // search: a correct MCS coloring order needs only 3 colors, but the
-        // order MCS would degenerate to if a remaining vertex's weight were
-        // never actually incremented — leaving every vertex perpetually
-        // "tied" at weight 0, so ties break by descending ValueId alone —
-        // needs 5. That gap is what pins the weight-update logic itself,
-        // independent of the two-triangle test above (which happens to
-        // produce the same order whether or not weights update, for its
-        // specific graph — this one does not).
-        let mut graph = InterferenceGraph::new();
-        for i in 0..8 {
-            graph.add_value(ValueId(i));
-        }
-        for &(a, b) in &[
-            (0, 1),
-            (0, 2),
-            (0, 3),
-            (0, 4),
-            (0, 7),
-            (1, 2),
-            (1, 3),
-            (1, 4),
-            (1, 6),
-            (2, 5),
-            (2, 6),
-            (3, 6),
-            (4, 6),
-            (5, 6),
-        ] {
-            graph.add_edge(ValueId(a), ValueId(b));
-        }
-
-        let alloc = color_graph(&graph, 3, 4);
-
-        assert!(alloc.spilled.is_empty(), "{alloc:?}");
-        assert_eq!(alloc.num_regs, 3, "{alloc:?}");
-    }
-
-    fn const_op(bits: f32) -> ScheduledOp {
-        ScheduledOp::Const(bits)
-    }
-
-    fn add_op(a: ValueId, b: ValueId) -> ScheduledOp {
-        ScheduledOp::Binary(OpKind::Add, a, b)
-    }
-
-    fn var_op(id: u8) -> ScheduledOp {
-        ScheduledOp::Var(id)
-    }
-
-    fn neg_op(a: ValueId) -> ScheduledOp {
-        ScheduledOp::Unary(OpKind::Neg, a)
-    }
-
-    #[test]
-    fn linear_scan_should_return_an_empty_allocation_for_an_empty_schedule() {
-        let alloc = linear_scan(&[], &[], &BTreeMap::new(), 4, 4);
-        assert!(alloc.assignment.is_empty());
-        assert!(alloc.spilled.is_empty());
-        assert_eq!(alloc.num_regs, 0);
-    }
-
-    #[test]
-    fn linear_scan_should_assign_distinct_registers_when_supply_is_sufficient() {
-        // v0 = const, v1 = const, v2 = v0 + v1 (root).
-        let schedule = [
-            (ValueId(0), const_op(1.0)),
-            (ValueId(1), const_op(2.0)),
-            (ValueId(2), add_op(ValueId(0), ValueId(1))),
-        ];
-        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 4, 4);
-
-        assert!(alloc.spilled.is_empty());
-        assert_eq!(alloc.assignment.len(), 3);
-        let regs: BTreeSet<_> = alloc.assignment.values().collect();
-        assert_eq!(
-            regs.len(),
-            3,
-            "each simultaneously-live value needs its own register"
-        );
-        assert_eq!(alloc.num_regs, 3);
-    }
-
-    #[test]
-    fn linear_scan_should_free_a_dead_values_register_at_the_next_instruction() {
-        // v0 is a constant with no further uses — its live range ends at its
-        // own definition, so its register must be free again by v1's turn.
-        // With only one register available, that reuse is the only way both
-        // values get assigned instead of one being rematerialized.
-        let schedule = [(ValueId(0), const_op(1.0)), (ValueId(1), const_op(2.0))];
-        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 1, 4);
-
-        assert!(
-            alloc.rematerialize.is_empty(),
-            "v0's register should have been freed and reused, not evicted: {:?}",
-            alloc.rematerialize
-        );
-        assert_eq!(alloc.assignment.len(), 2);
-    }
-
-    #[test]
-    fn linear_scan_should_rematerialize_a_constant_instead_of_spilling_it_when_evicted() {
-        // v0, v1 are constants live across v2's definition; only 1 register
-        // available, so one of them must be evicted. A constant should be
-        // rematerialized (free), never pushed to `spilled`.
-        let schedule = [
-            (ValueId(0), const_op(1.0)),
-            (ValueId(1), const_op(2.0)),
-            (ValueId(2), add_op(ValueId(0), ValueId(1))),
-        ];
-        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 1, 4);
-
-        assert!(
-            alloc.spilled.is_empty(),
-            "a constant eviction must rematerialize, not spill: {:?}",
-            alloc.spilled
-        );
-        assert!(!alloc.rematerialize.is_empty());
-    }
-
-    #[test]
-    fn linear_scan_should_keep_a_precolored_value_at_its_assigned_register() {
-        let schedule = [(ValueId(0), ScheduledOp::Var(0))];
-        let mut precolored = BTreeMap::new();
-        precolored.insert(ValueId(0), Reg(9));
-
-        let alloc = linear_scan(&schedule, &[], &precolored, 4, 4);
-
-        assert_eq!(alloc.assignment[&ValueId(0)], Reg(9));
-    }
-
-    #[test]
-    fn linear_scan_should_prefer_evicting_a_constant_occupant_over_a_non_constant_one() {
-        // v0 (const) and v1 (non-const) both occupy the only 2 registers when
-        // v_new needs a third. v1's next use is farther away than v0's, so a
-        // pure Belady rule would evict v1 — but a constant is free to
-        // rematerialize, so v0 must be evicted instead regardless of lu.
-        let schedule = [
-            (ValueId(0), const_op(1.0)),      // lu -> 3
-            (ValueId(1), var_op(0)),          // lu -> 4 (farther out than v0's)
-            (ValueId(2), var_op(1)),          // forces eviction
-            (ValueId(3), neg_op(ValueId(0))), // v0's last use
-            (ValueId(4), neg_op(ValueId(1))), // v1's last use
-        ];
-        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 2, 4);
-
-        assert!(
-            alloc.rematerialize.contains_key(&ValueId(0)),
-            "the constant should be evicted (rematerialized), not the non-constant: {alloc:?}"
-        );
-        assert!(alloc.assignment.contains_key(&ValueId(1)));
-        assert!(alloc.spilled.is_empty());
-    }
-
-    #[test]
-    fn linear_scan_should_break_a_tied_constant_eviction_candidate_toward_the_first_one_seen() {
-        // v0 and v1 are both constants with the SAME last-use index (tied via
-        // their shared consumer at i3), occupying the only 2 registers when
-        // v_new needs a third. A strict farthest-use comparison must not let
-        // the second-seen candidate overwrite the first on a tie.
-        let schedule = [
-            (ValueId(0), const_op(1.0)),
-            (ValueId(1), const_op(2.0)),
-            (ValueId(2), var_op(0)),                      // forces eviction
-            (ValueId(3), add_op(ValueId(0), ValueId(1))), // ties both lus at 3
-        ];
-        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 2, 4);
-
-        assert!(
-            alloc.rematerialize.contains_key(&ValueId(0)),
-            "the first-seen tied candidate (v0) should be evicted: {alloc:?}"
-        );
-        assert!(!alloc.rematerialize.contains_key(&ValueId(1)));
-        assert!(alloc.assignment.contains_key(&ValueId(1)));
-    }
-
-    #[test]
-    fn linear_scan_should_evict_the_non_constant_occupant_used_furthest_in_the_future() {
-        // No constants at all: pure Belady eviction among v0 and v1, which
-        // both occupy the only 2 registers when v_new needs a third. v1's
-        // next use is farther away, so v1 (not v0) must be the one evicted.
-        let schedule = [
-            (ValueId(0), var_op(0)),          // lu -> 3
-            (ValueId(1), var_op(1)),          // lu -> 4 (farther out)
-            (ValueId(2), var_op(2)),          // forces eviction
-            (ValueId(3), neg_op(ValueId(0))), // v0's last use
-            (ValueId(4), neg_op(ValueId(1))), // v1's last use
-        ];
-        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 2, 4);
-
-        assert!(
-            alloc.spilled.contains(&ValueId(1)),
-            "v1 (used furthest in the future) should be evicted: {alloc:?}"
-        );
-        assert!(!alloc.spilled.contains(&ValueId(0)));
-        assert!(alloc.assignment.contains_key(&ValueId(0)));
-    }
-
-    #[test]
-    fn linear_scan_should_break_a_tied_non_constant_eviction_candidate_toward_the_first_one_seen() {
-        // No constants; v0 and v1 have the SAME last-use index (tied via
-        // their shared consumer at i3), occupying the only 2 registers when
-        // v_new needs a third.
-        let schedule = [
-            (ValueId(0), var_op(0)),
-            (ValueId(1), var_op(1)),
-            (ValueId(2), var_op(2)),                      // forces eviction
-            (ValueId(3), add_op(ValueId(0), ValueId(1))), // ties both lus at 3
-        ];
-        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 2, 4);
-
-        assert!(
-            alloc.spilled.contains(&ValueId(0)),
-            "the first-seen tied candidate (v0) should be evicted: {alloc:?}"
-        );
-        assert!(!alloc.spilled.contains(&ValueId(1)));
-        assert!(alloc.assignment.contains_key(&ValueId(1)));
-    }
-
-    #[test]
-    fn linear_scan_should_evict_the_new_value_over_a_non_constant_occupant_on_a_tied_last_use() {
-        // Only 1 register. v0 holds it; v_new arrives needing it with v0's
-        // last use tied exactly with v_new's own (both consumed together by
-        // v_c at i2). On a tie, Belady's rule keeps the resident and evicts
-        // the arriving value — evicting the resident here would just repeat
-        // the same tied decision one instruction later, for no benefit.
-        let schedule = [
-            (ValueId(0), var_op(0)),
-            (ValueId(1), var_op(1)),
-            (ValueId(2), add_op(ValueId(0), ValueId(1))), // ties both lus at 2
-        ];
-        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 1, 4);
+        let a = alloc(schedule);
 
         assert_eq!(
-            alloc.assignment.keys().collect::<alloc::vec::Vec<_>>(),
-            alloc::vec![&ValueId(0)],
-            "v0 should stay resident throughout: {alloc:?}"
+            a.placement(ValueId(4)),
+            Placement::Spilled,
+            "v4 is needed last, so it is the one to evict"
         );
-        let spilled: BTreeSet<_> = alloc.spilled.iter().collect();
-        assert_eq!(spilled, BTreeSet::from([&ValueId(1), &ValueId(2)]));
+        assert!(
+            matches!(a.placement(ValueId(1)), Placement::Reg(_)),
+            "v1 is needed next, so it must keep its register — evicting it is \
+             what FIFO and LRU would have done"
+        );
+    }
+
+    /// Purity is load-bearing: the collapse driver sizes a frame with one run
+    /// and emits into it with another, and a disagreement misplaces every slot.
+    #[test]
+    fn allocation_is_deterministic() {
+        let a = alloc(add_xy());
+        let b = alloc(add_xy());
+        for d in &a.schedule {
+            assert_eq!(a.placement(d.value), b.placement(d.value));
+        }
+        assert_eq!(
+            a.spilled().collect::<Vec<_>>(),
+            b.spilled().collect::<Vec<_>>()
+        );
+    }
+
+    /// A hoisted value is pinned to the slot its prologue parked it in,
+    /// overriding whatever the allocator gave the placeholder def.
+    #[test]
+    fn a_placement_can_be_overridden() {
+        let mut a = alloc(add_xy());
+        assert!(matches!(a.placement(ValueId(2)), Placement::Reg(_)));
+        a.place(ValueId(2), Placement::Spilled);
+        assert_eq!(a.placement(ValueId(2)), Placement::Spilled);
+        assert_eq!(a.spilled().collect::<Vec<_>>(), vec![ValueId(2)]);
+    }
+
+    /// All three `Ternary` operands count toward liveness. Missing one frees a
+    /// register that is still in use.
+    #[test]
+    fn every_ternary_operand_extends_liveness() {
+        let sel = ScheduledOp::Ternary(OpKind::Select, ValueId(0), ValueId(1), ValueId(2));
+        assert_eq!(
+            operands(&sel).collect::<Vec<_>>(),
+            vec![ValueId(0), ValueId(1), ValueId(2)]
+        );
+        let a = alloc(vec![
+            def(0, ScheduledOp::Var(0)),
+            def(1, ScheduledOp::Var(1)),
+            def(2, ScheduledOp::Var(2)),
+            def(3, sel),
+        ]);
+        assert_eq!(a.spilled().count(), 0);
+    }
+
+    /// `checked()` is the isolation's teeth: a file whose reload register sits
+    /// inside the allocatable pool would let a reload clobber a live value.
+    #[test]
+    #[should_panic(expected = "reload register is inside the allocatable pool")]
+    fn a_reload_register_inside_the_pool_is_refused() {
+        let _refused = RegisterFile {
+            scratch: RegSet::range(4, 8), // swallows Reg(11)
+            ..TEST_FILE
+        }
+        .checked();
+    }
+
+    /// The same teeth for a backend's own scratch: `fixed` is declared so this
+    /// is a const-eval failure rather than an argument in a comment.
+    #[test]
+    #[should_panic(expected = "fixed backend scratch register is inside the allocatable pool")]
+    fn a_fixed_register_inside_the_pool_is_refused() {
+        let _refused = RegisterFile {
+            fixed: &[Reg(5)], // inside TEST_FILE's 4..8 pool
+            ..TEST_FILE
+        }
+        .checked();
+    }
+
+    /// A backend scratch that aliases `select_reload` is refused too: an
+    /// all-spilled `Select` reloads into that register, and the backend's own
+    /// emission must not be able to clobber it.
+    #[test]
+    #[should_panic(expected = "aliases select_reload")]
+    fn a_fixed_register_aliasing_select_reload_is_refused() {
+        let _refused = RegisterFile {
+            fixed: &[TEST_FILE.select_reload],
+            ..TEST_FILE
+        }
+        .checked();
+    }
+
+    /// A set is not a range: the pool may hold registers on both sides of a
+    /// reserved one, which is the whole reason `RegSet` replaced base+count.
+    #[test]
+    fn the_pool_may_straddle_a_reserved_register() {
+        let straddling = RegisterFile {
+            scratch: RegSet::of(&[Reg(4), Reg(5), Reg(14), Reg(15)]),
+            ..TEST_FILE
+        }
+        .checked();
+        assert_eq!(straddling.scratch.len(), 4);
+        assert!(!straddling.scratch.contains(straddling.select_reload));
+        let regs: alloc::vec::Vec<Reg> = straddling.scratch.iter().collect();
+        assert_eq!(regs, alloc::vec![Reg(4), Reg(5), Reg(14), Reg(15)]);
+    }
+
+    /// `capped` shrinks a non-contiguous pool to its lowest members.
+    #[test]
+    fn capping_takes_the_lowest_members() {
+        let set = RegSet::of(&[Reg(4), Reg(9), Reg(14), Reg(15)]);
+        let regs: alloc::vec::Vec<Reg> = set.take(2).iter().collect();
+        assert_eq!(regs, alloc::vec![Reg(4), Reg(9)]);
+        assert_eq!(set.take(99).len(), 4, "capping never grows the pool");
+    }
+
+    #[test]
+    #[should_panic(expected = "select_reload duplicates a reload register")]
+    fn a_select_reload_aliasing_a_reload_register_is_refused() {
+        let _refused = RegisterFile {
+            select_reload: Reg(12),
+            ..TEST_FILE
+        }
+        .checked();
+    }
+
+    #[test]
+    #[should_panic(expected = "input register is inside the allocatable pool")]
+    fn an_input_register_inside_the_pool_is_refused() {
+        let _refused = RegisterFile {
+            inputs: [Reg(0), Reg(1), Reg(2), Reg(4)],
+            ..TEST_FILE
+        }
+        .checked();
+    }
+
+    #[test]
+    #[should_panic(expected = "vector_bytes")]
+    fn a_non_power_of_two_vector_width_is_refused() {
+        let _refused = RegisterFile {
+            vector_bytes: 24,
+            ..TEST_FILE
+        }
+        .checked();
+    }
+
+    /// Allocate against a deliberately tiny pool.
+    ///
+    /// The eviction rule only runs once every scratch register is occupied, so
+    /// separating its branches needs a pool small enough that two or three
+    /// values fill it — otherwise the scenario has to be padded out with
+    /// values that obscure which occupant the rule actually picked.
+    fn alloc_in_pool(n: u8, schedule: Vec<Def>) -> Allocation {
+        LinearScan.allocate(schedule, &TEST_FILE.capped(Some(n)))
+    }
+
+    /// `vN = -X`: a non-constant that competes for the scratch pool. A `Var`
+    /// would not — those are pinned to the input registers before the scan.
+    fn neg_x(value: u32) -> Def {
+        def(value, ScheduledOp::Unary(OpKind::Neg, ValueId(0)))
+    }
+
+    /// A constant loses its register to a non-constant that is needed *later*.
+    ///
+    /// Belady alone would keep the constant and evict v2, which is used one
+    /// instruction farther out. Rematerializing costs no memory traffic, so
+    /// the constant goes first whatever its next use — the rule that
+    /// `belady_evicts_the_value_used_farthest_out` cannot see, because no
+    /// constant competes there, and that
+    /// `constants_are_rematerialized_rather_than_spilled` cannot see either,
+    /// because every occupant there is a constant.
+    #[test]
+    fn a_constant_is_evicted_before_a_non_constant_needed_farther_out() {
+        let a = alloc_in_pool(
+            2,
+            vec![
+                def(0, ScheduledOp::Var(0)),
+                def(1, ScheduledOp::Const(1.0)),
+                neg_x(2),
+                neg_x(3), // The pool is full: this forces an eviction.
+                def(4, ScheduledOp::Unary(OpKind::Neg, ValueId(1))),
+                def(5, ScheduledOp::Unary(OpKind::Neg, ValueId(2))),
+            ],
+        );
+
+        assert_eq!(
+            a.placement(ValueId(1)),
+            Placement::Remat(1.0f32.to_bits()),
+            "the constant rematerializes even though v2 is needed later"
+        );
+        assert!(matches!(a.placement(ValueId(2)), Placement::Reg(_)));
+        assert_eq!(a.spilled().count(), 0);
+    }
+
+    /// Two constants needed at the same instruction: the first one seen goes.
+    ///
+    /// The scan keeps a candidate only when it is used *strictly* farther out,
+    /// so a tie leaves the earlier slot in place. Relaxing that comparison
+    /// silently evicts the later occupant instead — the same allocation cost,
+    /// but a different program, and the pair of runs the collapse driver makes
+    /// would still agree, so nothing downstream would notice.
+    #[test]
+    fn tied_constant_eviction_candidates_break_toward_the_first_seen() {
+        let a = alloc_in_pool(
+            2,
+            vec![
+                def(0, ScheduledOp::Var(0)),
+                def(1, ScheduledOp::Const(1.0)),
+                def(2, ScheduledOp::Const(2.0)),
+                neg_x(3), // The pool is full: this forces an eviction.
+                def(4, ScheduledOp::Binary(OpKind::Add, ValueId(1), ValueId(2))),
+            ],
+        );
+
+        assert_eq!(
+            a.placement(ValueId(1)),
+            Placement::Remat(1.0f32.to_bits()),
+            "v1 and v2 are both last used at the same instruction, so the \
+             first-seen candidate is the one to evict"
+        );
+        assert!(matches!(a.placement(ValueId(2)), Placement::Reg(_)));
+    }
+
+    /// The same tie, one branch over: no constants, so Belady picks, and a tie
+    /// again leaves the earlier slot in place.
+    #[test]
+    fn tied_non_constant_eviction_candidates_break_toward_the_first_seen() {
+        let a = alloc_in_pool(
+            2,
+            vec![
+                def(0, ScheduledOp::Var(0)),
+                neg_x(1),
+                neg_x(2),
+                neg_x(3), // The pool is full: this forces an eviction.
+                def(4, ScheduledOp::Binary(OpKind::Add, ValueId(1), ValueId(2))),
+            ],
+        );
+
+        assert_eq!(a.placement(ValueId(1)), Placement::Spilled);
+        assert!(matches!(a.placement(ValueId(2)), Placement::Reg(_)));
+        assert!(matches!(a.placement(ValueId(3)), Placement::Reg(_)));
+    }
+
+    /// When the arriving value and the resident are needed at the same
+    /// instruction, the arriving one goes to memory.
+    ///
+    /// Evicting the resident would hand the register straight to a value with
+    /// exactly the same next use — the identical decision one instruction
+    /// later, plus a store the other choice never pays for.
+    #[test]
+    fn on_a_tied_last_use_the_arriving_value_is_evicted_not_the_resident() {
+        let a = alloc_in_pool(
+            1,
+            vec![
+                def(0, ScheduledOp::Var(0)),
+                neg_x(1),
+                neg_x(2), // The single register is taken: this forces an eviction.
+                def(3, ScheduledOp::Binary(OpKind::Add, ValueId(1), ValueId(2))),
+            ],
+        );
+
+        assert!(
+            matches!(a.placement(ValueId(1)), Placement::Reg(_)),
+            "the resident keeps the register on a tie"
+        );
+        assert_eq!(a.placement(ValueId(2)), Placement::Spilled);
     }
 }
