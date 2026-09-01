@@ -39,6 +39,7 @@ pub mod ops;
 pub mod provenance;
 pub mod rewrite;
 pub mod saturate;
+pub mod template;
 
 // Re-export public API
 pub use anytime::{
@@ -68,12 +69,13 @@ pub use provenance::{
     ApplicationId, ApplicationRecord, ENodeId, Origin, Provenance, UnionEvent,
     derivation_ancestors, derivation_ancestors_tight, format_derivation_trace,
 };
-pub use rewrite::{Rewrite, RewriteAction};
+pub use rewrite::{Rewrite, RewriteAction, TemplateArena};
 pub use saturate::{
     GuidedSaturation, SaturationConfig, SaturationResult, achievable_cost_within_budget,
     config_for_node_count, saturate_guided_until_applications, saturate_with_budget,
     saturate_with_full_budget,
 };
+pub use template::TemplateRewrite;
 
 // Re-export rule types from math module for backward compatibility
 pub use crate::math::{

@@ -1,9 +1,26 @@
 //! Rewrite rule infrastructure.
 
+use std::sync::Arc;
+
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::ops::Op;
 use pixelflow_ir::arena::{ExprArena, ExprId};
+
+/// [`ExprArena`] has no `Debug` impl (it is not a debugging-facing type
+/// anywhere else in the codebase), but [`RewriteAction`] derives one for
+/// assertion failures and test output — so `Instantiate`'s pattern arena is
+/// wrapped rather than shown as forcing a `Debug` impl onto `ExprArena`
+/// itself, which would be a wider API surface change than this harness
+/// variant justifies.
+#[derive(Clone)]
+pub struct TemplateArena(pub Arc<ExprArena>);
+
+impl core::fmt::Debug for TemplateArena {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "TemplateArena(..)")
+    }
+}
 
 /// Build a rewrite-rule template directly into an [`ExprArena`], returning the
 /// root [`ExprId`]. The DSL mirrors the structural pattern: `var N` / `cst V` /
@@ -140,6 +157,113 @@ pub enum RewriteAction {
     /// sub-expressions so equality saturation keeps pushing the derivative
     /// toward the leaves until it dissolves into ordinary arithmetic.
     Differentiate { inner: ENode, var: u8 },
+
+    // ------------------------------------------------------------------
+    // Round 2, modes (i)/(ii) — generic template instantiation
+    // (docs/plans/2026-09-01-phase3-round2-rule-scaling.md §2.2, §8).
+    // The one action every `TemplateRewrite` (`egraph::template`) produces:
+    // exact duplicates delegate straight to their inner rule's own action and
+    // never construct this, but a mechanical composition A∘B has no fixed
+    // shape — it is data (an RHS pattern in `template`) discovered at harness
+    // startup, not a hand-written combinator — so it needs a generic
+    // "instantiate this pattern under these bindings" executor instead of a
+    // bespoke variant per composition.
+    // ------------------------------------------------------------------
+    /// Instantiate `template`'s subtree rooted at `root` bottom-up, reading
+    /// each `Var(i)` leaf as `bindings[i]` (an existing e-class — no new node
+    /// is created for a metavariable, exactly as a real rewrite target),
+    /// building every internal node via [`EGraph::add`], then unioning the
+    /// result with the class that matched the pattern's LHS.
+    Instantiate {
+        template: TemplateArena,
+        root: ExprId,
+        bindings: Vec<EClassId>,
+    },
+
+    // ------------------------------------------------------------------
+    // Round 2, mode (iii) — genuinely new rules
+    // (docs/plans/2026-09-01-phase3-round2-rule-scaling.md §2.3, §8).
+    // Harness-only: produced by `crate::math::round2_rules`, never by any
+    // rule in `all_rules()`.
+    // ------------------------------------------------------------------
+    /// `op(a,b) → neg(dual(neg(a), neg(b)))` — De Morgan duality between
+    /// `min`/`max`. `op` is the DUAL operator built on the RHS (`Max` when
+    /// this fires on `Min`, and vice versa).
+    NegBinaryNeg {
+        op: &'static dyn Op,
+        a: EClassId,
+        b: EClassId,
+    },
+    /// `unary(x) → binary(x, unary(x))` — e.g. `abs(x) → max(x, neg(x))`.
+    SelfPair {
+        unary: &'static dyn Op,
+        binary: &'static dyn Op,
+        x: EClassId,
+    },
+    /// `select(m, func(a), func(b)) → func(select(m, a, b))` — hoist a unary
+    /// op through a mask-select (N14).
+    HoistUnaryThroughSelect {
+        func: &'static dyn Op,
+        mask: EClassId,
+        a: EClassId,
+        b: EClassId,
+    },
+    /// `tan(x) → sin(x) * recip(cos(x))` (N16). Dedicated, single-purpose:
+    /// three new nodes with no reusable shape elsewhere in this batch.
+    TanFromSinCos { x: EClassId },
+    /// `func(x * scale) ← func(x)`'s inverse shape: builds `func(x * scale)`
+    /// with `scale` a compile-time literal (N18: `exp(x) → exp2(x*log2(e))`).
+    ScaleThenUnary {
+        scale: f32,
+        func: &'static dyn Op,
+        x: EClassId,
+    },
+    /// `func(x) * scale` with `scale` a compile-time literal
+    /// (N19: `ln(x) → log2(x)*ln(2)`; N20: `log10(x) → log2(x)*log10(2)`).
+    UnaryThenScale {
+        func: &'static dyn Op,
+        scale: f32,
+        x: EClassId,
+    },
+    /// `func(combine(x, y))` — combine two operands, then wrap in a unary op
+    /// (N21: `sqrt(x)*sqrt(y) → sqrt(x*y)`; N24: `recip(a)*recip(b) →
+    /// recip(a*b)`).
+    CombineThenUnary {
+        combine: &'static dyn Op,
+        func: &'static dyn Op,
+        x: EClassId,
+        y: EClassId,
+    },
+    /// `combine(func(x), func(y))` — apply a unary op to each operand, then
+    /// combine (N24r: `recip(a*b) → recip(a)*recip(b)`; N27a:
+    /// `neg(a+b) → neg(a)+neg(b)`).
+    UnaryPairThenCombine {
+        func: &'static dyn Op,
+        combine: &'static dyn Op,
+        x: EClassId,
+        y: EClassId,
+    },
+    /// `binary(func(base), other)` — apply a unary op to one operand only,
+    /// then combine with the other unchanged (N27b: `neg(a*b) → neg(a)*b`).
+    UnaryThenBinaryWithOther {
+        func: &'static dyn Op,
+        binary: &'static dyn Op,
+        base: EClassId,
+        other: EClassId,
+    },
+    /// `outer(inner(a,b), c)` with `inner != outer` — a fused ternary op
+    /// unfused into two binaries of different operators (N25:
+    /// `fma(a,b,c) → a*b+c`).
+    FuseThenCombine {
+        inner: &'static dyn Op,
+        outer: &'static dyn Op,
+        a: EClassId,
+        b: EClassId,
+        c: EClassId,
+    },
+    /// `a * (1/k)` with `1/k` computed exactly at rule-application time from
+    /// a literal `k` matched on the LHS (N28: `a / k → a * (1/k)`, `k != 0`).
+    MulByLiteralRecip { a: EClassId, recip_k: f32 },
 }
 
 /// A rewrite rule that can be applied to e-graph nodes.

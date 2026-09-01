@@ -55,12 +55,21 @@
 pub mod algebra;
 pub mod exp;
 pub mod fusion;
+pub mod inflate;
 pub mod parity;
 pub mod power;
 pub mod trig;
 
+/// Round 2, mode (iii) — genuinely new rewrite rules, harness-only.
+/// See [`round2_rules::experimental_rules`]. Never referenced by
+/// [`all_rules`] or [`all_math_rules`].
+pub mod round2_rules;
+
 #[cfg(test)]
 mod pict_rewrite_tests; // PICT-style pairwise testing of the rewrite rules (POC)
+
+#[cfg(test)]
+pub(crate) mod oracle; // cross-form oracle gate for Round 2 generated rules (§2.4)
 
 use crate::egraph::rewrite::Rewrite;
 

@@ -1251,6 +1251,69 @@ impl EGraph {
         usize::from(self.find(a) == self.find(b))
     }
 
+    /// Materialize `template`'s subtree at `id` into this e-graph, bottom-up,
+    /// reading each metavariable leaf from `bindings` rather than creating a
+    /// node for it — the same convention every hand-written multi-node
+    /// `RewriteAction` uses (`Distribute`, `Canonicalize`, …), just driven by
+    /// a runtime pattern instead of a fixed shape. `self.add` is what
+    /// attributes every node created here to the active application's
+    /// provenance, so this must only ever be called from inside
+    /// `apply_action` (i.e. under `apply_action_from_rule`).
+    ///
+    /// # Panics
+    ///
+    /// Panics on `Param`/`Buffer` nodes (a rewrite RHS template must never
+    /// contain either — [`super::template::TemplateRewrite::new`] is the
+    /// only producer, and it is built from other rules' own RHS templates,
+    /// which the same invariant already holds for) or on an `OpKind` with no
+    /// static [`Op`] (an arena/op-table drift, not a runtime condition).
+    fn instantiate_template(
+        &mut self,
+        template: &pixelflow_ir::ExprArena,
+        id: pixelflow_ir::ExprId,
+        bindings: &[EClassId],
+    ) -> EClassId {
+        use pixelflow_ir::arena::ExprNode;
+
+        match template.node(id) {
+            ExprNode::Var(mv) => {
+                let mv = *mv as usize;
+                assert!(
+                    mv < bindings.len(),
+                    "instantiate_template: metavariable {mv} has no binding \
+                     ({} supplied) — a TemplateRewrite construction bug, since \
+                     apply() refuses to instantiate a binding it cannot fill",
+                    bindings.len()
+                );
+                bindings[mv]
+            }
+            ExprNode::Const(v) => self.add(ENode::constant(*v)),
+            ExprNode::Param(p) => {
+                panic!("instantiate_template: Param({p}) in a rewrite RHS template")
+            }
+            ExprNode::Buffer(b) => {
+                panic!(
+                    "instantiate_template: Buffer({}) in a rewrite RHS template",
+                    b.0
+                )
+            }
+            _ => {
+                let kind = template.kind(id);
+                let static_op = ops::op_from_kind(kind).unwrap_or_else(|| {
+                    panic!("instantiate_template: no static Op for OpKind {kind:?}")
+                });
+                let children: Vec<EClassId> = template
+                    .children(id)
+                    .map(|c| self.instantiate_template(template, c, bindings))
+                    .collect();
+                self.add(ENode::Op {
+                    op: static_op,
+                    children,
+                })
+            }
+        }
+    }
+
     fn apply_action(&mut self, class_id: EClassId, action: RewriteAction) -> usize {
         match action {
             RewriteAction::Union(target_id) => self.union_counted(class_id, target_id),
@@ -1650,6 +1713,183 @@ impl EGraph {
             RewriteAction::Differentiate { inner, var } => {
                 let deriv_id = self.build_derivative(&inner, var);
                 self.union_counted(class_id, deriv_id)
+            }
+
+            // ---------------------------------------------------------
+            // Round 2, modes (i)/(ii) — see rewrite.rs for the shape docs.
+            // ---------------------------------------------------------
+            RewriteAction::Instantiate {
+                template,
+                root,
+                bindings,
+            } => {
+                let result_id = self.instantiate_template(&template.0, root, &bindings);
+                self.union_counted(class_id, result_id)
+            }
+
+            // ---------------------------------------------------------
+            // Round 2, mode (iii) — see rewrite.rs for the shape docs.
+            // ---------------------------------------------------------
+            RewriteAction::NegBinaryNeg { op, a, b } => {
+                let neg_a = self.add(ENode::Op {
+                    op: &ops::Neg,
+                    children: vec![a],
+                });
+                let neg_b = self.add(ENode::Op {
+                    op: &ops::Neg,
+                    children: vec![b],
+                });
+                let dual = self.add(ENode::Op {
+                    op,
+                    children: vec![neg_a, neg_b],
+                });
+                let result = self.add(ENode::Op {
+                    op: &ops::Neg,
+                    children: vec![dual],
+                });
+                self.union_counted(class_id, result)
+            }
+            RewriteAction::SelfPair { unary, binary, x } => {
+                let u = self.add(ENode::Op {
+                    op: unary,
+                    children: vec![x],
+                });
+                let result = self.add(ENode::Op {
+                    op: binary,
+                    children: vec![x, u],
+                });
+                self.union_counted(class_id, result)
+            }
+            RewriteAction::HoistUnaryThroughSelect { func, mask, a, b } => {
+                let sel = self.add(ENode::Op {
+                    op: &ops::Select,
+                    children: vec![mask, a, b],
+                });
+                let result = self.add(ENode::Op {
+                    op: func,
+                    children: vec![sel],
+                });
+                self.union_counted(class_id, result)
+            }
+            RewriteAction::TanFromSinCos { x } => {
+                let s = self.add(ENode::Op {
+                    op: &ops::Sin,
+                    children: vec![x],
+                });
+                let c = self.add(ENode::Op {
+                    op: &ops::Cos,
+                    children: vec![x],
+                });
+                let r = self.add(ENode::Op {
+                    op: &ops::Recip,
+                    children: vec![c],
+                });
+                let result = self.add(ENode::Op {
+                    op: &ops::Mul,
+                    children: vec![s, r],
+                });
+                self.union_counted(class_id, result)
+            }
+            RewriteAction::ScaleThenUnary { scale, func, x } => {
+                let c = self.add(ENode::constant(scale));
+                let m = self.add(ENode::Op {
+                    op: &ops::Mul,
+                    children: vec![x, c],
+                });
+                let result = self.add(ENode::Op {
+                    op: func,
+                    children: vec![m],
+                });
+                self.union_counted(class_id, result)
+            }
+            RewriteAction::UnaryThenScale { func, scale, x } => {
+                let u = self.add(ENode::Op {
+                    op: func,
+                    children: vec![x],
+                });
+                let c = self.add(ENode::constant(scale));
+                let result = self.add(ENode::Op {
+                    op: &ops::Mul,
+                    children: vec![u, c],
+                });
+                self.union_counted(class_id, result)
+            }
+            RewriteAction::CombineThenUnary {
+                combine,
+                func,
+                x,
+                y,
+            } => {
+                let c = self.add(ENode::Op {
+                    op: combine,
+                    children: vec![x, y],
+                });
+                let result = self.add(ENode::Op {
+                    op: func,
+                    children: vec![c],
+                });
+                self.union_counted(class_id, result)
+            }
+            RewriteAction::UnaryPairThenCombine {
+                func,
+                combine,
+                x,
+                y,
+            } => {
+                let fx = self.add(ENode::Op {
+                    op: func,
+                    children: vec![x],
+                });
+                let fy = self.add(ENode::Op {
+                    op: func,
+                    children: vec![y],
+                });
+                let result = self.add(ENode::Op {
+                    op: combine,
+                    children: vec![fx, fy],
+                });
+                self.union_counted(class_id, result)
+            }
+            RewriteAction::UnaryThenBinaryWithOther {
+                func,
+                binary,
+                base,
+                other,
+            } => {
+                let fb = self.add(ENode::Op {
+                    op: func,
+                    children: vec![base],
+                });
+                let result = self.add(ENode::Op {
+                    op: binary,
+                    children: vec![fb, other],
+                });
+                self.union_counted(class_id, result)
+            }
+            RewriteAction::FuseThenCombine {
+                inner,
+                outer,
+                a,
+                b,
+                c,
+            } => {
+                let i = self.add(ENode::Op {
+                    op: inner,
+                    children: vec![a, b],
+                });
+                let result = self.add(ENode::Op {
+                    op: outer,
+                    children: vec![i, c],
+                });
+                self.union_counted(class_id, result)
+            }
+            RewriteAction::MulByLiteralRecip { a, recip_k } => {
+                let c = self.add(ENode::constant(recip_k));
+                let result = self.add(ENode::Op {
+                    op: &ops::Mul,
+                    children: vec![a, c],
+                });
+                self.union_counted(class_id, result)
             }
         }
     }
