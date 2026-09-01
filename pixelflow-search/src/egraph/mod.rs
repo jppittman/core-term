@@ -47,7 +47,9 @@ pub use extract::{
     compute_ref_counts, extract, extract_dag,
 };
 pub use extraction::{ExtractionPolicy, env_extraction_policy};
-pub use graph::{ApplyResult, EGraph, EGraphBatch, RewriteTarget, SaturationStats};
+pub use graph::{
+    ApplyResult, EGraph, EGraphBatch, RewriteTarget, SaturationStats, SaturationStopReason,
+};
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode};
 pub use ops::Op;

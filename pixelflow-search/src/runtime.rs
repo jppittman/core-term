@@ -21,6 +21,14 @@
 //! `jit_cache`. Callers that want optimized runtime kernels — today,
 //! `pixelflow-core`'s `Lattice::bake` — call this function before handing the
 //! arena to `jit_cache`.
+//!
+//! # Saturation telemetry
+//!
+//! Build with `--features saturation-telemetry` to have every call here emit
+//! one JSONL record of its saturation run (budget, stop reason, cost, wall
+//! clock — see [`crate::telemetry`]). Point it at a file with
+//! `PIXELFLOW_SATURATION_TELEMETRY=/path/to/log.jsonl cargo run --features saturation-telemetry`,
+//! or leave it unset to see records on stderr.
 
 use crate::egraph::{
     EClassId, EGraph, ENode, Op, all_rules, choices_to_arena, config_for_node_count,
@@ -150,7 +158,9 @@ fn optimize_runtime_arena_uncached(
 
     let node_count = reachable_count(&arena, root);
     let config = config_for_node_count(node_count);
-    crate::egraph::saturate_with_full_budget(
+    #[cfg(feature = "saturation-telemetry")]
+    let telemetry_start = std::time::Instant::now();
+    let saturation_result = crate::egraph::saturate_with_full_budget(
         &mut egraph,
         config.max_iterations,
         config.max_classes,
@@ -163,6 +173,22 @@ fn optimize_runtime_arena_uncached(
     let policy = env_extraction_policy().for_lattice(shape);
     let extraction = policy.extraction(&egraph, root_class);
     let (extracted, extracted_root) = choices_to_arena(&extraction);
+
+    #[cfg(feature = "saturation-telemetry")]
+    crate::telemetry::record(crate::telemetry::SaturationInvocation {
+        tier: "runtime",
+        node_count,
+        max_iterations: config.max_iterations,
+        max_classes: config.max_classes,
+        hard_timeout: config.hard_timeout,
+        result: &saturation_result,
+        application_count: egraph.provenance().application_count(),
+        union_count: egraph.provenance().union_count(),
+        extracted_arena: &extracted,
+        extracted_root,
+        wall_clock: telemetry_start.elapsed(),
+        kernel_label: None,
+    });
 
     // The extracted arena declares buffers in extraction-traversal order,
     // which need not match the input's — and slot order is ABI: the JIT

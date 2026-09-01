@@ -350,6 +350,7 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 - **Cocoa main thread panic**: Ensure `pixelflow_runtime::run()` called from `fn main()`, not a spawned thread.
 - **Complex Manifold trait bounds**: Add explicit type annotations, break into named intermediates.
 - **"method not found" on Manifold**: Import `use pixelflow_core::Manifold;` and extension traits.
+- **Why did the e-graph pick that?**: Build with `--features saturation-telemetry` (e.g. `cargo run -p core-term --features saturation-telemetry`) and every production saturation run — macro-tier `kernel!` expansions and runtime-tier `Lattice::bake`/glyph bakes alike — appends a JSONL record (budget, stop reason, cost, wall clock) to `$PIXELFLOW_SATURATION_TELEMETRY` if set, else stderr; see `pixelflow-search/src/telemetry.rs`.
 
 ## Execution Notes
 
