@@ -120,3 +120,17 @@ path = "src/bin/guide_scope_saturation_delta.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "mint_variant_sets"
+path = "src/bin/mint_variant_sets.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "train_contrastive"
+path = "src/bin/train_contrastive.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
