@@ -29,15 +29,28 @@
 //! signal and not evaluable signal either (measurement-discipline
 //! requirement, docs/plans/2026-08-05-egraph-nnue-research-workflow.md §4).
 //!
-//! Every accumulator (regression and pairwise, TRAIN and DEV) is built once
-//! against ONE reference `ExprNnue::new_random(seed)`'s embeddings and
-//! reused across every lambda in the sweep: embeddings are frozen for the
-//! whole run (P1(a) — `unified_backward`'s `backward_value`/
-//! `backward_pairwise` never produce a `d_embeddings` gradient, see that
-//! module's doc), and every lambda config is cold-started from the SAME
-//! seed, so every config's embeddings are bit-identical to the reference's
-//! for the run's entire duration. Rebuilding features per lambda would
-//! recompute the exact same numbers `k` times.
+//! Every sample (regression and pairwise, TRAIN and DEV) is walked into an
+//! [`EdgeTrace`](pixelflow_search::nnue::factored::EdgeTrace) exactly once,
+//! against a throwaway reference `ExprNnue::new_random(seed)` used only to
+//! run the walk — the trace itself is embedding-independent (structure +
+//! PE rotation only) and is reused across every lambda in the sweep, so the
+//! O(edges) walk is not repeated `k` times.
+//!
+//! What IS repeated per lambda, per forward pass, is `trace.realize(&model
+//! .embeddings)`: `unified_backward`'s `backward_value`/`backward_pairwise`
+//! both differentiate into `grads.d_embeddings` through the recorded edge
+//! stream (P1(a) — embeddings are a real, trained parameter now, not a
+//! frozen reference table), so each lambda's model — cold-started from the
+//! SAME seed but trained under a different loss — moves its OWN embeddings
+//! independently from step one, and every forward/backward for that model
+//! must realize features from that model's current table, not a shared
+//! frozen one. This is the corollary the module doc for `unified_backward`
+//! flags: a contrastive run trains embeddings too, which past-2b framing
+//! (written when neither loss had an accumulator-backward path) did not
+//! anticipate — see that module's history note. DEV evaluation realizes
+//! from each lambda's own FINAL trained embeddings for the same reason: a
+//! DEV accumulator built against the discarded reference table would score
+//! the wrong function.
 //!
 //! # Usage
 //!
@@ -54,7 +67,7 @@ use serde::Serialize;
 use pixelflow_ir::{ExprArena, ExprId};
 use pixelflow_search::egraph::CostModel;
 use pixelflow_search::nnue::ExprNnue;
-use pixelflow_search::nnue::factored::EdgeAccumulator;
+use pixelflow_search::nnue::factored::{EdgeAccumulator, EdgeTrace};
 
 use pixelflow_pipeline::extraction_head_weights_path;
 use pixelflow_pipeline::jit_bench::{
@@ -71,8 +84,8 @@ use pixelflow_pipeline::training::quarantine::Quarantine;
 use pixelflow_pipeline::training::split::{DevSide, Fence, FinalSide};
 use pixelflow_pipeline::training::stats::{noise_floor_pct, noise_probe_arena, spearman_rho};
 use pixelflow_pipeline::training::unified_backward::{
-    SgdConfig, UnifiedGradients, apply_unified_sgd, backward_pairwise, backward_value,
-    forward_cached,
+    PairwiseSide, SgdConfig, UnifiedGradients, ValueObjective, apply_unified_sgd,
+    backward_pairwise, backward_value, forward_cached,
 };
 use pixelflow_pipeline::training::variant_set::{
     MintTally, VariantMember, mint_variant_set_dev_eval_with_arenas, mint_variant_set_with_arenas,
@@ -218,14 +231,20 @@ impl SeededRng {
 // ── Regression samples ──────────────────────────────────────────────────────
 
 struct RegressionSample {
-    acc: EdgeAccumulator,
+    /// The typed record of the feature walk, NOT a baked accumulator: every
+    /// forward pass realizes this against the training model's OWN live
+    /// embeddings ([`EdgeTrace::realize`]), because embeddings now move
+    /// under `backward_value`/`backward_pairwise` (P1(a)) and each lambda's
+    /// model trains its own copy independently. See the module doc.
+    trace: EdgeTrace,
     target_log_ns: f32,
 }
 
 /// Benchmark every entry of `entries` under `session`, quarantine-check and
-/// mint a label for each, and build its `EdgeAccumulator` against
-/// `ref_embeddings`. Returns samples plus (attempted, bench_failed,
-/// quarantine_failed) tallies.
+/// mint a label for each, and walk it into an [`EdgeTrace`] (embeddings
+/// only run the walk once — the trace itself doesn't depend on their
+/// values, see [`EdgeAccumulator::from_arena_dag_traced`]). Returns samples
+/// plus (attempted, bench_failed, quarantine_failed) tallies.
 ///
 /// `drift_factors` collects each minted label's [`CostLabel::drift`] — pass
 /// the run's shared TRAIN-label accumulator here, or a throwaway `Vec` for
@@ -238,7 +257,7 @@ fn build_regression_samples(
     session: &mut BenchSession,
     quarantine: &mut Quarantine,
     entries: &[(String, ExprArena, ExprId)],
-    ref_embeddings: &pixelflow_search::nnue::factored::OpEmbeddings,
+    walk_embeddings: &pixelflow_search::nnue::factored::OpEmbeddings,
     name_prefix: &str,
     position: &mut usize,
     drift_factors: &mut Vec<f64>,
@@ -265,9 +284,9 @@ fn build_regression_samples(
         let label = CostLabel::mint(&bench, BenchPosition(*position), "train_contrastive");
         *position += 1;
         drift_factors.push(label.drift().get());
-        let acc = EdgeAccumulator::from_arena_dag(arena, *root, ref_embeddings);
+        let (_, trace) = EdgeAccumulator::from_arena_dag_traced(arena, *root, walk_embeddings);
         samples.push(RegressionSample {
-            acc,
+            trace,
             target_log_ns: label.target_log_ns(),
         });
     }
@@ -277,19 +296,23 @@ fn build_regression_samples(
 // ── Pairwise samples ────────────────────────────────────────────────────────
 
 struct PairSample {
-    acc_cheaper: EdgeAccumulator,
-    acc_pricier: EdgeAccumulator,
+    /// Each side's typed feature-walk record — realized against the
+    /// training model's live embeddings on every forward pass, same as
+    /// [`RegressionSample::trace`].
+    trace_cheaper: EdgeTrace,
+    trace_pricier: EdgeTrace,
 }
 
 /// Every orderable pair (measured delta at/above `floor_pct`) inside one
-/// minted `(members, arenas)` VariantSet, as `PairSample`s built against
-/// `ref_embeddings`. Also returns (total pairs in this set, orderable pairs
-/// in this set) for the dataset-quality report.
+/// minted `(members, arenas)` VariantSet, as `PairSample`s (each side
+/// walked into an [`EdgeTrace`] once, against `walk_embeddings` — see
+/// [`build_regression_samples`]). Also returns (total pairs in this set,
+/// orderable pairs in this set) for the dataset-quality report.
 fn set_pairs(
     members: &[VariantMember],
     arenas: &[(ExprArena, ExprId)],
     floor_pct: f64,
-    ref_embeddings: &pixelflow_search::nnue::factored::OpEmbeddings,
+    walk_embeddings: &pixelflow_search::nnue::factored::OpEmbeddings,
 ) -> (Vec<PairSample>, usize, usize) {
     let mut pairs = Vec::new();
     let mut total = 0usize;
@@ -314,9 +337,13 @@ fn set_pairs(
             };
             let (ca, ra) = &arenas[cheaper_idx];
             let (cp, rp) = &arenas[pricier_idx];
+            let (_, trace_cheaper) =
+                EdgeAccumulator::from_arena_dag_traced(ca, *ra, walk_embeddings);
+            let (_, trace_pricier) =
+                EdgeAccumulator::from_arena_dag_traced(cp, *rp, walk_embeddings);
             pairs.push(PairSample {
-                acc_cheaper: EdgeAccumulator::from_arena_dag(ca, *ra, ref_embeddings),
-                acc_pricier: EdgeAccumulator::from_arena_dag(cp, *rp, ref_embeddings),
+                trace_cheaper,
+                trace_pricier,
             });
         }
     }
@@ -381,12 +408,20 @@ fn train_one_lambda(
                 match item {
                     TrainItem::Regression(idx) => {
                         let s = &train_samples[idx];
-                        let cache = forward_cached(&model, &s.acc);
+                        // Realized from the LIVE table on every step — this
+                        // model's embeddings move under its own gradient
+                        // from epoch 0, so a cached accumulator would go
+                        // stale the moment SGD touches `model.embeddings`.
+                        let acc = s.trace.realize(&model.embeddings);
+                        let cache = forward_cached(&model, &acc);
                         backward_value(
                             &model,
                             &cache,
-                            s.target_log_ns,
-                            args.value_coeff,
+                            &s.trace,
+                            ValueObjective {
+                                target_log_ns: s.target_log_ns,
+                                coeff: args.value_coeff,
+                            },
                             &mut grads,
                         );
                         let err = cache.value_pred - s.target_log_ns;
@@ -395,12 +430,20 @@ fn train_one_lambda(
                     }
                     TrainItem::Pair(idx) => {
                         let p = &train_pairs[idx];
-                        let cache_cheaper = forward_cached(&model, &p.acc_cheaper);
-                        let cache_pricier = forward_cached(&model, &p.acc_pricier);
+                        let acc_cheaper = p.trace_cheaper.realize(&model.embeddings);
+                        let acc_pricier = p.trace_pricier.realize(&model.embeddings);
+                        let cache_cheaper = forward_cached(&model, &acc_cheaper);
+                        let cache_pricier = forward_cached(&model, &acc_pricier);
                         let violation = backward_pairwise(
                             &model,
-                            &cache_cheaper,
-                            &cache_pricier,
+                            PairwiseSide {
+                                cache: &cache_cheaper,
+                                trace: &p.trace_cheaper,
+                            },
+                            PairwiseSide {
+                                cache: &cache_pricier,
+                                trace: &p.trace_pricier,
+                            },
                             lambda,
                             &mut grads,
                         );
@@ -439,9 +482,13 @@ fn train_one_lambda(
     }
 
     // ── DEV regression metrics ──────────────────────────────────────────
+    // Realized from THIS model's final trained embeddings, not the
+    // discarded walk-time reference table — DEV must score the function
+    // this lambda actually learned, and since P1(a) that function includes
+    // the embedding table.
     let predicted: Vec<f32> = dev_samples
         .iter()
-        .map(|s| model.predict_log_cost_with_features(&s.acc))
+        .map(|s| model.predict_log_cost_with_features(&s.trace.realize(&model.embeddings)))
         .collect();
     let measured: Vec<f32> = dev_samples.iter().map(|s| s.target_log_ns).collect();
     let dev_mae = predicted
@@ -455,8 +502,10 @@ fn train_one_lambda(
     // ── DEV pairwise accuracy (the diagnostic this round exists for) ────
     let mut correct = 0usize;
     for p in dev_pairs {
-        let pred_cheaper = model.predict_log_cost_with_features(&p.acc_cheaper);
-        let pred_pricier = model.predict_log_cost_with_features(&p.acc_pricier);
+        let pred_cheaper =
+            model.predict_log_cost_with_features(&p.trace_cheaper.realize(&model.embeddings));
+        let pred_pricier =
+            model.predict_log_cost_with_features(&p.trace_pricier.realize(&model.embeddings));
         if pred_cheaper < pred_pricier {
             correct += 1;
         }
@@ -572,10 +621,14 @@ fn main() {
     mint_meta.require_weights(&weights_bytes);
     let static_costs = CostModel::latency_prior();
 
-    // Reference embeddings: every model in the sweep is cold-started from
-    // the SAME seed and never updates embeddings (P1(a)), so features built
-    // against this one reference are valid for every lambda's model for the
-    // run's entire duration.
+    // Walk-time reference model: used ONLY to run each sample's feature walk
+    // once and record its `EdgeTrace` (structural — PE rotation + op kinds —
+    // and independent of embedding VALUES, so any consistent table works
+    // here). Every lambda's model is cold-started from the SAME seed as this
+    // one, but — since embeddings now train under `backward_value`/
+    // `backward_pairwise` (P1(a)) — each one moves its OWN copy from step
+    // one; every actual forward/backward realizes the trace against that
+    // model's live `model.embeddings`, never against this reference's.
     let ref_model = ExprNnue::new_random(args.seed);
 
     let mut session = BenchSession::new();

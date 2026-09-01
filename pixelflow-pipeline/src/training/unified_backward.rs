@@ -621,14 +621,14 @@ fn backward_from_d_value(
 ///
 /// Loss = max(0, pred(cheaper) − pred(pricier)) · lambda
 ///
-/// `cheaper_trace`/`pricier_trace` are each side's [`EdgeTrace`] — the same
-/// per-sample provenance [`backward_value`] requires, for the same reason:
-/// each side's forward pass realized its features from the LIVE
-/// [`ExprNnue::embeddings`] table (`cheaper`/`pricier` are the resulting
-/// caches), so the pairwise gradient flows into `grads.d_embeddings`
-/// through both sides' recorded edge streams, not just the shared trunk.
-/// There is no longer a frozen-embeddings tier for this loss to skip that
-/// path through — see the module docs' `EdgeTrace` discussion.
+/// Each side's [`PairwiseSide::trace`] is the same per-sample provenance
+/// [`backward_value`] requires, for the same reason: each side's forward
+/// pass realized its features from the LIVE [`ExprNnue::embeddings`] table
+/// (`PairwiseSide::cache` is the resulting cache), so the pairwise gradient
+/// flows into `grads.d_embeddings` through both sides' recorded edge
+/// streams, not just the shared trunk. There is no longer a
+/// frozen-embeddings tier for this loss to skip that path through — see the
+/// module docs' `EdgeTrace` discussion.
 ///
 /// Returns the UNWEIGHTED hinge violation (`max(0, pred(cheaper) -
 /// pred(pricier))`, before `lambda` is applied) for the caller's loss
@@ -636,14 +636,12 @@ fn backward_from_d_value(
 /// (which is also when this function contributes no gradient).
 pub fn backward_pairwise(
     net: &ExprNnue,
-    cheaper: &UnifiedForwardCache,
-    cheaper_trace: &EdgeTrace,
-    pricier: &UnifiedForwardCache,
-    pricier_trace: &EdgeTrace,
+    cheaper: PairwiseSide<'_>,
+    pricier: PairwiseSide<'_>,
     lambda: f32,
     grads: &mut UnifiedGradients,
 ) -> f32 {
-    let violation = cheaper.value_pred - pricier.value_pred;
+    let violation = cheaper.cache.value_pred - pricier.cache.value_pred;
     if violation <= 0.0 {
         // Already correctly ordered: hinge is flat here, zero gradient by
         // design (see the function doc for why zero margin, not a "close
@@ -653,9 +651,21 @@ pub fn backward_pairwise(
     }
     // d(violation * lambda)/d(pred(cheaper)) = +lambda
     // d(violation * lambda)/d(pred(pricier)) = -lambda
-    backward_from_d_value(net, cheaper, cheaper_trace, lambda, grads);
-    backward_from_d_value(net, pricier, pricier_trace, -lambda, grads);
+    backward_from_d_value(net, cheaper.cache, cheaper.trace, lambda, grads);
+    backward_from_d_value(net, pricier.cache, pricier.trace, -lambda, grads);
     violation
+}
+
+/// One side of a [`backward_pairwise`] comparison: a forward cache paired
+/// with the [`EdgeTrace`] that produced it. Grouped into one type rather
+/// than passed as two more parameters — `backward_pairwise` needs both
+/// halves for BOTH sides of the pair, and a bare `(&UnifiedForwardCache,
+/// &EdgeTrace)` tuple would let a caller silently swap a `cheaper` cache
+/// with a `pricier` trace, which `PairwiseSide` field names rule out.
+#[derive(Clone, Copy)]
+pub struct PairwiseSide<'a> {
+    pub cache: &'a UnifiedForwardCache,
+    pub trace: &'a EdgeTrace,
 }
 
 // ============================================================================
@@ -1952,10 +1962,14 @@ mod tests {
         let mut grads = Box::new(UnifiedGradients::zero());
         let violation = backward_pairwise(
             &net,
-            &cache_cheaper,
-            trace_cheaper,
-            &cache_pricier,
-            trace_pricier,
+            PairwiseSide {
+                cache: &cache_cheaper,
+                trace: trace_cheaper,
+            },
+            PairwiseSide {
+                cache: &cache_pricier,
+                trace: trace_pricier,
+            },
             lambda,
             &mut grads,
         );
@@ -1976,13 +1990,11 @@ mod tests {
             for j in [0, 32, 63] {
                 let mut net_p = net.clone();
                 net_p.w1[i][j] += eps;
-                let loss_plus =
-                    pairwise_loss_traced(&net_p, trace_cheaper, trace_pricier, lambda);
+                let loss_plus = pairwise_loss_traced(&net_p, trace_cheaper, trace_pricier, lambda);
 
                 let mut net_m = net.clone();
                 net_m.w1[i][j] -= eps;
-                let loss_minus =
-                    pairwise_loss_traced(&net_m, trace_cheaper, trace_pricier, lambda);
+                let loss_minus = pairwise_loss_traced(&net_m, trace_cheaper, trace_pricier, lambda);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_w1[i][j], num_grad);
@@ -2068,21 +2080,24 @@ mod tests {
 
         let cache_a = forward_cached(&net, &trace_a.realize(&net.embeddings));
         let cache_b = forward_cached(&net, &trace_b.realize(&net.embeddings));
-        let (cheaper, cheaper_trace, pricier, pricier_trace) = if cache_a.value_pred
-            <= cache_b.value_pred
-        {
-            (&cache_a, &trace_a, &cache_b, &trace_b)
-        } else {
-            (&cache_b, &trace_b, &cache_a, &trace_a)
-        };
+        let (cheaper, cheaper_trace, pricier, pricier_trace) =
+            if cache_a.value_pred <= cache_b.value_pred {
+                (&cache_a, &trace_a, &cache_b, &trace_b)
+            } else {
+                (&cache_b, &trace_b, &cache_a, &trace_a)
+            };
 
         let mut grads = UnifiedGradients::zero();
         let violation = backward_pairwise(
             &net,
-            cheaper,
-            cheaper_trace,
-            pricier,
-            pricier_trace,
+            PairwiseSide {
+                cache: cheaper,
+                trace: cheaper_trace,
+            },
+            PairwiseSide {
+                cache: pricier,
+                trace: pricier_trace,
+            },
             0.5,
             &mut grads,
         );

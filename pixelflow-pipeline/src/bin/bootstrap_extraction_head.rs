@@ -1864,66 +1864,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn average_ranks_no_ties() {
-        assert_eq!(average_ranks(&[10.0, 30.0, 20.0]), vec![1.0, 3.0, 2.0]);
-    }
-
-    #[test]
-    fn average_ranks_with_ties() {
-        // 2.0 occupies ranks 2 and 3 → both get 2.5.
-        assert_eq!(
-            average_ranks(&[1.0, 2.0, 2.0, 4.0]),
-            vec![1.0, 2.5, 2.5, 4.0]
-        );
-    }
-
-    #[test]
-    fn spearman_perfect_monotone() {
-        // Monotone but non-linear: rank correlation is exactly 1.
-        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
-        let b = [1.0, 4.0, 9.0, 16.0, 25.0];
-        let rho = spearman_rho(&a, &b).expect("defined");
-        assert!((rho - 1.0).abs() < 1e-12, "got {rho}");
-
-        let rev: Vec<f32> = b.iter().rev().copied().collect();
-        let rho = spearman_rho(&a, &rev).expect("defined");
-        assert!((rho + 1.0).abs() < 1e-12, "got {rho}");
-    }
-
-    #[test]
-    fn spearman_known_small_example() {
-        // Ranks: a=[1,2,3], b=[3,1,2]; d²=[4,1,1] → ρ = 1 − 6·6/(3·8) = −0.5.
-        let rho = spearman_rho(&[1.0, 2.0, 3.0], &[3.0, 1.0, 2.0]).expect("defined");
-        assert!((rho + 0.5).abs() < 1e-12, "got {rho}");
-    }
-
-    #[test]
-    fn spearman_with_ties_uses_average_ranks() {
-        // a ranks: [1, 2.5, 2.5, 4]; b ranks: [1, 2, 3, 4].
-        // Pearson on those ranks: 4.5 / sqrt(4.5 * 5) = 0.9486832...
-        let rho = spearman_rho(&[1.0, 2.0, 2.0, 4.0], &[1.0, 2.0, 3.0, 4.0]).expect("defined");
-        let expected = 4.5 / (4.5f64 * 5.0).sqrt();
-        assert!((rho - expected).abs() < 1e-12, "got {rho}, want {expected}");
-    }
-
-    #[test]
-    fn spearman_zero_variance_is_undefined() {
-        assert!(spearman_rho(&[7.0, 7.0, 7.0], &[1.0, 2.0, 3.0]).is_none());
-        assert!(spearman_rho(&[1.0, 2.0, 3.0], &[7.0, 7.0, 7.0]).is_none());
-    }
-
-    #[test]
-    #[should_panic(expected = "length mismatch")]
-    fn spearman_length_mismatch_panics() {
-        let _ = spearman_rho(&[1.0, 2.0], &[1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    #[should_panic(expected = "non-comparable (NaN)")]
-    fn average_ranks_nan_panics() {
-        let _ = average_ranks(&[1.0, f32::NAN, 3.0]);
-    }
+    // `average_ranks`/`spearman_rho` moved to `training::stats` (dedup'd out
+    // of this binary and `mint_variant_sets`) — their coverage, including
+    // the ties/NaN/length-mismatch edge cases this file used to check
+    // directly, now lives in that module's own test suite rather than
+    // duplicated per consumer.
 
     // ── Benchmark order (item 6b) ───────────────────────────────────────────
 
