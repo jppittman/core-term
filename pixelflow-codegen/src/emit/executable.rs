@@ -582,8 +582,7 @@ mod tests {
 
         let mut code = Vec::new();
 
-        // RET
-        code.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
+        crate::emit::aarch64::ret(&mut code);
 
         unsafe {
             let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
@@ -616,8 +615,7 @@ mod tests {
         let fadd = 0x4E20D400u32 | 0 | (0 << 5) | (1 << 16);
         code.extend_from_slice(&fadd.to_le_bytes());
 
-        // RET
-        code.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
+        crate::emit::aarch64::ret(&mut code);
 
         unsafe {
             let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
@@ -655,8 +653,7 @@ mod tests {
         let fmul = 0x6E20DC00u32 | 0 | (0 << 5) | (2 << 16);
         code.extend_from_slice(&fmul.to_le_bytes());
 
-        // RET
-        code.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
+        crate::emit::aarch64::ret(&mut code);
 
         unsafe {
             let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
@@ -698,8 +695,7 @@ mod tests {
         // DUP V0.4S, W16
         code.extend_from_slice(&(0x4E040C00u32 | (16 << 5) | 0).to_le_bytes());
 
-        // RET
-        code.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
+        crate::emit::aarch64::ret(&mut code);
 
         unsafe {
             let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
@@ -723,8 +719,7 @@ mod tests {
 
         let mut code = Vec::new();
 
-        // RET
-        code.push(0xC3);
+        crate::emit::x86_64::ret(&mut code);
 
         unsafe {
             let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
@@ -749,11 +744,9 @@ mod tests {
 
         let mut code = Vec::new();
 
-        // ADDPS xmm0, xmm1
-        code.extend_from_slice(&[0x0F, 0x58, 0xC1]);
+        crate::emit::x86_64::emit_addps(&mut code, crate::emit::Reg(0), crate::emit::Reg(1));
 
-        // RET
-        code.push(0xC3);
+        crate::emit::x86_64::ret(&mut code);
 
         unsafe {
             let exec = ExecutableCode::from_code(&code).expect("failed to create executable");
