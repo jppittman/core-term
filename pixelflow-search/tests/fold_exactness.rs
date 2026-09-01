@@ -75,7 +75,7 @@ fn refused_union_is_journaled() {
     let d = cancel(&mut a);
     let mut eg = EGraph::with_rules(all_rules());
     let root = eg.add_arena(&a, d);
-    eg.saturate_with_limit(60);
+    eg.saturate_with_limits(60, 10_000, std::time::Duration::from_millis(500));
     let _ = root;
     assert!(
         !eg.refused_const_unions().is_empty(),

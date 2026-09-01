@@ -119,7 +119,7 @@ mod tests {
         // budgeting concern orthogonal to autodiff.)
         let mut eg = EGraph::with_rules(derivative_rules());
         let root_class = eg.add_arena(&a, root);
-        eg.saturate_with_limit(60);
+        eg.saturate_with_limits(60, 10_000, std::time::Duration::from_millis(500));
 
         let (out, out_root, _cost) = extract(&eg, root_class, &CostModel::default());
         assert!(
@@ -245,7 +245,7 @@ mod piecewise_tests {
         let root = a.push_binary(OpKind::Dwrt, differentiand, v);
         let mut eg = EGraph::with_rules(derivative_rules());
         let root_class = eg.add_arena(&a, root);
-        eg.saturate_with_limit(60);
+        eg.saturate_with_limits(60, 10_000, std::time::Duration::from_millis(500));
         let (out, out_root, _cost) = extract(&eg, root_class, &CostModel::default());
         assert!(
             !(0..out.len()).any(|i| matches!(

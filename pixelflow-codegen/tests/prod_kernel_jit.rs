@@ -54,7 +54,7 @@ fn optimize(arena: &ExprArena, root: ExprId, tag: &str) -> (ExprArena, ExprId) {
     let root_class = eg.add_arena(arena, root);
     let classes_before = eg.num_classes();
 
-    eg.saturate_with_limit(40);
+    eg.saturate_with_limits(40, 10_000, std::time::Duration::from_millis(500));
     let classes_after = eg.num_classes();
 
     // Latency-prior extraction of the cheapest DAG.

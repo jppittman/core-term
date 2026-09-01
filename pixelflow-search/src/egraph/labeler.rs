@@ -290,7 +290,7 @@ pub fn run_episode(
 ) -> EpisodeResult {
     let mut egraph = EGraph::with_rules(rules);
     let root_class = egraph.add_arena(arena, root);
-    egraph.saturate();
+    egraph.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
 
     let costs = CostModel::latency_prior();
     let extraction = extract::extract_dag(&egraph, root_class, &costs);

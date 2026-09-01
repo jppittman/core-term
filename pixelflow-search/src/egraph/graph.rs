@@ -858,22 +858,14 @@ impl EGraph {
         self.nodes(id).iter().any(|n| n.is_const(val))
     }
 
-    /// Saturate the e-graph with time and size limits.
-    ///
-    /// Uses chess-style time management:
-    /// - 500ms hard timeout (never exceed)
-    /// - 10000 class limit (prevent memory explosion)
-    /// - 100 iteration limit (budget control)
-    pub fn saturate(&mut self) {
-        self.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
-    }
-
-    /// Saturate with just an iteration limit (simple compatibility API).
-    ///
-    /// Warning: This can hang on complex expressions. Prefer `saturate_with_limits`.
-    pub fn saturate_with_limit(&mut self, max_iters: usize) {
-        self.saturate_with_limits(max_iters, 10_000, std::time::Duration::from_millis(500));
-    }
+    // `saturate`/`saturate_with_limit` (hardcoded 100-or-N/10,000/500ms
+    // convenience wrappers) were deleted here (J11,
+    // docs/plans/2026-08-17-cost-model-domain.md, 2026-09-01 integration
+    // audit): a second, ad hoc budget alongside `SaturationConfig`'s presets
+    // is exactly the drift the domain model doc calls out. Every caller now
+    // goes through `super::saturate::saturate_with_full_budget` (same
+    // limits, spelled out at the call site) or, in production code,
+    // `config_for_node_count`'s size-tiered budget.
 
     /// Saturate with full time and size control.
     ///
@@ -2169,7 +2161,7 @@ mod tests {
             op: &ops::Add,
             children: vec![x, neg_x],
         });
-        eg.saturate();
+        eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
         let zero = eg.add(ENode::constant(0.0));
         assert_eq!(eg.find(sum), eg.find(zero));
     }
@@ -2186,7 +2178,7 @@ mod tests {
             op: &ops::Mul,
             children: vec![x, recip_x],
         });
-        eg.saturate();
+        eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
         let one = eg.add(ENode::constant(1.0));
         assert_eq!(eg.find(product), eg.find(one));
     }
@@ -2204,7 +2196,7 @@ mod tests {
             op: &ops::Div,
             children: vec![prod, x],
         });
-        eg.saturate();
+        eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
         assert_eq!(eg.find(div), eg.find(five));
     }
 
@@ -2227,7 +2219,7 @@ mod tests {
             children: vec![a, b_minus_c],
         }); // 10 - 4 = 6
 
-        eg.saturate();
+        eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
 
         // Extract and verify structure
         let costs = CostModel::default();
@@ -2258,7 +2250,7 @@ mod tests {
             children: vec![d_sq, inner_sub],
         });
 
-        eg.saturate();
+        eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
 
         let costs = CostModel::default();
         let (arena, root) = eg.extract_expr_with_costs(result, &costs);
@@ -2287,7 +2279,7 @@ mod tests {
             children: vec![x_sq, inner_sub],
         });
 
-        eg.saturate();
+        eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
 
         let costs = CostModel::default();
         let (arena, root) = eg.extract_expr_with_costs(result, &costs);
@@ -2320,7 +2312,7 @@ mod tests {
             children: vec![x_sq, inner_sub],
         });
 
-        eg.saturate();
+        eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
 
         // Use default costs like the kernel! macro does
         let costs = CostModel::new();
@@ -2372,7 +2364,7 @@ mod tests {
             children: vec![d_sq, inner],
         });
 
-        eg.saturate();
+        eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
 
         let costs = CostModel::new();
         let (arena, root) = eg.extract_expr_with_costs(result, &costs);
@@ -2420,7 +2412,7 @@ mod tests {
             });
         }
 
-        eg.saturate();
+        eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
 
         // Extract with default costs (high threshold)
         let default_costs = CostModel::default();
@@ -2672,7 +2664,7 @@ mod tests {
         }
 
         let start = std::time::Instant::now();
-        eg.saturate();
+        eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
         let elapsed = start.elapsed();
 
         eprintln!(
