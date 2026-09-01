@@ -181,3 +181,22 @@ where the buy-back is; the Guide must discriminate at **candidate granularity** 
 of which rule at which e-class, per the design revision §4's candidate-local feature argument
 and the §2.2 dedup finding), or it will have nothing to show at these budgets. This is
 context for Guide design, not part of the claim.
+
+## 9. Results appended against the gates (DEV, round 1, 2026-09-01)
+
+Appended per this document's own rule (results only; nothing above is revised). Full report:
+`docs/results/2026-09-01-phase3-at-budget-eval.md` (per-expression rows in the `.jsonl`,
+generated tables in `-report.md`). All 334 DEV classical expressions; Guide =
+`guide_checkpoint_strict_v1.json` (strict-v1 labels, cold start); control = `PerRuleRateGuide`.
+
+| Tier | Registered | Measured (linear Guide, median per-expression) | Verdict |
+|---|---|---|---|
+| classical B=100 | ratio ≤ 0.837 (Y=16.3%); gap vs 4B ≤ 24.2% | ratio **0.537** (323 improved / 4 unchanged / 7 worse); gap vs unguided@400 **0.00%** | both clauses hold on DEV |
+| classical B=200 | ratio ≤ 0.910 (Y=9.0%); gap vs 4B ≤ 11.0% | ratio **0.696** (245 / 71 / 18); gap vs unguided@800 **0.00%** | both clauses hold on DEV |
+
+Control arm (per-rule TRAIN rates, no candidate-local information): median ratio 0.565 / 0.699 —
+most of the effect; the linear model wins the head-to-head ~2:1 where they differ and halves the
+p90 regret. Kill gate: not fired (round 1 of 5 clean rounds). Accept gate: not yet run (FINAL
+untouched). Production context: classical production stops at a median 1,671 applications
+(q1 400, q3 9,441; 314 quiesced / 20 timeout), i.e. beyond 4B on most expressions — the
+registered budget is not the regime production runs in.
