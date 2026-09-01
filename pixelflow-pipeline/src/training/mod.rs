@@ -37,3 +37,6 @@ pub mod quarantine;
 
 #[cfg(feature = "training")]
 pub mod guide_linear;
+
+#[cfg(feature = "training")]
+pub mod sh_family;
