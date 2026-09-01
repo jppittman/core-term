@@ -109,15 +109,36 @@ pub struct ApplyResult {
     pub evals: usize,
 }
 
+/// Why [`EGraph::saturate_with_limits`] returned — the field
+/// `pixelflow-pipeline/src/bin/guide_headroom.rs` names as the one ambiguity
+/// its own `iterations < max_iters` proxy can't resolve. Read off the same
+/// loop that decides when to stop, never inferred from the counts after the
+/// fact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaturationStopReason {
+    /// A round applied zero rewrites — the e-graph reached a fixed point
+    /// under the active rule set (not a certified global fixpoint; just
+    /// "nothing left for these rules to do").
+    Converged,
+    /// `max_iters` rounds completed without converging.
+    IterationLimit,
+    /// E-class count exceeded `max_classes` before either of the above.
+    ClassLimit,
+    /// Wall-clock `timeout` elapsed before either of the above.
+    Timeout,
+}
+
 /// Result of one [`EGraph::saturate_with_limits`] run: how many rounds it
 /// took and how many rule applications fired in total, whichever limit
 /// (iteration count, class count, timeout, or convergence) ended the run.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct SaturationStats {
     /// Number of rewrite rounds completed before the run stopped.
     pub iterations: usize,
     /// Sum of `ApplyResult::changes` across every round.
     pub total_unions: usize,
+    /// Which limit ended the run.
+    pub stop_reason: SaturationStopReason,
 }
 
 impl EGraph {
@@ -842,12 +863,15 @@ impl EGraph {
         let deadline = start + timeout;
         let mut iterations = 0;
         let mut total_unions = 0;
+        let mut stop_reason = SaturationStopReason::IterationLimit;
 
         for _ in 0..max_iters {
             if start.elapsed() >= timeout {
+                stop_reason = SaturationStopReason::Timeout;
                 break;
             }
             if self.classes.len() > max_classes {
+                stop_reason = SaturationStopReason::ClassLimit;
                 break;
             }
             iterations += 1;
@@ -874,6 +898,7 @@ impl EGraph {
             };
             total_unions += unions;
             if unions == 0 {
+                stop_reason = SaturationStopReason::Converged;
                 break; // Saturated
             }
         }
@@ -881,6 +906,7 @@ impl EGraph {
         SaturationStats {
             iterations,
             total_unions,
+            stop_reason,
         }
     }
 
