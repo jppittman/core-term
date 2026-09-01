@@ -8,18 +8,18 @@ use pixelflow_ir::kind::OpKind;
 
 #[cfg(target_arch = "aarch64")]
 fn main() {
-    use pixelflow_codegen::emit::compile_arena_dag;
+    use pixelflow_codegen::emit::compile;
 
     for size in [10, 30, 50, 100, 150, 200] {
         let (arena, root) = build_expr(size);
         let actual = arena.len();
         for _ in 0..100 {
-            compile_arena_dag(&arena, root).unwrap();
+            compile(&arena, root).unwrap();
         }
         let n = 1000;
         let start = std::time::Instant::now();
         for _ in 0..n {
-            std::hint::black_box(compile_arena_dag(&arena, root).unwrap());
+            std::hint::black_box(compile(&arena, root).unwrap());
         }
         let us = start.elapsed().as_micros() as f64 / n as f64;
         eprintln!(

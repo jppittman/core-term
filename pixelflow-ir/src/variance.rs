@@ -391,7 +391,7 @@ fn bound_index_slot(
 /// callers. The live loop-invariant-code-motion in the collapse compile path
 /// does the same job over the *schedule* instead — see `schedule_variance` and
 /// `plan_collapse_hoist` in pixelflow-codegen's `emit/mod.rs`, which
-/// `compile_collapse_via_backend` runs at two scopes (whole-nest, then
+/// `compile_via_backend` runs at two scopes (whole-nest, then
 /// per-row). So this is one analysis implemented twice at two tiers, the same
 /// shape as the chain rule was. Which copy survives is an open question, not a
 /// dormant feature.

@@ -69,6 +69,14 @@ mod tests {
         let mut out = [0.0; 4];
         c.store(&mut out);
         assert_eq!(out, [0.0, 0.0, 0.0, 0.0]);
+
+        // The pair above ANDs to all-zero, which coincides with
+        // `F32x4::default()` — a "replace bitand with Default::default()"
+        // mutant survives it. 3.0 (0x40400000) & 2.0 (0x40000000) = 2.0,
+        // distinguishing the real op from the default.
+        let d = F32x4::splat(3.0) & F32x4::splat(2.0);
+        d.store(&mut out);
+        assert_eq!(out, [2.0, 2.0, 2.0, 2.0]);
     }
 
     #[test]
@@ -460,6 +468,21 @@ mod tests {
         let mask = ones.float_to_mask();
         assert!(mask.all());
         assert_eq!(mask_bits(mask), [u32::MAX; 4]);
+    }
+
+    #[test]
+    fn mask4_bitand_bitor_and_not_should_combine_masks_lanewise() {
+        // Mask4's own BitAnd/BitOr/Not (as opposed to F32x4's) had no
+        // direct coverage: every prior test only ever combined masks
+        // indirectly via `any`/`all`, which a wrong-but-nonzero mask can
+        // still satisfy.
+        let a = F32x4::from_slice(&[1.0, 1.0, 0.0, 0.0]).cmp_gt(F32x4::splat(0.0));
+        let b = F32x4::from_slice(&[1.0, 0.0, 1.0, 0.0]).cmp_gt(F32x4::splat(0.0));
+        const T: u32 = u32::MAX;
+
+        assert_eq!(mask_bits(a & b), [T, 0, 0, 0]);
+        assert_eq!(mask_bits(a | b), [T, T, T, 0]);
+        assert_eq!(mask_bits(!a), [0, 0, T, T]);
     }
 
     #[test]

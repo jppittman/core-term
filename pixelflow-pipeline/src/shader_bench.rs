@@ -987,7 +987,7 @@ mod tests {
         // *reference* and is meant for BwdGenerator's largely tree-shaped
         // synthetic output). The fractal kernels here deliberately reuse
         // per-iteration state across several downstream consumers — real
-        // sharing that both the JIT (`compile_arena_dag`) and the scalar
+        // sharing that both the JIT (`compile`) and the scalar
         // oracle's memoized evaluator (`eval.rs`'s per-`ExprId` memo table)
         // compile/evaluate once each, so `arena.len()` is what "expression
         // size" actually means for these — `node_count_subtree` explodes
