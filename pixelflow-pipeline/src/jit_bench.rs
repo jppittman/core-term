@@ -10,6 +10,7 @@ use std::fmt;
 
 use pixelflow_codegen::emit::compile;
 use pixelflow_codegen::emit::executable::ExecutableCode;
+use pixelflow_codegen::error::CompileError;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 
 /// Number of timed samples per expression. Take the median.
@@ -87,7 +88,7 @@ const MAX_PLAUSIBLE_NS: f64 = 1_000_000_000.0;
 #[derive(Debug)]
 pub enum BenchError {
     /// JIT compilation failed.
-    CompileFailed(&'static str),
+    CompileFailed(CompileError),
     /// Architecture not supported for JIT.
     UnsupportedArch,
     /// Measurement was invalid (NaN, negative, or absurdly large).

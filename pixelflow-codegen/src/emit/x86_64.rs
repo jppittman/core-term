@@ -868,6 +868,7 @@ mod tests {
 pub(crate) mod driver {
     use super::super::*;
     use super::{Imm8, Imm32, Mem, NoDisp, gpr, scaffold};
+    use crate::error::CompileError;
     use alloc::vec::Vec;
     use pixelflow_ir::kind::OpKind;
 
@@ -905,14 +906,16 @@ pub(crate) mod driver {
     }
 
     /// Map a `FrameLayout` spill offset to a red-zone `[rsp+disp8]` displacement.
-    fn x86_redzone_disp(offset: u32) -> Result<i8, &'static str> {
+    fn x86_redzone_disp(offset: u32) -> Result<i8, CompileError> {
         // Slots live below rsp: offset 0 -> [rsp-16], 16 -> [rsp-32], ...
         // Only called in red-zone mode (the prologue switches to an allocated
         // frame when the layout exceeds the zone), so overflow here is an
         // internal invariant violation, not a kernel-size limit.
         let disp = -(offset as i64 + 16);
         if disp < -128 {
-            return Err("x86 spill: red-zone displacement out of range (prologue mode bug)");
+            return Err(CompileError::Internal(
+                "x86 spill: red-zone displacement out of range (prologue mode bug)",
+            ));
         }
         Ok(disp as i8)
     }
@@ -996,7 +999,7 @@ pub(crate) mod driver {
             self.file
         }
 
-        fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), &'static str> {
+        fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), CompileError> {
             Ok(()) // x86 const loads are self-contained; no pool.
         }
 
@@ -1012,7 +1015,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             plan: &InstructionPlan,
-        ) -> Result<(), &'static str> {
+        ) -> Result<(), CompileError> {
             use super::*;
             for reload in &plan.reloads {
                 match reload {
@@ -1124,7 +1127,7 @@ pub(crate) mod driver {
             code: &mut Vec<u8>,
             src: Reg,
             offset: u32,
-        ) -> Result<(), &'static str> {
+        ) -> Result<(), CompileError> {
             self.spill_store(code, src, offset);
             Ok(())
         }

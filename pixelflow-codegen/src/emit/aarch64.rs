@@ -1219,12 +1219,13 @@ fn decode_aarch64_mnemonic(word: u32) -> String {
 ///
 /// # Errors
 ///
-/// Returns an error string if compilation fails (same errors as [`compile`](super::compile)).
+/// Returns [`crate::error::CompileError`] if compilation fails (same errors as
+/// [`compile`](super::compile)).
 #[cfg(target_arch = "aarch64")]
 pub fn dump_jit_asm(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
-) -> Result<String, &'static str> {
+) -> Result<String, crate::error::CompileError> {
     let result = super::compile(arena, root)?;
     Ok(disassemble_code(result.code.as_bytes()))
 }
@@ -1645,6 +1646,7 @@ pub(crate) mod driver {
     use super::super::*;
     use super::xr::*;
     use super::{Mem, Xr};
+    use crate::error::CompileError;
     use alloc::vec::Vec;
 
     /// Constant pool: maps f32 bit patterns to pool indices.
@@ -1677,16 +1679,16 @@ pub(crate) mod driver {
         /// Builtin emitters call this unconditionally because every constant
         /// they use benefits from the pool (they are transcendental coefficients,
         /// never zero or FMOV-encodable).
-        pub(crate) fn push_f32(&mut self, val: f32) -> Result<u16, &'static str> {
+        pub(crate) fn push_f32(&mut self, val: f32) -> Result<u16, CompileError> {
             let bits = val.to_bits();
             if let Some(&idx) = self.index.get(&bits) {
                 return Ok(idx * 16);
             }
             let idx = self.entries.len();
             if idx >= 4096 {
-                return Err(
+                return Err(CompileError::BudgetExceeded(
                     "constant pool overflow: exceeded 12-bit LDR offset limit (max 4095 entries)",
-                );
+                ));
             }
             self.entries.push(bits);
             self.index.insert(bits, idx as u16);
@@ -1835,7 +1837,7 @@ pub(crate) mod driver {
             self.file
         }
 
-        fn begin(&mut self, schedule: &[regalloc::Def]) -> Result<(), &'static str> {
+        fn begin(&mut self, schedule: &[regalloc::Def]) -> Result<(), CompileError> {
             // Seed by APPENDING into the existing pool, never replacing it: a
             // collapse compile emits two bodies through one backend (the LICM
             // prologue, then the loop body), and the prologue's bytes have the
@@ -1856,9 +1858,9 @@ pub(crate) mod driver {
             // offset limit.
             const BUILTIN_HEADROOM: usize = 128;
             if self.pool.entries.len() + BUILTIN_HEADROOM > 4095 {
-                return Err(
+                return Err(CompileError::BudgetExceeded(
                     "expression too large: constant pool would exceed 12-bit LDR offset limit",
-                );
+                ));
             }
             Ok(())
         }
@@ -1867,7 +1869,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             plan: &InstructionPlan,
-        ) -> Result<(), &'static str> {
+        ) -> Result<(), CompileError> {
             emit_instruction_plan(code, plan, &mut self.pool)
         }
 
@@ -1880,7 +1882,7 @@ pub(crate) mod driver {
             code: &mut Vec<u8>,
             src: Reg,
             offset: u32,
-        ) -> Result<(), &'static str> {
+        ) -> Result<(), CompileError> {
             super::emit_str_q(code, src, frame_slot(offset));
             Ok(())
         }
@@ -2039,7 +2041,7 @@ pub(crate) mod driver {
         code: &mut Vec<u8>,
         plan: &InstructionPlan,
         pool: &mut ConstPool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), CompileError> {
         use super::*;
 
         // 1. Emit reloads (from stack or rematerialized constants)

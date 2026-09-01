@@ -837,6 +837,7 @@ pub(crate) mod driver {
     use super::{Mem, NoDisp, frame_slot};
     use crate::emit::x86_64 as x86;
     use crate::emit::x86_64::driver::SSE2_FILE;
+    use crate::error::CompileError;
     use alloc::vec::Vec;
     use pixelflow_ir::kind::OpKind;
 
@@ -891,7 +892,7 @@ pub(crate) mod driver {
             self.file
         }
 
-        fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), &'static str> {
+        fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), CompileError> {
             Ok(()) // const broadcast is self-contained; no pool.
         }
 
@@ -899,7 +900,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             plan: &InstructionPlan,
-        ) -> Result<(), &'static str> {
+        ) -> Result<(), CompileError> {
             for r in &plan.reloads {
                 Self::reload(code, r);
             }
@@ -1001,7 +1002,7 @@ pub(crate) mod driver {
             code: &mut Vec<u8>,
             src: Reg,
             offset: u32,
-        ) -> Result<(), &'static str> {
+        ) -> Result<(), CompileError> {
             super::emit_store(code, frame_slot(offset), src);
             Ok(())
         }

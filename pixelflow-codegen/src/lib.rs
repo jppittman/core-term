@@ -18,9 +18,11 @@
 extern crate alloc;
 
 pub mod emit;
+pub mod error;
 
 pub mod jit_manifold;
 pub use emit::executable::{Extent2D, Point4, TileSlice};
+pub use error::CompileError;
 pub use jit_manifold::JitManifold;
 
 // x86-64 and aarch64 are the architectures with emitters.
