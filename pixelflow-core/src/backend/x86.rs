@@ -626,6 +626,25 @@ impl U32x4 {
 // AVX2 Backend (8 lanes)
 // ============================================================================
 
+// The AVX2 tier requires FMA3. No shipping x86-64 CPU has ever offered AVX2
+// without it (Intel: both since Haswell; AMD: FMA3 predates AVX2 by a
+// generation) — the industry itself codifies the pairing as x86-64-v3. An
+// AVX2-without-FMA build is a paper configuration that bought a
+// value-semantics fork (one rounding vs. two — see the `mul_add`/`log2`/
+// `exp2` fma-vs-no-fma branches below) no real machine ever exercised, and
+// that fork was directly responsible for a P2 (two materially different
+// kernels sharing one environment fingerprint — see
+// `pixelflow-pipeline/src/journal.rs`). Fail loudly at compile time rather
+// than silently degrading precision. (This does not touch the SSE2 baseline
+// tier above, which has no `avx2` feature set and keeps its own
+// `not(target_feature = "fma")` fallback — there, mul+add genuinely is the
+// only option.)
+#[cfg(all(target_feature = "avx2", not(target_feature = "fma")))]
+compile_error!(
+    "the AVX2 backend requires FMA3 (no shipping CPU has AVX2 without it); \
+     build with `-C target-feature=+avx2,+fma` or `-C target-cpu=x86-64-v3`"
+);
+
 // ============================================================================
 // Mask8 - 8-lane mask for AVX2
 // ============================================================================

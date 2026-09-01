@@ -197,8 +197,8 @@ adding a test that can't mean anything.
    (`F32x4`/`Mask4`/`U32x4`), the tier the default host build actually
    compiles and tests. The AVX2/AVX-512 code in the same file is gated by
    `#[cfg(target_feature = "avx2"/"avx512f")]` and needs a host (or
-   `RUSTFLAGS="-C target-feature=+avx2"` / `+avx512f`) that has those
-   features to build and mutation-test.
+   `RUSTFLAGS="-C target-feature=+avx2,+fma"` / `+avx512f,+avx512dq`) that
+   has those features to build and mutation-test.
 4. `arm.rs`'s NEON backend — still never independently mutation-tested;
    needs an aarch64 host, unavailable in this environment.
 5. All prior audits' still-open items carry forward unchanged:

@@ -263,10 +263,15 @@ pub fn environment_fingerprint() -> String {
     // `avx2,+fma` build and an `avx2,-fma` build previously both read
     // isa=avx2 (the `else if target_feature = "fma"` arm was unreachable
     // whenever avx2 was also set), so two runs executing materially
-    // different kernels — `pixelflow-codegen`'s `emit_fmadd_c_in_dst` emits
+    // different kernels — `pixelflow-codegen`'s `emit_fmadd_c_in_dst` emitted
     // a hardware `vfmadd231ps` under `fma` and a separate multiply-then-add
     // otherwise, with different timing and rounding — received the same
     // environment fingerprint (P2 finding on the fix commit for PR #1019).
+    // The AVX2 tier now requires `fma` outright (a `compile_error!` refuses
+    // `avx2,-fma` builds), so `pixelflow-codegen` no longer has that fork —
+    // but `isa=baseline`'s SSE2 path still picks between hardware FMA and a
+    // software mul+add depending on this same flag, so `fma` stays its own
+    // field rather than folding into `isa`.
     let fma = cfg!(target_feature = "fma");
     format!(
         "arch={};os={};ptr={};isa={};fma={};profile={}",
