@@ -739,8 +739,7 @@ mod guided_tests {
             let (arena, root) = build();
             let mut eg = EGraph::with_rules(all_rules());
             let root_class = eg.add_arena(&arena, root);
-            let stats =
-                eg.saturate_until_applications(2_000, 200, 5_000, Duration::from_secs(30));
+            let stats = eg.saturate_until_applications(2_000, 200, 5_000, Duration::from_secs(30));
             let costs = CostModel::latency_prior();
             let (out_arena, _out_root, cost) = eg.extract_best(root_class, &costs);
             (cost, out_arena.len(), stats.stop)
@@ -748,7 +747,10 @@ mod guided_tests {
 
         let (cost1, len1, stop1) = digest();
         let (cost2, len2, stop2) = digest();
-        assert_eq!(cost1, cost2, "unguided extraction cost must be deterministic");
+        assert_eq!(
+            cost1, cost2,
+            "unguided extraction cost must be deterministic"
+        );
         assert_eq!(
             len1, len2,
             "unguided extracted-arena size must be deterministic"
