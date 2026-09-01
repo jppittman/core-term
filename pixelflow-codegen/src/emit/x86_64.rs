@@ -862,6 +862,84 @@ mod tests {
             "X86BinaryInsn::select has no mnemonic for: {unselected:?}"
         );
     }
+
+    // The tests below target this file's real API boundary: given operands,
+    // what bytes come out. Most of that boundary's byte-construction ORs
+    // together bit-disjoint fields (a REX bit, a ModRM.reg nibble in bits
+    // 3-5, a ModRM.rm nibble in bits 0-2, ...) — that's what makes ModRM/VEX
+    // encoding decodable at all — so `cargo mutants` will keep reporting a
+    // `|` → `^` replacement there as missed no matter what a test asserts:
+    // OR and XOR of operands that can never share a set bit compute the same
+    // byte for every input. That is a real equivalent, not a gap.
+
+    #[test]
+    fn vex_head_sets_the_w_bit_for_a_rex_w_encoded_instruction() {
+        let mut code = Vec::new();
+        let vex = Vex {
+            map: Map::M0F,
+            pp: Pp::None,
+            w: true,
+            opcode: 0x11,
+        };
+        vex.rr(&mut code, Reg(0), Reg(0));
+        assert_eq!(code, vec![0xC4, 0xE1, 0xF8, 0x11, 0xC0]);
+    }
+
+    #[test]
+    fn emit_movups_store_base_omits_rex_when_both_registers_are_low() {
+        let mut code = Vec::new();
+        emit_movups_store_base(&mut code, Reg(3), 3);
+        assert_eq!(code, vec![0x0F, 0x11, ((3 & 7) << 3) | 3]);
+    }
+
+    #[test]
+    fn emit_movups_store_base_sets_rex_r_when_only_the_source_register_is_high() {
+        let mut code = Vec::new();
+        emit_movups_store_base(&mut code, Reg(9), 3);
+        assert_eq!(code, vec![0x44, 0x0F, 0x11, ((9 & 7) << 3) | 3]);
+    }
+
+    #[test]
+    fn emit_movups_store_base_sets_rex_b_when_only_the_base_register_is_high() {
+        let mut code = Vec::new();
+        emit_movups_store_base(&mut code, Reg(2), 11);
+        assert_eq!(code, vec![0x41, 0x0F, 0x11, ((2 & 7) << 3) | (11 & 7)]);
+    }
+
+    #[test]
+    fn emit_movups_store_base_sets_both_rex_bits_when_both_registers_are_high() {
+        let mut code = Vec::new();
+        emit_movups_store_base(&mut code, Reg(11), 14);
+        assert_eq!(code, vec![0x45, 0x0F, 0x11, ((11 & 7) << 3) | (14 & 7)]);
+    }
+
+    #[test]
+    fn emit_load_ptr_from_ctx_masks_both_gprs_into_disjoint_modrm_fields() {
+        let mut code = Vec::new();
+        emit_load_ptr_from_ctx(&mut code, 3, 2, 96);
+        assert_eq!(code, vec![0x48, 0x8B, 0x80 | (3 << 3) | 2, 96, 0, 0, 0]);
+    }
+
+    #[test]
+    fn emit_movmskps_eax_emits_rex_b_for_a_high_source_register() {
+        let mut code = Vec::new();
+        emit_movmskps_eax(&mut code, Reg(11));
+        assert_eq!(code, vec![0x41, 0x0F, 0x50, 0xC0 | (11 & 7)]);
+    }
+
+    #[test]
+    fn emit_movmskps_eax_omits_rex_for_a_low_source_register() {
+        let mut code = Vec::new();
+        emit_movmskps_eax(&mut code, Reg(2));
+        assert_eq!(code, vec![0x0F, 0x50, 0xC0 | 2]);
+    }
+
+    #[test]
+    fn emit_cmp_eax_imm8_emits_the_cmp_opcode_and_the_immediate_byte() {
+        let mut code = Vec::new();
+        emit_cmp_eax_imm8(&mut code, 0x0F);
+        assert_eq!(code, vec![0x83, 0xF8, 0x0F]);
+    }
 }
 
 // =============================================================================
@@ -1266,6 +1344,113 @@ pub(crate) mod driver {
 
         fn emit_ret(&mut self, code: &mut Vec<u8>) {
             super::ret(code);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn x86_redzone_disp_negates_the_offset_and_biases_by_the_red_zone_size() {
+            assert_eq!(x86_redzone_disp(0), Ok(-16));
+            assert_eq!(x86_redzone_disp(16), Ok(-32));
+        }
+
+        #[test]
+        fn x86_redzone_disp_refuses_an_offset_that_would_overflow_disp8() {
+            // -(112 + 16) == -128, the last value disp8 still represents.
+            assert_eq!(x86_redzone_disp(112), Ok(-128));
+            assert_eq!(
+                x86_redzone_disp(113),
+                Err("x86 spill: red-zone displacement out of range (prologue mode bug)")
+            );
+        }
+
+        /// `dst == right` (with `dst != left`) is the one assignment that
+        /// would corrupt `right` before it's read, so it's the one case
+        /// `emit_binary_safe` must route away from the plain `emit_binary`
+        /// call. Every other combination — including "all three alias",
+        /// where `dst == right` too — goes straight through.
+        #[test]
+        fn emit_binary_safe_emits_directly_whenever_dst_is_not_the_lone_right_operand() {
+            let mut code = Vec::new();
+            emit_binary_safe(&mut code, OpKind::Sub, Reg(2), Reg(2), Reg(2));
+            let mut expected = Vec::new();
+            super::super::emit_binary(&mut expected, OpKind::Sub, Reg(2), Reg(2), Reg(2));
+            assert_eq!(code, expected, "dst aliases both operands");
+
+            let mut code = Vec::new();
+            emit_binary_safe(&mut code, OpKind::Sub, Reg(0), Reg(1), Reg(2));
+            let mut expected = Vec::new();
+            super::super::emit_binary(&mut expected, OpKind::Sub, Reg(0), Reg(1), Reg(2));
+            assert_eq!(code, expected, "dst aliases neither operand");
+        }
+
+        #[test]
+        fn emit_binary_safe_stashes_right_in_scratch_for_a_noncommutative_op_when_dst_aliases_right()
+         {
+            let mut code = Vec::new();
+            emit_binary_safe(&mut code, OpKind::Sub, Reg(1), Reg(0), Reg(1));
+            let mut expected = Vec::new();
+            super::super::emit_movaps(&mut expected, super::super::X86_SCRATCH, Reg(1));
+            super::super::emit_movaps(&mut expected, Reg(1), Reg(0));
+            super::super::emit_binary(
+                &mut expected,
+                OpKind::Sub,
+                Reg(1),
+                Reg(1),
+                super::super::X86_SCRATCH,
+            );
+            assert_eq!(code, expected);
+        }
+
+        #[test]
+        fn prologue_omits_the_stack_adjustment_when_the_frame_fits_the_red_zone() {
+            let mut backend = X86Backend::new(EmitCtx::default());
+            backend.frame_ready(128); // <= 128: red zone, frame_bytes stays 0
+            let mut code = Vec::new();
+            backend.prologue(&mut code, 128);
+            assert!(
+                code.is_empty(),
+                "a frame that fits the red zone needs no `sub rsp`"
+            );
+        }
+
+        #[test]
+        fn prologue_allocates_the_frame_when_it_does_not_fit_the_red_zone() {
+            let mut backend = X86Backend::new(EmitCtx::default());
+            backend.frame_ready(129);
+            let mut code = Vec::new();
+            backend.prologue(&mut code, 129);
+            let mut expected = Vec::new();
+            super::super::emit_sub_rsp(&mut expected, 129);
+            assert_eq!(code, expected);
+        }
+
+        #[test]
+        fn epilogue_omits_the_stack_adjustment_when_the_frame_fits_the_red_zone() {
+            let mut backend = X86Backend::new(EmitCtx::default());
+            backend.frame_ready(128);
+            let mut code = Vec::new();
+            backend.epilogue(&mut code, Reg(0), 128);
+            assert_eq!(
+                code,
+                vec![0xC3],
+                "a frame that fits the red zone needs no `add rsp`"
+            );
+        }
+
+        #[test]
+        fn epilogue_releases_the_allocated_frame_before_returning() {
+            let mut backend = X86Backend::new(EmitCtx::default());
+            backend.frame_ready(129);
+            let mut code = Vec::new();
+            backend.epilogue(&mut code, Reg(0), 129);
+            let mut expected = Vec::new();
+            super::super::emit_add_rsp(&mut expected, 129);
+            expected.push(0xC3);
+            assert_eq!(code, expected);
         }
     }
 }
