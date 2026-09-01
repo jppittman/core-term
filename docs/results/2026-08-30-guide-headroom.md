@@ -23,29 +23,44 @@ it bounds the *algorithm*, not anything we measure.
 Pre-run check: `pgrep -fl "bootstrap_extraction_head|bench_extraction_3way"` was clean before
 starting (no paper-capstone timed run in flight).
 
-## The headline number(s) — there are two, and they disagree by 20x
+**Revision note (2026-09-01):** an automated review of PR #1067 (`chatgpt-codex-connector`)
+correctly flagged that an earlier version of this harness reused production `saturate()`'s 500ms
+wall-clock deadline as `saturate_with_limits`'s timeout — meaning any expression whose saturation
+took longer than 500ms would be silently truncated mid-run and its partial e-graph reported as
+"the" measurement, making the supposedly-deterministic ratios depend on host speed. Fixed: the
+harness now passes a 60s, effectively-non-binding safety ceiling instead (and fails loud —
+`assert!`, not a silent truncation — if that ceiling is ever actually hit), while separately
+timing each expression purely as an *informational* diagnostic against the old 500ms figure. The
+numbers below are from the re-run with this fix; **27/800 expressions did in fact take >=500ms**
+(so the earlier truncation risk was real, not hypothetical), and one previously-"quiesced"
+expression turned out to be genuinely exhausting the 100-iteration cap once allowed to run to
+completion. Per-expression medians moved negligibly (see "diagnostic" section below); the pooled
+ratios moved by a few percent (0.756 -> 0.719 labeler, both directions consistent with previously
+under-measuring the blowup cases that dominate the pooled sum).
+
+## The headline number(s) — there are two, and they disagree by ~500x pooled
 
 | Bound | Pooled ratio (ΣLB / ΣApplications) | Per-expression median | Q1 | Q3 | Implied oracle savings (1/median) |
 |---|---|---|---|---|---|
-| **Labeler** (`derivation_ancestors`, over-approximate — the label a Guide would actually train on) | 0.7557 | **0.382** | 0.333 | 0.527 | **2.6x** |
-| **Strict lower bound** (application's output node is literally on the extracted derivation path) | 0.0017 | **0.029** | 0.006 | 0.058 | **34x** |
+| **Labeler** (`derivation_ancestors`, over-approximate — the label a Guide would actually train on) | 0.7188 | **0.382** | 0.333 | 0.527 | **2.6x** |
+| **Strict lower bound** (application's output node is literally on the extracted derivation path) | 0.0014 | **0.029** | 0.006 | 0.058 | **34x** |
 
-800 expressions, 7,096,848 total rule applications recorded, 5,363,145 labeler-load-bearing,
-12,368 strict-load-bearing. (These pooled totals carry run-to-run noise of a few tenths of a
-percent — a re-run on the same corpus with the same harness produced 7,104,300 applications and
-a 0.7552 pooled labeler ratio — because the handful of combinatorial-blowup expressions that
-dominate the pooled sum are sensitive to iteration-order effects in how many times an
-already-resolved match gets rescanned before quiescence. The per-expression median/quartiles
-below are unaffected: they reproduced bit-for-bit across re-runs.)
+800 expressions, 8,729,067 total rule applications recorded, 6,274,873 labeler-load-bearing,
+12,390 strict-load-bearing. (Pooled totals still carry run-to-run noise of a few tenths of a
+percent from iteration-order effects in the blowup cases — see the per-application harness's own
+noise note — on top of the larger, one-time shift from the wall-clock fix above. The
+per-expression median/quartiles are essentially unaffected by either source: 0.382/0.029 both
+before and after.)
 
 **Read the median, not the pooled ratio.** Applications-per-expression is heavy-tailed: median
-195, mean 8,871 (top 50 of 800 expressions — 6.25% — account for 65% of all applications
-corpus-wide; one expression alone fired 353,542 applications). The pooled ratio is dominated by
-a handful of blowup cases where comm/assoc/distribute saturate combinatorially; it answers "what
-fraction of all firings across the whole corpus were load-bearing" (relevant to raw compute
-spent), while the per-expression median answers "for a typical expression, what fraction of its
-saturation's applications mattered" (the more relevant number for a per-episode Guide). Report
-both; lead with the median.
+195, mean 10,911 (top 50 of 800 expressions — 6.25% — account for 69% of all applications
+corpus-wide; one expression alone fired 996,047 applications — the same expression that now
+correctly reports as budget-exhausted rather than quiesced, see below). The pooled ratio is
+dominated by a handful of blowup cases where comm/assoc/distribute saturate combinatorially; it
+answers "what fraction of all firings across the whole corpus were load-bearing" (relevant to raw
+compute spent), while the per-expression median answers "for a typical expression, what fraction
+of its saturation's applications mattered" (the more relevant number for a per-episode Guide).
+Report both; lead with the median.
 
 **Compare to the toy-kernel baseline** (`docs/results/2026-07-08-rule-report.md`, 5 hand-picked
 kernels, 61 rules, labeler bound only): aggregate ratios there ranged 10%-87% per rule with a
@@ -54,7 +69,7 @@ scale the *median* expression's labeler ratio (38%) sits inside that same range,
 kernels weren't wildly unrepresentative in aggregate — but the corpus surfaces the pooled/median
 divergence the 5-kernel sample was too small to show, and the strict bound (not computed in the
 toy-kernel report) reveals the over-approximation is far larger than "ratios read high":
-**pooled labeler credits ~434x more applications than the strict walk finds on the winning
+**pooled labeler credits ~507x more applications than the strict walk finds on the winning
 derivation path.**
 
 ## Two further diagnostics: budget exhaustion and expression size
@@ -63,14 +78,18 @@ The harness also reports (numbers from the final run,
 `docs/results/2026-08-30-guide-headroom.json`, `quiesced_before_cap_count` /
 `exhausted_budget_count` / per-expression `quiesced_before_cap`):
 
-- **All 800 expressions quiesced before hitting either budget cap** (0 exhausted the 100-iteration
-  or 10,000-class limit; `saturate_with_limits`'s own `if unions == 0 { break }` convergence check
-  fired first every time). So the ratios above are not an artifact of truncating some expressions
-  mid-saturation — every episode ran to its own quiescence point (a diagnostic condition, not a
-  certified fixpoint; this optimizer is budget-only by design) (or, for the rare case this proxy
-  can't distinguish, to the 500ms deadline; see the harness's module doc). This also means the
-  heavy tail described above is a property of *how large the graph gets before quiescing*, not of
-  budget clipping.
+- **799/800 expressions quiesced before hitting either budget cap** (`saturate_with_limits`'s own
+  `if unions == 0 { break }` convergence check — a diagnostic condition, not a certified fixpoint;
+  this optimizer is budget-only by design). **1/800 genuinely exhausts the 100-iteration cap**
+  (`train_b23_f02_03726`, 264 nodes, 996,047 applications, 100/100 iterations) — this is the same
+  expression that previously (under the buggy 500ms-truncated harness) looked like it had
+  quiesced early, because the wall-clock deadline cut it off before it could reach either its true
+  fixed budget or genuine convergence. With the fix, its ratios are now attributed correctly
+  (labeler 67.3%, strict 0.0035%) instead of to a truncated partial graph. **27/800 expressions
+  took >=500ms wall-clock** — informational only (doesn't gate which samples count), but confirms
+  the truncation risk the earlier draft's harness carried was real, not hypothetical. Excluding
+  the one genuinely-exhausted expression, the heavy tail described above is a property of *how
+  large the graph gets before quiescing*, not of budget clipping.
 - **The labeler/strict divergence gets worse, not better, as expressions grow.** Splitting the 800
   expressions into size terciles by arena node count (small/medium/large, ~266-268 each):
 
@@ -112,14 +131,28 @@ enabling-credit mass, and it turns out to be enormous:
   form — but they fire in enormous volume (commutative alone: 2.3M firings) building the
   equivalence classes that let *other* rules' rewrites become reachable from the root.
 - **Numeric/transcendental rules (power-recip, power-sqrt, power-rsqrt, recip-sqrt,
-  even-negation) are the opposite shape**: 13-18% under the labeler bound but their strict
-  scores (6-13%) are the *closest* to their labeler scores of any rule family — these rules'
+  even-negation) are the opposite shape**: 13-17% under the labeler bound but their strict
+  scores (6-12%) are the *closest* to their labeler scores of any rule family — these rules'
   products more often survive directly into the extracted expression.
-- **Rank correlation between the two bounds, per rule instance, is ≈0** (Spearman ρ = 0.023,
-  n = 55 rules that fired). A Guide trained on labeler labels and one trained on strict labels
-  would learn almost unrelated rule priorities. This is the load-bearing risk this measurement
-  surfaces for Phase 3 (see below) — not "the ratio is inflated," which the toy-kernel report
-  already knew, but "the *ordering* the two bounds imply is uncorrelated," which is new.
+- **Rank correlation between the two bounds, per rule instance, is moderate, not strong** —
+  Spearman ρ = 0.35 (n = 55 rule instances that fired; average-rank tie handling, computed from
+  this document's own `per_rule` JSON — `labeler_load_bearing/fired` vs `strict_load_bearing/fired`
+  per row; script not checked in, reproducible from the JSON in a few lines). **Correction
+  (2026-09-01):** an earlier draft of this document reported ρ ≈ 0.02 ("almost independently") —
+  that number was never computed from this harness's output (no Spearman computation exists
+  anywhere in `guide_headroom.rs`; the JSON has no such field) and does not reproduce under any
+  variant tried (percentage-vs-percentage, count-vs-count, or the corrected-data re-run all land
+  in the 0.35-0.50 range, not near zero). It was an error, not updated data — the wall-clock fix
+  above only shifted the pooled totals by a few percent, nowhere near enough to move a
+  correlation from 0.02 to 0.35. **The corrected 0.35 still supports the same qualitative
+  finding, just less starkly than "almost independent" claimed**: the two bounds agree
+  moderately overall, but split cleanly by rule *class* — every structural/congruence rule
+  clusters at ~0% under the strict bound regardless of its labeler score (60-85%), while every
+  numeric/transcendental rule that fires often enough clusters in the same rough range (6-17%)
+  under both. That per-class split, not the single correlation number, is the load-bearing risk
+  this measurement surfaces for Phase 3 (see below): a Guide trained on labeler labels would
+  learn to prize exactly the rule class the strict bound says contributes almost nothing to the
+  literal extracted expression.
 
 ## Per-rule table, full 62-rule library (`pixelflow_search::math::all_rules()`)
 
@@ -134,52 +167,52 @@ rule index) is in the sibling JSON (`docs/results/2026-08-30-guide-headroom.json
 
 | rule | fired | labeler LB | labeler % | strict LB | strict % |
 |---|---:|---:|---:|---:|---:|
-| identity | 121,572 | 108,569 | 89.3% | 0 | 0.0% |
-| commutative | 2,329,614 | 1,918,615 | 82.4% | 0 | 0.0% |
-| fma-fusion | 1,403,501 | 1,148,569 | 81.8% | 1,483 | 0.1% |
-| associative | 1,070,772 | 786,164 | 73.4% | 145 | 0.0% |
-| distribute | 236,390 | 173,554 | 73.4% | 11 | 0.0% |
-| reverse-associative | 1,145,762 | 839,677 | 73.3% | 151 | 0.0% |
-| doubling | 41,325 | 26,994 | 65.3% | 83 | 0.2% |
-| constant-fold | 130,201 | 82,575 | 63.4% | 1,607 | 1.2% |
-| annihilator | 31,924 | 19,243 | 60.3% | 0 | 0.0% |
-| factor | 308,002 | 156,732 | 50.9% | 192 | 0.1% |
-| halving | 54,566 | 27,142 | 49.7% | 1 | 0.0% |
-| half-angle-product | 3,299 | 1,608 | 48.7% | 1 | 0.0% |
-| cos-angle-addition | 2,026 | 937 | 46.2% | 2 | 0.1% |
-| sin-angle-addition | 2,633 | 986 | 37.4% | 1 | 0.0% |
-| canonicalize | 6,539 | 2,141 | 32.7% | 57 | 0.9% |
-| pythagorean | 644 | 200 | 31.1% | 0 | 0.0% |
-| exp-homomorphism | 895 | 247 | 27.6% | 2 | 0.2% |
-| odd-negation | 3,780 | 887 | 23.5% | 29 | 0.8% |
-| reverse-angle-addition | 8,034 | 1,842 | 22.9% | 34 | 0.4% |
-| power-combine | 4,827 | 1,000 | 20.7% | 143 | 3.0% |
-| inverse-annihilation | 7,110 | 1,425 | 20.0% | 20 | 0.3% |
-| diff-of-squares | 102 | 20 | 19.6% | 0 | 0.0% |
-| power-recip | 9,182 | 1,664 | 18.1% | 1,159 | 12.6% |
-| power-recurrence | 6 | 1 | 16.7% | 0 | 0.0% |
-| expand-square | 6 | 1 | 16.7% | 0 | 0.0% |
-| power-sqrt | 13,995 | 2,332 | 16.7% | 1,526 | 10.9% |
-| power-rsqrt | 3,303 | 543 | 16.4% | 422 | 12.8% |
-| involution | 37,650 | 5,703 | 15.1% | 0 | 0.0% |
-| recip-sqrt | 3,363 | 504 | 15.0% | 408 | 12.1% |
-| even-negation | 77,521 | 11,085 | 14.3% | 4,897 | 6.3% |
-| exp-ln-cancel | 231 | 33 | 14.3% | 0 | 0.0% |
-| power-identity | 919 | 124 | 13.5% | 0 | 0.0% |
-| exp2-log2-cancel | 270 | 36 | 13.3% | 0 | 0.0% |
-| idempotent | 1,012 | 82 | 8.1% | 0 | 0.0% |
-| cancellation | 449 | 36 | 8.0% | 0 | 0.0% |
-| log2-power | 14 | 1 | 7.1% | 0 | 0.0% |
-| ln-exp-cancel | 231 | 3 | 1.3% | 0 | 0.0% |
-| log2-exp2-cancel | 267 | 0 | 0.0% | 0 | 0.0% |
-| power-expand-2 | 6 | 0 | 0.0% | 0 | 0.0% |
+| commutative | 2,826,152 | 2,363,621 | 83.6% | 0 | 0.0% |
+| fma-fusion | 1,625,547 | 1,340,326 | 82.5% | 1,482 | 0.1% |
+| distribute | 297,885 | 221,313 | 74.3% | 11 | 0.0% |
+| reverse-associative | 1,352,456 | 960,775 | 71.0% | 152 | 0.0% |
+| identity | 260,983 | 169,955 | 65.1% | 0 | 0.0% |
+| associative | 1,277,910 | 809,484 | 63.3% | 148 | 0.0% |
+| doubling | 64,742 | 34,605 | 53.5% | 83 | 0.1% |
+| constant-fold | 233,967 | 110,342 | 47.2% | 1,607 | 0.7% |
+| halving | 83,371 | 38,759 | 46.5% | 1 | 0.0% |
+| factor | 397,645 | 167,127 | 42.0% | 192 | 0.0% |
+| cos-angle-addition | 2,537 | 1,015 | 40.0% | 2 | 0.1% |
+| sin-angle-addition | 3,204 | 1,113 | 34.7% | 1 | 0.0% |
+| canonicalize | 7,639 | 2,426 | 31.8% | 57 | 0.7% |
+| half-angle-product | 7,017 | 2,102 | 30.0% | 1 | 0.0% |
+| annihilator | 85,142 | 23,131 | 27.2% | 0 | 0.0% |
+| exp-homomorphism | 1,213 | 301 | 24.8% | 1 | 0.1% |
+| power-combine | 5,143 | 1,073 | 20.9% | 143 | 2.8% |
+| odd-negation | 4,407 | 887 | 20.1% | 29 | 0.7% |
+| power-recip | 9,765 | 1,664 | 17.0% | 1,159 | 11.9% |
+| reverse-angle-addition | 12,164 | 1,982 | 16.3% | 34 | 0.3% |
+| power-sqrt | 14,734 | 2,332 | 15.8% | 1,526 | 10.4% |
+| power-rsqrt | 3,494 | 543 | 15.5% | 422 | 12.1% |
+| expand-square | 7 | 1 | 14.3% | 0 | 0.0% |
+| involution | 40,255 | 5,709 | 14.2% | 0 | 0.0% |
+| recip-sqrt | 3,571 | 504 | 14.1% | 408 | 11.4% |
+| exp-ln-cancel | 244 | 33 | 13.5% | 0 | 0.0% |
+| even-negation | 82,517 | 11,085 | 13.4% | 4,910 | 6.0% |
+| exp2-log2-cancel | 276 | 36 | 13.0% | 0 | 0.0% |
+| pythagorean | 1,540 | 200 | 13.0% | 0 | 0.0% |
+| power-identity | 958 | 124 | 12.9% | 0 | 0.0% |
+| diff-of-squares | 166 | 21 | 12.7% | 0 | 0.0% |
+| power-recurrence | 8 | 1 | 12.5% | 0 | 0.0% |
+| inverse-annihilation | 19,829 | 2,155 | 10.9% | 21 | 0.1% |
+| idempotent | 1,104 | 82 | 7.4% | 0 | 0.0% |
+| log2-power | 15 | 1 | 6.7% | 0 | 0.0% |
+| cancellation | 936 | 42 | 4.5% | 0 | 0.0% |
+| ln-exp-cancel | 244 | 3 | 1.2% | 0 | 0.0% |
+| log2-exp2-cancel | 273 | 0 | 0.0% | 0 | 0.0% |
+| power-expand-2 | 7 | 0 | 0.0% | 0 | 0.0% |
 
 (Sorted by labeler %, names merged across operator instances — see JSON for the un-merged,
 rule-index-level table the harness actually computed from.)
 
 **Rule-triage reading, with the caveat that "reading" differs by which bound you trust:**
 - Under the labeler bound alone, nothing looks safe to drop — even the bottom rows
-  (`log2-exp2-cancel`, `power-expand-2`) simply have low fire counts (267, 6), not low ratios
+  (`log2-exp2-cancel`, `power-expand-2`) simply have low fire counts (273, 7), not low ratios
   distinguishable from noise.
 - Under the strict bound, the entire top of the labeler table (identity, commutative,
   fma-fusion, associative, distribute, reverse-associative, annihilator, involution) reads as
@@ -199,15 +232,17 @@ rule-index-level table the harness actually computed from.)
 2. **The labeler/strict gap is the central open risk, not a rounding error.** A Guide is only
    ever going to be trainable on the labeler bound (the strict bound isn't a candidate training
    signal — it's blind to real enabling credit, as noted above). But this measurement shows the
-   labeler bound's *ranking* of rules is uncorrelated with the strict bound's, and the two
-   bounds' *magnitudes* differ by 20-400x depending on how you pool. Before spending Phase 3
-   budget training against labeler labels, the follow-up docs/plans/2026-07-07 lines 88-90
-   already called for — tightening the union-causality over-approximation — should be
-   understood well enough to know whether a *tighter* over-approximation (still safe, i.e.
-   never under-crediting) would substantially change the rule ranking above. This round
-   deliberately did not touch that logic (house rule: measure the looseness, don't redesign it
-   yet); the next round should.
-3. **Per-expression heterogeneity is itself a design input.** The heavy tail (65% of all
+   labeler bound's *ranking* of rules correlates only moderately with the strict bound's
+   (Spearman ρ ≈ 0.35) and splits cleanly by rule class (structural rules near-0% strict
+   regardless of labeler score; numeric rules track both bounds closely), and the two bounds'
+   *pooled magnitudes* differ by ~500x. Before spending Phase 3 budget training against labeler
+   labels, the follow-up docs/plans/2026-07-07 lines 88-90 already called for — tightening the
+   union-causality over-approximation — should be understood well enough to know whether a
+   *tighter* over-approximation (still safe, i.e. never under-crediting) would substantially
+   change the rule ranking above, particularly for the structural-rule class where the two
+   bounds disagree most. This round deliberately did not touch that logic (house rule: measure
+   the looseness, don't redesign it yet); the next round should.
+3. **Per-expression heterogeneity is itself a design input.** The heavy tail (69% of all
    applications from 6.25% of expressions) means a fixed per-episode saturation budget hits
    wildly different "how much of this could a Guide have skipped" targets depending on
    expression size/shape. A budget-bounded Guide (as Phase 3 proposes) should be evaluated
@@ -233,7 +268,7 @@ here rather than duplicated:
   production (batched) saturation algorithm: 91.1% of all recorded rule applications are
   idempotent re-fires that create zero new nodes/edges (an even stronger form of incrementality
   than "small delta" — no update needed at all), and among the remainder, the per-application
-  edge-delta fraction has median 0.14% (~731x implied speedup) — but eval economics are
+  edge-delta fraction has median 0.14% (~728x implied speedup) — but eval economics are
   separately expensive: median 153 match evaluations per saturation round, 90.4% of all evaluated
   candidates producing no committed rewrite action (the same idempotent-refire mechanism viewed
   from the candidate side; see that file's harness doc for the root cause — rules like

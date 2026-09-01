@@ -24,14 +24,26 @@
 //! a trained Guide would inherit from the over-approximation.
 //!
 //! Every number this binary reports is a deterministic count or a
-//! `CostModel::latency_prior()` cost — no wall-clock timing anywhere, so
-//! machine contention cannot corrupt the measurement (it can only slow the
-//! run down). `EGraph::saturate_with_limits` does carry an internal
-//! wall-clock *deadline* (500ms, `EGraph::saturate()`'s default) as one of
-//! four stopping conditions — that is the existing, standard budget every
-//! production caller already saturates under (`run_episode` calls the same
-//! `saturate()`); the deadline itself is not part of what we measure or
-//! report.
+//! `CostModel::latency_prior()` cost — no wall-clock timing gates
+//! correctness, so machine contention cannot corrupt the measurement (it can
+//! only slow the run down). `EGraph::saturate()`'s production default caps
+//! each round at a 500ms wall-clock deadline, but that deadline is a
+//! *latency-sensitivity* concern specific to the compiler's interactive
+//! path, not this offline, batch measurement — so this binary calls
+//! `saturate_with_limits` with a generous, effectively-non-binding
+//! [`SATURATE_TIMEOUT`] (60s) instead of reusing the production 500ms value,
+//! and separately times each call with `Instant` purely as an *informational*
+//! diagnostic (`slow_expressions_over_500ms`, reported but never gating which
+//! samples count). This closes a gap an earlier draft of this harness left
+//! open (and flagged rather than silently assuming away): with the
+//! production 500ms deadline actually wired into the stopping condition, a
+//! run that happened to exceed it partway through would have its *partial*,
+//! non-converged e-graph counted as the expression's result — indistinguishable,
+//! by the iteration/class-count-only proxy below, from a run that truly
+//! converged — making the reported ratios depend on host speed for any
+//! expression that ran long. With the timeout now generous, that dependency
+//! is removed: iteration/class-count caps are the only remaining stopping
+//! conditions besides genuine convergence, and both are deterministic counts.
 //!
 //! # Quiescence diagnostic
 //!
@@ -40,19 +52,19 @@
 //! more changes)"** — the loop's own convergence check
 //! (`if unions == 0 { break; }` in `pixelflow-search/src/egraph/graph.rs`).
 //! So this crate's saturation is *not* pure budget-truncation-only: a run can
-//! and does reach an actual fixed point before its budget is spent, and the
-//! existing code already detects that case. This binary reports, per
-//! expression, a `quiesced_before_cap` diagnostic derived from
+//! and does reach quiescence — a diagnostic condition, never a certified
+//! fixpoint (this optimizer is budget-only by design) — before its budget is
+//! spent, and the existing code already detects that case. This binary
+//! reports, per expression, a `quiesced_before_cap` diagnostic derived from
 //! `SaturationStats` alone (`iterations < max_iters` and the e-graph did not
-//! reach `max_classes`) — both deterministic counts, not timing reads. The
-//! one gap this can't close without adding wall-clock instrumentation (which
-//! this round deliberately avoids) or extending `SaturationStats` with an
-//! explicit stop-reason (out of scope — no edits to core e-graph semantics
-//! this round beyond this read-only diagnostic): a run that stops early
-//! because it hit the 500ms deadline is indistinguishable, by this proxy,
-//! from one that truly converged. In practice this corpus's episodes are
-//! small enough, and 500ms generous enough in release mode, that this is
-//! expected to be rare — flagged here rather than silently assumed away.
+//! reach `max_classes`) — both deterministic counts, not timing reads. With
+//! [`SATURATE_TIMEOUT`] now generous rather than production's 500ms (see
+//! above), the one remaining ambiguity this proxy can't resolve without
+//! `SaturationStats` growing an explicit stop-reason field (out of scope —
+//! no edits to core e-graph semantics this round beyond the read-only
+//! `Instant` wrapping above) is a run hitting the 60s safety ceiling itself —
+//! expected never to happen at this corpus's scale, and reported
+//! (`hit_safety_timeout`) rather than silently assumed away if it ever does.
 //!
 //! Usage:
 //! ```bash
@@ -102,12 +114,23 @@ struct Args {
     out: Option<String>,
 }
 
-/// Standard saturation budget — identical to `EGraph::saturate()`'s
+/// Iteration/class-count budget — identical to `EGraph::saturate()`'s
 /// hardcoded defaults, called out explicitly here because this binary needs
 /// the `SaturationStats` that `saturate()` discards.
 const SATURATE_MAX_ITERS: usize = 100;
 const SATURATE_MAX_CLASSES: usize = 10_000;
-const SATURATE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+/// Safety ceiling only, per the module doc — deliberately NOT production's
+/// 500ms (a latency-sensitivity budget for the interactive compiler path,
+/// not this offline measurement). 60s is expected to never bind; if it ever
+/// does, `hit_safety_timeout` reports it rather than silently mislabeling a
+/// truncated run as converged.
+const SATURATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Informational-only threshold: did this expression's saturation call take
+/// long enough that it WOULD have hit production's 500ms deadline, had this
+/// binary reused it? Never gates correctness or which samples count — purely
+/// context for how close this corpus runs to the production budget.
+const PRODUCTION_DEADLINE_FOR_COMPARISON: std::time::Duration =
+    std::time::Duration::from_millis(500);
 
 /// Per-expression measurement.
 struct ExprMeasurement {
@@ -119,10 +142,14 @@ struct ExprMeasurement {
     extracted_cost: usize,
     /// See module docs' "Quiescence diagnostic" section: `true` means the
     /// run stopped before exhausting either the iteration or class-count
-    /// cap (so it either truly converged or — the undistinguished, expected
-    /// rare case — hit the wall-clock deadline).
+    /// cap — i.e. truly converged, now that `SATURATE_TIMEOUT` is a
+    /// non-binding safety ceiling rather than production's 500ms deadline.
     quiesced_before_cap: bool,
     saturation_iterations: usize,
+    /// Wall-clock elapsed for this expression's `saturate_with_limits` call —
+    /// informational only (see `PRODUCTION_DEADLINE_FOR_COMPARISON`), never
+    /// used to decide `quiesced_before_cap` or any reported ratio.
+    exceeded_production_deadline: bool,
 }
 
 impl ExprMeasurement {
@@ -291,11 +318,22 @@ fn main() {
     for (i, (name, arena, root)) in entries.iter().enumerate() {
         let mut egraph = EGraph::with_rules(all_rules());
         let root_class = egraph.add_arena(arena, *root);
+        let saturate_started = std::time::Instant::now();
         let sat_stats =
             egraph.saturate_with_limits(SATURATE_MAX_ITERS, SATURATE_MAX_CLASSES, SATURATE_TIMEOUT);
+        let saturate_elapsed = saturate_started.elapsed();
         let hit_iteration_cap = sat_stats.iterations >= SATURATE_MAX_ITERS;
         let hit_class_cap = egraph.num_classes() > SATURATE_MAX_CLASSES;
+        let hit_safety_timeout = saturate_elapsed >= SATURATE_TIMEOUT;
+        assert!(
+            !hit_safety_timeout,
+            "guide_headroom: expression '{name}' ran {saturate_elapsed:?}, hitting the \
+             {SATURATE_TIMEOUT:?} safety ceiling — this was expected to never bind at this \
+             corpus's scale; fail loud rather than silently report a truncated sample as \
+             converged"
+        );
         let quiesced_before_cap = !hit_iteration_cap && !hit_class_cap;
+        let exceeded_production_deadline = saturate_elapsed >= PRODUCTION_DEADLINE_FOR_COMPARISON;
 
         let extraction = extract_dag(&egraph, root_class, &costs);
         let labels = EpisodeLabels::compute(&egraph, extraction.root, &extraction.choices);
@@ -345,6 +383,7 @@ fn main() {
             extracted_cost: extraction.total_cost,
             quiesced_before_cap,
             saturation_iterations: sat_stats.iterations,
+            exceeded_production_deadline,
         });
 
         if (i + 1) % 100 == 0 || i + 1 == n {
@@ -428,6 +467,16 @@ fn main() {
         .collect();
     print_group("quiesced before cap", &quiesced);
     print_group("exhausted budget    ", &exhausted);
+    let exceeded_production_deadline: Vec<&ExprMeasurement> = measurements
+        .iter()
+        .filter(|m| m.exceeded_production_deadline)
+        .collect();
+    println!(
+        "  (informational, not a correctness gate: {}/{n} expressions took >= 500ms wall-clock \
+         -- i.e. would have hit production `saturate()`'s deadline had this offline harness reused \
+         it instead of a generous, non-binding safety ceiling)",
+        exceeded_production_deadline.len()
+    );
 
     // Same split by expression size (arena node count), since size is the
     // obvious confound: larger expressions are both more likely to exhaust
@@ -545,10 +594,17 @@ fn main() {
             "  \"exhausted_budget_count\": {},\n",
             exhausted.len()
         ));
+        let exceeded_production_deadline_count = measurements
+            .iter()
+            .filter(|m| m.exceeded_production_deadline)
+            .count();
+        json.push_str(&format!(
+            "  \"exceeded_production_deadline_count\": {exceeded_production_deadline_count},\n"
+        ));
         json.push_str("  \"per_expression\": [\n");
         for (i, m) in measurements.iter().enumerate() {
             json.push_str(&format!(
-                "    {{\"name\": {:?}, \"node_count\": {}, \"total_applications\": {}, \"labeler_load_bearing\": {}, \"strict_load_bearing\": {}, \"labeler_ratio\": {:.6}, \"strict_ratio\": {:.6}, \"extracted_cost\": {}, \"quiesced_before_cap\": {}, \"saturation_iterations\": {}}}{}\n",
+                "    {{\"name\": {:?}, \"node_count\": {}, \"total_applications\": {}, \"labeler_load_bearing\": {}, \"strict_load_bearing\": {}, \"labeler_ratio\": {:.6}, \"strict_ratio\": {:.6}, \"extracted_cost\": {}, \"quiesced_before_cap\": {}, \"saturation_iterations\": {}, \"exceeded_production_deadline\": {}}}{}\n",
                 m.name,
                 m.node_count,
                 m.total_applications,
@@ -559,6 +615,7 @@ fn main() {
                 m.extracted_cost,
                 m.quiesced_before_cap,
                 m.saturation_iterations,
+                m.exceeded_production_deadline,
                 if i + 1 < measurements.len() { "," } else { "" }
             ));
         }
