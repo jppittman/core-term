@@ -49,6 +49,84 @@ everything the trainer consumes is exactly what the deployed Guide consumes — 
 mandatory and bit-exact over ≥ 1,000 DEV records; oracle validation for every generated expression
 under the algebraic-validity contract; no silent failures; minimal public API.
 
+## 0.5 Survey: what already exists, and the verdict on each item
+
+JP, 2026-09-01: *"scan the repo, take a gander at what already exists; we still have a lot of
+dead code with some decent ideas in it, factored.rs and so on."* Every feature in §1 is stated in
+terms of the functions below, so the Build phase composes rather than reimplements. Status is by
+grep over the workspace at the time of writing (`LIVE` = called from non-test code; `TEST-ONLY` =
+reachable only from tests; `DEAD` = no callers).
+
+### 0.5.1 REUSED — §1's denotation is written in terms of these
+
+| Item | Where | Status | What it is | How this design composes from it |
+|---|---|---|---|---|
+| `CandidateFeatures::observe`, `CandidateKey`, `ClassContentKey`, `Firing`, private `neighborhood_ops` | `pixelflow-search/src/egraph/candidate.rs` | LIVE | The one constructor; the key; the class-level one-hop child multiset; the budget state | Extended in place (§1.4). `neighborhood_ops` is kept as the class-wide DOWN hop-1 multiset the v1 linear Guide already trains on. |
+| `RewriteAction` (every variant names the bound e-classes: `Create(ENode{children})`, `Distribute{a,b,c}`, `Factor{common,unique_l,unique_r}`, `Associate{a,b,c}`, `AngleAddition{a,b}`, `PowerCombine{base,exp_a,exp_b}`, …, `Union(other)`) and `EGraph::find_rewrite_matches` (calls `rule.apply` and discards the action) | `egraph/rewrite.rs`, `egraph/graph.rs` | LIVE | The instantiated RHS, already computed at enumeration | The bindings `b` and `dcost` (§1.2) — exact for all 62 rules, no template dependence. `find_rewrite_matches_with_actions` (§1.4) stops throwing the action away. |
+| `GraphAccumulator` — `add_edge_at_depth`, `add_op_node_at_depth`, `add_2hop_edge`, `remove_*`, `normalized`, `GRAPH_ACC_DIM = 4·K` | `nnue/guide/accumulator.rs` (`#![allow(dead_code)]`, all `pub(crate)`) | TEST-ONLY (transitively: its only callers are `scoring.rs` methods that are themselves test-only) | Four K=32 sections: `[0..K)` Σ E[parent]; `[K..2K)` Σ E[child]; `[2K..3K)` Σ E[parent] ⊙ shift(E[child]) — 1-hop binding; `[3K..4K)` Σ E[gp] ⊙ shift(E[p]) ⊙ shift²(E[c]) — 2-hop binding. **Fed edge by edge; it has no whole-graph constructor, so it is already scope-agnostic.** | **UP and DOWN are these four sections evaluated over the candidate's local edge set** (§5.6): DOWN = the child section over `n → operand-class node` edges, UP hop-1 = the parent section and the 1-hop binding over `parent-node → c` edges, hop-2 = the 2-hop binding in both directions. No new histogram-to-vector encoder is written; the histograms in §1.4 are the *recorded stream* the sections are realized from. |
+| `OpEmbeddings::get`, `OpEmbeddings::init_with_latency_prior` | `nnue/factored.rs` | LIVE | K=32 per-op embedding; **dimension 0 is the latency prior**: `e[op][0] = ln(1 + cycles) / ln(1 + 1000)` from the same `latency_prior_cycles()` table `CostModel::latency_prior()` reads | Every op multiset in the context is realized through this table, so Σ count · prior — the neighborhood's table cost — is a feature for free, in the same units as `dcost`. |
+| `CostEdge` / `EdgeTrace` / `EdgeSink` (PR #1063 typed edge stream), `AccumulatorScratch` | `nnue/factored.rs` | LIVE (`unified_backward.rs`, `bootstrap_extraction_head.rs`) | Record the stream, realize against live embeddings at train time (bit-identical to the walk); reusable buffers across many candidates | The **discipline** §1.4 adopts: `CandidateContext` stores op multisets (raw, embedding-free, hashable, serializable) and the encoders realize them; nothing caches floats that a trainable embedding would have to be backed out of. `AccumulatorScratch` is the allocation pattern for hundreds of candidates per round. |
+| `SaturationHead::forward_candidate` / `compute_candidate_embed` / `score_candidate`, `CANDIDATE_INPUT_DIM = K + 1` | `nnue/guide/scoring.rs` (`pub(crate)`) | TEST-ONLY | The candidate tower: `1/sqrt(n)` bag-of-op pooling + one scalar row (`budget_fraction`), through `ExprNnue::apply_trunk`, then the bilinear `(mask, rule)` scorer | The nonlinear Guide family consumes the context here (§5.6): the input widens from `K + 1` to `4·K + N_SCALARS`; the bilinear scorer is unchanged. |
+| `ExprNnue::apply_trunk`, `K`, `EMBED_DIM`, `HIDDEN_DIM`, the `"TRIF"` checkpoint magic | `nnue/factored.rs` | LIVE | Shared trunk and dims; the serialization format | The tower routes through the shared trunk exactly as today; the magic is bumped only if the nonlinear family's weights are serialized this round. |
+| `extract_dag` / `extract` bottom-up DP — local `best_cost: Vec<Option<usize>>`, `best_node`; `ExtractedDAG::{schedule, choices, total_cost}` | `egraph/extract.rs` | LIVE (13 files) | Per-class best cost under a `CostFunction` is computed and then **dropped**; only the root's `total_cost` escapes | `RoundSnapshot::take` (§1.4) takes the vector (`ExtractedDAG.class_costs`, additive field) and derives `best_path` from `schedule`. One DP per round. |
+| `EGraph::extract_with_costs` (fixpoint `HashMap<EClassId,(usize,ENode)>`) | `egraph/graph.rs` | LIVE | The older root-only fixpoint walk | Not used; listed so nobody adds a third cost pass. |
+| `Provenance`: `Origin::{Seed, Rule(ApplicationId)}`, `ENodeId` (global monotone), `EGraph::tags(class)`, `ApplicationRecord` | `egraph/provenance.rs`, `graph.rs` | LIVE | Stable node identity and creation ordinals | Class **age** (§1.2) = min over the class's tags of the creating application's ordinal (`Seed` = 0). There is no class-age field and `EClassId` is not stable under union — this is the only honest source. |
+| `EpisodeLabels::{compute_strict, compute_tight}`; private `chosen_tagged_nodes` | `egraph/labeler.rs` | LIVE | Hindsight labels; the chosen-node walk | Label unchanged (strict now, tight at stage 2). `chosen_tagged_nodes` is the node-granularity "on the best path" set behind `on_best_path`; §1.4 derives the class bitset from `ExtractedDAG::schedule` instead, so it stays private. |
+| `GuidedSaturation::until_applications` — dedup before scoring (`seen_keys`, `round_keys`), key marked seen only on a recorded application; `GuidedEpisodeStats` (Round 2 §8) | `egraph/saturate.rs` | LIVE | The deployed loop | The snapshot is taken after `find_rewrite_matches`, before scoring (§1.3); ε-mixing and fallback (§6) are seams in the apply-order step; two counters are added for the snapshot cost (§1.4 invariant 6). |
+| `CandidateSummary::new`, `SaturationGuide::score_candidates`, `LinearCandidateGuide` (every term `black_box`-fenced), `PerRuleRateGuide`, `CheckpointError` | `nnue/guide/{mod,linear}.rs` | LIVE | The scoring seam and the two live Guide families | `CandidateSummary` gains `context`; `ContextLinearGuide` (§5.5) is the new linear family; `PerRuleRateGuide` stays the control; the cell oracle (§3.4) is the second control. |
+| `guide_linear::{Record, Sample, to_sample, op_index_table, Model}` | `pixelflow-pipeline/src/training/guide_linear.rs` | LIVE | The one JSONL-row → feature encoding shared by trainer and skew test | `Record` gains the `context` block; `to_sample` encodes it; the skew test covers every new term. |
+| `RuleTemplates::build`, `Rewrite::{lhs_template, rhs_template}` (30 of 62 provide them) | `nnue/factored.rs`, `egraph/rewrite.rs` | LIVE | Per-rule LHS/RHS arenas | §4.1 instantiates LHS templates; the Build phase adds templates for the 30 rules §4.1 names. |
+| `pattern_match_arena`, `substitute_template_arena` | `nnue/mod.rs` | LIVE (crate-internal) | Arena-native template match and instantiate (`Var(i)` = metavariable) | **The instantiation primitive for §4.1** — not re-derived. |
+| `BwdGenerator`, `BwdGenConfig`, `collect_rule_templates`, `family_rng_seed`, `Band`/`BANDS` (38 entries) | `nnue/mod.rs`, `egraph/mod.rs`, `bin/gen_bench_corpus.rs` | LIVE | The corpus generator and its family seeding | Supplies random operand subterms and wrapper contexts to §4.1; the context family `(band, seed)` of §4.5 is exactly this unit. |
+| `screen_for_oracle`, `quarantine_verdict`, `QuarantineGrid` (64 seeded points), `Conditioning`, `Exclusion`, `Quarantine` | `pixelflow-pipeline/src/training/quarantine.rs` | LIVE | The same-form JIT-vs-oracle gate with a compositional per-point error bound | §4.2's hard gate, unchanged. |
+| `PointCheck::is_well_conditioned`, `eval_scalar`, `equivalence_tolerance` | `pixelflow-ir/src/eval.rs` | LIVE / LIVE / TEST-ONLY (one codegen test) | Per-point conditioning predicate; the scalar oracle; the per-op drift allowance | §4.2's cross-form conditioned gate. `equivalence_tolerance` becomes load-bearing here. |
+| Cross-form "compare two forms only where both are well-conditioned" block | `pixelflow-pipeline/src/bin/bench_extraction_3way.rs` (private to the binary, ~lines 789–960) | LIVE, bin-local | The reference implementation of §4.2's second gate | **Lifted** into `quarantine.rs` as `pub fn cross_form_agreement(..) -> CrossFormVerdict` (§8); the binary calls the lifted function. |
+| `FenceKey::of` | `training/structural.rs` | LIVE | Feature-quotient structural key | The cross-tier dedup ledger for every generated expression, unchanged. |
+| `SplitManifest::{load, parse, tier_of}` (private `validate`), `Family { band, seed }`, `TierSpec`, `SeedRange`, `Fence`, `assert_family_integrity` / `MIN_FAMILY_ADMISSIONS = 8` | `training/split.rs`, `bin/gen_bench_corpus.rs` | LIVE | The fence and the per-family attrition assertion | Extended per §4.5/§4.6; the per-family panic rule is applied to rule-conditioned families. |
+| `Variance`, `compute_arena_variance`, `Extraction::chosen_variance` (`pub(crate)`), `EdgeAccumulator::variance_frac_*` | `pixelflow-ir/src/variance.rs`, `extract.rs`, `factored.rs` | LIVE | Per-node dependence lattice and its histogram | **Not in v1.** A per-class variance summary is a plausible later context feature (loop-aware codegen makes it matter); adding it is a schema bump, not a silent field. Listed so it is not rediscovered. |
+
+### 0.5.2 SUPERSEDED — dead, do not build on
+
+| Item | Where | Superseded by |
+|---|---|---|
+| `ExprGenerator`, `ExprGenConfig` | `nnue/mod.rs` | `BwdGenerator`/`BwdGenConfig`. `ExprGenerator` has no `generate` method and is never constructed. (Its private `shader_weight` table is harvested — see 0.5.4.) |
+| `MAX_DEPTH = 8`, `DEPTH_LIMITED_MAGIC`, `DEPTH_LIMITED_VERSION` | `nnue/mod.rs` | `factored::MAX_DEPTH = 192` and the `"TRIF"` format — a live name collision; no binpack reader/writer survives. |
+| `EdgeAccumulator::{add_var_ref_edges, remove_var_ref_edges, reset}`, `from_dag_choices` (no variance), `randomize_weights_only`, `memory_bytes`, `RuleTemplates::{len, is_empty, has_templates, has_root_op}` | `nnue/factored.rs` | The walker emits reload edges itself; `from_dag_choices_with_variance`; nothing. |
+| `SaturationHead::{forward_graph, mask_score_all_rules_graph, mask_score_all_rules_with_hidden}`, `GraphSummary` | `nnue/guide/{scoring,mod}.rs` | Whole-graph scoring, segregated to a future extraction-cost Judge (design revision §4). A candidate-scope context reuses the accumulator's *sections* (0.5.1), never the whole-graph *scorer*. |
+| Local `Expr` shim in `factored.rs` (memory listed it as remaining debt) | — | Gone; `pixelflow_ir::ExprArena` is the only IR. Nothing to migrate. |
+| `docs/superpowers/plans/2026-04-07-team4-backward-training.md`'s plan to delete `unified_backward.rs` | — | Stale: the file is LIVE via `bootstrap_extraction_head`. |
+
+### 0.5.3 NOT-APPLICABLE — live or dead, but not this feature's business
+
+| Item | Where | Why not |
+|---|---|---|
+| `unified_backward.rs` (`forward_cached`, `backward_value`, `apply_unified_sgd`, `UnifiedGradients`) | `pixelflow-pipeline/src/training/` | LIVE extraction-head training math, not featurization. `GradientClipStats`/`clip_stats` and the five `norm_*` accessors are dead diagnostics — harvestable later, not here. |
+| `EdgeAccumulator` (flat 2K + PE-encoded 2K), `IncrementalExtractor`, `ExtractionPolicy::Nnue`, `predict_log_cost_with_features` | `factored.rs`, `extract.rs`, `extraction.rs` | The learned-cost extraction path. Every cost in this document is the static table (Round 1 §1). |
+| `achievable_cost_within_budget` | `egraph/saturate.rs` | Root-only and mutating; the snapshot needs per-class costs without mutation. |
+| `pixelflow-ml/src/graphics.rs` (`ShFeatureMap`, `HarmonicAttention`, `LinearAttention`) | `pixelflow-ml` (feature-gated) | Spherical-harmonic **feature maps over `Field`** for rendering. No reverse dependency from `pixelflow-search`/`pixelflow-pipeline`; `LinearAttention` has no forward pass. The `sh` name collision with Round 1b's family is coincidental — `ShFeatureMap::project` contains no trig. Do not cite it for the `sh` family or for trig context. |
+
+### 0.5.4 Dead with a good idea (harvest) vs dead and superseded (leave)
+
+**Harvest:**
+- `GraphAccumulator`'s four-section layout (`accumulator.rs`) — the exact DOWN / UP-1 / UP-2 encoding, already scope-agnostic and already invertible. Reused in §5.6.
+- `SaturationHead::forward_candidate` (`scoring.rs`) — the minimal candidate tower; widened, not replaced, in §5.6.
+- `ExprGenerator::shader_weight` (`nnue/mod.rs`, private, reachable only via dead `new`) — the only ShaderToy-derived op-frequency prior in the repo (Mul 50, Add 30, Sub 20, Div/Neg 10, Abs 12, Sin/Cos 8, …). Lifted to `pub(crate) fn shader_op_prior() -> OpMap<u32>` and used as §4.1's subterm op prior.
+- `equivalence_tolerance` (`pixelflow-ir/src/eval.rs`) — the per-op drift table, one test caller; §4.2 makes it load-bearing.
+- `bench_extraction_3way.rs`'s cross-form well-conditioned comparison — correct logic trapped in a 170 KB binary; lifted (§4.2).
+- `EdgeTrace`/`EdgeSink` — not dead, but the record-the-stream discipline is the good idea §1.4 borrows.
+- `UnifiedGradients::clip_stats`, `norm_*` — real gradient-health diagnostics; harvest when the nonlinear family gets a trainer, not now.
+
+**Leave:** everything in 0.5.2.
+
+### 0.5.5 Two facts the survey established that the design must not pretend otherwise about
+
+- **`EGraph` keeps no parent lists.** `EGraph::parent: Vec<EClassId>` is the union-find array;
+  `EClass` has exactly `nodes` and `tags`; `rebuild_budgeted` is worklist- and memo-driven. The UP
+  context needs a reverse index built once per round by one scan over all nodes (§1.2's
+  implementation note) — O(Σ|nodes|), the order `find_rewrite_matches` already pays, flat in |R|.
+- **There is no class-age field, and `EClassId` order is not stable under union.** The stable
+  ordinals are `ENodeId` and `ApplicationId`; §1.2 derives age from `Origin` over the class's tags.
+
 ## 1. The denotation: a candidate and its local context
 
 ### 1.1 What a candidate is
@@ -151,11 +229,17 @@ pub struct ClassSummary {
     pub age: u32,           // application ordinal at which the class's earliest node was created; 0 = seed
 }
 
+/// Per-(op, op) counts, sparse, sorted, no zero entries, saturating at u8::MAX. Keeps the
+/// PAIRING a marginal histogram loses: the GraphAccumulator 2-hop binding section
+/// (§5.6) needs (parent op, grandparent op) per edge, not two independent marginals.
+pub struct OpPairHistogram(Vec<((OpKind, OpKind), u8)>);
+
 /// Parent-op multisets one and two hops above the match root (§1.2 UP).
 pub struct ParentHistogram {
-    pub hop1: OpHistogram,  // ops of e-nodes that have `c` as a child
-    pub hop2: OpHistogram,  // ops of e-nodes that have a hop-1 parent class as a child
-    pub parents1: u16,      // |hop-1 parent e-nodes| (saturating); 0 == c is the root
+    pub hop1: OpHistogram,      // ops of e-nodes that have `c` as a child
+    pub hop2: OpPairHistogram,  // (op of hop-1 parent node p, op of node g that has p's class as a child);
+                                // the hop-2 marginal is its projection onto the second component
+    pub parents1: u16,          // |hop-1 parent e-nodes| (saturating); 0 == c is the root
     pub parents2: u16,
 }
 
@@ -170,6 +254,10 @@ pub struct CandidateState {
 
 pub struct CandidateContext {
     pub down: [ClassSummary; K_DOWN],
+    /// (op of operand-class node t, op of node u in a child class of t) — the DOWN two-hop
+    /// pairing, for the same reason `ParentHistogram::hop2` is a pair histogram (§5.6).
+    /// For a depth-2 rule this is where the second-hop binding's own forms are visible.
+    pub down_hop2: OpPairHistogram,
     pub up: ParentHistogram,
     pub state: CandidateState,
 }
@@ -406,6 +494,11 @@ power-recurrence, log-power ×2, expand-square, diff-of-squares, recip-sqrt; tha
    the existing `BwdGenerator` with `max_depth ∈ {0, 1, 2}` over the band's variable count (depth 0
    = a leaf, so the LEAF × LEAF cell is reachable; depth 2 lets the operand's dominant group range
    over `G`). Shared variables in the LHS (pythagorean's `x` in `sin²x + cos²x`) are bound once.
+   The substitution itself is `nnue::substitute_template_arena(&mut arena, &lhs_arena, lhs_root,
+   &bindings)` (0.5.1) — the existing primitive, not a copy. The op prior for subterm draws is
+   `shader_op_prior()` (0.5.4, lifted from the dead `ExprGenerator::shader_weight`); when a target
+   cell (§4.4) names a group, that group's ops get their weight multiplied by 8, so targeting is a
+   reweighting of one table, not a second generator.
 2. **Embed** the instance at a random position in a random context of depth `d ∈ {0, 1, 2, 3}`:
    `d = 0` is the bare instance (root; `up1 = None`); `d ≥ 1` wraps it in `d` random ops so that
    `up1` ranges over `G` — the `sqrt`/`div` parents pythagorean needs to pay are reached by
@@ -419,15 +512,20 @@ Two checks, never conflated:
 
 - **Same-form hard gate** — every generated expression passes the numeric quarantine
   (`training::quarantine::Quarantine`, JIT vs `pixelflow_ir::eval_scalar` on the same arena over
-  the 64-point seeded grid under `DifferentialCheck`'s compositional bound). Mismatch = miscompile
-  = hard failure at the same `MAX_MISMATCH_RATE` the corpus uses.
+  the 64-point seeded grid under `DifferentialCheck`'s compositional bound; `screen_for_oracle`
+  runs first, as it must). Mismatch = miscompile = hard failure at the same `MAX_MISMATCH_RATE`
+  the corpus uses.
 - **Cross-form conditioned gate** — the LHS instance and its RHS instantiation (the rule's
   `rhs_template` under the same bindings) are evaluated by `eval_scalar` at the well-conditioned
-  points of the same grid (`PointCheck::is_well_conditioned`) and must agree within the composed
-  per-op tolerance (`equivalence_tolerance`). Disagreement at a well-conditioned point **fails** —
-  an implementation error in the rule, the template, or the generator. Divergence at
-  ill-conditioned points is metadata on the instance, never an exclusion, never an alarm.
-  Algebraically valid rewrites are never called "unsound" and never get domain guards.
+  points of the same grid (`PointCheck::is_well_conditioned`, for **both** forms) and must agree
+  within the composed per-op tolerance (`equivalence_tolerance`). Disagreement at a
+  well-conditioned point **fails** — an implementation error in the rule, the template, or the
+  generator — and is written to the run's quarantine log with the point and both values.
+  Divergence at ill-conditioned points is metadata on the instance, never an exclusion, never an
+  alarm. Algebraically valid rewrites are never called "unsound" and never get domain guards. The
+  comparison is `quarantine::cross_form_agreement(lhs, rhs, &grid) -> CrossFormVerdict`, lifted
+  from the private block in `bench_extraction_3way.rs` (0.5.1) so there is one definition; the
+  binary is re-pointed at it.
 
 ### 4.3 Payability: keep instances where the rule can demonstrably pay, or is a designated enabler
 
@@ -467,9 +565,13 @@ likely cause is that the rule's LHS constrains the operands more than the arity-
 A rule-conditioned expression's holdout unit is its **context family**, exactly the existing unit:
 the `(band, seed)` of the generator stream its operands and wrapper were drawn from. The rule is
 not the family — every rule must appear in TRAIN, and DEV tests it on unseen context families.
-Names: `{tier}_rc{rule_idx:02}_b{band:02}_f{seed:02}_{idx:05}`. Tier follows `corpus_split.toml`'s
-existing `[train]`/`[dev]` band tables (the fence parser is extended to the `rc` form; the check
-that a TRAIN entry's family is a TRAIN family is unchanged). Output files are separate —
+Names: `{tier}_rc-{rule_name}_b{band:02}_f{seed:02}_{idx:05}`, where `rule_name` is
+`Rewrite::name()` — the rule **family** (the four `commutative` indices share one name and one
+prefix; under Round 2 a duplicate `<name>#dup<k>` and a composition carry their own names). The
+name, not the index, is in the entry name because an index is rule-set-relative under Round 2's
+inflated vectors and the corpus must remain readable across |R| points. Tier follows
+`corpus_split.toml`'s existing `[train]`/`[dev]` band tables (the fence parser is extended to the
+`rc-` form; the check that a TRAIN entry's family is a TRAIN family is unchanged). Output files are separate —
 `corpus_rc_train.bin`, `corpus_rc_dev.bin` — so Round 1's `corpus_{train,dev}.bin` MD5s are
 untouched and Round 1's numbers stay comparable. The manifest gains one table:
 
@@ -503,11 +605,32 @@ seeds = [[0, 7]]
   the exactly-one-tier check instead; `sh`/`bezier` remain DEV-only under it. The per-rule
   positive-rate targets in Round 1b §5 (every trig rule with ≥ 100 TRAIN positives) become the
   acceptance metric for these families — read straight off the coverage table's per-rule row.
+  **Two form collisions flagged for JP's decision (survey pass), not resolved here:** (i)
+  `normalize` is the *name and the form* of one of the five FINAL production kernels
+  (`corpus_split.toml` `[final] kernels`; `gen_bench_corpus::named_kernel`), and `horner` is the
+  form of the FINAL kernel `poly` — a TRAIN family that reproduces a FINAL kernel's structure
+  leaks by construction, and `FenceKey` catches only exact structural duplicates, not the family
+  resemblance. (ii) `fourier`'s `sin(kθ + φ_k)` terms are the `sh-direct` form (`Sin(m·φ)` with a
+  `Mul(Const, Y)` argument) of the DEV OOD family, which would make `sh` less out-of-distribution
+  than Round 1b registered it to be. Candidate replacements that exercise the same contexts
+  without either collision: `lighting` (Lambert/Phong — normalized dot products, `max(0, ·)`,
+  `pow(·, k)`: the LIN/ROOT/EXPLOG parents) and `complex-mul` (chains of complex products and
+  moduli: the expand-square / diff-of-squares / MUL context); `rotation` stands as proposed.
+  Whichever set JP picks, the acceptance metric above is unchanged.
 
 ## 5. Training-distribution policy for Round 2 (and after)
 
-1. **TRAIN** = rule-conditioned, cell-balanced `corpus_rc_train.bin` (§4) + the existing
-   natural-frequency TRAIN bands (`corpus_train.bin`) + the structure-aware named TRAIN families.
+1. **TRAIN** — two pre-committed arms, because JP's framing demotes the natural-frequency
+   corpus and the demotion should be measured rather than assumed:
+   - **Primary arm:** rule-conditioned, cell-balanced `corpus_rc_train.bin` (§4) + the
+     structure-aware named TRAIN families (§4.6). The natural-frequency TRAIN bands
+     (`corpus_train.bin`) are **not** trained on — "natural-frequency generator corpus demoted to
+     a DEV baseline" (JP) is read literally.
+   - **Secondary arm (ablation):** the primary arm's data + `corpus_train.bin`. It answers one
+     question — does the natural corpus add anything once the cells are covered? — and is
+     reported next to the primary, never in its place.
+   - A third, distribution-only ablation trains Round 1's *feature set* (no context) on the
+     primary arm's data, so the feature's effect and the distribution's effect are separable.
    Labels minted with the in-sweep observation hook (§1.3) under the rule set being trained for
    (per-|R| re-minting, Round 2 §7.3, unchanged).
 2. **DEV baseline** = the natural-frequency DEV bands (`corpus_dev.bin`, unchanged MD5) — demoted
@@ -529,6 +652,42 @@ seeds = [[0, 7]]
    `w_on_path` + `w_budget` + `w_age·log1p(class_age)` + the existing neighborhood/size terms.
    Same trainer, same loss weighting, same skew test extended to the new fields. Rule embeddings
    from templates (Round 2 §7.2's named Round-3 lever) remain out of scope.
+6. **Realization through the existing towers — §5.6.** The context is *recorded* as histograms
+   (§1.4) and *realized* by each family's encoder; the linear family's realization is item 5, the
+   nonlinear family's is §5.6. Both read the same `CandidateContext`; neither restates it.
+
+### 5.6 The nonlinear family: `GraphAccumulator` sections over the candidate's local edge set
+
+The coordinator's instruction, and the survey's finding (0.5.1), is that `GraphAccumulator`'s
+four sections *are* an up/down-context representation built whole-graph, so at candidate scope
+the UP/DOWN features are stated as those sections evaluated over the candidate's parent set and
+bound classes — not as a new encoder. Concretely, per candidate, with `E = ExprNnue::embeddings`
+and `op_n` the op of the matched node `n`:
+
+```
+acc = GraphAccumulator::new()                          // or reset() on a per-round scratch buffer
+for slot in down where present:
+    for (o, k) in slot.ops:        k × acc.add_edge_at_depth(E, parent = op_n, child = o, depth = 1)
+for ((t, u), k) in down_hop2:      k × acc.add_2hop_edge(E, gp = op_n, parent = t, child = u)
+for (p, k) in up.hop1:             k × acc.add_edge_at_depth(E, parent = p, child = op_n, depth = 1)
+for ((p, g), k) in up.hop2:        k × acc.add_2hop_edge(E, gp = g, parent = p, child = op_n)
+acc = acc.normalized()                                 // per-section L2, exactly as today
+input = [acc.values (4·K = 128) ‖ scalars (N_SCALARS = 20)]      // CANDIDATE_INPUT_DIM: K+1 → 148
+```
+
+Read off the sections: `[K..2K)` is the DOWN marginal, `[0..K)` the UP hop-1 marginal,
+`[2K..3K)` the 1-hop binding in both directions (keyed by which side is `op_n`), `[3K..4K)` the
+2-hop binding in both directions — which is why §1.4's hop-2 histograms are *pair* histograms:
+the binding section is a sum of products over edges, not a product of marginals. Because
+`E[·][0]` is the latency prior (0.5.1), the marginal sections carry Σ count · prior — the
+neighborhood's table cost — with no extra feature. The 20 scalars: `budget_fraction`,
+`dcost / 64` clipped to ±1, `on_best_path`, `class_age / B`, `log1p(class_size)`,
+`log1p(parents1)`, `log1p(parents2)`, `parents1 == 0`, and per DOWN slot (`present`,
+`log1p(best_cost)`, `log1p(size)`, `age / B`) × 3. `forward_candidate` keeps its `1/sqrt(n)`
+pooling for the pre-existing `neighborhood_ops` row and its path through `apply_trunk` and the
+bilinear scorer; only its input width changes. The tower stays `pub(crate)`; a trainer for it is a
+later task, and it is **not** in this round's accept gate (the linear family is) — exactly the
+sequencing `train_guide`'s module doc argues for.
 
 ## 6. Design items specified here, not implemented here
 
@@ -601,7 +760,11 @@ generator's job, gated by the coverage table and the domain-shift table.
 
 | Crate / file | Item | Kind |
 |---|---|---|
-| `pixelflow-search/src/egraph/candidate.rs` | `K_DOWN`, `OpHistogram`, `ClassSummary` (+`ABSENT`), `ParentHistogram`, `CandidateState`, `CandidateContext`, `RoundSnapshot::take`, `Firing { node_idx, action }`, `CandidateFeatures { context }`, `CandidateFeatures::observe(egraph, snapshot, firing)` | additive types + the one constructor |
+| `pixelflow-search/src/egraph/candidate.rs` | `K_DOWN`, `OpHistogram`, `OpPairHistogram`, `ClassSummary` (+`ABSENT`), `ParentHistogram { hop1, hop2: OpPairHistogram, parents1, parents2 }`, `CandidateState`, `CandidateContext { down, down_hop2, up, state }`, `RoundSnapshot::take`, `Firing { node_idx, action }`, `CandidateFeatures { context }`, `CandidateFeatures::observe(egraph, snapshot, firing)`; all context types `Serialize`/`Deserialize` under `std` so the JSONL carries the struct whole | additive types + the one constructor |
+| `pixelflow-search/src/egraph/extract.rs` | `ExtractedDAG.class_costs: Vec<Option<usize>>` — the DP's own `best_cost` vector, returned instead of dropped | additive field |
+| `pixelflow-search/src/nnue/guide/scoring.rs` | `CANDIDATE_INPUT_DIM = 4 * K + N_SCALARS` (148); `forward_candidate` fed by a `GraphAccumulator` over the candidate's local edge set (§5.6); `accumulator.rs` unchanged | nonlinear family (not in this round's gate) |
+| `pixelflow-search/src/nnue/mod.rs` | `pub(crate) fn shader_op_prior() -> OpMap<u32>` lifted from `ExprGenerator::shader_weight`; `substitute_template_arena` reused as-is | harvest |
+| `pixelflow-pipeline/src/training/quarantine.rs` | `pub fn cross_form_agreement(lhs: (&ExprArena, ExprId), rhs: (&ExprArena, ExprId), grid: &QuarantineGrid) -> CrossFormVerdict` lifted from `bench_extraction_3way.rs`, which is re-pointed at it | lift |
 | `pixelflow-search/src/egraph/cell.rs` (new) | `Group`, `group_of(OpKind)`, `DownSig`, `DcostBucket`, `BudgetBucket`, `CandidateCell`, `CandidateCell::of(&CandidateFeatures)`, `CandidateCell::l1()/l2()`, `reachable_cells(rules: &[Box<dyn Rewrite>]) -> ReachableCells` | bucketing + enumeration |
 | `pixelflow-search/src/egraph/rewrite.rs` | `RewriteAction::table_cost(&RoundSnapshot, &CostModel)` (pub(crate)); `lhs_template`/`rhs_template` for the 32 currently-untemplated rules minus {constant-fold, differentiate} (30 rules) | additive |
 | `pixelflow-search/src/egraph/graph.rs` | `find_rewrite_matches_with_actions()` | additive sibling |
@@ -609,7 +772,7 @@ generator's job, gated by the coverage table and the domain-shift table.
 | `pixelflow-search/src/nnue/guide/mod.rs` | `CandidateSummary { context }`; `ContextLinearGuide` (§5.5) implementing `SaturationGuide` | additive |
 | `pixelflow-pipeline/src/training/split.rs` | `[rule_conditioned]` table; `rc` name form in the fence parser; exactly-one-tier check for named families | manifest |
 | `pixelflow-pipeline/src/training/rule_conditioned.rs` (new) | `instantiate_lhs`, `embed`, `is_pay`, `is_enabler_case`, `ENABLERS`, `fill_plan(coverage.json)` | generator |
-| `pixelflow-pipeline/src/bin/gen_rc_corpus.rs` (new) | `--rule-set`, `--manifest`, `--coverage` (previous report), `--n-per-rule 2000`, `--out-train corpus_rc_train.bin --out-dev corpus_rc_dev.bin` | binary |
+| `pixelflow-pipeline/src/bin/gen_rc_corpus.rs` (new) | `--rule-set`, `--manifest`, `--coverage` (previous report), `--n-per-rule 2000`, `--out-train corpus_rc_train.bin --out-dev corpus_rc_dev.bin`; entry names `{tier}_rc-{rule_name}_b{band:02}_f{seed:02}_{idx:05}` | binary |
 | `pixelflow-pipeline/src/bin/gen_strict_labels.rs` | in-sweep observation (§1.3); JSONL record gains the full `CandidateContext` and the L1/L2/L3 cell | changed mint |
 | `pixelflow-pipeline/src/bin/guide_coverage.rs` (new) | `--labels <jsonl>... --rule-set --out docs/results/<date>-guide-coverage.{json,md}`; §3.3 format; cell-oracle AUC | binary |
 | `pixelflow-pipeline/src/bin/train_guide.rs` | `--model {linear, context-linear}`; checkpoint carries `Support`, fingerprint, corpus MD5s, coverage hash | changed trainer |
@@ -621,3 +784,30 @@ coverage table of the natural-frequency corpus is itself a result — it is the 
 much of the reachable context space Round 1 ever saw); then the mint hook and skew test; then the
 generator; then the context Guide; then ε/fallback. Each step lands with its tests and with no
 change to production saturation.
+
+## 9. Revision log
+
+- **2026-09-01, first commit (`356de421`):** the denotation, the cell, the coverage table,
+  rule-conditioned generation, the training-distribution policy, ε-mixing and fallback, and §7.
+- **2026-09-01, survey pass (this revision), per JP's instruction to inventory existing code
+  before writing types.** Additive changes only; no committed number in §2–§3 moved:
+  - §0.5 added: the REUSED / SUPERSEDED / NOT-APPLICABLE inventory, the harvest-vs-leave lists,
+    and the two implementation facts (no parent lists; no class age).
+  - §1.4: `ParentHistogram::hop2` and the new `CandidateContext::down_hop2` are **pair**
+    histograms (`OpPairHistogram`), because the `GraphAccumulator` 2-hop binding section is a sum
+    of products over edges and cannot be realized from two marginals. The hop-2 marginals are
+    projections of the pairs, so nothing the first commit's linear model (§5.5) reads is lost.
+  - §4.1: names `substitute_template_arena` as the instantiation primitive and `shader_op_prior()`
+    (lifted from dead code) as the subterm op prior; §4.2: names `cross_form_agreement` lifted from
+    `bench_extraction_3way.rs`.
+  - §4.5: rule-conditioned entry names carry `Rewrite::name()` (the rule family) rather than the
+    rule index, which is rule-set-relative under Round 2.
+  - §4.6: flags the `normalize`/`poly`-vs-FINAL and `fourier`-vs-`sh-direct` form collisions for
+    JP's decision, with two collision-free candidates; does not change the list.
+  - §5.1: splits TRAIN into a primary arm (natural TRAIN bands excluded, per JP's demotion) and a
+    secondary ablation arm (included), plus the distribution-only ablation; the first commit's
+    single TRAIN definition is the secondary arm.
+  - §5.6 added: the nonlinear family's realization as `GraphAccumulator` sections over the
+    candidate's local edge set, with the latency prior arriving through `OpEmbeddings` dim 0.
+  - §8: rows for `ExtractedDAG.class_costs`, `scoring.rs`, `shader_op_prior`, and
+    `cross_form_agreement`.
