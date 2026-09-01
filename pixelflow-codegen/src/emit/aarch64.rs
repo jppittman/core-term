@@ -1863,15 +1863,6 @@ pub(crate) mod driver {
             Ok(())
         }
 
-        fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32) {
-            if frame_size > 0 {
-                super::emit_sub_sp(code, frame_size);
-            }
-            // Builtins may add pool entries during emission, so always reserve the
-            // ADR anchor (harmless if the pool ends up empty).
-            self.adr_patch_pos = super::emit_adr_x17_placeholder(code);
-        }
-
         fn emit_plan(
             &mut self,
             code: &mut Vec<u8>,
@@ -1940,17 +1931,6 @@ pub(crate) mod driver {
                 Aarch64Branch::B(p) => super::patch_b(code, p, target),
                 Aarch64Branch::Hs(c) => c.patch(code, target),
             }
-        }
-
-        fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32) {
-            if result_reg.0 != 0 {
-                super::emit_mov(code, Reg(0), result_reg);
-            }
-            if frame_size > 0 {
-                super::emit_add_sp(code, frame_size);
-            }
-            super::ret(code);
-            self.finish_pool(code);
         }
 
         // AAPCS64: x0 = ctx (read-only in the body's gathers), x1 = out,

@@ -895,13 +895,6 @@ pub(crate) mod driver {
             Ok(()) // const broadcast is self-contained; no pool.
         }
 
-        fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32) {
-            let bytes = frame_size;
-            if bytes > 0 {
-                x86::emit_sub_rsp(code, bytes);
-            }
-        }
-
         fn emit_plan(
             &mut self,
             code: &mut Vec<u8>,
@@ -1049,17 +1042,6 @@ pub(crate) mod driver {
         }
         fn patch_branch(&mut self, code: &mut Vec<u8>, branch: usize, target: usize) {
             x86_64::patch_rel32(code, branch, target);
-        }
-
-        fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32) {
-            if result_reg.0 != 0 {
-                super::emit_mov(code, Reg(0), result_reg);
-            }
-            let bytes = frame_size;
-            if bytes > 0 {
-                x86::emit_add_rsp(code, bytes);
-            }
-            x86::ret(code);
         }
 
         // Same scaffold register roles as SSE2 — see `x86_64::scaffold` — at

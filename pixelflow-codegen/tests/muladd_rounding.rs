@@ -19,8 +19,9 @@
 //! all four backends from any host by `emit::tests::muladd_encoding`.
 #![cfg(target_arch = "x86_64")]
 
-use pixelflow_codegen::emit::executable::{ExecutableCode, PerBatch};
-use pixelflow_codegen::emit::{EmitCtx, compile_arena_dag, compile_arena_dag_with_ctx};
+use pixelflow_codegen::JitManifold;
+use pixelflow_codegen::emit::executable::Point4;
+use pixelflow_codegen::emit::{EmitCtx, compile};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -58,75 +59,6 @@ const HALF_A: f32 = 0.500_000_06;
 const HALF_B: f32 = 2048.5;
 
 // ── JIT invocation at this build's width ─────────────────────────────────────
-
-#[allow(improper_ctypes_definitions)]
-#[cfg(target_feature = "avx512f")]
-type KernelFn = extern "C" fn(
-    core::arch::x86_64::__m512,
-    core::arch::x86_64::__m512,
-    core::arch::x86_64::__m512,
-    core::arch::x86_64::__m512,
-) -> core::arch::x86_64::__m512;
-
-#[cfg(target_feature = "avx512f")]
-fn jit_eval(code: &ExecutableCode<PerBatch>, x: f32, y: f32, z: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        _mm512_cvtss_f32(f(
-            _mm512_set1_ps(x),
-            _mm512_set1_ps(y),
-            _mm512_set1_ps(z),
-            _mm512_setzero_ps(),
-        ))
-    }
-}
-
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
-type KernelFn = extern "C" fn(
-    core::arch::x86_64::__m256,
-    core::arch::x86_64::__m256,
-    core::arch::x86_64::__m256,
-    core::arch::x86_64::__m256,
-) -> core::arch::x86_64::__m256;
-
-#[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
-fn jit_eval(code: &ExecutableCode<PerBatch>, x: f32, y: f32, z: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        _mm256_cvtss_f32(f(
-            _mm256_set1_ps(x),
-            _mm256_set1_ps(y),
-            _mm256_set1_ps(z),
-            _mm256_setzero_ps(),
-        ))
-    }
-}
-
-#[allow(improper_ctypes_definitions)]
-#[cfg(not(target_feature = "avx2"))]
-type KernelFn = extern "C" fn(
-    core::arch::x86_64::__m128,
-    core::arch::x86_64::__m128,
-    core::arch::x86_64::__m128,
-    core::arch::x86_64::__m128,
-) -> core::arch::x86_64::__m128;
-
-#[cfg(not(target_feature = "avx2"))]
-fn jit_eval(code: &ExecutableCode<PerBatch>, x: f32, y: f32, z: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        _mm_cvtss_f32(f(
-            _mm_set1_ps(x),
-            _mm_set1_ps(y),
-            _mm_set1_ps(z),
-            _mm_setzero_ps(),
-        ))
-    }
-}
 
 fn assert_bits(tag: &str, got: f32, want: f32) {
     assert_eq!(
@@ -171,9 +103,9 @@ fn an_unspilled_muladd_rounds_the_way_this_target_does() {
     let z = a.push_var(2);
     let root = a.push_ternary(OpKind::MulAdd, x, y, z);
 
-    let result = compile_arena_dag(&a, root).expect("compile MulAdd(X, Y, Z)");
+    let result = compile(&a, root).expect("compile MulAdd(X, Y, Z)");
     assert_eq!(result.spill_count, 0, "this scenario must not spill");
-    let got = jit_eval(&result.code, A, B, C);
+    let got = JitManifold::new(result.code).eval_at(Point4::new(A, B, C, 0.0));
 
     #[cfg(target_feature = "fma")]
     assert_bits("fused MulAdd on an FMA target", got, fused(A, B, C));
@@ -230,12 +162,13 @@ fn a_spilled_muladd_rounds_twice_on_every_target() {
         .iter()
         .fold(fma, |acc, &w| a.push_binary(OpKind::Add, acc, w));
 
-    let result = compile_arena_dag_with_ctx(&a, root, EmitCtx::with_max_regs(1))
+    let result = EmitCtx::with_max_regs(1)
+        .compile(&a, root)
         .expect("compile spilled MulAdd");
     assert!(
         result.spill_count > 0,
         "scenario failed to create register pressure"
     );
-    let got = jit_eval(&result.code, HALF_A, HALF_B, C);
+    let got = JitManifold::new(result.code).eval_at(Point4::new(HALF_A, HALF_B, C, 0.0));
     assert_bits("decomposed MulAdd", got, decomposed(A, B, C));
 }

@@ -56,8 +56,6 @@ pub mod x86_64;
 
 use pixelflow_ir::kind::OpKind;
 
-use pixelflow_ir::arena::{ExprArena, ExprId};
-
 use alloc::vec::Vec;
 
 /// Physical register index.
@@ -302,6 +300,27 @@ impl EmitCtx {
             max_regs: Some(max_regs),
         }
     }
+
+    /// Compile an [`ExprArena`] DAG under this configuration.
+    ///
+    /// The configured spelling of [`compile`]. It is a method rather than a
+    /// `compile_with_ctx` free function because the suffix was only ever
+    /// standing in for a receiver: the config is the thing that varies, so the
+    /// config is what should be on the left.
+    ///
+    /// # Errors
+    ///
+    /// If the arena contains a construct no pass can lower, or the emitter
+    /// cannot allocate a frame for it.
+    pub fn compile(
+        self,
+        arena: &pixelflow_ir::arena::ExprArena,
+        root: pixelflow_ir::arena::ExprId,
+    ) -> Result<CompileResult, &'static str> {
+        let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
+        let schedule = arena_to_schedule(&arena, root);
+        compile_via_backend(schedule, &mut Native::new(self))
+    }
 }
 
 /// The coordinate inputs, in order: X, Y, Z, W.
@@ -320,12 +339,9 @@ const INPUT_REGS: [Reg; 4] = [Reg(0), Reg(1), Reg(2), Reg(3)];
 
 /// Compile result with metadata for ML training.
 ///
-/// `A` is the calling convention the emitter produced. It rides along on
-/// `code` so a consumer cannot pick the wrong entry point: see
-/// [`executable::KernelAbi`].
-pub struct CompileResult<A: executable::KernelAbi> {
+pub struct CompileResult {
     /// The executable code.
-    pub code: executable::ExecutableCode<A>,
+    pub code: executable::ExecutableCode,
     /// Number of spills performed.
     pub spill_count: u32,
     /// Total stack space used for spills (bytes).
@@ -370,9 +386,6 @@ trait IsaBackend {
     /// after the body is produced and can only prepend bytes.
     fn frame_ready(&mut self, _frame_size: u32) {}
 
-    /// Function prologue (allocate the spill frame, set up any pool anchor).
-    fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32);
-
     /// Emit one resolved instruction (with its reloads/store).
     fn emit_plan(&mut self, code: &mut Vec<u8>, plan: &InstructionPlan)
     -> Result<(), &'static str>;
@@ -402,11 +415,6 @@ trait IsaBackend {
     fn emit_jump(&mut self, code: &mut Vec<u8>) -> Self::Branch;
     /// Patch a previously emitted branch to land at `target`.
     fn patch_branch(&mut self, code: &mut Vec<u8>, branch: Self::Branch, target: usize);
-
-    /// Function epilogue: move the result into the return register, tear down
-    /// the frame, emit RET, and perform any arch-specific finalization (e.g.
-    /// append + anchor the constant pool). After this, `code` is complete.
-    fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32);
 
     // -------------------------------------------------------------------------
     // Collapse-loop scaffold
@@ -471,7 +479,7 @@ trait IsaBackend {
     fn emit_ret(&mut self, code: &mut Vec<u8>);
 
     /// Wrap a [`CollapseBody`] in the collapse loop scaffold, producing a
-    /// complete [`CollapseKernelFn`](executable::CollapseKernelFn): the
+    /// complete [`KernelFn`](executable::KernelFn): the
     /// caller's lane-sequential X is an induction value stepped by the batch
     /// width in the inner loop and reset for each row; Y advances by 1.0 in
     /// the outer loop; Z/W are loop-invariant. Each batch's result is stored
@@ -861,36 +869,6 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
     let result_reg = backend.emit_resolve(&mut code, root, file.reload[1], locs);
 
     Ok((code, result_reg, frame_size, real_spill_count))
-}
-
-/// Drive a schedule to a complete per-batch function via an
-/// [`IsaBackend`]: prologue, body, epilogue (root in the return register, frame
-/// torn down, `RET`). Byte-for-byte identical to the pre-refactor emitter — the
-/// body is simply produced by [`emit_dag_body`] and framed here.
-fn compile_dag_via_backend<B: IsaBackend>(
-    schedule: Vec<regalloc::Def>,
-    backend: &mut B,
-) -> Result<CompileResult<executable::PerBatch>, &'static str> {
-    let (body, result_reg, frame_size, spill_count) = emit_dag_body(schedule, backend)?;
-
-    let mut code: Vec<u8> = Vec::new();
-    backend.prologue(&mut code, frame_size);
-    code.extend_from_slice(&body);
-    backend.epilogue(&mut code, result_reg, frame_size);
-
-    let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
-    Ok(CompileResult {
-        code: exec,
-        spill_count,
-        // The backend's own figure, not the logical one: an AVX2 slot is 32
-        // bytes and an AVX-512 slot 64, so reporting `frame_size` here claimed
-        // 16 bytes per spill while the prologue reserved 2x/4x that. The
-        // number feeds the cost model's training metadata and frame-size
-        // thresholds, so the discrepancy was silently mistraining them.
-        spill_bytes: frame_size,
-        max_regs: backend.register_file().scratch.len(),
-        hoisted_values: 0,
-    })
 }
 
 /// Info about an operation in the schedule.
@@ -1856,144 +1834,6 @@ type Native = avx2::driver::Avx2Backend;
 ))]
 type Native = x86_64::driver::X86Backend;
 
-/// Compile an [`ExprArena`] DAG to executable code.
-pub fn compile_arena(
-    arena: &ExprArena,
-    root: ExprId,
-) -> Result<executable::ExecutableCode<executable::PerBatch>, &'static str> {
-    compile_arena_dag(arena, root).map(|r| r.code)
-}
-
-/// Compile an [`ExprArena`] DAG using linear-scan register allocation.
-///
-/// Walks the arena directly — no intermediate `Expr` tree is materialized, and
-/// the arena IS the linearized schedule, so linearization is free. Every
-/// target runs this same schedule → allocate → emit driver.
-pub fn compile_arena_dag(
-    arena: &ExprArena,
-    root: ExprId,
-) -> Result<CompileResult<executable::PerBatch>, &'static str> {
-    compile_arena_dag_with_ctx(arena, root, EmitCtx::default())
-}
-
-/// Compile an [`ExprArena`] DAG with an explicit register budget.
-///
-/// `ctx.max_regs` caps the selected backend's scratch pool (it can only shrink
-/// it — see [`regalloc::RegisterFile::capped`]), which is how a caller forces
-/// spilling. It used to be documented as advisory here on the grounds that
-/// x86 ran a Sethi-Ullman tree emitter that never spilled; both halves of that
-/// had stopped being true — x86 runs the same linear-scan driver as everything
-/// else, and it spills.
-pub fn compile_arena_dag_with_ctx(
-    arena: &ExprArena,
-    root: ExprId,
-    ctx: EmitCtx,
-) -> Result<CompileResult<executable::PerBatch>, &'static str> {
-    // After this the emitter sees only ops it can encode — no Dwrt, Reduce,
-    // Gather or transcendentals. The passes and their order live in
-    // `pixelflow_ir::passes::legalize`.
-    //
-    // A kernel that reads bound memory takes its buffer bases from a context
-    // pointer (rdi / x0); the emitted body is identical either way, so the
-    // caller invokes it as `CtxKernelFn` instead of `KernelFn`.
-    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
-    let schedule = arena_to_schedule(&arena, root);
-    compile_dag_via_backend(schedule, &mut Native::new(ctx))
-}
-
-// =============================================================================
-// x86-64 IsaBackend: the leaf emit for the SHARED per-batch driver.
-// =============================================================================
-//
-// `compile_dag_via_backend` owns the control flow (schedule, regalloc, Select
-// short-circuit guards, root handling) for BOTH architectures; this is just the
-// x86 instruction encoding behind that seam, so x86 and aarch64 run the same
-// driver (no "works on my machine" divergence between them).
-//
-// Spills go to the System V red zone when the frame fits (the kernel is a
-// leaf): a `FrameLayout` slot at byte `offset` maps to `[rsp - (offset + 16)]`.
-// Larger frames (glyph-scale fused kernels) allocate a real frame in the
-// prologue (`sub rsp, N`); slots then live at `[rsp + offset]` and the
-// epilogue releases the frame before `ret`.
-//
-// Register roles: xmm0-3 inputs (precolored), xmm4-9 allocatable (6),
-// xmm10 fixed scratch (binary two-operand hazard + select temp), xmm11-12
-// reload (`SSE2_FILE.reload`), xmm13-15 builtin scratch.
-
-// =============================================================================
-// AVX-512 backend: the leaf emit for the SHARED driver, 512-bit (zmm) kernels.
-// =============================================================================
-//
-// Mirrors `X86Backend`'s register roles exactly — `AVX512_FILE` is `SSE2_FILE`
-// with a wider `vector_bytes` — so it reuses the shared driver and allocator
-// unchanged; only the leaf encodings differ. EVEX is 3-operand and non-destructive, so there is
-// no SSE two-operand hazard (operands never clobbered; may alias dst), and we
-// have real hardware FMA.
-//
-// Register roles (zmm): zmm0-3 inputs, zmm4-9 allocatable (6), zmm10 fixed
-// scratch (FMA temp), zmm11-12 reload, zmm13-15 builtin scratch.
-//
-// Spills use a REAL stack frame, not the red zone: a zmm slot is 64 bytes, so
-// even one spill overflows the 128-byte red zone. `FrameLayout` hands out
-// offsets in 16-byte units (the shared layout assumes 128-bit slots); scale ×4
-// to 64-byte zmm slots, and allocate `frame_size * 4` in the prologue.
-//
-// Scope (Stage 1): the arithmetic subset (Var/Const/Unary{sqrt,neg,abs}/Binary
-// {add,sub,mul,div,min,max}/FMA). Select (k-mask class), Clamp, and the
-// transcendentals reject loudly and are later stages.
-
-// =============================================================================
-// AVX2 backend: the leaf emit for the SHARED driver, 256-bit (ymm) kernels.
-// =============================================================================
-//
-// The middle width between `X86Backend` (128-bit) and `Avx512Backend`
-// (512-bit). Register roles are IDENTICAL to `X86Backend` — same input/
-// allocatable/scratch/reload layout (ymm0-15 is the same physical file as
-// xmm0-15) — only the leaf encodings differ (VEX.256 instead of legacy SSE).
-// VEX is 3-operand like EVEX, so — like `Avx512Backend` — there is no
-// two-operand hazard to route around.
-//
-// Spills use a real stack frame (mirrors `Avx512Backend`'s reasoning): a ymm
-// slot is 32 bytes, so `FrameLayout`'s 16-byte-unit offsets are scaled ×2.
-
-/// Compile an arena DAG to an AVX2 (256-bit, 8-lane ymm) kernel via the shared
-/// driver. Same arg shape as [`compile_arena_dag`] but the kernel's ABI is
-/// `__m256` (one pixel per lane, 8 pixels per call).
-///
-/// Gated on the arch — unlike [`Avx2Backend`](avx2::driver::Avx2Backend)
-/// itself, which compiles everywhere — because this hands back *callable*
-/// code. Emitting AVX2 bytes is portable; wrapping them in something a caller
-/// may jump to is execution surface, and belongs on the same side of the line
-/// as [`executable`].
-#[cfg(target_arch = "x86_64")]
-pub fn compile_arena_dag_avx2(
-    arena: &ExprArena,
-    root: ExprId,
-) -> Result<CompileResult<executable::PerBatch>, &'static str> {
-    let ctx = EmitCtx::default();
-    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
-    let schedule = arena_to_schedule(&arena, root);
-    compile_dag_via_backend(schedule, &mut avx2::driver::Avx2Backend::new(ctx))
-}
-
-/// Compile an arena DAG to an AVX-512 (512-bit, 16-lane zmm) kernel via the
-/// shared driver. Same arg shape as [`compile_arena_dag`] but the kernel's ABI
-/// is `__m512` (one pixel per lane, 16 pixels per call). Stage-1 arithmetic
-/// subset only; ops outside it return `Err`.
-///
-/// Arch-gated for the same reason as [`compile_arena_dag_avx2`]: it returns
-/// callable code.
-#[cfg(target_arch = "x86_64")]
-pub fn compile_arena_dag_avx512(
-    arena: &ExprArena,
-    root: ExprId,
-) -> Result<CompileResult<executable::PerBatch>, &'static str> {
-    let ctx = EmitCtx::default();
-    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
-    let schedule = arena_to_schedule(&arena, root);
-    compile_dag_via_backend(schedule, &mut avx512::driver::Avx512Backend::new(ctx))
-}
-
 /// Compile an [`ExprArena`] DAG into a **collapse** kernel: the X/Y loop nest is
 /// emitted *inside* the code, so one call fills `rows * groups` output batches
 /// with no per-row or per-batch Rust↔JIT boundary. This is the internal-loop
@@ -2006,24 +1846,22 @@ pub fn compile_arena_dag_avx512(
 /// resets per row, Y steps by 1.0, Z/W stay invariant, gathers read buffer
 /// bases from the context register, and each batch stores straight to `out`.
 /// Matches the
-/// [`CollapseKernelFn`](executable::CollapseKernelFn) ABI
+/// [`KernelFn`](executable::KernelFn) ABI
 /// `(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)`.
-pub fn compile_collapse(
+pub fn compile(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
-) -> Result<CompileResult<executable::Collapse>, &'static str> {
-    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
-    let schedule = arena_to_schedule(&arena, root);
-    compile_collapse_via_backend(schedule, &mut Native::new(EmitCtx::default()))
+) -> Result<CompileResult, &'static str> {
+    EmitCtx::default().compile(arena, root)
 }
 
 /// Drive a schedule to a complete collapse kernel via an
 /// [`IsaBackend`]: the body from [`emit_dag_body`], framed by the backend's
 /// [`IsaBackend::emit_collapse_loop`] scaffold.
-fn compile_collapse_via_backend<B: IsaBackend>(
+fn compile_via_backend<B: IsaBackend>(
     schedule: Vec<regalloc::Def>,
     backend: &mut B,
-) -> Result<CompileResult<executable::Collapse>, &'static str> {
+) -> Result<CompileResult, &'static str> {
     let file = backend.register_file();
     let variance = schedule_variance(&schedule);
     const X_SCOPE: u8 = 1 << 0;
@@ -2174,8 +2012,41 @@ fn compile_collapse_via_backend<B: IsaBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_arch = "aarch64")]
-    use pixelflow_ir::arena::ExprArena;
+    use pixelflow_ir::arena::{ExprArena, ExprId};
+
+    /// Lanes in one SIMD batch for this build.
+    const LANES: usize = crate::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
+
+    /// Evaluate one batch at arbitrary per-lane coordinates.
+    ///
+    /// `V` is `[f32; LANES]`, which is the emitted vector type *by size*, so
+    /// this needs neither intrinsics nor a hand-written `extern "C"` signature
+    /// — the two things every caller in this file used to spell for itself,
+    /// once per ISA. `ctx` may be empty: a kernel that declares no buffer never
+    /// reads the pointer.
+    fn eval_batch(
+        code: &executable::ExecutableCode,
+        ctx: &[*const f32],
+        origin: executable::Point4<[f32; LANES]>,
+    ) -> [f32; LANES] {
+        let mut out = [0.0f32; LANES];
+        // SAFETY: `out` holds exactly one batch; size_of::<[f32; LANES]>() is
+        // JIT_VECTOR_BYTES by construction; `ctx` binds every declared buffer.
+        unsafe {
+            code.call_collapse(
+                ctx.as_ptr(),
+                executable::TileSlice::single(out.as_mut_ptr()),
+                origin,
+            );
+        }
+        out
+    }
+
+    /// Evaluate at a single point (all lanes the same X).
+    fn eval_point(code: &executable::ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
+        let o = executable::Point4::new([x; LANES], [y; LANES], [z; LANES], [w; LANES]);
+        eval_batch(code, &[], o)[0]
+    }
 
     #[allow(dead_code, improper_ctypes_definitions)]
     #[cfg(target_arch = "aarch64")]
@@ -2883,7 +2754,7 @@ mod tests {
         let y = arena.push_var(1);
         let sum = arena.push_binary(OpKind::Add, x, y);
 
-        let result = compile_arena_dag(&arena, sum).expect("arena DAG compile failed");
+        let result = compile(&arena, sum).expect("arena DAG compile failed");
         assert_eq!(result.spill_count, 0);
 
         unsafe {
@@ -2911,7 +2782,7 @@ mod tests {
         let prod = arena.push_binary(OpKind::Mul, x, two);
         let sum = arena.push_binary(OpKind::Add, prod, y);
 
-        let result = compile_arena_dag(&arena, sum).expect("arena DAG compile failed");
+        let result = compile(&arena, sum).expect("arena DAG compile failed");
 
         unsafe {
             use core::arch::aarch64::*;
@@ -2942,7 +2813,8 @@ mod tests {
         let root = arena.push_binary(OpKind::Add, left, right);
 
         let ctx = EmitCtx::with_max_regs(2);
-        let result = compile_arena_dag_with_ctx(&arena, root, ctx)
+        let result = ctx
+            .compile(&arena, root)
             .expect("arena DAG compile with spills failed");
 
         assert!(result.spill_count > 0, "expected spills with max_regs=2");
@@ -2970,13 +2842,8 @@ mod tests {
         not(target_feature = "avx2")
     ))]
     fn run1(arena: &ExprArena, root: ExprId, x: f32) -> f32 {
-        use core::arch::x86_64::*;
-        let r = compile_arena_dag(arena, root).expect("compile failed");
-        unsafe {
-            let f: KernelFn = r.code.as_fn();
-            let z = _mm_set1_ps(0.0);
-            _mm_cvtss_f32(f(_mm_set1_ps(x), z, z, z))
-        }
+        let r = compile(arena, root).expect("compile failed");
+        eval_point(&r.code, x, 0.0, 0.0, 0.0)
     }
 
     /// Per-batch eval at (X=x, Y=y, Z=W=0), lane 0. 128-bit `KernelFn`, so gated
@@ -2987,13 +2854,8 @@ mod tests {
         not(target_feature = "avx2")
     ))]
     fn run_xy(arena: &ExprArena, root: ExprId, x: f32, y: f32) -> f32 {
-        use core::arch::x86_64::*;
-        let r = compile_arena_dag(arena, root).expect("compile failed");
-        unsafe {
-            let f: KernelFn = r.code.as_fn();
-            let z = _mm_set1_ps(0.0);
-            _mm_cvtss_f32(f(_mm_set1_ps(x), _mm_set1_ps(y), z, z))
-        }
+        let r = compile(arena, root).expect("compile failed");
+        eval_point(&r.code, x, y, 0.0, 0.0)
     }
 
     /// A `Dwrt`-carrying arena must JIT-compile end-to-end: the compile entry
@@ -3044,7 +2906,7 @@ mod tests {
         let g = a.push_ternary(OpKind::Gather, bufleaf, x, y);
         let v0 = a.push_const(0.0);
         let root = a.push_binary(OpKind::Dwrt, g, v0);
-        assert!(compile_arena_dag(&a, root).is_err());
+        assert!(compile(&a, root).is_err());
     }
 
     /// A spill frame past the 128-byte red zone must allocate a real frame
@@ -3074,7 +2936,7 @@ mod tests {
             root = a.push_binary(OpKind::Add, root, *p);
         }
 
-        let result = compile_arena_dag(&a, root).expect("large spill frame must compile");
+        let result = compile(&a, root).expect("large spill frame must compile");
         assert!(
             result.spill_bytes > 128,
             "test did not force a frame beyond the red zone (spill_bytes = {})",
@@ -3222,15 +3084,10 @@ mod tests {
         not(target_feature = "avx2")
     ))]
     fn x86_binary_ternary_builtins_match_scalar() {
-        use core::arch::x86_64::*;
         // Helper: compile f(X, Y) and eval at (x, y).
-        unsafe fn run2(arena: &ExprArena, root: ExprId, x: f32, y: f32) -> f32 {
-            unsafe {
-                let r = compile_arena_dag(arena, root).expect("compile failed");
-                let f: KernelFn = r.code.as_fn();
-                let z = _mm_set1_ps(0.0);
-                _mm_cvtss_f32(f(_mm_set1_ps(x), _mm_set1_ps(y), z, z))
-            }
+        fn run2(arena: &ExprArena, root: ExprId, x: f32, y: f32) -> f32 {
+            let r = compile(arena, root).expect("compile failed");
+            eval_point(&r.code, x, y, 0.0, 0.0)
         }
 
         // atan2(y, x): arena Binary(Atan2, Y, X)  (op order: src1=y, src2=x)
@@ -3248,7 +3105,7 @@ mod tests {
             let x = a.push_var(0);
             let root = a.push_binary(OpKind::Atan2, y, x);
             for &(yv, xv) in &pts {
-                let got = unsafe { run2(&a, root, xv, yv) };
+                let got = run2(&a, root, xv, yv);
                 let want = yv.atan2(xv);
                 assert!(
                     (got - want).abs() <= 1.5e-2,
@@ -3263,7 +3120,7 @@ mod tests {
             let y = a.push_var(1);
             let root = a.push_binary(OpKind::Pow, x, y);
             for &(xv, yv) in &[(2.0f32, 3.0f32), (9.0, 0.5), (4.0, -1.0), (1.5, 2.0)] {
-                let got = unsafe { run2(&a, root, xv, yv) };
+                let got = run2(&a, root, xv, yv);
                 let want = xv.powf(yv);
                 let err = (got - want).abs() / (1.0 + want.abs());
                 assert!(err <= 5e-3, "pow({xv},{yv}): {got} vs {want} err={err}");
@@ -3279,7 +3136,7 @@ mod tests {
             let sum = a.push_binary(OpKind::Add, xx, yy);
             let root = a.push_unary(OpKind::Sqrt, sum);
             for &(xv, yv) in &[(3.0f32, 4.0f32), (1.0, 1.0), (0.0, 2.0)] {
-                let got = unsafe { run2(&a, root, xv, yv) };
+                let got = run2(&a, root, xv, yv);
                 let want = xv.hypot(yv);
                 assert!(
                     (got - want).abs() <= 1e-4,
@@ -3297,7 +3154,7 @@ mod tests {
             let y = a.push_var(1);
             let root = a.push_binary(op, x, y);
             for &(xv, yv) in &[(1.0f32, 2.0f32), (3.0, -1.0), (-2.0, -5.0)] {
-                let got = unsafe { run2(&a, root, xv, yv) };
+                let got = run2(&a, root, xv, yv);
                 assert!((got - f(xv, yv)).abs() <= 1e-6, "{op:?}({xv},{yv})");
             }
         }
@@ -3517,18 +3374,8 @@ mod tests {
         use super::*;
         use pixelflow_ir::arena::ExprArena;
 
-        fn run(res: &CompileResult<executable::PerBatch>, x: f32, y: f32, z: f32, w: f32) -> f32 {
-            unsafe {
-                use core::arch::x86_64::*;
-                let f: KernelFn = res.code.as_fn();
-                let o = f(
-                    _mm_set1_ps(x),
-                    _mm_set1_ps(y),
-                    _mm_set1_ps(z),
-                    _mm_set1_ps(w),
-                );
-                _mm_cvtss_f32(o)
-            }
+        fn run(res: &CompileResult, x: f32, y: f32, z: f32, w: f32) -> f32 {
+            eval_point(&res.code, x, y, z, w)
         }
 
         const PTS: &[(f32, f32, f32, f32)] = &[
@@ -3560,7 +3407,7 @@ mod tests {
             let sub = a.push_binary(OpKind::Sub, dist, yz); // dist - Y*Z
             let root = sub;
 
-            let sched = compile_arena_dag(&a, root).expect("compile");
+            let sched = compile(&a, root).expect("compile");
             assert_eq!(sched.spill_count, 0, "should fit without spilling");
 
             for &(px, py, pz, pw) in PTS {
@@ -3600,7 +3447,7 @@ mod tests {
             }
             let root = terms[0];
 
-            let sched = compile_arena_dag(&a, root).expect("scheduled compile");
+            let sched = compile(&a, root).expect("scheduled compile");
             assert!(
                 sched.spill_count > 0,
                 "expected spilling; widen the expression if this regresses"
@@ -3635,7 +3482,7 @@ mod tests {
             let zzz = a.push_binary(OpKind::Add, zz, z); // false arm: 3Z
             let root = a.push_ternary(OpKind::Select, cond, yyy, zzz);
 
-            let sched = compile_arena_dag(&a, root).expect("scheduled compile");
+            let sched = compile(&a, root).expect("scheduled compile");
 
             // x>0 -> all-true -> Y^3 ; x<=0 -> all-false -> 3Z.
             for &(px, py, pz, _pw) in PTS {
@@ -3666,56 +3513,22 @@ mod tests {
     ))]
     mod gather_driver_128 {
         use super::*;
-        use pixelflow_ir::arena::{ExprArena, ExprId};
+        use pixelflow_ir::arena::ExprId;
 
-        /// Run a compiled gather kernel as a `CtxKernelFn`: the context (array
-        /// of buffer base pointers) goes in the first integer argument (x0 /
-        /// rdi), coords in the first four vector registers.
-        #[cfg(target_arch = "aarch64")]
+        /// Run a compiled gather kernel over one batch: `ctx` is the array of
+        /// buffer base pointers. Arch-independent now that the coordinates are
+        /// plain arrays rather than intrinsics.
         fn run4_ctx(
-            res: &CompileResult<executable::PerBatch>,
+            res: &CompileResult,
             ctx: &[*const f32],
-            xs: [f32; 4],
-            ys: [f32; 4],
-        ) -> [f32; 4] {
-            unsafe {
-                use core::arch::aarch64::*;
-                let f: CtxKernelFn = res.code.as_fn();
-                let r = f(
-                    ctx.as_ptr(),
-                    vld1q_f32(xs.as_ptr()),
-                    vld1q_f32(ys.as_ptr()),
-                    vdupq_n_f32(0.0),
-                    vdupq_n_f32(0.0),
-                );
-                let mut out = [0.0f32; 4];
-                vst1q_f32(out.as_mut_ptr(), r);
-                out
-            }
-        }
-
-        /// See the aarch64 variant above.
-        #[cfg(target_arch = "x86_64")]
-        fn run4_ctx(
-            res: &CompileResult<executable::PerBatch>,
-            ctx: &[*const f32],
-            xs: [f32; 4],
-            ys: [f32; 4],
-        ) -> [f32; 4] {
-            unsafe {
-                use core::arch::x86_64::*;
-                let f: CtxKernelFn = res.code.as_fn();
-                let r = f(
-                    ctx.as_ptr(),
-                    _mm_loadu_ps(xs.as_ptr()),
-                    _mm_loadu_ps(ys.as_ptr()),
-                    _mm_setzero_ps(),
-                    _mm_setzero_ps(),
-                );
-                let mut out = [0.0f32; 4];
-                _mm_storeu_ps(out.as_mut_ptr(), r);
-                out
-            }
+            xs: [f32; LANES],
+            ys: [f32; LANES],
+        ) -> [f32; LANES] {
+            eval_batch(
+                &res.code,
+                ctx,
+                executable::Point4::new(xs, ys, [0.0; LANES], [0.0; LANES]),
+            )
         }
 
         #[allow(clippy::too_many_arguments)] // test helper: 6 distinct params (arena, root, buffers, xs, ys, tag)
@@ -3730,7 +3543,7 @@ mod tests {
             ys: [f32; 16],
             tag: &str,
         ) {
-            let res = compile_arena_dag(arena, root).expect("compile gather kernel");
+            let res = compile(arena, root).expect("compile gather kernel");
             let ctx: Vec<*const f32> = buffers.iter().map(|b| b.as_ptr()).collect();
             let bindings = pixelflow_ir::binding::BindingTable::bind(arena, buffers).unwrap();
 
@@ -3904,12 +3717,7 @@ mod tests {
         ) -> core::arch::x86_64::__m512;
 
         /// Run a compiled zmm kernel over 16 distinct lanes per coordinate.
-        fn run16(
-            res: &CompileResult<executable::PerBatch>,
-            xs: [f32; 16],
-            ys: [f32; 16],
-            zs: [f32; 16],
-        ) -> [f32; 16] {
+        fn run16(res: &CompileResult, xs: [f32; 16], ys: [f32; 16], zs: [f32; 16]) -> [f32; 16] {
             unsafe {
                 use core::arch::x86_64::*;
                 let f: K = res.code.as_fn();
@@ -3965,7 +3773,7 @@ mod tests {
         /// Run a compiled gather kernel as a `CtxKernelFn`: the context (array of
         /// buffer base pointers) goes in rdi, coords in zmm0..3.
         fn run16_ctx(
-            res: &CompileResult<executable::PerBatch>,
+            res: &CompileResult,
             ctx: &[*const f32],
             xs: [f32; 16],
             ys: [f32; 16],
@@ -3997,7 +3805,7 @@ mod tests {
             ys: [f32; 16],
             tag: &str,
         ) {
-            let res = compile_arena_dag(arena, root).expect("compile gather kernel");
+            let res = compile(arena, root).expect("compile gather kernel");
             let ctx: Vec<*const f32> = buffers.iter().map(|b| b.as_ptr()).collect();
             let got = run16_ctx(&res, &ctx, xs, ys);
 
@@ -4154,7 +3962,7 @@ mod tests {
             let dist = a.push_unary(OpKind::Sqrt, sum);
             let root = a.push_binary(OpKind::Sub, dist, z);
 
-            let res = compile_arena_dag_avx512(&a, root).expect("avx512 compile");
+            let res = compile(&a, root).expect("avx512 compile");
             assert_eq!(res.spill_count, 0, "should fit without spilling");
 
             let (xs, ys, zs) = lanes();
@@ -4232,7 +4040,7 @@ mod tests {
             let cond = a.push_binary(OpKind::Lt, x, y);
             let root = a.push_ternary(OpKind::Select, cond, x, y);
 
-            let res = compile_arena_dag_avx512(&a, root).expect("avx512 compile");
+            let res = compile(&a, root).expect("avx512 compile");
             let (xs, ys, zs) = lanes();
             check(run16(&res, xs, ys, zs), |i| xs[i].min(ys[i]), "lt-select");
         }
@@ -4255,7 +4063,7 @@ mod tests {
             let zzz = a.push_binary(OpKind::Add, zz, z);
             let root = a.push_ternary(OpKind::Select, cond, yyy, zzz);
 
-            let res = compile_arena_dag_avx512(&a, root).expect("avx512 compile");
+            let res = compile(&a, root).expect("avx512 compile");
 
             let allpos = [2.0f32; 16];
             let allneg = [-2.0f32; 16];
@@ -4300,7 +4108,7 @@ mod tests {
                 let mut a = ExprArena::new();
                 let x = a.push_var(0);
                 let root = a.push_unary(op, x);
-                let res = compile_arena_dag_avx512(&a, root).expect("avx512 compile");
+                let res = compile(&a, root).expect("avx512 compile");
                 check(run16(&res, xs, ones, ones), |i| f(xs[i]), tag);
             }
         }
