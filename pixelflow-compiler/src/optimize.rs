@@ -168,6 +168,15 @@ fn optimize_via_model(
     // Extract via arena path (CSE-preserving) then convert choices → DAG.
     let choices = extraction.choices(&ctx.egraph, root);
 
+    // Stop the clock here: `wall_clock` is documented (see
+    // `telemetry::SaturationInvocation::wall_clock`) as saturate+extract,
+    // and the `choices()` call just above is that one real extraction pass.
+    // Sampled before the telemetry-only second pass below, so an expensive
+    // NNUE or large-graph extraction isn't double-counted into this number
+    // just because telemetry happens to be on.
+    #[cfg(feature = "saturation-telemetry")]
+    let wall_clock = telemetry_start.elapsed();
+
     #[cfg(feature = "saturation-telemetry")]
     {
         // A second, telemetry-only extraction pass on the same (unmutated)
@@ -176,13 +185,14 @@ fn optimize_via_model(
         // + root (see `Extraction`'s own doc comment on the refinement
         // search's determinism harness), so this reproduces the same
         // choices `extraction.choices()` just made; it is not consulted for
-        // the actual compiled output.
+        // the actual compiled output, and (per the `wall_clock` capture
+        // above) not counted in the reported timing either.
         let telemetry_extraction = extraction.extraction(&ctx.egraph, root);
         let (telemetry_arena, telemetry_root) =
             pixelflow_search::egraph::choices_to_arena(&telemetry_extraction);
         let kernel_label = _kernel_label.map(|ident| ident.to_string());
         pixelflow_search::telemetry::record(pixelflow_search::telemetry::SaturationInvocation {
-            tier: "macro",
+            tier: pixelflow_search::telemetry::Tier::Macro,
             node_count,
             max_iterations: config.max_iterations,
             max_classes: config.max_classes,
@@ -192,7 +202,7 @@ fn optimize_via_model(
             union_count: ctx.egraph.provenance().union_count(),
             extracted_arena: &telemetry_arena,
             extracted_root: telemetry_root,
-            wall_clock: telemetry_start.elapsed(),
+            wall_clock,
             kernel_label: kernel_label.as_deref(),
         });
     }

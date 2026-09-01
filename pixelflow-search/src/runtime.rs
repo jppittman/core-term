@@ -176,7 +176,7 @@ fn optimize_runtime_arena_uncached(
 
     #[cfg(feature = "saturation-telemetry")]
     crate::telemetry::record(crate::telemetry::SaturationInvocation {
-        tier: "runtime",
+        tier: crate::telemetry::Tier::Runtime,
         node_count,
         max_iterations: config.max_iterations,
         max_classes: config.max_classes,

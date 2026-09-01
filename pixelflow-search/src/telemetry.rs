@@ -23,6 +23,17 @@
 //! mode this instrument exists to catch (see this workspace's no-silent-
 //! failures rule).
 //!
+//! The macro tier's stderr fallback is a special case: it runs inside
+//! rustc's own process at macro-expansion time, so that stderr IS rustc's
+//! diagnostic stream, and a bare JSON object dropped onto it is valid
+//! enough to be mistaken for a real compiler message under `cargo ...
+//! --message-format=json` (see `write_line`'s doc comment). It is prefixed
+//! with plain text there — never emitted bare — so it fails JSON parsing on
+//! that path and cargo passes it through as an ordinary line instead of a
+//! forwarded diagnostic. The file sink is unaffected either way: a file a
+//! caller opted into via the env var is never read by cargo's own
+//! diagnostic parser, so it stays pure JSONL for both tiers.
+//!
 //! # Usage
 //!
 //! ```text
@@ -36,15 +47,38 @@ use std::time::Duration;
 use crate::egraph::{CostModel, SaturationResult, SaturationStop};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
+/// Which tier invoked saturation.
+///
+/// A closed set of two, so [`record`] can serialize it as a JSON string
+/// literal directly — unlike `kernel_label`, there is no free-text value
+/// here for `escape_json` to have to defend against. Extending "which tier"
+/// to a type (rather than leaving it as a caller-supplied `&'static str`,
+/// which a future call site could pass anything through) is what makes a
+/// third, malformed tier unrepresentable instead of merely undocumented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    /// [`crate::runtime::optimize_runtime_arena`].
+    Runtime,
+    /// `pixelflow_compiler::optimize`, running inside rustc at macro
+    /// expansion time.
+    Macro,
+}
+
+impl Tier {
+    fn as_json_str(self) -> &'static str {
+        match self {
+            Tier::Runtime => "runtime",
+            Tier::Macro => "macro",
+        }
+    }
+}
+
 /// Everything one production optimizer invocation — one
 /// `saturate_with_full_budget` call plus the extraction that followed it —
 /// knows about itself, for [`record`] to serialize.
 pub struct SaturationInvocation<'a> {
-    /// Which tier invoked saturation: `"runtime"`
-    /// ([`crate::runtime::optimize_runtime_arena`]) or `"macro"`
-    /// (`pixelflow_compiler::optimize`, running inside rustc at macro
-    /// expansion time).
-    pub tier: &'static str,
+    /// Which tier invoked saturation.
+    pub tier: Tier,
     /// Size of the input, as passed to `config_for_node_count` to select the
     /// budget triple below.
     pub node_count: usize,
@@ -89,7 +123,7 @@ pub fn record(inv: SaturationInvocation<'_>) {
          \"classes_at_stop\":{classes_at_stop},\"application_count\":{application_count},\
          \"union_count\":{union_count},\"extracted_latency_prior_cost\":{cost},\
          \"wall_clock_us\":{wall_clock_us},\"kernel_label\":{kernel_label}}}",
-        tier = inv.tier,
+        tier = inv.tier.as_json_str(),
         node_count = inv.node_count,
         max_iterations = inv.max_iterations,
         max_classes = inv.max_classes,
@@ -103,7 +137,7 @@ pub fn record(inv: SaturationInvocation<'_>) {
         wall_clock_us = inv.wall_clock.as_micros(),
         kernel_label = json_opt_str(inv.kernel_label),
     );
-    write_line(&line);
+    write_line(inv.tier, &line);
 }
 
 fn stop_str(stop: SaturationStop) -> &'static str {
@@ -122,10 +156,16 @@ fn json_opt_str(s: Option<&str>) -> String {
     }
 }
 
-/// Minimal JSON string escaping — telemetry labels are source identifiers
-/// or spans, never arbitrary user text, but this keeps a stray quote or
-/// backslash from producing an invalid JSONL line instead of guessing it
-/// can't happen.
+/// Full JSON string escaping (RFC 8259 §7): every control character
+/// (U+0000-U+001F) plus `"` and `\`. `kernel_label` is `pub`, so a caller
+/// can hand `record` a struct name or span text containing a tab, carriage
+/// return, or other control byte — those are JSON-forbidden unescaped in a
+/// string literal and would silently corrupt the JSONL line (not just
+/// visually mangle it) if left through, the same way an all-ones mask read
+/// as a float silently corrupts a value elsewhere in this codebase. This is
+/// not "telemetry labels happen to be identifiers today" defended
+/// defensively; it is the complete contract for what `pub kernel_label:
+/// Option<&str>` promises to accept.
 fn escape_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -133,6 +173,11 @@ fn escape_json(s: &str) -> String {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
             _ => out.push(c),
         }
     }
@@ -173,8 +218,23 @@ fn latency_prior_cost(arena: &ExprArena, root: ExprId) -> usize {
 }
 
 /// Append one line to the sink named by `PIXELFLOW_SATURATION_TELEMETRY`, or
-/// stderr when unset. Open/write failures panic.
-fn write_line(line: &str) {
+/// stderr when unset — plain, for the runtime tier; prefixed with plain
+/// text for the macro tier so cargo can't mistake it for a diagnostic (see
+/// the `match tier` below). Open/write failures panic.
+///
+/// Emits the newline-terminated record with a single `write_all` rather than
+/// `writeln!`, which is free to issue the line and the trailing newline as
+/// two separate `write(2)` calls. Append mode (`O_APPEND`) only makes each
+/// individual write atomic, not the pair — two parallel rustc processes (or
+/// runtime threads) appending to the same path could otherwise interleave
+/// their line and newline writes, corrupting the JSONL corpus with
+/// concatenated objects or stray blank lines even though every process
+/// respected append mode.
+fn write_line(tier: Tier, line: &str) {
+    let mut record = String::with_capacity(line.len() + 1);
+    record.push_str(line);
+    record.push('\n');
+
     match std::env::var_os("PIXELFLOW_SATURATION_TELEMETRY") {
         Some(path) => {
             let mut file = std::fs::OpenOptions::new()
@@ -184,12 +244,37 @@ fn write_line(line: &str) {
                 .unwrap_or_else(|e| {
                     panic!("saturation-telemetry: failed to open {path:?} for append: {e}")
                 });
-            writeln!(file, "{line}").unwrap_or_else(|e| {
+            file.write_all(record.as_bytes()).unwrap_or_else(|e| {
                 panic!("saturation-telemetry: failed to write to {path:?}: {e}")
             });
         }
         None => {
-            eprintln!("{line}");
+            let stderr = std::io::stderr();
+            let mut lock = stderr.lock();
+            // `Tier::Macro` runs inside rustc's own process at
+            // macro-expansion time: this stderr IS rustc's stderr, not some
+            // ordinary binary's. Under `cargo ... --message-format=json`,
+            // cargo parses each line of rustc's stderr and forwards
+            // whatever parses as JSON as a `"reason":"compiler-message"`
+            // event — our record is itself valid JSON (just not
+            // diagnostic-shaped), so a bare line here gets misread as a
+            // genuine compiler message and forwarded downstream, corrupting
+            // the stream for any JSON consumer. Confirmed empirically:
+            // `cargo check --features saturation-telemetry
+            // --message-format=json` produced exactly these bogus events.
+            // A short plain-text prefix guarantees the line fails JSON
+            // parsing, so cargo relays it as an ordinary (non-diagnostic)
+            // line instead — still visible on stderr for a human, just not
+            // parseable as one more compiler message. The runtime tier has
+            // no such collision (its stderr is an ordinary process's own
+            // stream, never read by cargo's diagnostic parser), so it keeps
+            // emitting a bare, directly-JSONL-parseable line.
+            let write_result = match tier {
+                Tier::Macro => write!(lock, "saturation-telemetry(macro): {record}"),
+                Tier::Runtime => lock.write_all(record.as_bytes()),
+            };
+            write_result
+                .unwrap_or_else(|e| panic!("saturation-telemetry: failed to write stderr: {e}"));
         }
     }
 }
