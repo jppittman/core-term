@@ -1,19 +1,27 @@
 //! JitManifold: a JIT-compiled function held as executable memory.
 //!
-//! This type owns an [`ExecutableCode`] and exposes it through a platform-specific
-//! `call` method. It does NOT implement `pixelflow_core::Manifold` directly — that
-//! would create a dependency cycle. Instead, `kernel_jit!` emits a thin wrapper in
-//! the user's crate that calls through to `JitManifold`.
+//! This type owns an [`ExecutableCode`] and exposes it through safe evaluation
+//! and low-level collapse execution methods.
 
-use crate::emit::executable::{CollapseKernelFn, CtxKernelFn, ExecutableCode, KernelFn};
+use crate::JIT_VECTOR_BYTES;
+use crate::emit::executable::{ExecutableCode, Extent2D, Point4, TileSlice};
 
-/// A JIT-compiled kernel. Owns the executable code for one specific parameter
+const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
+
+/// A JIT-compiled kernel. Owns the executable memory for one specific parameter
 /// combination. No cache — caller decides lifetime.
 pub struct JitManifold {
     code: ExecutableCode,
 }
 
 impl JitManifold {
+    /// Wrap newly compiled executable code into a `JitManifold`.
+    ///
+    #[must_use]
+    pub const fn new(code: ExecutableCode) -> Self {
+        Self { code }
+    }
+
     /// The emitted machine code, for offline inspection (disassembly,
     /// profiler correlation). The bytes are the artifact, not an ABI.
     #[must_use]
@@ -21,366 +29,177 @@ impl JitManifold {
         self.code.as_bytes()
     }
 
-    /// Wrap compiled executable code.
-    #[must_use]
-    pub fn new(code: ExecutableCode) -> Self {
-        Self { code }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-impl JitManifold {
-    /// Evaluate the kernel at the given coordinates.
+    /// Evaluate the kernel over a single SIMD vector batch coordinate point `origin`.
     ///
     /// # Safety
     ///
-    /// The caller must ensure the SIMD types match the platform ABI that the
-    /// emitter generated code for (ARM64 NEON: `float32x4_t`).
+    /// `V` must have `size_of::<V>() == JIT_VECTOR_BYTES`.
     #[must_use]
     #[inline(always)]
-    pub unsafe fn call(
-        &self,
-        x: core::arch::aarch64::float32x4_t,
-        y: core::arch::aarch64::float32x4_t,
-        z: core::arch::aarch64::float32x4_t,
-        w: core::arch::aarch64::float32x4_t,
-    ) -> core::arch::aarch64::float32x4_t {
-        // SAFETY: The ExecutableCode was produced by our JIT compiler which
-        // emits code matching the KernelFn signature.
-        let func: KernelFn = unsafe { self.code.as_fn() };
-        func(x, y, z, w)
+    pub unsafe fn call<V: Copy>(&self, origin: Point4<V>) -> V {
+        assert_eq!(core::mem::size_of::<V>(), JIT_VECTOR_BYTES);
+        let mut out = core::mem::MaybeUninit::<V>::uninit();
+        // SAFETY: caller guarantees size_of::<V>() matches the JIT vector width.
+        unsafe {
+            self.call_collapse(
+                core::ptr::null(),
+                TileSlice::single(out.as_mut_ptr().cast::<f32>()),
+                origin,
+            );
+            out.assume_init()
+        }
     }
 
-    /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
-    /// pointers, indexed by [`BufferId`](pixelflow_ir::arena::BufferId), passed in
-    /// the first integer register (`x0`).
+    /// Evaluate a bound-memory kernel for a single SIMD vector batch:
+    /// `ctx` is the array of buffer base pointers passed in the first integer
+    /// register.
     ///
     /// # Safety
     ///
-    /// - The kernel must have been compiled from an arena that declares
-    ///   buffers (its code reads the context register); use [`Self::call`]
-    ///   for buffer-free kernels, whose code never looks at `x0`.
-    /// - `ctx` must hold one valid base pointer per declared buffer, each
-    ///   pointing at `width * height` readable `f32`s matching its
-    ///   [`BufferDecl`](pixelflow_ir::arena::BufferDecl), and must outlive the call.
-    /// - The SIMD types must match the platform ABI the emitter generated
-    ///   code for (ARM64 NEON: `float32x4_t`).
-    #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
+    /// - `ctx` must hold valid pointers for every buffer declared by the arena.
+    /// - `V` must have `size_of::<V>() == JIT_VECTOR_BYTES`.
     #[must_use]
     #[inline(always)]
-    pub unsafe fn call_bound(
-        &self,
-        ctx: *const *const f32,
-        x: core::arch::aarch64::float32x4_t,
-        y: core::arch::aarch64::float32x4_t,
-        z: core::arch::aarch64::float32x4_t,
-        w: core::arch::aarch64::float32x4_t,
-    ) -> core::arch::aarch64::float32x4_t {
-        // SAFETY: The ExecutableCode was produced by our JIT compiler which
-        // emits code matching the CtxKernelFn signature for buffer-declaring
-        // arenas.
-        let func: CtxKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, x, y, z, w)
+    pub unsafe fn call_bound<V: Copy>(&self, ctx: *const *const f32, origin: Point4<V>) -> V {
+        assert_eq!(core::mem::size_of::<V>(), JIT_VECTOR_BYTES);
+        let mut out = core::mem::MaybeUninit::<V>::uninit();
+        // SAFETY: caller guarantees valid ctx and size_of::<V>() matches JIT vector width.
+        unsafe {
+            self.call_collapse(
+                ctx,
+                TileSlice::single(out.as_mut_ptr().cast::<f32>()),
+                origin,
+            );
+            out.assume_init()
+        }
     }
-    /// Run a 2D collapse kernel: one call fills `rows * groups` batches,
+
+    /// Run a 2D collapse kernel: one call fills `tile.rows * tile.groups` vector batches,
     /// resetting X and advancing Y by 1.0 after each row.
     ///
     /// # Safety
     ///
-    /// - The kernel must have been compiled by
-    ///   [`compile_collapse`](crate::emit::compile_collapse) — the
-    ///   per-batch entries emit a different ABI.
-    /// - Each row must expose `groups * lanes` writable `f32`s followed by
-    ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
-    /// - `ctx` must hold one valid base pointer per buffer the arena
-    ///   declares (never read when it declares none).
-    #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
+    /// - `tile.out` must point to writable memory with space for `tile.rows` stripes of
+    ///   `tile.groups * LANES` floats plus `tile.row_skip_bytes` padding between rows.
+    /// - `ctx` must hold valid base pointers for every buffer declared by the arena
+    ///   (pass null/empty if the kernel has no buffers).
+    /// - `size_of::<V>() == JIT_VECTOR_BYTES`.
     #[inline(always)]
-    pub unsafe fn call_collapse(
+    pub unsafe fn call_collapse<V: Copy>(
         &self,
         ctx: *const *const f32,
-        out: *mut f32,
-        groups: usize,
-        rows: usize,
-        row_skip_bytes: usize,
-        x0: core::arch::aarch64::float32x4_t,
-        y0: core::arch::aarch64::float32x4_t,
-        z: core::arch::aarch64::float32x4_t,
-        w: core::arch::aarch64::float32x4_t,
+        tile: TileSlice,
+        origin: Point4<V>,
     ) {
-        // SAFETY: the ExecutableCode was produced by our JIT compiler which
-        // emits code matching the CollapseKernelFn signature.
-        let func: CollapseKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)
-    }
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
-impl JitManifold {
-    /// Evaluate the kernel at the given coordinates (SSE2, 128-bit, 4 lanes).
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure the SIMD types match the platform ABI the emitter
-    /// generated code for (x86-64 SSE2: `__m128`).
-    #[inline(always)]
-    #[must_use]
-    pub unsafe fn call(
-        &self,
-        x: core::arch::x86_64::__m128,
-        y: core::arch::x86_64::__m128,
-        z: core::arch::x86_64::__m128,
-        w: core::arch::x86_64::__m128,
-    ) -> core::arch::x86_64::__m128 {
-        // SAFETY: The ExecutableCode was produced by our JIT compiler which
-        // emits code matching the KernelFn signature.
-        let func: KernelFn = unsafe { self.code.as_fn() };
-        func(x, y, z, w)
+        // SAFETY: Delegated to ExecutableCode which invokes the emitted KernelFn.
+        unsafe { self.code.call_collapse(ctx, tile, origin) }
     }
 
-    /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
-    /// pointers, indexed by [`BufferId`](pixelflow_ir::arena::BufferId), passed in
-    /// the first integer register (`rdi`).
+    /// Safe evaluator for a row of pixels.
     ///
-    /// # Safety
-    ///
-    /// - The kernel must have been compiled from an arena that declares
-    ///   buffers (its code reads the context register); use [`Self::call`]
-    ///   for buffer-free kernels, whose code never looks at `rdi`.
-    /// - `ctx` must hold one valid base pointer per declared buffer, each
-    ///   pointing at `width * height` readable `f32`s matching its
-    ///   [`BufferDecl`](pixelflow_ir::arena::BufferDecl), and must outlive the call.
-    /// - The SIMD types must match the platform ABI the emitter generated
-    ///   code for (x86-64 SSE2: `__m128`).
-    #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
-    #[inline(always)]
-    #[must_use]
-    pub unsafe fn call_bound(
-        &self,
-        ctx: *const *const f32,
-        x: core::arch::x86_64::__m128,
-        y: core::arch::x86_64::__m128,
-        z: core::arch::x86_64::__m128,
-        w: core::arch::x86_64::__m128,
-    ) -> core::arch::x86_64::__m128 {
-        // SAFETY: The ExecutableCode was produced by our JIT compiler which
-        // emits code matching the CtxKernelFn signature for buffer-declaring
-        // arenas.
-        let func: CtxKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, x, y, z, w)
-    }
-    /// Run a 2D collapse kernel: one call fills `rows * groups` batches,
-    /// resetting X and advancing Y by 1.0 after each row.
-    ///
-    /// # Safety
-    ///
-    /// - The kernel must have been compiled by
-    ///   [`compile_collapse`](crate::emit::compile_collapse) — the
-    ///   per-batch entries emit a different ABI.
-    /// - Each row must expose `groups * lanes` writable `f32`s followed by
-    ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
-    /// - `ctx` must hold one valid base pointer per buffer the arena
-    ///   declares (never read when it declares none).
-    #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
-    #[inline(always)]
-    pub unsafe fn call_collapse(
-        &self,
-        ctx: *const *const f32,
-        out: *mut f32,
-        groups: usize,
-        rows: usize,
-        row_skip_bytes: usize,
-        x0: core::arch::x86_64::__m128,
-        y0: core::arch::x86_64::__m128,
-        z: core::arch::x86_64::__m128,
-        w: core::arch::x86_64::__m128,
-    ) {
-        // SAFETY: the ExecutableCode was produced by our JIT compiler which
-        // emits code matching the CollapseKernelFn signature.
-        let func: CollapseKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)
-    }
-}
+    /// Writes `out.len()` consecutive pixels starting at `origin`.
+    pub fn eval_row(&self, out: &mut [f32], origin: Point4<f32>) {
+        let full_groups = out.len() / LANES;
+        let mut x0_vec = [0.0f32; LANES];
+        for (i, lane) in x0_vec.iter_mut().enumerate() {
+            *lane = origin.x + i as f32;
+        }
+        let coords = Point4::new(
+            x0_vec,
+            [origin.y; LANES],
+            [origin.z; LANES],
+            [origin.w; LANES],
+        );
 
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-impl JitManifold {
-    /// Evaluate the kernel at the given coordinates (AVX2, 256-bit, 8 lanes).
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure the SIMD types match the platform ABI the emitter
-    /// generated code for (x86-64 AVX2: `__m256`).
-    #[inline(always)]
-    #[must_use]
-    pub unsafe fn call(
-        &self,
-        x: core::arch::x86_64::__m256,
-        y: core::arch::x86_64::__m256,
-        z: core::arch::x86_64::__m256,
-        w: core::arch::x86_64::__m256,
-    ) -> core::arch::x86_64::__m256 {
-        // SAFETY: The ExecutableCode was produced by our JIT compiler which
-        // emits code matching the KernelFn signature.
-        let func: KernelFn = unsafe { self.code.as_fn() };
-        func(x, y, z, w)
+        if full_groups > 0 {
+            // SAFETY: out has space for full_groups * LANES floats.
+            unsafe {
+                self.call_collapse(
+                    core::ptr::null(),
+                    TileSlice::contiguous(out.as_mut_ptr(), full_groups, 1),
+                    coords,
+                );
+            }
+        }
+
+        let tail = out.len() % LANES;
+        if tail > 0 {
+            let offset = full_groups * LANES;
+            for (i, lane) in x0_vec.iter_mut().enumerate() {
+                *lane = origin.x + (offset + i) as f32;
+            }
+            let tail_coords = Point4::new(
+                x0_vec,
+                [origin.y; LANES],
+                [origin.z; LANES],
+                [origin.w; LANES],
+            );
+            let mut scratch = [0.0f32; LANES];
+            // SAFETY: scratch buffer has space for 1 whole batch.
+            unsafe {
+                self.call_collapse(
+                    core::ptr::null(),
+                    TileSlice::single(scratch.as_mut_ptr()),
+                    tail_coords,
+                );
+            }
+            out[offset..].copy_from_slice(&scratch[..tail]);
+        }
     }
 
-    /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
-    /// pointers, indexed by [`BufferId`](pixelflow_ir::arena::BufferId), passed in
-    /// the first integer register (`rdi`).
+    /// Evaluate the kernel at a single point.
     ///
-    /// # Safety
-    ///
-    /// - The kernel must have been compiled from an arena that declares
-    ///   buffers (its code reads the context register); use [`Self::call`]
-    ///   for buffer-free kernels, whose code never looks at `rdi`.
-    /// - `ctx` must hold one valid base pointer per declared buffer, each
-    ///   pointing at `width * height` readable `f32`s matching its
-    ///   [`BufferDecl`](pixelflow_ir::arena::BufferDecl), and must outlive the call.
-    /// - The SIMD types must match the platform ABI the emitter generated
-    ///   code for (x86-64 AVX2: `__m256`).
-    #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
-    #[inline(always)]
+    /// The safe counterpart to the hand-written `extern "C"` signature every
+    /// caller used to spell for itself: no intrinsics, no transmute, and no
+    /// per-ISA `cfg` — the batch width is the kernel's business, not the
+    /// caller's.
     #[must_use]
-    pub unsafe fn call_bound(
-        &self,
-        ctx: *const *const f32,
-        x: core::arch::x86_64::__m256,
-        y: core::arch::x86_64::__m256,
-        z: core::arch::x86_64::__m256,
-        w: core::arch::x86_64::__m256,
-    ) -> core::arch::x86_64::__m256 {
-        // SAFETY: The ExecutableCode was produced by our JIT compiler which
-        // emits code matching the CtxKernelFn signature for buffer-declaring
-        // arenas.
-        let func: CtxKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, x, y, z, w)
-    }
-    /// Run a 2D collapse kernel: one call fills `rows * groups` batches,
-    /// resetting X and advancing Y by 1.0 after each row.
-    ///
-    /// # Safety
-    ///
-    /// - The kernel must have been compiled by
-    ///   [`compile_collapse`](crate::emit::compile_collapse) — the
-    ///   per-batch entries emit a different ABI.
-    /// - Each row must expose `groups * lanes` writable `f32`s followed by
-    ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
-    /// - `ctx` must hold one valid base pointer per buffer the arena
-    ///   declares (never read when it declares none).
-    #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
-    #[inline(always)]
-    pub unsafe fn call_collapse(
-        &self,
-        ctx: *const *const f32,
-        out: *mut f32,
-        groups: usize,
-        rows: usize,
-        row_skip_bytes: usize,
-        x0: core::arch::x86_64::__m256,
-        y0: core::arch::x86_64::__m256,
-        z: core::arch::x86_64::__m256,
-        w: core::arch::x86_64::__m256,
-    ) {
-        // SAFETY: the ExecutableCode was produced by our JIT compiler which
-        // emits code matching the CollapseKernelFn signature.
-        let func: CollapseKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)
-    }
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-impl JitManifold {
-    /// Evaluate the kernel at the given coordinates (AVX-512, 512-bit, 16 lanes).
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure the SIMD types match the platform ABI the emitter
-    /// generated code for (x86-64 AVX-512: `__m512`).
-    #[inline(always)]
-    #[must_use]
-    pub unsafe fn call(
-        &self,
-        x: core::arch::x86_64::__m512,
-        y: core::arch::x86_64::__m512,
-        z: core::arch::x86_64::__m512,
-        w: core::arch::x86_64::__m512,
-    ) -> core::arch::x86_64::__m512 {
-        // SAFETY: The ExecutableCode was produced by our JIT compiler which
-        // emits code matching the KernelFn signature.
-        let func: KernelFn = unsafe { self.code.as_fn() };
-        func(x, y, z, w)
+    pub fn eval_at(&self, origin: Point4<f32>) -> f32 {
+        let mut out = [0.0f32; 1];
+        self.eval_row(&mut out, origin);
+        out[0]
     }
 
-    /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
-    /// pointers, indexed by [`BufferId`](pixelflow_ir::arena::BufferId), passed in
-    /// the first integer register (`rdi`).
+    /// Safe evaluator for a 2D rectangular grid of pixels.
     ///
-    /// # Safety
-    ///
-    /// - The kernel must have been compiled from an arena that declares
-    ///   buffers (its code reads the context register); use [`Self::call`]
-    ///   for buffer-free kernels, whose code never looks at `rdi`.
-    /// - `ctx` must hold one valid base pointer per declared buffer, each
-    ///   pointing at `width * height` readable `f32`s matching its
-    ///   [`BufferDecl`](pixelflow_ir::arena::BufferDecl), and must outlive the call.
-    /// - The SIMD types must match the platform ABI the emitter generated
-    ///   code for (x86-64 AVX-512: `__m512`).
-    #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
-    #[inline(always)]
-    #[must_use]
-    pub unsafe fn call_bound(
-        &self,
-        ctx: *const *const f32,
-        x: core::arch::x86_64::__m512,
-        y: core::arch::x86_64::__m512,
-        z: core::arch::x86_64::__m512,
-        w: core::arch::x86_64::__m512,
-    ) -> core::arch::x86_64::__m512 {
-        // SAFETY: The ExecutableCode was produced by our JIT compiler which
-        // emits code matching the CtxKernelFn signature for buffer-declaring
-        // arenas.
-        let func: CtxKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, x, y, z, w)
-    }
-    /// Run a 2D collapse kernel: one call fills `rows * groups` batches,
-    /// resetting X and advancing Y by 1.0 after each row.
-    ///
-    /// # Safety
-    ///
-    /// - The kernel must have been compiled by
-    ///   [`compile_collapse`](crate::emit::compile_collapse) — the
-    ///   per-batch entries emit a different ABI.
-    /// - Each row must expose `groups * lanes` writable `f32`s followed by
-    ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
-    /// - `ctx` must hold one valid base pointer per buffer the arena
-    ///   declares (never read when it declares none).
-    #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
-    #[inline(always)]
-    pub unsafe fn call_collapse(
-        &self,
-        ctx: *const *const f32,
-        out: *mut f32,
-        groups: usize,
-        rows: usize,
-        row_skip_bytes: usize,
-        x0: core::arch::x86_64::__m512,
-        y0: core::arch::x86_64::__m512,
-        z: core::arch::x86_64::__m512,
-        w: core::arch::x86_64::__m512,
-    ) {
-        // SAFETY: the ExecutableCode was produced by our JIT compiler which
-        // emits code matching the CollapseKernelFn signature.
-        let func: CollapseKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)
+    /// Evaluates `extent.width * extent.height` pixels starting at `origin`.
+    pub fn eval_grid(&self, out: &mut [f32], extent: Extent2D, origin: Point4<f32>) {
+        assert!(
+            out.len() >= extent.len(),
+            "output buffer too small for grid"
+        );
+        let full_groups = extent.width / LANES;
+        let tail = extent.width % LANES;
+
+        let mut x0_vec = [0.0f32; LANES];
+        for (i, lane) in x0_vec.iter_mut().enumerate() {
+            *lane = origin.x + i as f32;
+        }
+        let coords = Point4::new(
+            x0_vec,
+            [origin.y; LANES],
+            [origin.z; LANES],
+            [origin.w; LANES],
+        );
+
+        if tail == 0 && full_groups > 0 {
+            // Whole rows can be evaluated in a single 2D collapse call across all rows!
+            // SAFETY: out has space for width * height floats without padding.
+            unsafe {
+                self.call_collapse(
+                    core::ptr::null(),
+                    TileSlice::contiguous(out.as_mut_ptr(), full_groups, extent.height),
+                    coords,
+                );
+            }
+        } else {
+            // Rows with scalar tail: evaluate row by row
+            for row in 0..extent.height {
+                let row_y = origin.y + row as f32;
+                let row_slice = &mut out[row * extent.width..(row + 1) * extent.width];
+                self.eval_row(row_slice, Point4::new(origin.x, row_y, origin.z, origin.w));
+            }
+        }
     }
 }
 

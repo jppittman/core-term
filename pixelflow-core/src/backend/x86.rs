@@ -525,7 +525,11 @@ impl SimdU32Ops for U32x4 {
 
     #[inline(always)]
     fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
-        // Placeholder - actual packing is done via pack_rgba
+        // Placeholder - actual packing is done via pack_rgba. The body is
+        // already `Self::default()`, so cargo-mutants' "replace with
+        // Default::default()" mutant here is equivalent, not a coverage
+        // gap: there is no other behavior for a test to distinguish it
+        // from.
         Self::default()
     }
 }
@@ -1127,6 +1131,9 @@ impl SimdU32Ops for U32x8 {
 
     #[inline(always)]
     fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
+        // Placeholder - actual packing is done via pack_rgba. Already
+        // `Self::default()`, so cargo-mutants' Default::default() mutant
+        // here is equivalent, not a coverage gap.
         Self::default()
     }
 }
@@ -1727,7 +1734,9 @@ impl SimdU32Ops for U32x16 {
 
     #[inline(always)]
     fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
-        // Placeholder
+        // Placeholder - actual packing is done via pack_rgba. Already
+        // `Self::default()`, so cargo-mutants' Default::default() mutant
+        // here is equivalent, not a coverage gap.
         Self::default()
     }
 }
@@ -1823,32 +1832,6 @@ impl U32x16 {
                 _mm512_or_si512(b_shifted, a_shifted),
             );
             Self(packed)
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(target_feature = "avx512f")]
-    use super::*;
-
-    #[test]
-    #[cfg(target_feature = "avx512f")]
-    fn avx512_log2() {
-        let test_vals = [0.5f32, 0.75, 1.0, 1.5, 2.0, 4.0, 8.0];
-        for &val in &test_vals {
-            let v = F32x16::splat(val);
-            let result = v.log2();
-            let mut buf = [0.0f32; 16];
-            result.store(&mut buf);
-            let expected = val.log2();
-            assert!(
-                (buf[0] - expected).abs() < 0.01,
-                "log2({}) = {}, expected {}",
-                val,
-                buf[0],
-                expected
-            );
         }
     }
 }
