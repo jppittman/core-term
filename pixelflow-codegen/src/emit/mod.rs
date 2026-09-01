@@ -2700,6 +2700,10 @@ mod tests {
         assert_eq!(eval_point(&result.code, 3.0, 4.0, 0.0, 0.0), 10.0);
     }
 
+    /// `(X+Y)·(X−Y) + (X·Y)·(X+1)`: whichever product is computed second
+    /// has three values live, so a two-register pool must spill. Every leaf
+    /// depends on X or Y — a Z/W subtree would be loop-invariant, hoisted out
+    /// of the collapse body, and leave nothing to spill.
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn arena_compile_with_spills() {
@@ -2708,10 +2712,13 @@ mod tests {
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
         let y = arena.push_var(1);
-        let z = arena.push_var(2);
-        let w = arena.push_var(3);
-        let left = arena.push_binary(OpKind::Add, x, y);
-        let right = arena.push_binary(OpKind::Add, z, w);
+        let one = arena.push_const(1.0);
+        let sum = arena.push_binary(OpKind::Add, x, y);
+        let diff = arena.push_binary(OpKind::Sub, x, y);
+        let left = arena.push_binary(OpKind::Mul, sum, diff);
+        let prod = arena.push_binary(OpKind::Mul, x, y);
+        let succ = arena.push_binary(OpKind::Add, x, one);
+        let right = arena.push_binary(OpKind::Mul, prod, succ);
         let root = arena.push_binary(OpKind::Add, left, right);
 
         let ctx = EmitCtx::with_max_regs(2);
@@ -2721,8 +2728,8 @@ mod tests {
 
         assert!(result.spill_count > 0, "expected spills with max_regs=2");
 
-        // (1+2) + (3+4) = 10
-        assert_eq!(eval_point(&result.code, 1.0, 2.0, 3.0, 4.0), 10.0);
+        // (3+4)·(3−4) + (3·4)·(3+1) = −7 + 48 = 41
+        assert_eq!(eval_point(&result.code, 3.0, 4.0, 0.0, 0.0), 41.0);
     }
 
     /// Run an arena kernel at `x` (Y/Z/W = 0) and return lane 0. The
