@@ -44,7 +44,10 @@ pub mod saturate;
 pub use anytime::{
     APP_CHECKPOINT_GRID, AnytimeCheckpoint, AnytimeCurve, AnytimeCurveOutput, run_anytime_curve,
 };
-pub use candidate::{CandidateFeatures, CandidateKey, ClassContentKey, Firing};
+pub use candidate::{
+    CandidateFeatures, CandidateKey, ClassContentKey, Firing,
+    REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
+};
 pub use cost::{CostFunction, CostModel};
 pub use deps::{Deps, DepsAnalysis};
 pub use derivative::{ChainRule, derivative_rules};

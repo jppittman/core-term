@@ -11,6 +11,13 @@ bench = false
 [dependencies]
 libm = "0.2.15"
 pixelflow-ir = { path = "../pixelflow-ir", default-features = false, features = ["std"] }
+# Cold-start Guide checkpoint loading only (`nnue::guide::linear` — the
+# linear model `pixelflow-pipeline`'s `train_guide` writes as JSON). Value-
+# based parsing, no `derive`: the checkpoint's writer (a separate crate, one
+# layer up the dependency graph) owns the schema; this crate only reads the
+# handful of named fields it needs, so a `Deserialize`-derived struct here
+# would be a second, drift-prone restatement of a schema it doesn't own.
+serde_json = "1.0"
 
 [dev-dependencies]
 # Rewrite-soundness tests check a rule's two sides numerically against the
