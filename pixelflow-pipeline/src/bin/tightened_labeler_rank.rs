@@ -344,7 +344,8 @@ fn main() {
         Contingency::default(),
         Contingency::default(),
     );
-    let (mut total_apps, mut total_loose, mut total_tight, mut total_strict) = (0u64, 0u64, 0u64, 0u64);
+    let (mut total_apps, mut total_loose, mut total_tight, mut total_strict) =
+        (0u64, 0u64, 0u64, 0u64);
 
     for (i, (name, arena, root)) in entries.iter().enumerate() {
         let mut egraph = EGraph::with_rules(all_rules());
@@ -613,10 +614,7 @@ fn main() {
             "  \"strict_ratio_quartiles\": [{s_q1:.6}, {s_med:.6}, {s_q3:.6}],\n"
         ));
         json.push_str("  \"per_rule_spearman\": {\n");
-        json.push_str(&format!(
-            "    \"n_rules\": {},\n",
-            rule_rows.len()
-        ));
+        json.push_str(&format!("    \"n_rules\": {},\n", rule_rows.len()));
         json.push_str(&format!(
             "    \"loose_vs_strict\": {},\n",
             spearman_loose_strict

@@ -113,7 +113,10 @@ struct Args {
 
     /// DEV-family strict-label JSONL (`gen_strict_labels`'s `--out-dev`) —
     /// held out, evaluated only, never trained on.
-    #[arg(long, default_value = "pixelflow-pipeline/data/strict_labels_dev.jsonl")]
+    #[arg(
+        long,
+        default_value = "pixelflow-pipeline/data/strict_labels_dev.jsonl"
+    )]
     dev: String,
 
     /// Training epochs (full passes over the shuffled TRAIN set).
@@ -276,11 +279,7 @@ fn weighted_bce_loss(z: f32, y: f32, pos_weight: f32) -> f32 {
 /// label, `p` for a negative one (derived from `d/dz[-log(sigmoid(z))] =
 /// sigmoid(z)-1` and `d/dz[-log(1-sigmoid(z))] = sigmoid(z)`).
 fn weighted_bce_grad(p: f32, y: f32, pos_weight: f32) -> f32 {
-    if y > 0.5 {
-        pos_weight * (p - 1.0)
-    } else {
-        p
-    }
+    if y > 0.5 { pos_weight * (p - 1.0) } else { p }
 }
 
 // ── Deterministic shuffle (same LCG constant `SaturationHead::randomize` uses) ──
@@ -645,8 +644,7 @@ struct Report {
 fn write_json_report(path: &str, report: &Report) {
     let json = serde_json::to_string_pretty(report)
         .unwrap_or_else(|e| panic!("train_guide: report serialization failed: {e}"));
-    std::fs::write(path, json)
-        .unwrap_or_else(|e| panic!("train_guide: cannot write {path}: {e}"));
+    std::fs::write(path, json).unwrap_or_else(|e| panic!("train_guide: cannot write {path}: {e}"));
     eprintln!("train_guide: wrote {path}");
 }
 
@@ -703,10 +701,10 @@ fn write_md_report(path: &str, report: &Report) {
         ));
     }
 
+    md.push_str("\n## Calibration (population-quantile buckets, dense toward the top, DEV)\n\n");
     md.push_str(
-        "\n## Calibration (population-quantile buckets, dense toward the top, DEV)\n\n",
+        "| quantile range | n | predicted range | mean predicted | actual positive rate |\n",
     );
-    md.push_str("| quantile range | n | predicted range | mean predicted | actual positive rate |\n");
     md.push_str("|---|---:|---|---:|---:|\n");
     for b in &report.calibration {
         md.push_str(&format!(
@@ -818,19 +816,28 @@ fn main() {
             let z = model.logit(s);
             let p = sigmoid(z);
             loss_sum += weighted_bce_loss(z, s.label, pos_weight) as f64;
-            let grad_z = weighted_bce_grad(p, s.label, pos_weight).clamp(-args.grad_clip, args.grad_clip);
+            let grad_z =
+                weighted_bce_grad(p, s.label, pos_weight).clamp(-args.grad_clip, args.grad_clip);
             model.sgd_step(s, grad_z, lr, args.l2);
         }
         let mean_loss = loss_sum / train.samples.len() as f64;
 
         let is_last = epoch + 1 == args.epochs;
-        let (dev_auc, dev_pr_auc) = if args.eval_every > 0 && (epoch % args.eval_every == 0 || is_last) {
-            let scores: Vec<f32> = dev.samples.iter().map(|s| sigmoid(model.logit(s))).collect();
-            let labels: Vec<f32> = dev.samples.iter().map(|s| s.label).collect();
-            (auc_roc(&scores, &labels), average_precision(&scores, &labels))
-        } else {
-            (None, None)
-        };
+        let (dev_auc, dev_pr_auc) =
+            if args.eval_every > 0 && (epoch % args.eval_every == 0 || is_last) {
+                let scores: Vec<f32> = dev
+                    .samples
+                    .iter()
+                    .map(|s| sigmoid(model.logit(s)))
+                    .collect();
+                let labels: Vec<f32> = dev.samples.iter().map(|s| s.label).collect();
+                (
+                    auc_roc(&scores, &labels),
+                    average_precision(&scores, &labels),
+                )
+            } else {
+                (None, None)
+            };
 
         eprintln!(
             "train_guide: epoch {epoch:>3} lr={lr:.5} train_weighted_loss={mean_loss:.6}{}",
@@ -850,7 +857,11 @@ fn main() {
     }
 
     // Final held-out evaluation (guaranteed present regardless of `--eval-every`).
-    let dev_scores: Vec<f32> = dev.samples.iter().map(|s| sigmoid(model.logit(s))).collect();
+    let dev_scores: Vec<f32> = dev
+        .samples
+        .iter()
+        .map(|s| sigmoid(model.logit(s)))
+        .collect();
     let dev_labels: Vec<f32> = dev.samples.iter().map(|s| s.label).collect();
     let dev_auc = auc_roc(&dev_scores, &dev_labels).unwrap_or_else(|| {
         panic!("train_guide: DEV AUC undefined — one class is entirely absent from DEV")
@@ -887,7 +898,11 @@ fn main() {
         let (train_fired, train_positive) = train.per_rule.get(&idx).copied().unwrap_or((0, 0));
         let (dev_fired, dev_positive) = dev.per_rule.get(&idx).copied().unwrap_or((0, 0));
         let (pred_sum, pred_n) = dev_mean_pred_by_rule.get(&idx).copied().unwrap_or((0.0, 0));
-        let dev_mean_predicted = if pred_n > 0 { pred_sum / pred_n as f64 } else { 0.0 };
+        let dev_mean_predicted = if pred_n > 0 {
+            pred_sum / pred_n as f64
+        } else {
+            0.0
+        };
         let dev_positive_rate = if dev_fired > 0 {
             dev_positive as f64 / dev_fired as f64
         } else {
@@ -1051,7 +1066,10 @@ mod tests {
         for &y in &[0.0f32, 1.0] {
             let weighted = weighted_bce_loss(z, y, 1.0);
             let naive = -(y * p.ln() + (1.0 - y) * (1.0 - p).ln());
-            assert!((weighted - naive).abs() < 1e-4, "y={y} weighted={weighted} naive={naive}");
+            assert!(
+                (weighted - naive).abs() < 1e-4,
+                "y={y} weighted={weighted} naive={naive}"
+            );
         }
     }
 
@@ -1145,11 +1163,17 @@ mod tests {
     #[test]
     fn calibration_tail_buckets_covers_the_whole_population_and_orders_by_score() {
         let scores: Vec<f32> = (0..1000).map(|i| i as f32 / 1000.0).collect();
-        let labels: Vec<f32> = (0..1000).map(|i| if i >= 500 { 1.0 } else { 0.0 }).collect();
+        let labels: Vec<f32> = (0..1000)
+            .map(|i| if i >= 500 { 1.0 } else { 0.0 })
+            .collect();
         let buckets = calibration_tail_buckets(&scores, &labels);
         assert_eq!(buckets.len(), CALIBRATION_QUANTILES.len() - 1);
         let total: usize = buckets.iter().map(|b| b.count).sum();
-        assert_eq!(total, scores.len(), "buckets must partition the whole population");
+        assert_eq!(
+            total,
+            scores.len(),
+            "buckets must partition the whole population"
+        );
         // Bottom bucket (lowest predicted scores) is all-negative, top
         // bucket (highest predicted scores) is all-positive for this
         // perfectly-ordered synthetic input.
@@ -1191,7 +1215,11 @@ mod tests {
             log_expr_size: 1.0,
             label: 1.0,
         };
-        assert_eq!(model.logit(&s), 0.0, "a zero-initialized model must score zero everywhere");
+        assert_eq!(
+            model.logit(&s),
+            0.0,
+            "a zero-initialized model must score zero everywhere"
+        );
     }
 
     #[test]
@@ -1278,17 +1306,18 @@ mod tests {
         let scores: Vec<f32> = samples.iter().map(|s| sigmoid(model.logit(s))).collect();
         let labels: Vec<f32> = samples.iter().map(|s| s.label).collect();
         let auc = auc_roc(&scores, &labels).unwrap();
-        assert!(auc > 0.99, "expected near-perfect AUC on a linearly separable toy set, got {auc}");
+        assert!(
+            auc > 0.99,
+            "expected near-perfect AUC on a linearly separable toy set, got {auc}"
+        );
     }
 
     // ── checkpoint round trip ────────────────────────────────────────────
 
     #[test]
     fn checkpoint_write_then_read_round_trips_and_validates() {
-        let dir = std::env::temp_dir().join(format!(
-            "train_guide_ckpt_test_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("train_guide_ckpt_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("checkpoint.json");
 
@@ -1329,7 +1358,10 @@ mod tests {
         let loaded = GuideCheckpoint::read(&path).unwrap();
         assert_eq!(loaded.label_source, "strict-v1");
         assert_eq!(loaded.w_rule, vec![0.2, -0.3]);
-        assert_eq!(loaded.schema_identity, GuideCheckpoint::current_schema_identity());
+        assert_eq!(
+            loaded.schema_identity,
+            GuideCheckpoint::current_schema_identity()
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1380,11 +1412,17 @@ mod tests {
         // Hand-tamper: flip a weight without touching the recorded hash.
         let text = std::fs::read_to_string(&path).unwrap();
         let tampered = text.replace("\"bias\": 0.0", "\"bias\": 99.0");
-        assert_ne!(text, tampered, "test setup: replacement should have matched something");
+        assert_ne!(
+            text, tampered,
+            "test setup: replacement should have matched something"
+        );
         std::fs::write(&path, tampered).unwrap();
 
         let result = GuideCheckpoint::read(&path);
-        assert!(result.is_err(), "a tampered checkpoint must be refused, not silently loaded");
+        assert!(
+            result.is_err(),
+            "a tampered checkpoint must be refused, not silently loaded"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
