@@ -27,6 +27,7 @@
 //! with `vinsertf128`.
 
 use super::x86_64;
+use super::x86_64::{Disp, Imm8, Imm32, Mem, NoDisp, gpr};
 use super::{Reg, unimplemented_op};
 use alloc::vec::Vec;
 use pixelflow_ir::OpKind;
@@ -77,7 +78,7 @@ enum Map {
 /// The identity of one VEX-256 instruction: opcode map, implied legacy
 /// prefix, W bit, opcode byte. This quadruple is *which instruction* — it is
 /// constant per mnemonic, so each mnemonic below states it exactly once and
-/// the operand form (`rrr`/`imm`/`rm_rsp`) supplies the per-call parts.
+/// the operand form (`rrr`/`imm`/`rm`) supplies the per-call parts.
 #[derive(Clone, Copy)]
 struct Vex {
     map: Map,
@@ -138,45 +139,18 @@ impl Vex {
         code.push(0xC0 | ((dst & 7) << 3) | (rm & 7));
     }
 
-    /// `[rsp + disp32]` memory-operand form (spill loads/stores).
-    fn rm_rsp(self, code: &mut Vec<u8>, reg: u8, disp: i32) {
-        self.rm_rsp_prefix(code, reg);
-        code.push(0x84 | ((reg & 7) << 3)); // mod=10, reg=reg, rm=100 (SIB)
-        code.push(0x24); // SIB: base=rsp, no index
-        code.extend_from_slice(&disp.to_le_bytes());
-    }
-
-    /// `[rsp + disp8]` memory-operand form (red-zone constant broadcast).
-    fn rm_rsp8(self, code: &mut Vec<u8>, reg: u8, disp: i8) {
-        self.rm_rsp_prefix(code, reg);
-        code.push(0x44 | ((reg & 7) << 3)); // mod=01, reg=reg, rm=100 (SIB)
-        code.push(0x24);
-        code.push(disp as u8);
-    }
-
-    /// `[base64]` memory-operand form (mod=00 direct). `base` must not be
-    /// rsp/rbp/r12/r13, whose mod=00 encodings mean SIB/RIP instead.
-    fn rm_base(self, code: &mut Vec<u8>, reg: u8, base: u8) {
-        debug_assert!(
-            base & 7 != 4 && base & 7 != 5,
-            "Vex::rm_base: base must not be rsp/rbp/r12/r13"
-        );
+    /// `op reg, [addr]` — the memory-operand form, for any base and any
+    /// displacement mode. The prefix is VEX's; the ModRM/SIB/displacement tail
+    /// is the architecture's, so it comes from `x86_64::mem_operand`.
+    fn rm<D: Disp>(self, code: &mut Vec<u8>, reg: u8, addr: Mem<D>) {
+        // R and B are stored inverted; X is unused (no index register).
         let rbit = if reg >= 8 { 0x00 } else { 0x80 };
-        let bbit = if base >= 8 { 0x00 } else { 0x20 };
+        let bbit = if addr.base.0 >= 8 { 0x00 } else { 0x20 };
         code.push(0xC4);
-        code.push(rbit | 0x40 | bbit | self.map as u8); // X=1 (unused)
-        code.push(((self.w as u8) << 7) | (0xF << 3) | (1 << 2) | self.pp as u8);
-        code.push(self.opcode);
-        code.push(((reg & 7) << 3) | (base & 7)); // mod=00
-    }
-
-    /// Shared VEX prefix + opcode for the rsp-based memory forms.
-    fn rm_rsp_prefix(self, code: &mut Vec<u8>, reg: u8) {
-        let rbit = if reg >= 8 { 0x00 } else { 0x80 };
-        code.push(0xC4);
-        code.push(rbit | 0x40 | 0x20 | self.map as u8); // X=1 (unused), B=1 (rsp < 8)
+        code.push(rbit | 0x40 | bbit | self.map as u8);
         code.push(((self.w as u8) << 7) | (0xF << 3) | (1 << 2) | self.pp as u8); // vvvv unused, L=1
         code.push(self.opcode);
+        x86_64::mem_operand(code, reg, addr);
     }
 }
 
@@ -314,20 +288,32 @@ pub fn emit_mov(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     Vex::m0f(0x28).rrr(code, dst.0, UNUSED_VVVV, src.0);
 }
 
-/// `vmovups ymmDST, [rsp+disp32]` — 256-bit reload.
-pub fn emit_load_rsp(code: &mut Vec<u8>, dst: Reg, disp: i32) {
-    Vex::m0f(0x10).rm_rsp(code, dst.0, disp);
+/// A slot in the allocated spill frame. AVX2 kernels are leaves with no base
+/// pointer, so a slot *is* `rsp + offset`.
+const fn frame_slot(offset: u32) -> Mem<Imm32> {
+    Mem {
+        base: gpr::RSP,
+        disp: Imm32(offset as i32),
+    }
 }
 
-/// `vmovups [rsp+disp32], ymmSRC` — 256-bit spill store.
-pub fn emit_store_rsp(code: &mut Vec<u8>, src: Reg, disp: i32) {
-    Vex::m0f(0x11).rm_rsp(code, src.0, disp);
+/// `vmovups ymmDST, [addr]` — 256-bit load.
+pub fn emit_load<D: Disp>(code: &mut Vec<u8>, dst: Reg, addr: Mem<D>) {
+    Vex::m0f(0x10).rm(code, dst.0, addr);
 }
 
-/// `vmovups [base64], ymmSRC` — unaligned 256-bit store to a GP-register base.
-pub fn emit_store_base(code: &mut Vec<u8>, src: Reg, base_gpr: u8) {
-    Vex::m0f(0x11).rm_base(code, src.0, base_gpr);
+/// `vmovups [addr], ymmSRC` — 256-bit store.
+pub fn emit_store<D: Disp>(code: &mut Vec<u8>, addr: Mem<D>, src: Reg) {
+    Vex::m0f(0x11).rm(code, src.0, addr);
 }
+
+/// Where [`emit_const`] stages an f32 before broadcasting it: four bytes of
+/// red zone below `rsp`, never touched by a spill frame (which lives at
+/// `[rsp .. rsp+N)`).
+const RED_ZONE_CONST: Mem<Imm8> = Mem {
+    base: gpr::RSP,
+    disp: Imm8(-4),
+};
 
 /// Broadcast an f32 constant to all 8 lanes of `dst` via the stack (red zone,
 /// `[rsp-4]`; never affected by a spill frame, which lives at `[rsp..rsp+N)`).
@@ -341,7 +327,7 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
     code.extend_from_slice(&[0xC7, 0x44, 0x24, 0xFC]);
     code.extend_from_slice(&bits.to_le_bytes());
     // vbroadcastss ymm, [rsp-4]  (VEX.256.66.0F38.W0 18 /r)
-    Vex::m0f38_66(0x18).rm_rsp8(code, dst.0, -4);
+    Vex::m0f38_66(0x18).rm(code, dst.0, RED_ZONE_CONST);
 }
 
 // =============================================================================
@@ -455,9 +441,15 @@ fn vfmadd231ps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
 /// interpreter under `fp-contract=fast` — `eval_scalar`'s scalar `a*b+c` gets
 /// contracted to an `fma` instruction by LLVM under `+fma` too, so a
 /// software two-step mul-then-add would round twice and disagree in the last
-/// bit. The two-roundings case still exists, just not here: it's the SSE2
-/// *baseline* tier's only option (`pixelflow-core`'s x86 backend, no `avx2`
-/// set), where mul+add genuinely is all the hardware offers.
+/// bit.
+///
+/// The two-roundings case still exists, just not in *this* function. It is
+/// the SSE2 baseline's only option — `x86_64.rs`'s own `FusedMulAdd` arm is a
+/// `movaps`/`mulps`/`addps` stand-in, as is `pixelflow-core`'s x86 backend —
+/// and it is also what `DecomposedMulAdd` does on every tier, this one
+/// included, whenever register pressure pulls `a` and `b` apart from `c`.
+/// Both are pinned as bytes by `emit::tests::muladd_encoding` and as values
+/// by `tests/muladd_rounding.rs`.
 pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
     vfmadd231ps(code, dst.0, a.0, b.0);
 }
@@ -654,15 +646,51 @@ mod tests {
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i] + zs[i], "fma sw");
         }
 
+        /// The FMA bytes really are an FMA: **one** rounding, not a multiply
+        /// followed by an add.
+        ///
+        /// `const_broadcast_and_fma`'s 1e-3 tolerance cannot tell those apart — the whole
+        /// difference is the last mantissa bit — so a stand-in built out of a
+        /// multiply and an add would pass it. `1.0000001 * 4097 + 4097` is one
+        /// of the inputs CLAUDE.md's `MulAdd` row is about, where the two
+        /// forms genuinely disagree, and this asserts the bits.
+        #[test]
+        fn fma_rounds_once() {
+            let xs = [1.000_000_1f32; 8];
+            let ys = [4097.0f32; 8];
+            let zs = [4097.0f32; 8];
+            let one = xs[0].mul_add(ys[0], zs[0]);
+            // `black_box` stops LLVM contracting the reference into the very
+            // instruction it exists to be different from.
+            let two = core::hint::black_box(xs[0] * ys[0]) + zs[0];
+            assert_ne!(
+                one.to_bits(),
+                two.to_bits(),
+                "this input no longer separates one rounding from two"
+            );
+
+            let mut c = Vec::new();
+            emit_mov(&mut c, Reg(5), Z);
+            emit_fmadd_c_in_dst(&mut c, Reg(5), X, Y);
+            emit_mov(&mut c, X, Reg(5));
+            for (i, &g) in run(&c, xs, ys, zs).iter().enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    one.to_bits(),
+                    "lane {i}: {g} rounded twice; the fused answer is {one}"
+                );
+            }
+        }
+
         #[test]
         fn spill_frame_roundtrip() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             crate::emit::x86_64::emit_sub_rsp(&mut c, 32);
             emit_binary(&mut c, OpKind::Mul, Reg(6), X, Y);
-            emit_store_rsp(&mut c, Reg(6), 0);
+            emit_store(&mut c, frame_slot(0), Reg(6));
             emit_binary(&mut c, OpKind::Add, Reg(6), X, X); // clobber
-            emit_load_rsp(&mut c, X, 0);
+            emit_load(&mut c, X, frame_slot(0));
             crate::emit::x86_64::emit_add_rsp(&mut c, 32);
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i], "spill roundtrip");
         }
@@ -752,8 +780,10 @@ mod tests {
 )]
 pub(crate) mod driver {
     use super::super::*;
+    use super::{Mem, NoDisp, frame_slot};
     use crate::emit::x86_64 as x86;
     use crate::emit::x86_64::driver::SSE2_FILE;
+    use crate::error::CompileError;
     use alloc::vec::Vec;
     use pixelflow_ir::kind::OpKind;
 
@@ -807,7 +837,7 @@ pub(crate) mod driver {
         fn reload(code: &mut Vec<u8>, reload: &Reload) {
             match reload {
                 Reload::FromStack { target, offset } => {
-                    super::emit_load_rsp(code, *target, *offset as i32);
+                    super::emit_load(code, *target, frame_slot(*offset));
                 }
                 Reload::Const { target, val_bits } => {
                     super::emit_const(code, *target, f32::from_bits(*val_bits));
@@ -823,22 +853,15 @@ pub(crate) mod driver {
             self.file
         }
 
-        fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), &'static str> {
+        fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), CompileError> {
             Ok(()) // const broadcast is self-contained; no pool.
-        }
-
-        fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32) {
-            let bytes = frame_size;
-            if bytes > 0 {
-                x86::emit_sub_rsp(code, bytes);
-            }
         }
 
         fn emit_plan(
             &mut self,
             code: &mut Vec<u8>,
             plan: &InstructionPlan,
-        ) -> Result<(), &'static str> {
+        ) -> Result<(), CompileError> {
             for r in &plan.reloads {
                 Self::reload(code, r);
             }
@@ -910,7 +933,7 @@ pub(crate) mod driver {
                     super::emit_binary(code, OpKind::Mul, *dst, *a, *b);
                     match c_deferred {
                         Some(DeferredReload::FromStack(off)) => {
-                            super::emit_load_rsp(code, *c, *off as i32);
+                            super::emit_load(code, *c, frame_slot(*off));
                         }
                         Some(DeferredReload::Const(bits)) => {
                             super::emit_const(code, *c, f32::from_bits(*bits));
@@ -929,7 +952,7 @@ pub(crate) mod driver {
                 }
             }
             if let Some(store) = &plan.store {
-                super::emit_store_rsp(code, store.src, store.offset as i32);
+                super::emit_store(code, frame_slot(store.offset), store.src);
             }
             Ok(())
         }
@@ -943,8 +966,8 @@ pub(crate) mod driver {
             code: &mut Vec<u8>,
             src: Reg,
             offset: u32,
-        ) -> Result<(), &'static str> {
-            super::emit_store_rsp(code, src, offset as i32);
+        ) -> Result<(), CompileError> {
+            super::emit_store(code, frame_slot(offset), src);
             Ok(())
         }
 
@@ -962,7 +985,7 @@ pub(crate) mod driver {
                     target
                 }
                 Loc::Spill(offset) => {
-                    super::emit_load_rsp(code, target, offset as i32);
+                    super::emit_load(code, target, frame_slot(offset));
                     target
                 }
             }
@@ -991,17 +1014,6 @@ pub(crate) mod driver {
             x86_64::patch_rel32(code, branch, target);
         }
 
-        fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32) {
-            if result_reg.0 != 0 {
-                super::emit_mov(code, Reg(0), result_reg);
-            }
-            let bytes = frame_size;
-            if bytes > 0 {
-                x86::emit_add_rsp(code, bytes);
-            }
-            x86::ret(code);
-        }
-
         // Same scaffold register roles as SSE2 — see `x86_64::scaffold` — at
         // this vector width. Unlike SSE2 there is no red-zone mode: the body
         // always spills into an allocated frame, and the scaffold's coordinate
@@ -1016,11 +1028,11 @@ pub(crate) mod driver {
         }
 
         fn slot_store(&mut self, code: &mut Vec<u8>, src: Reg, offset: u32) {
-            super::emit_store_rsp(code, src, offset as i32);
+            super::emit_store(code, frame_slot(offset), src);
         }
 
         fn slot_load(&mut self, code: &mut Vec<u8>, dst: Reg, offset: u32) {
-            super::emit_load_rsp(code, dst, offset as i32);
+            super::emit_load(code, dst, frame_slot(offset));
         }
 
         fn latch_bounds(&mut self, code: &mut Vec<u8>) {
@@ -1040,7 +1052,14 @@ pub(crate) mod driver {
         }
 
         fn store_result(&mut self, code: &mut Vec<u8>, src: Reg) {
-            super::emit_store_base(code, src, x86::scaffold::OUT_PTR);
+            super::emit_store(
+                code,
+                Mem {
+                    base: x86::scaffold::OUT_PTR,
+                    disp: NoDisp,
+                },
+                src,
+            );
         }
 
         fn advance_out(&mut self, code: &mut Vec<u8>, step: OutStep) {

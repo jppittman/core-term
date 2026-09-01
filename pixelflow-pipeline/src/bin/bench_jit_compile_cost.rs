@@ -7,12 +7,12 @@
 //!   path. On a miss that entry point runs canonical-key construction, the
 //!   cache lock, `optimize_runtime_arena` (e-graph saturation + extraction,
 //!   itself keyed by the same structure and therefore also a miss for a
-//!   distinct kernel), `compile_arena_dag` (mmap + emit + mprotect), and
+//!   distinct kernel), `compile` (mmap + emit + mprotect), and
 //!   cache insertion. This is what one *distinct* kernel actually costs at
 //!   runtime, and it is the number the G0 verdict reads. A kernel seen before
 //!   costs a hash lookup and an `Arc` clone instead — hits are not what this
 //!   benchmark measures.
-//! - **emit only** (attribution, `emit ns`): `compile_arena_dag` called
+//! - **emit only** (attribution, `emit ns`): `compile` called
 //!   directly on one fixed arena — codegen plus the executable-region
 //!   lifecycle, with no optimizer, no key, no lock. The gap between the two
 //!   series is the optimizer + cache bookkeeping share of a miss.
@@ -142,7 +142,7 @@ fn main() {
     println!(
         "miss ns = full jit_cache::compile_cached miss (key + lock + optimize + emit + insert)"
     );
-    println!("emit ns = compile_arena_dag only (attribution)\n");
+    println!("emit ns = compile only (attribution)\n");
     println!(
         "{:>6}  {:>10}  {:>12}  {:>12}  {:>10}",
         "nodes", "code B", "miss ns", "emit ns", "miss/node"

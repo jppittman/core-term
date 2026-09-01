@@ -27,43 +27,17 @@ use std::vec::Vec;
 
 use crate::JitManifold;
 use crate::emit;
+use crate::error::CompileError;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
 static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Arc<JitManifold>>>> = OnceLock::new();
 
-/// The two compiled forms a kernel can take. The mode tags the cache key —
-/// the same arena compiles to different code (and a different ABI) per mode,
-/// so the forms must never share an entry.
-#[derive(Clone, Copy)]
-enum Mode {
-    /// One call = one SIMD batch (`KernelFn`/`CtxKernelFn`).
-    PerBatch,
-    /// One call = a 2D X/Y tile of batches (`CollapseKernelFn`).
-    Collapse,
-}
-
-/// Compile the kernel rooted at `root` to the per-batch form, sharing
-/// previously compiled code for canonically identical kernels. The returned
-/// `Arc` is the shared handle — two constructions of the same kernel yield
-/// pointer-equal manifolds.
-pub fn compile_cached(arena: &ExprArena, root: ExprId) -> Result<Arc<JitManifold>, &'static str> {
-    compile_cached_mode(arena, root, Mode::PerBatch)
-}
-
-/// Compile the kernel rooted at `root` to the collapse (internal-loop) form
-/// — call through [`JitManifold::call_collapse`] — with the same sharing.
-pub fn compile_collapse_cached(
-    arena: &ExprArena,
-    root: ExprId,
-) -> Result<Arc<JitManifold>, &'static str> {
-    compile_cached_mode(arena, root, Mode::Collapse)
-}
-
-fn compile_cached_mode(
-    arena: &ExprArena,
-    root: ExprId,
-    mode: Mode,
-) -> Result<Arc<JitManifold>, &'static str> {
+/// Compile the kernel rooted at `root` to an executable [`JitManifold`] (2D collapse loop),
+/// sharing previously compiled code for canonically identical kernels.
+///
+/// The returned `Arc` is the shared handle — two constructions of the same
+/// kernel yield pointer-equal manifolds.
+pub fn compile(arena: &ExprArena, root: ExprId) -> Result<Arc<JitManifold>, CompileError> {
     // Optimize, then emit. This is not a step callers get to sequence: an
     // arena reaching a backend unoptimized is never what anyone wanted, and
     // when the choice was on offer, two of the three production call sites
@@ -74,21 +48,18 @@ fn compile_cached_mode(
     // It bails to the arena as given for constructs the e-graph does not
     // model (`Reduce`, the binder `Kernel::over` produces); those still
     // compile, just without the extra fusion.
-    let compile = |arena: &ExprArena, root: ExprId| {
+    let emit_fn = |arena: &ExprArena, root: ExprId| {
         let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root);
         let (arena, root) = optimized
             .as_deref()
             .map(|(a, r)| (a, *r))
             .unwrap_or((arena, root));
-        match mode {
-            Mode::PerBatch => emit::compile_arena_dag(arena, root),
-            Mode::Collapse => emit::compile_collapse(arena, root),
-        }
+        emit::compile(arena, root)
     };
 
-    let Some(key) = canonical_key(arena, root, mode) else {
+    let Some(key) = canonical_key(arena, root) else {
         // Uncacheable (bound memory): compile fresh.
-        let result = compile(arena, root)?;
+        let result = emit_fn(arena, root)?;
         return Ok(Arc::new(JitManifold::new(result.code)));
     };
 
@@ -103,7 +74,7 @@ fn compile_cached_mode(
     // Compile outside the lock so concurrent distinct-kernel constructions
     // don't serialize. A racing duplicate compile wastes work; the first
     // insertion wins so all callers share one region.
-    let result = compile(arena, root)?;
+    let result = emit_fn(arena, root)?;
     let compiled = Arc::new(JitManifold::new(result.code));
     let mut guard = cache.lock().expect("jit_cache: lock poisoned");
     Ok(guard.entry(key).or_insert(compiled).clone())
@@ -118,11 +89,11 @@ pub fn entry_count() -> usize {
         .unwrap_or(0)
 }
 
-/// Canonical serialization of the subgraph reachable from `root`: a leading
-/// mode byte, then nodes in ascending original id order (the arena is
-/// append-only, so children always precede parents), child references
-/// remapped to dense indices. `None` if the subgraph reads bound memory.
-fn canonical_key(arena: &ExprArena, root: ExprId, mode: Mode) -> Option<Vec<u8>> {
+/// Canonical serialization of the subgraph reachable from `root`: nodes in
+/// ascending original id order (the arena is append-only, so children always
+/// precede parents), child references remapped to dense indices. `None` if the
+/// subgraph reads bound memory.
+fn canonical_key(arena: &ExprArena, root: ExprId) -> Option<Vec<u8>> {
     let len = arena.nodes_raw().len();
     let mut reachable = vec![false; len];
     let mut stack = vec![root];
@@ -136,11 +107,7 @@ fn canonical_key(arena: &ExprArena, root: ExprId, mode: Mode) -> Option<Vec<u8>>
     // Dense remap in ascending id order.
     let mut dense: Vec<u32> = vec![u32::MAX; len];
     let mut next = 0u32;
-    let mut key: Vec<u8> = Vec::with_capacity(len * 8 + 1);
-    key.push(match mode {
-        Mode::PerBatch => 0,
-        Mode::Collapse => 1,
-    });
+    let mut key: Vec<u8> = Vec::with_capacity(len * 8);
 
     let push_id = |key: &mut Vec<u8>, dense: &[u32], id: ExprId| {
         let d = dense[id.0 as usize];
@@ -226,8 +193,8 @@ mod tests {
     fn identical_kernels_share_code() {
         let (a1, r1) = circle_arena(false);
         let (a2, r2) = circle_arena(true);
-        let m1 = compile_cached(&a1, r1).expect("compile");
-        let m2 = compile_cached(&a2, r2).expect("compile");
+        let m1 = compile(&a1, r1).expect("compile");
+        let m2 = compile(&a2, r2).expect("compile");
         assert!(
             Arc::ptr_eq(&m1, &m2),
             "canonically identical kernels must share one compiled region"
@@ -241,8 +208,8 @@ mod tests {
         let x = a2.push_var(0);
         let y = a2.push_var(1);
         let r2 = a2.push_binary(OpKind::Sub, x, y);
-        let m1 = compile_cached(&a1, r1).expect("compile");
-        let m2 = compile_cached(&a2, r2).expect("compile");
+        let m1 = compile(&a1, r1).expect("compile");
+        let m2 = compile(&a2, r2).expect("compile");
         assert!(!Arc::ptr_eq(&m1, &m2));
     }
 
@@ -253,7 +220,7 @@ mod tests {
         let k = a.push_const(424_242.0);
         let r = a.push_binary(OpKind::Mul, x, k);
         let before = entry_count();
-        let _m1 = compile_cached(&a, r).expect("compile");
+        let _m1 = compile(&a, r).expect("compile");
         let after_one = entry_count();
         assert!(
             after_one > before,
@@ -264,7 +231,7 @@ mod tests {
         let y = a2.push_var(1);
         let k2 = a2.push_const(535_353.0);
         let r2 = a2.push_binary(OpKind::Mul, y, k2);
-        let _m2 = compile_cached(&a2, r2).expect("compile");
+        let _m2 = compile(&a2, r2).expect("compile");
         let after_two = entry_count();
         assert!(
             after_two > after_one,
@@ -295,8 +262,8 @@ mod tests {
         let r2b = a2.push_reduce(OpKind::Mul, 5, 9, body2b); // extent differs only here
         let root2 = a2.push_binary(OpKind::Add, r1b, r2b);
 
-        let m1 = compile_cached(&a, root).expect("compile");
-        let m2 = compile_cached(&a2, root2).expect("compile");
+        let m1 = compile(&a, root).expect("compile");
+        let m2 = compile(&a2, root2).expect("compile");
         assert!(
             !Arc::ptr_eq(&m1, &m2),
             "a change confined to the second reduce's extent must not share a cache entry"
@@ -315,8 +282,8 @@ mod tests {
         let s = a3.push_binary(OpKind::Add, y2, x2); // operand order flipped
         let r3 = a3.push_unary(OpKind::Sqrt, s);
 
-        let m1 = compile_cached(&a1, r1).expect("compile");
-        let m3 = compile_cached(&a3, r3).expect("compile");
+        let m1 = compile(&a1, r1).expect("compile");
+        let m3 = compile(&a3, r3).expect("compile");
         assert!(
             !Arc::ptr_eq(&m1, &m3),
             "flipping operand order must not share a cache entry"

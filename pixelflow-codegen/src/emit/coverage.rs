@@ -73,5 +73,7 @@ pub(crate) const REQUIRED_SHIFT_OPS: &[OpKind] = &[OpKind::Shl, OpKind::Shr];
 
 /// Ops with a bespoke `ResolvedOp` shape (`FusedMulAdd`/`DecomposedMulAdd` for
 /// `MulAdd`, `Select` for `Select`). Listed for documentation; the per-backend
-/// tests build these two plans explicitly rather than looping generically.
+/// tests build these plans explicitly rather than looping generically — four
+/// of them for `MulAdd` alone, since a backend owes both shapes and each
+/// `DeferredReload` spelling of the decomposed one is its own arm.
 pub(crate) const REQUIRED_TERNARY_OPS: &[OpKind] = &[OpKind::MulAdd, OpKind::Select];

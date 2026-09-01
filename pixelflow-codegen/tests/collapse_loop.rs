@@ -1,21 +1,19 @@
-//! Collapse-loop equivalence: the internal-loop kernel produced by
-//! `compile_collapse` must agree with the per-batch kernel compiled from the
-//! same arena — the body is byte-identical, only the framing differs, so any
-//! divergence is a bug in the loop scaffold (coordinate slots, X induction,
-//! output stores, branch patching around the body).
+//! Collapse-loop equivalence: the kernel produced by `compile` must
+//! agree, bit for bit, with the IR interpreter over the lattice it fills.
 //!
-//! The per-batch path is the primary oracle (bit-exact by construction); the
-//! interpreter (`eval_scalar`) additionally anchors the arithmetic and gather
-//! cases to the language's reference semantics.
+//! The oracle is `eval_scalar`, an independent implementation. It used to be a
+//! second compiled kernel — the per-batch entry — but both framings wrapped the
+//! same `emit_dag_body` output, so that comparison could only ever see the loop
+//! scaffold (coordinate slots, X induction, output stores, branch patching) and
+//! was blind to any bug in the shared body. The interpreter sees both.
 //!
 //! Runs at whichever width the build selects (SSE2/AVX2/AVX-512/NEON): the
 //! CI ISA matrix covers the x86 widths, macOS covers aarch64.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
-use pixelflow_codegen::JIT_VECTOR_BYTES;
-use pixelflow_codegen::emit::executable::CollapseKernelFn;
-use pixelflow_codegen::emit::{CompileResult, compile_arena_dag, compile_collapse};
+use pixelflow_codegen::emit::{CompileResult, compile};
+use pixelflow_codegen::{JIT_VECTOR_BYTES, Point4, TileSlice};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
@@ -24,205 +22,65 @@ use pixelflow_ir::eval_scalar;
 const LANES: usize = JIT_VECTOR_BYTES / 4;
 
 /// One collapse call: fill `out` (whose length must be `groups * LANES`)
-/// from lane-sequential X starting at `x0`, with loop-invariant y/z/w.
-#[allow(clippy::too_many_arguments)] // ctx + out + the four coordinates: the ABI's shape
+/// from lane-sequential X starting at `origin.x`, with loop-invariant y/z/w.
 fn run_collapse_grid(
     res: &CompileResult,
     ctx: &[*const f32],
-    out: &mut [f32],
-    groups: usize,
-    rows: usize,
-    row_skip_bytes: usize,
-    x0: f32,
-    y: f32,
-    z: f32,
-    w: f32,
+    tile: TileSlice,
+    origin: Point4<f32>,
 ) {
-    let seq: Vec<f32> = (0..LANES).map(|i| x0 + i as f32).collect();
-
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    unsafe {
-        use core::arch::x86_64::*;
-        let f: CollapseKernelFn = res.code.as_fn();
-        f(
-            ctx.as_ptr(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            row_skip_bytes,
-            _mm512_loadu_ps(seq.as_ptr()),
-            _mm512_set1_ps(y),
-            _mm512_set1_ps(z),
-            _mm512_set1_ps(w),
-        );
+    let mut x0_vec = [0.0f32; LANES];
+    for (i, lane) in x0_vec.iter_mut().enumerate() {
+        *lane = origin.x + i as f32;
     }
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        not(target_feature = "avx512f")
-    ))]
     unsafe {
-        use core::arch::x86_64::*;
-        let f: CollapseKernelFn = res.code.as_fn();
-        f(
+        res.code.call_collapse(
             ctx.as_ptr(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            row_skip_bytes,
-            _mm256_loadu_ps(seq.as_ptr()),
-            _mm256_set1_ps(y),
-            _mm256_set1_ps(z),
-            _mm256_set1_ps(w),
-        );
-    }
-    #[cfg(all(
-        target_arch = "x86_64",
-        not(target_feature = "avx512f"),
-        not(target_feature = "avx2")
-    ))]
-    unsafe {
-        use core::arch::x86_64::*;
-        let f: CollapseKernelFn = res.code.as_fn();
-        f(
-            ctx.as_ptr(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            row_skip_bytes,
-            _mm_loadu_ps(seq.as_ptr()),
-            _mm_set1_ps(y),
-            _mm_set1_ps(z),
-            _mm_set1_ps(w),
-        );
-    }
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        use core::arch::aarch64::*;
-        let f: CollapseKernelFn = res.code.as_fn();
-        f(
-            ctx.as_ptr(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            row_skip_bytes,
-            vld1q_f32(seq.as_ptr()),
-            vdupq_n_f32(y),
-            vdupq_n_f32(z),
-            vdupq_n_f32(w),
+            tile,
+            Point4::new(
+                x0_vec,
+                [origin.y; LANES],
+                [origin.z; LANES],
+                [origin.w; LANES],
+            ),
         );
     }
 }
 
-#[allow(clippy::too_many_arguments)] // same coordinate shape as the JIT ABI
-fn run_collapse(
-    res: &CompileResult,
-    ctx: &[*const f32],
-    out: &mut [f32],
-    x0: f32,
-    y: f32,
-    z: f32,
-    w: f32,
-) {
+fn run_collapse(res: &CompileResult, ctx: &[*const f32], out: &mut [f32], origin: Point4<f32>) {
     assert_eq!(out.len() % LANES, 0);
     let groups = out.len() / LANES;
-    run_collapse_grid(res, ctx, out, groups, 1, 0, x0, y, z, w);
+    run_collapse_grid(
+        res,
+        ctx,
+        TileSlice::contiguous(out.as_mut_ptr(), groups, 1),
+        origin,
+    );
 }
 
-/// The per-batch oracle: evaluate the same arena batch by batch through the
-/// per-batch entry (`CtxKernelFn` shape — a buffer-free kernel never reads
-/// the context, so passing it unconditionally is sound) over the same row.
-#[allow(clippy::too_many_arguments)] // same ABI shape as run_collapse
-fn run_per_batch(
-    res: &CompileResult,
-    ctx: &[*const f32],
-    out: &mut [f32],
-    x0: f32,
-    y: f32,
-    z: f32,
-    w: f32,
-) {
-    assert_eq!(out.len() % LANES, 0);
-    for (g, chunk) in out.as_chunks_mut::<LANES>().0.iter_mut().enumerate() {
-        let base = x0 + (g * LANES) as f32;
-        let seq: Vec<f32> = (0..LANES).map(|i| base + i as f32).collect();
-
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-        unsafe {
-            use core::arch::x86_64::*;
-            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
-            let r = f(
-                ctx.as_ptr(),
-                _mm512_loadu_ps(seq.as_ptr()),
-                _mm512_set1_ps(y),
-                _mm512_set1_ps(z),
-                _mm512_set1_ps(w),
-            );
-            _mm512_storeu_ps(chunk.as_mut_ptr(), r);
-        }
-        #[cfg(all(
-            target_arch = "x86_64",
-            target_feature = "avx2",
-            not(target_feature = "avx512f")
-        ))]
-        unsafe {
-            use core::arch::x86_64::*;
-            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
-            let r = f(
-                ctx.as_ptr(),
-                _mm256_loadu_ps(seq.as_ptr()),
-                _mm256_set1_ps(y),
-                _mm256_set1_ps(z),
-                _mm256_set1_ps(w),
-            );
-            _mm256_storeu_ps(chunk.as_mut_ptr(), r);
-        }
-        #[cfg(all(
-            target_arch = "x86_64",
-            not(target_feature = "avx512f"),
-            not(target_feature = "avx2")
-        ))]
-        unsafe {
-            use core::arch::x86_64::*;
-            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
-            let r = f(
-                ctx.as_ptr(),
-                _mm_loadu_ps(seq.as_ptr()),
-                _mm_set1_ps(y),
-                _mm_set1_ps(z),
-                _mm_set1_ps(w),
-            );
-            _mm_storeu_ps(chunk.as_mut_ptr(), r);
-        }
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            use core::arch::aarch64::*;
-            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
-            let r = f(
-                ctx.as_ptr(),
-                vld1q_f32(seq.as_ptr()),
-                vdupq_n_f32(y),
-                vdupq_n_f32(z),
-                vdupq_n_f32(w),
-            );
-            vst1q_f32(chunk.as_mut_ptr(), r);
-        }
-    }
-}
-
-/// Compile both entries from the same arena and require bit-identical output
-/// over several rows; returns the collapse result for extra assertions.
-fn assert_collapse_matches_per_batch(
+/// Compile the collapse kernel and require it to agree, bit for bit, with the
+/// IR interpreter over several rows; returns the result for extra assertions.
+///
+/// The oracle used to be a second *compiled* kernel (the per-batch entry), but
+/// both framings wrap the same `emit_dag_body` output, so that comparison was
+/// blind to any bug in the shared body — it could only ever see the scaffold.
+/// `eval_scalar` is an independent implementation, so it sees both.
+fn assert_collapse_matches_interpreter(
     arena: &ExprArena,
     root: ExprId,
-    ctx: &[*const f32],
+    bufs: &[&[f32]],
     groups: usize,
     label: &str,
 ) -> CompileResult {
-    let collapse = compile_collapse(arena, root)
-        .unwrap_or_else(|e| panic!("{label}: collapse compile failed: {e}"));
-    let batch = compile_arena_dag(arena, root)
-        .unwrap_or_else(|e| panic!("{label}: per-batch compile failed: {e}"));
+    let collapse =
+        compile(arena, root).unwrap_or_else(|e| panic!("{label}: collapse compile failed: {e}"));
+
+    let ctx: Vec<*const f32> = bufs.iter().map(|b| b.as_ptr()).collect();
+    let bindings = if bufs.is_empty() {
+        BindingTable::empty()
+    } else {
+        BindingTable::bind(arena, bufs).expect("bind test buffers")
+    };
 
     for &(x0, y, z, w) in &[
         (0.5f32, 0.5f32, 0.0f32, 0.0f32),
@@ -230,13 +88,13 @@ fn assert_collapse_matches_per_batch(
         (100.0, -2.0, 1.0, -1.0),
     ] {
         let mut got = vec![0.0f32; groups * LANES];
-        let mut want = vec![0.0f32; groups * LANES];
-        run_collapse(&collapse, ctx, &mut got, x0, y, z, w);
-        run_per_batch(&batch, ctx, &mut want, x0, y, z, w);
-        for (i, (g, e)) in got.iter().zip(want.iter()).enumerate() {
+        run_collapse(&collapse, &ctx, &mut got, Point4::new(x0, y, z, w));
+        for (i, &g) in got.iter().enumerate() {
+            let xi = x0 + i as f32;
+            let want = eval_scalar(arena, root, &[xi, y, z, w], &bindings);
             assert!(
-                g == e || (g.is_nan() && e.is_nan()),
-                "{label}: collapse[{i}] = {g} != per-batch {e} (row x0={x0}, y={y})"
+                (want.is_nan() && g.is_nan()) || g == want,
+                "{label}: collapse {g} != interp {want} at lane {i} of ({x0}, {y}, {z}, {w})"
             );
         }
     }
@@ -244,7 +102,7 @@ fn assert_collapse_matches_per_batch(
 }
 
 #[test]
-fn arithmetic_row_matches_per_batch_and_interpreter() {
+fn arithmetic_row_matches_the_interpreter() {
     // x*y + (x - 1.5): induction X must advance exactly like the per-batch
     // loop's, and Y must survive every iteration in its slot.
     let mut a = ExprArena::new();
@@ -255,11 +113,11 @@ fn arithmetic_row_matches_per_batch_and_interpreter() {
     let xc = a.push_binary(OpKind::Sub, x, c);
     let root = a.push_binary(OpKind::Add, xy, xc);
 
-    let res = assert_collapse_matches_per_batch(&a, root, &[], 5, "arith");
+    let res = assert_collapse_matches_interpreter(&a, root, &[], 5, "arith");
 
     // And anchor to the reference semantics.
     let mut out = vec![0.0f32; 5 * LANES];
-    run_collapse(&res, &[], &mut out, 2.0, 3.0, 0.0, 0.0);
+    run_collapse(&res, &[], &mut out, Point4::new(2.0, 3.0, 0.0, 0.0));
     for (i, &got) in out.iter().enumerate() {
         let xi = 2.0 + i as f32;
         let want = eval_scalar(&a, root, &[xi, 3.0, 0.0, 0.0], &BindingTable::empty());
@@ -286,7 +144,7 @@ fn two_dimensional_collapse_advances_y_preserves_stride_and_hoists_both_scopes()
     let fx = a.push_binary(OpKind::Mul, frame_value, x);
     let root = a.push_binary(OpKind::Add, fx, row_value);
 
-    let compiled = compile_collapse(&a, root).expect("2D collapse compile");
+    let compiled = compile(&a, root).expect("2D collapse compile");
     assert!(
         compiled.hoisted_values >= 2,
         "frame and row roots must both hoist, got {}",
@@ -302,14 +160,13 @@ fn two_dimensional_collapse_advances_y_preserves_stride_and_hoists_both_scopes()
     run_collapse_grid(
         &compiled,
         &[],
-        &mut out,
-        GROUPS,
-        ROWS,
-        TAIL * core::mem::size_of::<f32>(),
-        x0,
-        y0,
-        z0,
-        w0,
+        TileSlice::new(
+            out.as_mut_ptr(),
+            GROUPS,
+            ROWS,
+            TAIL * core::mem::size_of::<f32>(),
+        ),
+        Point4::new(x0, y0, z0, w0),
     );
 
     for row in 0..ROWS {
@@ -346,7 +203,7 @@ fn select_short_circuit_branches_inside_loop() {
     let x2 = a.push_binary(OpKind::Mul, x, two);
     let root = a.push_ternary(OpKind::Select, cond, x2, y);
 
-    assert_collapse_matches_per_batch(&a, root, &[], 6, "select");
+    assert_collapse_matches_interpreter(&a, root, &[], 6, "select");
 }
 
 #[test]
@@ -363,7 +220,7 @@ fn transcendentals_rematerialize_per_iteration() {
     let ey = a.push_unary(OpKind::Exp, y);
     let root = a.push_binary(OpKind::Add, sin, ey);
 
-    assert_collapse_matches_per_batch(&a, root, &[], 4, "transcendental");
+    assert_collapse_matches_interpreter(&a, root, &[], 4, "transcendental");
 }
 
 #[test]
@@ -387,12 +244,12 @@ fn gather_reads_ctx_every_iteration() {
     let root = a.push_binary(OpKind::Add, g, xf);
 
     let ctx = [buf.as_ptr()];
-    let res = assert_collapse_matches_per_batch(&a, root, &ctx, 4, "gather");
+    let res = assert_collapse_matches_interpreter(&a, root, &[buf.as_slice()], 4, "gather");
 
     // Interpreter anchor over one row.
     let bindings = BindingTable::bind(&a, &[buf.as_slice()]).unwrap();
     let mut out = vec![0.0f32; 4 * LANES];
-    run_collapse(&res, &ctx, &mut out, 0.0, 1.0, 0.0, 0.0);
+    run_collapse(&res, &ctx, &mut out, Point4::new(0.0, 1.0, 0.0, 0.0));
     for (i, &got) in out.iter().enumerate() {
         let want = eval_scalar(&a, root, &[i as f32, 1.0, 0.0, 0.0], &bindings);
         assert_eq!(got, want, "gather vs interp at lane {i}");
@@ -427,10 +284,10 @@ fn matmul_reduce_one_call_fills_output() {
     let root = a.push_reduce(OpKind::Add, 4, in_dim as u32, prod);
 
     let ctx = [w.as_ptr(), input.as_ptr()];
-    let res = compile_collapse(&a, root).expect("matmul collapse compile");
+    let res = compile(&a, root).expect("matmul collapse compile");
 
     let mut out = vec![0.0f32; out_dim];
-    run_collapse(&res, &ctx, &mut out, 0.0, 0.0, 0.0, 0.0);
+    run_collapse(&res, &ctx, &mut out, Point4::new(0.0, 0.0, 0.0, 0.0));
 
     let bindings = BindingTable::bind(&a, &[w.as_slice(), input.as_slice()]).unwrap();
     for (j, &got) in out.iter().enumerate() {
@@ -440,7 +297,7 @@ fn matmul_reduce_one_call_fills_output() {
 }
 
 #[test]
-fn hoisted_row_constants_match_per_batch() {
+fn hoisted_row_constants_match_the_interpreter() {
     // sqrt(y*y + 2) * x + y/3: the sqrt chain and the division are X-invariant
     // and consumed by X-dependent ops, so LICM parks them in hoist slots and
     // the loop reloads them. Hoisting reorders nothing within a value's own
@@ -458,7 +315,7 @@ fn hoisted_row_constants_match_per_batch() {
     let sx = a.push_binary(OpKind::Mul, s, x);
     let root = a.push_binary(OpKind::Add, sx, yd);
 
-    let res = assert_collapse_matches_per_batch(&a, root, &[], 5, "hoist");
+    let res = assert_collapse_matches_interpreter(&a, root, &[], 5, "hoist");
     assert!(
         res.hoisted_values >= 2,
         "sqrt chain and division must hoist, got {}",
@@ -478,7 +335,7 @@ fn fully_invariant_kernel_degenerates_to_a_store_loop() {
     let yzw = a.push_binary(OpKind::Add, y, zw);
     let root = a.push_unary(OpKind::Sqrt, yzw);
 
-    let res = assert_collapse_matches_per_batch(&a, root, &[], 4, "invariant-root");
+    let res = assert_collapse_matches_interpreter(&a, root, &[], 4, "invariant-root");
     assert!(res.hoisted_values >= 1);
 }
 
@@ -512,7 +369,7 @@ fn hoisted_guarded_select_still_fills_its_slot() {
     let prod = a.push_binary(OpKind::Mul, ysel, x);
     let root = a.push_binary(OpKind::Add, prod, xsel);
 
-    let res = assert_collapse_matches_per_batch(&a, root, &[], 6, "hoisted-select");
+    let res = assert_collapse_matches_interpreter(&a, root, &[], 6, "hoisted-select");
     assert!(
         res.hoisted_values >= 1,
         "the invariant select must hoist, got {}",
@@ -559,7 +416,7 @@ fn deep_invariant_chain_spills_in_the_prologue() {
     }
     let root = sums[0];
 
-    let res = assert_collapse_matches_per_batch(&a, root, &[], 3, "deep-hoist");
+    let res = assert_collapse_matches_interpreter(&a, root, &[], 3, "deep-hoist");
     assert!(
         res.hoisted_values >= 10,
         "all ten sqrt chains must hoist, got {}",
@@ -601,7 +458,7 @@ fn spill_frame_coexists_with_coordinate_slots() {
     }
     let root = products[0];
 
-    let res = assert_collapse_matches_per_batch(&a, root, &[], 3, "spill");
+    let res = assert_collapse_matches_interpreter(&a, root, &[], 3, "spill");
     assert!(
         res.spill_count > 0,
         "pressure kernel did not spill (budget grew?) — the scenario proves nothing"
