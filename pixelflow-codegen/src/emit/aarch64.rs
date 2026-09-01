@@ -37,88 +37,140 @@ pub fn emit32(code: &mut Vec<u8>, inst: u32) {
 // Load / Store
 // =============================================================================
 
-/// LDR Vd, [X0, #offset] - Load 128-bit vector from base + offset
-pub fn emit_ldr_voff(code: &mut Vec<u8>, dst: Reg, offset: u16) {
-    // LDR Qt, [Xn, #imm] - 128-bit load
-    // Encoding: 0x3DC00000 | (imm12 << 10) | (Rn << 5) | Rt
-    // imm12 is offset/16 for 128-bit loads
-    let imm12 = (offset / 16) as u32;
-    let inst = (0x3DC00000 | (imm12 << 10)) | (dst.0 as u32); // X0 as base
-    emit32(code, inst);
-}
-
-/// STR Vt, [X0, #offset] - Store 128-bit vector to base + offset
-pub fn emit_str_voff(code: &mut Vec<u8>, src: Reg, offset: u16) {
-    let imm12 = (offset / 16) as u32;
-    let inst = (0x3D800000 | (imm12 << 10)) | (src.0 as u32);
-    emit32(code, inst);
-}
-
-/// LDR Vd, [SP, #offset] - Load 128-bit vector from stack.
+/// An address spelled `[base, #offset]` — the scaled-immediate addressing mode.
 ///
-/// Small offsets (< 65536, 16-byte aligned) use single-instruction scaled
-/// immediate addressing. Large offsets use X16 (IP0) as scratch to compute
-/// the address, then load from [X16].
-pub fn emit_ldr_sp(code: &mut Vec<u8>, dst: Reg, offset: u32) {
-    assert!(
-        offset.is_multiple_of(16),
-        "emit_ldr_sp: offset {offset} not 16-byte aligned"
-    );
-    let imm12 = offset / 16;
-    if imm12 <= 4095 {
-        // LDR Qt, [SP, #imm12*16]
-        let inst = 0x3DC00000 | (imm12 << 10) | (31 << 5) | (dst.0 as u32);
-        emit32(code, inst);
-    } else {
-        // ADD X16, SP, #offset  (may need multiple instructions)
-        emit_add_x16_sp(code, offset);
-        // LDR Qt, [X16]
-        let inst = 0x3DC00000 | (16 << 5) | (dst.0 as u32);
-        emit32(code, inst);
-    }
+/// `offset` is in BYTES. aarch64 encodes it divided by the *access size*, so
+/// that divisor belongs to the instruction ([`emit_ldr_q`] moves 16 bytes,
+/// [`emit_ldr_x`] moves 8) rather than to the address: one `Mem` names a
+/// different immediate field in each, and an offset that is not a multiple of
+/// the access size is not encodable at all.
+///
+/// The base being an [`Xr`] is the point. `sp`, `x17` and `x0` are values here;
+/// they used to be the `_sp`, `_x17` and `_voff` suffixes of three separate
+/// functions that encoded the same instruction.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Mem {
+    /// The register the displacement is measured from.
+    pub base: Xr,
+    /// Displacement in bytes; must be a multiple of the access size.
+    pub offset: u32,
 }
 
-/// STR Vt, [SP, #offset] - Store 128-bit vector to stack.
+/// An address spelled `[base, w<index>, uxtw #n]` — a 32-bit index register,
+/// zero-extended to 64 bits and scaled by the access size.
 ///
-/// Small offsets use scaled immediate. Large offsets use X16 scratch.
-pub fn emit_str_sp(code: &mut Vec<u8>, src: Reg, offset: u32) {
-    assert!(
-        offset.is_multiple_of(16),
-        "emit_str_sp: offset {offset} not 16-byte aligned"
-    );
-    let imm12 = offset / 16;
-    if imm12 <= 4095 {
-        // STR Qt, [SP, #imm12*16]
-        let inst = 0x3D800000 | (imm12 << 10) | (31 << 5) | (src.0 as u32);
-        emit32(code, inst);
-    } else {
-        emit_add_x16_sp(code, offset);
-        // STR Qt, [X16]
-        let inst = 0x3D800000 | (16 << 5) | (src.0 as u32);
-        emit32(code, inst);
-    }
+/// A different addressing *mode* from [`Mem`], not a different kind of offset,
+/// so it is a different type. Only the instruction that encodes it accepts one,
+/// which is what spares every other encoder from rejecting at runtime an
+/// address it cannot spell.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct MemIndexed {
+    /// The register holding the buffer base.
+    pub base: Xr,
+    /// The element index, read as the 32-bit `w<index>`.
+    pub index: Xr,
 }
 
-/// ADD X16, SP, #offset - Compute stack address in scratch register.
+/// Bytes moved by a `q` (128-bit vector) access — also the scale of its offset.
+const Q_BYTES: u32 = 16;
+/// Bytes moved by an `x` (64-bit general) access.
+const X_BYTES: u32 = 8;
+/// The largest value a 12-bit scaled immediate holds.
+const MAX_IMM12: u32 = 4095;
+/// The largest 16-byte-aligned displacement `add`'s own 12-bit immediate holds.
+const MAX_ADD_IMM: u32 = 4080;
+
+/// Rewrite `addr` as `[x16]`, computing `base + offset` into IP0 first.
 ///
-/// ARM64 ADD immediate is 12-bit (max 4095). For larger offsets, emit
-/// multiple ADD instructions.
-fn emit_add_x16_sp(code: &mut Vec<u8>, offset: u32) {
-    // First: MOV X16, SP  (ADD X16, SP, #0 — but we'll fold the first chunk)
+/// The fallback for a displacement past the 12-bit scaled immediate — a spill
+/// frame deeper than 64 KiB. `add`'s immediate is 12 bits too, so a large
+/// displacement takes several of them.
+fn address_in_ip0(code: &mut Vec<u8>, Mem { base, offset }: Mem) -> Mem {
     let mut remaining = offset;
-    let first_chunk = remaining.min(4080);
-    // ADD X16, SP, #first_chunk
-    let inst = 0x91000000 | (first_chunk << 10) | (31 << 5) | 16;
-    emit32(code, inst);
-    remaining -= first_chunk;
+    let first = remaining.min(MAX_ADD_IMM);
+    add(code, xr::X16, base, Imm12(first as u16));
+    remaining -= first;
     while remaining > 0 {
-        let chunk = remaining.min(4080);
-        // ADD X16, X16, #chunk
-        let inst = 0x91000000 | (chunk << 10) | (16 << 5) | 16;
-        emit32(code, inst);
+        let chunk = remaining.min(MAX_ADD_IMM);
+        add(code, xr::X16, xr::X16, Imm12(chunk as u16));
         remaining -= chunk;
     }
+    Mem {
+        base: xr::X16,
+        offset: 0,
+    }
 }
+
+/// The 128-bit vector transfers, which are one encoding —
+/// `opcode | (imm12 << 10) | (Rn << 5) | Rt` — differing only in `opcode`.
+fn ldst_q(code: &mut Vec<u8>, opcode: u32, vec: Reg, addr: Mem) {
+    assert!(
+        addr.offset.is_multiple_of(Q_BYTES),
+        "128-bit access offset {} is not 16-byte aligned",
+        addr.offset
+    );
+    let addr = if addr.offset / Q_BYTES > MAX_IMM12 {
+        address_in_ip0(code, addr)
+    } else {
+        addr
+    };
+    emit32(
+        code,
+        opcode | ((addr.offset / Q_BYTES) << 10) | ((addr.base.0 as u32) << 5) | (vec.0 as u32),
+    );
+}
+
+/// `ldr q<dst>, [addr]` — load a 128-bit vector.
+pub fn emit_ldr_q(code: &mut Vec<u8>, dst: Reg, addr: Mem) {
+    ldst_q(code, 0x3DC0_0000, dst, addr);
+}
+
+/// `str q<src>, [addr]` — store a 128-bit vector.
+pub fn emit_str_q(code: &mut Vec<u8>, src: Reg, addr: Mem) {
+    ldst_q(code, 0x3D80_0000, src, addr);
+}
+
+/// `ldr x<dst>, [addr]` — load a 64-bit pointer into a *general* register,
+/// e.g. a buffer base out of the context array.
+///
+/// A different instruction on a different register file from [`emit_ldr_q`],
+/// and the signature says so: the destination is an [`Xr`], not a [`Reg`], and
+/// the offset scales by 8 rather than 16. No IP0 fallback — every caller
+/// indexes the small context array, so an offset past the immediate is a bug
+/// and not a deep frame.
+pub fn emit_ldr_x(code: &mut Vec<u8>, dst: Xr, addr: Mem) {
+    assert!(
+        addr.offset.is_multiple_of(X_BYTES),
+        "pointer load offset {} not 8-byte aligned",
+        addr.offset
+    );
+    let imm12 = addr.offset / X_BYTES;
+    assert!(
+        imm12 <= MAX_IMM12,
+        "pointer load offset {} exceeds LDR imm12 range",
+        addr.offset
+    );
+    emit32(
+        code,
+        0xF940_0000 | (imm12 << 10) | ((addr.base.0 as u32) << 5) | (dst.0 as u32),
+    );
+}
+
+/// `ldr w<dst>, [base, w<index>, uxtw #2]` — load one 32-bit element at
+/// `base + index * 4` into the 32-bit view of a general register.
+///
+/// Takes a [`MemIndexed`] because that is the mode it encodes; `#2` is the
+/// shift a 4-byte access implies, which is why the scale is not an operand.
+pub fn emit_ldr_w(code: &mut Vec<u8>, dst: Xr, addr: MemIndexed) {
+    emit32(
+        code,
+        0xB860_5800 | ((addr.index.0 as u32) << 16) | ((addr.base.0 as u32) << 5) | (dst.0 as u32),
+    );
+}
+
+// =============================================================================
+// Stack frame
+// =============================================================================
 
 /// SUB SP, SP, #imm - Allocate stack frame.
 ///
@@ -285,7 +337,7 @@ pub fn emit_bsl(code: &mut Vec<u8>, mask: Reg, if_true: Reg, if_false: Reg) {
 /// 3. General: MOVZ W16 + MOVK W16 + DUP Vd.4S, W16 (3 instructions)
 ///
 /// TODO: Use a constant pool with LDR for better performance on general case.
-pub fn emit_fmov_imm(code: &mut Vec<u8>, dst: Reg, val: f32, _scratch: [Reg; 4]) {
+pub fn emit_fmov_imm(code: &mut Vec<u8>, dst: Reg, val: f32) {
     let bits = val.to_bits();
 
     if bits == 0 {
@@ -443,24 +495,6 @@ pub fn patch_adr_or_adrp(code: &mut [u8], adr_pos: usize, target_pos: usize, is_
     }
 }
 
-/// Emit `LDR Qt, [X17, #imm]` — 128-bit load from constant pool base + offset.
-///
-/// Encoding: `0x3DC00000 | (imm12 << 10) | (Rn << 5) | Rt`
-/// where imm12 = byte_offset / 16, Rn = 17 (X17).
-pub fn emit_ldr_q_x17(code: &mut Vec<u8>, dst: Reg, byte_offset: u16) {
-    assert!(
-        byte_offset.is_multiple_of(16),
-        "constant pool offset {} not 16-byte aligned",
-        byte_offset
-    );
-    let imm12 = (byte_offset / 16) as u32;
-    assert!(imm12 < 4096, "constant pool offset too large");
-    emit32(
-        code,
-        0x3DC00000 | (imm12 << 10) | (17 << 5) | (dst.0 as u32),
-    );
-}
-
 /// Emit a constant pool entry: 16 bytes = f32 value splatted 4x (fills a 128-bit NEON register).
 pub fn emit_pool_entry(code: &mut Vec<u8>, val_bits: u32) {
     let bytes = val_bits.to_le_bytes();
@@ -474,59 +508,33 @@ pub fn emit_pool_entry(code: &mut Vec<u8>, val_bits: u32) {
 // =============================================================================
 
 /// UMOV Wd, Vn.S[lane] — extract a 32-bit vector lane into a GP register.
-pub fn emit_umov_w(code: &mut Vec<u8>, gpr_dst: u8, src: Reg, lane: u8) {
+pub fn emit_umov_w(code: &mut Vec<u8>, dst: Xr, src: Reg, lane: u8) {
     debug_assert!(lane < 4);
     let imm5 = ((lane as u32) << 3) | 0b100; // S-lane element size
     emit32(
         code,
-        0x0E003C00 | (imm5 << 16) | ((src.0 as u32) << 5) | (gpr_dst as u32),
+        0x0E003C00 | (imm5 << 16) | ((src.0 as u32) << 5) | (dst.0 as u32),
     );
 }
 
 /// INS Vd.S[lane], Wn — insert a GP register into a 32-bit vector lane.
-pub fn emit_ins_w(code: &mut Vec<u8>, dst: Reg, lane: u8, gpr_src: u8) {
+pub fn emit_ins_w(code: &mut Vec<u8>, dst: Reg, lane: u8, src: Xr) {
     debug_assert!(lane < 4);
     let imm5 = ((lane as u32) << 3) | 0b100;
     emit32(
         code,
-        0x4E001C00 | (imm5 << 16) | ((gpr_src as u32) << 5) | (dst.0 as u32),
-    );
-}
-
-/// LDR Xt, [Xn, #offset] — load a 64-bit pointer (e.g. a buffer base from the
-/// context array). `offset` must be a multiple of 8 and < 32768.
-pub fn emit_ldr_x_imm(code: &mut Vec<u8>, gpr_dst: u8, gpr_base: u8, offset: u32) {
-    assert!(
-        offset.is_multiple_of(8),
-        "pointer load offset {offset} not 8-byte aligned"
-    );
-    let imm12 = offset / 8;
-    assert!(
-        imm12 < 4096,
-        "pointer load offset {offset} exceeds LDR imm12 range"
-    );
-    emit32(
-        code,
-        0xF9400000 | (imm12 << 10) | ((gpr_base as u32) << 5) | (gpr_dst as u32),
-    );
-}
-
-/// LDR Wt, [Xn, Wm, UXTW #2] — 32-bit element load at `base + index * 4`.
-pub fn emit_ldr_w_uxtw2(code: &mut Vec<u8>, gpr_dst: u8, gpr_base: u8, gpr_index: u8) {
-    emit32(
-        code,
-        0xB8605800 | ((gpr_index as u32) << 16) | ((gpr_base as u32) << 5) | (gpr_dst as u32),
+        0x4E001C00 | (imm5 << 16) | ((src.0 as u32) << 5) | (dst.0 as u32),
     );
 }
 
 /// GP registers used by the scalar-load gather sequence.
 pub struct GatherGprs {
     /// Holds the buffer base pointer (survives the whole sequence).
-    pub base: u8,
+    pub base: Xr,
     /// Scratch: one extracted lane index at a time. Clobbered.
-    pub idx: u8,
+    pub idx: Xr,
     /// Scratch: one loaded value at a time. Clobbered.
-    pub val: u8,
+    pub val: Xr,
 }
 
 /// dst.4S = base[idx_int.S[lane]] for each lane — the NEON gather: four scalar
@@ -536,7 +544,14 @@ pub struct GatherGprs {
 pub fn emit_gather(code: &mut Vec<u8>, dst: Reg, idx_int: Reg, gprs: GatherGprs) {
     for lane in 0..4 {
         emit_umov_w(code, gprs.idx, idx_int, lane);
-        emit_ldr_w_uxtw2(code, gprs.val, gprs.base, gprs.idx);
+        emit_ldr_w(
+            code,
+            gprs.val,
+            MemIndexed {
+                base: gprs.base,
+                index: gprs.idx,
+            },
+        );
         emit_ins_w(code, dst, lane, gprs.val);
     }
 }
@@ -640,13 +655,13 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 /// Emit unary operation - dispatches to appropriate instruction(s)
-pub(crate) fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: Reg) {
     match op {
         OpKind::Neg => emit_fneg(code, dst, src),
         OpKind::Abs => emit_fabs(code, dst, src),
         OpKind::Sqrt => emit_fsqrt(code, dst, src),
-        OpKind::Rsqrt => emit_frsqrt(code, dst, src, scratch[0]),
-        OpKind::Recip => emit_frecip(code, dst, src, scratch[0]),
+        OpKind::Rsqrt => emit_frsqrt(code, dst, src, scratch),
+        OpKind::Recip => emit_frecip(code, dst, src, scratch),
         OpKind::Floor => emit_frintm(code, dst, src),
         OpKind::Ceil => emit_frintp(code, dst, src),
         OpKind::Round => emit_round_builtin(code, dst, src),
@@ -1278,10 +1293,9 @@ mod tests {
     fn emit_fmov_imm_uses_single_instruction_for_encodable() {
         let mut code = Vec::new();
         let dst = Reg(0);
-        let scratch = [Reg(16), Reg(17), Reg(18), Reg(19)];
 
         // 1.0 is FMOV-encodable → should emit exactly 1 instruction (4 bytes)
-        emit_fmov_imm(&mut code, dst, 1.0, scratch);
+        emit_fmov_imm(&mut code, dst, 1.0);
         assert_eq!(
             code.len(),
             4,
@@ -1297,19 +1311,14 @@ mod tests {
     #[test]
     fn emit_fmov_imm_zero_is_movi() {
         let mut code = Vec::new();
-        emit_fmov_imm(&mut code, Reg(0), 0.0, [Reg(16), Reg(17), Reg(18), Reg(19)]);
+        emit_fmov_imm(&mut code, Reg(0), 0.0);
         assert_eq!(code.len(), 4, "zero should emit 1 instruction (MOVI)");
     }
 
     #[test]
     fn emit_fmov_imm_fallback_for_non_encodable() {
         let mut code = Vec::new();
-        emit_fmov_imm(
-            &mut code,
-            Reg(0),
-            core::f32::consts::PI,
-            [Reg(16), Reg(17), Reg(18), Reg(19)],
-        );
+        emit_fmov_imm(&mut code, Reg(0), core::f32::consts::PI);
         assert_eq!(
             code.len(),
             12,
@@ -1396,7 +1405,7 @@ mod tests {
     #[test]
     fn disassemble_zero_const() {
         let mut code = Vec::new();
-        emit_fmov_imm(&mut code, Reg(0), 0.0, [Reg(28), Reg(29), Reg(30), Reg(31)]);
+        emit_fmov_imm(&mut code, Reg(0), 0.0);
         let dis = disassemble_code(&code);
         assert!(
             dis.contains("movi"),
@@ -1407,8 +1416,22 @@ mod tests {
     #[test]
     fn disassemble_ldr_str() {
         let mut code = Vec::new();
-        emit_ldr_voff(&mut code, Reg(0), 32);
-        emit_str_voff(&mut code, Reg(1), 48);
+        emit_ldr_q(
+            &mut code,
+            Reg(0),
+            Mem {
+                base: xr::X0,
+                offset: 32,
+            },
+        );
+        emit_str_q(
+            &mut code,
+            Reg(1),
+            Mem {
+                base: xr::X0,
+                offset: 48,
+            },
+        );
         let dis = disassemble_code(&code);
         assert!(dis.contains("ldr"), "missing ldr in: {dis}");
         assert!(dis.contains("str"), "missing str in: {dis}");
@@ -1471,21 +1494,51 @@ mod tests {
         // fcvtzs v28.4s, v5.4s
         assert_eq!(one(|c| emit_fcvtzs(c, Reg(28), Reg(5))), 0x4EA1B8BC);
         // ldr x9, [x0, #8]
-        assert_eq!(one(|c| emit_ldr_x_imm(c, 9, 0, 8)), 0xF9400409);
+        assert_eq!(
+            one(|c| emit_ldr_x(
+                c,
+                Xr(9),
+                Mem {
+                    base: xr::X0,
+                    offset: 8
+                }
+            )),
+            0xF9400409
+        );
         // ldr x9, [x0]
-        assert_eq!(one(|c| emit_ldr_x_imm(c, 9, 0, 0)), 0xF9400009);
+        assert_eq!(
+            one(|c| emit_ldr_x(
+                c,
+                Xr(9),
+                Mem {
+                    base: xr::X0,
+                    offset: 0
+                }
+            )),
+            0xF9400009
+        );
         // umov w10, v28.s[0..3]
-        assert_eq!(one(|c| emit_umov_w(c, 10, Reg(28), 0)), 0x0E043F8A);
-        assert_eq!(one(|c| emit_umov_w(c, 10, Reg(28), 1)), 0x0E0C3F8A);
-        assert_eq!(one(|c| emit_umov_w(c, 10, Reg(28), 2)), 0x0E143F8A);
-        assert_eq!(one(|c| emit_umov_w(c, 10, Reg(28), 3)), 0x0E1C3F8A);
+        assert_eq!(one(|c| emit_umov_w(c, Xr(10), Reg(28), 0)), 0x0E043F8A);
+        assert_eq!(one(|c| emit_umov_w(c, Xr(10), Reg(28), 1)), 0x0E0C3F8A);
+        assert_eq!(one(|c| emit_umov_w(c, Xr(10), Reg(28), 2)), 0x0E143F8A);
+        assert_eq!(one(|c| emit_umov_w(c, Xr(10), Reg(28), 3)), 0x0E1C3F8A);
         // ldr w11, [x9, w10, uxtw #2]
-        assert_eq!(one(|c| emit_ldr_w_uxtw2(c, 11, 9, 10)), 0xB86A592B);
+        assert_eq!(
+            one(|c| emit_ldr_w(
+                c,
+                Xr(11),
+                MemIndexed {
+                    base: Xr(9),
+                    index: Xr(10)
+                }
+            )),
+            0xB86A592B
+        );
         // ins v6.s[0..3], w11
-        assert_eq!(one(|c| emit_ins_w(c, Reg(6), 0, 11)), 0x4E041D66);
-        assert_eq!(one(|c| emit_ins_w(c, Reg(6), 1, 11)), 0x4E0C1D66);
-        assert_eq!(one(|c| emit_ins_w(c, Reg(6), 2, 11)), 0x4E141D66);
-        assert_eq!(one(|c| emit_ins_w(c, Reg(6), 3, 11)), 0x4E1C1D66);
+        assert_eq!(one(|c| emit_ins_w(c, Reg(6), 0, Xr(11))), 0x4E041D66);
+        assert_eq!(one(|c| emit_ins_w(c, Reg(6), 1, Xr(11))), 0x4E0C1D66);
+        assert_eq!(one(|c| emit_ins_w(c, Reg(6), 2, Xr(11))), 0x4E141D66);
+        assert_eq!(one(|c| emit_ins_w(c, Reg(6), 3, Xr(11))), 0x4E1C1D66);
     }
 
     #[test]
@@ -1496,13 +1549,71 @@ mod tests {
             Reg(6),
             Reg(28),
             GatherGprs {
-                base: 9,
-                idx: 10,
-                val: 11,
+                base: Xr(9),
+                idx: Xr(10),
+                val: Xr(11),
             },
         );
         // 4 lanes x (umov + ldr + ins) = 12 instructions.
         assert_eq!(code.len(), 12 * 4);
+    }
+
+    /// The base register and the addressing mode are operands, so one `ldr q`
+    /// covers what used to be `_voff`, `_sp` and `_x17`: the same word, with
+    /// `Rn` coming from the [`Mem`] instead of from the function's name.
+    #[test]
+    fn the_base_register_is_an_operand_not_a_suffix() {
+        fn one(f: impl FnOnce(&mut Vec<u8>)) -> u32 {
+            let mut code = Vec::new();
+            f(&mut code);
+            assert_eq!(code.len(), 4, "aarch64 instructions are fixed-width");
+            u32::from_le_bytes(code[..4].try_into().unwrap())
+        }
+        // ldr q0, [x0, #32] / [sp, #32] / [x17, #32] — one encoder, three bases.
+        for base in [xr::X0, xr::SP, xr::X17] {
+            let word = one(|c| emit_ldr_q(c, Reg(0), Mem { base, offset: 32 }));
+            assert_eq!(word & !(0x1F << 5), 0x3DC0_0800, "same instruction");
+            assert_eq!((word >> 5) & 0x1F, u32::from(base.0), "Rn is the base");
+        }
+        // str q1, [sp, #48]
+        assert_eq!(
+            one(|c| emit_str_q(
+                c,
+                Reg(1),
+                Mem {
+                    base: xr::SP,
+                    offset: 48
+                }
+            )),
+            0x3D80_0FE1
+        );
+    }
+
+    /// An offset past the 12-bit scaled immediate is computed into IP0 first,
+    /// in `add`-immediate-sized steps, and the transfer then reads `[x16]`.
+    #[test]
+    fn a_deep_frame_addresses_through_ip0() {
+        let mut code = Vec::new();
+        // 65536 = 16 * 4096, one slot past the largest encodable displacement.
+        emit_ldr_q(
+            &mut code,
+            Reg(3),
+            Mem {
+                base: xr::SP,
+                offset: 65536,
+            },
+        );
+        let words: Vec<u32> = code
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
+            .collect();
+        // 65536 = 16 * 4080 + 256, so sixteen full adds plus the remainder.
+        assert_eq!(words.len(), 17 + 1, "adds then the load");
+        assert_eq!(words[0], 0x9100_0000 | (4080 << 10) | (31 << 5) | 16);
+        assert_eq!(words[1], 0x9100_0000 | (4080 << 10) | (16 << 5) | 16);
+        assert_eq!(*words.last().unwrap(), 0x3DC0_0000 | (16 << 5) | 3);
     }
 }
 
@@ -1532,8 +1643,8 @@ mod tests {
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 pub(crate) mod driver {
     use super::super::*;
-    use super::Xr;
     use super::xr::*;
+    use super::{Mem, Xr};
     use alloc::vec::Vec;
 
     /// Constant pool: maps f32 bit patterns to pool indices.
@@ -1597,12 +1708,26 @@ pub(crate) mod driver {
     /// Falls back to `emit_fmov_imm` for zero and FMOV-encodable values.
     fn emit_const_load(code: &mut Vec<u8>, dst: Reg, val_bits: u32, pool: &ConstPool) {
         if let Some(offset) = pool.offset_for(val_bits) {
-            super::emit_ldr_q_x17(code, dst, offset);
+            super::emit_ldr_q(
+                code,
+                dst,
+                Mem {
+                    base: X17,
+                    offset: offset.into(),
+                },
+            );
         } else {
-            let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
-            super::emit_fmov_imm(code, dst, f32::from_bits(val_bits), scratch);
+            super::emit_fmov_imm(code, dst, f32::from_bits(val_bits));
         }
     }
+    /// The address of a frame slot. Kernels are leaf functions with no frame
+    /// pointer, so every slot — spill or scaffold — is `sp` plus its offset;
+    /// naming that here keeps `sp` a fact about the frame instead of a suffix
+    /// on the load and store that reach it.
+    const fn frame_slot(offset: u32) -> Mem {
+        Mem { base: SP, offset }
+    }
+
     /// A pending aarch64 branch: CBZ and B are patched differently.
     pub(crate) enum Aarch64Branch {
         Cbz(usize),
@@ -1610,6 +1735,13 @@ pub(crate) mod driver {
         /// A `b.hs` awaiting its target — the collapse loop's exit test.
         Hs(super::Cond19),
     }
+
+    /// The one vector register `emit_unary` may clobber.
+    ///
+    /// Outside the allocatable pool, the reload pair and `select_reload`, so
+    /// `RegisterFile::checked` can prove the disjointness rather than a comment
+    /// asserting it.
+    const UNARY_SCRATCH: Reg = Reg(29);
 
     /// aarch64 implementation of the shared driver's leaf operations.
     ///
@@ -1630,12 +1762,18 @@ pub(crate) mod driver {
     ///   v28-v31: fixed-purpose scratch (select guard reduction, imm construction)
     const AARCH64_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
-        scratch_base: 16,
-        scratch_count: 10,
+        // v16-v25 plus v4-v7 and v31. AAPCS64 callee-saves the low 64 bits of
+        // v8-v15 and these are leaf kernels with no prologue that preserves
+        // them, so v8-v15 stay out; v4-v7 are unused argument registers.
+        scratch: regalloc::RegSet::range(16, 10)
+            .union(regalloc::RegSet::range(4, 4))
+            .union(regalloc::RegSet::of(&[Reg(31)])),
         reload: [Reg(26), Reg(27)],
         // v28: fixed-purpose scratch outside the allocatable range; BSL reads its
         // three operands directly and never touches it.
         select_reload: Reg(28),
+        // v29: `emit_unary`'s temp. v30: the gather's truncated-index register.
+        fixed: &[UNARY_SCRATCH, Reg(30)],
         vector_bytes: 16,
     }
     .checked();
@@ -1752,7 +1890,7 @@ pub(crate) mod driver {
             src: Reg,
             offset: u32,
         ) -> Result<(), &'static str> {
-            super::emit_str_sp(code, src, offset);
+            super::emit_str_q(code, src, frame_slot(offset));
             Ok(())
         }
 
@@ -1770,7 +1908,7 @@ pub(crate) mod driver {
                     target
                 }
                 Loc::Spill(offset) => {
-                    super::emit_ldr_sp(code, target, offset);
+                    super::emit_ldr_q(code, target, frame_slot(offset));
                     target
                 }
             }
@@ -1788,7 +1926,7 @@ pub(crate) mod driver {
             super::emit_uminv(code, scratch, mask_reg); // min lane; 0xFFFFFFFF => all-true
             super::emit_fmov_to_gp(code, scratch);
             // MVN W16, W16 -> 0 iff all-true, which the cbz below tests.
-            super::mvn_w(code, super::Xr(16), super::Xr(16));
+            super::mvn_w(code, X16, X16);
             Aarch64Branch::Cbz(super::emit_cbz_w16(code))
         }
 
@@ -1841,11 +1979,11 @@ pub(crate) mod driver {
         }
 
         fn slot_store(&mut self, code: &mut Vec<u8>, src: Reg, offset: u32) {
-            super::emit_str_sp(code, src, offset);
+            super::emit_str_q(code, src, frame_slot(offset));
         }
 
         fn slot_load(&mut self, code: &mut Vec<u8>, dst: Reg, offset: u32) {
-            super::emit_ldr_sp(code, dst, offset);
+            super::emit_ldr_q(code, dst, frame_slot(offset));
         }
 
         fn counter_clear(&mut self, code: &mut Vec<u8>, counter: Counter) {
@@ -1867,7 +2005,14 @@ pub(crate) mod driver {
         }
 
         fn store_result(&mut self, code: &mut Vec<u8>, src: Reg) {
-            super::str_q(code, src, X1);
+            super::emit_str_q(
+                code,
+                src,
+                Mem {
+                    base: X1,
+                    offset: 0,
+                },
+            );
         }
 
         fn advance_out(&mut self, code: &mut Vec<u8>, step: OutStep) {
@@ -1880,7 +2025,7 @@ pub(crate) mod driver {
         }
 
         fn add_scalar(&mut self, code: &mut Vec<u8>, dst: Reg, scratch: Reg, scalar: f32) {
-            super::emit_fmov_imm(code, scratch, scalar, FMOV_FALLBACK_SCRATCH);
+            super::emit_fmov_imm(code, scratch, scalar);
             super::emit_fadd(code, dst, dst, scratch);
         }
 
@@ -1888,10 +2033,6 @@ pub(crate) mod driver {
             super::ret(code);
         }
     }
-
-    /// Vector registers `emit_fmov_imm` may use when a constant is not
-    /// FMOV-immediate encodable and has to come from the pool.
-    const FMOV_FALLBACK_SCRATCH: [Reg; 4] = [Reg(28), Reg(29), Reg(30), Reg(31)];
 
     /// The register each loop counter lives in.
     const fn counter_reg(counter: Counter) -> Xr {
@@ -1925,7 +2066,7 @@ pub(crate) mod driver {
         for reload in &plan.reloads {
             match reload {
                 Reload::FromStack { target, offset } => {
-                    emit_ldr_sp(code, *target, *offset);
+                    emit_ldr_q(code, *target, frame_slot(*offset));
                 }
                 Reload::Const { target, val_bits } => {
                     emit_const_load(code, *target, *val_bits, pool);
@@ -1945,8 +2086,7 @@ pub(crate) mod driver {
                 emit_const_load(code, *dst, *val_bits, pool);
             }
             ResolvedOp::Unary { op, dst, src } => {
-                let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
-                emit_unary(code, *op, *dst, *src, scratch);
+                emit_unary(code, *op, *dst, *src, UNARY_SCRATCH);
             }
             ResolvedOp::ShiftImm {
                 op,
@@ -1962,16 +2102,26 @@ pub(crate) mod driver {
                 // pointers) is caller-provided in x0 per AAPCS64 — disjoint from
                 // the coordinate vectors in v0..3 and never touched by the
                 // arithmetic/const emit, so it survives to here.
-                // v28 is fixed-purpose scratch (outside the allocatable range);
-                // x9-x11 are caller-saved GPR scratch clear of the branch guard
-                // (w16) and the const-pool anchor (x17).
-                const IDX_INT: Reg = Reg(28);
-                const BASE_GPR: u8 = 9;
-                const IDX_GPR: u8 = 10;
-                const VAL_GPR: u8 = 11;
-                const CTX_GPR: u8 = 0;
+                // v30 is declared in `AARCH64_FILE.fixed`, so
+                // `RegisterFile::checked` proves it misses the pool, the reload
+                // pair and `select_reload` (v28) rather than a comment claiming
+                // it; x9-x11 are caller-saved GPR scratch clear of the branch
+                // guard (w16) and the const-pool anchor (x17).
+                const IDX_INT: Reg = Reg(30);
+                const BASE_GPR: Xr = Xr(9);
+                const IDX_GPR: Xr = Xr(10);
+                const VAL_GPR: Xr = Xr(11);
+                /// Bytes per pointer in the context array.
+                const PTR_BYTES: u32 = 8;
                 emit_fcvtzs(code, IDX_INT, *idx); // float idx -> int32 lanes
-                emit_ldr_x_imm(code, BASE_GPR, CTX_GPR, (*slot as u32) * 8);
+                emit_ldr_x(
+                    code,
+                    BASE_GPR,
+                    Mem {
+                        base: X0,
+                        offset: u32::from(*slot) * PTR_BYTES,
+                    },
+                );
                 emit_gather(
                     code,
                     *dst,
@@ -2024,7 +2174,7 @@ pub(crate) mod driver {
 
         // 4. Emit store
         if let Some(store) = &plan.store {
-            emit_str_sp(code, store.src, store.offset);
+            emit_str_q(code, store.src, frame_slot(store.offset));
         }
 
         Ok(())
@@ -2038,7 +2188,7 @@ pub(crate) mod driver {
     ) {
         match deferred {
             Some(DeferredReload::FromStack(offset)) => {
-                super::emit_ldr_sp(code, target, *offset);
+                super::emit_ldr_q(code, target, frame_slot(*offset));
             }
             Some(DeferredReload::Const(val_bits)) => {
                 emit_const_load(code, target, *val_bits, pool);
@@ -2059,15 +2209,19 @@ pub(crate) mod driver {
 /// `Reg(1)` is `v1`, and neither can be passed where the other belongs.
 ///
 /// A SIMD language barely touches these: loop counters, the output pointer,
-/// and the row stride. That is the whole list, which is why the vocabulary
-/// below is seven instructions rather than an assembler.
+/// the row stride, the scalar half of a gather, and the base of every address
+/// a load or store names. That is the whole list, which is why this stays a
+/// vocabulary rather than an assembler.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Xr(pub u8);
 
-/// AAPCS64 registers the collapse-loop scaffold uses.
+/// AAPCS64 registers the emitted kernels use.
 pub mod xr {
     use super::Xr;
 
+    /// 1st argument: the context pointer — the array of bound buffer bases a
+    /// gather reads its slot from. Read-only for the whole kernel.
+    pub const X0: Xr = Xr(0);
     /// 2nd argument: the output pointer, advanced per batch and per row.
     pub const X1: Xr = Xr(1);
     /// 3rd argument: group count (the inner bound).
@@ -2080,8 +2234,20 @@ pub mod xr {
     pub const X5: Xr = Xr(5);
     /// Outer (row) loop counter.
     pub const X6: Xr = Xr(6);
+    /// IP0, the intra-procedure scratch. The encoder borrows it to hold an
+    /// address whose displacement is past a load's 12-bit immediate.
+    pub const X16: Xr = Xr(16);
+    /// IP1, the intra-procedure scratch holding the constant-pool anchor.
+    pub const X17: Xr = Xr(17);
     /// The zero register in the positions where `xzr` is meant.
     pub const XZR: Xr = Xr(31);
+    /// The stack pointer — spill slots are addressed from it.
+    ///
+    /// Encoded as register 31, the number [`XZR`] also uses. Which of the two
+    /// `31` means is decided by the instruction (load/store and `add` read it
+    /// as `sp`; most data-processing reads it as `xzr`), so the two constants
+    /// exist to say at the call site which one was meant.
+    pub const SP: Xr = Xr(31);
 }
 
 /// A 12-bit unsigned immediate, the width `add`'s immediate form encodes.
@@ -2136,12 +2302,6 @@ impl AddOperand for Imm12 {
 #[inline(always)]
 pub fn add(code: &mut Vec<u8>, dst: Xr, src: Xr, operand: impl AddOperand) {
     operand.add_into(code, dst, src);
-}
-
-/// `str q<src>, [base]` — store one 128-bit vector through a pointer.
-#[inline(always)]
-pub fn str_q(code: &mut Vec<u8>, src: Reg, base: Xr) {
-    emit32(code, 0x3D80_0000 | ((base.0 as u32) << 5) | src.0 as u32);
 }
 
 /// `mvn w<dst>, w<src>` — bitwise NOT of a 32-bit general register.
@@ -2222,7 +2382,17 @@ mod xr_tests {
         // ADD Xd, Xn, Xm
         assert_eq!(word(|c| add(c, X1, X1, X4)), 0x8B04_0021);
         // STR Qt, [Xn]
-        assert_eq!(word(|c| str_q(c, Reg(0), X1)), 0x3D80_0020);
+        assert_eq!(
+            word(|c| emit_str_q(
+                c,
+                Reg(0),
+                Mem {
+                    base: X1,
+                    offset: 0
+                }
+            )),
+            0x3D80_0020
+        );
         // RET
         assert_eq!(word(ret), 0xD65F_03C0);
     }
@@ -2268,8 +2438,31 @@ mod xr_tests {
     #[test]
     fn the_two_register_files_are_not_interchangeable() {
         assert_eq!(X1.0, Reg(1).0);
-        // `str_q` takes both, in their own positions: the vector operand lands
-        // in Rt and the pointer in Rn, so swapping them cannot typecheck.
-        assert_eq!(word(|c| str_q(c, Reg(3), X1)), 0x3D80_0023);
+        // `emit_str_q` takes both, in their own positions: the vector operand
+        // lands in Rt and the address's base in Rn, so swapping them cannot
+        // typecheck. `emit_ldr_x` is the mirror — an `Xr` destination, because
+        // it is a load on the general file, not the vector one.
+        assert_eq!(
+            word(|c| emit_str_q(
+                c,
+                Reg(3),
+                Mem {
+                    base: X1,
+                    offset: 0
+                }
+            )),
+            0x3D80_0023
+        );
+        assert_eq!(
+            word(|c| emit_ldr_x(
+                c,
+                Xr(3),
+                Mem {
+                    base: X1,
+                    offset: 0
+                }
+            )),
+            0xF940_0023
+        );
     }
 }

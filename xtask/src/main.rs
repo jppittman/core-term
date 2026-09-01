@@ -544,16 +544,12 @@ const ISA_LEVELS: &[IsaLevel] = &[
         target_feature: "",
         requires: &[],
     },
-    // Two AVX2 rows, because `Avx2Backend` is gated on `avx2` ALONE and carries
-    // a documented software mul+add fallback for parts that shipped AVX2
-    // without FMA3 (VIA, early Zen). Requiring both features would skip this
-    // configuration entirely on such a host and never exercise that fallback —
-    // so the matrix would not, in fact, cover every level the host supports.
-    IsaLevel {
-        name: "avx2 (no fma)",
-        target_feature: "+avx2",
-        requires: &["avx2"],
-    },
+    // One AVX2 row, requiring both features: no shipping x86-64 CPU has ever
+    // offered AVX2 without FMA3 (Intel: both since Haswell; AMD: FMA3
+    // predates AVX2), so `avx2,fma` is the tier — x86-64-v3 codifies the same
+    // pairing industry-wide. AVX2-without-FMA is a compile_error in
+    // `pixelflow-codegen`/`pixelflow-core` now, not a level this matrix
+    // should attempt.
     IsaLevel {
         name: "avx2+fma",
         target_feature: "+avx2,+fma",

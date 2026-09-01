@@ -345,7 +345,7 @@ fn emit_f32_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
 /// Load constant into register (placeholder for the high-level emit dispatch).
 ///
 /// Uses RIP-relative constant embedding for non-zero values, VXORPS for zero.
-pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32, _scratch: [Reg; 4]) {
+pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
     emit_f32_const(code, dst, val);
 }
 
@@ -599,6 +599,15 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 /// AVX-512 backends spell the same role `UNARY_SCRATCH`.
 const X86_SCRATCH: Reg = Reg(10);
 
+/// The gather's truncated-index lanes and loaded-value register.
+///
+/// `GATHER_IDX` was `xmm13` — the same register as `select_reload`, safe only
+/// because a gather and a `Select`'s operand reload never occur in one
+/// instruction. Declared in `SSE2_FILE.fixed` now, so `RegisterFile::checked`
+/// proves the separation instead of a comment asserting it.
+pub(crate) const GATHER_IDX: Reg = Reg(15);
+pub(crate) const GATHER_VALUE: Reg = Reg(14);
+
 /// `dst = mask ? if_true : if_false` (bit-select; mask already in `dst`, same
 /// convention as AVX2/AVX-512). The blend temp is this backend's fixed
 /// scratch, which the register file keeps outside the allocatable range —
@@ -617,7 +626,7 @@ pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
 // =============================================================================
 
 /// Emit unary operation
-pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: Reg) {
     match op {
         OpKind::Sqrt => emit_sqrtps(code, dst, src),
         OpKind::Rsqrt => {
@@ -628,14 +637,14 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: [
 
         // Negation: flip the sign bit (dst = src XOR 0x80000000).
         OpKind::Neg => {
-            let mask = scratch[0];
+            let mask = scratch;
             emit_f32_const(code, mask, f32::from_bits(0x8000_0000));
             emit_vxorps(code, dst, src, mask);
         }
 
         // Absolute value: clear the sign bit (dst = src AND 0x7FFFFFFF).
         OpKind::Abs => {
-            let mask = scratch[0];
+            let mask = scratch;
             emit_f32_const(code, mask, f32::from_bits(0x7FFF_FFFF));
             emit_vandps(code, dst, src, mask);
         }
@@ -985,22 +994,21 @@ pub(crate) mod driver {
     /// hazard/select temp, xmm11-12 for reloads, and xmm13-15 for builtins.
     pub(crate) const SSE2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
-        scratch_base: 4,
-        scratch_count: 6,
+        // xmm4-9. Every other xmm is spoken for: inputs 0-3, X86_SCRATCH,
+        // the reload pair, select_reload, and the gather's two registers.
+        // A sixteen-register file with no slack — which the accounting below
+        // now states rather than leaves implicit.
+        scratch: regalloc::RegSet::range(4, 6),
         reload: [Reg(11), Reg(12)],
         // xmm13: builtin scratch, unused by `emit_select` (whose internal temp is
         // X86_SCRATCH/xmm10) and by the reload path (movups / RIP-relative consts
         // touch no scratch).
         select_reload: Reg(13),
+        // xmm10: the two-operand form's temp and the Select blend's temp.
+        fixed: &[super::X86_SCRATCH, super::GATHER_VALUE, super::GATHER_IDX],
         vector_bytes: 16,
     }
     .checked();
-
-    /// Scratch quad for builtins (sin/cos/exp/atan2/...), which need FOUR distinct
-    /// scratch registers. Clear of the allocatable range (4-9) and the reload regs
-    /// (11,12). Includes `X86_SCRATCH` (xmm10): builtins don't use it for the
-    /// hazard/select roles, so it is free as a fourth scratch here.
-    const X86_BUILTIN_SCRATCH: [Reg; 4] = [Reg(10), Reg(13), Reg(14), Reg(15)];
 
     /// Map a `FrameLayout` spill offset to a red-zone `[rsp+disp8]` displacement.
     fn x86_redzone_disp(offset: u32) -> Result<i8, &'static str> {
@@ -1116,12 +1124,7 @@ pub(crate) mod driver {
                         self.spill_load(code, *target, *offset);
                     }
                     Reload::Const { target, val_bits } => {
-                        emit_const(
-                            code,
-                            *target,
-                            f32::from_bits(*val_bits),
-                            X86_BUILTIN_SCRATCH,
-                        );
+                        emit_const(code, *target, f32::from_bits(*val_bits));
                     }
                 }
             }
@@ -1131,10 +1134,10 @@ pub(crate) mod driver {
             match &plan.op {
                 ResolvedOp::Nop => {}
                 ResolvedOp::LoadConst { dst, val_bits } => {
-                    emit_const(code, *dst, f32::from_bits(*val_bits), X86_BUILTIN_SCRATCH);
+                    emit_const(code, *dst, f32::from_bits(*val_bits));
                 }
                 ResolvedOp::Unary { op, dst, src } => {
-                    emit_unary(code, *op, *dst, *src, X86_BUILTIN_SCRATCH);
+                    emit_unary(code, *op, *dst, *src, X86_SCRATCH);
                 }
                 ResolvedOp::ShiftImm {
                     op,
@@ -1151,7 +1154,7 @@ pub(crate) mod driver {
                     // arithmetic/const emission, so it survives to here; rax/rcx
                     // are caller-saved and unused by the rest of the body.
                     // Both vector scratch registers are outside the allocatable
-                    // range and the reload pair (see X86_BUILTIN_SCRATCH).
+                    // range and the reload pair (see X86_SCRATCH).
                     super::emit_gather_scalar(
                         code,
                         *dst,
@@ -1161,8 +1164,8 @@ pub(crate) mod driver {
                             base_gpr: 0,  // rax
                             index_gpr: 1, // rcx
                             ctx_gpr: 7,   // rdi
-                            idx_lanes: Reg(13),
-                            value: Reg(14),
+                            idx_lanes: super::GATHER_IDX,
+                            value: super::GATHER_VALUE,
                         },
                     );
                 }
@@ -1203,7 +1206,7 @@ pub(crate) mod driver {
                             self.spill_load(code, *c, *off);
                         }
                         Some(DeferredReload::Const(bits)) => {
-                            emit_const(code, *c, f32::from_bits(*bits), X86_BUILTIN_SCRATCH);
+                            emit_const(code, *c, f32::from_bits(*bits));
                         }
                         None => {}
                     }
@@ -1240,7 +1243,7 @@ pub(crate) mod driver {
             match location_of(locs, vid) {
                 Loc::Reg(reg) => reg,
                 Loc::Remat(bits) => {
-                    super::emit_const(code, target, f32::from_bits(bits), X86_BUILTIN_SCRATCH);
+                    super::emit_const(code, target, f32::from_bits(bits));
                     target
                 }
                 Loc::Spill(offset) => {
@@ -1338,7 +1341,7 @@ pub(crate) mod driver {
         }
 
         fn add_scalar(&mut self, code: &mut Vec<u8>, dst: Reg, scratch: Reg, scalar: f32) {
-            super::emit_const(code, scratch, scalar, X86_BUILTIN_SCRATCH);
+            super::emit_const(code, scratch, scalar);
             super::emit_binary(code, OpKind::Add, dst, dst, scratch);
         }
 

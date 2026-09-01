@@ -20,3 +20,8 @@ pixelflow-pipeline/data/*
 # cargo-mutants scratch output
 mutants.out/
 mutants.out.old/
+
+# Isolated git worktrees created for background agents. Transient harness
+# state, not project content — and large enough (tens of MB) that a stray
+# `git add -A` would sweep them into a commit.
+.claude/worktrees/

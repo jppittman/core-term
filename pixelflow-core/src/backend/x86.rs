@@ -626,6 +626,25 @@ impl U32x4 {
 // AVX2 Backend (8 lanes)
 // ============================================================================
 
+// The AVX2 tier requires FMA3. No shipping x86-64 CPU has ever offered AVX2
+// without it (Intel: both since Haswell; AMD: FMA3 predates AVX2 by a
+// generation) — the industry itself codifies the pairing as x86-64-v3. An
+// AVX2-without-FMA build is a paper configuration that bought a
+// value-semantics fork (one rounding vs. two — see the `mul_add`/`log2`/
+// `exp2` fma-vs-no-fma branches below) no real machine ever exercised, and
+// that fork was directly responsible for a P2 (two materially different
+// kernels sharing one environment fingerprint — see
+// `pixelflow-pipeline/src/journal.rs`). Fail loudly at compile time rather
+// than silently degrading precision. (This does not touch the SSE2 baseline
+// tier above, which has no `avx2` feature set and keeps its own
+// `not(target_feature = "fma")` fallback — there, mul+add genuinely is the
+// only option.)
+#[cfg(all(target_feature = "avx2", not(target_feature = "fma")))]
+compile_error!(
+    "the AVX2 backend requires FMA3 (no shipping CPU has AVX2 without it); \
+     build with `-C target-feature=+avx2,+fma` or `-C target-cpu=x86-64-v3`"
+);
+
 // ============================================================================
 // Mask8 - 8-lane mask for AVX2
 // ============================================================================
@@ -843,14 +862,8 @@ impl SimdOps for F32x8 {
 
     #[inline(always)]
     fn mul_add(self, b: Self, c: Self) -> Self {
-        #[cfg(target_feature = "fma")]
-        unsafe {
-            Self(_mm256_fmadd_ps(self.0, b.0, c.0))
-        }
-        #[cfg(not(target_feature = "fma"))]
-        {
-            self * b + c
-        }
+        // The AVX2 tier requires FMA, so this is unconditionally one rounding.
+        unsafe { Self(_mm256_fmadd_ps(self.0, b.0, c.0)) }
     }
 
     #[inline(always)]
@@ -941,20 +954,11 @@ impl SimdOps for F32x8 {
             let c0 = _mm256_set1_ps(log2_poly::C0);
 
             // Horner's method with FMA when available
-            #[cfg(target_feature = "fma")]
             {
                 let mut poly = _mm256_fmadd_ps(c4, f, c3);
                 poly = _mm256_fmadd_ps(poly, f, c2);
                 poly = _mm256_fmadd_ps(poly, f, c1);
                 poly = _mm256_fmadd_ps(poly, f, c0);
-                Self(_mm256_add_ps(n, poly))
-            }
-            #[cfg(not(target_feature = "fma"))]
-            {
-                let mut poly = _mm256_add_ps(_mm256_mul_ps(c4, f), c3);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c2);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c1);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c0);
                 Self(_mm256_add_ps(n, poly))
             }
         }
@@ -974,7 +978,6 @@ impl SimdOps for F32x8 {
             let c0 = _mm256_set1_ps(1.0);
 
             // Horner's method
-            #[cfg(target_feature = "fma")]
             {
                 let mut poly = _mm256_fmadd_ps(c4, f, c3);
                 poly = _mm256_fmadd_ps(poly, f, c2);
@@ -982,20 +985,6 @@ impl SimdOps for F32x8 {
                 poly = _mm256_fmadd_ps(poly, f, c0);
 
                 // 2^n = (n + 127) << 23
-                let bias = _mm256_set1_epi32(127);
-                let n_i32 = _mm256_cvtps_epi32(n);
-                let exp_bits = _mm256_slli_epi32(_mm256_add_epi32(n_i32, bias), 23);
-                let scale = _mm256_castsi256_ps(exp_bits);
-
-                Self(_mm256_mul_ps(poly, scale))
-            }
-            #[cfg(not(target_feature = "fma"))]
-            {
-                let mut poly = _mm256_add_ps(_mm256_mul_ps(c4, f), c3);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c2);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c1);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c0);
-
                 let bias = _mm256_set1_epi32(127);
                 let n_i32 = _mm256_cvtps_epi32(n);
                 let exp_bits = _mm256_slli_epi32(_mm256_add_epi32(n_i32, bias), 23);

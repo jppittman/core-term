@@ -31,6 +31,22 @@ use super::{Reg, unimplemented_op};
 use alloc::vec::Vec;
 use pixelflow_ir::OpKind;
 
+// The AVX2 tier requires FMA3. No shipping x86-64 CPU has ever offered AVX2
+// without it (Intel: both since Haswell; AMD: FMA3 predates AVX2 by a
+// generation) — the industry itself codifies the pairing as x86-64-v3. A
+// hypothetical AVX2-without-FMA build is not a smaller tier, it is a paper
+// configuration: it forked `emit_fmadd_c_in_dst` into a value-semantics
+// variant (one rounding vs. two, see CLAUDE.md's `MulAdd` platform-divergence
+// table) that no real machine ever exercised, and that fork was directly
+// responsible for a P2 (two materially different kernels sharing one
+// environment fingerprint — see `pixelflow-pipeline/src/journal.rs`). Fail
+// loudly at compile time rather than silently degrading precision.
+#[cfg(all(target_feature = "avx2", not(target_feature = "fma")))]
+compile_error!(
+    "the AVX2 backend requires FMA3 (no shipping CPU has AVX2 without it); \
+     build with `-C target-feature=+avx2,+fma` or `-C target-cpu=x86-64-v3`"
+);
+
 // =============================================================================
 // VEX.256 encoder
 // =============================================================================
@@ -423,33 +439,27 @@ pub fn emit_cmp_al_imm8(code: &mut Vec<u8>, imm: u8) {
 
 /// `vfmadd231ps ymmD, ymmA, ymmB` — `dst = a*b + dst` (231 form: dst is the
 /// addend going in, `a`/`b` the product). VEX.256.66.0F38.W0 B8 /r, same
-/// opcode as `avx512.rs`'s EVEX form, just VEX-encoded at 256 bits. Requires
-/// `target_feature = "fma"` (FMA3) — not implied by `avx2` alone.
-#[cfg(target_feature = "fma")]
+/// opcode as `avx512.rs`'s EVEX form, just VEX-encoded at 256 bits.
+/// `target_feature = "fma"` (FMA3) is not implied by `avx2` alone in rustc's
+/// feature model, which is why this file's own `compile_error!` pins the two
+/// together for this backend — see the module-top comment.
 fn vfmadd231ps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
     Vex::m0f38_66(0xB8).rrr(c, d, s1, s2);
 }
 
 /// Fused multiply-add: `dst` already holds `c`; computes `dst = a*b + dst`.
 ///
-/// Uses real hardware FMA when the build has `+fma` (rounds once, exactly
-/// matching the reference interpreter under `fp-contract=fast` — see the
-/// regression this fixed: `eval_scalar`'s scalar `a*b+c` gets contracted to
-/// an `fma` instruction by LLVM under `+fma` too, so a software two-step
-/// mul-then-add here would round twice and disagree in the last bit).
-/// Falls back to software mul+add otherwise (this backend is gated on `avx2`
-/// alone, not `avx2,fma` — VIA/older Zen chips shipped AVX2 without FMA3).
-#[cfg(target_feature = "fma")]
+/// Always real hardware FMA: the AVX2 tier requires `+fma` (see the
+/// module-top `compile_error!`), so there is no software mul+add fallback to
+/// choose between here. This rounds once, exactly matching the reference
+/// interpreter under `fp-contract=fast` — `eval_scalar`'s scalar `a*b+c` gets
+/// contracted to an `fma` instruction by LLVM under `+fma` too, so a
+/// software two-step mul-then-add would round twice and disagree in the last
+/// bit. The two-roundings case still exists, just not here: it's the SSE2
+/// *baseline* tier's only option (`pixelflow-core`'s x86 backend, no `avx2`
+/// set), where mul+add genuinely is all the hardware offers.
 pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
     vfmadd231ps(code, dst.0, a.0, b.0);
-}
-
-/// See the `+fma` variant above.
-#[cfg(not(target_feature = "fma"))]
-pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
-    let tmp = UNARY_SCRATCH;
-    vmulps(code, tmp.0, a.0, b.0);
-    vaddps(code, dst.0, dst.0, tmp.0);
 }
 
 // =============================================================================
@@ -764,10 +774,20 @@ pub(crate) mod driver {
     /// instead would restore the sixth register; that is a contained change to
     /// `super::emit_gather_scalar` and is the better long-term fix.
     const AVX2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
-        scratch_count: 4,
+        // ymm4-7. ymm8/ymm9 carry the gather's high half and ymm14/ymm15 its
+        // low half and the unary temp, so a sixteen-register file leaves four.
+        scratch: regalloc::RegSet::range(4, 4),
         // ymm13: outside the allocatable range and the reload pair; the AVX2
         // select is a VEX blend with no internal temp.
         select_reload: Reg(13),
+        // ymm15: `emit_unary`'s sign-mask temp.
+        fixed: &[
+            super::UNARY_SCRATCH,
+            x86_64::GATHER_VALUE,
+            x86_64::GATHER_IDX,
+            Reg(8),
+            Reg(9),
+        ],
         vector_bytes: 32,
         ..SSE2_FILE
     }
@@ -860,8 +880,8 @@ pub(crate) mod driver {
                                 base_gpr: 0,  // rax
                                 index_gpr: 1, // rcx
                                 ctx_gpr: 7,   // rdi
-                                idx_lanes: Reg(13),
-                                value: Reg(14),
+                                idx_lanes: x86_64::GATHER_IDX,
+                                value: x86_64::GATHER_VALUE,
                             },
                             idx_hi: Reg(9),
                             res_hi: Reg(8),
