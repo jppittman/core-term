@@ -842,11 +842,22 @@ delta is 2.5% (IQR 1.0–5.4%), while the median per-kernel repeat spread
 (range over the five repeats as a fraction of the median, static policy) is
 9.0% — **84% of individual paired decisions are smaller than their own
 kernel's measurement spread** (under the stricter IQR-of-repeats definition
-the spread is 3.4% and 61% of decisions still sit under it). Only pairing and aggregation over 719
+the spread is 3.4% and 61% of decisions still sit under it).
+
+Both fractions compare a policy difference against the spread of *individual
+measurements*, which is not an uncertainty interval for that difference: the
+range in particular is an extreme statistic and inflates with repeat count,
+so these numbers overstate how many decisions are genuinely unresolved. The
+estimator the claim wants is a per-kernel paired interval or test built from
+the five repeats, reporting the fraction whose paired effect does not clear
+zero; that needs the per-kernel repeat rows, which are in the uncommitted
+`D3` artifact (§5.0). Read 84%/61% as an upper bound on the unresolved
+fraction, not a measurement of it. Only pairing and aggregation over 719
 kernels resolves the 0.37% mean effect against the ±0.07% A/A floor. A
 cost model asked to out-rank the table must make thousands of decisions
-whose individual ground truth is unmeasurable in isolation; the labels it
-trains on carry the same floor. This is a structural argument that
+whose individual ground truth is at best marginally measurable in isolation;
+the labels it trains on carry the same floor. ("Unmeasurable" is stronger
+than the statistic above supports — see the caveat.) This is a structural argument that
 marginal cost-model improvements here are undetectable-by-construction —
 and it generalizes to any extraction setting where candidate variants
 differ by a few instructions.
