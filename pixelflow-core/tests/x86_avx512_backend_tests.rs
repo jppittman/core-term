@@ -82,6 +82,14 @@ mod tests {
         let mut out = [0.0; 16];
         c.store(&mut out);
         assert_eq!(out, [0.0; 16]);
+
+        // The pair above ANDs to all-zero, which coincides with
+        // `F32x16::default()` — a "replace bitand with Default::default()"
+        // mutant survives it. 3.0 (0x40400000) & 2.0 (0x40000000) = 2.0,
+        // distinguishing the real op from the default.
+        let d = F32x16::splat(3.0) & F32x16::splat(2.0);
+        d.store(&mut out);
+        assert_eq!(out, [2.0; 16]);
     }
 
     #[test]
@@ -459,6 +467,42 @@ mod tests {
         let mask = ones.float_to_mask();
         assert!(mask.all());
         assert_eq!(mask_bits(mask), [u32::MAX; 16]);
+    }
+
+    #[test]
+    fn mask16_bitand_bitor_and_not_should_combine_masks_lanewise() {
+        // Mask16's own BitAnd/BitOr/Not (as opposed to F32x16's) had no
+        // direct coverage: every prior test only ever combined masks
+        // indirectly via `any`/`all`, which a wrong-but-nonzero mask can
+        // still satisfy. Unlike Mask8's movemask-derived bits, Mask16 is a
+        // raw k-register value, so `&`/`|`/`!` are plain integer ops —
+        // still worth pinning directly since nothing else in this file
+        // exercises them.
+        let a_vals: [f32; 16] = core::array::from_fn(|i| if i % 4 < 2 { 1.0 } else { 0.0 });
+        let b_vals: [f32; 16] = core::array::from_fn(|i| if i % 2 == 0 { 1.0 } else { 0.0 });
+        let a = F32x16::from_slice(&a_vals).cmp_gt(F32x16::splat(0.0));
+        let b = F32x16::from_slice(&b_vals).cmp_gt(F32x16::splat(0.0));
+        const T: u32 = u32::MAX;
+
+        let want_and: [u32; 16] = core::array::from_fn(|i| {
+            if a_vals[i] > 0.0 && b_vals[i] > 0.0 {
+                T
+            } else {
+                0
+            }
+        });
+        let want_or: [u32; 16] = core::array::from_fn(|i| {
+            if a_vals[i] > 0.0 || b_vals[i] > 0.0 {
+                T
+            } else {
+                0
+            }
+        });
+        let want_not: [u32; 16] = core::array::from_fn(|i| if a_vals[i] > 0.0 { 0 } else { T });
+
+        assert_eq!(mask_bits(a & b), want_and);
+        assert_eq!(mask_bits(a | b), want_or);
+        assert_eq!(mask_bits(!a), want_not);
     }
 
     #[test]

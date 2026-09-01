@@ -525,7 +525,11 @@ impl SimdU32Ops for U32x4 {
 
     #[inline(always)]
     fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
-        // Placeholder - actual packing is done via pack_rgba
+        // Placeholder - actual packing is done via pack_rgba. The body is
+        // already `Self::default()`, so cargo-mutants' "replace with
+        // Default::default()" mutant here is equivalent, not a coverage
+        // gap: there is no other behavior for a test to distinguish it
+        // from.
         Self::default()
     }
 }
@@ -1127,6 +1131,9 @@ impl SimdU32Ops for U32x8 {
 
     #[inline(always)]
     fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
+        // Placeholder - actual packing is done via pack_rgba. Already
+        // `Self::default()`, so cargo-mutants' Default::default() mutant
+        // here is equivalent, not a coverage gap.
         Self::default()
     }
 }
@@ -1727,7 +1734,9 @@ impl SimdU32Ops for U32x16 {
 
     #[inline(always)]
     fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
-        // Placeholder
+        // Placeholder - actual packing is done via pack_rgba. Already
+        // `Self::default()`, so cargo-mutants' Default::default() mutant
+        // here is equivalent, not a coverage gap.
         Self::default()
     }
 }
