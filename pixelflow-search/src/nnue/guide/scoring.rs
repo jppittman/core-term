@@ -14,21 +14,32 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use libm::{log2f, sqrtf};
+use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
 use super::accumulator::{GRAPH_ACC_DIM, GraphAccumulator};
 use crate::nnue::factored::{
-    EMBED_DIM, EdgeAccumulator, ExprNnue, HIDDEN_DIM, MLP_HIDDEN, SCALAR_FEATURE_COUNT,
+    EMBED_DIM, EdgeAccumulator, ExprNnue, HIDDEN_DIM, K, MLP_HIDDEN, SCALAR_FEATURE_COUNT,
 };
 
-/// Mask MLP input dimension: expr_embed / graph_embed directly (`EMBED_DIM`).
-/// `value_pred` was removed — it is a deterministic function of the
-/// embedding and adds zero information.
+/// Mask MLP input dimension: expr_embed / graph_embed / candidate_embed
+/// directly (`EMBED_DIM`). `value_pred` was removed — it is a deterministic
+/// function of the embedding and adds zero information.
 pub(crate) const MASK_INPUT_DIM: usize = EMBED_DIM;
 
 /// Graph backbone input: `GRAPH_ACC_DIM` + 4 scalars (edge_count, node_count,
 /// node_budget, epoch_budget).
 pub(crate) const GRAPH_INPUT_DIM: usize = GRAPH_ACC_DIM + SCALAR_FEATURE_COUNT;
+
+/// Candidate-local tower input (design doc §4): a bag-of-embeddings pooling
+/// of the match's one-hop neighborhood ops (`K` dims, same op-embedding space
+/// [`GraphAccumulator`]'s marginal sections use) plus one scalar —
+/// `budget_fraction` (see
+/// [`crate::egraph::candidate::CandidateFeatures::budget_fraction`]).
+/// Deliberately much smaller than [`GRAPH_INPUT_DIM`]: the candidate tower
+/// scores one match's own local structure, not the whole graph's aggregate
+/// shape (§4's locality argument).
+pub(crate) const CANDIDATE_INPUT_DIM: usize = K + 1;
 
 /// Concatenated rule features: `[z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS]` (4 × `EMBED_DIM`).
 pub(crate) const RULE_CONCAT_DIM: usize = 4 * EMBED_DIM;
@@ -68,7 +79,11 @@ pub(crate) struct SaturationHead {
     /// Learned bias projection: per-rule bias via `dot(mask_bias_proj, rule_embed)`.
     mask_bias_proj: [f32; EMBED_DIM],
 
-    /// Graph backbone weights: [`GRAPH_INPUT_DIM`] x `HIDDEN_DIM`.
+    /// Graph backbone weights: [`GRAPH_INPUT_DIM`] x `HIDDEN_DIM`. Kept —
+    /// unused by [`super::SaturationGuide`] as of the v2 candidate-local
+    /// contract (see `super`'s module doc, "Contract revision") but still
+    /// live for `mask_score_all_rules_graph`, the segregated seam for a
+    /// future whole-graph Judge.
     graph_w1: [[f32; HIDDEN_DIM]; GRAPH_INPUT_DIM],
     /// Graph backbone biases.
     graph_b1: [f32; HIDDEN_DIM],
@@ -76,6 +91,16 @@ pub(crate) struct SaturationHead {
     graph_proj_w: [[f32; EMBED_DIM]; HIDDEN_DIM],
     /// Graph → embed projection bias.
     graph_proj_b: [f32; EMBED_DIM],
+
+    /// Candidate-local tower weights (design doc §4, the v2 contract's actual
+    /// scoring path): [`CANDIDATE_INPUT_DIM`] x `HIDDEN_DIM`.
+    candidate_w1: [[f32; HIDDEN_DIM]; CANDIDATE_INPUT_DIM],
+    /// Candidate tower biases.
+    candidate_b1: [f32; HIDDEN_DIM],
+    /// Candidate → embed projection weights: `HIDDEN_DIM` x `EMBED_DIM`.
+    candidate_proj_w: [[f32; EMBED_DIM]; HIDDEN_DIM],
+    /// Candidate → embed projection bias.
+    candidate_proj_b: [f32; EMBED_DIM],
 }
 
 impl Default for SaturationHead {
@@ -101,6 +126,10 @@ impl SaturationHead {
             graph_b1: [0.0; HIDDEN_DIM],
             graph_proj_w: [[0.0; EMBED_DIM]; HIDDEN_DIM],
             graph_proj_b: [0.0; EMBED_DIM],
+            candidate_w1: [[0.0; HIDDEN_DIM]; CANDIDATE_INPUT_DIM],
+            candidate_b1: [0.0; HIDDEN_DIM],
+            candidate_proj_w: [[0.0; EMBED_DIM]; HIDDEN_DIM],
+            candidate_proj_b: [0.0; EMBED_DIM],
         }
     }
 
@@ -120,6 +149,7 @@ impl SaturationHead {
         let scale_hidden = sqrtf(2.0 / MLP_HIDDEN as f32);
         let scale_concat = sqrtf(2.0 / RULE_CONCAT_DIM as f32);
         let scale_graph = sqrtf(2.0 / GRAPH_INPUT_DIM as f32);
+        let scale_candidate = sqrtf(2.0 / CANDIDATE_INPUT_DIM as f32);
         let scale_proj = sqrtf(2.0 / HIDDEN_DIM as f32);
 
         // Mask MLP: MASK_INPUT_DIM → MLP_HIDDEN → EMBED_DIM
@@ -179,6 +209,26 @@ impl SaturationHead {
             }
         }
         for b in &mut self.graph_proj_b {
+            *b = next_f32().abs() * 0.1;
+        }
+
+        // Candidate tower: CANDIDATE_INPUT_DIM → HIDDEN_DIM
+        for row in 0..CANDIDATE_INPUT_DIM {
+            for col in 0..HIDDEN_DIM {
+                self.candidate_w1[row][col] = next_f32() * scale_candidate;
+            }
+        }
+        for b in &mut self.candidate_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+
+        // Candidate projection: HIDDEN_DIM → EMBED_DIM
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                self.candidate_proj_w[j][k] = next_f32() * scale_proj;
+            }
+        }
+        for b in &mut self.candidate_proj_b {
             *b = next_f32().abs() * 0.1;
         }
     }
@@ -308,6 +358,85 @@ impl SaturationHead {
             .iter()
             .map(|rule_embed| self.bilinear_score(&mask_features, rule_embed))
             .collect()
+    }
+
+    /// Candidate-local forward pass (design doc §4 — this is the v2
+    /// [`super::SaturationGuide`] contract's actual scoring path,
+    /// [`Self::forward_graph`]'s replacement for that purpose): the match's
+    /// one-hop neighborhood ops, bag-of-embeddings pooled the same way
+    /// [`GraphAccumulator`]'s marginal child section pools (`1/sqrt(n)`
+    /// scaling — same rationale, see [`Self::forward_graph`]'s doc), plus the
+    /// scalar `budget_fraction`, then routed through `backbone`'s shared
+    /// trunk.
+    #[inline]
+    pub(crate) fn forward_candidate(
+        &self,
+        backbone: &ExprNnue,
+        neighborhood_ops: &[OpKind],
+        budget_fraction: f32,
+    ) -> [f32; HIDDEN_DIM] {
+        let mut hidden = self.candidate_b1;
+
+        let scale = if neighborhood_ops.is_empty() {
+            1.0
+        } else {
+            1.0 / sqrtf(neighborhood_ops.len() as f32)
+        };
+
+        for &op in neighborhood_ops {
+            let emb = backbone.embeddings.get(op);
+            for i in 0..K {
+                let v = emb[i] * scale;
+                for (j, h) in hidden.iter_mut().enumerate() {
+                    *h += v * self.candidate_w1[i][j];
+                }
+            }
+        }
+
+        // budget_fraction lives in the one scalar row past the K
+        // neighborhood-op rows.
+        let base = K;
+        for (j, h) in hidden.iter_mut().enumerate() {
+            *h += budget_fraction * self.candidate_w1[base][j];
+        }
+
+        for h in &mut hidden {
+            *h = h.max(0.0);
+        }
+
+        backbone.apply_trunk(&hidden)
+    }
+
+    /// Project candidate hidden to candidate embedding (`EMBED_DIM`). Same
+    /// structure as [`Self::compute_graph_embed`]/`ExprNnue::compute_expr_embed`
+    /// with this tower's own `candidate_proj_w`/`candidate_proj_b`.
+    #[inline]
+    pub(crate) fn compute_candidate_embed(&self, hidden: &[f32; HIDDEN_DIM]) -> [f32; EMBED_DIM] {
+        let mut embed = self.candidate_proj_b;
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                embed[k] += hidden[j] * self.candidate_proj_w[j][k];
+            }
+        }
+        embed
+    }
+
+    /// Score one candidate (design doc §4's actual v2 scoring path):
+    /// `forward_candidate -> compute_candidate_embed -> compute_mask_features
+    /// -> bilinear_score`. [`super::Guide::score_candidates`] calls this once
+    /// per candidate in its batch — see that impl for the batching contract.
+    #[must_use]
+    pub(crate) fn score_candidate(
+        &self,
+        backbone: &ExprNnue,
+        neighborhood_ops: &[OpKind],
+        budget_fraction: f32,
+        rule_embed: &[f32; EMBED_DIM],
+    ) -> f32 {
+        let hidden = self.forward_candidate(backbone, neighborhood_ops, budget_fraction);
+        let embed = self.compute_candidate_embed(&hidden);
+        let mask_features = self.compute_mask_features(&embed);
+        self.bilinear_score(&mask_features, rule_embed)
     }
 
     /// Encode a single rule's LHS/RHS arena subtrees into a rule embedding.
@@ -836,6 +965,7 @@ mod tests {
         let scale_hidden = sqrtf(2.0 / MLP_HIDDEN as f32);
         let scale_concat = sqrtf(2.0 / RULE_CONCAT_DIM as f32);
         let scale_graph = sqrtf(2.0 / GRAPH_INPUT_DIM as f32);
+        let scale_candidate = sqrtf(2.0 / CANDIDATE_INPUT_DIM as f32);
         let scale_proj = sqrtf(2.0 / HIDDEN_DIM as f32);
 
         let mut exp_mask_mlp_w1 = [[0.0f32; MLP_HIDDEN]; MASK_INPUT_DIM];
@@ -890,6 +1020,27 @@ mod tests {
         }
         let mut exp_graph_proj_b = [0.0f32; EMBED_DIM];
         for b in &mut exp_graph_proj_b {
+            *b = next_f32().abs() * 0.1;
+        }
+
+        let mut exp_candidate_w1 = [[0.0f32; HIDDEN_DIM]; CANDIDATE_INPUT_DIM];
+        for row in 0..CANDIDATE_INPUT_DIM {
+            for col in 0..HIDDEN_DIM {
+                exp_candidate_w1[row][col] = next_f32() * scale_candidate;
+            }
+        }
+        let mut exp_candidate_b1 = [0.0f32; HIDDEN_DIM];
+        for b in &mut exp_candidate_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+        let mut exp_candidate_proj_w = [[0.0f32; EMBED_DIM]; HIDDEN_DIM];
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                exp_candidate_proj_w[j][k] = next_f32() * scale_proj;
+            }
+        }
+        let mut exp_candidate_proj_b = [0.0f32; EMBED_DIM];
+        for b in &mut exp_candidate_proj_b {
             *b = next_f32().abs() * 0.1;
         }
 
@@ -985,6 +1136,34 @@ mod tests {
             assert!(
                 close(head.graph_proj_b[k], exp_graph_proj_b[k]),
                 "graph_proj_b[{k}]"
+            );
+        }
+        for row in 0..CANDIDATE_INPUT_DIM {
+            for col in 0..HIDDEN_DIM {
+                assert!(
+                    close(head.candidate_w1[row][col], exp_candidate_w1[row][col]),
+                    "candidate_w1[{row}][{col}]"
+                );
+            }
+        }
+        for j in 0..HIDDEN_DIM {
+            assert!(
+                close(head.candidate_b1[j], exp_candidate_b1[j]),
+                "candidate_b1[{j}]"
+            );
+        }
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                assert!(
+                    close(head.candidate_proj_w[j][k], exp_candidate_proj_w[j][k]),
+                    "candidate_proj_w[{j}][{k}]"
+                );
+            }
+        }
+        for k in 0..EMBED_DIM {
+            assert!(
+                close(head.candidate_proj_b[k], exp_candidate_proj_b[k]),
+                "candidate_proj_b[{k}]"
             );
         }
     }
@@ -1160,6 +1339,171 @@ mod tests {
             "graph scoring must be forward_graph -> compute_graph_embed -> \
              compute_mask_features -> bilinear_score; got {}, want {want}",
             got[0]
+        );
+    }
+
+    // ========================================================================
+    // Candidate-local tower (design doc §4, v2 SaturationGuide contract)
+    // ========================================================================
+
+    #[test]
+    fn forward_candidate_should_be_finite_for_an_empty_neighborhood() {
+        let backbone = test_backbone();
+        let mut head = SaturationHead::new();
+        head.randomize(1);
+
+        let hidden = head.forward_candidate(&backbone, &[], 0.0);
+        assert!(hidden.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn forward_candidate_should_use_a_scale_of_one_when_the_neighborhood_is_empty() {
+        // Mirrors `forward_graph_should_use_a_scale_of_one_when_node_count_is_zero`:
+        // an empty neighborhood must not divide by `sqrtf(0)` (= inf/NaN). With
+        // no ops to sum, only the budget_fraction row and bias contribute.
+        let backbone = identity_trunk_backbone();
+        let mut head = SaturationHead::new();
+        head.candidate_b1 = [5.0; HIDDEN_DIM];
+        head.candidate_w1[K] = [2.0; HIDDEN_DIM]; // the budget_fraction row
+
+        let hidden = head.forward_candidate(&backbone, &[], 3.0);
+
+        let expected = 5.0 + 3.0 * 2.0;
+        for (j, &h) in hidden.iter().enumerate() {
+            assert!(
+                (h - expected).abs() < 1e-6,
+                "hidden[{j}]: got {h}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_candidate_should_index_the_op_weight_matrix_by_both_lane_and_column() {
+        // Sparse fixture (see the analogous `forward_graph` index-pinning
+        // test): exactly one (K-lane, hidden-column) pair is live, with
+        // neither index zero, so a `candidate_w1[0][j]`/`candidate_w1[i][0]`
+        // substitution collapses to zero instead of coincidentally matching.
+        const LANE: usize = 5;
+        const COLUMN: usize = 7;
+
+        let mut backbone = identity_trunk_backbone();
+        let mut head = SaturationHead::new();
+        head.candidate_w1[LANE][COLUMN] = 3.0;
+
+        // A neighborhood of exactly one op whose embedding is all-zero except
+        // lane LANE keeps only `candidate_w1[LANE]` live; scale = 1/sqrt(1) = 1.
+        const LANE_VAL: f32 = 2.0;
+        let mut op_embed = [0.0f32; K];
+        op_embed[LANE] = LANE_VAL;
+        backbone.embeddings.e[OpKind::Add] = op_embed;
+
+        let hidden = head.forward_candidate(&backbone, &[OpKind::Add], 0.0);
+
+        for (j, &h) in hidden.iter().enumerate() {
+            let want = if j == COLUMN { LANE_VAL * 3.0 } else { 0.0 };
+            assert!(
+                (h - want).abs() < 1e-6,
+                "hidden[{j}]: got {h}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_candidate_should_scale_by_one_over_sqrt_of_neighborhood_size() {
+        // Identity trunk (so the returned hidden is directly comparable to a
+        // hand-computed pre-trunk value) with each op's embedding manually
+        // pinned to a known constant vector — `identity_trunk_backbone`'s
+        // default `ExprNnue::new()` embeddings are all-zero (would make every
+        // candidate op contribute nothing), and real random embeddings could
+        // sum to either sign depending on the seed, which would make the
+        // "stay positive" assumption below a coin flip instead of a fact
+        // about the code under test.
+        let mut backbone = identity_trunk_backbone();
+        let ops = [OpKind::Add, OpKind::Mul, OpKind::Sub, OpKind::Div];
+        for &op in &ops {
+            backbone.embeddings.e[op] = [1.0; K];
+        }
+        let mut head = SaturationHead::new();
+        for i in 0..K {
+            head.candidate_w1[i] = [1.0; HIDDEN_DIM];
+        }
+
+        let hidden = head.forward_candidate(&backbone, &ops, 0.0);
+
+        let scale = 1.0 / sqrtf(ops.len() as f32);
+        // Each op's embedding sums to K (all-ones, K dims); candidate_w1 rows
+        // are all-ones too, so each hidden column accumulates `K * scale`
+        // once per op in the neighborhood.
+        let expected = ops.len() as f32 * (K as f32) * scale;
+        assert!(
+            expected > 0.0,
+            "fixture must stay in the ReLU's positive branch"
+        );
+        for (j, &h) in hidden.iter().enumerate() {
+            assert!(
+                (h - expected).abs() < 1e-2,
+                "hidden[{j}]: got {h}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn compute_candidate_embed_should_index_the_projection_by_both_hidden_lane_and_column() {
+        const LANE: usize = 2;
+        const COLUMN: usize = 6;
+
+        let mut head = SaturationHead::new();
+        head.candidate_proj_w[LANE][COLUMN] = 4.0;
+        let mut hidden = [0.0f32; HIDDEN_DIM];
+        hidden[LANE] = 3.0;
+
+        let embed = head.compute_candidate_embed(&hidden);
+
+        for (k, &v) in embed.iter().enumerate() {
+            let want = if k == COLUMN { 12.0 } else { 0.0 };
+            assert!(
+                (v - want).abs() < 1e-6,
+                "embed[{k}]: got {v}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn score_candidate_should_compose_forward_candidate_embed_and_bilinear_score() {
+        let backbone = test_backbone();
+        let mut head = SaturationHead::new();
+        head.randomize(13);
+
+        let neighborhood = [OpKind::Sqrt, OpKind::Neg];
+        let rule_embed = [0.3f32; EMBED_DIM];
+
+        let got = head.score_candidate(&backbone, &neighborhood, 0.4, &rule_embed);
+
+        let hidden = head.forward_candidate(&backbone, &neighborhood, 0.4);
+        let embed = head.compute_candidate_embed(&hidden);
+        let mask_features = head.compute_mask_features(&embed);
+        let want = head.bilinear_score(&mask_features, &rule_embed);
+
+        assert!(
+            (got - want).abs() < 1e-6,
+            "score_candidate must be forward_candidate -> compute_candidate_embed \
+             -> compute_mask_features -> bilinear_score; got {got}, want {want}"
+        );
+    }
+
+    #[test]
+    fn score_candidate_should_distinguish_different_budget_fractions() {
+        let backbone = test_backbone();
+        let mut head = SaturationHead::new();
+        head.randomize(21);
+        let neighborhood = [OpKind::Add];
+        let rule_embed = [0.5f32; EMBED_DIM];
+
+        let low = head.score_candidate(&backbone, &neighborhood, 0.0, &rule_embed);
+        let high = head.score_candidate(&backbone, &neighborhood, 1.0, &rule_embed);
+        assert!(
+            (low - high).abs() > 1e-6,
+            "distinct budget fractions should score differently: low={low}, high={high}"
         );
     }
 }

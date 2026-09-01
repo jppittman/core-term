@@ -15,10 +15,14 @@
 //! println!("Unions: {}, Saturated: {}", result.total_unions, result.saturated);
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
-use super::graph::EGraph;
+use super::candidate::{CandidateFeatures, CandidateKey, Firing};
+use super::graph::{AppBudgetSaturationStats, EGraph, RewriteTarget, SaturationStop};
 use super::node::EClassId;
+use crate::nnue::factored::EMBED_DIM;
+use crate::nnue::guide::{CandidateSummary, SaturationGuide};
 
 /// Result of a budget-limited saturation run.
 ///
@@ -241,6 +245,205 @@ pub fn achievable_cost_within_budget(
     (cost, result)
 }
 
+// ============================================================================
+// Guided saturation (docs/plans/2026-08-31-guide-design-revision.md §4/§5)
+// ============================================================================
+
+/// Guided-saturation ordering loop: score every surviving (post-dedup)
+/// candidate rewrite with `guide`, apply them in descending-score order, and
+/// repeat until a budget/quiescence/cap/timeout condition stops the run —
+/// mirroring [`EGraph::saturate_until_applications`]'s stop-reason contract
+/// exactly (same [`AppBudgetSaturationStats`] return shape), so a caller can
+/// compare guided and unguided runs directly.
+///
+/// # What this changes relative to unguided saturation
+///
+/// Unguided saturation (`saturate_until_applications`) applies every rule
+/// against every matching node it finds, in a fixed rule-then-class scan
+/// order, once per sweep — with no notion of "have I already resolved this
+/// exact (rule, class content) pair". This function instead, once per round:
+///
+/// 1. Enumerates every current match ([`EGraph::find_rewrite_matches`]).
+/// 2. Builds each match's [`CandidateKey`] (rule identity + canonical class
+///    content, via [`CandidateFeatures::observe`]) and skips any key already
+///    seen in an EARLIER round of this same call, without ever handing it to
+///    `guide` — the "dedup before scoring" step design doc §2.2/§4 measured
+///    as the dominant per-round cost (90.4% of raw matches are exactly this:
+///    an idempotent re-fire of an already-installed rewrite, from rules like
+///    `commutative`/`associative` that have no "already applied" check).
+/// 3. Scores the survivors in ONE batched [`SaturationGuide::score_candidates`]
+///    call (binding rule: batch per iteration, no incrementality work).
+/// 4. Applies them in descending-score order via
+///    [`EGraph::apply_single_rule`], checking the application budget, the
+///    wall-clock deadline, and the class cap after every single application
+///    — finer-grained than the unguided per-sweep check, since one guided
+///    round can apply many more candidates before its next full rescan.
+///
+/// A round in which every match is already a seen key (survivors empty, but
+/// the raw match set was not) is also treated as quiescence: without this,
+/// guided mode would loop, re-enumerating the same fully-deduped match set,
+/// until `max_iters` or `timeout` — a `SaturationStop` that misreports "ran
+/// out of budget/time" for a graph that had, in truth, nothing left to try.
+///
+/// # Approximation, stated plainly (mirrors `egraph::candidate`'s own note)
+///
+/// A `node_idx` recorded when a round's matches were enumerated can go stale
+/// mid-round: applying an earlier, higher-scored candidate in the same round
+/// may rebuild/renumber the e-class a later candidate's `node_idx` pointed
+/// into. `apply_single_rule` re-fetches the node at that index and re-checks
+/// the rule against it before doing anything, so a stale index either still
+/// matches (no problem) or fails to match and the call is a safe no-op —
+/// never a wrong effect. The missed opportunity, if any, is picked up on the
+/// next round's rescan. `budget_fraction`'s `application_ordinal` is
+/// similarly a per-round approximation (the cumulative application count at
+/// the START of scoring, shared by every candidate scored that round, not
+/// each candidate's own eventual firing order) — exact per-candidate ordinals
+/// would require scoring one candidate at a time, which the batch-per-
+/// iteration binding rule above rules out for v1.
+///
+/// # Unguided mode is untouched
+///
+/// This function is purely additive: it calls only [`EGraph`]'s existing
+/// public API (`find_rewrite_matches`, `apply_single_rule`, `provenance`,
+/// `num_classes`) and does not modify `saturate_until_applications`, `batch`,
+/// or any other unguided path. See `tests::guided::unguided_mode_is_bit_
+/// identical_to_before_this_change` for the determinism regression this
+/// claim is pinned by.
+///
+/// # Panics
+///
+/// - If `guide.score_candidates` returns a different number of scores than
+///   candidates given, or any non-finite score (NO SILENT FAILURES: a guide
+///   bug must not silently corrupt move ordering).
+/// - If a match fires a `rule_idx` for which `rule_embeds` has no entry —
+///   the caller is responsible for supplying one embedding per registered
+///   rule.
+pub fn saturate_guided_until_applications<G: SaturationGuide>(
+    egraph: &mut EGraph,
+    guide: &G,
+    rule_embeds: &[[f32; EMBED_DIM]],
+    max_total_applications: usize,
+    max_iters: usize,
+    max_classes: usize,
+    timeout: Duration,
+) -> AppBudgetSaturationStats {
+    let start = Instant::now();
+    let mut iterations = 0usize;
+    let mut total_unions = 0usize;
+    let mut seen_keys: HashSet<CandidateKey> = HashSet::new();
+
+    let stop = 'outer: loop {
+        if egraph.provenance().application_count() >= max_total_applications {
+            break SaturationStop::ApplicationBudget;
+        }
+        if iterations >= max_iters {
+            break SaturationStop::IterationCeiling;
+        }
+        if start.elapsed() >= timeout {
+            break SaturationStop::Timeout;
+        }
+        if egraph.num_classes() > max_classes {
+            break SaturationStop::ClassCap;
+        }
+        iterations += 1;
+
+        let matches = egraph.find_rewrite_matches();
+        if matches.is_empty() {
+            break SaturationStop::Quiesced;
+        }
+
+        // Dedup BEFORE scoring (§2.2/§4): the ordinal recorded is a
+        // per-round approximation (see doc above), used only for the
+        // budget_fraction feature, never for correctness.
+        let ordinal = egraph.provenance().application_count() as u64;
+        let mut survivors: Vec<(RewriteTarget, CandidateFeatures)> = Vec::new();
+        for target in matches {
+            let firing = Firing {
+                rule_idx: target.rule_idx,
+                match_root: target.class_id,
+                application_ordinal: ordinal,
+                registered_budget: max_total_applications,
+            };
+            let features = CandidateFeatures::observe(egraph, &firing);
+            if seen_keys.insert(features.key.clone()) {
+                survivors.push((target, features));
+            }
+        }
+
+        if survivors.is_empty() {
+            break SaturationStop::Quiesced;
+        }
+
+        // Batch-score (never one candidate at a time — binding rule).
+        let summaries: Vec<CandidateSummary> = survivors
+            .iter()
+            .map(|(target, features)| {
+                let rule_embed = *rule_embeds.get(target.rule_idx).unwrap_or_else(|| {
+                    panic!(
+                        "saturate_guided_until_applications: rule_embeds has {} entries, \
+                         but a match fired rule_idx {} — the caller must supply one \
+                         embedding per registered rule",
+                        rule_embeds.len(),
+                        target.rule_idx
+                    )
+                });
+                CandidateSummary::new(features, rule_embed)
+            })
+            .collect();
+        let scores = guide.score_candidates(&summaries);
+        assert_eq!(
+            scores.len(),
+            survivors.len(),
+            "SaturationGuide::score_candidates must return exactly one score per \
+             candidate — got {} scores for {} candidates",
+            scores.len(),
+            survivors.len()
+        );
+        for &s in &scores {
+            assert!(
+                s.is_finite(),
+                "SaturationGuide produced a non-finite score ({s}) — fail loud rather \
+                 than let NaN/inf silently corrupt move ordering"
+            );
+        }
+
+        // Order descending by score; ties keep match-enumeration order
+        // (`sort_by` is stable) for determinism given a fixed guide.
+        let mut order: Vec<usize> = (0..survivors.len()).collect();
+        order.sort_by(|&a, &b| {
+            scores[b]
+                .partial_cmp(&scores[a])
+                .expect("scores were just asserted finite above")
+        });
+
+        // Apply in that order, budget/deadline/cap-checked per application —
+        // see the doc's "Approximation, stated plainly" section for why a
+        // stale `node_idx` mid-round is safe rather than silently wrong.
+        for idx in order {
+            if egraph.provenance().application_count() >= max_total_applications {
+                break 'outer SaturationStop::ApplicationBudget;
+            }
+            if start.elapsed() >= timeout {
+                break 'outer SaturationStop::Timeout;
+            }
+            let target = survivors[idx].0;
+            if egraph.apply_single_rule(target.rule_idx, target.class_id, target.node_idx) {
+                total_unions += 1;
+            }
+            if egraph.num_classes() > max_classes {
+                break 'outer SaturationStop::ClassCap;
+            }
+        }
+    };
+
+    AppBudgetSaturationStats {
+        iterations,
+        total_unions,
+        applications: egraph.provenance().application_count(),
+        stop,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +547,212 @@ mod tests {
         };
 
         assert!((result.growth_ratio() - 1.5).abs() < 0.01);
+    }
+}
+
+// ============================================================================
+// Guided-saturation tests (docs/plans/2026-08-31-guide-design-revision.md
+// §4/§5 — task 2/4 of the phase3-guide wiring round)
+// ============================================================================
+
+#[cfg(test)]
+mod guided_tests {
+    use super::*;
+    use crate::egraph::{ENode, Rewrite, ops};
+    use crate::math::algebra::Commutative;
+    use crate::nnue::guide::{CandidateSummary, SaturationGuide};
+
+    /// A one-rule e-graph whose single match will grow the matched class's
+    /// own content on the very first firing (`x+y` gains a `y+x` sibling) —
+    /// exactly the idempotent-refire shape §2.2 measured: `find_rewrite_
+    /// matches` keeps reporting a non-empty match set forever (both `x+y`
+    /// and `y+x` always match `Commutative`), so nothing but candidate-key
+    /// dedup can ever stop this loop short of `max_iters`/`timeout`.
+    fn commutative_only_egraph() -> EGraph {
+        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
+        let mut eg = EGraph::with_rules(rules);
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, y],
+        });
+        eg
+    }
+
+    /// Records how many candidates each `score_candidates` call received;
+    /// scores everything `0.0` (ordering is not under test here).
+    struct SpyGuide {
+        calls: std::cell::RefCell<Vec<usize>>,
+    }
+
+    impl SaturationGuide for SpyGuide {
+        fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
+            self.calls.borrow_mut().push(candidates.len());
+            vec![0.0; candidates.len()]
+        }
+    }
+
+    #[test]
+    fn dedup_should_keep_the_guide_from_ever_rescoring_an_already_seen_candidate_key() {
+        let mut eg = commutative_only_egraph();
+        let rule_embeds = [[0.0f32; EMBED_DIM]];
+        let guide = SpyGuide {
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+
+        // A generous budget/iteration/time ceiling: if dedup were broken (or
+        // absent), `find_rewrite_matches` reporting a permanently non-empty
+        // match set would drive this loop to `max_iters` scoring the same
+        // candidate every round, not to quiescence in a handful of rounds.
+        let stats = saturate_guided_until_applications(
+            &mut eg,
+            &guide,
+            &rule_embeds,
+            1_000,
+            50,
+            2_000,
+            Duration::from_secs(5),
+        );
+
+        assert_eq!(
+            stats.stop,
+            SaturationStop::Quiesced,
+            "a single-rule commutative e-graph has nothing left to try once its one \
+             candidate key has fired and settled — dedup-driven quiescence, not an \
+             exhausted iteration/time budget: {stats:?}"
+        );
+        assert!(
+            stats.iterations <= 3,
+            "expected quiescence within a couple of rounds once every candidate key \
+             has been seen, got {} iterations",
+            stats.iterations
+        );
+
+        let calls = guide.calls.into_inner();
+        assert!(
+            !calls.is_empty(),
+            "the guide should have been asked to score at least once"
+        );
+        let total_scored: usize = calls.iter().sum();
+        assert!(
+            total_scored <= 2,
+            "dedup must keep the total number of scored candidates tiny even though \
+             find_rewrite_matches keeps finding a non-empty (but already-resolved) \
+             match set every round forever without it — calls were {calls:?}"
+        );
+    }
+
+    /// Two independent rules, each with exactly one match available in the
+    /// same round, scored by a guide that reads the rule embedding directly
+    /// (so the test controls which candidate scores higher without needing
+    /// the real NNUE encoding).
+    fn two_rule_egraph() -> EGraph {
+        let rules: Vec<Box<dyn Rewrite>> =
+            vec![Commutative::new(&ops::Add), Commutative::new(&ops::Mul)];
+        let mut eg = EGraph::with_rules(rules);
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, y],
+        });
+        let a = eg.add(ENode::Var(2));
+        let b = eg.add(ENode::Var(3));
+        eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![a, b],
+        });
+        eg
+    }
+
+    struct ScoreByRuleEmbedFirstLane;
+
+    impl SaturationGuide for ScoreByRuleEmbedFirstLane {
+        fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
+            candidates.iter().map(|c| c.rule_embed[0]).collect()
+        }
+    }
+
+    #[test]
+    fn ordering_should_apply_the_higher_scored_candidate_before_the_lower_scored_one() {
+        let mut eg = two_rule_egraph();
+        // rule 0 (Add) scores low, rule 1 (Mul) scores high.
+        let rule_embeds = [[1.0f32; EMBED_DIM], [10.0f32; EMBED_DIM]];
+
+        let stats = saturate_guided_until_applications(
+            &mut eg,
+            &ScoreByRuleEmbedFirstLane,
+            &rule_embeds,
+            1_000,
+            50,
+            2_000,
+            Duration::from_secs(5),
+        );
+        assert!(
+            stats.applications >= 2,
+            "both the Add and Mul candidates should have fired: {stats:?}"
+        );
+
+        let mut records: Vec<_> = eg.provenance().applications().collect();
+        records.sort_by_key(|(id, _)| id.as_u64());
+        assert!(
+            records.len() >= 2,
+            "expected at least 2 recorded applications, got {}",
+            records.len()
+        );
+        assert_eq!(
+            records[0].1.rule_idx, 1,
+            "the higher-scored (Mul, rule_idx=1) candidate must be applied first"
+        );
+        assert_eq!(
+            records[1].1.rule_idx, 0,
+            "the lower-scored (Add, rule_idx=0) candidate must be applied second"
+        );
+    }
+
+    /// `saturate_guided_until_applications` is purely additive: it calls only
+    /// `EGraph`'s existing public API and does not touch
+    /// `saturate_until_applications` or any other unguided path. This test
+    /// pins that the unguided path stays deterministic (same cost, same
+    /// extracted-arena size) across two independent runs over identical
+    /// input — the regression this change must not disturb.
+    #[test]
+    fn unguided_saturate_until_applications_stays_deterministic() {
+        use crate::egraph::CostModel;
+        use crate::math::all_rules;
+        use pixelflow_ir::{ExprArena, ExprId, OpKind};
+
+        fn build() -> (ExprArena, ExprId) {
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let s = a.push_binary(OpKind::Add, x, y);
+            let s2 = a.push_binary(OpKind::Mul, s, s);
+            let two = a.push_const(2.0);
+            let ts = a.push_binary(OpKind::Mul, two, s);
+            let out = a.push_binary(OpKind::Add, s2, ts);
+            (a, out)
+        }
+
+        fn digest() -> (usize, usize, SaturationStop) {
+            let (arena, root) = build();
+            let mut eg = EGraph::with_rules(all_rules());
+            let root_class = eg.add_arena(&arena, root);
+            let stats =
+                eg.saturate_until_applications(2_000, 200, 5_000, Duration::from_secs(30));
+            let costs = CostModel::latency_prior();
+            let (out_arena, _out_root, cost) = eg.extract_best(root_class, &costs);
+            (cost, out_arena.len(), stats.stop)
+        }
+
+        let (cost1, len1, stop1) = digest();
+        let (cost2, len2, stop2) = digest();
+        assert_eq!(cost1, cost2, "unguided extraction cost must be deterministic");
+        assert_eq!(
+            len1, len2,
+            "unguided extracted-arena size must be deterministic"
+        );
+        assert_eq!(stop1, stop2, "unguided stop reason must be deterministic");
     }
 }

@@ -1,20 +1,54 @@
-//! # Saturation Guide (Phase 3 — not started)
+//! # Saturation Guide (Phase 3 — wiring in progress)
 //!
-//! Given an e-graph's current state and a set of candidate rewrite-rule
-//! applications, produce per-candidate move-ordering scores to guide equality
-//! saturation. That sentence is the entire contract; see
-//! `docs/plans/2026-07-07-guided-saturation-redesign.md` for the design this
-//! module exists to satisfy once training lands, purely supervised on
-//! hindsight rule-provenance labels from `crate::egraph::labeler` — no
-//! REINFORCE, no self-play.
+//! Given a set of candidate rewrite-rule applications, produce per-candidate
+//! move-ordering scores to guide equality saturation. That sentence is the
+//! entire contract; see `docs/plans/2026-07-07-guided-saturation-redesign.md`
+//! for the design this module exists to satisfy once training lands, purely
+//! supervised on hindsight rule-provenance labels from `crate::egraph::labeler`
+//! — no REINFORCE, no self-play.
 //!
-//! **This module is inert today.** `GraphAccumulator::new()` appears in
-//! production only as an unused placeholder value; nothing calls
-//! [`SaturationGuide::score_candidates`] outside this module's own tests. The
-//! public surface below — the trait and [`Guide`]'s constructor — is
-//! deliberately the entire contract: every mask/graph/rule-projection weight,
-//! the VSA accumulator, and the bilinear scorer are private machinery behind
-//! it (`accumulator.rs`, `scoring.rs`), so a future Phase-3 trainer has one
+//! ## Contract revision, v1 -> v2 (2026-09-01, design doc §4)
+//!
+//! **Loud note, per that task's explicit instruction: this trait's shape
+//! changed.** The original contract scored a candidate against a *whole-graph*
+//! summary (`GraphSummary`, wrapping [`GraphAccumulator`]) plus a bare rule
+//! embedding (`RuleCandidate`). `docs/plans/2026-08-31-guide-design-revision.md`
+//! §4 argues from measurement, not taste, that this is the wrong granularity:
+//! the dominant per-round cost is candidate-level deduplication (90.4% of
+//! scored candidates commit no change — §2.2), which is a property of *one
+//! rule instance at one e-class*, not of the graph as a whole; and the
+//! label-semantics gap (§3) is per-rule, not per-graph. [`SaturationGuide`]
+//! now scores [`CandidateSummary`] — rule identity + this match's own one-hop
+//! e-class neighborhood + budget state, mirroring
+//! [`crate::egraph::candidate::CandidateFeatures`] (the same object minted for
+//! the strict-label training pipeline, `gen_strict_labels`) field for field —
+//! rather than [`GraphSummary`]/[`RuleCandidate`].
+//!
+//! `GraphAccumulator` itself is **not deleted** (segregation rule,
+//! `docs/plans/2026-08-31-guide-design-revision.md` §4 last paragraph: "the
+//! accumulator's whole-graph summary remains the right shape for the
+//! *extraction-cost* Judge, a genuinely different question from 'should this
+//! match fire now'"). It stays exactly where it was (`accumulator.rs`), still
+//! exercised by its own characterization tests and by
+//! `scoring::SaturationHead::mask_score_all_rules_graph` (also kept, also
+//! unused by [`SaturationGuide`] as of this revision) — a live roadmap seam
+//! for a future whole-graph Judge, not a Guide-scoring code path. The
+//! `GraphSummary`/`RuleCandidate` *wrapper types* that named that path as part
+//! of the public [`SaturationGuide`] contract are removed, since nothing
+//! outside this module ever constructed them (confirmed by grep before this
+//! change) and keeping unused public wrapper types around a live private
+//! implementation is exactly the "dozen public methods to pick from" this
+//! module's original doc said it wanted to avoid.
+//!
+//! **This module is still inert in production.** Nothing calls
+//! [`SaturationGuide::score_candidates`] outside this module's own tests and
+//! `egraph::saturate`'s guided-mode ordering hook's own tests — production
+//! saturation (`EGraph::saturate`, `saturate_with_limits`,
+//! `saturate_until_applications`) is unguided and untouched by this revision.
+//! The public surface below — the trait, [`CandidateSummary`], and [`Guide`]'s
+//! constructor — is deliberately the entire contract: every mask/rule-
+//! projection/candidate-tower weight and the bilinear scorer are private
+//! machinery behind it (`scoring.rs`), so a future Phase-3 trainer has one
 //! seam to fill in rather than a dozen public methods to pick from.
 //!
 //! Kept, not deleted: the 2026-08-17 disposition inventory confirmed zero
@@ -37,10 +71,11 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use accumulator::GraphAccumulator;
 use scoring::SaturationHead;
 
+use crate::egraph::candidate::CandidateFeatures;
 use crate::nnue::factored::{EMBED_DIM, ExprNnue, K};
+use pixelflow_ir::OpKind;
 
 /// Cyclic rotation by `amount % K` positions (generalised VSA permutation).
 ///
@@ -64,30 +99,60 @@ fn shift1(emb: &[f32; K]) -> [f32; K] {
     shift_by(emb, 1)
 }
 
-/// Opaque view of e-graph state, as [`SaturationGuide::score_candidates`]
-/// consumes it. Wraps a [`GraphAccumulator`] — the VSA encoding is private;
-/// nothing outside this module names that type.
-pub struct GraphSummary {
-    pub(crate) gacc: GraphAccumulator,
-}
-
 /// One candidate rewrite-rule application, as
-/// [`SaturationGuide::score_candidates`] scores it. Wraps a pre-encoded rule
-/// embedding (see `scoring::SaturationHead::encode_rule_from_arena`, the
-/// arena-template encoder that replaced the legacy hand-crafted
-/// `RuleFeatures` path).
-pub struct RuleCandidate {
+/// [`SaturationGuide::score_candidates`] scores it (design doc §4 — see the
+/// module doc's "Contract revision" section for what this replaced).
+///
+/// Deliberately field-for-field the same information as
+/// [`crate::egraph::candidate::CandidateFeatures`] plus a pre-encoded rule
+/// embedding, rather than that type itself: `CandidateFeatures` lives in
+/// `egraph::candidate` because it doubles as the saturation loop's dedup key
+/// (see that module's doc), and this crate's rule embeddings are an
+/// NNUE-specific encoding (`scoring::SaturationHead::encode_rule_from_arena`)
+/// that `egraph::candidate` has no business knowing about — keeping them
+/// separate keeps the dedup-key module free of NNUE machinery it doesn't own.
+/// [`CandidateSummary::new`] is the single seam that combines the two, so
+/// there is exactly one place a caller can get this wrong.
+pub struct CandidateSummary {
     pub(crate) rule_embed: [f32; EMBED_DIM],
+    pub(crate) neighborhood_ops: Vec<OpKind>,
+    pub(crate) budget_fraction: f32,
 }
 
-/// Given the current e-graph state and a set of candidate rewrite-rule
-/// applications, produce per-candidate move-ordering scores.
+impl CandidateSummary {
+    /// Build a `CandidateSummary` from a candidate-local feature (see
+    /// [`crate::egraph::candidate::CandidateFeatures::observe`]) plus a
+    /// pre-encoded rule embedding.
+    ///
+    /// The rule embedding is supplied separately rather than encoded here:
+    /// its encoding (`SaturationHead::encode_rule_from_arena`) is a pure
+    /// function of the rule's LHS/RHS templates, independent of any e-graph
+    /// state, so a caller scoring many candidates for the same rule computes
+    /// it once per rule per episode, not once per candidate.
+    #[must_use]
+    pub fn new(features: &CandidateFeatures, rule_embed: [f32; EMBED_DIM]) -> Self {
+        Self {
+            rule_embed,
+            neighborhood_ops: features.neighborhood_ops.clone(),
+            budget_fraction: features.budget_fraction(),
+        }
+    }
+}
+
+/// Given a batch of candidate rewrite-rule applications, produce per-candidate
+/// move-ordering scores.
 ///
 /// The only public contract of the saturation head. See the module doc for
-/// why an implementation of this trait is, today, necessarily untrained.
+/// why an implementation of this trait is, today, necessarily untrained, and
+/// for the v1->v2 contract revision this signature reflects.
+///
+/// Scoring is batched deliberately (design doc §5/binding rule: "batch per
+/// iteration, no incrementality work") — a caller collects one saturation
+/// round's surviving (post-dedup) candidates and scores them in one call,
+/// never one candidate at a time.
 pub trait SaturationGuide {
-    /// Score `candidates` against `graph`, one score per candidate, in order.
-    fn score_candidates(&self, graph: &GraphSummary, candidates: &[RuleCandidate]) -> Vec<f32>;
+    /// Score `candidates`, one score per candidate, in order.
+    fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32>;
 }
 
 /// The (untrained, Phase-3-gated) saturation guide: a snapshot of the shared
@@ -117,10 +182,18 @@ impl Guide {
 }
 
 impl SaturationGuide for Guide {
-    fn score_candidates(&self, graph: &GraphSummary, candidates: &[RuleCandidate]) -> Vec<f32> {
-        let rule_embeds: Vec<[f32; EMBED_DIM]> = candidates.iter().map(|c| c.rule_embed).collect();
-        self.head
-            .mask_score_all_rules_graph(&self.backbone, &graph.gacc, &rule_embeds)
+    fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
+        candidates
+            .iter()
+            .map(|c| {
+                self.head.score_candidate(
+                    &self.backbone,
+                    &c.neighborhood_ops,
+                    c.budget_fraction,
+                    &c.rule_embed,
+                )
+            })
+            .collect()
     }
 }
 
@@ -206,28 +279,28 @@ mod tests {
     }
 
     // ========================================================================
-    // Guide::score_candidates
+    // Guide::score_candidates (candidate-local contract, v2)
     // ========================================================================
+
+    fn sample_candidate(rule_embed_fill: f32, neighborhood: Vec<OpKind>) -> CandidateSummary {
+        CandidateSummary {
+            rule_embed: [rule_embed_fill; EMBED_DIM],
+            neighborhood_ops: neighborhood,
+            budget_fraction: 0.25,
+        }
+    }
 
     #[test]
     fn guide_score_candidates_should_return_one_finite_score_per_candidate() {
         let backbone = ExprNnue::new_random(1);
         let guide = Guide::new_random(backbone, 2);
 
-        let mut gacc = GraphAccumulator::new();
-        gacc.node_count = 1;
-        let graph = GraphSummary { gacc };
-
         let candidates = alloc::vec![
-            RuleCandidate {
-                rule_embed: [0.1; EMBED_DIM],
-            },
-            RuleCandidate {
-                rule_embed: [0.9; EMBED_DIM],
-            },
+            sample_candidate(0.1, alloc::vec![OpKind::Add, OpKind::Mul]),
+            sample_candidate(0.9, alloc::vec![OpKind::Sqrt]),
         ];
 
-        let scores = guide.score_candidates(&graph, &candidates);
+        let scores = guide.score_candidates(&candidates);
         assert_eq!(scores.len(), candidates.len(), "one score per candidate");
         assert!(scores.iter().all(|s| s.is_finite()));
     }
@@ -236,9 +309,75 @@ mod tests {
     fn guide_score_candidates_should_return_empty_for_empty_candidates() {
         let backbone = ExprNnue::new_random(1);
         let guide = Guide::new_random(backbone, 2);
-        let graph = GraphSummary {
-            gacc: GraphAccumulator::new(),
+        assert!(guide.score_candidates(&[]).is_empty());
+    }
+
+    #[test]
+    fn guide_score_candidates_should_distinguish_different_neighborhoods() {
+        // Same rule embedding, different local neighborhoods: a Guide that
+        // collapsed candidate-local structure into a constant (e.g. reading
+        // only `rule_embed`) would score these identically.
+        let backbone = ExprNnue::new_random(5);
+        let guide = Guide::new_random(backbone, 9);
+
+        let candidates = alloc::vec![
+            sample_candidate(0.5, alloc::vec![OpKind::Add]),
+            sample_candidate(0.5, alloc::vec![OpKind::Sqrt, OpKind::Sqrt, OpKind::Sqrt]),
+        ];
+        let scores = guide.score_candidates(&candidates);
+        assert!(
+            (scores[0] - scores[1]).abs() > 1e-6,
+            "distinct neighborhoods should score differently: {scores:?}"
+        );
+    }
+
+    // ========================================================================
+    // CandidateSummary::new — contract round-trip with egraph::candidate
+    // ========================================================================
+
+    #[test]
+    fn candidate_summary_new_should_round_trip_features_and_rule_embed() {
+        use crate::egraph::candidate::Firing;
+        use crate::egraph::ops;
+        use crate::egraph::{ENode, EGraph, Rewrite};
+        use crate::math::algebra::Commutative;
+
+        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
+        let mut eg = EGraph::with_rules(rules);
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let sum = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, y],
+        });
+
+        let firing = Firing {
+            rule_idx: 0,
+            match_root: eg.find(sum),
+            application_ordinal: 5,
+            registered_budget: 20,
         };
-        assert!(guide.score_candidates(&graph, &[]).is_empty());
+        let features = CandidateFeatures::observe(&eg, &firing);
+        let rule_embed = [0.42f32; EMBED_DIM];
+
+        let summary = CandidateSummary::new(&features, rule_embed);
+
+        assert_eq!(summary.rule_embed, rule_embed);
+        assert_eq!(summary.neighborhood_ops, features.neighborhood_ops);
+        assert!((summary.budget_fraction - features.budget_fraction()).abs() < 1e-9);
+
+        // And the round-tripped summary scores identically to scoring the
+        // same neighborhood/budget/rule_embed directly through the head —
+        // i.e. `new` doesn't silently drop or reorder a field before it
+        // reaches the scorer.
+        let backbone = ExprNnue::new_random(3);
+        let guide = Guide::new_random(backbone, 4);
+        let via_summary = guide.score_candidates(&[summary])[0];
+        let direct = guide.score_candidates(&[CandidateSummary {
+            rule_embed,
+            neighborhood_ops: features.neighborhood_ops.clone(),
+            budget_fraction: features.budget_fraction(),
+        }])[0];
+        assert!((via_summary - direct).abs() < 1e-6);
     }
 }
