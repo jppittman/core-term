@@ -65,6 +65,7 @@
 //! here) and outside the extraction head's checkpoint format entirely.
 
 mod accumulator;
+pub mod linear;
 mod scoring;
 
 extern crate alloc;
@@ -113,16 +114,56 @@ fn shift1(emb: &[f32; K]) -> [f32; K] {
 /// separate keeps the dedup-key module free of NNUE machinery it doesn't own.
 /// [`CandidateSummary::new`] is the single seam that combines the two, so
 /// there is exactly one place a caller can get this wrong.
+///
+/// # Extension for the linear cold-start Guide (2026-09-01, design doc §5 task 2)
+///
+/// [`crate::nnue::guide::linear::LinearCandidateGuide`] deploys the same
+/// linear model `pixelflow-pipeline`'s `train_guide` trains — a per-rule
+/// bias, a bag-of-neighborhood-ops term, and a handful of scalar features
+/// keyed on `rule_idx`, the matched class's node count, and the originating
+/// episode's expression size, none of which the original (tower-only)
+/// contract carried. Rather than have `LinearCandidateGuide` reconstruct
+/// those from a second computation (the anti-drift rule this module's own
+/// doc states: "there is exactly one place a caller can get this wrong"),
+/// `CandidateSummary` carries them too — additively, alongside the fields
+/// [`scoring::SaturationHead`]'s tower already consumed. `rule_idx` and
+/// `match_class_node_count` come straight off `features.key` (already
+/// computed, nothing new to derive); `expr_node_count` has no home in
+/// [`CandidateFeatures`] (it's an episode-level constant, not part of any
+/// one candidate's dedup key) so [`CandidateSummary::new`] takes it as an
+/// explicit parameter from the caller, which already has it (the offline
+/// label-minting replay reads it off the arena; the live guided loop reads
+/// `EGraph::node_count()` at the episode's start — see
+/// `saturate_guided_until_applications`).
 pub struct CandidateSummary {
-    pub(crate) rule_embed: [f32; EMBED_DIM],
-    pub(crate) neighborhood_ops: Vec<OpKind>,
-    pub(crate) budget_fraction: f32,
+    pub rule_embed: [f32; EMBED_DIM],
+    pub neighborhood_ops: Vec<OpKind>,
+    pub budget_fraction: f32,
+    /// Index into the e-graph's rule list ([`CandidateKey::rule_idx`]) —
+    /// consumed by [`linear::LinearCandidateGuide`] and
+    /// [`linear::PerRuleRateGuide`], not by [`scoring::SaturationHead`]'s
+    /// tower (which reads only `rule_embed`).
+    pub rule_idx: usize,
+    /// Node count of the matched e-class's canonical content
+    /// ([`ClassContentKey::node_count`]) — `train_guide`'s
+    /// `log_match_class` feature, before the `log1p` the linear model
+    /// applies.
+    pub match_class_node_count: usize,
+    /// Node count of the episode's original root expression —
+    /// `train_guide`'s `log_expr_size` feature, before `log1p`. Constant
+    /// across every candidate scored in one episode; see the struct doc for
+    /// why it is a caller-supplied parameter rather than a
+    /// [`CandidateFeatures`] field.
+    pub expr_node_count: usize,
 }
 
 impl CandidateSummary {
     /// Build a `CandidateSummary` from a candidate-local feature (see
     /// [`crate::egraph::candidate::CandidateFeatures::observe`]) plus a
-    /// pre-encoded rule embedding.
+    /// pre-encoded rule embedding and the originating episode's expression
+    /// size (see the struct doc's "Extension for the linear cold-start
+    /// Guide" section for why the latter is a parameter here rather than a
+    /// `CandidateFeatures` field).
     ///
     /// The rule embedding is supplied separately rather than encoded here:
     /// its encoding (`SaturationHead::encode_rule_from_arena`) is a pure
@@ -130,11 +171,18 @@ impl CandidateSummary {
     /// state, so a caller scoring many candidates for the same rule computes
     /// it once per rule per episode, not once per candidate.
     #[must_use]
-    pub fn new(features: &CandidateFeatures, rule_embed: [f32; EMBED_DIM]) -> Self {
+    pub fn new(
+        features: &CandidateFeatures,
+        rule_embed: [f32; EMBED_DIM],
+        expr_node_count: usize,
+    ) -> Self {
         Self {
             rule_embed,
             neighborhood_ops: features.neighborhood_ops.clone(),
             budget_fraction: features.budget_fraction(),
+            rule_idx: features.key.rule_idx,
+            match_class_node_count: features.key.content.node_count(),
+            expr_node_count,
         }
     }
 }
@@ -287,6 +335,9 @@ mod tests {
             rule_embed: [rule_embed_fill; EMBED_DIM],
             neighborhood_ops: neighborhood,
             budget_fraction: 0.25,
+            rule_idx: 0,
+            match_class_node_count: 1,
+            expr_node_count: 1,
         }
     }
 
@@ -360,16 +411,24 @@ mod tests {
         let features = CandidateFeatures::observe(&eg, &firing);
         let rule_embed = [0.42f32; EMBED_DIM];
 
-        let summary = CandidateSummary::new(&features, rule_embed);
+        let summary = CandidateSummary::new(&features, rule_embed, 42);
 
         assert_eq!(summary.rule_embed, rule_embed);
         assert_eq!(summary.neighborhood_ops, features.neighborhood_ops);
         assert!((summary.budget_fraction - features.budget_fraction()).abs() < 1e-9);
+        assert_eq!(summary.rule_idx, features.key.rule_idx);
+        assert_eq!(
+            summary.match_class_node_count,
+            features.key.content.node_count()
+        );
+        assert_eq!(summary.expr_node_count, 42);
 
         // And the round-tripped summary scores identically to scoring the
         // same neighborhood/budget/rule_embed directly through the head —
         // i.e. `new` doesn't silently drop or reorder a field before it
-        // reaches the scorer.
+        // reaches the scorer. (The tower reads only rule_embed/neighborhood/
+        // budget, so the new rule_idx/match_class/expr_node_count fields are
+        // free to differ here without affecting this equality.)
         let backbone = ExprNnue::new_random(3);
         let guide = Guide::new_random(backbone, 4);
         let via_summary = guide.score_candidates(&[summary])[0];
@@ -377,6 +436,9 @@ mod tests {
             rule_embed,
             neighborhood_ops: features.neighborhood_ops.clone(),
             budget_fraction: features.budget_fraction(),
+            rule_idx: 0,
+            match_class_node_count: 0,
+            expr_node_count: 0,
         }])[0];
         assert!((via_summary - direct).abs() < 1e-6);
     }

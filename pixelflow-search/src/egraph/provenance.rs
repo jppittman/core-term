@@ -501,10 +501,10 @@ pub fn derivation_ancestors_tight(
     // nodes get pushed onto `node_stack` in the first place, via
     // `nodes_to_follow` below).
     let follow_node = |node: ENodeId,
-                        result: &mut BTreeSet<ApplicationId>,
-                        visited_nodes: &mut BTreeSet<ENodeId>,
-                        visited_classes: &mut BTreeSet<EClassId>,
-                        class_stack: &mut Vec<EClassId>| {
+                       result: &mut BTreeSet<ApplicationId>,
+                       visited_nodes: &mut BTreeSet<ENodeId>,
+                       visited_classes: &mut BTreeSet<EClassId>,
+                       class_stack: &mut Vec<EClassId>| {
         if !visited_nodes.insert(node) {
             return;
         }
