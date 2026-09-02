@@ -36,6 +36,7 @@ pub mod ops;
 pub mod optimizer;
 pub mod provenance;
 pub mod rewrite;
+pub mod rule_order;
 pub mod rules;
 pub mod saturate;
 
