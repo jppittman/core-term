@@ -156,3 +156,17 @@ path = "src/bin/strict_label_output_class_recount.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "phase3_round2_unguided_curves"
+path = "src/bin/phase3_round2_unguided_curves.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "phase3_round2_new_rules"
+path = "src/bin/phase3_round2_new_rules.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false

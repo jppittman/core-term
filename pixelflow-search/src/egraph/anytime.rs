@@ -84,6 +84,12 @@ pub struct AnytimeCheckpoint {
     pub app_actual: usize,
     /// Cumulative completed sweeps at the sample (diagnostic only).
     pub sweeps: usize,
+    /// Cumulative rule-match ATTEMPTS at the sample
+    /// ([`EGraph::total_evals`]) — "raw matches enumerated", the
+    /// denominator Round 2's Guide-overhead-flatness precondition needs
+    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1).
+    /// Diagnostic: nothing in the curve's y-axis reads it.
+    pub evals_actual: usize,
     /// E-class count at the sample.
     pub classes: usize,
     /// E-node count at the sample.
@@ -253,6 +259,7 @@ pub fn run_anytime_curve(
             app_target: target,
             app_actual: out.stats.applications as usize,
             sweeps: sweeps_total,
+            evals_actual: egraph.total_evals(),
             classes: egraph.num_classes(),
             nodes: egraph.node_count(),
             cost: out.cost,

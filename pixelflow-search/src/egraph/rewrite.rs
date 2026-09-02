@@ -1,9 +1,27 @@
 //! Rewrite rule infrastructure.
 
+use alloc::sync::Arc;
+
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::ops::Op;
 use pixelflow_ir::arena::{ExprArena, ExprId};
+
+/// A rewrite RHS pattern, shared.
+///
+/// [`ExprArena`] has no `Debug` impl (it is not a debugging-facing type
+/// anywhere else in the codebase), but [`RewriteAction`] derives one for
+/// assertion failures and test output — so `Instantiate`'s pattern arena is
+/// wrapped rather than forcing a `Debug` impl onto `ExprArena` itself,
+/// which would be a wider API surface change than this justifies.
+#[derive(Clone)]
+pub struct TemplateArena(pub Arc<ExprArena>);
+
+impl core::fmt::Debug for TemplateArena {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "TemplateArena(..)")
+    }
+}
 
 /// Build a rewrite-rule template directly into an [`ExprArena`], returning the
 /// root [`ExprId`]. The DSL mirrors the structural pattern: `var N` / `cst V` /
@@ -140,6 +158,34 @@ pub enum RewriteAction {
     /// sub-expressions so equality saturation keeps pushing the derivative
     /// toward the leaves until it dissolves into ordinary arithmetic.
     Differentiate { inner: ENode, var: u8 },
+
+    /// Instantiate `template`'s subtree rooted at `root` bottom-up, reading
+    /// each `Var(i)` leaf as `bindings[i]` (an existing e-class — no new
+    /// node is created for a metavariable, exactly as a real rewrite
+    /// target), building every internal node via `EGraph::add`, then
+    /// unioning the result with the class that matched the pattern's LHS.
+    ///
+    /// # Why this is the only action Round 2 adds
+    ///
+    /// A mechanical composition `A∘B` has no fixed shape — it is *data* (an
+    /// RHS pattern discovered at harness startup, see
+    /// [`super::template::TemplateRewrite`]), not a hand-written
+    /// combinator. And a hand-written rule whose RHS is already spelled as
+    /// an `rhs_template` gains nothing from a bespoke variant that rebuilds
+    /// the same shape a second way: two spellings of one shape is exactly
+    /// the drift this codebase's one-constructor rule exists to prevent, and
+    /// the second spelling is the one no oracle test reads. So
+    /// `crate::math::round2_rules` — 33 harness-only rules — produces this
+    /// action and nothing else, and this enum grows by one variant rather
+    /// than by twelve.
+    Instantiate {
+        /// The RHS pattern.
+        template: TemplateArena,
+        /// Which node of `template` is the pattern's root.
+        root: ExprId,
+        /// `bindings[i]` is the e-class the pattern's `Var(i)` names.
+        bindings: alloc::vec::Vec<EClassId>,
+    },
 }
 
 /// A rewrite rule that can be applied to e-graph nodes.
