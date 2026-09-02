@@ -93,7 +93,7 @@ fn assert_jit_matches_oracle(
     skip: impl Fn(&[f32; 4]) -> bool,
 ) {
     let tol = expression_tolerance(arena, root);
-    let jit = jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME)
+    let jit = jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT)
         .unwrap_or_else(|e| panic!("{name}: kernel failed to compile on this backend: {e}"));
     let bindings = BindingTable::empty();
     let mut checked = 0usize;

@@ -25,7 +25,7 @@ pub mod kind;
 pub mod traits;
 pub mod variance;
 
-pub use variance::{LoopShape, Variance};
+pub use variance::{LatticeShape, Variance};
 
 pub mod arena;
 

@@ -396,7 +396,7 @@ fn jit_wrapper_tokens() -> TokenStream {
                     ::pixelflow_core::__macro::codegen::jit_cache::compile(
                         &self.ir.0,
                         self.ir.1,
-                        ::pixelflow_core::__macro::ir::LoopShape::POINT,
+                        ::pixelflow_core::__macro::ir::LatticeShape::POINT,
                     )
                         .expect("kernel JIT compilation failed")
                 })

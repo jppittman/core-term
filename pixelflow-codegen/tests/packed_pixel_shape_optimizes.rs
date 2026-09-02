@@ -56,8 +56,11 @@ fn packed_shape_gets_cse() {
     let root = a.push_binary(OpKind::BitOr, or2, lanes[3]);
 
     let before = reachable(&a, root);
-    let out =
-        pixelflow_search::runtime::optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME);
+    let out = pixelflow_search::runtime::optimize_runtime_arena(
+        &a,
+        root,
+        pixelflow_ir::LatticeShape::POINT,
+    );
     match out {
         None => panic!("optimizer BAILED on the packed shape ({before} nodes)"),
         Some(res) => {

@@ -43,7 +43,7 @@ fn golden_for(ch: char, size: usize) {
     let optimized = pixelflow_search::runtime::optimize_runtime_arena(
         arena,
         root,
-        pixelflow_ir::LoopShape::FRAME,
+        pixelflow_ir::LatticeShape::new([size as u32, size as u32, 1, 1]),
     );
     let (lowered, lroot) = match optimized.as_deref() {
         Some((a, r)) => (a.clone(), *r),

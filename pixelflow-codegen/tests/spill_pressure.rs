@@ -31,7 +31,7 @@ fn assert_jit_matches_interp(arena: &ExprArena, root: ExprId, label: &str) -> u3
     let result =
         compile(arena, root).unwrap_or_else(|e| panic!("{label}: JIT compile failed: {e}"));
     let spills = result.spill_count;
-    let jit = JitManifold::new(result.code, pixelflow_ir::LoopShape::FRAME);
+    let jit = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT);
     let coords = [-2.5f32, -1.0, -0.3, 0.0, 0.4, 1.0, 1.7, 3.0];
     for &x in &coords {
         for &y in &coords {
@@ -238,7 +238,7 @@ fn frame_mode_beyond_red_zone() {
         "scenario stayed inside the red zone (spill_bytes={}), not testing frame mode",
         result.spill_bytes
     );
-    let jit = JitManifold::new(result.code, pixelflow_ir::LoopShape::FRAME);
+    let jit = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT);
     for &(x, y) in &[(0.3f32, -1.2f32), (2.0, 0.7), (-0.9, 3.1)] {
         let want = eval_scalar(&a, root, &[x, y, 0.1, 0.9], &BindingTable::empty());
         let got = jit.eval_at(Point4::new(x, y, 0.1, 0.9));
