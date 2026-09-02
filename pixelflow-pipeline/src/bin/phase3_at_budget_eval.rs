@@ -78,6 +78,7 @@ use serde::{Deserialize, Serialize};
 
 use pixelflow_ir::{ExprArena, ExprId};
 use pixelflow_pipeline::journal::append_record;
+use pixelflow_pipeline::schema::fnv1a64_hex;
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_search::egraph::{
     APP_CHECKPOINT_GRID, AnytimeCurveOutput, ApplicationId, CostModel, EClassId, EGraph, ENode,
@@ -196,6 +197,33 @@ const STRUCTURAL_RULES: [&str; 6] = [
 
 const ARM_NAMES: [&str; 3] = ["unguided", "control", "linear"];
 
+/// Everything that changes what a row MEANS, as one JSON blob written
+/// beside the resumable JSONL. Paths alone would not do: a checkpoint file
+/// can be retrained in place under the same name, so the guide artifacts are
+/// identified by content hash.
+fn config_fingerprint(args: &Args, guided_grid: &[usize], dev_corpus: &Path) -> String {
+    let hash_of = |path: &Path| -> String {
+        let bytes = std::fs::read(path)
+            .unwrap_or_else(|e| panic!("cannot read {} to fingerprint it: {e}", path.display()));
+        fnv1a64_hex(&bytes)
+    };
+    format!(
+        "{{\n  \"guided_grid\": {guided_grid:?},\n  \"checkpoint\": {:?},\n  \
+         \"checkpoint_fnv64\": {:?},\n  \"train_guide_report\": {:?},\n  \
+         \"train_guide_report_fnv64\": {:?},\n  \"dev_corpus\": {:?},\n  \
+         \"dev_corpus_fnv64\": {:?},\n  \"classical_samples\": {},\n  \
+         \"other_samples\": {}\n}}\n",
+        args.checkpoint,
+        hash_of(Path::new(&args.checkpoint)),
+        args.train_guide_report,
+        hash_of(Path::new(&args.train_guide_report)),
+        dev_corpus.display().to_string(),
+        hash_of(dev_corpus),
+        args.classical_samples,
+        args.other_samples,
+    )
+}
+
 fn tier_name(node_count: usize) -> &'static str {
     match node_count {
         0..=10 => "blitz",
@@ -255,6 +283,40 @@ impl ArmCurve {
     }
     fn best_cost(&self) -> usize {
         *self.cost.iter().min().expect("non-empty curve")
+    }
+    /// Best cost reached at any checkpoint whose grid TARGET is `<= limit`.
+    ///
+    /// The registered regret reference is the best cost either arm reaches
+    /// over the grid — but the arms do not run the same grid: unguided
+    /// samples `APP_CHECKPOINT_GRID` to 204800, guided arms stop at the last
+    /// registered quantity (4B of the secondary tier). Comparing a guided
+    /// arm's regret against a reference only the unguided arm was given the
+    /// budget to reach measures the grid, not the guide.
+    fn best_cost_up_to(&self, limit: usize) -> usize {
+        self.grid
+            .iter()
+            .zip(&self.cost)
+            .filter(|(g, _)| **g <= limit)
+            .map(|(_, c)| *c)
+            .min()
+            .expect("every arm's grid contains at least the first checkpoint")
+    }
+    /// Cost at the first checkpoint whose ACTUAL application count reaches
+    /// `apps`, or the curve's final (frozen) cost if it never does.
+    ///
+    /// Unguided saturation checks its budget between whole rule sweeps and so
+    /// overshoots a grid target; guided saturation stops after an individual
+    /// candidate and lands on it. Reading both arms at the same grid TARGET
+    /// therefore hands the unguided arm more work than the guided one — for
+    /// the committed classical baseline, a median 113 applications against
+    /// 100. This reads an arm at a common actual-application count instead.
+    fn cost_at_apps(&self, apps: usize) -> usize {
+        for (i, &a) in self.app_actual.iter().enumerate() {
+            if a >= apps {
+                return self.cost[i];
+            }
+        }
+        *self.cost.last().expect("non-empty curve")
     }
 }
 
@@ -502,10 +564,17 @@ fn enabler_diag(
             class_of_tag.insert(*tag, (c, i));
         }
     }
-    let chosen: HashSet<ENodeId> = {
+    // The extraction's complete class -> chosen-node map, and the set of
+    // chosen tags. `derivation_ancestors_tight` prunes with the map: handed
+    // only the one output node whose ancestry is being asked about, every
+    // class the walk descends into is absent from it and falls back to "all
+    // tags in the class", letting unrelated structural alternatives mark the
+    // application structurally enabled — the loose bound inflating a
+    // diagnostic that reports itself as the tight one.
+    let chosen_map: Vec<(EClassId, ENodeId)> = {
         let mut seen: HashSet<EClassId> = HashSet::new();
         let mut stack = vec![unguided.extraction.root];
-        let mut out = HashSet::new();
+        let mut out = Vec::new();
         while let Some(c) = stack.pop() {
             let c = eg.find(c);
             if !seen.insert(c) {
@@ -517,11 +586,12 @@ fn enabler_diag(
                     c.index()
                 )
             });
-            out.insert(eg.tags(c)[idx]);
+            out.push((c, eg.tags(c)[idx]));
             stack.extend(eg.nodes(c)[idx].children());
         }
         out
     };
+    let chosen: HashSet<ENodeId> = chosen_map.iter().map(|&(_, t)| t).collect();
     let structural_app = |app: ApplicationId| -> bool {
         let rec = prov
             .application(app)
@@ -566,7 +636,7 @@ fn enabler_diag(
             let (class, node_idx) = *class_of_tag.get(&tag).unwrap_or_else(|| {
                 panic!("output node {tag:?} of {app:?} is in no canonical class")
             });
-            let mut ancestry = eg.derivation_ancestors_tight(&[(class, tag)]);
+            let mut ancestry = eg.derivation_ancestors_tight_from(&[(class, tag)], &chosen_map);
             ancestry.remove(&app);
             enabled |= ancestry.iter().any(|&a| structural_app(a));
             let node = &eg.nodes(class)[node_idx];
@@ -809,6 +879,20 @@ struct ArmAtB {
     strict_precision_pooled: f64,
     rounds_to_b: Dist,
     app_actual_at_b: Dist,
+    /// The unguided arm's ACTUAL application count at the same grid target —
+    /// the number `ratio_vs_unguided_at_b` implicitly gives the unguided arm
+    /// and this arm does not get. Reported so the headline ratio is never
+    /// read as an equal-work comparison without the reader seeing the gap.
+    unguided_app_actual_at_b: Dist,
+    /// `arm_cost / unguided_cost@B` with the arm read at the first checkpoint
+    /// whose ACTUAL application count reaches the unguided arm's actual count
+    /// at B — the equal-work counterpart to `ratio_vs_unguided_at_b`.
+    ratio_vs_unguided_at_matched_apps: Dist,
+    /// `regret_pct` against the best cost any arm reaches on the grid
+    /// prefix every arm actually ran (see `ArmCurve::best_cost_up_to`).
+    regret_on_common_grid_pct: Dist,
+    /// Expressions where this arm reaches that common-grid best.
+    reaches_common_grid_best: usize,
     /// Guided runs that had already quiesced (dedup exhaustion) before
     /// reaching B applications — for them "at B" is "at quiescence".
     ended_before_b: usize,
@@ -924,6 +1008,24 @@ fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierR
             .min()
             .expect("arms")
     };
+    // The largest grid target EVERY arm ran — the reference the arms can be
+    // compared on without crediting one for checkpoints another was never
+    // budgeted to reach.
+    let common_limit = |r: &ExprRow| -> usize {
+        r.arms
+            .values()
+            .map(|a| *a.grid.last().expect("non-empty curve"))
+            .min()
+            .expect("arms")
+    };
+    let best_common = |r: &ExprRow| {
+        let limit = common_limit(r);
+        r.arms
+            .values()
+            .map(|a| a.best_cost_up_to(limit))
+            .min()
+            .expect("arms")
+    };
 
     let unguided_regret_at_b: Vec<f64> = rows
         .iter()
@@ -953,6 +1055,10 @@ fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierR
         let (mut pb, mut pe, mut pw) = (0usize, 0usize, 0usize);
         let mut ended_at = Vec::new();
         let mut burned = Vec::new();
+        let mut unguided_app_actual = Vec::new();
+        let mut matched_ratios = Vec::new();
+        let mut common_regrets = Vec::new();
+        let mut reaches_common = 0usize;
         for r in rows {
             let a = &r.arms[arm_name];
             if a.ended != "app_budget" && a.ended_at_apps < b {
@@ -995,6 +1101,15 @@ fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierR
             if cu > cu4 {
                 closed.push((cu as f64 - ca as f64) / (cu as f64 - cu4 as f64));
             }
+            let u_apps = ung(r).apps_at(b);
+            unguided_app_actual.push(u_apps as f64);
+            matched_ratios.push(ratio(a.cost_at_apps(u_apps), cu));
+            let bc = best_common(r);
+            common_regrets.push(pct_over(ca, bc));
+            if a.best_cost_up_to(common_limit(r)) == bc {
+                reaches_common += 1;
+            }
+
             let d = &r.at_budget[arm_name][&b];
             apps += d.applications;
             structural += d.structural;
@@ -1005,6 +1120,10 @@ fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierR
         arms.push(ArmAtB {
             arm: arm_name.to_string(),
             ratio_vs_unguided_at_b: dist(&ratios),
+            unguided_app_actual_at_b: dist(&unguided_app_actual),
+            ratio_vs_unguided_at_matched_apps: dist(&matched_ratios),
+            regret_on_common_grid_pct: dist(&common_regrets),
+            reaches_common_grid_best: reaches_common,
             improved: imp,
             unchanged: unch,
             worse,
@@ -1363,6 +1482,26 @@ Strict-oracle arm: not run (see the harness module doc — no cheap provenance r
             ));
         }
         md.push('\n');
+        md.push_str(
+            "Equal-work and common-grid restatements (the headline row above reads both \
+             arms at the same grid TARGET, and its regret reference is the best either arm \
+             reached anywhere on its own grid — neither of which is symmetric between a \
+             sweep-granular unguided stepper and a per-candidate guided one):\n\n",
+        );
+        for a in &t.arms {
+            md.push_str(&format!(
+                "- {}: unguided actual applications at this target {} (this arm lands on B); \
+                 ratio at MATCHED actual applications {}; regret on the grid prefix both \
+                 arms ran {}; reaches that common-grid best on {} / {}.\n",
+                a.arm,
+                fmt_d(&a.unguided_app_actual_at_b),
+                fmt_d(&a.ratio_vs_unguided_at_matched_apps),
+                fmt_pct(&a.regret_on_common_grid_pct),
+                a.reaches_common_grid_best,
+                t.n,
+            ));
+        }
+        md.push('\n');
         md.push_str(&format!(
             "Ladder diagnostics: linear < control on {} expressions, equal on {}, linear > control on {}. ",
             t.linear_lt_control, t.linear_eq_control, t.linear_gt_control
@@ -1618,8 +1757,43 @@ fn main() {
             ));
         }
 
-        let existing: HashSet<String> =
-            read_rows(&jsonl_path).into_iter().map(|r| r.name).collect();
+        // Resuming skips an expression by NAME. Every skipped row was
+        // produced under whatever configuration the earlier run used, so
+        // resuming into a file written under a different guided grid,
+        // checkpoint, control report or sampling setting silently rebuilds
+        // the aggregate from incompatible rows — and the documented
+        // guided-grid sensitivity check would have no effect at all once the
+        // checked-in run is complete. The configuration is fingerprinted
+        // beside the JSONL and compared before any row is reused.
+        let fingerprint = config_fingerprint(&args, &guided_grid, &dev_path);
+        let fp_path = jsonl_path.with_extension("config.json");
+        let existing_rows = read_rows(&jsonl_path);
+        if existing_rows.is_empty() {
+            std::fs::write(&fp_path, &fingerprint)
+                .unwrap_or_else(|e| panic!("cannot write {}: {e}", fp_path.display()));
+        } else {
+            let recorded = std::fs::read_to_string(&fp_path).unwrap_or_else(|e| {
+                panic!(
+                    "{} holds {} completed rows but its configuration fingerprint {} is \
+                     unreadable ({e}) — those rows were written under an unknown \
+                     configuration and cannot be safely resumed into. Delete the JSONL to \
+                     start fresh, or re-run with --aggregate-only to read it as-is.",
+                    jsonl_path.display(),
+                    existing_rows.len(),
+                    fp_path.display()
+                )
+            });
+            assert_eq!(
+                recorded.trim(),
+                fingerprint.trim(),
+                "{} was written under a different configuration than this run \
+                 (fingerprint {}) — resuming would mix incompatible rows into one \
+                 aggregate. Write to a fresh --out-jsonl, or delete the existing file.",
+                jsonl_path.display(),
+                fp_path.display()
+            );
+        }
+        let existing: HashSet<String> = existing_rows.into_iter().map(|r| r.name).collect();
         eprintln!(
             "phase3_at_budget_eval: {} selected, {} already done, {} skipped by flag",
             selected.len(),
@@ -1675,12 +1849,29 @@ fn main() {
     // ------------------------------------------------------------------
     // Aggregate.
     // ------------------------------------------------------------------
-    let rows = read_rows(&jsonl_path);
+    // `--skip-names` documents an expression as excluded from the run; a row
+    // for it left in the resumable JSONL (from an earlier run, or read back
+    // under `--aggregate-only`) would still enter every count, median and
+    // registered verdict. Filter before aggregating, not only before
+    // evaluating.
+    let all_rows = read_rows(&jsonl_path);
+    let rows: Vec<ExprRow> = all_rows
+        .into_iter()
+        .filter(|r| !skipped.contains(&r.name))
+        .collect();
     assert!(
         !rows.is_empty(),
         "no rows in {} — nothing to aggregate",
         jsonl_path.display()
     );
+    if !skipped.is_empty() {
+        eprintln!(
+            "phase3_at_budget_eval: aggregating {} rows; {} name(s) excluded by \
+             --skip-names: {skipped:?}",
+            rows.len(),
+            skipped.len()
+        );
+    }
     let mut n_by_band: BTreeMap<String, usize> = BTreeMap::new();
     for r in &rows {
         *n_by_band.entry(r.tier.clone()).or_default() += 1;

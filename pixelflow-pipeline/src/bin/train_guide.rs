@@ -97,7 +97,8 @@ use serde::{Deserialize, Serialize};
 
 use pixelflow_pipeline::schema::{SchemaIdentity, fnv1a64_hex, identity_mismatch, unix_now_s};
 use pixelflow_pipeline::training::guide_linear::{
-    Model, Record, Sample, auc_roc, average_precision, op_index_table, to_sample,
+    Model, Record, Sample, auc_roc, auc_roc_within_groups, average_precision, op_index_table,
+    to_sample,
 };
 
 #[derive(Parser)]
@@ -186,11 +187,17 @@ struct Args {
 /// priorities get checked against).
 struct LoadedSplit {
     samples: Vec<Sample>,
+    /// Parallel to `samples`: which expression each one came from — the
+    /// decision set a live guide actually ranks within (see
+    /// `auc_within_groups`).
+    groups: Vec<String>,
     rule_names: HashMap<usize, String>,
     families: HashSet<(u32, u64)>,
     /// rule_idx -> (fired, positive), measured directly from this split.
     per_rule: BTreeMap<usize, (usize, usize)>,
     positives: usize,
+    /// Rows dropped because `dedup_repeat` was set — reported, never silent.
+    repeats_excluded: usize,
 }
 
 fn load_jsonl(path: &Path, op_index: &HashMap<String, usize>) -> LoadedSplit {
@@ -199,10 +206,12 @@ fn load_jsonl(path: &Path, op_index: &HashMap<String, usize>) -> LoadedSplit {
     let reader = BufReader::new(file);
 
     let mut samples = Vec::new();
+    let mut groups = Vec::new();
     let mut rule_names = HashMap::new();
     let mut families = HashSet::new();
     let mut per_rule: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
     let mut positives = 0usize;
+    let mut repeats_excluded = 0usize;
 
     for (line_no, line) in reader.lines().enumerate() {
         let line = line.unwrap_or_else(|e| {
@@ -226,28 +235,49 @@ fn load_jsonl(path: &Path, op_index: &HashMap<String, usize>) -> LoadedSplit {
         rule_names
             .entry(record.rule_idx)
             .or_insert_with(|| record.rule_name.clone());
+        // Train and evaluate on exactly the candidate population a deployed
+        // guide is asked to rank. `GuidedSaturation` removes an already-seen
+        // `CandidateKey` BEFORE scoring, so a `dedup_repeat` row can never
+        // enter a live decision set; keeping them would let idempotent
+        // re-fires (the large majority of every episode's log, and almost
+        // entirely negative) set both the learned per-rule priorities and
+        // the control's base rates.
+        if record.dedup_repeat {
+            repeats_excluded += 1;
+            continue;
+        }
         let agg = per_rule.entry(record.rule_idx).or_insert((0, 0));
         agg.0 += 1;
         if record.label_positive {
             agg.1 += 1;
             positives += 1;
         }
+        groups.push(record.expr_name.clone());
         samples.push(to_sample(&record, op_index));
     }
 
+    eprintln!(
+        "train_guide: {} — {} first-seen candidates kept, {repeats_excluded} dedup_repeat \
+         rows excluded (a deployed guide never scores them)",
+        path.display(),
+        samples.len()
+    );
+
     assert!(
         !samples.is_empty(),
-        "train_guide: {} contained zero usable records — refusing to train/evaluate on an \
-         empty split",
+        "train_guide: {} contained zero first-seen candidate records ({repeats_excluded} \
+         dedup_repeat rows were excluded) — refusing to train/evaluate on an empty split",
         path.display()
     );
 
     LoadedSplit {
         samples,
+        groups,
         rule_names,
         families,
         per_rule,
         positives,
+        repeats_excluded,
     }
 }
 
@@ -621,6 +651,14 @@ struct RuleRow {
 #[derive(Serialize)]
 struct Report {
     label_source: String,
+    /// The DEV file these metrics were computed on, and its FNV-1a 64
+    /// content hash. `eval_control_guides` subtracts this report's linear
+    /// AUCs from control AUCs it computes itself; without a fingerprint to
+    /// check, pointing it at a regenerated or filtered DEV file produces a
+    /// plausible gap between two different populations and calls it a
+    /// same-split comparison.
+    dev_path: String,
+    dev_fnv64: String,
     /// Provenance note for the 2026-09-02 budget-denominator correction —
     /// see `write_md_report`'s leading banner for the human-readable form.
     denominator_note: String,
@@ -634,6 +672,17 @@ struct Report {
     dev_positive_rate: f64,
     dev_auc: f64,
     dev_pr_auc: f64,
+    /// AUC computed WITHIN each expression's candidate set and macro-averaged
+    /// — the move-ordering question a deployed guide is actually asked. See
+    /// `guide_linear::auc_roc_within_groups` for why the pooled `dev_auc`
+    /// above can credit the model for between-expression variation two of
+    /// its features cannot act on at deploy time.
+    dev_auc_within_expression: Option<f64>,
+    dev_within_expression_groups: usize,
+    /// `dedup_repeat` rows excluded from each split (see
+    /// `guide_linear::Record::dedup_repeat`).
+    train_dedup_repeats_excluded: usize,
+    dev_dedup_repeats_excluded: usize,
     training_curve: Vec<EpochPoint>,
     calibration: Vec<CalibrationBucket>,
     per_rule: Vec<RuleRow>,
@@ -761,25 +810,62 @@ fn main() {
     eprintln!("train_guide: loading DEV from {}", args.dev);
     let dev = load_jsonl(&PathBuf::from(&args.dev), &op_index);
 
-    let max_rule_idx = train
-        .rule_names
-        .keys()
-        .chain(dev.rule_names.keys())
+    // TRAIN and DEV must be disjoint at family granularity, or "held out"
+    // is a claim about data that contributed gradients.
+    let overlap: Vec<(u32, u64)> = train
+        .families
+        .intersection(&dev.families)
         .copied()
-        .max()
-        .unwrap_or(0);
-    let num_rules = max_rule_idx + 1;
+        .collect();
+    assert!(
+        overlap.is_empty(),
+        "train_guide: TRAIN ({}) and DEV ({}) share {} generator families (e.g. {:?}) — the \
+         reported DEV metrics would not be held out; regenerate the splits against the \
+         corpus split manifest",
+        args.train,
+        args.dev,
+        overlap.len(),
+        &overlap[..overlap.len().min(3)]
+    );
 
-    let mut rule_names = vec![String::new(); num_rules];
+    // The rule table is sized and named from the LIVE registered rule set,
+    // not from whichever indices happened to appear in these two JSONL
+    // splits. `all_rules()` is what `rule_idx` indexes at deploy time, so a
+    // rule that never fired in TRAIN or DEV still needs a (zero) weight —
+    // otherwise the checkpoint is short and the first live candidate for
+    // that rule makes `LinearCandidateGuide::logit` panic.
+    let registered: Vec<String> = pixelflow_search::egraph::all_rules()
+        .iter()
+        .map(|r| r.name().to_string())
+        .collect();
+    let num_rules = registered.len();
     for (&idx, name) in train.rule_names.iter().chain(dev.rule_names.iter()) {
-        if rule_names[idx].is_empty() {
-            rule_names[idx] = name.clone();
-        }
+        assert!(
+            idx < num_rules,
+            "train_guide: a JSONL row names rule_idx {idx} ({name:?}) but only {num_rules} \
+             rules are registered — the labels were minted against a different rule set"
+        );
+        assert_eq!(
+            *name, registered[idx],
+            "train_guide: rule_idx {idx} is {name:?} in the labels but {:?} in this \
+             binary's registered rule set — the rule set was reordered since minting",
+            registered[idx]
+        );
     }
+    let rule_names = registered;
 
     let train_positive_rate = train.positives as f64 / train.samples.len() as f64;
     let neg = train.samples.len() - train.positives;
-    let pos_weight = neg as f32 / train.positives.max(1) as f32;
+    assert!(
+        train.positives > 0 && neg > 0,
+        "train_guide: TRAIN has {} positive and {neg} negative samples — binary \
+         supervision needs both. With no positives `pos_weight` would be invented from a \
+         `max(1)` denominator and the run would train an all-negative model; with no \
+         negatives it would be zero and every positive gradient would vanish. Either way \
+         the checkpoint would be written as if it had been trained.",
+        train.positives
+    );
+    let pos_weight = neg as f32 / train.positives as f32;
     let pos_weight_rationale = format!(
         "inverse class frequency (negatives/positives = {neg}/{} measured on this TRAIN split) \
          — the simplest defensible cold-start choice: unweighted BCE lets a trainer collapse to \
@@ -869,6 +955,29 @@ fn main() {
     let dev_pr_auc = average_precision(&dev_scores, &dev_labels).unwrap_or_else(|| {
         panic!("train_guide: DEV PR-AUC undefined — DEV has zero positive labels")
     });
+
+    let dev_auc_grouped = auc_roc_within_groups(&dev_scores, &dev_labels, &dev.groups);
+    match dev_auc_grouped {
+        Some((a, n)) => println!(
+            "=== held out DEV, WITHIN-expression AUC (the move-ordering question): {a:.4} \
+             over {n} expressions with both classes; pooled DEV AUC above also contains \
+             between-expression variation the deployed guide cannot act on ==="
+        ),
+        None => println!(
+            "=== held out DEV, WITHIN-expression AUC: undefined — no single expression's \
+             candidate set contains both classes ==="
+        ),
+    }
+
+    let dev_fnv64 = {
+        let bytes = std::fs::read(&args.dev).unwrap_or_else(|e| {
+            panic!(
+                "train_guide: cannot re-read {} to fingerprint it: {e}",
+                args.dev
+            )
+        });
+        fnv1a64_hex(&bytes)
+    };
 
     let calibration = calibration_tail_buckets(&dev_scores, &dev_labels);
 
@@ -1001,6 +1110,8 @@ fn main() {
 
     let report = Report {
         label_source: "strict-v1".to_string(),
+        dev_path: args.dev.clone(),
+        dev_fnv64: dev_fnv64.clone(),
         denominator_note: format!(
             "Budget denominator: REGISTERED_PRIMARY_BUDGET_APPLICATIONS = {} \
              (docs/plans/2026-09-01-phase3-registration.md §4, classical-band primary tier), \
@@ -1022,6 +1133,10 @@ fn main() {
         dev_positive_rate: dev.positives as f64 / dev.samples.len() as f64,
         dev_auc,
         dev_pr_auc,
+        dev_auc_within_expression: dev_auc_grouped.map(|(a, _)| a),
+        dev_within_expression_groups: dev_auc_grouped.map_or(0, |(_, n)| n),
+        train_dedup_repeats_excluded: train.repeats_excluded,
+        dev_dedup_repeats_excluded: dev.repeats_excluded,
         training_curve,
         calibration,
         per_rule: per_rule_rows,
@@ -1422,6 +1537,82 @@ mod tests {
         assert!(
             result.is_err(),
             "a tampered checkpoint must be refused, not silently loaded"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A checkpoint this binary WRITES must load in the deployed guide, and
+    /// a tampered one must not. `LinearCandidateGuide` re-derives
+    /// `weights_fnv64` with its own copy of the fingerprint formula (it
+    /// cannot depend on this crate), so this test is the seam that keeps the
+    /// two copies from drifting apart in silence.
+    #[test]
+    fn a_written_checkpoint_loads_in_the_deployed_guide_and_a_tampered_one_does_not() {
+        use pixelflow_search::nnue::guide::linear::LinearCandidateGuide;
+
+        let dir = std::env::temp_dir().join(format!(
+            "train_guide_deploy_roundtrip_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("checkpoint.json");
+
+        let rule_names: Vec<String> = pixelflow_search::egraph::all_rules()
+            .iter()
+            .map(|r| r.name().to_string())
+            .collect();
+        let (op_names, _) = op_index_table();
+        let mut ckpt = GuideCheckpoint {
+            schema_identity: String::new(),
+            label_source: "strict-v1".to_string(),
+            trainer: "train_guide".to_string(),
+            written_at_unix_s: 1,
+            seed: 1,
+            epochs: 1,
+            lr_initial: 0.01,
+            lr_decay: 0.0,
+            l2: 0.0,
+            grad_clip: 20.0,
+            pos_weight: 1.0,
+            num_rules: rule_names.len(),
+            num_ops: op_names.len(),
+            w_rule: vec![0.25; rule_names.len()],
+            w_op: vec![-0.125; op_names.len()],
+            rule_names,
+            op_names,
+            bias: 0.5,
+            w_budget: 0.125,
+            w_match_class: 0.0625,
+            w_neighborhood: -0.03125,
+            w_expr_size: 0.015625,
+            train_samples: 1,
+            train_families: 1,
+            train_positive_rate: 0.0,
+            dev_samples: 1,
+            dev_families: 1,
+            dev_auc: 0.5,
+            dev_pr_auc: 0.5,
+            weights_fnv64: String::new(),
+        };
+        ckpt.write(&path).unwrap();
+
+        LinearCandidateGuide::load(&path)
+            .expect("a checkpoint this binary just wrote must load in the deployed guide");
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let tampered = text.replace("\"bias\": 0.5", "\"bias\": 99.0");
+        assert_ne!(
+            text, tampered,
+            "test setup: replacement should have matched"
+        );
+        std::fs::write(&path, tampered).unwrap();
+        let Err(err) = LinearCandidateGuide::load(&path) else {
+            panic!("a hand-edited weight must be refused at deploy time too");
+        };
+        assert!(
+            err.to_string().contains("weights_fnv64"),
+            "the refusal should name the fingerprint: {err}"
         );
 
         std::fs::remove_dir_all(&dir).ok();

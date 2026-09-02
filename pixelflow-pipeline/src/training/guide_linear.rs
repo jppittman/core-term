@@ -25,7 +25,6 @@ use serde::Deserialize;
 /// writes (`pixelflow-pipeline/src/bin/gen_strict_labels.rs`).
 #[derive(Deserialize)]
 pub struct Record {
-    #[allow(dead_code)]
     pub expr_name: String,
     pub family_band: u32,
     pub family_seed: u64,
@@ -36,6 +35,17 @@ pub struct Record {
     pub match_class_node_count: usize,
     pub neighborhood_op_count: usize,
     pub neighborhood_op_hist: std::collections::BTreeMap<String, usize>,
+    /// `true` when this application re-fired a `CandidateKey` an earlier
+    /// application in the same episode already resolved.
+    ///
+    /// The live `GuidedSaturation` loop removes seen keys BEFORE scoring, so
+    /// a repeat row is a candidate no deployed guide will ever be asked to
+    /// rank. Consumers that train on or evaluate against these rows are
+    /// measuring a population the deployment never sees — 93.4% of the
+    /// committed TRAIN split, overwhelmingly negative. Kept in the schema
+    /// (rather than filtered at mint time) so the dedup rate stays
+    /// measurable; every consumer must decide about it explicitly.
+    pub dedup_repeat: bool,
     pub label_positive: bool,
 }
 
@@ -157,25 +167,43 @@ impl Model {
     }
 
     /// One online-SGD step for sample `s`, given the loss gradient w.r.t.
-    /// the logit (`grad_z`, already clipped by the caller). L2 weight decay
-    /// is applied to every weight this sample actually touched — not the
-    /// bias, per convention (a bias term has no "large weight" failure mode
-    /// L2 exists to guard against).
+    /// the logit (`grad_z`, already clipped by the caller).
+    ///
+    /// The data term is sparse — only the features this sample carries have
+    /// a gradient. The L2 penalty is NOT: its gradient is `l2 * w` for every
+    /// weight on every step. Decaying only the weights a sample happened to
+    /// touch made the effective penalty a function of feature frequency, so
+    /// a rule firing once per epoch was regularized orders of magnitude less
+    /// than `commutative` — which is a distortion of exactly the learned
+    /// per-rule priorities this model exists to produce. The tables are ~60
+    /// rules and ~50 ops, so decaying all of them per step is cheaper than
+    /// the bookkeeping a lazy scheme would need (and exact, which a lazy
+    /// scheme is not under this trainer's per-epoch learning-rate decay).
+    ///
+    /// The bias is exempt by convention: a bias term has no "large weight"
+    /// failure mode L2 exists to guard against.
     pub fn sgd_step(&mut self, s: &Sample, grad_z: f32, lr: f32, l2: f32) {
-        self.bias -= lr * grad_z;
-
-        let wr = &mut self.w_rule[s.rule_idx];
-        *wr -= lr * (grad_z + l2 * *wr);
-
-        for &(idx, count) in &s.op_feats {
-            let wo = &mut self.w_op[idx];
-            *wo -= lr * (grad_z * count + l2 * *wo);
+        // Decay first, then the data gradient: `w * (1 - lr*l2) - lr*g` is
+        // the same step as `w - lr*(g + l2*w)`, just written so the decay
+        // can cover every weight uniformly.
+        let keep = 1.0 - lr * l2;
+        for w in self.w_rule.iter_mut().chain(self.w_op.iter_mut()) {
+            *w *= keep;
         }
+        self.w_budget *= keep;
+        self.w_match_class *= keep;
+        self.w_neighborhood *= keep;
+        self.w_expr_size *= keep;
 
-        self.w_budget -= lr * (grad_z * s.budget_fraction + l2 * self.w_budget);
-        self.w_match_class -= lr * (grad_z * s.log_match_class + l2 * self.w_match_class);
-        self.w_neighborhood -= lr * (grad_z * s.log_neighborhood + l2 * self.w_neighborhood);
-        self.w_expr_size -= lr * (grad_z * s.log_expr_size + l2 * self.w_expr_size);
+        self.bias -= lr * grad_z;
+        self.w_rule[s.rule_idx] -= lr * grad_z;
+        for &(idx, count) in &s.op_feats {
+            self.w_op[idx] -= lr * grad_z * count;
+        }
+        self.w_budget -= lr * grad_z * s.budget_fraction;
+        self.w_match_class -= lr * grad_z * s.log_match_class;
+        self.w_neighborhood -= lr * grad_z * s.log_neighborhood;
+        self.w_expr_size -= lr * grad_z * s.log_expr_size;
     }
 }
 
@@ -222,6 +250,57 @@ pub fn auc_roc(scores: &[f32], labels: &[f32]) -> Option<f64> {
     )
 }
 
+/// One AUC per decision set, macro-averaged over the sets that contain both
+/// classes — the ranking question a deployed guide is actually asked.
+///
+/// Returns `(mean_auc, groups_scored)`, or `None` if no group has both
+/// classes.
+///
+/// A pooled AUC over every record lets a model gain credit from differences
+/// BETWEEN expressions and saturation rounds. Two of the model's features
+/// cannot possibly produce that credit at deploy time: `expr_node_count` is
+/// constant for a whole episode and `budget_fraction` is shared by every
+/// candidate in one live scoring round, so neither can reorder a single
+/// round's candidates. Whenever positive prevalence varies with expression
+/// size or progress, the pooled number reports ranking signal the guide
+/// cannot use for move ordering; grouping removes the between-group
+/// variation before the metric sees it.
+#[must_use]
+pub fn auc_roc_within_groups<K: Ord + Clone>(
+    scores: &[f32],
+    labels: &[f32],
+    groups: &[K],
+) -> Option<(f64, usize)> {
+    assert_eq!(
+        scores.len(),
+        labels.len(),
+        "auc_roc_within_groups: scores/labels length mismatch"
+    );
+    assert_eq!(
+        scores.len(),
+        groups.len(),
+        "auc_roc_within_groups: scores/groups length mismatch"
+    );
+    let mut by_group: std::collections::BTreeMap<K, (Vec<f32>, Vec<f32>)> =
+        std::collections::BTreeMap::new();
+    for i in 0..scores.len() {
+        let e = by_group
+            .entry(groups[i].clone())
+            .or_insert_with(|| (Vec::new(), Vec::new()));
+        e.0.push(scores[i]);
+        e.1.push(labels[i]);
+    }
+    let mut sum = 0.0f64;
+    let mut n = 0usize;
+    for (s, l) in by_group.values() {
+        if let Some(a) = auc_roc(s, l) {
+            sum += a;
+            n += 1;
+        }
+    }
+    (n > 0).then(|| (sum / n as f64, n))
+}
+
 /// Average precision (area under the precision-recall step function,
 /// sklearn's `average_precision_score` convention). `None` if there are no
 /// positives.
@@ -237,17 +316,34 @@ pub fn average_precision(scores: &[f32], labels: &[f32]) -> Option<f64> {
             .partial_cmp(&scores[a])
             .unwrap_or_else(|| panic!("average_precision: NaN score"))
     });
+    // sklearn's convention evaluates one threshold per DISTINCT score, so
+    // every example tied at that score is on the positive side of it
+    // together. Walking tied examples one at a time instead makes the result
+    // depend on the input's record order — and the per-rule control guide,
+    // which assigns one score per rule, is nothing but large tie groups.
     let mut tp = 0usize;
     let mut fp = 0usize;
     let mut ap = 0.0f64;
-    for &i in &idx {
-        if labels[i] > 0.5 {
-            tp += 1;
-            let precision = tp as f64 / (tp + fp) as f64;
-            ap += precision / n_pos as f64;
-        } else {
-            fp += 1;
+    let mut i = 0usize;
+    while i < idx.len() {
+        let mut j = i;
+        while j + 1 < idx.len() && scores[idx[j + 1]] == scores[idx[i]] {
+            j += 1;
         }
+        let mut group_pos = 0usize;
+        for &k in &idx[i..=j] {
+            if labels[k] > 0.5 {
+                group_pos += 1;
+            } else {
+                fp += 1;
+            }
+        }
+        tp += group_pos;
+        if group_pos > 0 {
+            let precision = tp as f64 / (tp + fp) as f64;
+            ap += precision * (group_pos as f64 / n_pos as f64);
+        }
+        i = j + 1;
     }
     Some(ap)
 }
@@ -255,6 +351,77 @@ pub fn average_precision(scores: &[f32], labels: &[f32]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn l2_decays_every_weight_not_only_the_ones_a_sample_touched() {
+        let mut m = Model::zero(3, 2);
+        m.w_rule = vec![1.0, 1.0, 1.0];
+        m.w_op = vec![1.0, 1.0];
+        let s = Sample {
+            rule_idx: 0,
+            op_feats: vec![(0, 1.0)],
+            budget_fraction: 0.0,
+            log_match_class: 0.0,
+            log_neighborhood: 0.0,
+            log_expr_size: 0.0,
+            label: 1.0,
+        };
+        // Zero gradient: the only thing that can move a weight is the L2 term.
+        m.sgd_step(&s, 0.0, 0.1, 0.5);
+        let keep = 1.0 - 0.1 * 0.5;
+        for (i, w) in m.w_rule.iter().enumerate() {
+            assert!(
+                (w - keep).abs() < 1e-6,
+                "w_rule[{i}] = {w}, expected every rule weight decayed to {keep} — a rule \
+                 that did not fire this step must still pay the penalty"
+            );
+        }
+        for (i, w) in m.w_op.iter().enumerate() {
+            assert!((w - keep).abs() < 1e-6, "w_op[{i}] = {w}, expected {keep}");
+        }
+    }
+
+    #[test]
+    fn average_precision_groups_tied_scores_at_one_threshold() {
+        // Two positives and two negatives, all tied at one score: sklearn's
+        // average_precision_score is 0.5 (the single threshold's precision).
+        let scores = vec![1.0f32; 4];
+        let labels = vec![1.0f32, 0.0, 1.0, 0.0];
+        let ap = average_precision(&scores, &labels).unwrap();
+        assert!((ap - 0.5).abs() < 1e-9, "ap={ap}");
+    }
+
+    #[test]
+    fn average_precision_of_a_tied_block_is_independent_of_record_order() {
+        let scores = vec![1.0f32; 6];
+        let a = average_precision(&scores, &[1.0, 1.0, 0.0, 0.0, 0.0, 0.0]).unwrap();
+        let b = average_precision(&scores, &[0.0, 0.0, 0.0, 1.0, 0.0, 1.0]).unwrap();
+        assert!(
+            (a - b).abs() < 1e-12,
+            "a tie group must not be ranked by JSONL order: {a} vs {b}"
+        );
+    }
+
+    #[test]
+    fn within_group_auc_ignores_between_group_score_offsets() {
+        // Inside each group the ranking is perfect; the groups sit at
+        // completely different score levels. Pooled AUC is dragged down by
+        // the between-group offset, the grouped one is not.
+        let scores = vec![0.1f32, 0.2, 0.8, 0.9];
+        let labels = vec![0.0f32, 1.0, 0.0, 1.0];
+        let groups = ["a", "a", "b", "b"];
+        let (mean, n) = auc_roc_within_groups(&scores, &labels, &groups).unwrap();
+        assert_eq!(n, 2);
+        assert!((mean - 1.0).abs() < 1e-9, "mean={mean}");
+    }
+
+    #[test]
+    fn within_group_auc_is_none_when_no_group_holds_both_classes() {
+        let scores = vec![0.1f32, 0.2];
+        let labels = vec![0.0f32, 0.0];
+        let groups = ["a", "b"];
+        assert!(auc_roc_within_groups(&scores, &labels, &groups).is_none());
+    }
 
     #[test]
     fn auc_roc_is_one_for_perfectly_separated_scores() {

@@ -148,6 +148,21 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     }
 }
 
+/// One percentage aggregate as JSON. Every one of these can legitimately be
+/// infinite under the zero-reference convention (`cost@4B` reached 0 while
+/// `cost@B` was positive), and Rust formats an infinite `f64` as a bare
+/// `inf`, which is not JSON — a report that parses on some runs and not
+/// others is a silent failure of the reporting, so all of them go through
+/// one encoder and become `null`. `inf_count` distinguishes "infinite" from
+/// "absent".
+fn json_pct(x: f64) -> String {
+    if x.is_finite() {
+        format!("{x:.6}")
+    } else {
+        "null".to_string()
+    }
+}
+
 /// Aggregate truncation-loss stats for one (scope, B) cell.
 struct LossCell {
     n: usize,
@@ -429,21 +444,21 @@ fn main() {
             );
             json_cells.push(format!(
                 "    {{\"scope\": \"{scope}\", \"B\": {b}, \"n\": {}, \"live_at_B\": {}, \
-                 \"inf_count\": {}, \"positive_count\": {}, \"median_pct\": {:.6}, \
-                 \"p90_pct\": {:.6}, \"max_pct\": {:.6}, \"mean_finite_pct\": {:.6}, \
-                 \"live_median_pct\": {:.6}, \"live_positive_count\": {}, \
-                 \"half_b_median_pct\": {:.6}, \"half_b_positive_count\": {}}}",
+                 \"inf_count\": {}, \"positive_count\": {}, \"median_pct\": {}, \
+                 \"p90_pct\": {}, \"max_pct\": {}, \"mean_finite_pct\": {}, \
+                 \"live_median_pct\": {}, \"live_positive_count\": {}, \
+                 \"half_b_median_pct\": {}, \"half_b_positive_count\": {}}}",
                 cell.n,
                 cell.live_at_b,
                 cell.inf_count,
                 cell.positive_count,
-                cell.median,
-                cell.p90,
-                if cell.max.is_finite() { cell.max } else { -1.0 },
-                cell.mean_finite,
-                cell.live_median,
+                json_pct(cell.median),
+                json_pct(cell.p90),
+                json_pct(cell.max),
+                json_pct(cell.mean_finite),
+                json_pct(cell.live_median),
                 cell.live_positive_count,
-                half_cell.median,
+                json_pct(half_cell.median),
                 half_cell.positive_count,
             ));
         }
@@ -452,7 +467,8 @@ fn main() {
         "\n  (live@B = run ended after more than B applications; expressions already \
          quiesced/capped at <= B have truncation loss exactly 0 by construction. \
          inf loss = cost@4B reached 0 while cost@B was positive; excluded from mean_fin, \
-         counted in >0 cnt, max shown as -1 in JSON when infinite.)"
+         counted in >0 cnt. EVERY non-finite aggregate is written as JSON null — read \
+         inf_count to tell an infinite aggregate from a missing one.)"
     );
 
     // Stop-the-presses check, in as many words (task spec: report loudly).

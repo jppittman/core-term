@@ -65,7 +65,7 @@ use clap::Parser;
 
 use pixelflow_ir::ExprArena;
 use pixelflow_pipeline::training::corpus::read_corpus;
-use pixelflow_search::egraph::{CostModel, EGraph, EpisodeLabels, extract_dag};
+use pixelflow_search::egraph::{CostModel, EGraph, EpisodeLabels, SaturationStop, extract_dag};
 use pixelflow_search::math::all_rules;
 
 #[derive(Parser)]
@@ -346,6 +346,7 @@ fn main() {
     );
     let (mut total_apps, mut total_loose, mut total_tight, mut total_strict) =
         (0u64, 0u64, 0u64, 0u64);
+    let mut non_quiescent = 0usize;
 
     for (i, (name, arena, root)) in entries.iter().enumerate() {
         let mut egraph = EGraph::with_rules(all_rules());
@@ -360,7 +361,20 @@ fn main() {
              ceiling — expected to never bind at this corpus's scale; fail loud rather than \
              silently report a truncated sample as converged"
         );
-        let _ = sat_stats;
+        // A run that stopped at the class cap or the iteration ceiling was
+        // cut wherever the safety limit happened to land: its available
+        // applications, its extracted path and all three label ratios then
+        // describe that truncation, not the rule library. Excluded and
+        // counted, never pooled in silently.
+        if sat_stats.stop != SaturationStop::Quiesced {
+            non_quiescent += 1;
+            eprintln!(
+                "tightened_labeler_rank: excluding '{name}' — saturation stopped with \
+                 {:?}, not Quiesced",
+                sat_stats.stop
+            );
+            continue;
+        }
 
         let extraction = extract_dag(&egraph, root_class, &costs);
         let loose = EpisodeLabels::compute(&egraph, extraction.root, &extraction.choices);
@@ -482,15 +496,39 @@ fn main() {
             .then(a.0.cmp(&b.0))
     });
 
-    let loose_rule_ratios: Vec<f64> = rule_rows
+    // The rank vectors are pooled by rule NAME, not by rule index. The rule
+    // library registers several indexed variants under one semantic name
+    // (`commutative`, `identity`, ... one per operator); keying the ranks by
+    // index would treat those variants as separate observations, overweight
+    // whichever families happen to have more registered operators, and make
+    // this correlation incomparable with `guide_headroom`'s pooled-by-name
+    // number that it exists to remeasure.
+    let mut name_agg: BTreeMap<String, RuleAgg> = BTreeMap::new();
+    for (&idx, a) in &rule_agg {
+        let e = name_agg
+            .entry(
+                rule_names
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| format!("<rule {idx}>")),
+            )
+            .or_default();
+        e.fired += a.fired;
+        e.loose_lb += a.loose_lb;
+        e.tight_lb += a.tight_lb;
+        e.strict_lb += a.strict_lb;
+    }
+    let named_rows: Vec<(&String, &RuleAgg)> =
+        name_agg.iter().filter(|(_, a)| a.fired > 0).collect();
+    let loose_rule_ratios: Vec<f64> = named_rows
         .iter()
         .map(|(_, a)| ratio(a.loose_lb, a.fired))
         .collect();
-    let tight_rule_ratios: Vec<f64> = rule_rows
+    let tight_rule_ratios: Vec<f64> = named_rows
         .iter()
         .map(|(_, a)| ratio(a.tight_lb, a.fired))
         .collect();
-    let strict_rule_ratios: Vec<f64> = rule_rows
+    let strict_rule_ratios: Vec<f64> = named_rows
         .iter()
         .map(|(_, a)| ratio(a.strict_lb, a.fired))
         .collect();
@@ -501,8 +539,9 @@ fn main() {
 
     println!();
     println!(
-        "--- Per-rule Spearman rank correlation (n={} rule instances that fired) ---",
-        rule_rows.len()
+        "--- Per-rule Spearman rank correlation (n={} distinct rule NAMES that fired, \
+         pooled across their indexed operator variants) ---",
+        named_rows.len()
     );
     println!(
         "  loose vs strict: {}",
@@ -599,7 +638,9 @@ fn main() {
     if let Some(out_path) = &args.out {
         let mut json = String::new();
         json.push_str("{\n");
-        json.push_str(&format!("  \"num_expressions\": {n},\n"));
+        json.push_str(&format!("  \"num_expressions\": {},\n", rows.len()));
+        json.push_str(&format!("  \"corpus_entries\": {n},\n"));
+        json.push_str(&format!("  \"non_quiescent_excluded\": {non_quiescent},\n"));
         json.push_str(&format!("  \"total_applications\": {total_apps},\n"));
         json.push_str(&format!("  \"pooled_loose_ratio\": {pooled_loose:.6},\n"));
         json.push_str(&format!("  \"pooled_tight_ratio\": {pooled_tight:.6},\n"));
@@ -614,7 +655,7 @@ fn main() {
             "  \"strict_ratio_quartiles\": [{s_q1:.6}, {s_med:.6}, {s_q3:.6}],\n"
         ));
         json.push_str("  \"per_rule_spearman\": {\n");
-        json.push_str(&format!("    \"n_rules\": {},\n", rule_rows.len()));
+        json.push_str(&format!("    \"n_rule_names\": {},\n", named_rows.len()));
         json.push_str(&format!(
             "    \"loose_vs_strict\": {},\n",
             spearman_loose_strict

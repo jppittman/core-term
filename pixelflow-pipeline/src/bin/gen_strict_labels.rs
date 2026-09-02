@@ -78,7 +78,7 @@ use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_pipeline::training::split::{Family, SplitManifest, Tier};
 use pixelflow_search::egraph::{
     CandidateFeatures, CostModel, EGraph, EpisodeLabels, Firing, Label,
-    REGISTERED_PRIMARY_BUDGET_APPLICATIONS, extract_dag,
+    REGISTERED_PRIMARY_BUDGET_APPLICATIONS, SaturationStop, extract_dag,
 };
 use pixelflow_search::math::all_rules;
 
@@ -286,6 +286,9 @@ struct SplitStats {
     rule_agg: BTreeMap<usize, RuleAgg>,
     /// Entries skipped for exceeding `--max-expr-nodes` (see `Args` doc).
     skipped_oversized: usize,
+    /// Replays whose saturation stopped at a safety ceiling instead of
+    /// quiescing — excluded from the dataset, reported here.
+    skipped_non_quiescent: usize,
     /// `true` if `--max-total-applications` cut this split short before
     /// every sampled entry was processed.
     hit_total_cap: bool,
@@ -310,6 +313,7 @@ impl SplitStats {
             dedup_hits: 0,
             rule_agg: BTreeMap::new(),
             skipped_oversized: 0,
+            skipped_non_quiescent: 0,
             hit_total_cap: false,
             per_expr_positive_rates: Vec::new(),
         }
@@ -388,7 +392,7 @@ fn mint_split(
         let mut egraph = EGraph::with_rules(all_rules());
         let root_class = egraph.add_arena(arena, *root);
         let saturate_started = std::time::Instant::now();
-        let _sat_stats =
+        let sat_stats =
             egraph.saturate_with_limits(SATURATE_MAX_ITERS, max_classes, SATURATE_TIMEOUT);
         let saturate_elapsed = saturate_started.elapsed();
         assert!(
@@ -397,6 +401,22 @@ fn mint_split(
              {SATURATE_TIMEOUT:?} safety ceiling — fail loud rather than mint labels from a \
              truncated, non-representative replay"
         );
+        // The elapsed-time assertion above only catches the wall-clock
+        // ceiling. A replay that stopped at the class cap or the iteration
+        // ceiling was cut wherever that safety limit happened to land, and
+        // its strict labels and final-graph features then describe the graph
+        // the cutoff left behind rather than a settled one — contamination
+        // that would flow straight into the trained checkpoint. Excluded and
+        // counted, never minted in silence.
+        if sat_stats.stop != SaturationStop::Quiesced {
+            stats.skipped_non_quiescent += 1;
+            eprintln!(
+                "gen_strict_labels[{tier_name}]: excluding '{name}' — saturation stopped \
+                 with {:?}, not Quiesced",
+                sat_stats.stop
+            );
+            continue;
+        }
 
         let extraction = extract_dag(&egraph, root_class, &costs);
         let labels = EpisodeLabels::compute_strict(&egraph, extraction.root, &extraction.choices);
@@ -614,6 +634,10 @@ fn write_json_report(path: &str, train: &SplitStats, dev: &SplitStats, rule_name
         json.push_str(&format!("    \"tier\": \"{}\",\n", s.tier_name));
         json.push_str(&format!("    \"expressions\": {},\n", s.expressions));
         json.push_str(&format!("    \"families\": {},\n", s.families.len()));
+        json.push_str(&format!(
+            "    \"skipped_non_quiescent\": {},\n",
+            s.skipped_non_quiescent
+        ));
         json.push_str(&format!(
             "    \"skipped_oversized\": {},\n",
             s.skipped_oversized

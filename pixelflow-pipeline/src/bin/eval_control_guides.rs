@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use pixelflow_search::nnue::guide::linear::PerRuleRateGuide;
 use pixelflow_search::nnue::guide::{CandidateSummary, SaturationGuide};
 
+use pixelflow_pipeline::schema::fnv1a64_hex;
 use pixelflow_pipeline::training::guide_linear::{Record, auc_roc, average_precision};
 
 #[derive(Parser)]
@@ -73,6 +74,13 @@ struct Args {
 
 #[derive(Deserialize)]
 struct TrainGuideReport {
+    /// The DEV file `train_guide` measured `dev_auc`/`dev_pr_auc` on, and
+    /// its content hash. Both are required: subtracting a report's
+    /// historical AUCs from AUCs computed here is only a same-split
+    /// comparison if it IS the same split, and a regenerated or filtered DEV
+    /// file produces a plausible, meaningless gap otherwise.
+    dev_path: String,
+    dev_fnv64: String,
     dev_samples: usize,
     dev_auc: f64,
     dev_pr_auc: f64,
@@ -114,6 +122,18 @@ fn main() {
         )
     });
 
+    let dev_bytes = std::fs::read(&args.dev)
+        .unwrap_or_else(|e| panic!("eval_control_guides: cannot read {}: {e}", args.dev));
+    let dev_fnv64 = fnv1a64_hex(&dev_bytes);
+    assert_eq!(
+        dev_fnv64, train_report.dev_fnv64,
+        "eval_control_guides: --dev {} (fnv {dev_fnv64}) is not the file {} was measured \
+         on ({}, fnv {}) — this comparison subtracts that report's linear AUCs from \
+         control AUCs computed here, which is only meaningful on one split. Re-run \
+         train_guide against this DEV file, or point --dev at the one the report names.",
+        args.dev, args.train_guide_report, train_report.dev_path, train_report.dev_fnv64
+    );
+
     let per_rule_guide =
         PerRuleRateGuide::from_train_guide_report(std::path::Path::new(&args.train_guide_report))
             .unwrap_or_else(|e| panic!("eval_control_guides: {e}"));
@@ -124,6 +144,7 @@ fn main() {
 
     let mut scores = Vec::new();
     let mut labels = Vec::new();
+    let mut repeats_excluded = 0usize;
     for line in reader.lines() {
         let line = line.unwrap_or_else(|e| panic!("eval_control_guides: I/O error: {e}"));
         if line.trim().is_empty() {
@@ -131,6 +152,16 @@ fn main() {
         }
         let record: Record = serde_json::from_str(&line)
             .unwrap_or_else(|e| panic!("eval_control_guides: malformed JSONL row: {e}"));
+
+        // Same population `train_guide` trains and evaluates on: the
+        // first-seen candidates a deployed `GuidedSaturation` loop actually
+        // scores. Including `dedup_repeat` re-fires here while the linear
+        // model's reported AUCs exclude them would compare two guides on two
+        // different datasets.
+        if record.dedup_repeat {
+            repeats_excluded += 1;
+            continue;
+        }
 
         // PerRuleRateGuide reads only rule_idx (see that type's own doc) —
         // every other field is a don't-care filler.
@@ -149,8 +180,23 @@ fn main() {
 
     assert!(
         !scores.is_empty(),
-        "eval_control_guides: {} contained zero usable records",
+        "eval_control_guides: {} contained zero first-seen candidate records \
+         ({repeats_excluded} dedup_repeat rows were excluded)",
         args.dev
+    );
+    assert_eq!(
+        scores.len(),
+        train_report.dev_samples,
+        "eval_control_guides: this run scored {} DEV samples but {} reports {} — the two \
+         guides' metrics are not over the same records",
+        scores.len(),
+        args.train_guide_report,
+        train_report.dev_samples
+    );
+    eprintln!(
+        "eval_control_guides: {} first-seen candidates scored, {repeats_excluded} \
+         dedup_repeat rows excluded",
+        scores.len()
     );
 
     let per_rule_auc = auc_roc(&scores, &labels)
@@ -162,18 +208,29 @@ fn main() {
     let auc_gap = train_report.dev_auc - per_rule_auc;
     let pr_auc_gap = train_report.dev_pr_auc - per_rule_pr_auc;
 
+    // Three outcomes, not two: the gap is signed, and `auc_gap.abs()`
+    // reported a linear model that LOST to the control as evidence that
+    // candidate-local features carry signal.
     let verdict = if auc_gap.abs() < CLOSE_AUC_GAP {
         format!(
-            "CLOSE (AUC gap {auc_gap:+.4} < {CLOSE_AUC_GAP:.2}): the linear model's DEV AUC is \
-             barely above a per-rule lookup table's — most of its ranking quality is explained \
-             by which rule fired, not by this candidate's own neighborhood/budget/matched-class \
-             features. PR-AUC gap is {pr_auc_gap:+.4}."
+            "CLOSE (AUC gap {auc_gap:+.4}, |gap| < {CLOSE_AUC_GAP:.2}): the linear model's DEV \
+             AUC is barely above a per-rule lookup table's — most of its ranking quality is \
+             explained by which rule fired, not by this candidate's own \
+             neighborhood/budget/matched-class features. PR-AUC gap is {pr_auc_gap:+.4}."
         )
-    } else {
+    } else if auc_gap > 0.0 {
         format!(
             "REAL GAP (AUC gap {auc_gap:+.4} >= {CLOSE_AUC_GAP:.2}): the linear model \
              meaningfully outranks a per-rule lookup table — candidate-local features are \
              carrying signal beyond each rule's base rate. PR-AUC gap is {pr_auc_gap:+.4}."
+        )
+    } else {
+        format!(
+            "CONTROL WINS (AUC gap {auc_gap:+.4} <= -{CLOSE_AUC_GAP:.2}): the per-rule lookup \
+             table meaningfully OUTRANKS the linear model on held-out DEV — the \
+             candidate-local features did not merely fail to help, they cost ranking \
+             quality. This is a training/feature failure to investigate, not evidence for \
+             candidate-local features. PR-AUC gap is {pr_auc_gap:+.4}."
         )
     };
 
