@@ -128,10 +128,11 @@ pub struct TerminalApp {
     /// The scene stays in point space; this is only a density hint for the
     /// glyph cache so bakes match the platform's sample lattice.
     density: f32,
-    /// The window's frame in device pixels, from the last `WindowCreated` /
-    /// `Resized`. The cell-grid program is compiled for exactly this lattice
-    /// (`CellGridGeometry::frame_w/frame_h`), so it is part of the geometry
-    /// the recompile check compares.
+    /// The window's size in LOGICAL POINTS, from the last `WindowCreated` /
+    /// `Resized` (`Surface::width_px`, which is points despite the name).
+    /// Scaled by `density` it is the device-pixel lattice the cell-grid
+    /// kernels are compiled for, so it is part of the geometry the recompile
+    /// check compares.
     frame_px: [u32; 2],
 }
 
@@ -365,6 +366,28 @@ impl TerminalApp {
         // not contramap it): cell extents scale by the display density, and
         // the atlas — baked at `density` texels per point — is exactly one
         // texel per device pixel.
+        // The lattice the compiled kernels bake over, in the same device-pixel
+        // space as every other field here. The window events carry LOGICAL
+        // POINTS (`Surface::width_px`), while the frame buffer the renderer
+        // hands us is `Surface::frame_width` device pixels — points × scale —
+        // so the conversion is not optional. Before the first window event
+        // there is no window to measure: fall back to the grid's own extent,
+        // which is what the kernels would bake if the surface were tight to
+        // the grid.
+        let frame_px = {
+            let scaled = [
+                (self.frame_px[0] as f32 * self.density).round() as u32,
+                (self.frame_px[1] as f32 * self.density).round() as u32,
+            ];
+            if scaled[0] == 0 || scaled[1] == 0 {
+                [
+                    (cols as f32 * cell_width * self.density).round() as u32,
+                    (rows as f32 * cell_height * self.density).round() as u32,
+                ]
+            } else {
+                scaled
+            }
+        };
         let geom = CellGridGeometry {
             cols: cols as u32,
             rows: rows as u32,
@@ -375,8 +398,8 @@ impl TerminalApp {
             atlas_height: self.atlas.height() as u32,
             tile_w: self.atlas.tile_px() as u32,
             tile_h: self.atlas.tile_px() as u32,
-            frame_w: self.frame_px[0],
-            frame_h: self.frame_px[1],
+            frame_w: frame_px[0],
+            frame_h: frame_px[1],
         };
         if self.program.as_ref().map(CellGridPackedProgram::geometry) != Some(&geom) {
             log::info!(

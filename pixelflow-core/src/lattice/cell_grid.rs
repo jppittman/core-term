@@ -476,11 +476,18 @@ pub struct PlaneRegion {
 }
 
 /// The kernels were compiled for `frame` (`geom.frame_w × geom.frame_h`); a
-/// region outside it would run the collapse loop past the lattice they were
+/// region outside it will run the collapse loop past the lattice they were
 /// specialized to.
+///
+/// `debug_assert`, matching [`JitManifold::call_collapse`]'s own check of the
+/// same promise: today's emitted code takes its loop bounds from the tile at
+/// run time, so a wider region is merely a stale cache key, not wrong pixels.
+/// It becomes load-bearing when the emitted code specializes on the extents,
+/// and is promoted with that change rather than ahead of it — a release panic
+/// for a promise nothing yet relies on is a new way for a terminal to die.
 fn assert_region_in_frame(what: &str, frame: [u32; 2], region: PlaneRegion) {
     let (fw, fh) = (frame[0] as usize, frame[1] as usize);
-    assert!(
+    debug_assert!(
         region.width <= fw && region.y0.saturating_add(region.rows) <= fh,
         "{what}: region {}×{} at row {} lies outside the {fw}×{fh} frame this program was compiled for",
         region.width,
