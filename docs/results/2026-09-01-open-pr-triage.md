@@ -467,6 +467,28 @@ promptly**, because a reconciled-but-unlanded branch is a wasting asset. #1087
 is the demonstration in the good direction — reconciled and merged the same
 hour, so it kept its value and is now upstream.
 
+## Per-PR disposition
+
+Consolidating the calls this document makes, since they are scattered through
+the sections above.
+
+| PR | Call | Why |
+|---|---|---|
+| #1054 | **merge** after a `cargo mutants` rerun | was red, fixed and CI-green; the audit's "0 real gaps" has never been re-verified across two encoder refactors |
+| #1072 | **merge** | modify/delete resolved by accepting #1093's deletion; zero threads; the remaining question is editorial, not mechanical |
+| #1109 | **rework, do not merge as written** | the change it proposes is unbounded on a clock-free `main` — 353 s for a 279-node kernel, timing out CI. Pair the removed `break` with `Budget::Applications` and re-measure; the `stop`-re-arming half can land separately |
+| #1113, #1114 | **review normally** | clean, current, no threads |
+| #994 | **decide** — merge dormant or close | green and threadless since 11 Aug, blocked on five Apple secrets that do not exist; costs a rebase every time `main` moves |
+| #1084, #1088, #1091, #1095, #1096, #1101, #1103 | **hold** | all seven gated on the class-cap decision; mechanically ready otherwise, recipe above |
+| #1086 | this document | — |
+
+Superseded or obsolete, for the record: **#1050** (closed — #1055/#1068 deleted
+the allocator its tests and both its bug findings were about) and **#1044**
+(closed — a confirmed-negative result, ported twice, superseded by the Phase 3
+program). Neither was salvageable and both are gone. **#1054** looked like a
+third case and was not: it was twice-invalidated but its tests were
+re-targetable, and it is now green.
+
 ## Recommended order## Recommended order
 
 1. **Close #1054 and #1072**; decide #994. These three have not moved in
