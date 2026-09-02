@@ -170,3 +170,38 @@ path = "src/bin/phase3_round2_new_rules.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "gen_r2g_trajectories"
+path = "src/bin/gen_r2g_trajectories.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "counterfactual_credit"
+path = "src/bin/counterfactual_credit.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "train_guide_r2g"
+path = "src/bin/train_guide_r2g.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "r2g_spread_vs_budget"
+path = "src/bin/r2g_spread_vs_budget.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "skew_test_linear_guide"
+path = "src/bin/skew_test_linear_guide.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false

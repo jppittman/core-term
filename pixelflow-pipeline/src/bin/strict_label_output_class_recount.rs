@@ -46,8 +46,8 @@ use pixelflow_ir::{ExprArena, ExprNode};
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_search::egraph::{
     APP_CHECKPOINT_GRID, AnytimeCurveOutput, ApplicationId, Budget, CostModel, EClassId, EGraph,
-    ENode, ENodeId, EpisodeLabels, Optimizer, Origin, RuleId, RuleSet, config_for_node_count,
-    run_anytime_curve,
+    ENode, ENodeId, EpisodeLabels, KeepJournal, Optimizer, Origin, RuleId, RuleSet,
+    config_for_node_count, run_anytime_curve,
 };
 
 /// Per-curve safety ceilings — identical to `phase3_at_budget_eval`'s, so the
@@ -444,6 +444,10 @@ fn main() {
         let t0 = Instant::now();
         let mut optimizer = Optimizer::production()
             .cost(costs.clone())
+            // This harness reads the journal after the run, so recording has
+            // to be asked for: `Optimizer` records only for an observer
+            // (#1118), and production sets none.
+            .observe(Some(Box::new(KeepJournal)))
             .budget(Budget::Explicit {
                 iterations: SWEEP_SAFETY_CEILING,
                 classes: class_cap,

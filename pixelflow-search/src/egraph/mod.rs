@@ -73,9 +73,9 @@ pub use graph::{
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode};
 pub use ops::Op;
-#[cfg(feature = "provenance-journal")]
-pub use optimizer::Observer;
 pub use optimizer::{Budget, Limits, Optimized, Optimizer, OptimizerStats};
+#[cfg(feature = "provenance-journal")]
+pub use optimizer::{KeepJournal, Observer};
 pub use provenance::{ApplicationId, ENodeId, Provenance};
 #[cfg(feature = "provenance-journal")]
 pub use provenance::{
