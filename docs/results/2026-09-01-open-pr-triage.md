@@ -169,78 +169,66 @@ until someone pushes `v*.*.*`. Three weeks of drift on something CI cannot
 validate. Merge it as dormant infrastructure or close it — but decide, because
 leaving it open costs a rebase every time `main` moves.
 
-### 4. The saturation-family conflicts, and what kind of work they actually are
+### 4. The conflicted branches, triaged by what actually blocks each
 
-#1084, #1087, #1088, #1091, #1095, #1096, #1101, #1103 need a merge from `main`
-and reconciliation against the landed stop-reason and optimizer-entry-point
-work. #1109 was in this set and is now resolved (below), which is what makes
-the rest classifiable rather than merely daunting.
+Working through them empirically rather than by inspection changed the picture:
+two were mechanical and are done, and the rest split into two clearly different
+kinds of work. The blocker is **never** the stop-reason redesign by itself — in
+every case `main`'s landed version strictly supersedes the branch's, including
+the stop reason for an application budget (`SaturationStop::ApplicationBudget`)
+and the application-capped run itself (`Budget::Applications(u64)`, whose own
+doc calls it "the budget the research arms compare under"). What blocks each
+branch is whatever *else* it added to the same files.
 
-Each conflicted branch is **two separable jobs**, and conflating them is what
-makes the pile look worse than it is.
+**Kind 1 — superseded core, mechanical. Both done.**
 
-**(a) The core delta is superseded, and resolving it is mechanical.** Every one
-of these branches carries its own answer to "why did saturation stop," written
-before #1083 landed one. #1087 is the clearest case: its `graph.rs` conflict is
-ten hunks of `bool truncated` against `main`'s `ScanStop { Completed, ClassCap,
-Deadline }`. That is the same fact at strictly more resolution — and it is this
-codebase's own rule, *extend the type, not the convention*, already applied on
-the `main` side. There is nothing to weigh: take `main`'s. The same shape holds
-for the `saturate.rs`, `mod.rs`, and test-import hunks.
+*#1109* and *#1087* carried only the stop-reason work plus an `#[ignore]`d
+measurement module. Recipe: take `main`'s `graph.rs`/`saturate.rs`/`mod.rs`
+wholesale, keep the branch's harness intact as its own module, and port that
+harness off the deleted `env_extraction_policy`/`saturate_with_full_budget`
+onto `Optimizer` + `Budget::Explicit` + `hard_ceiling`, which is what keeps the
+caps as parameters a measurement varies. Both pushed and now merge clean.
 
-**(b) The harness collision is the real work.** These branches also add
-`#[ignore]`d measurement modules, and `main` has since added its own in the same
-file regions. #1087's `runtime.rs` conflict includes a single 456-vs-668-line
-hunk where its telemetry harness meets `main`'s #1106 congruence probe, each
-with near-duplicate helpers under different names (`load_arena` vs
-`load_arena_dump`, `arena_cost` vs `arena_static_cost`). Both must survive, and
-the helpers want deduplicating rather than both being kept. That is ~1,100 lines
-of careful test-only reconciliation per branch. It cannot break production — it
-is all `#[cfg(test)]` — but it decides whether a published measurement is
-reproducible, so it should be done by someone who can say which helper is
-authoritative.
+Two things worth stealing from those merges. First, `git` interleaved #1087's
+`production_telemetry` module with `main`'s `congruence_gap_probe` *inside each
+other's bodies* and produced an unclosed delimiter; the fix is to take `main`'s
+file whole and re-append the branch's module from its own side, not to resolve
+hunk by hunk. Second, each branch's `saturation_stop.rs` tests turned out to be
+a strict subset of `main`'s, name for name — independent confirmation that
+nothing is lost by taking `main`'s.
 
-The branches also do **not** share a resolvable base. #1084, #1088, #1091,
-#1095 and #1096 all fork from the same merge-base with `main`, but none is an
-ancestor of another: five independent lines, five registered experiments, no
-single resolution that templates them.
+**Kind 2 — an additive provenance subsystem to re-thread. #1101, #1103.**
 
-The one shortcut worth knowing: #1083's landed version deliberately converged
-its stop-reason type onto the names #1084 independently chose
-(`SaturationStop { Quiesced, ClassCap, IterationCeiling, Timeout }`, field
-`stop`), so #1084's job (a) should be closer to a duplicate-delete than a
-rename.
+Core delta is only 237 lines, which makes these look like Kind 1. They are not.
+Alongside the superseded stop-reason work each carries `ApplicationId` threaded
+through `UnionEvent`, `ApplicationRecord`, `active_application` and
+`derivation_ancestors_tight`, across `graph.rs`, `provenance.rs` and
+`labeler.rs`. `main` has none of it, so it must survive — but `main` rewrote the
+functions it threads through, so it has to be re-applied by hand.
 
-### 5. #1109 — resolved, and the template for job (a)
+Two traps, both hit and recorded: `git checkout --theirs graph.rs` silently
+destroys the additive work (it takes the whole file, including the parts that
+auto-merged cleanly), and resolving hunk-by-hunk instead leaves fragments of the
+branch's `saturate_until_applications` orphaned *inside* `main`'s rewritten
+function — dangling `'outer`, `max_total_applications`, `mid_sweep_stop`. The
+workable route is `main`'s file whole, then re-thread `ApplicationId`
+deliberately.
 
-Worth recording because its raw conflict was the most alarming on the board and
-the least real: an ~890-line region in `runtime.rs`, which turned out to be
-nothing but both sides appending an independent module at end-of-file
-(`main`'s #1106 probe and this branch's `cap_break_ab`). Both kept; neither
-touches the other. Its actual subject — classify a `ClassCap` sweep without
-ending the run, and re-arm `stop` so it names the *last* sweep — is two lines in
-`graph.rs` and merged clean.
+**Kind 3 — a large additive subsystem. #1084, #1088, #1091, #1095, #1096.**
 
-The genuine work was porting its harness: it drove `saturate_with_full_budget`
-and extracted through `env_extraction_policy()`, which #1108 deleted. It now
-runs through `Optimizer` — production's own entry point — with
-`Budget::Explicit` plus `hard_ceiling`, which is what keeps the caps as
-parameters, and this A/B requires that: both arms must meet identical caps for
-the control flow to be the only difference between them. Stats come off
-`OptimizerStats`, extraction off `Optimized::to_arena`.
+800–1,100 lines added to `graph.rs`/`saturate.rs` alone: the GuidedSaturation
+machinery each experiment runs on. "Take `main`'s" would delete the experiment.
+These need the subsystem re-applied onto `main`'s restructured `saturate.rs` by
+someone who can say which parts the registered claim depends on. They also do
+not share a resolvable base — all five fork from the same merge-base with `main`
+but none is an ancestor of another, so there are five of these, not one.
 
-One consequence flagged rather than buried: the old path honoured
-`PIXELFLOW_NNUE_WEIGHTS` through `env_extraction_policy`; the new one takes
-production's default static latency prior. That matches what production does
-today, but a previously recorded NNUE arm would not reproduce through this
-harness.
+Sizes, for planning: #1084 1,011 core / 28.5k total; #1088 1,091 / 308.9k;
+#1091 937 / 41k; #1095 804 / 42.5k; #1096 961 / 60k.
 
-Verified before pushing: all 7 of `saturation_stop.rs` — including
-`class_cap_reports_class_cap_not_quiesced` and
-`productive_but_class_capped_final_sweep_is_class_cap`, the two that would catch
-this exact change going wrong — and all 7 of `optimizer_laws.rs`, plus
-`cargo test -p pixelflow-search` 197/4/2/7/7 passing, clippy `-D warnings`
-clean, `fmt --check` clean.
+**One collision to expect.** #1087 and #1101 both add a module named
+`production_telemetry` to `runtime.rs`. They do not conflict today because
+neither has landed; whichever goes second will need a rename.
 
 ## Recommended order
 
