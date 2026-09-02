@@ -18,6 +18,35 @@ active?"*
 
 ---
 
+## 0. Correction note (2026-09-02) — how to read the evidence links, and what has moved since
+
+This section is dated and additive. The audit body below is preserved as the finding it was, with the
+factual errors review caught corrected **in place**; what an audit of a moving tree cannot preserve is
+the tree, so this note records the drift rather than rewriting the body around it.
+
+**Evidence links are pinned to `5568a807`, the audited revision.** Every relative
+`file.rs#Lnnn` link in this document resolves against whatever commit a reader happens to be viewing,
+but the line numbers were read at `5568a807` and are only guaranteed there. Refactors merged between
+the audit and this document already invalidated some of them — the clearest case was the `legalize`
+row in §1, which cited `pixelflow-codegen/src/emit/mod.rs:1892,1967,1985,2008`. Those were the four
+`legalize` call sites at `5568a807`; #1082 ("one kernel ABI, one compile entry") collapsed them, and at
+the current revision those lines are unrelated hoist/emission code while the single production
+`legalize` call lives at `emit/mod.rs:325` inside `NativeConfig::compile`. That row now cites the
+post-#1082 location; **for every other link, read `git show 5568a807:<path>`**, not the working tree.
+The claims were verified at `5568a807`; the coordinates are not stable.
+
+**Three merges since `5568a807` supersede claims in the body.** They do not change the audit's
+answer — the static latency table is still what every compile path uses — but they change the
+*reasons*, and the body is left as written so the diff between the two is visible:
+
+| Merged since | What it changes about this document |
+|---|---|
+| **#1093** — "delete the extraction head's shape, keep its denotation" | The `PIXELFLOW_NNUE_WEIGHTS` opt-in **no longer exists.** `grep -rln PIXELFLOW_NNUE_WEIGHTS` over `origin/main` is empty, `ExtractionPolicy` is a struct rather than a `Static`/`Nnue` enum, and `env_extraction_policy()` now returns `ExtractionPolicy::latency_prior()` unconditionally — its own doc comment says "Nothing is read from the environment now", and the name is kept only so a future policy change is one edit rather than two. So everywhere the body says the head is **OPT-IN** (§1's status table, §4 row 1, §1's "never selected" paragraph), read: OPT-IN **at `5568a807`**, and *removed* today. The §4 row-1 recipe for making it live is correspondingly obsolete: there is no env var left to set. The finding it supported — that the trained head never changed what a user runs — is unaffected, and #1093 is the strongest possible confirmation of it. |
+| **#1097** — "extraction prices a node by how often it runs" | Extraction is now lattice-aware: `ExtractionPolicy::for_lattice(shape)` multiplies a node's cost by `LatticeShape::evals`, so a node's price depends on the bake geometry. The `kernel!` tier, which expands before any bake exists, passes `LatticeShape::POINT` and weights everything by one — i.e. exactly the pricing this document measured. The runtime `Lattice::bake` path is the one that can now differ. The cost **table** (§1's headline entries) is untouched. |
+| **#1083 / #1085** (open, not merged as of this note) | §3a step 5 already cites #1083 as the in-progress fix for the missing termination cause, and §5 open question 10 describes what #1085 addresses (the `Dwrt` tier's duplicate saturation loop). Both were still open when this note was written, so the gaps described in the body are current on `main`. |
+
+---
+
 ## 1. Flat answers
 
 ### Q: Is the measured latency table the one `kernel!` uses today?
@@ -28,11 +57,15 @@ active?"*
 whose `Err(_)` arm (env var unset) is `ExtractionPolicy::Static(Box::new(CostModel::latency_prior()))`
 → the table at [`pixelflow-search/src/egraph/cost.rs:81-133`](../../pixelflow-search/src/egraph/cost.rs#L81-L133).
 
-That table **is** the Round-1 measured table. `git show e4388c54 -- pixelflow-search/src/egraph/cost.rs`
-(commit "remeasure the latency prior", 2026-08-14) shows the handwritten values it replaced, and
-`git diff e4388c54..HEAD -- pixelflow-search/src/egraph/cost.rs | grep -E '^[+-].*OpKind::'` shows
-**no `OpKind::X => N` table line has changed since** (only test and accessor refactors). Headline
-entries, today vs pre-Round-1:
+That table **is** the Round-1 measured table. It shipped in
+`be4f98df33751cb496c75f4955c03f27c664f8b8` ("fix(pixelflow-pipeline): harden the e-graph NNUE
+measurement pipeline (#984)", 2026-08-17), the squash-merge commit that is reachable from `main`.
+(An earlier draft of this document cited `e4388c54`, the branch-side commit that #984 squashed; it is
+not an ancestor of `origin/main`, so both reproduction commands failed for anyone with a normal
+clone.) `git show be4f98df -- pixelflow-search/src/egraph/cost.rs` shows the handwritten values it
+replaced, and `git diff be4f98df..HEAD -- pixelflow-search/src/egraph/cost.rs | grep -E '^[+-].*OpKind::'`
+shows **no `OpKind::X => N` table line has changed since** (only test and accessor refactors).
+Headline entries, today vs pre-Round-1:
 
 | Op | Today | Pre-Round-1 | Location |
 |---|---:|---:|---|
@@ -54,7 +87,12 @@ explicit `Static(latency_prior())` run) and
 [`pixelflow-search/tests/latency_prior_regression.rs`](../../pixelflow-search/tests/latency_prior_regression.rs)
 (`Pow(x, 0.5)` must extract as `Sqrt` through the runtime tier).
 
-The learned model is never selected: `PIXELFLOW_NNUE_WEIGHTS` appears in exactly three source files
+The learned model is not selected by anything in this repository — the searches below establish the
+repository *default*, not an absolute. `env_extraction_policy` picks NNUE whenever the calling
+process has `PIXELFLOW_NNUE_WEIGHTS` in its environment ([`extraction.rs:91-96`](../../pixelflow-search/src/egraph/extraction.rs#L91-L96)),
+so an externally configured developer shell or CI runner can select it with nothing committed here;
+that is exactly why the status table below classifies the head **OPT-IN** rather than dead.
+`PIXELFLOW_NNUE_WEIGHTS` appears in exactly three source files
 (`grep -rn PIXELFLOW_NNUE_WEIGHTS --include='*.rs' --include='*.toml' --include='*.yaml' --include='*.yml' --include='*.py' --include='*.sh' .`
 → `pixelflow-compiler/src/optimize.rs`, `pixelflow-search/src/egraph/extraction.rs`,
 `pixelflow-search/src/runtime.rs`); `.cargo/config.toml` has no `[env]` section and
@@ -114,7 +152,7 @@ Differences, all documented in code, none changing the rule set or policy:
 | Trigger | Count | Evidence |
 |---|---|---|
 | Cell-grid packed kernel: any geometry change (cols/rows/cell px/atlas extents) | compiles **on each transition to a different geometry** — a resize that leaves cols/rows/cell dims/atlas extents unchanged compiles nothing; only the current program is retained (single `Option` slot, not a cache) and the kernel's `Buffer` leaves make it uncacheable in `jit_cache`'s global dedup ([`jit_cache.rs:16-18,60-64`](../../pixelflow-codegen/src/jit_cache.rs#L60-L64)), so an A→B→A resize recompiles geometry A twice, not once | [`core-term/src/terminal_app.rs:362-388`](../../core-term/src/terminal_app.rs#L362-L388) |
-| Glyph SDF kernel: first use of a codepoint | 1 per distinct `char`, memoized in `slots` | [`pixelflow-graphics/src/fonts/atlas.rs:168-184`](../../pixelflow-graphics/src/fonts/atlas.rs#L168-L184) |
+| Glyph SDF kernel: first use of a codepoint | 1 per distinct `char` **that the font has a glyph for**, **per atlas instance** — `uv` memoizes in `slots`, but a `char` the font lacks memoizes `None` and returns `blank_uv()` with no `Lattice::bake` at all; and `slots` dies with the atlas, which `ensure_atlas` replaces wholesale on any density or cell-height change, so every previously baked character is baked again against the new atlas | [`pixelflow-graphics/src/fonts/atlas.rs:168-187`](../../pixelflow-graphics/src/fonts/atlas.rs#L168-L187) (the `let Some(baked) = baked else` miss arm); [`core-term/src/terminal_app.rs:239-245`](../../core-term/src/terminal_app.rs#L239-L245) (atlas replacement) |
 | Startup ASCII warm at density 1.0 | 95 bakes | [`terminal_app.rs:201-205`](../../core-term/src/terminal_app.rs#L201-L205) |
 | Atlas rebuild after density change | +95 bakes on any HiDPI display | [`terminal_app.rs:239-245`](../../core-term/src/terminal_app.rs#L239-L245), callers `:320,468,515` |
 | Per frame | **never** | [`terminal_app.rs:373`](../../core-term/src/terminal_app.rs#L373) reuse gate |
@@ -124,9 +162,17 @@ Every production bake enters through `jit_cache::compile`:
 [`cell_grid.rs:393,598`](../../pixelflow-core/src/lattice/cell_grid.rs#L598) (`CellGridProgram`/`CellGridPackedProgram::compile`).
 The packed cell-grid kernel is 623 reachable nodes (pinned,
 [`cell_grid.rs:1427-1446`](../../pixelflow-core/src/lattice/cell_grid.rs#L1427-L1446)) → classical tier.
-The runtime trace measured ASCII glyph kernels at 271–3,687 raw nodes (all classical) with an
-out-of-tree probe against the repo's fixture font; those numbers are carried forward from that
-trace, not re-measured here.
+The runtime trace measured ASCII glyph kernels at 271–3,687 raw nodes with an out-of-tree probe
+against the repo's fixture font; those numbers are carried forward from that trace, not re-measured
+here. **"All classical" holds only for the non-empty outlines.** Space (`U+0020`) has an empty `loca`
+entry, so [`ttf.rs:460-463`](../../pixelflow-graphics/src/fonts/ttf.rs#L460-L463) compiles it to the
+constant `kc(0.0)` and `glyph_kernel_scaled_by_id` warps that constant — the coordinate subtree is
+unreachable from the root, leaving **one** node. A probe over `' '..='~'` against the in-tree
+`pixelflow-graphics/assets/DejaVuSansMono-Fallback.ttf` at 16 px, counting reachable nodes after
+`lower_dwrt`, confirms it: space is 1 node (blitz tier), every other printable ASCII glyph exceeds 50
+(classical), and none land in rapid. So the startup warm range at
+[`terminal_app.rs:201-205`](../../core-term/src/terminal_app.rs#L201-L205) is 94 classical bakes plus
+one blitz bake, not 95 classical.
 
 ### Q: Which research artifacts are LIVE-DEFAULT / OPT-IN / LIBRARY-ONLY / DEAD?
 
@@ -137,7 +183,7 @@ trace, not re-measured here.
 | `config_for_node_count` tiers | **LIVE-DEFAULT** (macro + runtime); **not used** by the `Dwrt` path | [`saturate.rs:196-202`](../../pixelflow-search/src/egraph/saturate.rs#L196-L202) |
 | `extract_dag` (static DP extraction) | **LIVE-DEFAULT** | [`extraction.rs:58-64`](../../pixelflow-search/src/egraph/extraction.rs#L58-L64) |
 | `Extraction` validated type (`from_dp`) | **LIVE-DEFAULT** as a wrapper; its `try_swap` refinement is NNUE-only | [`extraction.rs:63`](../../pixelflow-search/src/egraph/extraction.rs#L63); `try_swap` only at [`extract.rs:460`](../../pixelflow-search/src/egraph/extract.rs#L460) inside `IncrementalExtractor` |
-| Legalization passes (`legalize`) | **LIVE-DEFAULT**, lowering only, after extraction | [`pixelflow-ir/src/passes.rs:39,63`](../../pixelflow-ir/src/passes.rs#L63); callers [`pixelflow-codegen/src/emit/mod.rs:1892,1967,1985,2008`](../../pixelflow-codegen/src/emit/mod.rs#L1892) |
+| Legalization passes (`legalize`) | **LIVE-DEFAULT**, lowering only, after extraction | [`pixelflow-ir/src/passes.rs:39,63`](../../pixelflow-ir/src/passes.rs#L63); production caller `pixelflow-codegen/src/emit/mod.rs:325`, inside the one compile entry (see the pinning note below) |
 | Rule-provenance **recording** | **LIVE-DEFAULT** — unconditional in `add`/`union`, no cfg gate | [`graph.rs:227,317`](../../pixelflow-search/src/egraph/graph.rs#L227), `Provenance::new()` at [`graph.rs:137,157`](../../pixelflow-search/src/egraph/graph.rs#L137); `grep -n "cfg(feature" graph.rs provenance.rs` → none |
 | Rule-provenance **consumption** (`derivation_ancestors`, `labeler.rs`) | **LIBRARY-ONLY** | callers: `pixelflow-search/src/egraph/{graph,labeler,mod,provenance}.rs`, `pixelflow-search/examples/oracle_filtered_budget_curves.rs`, `pixelflow-pipeline/src/bin/guide_headroom.rs` (grep `derivation_ancestors --include='*.rs'`) |
 | NNUE extraction head (`ExprNnue`, `IncrementalExtractor`, #1048 `try_swap`) | **OPT-IN** via `PIXELFLOW_NNUE_WEIGHTS`, never set; hard-panics on a bad file; **ignored** by the `Dwrt` path | [`extraction.rs:86-128`](../../pixelflow-search/src/egraph/extraction.rs#L86-L128) |
@@ -154,8 +200,13 @@ trace, not re-measured here.
 
 The one research result that changed what a user runs is Round 1's remeasured table: `Pow` 12→196,
 `Rsqrt` 5→21, `Recip` 10→16, transcendentals 10→70–134, and it is live in every compile path core-term
-has — the `kernel!`/`kernel_jit!`/`kernel_value!` macros at build time, the runtime `Lattice::bake`
-path for every glyph and cell-grid kernel, and the macro-time `Dwrt` e-graph. Everything else the
+has — the `kernel!` and `kernel_value!` macros at build time (`kernel_jit!` shares the same optimize
+pipeline and the same table, but a repository-wide search finds invocations only in
+`pixelflow-compiler/tests`, `pixelflow-runtime/tests`, and
+`pixelflow-runtime/examples/bench_psychedelic.rs` — none in `core-term/src`, `pixelflow-graphics/src`,
+`pixelflow-core/src`, or production `pixelflow-runtime/src`, so it is a library API here, not a path a
+core-term user runs), the runtime `Lattice::bake` path for every glyph and cell-grid kernel, and the
+macro-time `Dwrt` e-graph. Everything else the
 program produced — the trained extraction head, incremental extraction, the Guide, the labeler — is
 either behind an env var nobody sets or has no caller outside research binaries. Provenance recording
 is the odd one out: paid on every production compile, read by nothing production-facing. Two things
@@ -201,9 +252,15 @@ The "registration doc" is [`docs/plans/2026-08-31-guide-design-revision.md`](../
 What the mismatch means: a Guide validated under §5's protocol is validated on a machine whose budget
 is "N applications, unlimited time" while production's is "≤100 rounds, ≤5,000 classes, ≤200 ms". Until
 one of the two adopts the other's denomination, the experiment's accept gate does not speak to what
-`kernel!` or `Lattice::bake` will do. The same applies retroactively to the 0.9438/0.9486 numbers:
-they characterize extraction after 40 rounds at a 10,000-class / 500 ms ceiling, a point no
-production kernel is saturated to.
+`kernel!` or `Lattice::bake` will do. The same applies to the 0.9438/0.9486 numbers with a narrower
+claim than an earlier draft made: they characterize extraction under a ceiling of **up to** 40
+rounds, 10,000 classes and 500 ms. `saturate_with_limit(40)` can also return earlier — on
+quiescence, on the class cap, or on the timeout ([`graph.rs:846-879`](../../pixelflow-search/src/egraph/graph.rs#L846-L879))
+— and `bench_extraction_3way.rs` retains no termination telemetry, so which of those ended each run
+is not recoverable from the committed artifacts. What the audit can establish is that the *configured*
+ceilings differ from every production tier; it cannot establish that the numbers describe extraction
+after exactly 40 rounds, nor that they describe an operating point production never reaches. Settling
+that needs the benchmark's stop reasons measured — §5 open question 11.
 
 ---
 
@@ -221,7 +278,7 @@ No code here — files that change, in dependency order.
 
 ### 3b. Guided saturation behind `SaturationGuide`, in both compile paths
 
-1. [`pixelflow-search/src/egraph/graph.rs:860-871`](../../pixelflow-search/src/egraph/graph.rs#L860-L871) — the rule loop (`for rule_idx in 0..n_rules { batch.apply_rule(rule_idx, ..) }`) is the seam: ordering or masking `rule_idx` by a score is where a Guide acts.
+1. [`pixelflow-search/src/egraph/graph.rs:916-990`](../../pixelflow-search/src/egraph/graph.rs#L916-L990) — the seam is the **action-enumeration/commit boundary inside `apply_rule_at_index_timed`**, not the rule loop above it. `batch.apply_rule(rule_idx, ..)` ([`graph.rs:860-871`](../../pixelflow-search/src/egraph/graph.rs#L860-L871)) delegates all the way down to that function, which scans every canonical class × every node, pushes each match into `updates`, and then commits **all** of them through `apply_action_from_rule` before control returns. So scoring at `rule_idx` gives 62 decisions per round and nothing finer: it cannot order or deduplicate individual candidates, and it cannot stop at exactly N applications — which is precisely the unit §5's pre-registered budget is denominated in. A Guide that honors that budget must score `(class, node, action)` triples between the `updates.push` scan and the commit loop.
 2. [`pixelflow-search/src/nnue/guide/mod.rs:88`](../../pixelflow-search/src/nnue/guide/mod.rs#L88) — the `SaturationGuide` trait already exists; `score_candidates` needs a `GraphSummary`/`RuleCandidate` producer wired from the loop above.
 3. [`pixelflow-search/src/egraph/saturate.rs:104`](../../pixelflow-search/src/egraph/saturate.rs#L104) — `saturate_with_full_budget` takes an optional guide.
 4. The three callers: [`optimize.rs:145`](../../pixelflow-compiler/src/optimize.rs#L145), [`runtime.rs:128`](../../pixelflow-search/src/runtime.rs#L128), [`ir_bridge.rs:722`](../../pixelflow-compiler/src/ir_bridge.rs#L722).
@@ -236,7 +293,7 @@ in production and on in the harness — if that separation is wanted:
 
 1. [`pixelflow-search/src/egraph/graph.rs:137,157,227,317`](../../pixelflow-search/src/egraph/graph.rs#L227) — `Provenance::new()` in both constructors and the unconditional `record_origin`/`record_union` calls, plus `record_application` at [`graph.rs:1014`](../../pixelflow-search/src/egraph/graph.rs#L1014), gain a switch (a Cargo feature, or a constructor variant).
 2. [`pixelflow-search/src/egraph/provenance.rs:137-144`](../../pixelflow-search/src/egraph/provenance.rs#L137-L144) — the store itself (`origins: HashMap`, `applications: Vec`, `unions: Vec`).
-3. Consumers that must keep it on: [`labeler.rs`](../../pixelflow-search/src/egraph/labeler.rs), [`guide_headroom.rs`](../../pixelflow-pipeline/src/bin/guide_headroom.rs), [`examples/oracle_filtered_budget_curves.rs`](../../pixelflow-search/examples/oracle_filtered_budget_curves.rs), [`examples/rule_report.rs`](../../pixelflow-search/examples/rule_report.rs).
+3. Consumers that must keep it on: [`labeler.rs`](../../pixelflow-search/src/egraph/labeler.rs), [`guide_headroom.rs`](../../pixelflow-pipeline/src/bin/guide_headroom.rs), [`examples/oracle_filtered_budget_curves.rs`](../../pixelflow-search/examples/oracle_filtered_budget_curves.rs), [`examples/rule_report.rs`](../../pixelflow-search/examples/rule_report.rs), and — the one an earlier draft of this list omitted — [`guide_scope_saturation_delta.rs`](../../pixelflow-pipeline/src/bin/guide_scope_saturation_delta.rs), which is the *heaviest* reader of the four provenance accessors: `union_count()` before and after every round ([`:308,326`](../../pixelflow-pipeline/src/bin/guide_scope_saturation_delta.rs#L308-L326)), `origins()` ([`:399`](../../pixelflow-pipeline/src/bin/guide_scope_saturation_delta.rs#L399)), and `application_count()`/`applications()` in firing order ([`:416-418`](../../pixelflow-pipeline/src/bin/guide_scope_saturation_delta.rs#L416-L418)) — its entire per-application delta reconstruction. Turning provenance off without listing it here would either break its build or, worse, leave it reporting zeros.
 4. The cost itself was not measured by any trace or by this synthesis; the module doc's "O(1) per event" claim ([`provenance.rs:39-44`](../../pixelflow-search/src/egraph/provenance.rs#L39-L44)) is a claim.
 
 ---
@@ -245,14 +302,16 @@ in production and on in the harness — if that separation is wanted:
 
 | # | Artifact | Why it is not live | Smallest change that would make it live |
 |---|---|---|---|
-| 1 | Trained NNUE extraction head (`ExprNnue`, `bootstrap_extraction_head` output) | `PIXELFLOW_NNUE_WEIGHTS` is set nowhere in the tree | Add an `[env]` entry to `.cargo/config.toml` pointing at a checked-in weights file — **and** route [`ir_bridge.rs:724`](../../pixelflow-compiler/src/ir_bridge.rs#L724) through `env_extraction_policy()`, or the `Dwrt` path keeps using the static table regardless. |
+| 1 | Trained NNUE extraction head (`ExprNnue`, `bootstrap_extraction_head` output) | `PIXELFLOW_NNUE_WEIGHTS` is set nowhere in the tree | Three things, not one. (a) The macro tier reads the variable at proc-macro expansion time, so an `[env]` entry in `.cargo/config.toml` would cover it. (b) That entry does **not** cover the runtime tier: Cargo injects `[env]` only into processes *it* launches, while `env_extraction_policy()` reads the live process environment on the first glyph/cell-grid bake — a bundled `CoreTerm.app` or an installed binary launched directly never reads `.cargo/config.toml`, so `cargo run` would get NNUE and a packaged launch would silently stay on the static table. Making the head genuinely LIVE-DEFAULT means embedding the weights (or the policy choice) in the binary, or having the packaged launcher set the variable. (c) Independently, route [`ir_bridge.rs:724`](../../pixelflow-compiler/src/ir_bridge.rs#L724) through `env_extraction_policy()`, or the `Dwrt` path keeps using the static table regardless. |
 | 2 | `IncrementalExtractor` / validated-`Extraction` `try_swap` fast path (#1048) | Reached only inside the NNUE policy ([`extract.rs:345-470`](../../pixelflow-search/src/egraph/extract.rs#L345-L470)); the static path is one DP pass with no swap loop | Same gate as #1; nothing else changes. |
 | 3 | `SaturationGuide` / `GraphAccumulator` / mask head | No callers, no trainer, no weights; `saturate_guided*` does not exist on `main` | Nothing flips it — it is §3b in full, starting with the `graph.rs` rule-loop seam. |
 | 4 | Provenance journal → hindsight labeler | Write side is already live on every compile; read side is `labeler.rs` and research bins only | Same as #3: a deployed Guide is the only production consumer the design names. |
 | 5 | Corpus/holdout apparatus (`Fence`, `FenceKey`, `SchemaIdentity`, `JournalEntry`) | `pixelflow-pipeline`-internal bookkeeping by design | None directly; its only route to a user is producing the weights file in #1. |
 
 For contrast, the one that *did* change what a user runs: the remeasured table (§1), shipped in
-e4388c54 and untouched since.
+`be4f98df` (#984) and untouched since. It is not the *only* live change, though — see the Verdict in
+§1 and the provenance row in §1's status table: provenance **recording** is also live on every
+production compile, and unlike the table its cost was never measured.
 
 ---
 
@@ -292,6 +351,11 @@ e4388c54 and untouched since.
     [`2026-08-17-cost-model-domain.md`](../plans/2026-08-17-cost-model-domain.md) is not dead after
     all: `graph.rs::saturate()` is a live production entry via the `Dwrt` path, so unifying it with
     `saturate_with_full_budget` is a behavior change for `DX`/`DY` kernels, not a cleanup.
+11. **`bench_extraction_3way.rs` retains no termination telemetry.** `saturate_with_limit(40)` can
+    exit on any of four conditions ([`graph.rs:846-879`](../../pixelflow-search/src/egraph/graph.rs#L846-L879))
+    and the harness records none of them, so whether the 0.9438/0.9486 Spearman numbers describe
+    quiesced graphs or capped ones is not recoverable from the committed artifacts. Same instrument
+    as open question 1, pointed at the research harness instead of production.
 
 ---
 
