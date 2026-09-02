@@ -43,8 +43,8 @@ consequence if it breaks. **Three of five need correcting.**
 
 | | Law | Status |
 |---|---|---|
-| **L1** | Soundness: `add` is a homomorphism onto the semantic quotient | **VIOLATED** (one silent hole) and **unenforced** for ~1/3 of rules |
-| **L2** | Monotonicity: saturation only adds equalities | **TRUE**, unenforced |
+| **L1** | Soundness: `add` is a homomorphism onto the semantic quotient | **HOLDS** since #1105 (the silent hole is closed and pinned); still **unenforced** for ~1/3 of rules |
+| **L2** | Monotonicity: saturation only adds equalities | **TRUE**, pinned by a budget-refinement ladder since #1105 |
 | **L3** | Round-trip: `add(extract(g,c)) ∈ c` | **UNREPRESENTABLE as stated** — no membership test exists |
 | **L4** | Guide neutrality: any ordering policy preserves denotation | **TRUE**, but wholly derivative of L1; untested |
 | **L5** | `extract_dag` is argmin under an additive cost | **VIOLATED** — it is a heuristic, twice over |
@@ -56,10 +56,10 @@ consequence if it breaks. **Three of five need correcting.**
 > the term algebra onto the e-graph quotient:
 > `add(op(t₁..tₙ)) = canonical(op(add(t₁)..add(tₙ)))`.
 
-**Status: VIOLATED, once, silently.** `EGraph::add`
-(`pixelflow-search/src/egraph/graph.rs:206-219`) returns `EClassId(0)` when
-`self.classes.len() >= HARD_CLASS_LIMIT` (100 000) — a sentinel, not an
-insertion, and it does not go in the memo:
+**Status when this doc was written: VIOLATED, once, silently. FIXED in
+#1105.** `EGraph::add` returned `EClassId(0)` when `self.classes.len() >=
+HARD_CLASS_LIMIT` (100 000) — a sentinel, not an insertion, and it did not go
+in the memo:
 
 ```rust
 if self.classes.len() >= HARD_CLASS_LIMIT {
@@ -69,25 +69,49 @@ if self.classes.len() >= HARD_CLASS_LIMIT {
 }
 ```
 
-The caller does not know it got a sentinel. `RewriteAction::Create`'s handler
-(`graph.rs:~1063`) takes the returned id and calls `union_counted(class_id,
-EClassId(0))`, **asserting an equality that is false**: class 0 is whatever
-term was added first. Homomorphism fails at exactly that point, and every
-subsequent extraction may legally return class 0's term for an unrelated
-class.
+The caller did not know it got a sentinel. `RewriteAction::Create`'s handler
+took the returned id and called `union_counted(class_id, EClassId(0))`,
+**asserting an equality that is false**: class 0 is whatever term was added
+first. Homomorphism failed at exactly that point, and every subsequent
+extraction could legally return class 0's term for an unrelated class.
 
-It is unreachable in practice — the production class caps are 500/2000/5000
+It was unreachable in practice — the production class caps are 500/2000/5000
 (§1.L2), two orders of magnitude below the limit — but "unreachable" is not
-the standard. This is a hole in `add`'s *type*, papered over by a comment, and
-it is precisely the failure mode CLAUDE.md forbids: a wrong value that is
-silently representable.
+the standard. It was a hole in `add`'s *type*, papered over by a comment, and
+precisely the failure mode CLAUDE.md forbids: a wrong value that is silently
+representable.
 
-**Fix, in the API PR's spirit of subtraction:** `add` returns
-`Result<EClassId, GraphFull>` — or the limit becomes an explicit `Budget`
-dimension that stops the caller rather than lying to it. Either way the
-sentinel goes. This is one of the two behavior-adjacent items and is small
-enough to ride along; it is a fail-loud replacement for a silent one, and no
-production configuration can reach it.
+**How it was fixed — the subtraction, not the `Result`.** Both options this
+doc floated (`add → Result<EClassId, GraphFull>`, or a `Budget` dimension)
+remove the sentinel; only the second removes the *failure mode*. `add` is the
+homomorphism, so there is no correct value for it to return when it cannot
+insert — any answer it gives is a class that does not hold the node. So the
+limit moved to where growth is actually **decided**, and `add` became total
+with no error case at all:
+
+- `egraph::HARD_CLASS_LIMIT` is now a `pub const` and a **ceiling on every
+  class budget**. `saturate_with_limits`, `apply_rule_at_index_timed` and
+  `apply_rules_budgeted` each clamp their caller's cap to it, so a call site
+  that passes `usize::MAX` gets the ceiling and an honest `ClassCap` stop
+  instead of a graph that grows until `add` starts lying. Production caps are
+  untouched, so no shipping configuration changes behavior.
+- `apply_single_rule` — the one driver that takes no budget, because it
+  applies one action per call — **panics** at the ceiling, naming the limit and
+  the class count. Returning `false` there would be indistinguishable from
+  "the rule did not match", which is the silent failure the ceiling exists to
+  prevent. It has no production callers.
+- The ceiling is now approximate by a bounded amount (a sweep under-estimates
+  multi-node actions at 3 classes each, then commits the batch it accepted).
+  That is the *point* of moving it: at the driver it guards memory, not
+  meaning, so a bounded overshoot of a 100 000-class ceiling is free. The old
+  placement bought exactness with a false class id.
+
+**Pinned by** `over_budget_growth_cannot_assert_a_false_equality`
+(`egraph/graph.rs` tests): fills a graph to the ceiling, checks `add` still
+names a class that holds the node, then drives saturation past the ceiling and
+asserts no equality appeared among terms that are not equal. Against the
+pre-fix code it fails with four false unions — and a `SaturationStop::Quiesced`,
+i.e. the run reported success.
 
 **Enforcement gap — the bigger half.** L1 is only as strong as the oracle that
 checks it, and the oracle does not cover a third of the rules. The only
@@ -124,18 +148,32 @@ A Guide cannot be argued neutral on a graph that is not sound.
 > Saturation only ever adds equalities; the partition at t+1 refines t. Budget
 > truncation stops early; it can never make the graph unsound.
 
-**Status: TRUE and unenforced.** Nothing removes an equality. The class cap
-only `break`s the sweep (`graph.rs:850,866,946,963`); `rebuild_budgeted`
-(:374-445) is partial-but-consistent; `union`'s constant-contradiction refusal
-(:288-305) under-merges by design, which is monotone in the safe direction.
-The single exception is L1's `HARD_CLASS_LIMIT` sentinel, which *adds a false
-equality* — so L2 holds exactly where L1 does.
+**Status: TRUE, and pinned since #1105.** Nothing removes an equality. The
+class cap only `break`s the sweep; `rebuild_budgeted` is
+partial-but-consistent; `union`'s constant-contradiction refusal under-merges
+by design, which is monotone in the safe direction. The single exception was
+L1's `HARD_CLASS_LIMIT` sentinel, which *added a false equality* — so L2 holds
+exactly where L1 does, and both now hold everywhere.
 
-No test asserts it. **The test that should pin it:** saturate the same arena
-under a strictly increasing budget ladder and assert the class partition at
-each step refines the previous one (every pair equal at budget *b* is still
-equal at budget *b′ > b*). This is what makes "stop early" safe as an API
-concept, and it is what `Budget` (§2.2) is standing on.
+**Pinned by** `saturation_at_any_budget_never_removes_an_equality`
+(`egraph/graph.rs` tests), which is the ladder this section asked for: the same
+seed saturated under `[1, 2, 8, 64, 512, 4096, HARD_CLASS_LIMIT]` classes,
+asserting at each rung that a hand-made union survives and that every probe
+pair equal at a smaller budget is still equal at this one — plus a guard that
+some budget derived *something*, so the ladder cannot pass vacuously. This is
+what makes "stop early" safe as an API concept, and it is what `Budget`
+(§2.2) stands on.
+
+**One incompleteness the test documents rather than asserts:** this `rebuild`
+does no *upward* congruence closure. `union` enqueues only the merged class,
+never its parents, so `a = b` does not by itself re-canonicalize `f(a)` and
+`f(b)` into one class — they merge when a later sweep re-walks them, or not at
+all. That is fewer equalities than an ideal congruence closure, which is the
+direction L2 permits (and L1 requires), so it is a *quality* gap, not a
+soundness one. Filed as #1106: it means CSE quality depends on sweep order in
+a way nothing currently measures, and the first step there is a measurement
+(how many merges a parent-tracking rebuild would recover) rather than a
+parent list on faith.
 
 **Consequence if it breaks:** `Budget` stops being a pure
 quality/compile-time dial and becomes a correctness dial, at which point every
@@ -177,7 +215,9 @@ statement** — that is machinery growth in service of a doc.
 > denotes the same function; a Guide changes cost and compile time, never
 > meaning.
 
-**Status: TRUE, and it is a one-line proof once L1 and L2 are in hand.**
+**Status: TRUE, and it is a one-line proof once L1 and L2 are in hand.** As
+of #1105 both premises are pinned by tests rather than asserted by reading, so
+the proof below rests on something a future change has to break loudly.
 
 The argument, stated so a future Guide PR can cite it instead of re-deriving
 it:
@@ -434,6 +474,25 @@ behavior change, so **it ships in its own PR ahead of the API PR** (§4, step
 /// reporting success. Default: none.
 pub fn hard_ceiling(self, d: Duration) -> Self;
 ```
+
+**The class ceiling is already on the surface** (#1105), and `Budget` must
+respect it rather than restate it:
+
+```rust
+/// The ceiling on every class budget: no saturation driver grows the
+/// graph past this many e-classes, whatever cap its caller asks for.
+/// Memory protection for call sites that pass no meaningful cap; two
+/// orders of magnitude above the production caps, so no shipping
+/// configuration meets it. Approximate by a bounded amount, on purpose —
+/// at the driver it guards memory, not meaning (§1.L1).
+pub const HARD_CLASS_LIMIT: usize = 100_000;   // pixelflow_search::egraph
+```
+
+Every `Budget` variant's class figure is clamped to it by the drivers it
+lowers to, so `Budget::Explicit { classes: usize::MAX, .. }` is a legal way
+to say "as many as the ceiling allows" and gets a truthful
+`SaturationStop::ClassCap` when it stops. `Budget` should NOT re-clamp: one
+enforcement point, at the growth decision, is the whole shape of the L1 fix.
 
 ### 2.3 `SaturationGuide` — EXISTS on `claude/phase3-guide`
 
@@ -816,16 +875,21 @@ fingerprint is what a version check keys on, and it will already be there.
 
 - **Two behavior changes ship first**, each in its own PR: the wall-clock
   budget (§2.2, step 0) and the `add` sentinel (§1.L1). Both replace a silent
-  failure with a loud one.
+  failure with a loud one. The `add` sentinel **has shipped** (#1105): the
+  limit moved to the growth decision, `add` is total, and L1/L2 are pinned.
 - **`RuleId` before the 33-rule batch; the numeric-first reorder is safe now**
   (§4.1, verified).
 - **The API PR is mechanical** — three production call sites collapse to one,
   three of five types already exist, byte-identical output provable once step
   0 lands.
-- **Five tests do not exist and should**: a rule-witness test (L1), a budget
+- **Five tests did not exist and should**: a rule-witness test (L1), a budget
   refinement ladder (L2), a membership round-trip (L3a), **N-guides-same-
   denotation (L4)**, and a 62-distinct-`RuleId`s test (G5). The L4 one is
   worth more than any per-Guide correctness review, and it is about ten lines.
+  **Two now exist** (#1105): the budget refinement ladder, and — in place of
+  the rule-witness test, which is the *enforcement* half of L1 and still owed
+  — a direct soundness test that no over-budget run can assert a false
+  equality.
 - **`extract_dag` is not argmin** (§1.L5). Say so in the doc comment; do not
   build anything that assumes otherwise. `Reranker` is the seam for anything
   that needs a guarantee.

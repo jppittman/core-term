@@ -176,6 +176,33 @@ pub struct SaturationStats {
     pub stop: SaturationStop,
 }
 
+/// The ceiling on every class budget: no saturation driver grows the graph
+/// past this many e-classes, whatever cap its caller asks for.
+///
+/// This is memory protection for call sites that pass no meaningful cap
+/// (`usize::MAX`, or a number derived from an unbounded input). It lives
+/// here — at the growth decision — and NOT inside [`EGraph::add`], because
+/// `add` is the homomorphism onto the semantic quotient (law L1,
+/// `docs/plans/2026-09-02-optimizer-api.md` §1): a budget that stops `add`
+/// must hand the caller something that is not the class of the node it
+/// asked for, and there is no such thing. A budget that stops the *driver*
+/// leaves every class the graph does hold correct, which is what
+/// truncation has always meant here.
+///
+/// Two orders of magnitude above the production caps (500/2000/5000, see
+/// `SaturationConfig`), so no shipping configuration meets it.
+///
+/// It bounds the graph *approximately*: a sweep estimates the classes a
+/// pending action will mint (`RewriteAction::Union` 0, `Create` 1, every
+/// other variant 3) and then commits the batch it accepted, so a
+/// multi-node action can overshoot by the difference. That is precisely
+/// why the limit can live at the driver — it guards memory, not meaning,
+/// and a bounded overshoot of a 100 000-class ceiling costs memory nobody
+/// was going to miss. The old in-`add` limit bought exactness by returning
+/// `EClassId(0)`, a false class id that the `Create` handler then unioned
+/// against the match — asserting an equality that does not hold (#1105).
+pub const HARD_CLASS_LIMIT: usize = 100_000;
+
 impl EGraph {
     /// Create an empty e-graph with no rewrite rules.
     ///
@@ -260,18 +287,27 @@ impl EGraph {
         }
     }
 
+    /// Insert `node`, returning the e-class that contains it.
+    ///
+    /// **Total, and the law depends on it.** The returned class always
+    /// contains `node`: either the memo already had it, or this call
+    /// allocated a fresh class holding exactly it. There is no size at
+    /// which `add` returns something else, because there is nothing else
+    /// it could correctly return — this is law L1 (`add` is a homomorphism
+    /// from the term algebra onto the e-graph quotient,
+    /// `docs/plans/2026-09-02-optimizer-api.md` §1), and L4 (any saturation
+    /// policy preserves denotation) is proved from it.
+    ///
+    /// The class budget therefore is not enforced here. It is enforced
+    /// where growth is *decided* — the saturation drivers, each of which
+    /// clamps its caller's cap to [`HARD_CLASS_LIMIT`] and stops scanning
+    /// before it calls `add`. A driver that stops early leaves a graph
+    /// holding fewer equalities than an exhaustive run would; every one it
+    /// does hold is still true.
     pub fn add(&mut self, mut node: ENode) -> EClassId {
         self.canonicalize_node(&mut node);
         if let Some(&id) = self.memo.get(&node) {
             return self.find(id);
-        }
-        // Hard class limit: never allocate beyond this. Prevents unbounded
-        // memory growth when resource limits are missing from call sites.
-        const HARD_CLASS_LIMIT: usize = 100_000;
-        if self.classes.len() >= HARD_CLASS_LIMIT {
-            // Return a sentinel pointing at class 0. The e-graph is over
-            // budget; further growth would be useless anyway.
-            return EClassId(0);
         }
         let id = EClassId(self.classes.len() as u32);
         let enode_id = ENodeId(self.next_enode_id);
@@ -819,12 +855,31 @@ impl EGraph {
     ///
     /// Returns true if the rule matched and produced a change.
     /// This is used by guided search to apply rules one at a time.
+    ///
+    /// Unlike the sweeps, this takes no class budget: one call applies at
+    /// most one action, so it cannot itself grow the graph without bound —
+    /// the loop that calls it can, and that loop owns the budget. Reaching
+    /// [`HARD_CLASS_LIMIT`] here therefore means a caller is driving
+    /// rewrites with no budget at all, and it **panics** rather than
+    /// returning `false`: `false` already means "the rule did not fire",
+    /// and a budget exhaustion that is indistinguishable from a non-match
+    /// is the silent failure this ceiling exists to prevent. No production
+    /// path calls this, and the production caps are two orders of
+    /// magnitude below the limit.
     pub fn apply_single_rule(
         &mut self,
         rule_idx: usize,
         class_id: EClassId,
         node_idx: usize,
     ) -> bool {
+        assert!(
+            self.classes.len() < HARD_CLASS_LIMIT,
+            "apply_single_rule: e-graph is at the hard class limit \
+             ({} classes, limit {HARD_CLASS_LIMIT}) — this entry point applies \
+             one action per call and carries no budget, so the caller's \
+             rewrite loop must impose one (see `saturate_with_limits`)",
+            self.classes.len(),
+        );
         let Some(rule) = self.rules.get(rule_idx) else {
             return false;
         };
@@ -896,6 +951,11 @@ impl EGraph {
         max_classes: usize,
         timeout: std::time::Duration,
     ) -> SaturationStats {
+        // Growth is decided here and in `apply_rule_at_index_timed`, so the
+        // ceiling is applied here: a caller asking for `usize::MAX` classes
+        // gets `HARD_CLASS_LIMIT` and a truthful `ClassCap` stop, not a
+        // graph that grows until `add` starts lying about class ids.
+        let max_classes = max_classes.min(HARD_CLASS_LIMIT);
         let start = std::time::Instant::now();
         let deadline = start + timeout;
         let mut iterations = 0;
@@ -1025,6 +1085,10 @@ impl EGraph {
         max_nodes: usize,
         deadline: Option<std::time::Instant>,
     ) -> ApplyResult {
+        // See `HARD_CLASS_LIMIT`: the scan below is one of the two places
+        // the graph decides to grow, so it is one of the two places the
+        // ceiling is applied.
+        let max_nodes = max_nodes.min(HARD_CLASS_LIMIT);
         if rule_idx >= self.rules.len() {
             return ApplyResult {
                 changes: 0,
@@ -1879,6 +1943,8 @@ impl EGraph {
     }
 
     fn apply_rules_budgeted(&mut self, max_nodes: usize) -> usize {
+        // See `HARD_CLASS_LIMIT`.
+        let max_nodes = max_nodes.min(HARD_CLASS_LIMIT);
         // One call = one "apply all rules once" pass, the same granularity
         // saturate_with_limits uses for its step counter.
         self.step += 1;
@@ -1939,10 +2005,20 @@ impl EGraph {
                 break;
             }
         }
-        cost_table
-            .get(&root)
-            .map(|(_, node)| node.clone())
-            .unwrap_or(ENode::Const(0))
+        // `ENode::Const(0)` used to stand in here — the number 0.0 wearing
+        // an extracted term's type, returned for a root the fixpoint never
+        // priced. The fixpoint visits every canonical class and every class
+        // holds at least one node, so a miss is a bug in this loop, and the
+        // caller has no way to tell 0.0-the-answer from 0.0-the-excuse.
+        let Some((_, node)) = cost_table.get(&root) else {
+            panic!(
+                "extract_with_costs: root e-class {} was never priced by the \
+                 fixpoint — every canonical class holds at least one node, so \
+                 this is a bug in the loop above, not an empty graph",
+                root.0
+            )
+        };
+        node.clone()
     }
 
     fn node_cost_with_model(
@@ -2685,6 +2761,243 @@ mod tests {
             eg.provenance().application_count(),
             eg.provenance().union_count(),
             eg.num_classes(),
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // The laws. `docs/plans/2026-09-02-optimizer-api.md` §1 states each one
+    // and names the test that should pin it; these are those tests. They
+    // assert the *property*, never the mechanism — a future fix that moves
+    // the class budget somewhere else entirely should keep them passing.
+    // ------------------------------------------------------------------
+
+    /// Seed a graph whose rules certainly have work to do, and return the
+    /// probe ids the law tests watch. `Sub` guarantees a `Canonicalize`
+    /// firing (`a - b → a + (-b)`), which is a *node-minting* action — the
+    /// kind that used to route through the over-budget hole in `add`.
+    fn seed_probes(eg: &mut EGraph) -> Vec<EClassId> {
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let z = eg.add(ENode::Var(2));
+        let sum = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, y],
+        });
+        let diff = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![x, y],
+        });
+        let prod = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![sum, z],
+        });
+        let scaled = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![diff, z],
+        });
+        vec![x, y, z, sum, diff, prod, scaled]
+    }
+
+    /// The pairs of probes the graph currently calls equal.
+    fn equal_pairs(eg: &EGraph, probes: &[EClassId]) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+        for i in 0..probes.len() {
+            for j in (i + 1)..probes.len() {
+                if eg.find(probes[i]) == eg.find(probes[j]) {
+                    pairs.push((i, j));
+                }
+            }
+        }
+        pairs
+    }
+
+    /// **L1 — soundness.** `add` is a homomorphism onto the semantic
+    /// quotient: the class it names always contains the node it was given,
+    /// and no amount of graph growth changes that. Consequently an
+    /// over-budget run can discover *fewer* equalities than an exhaustive
+    /// one, never a different one.
+    ///
+    /// This is the regression test for #1105. Before the fix, `add`
+    /// answered `EClassId(0)` once the graph reached the hard class limit —
+    /// a sentinel, not an insertion — and `RewriteAction`'s node-minting
+    /// handlers unioned the matched class against it, asserting that some
+    /// unrelated term equals whatever was added first. Both halves are
+    /// asserted here: that `add` past the limit still names a class holding
+    /// the node, and that a saturation run driven past the limit invents no
+    /// equality among terms that are not equal.
+    ///
+    /// Deliberately mechanism-blind: it says nothing about *how* growth is
+    /// refused, only that nothing false comes out.
+    #[test]
+    fn over_budget_growth_cannot_assert_a_false_equality() {
+        let mut eg = egraph_with_rules();
+
+        // Class 0 is the term every false union used to land on, so make it
+        // something no probe below is equal to.
+        let class_zero = eg.add(ENode::constant(-1.0));
+        assert_eq!(class_zero, EClassId(0), "class 0 must be the first add");
+
+        let probes = seed_probes(&mut eg);
+        assert!(
+            equal_pairs(&eg, &probes).is_empty(),
+            "probes start distinct"
+        );
+
+        // Pad to one short of the ceiling with distinct constants, so the
+        // next rewrite that wants to mint a node is over budget — and so the
+        // graph lands *exactly* on the ceiling after the `add` below, which
+        // keeps the saturation run below inside the sweep rather than
+        // bailing at `saturate_with_limits`'s own pre-sweep check.
+        let mut pad = 0.0f32;
+        while eg.classes.len() < HARD_CLASS_LIMIT - 1 {
+            let _ = eg.add(ENode::constant(pad));
+            pad += 1.0;
+        }
+
+        // `add` is still total at the ceiling: the class it returns holds
+        // the node, and it is not class 0's term.
+        let fresh = eg.add(ENode::Var(200));
+        assert_eq!(eg.classes.len(), HARD_CLASS_LIMIT);
+        assert!(
+            matches!(eg.nodes(eg.find(fresh)).first(), Some(ENode::Var(200))),
+            "add past the limit returned a class that does not hold the node"
+        );
+        assert_ne!(
+            eg.find(fresh),
+            eg.find(class_zero),
+            "add past the limit aliased an unrelated class"
+        );
+
+        // Drive saturation with a cap no smaller than the graph, so the
+        // ceiling — not the caller's budget — is what has to hold.
+        let stats = eg.saturate_with_limits(4, usize::MAX, std::time::Duration::from_secs(60));
+        eprintln!("over-budget saturation: {stats:?}");
+
+        // The load-bearing assertion: nothing new is equal.
+        assert!(
+            equal_pairs(&eg, &probes).is_empty(),
+            "over-budget saturation invented an equality among distinct terms"
+        );
+        for (i, &p) in probes.iter().enumerate() {
+            assert_ne!(
+                eg.find(p),
+                eg.find(class_zero),
+                "probe {i} was falsely unioned with class 0"
+            );
+        }
+        assert_ne!(eg.find(fresh), eg.find(class_zero));
+    }
+
+    /// Seed a graph in which equalities are *derivable* and arrive at
+    /// different depths, so that a budget ladder has something to be
+    /// monotone about. Returns the probes, several of which the rules
+    /// eventually prove congruent.
+    fn seed_derivable_probes(eg: &mut EGraph) -> Vec<EClassId> {
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let zero = eg.add(ENode::constant(0.0));
+        let one = eg.add(ENode::constant(1.0));
+
+        // x + 0 = x, one Identity firing away.
+        let x_plus_zero = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, zero],
+        });
+        // (x + 0) * 1 = x, two firings away.
+        let scaled = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![x_plus_zero, one],
+        });
+        // x * 0 = 0, via Annihilator.
+        let annihilated = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![x, zero],
+        });
+        // x + y = y + x, via Commutative.
+        let xy = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, y],
+        });
+        let yx = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![y, x],
+        });
+
+        vec![x, y, zero, one, x_plus_zero, scaled, annihilated, xy, yx]
+    }
+
+    /// **L2 — monotonicity.** Saturation only ever adds equalities. A pair
+    /// the graph already calls equal is still equal after a run at any
+    /// budget, and the partition at a larger budget refines the partition at
+    /// a smaller one.
+    ///
+    /// Budget truncation is allowed to stop discovery; it is not allowed to
+    /// retract a discovery. That is what lets a budget stay a
+    /// quality/compile-time dial instead of a correctness one, and it is half
+    /// the proof of L4 (any saturation policy preserves denotation) — the
+    /// other half is L1, above.
+    ///
+    /// Two things are asserted, in increasing strength: a hand-made union
+    /// that no rule could have derived survives every budget, and the set of
+    /// probe pairs the graph calls equal only ever grows as the budget does.
+    ///
+    /// Note what is *not* asserted, because this rebuild does not do it:
+    /// upward congruence. `union` enqueues only the merged class, never its
+    /// parents, so `a = b` does not by itself re-canonicalize `f(a)` and
+    /// `f(b)` into one class — they merge when a later sweep re-walks them,
+    /// or not at all. That is an incompleteness (fewer equalities than an
+    /// ideal congruence closure), which is exactly the direction L2 permits;
+    /// it is filed as #1106 rather than assumed here.
+    #[test]
+    fn saturation_at_any_budget_never_removes_an_equality() {
+        // Strictly increasing, spanning "cannot even finish one rule" to the
+        // ceiling itself.
+        let ladder = [1usize, 2, 8, 64, 512, 4096, HARD_CLASS_LIMIT];
+        let mut previous: Option<(usize, Vec<(usize, usize)>)> = None;
+        let mut ever_found = 0usize;
+
+        for max_classes in ladder {
+            let mut eg = egraph_with_rules();
+            let probes = seed_derivable_probes(&mut eg);
+
+            // A hand-asserted equality between two terms no rule in this
+            // vocabulary relates: only a retraction could ever break it.
+            let a = eg.add(ENode::Var(30));
+            let b = eg.add(ENode::Var(31));
+            eg.union(a, b);
+            eg.rebuild();
+            assert_eq!(eg.find(a), eg.find(b), "union did not take");
+
+            eg.saturate_with_limits(20, max_classes, std::time::Duration::from_secs(30));
+
+            assert_eq!(
+                eg.find(a),
+                eg.find(b),
+                "budget {max_classes} retracted a hand-made equality"
+            );
+
+            // Refinement: every pair equal at a smaller budget is still
+            // equal at this one.
+            let pairs = equal_pairs(&eg, &probes);
+            if let Some((smaller, before)) = &previous {
+                for pair in before {
+                    assert!(
+                        pairs.contains(pair),
+                        "budget {max_classes} lost probe pair {pair:?} that budget \
+                         {smaller} had found — saturation is not monotone"
+                    );
+                }
+            }
+            ever_found = ever_found.max(pairs.len());
+            previous = Some((max_classes, pairs));
+        }
+
+        // Guard against the ladder asserting nothing: if no budget ever
+        // derived an equality, the refinement check above was vacuous.
+        assert!(
+            ever_found > 0,
+            "no budget derived any probe equality — the monotonicity ladder \
+             is vacuous and no longer tests L2"
         );
     }
 }
