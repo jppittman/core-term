@@ -2883,7 +2883,7 @@ mod tests {
     fn rebuild_budgeted_does_not_orphan_nodes_when_current_class_is_merged_away() {
         let mut eg = EGraph::new();
 
-        let _a = eg.add(ENode::Var(0)); // class 0 (unused, keeps ids spaced out)
+        let a = eg.add(ENode::Var(0)); // class 0 (keeps the ids spaced out)
         let b = eg.add(ENode::Var(1)); // class 1
         let c = eg.add(ENode::Var(2)); // class 2
         let nb = eg.add(ENode::Op {
@@ -2946,12 +2946,49 @@ mod tests {
             "EClass.nodes and EClass.tags must never desync"
         );
 
-        // And the orphaned slot must be left empty, not holding a shadow
-        // copy: two vectors both claiming to be class 3's nodes is the same
-        // silent divergence in a different disguise.
-        assert!(
-            eg.classes[nc.index()].nodes.is_empty(),
-            "the merged-away slot must not accumulate nodes behind `find`'s back"
+        // Nothing else got orphaned on the way. Stated as the law the public
+        // API actually owes a caller — **every id `add` ever handed out still
+        // resolves to a class containing its node** — rather than by reading
+        // the merged-away slot directly: a shadow copy is unreachable by
+        // definition, so the only honest way to catch one is to check that
+        // everything reachable is still there.
+        let holds = |eg: &EGraph, id: EClassId, want: &ENode| -> bool {
+            eg.nodes(eg.find(id)).iter().any(|n| n == want)
+        };
+        let neg_b = ENode::Op {
+            op: &ops::Neg,
+            children: vec![eg.find(b)],
+        };
+        for (id, want) in [
+            (a, ENode::Var(0)),
+            (b, ENode::Var(1)),
+            (c, ENode::Var(2)),
+            (marker, ENode::Var(9)),
+            (nb, neg_b.clone()),
+            (nc, neg_b.clone()),
+        ] {
+            assert!(
+                holds(&eg, id, &want),
+                "id {} no longer resolves to a class holding {want:?}",
+                id.index()
+            );
+        }
+
+        // And the graph must be at rest: a second rebuild is a no-op. The
+        // orphaning bug leaves the worklist naming a class whose nodes went
+        // somewhere else, so "reachable" was not yet a fixpoint — a state
+        // that can look correct until something rebuilds again.
+        let before: Vec<ENode> = eg.nodes(surviving).to_vec();
+        eg.rebuild();
+        assert_eq!(
+            eg.find(nc),
+            surviving,
+            "a second rebuild must not move the surviving class"
+        );
+        assert_eq!(
+            eg.nodes(eg.find(nc)),
+            before.as_slice(),
+            "rebuild must be idempotent once the worklist is drained"
         );
     }
 
