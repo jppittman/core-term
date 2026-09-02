@@ -581,6 +581,42 @@ impl LatticeShape {
         Variance(bits)
     }
 
+    /// How many times this lattice evaluates a value whose dependencies are
+    /// `deps` — the weight its cost carries in the whole program.
+    ///
+    /// The loop nest runs W outermost to X innermost, and nothing is
+    /// materialized, so a value is recomputed once per iteration of the
+    /// innermost binder it depends on: the product of the extents from that
+    /// axis outward. A value depending on X runs at every sample; one
+    /// depending only on Z runs once per Z plane; one depending on nothing
+    /// runs once per call. That single rule is loop-invariant code motion,
+    /// hoisting out of a reduction, and constant folding, priced.
+    ///
+    /// A dependency on a reduction binder counts as the innermost scope: the
+    /// binder sits inside the coordinate nest and this type does not carry
+    /// its extent. Binders are distributed before the e-graph sees them, so
+    /// the case does not arise in practice.
+    #[inline]
+    #[must_use]
+    pub const fn evals(self, deps: Variance) -> u64 {
+        let innermost = if deps.depends_on_binder() {
+            0
+        } else {
+            let bits = deps.bits();
+            if bits == 0 {
+                return 1;
+            }
+            bits.trailing_zeros() as usize
+        };
+        let mut count: u64 = 1;
+        let mut axis = innermost;
+        while axis < 4 {
+            count *= self.0[axis] as u64;
+            axis += 1;
+        }
+        count
+    }
+
     /// The extents serialized little-endian, for cache keys.
     #[inline]
     #[must_use]
@@ -863,6 +899,40 @@ mod lattice_shape_tests {
             Variance::X.union(Variance::Y).union(Variance::Z)
         );
         assert_eq!(LatticeShape::new([1, 1, 1, 2]).varying(), Variance::W);
+    }
+
+    #[test]
+    fn evals_counts_the_iterations_of_the_innermost_binder_depended_on() {
+        let frame = LatticeShape::new([1920, 1080, 1, 1]);
+        // Per sample, per row, per call — the three scopes the collapse loop
+        // already has, as numbers.
+        assert_eq!(frame.evals(Variance::X), 1920 * 1080);
+        assert_eq!(frame.evals(Variance::X.union(Variance::Y)), 1920 * 1080);
+        assert_eq!(frame.evals(Variance::Y), 1080);
+        assert_eq!(frame.evals(Variance::CONST), 1);
+        // Z and W are per-call in a frame, so anything not touching X or Y
+        // is evaluated once.
+        assert_eq!(frame.evals(Variance::Z), 1);
+        assert_eq!(frame.evals(Variance::Z.union(Variance::W)), 1);
+        // X dominates: the innermost dependency sets the scope.
+        assert_eq!(frame.evals(Variance::X.union(Variance::Z)), 1920 * 1080);
+
+        // A volume of Z planes: a Z-only value is computed once per plane.
+        let volume = LatticeShape::new([64, 32, 8, 2]);
+        assert_eq!(volume.evals(Variance::Z), 8 * 2);
+        assert_eq!(volume.evals(Variance::W), 2);
+        assert_eq!(volume.evals(Variance::Y), 32 * 8 * 2);
+        assert_eq!(volume.evals(Variance::X), 64 * 32 * 8 * 2);
+
+        // No lattice: everything is evaluated exactly once, so weighting a
+        // cost by `evals` leaves it unchanged.
+        for deps in [Variance::CONST, Variance::X, Variance::COORDS] {
+            assert_eq!(LatticeShape::POINT.evals(deps), 1);
+        }
+
+        // A reduction binder sits inside the coordinate nest, and this type
+        // does not carry its extent: count it as the innermost scope.
+        assert_eq!(frame.evals(Variance::from_var(4)), 1920 * 1080);
     }
 
     #[test]

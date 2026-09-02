@@ -95,7 +95,7 @@ pub fn optimize_runtime_arena(
     // forever (the cache is static and unbounded). A terminal resizing all
     // day would leak one full optimized arena per recompile for zero hits.
     if !arena.buffers().is_empty() {
-        return optimize_runtime_arena_uncached(arena, root).map(Arc::new);
+        return optimize_runtime_arena_uncached(arena, root, shape).map(Arc::new);
     }
 
     let mut key = canonical_key(arena, root);
@@ -109,7 +109,7 @@ pub fn optimize_runtime_arena(
         return hit.clone();
     }
 
-    let result = optimize_runtime_arena_uncached(arena, root).map(Arc::new);
+    let result = optimize_runtime_arena_uncached(arena, root, shape).map(Arc::new);
     cache
         .lock()
         .expect("optimize_runtime_arena: lock poisoned")
@@ -118,7 +118,11 @@ pub fn optimize_runtime_arena(
         .clone()
 }
 
-fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(ExprArena, ExprId)> {
+fn optimize_runtime_arena_uncached(
+    arena: &ExprArena,
+    root: ExprId,
+    shape: LatticeShape,
+) -> Option<(ExprArena, ExprId)> {
     // Resolve `Dwrt` FIRST, with the same exact symbolic pass the compile
     // entries run — then the e-graph sees pure arithmetic. Order matters
     // enormously: differentiation manufactures constants (the winding
@@ -153,7 +157,10 @@ fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(E
         config.hard_timeout,
     );
 
-    let policy = env_extraction_policy();
+    // Priced against the lattice this kernel is compiled for: the extents
+    // are known, so extraction minimizes the instruction count of the whole
+    // program rather than of its text.
+    let policy = env_extraction_policy().for_lattice(shape);
     let extraction = policy.extraction(&egraph, root_class);
     let (extracted, extracted_root) = choices_to_arena(&extraction);
 
@@ -1019,6 +1026,31 @@ mod tests {
 
         // Keep the measured counts visible in test output (`--nocapture`).
         println!("composed cell-grid shape: before={before} nodes, after={after} nodes");
+    }
+
+    /// Extraction under a real lattice still computes the same function.
+    ///
+    /// Which *form* it picks is pinned deterministically in
+    /// `egraph::extract`'s `scope_weighting_unfuses_an_fma_to_hoist_the_z_term`
+    /// — through saturation the available forms depend on a wall-clock
+    /// budget, so what is asserted here is the invariant that holds however
+    /// far saturation got.
+    #[test]
+    fn scope_weighted_extraction_preserves_semantics() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let z = a.push_var(2);
+        let inner = a.push_binary(OpKind::Add, x, z);
+        let root = a.push_binary(OpKind::Add, inner, z);
+
+        let frame = pixelflow_ir::LatticeShape::new([256, 256, 1, 1]);
+        let arc = optimize_runtime_arena(&a, root, frame).expect("must optimize");
+        let (opt, opt_root) = &*arc;
+        for (x, z) in [(0.0f32, 0.0f32), (1.5, -2.0), (-3.25, 7.5)] {
+            let want = eval_scalar(&a, root, &[x, 0.0, z, 0.0], &BindingTable::empty());
+            let got = eval_scalar(opt, *opt_root, &[x, 0.0, z, 0.0], &BindingTable::empty());
+            assert_eq!(got, want, "at X={x}, Z={z}");
+        }
     }
 
     #[test]
