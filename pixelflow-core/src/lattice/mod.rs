@@ -398,8 +398,12 @@ impl Lattice {
             "Lattice::bake: Field width does not match the JIT's emitted width"
         );
         let (arena, root) = kernel.parts();
-        let jit =
-            pixelflow_codegen::jit_cache::compile(arena, root).expect("kernel failed to compile");
+        let jit = pixelflow_codegen::jit_cache::compile(
+            arena,
+            root,
+            pixelflow_ir::LoopShape::from_loop_mask(self.loop_mask()),
+        )
+        .expect("kernel failed to compile");
 
         let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
         let mut buffer = vec![0.0f32; self.len()];
@@ -872,8 +876,10 @@ impl DiscreteManifold {
         let (arena, root) = bilinear_arena(self.id, width, height);
         // Bound-memory arenas are uncacheable (the code bakes buffer slot
         // metadata); compile recognizes that and compiles fresh.
-        let jit = pixelflow_codegen::jit_cache::compile(&arena, root)
-            .expect("bilinear sampler failed to compile");
+        // Sampled one batch at a time through `Manifold::eval`: a point shape.
+        let jit =
+            pixelflow_codegen::jit_cache::compile(&arena, root, pixelflow_ir::LoopShape::POINT)
+                .expect("bilinear sampler failed to compile");
         BilinearSampler { tex: self, jit }
     }
 }

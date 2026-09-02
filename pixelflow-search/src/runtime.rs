@@ -26,6 +26,7 @@ use crate::egraph::{
     EClassId, EGraph, ENode, Op, all_rules, choices_to_arena, config_for_node_count,
     env_extraction_policy,
 };
+use pixelflow_ir::LoopShape;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
 use std::collections::HashMap;
@@ -47,14 +48,22 @@ use std::sync::{Arc, Mutex, OnceLock};
 ///
 /// - `RawGather` — produced by lowering, after the e-graph's place in the
 ///   pipeline; reaching one here means the arena is already lowered.
-/// - `Nary` (the `Reduce` binder, from `Kernel::over`) — rewriting under a
-///   binder is unsound without binder-aware rules (none exist yet); this is
-///   a documented follow-up, not silently wrong output.
+/// - `Nary` other than `Reduce` (`Tuple`) — not modelled. `Reduce` itself
+///   is unrolled first (`passes::expand_reduce`, the same unroll `legalize`
+///   performs later): the arena the e-graph sees is binder-free, so factoring
+///   across the unrolled terms is ordinary rewriting rather than rewriting
+///   under a binder.
 /// - `Param` — a `pixelflow-compiler` macro-parameter slot that should never
 ///   reach a runtime-built `Kernel` in the first place.
 ///
 /// Callers compile the original arena unchanged in that case — `optimize_runtime_arena`
 /// is strictly an optimization, never required for correctness.
+///
+/// `shape` is the lattice shape the kernel is compiled for. It is part of the
+/// cache key and is consulted by no rewrite yet: stage 0 of
+/// `docs/plans/2026-09-01-loop-aware-codegen.md`, so that scope-weighted
+/// extraction (stage 1) is a policy change here and a signature change
+/// nowhere.
 ///
 /// Cached by the structural shape of the reachable subgraph (mirroring
 /// `pixelflow_codegen::jit_cache`'s own canonical-key cache): a caller that bakes
@@ -71,7 +80,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// optimized `ExprArena`. Returning an owned tuple here would silently
 /// reintroduce a per-call cost the cache exists to eliminate.
 #[must_use]
-pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<Arc<(ExprArena, ExprId)>> {
+pub fn optimize_runtime_arena(
+    arena: &ExprArena,
+    root: ExprId,
+    shape: LoopShape,
+) -> Option<Arc<(ExprArena, ExprId)>> {
     static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Option<Arc<(ExprArena, ExprId)>>>>> =
         OnceLock::new();
 
@@ -84,7 +97,8 @@ pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<Arc<(Ex
         return optimize_runtime_arena_uncached(arena, root).map(Arc::new);
     }
 
-    let key = canonical_key(arena, root);
+    let mut key = canonical_key(arena, root);
+    key.push(shape.bits());
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache
         .lock()
@@ -118,6 +132,12 @@ fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(E
     // the arena then compiles unoptimized and the compile entry's own
     // `lower_dwrt` reports the same error loudly at the right layer.
     let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(arena, root).ok()?;
+    // Then unroll every `Reduce`, in `legalize`'s order. The extents are
+    // static, so the binder disappears into N terms sharing their
+    // index-invariant subtrees (`unroll_reduce` factors `⊕_i (f(i)·c)` as
+    // `c·⊕_i f(i)` by declining to duplicate `c`), and the e-graph sees pure
+    // arithmetic it can CSE and fold across the terms.
+    let (arena, root) = pixelflow_ir::passes::expand_reduce_owned(&arena, root);
 
     let mut egraph = EGraph::with_rules(all_rules());
     let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
@@ -434,10 +454,8 @@ fn arena_to_egraph(
                         task_stack.push(Task::Visit(b));
                         task_stack.push(Task::Visit(a));
                     }
-                    // Reduce (the only Nary op) is a binder: its "children"
-                    // include the bound index and static extent alongside
-                    // the body, which rewriting can't treat as ordinary
-                    // operands without capturing the binder. Bail out.
+                    // `Reduce` was unrolled and `Dwrt` lowered before this
+                    // walk; what remains (`Tuple`) is not modelled. Bail out.
                     ExprNode::Nary(..) => return None,
                 }
             }
@@ -550,7 +568,8 @@ mod tests {
 
         let (a1, r1) = build_arena();
         let cold_start = std::time::Instant::now();
-        let arc1 = optimize_runtime_arena(&a1, r1).expect("must optimize");
+        let arc1 =
+            optimize_runtime_arena(&a1, r1, pixelflow_ir::LoopShape::FRAME).expect("must optimize");
         let opt1 = &arc1.0;
         let cold = cold_start.elapsed();
 
@@ -558,7 +577,8 @@ mod tests {
         // proves the cache keys on shape, not on the first call's identity.
         let (a2, r2) = build_arena();
         let warm_start = std::time::Instant::now();
-        let arc2 = optimize_runtime_arena(&a2, r2).expect("must optimize");
+        let arc2 =
+            optimize_runtime_arena(&a2, r2, pixelflow_ir::LoopShape::FRAME).expect("must optimize");
         let opt2 = &arc2.0;
         let warm = warm_start.elapsed();
 
@@ -585,7 +605,8 @@ mod tests {
         let mul = a.push_binary(OpKind::Mul, x, y);
         let root = a.push_binary(OpKind::Add, mul, z);
 
-        let arc = optimize_runtime_arena(&a, root).expect("pure arithmetic arena must optimize");
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+            .expect("pure arithmetic arena must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
         assert_semantics_preserved(&a, root, &(opt_arena.clone(), opt_root));
@@ -610,7 +631,8 @@ mod tests {
         let sq = a.push_binary(OpKind::Mul, s, s);
         let root = a.push_binary(OpKind::Add, sq, s);
 
-        let arc = optimize_runtime_arena(&a, root).expect("trig arena must optimize");
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+            .expect("trig arena must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
         assert_semantics_preserved(&a, root, &(opt_arena, opt_root));
     }
@@ -633,7 +655,8 @@ mod tests {
         let var_x = a.push_const(0.0); // Dwrt's second child is the var index, wrt X (0)
         let dx = a.push_binary(OpKind::Dwrt, d, var_x);
 
-        let arc = optimize_runtime_arena(&a, dx).expect("Dwrt-bearing arena must optimize");
+        let arc = optimize_runtime_arena(&a, dx, pixelflow_ir::LoopShape::FRAME)
+            .expect("Dwrt-bearing arena must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
         // eval_scalar refuses a raw Dwrt (the interpreter evaluates the
@@ -747,7 +770,7 @@ mod tests {
         let one = a.push_const(1.0);
         let root = a.push_binary(OpKind::Add, g, one);
 
-        let arc = optimize_runtime_arena(&a, root)
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
             .expect("a Gather-bearing arena must optimize, not bail");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
@@ -801,7 +824,8 @@ mod tests {
             "input must contain the duplicate"
         );
 
-        let arc = optimize_runtime_arena(&a, root).expect("must optimize");
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+            .expect("must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
         let after = reachable_count(&opt_arena, opt_root);
 
@@ -847,7 +871,8 @@ mod tests {
         let ga = a.push_gather(buf_a, x, y);
         let root = a.push_binary(OpKind::Add, gb, ga);
 
-        let out = optimize_runtime_arena(&a, root).expect("buffer kernel must optimize");
+        let out = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+            .expect("buffer kernel must optimize");
         let input: Vec<_> = a.buffers().iter().map(|d| d.id).collect();
         let output: Vec<_> = out.0.buffers().iter().map(|d| d.id).collect();
         assert_eq!(input, output, "slot order must survive optimization");
@@ -879,7 +904,8 @@ mod tests {
         let gb = a.push_gather(buf_b, x, y);
         let root = a.push_binary(OpKind::Sub, ga, gb);
 
-        let arc = optimize_runtime_arena(&a, root).expect("must optimize");
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+            .expect("must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
         assert_eq!(
@@ -966,7 +992,8 @@ mod tests {
         let before = reachable_count(&a, root);
         assert_eq!(count_gathers(&a, root), 9);
 
-        let arc = optimize_runtime_arena(&a, root).expect("must optimize");
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+            .expect("must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
         let after = reachable_count(&opt_arena, opt_root);
 
@@ -994,18 +1021,45 @@ mod tests {
     }
 
     #[test]
-    fn reduce_bails_out() {
-        // Kernel::over-shaped: a Reduce (Nary) anywhere reachable means the
-        // binder is present — bail rather than rewrite under it unsoundly.
+    fn reduce_is_unrolled_and_optimized() {
+        // Kernel::over-shaped: Σ_{i<4} i² over the reduction index slot. The
+        // binder is unrolled before saturation, so the e-graph sees
+        // 0·0 + 1·1 + 2·2 + 3·3 and folds the whole thing to 14.
         let mut a = ExprArena::new();
-        let i = a.push_var(4); // reduction index slot
+        let i = a.push_var(4);
         let body = a.push_binary(OpKind::Mul, i, i);
         let root = a.push_reduce(OpKind::Add, 4, 4, body);
 
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+            .expect("a Reduce-bearing arena must optimize once unrolled");
+        let (opt, opt_root) = &*arc;
         assert!(
-            optimize_runtime_arena(&a, root).is_none(),
-            "an arena containing a Reduce must not be optimized"
+            matches!(opt.node(*opt_root), ExprNode::Const(v) if *v == 14.0),
+            "Σ_{{i<4}} i² must fold to Const(14.0), got {:?}",
+            opt.node(*opt_root)
         );
+
+        // Σ_{i<3} X·i = 3·X: the surviving term depends on X, and the
+        // optimized form agrees with the interpreter on the unrolled original.
+        let mut b = ExprArena::new();
+        let x = b.push_var(0);
+        let j = b.push_var(5);
+        let body = b.push_binary(OpKind::Mul, x, j);
+        let root = b.push_reduce(OpKind::Add, 5, 3, body);
+        let (unrolled, unrolled_root) = pixelflow_ir::passes::expand_reduce_owned(&b, root);
+        let arc = optimize_runtime_arena(&b, root, pixelflow_ir::LoopShape::FRAME)
+            .expect("X-dependent Reduce must optimize");
+        let (opt, opt_root) = &*arc;
+        for x in [0.0f32, 1.5, -2.25, 7.0] {
+            let want = eval_scalar(
+                &unrolled,
+                unrolled_root,
+                &[x, 0.0, 0.0, 0.0],
+                &BindingTable::empty(),
+            );
+            let got = eval_scalar(opt, *opt_root, &[x, 0.0, 0.0, 0.0], &BindingTable::empty());
+            assert_eq!(got, want, "Σ_{{i<3}} X·i at X={x}");
+        }
     }
 
     #[test]
@@ -1018,7 +1072,8 @@ mod tests {
         let times_one = a.push_binary(OpKind::Mul, plus_zero, one);
         let root = times_one;
 
-        let arc = optimize_runtime_arena(&a, root).expect("identity arena must optimize");
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+            .expect("identity arena must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
         assert_semantics_preserved(&a, root, &(opt_arena.clone(), opt_root));
         // x + 0.0, then * 1.0 should collapse to bare X.

@@ -526,6 +526,83 @@ pub fn find_hoistable_out_of(
 // which consume the whole per-node table; `find_hoistable_out_of` and
 // `find_hoistable_arena_nodes` are not callers at all — they take an
 // already-computed variance slice from theirs.
+/// The coordinate axes a kernel's enclosing lattice actually varies — the
+/// loop nest the emitted collapse kernel iterates.
+///
+/// A lattice domain has an extent per axis. From the compiled kernel's point
+/// of view an axis of extent 1 is a per-call constant and an axis of larger
+/// extent is a loop; `LoopShape` is that fact and nothing else. The extents
+/// themselves are erased, so a window resize yields the same shape — and the
+/// same cached kernel — as long as the same axes loop. It is the same
+/// set-of-binders vocabulary as [`Variance`]: `deps(node) ∩ shape` is the
+/// scope a node's value lives at — X present, once per batch; Y only, once
+/// per row; neither, once per call.
+///
+/// Only X and Y are recorded. The collapse ABI's loop nest iterates those two;
+/// Z and W are per-call constants whatever the lattice's extent along them,
+/// so recording them would name distinct kernels for identical code. If an
+/// ABI that loops Z ever exists, this type is extended then.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LoopShape(Variance);
+
+impl LoopShape {
+    /// The axes the collapse loop nest can iterate.
+    const ITERABLE: Variance = Variance(Variance::X.0 | Variance::Y.0);
+
+    /// Nothing loops: one batch per call — a point lattice, and every
+    /// per-batch `eval`.
+    pub const POINT: Self = Self(Variance::CONST);
+    /// X loops, Y is fixed: one row per call — a scanline lattice.
+    pub const SCANLINE: Self = Self(Variance::X);
+    /// X and Y loop: the 2D collapse — a frame lattice.
+    pub const FRAME: Self = Self(Self::ITERABLE);
+
+    /// From a lattice's loop mask, in `Lattice::loop_mask()`'s bit order
+    /// (bit 0 = X, 1 = Y, 2 = Z, 3 = W — [`Variance`]'s order). Bits for axes
+    /// the collapse ABI does not iterate are dropped.
+    #[inline]
+    #[must_use]
+    pub const fn from_loop_mask(mask: u8) -> Self {
+        Self(Variance(mask & Self::ITERABLE.0))
+    }
+
+    /// The looping axes: the variance a value must have to be recomputed
+    /// every batch (X) or every row (Y).
+    #[inline]
+    #[must_use]
+    pub const fn varying(self) -> Variance {
+        self.0
+    }
+
+    /// Whether a tile of `groups` batches per row and `rows` rows can be
+    /// evaluated by a kernel compiled for this shape: more than one batch
+    /// per row needs X to loop, more than one row needs Y to loop.
+    #[inline]
+    #[must_use]
+    pub const fn admits(self, groups: usize, rows: usize) -> bool {
+        (groups <= 1 || self.0.depends_on_x()) && (rows <= 1 || self.0.depends_on_y())
+    }
+
+    /// The shape as one byte, for cache keys.
+    #[inline]
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0.0
+    }
+}
+
+impl core::fmt::Debug for LoopShape {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let name = match *self {
+            Self::POINT => "POINT",
+            Self::SCANLINE => "SCANLINE",
+            Self::FRAME => "FRAME",
+            _ => "COLUMN",
+        };
+        write!(f, "LoopShape::{name}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,5 +846,35 @@ mod tests {
                 .any(|id| matches!(arena.node(*id), ExprNode::Unary(OpKind::Sin, _))),
             "sin(Y) must not be hoistable out of Y, got {out_of_y:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod loop_shape_tests {
+    use super::{LoopShape, Variance};
+
+    #[test]
+    fn loop_mask_projects_to_the_iterable_axes() {
+        // Lattice::loop_mask bit order: X=1, Y=2, Z=4, W=8.
+        assert_eq!(LoopShape::from_loop_mask(0b0000), LoopShape::POINT);
+        assert_eq!(LoopShape::from_loop_mask(0b0001), LoopShape::SCANLINE);
+        assert_eq!(LoopShape::from_loop_mask(0b0011), LoopShape::FRAME);
+        // A volume (Z loops) and a frame compile to the same collapse kernel:
+        // Z is per-call in that ABI, so the shape erases it.
+        assert_eq!(LoopShape::from_loop_mask(0b0111), LoopShape::FRAME);
+        assert_eq!(LoopShape::from_loop_mask(0b1100), LoopShape::POINT);
+        assert_eq!(LoopShape::FRAME.varying(), Variance::X.union(Variance::Y));
+    }
+
+    #[test]
+    fn admits_tiles_within_the_looping_axes() {
+        assert!(LoopShape::POINT.admits(1, 1));
+        assert!(!LoopShape::POINT.admits(2, 1));
+        assert!(!LoopShape::POINT.admits(1, 2));
+        assert!(LoopShape::SCANLINE.admits(64, 1));
+        assert!(!LoopShape::SCANLINE.admits(64, 2));
+        assert!(LoopShape::FRAME.admits(64, 48));
+        // Zero-sized tiles fit anything: nothing iterates.
+        assert!(LoopShape::POINT.admits(0, 0));
     }
 }

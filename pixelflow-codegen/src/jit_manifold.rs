@@ -5,6 +5,7 @@
 
 use crate::JIT_VECTOR_BYTES;
 use crate::emit::executable::{ExecutableCode, Extent2D, Point4, TileSlice};
+use pixelflow_ir::LoopShape;
 
 const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
@@ -12,14 +13,27 @@ const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 /// combination. No cache — caller decides lifetime.
 pub struct JitManifold {
     code: ExecutableCode,
+    shape: LoopShape,
 }
 
 impl JitManifold {
-    /// Wrap newly compiled executable code into a `JitManifold`.
+    /// Wrap newly compiled executable code into a `JitManifold` for lattices
+    /// of `shape`.
     ///
+    /// The shape is the promise the code was compiled under: every tile
+    /// handed to [`call_collapse`](Self::call_collapse) must fit it. Today
+    /// every shape's code accepts every tile, so the promise is checked in
+    /// debug builds only; the loop-aware stages will emit code that keeps it
+    /// by construction.
     #[must_use]
-    pub const fn new(code: ExecutableCode) -> Self {
-        Self { code }
+    pub const fn new(code: ExecutableCode, shape: LoopShape) -> Self {
+        Self { code, shape }
+    }
+
+    /// The lattice shape this kernel was compiled for.
+    #[must_use]
+    pub const fn shape(&self) -> LoopShape {
+        self.shape
     }
 
     /// The emitted machine code, for offline inspection (disassembly,
@@ -91,6 +105,13 @@ impl JitManifold {
         tile: TileSlice,
         origin: Point4<V>,
     ) {
+        debug_assert!(
+            self.shape.admits(tile.groups, tile.rows),
+            "a {} × {} tile does not fit a kernel compiled for {:?}",
+            tile.groups,
+            tile.rows,
+            self.shape
+        );
         // SAFETY: Delegated to ExecutableCode which invokes the emitted KernelFn.
         unsafe { self.code.call_collapse(ctx, tile, origin) }
     }

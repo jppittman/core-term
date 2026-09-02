@@ -390,7 +390,7 @@ impl CellGridProgram {
             // of rows for a channel. Bound-memory arenas are uncacheable
             // (the code bakes buffer slot metadata); the cache recognizes
             // that and compiles fresh.
-            pixelflow_codegen::jit_cache::compile(arena, root)
+            pixelflow_codegen::jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME)
                 .expect("cell-grid channel failed to compile")
         });
         Self {
@@ -595,8 +595,9 @@ impl CellGridPackedProgram {
             "packed cell-grid kernel did not merge its atlas reads to one slot"
         );
         let (arena, root) = kernel.parts();
-        let jit = pixelflow_codegen::jit_cache::compile(arena, root)
-            .expect("packed cell-grid kernel failed to compile");
+        let jit =
+            pixelflow_codegen::jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME)
+                .expect("packed cell-grid kernel failed to compile");
         Self {
             geom,
             shifts,

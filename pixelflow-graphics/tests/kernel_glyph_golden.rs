@@ -40,7 +40,11 @@ fn golden_for(ch: char, size: usize) {
     // float-reassociation tolerance) is pinned separately by
     // tests/kernel_glyph_optimize.rs.
     let (arena, root) = kernel.parts();
-    let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root);
+    let optimized = pixelflow_search::runtime::optimize_runtime_arena(
+        arena,
+        root,
+        pixelflow_ir::LoopShape::FRAME,
+    );
     let (lowered, lroot) = match optimized.as_deref() {
         Some((a, r)) => (a.clone(), *r),
         None => lower_dwrt_owned(arena, root).expect("dwrt lowering"),
