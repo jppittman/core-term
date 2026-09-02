@@ -216,9 +216,15 @@ The compiler uses e-graphs (equality graphs) to find optimal instruction sequenc
    (`CostModel::latency_prior()` — handwritten per-op cycle estimates, the only policy;
    both tiers choose it through `env_extraction_policy()`)
 
-A learned NNUE extraction cost model was tried (2026-07 to 2026-09) and closed as an honest
-negative: the static table ties it and every lever made it worse
-(docs/paper/2026-08-egraph-nnue-parity.md). It is deleted, not disabled; history is in VCS.
+A learned NNUE extraction cost model was tried (2026-07 to 2026-09) and measured a tie with
+the static table on schedule-free expression kernels (docs/paper/2026-08-egraph-nnue-parity.md).
+That closed its *shape* — a bag-of-edges MLP predicting total cost in place of the table — not
+the idea: extraction is where codegen's schedule choice will be made, and a non-additive
+schedule cost belongs there as a residual over the table. The shape is deleted (history in
+VCS); the seams it needs are kept — the `Reranker` trait over the swap-refinement search
+(`egraph/extract.rs`, no implementation shipped), the prior-seeded `OpEmbeddings`, the typed
+edge stream, and per-node variance classification (`Extraction::chosen_variance`). The
+successor is denoted, not built: docs/plans/2026-09-01-schedule-cost-model-denotation.md.
 The e-graph also records **rule provenance** (node origins + union journal,
 `pixelflow-search/src/egraph/provenance.rs`), enabling hindsight labeling of which rule
 applications were load-bearing for an extraction (`labeler.rs`) — the substrate for the
@@ -354,12 +360,15 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 
 ## Cost Model and the Guide (offline, supervised)
 
-Two learned programs have been closed here, each with its post-mortem in the tree:
+Two learned programs have had their code removed here, each with its record in the tree:
 - The AlphaZero-style self-play/critic/REINFORCE loop, removed July 2026 after a four-agent
   audit found it methodologically unsound (docs/plans/2026-07-07-guided-saturation-redesign.md).
-- The extraction head (learned NNUE cost model for extraction), closed September 2026 as an
-  honest negative — the static latency table ties it, every lever made it worse
-  (docs/paper/2026-08-egraph-nnue-parity.md). Deleted; history in VCS.
+- The extraction head (learned NNUE cost model for extraction): its shape was deleted in
+  September 2026 after it tied the static table on schedule-free kernels
+  (docs/paper/2026-08-egraph-nnue-parity.md); its denotation — schedule cost as the analytic
+  table plus a learned residual that reranks extractions — is kept behind the `Reranker` seam
+  and specified in docs/plans/2026-09-01-schedule-cost-model-denotation.md. Not built until
+  codegen gives the e-graph schedules to choose.
 
 What remains:
 - The static latency prior (`CostModel::latency_prior()`) is the extraction cost model.

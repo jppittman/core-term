@@ -11,11 +11,12 @@
 //! There is exactly one policy today: the static latency prior
 //! ([`CostModel::latency_prior`]). A learned alternative — the NNUE
 //! extraction head, opt-in through a weights-file env var — lived behind this
-//! seam from 2026-07 to 2026-09 and was closed as an honest negative: the
-//! static table tied it and every lever made it worse
-//! (docs/paper/2026-08-egraph-nnue-parity.md). It is deleted, not disabled;
-//! this seam is where a successor would be chosen, and until one earns its
-//! place the type below refuses to represent a second choice.
+//! seam from 2026-07 to 2026-09 and tied the static table on schedule-free
+//! kernels (docs/paper/2026-08-egraph-nnue-parity.md). Its shape is deleted,
+//! not disabled; its successor is a residual over the table that reranks
+//! extractions through [`super::extract::Reranker`]
+//! (docs/plans/2026-09-01-schedule-cost-model-denotation.md), and until one
+//! earns its place the type below refuses to represent a second choice.
 
 use super::cost::CostModel;
 use super::extract::{Extraction, extract_dag};

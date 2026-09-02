@@ -5,8 +5,10 @@
 //! plumbing (`training`), and the Guide-program research bins. See
 //! docs/plans/2026-07-07-guided-saturation-redesign.md for the architecture,
 //! the (2026-07) removal of the RL self-play/critic loop this crate used to
-//! host, and docs/paper/2026-08-egraph-nnue-parity.md for the extraction-head
-//! program that was closed (honest negative) and deleted on 2026-09-01.
+//! host, and docs/paper/2026-08-egraph-nnue-parity.md plus
+//! docs/plans/2026-09-01-schedule-cost-model-denotation.md for the
+//! extraction-head program whose shape was deleted on 2026-09-01 and whose
+//! denotation (a schedule-cost residual over the table) is kept.
 
 pub mod jit_bench;
 pub mod journal;

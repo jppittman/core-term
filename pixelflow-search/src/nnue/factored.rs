@@ -20,9 +20,12 @@
 //!
 //! The extraction (value) head that used to sit on top of this — an
 //! accumulator feature vector, a backbone + value MLP, its checkpoint format
-//! — was closed as an honest negative
-//! (docs/paper/2026-08-egraph-nnue-parity.md) and deleted on 2026-09-01;
-//! history is in VCS.
+//! — tied the static table on schedule-free kernels
+//! (docs/paper/2026-08-egraph-nnue-parity.md) and its shape was deleted on
+//! 2026-09-01; history is in VCS. What this module keeps is the denotation a
+//! future residual reranker needs — the op vocabulary, the edge stream, and
+//! per-node variance classification
+//! (docs/plans/2026-09-01-schedule-cost-model-denotation.md).
 
 extern crate alloc;
 
@@ -872,7 +875,7 @@ impl CostDag for ChoicesCostDag<'_> {
 // ============================================================================
 //
 // The extraction-head program's value head — `ExprNnue`'s trunk and value
-// MLP — was deleted as an honest negative
+// MLP — was deleted after it tied the static table on schedule-free kernels
 // (docs/paper/2026-08-egraph-nnue-parity.md). An earlier pass on this branch
 // also restored the 4K per-level-sectioned edge accumulator that used to
 // feed it (flat + depth-encoded, × parent/child, plus this variance

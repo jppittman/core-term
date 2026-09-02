@@ -21,7 +21,8 @@
 //! non-test callers for this whole surface but a live roadmap role
 //! (ROADMAP-ADMITTED, `docs/plans/2026-08-17-cost-model-domain.md` §0 row J10).
 //! The extraction head this module used to share a backbone with is gone
-//! (closed honest-negative, deleted 2026-09-01); what it shares now is only
+//! (its shape was deleted 2026-09-01; the denotation is kept, see
+//! docs/plans/2026-09-01-schedule-cost-model-denotation.md); what it shares now is only
 //! [`OpEmbeddings`], and the trunk that used to be "shared" is this head's
 //! own (`scoring.rs`).
 

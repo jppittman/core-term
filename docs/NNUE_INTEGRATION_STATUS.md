@@ -1,15 +1,18 @@
 # NNUE Integration Status
 
-> **Closed 2026-09-01.** The extraction-head program this doc tracked — a learned NNUE cost
-> model for e-graph extraction, opt-in behind a weights-file env var — was closed as an
-> honest negative (the static latency table ties it; every lever made it worse:
-> [`paper/2026-08-egraph-nnue-parity.md`](paper/2026-08-egraph-nnue-parity.md)) and
-> deleted per JP's ruling ("delete. program closed, history belongs in vcs."). The value
-> head, its checkpoint format, the incremental extractor, the trainer and the 3-way gate are
-> in git history, not in the tree. What survived is what the successor program (the
-> saturation Guide, [`plans/2026-08-31-guide-design-revision.md`](plans/2026-08-31-guide-design-revision.md))
-> reuses by denotation: op embeddings seeded from the latency prior, the typed edge stream,
-> the graph accumulator and scoring head, provenance/labeling, and the bench harness.
+> **Shape deleted 2026-09-01; denotation kept.** The extraction-head program this doc tracked
+> — a learned NNUE cost model for e-graph extraction, opt-in behind a weights-file env var —
+> tied the static latency table on schedule-free expression kernels
+> ([`paper/2026-08-egraph-nnue-parity.md`](paper/2026-08-egraph-nnue-parity.md)). JP's ruling
+> (2026-09-01): "delete the shape, keep the denotation" — the bag-of-edges value head, its
+> checkpoint format, the NNUE-scored extractor, the trainer and the 3-way gate are in git
+> history, not in the tree. What stays is the seam a schedule-cost residual needs: the
+> swap-refinement search behind an unimplemented `Reranker` trait, op embeddings seeded from
+> the latency prior, the typed edge stream, per-node variance classification, and the bench
+> harness — specified in
+> [`plans/2026-09-01-schedule-cost-model-denotation.md`](plans/2026-09-01-schedule-cost-model-denotation.md).
+> The saturation Guide ([`plans/2026-08-31-guide-design-revision.md`](plans/2026-08-31-guide-design-revision.md))
+> reuses the embeddings, the graph accumulator and scoring head, and provenance/labeling.
 >
 > Rewritten 2026-08-05. The previous version of this doc described systems deleted in the
 > July 2026 cleanup (`train_unified`, the Guide/self-play loop, `critic_server.py`) as extant.

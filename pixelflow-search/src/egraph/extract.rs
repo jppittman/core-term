@@ -239,7 +239,7 @@ impl<'g> Extraction<'g> {
 // ============================================================================
 //
 // The extraction-head program that used to drive this search with a trained
-// NNUE was closed on 2026-09-01 as an honest negative
+// NNUE tied the static table on schedule-free kernels
 // (docs/paper/2026-08-egraph-nnue-parity.md) — but JP's ruling on the
 // program's SHAPE was narrower than "delete everything it touched":
 // "I don't think what we have was the correct shape. I think it's right as

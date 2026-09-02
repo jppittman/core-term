@@ -3,9 +3,12 @@
 //! Op embeddings and the typed edge stream (`factored`), the saturation Guide
 //! (`guide`), and the backward expression generator (`BwdGenerator`) that
 //! mints rewrite-pair corpora. The extraction (value) head this module was
-//! named for — an NNUE cost model for e-graph extraction — was closed as an
-//! honest negative (docs/paper/2026-08-egraph-nnue-parity.md) and deleted
-//! on 2026-09-01; the static latency prior is the extraction policy.
+//! named for — an NNUE cost model for e-graph extraction — tied the static
+//! table on schedule-free kernels (docs/paper/2026-08-egraph-nnue-parity.md)
+//! and its shape was deleted on 2026-09-01; the static latency prior is the
+//! extraction policy, and the seam a future schedule-cost residual plugs into
+//! is `egraph::extract::Reranker`
+//! (docs/plans/2026-09-01-schedule-cost-model-denotation.md).
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]

@@ -7,8 +7,9 @@ cost function.
 
 Learned rule guidance (the saturation Guide) is an experiment with decision gates—not the
 default optimizer and not a completed training product. A learned extraction cost model was
-tried and closed as an honest negative (see below); the static latency prior is the extraction
-policy.
+tried and tied the static table on schedule-free kernels (see below); the static latency prior
+is the extraction policy, and the learned model's seam (`Reranker`) is kept for a future
+schedule-cost residual.
 
 ## Status at a glance
 
@@ -20,7 +21,7 @@ policy.
 | Static latency-prior extraction | Implemented; compiler default |
 | DAG-aware extraction and arena reconstruction | Implemented |
 | Rule-application provenance and hindsight labels | Implemented |
-| Learned (NNUE) extraction cost model | Closed honest-negative 2026-09; deleted, history in VCS |
+| Learned (NNUE) extraction cost model | Shape deleted 2026-09 (tied the table on schedule-free kernels); `Reranker` seam kept, denotation in `docs/plans/2026-09-01-schedule-cost-model-denotation.md` |
 | Trained provenance guide for choosing rewrites | Research plan; thesis experiment not yet completed |
 | Beam/lookahead search over rewrite applications | Conditional future work |
 

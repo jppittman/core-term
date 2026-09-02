@@ -36,8 +36,9 @@ pub(crate) const RULE_CONCAT_DIM: usize = 4 * EMBED_DIM;
 ///
 /// These weights are untrained noise until Phase 3 gives them a training
 /// loop. The trunk used to be shared with the extraction head's expression
-/// tower; that head is gone (closed honest-negative, deleted 2026-09-01),
-/// so the trunk is this head's own. The only thing still shared across the
+/// tower; that head's shape is gone (deleted 2026-09-01; its denotation is
+/// kept, see docs/plans/2026-09-01-schedule-cost-model-denotation.md), so
+/// the trunk is this head's own. The only thing still shared across the
 /// crate is [`crate::nnue::factored::OpEmbeddings`], which a
 /// [`GraphAccumulator`] is built with before it reaches this struct.
 #[derive(Clone)]
