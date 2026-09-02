@@ -49,6 +49,11 @@ specified by [`templates/DESIGN_DOC.md`](templates/DESIGN_DOC.md). Use `Supersed
   and [`designs/pixelflow-runtime-engine-mesh-migration.md`](designs/pixelflow-runtime-engine-mesh-migration.md)
   — draft actor/runtime designs. The scheduler primitives have landed; the runtime mesh
   migration has not.
+- [`designs/2026-08-31-preemption-as-transaction-abort.md`](designs/2026-08-31-preemption-as-transaction-abort.md)
+  and [`designs/2026-08-31-hardware-sandboxed-kernel-preemption.md`](designs/2026-08-31-hardware-sandboxed-kernel-preemption.md)
+  — two alternative designs for preempting a green actor mid-step, which the mealy-transducer
+  design's §5 rules out. Neither is adopted and nothing has landed; they are recorded reasoning,
+  gated on a step actually being observed to overrun.
 - [`designs/LATTICE_EVAL.md`](designs/LATTICE_EVAL.md),
   [`designs/lattice-scheduling-types.md`](designs/lattice-scheduling-types.md),
   [`designs/REDUCTIONS_AND_FOLDS.md`](designs/REDUCTIONS_AND_FOLDS.md),
