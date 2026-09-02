@@ -178,9 +178,6 @@ fn optimize_runtime_arena_uncached(
     crate::telemetry::record(crate::telemetry::SaturationInvocation {
         tier: crate::telemetry::Tier::Runtime,
         node_count,
-        max_iterations: config.max_iterations,
-        max_classes: config.max_classes,
-        hard_timeout: config.hard_timeout,
         result: &saturation_result,
         application_count: egraph.provenance().application_count(),
         union_count: egraph.provenance().union_count(),

@@ -49,6 +49,13 @@ pub struct SaturationResult {
     /// The rewrite budget that was used.
     pub budget: usize,
 
+    /// The rest of the budget triple this run was given (`budget` is its
+    /// `max_iterations`) — recorded on the result so an observer of the run
+    /// (the `saturation-telemetry` feature) reads the limits that actually
+    /// applied instead of re-deriving them from `node_count`.
+    pub max_classes: usize,
+    pub hard_timeout: std::time::Duration,
+
     /// Which condition ended the run — read off `EGraph::saturate_with_limits`'s
     /// own stopping decision, not inferred from the counts above (those can
     /// tie: a class-cap or timeout break can leave `iterations <
@@ -137,6 +144,8 @@ pub fn saturate_with_full_budget(
         classes_after,
         rule_matches,
         budget: max_iterations,
+        max_classes,
+        hard_timeout: timeout,
         stop: stats.stop,
     }
 }
@@ -348,6 +357,8 @@ mod tests {
             classes_after: 15,
             rule_matches: HashMap::new(),
             budget: 100,
+            max_classes: 10_000,
+            hard_timeout: std::time::Duration::from_millis(500),
             stop: SaturationStop::Quiesced,
         };
 

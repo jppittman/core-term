@@ -171,9 +171,9 @@ fn optimize_via_model(
     // Stop the clock here: `wall_clock` is documented (see
     // `telemetry::SaturationInvocation::wall_clock`) as saturate+extract,
     // and the `choices()` call just above is that one real extraction pass.
-    // Sampled before the telemetry-only second pass below, so an expensive
-    // NNUE or large-graph extraction isn't double-counted into this number
-    // just because telemetry happens to be on.
+    // Sampled before the telemetry-only second pass below, so a large-graph
+    // extraction isn't double-counted into this number just because
+    // telemetry happens to be on.
     #[cfg(feature = "saturation-telemetry")]
     let wall_clock = telemetry_start.elapsed();
 
@@ -194,9 +194,6 @@ fn optimize_via_model(
         pixelflow_search::telemetry::record(pixelflow_search::telemetry::SaturationInvocation {
             tier: pixelflow_search::telemetry::Tier::Macro,
             node_count,
-            max_iterations: config.max_iterations,
-            max_classes: config.max_classes,
-            hard_timeout: config.hard_timeout,
             result: &_saturation_result,
             application_count: ctx.egraph.provenance().application_count(),
             union_count: ctx.egraph.provenance().union_count(),

@@ -8,8 +8,9 @@
 //! `pixelflow_compiler::optimize::optimize` keep their existing signatures
 //! and return types unchanged — telemetry is never threaded through what
 //! either function hands back. Each production call site calls
-//! [`record`] itself, immediately after its own `saturate_with_full_budget`
-//! + extract, only when this feature is compiled in. With the feature off,
+//! [`record`] itself, immediately after its own
+//! [`crate::egraph::saturate_with_full_budget`] + extract, only when this
+//! feature is compiled in. With the feature off,
 //! this module does not exist (see the `#[cfg]` on its declaration in
 //! `lib.rs`) and there is nothing left in the binary to call.
 //!
@@ -74,20 +75,17 @@ impl Tier {
 }
 
 /// Everything one production optimizer invocation — one
-/// `saturate_with_full_budget` call plus the extraction that followed it —
-/// knows about itself, for [`record`] to serialize.
+/// [`crate::egraph::saturate_with_full_budget`] call plus the extraction that
+/// followed it — knows about itself, for [`record`] to serialize.
 pub struct SaturationInvocation<'a> {
     /// Which tier invoked saturation.
     pub tier: Tier,
     /// Size of the input, as passed to `config_for_node_count` to select the
-    /// budget triple below.
+    /// budget triple.
     pub node_count: usize,
-    /// The `SaturationConfig` budget this run was given.
-    pub max_iterations: usize,
-    pub max_classes: usize,
-    pub hard_timeout: Duration,
-    /// The result `saturate_with_full_budget` returned: iterations used,
-    /// e-classes before/after, and — the field this feature exists to
+    /// The result `saturate_with_full_budget` returned: the budget triple the
+    /// run was given (`budget`/`max_classes`/`hard_timeout`), iterations
+    /// used, e-classes before/after, and — the field this feature exists to
     /// surface — why the run stopped.
     pub result: &'a SaturationResult,
     /// Rule-provenance counters, read off the e-graph's own journal at the
@@ -96,8 +94,8 @@ pub struct SaturationInvocation<'a> {
     pub application_count: usize,
     pub union_count: usize,
     /// The arena and root this invocation extracted, so [`record`] can cost
-    /// it under the static latency-prior model regardless of which
-    /// extraction policy actually chose it (static or NNUE).
+    /// it under the static latency-prior model independently of whatever
+    /// extraction policy actually chose it.
     pub extracted_arena: &'a ExprArena,
     pub extracted_root: ExprId,
     /// Wall-clock of saturate+extract together. Indicative only — see
@@ -125,9 +123,9 @@ pub fn record(inv: SaturationInvocation<'_>) {
          \"wall_clock_us\":{wall_clock_us},\"kernel_label\":{kernel_label}}}",
         tier = inv.tier.as_json_str(),
         node_count = inv.node_count,
-        max_iterations = inv.max_iterations,
-        max_classes = inv.max_classes,
-        hard_timeout_us = inv.hard_timeout.as_micros(),
+        max_iterations = inv.result.budget,
+        max_classes = inv.result.max_classes,
+        hard_timeout_us = inv.result.hard_timeout.as_micros(),
         stop_reason = stop_str(inv.result.stop),
         iterations = inv.result.iterations,
         classes_at_stop = inv.result.classes_after,
