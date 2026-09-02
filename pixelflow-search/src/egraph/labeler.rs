@@ -102,7 +102,7 @@ pub struct EpisodeLabels {
     /// note.
     pub load_bearing: BTreeSet<ApplicationId>,
     /// Binary label for every application recorded in the episode's
-    /// provenance log (`labels.len() == provenance.application_count()`).
+    /// provenance log (`labels.len() == provenance.recorded_count()`).
     pub labels: BTreeMap<ApplicationId, Label>,
     /// Per-rule aggregates, keyed by `rule_idx` (index into the e-graph's
     /// rule list at episode time).
@@ -370,7 +370,7 @@ mod tests {
             other_target.node_idx
         ));
         let app_wasted = ApplicationId(1);
-        assert_eq!(eg.provenance().application_count(), 2);
+        assert_eq!(eg.provenance().recorded_count(), 2);
 
         // Build the chosen extraction by hand: root = sum's class, choosing
         // the rule-created (commuted) node for `sum`, and node 0 (the only
@@ -443,7 +443,7 @@ mod tests {
             .expect("commutative should match (x + y) + z");
         assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.node_idx));
         let app_b = ApplicationId(1);
-        assert_eq!(eg.provenance().application_count(), 2);
+        assert_eq!(eg.provenance().recorded_count(), 2);
 
         let outer_class = eg.find(outer);
         let inner_class = eg.find(inner);
@@ -509,7 +509,7 @@ mod tests {
             .map(|s| s.load_bearing)
             .sum();
 
-        assert_eq!(total_fired, result.egraph.provenance().application_count());
+        assert_eq!(total_fired, result.egraph.provenance().recorded_count());
         assert_eq!(total_fired, result.labels.labels.len());
         assert_eq!(
             total_load_bearing,

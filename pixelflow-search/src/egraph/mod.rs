@@ -30,6 +30,10 @@ pub mod deps;
 pub mod derivative;
 pub(crate) mod extract;
 mod graph;
+// The hindsight labeler reads the provenance journal directly
+// (`derivation_ancestors`, `Origin`, `Provenance::recorded_count`) — it has
+// nothing to compute without it.
+#[cfg(feature = "provenance-journal")]
 mod labeler;
 mod node;
 pub mod ops;
@@ -52,13 +56,17 @@ pub use graph::{
     ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, RewriteTarget, SaturationStats,
     SaturationStop, ScanStop,
 };
+#[cfg(feature = "provenance-journal")]
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode};
 pub use ops::Op;
-pub use optimizer::{Budget, Limits, Observer, Optimized, Optimizer, OptimizerStats};
+#[cfg(feature = "provenance-journal")]
+pub use optimizer::Observer;
+pub use optimizer::{Budget, Limits, Optimized, Optimizer, OptimizerStats};
+pub use provenance::{ApplicationId, ENodeId, Provenance};
+#[cfg(feature = "provenance-journal")]
 pub use provenance::{
-    ApplicationId, ApplicationRecord, ENodeId, Origin, Provenance, UnionEvent,
-    derivation_ancestors, format_derivation_trace,
+    ApplicationRecord, Origin, UnionEvent, derivation_ancestors, format_derivation_trace,
 };
 pub use rewrite::{Rewrite, RewriteAction};
 pub use rules::{Fingerprint, RuleId, RuleSet, rule_label};

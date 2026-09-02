@@ -175,7 +175,7 @@ fn optimize_via_model(
             tier: pixelflow_search::telemetry::Tier::Macro,
             node_count,
             stats: &optimized.stats,
-            union_count: ctx.egraph.provenance().union_count(),
+            union_count: optimized.stats.unions,
             extracted_arena: &telemetry_arena,
             extracted_root: telemetry_root,
             wall_clock,

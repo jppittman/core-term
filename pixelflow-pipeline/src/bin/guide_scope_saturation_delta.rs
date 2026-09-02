@@ -413,7 +413,7 @@ fn reconstruct_applications(
     let mut running_nodes = seed_nodes;
     let mut running_edges = seed_edges;
     let mut apps: Vec<ApplicationSample> = Vec::new();
-    let total_applications = egraph.provenance().application_count();
+    let total_applications = egraph.provenance().recorded_count();
 
     for (app_id, record) in egraph.provenance().applications() {
         let created = nodes_by_app.get(&app_id.as_u64());

@@ -53,6 +53,7 @@ use super::cost::CostModel;
 use super::extract::{ChoiceCost, Extraction, IncrementalExtractor, Reranker, choices_to_arena};
 use super::graph::{EGraph, SaturationStop};
 use super::node::EClassId;
+#[cfg(feature = "provenance-journal")]
 use super::provenance::ApplicationRecord;
 use super::rules::{Fingerprint, RuleSet};
 
@@ -73,6 +74,7 @@ use super::rules::{Fingerprint, RuleSet};
 /// only after its action has run, so the two deliveries carry identical
 /// content; delivering at the end keeps the observer out of the rewrite
 /// dispatch path entirely.
+#[cfg(feature = "provenance-journal")]
 pub trait Observer {
     /// One rewrite application: which rule fired, in which round, what it
     /// minted, and whether anything actually changed.
@@ -237,6 +239,7 @@ pub struct Optimizer {
     cost: CostModel,
     shape: LatticeShape,
     rerank: Option<Box<dyn Reranker>>,
+    #[cfg(feature = "provenance-journal")]
     observer: Option<Box<dyn Observer>>,
     hard_ceiling: HardCeiling,
 }
@@ -334,6 +337,7 @@ impl Optimizer {
             cost: CostModel::latency_prior(),
             shape: LatticeShape::POINT,
             rerank: None,
+            #[cfg(feature = "provenance-journal")]
             observer: None,
             // The tier's own `SaturationConfig::safety_ceiling`, resolved
             // from `node_count` at `run()` time — every production call site
@@ -386,6 +390,7 @@ impl Optimizer {
 
     /// Record what saturation did, and hand it to `observer` when the run
     /// ends. Production passes `None` and nothing is recorded.
+    #[cfg(feature = "provenance-journal")]
     #[must_use]
     pub fn observe(mut self, observer: Option<Box<dyn Observer>>) -> Self {
         self.observer = observer;
@@ -477,6 +482,7 @@ impl Optimizer {
         let limits = self.budget.limits(node_count);
         let started = std::time::Instant::now();
 
+        #[cfg(feature = "provenance-journal")]
         egraph.set_provenance_recording(self.observer.is_some());
         let saturation =
             egraph.saturate_budgeted(limits.iterations, limits.classes, limits.applications);
@@ -509,6 +515,7 @@ impl Optimizer {
             );
         }
 
+        #[cfg(feature = "provenance-journal")]
         if let Some(observer) = self.observer.as_mut() {
             for (_id, record) in egraph.provenance().applications() {
                 observer.on_application(record);

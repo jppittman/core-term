@@ -1418,7 +1418,6 @@ mod production_telemetry {
         total_unions: usize,
         classes_after: usize,
         applications: usize,
-        journal_unions: usize,
         elapsed: Duration,
         cost: usize,
         dwrt_survived: bool,
@@ -1524,8 +1523,11 @@ mod production_telemetry {
             iterations: stats.iterations,
             total_unions: stats.total_unions,
             classes_after: eg.num_classes(),
-            applications: eg.provenance().application_count(),
-            journal_unions: eg.provenance().union_count(),
+            // The budget's own counter (unconditional — never requires
+            // `provenance-journal`, which pixelflow-compiler must never
+            // depend on), not the provenance journal's length; they agree
+            // whenever the journal is being kept at all.
+            applications: eg.application_count() as usize,
             elapsed,
             cost,
             dwrt_survived,
@@ -1687,12 +1689,11 @@ mod production_telemetry {
         let loss_vs_lifted = (prod.cost as f64 - lifted.cost as f64) / lifted.cost as f64 * 100.0;
 
         println!(
-            "prod:   stop={stop:?} iters={}/{PROD_MAX_ITERS} classes={} apps={} unions={} journal_unions={} elapsed_ms={:.1} cost={}",
+            "prod:   stop={stop:?} iters={}/{PROD_MAX_ITERS} classes={} apps={} unions={} elapsed_ms={:.1} cost={}",
             prod.iterations,
             prod.classes_after,
             prod.applications,
             prod.total_unions,
-            prod.journal_unions,
             prod.elapsed.as_secs_f64() * 1e3,
             prod.cost
         );

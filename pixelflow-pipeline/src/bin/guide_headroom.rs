@@ -361,7 +361,7 @@ fn main() {
             }
         }
 
-        let total_applications = egraph.provenance().application_count();
+        let total_applications = egraph.provenance().recorded_count();
         let labeler_lb = labels.load_bearing.len();
         let strict_lb = strict_set.len();
 

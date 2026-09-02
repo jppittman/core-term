@@ -376,7 +376,7 @@ fn observation_is_optional_and_does_not_move_the_budget() {
     let root_class = eg.add_arena(&arena, root);
     let quiet = silent.run(&mut eg, root_class, arena.len());
     assert_eq!(
-        eg.provenance().application_count(),
+        eg.provenance().recorded_count(),
         0,
         "production must not build a provenance log"
     );

@@ -22,7 +22,12 @@ profiling = ["pprof"]
 [dependencies]
 pixelflow-codegen = { path = "../pixelflow-codegen" }
 pixelflow-ir = { path = "../pixelflow-ir" }
-pixelflow-search = { path = "../pixelflow-search" }
+# `provenance-journal` unconditional (not gated behind `training`): the
+# hindsight labeler and guided-saturation harnesses (`guide_headroom`,
+# `guide_scope_saturation_delta`) read `Provenance::origins`/`applications`/
+# `derivation_ancestors` directly, and those APIs do not exist in
+# pixelflow-search without the feature.
+pixelflow-search = { path = "../pixelflow-search", features = ["provenance-journal"] }
 pixelflow-core = { path = "../pixelflow-core" }
 pixelflow-compiler = { path = "../pixelflow-compiler" }
 libm = "0.2.15"
