@@ -1,7 +1,8 @@
 # Phase 3 forward-port: inventory and map
 
-**Status:** Phase A (the `pixelflow-search` core) is ported. Phase B
-(`pixelflow-pipeline`'s harnesses) and the results docs are not — see §6.
+**Status:** Ported. Phase A (the `pixelflow-search` core), Phase B
+(`pixelflow-pipeline`'s harnesses) and the docs are all in; A10 is
+deliberately left out, with its reason — see §6.
 **Base:** `origin/main` @ `40c96ece` (#1118).
 **Sources (READ-ONLY):** `claude/phase3-guide` (#1084), `claude/phase3-domain-shift`
 (#1091), `claude/phase3-label-constfold` (#1095), `claude/phase3-r2g` (#1096),
@@ -420,42 +421,108 @@ production leaves `guide`/`mask` `None`, so nothing may move.
 | A7 `nnue/guide/linear.rs` | `feat: the cold-start linear Guide and its per-rule control arm` | `w_rule` keyed by `RuleId`, gated by `Fingerprint`. **No `serde_json` dependency** — parsing moved to `pixelflow-pipeline`, refusal kept at the constructor. |
 | A8 `Optimizer::mask` | `feat: Optimizer::mask` | `MaskScope`/`ApplicationMask`/`last_replay_mask_skips` behind an optimizer field, not `saturate_until_applications_observed`. Checked before the application counter increments, so a skipped ordinal goes to the next candidate. |
 
-### Phase A — not landed
+### Phase A — the rest
 
-- **A9, Round-2 machinery** (`template.rs`, `math/{inflate,oracle,round2_rules}.rs`).
-  Untouched. §1.4's two open questions stand: the 11 harness-only
-  `RewriteAction` variants should be reconsidered before being committed to,
-  and the v3 `RuleOrder` variants are superseded by main's `rule_order.rs`.
-- **A10, `extract::class_costs_and_choices`.** Untouched. Main rewrote
-  `extract.rs` (+633) and `phase3-context` is an explicit pre-rebase WIP, so
-  this is a re-derivation against `extract_dag_scoped` /
-  `repair_choices_well_founded` / `cost_of_choices`, not a patch to re-apply.
+| item | commit | notes |
+|---|---|---|
+| A9 Round-2 machinery | `feat: Round 2 rule-count scaling` | `egraph/template.rs`, `math/{inflate,oracle,round2_rules}.rs`, on `RuleSet::new` + `Optimizer::rules`. §1.4's two open questions are answered below. |
+| A10 `extract::class_costs_and_choices` | — | **Deliberately not landed.** See below. |
 
-### Phase B — not started
+#### A9's two open questions, answered
 
-Items 11–19 (`pixelflow-pipeline`: ~19,000 lines of harness). Every one of
-them now has a seam to land on — `Optimizer::{guide, mask, rules, budget}`,
-`run_anytime_curve`, `EpisodeLabels::{compute_strict, compute_tight}`,
-`LinearWeights` — which is what Phase A was for. The `RuleId` migration
-(§2.2) and the `dag_cost` swap (§2.3) apply to every one of them.
+**The 11 harness-only `RewriteAction` variants are gone.** `Instantiate` — an
+RHS pattern arena plus its bindings — is already the generic executor a
+mechanical composition `A∘B` needs, and every one of the 33 rules in
+`math::round2_rules` already spells its RHS exactly once, as the
+`rhs_template` its cross-form oracle test reads. A bespoke variant per shape
+was a second spelling of that shape with no test on it. `RewriteAction` grows
+by **one** variant, `apply_action` by one arm, and all 25 oracle tests pass
+unchanged. `DivByLiteral` is the single rule whose RHS constant depends on the
+matched literal, so it builds its three-node pattern at match time; its
+`rhs_template` still spells the shape, with a representative literal, for the
+oracle.
+
+**`RuleOrder::StaticReorder` delegates to main's `egraph::rule_order`,** which
+is where v3's §6b finding was adopted; the two 62-entry permutations were
+byte-identical, and now there is one. The other two v3 variants do **not**
+delegate, and §1.4's "main's version is the survivor" is only true of
+`NumericFirst`:
+
+- `inflate::RuleOrder::Shuffled(seed)` is not `rule_order::RuleOrder::Shuffled(seed)`.
+  The two draw from different PRNGs (SplitMix64 vs xorshift64\*), so the same
+  seed names a different permutation. `inflate`'s shuffles with the same
+  generator `Interleave` and `OrderMatchedBase` use, which is the entire point
+  of a base-only control **at the same seed** — routing it to main's builder
+  would silently redefine the v3 seed-sensitivity arm. Both are documented as
+  separate objects at both sites.
+- `OrderMatchedBase(seed, total)` has no equivalent on main at all, and is the
+  reference `ΔU(p)` is defined against.
+
+Likewise `inflate::rule_set_fingerprint` is **not** replaced by
+`RuleSet::fingerprint()`. They digest different things (rule *names* in Vec
+order vs `RuleId`s, i.e. `rule_label` including specialization), and
+`rule_set_fingerprint`'s values are quoted verbatim in the v2 registration's
+grid table — a frozen registered constant. Both are documented at the
+definition, and `v2_grid_fingerprints_are_pinned` still passes.
+
+#### A10, and why it is not landed
+
+`extract::class_costs_and_choices` factors phase 1 out of `extract_dag`, and
+`phase3-context` is explicit that its consumer — `RoundSnapshot` /
+`CandidateContext` — "is a sibling agent's work, landing separately". It has
+not landed. `guide_coverage_table`, the only `phase3-context` binary ported
+here, is a JSONL analysis tool and never calls it.
+
+Re-deriving the factoring against main's rewritten `extract_dag_scoped` is
+straightforward (the phase-1 boundary is still a single bottom-up DP followed
+by `repair_choices_well_founded`), but it would land a `pub(crate)` seam with
+no caller. It belongs in the PR that brings `RoundSnapshot`, where the shape
+of the tables it must return is decided by an actual consumer rather than
+guessed from a pre-rebase snapshot.
+
+### Phase B — landed
+
+| item | commit | notes |
+|---|---|---|
+| B11 `training/split.rs` `dev_families` | `feat: DEV-only out-of-distribution families` | Delta only, onto main's file. |
+| B12 `gen_strict_labels`, `tightened_labeler_rank`, `phase3_unguided_baseline`, `eval_control_guides` | `feat: the strict-label dataset, its rank re-measurement, …` | `GuideCheckpoint` moves to `training::guide_linear`; `Fingerprint::from_raw` added so a loader outside the crate can name a vocabulary. |
+| B13 `train_guide`, `training/guide_linear.rs`, `skew_test_linear_guide` | `feat: train_guide` + `feat: return-to-go` | The skew test lands with B17, which its `--model return` half depends on. |
+| B14 `phase3_at_budget_eval` | `feat: the at-budget ablation ladder, five tails merged` | Both run-config guards kept; `production_saturation_probe` replaced by the harness running `Optimizer::production()` itself. |
+| B15 `gen_sh_corpus`, `gen_bezier_corpus`, `training/sh_family.rs` | `feat: the sh and bezier out-of-distribution DEV families` | Unchanged — neither generator touches the e-graph. |
+| B16 `strict_label_output_class_recount` | `feat: the strict label's constant-output blind spot` | |
+| B17 R2G | `feat: return-to-go — trajectories, counterfactual credit, and the return head` | `LinearReturnGuide` on the shared `LinearWeights`; `ReturnObjective` is an enum, not the checkpoint's string. |
+| B18 Round 2 harnesses | `feat: Round 2 rule-count scaling` | `phase3_round2_{unguided_curves,new_rules}` + both stats scripts. |
+| B19 `guide_coverage_table` | `feat: guide_coverage_table` | Still a proxy over the current record schema, as its own module doc says. |
+
+### Two seams Phase A did not have, added by Phase B
+
+- **`Optimizer::observe(Some(Box::new(KeepJournal)))`.** `Optimizer` records
+  provenance only for an observer (#1118), but four harnesses read the whole
+  journal off the graph *after* the run, as a graph, in an order the stream
+  cannot give them. `KeepJournal` is the observer that consumes nothing; its
+  presence is the request. Without it those harnesses silently minted zero
+  labels — which is how it was found.
+- **`Optimizer::guided_keys_seen()`.** The guided episode's resolved-key
+  count, which `phase3_at_budget_eval` reports per arm and which is not
+  derivable from the application count (a key can be scored and then fail to
+  fire).
 
 ### Docs
 
-- The registrations (`2026-09-01-phase3-registration.md`, the Round-1b
-  domain-shift registration, the three Round-2 registrations, the rule-scaling
-  plan) and the two designs (`guide-candidate-context`,
-  `guide-return-to-go`) are ported **byte-identical** (`md5` checked). No
-  registered constant is edited.
-- `docs/results/2026-09-02-phase3-instrument-changes.md` is the new re-run
-  banner §2.1 and §2.3 call for, written once so every results doc can append
-  it rather than paraphrasing it.
-- The **results docs are deliberately not ported yet.** They travel with the
-  harness that produced them: a results doc on a branch whose binary does not
-  exist is an artifact with no route to reproduction, which is the exact state
-  its banner exists to warn about. They land with their Phase B binaries,
-  as-is, with their own banners intact plus the one above appended.
+- The registrations and the two designs are ported **byte-identical**
+  (`md5` checked). No registered constant is edited — including
+  `phase3_at_budget_eval`'s `TRIG_RULE_IDX`, which keeps its eleven indices
+  and gains a `TRIG_RULE_LABELS` companion plus a startup check that the two
+  still name the same rules.
+- 110 results artifacts port byte-identical, existing re-run banners intact,
+  and each results doc gains **one** new banner naming the two instrument
+  changes. `docs/results/2026-09-02-phase3-instrument-changes.md` states them
+  once.
+- `docs/results/journal.jsonl` gains the 18 records these runs appended, in
+  timestamp order.
 
 ### The neutrality proof
+
 
 `pixelflow-search/src/runtime.rs`'s `production_equivalence::production_extraction_digest`
 (ignored; `PIXELFLOW_EQUIV_DIR`/`PIXELFLOW_EQUIV_OUT`) replays the #1110
@@ -463,7 +530,9 @@ dumpers' arenas through `optimize_runtime_arena_uncached` — the production
 entry point — and digests the extracted term. Run over
 `/private/tmp/classcap_corpus`: **206 kernels** (95 glyphs at each of two
 densities, three cell grids, twelve shaders, psychedelic), **0 bailouts**,
-**diverged = 0** at A1, A3, A8 and A7 against the pre-port baseline.
+**diverged = 0** at A1, A3, A8 and A7 against the pre-port baseline, and
+again after **A9 and the whole of Phase B** (the digest is byte-identical to
+the pre-A9 baseline over all 206).
 
 That is the strong form of the claim: L4 says a lever cannot change what the
 extracted term *means*; this says it did not change the *term*. Every lever
