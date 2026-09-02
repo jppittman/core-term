@@ -761,6 +761,16 @@ impl EGraph {
         self.classes.iter().map(|c| c.nodes.len()).sum()
     }
 
+    /// Number of distinct e-nodes hash-consed in the `add()` memo table.
+    ///
+    /// `pub(crate)`, not public: this exists for offline memory measurement
+    /// (docs/results/2026-09-02-class-cap-ghosts.md) — the memo is a
+    /// production-internal dedup structure, not part of the algebra's public
+    /// surface.
+    pub(crate) fn memo_len(&self) -> usize {
+        self.memo.len()
+    }
+
     /// Get the OpKind of the canonical representative of an e-class.
     ///
     /// Resolves through union-find to the canonical class, then returns
