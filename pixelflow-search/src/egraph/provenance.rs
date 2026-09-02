@@ -451,14 +451,25 @@ pub fn derivation_ancestors(
 /// *different* `ENodeId`s — a caller contract violation (the map is supposed
 /// to name one chosen node per class), not a condition to paper over by
 /// picking one arbitrarily.
+/// `seeds` are the nodes the walk STARTS from; `chosen_nodes` is the
+/// extraction's complete class -> chosen-node map that axis 1 prunes with.
+/// They are different things: asking for one application's output's ancestry
+/// means one seed, but the pruning still needs every class's choice, or each
+/// class the walk descends into has no entry and falls back to the unpruned
+/// "all tags" behavior — silently returning the loose bound under the tight
+/// bound's name. [`EGraph::derivation_ancestors_tight`] passes the same
+/// slice for both, which is right when the seeds ARE the whole extraction.
 pub fn derivation_ancestors_tight(
     tags_of: &impl Fn(EClassId) -> Vec<ENodeId>,
     children_of: &impl Fn(ENodeId) -> Vec<EClassId>,
+    canonical_of: &impl Fn(EClassId) -> EClassId,
     provenance: &Provenance,
+    seeds: &[(EClassId, ENodeId)],
     chosen_nodes: &[(EClassId, ENodeId)],
 ) -> BTreeSet<ApplicationId> {
     let mut chosen_map: HashMap<EClassId, ENodeId> = HashMap::new();
     for &(class, node) in chosen_nodes {
+        let class = canonical_of(class);
         match chosen_map.entry(class) {
             std::collections::hash_map::Entry::Vacant(e) => {
                 e.insert(node);
@@ -478,6 +489,16 @@ pub fn derivation_ancestors_tight(
 
     // Axis 1: known-choice short-circuit. Falls back to `tags_of` (identical
     // to `derivation_ancestors`) for a class with no recorded choice.
+    //
+    // Every class id reaching this map is canonicalized first (see the
+    // `canonical_of` calls below). `chosen_map` is keyed by FINAL canonical
+    // ids, while a `UnionEvent` endpoint and an `ApplicationRecord`'s
+    // `match_root` are the ids as they were WHEN RECORDED — historical
+    // losers of later unions. Looking one of those up raw always misses, and
+    // the miss silently degrades the tightened walk back to
+    // `derivation_ancestors`'s "every tag in the class" behavior for exactly
+    // the classes a merge touched, over-crediting applications while still
+    // reporting itself as the tight bound.
     let nodes_to_follow = |class: EClassId| -> Vec<ENodeId> {
         match chosen_map.get(&class) {
             Some(&node) => vec![node],
@@ -489,8 +510,9 @@ pub fn derivation_ancestors_tight(
     let mut visited_classes: BTreeSet<EClassId> = BTreeSet::new();
     let mut visited_nodes: BTreeSet<ENodeId> = BTreeSet::new();
     let mut class_stack: Vec<EClassId> = Vec::new();
-    let mut node_stack: Vec<ENodeId> = chosen_nodes.iter().map(|&(_, n)| n).collect();
-    for &(class, _) in chosen_nodes {
+    let mut node_stack: Vec<ENodeId> = seeds.iter().map(|&(_, n)| n).collect();
+    for &(class, _) in seeds {
+        let class = canonical_of(class);
         if visited_classes.insert(class) {
             class_stack.push(class);
         }
@@ -511,12 +533,14 @@ pub fn derivation_ancestors_tight(
         if let Some(Origin::Rule(app_id)) = provenance.origin(node) {
             result.insert(app_id);
             if let Some(record) = provenance.application(app_id) {
-                if visited_classes.insert(record.match_root) {
-                    class_stack.push(record.match_root);
+                let root = canonical_of(record.match_root);
+                if visited_classes.insert(root) {
+                    class_stack.push(root);
                 }
             }
         }
         for child_class in children_of(node) {
+            let child_class = canonical_of(child_class);
             if visited_classes.insert(child_class) {
                 class_stack.push(child_class);
             }
@@ -550,17 +574,17 @@ pub fn derivation_ancestors_tight(
         }
 
         for event in provenance.union_events() {
-            if event.class_a == class || event.class_b == class {
+            if canonical_of(event.class_a) == class || canonical_of(event.class_b) == class {
                 // Axis 2: credit the exact firing, not every same-rule_idx
                 // application at or before this event's step.
                 if let Some(app_id) = event.application_id {
                     result.insert(app_id);
                 }
-                let other = if event.class_a == class {
+                let other = canonical_of(if event.class_a == class {
                     event.class_b
                 } else {
                     event.class_a
-                };
+                });
                 if visited_classes.insert(other) {
                     class_stack.push(other);
                 }
@@ -617,6 +641,12 @@ pub fn format_derivation_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Identity canonicalization: these unit tests build a `Provenance`
+    /// directly, with no e-graph union-find behind the class ids.
+    fn identity_canon(c: EClassId) -> EClassId {
+        c
+    }
 
     fn app(rule_idx: usize, step: usize, match_root: EClassId) -> ApplicationRecord {
         ApplicationRecord {
@@ -703,9 +733,17 @@ mod tests {
         let tags_of =
             |c: EClassId| -> Vec<ENodeId> { if c == EClassId(0) { vec![n0] } else { vec![] } };
         let children_of = |_n: ENodeId| -> Vec<EClassId> { vec![] };
+        let canonical_of = |c: EClassId| -> EClassId { c };
 
         let loose = derivation_ancestors(&tags_of, &children_of, &p, &[(EClassId(1), n1)]);
-        let tight = derivation_ancestors_tight(&tags_of, &children_of, &p, &[(EClassId(1), n1)]);
+        let tight = derivation_ancestors_tight(
+            &tags_of,
+            &children_of,
+            &canonical_of,
+            &p,
+            &[(EClassId(1), n1)],
+            &[(EClassId(1), n1)],
+        );
         assert_eq!(loose, BTreeSet::from([a0]));
         assert_eq!(tight, loose);
     }
@@ -736,10 +774,12 @@ mod tests {
             }
         };
         let children_of = |_n: ENodeId| -> Vec<EClassId> { vec![] };
+        let canonical_of = |c: EClassId| -> EClassId { c };
 
         let chosen = [(root, n_chosen)];
         let loose = derivation_ancestors(&tags_of, &children_of, &p, &chosen);
-        let tight = derivation_ancestors_tight(&tags_of, &children_of, &p, &chosen);
+        let tight =
+            derivation_ancestors_tight(&tags_of, &children_of, &canonical_of, &p, &chosen, &chosen);
 
         assert_eq!(
             loose,
@@ -783,7 +823,14 @@ mod tests {
 
         let chosen = [(root, n0)];
         let loose = derivation_ancestors(&tags_of, &children_of, &p, &chosen);
-        let tight = derivation_ancestors_tight(&tags_of, &children_of, &p, &chosen);
+        let tight = derivation_ancestors_tight(
+            &tags_of,
+            &children_of,
+            &identity_canon,
+            &p,
+            &chosen,
+            &chosen,
+        );
 
         assert_eq!(
             loose,
@@ -821,8 +868,70 @@ mod tests {
         let children_of = |_n: ENodeId| -> Vec<EClassId> { vec![] };
         let chosen = [(root, n0)];
 
-        let tight = derivation_ancestors_tight(&tags_of, &children_of, &p, &chosen);
+        let tight = derivation_ancestors_tight(
+            &tags_of,
+            &children_of,
+            &identity_canon,
+            &p,
+            &chosen,
+            &chosen,
+        );
         assert_eq!(tight, BTreeSet::from([a_union_only]));
+    }
+
+    /// A `UnionEvent` records its endpoints as the class ids they were WHEN
+    /// RECORDED. After a later merge, one of those is a historical loser,
+    /// and `chosen_map` is keyed by final canonical ids — so looking the
+    /// loser up raw always misses and the walk silently falls back to "every
+    /// tag in the class", re-introducing exactly the over-crediting axis 1
+    /// exists to remove, while still reporting itself as the tight bound.
+    #[test]
+    fn tight_canonicalizes_union_endpoints_before_the_chosen_node_lookup() {
+        let mut p = Provenance::new();
+        let root = EClassId(1);
+        let merged = EClassId(0);
+        let historical_loser = EClassId(9);
+        let n_root = ENodeId(0);
+        let n_chosen = ENodeId(1);
+        let n_sibling = ENodeId(2);
+
+        let a_union = p.record_application(app(3, 0, root));
+        let a_chosen = p.record_application(app(1, 0, EClassId(5)));
+        let a_sibling = p.record_application(app(2, 0, EClassId(6)));
+        p.record_origin(n_root, Origin::Seed);
+        p.record_origin(n_chosen, Origin::Rule(a_chosen));
+        p.record_origin(n_sibling, Origin::Rule(a_sibling));
+        p.record_union(UnionEvent {
+            rule_idx: Some(3),
+            application_id: Some(a_union),
+            step: 0,
+            class_a: root,
+            class_b: historical_loser,
+        });
+
+        // `historical_loser` was merged into `merged`, which holds both the
+        // extraction's chosen node and an unrelated sibling.
+        let canonical_of =
+            |c: EClassId| -> EClassId { if c == historical_loser { merged } else { c } };
+        let tags_of = |c: EClassId| -> Vec<ENodeId> {
+            match c {
+                _ if c == root => vec![n_root],
+                _ if c == merged => vec![n_chosen, n_sibling],
+                _ => vec![],
+            }
+        };
+        let children_of = |_n: ENodeId| -> Vec<EClassId> { vec![] };
+        let chosen = [(root, n_root), (merged, n_chosen)];
+
+        let tight =
+            derivation_ancestors_tight(&tags_of, &children_of, &canonical_of, &p, &chosen, &chosen);
+        assert_eq!(
+            tight,
+            BTreeSet::from([a_union, a_chosen]),
+            "the union's other endpoint must be canonicalized into `merged`, whose known \
+             choice is `n_chosen` — crediting `a_sibling` here would be the loose bound \
+             wearing the tight bound's name"
+        );
     }
 
     /// `chosen_nodes` naming the same class twice with two different nodes
@@ -837,7 +946,14 @@ mod tests {
         let n_b = ENodeId(1);
         let tags_of = |_: EClassId| -> Vec<ENodeId> { vec![] };
         let children_of = |_: ENodeId| -> Vec<EClassId> { vec![] };
-        let _ = derivation_ancestors_tight(&tags_of, &children_of, &p, &[(c, n_a), (c, n_b)]);
+        let _ = derivation_ancestors_tight(
+            &tags_of,
+            &children_of,
+            &identity_canon,
+            &p,
+            &[(c, n_a), (c, n_b)],
+            &[(c, n_a), (c, n_b)],
+        );
     }
 
     #[test]

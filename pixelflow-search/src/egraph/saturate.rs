@@ -298,14 +298,18 @@ pub fn achievable_cost_within_budget(
 ///
 /// # Approximation, stated plainly (mirrors `egraph::candidate`'s own note)
 ///
-/// A `node_idx` recorded when a round's matches were enumerated can go stale
-/// mid-round: applying an earlier, higher-scored candidate in the same round
-/// may rebuild/renumber the e-class a later candidate's `node_idx` pointed
-/// into. `apply_single_rule` re-fetches the node at that index and re-checks
-/// the rule against it before doing anything, so a stale index either still
-/// matches (no problem) or fails to match and the call is a safe no-op —
-/// never a wrong effect. The missed opportunity, if any, is picked up on the
-/// next round's rescan. `budget_fraction`'s `application_ordinal` is
+/// A match enumerated at the start of a round can be invalidated mid-round:
+/// applying an earlier, higher-scored candidate may union or rebuild the
+/// e-class a later candidate matched against. [`RewriteTarget`] therefore
+/// names the matched node by its stable [`super::provenance::ENodeId`], not
+/// by a position in the class's node vector, and `apply_single_rule`
+/// re-resolves that identity before re-checking the rule — so a
+/// mid-round rebuild either leaves the exact matched node in place (the rule
+/// is re-checked against it, as before) or removes it, in which case nothing
+/// fires and nothing is recorded. It can never apply a *different* node that
+/// happened to inherit the old index while the stale candidate's score and
+/// dedup key were credited to it. The missed opportunity, if any, is picked
+/// up on the next round's rescan. `budget_fraction`'s `application_ordinal` is
 /// similarly a per-round approximation (the cumulative application count at
 /// the START of scoring, shared by every candidate scored that round, not
 /// each candidate's own eventual firing order) — exact per-candidate ordinals
@@ -450,9 +454,20 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
             }
             iterations += 1;
 
+            // `find_rewrite_matches` scans every rule against every node of
+            // every class and is NOT deadline-aware, so on a large graph it
+            // can consume the whole remaining budget by itself. Declaring
+            // quiescence off an empty result without re-reading the clock
+            // would hand `run_anytime_curve_with` a `Quiesced` it accepts as
+            // a completed run when the safety ceiling had in fact expired
+            // mid-scan (that runner only rejects `Timeout`).
             let matches = egraph.find_rewrite_matches();
             if matches.is_empty() {
-                break SaturationStop::Quiesced;
+                break if start.elapsed() >= timeout {
+                    SaturationStop::Timeout
+                } else {
+                    SaturationStop::Quiesced
+                };
             }
 
             // Dedup BEFORE scoring (§2.2/§4): the ordinal recorded is a
@@ -463,8 +478,8 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
             // been RECORDED for it (below), not here at enumeration time.
             // Marking at enumeration burned every scored survivor the
             // round never got to — the ones after a mid-round budget /
-            // deadline / class-cap stop, and the ones whose `node_idx` an
-            // earlier application in the same round staled so
+            // deadline / class-cap stop, and the ones whose matched node an
+            // earlier application in the same round removed so
             // `apply_single_rule` recorded nothing — and the next round's
             // rescan then deduped them away for good. Measured on
             // 2026-09-01 (DEV classical, 334 expressions): a median 39–44%
@@ -473,11 +488,12 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
             // median ~50% of its applications-to-quiescence versus sampling
             // at 100 directly — the curve definition was silently
             // handicapping exactly the arm it exists to measure.
-            // `round_keys` only dedups within this round's match list (two
-            // nodes of one class matching the same rule).
+            // `round_keys` groups this round's match list by key (two nodes
+            // of one class matching the same rule share a score but stay
+            // two separate applications).
             let ordinal = egraph.provenance().application_count() as u64;
-            let mut survivors: Vec<(RewriteTarget, CandidateFeatures)> = Vec::new();
-            let mut round_keys: HashSet<CandidateKey> = HashSet::new();
+            let mut survivors: Vec<(Vec<RewriteTarget>, CandidateFeatures)> = Vec::new();
+            let mut round_keys: HashMap<CandidateKey, usize> = HashMap::new();
             for target in matches {
                 let firing = Firing {
                     rule_idx: target.rule_idx,
@@ -489,26 +505,45 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
                 if seen_keys.contains(&features.key) {
                     continue;
                 }
-                if round_keys.insert(features.key.clone()) {
-                    survivors.push((target, features));
+                // One SCORED candidate per key — two nodes of one class
+                // matching the same rule are, by the key's construction,
+                // feature-identical and would receive the same score, so
+                // scoring both would be wasted work. But they are two
+                // distinct ACTIONS: dropping the second and then burning the
+                // key once the first fires (an idempotent first firing keeps
+                // the class content, hence the key, unchanged) would skip it
+                // permanently and let the loop report quiescence with a real
+                // rewrite unexplored. So every distinct matched node is kept
+                // and applied under its key's single score.
+                match round_keys.get(&features.key) {
+                    Some(&i) => survivors[i].0.push(target),
+                    None => {
+                        round_keys.insert(features.key.clone(), survivors.len());
+                        survivors.push((vec![target], features));
+                    }
                 }
             }
 
             if survivors.is_empty() {
-                break SaturationStop::Quiesced;
+                break if start.elapsed() >= timeout {
+                    SaturationStop::Timeout
+                } else {
+                    SaturationStop::Quiesced
+                };
             }
 
             // Batch-score (never one candidate at a time — binding rule).
             let summaries: Vec<CandidateSummary> = survivors
                 .iter()
-                .map(|(target, features)| {
-                    let rule_embed = *rule_embeds.get(target.rule_idx).unwrap_or_else(|| {
+                .map(|(targets, features)| {
+                    let rule_idx = targets[0].rule_idx;
+                    let rule_embed = *rule_embeds.get(rule_idx).unwrap_or_else(|| {
                         panic!(
                             "saturate_guided_until_applications: rule_embeds has {} entries, \
                          but a match fired rule_idx {} — the caller must supply one \
                          embedding per registered rule",
                             rule_embeds.len(),
-                            target.rule_idx
+                            rule_idx
                         )
                     });
                     CandidateSummary::new(features, rule_embed, expr_node_count)
@@ -550,15 +585,21 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
                 if start.elapsed() >= timeout {
                     break 'outer SaturationStop::Timeout;
                 }
-                let (target, features) = &survivors[idx];
+                let (targets, features) = &survivors[idx];
                 let before = egraph.provenance().application_count();
-                if egraph.apply_single_rule(target.rule_idx, target.class_id, target.node_idx) {
-                    total_unions += 1;
+                for target in targets {
+                    if egraph.provenance().application_count() >= max_total_applications {
+                        break;
+                    }
+                    if egraph.apply_single_rule(target.rule_idx, target.class_id, target.tag) {
+                        total_unions += 1;
+                    }
                 }
                 // Recorded (whether or not it changed anything): this key
-                // is resolved. Not recorded (stale index, no match): leave
-                // it unseen so the next rescan can retry it with a fresh
-                // index — see the dedup comment above.
+                // is resolved. Not recorded (no matched node survived, so
+                // nothing fired): leave it unseen so the next rescan can
+                // retry it against the rebuilt graph — see the dedup
+                // comment above.
                 if egraph.provenance().application_count() > before {
                     seen_keys.insert(features.key.clone());
                 }
@@ -741,6 +782,69 @@ mod guided_tests {
             self.calls.borrow_mut().push(candidates.len());
             vec![0.0; candidates.len()]
         }
+    }
+
+    /// Two nodes of ONE e-class matching the same rule share a
+    /// [`CandidateKey`] — they are feature-identical, so the guide is asked
+    /// to score them once. They are still two distinct actions, and both
+    /// must fire: keeping only the first and then burning the key (an
+    /// idempotent first firing leaves the class content, hence the key,
+    /// unchanged) skipped the second permanently and let the loop report
+    /// quiescence with a real rewrite unexplored.
+    #[test]
+    fn every_node_level_match_sharing_one_key_is_applied_not_just_the_first() {
+        let mut eg = commutative_only_egraph();
+
+        // Fire commutative once so the sum's class holds BOTH Add(x, y) and
+        // Add(y, x) — two nodes, one class, both matching `commutative`.
+        let target = eg
+            .find_rewrite_matches()
+            .into_iter()
+            .next()
+            .expect("the seeded x + y has a commutative match");
+        assert!(eg.apply_single_rule(target.rule_idx, target.class_id, target.tag));
+        let class = eg.find(target.class_id);
+        assert_eq!(
+            eg.nodes(class).len(),
+            2,
+            "setup: the class should hold both orderings"
+        );
+        let matches: Vec<_> = eg
+            .find_rewrite_matches()
+            .into_iter()
+            .filter(|t| eg.find(t.class_id) == class)
+            .collect();
+        assert_eq!(
+            matches.len(),
+            2,
+            "setup: both nodes of the class match commutative"
+        );
+
+        let before = eg.provenance().application_count();
+        let rule_embeds = [[0.0f32; EMBED_DIM]];
+        let guide = SpyGuide {
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+        let stats = saturate_guided_until_applications(
+            &mut eg,
+            &guide,
+            &rule_embeds,
+            before + 2,
+            1,
+            2_000,
+            Duration::from_secs(5),
+        );
+
+        assert_eq!(
+            guide.calls.into_inner(),
+            vec![1],
+            "the two matches are one candidate KEY, so exactly one score is asked for"
+        );
+        assert_eq!(
+            stats.applications - before,
+            2,
+            "both matched nodes must fire under that single score, not just the first"
+        );
     }
 
     #[test]

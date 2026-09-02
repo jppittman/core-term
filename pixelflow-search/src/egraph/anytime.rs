@@ -185,6 +185,27 @@ pub fn run_anytime_curve(
     )
 }
 
+/// Number of DISTINCT arena nodes reachable from `root`.
+///
+/// Not `ExprArena::node_count_subtree`, which is documented to count a shared
+/// subtree once per reference (tree size, not DAG size) and so would not
+/// equal `nodes_raw().len()` for any expression with sharing.
+fn reachable_node_count(arena: &ExprArena, root: ExprId) -> usize {
+    let mut seen = vec![false; arena.nodes_raw().len()];
+    let mut stack = vec![root];
+    let mut count = 0usize;
+    while let Some(id) = stack.pop() {
+        let slot = &mut seen[id.0 as usize];
+        if *slot {
+            continue;
+        }
+        *slot = true;
+        count += 1;
+        stack.extend(arena.children(id));
+    }
+    count
+}
+
 /// The ONE anytime-curve definition, parameterized over how the graph is
 /// advanced between checkpoints (see [`AnytimeStepper`]). Guided arms of the
 /// pre-registered experiment call this with a
@@ -208,6 +229,25 @@ pub fn run_anytime_curve_with(
         "anytime: checkpoint grid must be strictly increasing, got {grid:?}"
     );
 
+    // `EGraph::add_arena` inserts every node of `arena`, not just the
+    // subtree reachable from `root` (it requires topological order from 0,
+    // not reachability). An append-only `ExprArena` that has been rewritten
+    // in place carries abandoned nodes, and saturating them would spend this
+    // curve's application budget rewriting an expression nobody asked about
+    // — making the curve a function of the arena's allocation history rather
+    // than of the expression. Callers compact first
+    // (`pixelflow_pipeline::training::corpus::reachable_subtree`, which
+    // `write_corpus` applies to every stored entry); this makes that a
+    // checked precondition instead of an unwritten one.
+    let reachable = reachable_node_count(arena, root);
+    assert_eq!(
+        reachable,
+        arena.nodes_raw().len(),
+        "anytime: arena holds {} nodes but only {reachable} are reachable from root \
+         {root:?} — compact the reachable subtree before running a curve, or the budget \
+         is spent on nodes that are not part of this expression",
+        arena.nodes_raw().len(),
+    );
     let mut egraph = EGraph::with_rules(rules);
     let root_class = egraph.add_arena(arena, root);
     let deadline = Instant::now() + safety_timeout;

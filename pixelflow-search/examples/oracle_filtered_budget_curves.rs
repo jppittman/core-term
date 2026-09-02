@@ -538,15 +538,47 @@ fn measure_expression(item: &CorpusItem) -> ExprMeasurement {
         &costs,
     );
 
+    // The oracle is defined against the BEST cost the unguided arm reaches
+    // over the grid, and `extract_dag` is explicitly non-monotonic along a
+    // curve — 21 of 225 unguided curves in the committed CSV end above their
+    // own minimum, sometimes by orders of magnitude. Labeling the FINAL
+    // extraction would then filter for the rules behind the worse final
+    // choice and drop the ones that produced the result the experiment's
+    // regret reference is measured against. Unguided saturation is
+    // deterministic, so the minimum-cost checkpoint's graph is recovered by
+    // re-running the same curve truncated at that checkpoint rather than by
+    // carrying a clone of every improving e-graph through the run.
+    let best_idx = unguided
+        .curve
+        .checkpoints
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, c)| c.cost)
+        .map(|(i, _)| i)
+        .expect("non-empty curve");
+    let at_best: Option<AnytimeCurveOutput> =
+        (best_idx + 1 < APP_CHECKPOINT_GRID.len()).then(|| {
+            run_anytime_curve(
+                &item.arena,
+                item.root,
+                all_rules(),
+                &APP_CHECKPOINT_GRID[..=best_idx],
+                class_cap,
+                SWEEP_SAFETY_CEILING,
+                SAFETY_TIMEOUT,
+                &costs,
+            )
+        });
+    let best_out = at_best.as_ref().unwrap_or(&unguided);
     let labels = EpisodeLabels::compute(
-        &unguided.egraph,
-        unguided.extraction.root,
-        &unguided.extraction.choices,
+        &best_out.egraph,
+        best_out.extraction.root,
+        &best_out.extraction.choices,
     );
     let oracle_rule_idxs: BTreeSet<usize> = labels
         .load_bearing
         .iter()
-        .filter_map(|app_id| unguided.egraph.provenance().application(*app_id))
+        .filter_map(|app_id| best_out.egraph.provenance().application(*app_id))
         .map(|record| record.rule_idx)
         .collect();
     let oracle_rules: Vec<Box<dyn Rewrite>> = all_rules()
@@ -568,14 +600,15 @@ fn measure_expression(item: &CorpusItem) -> ExprMeasurement {
         &costs,
     );
 
-    // Over-approximation looseness.
+    // Over-approximation looseness — measured on the same snapshot the
+    // labels were computed from.
     let chosen = chosen_tags(
-        &unguided.egraph,
-        unguided.extraction.root,
-        &unguided.extraction.choices,
+        &best_out.egraph,
+        best_out.extraction.root,
+        &best_out.extraction.choices,
     );
     let mut created_by: HashMap<u64, Vec<ENodeId>> = HashMap::new();
-    for (enode_id, origin) in unguided.egraph.provenance().origins() {
+    for (enode_id, origin) in best_out.egraph.provenance().origins() {
         if let Origin::Rule(app_id) = origin {
             created_by
                 .entry(app_id.as_u64())
@@ -662,7 +695,7 @@ fn measure_expression(item: &CorpusItem) -> ExprMeasurement {
         unguided_distinct_costs,
         first_to_final_gap_pct,
         load_bearing: labels.load_bearing.len(),
-        total_applications: unguided.egraph.provenance().application_count(),
+        total_applications: best_out.egraph.provenance().application_count(),
         credited_non_direct,
     }
 }

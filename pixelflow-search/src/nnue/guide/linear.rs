@@ -113,6 +113,73 @@ fn as_string_vec(v: &Value, path: &str, name: &str) -> Result<Vec<String>, Check
         .collect()
 }
 
+fn as_usize(v: &Value, path: &str, name: &str) -> Result<usize, CheckpointError> {
+    field(v, path, name)?
+        .as_u64()
+        .map(|x| x as usize)
+        .ok_or_else(|| {
+            CheckpointError(format!(
+                "checkpoint {path}: field {name:?} is not a non-negative integer"
+            ))
+        })
+}
+
+fn as_str_field(v: &Value, path: &str, name: &str) -> Result<String, CheckpointError> {
+    field(v, path, name)?
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CheckpointError(format!("checkpoint {path}: field {name:?} is not a string"))
+        })
+}
+
+/// FNV-1a 64, hex — `pixelflow_pipeline::schema::fnv1a64_hex`'s algorithm.
+/// Restated rather than imported because `pixelflow-search` does not depend
+/// on the pipeline crate; `train_guide`'s own round-trip test writes a
+/// checkpoint with `GuideCheckpoint::write` and loads it back through
+/// [`LinearCandidateGuide::load`], so the two implementations cannot drift
+/// apart unnoticed.
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
+/// `train_guide::GuideCheckpoint::weights_fingerprint`, recomputed from the
+/// weights this loader actually parsed — the content hash that binds a
+/// checkpoint file's metadata to its own weight values. Field order and
+/// `{:.9}` formatting are the format, not an implementation detail.
+fn weights_fingerprint(
+    bias: f32,
+    w_rule: &[f32],
+    w_op: &[f32],
+    w_budget: f32,
+    w_match_class: f32,
+    w_neighborhood: f32,
+    w_expr_size: f32,
+) -> String {
+    use std::fmt::Write;
+    let mut buf = String::new();
+    writeln!(buf, "{bias:.9}").expect("writing to a String cannot fail");
+    for w in w_rule {
+        writeln!(buf, "{w:.9}").expect("writing to a String cannot fail");
+    }
+    for w in w_op {
+        writeln!(buf, "{w:.9}").expect("writing to a String cannot fail");
+    }
+    write!(
+        buf,
+        "{w_budget:.9}\n{w_match_class:.9}\n{w_neighborhood:.9}\n{w_expr_size:.9}\n"
+    )
+    .expect("writing to a String cannot fail");
+    fnv1a64_hex(buf.as_bytes())
+}
+
 fn read_json(path: &Path) -> Result<Value, CheckpointError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| CheckpointError(format!("cannot read {}: {e}", path.display())))?;
@@ -194,6 +261,83 @@ impl LinearCandidateGuide {
         let w_neighborhood = as_f32(&v, &p, "w_neighborhood")?;
         let w_expr_size = as_f32(&v, &p, "w_expr_size")?;
         let op_names = as_string_vec(&v, &p, "op_names")?;
+
+        // Identity, before any weight is deployed. A checkpoint is a file:
+        // it can be stale, hand-edited, half-copied, or trained against a
+        // rule set whose indices have since been reordered. None of those
+        // announce themselves — the weights parse fine and the guide scores
+        // happily with `w_rule[i]` naming a different rule than it was
+        // trained on, silently changing move ordering (NO SILENT FAILURES).
+        let num_rules = as_usize(&v, &p, "num_rules")?;
+        let num_ops = as_usize(&v, &p, "num_ops")?;
+        let rule_names = as_string_vec(&v, &p, "rule_names")?;
+        let recorded_fnv = as_str_field(&v, &p, "weights_fnv64")?;
+        // Read (not verified: this crate cannot recompute the producer's
+        // `SchemaIdentity`) so a checkpoint missing it is refused as
+        // not-a-`train_guide`-checkpoint rather than silently accepted.
+        let _schema_identity = as_str_field(&v, &p, "schema_identity")?;
+        let _label_source = as_str_field(&v, &p, "label_source")?;
+
+        if num_rules != w_rule.len() || rule_names.len() != w_rule.len() {
+            return Err(CheckpointError(format!(
+                "checkpoint {p}: w_rule has {} entries but num_rules is {num_rules} and \
+                 rule_names has {} — the checkpoint's own dense-array lengths disagree",
+                w_rule.len(),
+                rule_names.len()
+            )));
+        }
+        if num_ops != w_op.len() {
+            return Err(CheckpointError(format!(
+                "checkpoint {p}: w_op has {} entries but num_ops is {num_ops}",
+                w_op.len()
+            )));
+        }
+
+        let actual_fnv = weights_fingerprint(
+            bias,
+            &w_rule,
+            &w_op,
+            w_budget,
+            w_match_class,
+            w_neighborhood,
+            w_expr_size,
+        );
+        if recorded_fnv != actual_fnv {
+            return Err(CheckpointError(format!(
+                "checkpoint {p}: metadata/weights mismatch — recorded weights_fnv64 \
+                 {recorded_fnv}, actual {actual_fnv}. The file has been edited or \
+                 partially copied since it was written; retrain rather than deploy it"
+            )));
+        }
+
+        // The live rule table is what `CandidateSummary::rule_idx` indexes.
+        // A same-length but reordered rule set is the case that produces no
+        // error anywhere else and silently mislabels every weight.
+        let live: Vec<String> = crate::egraph::all_rules()
+            .iter()
+            .map(|r| r.name().to_string())
+            .collect();
+        if live.len() != w_rule.len() {
+            return Err(CheckpointError(format!(
+                "checkpoint {p}: w_rule has {} entries but this binary registers {} rules \
+                 — a live candidate can fire a rule index this checkpoint has no weight \
+                 for; retrain against the current rule set",
+                w_rule.len(),
+                live.len()
+            )));
+        }
+        for (idx, name) in rule_names.iter().enumerate() {
+            // `""` marks an index no training row ever fired (weight stays
+            // zero); nothing to disagree with.
+            if !name.is_empty() && *name != live[idx] {
+                return Err(CheckpointError(format!(
+                    "checkpoint {p}: rule_names[{idx}] is {name:?} but this binary's rule \
+                     {idx} is {:?} — the rule set was reordered since training, so every \
+                     w_rule entry would name the wrong rule",
+                    live[idx]
+                )));
+            }
+        }
 
         if op_names.len() != w_op.len() {
             return Err(CheckpointError(format!(

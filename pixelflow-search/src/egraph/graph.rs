@@ -16,8 +16,19 @@ pub struct RewriteTarget {
     pub rule_idx: usize,
     /// The e-class to apply the rule to
     pub class_id: EClassId,
-    /// The node within the e-class that the rule should try to match
-    pub node_idx: usize,
+    /// The node the rule matched, named by its STABLE identity rather than
+    /// by its position in the class's node vector.
+    ///
+    /// A positional `node_idx` denotes a different node the moment anything
+    /// unions or rebuilds the class — union appends the loser's nodes, and
+    /// `rebuild` takes/canonicalizes/re-extends the whole vector — so a
+    /// target enumerated before an earlier application in the same round
+    /// could silently be applied against a *different* node that happened to
+    /// land at the same index. `ENodeId` is minted once per node in `add()`
+    /// and carried through every mutation in lockstep with `nodes`
+    /// (`EClass::tags`), so re-resolving it either finds the exact node that
+    /// was matched or finds nothing at all — never a substitute.
+    pub tag: ENodeId,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -567,6 +578,20 @@ impl EGraph {
         &self,
         chosen_nodes: &[(EClassId, ENodeId)],
     ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
+        self.derivation_ancestors_tight_from(chosen_nodes, chosen_nodes)
+    }
+
+    /// [`EGraph::derivation_ancestors_tight`] for a walk that starts from a
+    /// SUBSET of the extraction — one application's chosen output node, say
+    /// — while still pruning with the extraction's complete choice map. See
+    /// [`super::provenance::derivation_ancestors_tight`] for why passing
+    /// only the seeds as the choice map degrades the walk back to the loose
+    /// bound for every class it descends into.
+    pub fn derivation_ancestors_tight_from(
+        &self,
+        seeds: &[(EClassId, ENodeId)],
+        chosen_nodes: &[(EClassId, ENodeId)],
+    ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
         let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).to_vec() };
         let children_of = |tag: ENodeId| -> Vec<EClassId> {
             for class in self.classes.iter() {
@@ -576,10 +601,13 @@ impl EGraph {
             }
             Vec::new()
         };
+        let canonical_of = |class: EClassId| -> EClassId { self.find(class) };
         super::provenance::derivation_ancestors_tight(
             &tags_of,
             &children_of,
+            &canonical_of,
             &self.provenance,
+            seeds,
             chosen_nodes,
         )
     }
@@ -822,13 +850,14 @@ impl EGraph {
             for class_id in self.class_ids() {
                 let nodes = &self.classes[class_id.index()].nodes;
 
+                let tags = &self.classes[class_id.index()].tags;
                 for (node_idx, node) in nodes.iter().enumerate() {
                     // Check if rule matches this node
                     if rule.apply(self, class_id, node).is_some() {
                         matches.push(RewriteTarget {
                             rule_idx,
                             class_id,
-                            node_idx,
+                            tag: tags[node_idx],
                         });
                     }
                 }
@@ -838,22 +867,30 @@ impl EGraph {
         matches
     }
 
-    /// Apply a single rule to a specific (class, node) pair.
+    /// Apply a single rule to the node named by `tag` in `class_id`'s
+    /// canonical class.
     ///
-    /// Returns true if the rule matched and produced a change.
-    /// This is used by guided search to apply rules one at a time.
-    pub fn apply_single_rule(
-        &mut self,
-        rule_idx: usize,
-        class_id: EClassId,
-        node_idx: usize,
-    ) -> bool {
+    /// Returns true if the rule matched and produced a change. This is used
+    /// by guided search to apply rules one at a time.
+    ///
+    /// `tag` is re-resolved against the class's CURRENT tag vector, so an
+    /// earlier application that unioned or rebuilt the class cannot make
+    /// this call land on a different node: either the exact matched node is
+    /// still present (and the rule is re-checked against it), or it is gone
+    /// — deduped away by a rebuild — and this is a no-op returning `false`
+    /// with nothing recorded, which is what lets the caller leave that
+    /// candidate unresolved for the next rescan.
+    pub fn apply_single_rule(&mut self, rule_idx: usize, class_id: EClassId, tag: ENodeId) -> bool {
         let Some(rule) = self.rules.get(rule_idx) else {
             return false;
         };
 
         let class_id = self.find(class_id);
-        let nodes = self.classes[class_id.index()].nodes.clone();
+        let class = &self.classes[class_id.index()];
+        let Some(node_idx) = class.tags.iter().position(|&t| t == tag) else {
+            return false;
+        };
+        let nodes = class.nodes.clone();
         let Some(node) = nodes.get(node_idx) else {
             return false;
         };
@@ -957,16 +994,34 @@ impl EGraph {
                 // rebuild happens here on drop
             };
             total_unions += unions;
+
+            // The same two limits the head of the loop checks, checked again
+            // by the sweep that crossed them. For every iteration but the
+            // last this is redundant with the head check; for the last one it
+            // is the only look there is, and without it a run whose final
+            // permitted sweep blew the class cap or ran out of wall clock
+            // reports `IterationCeiling` — a stop reason its consumers
+            // (`production_saturation_probe`, the label-minting binaries'
+            // non-quiescence filters) would take at face value. Read by the
+            // loop that stopped, at the point it stops; never inferred
+            // afterwards from the counters.
+            if self.classes.len() > max_classes {
+                stop = SaturationStop::ClassCap;
+                break;
+            }
+            if start.elapsed() >= timeout {
+                stop = SaturationStop::Timeout;
+                break;
+            }
+
             if unions == 0 {
                 // `apply_rule` truncates its own scan once the deadline has
                 // passed, so a zero-union sweep with the deadline expired is
                 // a truncated scan, not quiescence (same distinction
-                // `saturate_until_applications` draws).
-                stop = if start.elapsed() >= timeout {
-                    SaturationStop::Timeout
-                } else {
-                    SaturationStop::Quiesced
-                };
+                // `saturate_until_applications` draws) — that case is already
+                // reported as `Timeout` by the check above, so reaching here
+                // means the sweep ran to completion and found nothing.
+                stop = SaturationStop::Quiesced;
                 break;
             }
         }
@@ -2531,6 +2586,38 @@ mod tests {
             })
     }
 
+    /// `apply_single_rule` names its node by stable identity, so a tag that
+    /// does not live in the target class is a refusal, never "whatever node
+    /// currently sits at that position". Under the old positional API the
+    /// same call applied an unrelated node under the stale candidate's score
+    /// and then marked that candidate resolved.
+    #[test]
+    fn apply_single_rule_refuses_a_tag_that_is_not_in_the_target_class() {
+        let mut eg = egraph_with_rules();
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let sum = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, y],
+        });
+
+        let target = find_target_in_class(&eg, "commutative", eg.find(sum));
+        let foreign_tag = eg.tags(eg.find(x))[0];
+        assert_ne!(foreign_tag, target.tag);
+
+        let before = eg.provenance().application_count();
+        assert!(
+            !eg.apply_single_rule(target.rule_idx, target.class_id, foreign_tag),
+            "a tag from another class names no node here — refuse rather than apply \
+             whichever node happens to occupy that slot"
+        );
+        assert_eq!(
+            eg.provenance().application_count(),
+            before,
+            "a refused application must record nothing"
+        );
+    }
+
     #[test]
     fn provenance_tiny_expression_one_rewrite_matches_hand_derivation() {
         // x + y, then apply Commutative -> y + x (a fresh Create'd node).
@@ -2558,7 +2645,7 @@ mod tests {
         let target = find_target(&eg, "commutative");
         assert_eq!(target.class_id, eg.find(sum));
 
-        let applied = eg.apply_single_rule(target.rule_idx, target.class_id, target.node_idx);
+        let applied = eg.apply_single_rule(target.rule_idx, target.class_id, target.tag);
         assert!(applied, "commutative rule should have applied to x + y");
 
         // Hand-derivation: exactly one application recorded, for the
@@ -2618,7 +2705,7 @@ mod tests {
 
         // Rule A: commute the inner sum (x + y) -> (y + x).
         let target_a = find_target_in_class(&eg, "commutative", eg.find(inner));
-        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.node_idx));
+        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.tag));
         let app_a = ApplicationId(0);
 
         // Rule B: commute the outer sum ((x+y)+z) -> (z + (x+y)). After
@@ -2626,7 +2713,7 @@ mod tests {
         // still match "commutative" — so we must specifically target
         // outer's class rather than take the first "commutative" match.
         let target_b = find_target_in_class(&eg, "commutative", eg.find(outer));
-        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.node_idx));
+        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.tag));
         let app_b = ApplicationId(1);
         assert_eq!(eg.provenance().application_count(), 2);
 
