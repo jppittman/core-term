@@ -6,6 +6,8 @@
 //! # Module Structure
 //!
 //! - [`node`]: Core data structures (EClassId, Op, ENode)
+//! - [`candidate`]: Candidate-local features and the dedup key a guided
+//!   saturation loop orders by
 //! - [`cost`]: Cost model for extraction
 //! - [`rewrite`]: Rewrite rule infrastructure
 //! - [`extract`]: Expression tree extraction, including DAG-aware extraction
@@ -24,12 +26,15 @@
 //! front door — insert an [`pixelflow_ir::arena::ExprArena`] directly, no AST
 //! involved.
 
+pub mod anytime;
+pub mod candidate;
 pub mod codegen;
 pub(crate) mod cost;
 pub mod deps;
 pub mod derivative;
 pub(crate) mod extract;
 mod graph;
+mod guided;
 // The hindsight labeler reads the provenance journal directly
 // (`derivation_ancestors`, `Origin`, `Provenance::recorded_count`) — it has
 // nothing to compute without it.
@@ -45,6 +50,13 @@ pub mod rules;
 pub mod saturate;
 
 // Re-export public API
+pub use anytime::{
+    APP_CHECKPOINT_GRID, AnytimeCheckpoint, AnytimeCurve, AnytimeCurveOutput, run_anytime_curve,
+};
+pub use candidate::{
+    CandidateFeatures, CandidateKey, ClassContentKey, Firing,
+    REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
+};
 pub use cost::{CostFunction, CostModel};
 pub use deps::{Deps, DepsAnalysis};
 pub use derivative::{ChainRule, derivative_rules};
@@ -53,8 +65,8 @@ pub use extract::{
     compute_ref_counts, cost_of_choices, extract, extract_dag,
 };
 pub use graph::{
-    ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, RewriteTarget, SaturationStats,
-    SaturationStop, ScanStop,
+    ApplicationMask, ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, MaskScope, RewriteTarget,
+    SaturationStats, SaturationStop, ScanStop,
 };
 #[cfg(feature = "provenance-journal")]
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};

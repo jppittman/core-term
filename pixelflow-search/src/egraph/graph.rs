@@ -19,8 +19,17 @@ pub struct RewriteTarget {
     pub rule_idx: usize,
     /// The e-class to apply the rule to
     pub class_id: EClassId,
-    /// The node within the e-class that the rule should try to match
-    pub node_idx: usize,
+    /// The node the rule should try to match, named by its stable
+    /// [`ENodeId`] rather than by a position in the class's node vector.
+    ///
+    /// A position goes stale: a caller that enumerates a round's matches
+    /// and then applies them one at a time can rebuild the class between
+    /// enumeration and application, and `rebuild`'s take/canonicalize/extend
+    /// cycle renumbers it. Re-fetching a stale *index* silently applies the
+    /// rule to whichever node inherited that slot, credited to the original
+    /// candidate's score and dedup key. Re-resolving a stale *tag* finds
+    /// either the same node or nothing at all.
+    pub tag: ENodeId,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,6 +110,116 @@ pub struct EGraph {
     /// Application ceiling for the current run, or `None`. Set for the
     /// duration of [`EGraph::saturate_budgeted`].
     application_cap: Option<u64>,
+    /// Counterfactual-replay mask (docs/plans/2026-09-01-guide-return-to-go.md
+    /// §4.1): when `Some`, the application that would otherwise be assigned
+    /// this ordinal is skipped entirely by `apply_action_from_rule` — not
+    /// counted, not recorded, not applied — and the ordinal it would have
+    /// consumed is left for whatever candidate comes next in the same scan
+    /// order. Installed only by
+    /// [`Optimizer::mask`](super::optimizer::Optimizer::mask), so every
+    /// other path is unaffected.
+    replay_mask: Option<ApplicationMask>,
+    /// How many applications the most recent masked run actually skipped.
+    /// Reset when a mask is installed and read back by
+    /// [`EGraph::last_replay_mask_skips`] — a caller reporting a
+    /// confluence-aware Δ must be able to distinguish "the mask matched
+    /// once" from "the mask matched eleven times", and must never have to
+    /// infer that a mask fired at all.
+    replay_mask_skips: usize,
+}
+
+/// How far a counterfactual replay's mask reaches: one application, or
+/// every application that would re-derive the same thing.
+///
+/// Leave-one-out ([`MaskScope::Single`]) answers "what did THIS firing
+/// contribute", but an e-graph is confluent enough that a masked node is
+/// often re-derived a few applications later by the same rule matching the
+/// same class content again — so a `Δ = 0` under `Single` can mean either
+/// "this application did not matter" or "this application mattered and
+/// something else silently restored it". [`MaskScope::AllMatchingCandidate`]
+/// separates those two: it masks the seed AND every later application
+/// sharing its [`CandidateKey`](super::candidate::CandidateKey) — the same
+/// key the guided loop dedups on — so no re-derivation by that route can put
+/// the node back. The gap between the two Δs is this program's measurement
+/// of leave-one-out's confluence blindness
+/// (docs/plans/2026-09-01-guide-return-to-go.md §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaskScope {
+    /// Skip only the application that would be assigned `skip_ordinal`.
+    Single,
+    /// Skip that application and every later one with the same
+    /// [`CandidateKey`](super::candidate::CandidateKey), for the rest of the
+    /// run.
+    AllMatchingCandidate,
+}
+
+/// Names the application to skip in a counterfactual replay, and how far the
+/// skip reaches — see [`Optimizer::mask`](super::optimizer::Optimizer::mask)
+/// and docs/plans/2026-09-01-guide-return-to-go.md §4.1.
+///
+/// `skip_ordinal` counts in [`EGraph::application_count`]'s currency, the
+/// unconditional budget denominator — the same numbering
+/// [`ApplicationId`](super::provenance::ApplicationId) uses for a run that
+/// recorded from the start, so a harness can take an ordinal off the journal
+/// and hand it straight back. Replay is deterministic and identical to the
+/// original run up to the point of divergence, so replaying the same
+/// expression through the same configuration and masking the ordinal that
+/// was `a` in the original trajectory reproduces `τ \ a` exactly (§4.1's
+/// `Δ_a = R(τ\a,B) − R(τ,B)`).
+///
+/// Under [`MaskScope::AllMatchingCandidate`] the key to keep masking is not
+/// supplied by the caller — it is READ off the live graph at the moment the
+/// seed ordinal comes up, which is the only moment it is exactly the key the
+/// original trajectory's application `a` matched. A caller-supplied key
+/// would be a second computation of the same thing against a different graph
+/// state, i.e. the drift this codebase's one-constructor rule exists to
+/// prevent.
+#[derive(Clone, Debug)]
+pub struct ApplicationMask {
+    /// Ordinal of the seed application to skip.
+    pub skip_ordinal: u64,
+    /// How far the skip reaches.
+    pub scope: MaskScope,
+    /// The seed's `(rule, class content)`, captured when `skip_ordinal` came
+    /// up. `None` until then, and always `None` under [`MaskScope::Single`],
+    /// which never needs it.
+    captured: Option<super::candidate::CandidateKey>,
+}
+
+impl ApplicationMask {
+    /// §4.1's leave-one-out mask: skip exactly this ordinal.
+    #[must_use]
+    pub fn leave_one_out(skip_ordinal: u64) -> Self {
+        Self {
+            skip_ordinal,
+            scope: MaskScope::Single,
+            captured: None,
+        }
+    }
+
+    /// The confluence-aware mask: skip this ordinal and every later
+    /// application sharing its
+    /// [`CandidateKey`](super::candidate::CandidateKey).
+    #[must_use]
+    pub fn all_matching_candidate(skip_ordinal: u64) -> Self {
+        Self {
+            skip_ordinal,
+            scope: MaskScope::AllMatchingCandidate,
+            captured: None,
+        }
+    }
+}
+
+/// What [`EGraph::mask_decision`] concluded about the application about to
+/// be committed. Three distinct skips, not one boolean: the leave-one-out
+/// mask must be consumed after it fires, the confluence-aware seed must
+/// capture its key as it fires, and a later re-derivation must do neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaskDecision {
+    Proceed,
+    Skip,
+    SkipAndCapture,
+    SkipAndConsume,
 }
 
 impl Default for EGraph {
@@ -130,6 +249,8 @@ impl Clone for EGraph {
             #[cfg(feature = "provenance-journal")]
             record_provenance: self.record_provenance,
             application_cap: self.application_cap,
+            replay_mask: self.replay_mask.clone(),
+            replay_mask_skips: self.replay_mask_skips,
         }
     }
 }
@@ -272,6 +393,8 @@ impl EGraph {
             #[cfg(feature = "provenance-journal")]
             record_provenance: true,
             application_cap: None,
+            replay_mask: None,
+            replay_mask_skips: 0,
         }
     }
 
@@ -299,6 +422,8 @@ impl EGraph {
             #[cfg(feature = "provenance-journal")]
             record_provenance: true,
             application_cap: None,
+            replay_mask: None,
+            replay_mask_skips: 0,
         }
     }
 
@@ -537,6 +662,7 @@ impl EGraph {
         #[cfg(feature = "provenance-journal")]
         self.provenance.record_union(UnionEvent {
             rule_idx: self.active_application.map(|a| a.rule_idx),
+            application_id: self.active_application.map(|a| a.application_id),
             step: self.step,
             class_a: parent,
             class_b: child,
@@ -723,6 +849,53 @@ impl EGraph {
             &tags_of,
             &children_of,
             &self.provenance,
+            chosen_nodes,
+        )
+    }
+
+    /// The tightened counterpart to [`EGraph::derivation_ancestors`] — see
+    /// [`super::provenance::derivation_ancestors_tight`] for exactly which
+    /// over-approximation axes are narrowed and why the result is still safe
+    /// (a subset of `derivation_ancestors`'s result, a superset of the
+    /// strict node-on-path bound). Additive: does not change what
+    /// `derivation_ancestors` computes, so both can be run on the same
+    /// episode for comparison.
+    #[cfg(feature = "provenance-journal")]
+    pub fn derivation_ancestors_tight(
+        &self,
+        chosen_nodes: &[(EClassId, ENodeId)],
+    ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
+        self.derivation_ancestors_tight_from(chosen_nodes, chosen_nodes)
+    }
+
+    /// [`EGraph::derivation_ancestors_tight`] for a walk that starts from a
+    /// SUBSET of the extraction — one application's chosen output node, say
+    /// — while still pruning with the extraction's complete choice map. See
+    /// [`super::provenance::derivation_ancestors_tight`] for why passing
+    /// only the seeds as the choice map degrades the walk back to the loose
+    /// bound for every class it descends into.
+    #[cfg(feature = "provenance-journal")]
+    pub fn derivation_ancestors_tight_from(
+        &self,
+        seeds: &[(EClassId, ENodeId)],
+        chosen_nodes: &[(EClassId, ENodeId)],
+    ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
+        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).to_vec() };
+        let children_of = |tag: ENodeId| -> Vec<EClassId> {
+            for class in self.classes.iter() {
+                if let Some(idx) = class.tags.iter().position(|&t| t == tag) {
+                    return class.nodes[idx].children();
+                }
+            }
+            Vec::new()
+        };
+        let canonical_of = |class: EClassId| -> EClassId { self.find(class) };
+        super::provenance::derivation_ancestors_tight(
+            &tags_of,
+            &children_of,
+            &canonical_of,
+            &self.provenance,
+            seeds,
             chosen_nodes,
         )
     }
@@ -966,13 +1139,14 @@ impl EGraph {
             for class_id in self.class_ids() {
                 let nodes = &self.classes[class_id.index()].nodes;
 
+                let tags = &self.classes[class_id.index()].tags;
                 for (node_idx, node) in nodes.iter().enumerate() {
                     // Check if rule matches this node
                     if rule.apply(self, class_id, node).is_some() {
                         matches.push(RewriteTarget {
                             rule_idx,
                             class_id,
-                            node_idx,
+                            tag: tags[node_idx],
                         });
                     }
                 }
@@ -997,12 +1171,7 @@ impl EGraph {
     /// is the silent failure this ceiling exists to prevent. No production
     /// path calls this, and the production caps are two orders of
     /// magnitude below the limit.
-    pub fn apply_single_rule(
-        &mut self,
-        rule_idx: usize,
-        class_id: EClassId,
-        node_idx: usize,
-    ) -> bool {
+    pub fn apply_single_rule(&mut self, rule_idx: usize, class_id: EClassId, tag: ENodeId) -> bool {
         assert!(
             self.classes.len() < HARD_CLASS_LIMIT,
             "apply_single_rule: e-graph is at the hard class limit \
@@ -1016,12 +1185,15 @@ impl EGraph {
         };
 
         let class_id = self.find(class_id);
-        let nodes = self.classes[class_id.index()].nodes.clone();
-        let Some(node) = nodes.get(node_idx) else {
+        // Resolve the stable tag against the class as it stands NOW — a
+        // rebuild since the caller enumerated this target either left the
+        // node in place or removed it, and `None` is the honest answer for
+        // the second case. See `RewriteTarget::tag`.
+        let Some(node) = self.node_for_tag(class_id, tag).cloned() else {
             return false;
         };
 
-        let Some(action) = rule.apply(self, class_id, node) else {
+        let Some(action) = rule.apply(self, class_id, &node) else {
             return false;
         };
 
@@ -1412,6 +1584,71 @@ impl EGraph {
         }
     }
 
+    /// How many applications the most recent installed mask skipped. `0`
+    /// when no mask was installed, or when the mask's ordinal was never
+    /// reached — a caller reporting Δ reads this rather than assuming.
+    #[must_use]
+    pub const fn last_replay_mask_skips(&self) -> usize {
+        self.replay_mask_skips
+    }
+
+    /// Install (or clear) the counterfactual-replay mask, resetting the skip
+    /// counter. Crate-private on purpose: the mask is a *policy*, in exactly
+    /// the sense a `Reranker` and an `Observer` are, and it reaches the graph
+    /// through [`Optimizer::mask`](super::optimizer::Optimizer::mask) rather
+    /// than through a second public saturation entry point.
+    pub(crate) fn set_replay_mask(&mut self, mask: Option<ApplicationMask>) {
+        self.replay_mask = mask;
+        self.replay_mask_skips = 0;
+    }
+
+    /// Decide what the installed replay mask (if any) says about the
+    /// application about to be committed. Split out of
+    /// `apply_action_from_rule` because the `AllMatchingCandidate` arm needs
+    /// to READ the graph (`ClassContentKey::of`) while the mask is borrowed,
+    /// and then WRITE the mask — two borrows that cannot overlap.
+    fn mask_decision(&self, rule_idx: usize, class_id: EClassId) -> MaskDecision {
+        let Some(mask) = &self.replay_mask else {
+            return MaskDecision::Proceed;
+        };
+        // The counter is incremented right after this returns `Proceed`, so
+        // its value right now IS the ordinal about to be consumed.
+        let at_seed = mask.skip_ordinal == self.applications;
+        match (mask.scope, &mask.captured) {
+            // Leave-one-out: fire exactly once, then consume the mask.
+            (MaskScope::Single, _) => {
+                if at_seed {
+                    MaskDecision::SkipAndConsume
+                } else {
+                    MaskDecision::Proceed
+                }
+            }
+            // Confluence-aware, before the seed: nothing to compare against
+            // yet, so only the seed ordinal itself is masked — and masking
+            // it is what captures the key.
+            (MaskScope::AllMatchingCandidate, None) => {
+                if at_seed {
+                    MaskDecision::SkipAndCapture
+                } else {
+                    MaskDecision::Proceed
+                }
+            }
+            // Confluence-aware, after the seed: mask every re-derivation by
+            // the same (rule, canonical matched-class content).
+            (MaskScope::AllMatchingCandidate, Some(key)) => {
+                let same_rule = self.rule_ids.get(rule_idx).copied() == Some(key.rule);
+                if same_rule
+                    && key.content
+                        == super::candidate::ClassContentKey::of(self, self.find(class_id))
+                {
+                    MaskDecision::Skip
+                } else {
+                    MaskDecision::Proceed
+                }
+            }
+        }
+    }
+
     /// Apply a rewrite action on behalf of a specific rule, attributing
     /// every e-node created and every union performed while executing it to
     /// one [`super::provenance::ApplicationId`].
@@ -1435,6 +1672,46 @@ impl EGraph {
         class_id: EClassId,
         action: RewriteAction,
     ) -> usize {
+        // Counterfactual replay (docs/plans/2026-09-01-guide-return-to-go.md
+        // §4.1): a masked application is not counted, not recorded and not
+        // applied, so everything downstream — the rest of this scan, the
+        // rest of this sweep, later sweeps — proceeds exactly as it would
+        // against a graph that simply never received it, and the ordinal it
+        // would have consumed goes to the next candidate. Checked BEFORE the
+        // counter, which is what makes that last clause true. Which
+        // applications are masked is `mask_decision`'s call; see
+        // [`MaskScope`].
+        match self.mask_decision(rule_idx, class_id) {
+            MaskDecision::Proceed => {}
+            MaskDecision::Skip => {
+                self.replay_mask_skips += 1;
+                return 0;
+            }
+            MaskDecision::SkipAndCapture => {
+                let key = super::candidate::CandidateKey {
+                    rule: self.rule_ids.get(rule_idx).copied().unwrap_or_else(|| {
+                        panic!(
+                            "replay mask: rule_idx {rule_idx} has no id in this graph's rule \
+                             table — a mask names an application, and an application names a rule"
+                        )
+                    }),
+                    content: super::candidate::ClassContentKey::of(self, self.find(class_id)),
+                };
+                let mask = self
+                    .replay_mask
+                    .as_mut()
+                    .expect("mask_decision returned SkipAndCapture with no mask installed");
+                mask.captured = Some(key);
+                self.replay_mask_skips += 1;
+                return 0;
+            }
+            MaskDecision::SkipAndConsume => {
+                self.replay_mask = None;
+                self.replay_mask_skips += 1;
+                return 0;
+            }
+        }
+
         // Counted unconditionally: the budget must not depend on whether
         // anyone is watching.
         self.applications += 1;
@@ -2821,7 +3098,7 @@ mod tests {
         let target = find_target(&eg, "commutative");
         assert_eq!(target.class_id, eg.find(sum));
 
-        let applied = eg.apply_single_rule(target.rule_idx, target.class_id, target.node_idx);
+        let applied = eg.apply_single_rule(target.rule_idx, target.class_id, target.tag);
         assert!(applied, "commutative rule should have applied to x + y");
 
         // Hand-derivation: exactly one application recorded, for the
@@ -2881,7 +3158,7 @@ mod tests {
 
         // Rule A: commute the inner sum (x + y) -> (y + x).
         let target_a = find_target_in_class(&eg, "commutative", eg.find(inner));
-        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.node_idx));
+        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.tag));
         let app_a = ApplicationId(0);
 
         // Rule B: commute the outer sum ((x+y)+z) -> (z + (x+y)). After
@@ -2889,7 +3166,7 @@ mod tests {
         // still match "commutative" — so we must specifically target
         // outer's class rather than take the first "commutative" match.
         let target_b = find_target_in_class(&eg, "commutative", eg.find(outer));
-        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.node_idx));
+        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.tag));
         let app_b = ApplicationId(1);
         assert_eq!(eg.provenance().recorded_count(), 2);
 
@@ -3331,5 +3608,121 @@ impl Drop for EGraphBatch<'_> {
         if self.any_changes {
             self.graph.rebuild();
         }
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+    use crate::egraph::optimizer::{Budget, Optimizer};
+
+    /// A `(x*x + y*y).sqrt()`-shaped arena under the full rule set — a real
+    /// sweep where idempotent re-fires (`commutative`/`associative`)
+    /// dominate, which is exactly the regime
+    /// [`MaskScope::AllMatchingCandidate`] exists to see through.
+    fn mask_fixture() -> (Optimizer, EGraph, EClassId) {
+        let mut arena = pixelflow_ir::ExprArena::new();
+        let x = arena.push_var(0);
+        let y = arena.push_var(1);
+        let xx = arena.push_binary(pixelflow_ir::OpKind::Mul, x, x);
+        let yy = arena.push_binary(pixelflow_ir::OpKind::Mul, y, y);
+        let sum = arena.push_binary(pixelflow_ir::OpKind::Add, xx, yy);
+        let dist = arena.push_unary(pixelflow_ir::OpKind::Sqrt, sum);
+        let doubled = arena.push_binary(pixelflow_ir::OpKind::Add, dist, dist);
+        let root = arena.push_binary(pixelflow_ir::OpKind::Sub, doubled, doubled);
+        let opt = Optimizer::production()
+            .budget(Budget::Applications(MASK_BUDGET))
+            .no_ceiling();
+        let mut eg = opt.egraph();
+        let root_class = eg.add_arena(&arena, root);
+        (opt, eg, root_class)
+    }
+
+    const MASK_BUDGET: u64 = 60;
+    const NODES: usize = 8;
+
+    /// The leave-one-out mask is consumed after it fires: exactly one skip,
+    /// no matter how many later applications look like it.
+    #[test]
+    fn leave_one_out_mask_skips_exactly_one_application() {
+        let (opt, mut eg, root) = mask_fixture();
+        let mut opt = opt.mask(Some(ApplicationMask::leave_one_out(0)));
+        opt.run(&mut eg, root, NODES);
+        assert_eq!(
+            eg.last_replay_mask_skips(),
+            1,
+            "MaskScope::Single must fire exactly once"
+        );
+    }
+
+    /// The confluence-aware mask keeps firing: it skips the seed and every
+    /// later application of the same (rule, canonical matched-class
+    /// content). Under rules that re-match their own installed output, that
+    /// is strictly more than one.
+    #[test]
+    fn all_matching_candidate_mask_skips_every_re_derivation() {
+        let (opt, mut eg, root) = mask_fixture();
+        let mut opt = opt.mask(Some(ApplicationMask::all_matching_candidate(0)));
+        opt.run(&mut eg, root, NODES);
+        assert!(
+            eg.last_replay_mask_skips() > 1,
+            "MaskScope::AllMatchingCandidate must keep masking re-derivations of the seed \
+             candidate, got {} skip(s)",
+            eg.last_replay_mask_skips()
+        );
+    }
+
+    /// A mask whose ordinal is never reached leaves no trace: zero skips,
+    /// and — because nothing was withheld — the same run an unmasked
+    /// optimizer produces, down to the extracted term.
+    #[test]
+    fn a_mask_whose_ordinal_never_fires_changes_nothing() {
+        let (mut plain_opt, mut plain_eg, plain_root) = mask_fixture();
+        let plain = plain_opt.run(&mut plain_eg, plain_root, NODES);
+
+        let (opt, mut eg, root) = mask_fixture();
+        let mut opt = opt.mask(Some(ApplicationMask::leave_one_out(u64::MAX)));
+        let masked = opt.run(&mut eg, root, NODES);
+
+        assert_eq!(eg.last_replay_mask_skips(), 0);
+        assert_eq!(plain.stats.applications, masked.stats.applications);
+        assert_eq!(plain.stats.unions, masked.stats.unions);
+        assert_eq!(plain.choices, masked.choices);
+    }
+
+    /// The whole point of a counterfactual: withholding a real application
+    /// must actually withhold it, and the run must be a different run.
+    ///
+    /// A skipped ordinal is not *burned* — it is left for the next candidate
+    /// in the same scan order — so the mask does not by itself shorten the
+    /// budget. It can still end the run sooner, and on this fixture it does:
+    /// withholding a whole candidate class removes the work that would have
+    /// kept the sweep productive, and the masked run quiesces well inside
+    /// the 60-application budget while the unmasked one spends all of it.
+    /// That is the counterfactual working, so the assertion is the honest
+    /// one — the graphs differ — not an equality that happens to hold on a
+    /// luckier fixture.
+    #[test]
+    fn withholding_a_real_application_changes_the_run() {
+        let (mut plain_opt, mut plain_eg, plain_root) = mask_fixture();
+        let plain = plain_opt.run(&mut plain_eg, plain_root, NODES);
+
+        let (opt, mut eg, root) = mask_fixture();
+        let mut opt = opt.mask(Some(ApplicationMask::all_matching_candidate(0)));
+        let masked = opt.run(&mut eg, root, NODES);
+
+        assert!(eg.last_replay_mask_skips() > 0, "the seed must have fired");
+        assert!(
+            masked.stats.applications <= plain.stats.applications,
+            "a mask can only withhold work, never manufacture it: {} vs {}",
+            masked.stats.applications,
+            plain.stats.applications
+        );
+        assert_ne!(
+            (plain.stats.unions, plain.stats.classes),
+            (masked.stats.unions, masked.stats.classes),
+            "withholding a candidate and every re-derivation of it must change what the \
+             run built — otherwise Δ is measuring nothing"
+        );
     }
 }
