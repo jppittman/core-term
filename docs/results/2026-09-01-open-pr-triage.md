@@ -258,21 +258,57 @@ function — dangling `'outer`, `max_total_applications`, `mid_sweep_stop`. The
 workable route is `main`'s file whole, then re-thread `ApplicationId`
 deliberately.
 
-**Kind 3 — a large additive subsystem. #1084, #1088, #1091, #1095, #1096.**
+**Kind 3 — a competing refactor of the same seam. #1084, #1088, #1091, #1095, #1096.**
 
-800–1,100 lines added to `graph.rs`/`saturate.rs` alone: the GuidedSaturation
-machinery each experiment runs on. "Take `main`'s" would delete the experiment.
-These need the subsystem re-applied onto `main`'s restructured `saturate.rs` by
-someone who can say which parts the registered claim depends on. They also do
-not share a resolvable base — all five fork from the same merge-base with `main`
-but none is an ancestor of another, so there are five of these, not one.
+An earlier draft of this document called these "800–1,100 lines to re-apply."
+That was wrong, and the error is worth naming: it conflated *lines the branch
+adds* with *lines in conflict*. #1091 adds ~937 lines to `graph.rs`/
+`saturate.rs`, but most are new code that auto-merges — the actual conflict is
+12 hunks, ~395 lines, and most of those resolve mechanically to `main`'s landed
+design, exactly like Kind 1.
 
-Sizes, for planning: #1084 1,011 core / 28.5k total; #1088 1,091 / 308.9k;
-#1091 937 / 41k; #1095 804 / 42.5k; #1096 961 / 60k.
+Worked through to the bottom on #1091, the mechanical parts are:
 
-**One collision to expect.** #1087 and #1101 both add a module named
-`production_telemetry` to `runtime.rs`. They do not conflict today because
-neither has landed; whichever goes second will need a rename.
+- `graph.rs` h1+h6 (154 lines) are the superseded `saturate_until_applications`.
+  `main`'s `saturate_bounded` takes `max_applications` and `SaturationStop`
+  already has `ApplicationBudget`, so they drop.
+- `saturate.rs` and `mod.rs` are import merges — keep the branch's `candidate`
+  and `nnue::guide` imports, take `main`'s for the rest, drop the deleted
+  `AppBudgetSaturationStats` and `env_extraction_policy`.
+- `AppBudgetSaturationStats` is the branch's own type and re-homes cleanly into
+  `saturate.rs`, where the guided loop is its only producer and consumer.
+  `main`'s `SaturationStats` deliberately carries no application count — that
+  dimension belongs to `Budget::Applications` now.
+- `Cargo.toml` auto-merges into **two `[features]` blocks** (the branch's
+  `guide-checkpoint` and `main`'s `saturation-telemetry`). Cargo rejects the
+  manifest and reports the failure against `core-term`, not against this crate,
+  which makes it look unrelated.
+
+What actually stops it is a **design collision in `runtime.rs`**.
+`ProductionSaturation`, `saturate_for_production` and
+`production_saturation_probe` exist only on these branches — `main` has none of
+them. The branch factored production's saturation step into a shared seam
+precisely so the probe "runs THIS code, not a line-for-line copy that drifts";
+`main` rewrote the same function around `Optimizer` without that seam.
+Reconciling means re-deriving the seam from `main`'s new
+`optimize_runtime_arena_uncached` and re-pointing the probe at it. That is
+authoring rather than merging, and a subtle error breaks the one property the
+probe exists to guarantee — so it belongs to whoever owns the experiment.
+
+The five also do not share a resolvable base: all fork from the same merge-base
+with `main` but none is an ancestor of another, so this is five pieces of work,
+not one.
+
+**A collision that has now happened.** #1087 and #1101 both add a module named
+`production_telemetry` to `runtime.rs`, and both add
+`docs/results/2026-09-01-production-saturation-telemetry.{md,csv}`. #1087 landed
+first, so #1101 is the one that must reconcile: `main`'s docs are the later and
+more complete run (471 vs 286 lines; 193 kernels vs 173) and should win, while
+#1101's module is the superset (1,106 vs 610 lines) and adds exactly four
+functions — `run_with_rules`, `anytime_curve_arena`, `csv_escape`,
+`rule_order_real_kernels` — which graft onto `main`'s already-ported module.
+Note `main`'s copy is the version ported to `Optimizer`; taking #1101's wholesale
+would silently revert that.
 
 ## The finding that matters most: the seam churns faster than reconciliation completes
 
