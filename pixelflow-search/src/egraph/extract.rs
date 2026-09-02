@@ -136,6 +136,281 @@ impl<'g> Extraction<'g> {
     pub(crate) fn into_choices(self) -> Vec<Option<usize>> {
         self.choices
     }
+
+    /// Attempt to build a candidate extraction that swaps `class`'s choice
+    /// to `node_idx`, backfilling any newly-introduced children and
+    /// rejecting (returning `None`) if the swap closes a cycle through
+    /// already-chosen classes.
+    ///
+    /// This is [`IncrementalExtractor::extract_choices_only`]'s
+    /// per-candidate constructor — unlike [`Extraction::from_backfill`], a
+    /// cycle here is a normal search outcome (reject this candidate, try
+    /// another), not a bug.
+    ///
+    /// ## Acyclicity check scope, and the one case it does NOT match
+    /// `choices_have_cycle_from` bit-for-bit
+    ///
+    /// The check is scoped to `canonical`'s own new outgoing edges
+    /// ([`choices_have_cycle_through`]) rather than re-walking the whole
+    /// tree from `root`: this swap changes exactly one vertex's outgoing
+    /// edge — `canonical`'s — plus adds fresh backfilled subtrees hanging
+    /// off `node_idx`'s children, each internally acyclic by construction
+    /// ([`backfill_well_founded`] never revisits a class that already has a
+    /// choice, so a backfilled region can only ever terminate by joining
+    /// the pre-existing tree, not by cutting back into it). PROVIDED
+    /// `canonical` is itself currently reachable from `root`, a graph
+    /// mutated at exactly one vertex's outgoing edge gains a cycle if and
+    /// only if that vertex becomes reachable from itself through the new
+    /// edge, so checking forward reachability from `node_idx`'s children
+    /// back to `canonical` is equivalent to (but bounded by the
+    /// forward-reachable set from the new children, not the whole
+    /// root-reachable tree, unlike) a full re-walk from root.
+    ///
+    /// That proviso can fail: `extract_choices_only`'s refinement loop
+    /// takes its `active` class list once per pass and then mutates
+    /// `current_extraction` as it goes, so a class visited later in the
+    /// same pass can, by the time its own `try_swap` call runs, no longer
+    /// be root-reachable at all — an earlier accepted swap in the same
+    /// pass severed the only path to it. For such a `canonical`, this
+    /// check and a full `choices_have_cycle_from(root)` walk can disagree
+    /// (this one may reject a "cycle" the root walk would call
+    /// unreachable-hence-irrelevant, or the reverse). That disagreement
+    /// never reaches an observable output, though: every consumer that
+    /// scores or materialises a candidate walks forward from `root` only
+    /// ([`choices_to_arena`], which is what a [`Reranker`]'s score is
+    /// computed from), so a `canonical` unreachable from root is invisible
+    /// to it regardless of what this function decides; accept or reject,
+    /// the candidate's score is bit-identical to `current_cost` and it
+    /// never wins the refinement loop's strict `<` comparison.
+    pub(crate) fn try_swap(&self, class: EClassId, node_idx: usize) -> Option<Self> {
+        let canonical = self.egraph.find(class);
+        let mut choices = self.choices.clone();
+        choices[canonical.0 as usize] = Some(node_idx);
+
+        let new_children: &[EClassId] = match self.egraph.nodes(canonical).get(node_idx) {
+            Some(ENode::Op { children, .. }) => children,
+            _ => &[],
+        };
+
+        for &child in new_children {
+            backfill_well_founded(self.egraph, child, &mut choices);
+        }
+
+        // A leaf swap (Var/Const/Buffer, or an Op with no children) adds no
+        // outgoing edge at all, so it cannot possibly close a cycle — only
+        // removes `canonical`'s old edges, which can only ever break a
+        // cycle, never create one. Skip the walk entirely rather than
+        // paying for a reachability check with nothing to find.
+        if !new_children.is_empty() {
+            let has_cycle =
+                choices_have_cycle_through(self.egraph, canonical, new_children, &choices);
+            if has_cycle {
+                return None;
+            }
+        }
+
+        Some(Self {
+            egraph: self.egraph,
+            root: self.root,
+            choices,
+        })
+    }
+}
+
+// ============================================================================
+// Swap-refinement search (Reranker seam)
+// ============================================================================
+//
+// The extraction-head program that used to drive this search with a trained
+// NNUE was closed on 2026-09-01 as an honest negative
+// (docs/paper/2026-08-egraph-nnue-parity.md) — but JP's ruling on the
+// program's SHAPE was narrower than "delete everything it touched":
+// "I don't think what we have was the correct shape. I think it's right as
+// an idea. [...] Egraph extraction is the place where code gen's schedule
+// choice is going to go." What was wrong was a bag-of-edges MLP that
+// predicted TOTAL cost and tried to replace the additive table outright;
+// what was right is this local search — swap one e-class's choice, rescore,
+// keep strict improvements — as the reranking primitive a future
+// non-additive cost model needs. So the search stays, generic over a
+// [`Reranker`] seam with no implementation shipped: the NNUE-specific
+// scoring is deleted with the program that trained it, not the search that
+// used to call it.
+
+/// A pluggable scoring function for [`IncrementalExtractor`]'s
+/// swap-refinement search. Lower is better — the search treats this as a
+/// cost, not a probability or utility, and accepts a candidate only on a
+/// strict improvement.
+///
+/// No implementation ships in this crate. This trait is the seam a future
+/// residual reranker over the additive latency-prior table plugs into; only
+/// test-only rerankers exist today (see `egraph::extract::tests`).
+pub trait Reranker {
+    /// Score the DAG `extraction` selects, materialised as `arena` — the
+    /// same `(arena, root)` pair [`choices_to_arena`] would return for
+    /// `extraction`, computed once per candidate by the search loop.
+    fn score(&self, extraction: &Extraction<'_>, arena: &pixelflow_ir::ExprArena) -> f64;
+}
+
+/// Incremental swap-refinement extractor, generic over a [`Reranker`].
+///
+/// - **Pass 1 (Bootstrap)**: extract a well-founded starting choice per
+///   e-class via [`Extraction::from_backfill`].
+/// - **Passes 2..=`MAX_PASSES` (Refine)**: for each active e-class, try
+///   alternative nodes (up to `top_k`) via [`Extraction::try_swap`],
+///   rescoring each candidate through `reranker`. Accept the single best
+///   strict improvement per class per pass. Repeat until a pass makes no
+///   improvement (fixpoint) or `MAX_PASSES` is reached.
+pub struct IncrementalExtractor<'a, R: Reranker> {
+    reranker: &'a R,
+    top_k: usize,
+}
+
+impl<'a, R: Reranker> IncrementalExtractor<'a, R> {
+    /// `top_k` bounds how many alternative nodes per e-class are evaluated
+    /// during refinement passes.
+    pub fn new(reranker: &'a R, top_k: usize) -> Self {
+        Self { reranker, top_k }
+    }
+
+    /// Run the extraction refinement loop and return `(score, extraction)`.
+    ///
+    /// Call [`choices_to_arena`] on the returned [`Extraction`] to
+    /// materialise the extracted DAG.
+    pub fn extract_choices_only<'g>(
+        &self,
+        egraph: &'g EGraph,
+        root_class: EClassId,
+    ) -> (f64, Extraction<'g>) {
+        const MAX_PASSES: usize = 10;
+
+        // Pass 1: Bootstrap with a well-founded choice per reachable e-class.
+        // For unmerged classes this is the original expression's node; where
+        // saturation merges reordered node lists it is the first admissible
+        // node instead — refinement below then improves whatever valid
+        // start this provides.
+        let num_classes = egraph.num_classes();
+        let choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
+        let mut current_extraction = Extraction::from_backfill(egraph, root_class, choices);
+        let mut current_cost = self.score(&current_extraction);
+
+        // Refinement passes: for each e-class, try ALL alternatives (up to
+        // top_k), accept the BEST improvement (not first). Repeat until
+        // fixpoint or max passes.
+        for _pass in 0..MAX_PASSES {
+            let active = self.get_active_classes(&current_extraction);
+            let mut improved = false;
+
+            for &class in &active {
+                let canonical = egraph.find(class);
+                let nodes = egraph.nodes(canonical);
+                if nodes.len() <= 1 {
+                    continue;
+                }
+
+                let current_node_idx = current_extraction.choice(canonical).unwrap_or_else(|| {
+                    panic!(
+                        "extract_choices_only: e-class {} is active (reachable from root) \
+                         but has no recorded choice — backfill_well_founded should have \
+                         populated every class returned by get_active_classes",
+                        canonical.0
+                    )
+                });
+                let candidates_to_try = nodes.len().min(self.top_k);
+
+                // Best-improvement: evaluate ALL candidates, pick the
+                // cheapest. Each candidate is evaluated on a COMPLETE choice
+                // state (the swap applied AND the newly reachable subtree
+                // backfilled, cycle-checked via `Extraction::try_swap`), so
+                // the state scored is the state adopted.
+                let mut best_swap_cost = current_cost;
+                let mut best_swap: Option<Extraction<'g>> = None;
+
+                for node_idx in 0..candidates_to_try {
+                    if node_idx == current_node_idx {
+                        continue;
+                    }
+
+                    // Skip self-referential candidates (would create cycles).
+                    if let ENode::Op { children, .. } = &nodes[node_idx] {
+                        if children.iter().any(|&c| egraph.find(c) == canonical) {
+                            continue;
+                        }
+                    }
+
+                    // Rejects candidates that close a cycle through classes
+                    // that already held choices.
+                    let Some(candidate) = current_extraction.try_swap(canonical, node_idx) else {
+                        continue;
+                    };
+
+                    let test_cost = self.score(&candidate);
+                    if test_cost < best_swap_cost {
+                        best_swap_cost = test_cost;
+                        best_swap = Some(candidate);
+                    }
+                }
+
+                if let Some(swapped) = best_swap {
+                    // Adopt EXACTLY the state that was cycle-checked and
+                    // scored — no post-acceptance re-derivation.
+                    current_extraction = swapped;
+                    current_cost = best_swap_cost;
+                    improved = true;
+                }
+            }
+
+            if !improved {
+                break; // Fixpoint
+            }
+        }
+
+        (current_cost, current_extraction)
+    }
+
+    /// Materialise `extraction` and hand it to `self.reranker`.
+    fn score(&self, extraction: &Extraction<'_>) -> f64 {
+        let (arena, _root) = choices_to_arena(extraction);
+        self.reranker.score(extraction, &arena)
+    }
+
+    /// Walk the current best tree and collect active (reachable) e-class IDs.
+    fn get_active_classes(&self, extraction: &Extraction<'_>) -> Vec<EClassId> {
+        let egraph = extraction.egraph();
+        let root = extraction.root();
+        use alloc::collections::BTreeSet;
+
+        let mut active = Vec::new();
+        let mut visited = BTreeSet::new();
+        let mut stack = vec![root];
+
+        while let Some(class) = stack.pop() {
+            let canonical = egraph.find(class);
+            if !visited.insert(canonical.0) {
+                continue;
+            }
+
+            active.push(canonical);
+
+            let node_idx = extraction.choice(canonical).unwrap_or_else(|| {
+                panic!(
+                    "get_active_classes: e-class {} reachable from root has no recorded \
+                     choice — extract_choices_only must call backfill_well_founded \
+                     transitively before invoking get_active_classes",
+                    canonical.0
+                )
+            });
+            let nodes = egraph.nodes(canonical);
+            if node_idx < nodes.len() {
+                if let ENode::Op { children, .. } = &nodes[node_idx] {
+                    for &child in children {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+
+        active
+    }
 }
 
 /// Fill in a **well-founded** choice for every e-class reachable from
@@ -298,6 +573,49 @@ fn choices_have_cycle_from(egraph: &EGraph, root: EClassId, choices: &[Option<us
         if let Some(ENode::Op { children, .. }) = egraph.nodes(canonical).get(node_idx) {
             for &child in children.iter().rev() {
                 stack.push((child, false));
+            }
+        }
+    }
+
+    false
+}
+
+/// Check whether `canonical` is forward-reachable from `new_children` by
+/// following `choices`. Used by [`Extraction::try_swap`] as the equivalent,
+/// but far cheaper, replacement for a full [`choices_have_cycle_from`]
+/// re-walk from root — see that method's doc comment for why scoping the
+/// check to the one changed vertex's new edges is sound. Plain reachability
+/// (no gray/black coloring) is enough here, unlike
+/// [`choices_have_cycle_from`]: we are not distinguishing "cycle" from
+/// "revisited via legitimate DAG sharing" for the whole tree, only asking
+/// whether ANY forward path from the new edges leads back to `canonical` —
+/// which is exactly what a cycle through the swapped vertex means.
+///
+/// Bounded by the size of the forward-reachable set from `new_children`,
+/// not `egraph.num_classes()`.
+fn choices_have_cycle_through(
+    egraph: &EGraph,
+    canonical: EClassId,
+    new_children: &[EClassId],
+    choices: &[Option<usize>],
+) -> bool {
+    let num_classes = choices.len();
+    let mut visited: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
+    let mut stack: Vec<EClassId> = new_children.to_vec();
+
+    while let Some(class) = stack.pop() {
+        let c = egraph.find(class);
+        if c == canonical {
+            return true;
+        }
+        let idx = c.0 as usize;
+        if idx >= num_classes || !visited.insert(c.0) {
+            continue;
+        }
+        let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
+        if let Some(ENode::Op { children, .. }) = egraph.nodes(c).get(node_idx) {
+            for &child in children {
+                stack.push(child);
             }
         }
     }
@@ -1398,6 +1716,95 @@ mod tests {
             ),
             "extraction with the latency-prior cost model should pick the Add form, got {root_node:?}"
         );
+    }
+
+    // ========================================================================
+    // Swap-refinement search (Reranker seam)
+    // ========================================================================
+
+    /// A trivial, test-only [`Reranker`]: the sum of `costs.cost(op)` over
+    /// every node the candidate's materialised arena contains — the same
+    /// additive latency-prior table [`extract_dag`] minimizes, just summed
+    /// over the arena instead of folded bottom-up through the e-graph. No
+    /// sharing discount (each arena node is already deduped by
+    /// `choices_to_arena`, so this is a DAG cost, not a tree cost) — fine
+    /// for the sharing-free graphs these tests build.
+    struct TableReranker<'a> {
+        costs: &'a CostModel,
+    }
+
+    impl Reranker for TableReranker<'_> {
+        fn score(&self, _extraction: &Extraction<'_>, arena: &pixelflow_ir::ExprArena) -> f64 {
+            let mut total = 0.0f64;
+            for i in 0..arena.len() {
+                let id = pixelflow_ir::ExprId(i as u32);
+                total += self.costs.cost(arena.kind(id)) as f64;
+            }
+            total
+        }
+    }
+
+    #[test]
+    fn swap_search_reproduces_extract_dags_choice_on_a_cost_ambiguous_class() {
+        // Same setup as `extract_latency_prior_picks_cheaper_equivalent_form`:
+        // x+x and x*2 are unioned, so the class has a genuine choice to make.
+        // The bootstrap pass may start on either node; the swap-refinement
+        // loop must walk to the same cheaper form `extract_dag` reaches via
+        // its (unrelated) bottom-up DP — same table, same answer, two
+        // different search strategies.
+        let mut egraph = EGraph::new();
+        let x = egraph.add(ENode::Var(0));
+        let two = egraph.add(ENode::constant(2.0));
+        let x_plus_x = egraph.add(ENode::Op {
+            op: &super::super::ops::Add,
+            children: alloc::vec![x, x],
+        });
+        let x_times_2 = egraph.add(ENode::Op {
+            op: &super::super::ops::Mul,
+            children: alloc::vec![x, two],
+        });
+        let merged = egraph.union(x_plus_x, x_times_2);
+        egraph.rebuild();
+
+        let costs = CostModel::latency_prior();
+        let dag = extract_dag(&egraph, merged, &costs);
+
+        let reranker = TableReranker { costs: &costs };
+        let extractor = IncrementalExtractor::new(&reranker, 8);
+        let (search_cost, extraction) = extractor.extract_choices_only(&egraph, merged);
+        let (arena, root) = choices_to_arena(&extraction);
+
+        assert_eq!(
+            search_cost, dag.total_cost as f64,
+            "swap-refinement search must reach the same additive cost as extract_dag's DP"
+        );
+        let root_node = arena.node(root);
+        assert!(
+            matches!(
+                root_node,
+                pixelflow_ir::arena::ExprNode::Binary(pixelflow_ir::OpKind::Add, _, _)
+            ),
+            "swap search should have converged on the Add form, got {root_node:?}"
+        );
+    }
+
+    #[test]
+    fn swap_search_bootstrap_survives_a_merge_reordered_class() {
+        // The real round-1 failure this search once hit: the old bootstrap
+        // picked node index 0 everywhere, but after saturation merges "node
+        // 0" of two classes can reference each other — a CYCLIC bootstrap.
+        // `Extraction::from_backfill` (which the search's bootstrap pass
+        // uses) must return a well-founded choice set for ANY node
+        // ordering, which materialises without panicking regardless of
+        // what the reranker says.
+        let (egraph, merged, _n1) = cyclic_capable_egraph();
+        let costs = CostModel::latency_prior();
+        let reranker = TableReranker { costs: &costs };
+        let extractor = IncrementalExtractor::new(&reranker, 8);
+        let (_cost, extraction) = extractor.extract_choices_only(&egraph, merged);
+        let (arena, root) = choices_to_arena(&extraction);
+        assert!(arena.len() >= 1);
+        assert!(root.0 < arena.len() as u32);
     }
 
     // ========================================================================
