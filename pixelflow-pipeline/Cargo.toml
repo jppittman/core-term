@@ -179,3 +179,10 @@ path = "src/bin/gen_r2g_trajectories.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "r2g_spread_vs_budget"
+path = "src/bin/r2g_spread_vs_budget.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false

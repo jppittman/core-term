@@ -618,6 +618,40 @@ impl OrderingPolicy {
     }
 }
 
+/// The extended budget ladder for the round-3 "measure spread where the
+/// budget binds" task (`docs/plans/2026-09-01-guide-return-to-go.md` §2b):
+/// the two originally-registered tiers (B=100/200, unchanged — still what
+/// `train_guide_r2g` reads via [`TrajectoryRow::app_actual_b100`] etc.) plus
+/// four higher tiers reaching into the regime where production's classical
+/// kernels actually run (median ~1,671 applications, PR #1087). `100` and
+/// `200` MUST remain the first two entries — `gen_r2g_trajectories`'
+/// `mint_expression` reads `checkpoints[0]`/`checkpoints[1]` positionally to
+/// populate `TrajectoryRow`'s original `*_b100`/`*_b200` fields (its own
+/// `parse_budgets` asserts this at startup), so every existing consumer of
+/// those two fields keeps working unchanged.
+pub const BUDGET_LADDER: [usize; 6] = [100, 200, 400, 800, 1600, 3200];
+
+/// One trajectory's cost/return at one point on [`BUDGET_LADDER`], plus the
+/// TYPED stop reason the underlying `SaturationStop` reported at that
+/// checkpoint (`Debug`-formatted — `pixelflow_search::egraph::SaturationStop`
+/// is not itself `serde`-derived, and this module must not depend on
+/// `pixelflow-search` for a label string) — the round-3 task's "read the
+/// typed stop if the branch has it" requirement, not an inferred guess.
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
+pub struct CheckpointRow {
+    pub budget: usize,
+    /// Cumulative recorded applications at this checkpoint (may overshoot
+    /// `budget` — see `EGraph::saturate_until_applications`'s doc).
+    pub app_actual: u64,
+    pub cost: u64,
+    /// `format!("{:?}", SaturationStop)` — `"Quiesced"`, `"ApplicationBudget"`,
+    /// `"ClassCap"`, `"IterationCeiling"`, or `"Timeout"`.
+    pub stop: String,
+    /// `R(τ, budget)` (§1.2) — `None` when `expr_best_cost == 0` for this
+    /// expression (the registration's zero-best exclusion convention).
+    pub return_val: Option<f32>,
+}
+
 /// One trajectory's summary row — one per `(expression, trajectory)`, not
 /// per application. Written to `r2g_trajectories_*.jsonl` alongside the
 /// (much larger) per-application `r2g_*.jsonl` records, so
@@ -631,6 +665,13 @@ pub struct TrajectoryRow {
     pub tier: String,
     pub trajectory_id: u32,
     pub policy: String,
+    /// Arena node count of the source expression — carried on the
+    /// trajectory row (not just the per-application file) so the round-3
+    /// spread-vs-budget report can bucket by node-count band without
+    /// rejoining against the corpus. `0` on rows minted before this field
+    /// existed (`#[serde(default)]`).
+    #[serde(default)]
+    pub expr_node_count: usize,
     /// Cumulative recorded applications at the B=100 checkpoint (may
     /// overshoot 100 for the unguided sweep, which checks the budget
     /// between rules — see `EGraph::saturate_until_applications`'s doc).
@@ -648,6 +689,12 @@ pub struct TrajectoryRow {
     /// expression (the registration's zero-best exclusion convention).
     pub return_b100: Option<f32>,
     pub return_b200: Option<f32>,
+    /// One entry per [`BUDGET_LADDER`] tier (superset of `b100`/`b200`
+    /// above, which stay for backward compatibility with existing
+    /// consumers). Empty on rows minted before round 3
+    /// (`#[serde(default)]`).
+    #[serde(default)]
+    pub checkpoints: Vec<CheckpointRow>,
 }
 
 /// Per-expression return-spread statistics — §2's dataset statistic and
@@ -783,6 +830,7 @@ mod minter_tests {
             tier: "train".to_string(),
             trajectory_id,
             policy: "unguided".to_string(),
+            expr_node_count: 10,
             app_actual_b100: 100,
             cost_b100: 50,
             app_actual_b200: 200,
@@ -791,6 +839,7 @@ mod minter_tests {
             ended_at_apps: 200,
             return_b100,
             return_b200,
+            checkpoints: Vec::new(),
         }
     }
 

@@ -219,6 +219,119 @@ are minted with the same binary into separate files and are never trained on; th
 skew test and held-out regression metrics, and every loaded entry is `FenceKey`-checked against
 TRAIN with a collision as a hard error (Round 1b's rule).
 
+## 2b. Round 3: measuring spread where the budget binds (2026-09-01)
+
+Round 2's dataset gate FIRED (§9's appended results: 67.2% of TRAIN classical `spread_e(100) = 0`)
+and the counterfactual credit test found the linear R2G Guide ties the strict bit everywhere
+(ρ = −0.004 vs the counterfactual, `docs/results/2026-09-01-guide-return-to-go.md`). JP's reading:
+that mint inherited `gen_strict_labels`' `--max-expr-nodes 250` / `--max-classes 2000` tractability
+filter — a regime where `B = 100` is near quiescence for most surviving expressions, and dedup
+collapses every guided ordering onto the same committed set (`bezier` showed an exact 11-way tie).
+Production runs classical kernels to a median ≈ 1,671 applications and the 5,000-class production
+cap binds on ≥ 67.6% of real kernels (PR #1087) — that regime was never in Round 1/2's training
+data. This round re-mints with the size filter LIFTED, the class cap raised to production's
+classical tier, and returns reported at six budgets (`100..3200`, `BUDGET_LADDER`) instead of two,
+specifically to find OUT whether spread — and, more precisely, spread AMONG the guided policies
+(the credit signal a learned Guide could improve; unguided-vs-guided spread is just
+ordering+dedup) — exists anywhere in the regime production actually runs in.
+
+**Selection-rule test (registered before reading the results below):** a `(B, node-count band)`
+cell enters the training regime iff `zero_spread_guided_share < 0.5` for that cell — i.e. at least
+half its expressions show non-zero spread AMONG the 11 guided orderings. `qualifies` in
+`r2g_spread_vs_budget`'s own output is exactly this test, per cell.
+
+Full numbers: `docs/results/2026-09-01-r2g-spread-vs-budget.{md,csv,json}`; mint provenance:
+`docs/results/2026-09-01-r2g-trajectory-mint-full.{json,md}`.
+
+### 2b.1 Run
+
+`gen_r2g_trajectories --tier all --train-limit 0 --dev-limit 0 --max-expr-nodes 0` (size filter
+LIFTED — the full population, not a stride sample; `--train-limit`/`--dev-limit 0` mean "all"),
+`--max-classes` unset → resolved to production's classical tier, **5,000**, read from
+`config_for_node_count(usize::MAX)` (not hardcoded — see the flag's own doc). Budget ladder
+`100,200,400,800,1600,3200`. No expression hit the per-expression 10-minute wall-clock ceiling
+(`skipped_wallclock: 0` on every split) and the run-level `|R|`-scaled panic did not fire. Mint
+wall-clock: 1,306.1s (~21.8 min) for all four splits combined.
+
+| Split | Expressions | Zero-best excluded | Trajectories | Applications |
+|---|---:|---:|---:|---:|
+| TRAIN | 3,356 | 3 | 40,272 | 18,565,784 |
+| DEV | 783 | 1 | 9,396 | 3,544,477 |
+| sh | 100 | 0 | 1,200 | 3,652,201 |
+| bezier | 80 | 0 | 960 | 2,504,034 |
+
+**No expression in TRAIN, DEV, `sh`, or `bezier` exceeds 1,000 arena nodes even with the size
+filter fully lifted** — the `>1000` node-count band is empty for every split (`r2g_spread_vs_budget`
+never emits it). This is itself a finding, not a null result: production's classical-tier tail
+(p90 23,799 / max 85,900 applications at stop, `docs/results/2026-09-01-phase3-at-budget-eval.md`)
+is not explained by a handful of unusually large expression TREES — it comes from expressions in
+the 251–1,000 node range needing many more rewrite ROUNDS than round 1/2's `--max-classes 2000` /
+B≤200 mint ever gave them room to take, not from trees themselves growing past 1,000 nodes. The
+corpus's node-count ceiling, not the class cap or the budget ladder, is what bounds this round's
+coverage of production's tail (p90/max reach ~24k/86k applications; this ladder tops out at 3,200).
+
+### 2b.2 Selection-rule test results
+
+Applying `zero_spread_guided_share < 0.5` (the pre-registered test) per `(B, band)` cell:
+
+| Set | Qualifying cells (B, band) | n per cell |
+|---|---|---|
+| **TRAIN** | (100, 101-250), (200, 101-250), (100, 251-1000), (200, 251-1000), (400, 251-1000) | 540, 540, 529, 529, 529 |
+| **DEV** | (100, 101-250), (200, 101-250), (100, 251-1000), (200, 251-1000), (400, 251-1000) | 116, 116, 92, 92, 92 |
+| `sh` | ALL 18 cells (3 bands × 6 budgets) | 46–100 |
+| `bezier` | 15 of 18 cells (all but B∈{100,200} band 51-100/all) | 19–80 |
+
+**TRAIN and DEV agree exactly on which cells qualify** — the same two bands, the same budget
+cutoffs, independently on two disjoint expression populations (different generator families,
+`corpus_split.toml`'s family-holdout). That agreement is the strongest evidence in this round that
+the effect is real rather than a sampling artifact of either split.
+
+**The pattern, read against `zero_spread_guided_share` directly** (not just the yes/no test):
+
+- **Band 51-100 and the pooled "all" row never qualify on TRAIN/DEV, at any budget.** At this size,
+  expressions are already near-quiescent by B=100 (43.4%/42.1% zero-spread-among-guided at B=100
+  even before any spread has a chance to develop, climbing past 90% by B=400) — this is round 2's
+  original finding, now localized: it was never a property of "classical expressions" in general,
+  it is specifically what happens to SMALL classical expressions.
+- **Band 101-250 qualifies only at B∈{100,200}.** `zero_spread_guided_share` is 11.1%/36.1% (TRAIN)
+  and 7.8%/42.2% (DEV) there, then jumps to 74.1%/85.3% at B=400 — the credit signal exists but is
+  gone by the third rung of the ladder. `unguided_differs_share` at B=100 in this band is 94.6%
+  (TRAIN) / 97.4% (DEV) — much higher than the pooled `all`-band figure (44.1%/40.0%) — confirming
+  this band specifically, not the population at large, is where unguided departs furthest from the
+  guided family (ordering+dedup is doing real work here, on top of the guided-vs-guided signal).
+- **Band 251-1000 qualifies through B=400 (0.0% / 0.0% / 19.1–21.7% zero-spread-among-guided at
+  B=100/200/400), then collapses to 54–58% by B=800.** This is the band carrying the strongest,
+  widest signal — spread-among-guided is exactly 0% at B=100/200 (EVERY expression in this band
+  has SOME guided policy disagree with some other), and unguided-differs is 100.0% at every budget
+  through B=400. `ApplicationBudget` is the ONLY stop reason at B=100/200 for TRAIN's 251-1000 band
+  (6,348 of 6,348 trajectory-checkpoints, i.e. all 529 expressions × 12 policies — zero quiesce),
+  dropping to 5,863/6,348 at B=400 — these expressions are genuinely budget-bound, not quiescing
+  early; the spread only closes once budget stops binding.
+- `sh`/`bezier` qualify almost everywhere, confirming round 2's own reading: the synthetic
+  TRAIN/DEV generator's structural motifs converge under saturation in a way the two OOD families
+  do not, independent of node-count band.
+
+### 2b.3 Selection rule (registered here, before any training run)
+
+**The training regime is: node-count band ∈ {101-250, 251-1000}, budget ∈ {100, 200} for
+101-250 and ∈ {100, 200, 400} for 251-1000** — i.e. exactly the five TRAIN/DEV-agreeing cells in
+§2b.2's table. A record enters training iff its source expression's arena node count falls in one
+of those two bands AND its label budget is one of that band's qualifying budgets; everything
+else (band 51-100 at any budget, band 101-1000 past its budget cutoff, and the pooled/unbanded
+population) is excluded from the training regime as a zero-signal population by this test, even
+though `spread_report`'s existing dataset gate would still admit it. Label budget for training:
+B=100 (both bands qualify there with the widest margin from zero) unless the higher-budget
+ablation named in §3.4 is run.
+
+**This is a narrower regime than "TRAIN classical," and it does not cover production's tail** (no
+`>1000`-node expression exists in this corpus at all, §2b.1) — training restricted to it answers
+"can a Guide learn anything in the region where guided orderings disagree," not "does a Guide
+generalize to the full production distribution." Extending coverage past 1,000 nodes is a corpus-
+design question (§2b.1's redirect), separate from this selection rule.
+
+Selection made from this measurement alone, before training; §7's registered comparison and Round
+1/2's kill-gate accounting are unaffected until a training run against this regime reports back.
+
 ## 3. The model
 
 ### 3.1 Features
@@ -437,6 +550,10 @@ clean rounds of Round 1's kill gate (the label source changed; the gates did not
 | `pixelflow-pipeline/src/bin/r2g_counterfactual.rs` (new) | `--corpus-dir`, `--corpus`, `--name-prefix dev_sh_`, `--n-expr 30`, `--n-apps 20`, `--budget 100`, `--r2g-checkpoint`, `--strict-checkpoint`, `--train-guide-report`, `--seed`, `--out-jsonl`, `--out-json`, `--out-md`; one row per sampled application (`expr_name, set, ordinal, sweep, rule_idx, rule_name, changed, cost_with, cost_without, delta, adv_r2g, adv_strict_v1, adv_per_rule, bit_loose_at_b, bit_tight_at_b, bit_strict_at_b, bit_strict_class_at_b, bit_*_full`); aggregate Spearman per proxy per set + pooled, nonzero-Δ share, bootstrap CIs; `docs/results/<date>-r2g-counterfactual.{jsonl,json,md}` | binary |
 | `pixelflow-pipeline/src/bin/phase3_at_budget_eval.rs` | `--r2g-checkpoint <path>` adds arm `r2g` (`ARM_NAMES` gains `"r2g"`); the §7 table (`m_r2g − m_linear` against `M_B`, per set and tier, head-to-head counts) in the JSON/MD; `docs/results/<date>-phase3-r2g-{dev,sh,bezier}.{jsonl,json}` + `-report.md`, combined `<date>-phase3-r2g-comparison.{json,csv,md}`; journal record `phase3_r2g` | evaluation |
 
+| `pixelflow-pipeline/src/training/r2g.rs` (round 3) | `pub const BUDGET_LADDER: [usize; 6] = [100, 200, 400, 800, 1600, 3200]`; `pub struct CheckpointRow { budget, app_actual, cost, stop: String, return_val: Option<f32> }`; `TrajectoryRow` gains `expr_node_count: usize` and `checkpoints: Vec<CheckpointRow>` (both `#[serde(default)]`, additive — `app_actual_b100`/`cost_b100`/etc. unchanged) | additive |
+| `pixelflow-pipeline/src/bin/gen_r2g_trajectories.rs` (round 3) | `--max-expr-nodes 0` lifts the size filter; `--max-classes` becomes `Option<usize>`, resolved from `pixelflow_search::egraph::config_for_node_count(usize::MAX).max_classes` when unset; `--budgets` (default `100,200,400,800,1600,3200`, first two entries pinned to 100/200); per-expression `PER_EXPR_WALLCLOCK_CEILING` (10 min, post-hoc — excludes and loudly reports an over-ceiling expression rather than writing partial output); run-level `\|R\|`-scaled wall-clock assert (panics if the aggregate run is far slower than every per-expression skip explains) | changed binary, additive flags |
+| `pixelflow-pipeline/src/bin/r2g_spread_vs_budget.rs` (new, round 3) | `--data-dir`, `--tiers`, `--out-json`, `--out-csv`, `--out-md`; reads `r2g_trajectories_{tier}.jsonl`'s `checkpoints` field and reports, per `(tier, budget, node-count band ∈ {51-100,101-250,251-1000,>1000,all})`: `zero_spread_all_share` (12-way), `zero_spread_guided_share` (11-way, excludes `unguided` — the credit signal), `qualifies` (`zero_spread_guided_share < 0.5`), spread quartiles, `unguided_differs_share`, a typed stop-reason histogram; `docs/results/2026-09-01-r2g-spread-vs-budget.{json,csv,md}` | binary |
+
 Everything in this table is additive to the crate surfaces named; no existing public item changes
 signature; `pub(crate)` stays `pub(crate)`.
 
@@ -473,3 +590,17 @@ Appended 2026-09-01 after the run; §0–§7 above are unrevised. Full report:
   `counterfactual_credit --r2g-checkpoint/--strict-checkpoint` (Spearman vs Δ) before any ladder
   run. §6's transformer pull-forward condition is not met (the linear model beat no bound).
 - Kill-gate accounting: one clean round consumed (Round 1, Round 1b, this round).
+
+**Round 3 (2026-09-01), "measure spread where the budget binds":** full §2b above. Re-mint with
+`--max-expr-nodes 0` (size filter lifted) and `--max-classes` resolved from production's own
+`config_for_node_count` (5,000) rather than the round-1/2 `--max-classes 2000` inherited from
+`gen_strict_labels`; budget ladder `100..3200` in place of B∈{100,200}. TRAIN 3,356 / DEV 783 / `sh`
+100 / `bezier` 80 expressions, no wall-clock skips. Finding: TRAIN and DEV agree exactly on five
+qualifying `(B, band)` cells — 101-250 nodes at B∈{100,200}, 251-1000 nodes at B∈{100,200,400} —
+where guided-among-themselves spread is non-zero for ≥50% of expressions; every other cell
+(band 51-100, the pooled population, and both bands past their budget cutoff) does not qualify.
+No expression in any split exceeds 1,000 nodes, so this corpus does not reach production's
+measured tail (p90/max ~24k/86k applications) regardless of node-count filtering — a corpus-design
+gap, not a training-target gap. Selection rule registered in §2b.3: training regime restricted to
+the five agreeing cells. Data: `docs/results/2026-09-01-r2g-spread-vs-budget.{md,csv,json}`,
+`docs/results/2026-09-01-r2g-trajectory-mint-full.{json,md}`.

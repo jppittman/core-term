@@ -18,29 +18,26 @@
 //! than re-derived (K and the seed count are justified there from
 //! per-expression application volume and mint cost, not re-argued here).
 //!
-//! # Checkpoints: B=100 / B=200, ceiling 4×B=400
+//! # Checkpoints: the budget ladder ([`BUDGET_LADDER`], round 3)
 //!
-//! Every trajectory runs to a ceiling of `4 * REGISTERED_PRIMARY_BUDGET_
-//! APPLICATIONS = 400` recorded applications (or ends earlier), with
-//! extraction snapshots taken at the two REGISTERED tiers this program's
-//! `train_guide_r2g`/[`R2gRecord`] consumer already expects
-//! (`cost_b100`/`cost_b200`, §7's pre-registered comparison) plus a third,
-//! unreported extraction at the ceiling itself — used only to (a) label
-//! `label_positive` against the fullest available derivation and (b) widen
-//! the empirical per-expression best-cost reference beyond the two reported
-//! checkpoints (§1.2: "the unguided trajectory contributes its full grid
-//! through quiescence/cap"). Running to a ceiling past the registered
-//! secondary tier, while still labeling at the two registered checkpoints,
-//! is a deliberate reconciliation: the task instruction driving this binary
-//! asked for trajectories run "to budget 4B, so B and 4B returns both
-//! exist," but every consumer already landed in this tree
-//! (`training/r2g.rs`'s [`R2gRecord`], `train_guide_r2g`,
-//! `phase3_at_budget_eval`'s planned `--r2g-checkpoint` arm) is built
-//! against the plan's actual pre-registered tiers, B=100/B=200 (§7) — not
-//! 4B=400. Matching the landed schema rather than inventing a third,
-//! incompatible one is the smaller, more defensible surface; the ceiling
-//! still runs to 400, satisfying "trajectories to budget 4B" as the run
-//! length, while `cost_b100`/`cost_b200` satisfy every downstream reader.
+//! Every trajectory runs through every rung of `--budgets` (default
+//! [`BUDGET_LADDER`] = `100,200,400,800,1600,3200`), extracting at each —
+//! round 3 (`docs/plans/2026-09-01-guide-return-to-go.md` §2b) generalized
+//! this from round 1/2's fixed B=100/B=200/ceiling-at-4B trio specifically
+//! to measure where, if anywhere, return spread survives into the budget
+//! regime production actually runs classical kernels in (median ≈ 1,671
+//! applications, PR #1087) — round 2's finding was that the ORIGINAL
+//! `--max-expr-nodes 250`/`--max-classes 2000` mint made B=100 near-
+//! quiescence for most surviving expressions, collapsing every guided
+//! ordering onto the same committed set. The first two ladder rungs MUST
+//! stay 100/200 ([`parse_budgets`] asserts this): every existing
+//! `TrajectoryRow::app_actual_b100`/`cost_b100`/`return_b100` (and the
+//! `_b200` twins) consumer — `train_guide_r2g`'s [`R2gRecord`],
+//! `phase3_at_budget_eval`'s planned `--r2g-checkpoint` arm — reads those
+//! two fields positionally, unchanged by this generalization.
+//! `EpisodeLabels::compute_strict`'s `label_positive` is computed against
+//! the LAST (highest-budget) extraction, same role round 1/2's ceiling
+//! extraction played.
 //!
 //! # Feature observation is post-hoc, not in-loop (a stated approximation)
 //!
@@ -86,35 +83,46 @@ use clap::Parser;
 
 use pixelflow_ir::{ExprArena, ExprId};
 use pixelflow_pipeline::training::corpus::read_corpus;
-use pixelflow_pipeline::training::r2g::{OrderingPolicy, TrajectoryRow, log_regret, spread_report};
+use pixelflow_pipeline::training::r2g::{
+    BUDGET_LADDER, CheckpointRow, OrderingPolicy, TrajectoryRow, log_regret, spread_report,
+};
 use pixelflow_pipeline::training::split::{Family, SplitManifest, Tier};
 use pixelflow_pipeline::training::structural::FenceKey;
 use pixelflow_search::egraph::{
     ApplicationId, CandidateFeatures, CostModel, EGraph, EpisodeLabels, Firing, GuidedSaturation,
-    Label, Origin, REGISTERED_PRIMARY_BUDGET_APPLICATIONS, SaturationStop, all_rules, extract_dag,
+    Label, Origin, REGISTERED_PRIMARY_BUDGET_APPLICATIONS, SaturationStop, all_rules,
+    config_for_node_count, extract_dag,
 };
 use pixelflow_search::nnue::factored::EMBED_DIM;
 use pixelflow_search::nnue::guide::diversity::{UniformRandomGuide, uniform_unit_score};
 use pixelflow_search::nnue::guide::linear::{LinearCandidateGuide, PerRuleRateGuide};
 use pixelflow_search::nnue::guide::{CandidateSummary, SaturationGuide};
 
-/// Registered primary tier, `B`.
+/// Registered primary tier, `B` — `BUDGET_LADDER[0]` MUST equal this (a test
+/// below pins the equality) since [`unguided_trajectory_reproduces_run_
+/// anytime_curve_cost_at_b`] compares against it directly.
 const B_PRIMARY: usize = REGISTERED_PRIMARY_BUDGET_APPLICATIONS;
-/// Registered secondary tier (Phase 3 registration §4).
-const B_SECONDARY: usize = 200;
-/// Ceiling every trajectory runs to (or ends before) — `4 * B`, per this
-/// task's instruction; see the module doc's "Checkpoints" section for why
-/// the two REPORTED checkpoints stay at the registered 100/200 tiers rather
-/// than becoming B/4B.
-const CEILING: usize = 4 * B_PRIMARY;
 /// Same iteration ceiling `gen_strict_labels`/`guide_headroom` use — a
 /// generous safety cap, not expected to bind under an application budget
 /// far below it.
-const SATURATE_MAX_ITERS: usize = 400;
-/// Per-stage wall-clock safety ceiling — this is an offline batch
-/// measurement, so production's sub-second deadline does not apply; a
-/// single expression's three checkpoint stages share this budget each.
+const SATURATE_MAX_ITERS: usize = 2_000;
+/// Per-checkpoint wall-clock safety ceiling — this is an offline batch
+/// measurement, so production's sub-second deadline does not apply; each
+/// of a trajectory's [`BUDGET_LADDER`] stages shares this budget.
 const SATURATE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Round-3 task's per-expression wall-clock safety ceiling
+/// (`docs/plans/2026-09-01-guide-return-to-go.md` §2b): minting one
+/// expression (every ordering policy, run out to the full
+/// [`BUDGET_LADDER`]) that has not finished within this long is ABANDONED —
+/// the outer loop stops launching further policies for that expression,
+/// reports it loudly (stderr + a counted report field), and moves on. This
+/// is checked between whole policy-trajectory runs (the finest granularity
+/// available without threading a preemption hook through `EGraph`'s
+/// saturation loop — see `run_trajectory`'s own per-checkpoint
+/// `SATURATE_TIMEOUT` for the finer-grained net under that), so a single
+/// pathological policy run can still overshoot this ceiling before the
+/// check fires; it is a safety net, not a hard real-time bound.
+const PER_EXPR_WALLCLOCK_CEILING: Duration = Duration::from_secs(600);
 
 #[derive(Parser)]
 #[command(name = "gen_r2g_trajectories")]
@@ -178,14 +186,36 @@ struct Args {
     /// flag and identical default to `gen_strict_labels --max-expr-nodes`,
     /// for direct comparability (this binary's own module doc and mint
     /// report restate the value used, per this task's instruction).
+    /// `0` LIFTS the filter entirely (no expression is skipped for size) —
+    /// round 3's "measure spread where the budget binds" task needs the
+    /// full TRAIN/DEV population, not the round-1/2
+    /// `gen_strict_labels`-inherited `--max-expr-nodes 250` tractability cut
+    /// that round 2 found was itself gating out the budget-bound regime.
     #[arg(long, default_value_t = 250)]
     max_expr_nodes: usize,
 
-    /// Per-expression e-class cap passed to every saturation call —
-    /// identical flag and identical default to `gen_strict_labels
-    /// --max-classes`.
-    #[arg(long, default_value_t = 2_000)]
-    max_classes: usize,
+    /// Per-expression e-class cap passed to every saturation call. Unset
+    /// (the default) resolves to production's OWN classical-tier cap, read
+    /// from `pixelflow_search::egraph::config_for_node_count` rather than
+    /// hardcoded — round 3's instruction is explicit that the cap must
+    /// track that function, not restate its current value (5,000) as a
+    /// literal that could silently drift out of step. Pass a value
+    /// explicitly to override (e.g. to reproduce round 1/2's
+    /// `--max-classes 2000`).
+    #[arg(long)]
+    max_classes: Option<usize>,
+
+    /// Comma-separated application-count checkpoints to extract and label
+    /// at, in ascending order — round 3's task: `100,200,400,800,1600,3200`.
+    /// The mint's mandatory equivalence test
+    /// (`unguided_trajectory_reproduces_run_anytime_curve_cost_at_b`) and
+    /// every consumer of the ORIGINAL two-tier `TrajectoryRow` fields
+    /// (`app_actual_b100`/`cost_b100`/`return_b100` and the `_b200` twins)
+    /// require the first two entries to be exactly 100 and 200 — anything
+    /// else panics loudly at startup rather than silently mislabeling those
+    /// fields (see `parse_budgets`).
+    #[arg(long, default_value = "100,200,400,800,1600,3200")]
+    budgets: String,
 
     /// Output directory for the four `r2g_{train,dev,sh,bezier}.jsonl` /
     /// `r2g_trajectories_{train,dev,sh,bezier}.jsonl` file pairs.
@@ -408,6 +438,40 @@ fn build_policies(n_rand: u64, mix_ratios: &[(u16, u16)]) -> Vec<OrderingPolicy>
     policies
 }
 
+/// Parse `--budgets` into an ascending `Vec<usize>`, asserting the first two
+/// entries are exactly 100/200 (see the flag's own doc for why: every
+/// existing `TrajectoryRow::*_b100`/`*_b200` consumer, and this binary's own
+/// equivalence test, depend on that positionally).
+fn parse_budgets(s: &str) -> Vec<usize> {
+    let budgets: Vec<usize> = s
+        .split(',')
+        .map(|tok| {
+            let tok = tok.trim();
+            tok.parse::<usize>().unwrap_or_else(|e| {
+                panic!("gen_r2g_trajectories: --budgets entry {tok:?} is not a number: {e}")
+            })
+        })
+        .collect();
+    assert!(
+        !budgets.is_empty(),
+        "gen_r2g_trajectories: --budgets must name at least one checkpoint"
+    );
+    for w in budgets.windows(2) {
+        assert!(
+            w[0] < w[1],
+            "gen_r2g_trajectories: --budgets must be strictly ascending, got {budgets:?}"
+        );
+    }
+    assert_eq!(
+        (budgets[0], *budgets.get(1).unwrap_or(&0)),
+        (100, 200),
+        "gen_r2g_trajectories: --budgets' first two entries must be 100,200 — every existing \
+         TrajectoryRow::app_actual_b100/cost_b100/return_b100 (and the _b200 twins) consumer \
+         reads those positionally; got {budgets:?}"
+    );
+    budgets
+}
+
 fn parse_mix_ratios(s: &str) -> Vec<(u16, u16)> {
     s.split(',')
         .map(|tok| {
@@ -430,34 +494,39 @@ fn parse_mix_ratios(s: &str) -> Vec<(u16, u16)> {
 // Running one trajectory
 // ============================================================================
 
+/// One checkpoint's raw outcome within a trajectory — one per
+/// [`BUDGET_LADDER`] entry.
+struct RawCheckpoint {
+    budget: usize,
+    app_actual: u64,
+    cost: u64,
+    stop: SaturationStop,
+}
+
 /// One trajectory's raw outcome: the e-graph it produced (kept, so the
 /// per-application feature/label pass below can walk its final provenance
 /// log — see the module doc's "Feature observation is post-hoc" section),
-/// its three checkpoint costs, and the hindsight strict labels computed
-/// against the ceiling extraction.
+/// its per-[`BUDGET_LADDER`]-checkpoint costs, and the hindsight strict
+/// labels computed against the LAST (ceiling) extraction.
 struct RawTrajectory {
     egraph: EGraph,
-    app_actual_b100: u64,
-    cost_b100: u64,
-    app_actual_b200: u64,
-    cost_b200: u64,
-    app_actual_ceiling: u64,
-    cost_ceiling: u64,
+    checkpoints: Vec<RawCheckpoint>,
     /// `true` iff saturation had already stopped for a reason other than
     /// the application budget (quiesced / class-capped / iteration-
-    /// ceilinged) by the time the ceiling stage returned.
+    /// ceilinged) by the time the LAST checkpoint returned.
     ended: bool,
     labels: EpisodeLabels,
 }
 
-/// Run one `(expression, policy)` trajectory through the three checkpoint
-/// stages (B=100, B=200, ceiling=4B), extracting at each. The `Unguided`
-/// and guided branches are written out separately, rather than behind one
-/// shared closure/helper, because a closure capturing `&mut egraph` would
-/// hold that borrow for its own entire lifetime — blocking the
-/// `extract_dag(&egraph, ...)` calls this function needs to interleave
-/// between checkpoint stages; three direct calls avoid the borrow
-/// entirely and read no worse for the duplication.
+/// Run one `(expression, policy)` trajectory through every stage of
+/// `budgets` (ascending, e.g. [`BUDGET_LADDER`]), extracting at each. The
+/// `Unguided` and guided branches are written out separately, rather than
+/// behind one shared closure/helper, because a closure capturing `&mut
+/// egraph` would hold that borrow for its own entire lifetime — blocking
+/// the `extract_dag(&egraph, ...)` calls this function needs to interleave
+/// between checkpoint stages; two direct loops avoid the borrow entirely
+/// and read no worse for the duplication.
+#[allow(clippy::too_many_arguments)]
 fn run_trajectory(
     policy: &OrderingPolicy,
     cache: &GuideCache,
@@ -465,11 +534,13 @@ fn run_trajectory(
     root: ExprId,
     max_classes: usize,
     costs: &CostModel,
+    budgets: &[usize],
 ) -> RawTrajectory {
     let mut egraph = EGraph::with_rules(all_rules());
     let root_class = egraph.add_arena(arena, root);
-
-    let (stats_b100, cost_b100, stats_b200, cost_b200, stats_ceiling, ext_ceiling);
+    let mut checkpoints = Vec::with_capacity(budgets.len());
+    let mut last_stop = SaturationStop::ApplicationBudget;
+    let mut last_ext = None;
 
     if matches!(policy, OrderingPolicy::Unguided) {
         // The production path, byte-for-byte: `EGraph::saturate_until_
@@ -477,73 +548,60 @@ fn run_trajectory(
         // `unguided_trajectory_reproduces_run_anytime_curve_cost_at_b` test
         // for the equivalence this guarantees against
         // `egraph::run_anytime_curve`.
-        stats_b100 = egraph.saturate_until_applications(
-            B_PRIMARY,
-            SATURATE_MAX_ITERS,
-            max_classes,
-            SATURATE_TIMEOUT,
-        );
-        cost_b100 = extract_dag(&egraph, root_class, costs).total_cost;
-        stats_b200 = egraph.saturate_until_applications(
-            B_SECONDARY,
-            SATURATE_MAX_ITERS,
-            max_classes,
-            SATURATE_TIMEOUT,
-        );
-        cost_b200 = extract_dag(&egraph, root_class, costs).total_cost;
-        stats_ceiling = egraph.saturate_until_applications(
-            CEILING,
-            SATURATE_MAX_ITERS,
-            max_classes,
-            SATURATE_TIMEOUT,
-        );
-        ext_ceiling = extract_dag(&egraph, root_class, costs);
+        for &budget in budgets {
+            let stats = egraph.saturate_until_applications(
+                budget,
+                SATURATE_MAX_ITERS,
+                max_classes,
+                SATURATE_TIMEOUT,
+            );
+            let ext = extract_dag(&egraph, root_class, costs);
+            checkpoints.push(RawCheckpoint {
+                budget,
+                app_actual: stats.applications as u64,
+                cost: ext.total_cost as u64,
+                stop: stats.stop,
+            });
+            last_stop = stats.stop;
+            last_ext = Some(ext);
+        }
     } else {
         let rule_embeds = vec![[0.0f32; EMBED_DIM]; all_rules().len()];
         let built = build_guide(policy, cache);
-        // ONE continuous episode across all three checkpoints — resuming a
+        // ONE continuous episode across every checkpoint — resuming a
         // fresh `GuidedSaturation` per checkpoint would re-score and
         // re-fire every already-resolved candidate key, per that type's own
         // doc ("silently handicapped at every checkpoint after the
         // first").
         let mut episode = GuidedSaturation::new(&built, &rule_embeds);
-        stats_b100 = episode.until_applications(
-            &mut egraph,
-            B_PRIMARY,
-            SATURATE_MAX_ITERS,
-            max_classes,
-            SATURATE_TIMEOUT,
-        );
-        cost_b100 = extract_dag(&egraph, root_class, costs).total_cost;
-        stats_b200 = episode.until_applications(
-            &mut egraph,
-            B_SECONDARY,
-            SATURATE_MAX_ITERS,
-            max_classes,
-            SATURATE_TIMEOUT,
-        );
-        cost_b200 = extract_dag(&egraph, root_class, costs).total_cost;
-        stats_ceiling = episode.until_applications(
-            &mut egraph,
-            CEILING,
-            SATURATE_MAX_ITERS,
-            max_classes,
-            SATURATE_TIMEOUT,
-        );
-        ext_ceiling = extract_dag(&egraph, root_class, costs);
+        for &budget in budgets {
+            let stats = episode.until_applications(
+                &mut egraph,
+                budget,
+                SATURATE_MAX_ITERS,
+                max_classes,
+                SATURATE_TIMEOUT,
+            );
+            let ext = extract_dag(&egraph, root_class, costs);
+            checkpoints.push(RawCheckpoint {
+                budget,
+                app_actual: stats.applications as u64,
+                cost: ext.total_cost as u64,
+                stop: stats.stop,
+            });
+            last_stop = stats.stop;
+            last_ext = Some(ext);
+        }
     }
 
-    let labels = EpisodeLabels::compute_strict(&egraph, ext_ceiling.root, &ext_ceiling.choices);
-    let ended = stats_ceiling.stop != SaturationStop::ApplicationBudget;
+    let ext_last = last_ext
+        .unwrap_or_else(|| panic!("run_trajectory: budgets slice was empty — no checkpoint ran"));
+    let labels = EpisodeLabels::compute_strict(&egraph, ext_last.root, &ext_last.choices);
+    let ended = last_stop != SaturationStop::ApplicationBudget;
 
     RawTrajectory {
         egraph,
-        app_actual_b100: stats_b100.applications as u64,
-        cost_b100: cost_b100 as u64,
-        app_actual_b200: stats_b200.applications as u64,
-        cost_b200: cost_b200 as u64,
-        app_actual_ceiling: stats_ceiling.applications as u64,
-        cost_ceiling: ext_ceiling.total_cost as u64,
+        checkpoints,
         ended,
         labels,
     }
@@ -616,22 +674,22 @@ fn mint_expression(
     max_classes: usize,
     costs: &CostModel,
     rule_names: &[String],
+    budgets: &[usize],
     out: &mut impl Write,
 ) -> ExprMintOutcome {
     let expr_node_count = arena.nodes_raw().len();
     let raw: Vec<RawTrajectory> = policies
         .iter()
-        .map(|p| run_trajectory(p, cache, arena, root, max_classes, costs))
+        .map(|p| run_trajectory(p, cache, arena, root, max_classes, costs, budgets))
         .collect();
 
     // Empirical best (§1.2's `c*_e`): the minimum extraction cost seen at
-    // ANY checkpoint of ANY trajectory — wider than just the two reported
-    // checkpoints (includes the ceiling extraction), matching "the unguided
-    // trajectory contributes its full grid" in spirit without needing the
-    // full anytime grid this mint does not sample.
+    // ANY checkpoint (any rung of `budgets`) of ANY trajectory — matching
+    // "the unguided trajectory contributes its full grid" in spirit without
+    // needing the full anytime grid this mint does not sample.
     let best: u64 = raw
         .iter()
-        .flat_map(|t| [t.cost_b100, t.cost_b200, t.cost_ceiling])
+        .flat_map(|t| t.checkpoints.iter().map(|c| c.cost))
         .min()
         .unwrap_or(0);
 
@@ -643,12 +701,29 @@ fn mint_expression(
         };
     }
 
-    let returns_b100: Vec<Option<f32>> =
-        raw.iter().map(|t| log_regret(t.cost_b100, best)).collect();
-    let returns_b200: Vec<Option<f32>> =
-        raw.iter().map(|t| log_regret(t.cost_b200, best)).collect();
-    let mean_b100 = mean_of_some(&returns_b100);
-    let mean_b200 = mean_of_some(&returns_b200);
+    // Returns per (trajectory, budget-ladder-index), plus the per-budget
+    // cross-trajectory mean used for centering — generalizes the original
+    // b100/b200-only computation to every rung of `budgets`.
+    let n_budgets = budgets.len();
+    let returns: Vec<Vec<Option<f32>>> = raw
+        .iter()
+        .map(|t| {
+            t.checkpoints
+                .iter()
+                .map(|c| log_regret(c.cost, best))
+                .collect()
+        })
+        .collect();
+    let means: Vec<Option<f32>> = (0..n_budgets)
+        .map(|bi| {
+            mean_of_some(
+                &raw.iter()
+                    .enumerate()
+                    .map(|(ti, _)| returns[ti][bi])
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
 
     let mut trajectory_rows = Vec::with_capacity(raw.len());
     let mut applications_written = 0usize;
@@ -656,25 +731,44 @@ fn mint_expression(
     for (i, (traj, policy)) in raw.iter().zip(policies.iter()).enumerate() {
         let trajectory_id = i as u32;
         let policy_label = policy.label();
-        let return_b100 = returns_b100[i];
-        let return_b200 = returns_b200[i];
-        let centered_b100 = return_b100.zip(mean_b100).map(|(r, m)| r - m);
-        let centered_b200 = return_b200.zip(mean_b200).map(|(r, m)| r - m);
+        let return_b100 = returns[i][0];
+        let return_b200 = returns[i][1];
+
+        let checkpoint_rows: Vec<CheckpointRow> = traj
+            .checkpoints
+            .iter()
+            .zip(returns[i].iter())
+            .map(|(c, &r)| CheckpointRow {
+                budget: c.budget,
+                app_actual: c.app_actual,
+                cost: c.cost,
+                stop: format!("{:?}", c.stop),
+                return_val: r,
+            })
+            .collect();
+        let last_checkpoint = traj.checkpoints.last().unwrap_or_else(|| {
+            panic!("mint_expression: trajectory {trajectory_id} ran zero checkpoints")
+        });
 
         trajectory_rows.push(TrajectoryRow {
             expr_name: name.to_string(),
             tier: tier_label.to_string(),
             trajectory_id,
             policy: policy_label.clone(),
-            app_actual_b100: traj.app_actual_b100,
-            cost_b100: traj.cost_b100,
-            app_actual_b200: traj.app_actual_b200,
-            cost_b200: traj.cost_b200,
+            expr_node_count,
+            app_actual_b100: traj.checkpoints[0].app_actual,
+            cost_b100: traj.checkpoints[0].cost,
+            app_actual_b200: traj.checkpoints[1].app_actual,
+            cost_b200: traj.checkpoints[1].cost,
             ended: traj.ended,
-            ended_at_apps: traj.app_actual_ceiling,
+            ended_at_apps: last_checkpoint.app_actual,
             return_b100,
             return_b200,
+            checkpoints: checkpoint_rows,
         });
+
+        let centered_b100 = return_b100.zip(means[0]).map(|(r, m)| r - m);
+        let centered_b200 = return_b200.zip(means[1]).map(|(r, m)| r - m);
 
         let changed_ids = changed_application_ids(&traj.egraph);
         for (app_id, record) in traj.egraph.provenance().applications() {
@@ -739,8 +833,8 @@ fn mint_expression(
                 record.step,
                 app_id.as_u64(),
                 changed,
-                traj.cost_b100,
-                traj.cost_b200,
+                traj.checkpoints[0].cost,
+                traj.checkpoints[1].cost,
                 best,
                 opt_f32_json(return_b100),
                 opt_f32_json(return_b200),
@@ -878,6 +972,17 @@ struct SplitOutcome {
     expressions: usize,
     zero_best_excluded: usize,
     skipped_oversized: usize,
+    /// Expressions whose FULL mint (every policy, every `budgets` rung)
+    /// exceeded [`PER_EXPR_WALLCLOCK_CEILING`] — abandoned and excluded from
+    /// output rather than written partially, and reported loudly (stderr,
+    /// plus this counted field) per the round-3 task's "reported loudly as
+    /// skipped, never silent" requirement. This check is necessarily
+    /// post-hoc (timed after `mint_expression` returns), not preemptive —
+    /// see [`PER_EXPR_WALLCLOCK_CEILING`]'s own doc for why a synchronous,
+    /// single-threaded mint loop cannot interrupt mid-saturation without a
+    /// preemption hook this task's scope does not require building.
+    skipped_wallclock: usize,
+    skipped_wallclock_names: Vec<String>,
     trajectories: usize,
     applications: usize,
     trajectory_rows: Vec<TrajectoryRow>,
@@ -892,6 +997,7 @@ fn mint_split(
     max_expr_nodes: usize,
     max_classes: usize,
     rule_names: &[String],
+    budgets: &[usize],
     family_of: impl Fn(&str) -> (u32, u64),
     out_records_path: &Path,
     out_trajectories_path: &Path,
@@ -916,6 +1022,8 @@ fn mint_split(
         expressions: 0,
         zero_best_excluded: 0,
         skipped_oversized: 0,
+        skipped_wallclock: 0,
+        skipped_wallclock_names: Vec::new(),
         trajectories: 0,
         applications: 0,
         trajectory_rows: Vec::new(),
@@ -924,11 +1032,18 @@ fn mint_split(
     let n = entries.len();
     for (i, (name, arena, root)) in entries.iter().enumerate() {
         let node_count = arena.nodes_raw().len();
-        if node_count > max_expr_nodes {
+        // `max_expr_nodes == 0` LIFTS the filter — see the flag's own doc.
+        if max_expr_nodes != 0 && node_count > max_expr_nodes {
             outcome.skipped_oversized += 1;
             continue;
         }
         let (family_band, family_seed) = family_of(name);
+
+        // Mint into a scratch buffer first, timed, so an over-ceiling
+        // expression's partial output never reaches the real file — see
+        // `SplitOutcome::skipped_wallclock`'s doc.
+        let mint_start = std::time::Instant::now();
+        let mut scratch = Vec::new();
         let result = mint_expression(
             name,
             arena,
@@ -941,8 +1056,27 @@ fn mint_split(
             max_classes,
             &costs,
             rule_names,
-            &mut records_out,
+            budgets,
+            &mut scratch,
         );
+        let mint_elapsed = mint_start.elapsed();
+        if mint_elapsed > PER_EXPR_WALLCLOCK_CEILING {
+            eprintln!(
+                "gen_r2g_trajectories[{tier_label}]: SKIPPING '{name}' ({node_count} nodes) — \
+                 mint took {:.1}s, over the {:.0}s per-expression wall-clock ceiling",
+                mint_elapsed.as_secs_f64(),
+                PER_EXPR_WALLCLOCK_CEILING.as_secs_f64()
+            );
+            outcome.skipped_wallclock += 1;
+            outcome.skipped_wallclock_names.push(name.clone());
+            continue;
+        }
+        records_out.write_all(&scratch).unwrap_or_else(|e| {
+            panic!(
+                "gen_r2g_trajectories: write to {}: {e}",
+                out_records_path.display()
+            )
+        });
         if result.zero_best_excluded {
             outcome.zero_best_excluded += 1;
         } else {
@@ -992,10 +1126,13 @@ fn mint_split(
 // Report
 // ============================================================================
 
+#[allow(clippy::too_many_arguments)]
 fn write_report(
     path_json: Option<&str>,
     path_md: Option<&str>,
     args: &Args,
+    resolved_max_classes: usize,
+    budgets: &[usize],
     outcomes: &[SplitOutcome],
     mint_seconds: f64,
 ) {
@@ -1036,6 +1173,7 @@ fn write_report(
         per_split_json.push_str(&format!(
             "  {{\n    \"tier\": \"{}\",\n    \"expressions\": {},\n    \
              \"zero_best_excluded\": {},\n    \"skipped_oversized\": {},\n    \
+             \"skipped_wallclock\": {},\n    \"skipped_wallclock_names\": {:?},\n    \
              \"trajectories\": {},\n    \"applications\": {},\n    \
              \"zero_spread_b100\": {},\n    \"zero_spread_b100_share\": {:.4},\n    \
              \"zero_spread_b100_record_share\": {:.4},\n    \
@@ -1045,6 +1183,8 @@ fn write_report(
             outcome.expressions,
             outcome.zero_best_excluded,
             outcome.skipped_oversized,
+            outcome.skipped_wallclock,
+            outcome.skipped_wallclock_names,
             outcome.trajectories,
             outcome.applications,
             spread.zero_spread_b100,
@@ -1069,7 +1209,8 @@ fn write_report(
 
         per_split_md.push_str(&format!(
             "## {}\n\n\
-             - expressions: {} ({} zero-best excluded, {} oversized-skipped)\n\
+             - expressions: {} ({} zero-best excluded, {} oversized-skipped, {} \
+             wallclock-skipped{})\n\
              - trajectories: {}\n\
              - applications (JSONL rows): {}\n\
              - return spread at B=100: Q1 {:.4}  median {:.4}  Q3 {:.4}\n\
@@ -1080,6 +1221,12 @@ fn write_report(
             outcome.expressions,
             outcome.zero_best_excluded,
             outcome.skipped_oversized,
+            outcome.skipped_wallclock,
+            if outcome.skipped_wallclock_names.is_empty() {
+                String::new()
+            } else {
+                format!(": {:?}", outcome.skipped_wallclock_names)
+            },
             outcome.trajectories,
             outcome.applications,
             spread.spread_b100_quartiles.0,
@@ -1108,17 +1255,13 @@ fn write_report(
 
     if let Some(path) = path_json {
         let json = format!(
-            "{{\n  \"registered_budget_b\": {B_PRIMARY},\n  \"registered_budget_b200\": \
-             {B_SECONDARY},\n  \"ceiling\": {CEILING},\n  \"max_expr_nodes\": {},\n  \
-             \"max_classes\": {},\n  \"train_limit\": {},\n  \"dev_limit\": {},\n  \
+            "{{\n  \"registered_budget_b\": {B_PRIMARY},\n  \"budget_ladder\": {:?},\n  \
+             \"max_expr_nodes\": {},\n  \
+             \"max_classes\": {resolved_max_classes},\n  \"train_limit\": {},\n  \
+             \"dev_limit\": {},\n  \
              \"n_rand\": {},\n  \"mix\": {:?},\n  \"mint_seconds\": {mint_seconds:.2},\n  \
              \"splits\": [\n{per_split_json}\n  ]\n}}\n",
-            args.max_expr_nodes,
-            args.max_classes,
-            args.train_limit,
-            args.dev_limit,
-            args.n_rand,
-            args.mix,
+            budgets, args.max_expr_nodes, args.train_limit, args.dev_limit, args.n_rand, args.mix,
         );
         std::fs::write(path, json)
             .unwrap_or_else(|e| panic!("gen_r2g_trajectories: cannot write {path}: {e}"));
@@ -1127,18 +1270,13 @@ fn write_report(
     if let Some(path) = path_md {
         let md = format!(
             "# R2G trajectory mint\n\n\
-             Registered budget B={B_PRIMARY} (primary) / {B_SECONDARY} (secondary); every \
-             trajectory ran to a ceiling of {CEILING} applications. \
-             `--max-expr-nodes {}` / `--max-classes {}` (identical flags and defaults to \
-             `gen_strict_labels`, for direct comparability). `--train-limit {}` \
+             Registered budget B={B_PRIMARY} (primary), budget ladder {:?}. \
+             `--max-expr-nodes {}` (`0` = no filter) / `--max-classes {resolved_max_classes}` \
+             (resolved from `config_for_node_count` when `--max-classes` is unset). \
+             `--train-limit {}` \
              `--dev-limit {}` `--n-rand {}` `--mix {:?}`. Mint wall-clock: {mint_seconds:.1}s.\n\n\
              {per_split_md}",
-            args.max_expr_nodes,
-            args.max_classes,
-            args.train_limit,
-            args.dev_limit,
-            args.n_rand,
-            args.mix,
+            budgets, args.max_expr_nodes, args.train_limit, args.dev_limit, args.n_rand, args.mix,
         );
         std::fs::write(path, md)
             .unwrap_or_else(|e| panic!("gen_r2g_trajectories: cannot write {path}: {e}"));
@@ -1153,6 +1291,38 @@ fn write_report(
 fn main() {
     let args = Args::parse();
     let start = std::time::Instant::now();
+
+    let budgets = parse_budgets(&args.budgets);
+    if args.budgets == "100,200,400,800,1600,3200" {
+        assert_eq!(
+            budgets,
+            BUDGET_LADDER.to_vec(),
+            "gen_r2g_trajectories: --budgets' own default string and BUDGET_LADDER have drifted \
+             apart from each other"
+        );
+    }
+    // Production's classical tier (§2b's task: "read the constant from
+    // saturate.rs config_for_node_count rather than hardcoding") — resolved
+    // at a node count large enough to be unambiguously in the `classical()`
+    // branch, so a future rebalancing of `config_for_node_count`'s
+    // thresholds still resolves correctly without touching this file.
+    let resolved_max_classes = args
+        .max_classes
+        .unwrap_or_else(|| config_for_node_count(usize::MAX).max_classes);
+    eprintln!(
+        "gen_r2g_trajectories: budgets={budgets:?} max_expr_nodes={} ({}) max_classes={resolved_max_classes}{}",
+        args.max_expr_nodes,
+        if args.max_expr_nodes == 0 {
+            "no filter"
+        } else {
+            "filtered"
+        },
+        if args.max_classes.is_none() {
+            " (resolved from config_for_node_count)"
+        } else {
+            " (explicit --max-classes)"
+        },
+    );
 
     let corpus_dir = PathBuf::from(&args.corpus_dir);
     let out_dir = PathBuf::from(&args.out_dir);
@@ -1213,8 +1383,9 @@ fn main() {
             &policies,
             &cache,
             args.max_expr_nodes,
-            args.max_classes,
+            resolved_max_classes,
             &rule_names,
+            &budgets,
             |name| {
                 let f = parse_family(name);
                 (f.band as u32, f.seed)
@@ -1244,8 +1415,9 @@ fn main() {
             &policies,
             &cache,
             args.max_expr_nodes,
-            args.max_classes,
+            resolved_max_classes,
             &rule_names,
+            &budgets,
             |name| {
                 let f = parse_family(name);
                 (f.band as u32, f.seed)
@@ -1287,8 +1459,9 @@ fn main() {
                 &policies,
                 &cache,
                 args.max_expr_nodes,
-                args.max_classes,
+                resolved_max_classes,
                 &rule_names,
+                &budgets,
                 |_name| (0u32, 0u64),
                 &out_dir.join("r2g_sh.jsonl"),
                 &out_dir.join("r2g_trajectories_sh.jsonl"),
@@ -1317,8 +1490,9 @@ fn main() {
                 &policies,
                 &cache,
                 args.max_expr_nodes,
-                args.max_classes,
+                resolved_max_classes,
                 &rule_names,
+                &budgets,
                 |_name| (0u32, 0u64),
                 &out_dir.join("r2g_bezier.jsonl"),
                 &out_dir.join("r2g_trajectories_bezier.jsonl"),
@@ -1342,10 +1516,33 @@ fn main() {
     }
     println!("gen_r2g_trajectories: mint took {mint_seconds:.1}s total");
 
+    // Run-level wall-clock safety ceiling, scaled by |R| (the total
+    // trajectories actually minted across every split) — a generous
+    // per-trajectory allowance (5s), so binding it means the run as a whole
+    // ran far slower than any individual saturation call should, which
+    // usually means something is stuck rather than merely slow. This is
+    // distinct from `skipped_wallclock` above (which skips one over-budget
+    // EXPRESSION and continues loudly): this one is checked once, after
+    // every split has finished, and PANICS if it binds — NO SILENT
+    // FAILURES, a suspect aggregate measurement must not be reported as if
+    // it were clean.
+    let total_trajectories: usize = outcomes.iter().map(|o| o.trajectories).sum();
+    let run_wallclock_ceiling_secs = (total_trajectories.max(1) as f64) * 5.0;
+    assert!(
+        mint_seconds <= run_wallclock_ceiling_secs,
+        "gen_r2g_trajectories: mint took {mint_seconds:.1}s across {total_trajectories} \
+         trajectories — over the |R|-scaled wall-clock safety ceiling \
+         ({run_wallclock_ceiling_secs:.1}s at 5s/trajectory). This is the RUN-LEVEL ceiling, \
+         distinct from the per-expression skip reported above; binding it means the aggregate \
+         run ran far slower than any per-expression skip alone explains."
+    );
+
     write_report(
         args.report_json.as_deref(),
         args.report_md.as_deref(),
         &args,
+        resolved_max_classes,
+        &budgets,
         &outcomes,
         mint_seconds,
     );
@@ -1390,6 +1587,7 @@ mod tests {
             root,
             2_000,
             &costs,
+            &BUDGET_LADDER,
         );
 
         let grid: Vec<usize> = APP_CHECKPOINT_GRID
@@ -1421,7 +1619,7 @@ mod tests {
             .cost;
 
         assert_eq!(
-            traj.cost_b100, cost_at_b as u64,
+            traj.checkpoints[0].cost, cost_at_b as u64,
             "the minter's Unguided trajectory must extract to the same cost at B=100 as \
              run_anytime_curve's own sample at the same target"
         );
@@ -1549,6 +1747,7 @@ mod tests {
             2_000,
             &costs,
             &rule_names,
+            &BUDGET_LADDER,
             &mut buf,
         );
         assert!(!outcome.zero_best_excluded);
