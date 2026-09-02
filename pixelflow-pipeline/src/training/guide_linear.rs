@@ -886,10 +886,17 @@ pub fn per_rule_rate_guide_from_report(path: &Path) -> Result<PerRuleRateGuide, 
 
     let mut rates: Vec<(String, f32)> = Vec::with_capacity(rows.len());
     for (i, row) in rows.iter().enumerate() {
+        // `train_guide`'s report spells the label `rule_name`;
+        // `gen_strict_labels`' spells it `rule`. Both are the same canonical
+        // label, so accept either rather than making the two writers agree
+        // on a field name they never agreed on.
         let label = row
-            .get("rule")
+            .get("rule_name")
+            .or_else(|| row.get("rule"))
             .and_then(Value::as_str)
-            .ok_or_else(|| format!("train_guide report {p}: per_rule[{i}] has no \"rule\""))?;
+            .ok_or_else(|| {
+                format!("train_guide report {p}: per_rule[{i}] has no \"rule_name\"/\"rule\"")
+            })?;
         let rate = row
             .get("train_positive_rate")
             .and_then(Value::as_f64)
@@ -907,4 +914,141 @@ pub fn per_rule_rate_guide_from_report(path: &Path) -> Result<PerRuleRateGuide, 
         rates.push((label.to_string(), rate));
     }
     Ok(PerRuleRateGuide::from_labels(&rates))
+}
+
+// ── Checkpoint round trip ───────────────────────────────────────────────────
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    fn ckpt_for(rules: &RuleSet) -> GuideCheckpoint {
+        let (rule_names, _) = rule_index_table(rules);
+        let (op_names, _) = op_index_table();
+        GuideCheckpoint {
+            schema_identity: String::new(),
+            label_source: "strict-v1".to_string(),
+            trainer: "train_guide".to_string(),
+            written_at_unix_s: 1,
+            seed: 1,
+            epochs: 1,
+            lr_initial: 0.01,
+            lr_decay: 0.0,
+            l2: 0.0,
+            grad_clip: 20.0,
+            pos_weight: 1.0,
+            num_rules: rule_names.len(),
+            num_ops: op_names.len(),
+            w_rule: vec![0.25; rule_names.len()],
+            w_op: vec![-0.125; op_names.len()],
+            rule_names,
+            rule_fingerprint: format!("{}", rules.fingerprint()),
+            op_names,
+            bias: 0.5,
+            w_budget: 0.125,
+            w_match_class: 0.0625,
+            w_neighborhood: -0.031_25,
+            w_expr_size: 0.015_625,
+            train_samples: 1,
+            train_families: 1,
+            train_positive_rate: 0.0,
+            dev_samples: 1,
+            dev_families: 1,
+            dev_auc: 0.5,
+            dev_pr_auc: 0.5,
+            weights_fnv64: String::new(),
+        }
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("guide_ckpt_{tag}_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[test]
+    fn a_written_checkpoint_round_trips_and_deploys_against_the_vocabulary_it_names() {
+        let dir = scratch("roundtrip");
+        let path = dir.join("checkpoint.json");
+        let rules = RuleSet::production();
+        let mut ckpt = ckpt_for(&rules);
+        ckpt.write(&path).expect("write");
+
+        let loaded = GuideCheckpoint::read(&path).expect("read");
+        assert_eq!(loaded.label_source, "strict-v1");
+        assert_eq!(
+            loaded.schema_identity,
+            GuideCheckpoint::current_schema_identity()
+        );
+        load_linear_guide(&path, &rules)
+            .expect("a checkpoint just written must deploy against the rule set it names");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The G5 property: a weight table is bound to the vocabulary it was
+    /// trained on by a fingerprint, not by array length. A same-length
+    /// reorder is exactly the case a length check cannot see.
+    #[test]
+    fn a_checkpoint_from_another_vocabulary_is_refused_at_deploy_time() {
+        let dir = scratch("wrong_vocab");
+        let path = dir.join("checkpoint.json");
+        let rules = RuleSet::production();
+        let mut ckpt = ckpt_for(&rules);
+        // Same rules, reversed order: same length, same names, different
+        // fingerprint.
+        ckpt.rule_fingerprint = {
+            let mut reversed = pixelflow_search::egraph::all_rules();
+            reversed.reverse();
+            format!("{}", RuleSet::new(reversed).fingerprint())
+        };
+        ckpt.write(&path).expect("write");
+
+        let err = load_linear_guide(&path, &rules)
+            .expect_err("weights from a reordered vocabulary must be refused");
+        assert!(
+            err.contains("vocabulary changed") || err.contains("trained against"),
+            "the refusal should say the vocabulary disagrees: {err}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_hand_edited_weight_is_refused_by_its_own_content_hash() {
+        let dir = scratch("tamper");
+        let path = dir.join("checkpoint.json");
+        let rules = RuleSet::production();
+        let mut ckpt = ckpt_for(&rules);
+        ckpt.write(&path).expect("write");
+
+        let text = std::fs::read_to_string(&path).expect("read back");
+        let tampered = text.replace("\"bias\": 0.5", "\"bias\": 99.0");
+        assert_ne!(
+            text, tampered,
+            "test setup: replacement should have matched"
+        );
+        std::fs::write(&path, tampered).expect("write tampered");
+
+        let err = load_linear_guide(&path, &rules)
+            .expect_err("a hand-edited weight must be refused, not silently loaded");
+        assert!(
+            err.contains("metadata/weights mismatch"),
+            "the refusal should name the content hash: {err}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_checkpoint_without_a_readable_fingerprint_is_refused_rather_than_defaulted() {
+        let rules = RuleSet::production();
+        let mut ckpt = ckpt_for(&rules);
+        ckpt.rule_fingerprint = "not-hex".to_string();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ckpt.to_weights()));
+        assert!(
+            caught.is_err(),
+            "an unreadable rule fingerprint must panic, not deploy as fingerprint 0"
+        );
+    }
 }
