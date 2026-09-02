@@ -51,11 +51,13 @@ use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
 use super::cost::CostModel;
 use super::extract::{ChoiceCost, Extraction, IncrementalExtractor, Reranker, choices_to_arena};
-use super::graph::{EGraph, SaturationStop};
+use super::graph::{EGraph, SaturationStats, SaturationStop};
+use super::guided::GuidedEpisode;
 use super::node::EClassId;
 #[cfg(feature = "provenance-journal")]
 use super::provenance::ApplicationRecord;
 use super::rules::{Fingerprint, RuleSet};
+use crate::nnue::guide::SaturationGuide;
 
 /// A sink for what saturation did.
 ///
@@ -239,6 +241,13 @@ pub struct Optimizer {
     cost: CostModel,
     shape: LatticeShape,
     rerank: Option<Box<dyn Reranker>>,
+    guide: Option<Box<dyn SaturationGuide>>,
+    /// The guided episode's carried state — dedup set, feature constant,
+    /// rule-embedding cache — created on the first guided [`Self::run`] and
+    /// reused by later ones, so a caller stepping an anytime curve through
+    /// several application budgets on ONE e-graph sees one continuous guided
+    /// run. `None` whenever `guide` is `None`.
+    episode: Option<GuidedEpisode>,
     #[cfg(feature = "provenance-journal")]
     observer: Option<Box<dyn Observer>>,
     hard_ceiling: HardCeiling,
@@ -337,6 +346,8 @@ impl Optimizer {
             cost: CostModel::latency_prior(),
             shape: LatticeShape::POINT,
             rerank: None,
+            guide: None,
+            episode: None,
             #[cfg(feature = "provenance-journal")]
             observer: None,
             // The tier's own `SaturationConfig::safety_ceiling`, resolved
@@ -385,6 +396,33 @@ impl Optimizer {
     #[must_use]
     pub fn rerank(mut self, rerank: Option<Box<dyn Reranker>>) -> Self {
         self.rerank = rerank;
+        self
+    }
+
+    /// Order the rewrite candidates saturation applies.
+    ///
+    /// A [`SaturationGuide`](crate::nnue::guide::SaturationGuide) supplies
+    /// **order only** — it never constructs a rewrite action, never unions,
+    /// never sees a mutable e-graph. That is what makes law **L4** (see this
+    /// module's docs) hold without a numeric-equivalence suite: every
+    /// ordering leaves the graph holding a subset of the equalities an
+    /// exhaustive run would hold, and every node of the root's class denotes
+    /// the root's function, so the extracted term means the same thing under
+    /// any guide. A guide owes a *quality* measurement, not a correctness
+    /// argument.
+    ///
+    /// [`Self::production`] leaves this `None` and takes the unguided sweep,
+    /// byte for byte. `Budget::Applications` is the budget a guided arm
+    /// should be compared under: an application count is the one currency
+    /// that means the same thing to every ordering policy.
+    ///
+    /// Setting a guide resets the carried episode state, so one optimizer
+    /// can be re-pointed at a fresh guide without inheriting the previous
+    /// one's dedup set.
+    #[must_use]
+    pub fn guide(mut self, guide: Option<Box<dyn SaturationGuide>>) -> Self {
+        self.guide = guide;
+        self.episode = None;
         self
     }
 
@@ -479,13 +517,25 @@ impl Optimizer {
     /// assertion about the budget, and a silently truncated optimization that
     /// reports success is the failure mode this API exists to remove.
     pub fn run(&mut self, egraph: &mut EGraph, root: EClassId, node_count: usize) -> Optimized {
-        let limits = self.budget.limits(node_count);
+        self.run_bounded(egraph, root, self.budget.limits(node_count), node_count)
+    }
+
+    /// [`Self::run`] with the limits named outright — the seam
+    /// [`super::anytime`] steps a curve on, where each step's budget is the
+    /// *gap* to the next checkpoint and `node_count` is only still needed to
+    /// name the tier the ceiling belongs to.
+    pub(crate) fn run_bounded(
+        &mut self,
+        egraph: &mut EGraph,
+        root: EClassId,
+        limits: Limits,
+        node_count: usize,
+    ) -> Optimized {
         let started = std::time::Instant::now();
 
         #[cfg(feature = "provenance-journal")]
         egraph.set_provenance_recording(self.observer.is_some());
-        let saturation =
-            egraph.saturate_budgeted(limits.iterations, limits.classes, limits.applications);
+        let saturation = self.saturate(egraph, limits);
 
         // Name and budget from one lookup, so the panic below cannot name a
         // tier other than the one whose ceiling it is asserting.
@@ -555,6 +605,32 @@ impl Optimizer {
                 limits,
             },
         }
+    }
+}
+
+impl Optimizer {
+    /// The one place this type decides *how* saturation runs: the unguided
+    /// sweep, or the guided ordering when a
+    /// [`SaturationGuide`](crate::nnue::guide::SaturationGuide) is set.
+    ///
+    /// Both arms are held to the same [`Limits`] and report the same
+    /// [`SaturationStats`], and neither can report
+    /// [`SaturationStop::Timeout`] — the guided loop takes no clock either.
+    /// Every mutation the guided arm makes goes through
+    /// `EGraph::apply_single_rule`, i.e. through the same
+    /// `apply_action_from_rule` the sweep uses, which is what keeps the
+    /// application counter (the budget's denominator) meaning one thing.
+    fn saturate(&mut self, egraph: &mut EGraph, limits: Limits) -> SaturationStats {
+        let Some(guide) = self.guide.as_ref() else {
+            return egraph.saturate_budgeted(
+                limits.iterations,
+                limits.classes,
+                limits.applications,
+            );
+        };
+        self.episode
+            .get_or_insert_with(GuidedEpisode::default)
+            .advance(egraph, guide.as_ref(), limits)
     }
 }
 

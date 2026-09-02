@@ -348,7 +348,7 @@ mod tests {
             .into_iter()
             .find(|t| t.class_id == eg.find(sum))
             .expect("commutative should match x + y");
-        assert!(eg.apply_single_rule(target.rule_idx, target.class_id, target.node_idx));
+        assert!(eg.apply_single_rule(target.rule_idx, target.class_id, target.tag));
         let app_load_bearing = ApplicationId(0);
 
         // Disjoint side: z + w, commuted too, but never referenced by the
@@ -367,7 +367,7 @@ mod tests {
         assert!(eg.apply_single_rule(
             other_target.rule_idx,
             other_target.class_id,
-            other_target.node_idx
+            other_target.tag
         ));
         let app_wasted = ApplicationId(1);
         assert_eq!(eg.provenance().recorded_count(), 2);
@@ -430,7 +430,7 @@ mod tests {
             .into_iter()
             .find(|t| t.class_id == eg.find(inner))
             .expect("commutative should match x + y");
-        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.node_idx));
+        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.tag));
         let app_a = ApplicationId(0);
 
         // Rule B: commute the outer sum. `inner`'s class now holds two
@@ -441,7 +441,7 @@ mod tests {
             .into_iter()
             .find(|t| t.class_id == eg.find(outer))
             .expect("commutative should match (x + y) + z");
-        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.node_idx));
+        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.tag));
         let app_b = ApplicationId(1);
         assert_eq!(eg.provenance().recorded_count(), 2);
 

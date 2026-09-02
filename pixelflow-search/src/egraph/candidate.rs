@@ -345,7 +345,7 @@ mod tests {
             .into_iter()
             .find(|t| t.class_id == eg.find(sum))
             .expect("commutative should match x + y");
-        assert!(eg.apply_single_rule(target.rule_idx, target.class_id, target.node_idx));
+        assert!(eg.apply_single_rule(target.rule_idx, target.class_id, target.tag));
 
         let after = ClassContentKey::of(&eg, eg.find(sum));
         assert_ne!(

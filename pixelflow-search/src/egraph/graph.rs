@@ -19,8 +19,17 @@ pub struct RewriteTarget {
     pub rule_idx: usize,
     /// The e-class to apply the rule to
     pub class_id: EClassId,
-    /// The node within the e-class that the rule should try to match
-    pub node_idx: usize,
+    /// The node the rule should try to match, named by its stable
+    /// [`ENodeId`] rather than by a position in the class's node vector.
+    ///
+    /// A position goes stale: a caller that enumerates a round's matches
+    /// and then applies them one at a time can rebuild the class between
+    /// enumeration and application, and `rebuild`'s take/canonicalize/extend
+    /// cycle renumbers it. Re-fetching a stale *index* silently applies the
+    /// rule to whichever node inherited that slot, credited to the original
+    /// candidate's score and dedup key. Re-resolving a stale *tag* finds
+    /// either the same node or nothing at all.
+    pub tag: ENodeId,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -966,13 +975,14 @@ impl EGraph {
             for class_id in self.class_ids() {
                 let nodes = &self.classes[class_id.index()].nodes;
 
+                let tags = &self.classes[class_id.index()].tags;
                 for (node_idx, node) in nodes.iter().enumerate() {
                     // Check if rule matches this node
                     if rule.apply(self, class_id, node).is_some() {
                         matches.push(RewriteTarget {
                             rule_idx,
                             class_id,
-                            node_idx,
+                            tag: tags[node_idx],
                         });
                     }
                 }
@@ -997,12 +1007,7 @@ impl EGraph {
     /// is the silent failure this ceiling exists to prevent. No production
     /// path calls this, and the production caps are two orders of
     /// magnitude below the limit.
-    pub fn apply_single_rule(
-        &mut self,
-        rule_idx: usize,
-        class_id: EClassId,
-        node_idx: usize,
-    ) -> bool {
+    pub fn apply_single_rule(&mut self, rule_idx: usize, class_id: EClassId, tag: ENodeId) -> bool {
         assert!(
             self.classes.len() < HARD_CLASS_LIMIT,
             "apply_single_rule: e-graph is at the hard class limit \
@@ -1016,12 +1021,15 @@ impl EGraph {
         };
 
         let class_id = self.find(class_id);
-        let nodes = self.classes[class_id.index()].nodes.clone();
-        let Some(node) = nodes.get(node_idx) else {
+        // Resolve the stable tag against the class as it stands NOW — a
+        // rebuild since the caller enumerated this target either left the
+        // node in place or removed it, and `None` is the honest answer for
+        // the second case. See `RewriteTarget::tag`.
+        let Some(node) = self.node_for_tag(class_id, tag).cloned() else {
             return false;
         };
 
-        let Some(action) = rule.apply(self, class_id, node) else {
+        let Some(action) = rule.apply(self, class_id, &node) else {
             return false;
         };
 
@@ -2821,7 +2829,7 @@ mod tests {
         let target = find_target(&eg, "commutative");
         assert_eq!(target.class_id, eg.find(sum));
 
-        let applied = eg.apply_single_rule(target.rule_idx, target.class_id, target.node_idx);
+        let applied = eg.apply_single_rule(target.rule_idx, target.class_id, target.tag);
         assert!(applied, "commutative rule should have applied to x + y");
 
         // Hand-derivation: exactly one application recorded, for the
@@ -2881,7 +2889,7 @@ mod tests {
 
         // Rule A: commute the inner sum (x + y) -> (y + x).
         let target_a = find_target_in_class(&eg, "commutative", eg.find(inner));
-        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.node_idx));
+        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.tag));
         let app_a = ApplicationId(0);
 
         // Rule B: commute the outer sum ((x+y)+z) -> (z + (x+y)). After
@@ -2889,7 +2897,7 @@ mod tests {
         // still match "commutative" — so we must specifically target
         // outer's class rather than take the first "commutative" match.
         let target_b = find_target_in_class(&eg, "commutative", eg.find(outer));
-        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.node_idx));
+        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.tag));
         let app_b = ApplicationId(1);
         assert_eq!(eg.provenance().recorded_count(), 2);
 

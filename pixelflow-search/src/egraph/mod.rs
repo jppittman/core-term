@@ -33,6 +33,7 @@ pub mod deps;
 pub mod derivative;
 pub(crate) mod extract;
 mod graph;
+mod guided;
 // The hindsight labeler reads the provenance journal directly
 // (`derivation_ancestors`, `Origin`, `Provenance::recorded_count`) — it has
 // nothing to compute without it.

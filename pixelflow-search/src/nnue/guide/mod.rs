@@ -65,6 +65,7 @@ mod scoring;
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use scoring::SaturationHead;
@@ -202,6 +203,25 @@ impl CandidateSummary {
 pub trait SaturationGuide {
     /// Score `candidates`, one score per candidate, in order.
     fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32>;
+
+    /// This guide's own encoding of the rule named by `rule`, for the
+    /// [`CandidateSummary::rule_embed`] field the saturation loop fills in.
+    ///
+    /// Defaults to all-zero, which is the honest answer for every guide that
+    /// does not encode rules as vectors at all — the per-rule linear models
+    /// key on [`CandidateSummary::rule`] directly and would otherwise carry
+    /// a field of boilerplate zeros they had to write themselves.
+    ///
+    /// The loop calls this **once per rule per episode**, not once per
+    /// candidate: an encoding is a pure function of the rule, and the
+    /// alternative (having the caller thread a positional
+    /// `rule_embeds: &[[f32; EMBED_DIM]]` array through every entry point)
+    /// is the positional-rule-key bug [`crate::egraph::rules`] exists to
+    /// prevent, in the one place a Guide would have felt it.
+    fn rule_embed(&self, rule: crate::egraph::rules::RuleId) -> [f32; EMBED_DIM] {
+        let _ = rule;
+        [0.0; EMBED_DIM]
+    }
 }
 
 /// The (untrained, Phase-3-gated) saturation guide: the op embeddings a
@@ -215,6 +235,14 @@ pub trait SaturationGuide {
 pub struct Guide {
     embeddings: OpEmbeddings,
     head: SaturationHead,
+    /// Per-rule encodings, keyed by stable identity, or empty.
+    ///
+    /// Built by whoever has an expression encoder to hand — the rule-pair
+    /// encoder `SaturationHead::encode_rule` needs each side's *embedded*
+    /// template, which lives in the training crate, not here. Empty means
+    /// [`SaturationGuide::rule_embed`]'s all-zero default, which is what an
+    /// untrained guide should say.
+    rule_embeds: BTreeMap<RuleId, [f32; EMBED_DIM]>,
 }
 
 impl Guide {
@@ -224,7 +252,24 @@ impl Guide {
     pub fn new_random(embeddings: OpEmbeddings, seed: u64) -> Self {
         let mut head = SaturationHead::new();
         head.randomize(seed);
-        Self { embeddings, head }
+        Self {
+            embeddings,
+            head,
+            rule_embeds: BTreeMap::new(),
+        }
+    }
+
+    /// Attach per-rule encodings, keyed by stable identity.
+    ///
+    /// A `BTreeMap` rather than a vector: a positional table is repointed
+    /// wholesale by a same-length reorder of the rule vocabulary and nothing
+    /// anywhere is the wrong length. A rule absent from the table scores
+    /// against the all-zero default rather than against some other rule's
+    /// vector.
+    #[must_use]
+    pub fn with_rule_embeds(mut self, embeds: BTreeMap<RuleId, [f32; EMBED_DIM]>) -> Self {
+        self.rule_embeds = embeds;
+        self
     }
 
     /// The op embeddings every candidate scored by this guide is pooled in.
@@ -247,6 +292,13 @@ impl SaturationGuide for Guide {
                 )
             })
             .collect()
+    }
+
+    fn rule_embed(&self, rule: RuleId) -> [f32; EMBED_DIM] {
+        self.rule_embeds
+            .get(&rule)
+            .copied()
+            .unwrap_or([0.0; EMBED_DIM])
     }
 }
 
