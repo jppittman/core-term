@@ -274,7 +274,46 @@ Sizes, for planning: #1084 1,011 core / 28.5k total; #1088 1,091 / 308.9k;
 `production_telemetry` to `runtime.rs`. They do not conflict today because
 neither has landed; whichever goes second will need a rename.
 
-## Recommended order
+## The finding that matters most: the seam churns faster than reconciliation completes
+
+Reconciling a branch against this seam has a **short half-life**, and that is a
+process problem rather than a backlog to burn down.
+
+The evidence accumulated over one working day:
+
+- The board went 5/15 clean → 7/15 as #1054, #1109 and #1087 were fixed → back
+  to **5/14** the moment #1087 merged. #1087 landing re-conflicted #1109 and
+  #1114, both of which had been clean an hour earlier.
+- **#1109 needed reconciling twice in one day**, for the same structural reason
+  each time: something landed on `runtime.rs` and both sides append a module at
+  end-of-file.
+- **#1114 was clean at 10:10 and needs an API port by 11:00** — `Budget` gained
+  a field, `SaturationStop::ClassCap` changed arity, and helpers it reuses are
+  now private to other modules.
+- The #1087↔#1101 collision this document predicted ("whichever lands second
+  needs a rename") **materialized**: both add a `production_telemetry` module
+  and both add `2026-09-01-production-saturation-telemetry.{md,csv}`.
+
+Every one of those is the same mechanism. `pixelflow-search/src/{egraph/graph,
+egraph/saturate,runtime}.rs` is one hot seam, ten branches are queued on it, and
+each landing invalidates the rest. Reconciling branch *n* while branches
+*n+1…* are still landing is work with a half-life measured in hours.
+
+Two things would actually fix it, and neither is more reconciliation:
+
+1. **Rebase the queue as a batch immediately after each seam landing**, not
+   per-branch on demand. The cost is one pass; the current cost is one pass per
+   branch per landing.
+2. **Or freeze the seam** until the queue drains. The four PRs that landed on it
+   yesterday (#1083, #1085, #1107, #1108) are what created a nine-branch
+   conflict set out of a board that merged cleanly the day before.
+
+The corollary for whoever picks this up: **reconcile in landing order and land
+promptly**, because a reconciled-but-unlanded branch is a wasting asset. #1087
+is the demonstration in the good direction — reconciled and merged the same
+hour, so it kept its value and is now upstream.
+
+## Recommended order## Recommended order
 
 1. **Close #1054 and #1072**; decide #994. These three have not moved in
    ~13 hours and each is blocked on something no rebase fixes.
