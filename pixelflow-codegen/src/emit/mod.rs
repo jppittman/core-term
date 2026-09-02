@@ -646,46 +646,42 @@ const fn coord_reg(slot: u32) -> Reg {
 /// free to clobber them once the body has run.
 const SCAFFOLD_ACC: Reg = Reg(0);
 const SCAFFOLD_SCRATCH: Reg = Reg(1);
-
-/// Drive a schedule to machine code via an [`IsaBackend`].
+/// Allocate a straight-line schedule and emit it as a region body.
 ///
-/// This is the single shared body driver for both architectures. The
-/// control flow here — Select guard analysis, short-circuit branch emission and
-/// patching, root resolution — is identical regardless of ISA; only the leaf
-/// emits go through `backend`.
-/// Emit the register-allocated *body* of a DAG — the per-op instruction stream
-/// plus root resolution — with **no** prologue, epilogue, or `RET`. Returns the
-/// body bytes, the register holding the root value, the spill-frame size, and
-/// the spill count. The body's branches are self-relative, so a caller may
-/// freely wrap it in a loop. This is the seam between the body emitter and
-/// the collapse-loop scaffold.
+/// Production compiles allocate the whole nest at once
+/// ([`regalloc::RegisterAllocator::allocate_nest`]) so every region's frame
+/// is known before any of them is emitted; this is the one-region
+/// convenience the emitter's own tests are written against.
+#[cfg(test)]
 fn emit_dag_body<B: IsaBackend>(
     schedule: Vec<regalloc::Def>,
     backend: &mut B,
 ) -> Result<(Vec<u8>, Reg, u32, u32), CompileError> {
-    emit_dag_body_hoisted(schedule, backend, HoistCtx::None, None)
+    use regalloc::RegisterAllocator;
+    let allocation = regalloc::LinearScan.allocate(schedule, &backend.register_file());
+    emit_dag_body_hoisted(allocation, backend, HoistCtx::None, None)
 }
 
-/// [`emit_dag_body`] with collapse-loop LICM support: a hoist map (see
+/// Emit one region's body from a finished allocation, with collapse-loop
+/// LICM support: a hoist map (see
 /// [`HoistCtx`]) and an optional frame-size override. The override replaces
 /// the layout's frame size in the `frame_ready` latch and the returned frame
 /// size — the collapse driver passes the max of the prologue's and body's
 /// frames so both address the shared hoist slots consistently (and, on x86,
 /// so both latch the same allocated-frame mode).
 fn emit_dag_body_hoisted<B: IsaBackend>(
-    schedule: Vec<regalloc::Def>,
+    allocation: regalloc::Allocation,
     backend: &mut B,
     hoist: HoistCtx<'_>,
     frame_override: Option<u32>,
 ) -> Result<(Vec<u8>, Reg, u32, u32), CompileError> {
     use alloc::collections::BTreeMap;
-    use regalloc::RegisterAllocator;
 
     let file = backend.register_file();
-    // The allocator chooses the evaluation order, so everything downstream —
+    // Allocation happened before this call — once per region, over the whole
+    // nest. The allocator chooses the evaluation order, so everything here —
     // guard ranges, program points, the emit loop itself — reads the schedule
-    // it hands back rather than the one it was given.
-    let allocation = regalloc::LinearScan.allocate(schedule, &file);
+    // it handed back rather than the one it was given.
     let schedule = &allocation.schedule;
     let mut layout = FrameLayout::resolve(&allocation, file.vector_bytes)?;
     let real_spill_count = allocation.spilled().count() as u32;
@@ -1250,30 +1246,6 @@ fn plan_collapse_hoist(
     })
 }
 
-/// A schedule split by scope: the innermost body, plus one region per binder
-/// it can be lifted out of.
-///
-/// This is the loop nest as data. `regions` runs outermost first, so
-/// `regions[0]` is what happens once per call and the last region is what
-/// happens once per iteration of the next-to-innermost binder; `body` is what
-/// happens at every sample. Each region's `roots` are the values it computes
-/// for the regions inside it, which the emitter parks in hoist slots.
-struct ScopedSchedule {
-    /// One per binder, outermost first. A binder nothing can be lifted out of
-    /// still gets a region; it is simply empty.
-    regions: Vec<ScopeRegion>,
-    /// The innermost region: evaluated at every sample.
-    body: Vec<regalloc::Def>,
-}
-
-/// One scope of a [`ScopedSchedule`].
-struct ScopeRegion {
-    /// Values this region computes for the ones inside it.
-    roots: Vec<regalloc::ValueId>,
-    /// What it computes, in topological order.
-    schedule: Vec<regalloc::Def>,
-}
-
 /// Split a schedule by scope over `binders`, given innermost first.
 ///
 /// One rule, applied once per binder from the outside in: a value is lifted
@@ -1289,7 +1261,7 @@ fn partition_by_scope(
     schedule: Vec<regalloc::Def>,
     variance: &[pixelflow_ir::variance::Variance],
     binders: &[u8],
-) -> ScopedSchedule {
+) -> regalloc::ScopedSchedule {
     let mut remaining = schedule;
     let mut regions = Vec::with_capacity(binders.len());
     // Outermost first: the scope outside binder `j` cannot depend on `j` or
@@ -1299,39 +1271,24 @@ fn partition_by_scope(
         match plan_collapse_hoist(&remaining, variance, mask) {
             Some(plan) => {
                 remaining = plan.body;
-                regions.push(ScopeRegion {
+                regions.push(regalloc::ScopeRegion {
                     roots: plan.roots,
                     schedule: plan.prologue,
                 });
             }
-            None => regions.push(ScopeRegion {
+            None => regions.push(regalloc::ScopeRegion {
                 roots: Vec::new(),
                 schedule: Vec::new(),
             }),
         }
     }
-    ScopedSchedule {
+    regalloc::ScopedSchedule {
         regions,
         body: remaining,
     }
 }
 
-/// The spill-frame size, in bytes, a schedule will need — without emitting it.
-///
-/// [`regalloc::RegisterAllocator`] implementations and [`FrameLayout`] are
-/// pure, so this is exactly the frame `emit_dag_body` will compute for the
-/// same inputs. Used to place the hoist slots above both the prologue's and
-/// the body's frames before either is emitted.
-fn presize_frame(
-    schedule: &[regalloc::Def],
-    file: &regalloc::RegisterFile,
-) -> Result<u32, CompileError> {
-    use regalloc::RegisterAllocator;
-    let allocation = regalloc::LinearScan.allocate(schedule.to_vec(), file);
-    Ok(FrameLayout::resolve(&allocation, file.vector_bytes)?.frame_size)
-}
-
-/// How `emit_dag_body` treats hoisted values, if any.
+/// How [`emit_dag_body_hoisted`] treats hoisted values, if any.
 enum HoistCtx<'a> {
     /// No hoisting (per-batch kernels, and collapse kernels with nothing to
     /// hoist).
@@ -1911,7 +1868,7 @@ type Native = x86_64::driver::X86Backend;
 /// with no per-row or per-batch Rust↔JIT boundary. This is the internal-loop
 /// realization of a lattice collapse.
 ///
-/// The per-batch body (produced by [`emit_dag_body`], with derivatives /
+/// The per-batch body (produced by [`emit_dag_body_hoisted`], with derivatives /
 /// reductions / gathers / transcendentals already lowered) is wrapped in the
 /// build width's
 /// [`IsaBackend::emit_collapse_loop`] scaffold: X steps by the batch width and
@@ -1928,12 +1885,14 @@ pub fn compile(
 }
 
 /// Drive a schedule to a complete collapse kernel via an
-/// [`IsaBackend`]: the body from [`emit_dag_body`], framed by the backend's
+/// [`IsaBackend`]: the body from [`emit_dag_body_hoisted`], framed by the backend's
 /// [`IsaBackend::emit_collapse_loop`] scaffold.
 fn compile_via_backend<B: IsaBackend>(
     schedule: Vec<regalloc::Def>,
     backend: &mut B,
 ) -> Result<CompileResult, CompileError> {
+    use regalloc::RegisterAllocator;
+
     let file = backend.register_file();
     let variance = schedule_variance(&schedule);
 
@@ -1944,15 +1903,21 @@ fn compile_via_backend<B: IsaBackend>(
     // returns are the per-call and per-row prologues the scaffold frames.
     const COLLAPSE_BINDERS: [u8; 2] = [0, 1];
     let scoped = partition_by_scope(schedule, &variance, &COLLAPSE_BINDERS);
-    let [frame_region, row_region] = <[ScopeRegion; 2]>::try_from(scoped.regions)
+
+    // One allocation pass over the whole nest. Each region's frame is a
+    // function of its own allocation, so the shared frame below is read off
+    // these rather than computed by allocating everything a second time.
+    let nest = regalloc::LinearScan.allocate_nest(scoped, &file);
+    let [frame_region, row_region] = <[regalloc::RegionAllocation; 2]>::try_from(nest.regions)
         .unwrap_or_else(|_| unreachable!("one region per collapse binder"));
-    let body_schedule = scoped.body;
-    let (frame_roots, frame_prologue) = (frame_region.roots, frame_region.schedule);
-    let (row_roots, row_prologue) = (row_region.roots, row_region.schedule);
+    let body_alloc = nest.body;
+    let (frame_roots, frame_alloc) = (frame_region.parked, frame_region.allocation);
+    let (row_roots, row_alloc) = (row_region.parked, row_region.allocation);
 
     if frame_roots.is_empty() && row_roots.is_empty() {
         // Nothing loop-invariant worth hoisting: the plain loop nest.
-        let (body, result_reg, frame_size, spill_count) = emit_dag_body(body_schedule, backend)?;
+        let (body, result_reg, frame_size, spill_count) =
+            emit_dag_body_hoisted(body_alloc, backend, HoistCtx::None, None)?;
         let code = backend.emit_collapse_loop(&CollapseBody {
             frame_hoist: &[],
             row_hoist: &[],
@@ -1984,24 +1949,16 @@ fn compile_via_backend<B: IsaBackend>(
     // allocated-frame (`[rsp + offset]`) addressing.
     const RED_ZONE_FLOOR: u32 = 144;
     let vector_bytes = file.vector_bytes;
-    let ff = if frame_prologue.is_empty() {
-        0
-    } else {
-        presize_frame(&frame_prologue, &file)?
-    };
-    let rf = if row_prologue.is_empty() {
-        0
-    } else {
-        presize_frame(&row_prologue, &file)?
-    };
-    let bf = presize_frame(&body_schedule, &file)?;
     // Rounded to a whole slot so the scaffold's coordinate and hoist slots,
     // which sit at `m + k·vector_bytes`, stay naturally aligned.
-    let m = ff
-        .max(rf)
-        .max(bf)
-        .max(RED_ZONE_FLOOR)
-        .next_multiple_of(vector_bytes);
+    let mut m = RED_ZONE_FLOOR;
+    for allocation in [&frame_alloc, &row_alloc, &body_alloc] {
+        if allocation.schedule.is_empty() {
+            continue;
+        }
+        m = m.max(FrameLayout::resolve(allocation, vector_bytes)?.frame_size);
+    }
+    let m = m.next_multiple_of(vector_bytes);
     // Hoist slot k sits above the scaffold's five coordinate slots.
     let hoist_slot = |k: usize| m + (5 + k as u32) * vector_bytes;
     let frame_map: alloc::collections::BTreeMap<regalloc::ValueId, u32> = frame_roots
@@ -2020,11 +1977,11 @@ fn compile_via_backend<B: IsaBackend>(
         .map(|(vid, offset)| (*vid, *offset))
         .collect();
 
-    let (frame_code, frame_spills) = if frame_prologue.is_empty() {
+    let (frame_code, frame_spills) = if frame_alloc.schedule.is_empty() {
         (Vec::new(), 0)
     } else {
         let (code, _, _, spills) = emit_dag_body_hoisted(
-            frame_prologue,
+            frame_alloc,
             backend,
             HoistCtx::Prologue {
                 preloaded: None,
@@ -2034,11 +1991,11 @@ fn compile_via_backend<B: IsaBackend>(
         )?;
         (code, spills)
     };
-    let (row_code, row_spills) = if row_prologue.is_empty() {
+    let (row_code, row_spills) = if row_alloc.schedule.is_empty() {
         (Vec::new(), 0)
     } else {
         let (code, _, _, spills) = emit_dag_body_hoisted(
-            row_prologue,
+            row_alloc,
             backend,
             HoistCtx::Prologue {
                 preloaded: if frame_map.is_empty() {
@@ -2053,7 +2010,7 @@ fn compile_via_backend<B: IsaBackend>(
         (code, spills)
     };
     let (body, result_reg, _, body_spills) =
-        emit_dag_body_hoisted(body_schedule, backend, HoistCtx::Body(&hoist_map), Some(m))?;
+        emit_dag_body_hoisted(body_alloc, backend, HoistCtx::Body(&hoist_map), Some(m))?;
 
     let hoisted_values = (frame_roots.len() + row_roots.len()) as u32;
     let code = backend.emit_collapse_loop(&CollapseBody {
