@@ -191,9 +191,10 @@ fn saturate_for_production(arena: &ExprArena, root: ExprId) -> Option<Production
 /// Every field is read from the run, never inferred: `stop` is the loop's
 /// own stop reason, `applications` the provenance count at stop, `cost` the
 /// `CostModel::latency_prior()` `extract_dag` cost of the saturated graph
-/// (the production default policy, pinned explicitly here so an opt-in
-/// `PIXELFLOW_NNUE_WEIGHTS` in the environment cannot change what this probe
-/// measures). `hard_timeout` is a stop CONDITION of the production call and
+/// (the production policy — the only extraction policy since the extraction
+/// head's shape was deleted 2026-09-01 — pinned explicitly here rather than
+/// resolved through `env_extraction_policy`, so this probe measures one named
+/// cost model). `hard_timeout` is a stop CONDITION of the production call and
 /// is reported only so a `Timeout` stop can be flagged as machine-dependent —
 /// it is never a metric.
 #[derive(Clone, Debug)]
