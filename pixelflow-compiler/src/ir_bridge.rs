@@ -684,7 +684,7 @@ fn encode_params_as_vars(arena: &ExprArena) -> ExprArena {
 /// contract is that a `Some` is `Dwrt`-free and mathematically equivalent.
 fn differentiate_in_optimizer(arena: &ExprArena, root: ExprId) -> Option<(ExprArena, ExprId)> {
     use pixelflow_ir::arena::ExprNode;
-    use pixelflow_search::egraph::{EGraph, env_extraction_policy, saturate_for_extraction};
+    use pixelflow_search::egraph::Optimizer;
 
     if !contains_dwrt(arena) {
         return None;
@@ -725,37 +725,33 @@ fn differentiate_in_optimizer(arena: &ExprArena, root: ExprId) -> Option<(ExprAr
     // TOGETHER — the point of the e-graph is that there is no pass ordering,
     // so the optimizer is free to simplify the differentiand before, during,
     // or after the chain rule fires (see the `derivative` module doc in
-    // pixelflow-search). Same production policy as every other tier
+    // pixelflow-search). Same entry point as every other tier
     // (`pixelflow-compiler::optimize`'s macro tier and
     // `pixelflow-search::runtime::optimize_runtime_arena`'s runtime tier):
-    // `config_for_node_count` sizes the budget off a reachable-node count
-    // (`saturate_for_extraction`), and extraction goes through
-    // `env_extraction_policy()` — the one place the policy is chosen, so a
-    // future policy change reaches this tier too instead of being silently
-    // skipped — via the DAG-preserving `ExtractionPolicy::extraction` /
-    // `choices_to_arena`, not the tree `extract`. One policy, no second copy.
-    let mut eg = EGraph::with_rules(crate::optimize::standard_rules());
+    // one `Optimizer` decides the rule set, the budget, the cost model and
+    // the extractor, so a future policy change reaches this tier too instead
+    // of being silently skipped. One entry point, no second copy.
+    let mut optimizer = Optimizer::production();
+    let mut eg = optimizer.egraph();
     let root_class = eg.add_arena(&encoded, root);
     let node_count = reachable_node_count(&encoded, root);
-    saturate_for_extraction(&mut eg, node_count);
+    let optimized = optimizer.run(&mut eg, root_class, node_count);
 
-    extract_dwrt_free(&eg, root_class, &env_extraction_policy())
+    extract_dwrt_free(&eg, root_class, &optimized)
 }
 
-/// Extract `root_class` from a saturated `Dwrt`-bearing e-graph under
-/// `policy` and undo [`encode_params_as_vars`]. `None` if a `Dwrt` survived
-/// extraction — saturation stopped short of the chain rule's fixed point
-/// (budget), or the policy picked one — and the runtime `lower_dwrt` tier
-/// takes over.
+/// Materialise `optimized` and undo [`encode_params_as_vars`]. `None` if a
+/// `Dwrt` survived extraction — saturation stopped short of the chain rule's
+/// fixed point (budget), or extraction picked one — and the runtime
+/// `lower_dwrt` tier takes over.
 fn extract_dwrt_free(
     eg: &pixelflow_search::egraph::EGraph,
     root_class: pixelflow_search::egraph::EClassId,
-    policy: &pixelflow_search::egraph::ExtractionPolicy,
+    optimized: &pixelflow_search::egraph::Optimized,
 ) -> Option<(ExprArena, ExprId)> {
     use pixelflow_ir::arena::ExprNode;
 
-    let extraction = policy.extraction(eg, root_class);
-    let (out, out_root) = pixelflow_search::egraph::choices_to_arena(&extraction);
+    let (out, out_root) = optimized.to_arena(eg, root_class);
     if contains_dwrt(&out) {
         return None;
     }
@@ -1132,45 +1128,48 @@ mod expansion_derivative_tests {
     /// A deadline miss in production stays legitimate: it is the documented
     /// graceful fallback to the runtime `lower_dwrt` tier — see
     /// [`differentiate_in_optimizer`].
-    const UNTIMED_CEILING: std::time::Duration = std::time::Duration::from_secs(120);
-
-    /// Saturate `root` under its production tier's iteration and class caps
-    /// but [`UNTIMED_CEILING`], so what is measured is the caps, not the
-    /// machine. Mirrors [`differentiate_in_optimizer`]'s setup exactly —
-    /// same param encoding, same rule set, same `config_for_node_count`
-    /// sizing — up to that one substitution.
-    fn saturate_under_tier_caps(
+    /// Saturate `root` under the production configuration and extract.
+    /// Mirrors [`differentiate_in_optimizer`] exactly — same param encoding,
+    /// same `Optimizer::production()`.
+    ///
+    /// This helper used to substitute a 120-second ceiling for the tier's
+    /// `hard_timeout`, because `cargo test` builds this crate unoptimized and
+    /// shares the machine, so asserting anything under `rapid`'s 50 ms would
+    /// have pinned the machine's load rather than the policy — a
+    /// load-dependent assertion, i.e. a flake. `Budget` takes no clock, so
+    /// there is nothing left to substitute: the production configuration *is*
+    /// the untimed one, and these tests now exercise it unmodified.
+    fn optimize_under_production_budget(
         a: &ExprArena,
         root: ExprId,
     ) -> (
         pixelflow_search::egraph::EGraph,
         pixelflow_search::egraph::EClassId,
+        pixelflow_search::egraph::Optimized,
     ) {
-        use pixelflow_search::egraph::{EGraph, config_for_node_count, saturate_with_full_budget};
+        use pixelflow_search::egraph::Optimizer;
 
         let node_count = super::reachable_node_count(a, root);
-        let tier = config_for_node_count(node_count);
-
         let encoded = super::encode_params_as_vars(a);
-        let mut eg = EGraph::with_rules(crate::optimize::standard_rules());
+
+        let mut optimizer = Optimizer::production();
+        let mut eg = optimizer.egraph();
         let root_class = eg.add_arena(&encoded, root);
         let classes_before = eg.num_classes();
         let started = std::time::Instant::now();
-        let stats = saturate_with_full_budget(
-            &mut eg,
-            tier.max_iterations,
-            tier.max_classes,
-            UNTIMED_CEILING,
-        );
+        let optimized = optimizer.run(&mut eg, root_class, node_count);
         eprintln!(
-            "[tier caps, untimed] node_count={node_count} tier={tier:?} iterations={} \
-             total_unions={} classes {classes_before}->{} elapsed={:?}",
-            stats.iterations,
-            stats.total_unions,
+            "[production budget] node_count={node_count} limits={:?} iterations={} \
+             applications={} total_unions={} classes {classes_before}->{} stop={:?} elapsed={:?}",
+            optimized.stats.limits,
+            optimized.stats.iterations,
+            optimized.stats.applications,
+            optimized.stats.unions,
             eg.num_classes(),
+            optimized.stats.stop,
             started.elapsed(),
         );
-        (eg, root_class)
+        (eg, root_class, optimized)
     }
 
     /// [`winding_ramp_core`] plus the assertion that it lands in the `rapid`
@@ -1205,17 +1204,11 @@ mod expansion_derivative_tests {
     /// does not depend on `env_extraction_policy`'s selection).
     #[test]
     fn rapid_caps_resolve_winding_ramp_dwrt_under_static_policy() {
-        use pixelflow_search::egraph::{CostModel, ExtractionPolicy};
-
         let (a, root) = winding_ramp_in_rapid_tier();
-        let (eg, root_class) = saturate_under_tier_caps(&a, root);
+        let (eg, root_class, optimized) = optimize_under_production_budget(&a, root);
 
-        let (out, out_root) = super::extract_dwrt_free(
-            &eg,
-            root_class,
-            &ExtractionPolicy::with_costs(CostModel::latency_prior()),
-        )
-        .expect("Static: Dwrt must not survive a converged rapid-tier saturation");
+        let (out, out_root) = super::extract_dwrt_free(&eg, root_class, &optimized)
+            .expect("Static: Dwrt must not survive a converged rapid-tier saturation");
         eprintln!("[Static] extracted(dag) node_count={}", out.len());
         RuntimeTierReference {
             arena: &a,
@@ -1242,12 +1235,10 @@ mod expansion_derivative_tests {
     /// panic, never as a `None`.
     #[test]
     fn winding_ramp_core_takes_production_policy() {
-        use pixelflow_search::egraph::env_extraction_policy;
-
         let (a, root) = winding_ramp_in_rapid_tier();
-        let (eg, root_class) = saturate_under_tier_caps(&a, root);
+        let (eg, root_class, optimized) = optimize_under_production_budget(&a, root);
 
-        let (out, out_root) = super::extract_dwrt_free(&eg, root_class, &env_extraction_policy())
+        let (out, out_root) = super::extract_dwrt_free(&eg, root_class, &optimized)
             .expect("production policy: Dwrt must not survive a converged rapid-tier saturation");
         eprintln!(
             "[production] converged; extracted(dag) node_count={}",
@@ -1274,8 +1265,6 @@ mod expansion_derivative_tests {
 
     #[test]
     fn quad_shaped_core_takes_production_policy() {
-        use pixelflow_search::egraph::env_extraction_policy;
-
         let mut a = ExprArena::new();
         let root = quad_shaped_core(&mut a);
         let node_count = super::reachable_node_count(&a, root);
@@ -1284,11 +1273,10 @@ mod expansion_derivative_tests {
             "quad_shaped_core should land in the classical tier (51+ nodes), got {node_count}"
         );
 
-        let (eg, root_class) = saturate_under_tier_caps(&a, root);
-        let (out, out_root) = super::extract_dwrt_free(&eg, root_class, &env_extraction_policy())
-            .expect(
-                "production policy: Dwrt must not survive a converged classical-tier saturation",
-            );
+        let (eg, root_class, optimized) = optimize_under_production_budget(&a, root);
+        let (out, out_root) = super::extract_dwrt_free(&eg, root_class, &optimized).expect(
+            "production policy: Dwrt must not survive a converged classical-tier saturation",
+        );
         RuntimeTierReference {
             arena: &a,
             root,

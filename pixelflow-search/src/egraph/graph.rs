@@ -7,6 +7,7 @@ use super::node::{EClassId, ENode};
 use super::ops::{self, Op};
 use super::provenance::{ApplicationRecord, ENodeId, Origin, Provenance, UnionEvent};
 use super::rewrite::{Rewrite, RewriteAction};
+use super::rules::RuleId;
 use pixelflow_ir::kind::OpKind;
 
 /// A potential rewrite target: (rule, e-class, node within class).
@@ -47,7 +48,13 @@ pub struct EGraph {
     worklist: Vec<EClassId>,
     /// Rules are shared via Arc so EGraph can be cloned for search branching.
     rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
-    pub match_counts: HashMap<String, usize>,
+    /// Stable id per rule, parallel to `rules`. Kept so the graph can name a
+    /// rule by something that survives a reordering; see [`super::rules`].
+    rule_ids: std::sync::Arc<Vec<RuleId>>,
+    /// Matches found per rule, keyed by identity rather than by family name.
+    /// A name-keyed map collapsed all four `Commutative` instances into one
+    /// bucket, so every per-rule report built on it was wrong by aggregation.
+    pub match_counts: HashMap<RuleId, usize>,
     /// Global monotonic counter minting `ENodeId`s in `add()`.
     next_enode_id: u64,
     /// Saturation-iteration counter, advanced once per `saturate_with_limits`
@@ -71,6 +78,24 @@ pub struct EGraph {
     /// Distinct (bits, bits) pairs, kept for reporting and tests; see
     /// [`EGraph::union`].
     refused_const_unions: Vec<(u32, u32)>,
+    /// Rule applications this graph has performed, counted unconditionally.
+    ///
+    /// Independent of the provenance log on purpose: an application budget
+    /// must be enforceable whether or not anyone is observing, and reading
+    /// the budget off `provenance().application_count()` would make
+    /// recording a load-bearing part of saturation rather than an
+    /// observation of it.
+    applications: u64,
+    /// Whether to record provenance. Recording had no production consumer
+    /// (2026-09-01 integration audit) and a production compile discarded a
+    /// median 8 446 records per kernel;
+    /// [`super::optimizer::Optimizer`] turns it on exactly when an
+    /// [`Observer`](super::optimizer::Observer) is attached. Defaults to
+    /// `true`, so every direct `EGraph` caller keeps what it had.
+    record_provenance: bool,
+    /// Application ceiling for the current run, or `None`. Set for the
+    /// duration of [`EGraph::saturate_budgeted`].
+    application_cap: Option<u64>,
 }
 
 impl Default for EGraph {
@@ -87,6 +112,7 @@ impl Clone for EGraph {
             memo: self.memo.clone(),
             worklist: self.worklist.clone(),
             rules: self.rules.clone(), // Arc clone - cheap, shares rules
+            rule_ids: self.rule_ids.clone(),
             match_counts: self.match_counts.clone(),
             next_enode_id: self.next_enode_id,
             step: self.step,
@@ -94,6 +120,9 @@ impl Clone for EGraph {
             active_application: self.active_application,
             const_fact: self.const_fact.clone(),
             refused_const_unions: self.refused_const_unions.clone(),
+            applications: self.applications,
+            record_provenance: self.record_provenance,
+            application_cap: self.application_cap,
         }
     }
 }
@@ -131,6 +160,8 @@ pub enum ScanStop {
     /// commit that follows) was running. Both mean the same thing: this
     /// scan did not finish inside the ceiling.
     Deadline,
+    /// The rule-application budget was reached mid-scan.
+    ApplicationBudget,
 }
 
 /// Why an [`EGraph::saturate_with_limits`] call stopped — an explicit stop
@@ -155,7 +186,14 @@ pub enum SaturationStop {
     IterationCeiling,
     /// The wall-clock safety ceiling elapsed. Offline measurement callers
     /// should treat this as a hard error (fail loud), never as data.
+    ///
+    /// [`EGraph::saturate_budgeted`] can never report this: it takes no
+    /// clock, which is what makes it deterministic.
     Timeout,
+    /// The rule-application budget ran out. The one budget dimension that
+    /// means the same thing to every ordering policy, and so the one a
+    /// research arm can hold two policies to.
+    ApplicationBudget,
 }
 
 /// Result of one [`EGraph::saturate_with_limits`] run: how many rounds it
@@ -214,6 +252,7 @@ impl EGraph {
             memo: HashMap::new(),
             worklist: Vec::new(),
             rules: std::sync::Arc::new(Vec::new()),
+            rule_ids: std::sync::Arc::new(Vec::new()),
             match_counts: HashMap::new(),
             next_enode_id: 0,
             step: 0,
@@ -221,6 +260,9 @@ impl EGraph {
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
+            applications: 0,
+            record_provenance: true,
+            application_cap: None,
         }
     }
 
@@ -228,12 +270,14 @@ impl EGraph {
     ///
     /// Rules are owned by the e-graph and shared via Arc when cloned.
     pub fn with_rules(rules: Vec<Box<dyn Rewrite>>) -> Self {
+        let ids: Vec<RuleId> = rules.iter().map(|r| RuleId::of(r.as_ref())).collect();
         Self {
             classes: Vec::new(),
             parent: Vec::new(),
             memo: HashMap::new(),
             worklist: Vec::new(),
             rules: std::sync::Arc::new(rules),
+            rule_ids: std::sync::Arc::new(ids),
             match_counts: HashMap::new(),
             next_enode_id: 0,
             step: 0,
@@ -241,6 +285,9 @@ impl EGraph {
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
+            applications: 0,
+            record_provenance: true,
+            application_cap: None,
         }
     }
 
@@ -250,9 +297,74 @@ impl EGraph {
     ///
     /// Panics if the e-graph has been cloned (rules are shared via Arc).
     pub fn add_rule(&mut self, rule: Box<dyn Rewrite>) {
+        let id = RuleId::of(rule.as_ref());
         std::sync::Arc::get_mut(&mut self.rules)
             .expect("Cannot add rules after EGraph has been cloned")
             .push(rule);
+        std::sync::Arc::get_mut(&mut self.rule_ids)
+            .expect("Cannot add rules after EGraph has been cloned")
+            .push(id);
+    }
+
+    /// An e-graph over a rule vector that is already shared.
+    ///
+    /// [`super::RuleSet`] holds its rules behind an `Arc` so an
+    /// [`super::optimizer::Optimizer`] can hand the same vocabulary to as
+    /// many graphs as it likes without rebuilding it, and so the ids it
+    /// computed once stay in agreement with the rules the graph applies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the two vectors disagree in length — an id vector that does
+    /// not name exactly the rules the graph will apply is a
+    /// silently-wrong-answer generator, not a recoverable input.
+    #[must_use]
+    pub fn with_shared_rules(
+        rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
+        rule_ids: std::sync::Arc<Vec<RuleId>>,
+    ) -> Self {
+        assert_eq!(
+            rules.len(),
+            rule_ids.len(),
+            "EGraph::with_shared_rules: {} rules but {} ids",
+            rules.len(),
+            rule_ids.len()
+        );
+        let mut eg = Self::new();
+        eg.rules = rules;
+        eg.rule_ids = rule_ids;
+        eg
+    }
+
+    /// The stable id of the rule at `idx`, if there is one.
+    #[must_use]
+    pub fn rule_id(&self, idx: usize) -> Option<RuleId> {
+        self.rule_ids.get(idx).copied()
+    }
+
+    /// Rule applications performed since this graph was created.
+    ///
+    /// Counted whether or not provenance is being recorded — the budget and
+    /// the observation are separate concerns, and conflating them is what
+    /// made recording impossible to turn off.
+    #[must_use]
+    pub fn application_count(&self) -> u64 {
+        self.applications
+    }
+
+    /// Turn provenance recording on or off. On by default.
+    ///
+    /// Off, the graph still counts applications and still enforces an
+    /// application budget; it just does not build the log. Turning recording
+    /// off does not erase what is already recorded.
+    pub fn set_provenance_recording(&mut self, on: bool) {
+        self.record_provenance = on;
+    }
+
+    /// Whether provenance is being recorded.
+    #[must_use]
+    pub fn provenance_recording(&self) -> bool {
+        self.record_provenance
     }
 
     pub fn find(&self, id: EClassId) -> EClassId {
@@ -919,11 +1031,11 @@ impl EGraph {
     /// re-decides when a run stops. Callers reach it through one of two
     /// entry points:
     ///
-    /// - [`saturate_for_extraction`](super::extraction::saturate_for_extraction)
-    ///   — the production path. It picks a
-    ///   [`SaturationConfig`](super::saturate::SaturationConfig) preset from
-    ///   an expression-size measure, so the budget scales with the input.
-    ///   Both compile tiers and the `Dwrt`-differentiation tier use it.
+    /// - [`Optimizer::run`](super::optimizer::Optimizer::run) — the
+    ///   production path, through [`Self::saturate_budgeted`]. It picks its
+    ///   limits from a [`Budget`](super::optimizer::Budget), so the budget
+    ///   scales with the input and carries no clock. All three production
+    ///   tiers use it.
     /// - This method, called directly only where a budget must be pinned
     ///   rather than inherited — tests, the hindsight labeler, and
     ///   measurement harnesses, which spell it
@@ -951,13 +1063,59 @@ impl EGraph {
         max_classes: usize,
         timeout: std::time::Duration,
     ) -> SaturationStats {
+        self.saturate_bounded(max_iters, max_classes, None, Some(timeout))
+    }
+
+    /// Saturate under deterministic limits only — rounds, classes, and
+    /// optionally rule applications — with no clock.
+    ///
+    /// This is what [`super::optimizer::Optimizer`] drives, and the
+    /// difference from [`Self::saturate_with_limits`] is the whole point:
+    /// every limit here is a property of the input and the configuration, so
+    /// the same term under the same limits produces the same graph on any
+    /// machine at any load. `saturate_with_limits`'s `timeout` is not — it
+    /// stops the run at a wall-clock boundary and the result then depends on
+    /// what else the machine was doing. A wall-clock ceiling is still
+    /// available, on the optimizer, where exceeding it panics instead of
+    /// quietly changing the answer.
+    ///
+    /// `SaturationStop::Timeout` is unreachable from here.
+    pub fn saturate_budgeted(
+        &mut self,
+        max_iters: usize,
+        max_classes: usize,
+        max_applications: Option<u64>,
+    ) -> SaturationStats {
+        self.saturate_bounded(max_iters, max_classes, max_applications, None)
+    }
+
+    /// The one rewrite-until-budget-exhausted loop. Every saturation entry
+    /// point in this crate funnels here rather than re-deciding, in a second
+    /// copy, when to stop.
+    fn saturate_bounded(
+        &mut self,
+        max_iters: usize,
+        max_classes: usize,
+        max_applications: Option<u64>,
+        timeout: Option<std::time::Duration>,
+    ) -> SaturationStats {
         // Growth is decided here and in `apply_rule_at_index_timed`, so the
         // ceiling is applied here: a caller asking for `usize::MAX` classes
         // gets `HARD_CLASS_LIMIT` and a truthful `ClassCap` stop, not a
-        // graph that grows until `add` starts lying about class ids.
+        // graph that grows until `add` starts refusing to insert. Applied in
+        // the shared loop rather than in `saturate_with_limits`, so
+        // `saturate_budgeted` — and therefore every production tier — is
+        // held to it too.
         let max_classes = max_classes.min(HARD_CLASS_LIMIT);
         let start = std::time::Instant::now();
-        let deadline = start + timeout;
+        // `Instant + Duration::MAX` panics, so the deadline is optional
+        // rather than "infinitely far away".
+        let deadline = timeout.map(|t| start + t);
+        // The cap is enforced deep inside the scan, where an application is
+        // about to commit — the only place that can stop mid-round without
+        // letting the round decide how far past the budget to go.
+        let previous_cap = self.application_cap;
+        self.application_cap = max_applications.map(|n| self.applications.saturating_add(n));
         let mut iterations = 0;
         let mut total_unions = 0;
         // Recorded at the point the loop decides to stop — never inferred
@@ -965,12 +1123,21 @@ impl EGraph {
         let mut stop = SaturationStop::IterationCeiling;
 
         for _ in 0..max_iters {
-            if start.elapsed() >= timeout {
-                stop = SaturationStop::Timeout;
-                break;
+            if let Some(t) = timeout {
+                if start.elapsed() >= t {
+                    stop = SaturationStop::Timeout;
+                    break;
+                }
             }
             if self.classes.len() > max_classes {
                 stop = SaturationStop::ClassCap;
+                break;
+            }
+            if self
+                .application_cap
+                .is_some_and(|cap| self.applications >= cap)
+            {
+                stop = SaturationStop::ApplicationBudget;
                 break;
             }
             iterations += 1;
@@ -991,7 +1158,7 @@ impl EGraph {
                         sweep = ScanStop::ClassCap;
                         break;
                     }
-                    let result = batch.apply_rule(rule_idx, max_classes, Some(deadline));
+                    let result = batch.apply_rule(rule_idx, max_classes, deadline);
                     total += result.changes;
                     match result.scan {
                         ScanStop::Completed => {}
@@ -1004,6 +1171,13 @@ impl EGraph {
                         // another rule's scan on the far side of it.
                         ScanStop::Deadline => {
                             sweep = ScanStop::Deadline;
+                            break;
+                        }
+                        // The application budget is spent for the whole run,
+                        // not just this rule: no later rule can commit
+                        // anything either.
+                        ScanStop::ApplicationBudget => {
+                            sweep = ScanStop::ApplicationBudget;
                             break;
                         }
                     }
@@ -1032,6 +1206,10 @@ impl EGraph {
                     stop = SaturationStop::Timeout;
                     break;
                 }
+                ScanStop::ApplicationBudget => {
+                    stop = SaturationStop::ApplicationBudget;
+                    break;
+                }
                 // A full sweep that changed nothing is the one diagnostic
                 // fixed point this loop can report.
                 ScanStop::Completed => {
@@ -1042,6 +1220,8 @@ impl EGraph {
                 }
             }
         }
+
+        self.application_cap = previous_cap;
 
         SaturationStats {
             iterations,
@@ -1122,6 +1302,18 @@ impl EGraph {
         let mut estimated_new_nodes: usize = 0;
         let mut scan = ScanStop::Completed;
 
+        // An application budget is spent by *applications*, so the scan stops
+        // once it has queued its whole allowance. Checked here and not only
+        // between rounds: a round is 62 rules over every e-class, so a
+        // between-rounds check alone overshoots a small budget by orders of
+        // magnitude — the budget has to bound the work, not describe it
+        // afterwards.
+        let allowance_spent = |graph: &Self, queued: usize| {
+            graph
+                .application_cap
+                .is_some_and(|cap| graph.applications + queued as u64 >= cap)
+        };
+
         let canonical_ids = self.canonical_class_ids();
         'scan: for canonical in canonical_ids {
             // Budget check: current graph + pending creates must stay under limit
@@ -1131,6 +1323,10 @@ impl EGraph {
             }
             if expired(deadline) {
                 scan = ScanStop::Deadline;
+                break;
+            }
+            if allowance_spent(self, updates.len()) {
+                scan = ScanStop::ApplicationBudget;
                 break;
             }
 
@@ -1162,8 +1358,12 @@ impl EGraph {
                     updates.push((canonical, action));
                     *self
                         .match_counts
-                        .entry(self.rules[rule_idx].name().to_string())
+                        .entry(RuleId::of(self.rules[rule_idx].as_ref()))
                         .or_insert(0) += 1;
+                    if allowance_spent(self, updates.len()) {
+                        scan = ScanStop::ApplicationBudget;
+                        break 'scan;
+                    }
                 }
             }
         }
@@ -1172,6 +1372,10 @@ impl EGraph {
         // Do NOT rebuild here — caller is responsible for calling rebuild()
         // after all rules for the epoch are applied (lazy/batched rebuild).
         for (class_id, action) in updates {
+            if allowance_spent(self, 0) {
+                scan = ScanStop::ApplicationBudget;
+                break;
+            }
             unions += self.apply_action_from_rule(rule_idx, class_id, action);
         }
 
@@ -1212,10 +1416,22 @@ impl EGraph {
         class_id: EClassId,
         action: RewriteAction,
     ) -> usize {
+        // Counted unconditionally: the budget must not depend on whether
+        // anyone is watching.
+        self.applications += 1;
+
+        if !self.record_provenance {
+            return self.apply_action(class_id, action);
+        }
+
+        let minted_from = self.next_enode_id;
         let application_id = self.provenance.record_application(ApplicationRecord {
+            rule: self.rule_ids.get(rule_idx).copied(),
             rule_idx,
             step: self.step,
             match_root: class_id,
+            minted: minted_from..minted_from,
+            unions: 0,
         });
         let previous = self.active_application.replace(ActiveApplication {
             rule_idx,
@@ -1223,6 +1439,14 @@ impl EGraph {
         });
         let result = self.apply_action(class_id, action);
         self.active_application = previous;
+        // The record is opened before the action runs (so `add`/`union` can
+        // attribute to it) and closed after, which is the only order in
+        // which "what did this application mint" is answerable.
+        self.provenance.complete_application(
+            application_id,
+            minted_from..self.next_enode_id,
+            result,
+        );
         result
     }
 
@@ -1965,7 +2189,7 @@ impl EGraph {
                         updates.push((rule_idx, canonical, action));
                         *self
                             .match_counts
-                            .entry(rule.name().to_string())
+                            .entry(RuleId::of(rule.as_ref()))
                             .or_insert(0) += 1;
                     }
                 }

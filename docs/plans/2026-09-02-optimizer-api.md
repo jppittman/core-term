@@ -893,3 +893,152 @@ fingerprint is what a version check keys on, and it will already be there.
 - **`extract_dag` is not argmin** (§1.L5). Say so in the doc comment; do not
   build anything that assumes otherwise. `Reranker` is the seam for anything
   that needs a guarantee.
+
+---
+
+## 6. What shipped, and what did not
+
+Added after implementation. The sections above are the design as proposed;
+this one is the diff between that and the code, so a reader does not have to
+reconcile them by inspection.
+
+### 6.1 Shipped
+
+| Piece | Where |
+|---|---|
+| `Rewrite::specialization() -> Option<OpKind>` | `egraph/rewrite.rs`, overridden by the 11 aliased families |
+| `rule_label`, `RuleId`, `RuleSet`, `Fingerprint` | `egraph/rules.rs` (new) |
+| `Budget`, `Limits`, `Observer`, `Optimizer`, `Optimized`, `OptimizerStats` | `egraph/optimizer.rs` (new) |
+| `SaturationStop`, `SaturationOutcome`, `EGraph::saturate_budgeted` | `egraph/graph.rs` |
+| Unconditional application counter; `set_provenance_recording` | `egraph/graph.rs` |
+| `ApplicationRecord.{rule, minted, unions}` + `changed()` | `egraph/provenance.rs` |
+| All three production tiers on `Optimizer::run` | `optimize.rs`, `ir_bridge.rs`, `runtime.rs` |
+| L2 / L3a / L4 / determinism / observation tests | `pixelflow-search/tests/optimizer_laws.rs` (new) |
+| G5's "62 rules, 62 ids" test | `egraph/rules.rs` |
+| G8 for the runtime cache | `runtime.rs` — `pixelflow-codegen::jit_cache` still unkeyed |
+| Telemetry re-pointed at `OptimizerStats` | `telemetry.rs` — `hard_timeout_us` → `max_applications` |
+
+`RuleId` is derived from `(name, specialization)` rather than from eleven
+hand-written decorated-name tables. `Commutative` answers `Some(Mul)` where
+`LogPower` would have needed `"commutative(mul)"` spelled out; there is no
+per-family string table to forget an arm of, and no fallback that could
+silently re-alias an operator nobody enumerated. That is the subtraction §2.1
+asked for, arrived at differently.
+
+`match_counts` is re-keyed from `String` to `RuleId`, which fixes the
+four-`Commutative`s-in-one-bucket aggregation and removes a `String`
+allocation per match from the scan loop. Its only in-tree consumers take
+`.values().sum()`, so nothing downstream had to change.
+
+### 6.2 Not shipped, deliberately
+
+**No `guide` field and no `SaturationGuide` trait.** The trait is trivial;
+the loop that reads it is not, and it lives on `claude/phase3-guide`. A
+`guide: Option<..>` field on an optimizer whose saturation loop never
+consults it would accept a policy and ignore it — a silent failure, and the
+one thing this codebase's rules forbid outright. So the field lands with the
+loop, in #1084, and what this PR owes that PR is everything *around* the
+field: the struct to hang it on, `Budget::Applications` as the matched-budget
+currency to measure it at, `RuleId` to key its checkpoint by, and the L4 test
+whose `POLICIES` table it extends rather than re-deriving. §2.3's claim that
+the trait is "drop-in" is correct; §3's G1 "one-line injection" is one line
+*plus the loop*, and the doc was optimistic to imply otherwise.
+
+**`Reranker` is a real field and is honored**, routing through
+`IncrementalExtractor`. Its bound was relaxed to `?Sized` so a
+`Box<dyn Reranker>` works. G2 genuinely is one line.
+
+**The `HARD_CLASS_LIMIT` sentinel (§1.L1) was fixed elsewhere.** It is a
+behavior change of its own — `add` returning `EClassId(0)` over budget, and
+`RewriteAction::Create` then asserting a false equality against it — so it
+was correctly kept out of a no-behavior-change PR. #1107 landed it
+independently while this one was in review, which is the sequencing §4 wanted
+and leaves §1.L1 closed rather than deferred. One consequence lands here: the
+`max_classes.min(HARD_CLASS_LIMIT)` clamp #1107 put at the top of
+`saturate_with_limits` moves into the shared `saturate_bounded` loop, so
+`saturate_budgeted` — and therefore all three production tiers — is held to it
+too rather than inheriting it by accident of which entry point they used.
+
+**`ir_bridge` needed no special case, because #1085 landed first.** §2.6
+found that tier on a hardcoded 100/10 000/500 ms budget and the *tree*
+extractor; #1085 moved it onto `saturate_for_extraction` plus the DAG
+extractor by hand, which is exactly what §4 sequenced. So all three tiers were
+already uniform when this PR arrived, and routing them through
+`Optimizer::production()` is a substitution rather than a convergence. That is
+why the byte-identical claim covers the `Dwrt` tier too.
+
+`ir_bridge`'s own tests get smaller as a side effect. They carried an
+`UNTIMED_CEILING` constant — a 120-second substitute for the tier's
+`hard_timeout`, there because `cargo test` builds the crate unoptimized and
+shares the machine, so asserting anything under `rapid`'s 50 ms would have
+pinned the machine's load rather than the policy. `Budget` takes no clock, so
+there is nothing left to substitute: the production configuration *is* the
+untimed one, and those tests now exercise it unmodified.
+
+**`ExtractionPolicy` went with `env_extraction_policy`.** §2.7 called for
+deleting the vestigial name; the type it named had no remaining
+responsibility once `Optimizer` owned the cost model and the lattice, so the
+whole module went. Its two test callers now drive `Optimizer`, which is
+strictly better — they test the production path instead of a parallel one.
+
+### 6.3 Equivalence, measured
+
+`optimize_runtime_arena` over the twelve `shader_bench` kernels, release
+build, digesting the extracted arena. A digest is a stronger check than a
+cost: equal arenas have equal cost under every model, while equal costs can
+hide a different term.
+
+| arm | combined digest | runs |
+|---|---|---|
+| `origin/main` @ `c1afd4b9` | `66efbe1a7133c5f4` | 3/3 identical |
+| this branch | `66efbe1a7133c5f4` | 3/3 identical |
+
+**All twelve kernels match individually**, not just in the fold — same
+extracted node count, same digest, kernel by kernel. Timings are the same
+order on both arms (main 9.5–101 ms, branch 4.2–122 ms per kernel, on a
+machine at load ≈ 21 where that spread is noise).
+
+Per-kernel, with the budget the run actually spent — read off
+`OptimizerStats`, which is new surface this PR adds and the reason these
+numbers are available at all:
+
+| kernel | in | out | applications | classes | stop |
+|---|---:|---:|---:|---:|---|
+| cosine_palette | 40 | 26 | 2 614 | 1 767 | ClassCap |
+| smooth_min_scene | 43 | 38 | 2 722 | 1 219 | ClassCap |
+| mandelbrot_distance | 152 | 109 | 15 303 | 3 716 | ClassCap |
+| star_sdf | 66 | 57 | 7 997 | 3 828 | ClassCap |
+| gyroid_slice | 44 | 35 | 8 652 | 779 | Quiesced |
+| plasma | 41 | 31 | 3 310 | 1 822 | ClassCap |
+| domain_warp_fbm | 84 | 59 | 6 976 | 4 577 | ClassCap |
+| kaleidoscope_fold | 46 | 40 | 601 | 131 | Quiesced |
+| metaballs | 62 | 48 | 10 090 | 2 584 | ClassCap |
+| julia_set | 122 | 122 | 14 870 | 4 527 | ClassCap |
+| smoothstep_vignette | 64 | 45 | 1 596 | 283 | Quiesced |
+| torus_slice | 42 | 37 | 4 697 | 1 291 | ClassCap |
+
+**Not one `Timeout`.** Nine of twelve stop on the class cap and three
+quiesce, which is why dropping the wall clock costs nothing here and why the
+output is unchanged: on this corpus the clock was never what bound. That
+independently reproduces #1087's finding (class cap binding on 68 % of its
+kernels; 75 % here) on a different corpus, and it is what makes
+`Budget::Production` a faithful reproduction of the production presets rather
+than a redefinition of them.
+
+Two cautions against over-reading it.
+
+1. **This is not proof the clock can never bind** — only that it does not on
+   these twelve at this load. An earlier run of the same harness against
+   `origin/main` @ `6336a0c2`, *before* #1085 landed its `ScanStop` work,
+   produced **five different digests in five identical runs** and truncated
+   three of the twelve kernels mid-saturation. The clock is a live hazard the
+   moment a kernel's sweep outruns it; removing it is what makes that
+   unrepresentable rather than unlikely.
+2. **Applications range 601 – 15 303**, median ≈ 5 800. That is the
+   calibration table for `Budget::Applications` when a research arm needs two
+   policies held to the same spend, and it is the number G3 was missing.
+
+Wall clock survives only as `Optimizer::hard_ceiling`, which **panics**. A
+ceiling is an assertion about the budget; the old `hard_timeout` truncated and
+then reported `saturated: true`, which is the same failure wearing a success's
+clothes.

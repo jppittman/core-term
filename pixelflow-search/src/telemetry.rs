@@ -45,7 +45,7 @@
 use std::io::Write as _;
 use std::time::Duration;
 
-use crate::egraph::{CostModel, SaturationResult, SaturationStop};
+use crate::egraph::{CostModel, OptimizerStats, SaturationStop};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
 /// Which tier invoked saturation.
@@ -83,15 +83,18 @@ pub struct SaturationInvocation<'a> {
     /// Size of the input, as passed to `config_for_node_count` to select the
     /// budget triple.
     pub node_count: usize,
-    /// The result `saturate_with_full_budget` returned: the budget triple the
-    /// run was given (`budget`/`max_classes`/`hard_timeout`), iterations
-    /// used, e-classes before/after, and — the field this feature exists to
-    /// surface — why the run stopped.
-    pub result: &'a SaturationResult,
-    /// Rule-provenance counters, read off the e-graph's own journal at the
-    /// moment saturation stopped (`Provenance::application_count` /
-    /// `Provenance::union_count`) — never inferred from the stats above.
-    pub application_count: usize,
+    /// What [`crate::egraph::Optimizer::run`] reported: the deterministic
+    /// limits the run was held to, the rounds and applications it used, the
+    /// e-class count it stopped at, and — the field this feature exists to
+    /// surface — why it stopped.
+    ///
+    /// There is no `hard_timeout` here any more. The budget carries no
+    /// clock, which is what makes a record comparable to one taken on
+    /// another machine; a wall-clock ceiling exists on the optimizer but
+    /// panics rather than truncating, so it can never be a stop reason.
+    pub stats: &'a OptimizerStats,
+    /// Class merges journalled during the run
+    /// (`Provenance::union_count`) — never inferred from the stats above.
     pub union_count: usize,
     /// The arena and root this invocation extracted, so [`record`] can cost
     /// it under the static latency-prior model independently of whatever
@@ -116,20 +119,20 @@ pub fn record(inv: SaturationInvocation<'_>) {
     let cost = latency_prior_cost(inv.extracted_arena, inv.extracted_root);
     let line = format!(
         "{{\"tier\":\"{tier}\",\"node_count\":{node_count},\"max_iterations\":{max_iterations},\
-         \"max_classes\":{max_classes},\"hard_timeout_us\":{hard_timeout_us},\
+         \"max_classes\":{max_classes},\"max_applications\":{max_applications},\
          \"stop_reason\":\"{stop_reason}\",\"iterations\":{iterations},\
          \"classes_at_stop\":{classes_at_stop},\"application_count\":{application_count},\
          \"union_count\":{union_count},\"extracted_latency_prior_cost\":{cost},\
          \"wall_clock_us\":{wall_clock_us},\"kernel_label\":{kernel_label}}}",
         tier = inv.tier.as_json_str(),
         node_count = inv.node_count,
-        max_iterations = inv.result.budget,
-        max_classes = inv.result.max_classes,
-        hard_timeout_us = inv.result.hard_timeout.as_micros(),
-        stop_reason = stop_str(inv.result.stop),
-        iterations = inv.result.iterations,
-        classes_at_stop = inv.result.classes_after,
-        application_count = inv.application_count,
+        max_iterations = inv.stats.limits.iterations,
+        max_classes = inv.stats.limits.classes,
+        max_applications = json_opt_u64(inv.stats.limits.applications),
+        stop_reason = stop_str(inv.stats.stop),
+        iterations = inv.stats.iterations,
+        classes_at_stop = inv.stats.classes,
+        application_count = inv.stats.applications,
         union_count = inv.union_count,
         cost = cost,
         wall_clock_us = inv.wall_clock.as_micros(),
@@ -144,6 +147,16 @@ fn stop_str(stop: SaturationStop) -> &'static str {
         SaturationStop::ClassCap => "class_cap",
         SaturationStop::IterationCeiling => "iteration_ceiling",
         SaturationStop::Timeout => "timeout",
+        SaturationStop::ApplicationBudget => "application_budget",
+    }
+}
+
+/// `null` for an uncapped dimension, rather than a sentinel number a reader
+/// would have to know to interpret.
+fn json_opt_u64(v: Option<u64>) -> String {
+    match v {
+        Some(n) => format!("{n}"),
+        None => String::from("null"),
     }
 }
 
