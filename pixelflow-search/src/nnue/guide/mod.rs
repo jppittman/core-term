@@ -61,6 +61,7 @@
 //! own (`scoring.rs`).
 
 mod accumulator;
+pub mod diversity;
 pub mod linear;
 mod scoring;
 
