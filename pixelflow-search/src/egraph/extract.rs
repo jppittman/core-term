@@ -902,11 +902,9 @@ pub fn extract<C: CostFunction>(
                             // `best_cost` can already sit at a prohibitive
                             // sentinel (`Dwrt`'s `usize::MAX / 4` from
                             // `CostModel::node_op_cost`, or this function's
-                            // own `CYCLE_COST`), and a node with several such
-                            // children genuinely overflows a plain `usize`
-                            // sum — reachable once a real (not synthetic)
-                            // `Dwrt`-bearing e-graph goes through DAG
-                            // extraction (2026-09-01 integration audit).
+                            // own `CYCLE_COST`), so a node with several such
+                            // children overflows a plain `usize` sum. A real
+                            // `Dwrt`-bearing e-graph reaches that here.
                             let children_cost: usize = children
                                 .iter()
                                 .map(|&child| {

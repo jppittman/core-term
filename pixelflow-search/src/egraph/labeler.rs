@@ -43,6 +43,7 @@ use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::provenance::{ApplicationId, ENodeId};
 use super::rewrite::Rewrite;
+use super::saturate::SaturationConfig;
 
 /// Binary hindsight label for one recorded rewrite application.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,7 +291,7 @@ pub fn run_episode(
 ) -> EpisodeResult {
     let mut egraph = EGraph::with_rules(rules);
     let root_class = egraph.add_arena(arena, root);
-    egraph.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
+    SaturationConfig::compatibility(100).run(&mut egraph);
 
     let costs = CostModel::latency_prior();
     let extraction = extract::extract_dag(&egraph, root_class, &costs);

@@ -20,7 +20,7 @@
 
 use pixelflow_codegen::emit::compile;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
-use pixelflow_search::egraph::{EGraph, choices_to_arena, env_extraction_policy};
+use pixelflow_search::egraph::{EGraph, SaturationConfig, choices_to_arena, env_extraction_policy};
 use pixelflow_search::math::all_rules;
 
 /// Build `sin(sqrt(x*x + y*y) * freq) * amp + bias` as an arena.
@@ -54,7 +54,7 @@ fn optimize(arena: &ExprArena, root: ExprId, tag: &str) -> (ExprArena, ExprId) {
     let root_class = eg.add_arena(arena, root);
     let classes_before = eg.num_classes();
 
-    eg.saturate_with_limits(40, 10_000, std::time::Duration::from_millis(500));
+    SaturationConfig::compatibility(40).run(&mut eg);
     let classes_after = eg.num_classes();
 
     // Latency-prior extraction of the cheapest DAG.

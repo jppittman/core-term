@@ -733,8 +733,7 @@ fn differentiate_in_optimizer(arena: &ExprArena, root: ExprId) -> Option<(ExprAr
     // `env_extraction_policy()` — the one place the policy is chosen, so a
     // future policy change reaches this tier too instead of being silently
     // skipped — via the DAG-preserving `ExtractionPolicy::extraction` /
-    // `choices_to_arena`, not the tree `extract`. One policy, no second copy
-    // (2026-09-01 integration audit).
+    // `choices_to_arena`, not the tree `extract`. One policy, no second copy.
     let mut eg = EGraph::with_rules(crate::optimize::standard_rules());
     let root_class = eg.add_arena(&encoded, root);
     let node_count = reachable_node_count(&encoded, root);
@@ -1118,18 +1117,67 @@ mod expansion_derivative_tests {
         [1.2, -0.7, 0.0, 0.0],
     ];
 
-    /// Saturate [`winding_ramp_core`] under the `rapid` tier's iteration and
-    /// class caps but a generous wall-clock budget, so what is measured is
-    /// the caps, not the machine.
-    fn saturate_winding_ramp_under_rapid_caps() -> (
-        ExprArena,
-        ExprId,
+    /// Wall-clock ceiling for the tests below, standing in for the tier's own
+    /// deadline.
+    ///
+    /// The deadline is the one part of the production budget these tests
+    /// deliberately do not reproduce. `cargo test` builds this crate
+    /// unoptimized and shares the machine with the rest of the workspace, so
+    /// asserting anything under `rapid`'s 50ms (or `classical`'s 200ms) would
+    /// pin the machine's load, not the policy — and a load-dependent
+    /// assertion is a flake, which is worse than no assertion. Every other
+    /// dimension (round cap, class cap, rule set, extraction policy) is the
+    /// production one, so what these tests measure is whether *those* suffice.
+    ///
+    /// A deadline miss in production stays legitimate: it is the documented
+    /// graceful fallback to the runtime `lower_dwrt` tier — see
+    /// [`differentiate_in_optimizer`].
+    const UNTIMED_CEILING: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// Saturate `root` under its production tier's iteration and class caps
+    /// but [`UNTIMED_CEILING`], so what is measured is the caps, not the
+    /// machine. Mirrors [`differentiate_in_optimizer`]'s setup exactly —
+    /// same param encoding, same rule set, same `config_for_node_count`
+    /// sizing — up to that one substitution.
+    fn saturate_under_tier_caps(
+        a: &ExprArena,
+        root: ExprId,
+    ) -> (
         pixelflow_search::egraph::EGraph,
         pixelflow_search::egraph::EClassId,
     ) {
-        use pixelflow_search::egraph::{
-            EGraph, SaturationConfig, config_for_node_count, saturate_with_full_budget,
-        };
+        use pixelflow_search::egraph::{EGraph, config_for_node_count, saturate_with_full_budget};
+
+        let node_count = super::reachable_node_count(a, root);
+        let tier = config_for_node_count(node_count);
+
+        let encoded = super::encode_params_as_vars(a);
+        let mut eg = EGraph::with_rules(crate::optimize::standard_rules());
+        let root_class = eg.add_arena(&encoded, root);
+        let classes_before = eg.num_classes();
+        let started = std::time::Instant::now();
+        let stats = saturate_with_full_budget(
+            &mut eg,
+            tier.max_iterations,
+            tier.max_classes,
+            UNTIMED_CEILING,
+        );
+        eprintln!(
+            "[tier caps, untimed] node_count={node_count} tier={tier:?} iterations={} \
+             total_unions={} classes {classes_before}->{} elapsed={:?}",
+            stats.iterations,
+            stats.total_unions,
+            eg.num_classes(),
+            started.elapsed(),
+        );
+        (eg, root_class)
+    }
+
+    /// [`winding_ramp_core`] plus the assertion that it lands in the `rapid`
+    /// tier, so the tests below cannot silently start measuring a different
+    /// budget if the body or the tier thresholds change.
+    fn winding_ramp_in_rapid_tier() -> (ExprArena, ExprId) {
+        use pixelflow_search::egraph::{SaturationConfig, config_for_node_count};
 
         let mut a = ExprArena::new();
         let root = winding_ramp_core(&mut a);
@@ -1142,27 +1190,7 @@ mod expansion_derivative_tests {
                 && tier.max_iterations == rapid.max_iterations,
             "winding_ramp_core should land in the rapid tier, got {node_count} nodes -> {tier:?}"
         );
-
-        let encoded = super::encode_params_as_vars(&a);
-        let mut eg = EGraph::with_rules(crate::optimize::standard_rules());
-        let root_class = eg.add_arena(&encoded, root);
-        let classes_before = eg.num_classes();
-        let started = std::time::Instant::now();
-        let stats = saturate_with_full_budget(
-            &mut eg,
-            rapid.max_iterations,
-            rapid.max_classes,
-            std::time::Duration::from_secs(120),
-        );
-        eprintln!(
-            "[rapid caps, untimed] node_count={node_count} iterations={} total_unions={} \
-             classes {classes_before}->{} elapsed={:?}",
-            stats.iterations,
-            stats.total_unions,
-            eg.num_classes(),
-            started.elapsed(),
-        );
-        (a, root, eg, root_class)
+        (a, root)
     }
 
     /// The `rapid` tier's iteration and class caps (50 / 2000) are enough for
@@ -1179,7 +1207,8 @@ mod expansion_derivative_tests {
     fn rapid_caps_resolve_winding_ramp_dwrt_under_static_policy() {
         use pixelflow_search::egraph::{CostModel, ExtractionPolicy};
 
-        let (a, root, eg, root_class) = saturate_winding_ramp_under_rapid_caps();
+        let (a, root) = winding_ramp_in_rapid_tier();
+        let (eg, root_class) = saturate_under_tier_caps(&a, root);
 
         let (out, out_root) = super::extract_dwrt_free(
             &eg,
@@ -1197,35 +1226,40 @@ mod expansion_derivative_tests {
         .assert_agrees(&out, out_root);
     }
 
-    /// The real, wall-clock-budgeted production path on the same body. A
-    /// `None` is the documented budget-miss fallback and asserts nothing
-    /// (this binary shares the machine with the rest of
-    /// `cargo test --workspace`, and proc-macro builds are unoptimized); a
-    /// `Some` must agree with the runtime tier. What this pins
-    /// unconditionally is that the path runs to completion — the DAG
-    /// extraction's children-cost sum used to overflow on a `Dwrt`-bearing
-    /// graph (`extract_dag`, `usize::MAX / 4` sentinel), which surfaces
-    /// here as a panic, never as a `None`.
+    /// The same body through the production *policy seam* —
+    /// [`env_extraction_policy`], the one place extraction policy is chosen —
+    /// rather than a policy this test names itself.
+    ///
+    /// The derivative MUST be produced: a `None` here means the tier's caps
+    /// or the selected policy failed to resolve the chain rule on a real
+    /// glyph kernel, which is the regression this test exists to catch.
+    /// Only the deadline is relaxed, to [`UNTIMED_CEILING`] — see its doc for
+    /// why asserting under `rapid`'s 50ms would pin the machine instead.
+    ///
+    /// It also pins that the path runs to completion: the DAG extraction's
+    /// children-cost sum used to overflow on a `Dwrt`-bearing graph
+    /// (`extract_dag`, `usize::MAX / 4` sentinel), which surfaces here as a
+    /// panic, never as a `None`.
     #[test]
     fn winding_ramp_core_takes_production_policy() {
-        let mut a = ExprArena::new();
-        let root = winding_ramp_core(&mut a);
-        match differentiate_in_optimizer(&a, root) {
-            Some((out, out_root)) => {
-                eprintln!(
-                    "[production] converged; extracted(dag) node_count={}",
-                    out.len()
-                );
-                RuntimeTierReference {
-                    arena: &a,
-                    root,
-                    params: &WINDING_PARAMS,
-                    pts: &WINDING_POINTS,
-                }
-                .assert_agrees(&out, out_root);
-            }
-            None => eprintln!("[production] rapid's 50ms budget missed — graceful fallback"),
+        use pixelflow_search::egraph::env_extraction_policy;
+
+        let (a, root) = winding_ramp_in_rapid_tier();
+        let (eg, root_class) = saturate_under_tier_caps(&a, root);
+
+        let (out, out_root) = super::extract_dwrt_free(&eg, root_class, &env_extraction_policy())
+            .expect("production policy: Dwrt must not survive a converged rapid-tier saturation");
+        eprintln!(
+            "[production] converged; extracted(dag) node_count={}",
+            out.len()
+        );
+        RuntimeTierReference {
+            arena: &a,
+            root,
+            params: &WINDING_PARAMS,
+            pts: &WINDING_POINTS,
         }
+        .assert_agrees(&out, out_root);
     }
 
     /// Two independent ramp cores summed — an `AnalyticalQuad`-shaped
@@ -1240,6 +1274,8 @@ mod expansion_derivative_tests {
 
     #[test]
     fn quad_shaped_core_takes_production_policy() {
+        use pixelflow_search::egraph::env_extraction_policy;
+
         let mut a = ExprArena::new();
         let root = quad_shaped_core(&mut a);
         let node_count = super::reachable_node_count(&a, root);
@@ -1247,14 +1283,18 @@ mod expansion_derivative_tests {
             node_count > 50,
             "quad_shaped_core should land in the classical tier (51+ nodes), got {node_count}"
         );
-        if let Some((out, out_root)) = differentiate_in_optimizer(&a, root) {
-            RuntimeTierReference {
-                arena: &a,
-                root,
-                params: &WINDING_PARAMS,
-                pts: &WINDING_POINTS,
-            }
-            .assert_agrees(&out, out_root);
+
+        let (eg, root_class) = saturate_under_tier_caps(&a, root);
+        let (out, out_root) = super::extract_dwrt_free(&eg, root_class, &env_extraction_policy())
+            .expect(
+                "production policy: Dwrt must not survive a converged classical-tier saturation",
+            );
+        RuntimeTierReference {
+            arena: &a,
+            root,
+            params: &WINDING_PARAMS,
+            pts: &WINDING_POINTS,
         }
+        .assert_agrees(&out, out_root);
     }
 }
