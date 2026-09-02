@@ -123,7 +123,7 @@ pub(crate) struct GuidedEpisode {
 impl GuidedEpisode {
     /// How many distinct candidate keys this episode has resolved
     /// (diagnostic: dedup coverage).
-    pub(crate) fn seen_key_count(&self) -> usize {
+    pub(super) fn seen_key_count(&self) -> usize {
         self.seen_keys.len()
     }
 

@@ -109,6 +109,56 @@ pub struct LinearWeights {
     pub fingerprint: Fingerprint,
 }
 
+impl LinearWeights {
+    /// Refuse these weights against `rules` if they were trained against a
+    /// different vocabulary.
+    ///
+    /// One check, shared by both heads built on this layout
+    /// ([`LinearCandidateGuide`] and [`LinearReturnGuide`]): a second copy
+    /// is a second thing to forget to update.
+    ///
+    /// # Errors
+    ///
+    /// If [`Self::fingerprint`] disagrees with `rules.fingerprint()`, or if
+    /// `rules` contains a rule these weights have no entry for. Both are the
+    /// same failure seen from two sides, and both are refused before a
+    /// single candidate is scored — the alternative is a guide that runs
+    /// happily with `w_rule` naming the wrong rules.
+    pub fn check_vocabulary(&self, rules: &RuleSet) -> Result<(), GuideError> {
+        let live = rules.fingerprint();
+        if self.fingerprint != live {
+            return Err(GuideError(alloc::format!(
+                "linear guide: weights were trained against rule set {} but are being \
+                 deployed against {} — the vocabulary changed since training, so every \
+                 w_rule entry may name a different rule. Retrain rather than deploy.",
+                self.fingerprint,
+                live
+            )));
+        }
+        // The fingerprint covers the vocabulary; this covers the table. A
+        // checkpoint that matches the fingerprint but is missing a weight
+        // was written by something that did not write one per rule, and the
+        // gap would surface as a mid-saturation panic instead of a load
+        // failure.
+        let missing: Vec<String> = (0..rules.len())
+            .filter(|&i| {
+                rules
+                    .id_of(i)
+                    .is_none_or(|id| !self.w_rule.contains_key(&id))
+            })
+            .filter_map(|i| rules.label_of(i))
+            .collect();
+        if !missing.is_empty() {
+            return Err(GuideError(alloc::format!(
+                "linear guide: the rule set's fingerprint matches but {} rule(s) have no \
+                 weight: {missing:?}",
+                missing.len()
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Deploys `train_guide`'s cold-start linear model as a
 /// [`SaturationGuide`] — see the module doc for why this must reproduce
 /// `Model::logit` exactly rather than approximate it.
@@ -118,7 +168,7 @@ pub struct LinearWeights {
 /// skipping it avoids a transcendental per candidate. The skew test compares
 /// this logit against the trainer's, not against its reported (post-sigmoid)
 /// DEV probabilities.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct LinearCandidateGuide {
     weights: LinearWeights,
 }
@@ -135,36 +185,7 @@ impl LinearCandidateGuide {
     /// single candidate is scored — the alternative is a guide that runs
     /// happily with `w_rule` naming the wrong rules.
     pub fn new(weights: LinearWeights, rules: &RuleSet) -> Result<Self, GuideError> {
-        let live = rules.fingerprint();
-        if weights.fingerprint != live {
-            return Err(GuideError(alloc::format!(
-                "linear guide: weights were trained against rule set {} but are being \
-                 deployed against {} — the vocabulary changed since training, so every \
-                 w_rule entry may name a different rule. Retrain rather than deploy.",
-                weights.fingerprint,
-                live
-            )));
-        }
-        // The fingerprint covers the vocabulary; this covers the table. A
-        // checkpoint that matches the fingerprint but is missing a weight
-        // was written by something that did not write one per rule, and the
-        // gap would surface as a mid-saturation panic instead of a load
-        // failure.
-        let missing: Vec<String> = (0..rules.len())
-            .filter(|&i| {
-                rules
-                    .id_of(i)
-                    .is_none_or(|id| !weights.w_rule.contains_key(&id))
-            })
-            .filter_map(|i| rules.label_of(i))
-            .collect();
-        if !missing.is_empty() {
-            return Err(GuideError(alloc::format!(
-                "linear guide: the rule set's fingerprint matches but {} rule(s) have no \
-                 weight: {missing:?}",
-                missing.len()
-            )));
-        }
+        weights.check_vocabulary(rules)?;
         Ok(Self { weights })
     }
 
@@ -194,7 +215,15 @@ impl LinearCandidateGuide {
     /// which removes the contraction opportunity — restoring in release
     /// builds the two-rounding behavior an unoptimized build gives for free.
     fn logit(&self, c: &CandidateSummary) -> f32 {
-        let w = &self.weights;
+        self.weights.logit(c)
+    }
+}
+
+impl LinearWeights {
+    /// The shared forward pass — see [`LinearCandidateGuide::logit`] for the
+    /// `black_box` discipline and why it is load-bearing.
+    fn logit(&self, c: &CandidateSummary) -> f32 {
+        let w = self;
         let w_rule = *w.w_rule.get(&c.rule).unwrap_or_else(|| {
             panic!(
                 "LinearCandidateGuide: rule {} has no entry in this checkpoint's w_rule \
@@ -253,9 +282,112 @@ impl SaturationGuide for LinearCandidateGuide {
     }
 }
 
+/// Which loss trained a [`LinearReturnGuide`]'s weights.
+///
+/// A type rather than the checkpoint's raw string: "is this a return head at
+/// all, and if so which one" is a three-way question a `String` answers by
+/// convention and an enum answers by construction. The pipeline's loader
+/// maps `"return-mse"` / `"return-rank"` onto this and refuses everything
+/// else, so an unrecognized objective never reaches a scoring loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnObjective {
+    /// Squared error against the (expression-centered) return-to-go.
+    Mse,
+    /// Pairwise rank loss within an expression's candidate set.
+    Rank,
+}
+
+impl core::fmt::Display for ReturnObjective {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Mse => write!(f, "return-mse"),
+            Self::Rank => write!(f, "return-rank"),
+        }
+    }
+}
+
+/// Deploys `train_guide_r2g`'s linear return-to-go regressor as a
+/// [`SaturationGuide`] (docs/plans/2026-09-01-guide-return-to-go.md §3.3) —
+/// the same [`LinearWeights`] formula [`LinearCandidateGuide`] uses, trained
+/// against a different target (expression-centered log-regret rather than
+/// the strict load-bearing bit), so its forward pass is a **predicted
+/// cost**, not a probability.
+///
+/// # The sign, spelled out
+///
+/// [`SaturationGuide::score_candidates`] is a move-ordering rank: the guided
+/// loop applies candidates in *descending* score order. A predicted return
+/// is a predicted **regret** (§1.2: `R = ln(cost/best)`, 0 = optimal, more
+/// positive = worse) — the candidate the loop should fire *first* is the one
+/// whose predicted return is **lowest**, not highest. `score_candidates`
+/// therefore returns `-predicted_return`, so "highest score" and "lowest
+/// predicted regret" agree: the one deliberate difference from
+/// [`LinearCandidateGuide`], whose logit is already in "bigger is better"
+/// orientation and needs no such flip.
+#[derive(Clone, Debug)]
+pub struct LinearReturnGuide {
+    weights: LinearWeights,
+    objective: ReturnObjective,
+}
+
+impl LinearReturnGuide {
+    /// Deploy `weights` as a return head against `rules`, refusing them if
+    /// they were trained against a different vocabulary.
+    ///
+    /// # Errors
+    ///
+    /// The same two refusals as [`LinearCandidateGuide::new`] — see
+    /// [`LinearWeights::check_vocabulary`].
+    pub fn new(
+        weights: LinearWeights,
+        objective: ReturnObjective,
+        rules: &RuleSet,
+    ) -> Result<Self, GuideError> {
+        weights.check_vocabulary(rules)?;
+        Ok(Self { weights, objective })
+    }
+
+    /// Which loss trained these weights.
+    #[must_use]
+    pub fn objective(&self) -> ReturnObjective {
+        self.objective
+    }
+
+    /// The vocabulary these weights were trained against.
+    #[must_use]
+    pub fn fingerprint(&self) -> Fingerprint {
+        self.weights.fingerprint
+    }
+
+    /// One candidate's predicted return-to-go (§1.2's `R`, expression-
+    /// centered if the checkpoint was trained on the centered target) —
+    /// [`LinearWeights`]'s forward pass under a name that matches what this
+    /// head predicts. Exposed (not just `score_candidates`'s negated form)
+    /// so the mandatory skew test can compare this value directly against
+    /// `train_guide_r2g`'s own forward pass, the same discipline
+    /// [`LinearCandidateGuide`]'s skew test applies to its logit.
+    #[must_use]
+    pub fn predicted_return(&self, c: &CandidateSummary) -> f32 {
+        self.weights.logit(c)
+    }
+}
+
+impl SaturationGuide for LinearReturnGuide {
+    fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
+        // Lower predicted return = higher priority: negate so "descending
+        // score" (what the guided loop sorts by) means "ascending predicted
+        // regret" — see this type's doc, "The sign, spelled out".
+        candidates
+            .iter()
+            .map(|c| -self.predicted_return(c))
+            .collect()
+    }
+}
+
 /// The zero-candidate-local-information control arm — see the module doc.
 /// Scores every candidate of a given rule with that rule's TRAIN-measured
 /// strict-positive rate, ignoring everything else about the candidate.
+#[derive(Clone, Debug)]
 pub struct PerRuleRateGuide {
     rate: BTreeMap<RuleId, f32>,
 }

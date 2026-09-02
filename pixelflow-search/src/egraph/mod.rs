@@ -48,6 +48,7 @@ pub mod rewrite;
 pub mod rule_order;
 pub mod rules;
 pub mod saturate;
+pub mod template;
 
 // Re-export public API
 pub use anytime::{
@@ -72,20 +73,21 @@ pub use graph::{
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode};
 pub use ops::Op;
-#[cfg(feature = "provenance-journal")]
-pub use optimizer::Observer;
 pub use optimizer::{Budget, Limits, Optimized, Optimizer, OptimizerStats};
+#[cfg(feature = "provenance-journal")]
+pub use optimizer::{KeepJournal, Observer};
 pub use provenance::{ApplicationId, ENodeId, Provenance};
 #[cfg(feature = "provenance-journal")]
 pub use provenance::{
     ApplicationRecord, Origin, UnionEvent, derivation_ancestors, format_derivation_trace,
 };
-pub use rewrite::{Rewrite, RewriteAction};
+pub use rewrite::{Rewrite, RewriteAction, TemplateArena};
 pub use rules::{Fingerprint, RuleId, RuleSet, rule_label};
 pub use saturate::{
     SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
     saturate_with_budget, saturate_with_full_budget,
 };
+pub use template::TemplateRewrite;
 
 // Re-export rule types from math module for backward compatibility
 pub use crate::math::{

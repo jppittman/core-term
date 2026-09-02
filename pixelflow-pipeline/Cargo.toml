@@ -100,3 +100,122 @@ path = "src/bin/guide_scope_saturation_delta.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "tightened_labeler_rank"
+path = "src/bin/tightened_labeler_rank.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "phase3_unguided_baseline"
+path = "src/bin/phase3_unguided_baseline.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "gen_strict_labels"
+path = "src/bin/gen_strict_labels.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "eval_control_guides"
+path = "src/bin/eval_control_guides.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "train_guide"
+path = "src/bin/train_guide.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "gen_sh_corpus"
+path = "src/bin/gen_sh_corpus.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "gen_bezier_corpus"
+path = "src/bin/gen_bezier_corpus.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "strict_label_output_class_recount"
+path = "src/bin/strict_label_output_class_recount.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "phase3_round2_unguided_curves"
+path = "src/bin/phase3_round2_unguided_curves.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "phase3_round2_new_rules"
+path = "src/bin/phase3_round2_new_rules.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "gen_r2g_trajectories"
+path = "src/bin/gen_r2g_trajectories.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "counterfactual_credit"
+path = "src/bin/counterfactual_credit.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "train_guide_r2g"
+path = "src/bin/train_guide_r2g.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "r2g_spread_vs_budget"
+path = "src/bin/r2g_spread_vs_budget.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "skew_test_linear_guide"
+path = "src/bin/skew_test_linear_guide.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "phase3_at_budget_eval"
+path = "src/bin/phase3_at_budget_eval.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "guide_coverage_table"
+path = "src/bin/guide_coverage_table.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
