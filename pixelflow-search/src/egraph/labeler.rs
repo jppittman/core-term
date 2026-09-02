@@ -62,6 +62,15 @@
 //! API. Sound-by-construction (never over-credits), but blind to enabling
 //! credit — see the design doc §3 for why that is an accepted, documented
 //! cost of a cold-start label source, not a bug.
+//!
+//! It is also blind to any rewrite whose output already exists in the graph
+//! or is immediately folded away — strict credit is *minted* credit, and a
+//! memo-hit RHS mints nothing, so sin²x + cos²x → 1 on a kernel that already
+//! carries a `1` can never be strict-positive, and `1 + 0.5 → 1.5` hands the
+//! credit to the fold. This is pinned, not repaired, by the fixtures at the
+//! bottom of this file's tests (`docs/results/2026-09-01-strict-label-constant-output-blindspot.md`);
+//! the ruling is that hindsight provenance yields exact ancestry, not exact
+//! credit, and the Guide's target moves to hindsight return-to-go instead.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -715,5 +724,350 @@ mod tests {
             tight.load_bearing.len(),
             loose.load_bearing.len()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Documented blind spot: rewrites whose output already exists, or is
+    // immediately folded away, are invisible to the strict label.
+    //
+    // The fixtures below PIN the strict label's CURRENT behaviour. They are
+    // not the intended semantics — they are the documented blind spot
+    // (`docs/results/2026-09-01-strict-label-constant-output-blindspot.md`):
+    //
+    // `strict_load_bearing` credits an application iff a node *it minted* is
+    // on the extracted path. `EGraph::add` memo-hits when a rewrite's
+    // right-hand side already exists (a `1` the seed carried, a child term,
+    // a fold target), so such a firing mints nothing, records no
+    // `Origin::Rule`, and its only effect is a union — which the strict label
+    // never reads. And when the firing *does* mint its node but a later fold
+    // consumes it (`1 + 0.5 → 1.5`), the path holds the fold's node, so the
+    // fold takes the credit. Under it, sin²x + cos²x → 1 was strict-positive
+    // 0 / 456 times on the `sh` family (Round 1b).
+    //
+    // Ruling (JP, 2026-09-01): do not repair this with another hand-drawn
+    // bound. Hindsight provenance gives exact ANCESTRY, not exact CREDIT; the
+    // Guide's training target moves to hindsight return-to-go over diverse
+    // trajectories, with counterfactual replay as validation. These tests
+    // exist so that the blind spot is a fact the suite states, not folklore;
+    // a change that makes them fail is a semantics change and must update
+    // the results doc.
+    // -----------------------------------------------------------------------
+
+    use crate::egraph::{SaturationStop, all_rules};
+    use pixelflow_ir::{ExprArena, ExprId, OpKind};
+    use std::time::Duration;
+
+    struct Episode {
+        egraph: EGraph,
+        extraction: ExtractedDAG,
+    }
+
+    /// Saturate with `all_rules()` to a fixed application budget (or
+    /// quiescence), then extract with the latency prior. A fixed application
+    /// budget rather than `saturate()`'s 500 ms wall-clock ceiling: no clock
+    /// in the stop condition, so the fixture is deterministic.
+    fn budgeted_episode(arena: &ExprArena, root: ExprId, app_budget: usize) -> Episode {
+        let mut egraph = EGraph::with_rules(all_rules());
+        let root_class = egraph.add_arena(arena, root);
+        let stats =
+            egraph.saturate_until_applications(app_budget, 100, 10_000, Duration::from_secs(600));
+        assert!(
+            !matches!(stats.stop, SaturationStop::Timeout),
+            "fixture saturation hit the wall-clock ceiling — the episode is not reproducible"
+        );
+        let extraction = extract::extract_dag(&egraph, root_class, &CostModel::latency_prior());
+        Episode { egraph, extraction }
+    }
+
+    impl Episode {
+        fn labels(&self) -> (EpisodeLabels, EpisodeLabels, EpisodeLabels) {
+            let (eg, root, choices) =
+                (&self.egraph, self.extraction.root, &self.extraction.choices);
+            let strict = EpisodeLabels::compute_strict(eg, root, choices);
+            let tight = EpisodeLabels::compute_tight(eg, root, choices);
+            let loose = EpisodeLabels::compute(eg, root, choices);
+            assert!(
+                strict.load_bearing.is_subset(&tight.load_bearing),
+                "strict ⊄ tight"
+            );
+            assert!(
+                tight.load_bearing.is_subset(&loose.load_bearing),
+                "tight ⊄ loose"
+            );
+            // Strict credit is minted credit, by construction.
+            for app in &strict.load_bearing {
+                assert!(
+                    self.egraph
+                        .provenance()
+                        .origins()
+                        .any(|(_, o)| o == Origin::Rule(*app)),
+                    "strict-positive {app:?} minted no node"
+                );
+            }
+            (strict, tight, loose)
+        }
+
+        fn rule_idx(&self, name: &str) -> usize {
+            (0..self.egraph.num_rules())
+                .find(|&i| self.egraph.rule(i).map(|r| r.name()) == Some(name))
+                .unwrap_or_else(|| panic!("no rule named {name:?} in all_rules()"))
+        }
+
+        /// The extracted expression, rendered structurally: `Add(1, v1)`.
+        fn rendered(&self) -> String {
+            self.render(self.extraction.root)
+        }
+
+        fn render(&self, class: EClassId) -> String {
+            let (node, _) = self.chosen(class);
+            match node {
+                ENode::Var(v) => format!("v{v}"),
+                ENode::Const(bits) => format!("{}", f32::from_bits(*bits)),
+                ENode::Buffer(_) => "buf".to_string(),
+                ENode::Op { op, children } => {
+                    let kids: Vec<String> = children.iter().map(|&k| self.render(k)).collect();
+                    format!("{:?}({})", op.kind(), kids.join(", "))
+                }
+            }
+        }
+
+        fn chosen(&self, class: EClassId) -> (&ENode, ENodeId) {
+            let c = self.egraph.find(class);
+            let idx = self.extraction.choices[c.index()]
+                .unwrap_or_else(|| panic!("class e{} on the path has no choice", c.index()));
+            (&self.egraph.nodes(c)[idx], self.egraph.tags(c)[idx])
+        }
+
+        /// Origin of the node the extraction chose for the class holding
+        /// `bits` as a constant — the path's `1`, `1.5`, ...
+        fn origin_of_chosen_const(&self, value: f32) -> Origin {
+            let mut stack = vec![self.extraction.root];
+            let mut seen = BTreeSet::new();
+            while let Some(class) = stack.pop() {
+                let c = self.egraph.find(class);
+                if !seen.insert(c) {
+                    continue;
+                }
+                let (node, tag) = self.chosen(c);
+                if matches!(node, ENode::Const(b) if *b == value.to_bits()) {
+                    return self
+                        .egraph
+                        .provenance()
+                        .origin(tag)
+                        .expect("chosen node has an origin");
+                }
+                stack.extend(node.children());
+            }
+            panic!(
+                "no chosen Const({value}) on the extracted path {}",
+                self.rendered()
+            )
+        }
+
+        fn minted_by_rule(&self, rule_idx: usize) -> usize {
+            let prov = self.egraph.provenance();
+            prov.origins()
+                .filter(|(_, o)| {
+                    matches!(o, Origin::Rule(app)
+                        if prov.application(*app).expect("record").rule_idx == rule_idx)
+                })
+                .count()
+        }
+    }
+
+    fn assert_rendered_in(ep: &Episode, accepted: &[&str]) {
+        let got = ep.rendered();
+        assert!(
+            accepted.contains(&got.as_str()),
+            "extracted {got}, expected one of {accepted:?}"
+        );
+    }
+
+    fn origin_rule_name(ep: &Episode, origin: Origin) -> String {
+        match origin {
+            Origin::Seed => "seed".to_string(),
+            Origin::Rule(app) => {
+                let idx = ep
+                    .egraph
+                    .provenance()
+                    .application(app)
+                    .expect("record")
+                    .rule_idx;
+                ep.egraph.rule(idx).expect("rule").name().to_string()
+            }
+        }
+    }
+
+    fn sin2_plus_cos2(a: &mut ExprArena, x: ExprId) -> ExprId {
+        let s = a.push_unary(OpKind::Sin, x);
+        let c = a.push_unary(OpKind::Cos, x);
+        let s2 = a.push_binary(OpKind::Mul, s, s);
+        let c2 = a.push_binary(OpKind::Mul, c, c);
+        a.push_binary(OpKind::Add, s2, c2)
+    }
+
+    /// (a) `sin²x + cos²x + y`, no `1` in the seed: the FIRST pythagorean
+    /// firing mints `Const(1)`, that node is the path's `1`, and strict
+    /// credits exactly that one firing. Every later re-match of the same
+    /// identity memo-hits the node it minted and is invisible — so the
+    /// per-firing rate is 1 / fired even in the one case strict can see.
+    #[test]
+    fn strict_credits_pythagorean_only_through_the_node_it_minted() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let sum = sin2_plus_cos2(&mut a, x);
+        let root = a.push_binary(OpKind::Add, sum, y);
+        let ep = budgeted_episode(&a, root, usize::MAX);
+
+        assert_rendered_in(&ep, &["Add(1, v1)", "Add(v1, 1)"]);
+        let one = ep.origin_of_chosen_const(1.0);
+        assert_eq!(origin_rule_name(&ep, one), "pythagorean");
+        let Origin::Rule(minting_app) = one else {
+            unreachable!()
+        };
+
+        let (strict, tight, _) = ep.labels();
+        let pyth = ep.rule_idx("pythagorean");
+        let s = strict.rule_stats[&pyth];
+        assert!(
+            s.fired > 1,
+            "the identity re-matches after its first firing"
+        );
+        assert_eq!(
+            s.load_bearing, 1,
+            "strict credits exactly the minting firing"
+        );
+        assert!(strict.load_bearing.contains(&minting_app));
+        assert!(tight.load_bearing.contains(&minting_app));
+    }
+
+    /// (a2) The `sh` shape: `(sin²x + cos²x) · (y + 1)` — the seed already
+    /// carries a literal `1`, exactly as every SH basis function does. The
+    /// extracted `y + 1` holds the SEED `1`; pythagorean's `Create(Const(1))`
+    /// is a memo hit every time, mints nothing, and strict credits none of
+    /// its firings. Tight sees the union it caused.
+    #[test]
+    fn strict_is_blind_to_pythagorean_when_the_constant_pre_exists() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let sum = sin2_plus_cos2(&mut a, x);
+        let one = a.push_const(1.0);
+        let y1 = a.push_binary(OpKind::Add, y, one);
+        let root = a.push_binary(OpKind::Mul, sum, y1);
+        let ep = budgeted_episode(&a, root, 3_000);
+
+        assert_rendered_in(&ep, &["Add(v1, 1)", "Add(1, v1)"]);
+        assert_eq!(ep.origin_of_chosen_const(1.0), Origin::Seed);
+
+        let (strict, tight, _) = ep.labels();
+        let pyth = ep.rule_idx("pythagorean");
+        let s = strict.rule_stats[&pyth];
+        assert!(s.fired >= 1, "pythagorean must match here");
+        assert_eq!(ep.minted_by_rule(pyth), 0, "every firing was a memo hit");
+        assert_eq!(
+            s.load_bearing, 0,
+            "strict: 0 / {} (the documented blind spot)",
+            s.fired
+        );
+        assert!(
+            tight.rule_stats[&pyth].load_bearing >= 1,
+            "tight credits the union"
+        );
+    }
+
+    /// (a3) `(sin²x + cos²x + 0.5) · y`: pythagorean DOES mint its `1`, but
+    /// constant-fold immediately consumes it (`1 + 0.5 → 1.5`). The path
+    /// holds `1.5`, whose origin is the fold — so the fold is strict-positive
+    /// and the identity that made the fold possible is not.
+    #[test]
+    fn strict_credits_the_fold_that_consumed_pythagoreans_constant() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let sum = sin2_plus_cos2(&mut a, x);
+        let half = a.push_const(0.5);
+        let sum_half = a.push_binary(OpKind::Add, sum, half);
+        let root = a.push_binary(OpKind::Mul, sum_half, y);
+        let ep = budgeted_episode(&a, root, 3_000);
+
+        assert_rendered_in(&ep, &["Mul(1.5, v1)", "Mul(v1, 1.5)"]);
+        let folded = ep.origin_of_chosen_const(1.5);
+        assert_eq!(origin_rule_name(&ep, folded), "constant-fold");
+        let Origin::Rule(fold_app) = folded else {
+            unreachable!()
+        };
+
+        let (strict, tight, _) = ep.labels();
+        let pyth = ep.rule_idx("pythagorean");
+        assert!(
+            ep.minted_by_rule(pyth) >= 1,
+            "pythagorean minted its Const(1) here"
+        );
+        assert_eq!(
+            strict.rule_stats[&pyth].load_bearing, 0,
+            "…and still gets no strict credit"
+        );
+        assert!(
+            strict.load_bearing.contains(&fold_app),
+            "the fold takes the credit"
+        );
+        assert!(
+            tight.rule_stats[&pyth].load_bearing >= 1,
+            "tight credits the identity"
+        );
+    }
+
+    /// (b) `(x · 0) + z`: annihilator's `0` is the seed `0`, identity's `z`
+    /// is the seed `z`. The path collapses to the single seed leaf `v2`, so
+    /// strict credits NOTHING — not the annihilator that made the sum
+    /// collapsible, not the identity that collapsed it. Tight credits both.
+    #[test]
+    fn strict_credits_nothing_when_the_path_collapses_to_a_seed_leaf() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let z = a.push_var(2);
+        let zero = a.push_const(0.0);
+        let m = a.push_binary(OpKind::Mul, x, zero);
+        let root = a.push_binary(OpKind::Add, m, z);
+        let ep = budgeted_episode(&a, root, 2_000);
+
+        assert_eq!(ep.rendered(), "v2");
+        let (strict, tight, _) = ep.labels();
+        assert!(
+            strict.load_bearing.is_empty(),
+            "every node on the path is a seed"
+        );
+        for rule in ["annihilator", "identity"] {
+            let idx = ep.rule_idx(rule);
+            assert!(strict.rule_stats[&idx].fired >= 1, "{rule} must fire");
+            assert!(
+                tight.rule_stats[&idx].load_bearing >= 1,
+                "tight credits {rule}"
+            );
+        }
+    }
+
+    /// (c) `exp(ln x) · w`: exp-ln-cancel's output is the seed `x`. The path
+    /// is `x · w`, all seed nodes; strict credits nothing, tight credits the
+    /// cancellation through its union.
+    #[test]
+    fn strict_is_blind_to_exp_ln_cancel_whose_output_is_a_seed_child() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let w = a.push_var(3);
+        let l = a.push_unary(OpKind::Ln, x);
+        let e = a.push_unary(OpKind::Exp, l);
+        let root = a.push_binary(OpKind::Mul, e, w);
+        let ep = budgeted_episode(&a, root, usize::MAX);
+
+        assert_rendered_in(&ep, &["Mul(v0, v3)", "Mul(v3, v0)"]);
+        let (strict, tight, _) = ep.labels();
+        assert!(strict.load_bearing.is_empty());
+        let idx = ep.rule_idx("exp-ln-cancel");
+        assert!(strict.rule_stats[&idx].fired >= 1);
+        assert_eq!(strict.rule_stats[&idx].load_bearing, 0);
+        assert!(tight.rule_stats[&idx].load_bearing >= 1);
     }
 }
