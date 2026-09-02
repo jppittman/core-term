@@ -1,7 +1,7 @@
 # Loop-aware codegen: giving the register allocator the lattice
 
 **Date:** 2026-09-01
-**Status:** design, no code changes
+**Status:** design; revised 2026-09-02 (see below); stage 0 in progress
 **Depends on:** the one-kernel-ABI refactor (`#1077` and its in-flight
 follow-up), which retires `compile_arena_dag`/`compile_arena_dag_avx2`/
 `compile_arena_dag_avx512`/`compile_dag_via_backend` and the `PerBatch`
@@ -16,6 +16,146 @@ a loop wrapper bolted onto it.
 Steps 1–3 of that plan (declare `fixed`, let the allocator name reload/temp
 defs, add the register-class axis) are independent of this one and are not
 re-litigated here.
+
+## Revision 2026-09-02: factoring belongs to the e-graph and the lattice
+
+**Status:** design revised; stage 0 in progress. Sections 1, 2, 4, 6 and 7
+stand as written. Section 3 is narrowed and section 5 is re-staged; this
+section says how and why, and the original text below is kept as the record
+of what was reconsidered.
+
+The plan below was written from where the code stands: LICM lives in codegen
+(`plan_collapse_hoist`), so the natural next step looked like handing its
+three regions to the register allocator. That is a continuation of the July
+direction, and it quietly contradicts two design documents this codebase
+already carries:
+
+- [`docs/designs/lattice-scheduling-types.md`](../designs/lattice-scheduling-types.md)
+  — *"CSE is factoring. Let-binding is factoring. Loop-invariant code motion
+  is factoring."* The e-graph discovers the factorizations, variance is an
+  e-class analysis, the **Lattice** maps a variance class to a scope, and
+  extraction is scope-weighted. Codegen decides only *how* each factor is
+  computed.
+- [`docs/designs/REDUCTIONS_AND_FOLDS.md`](../designs/REDUCTIONS_AND_FOLDS.md)
+  — `Reduce` is an e-node, so hoisting out of a sum, fusing two sums and
+  `Σ_i c = N·c` are rewrites whose side condition is the variance analysis.
+
+What shipped instead: `plan_collapse_hoist` is a post-extraction pass over
+the flat schedule — the "LICM as an explicit AST pass" that
+`BRAINSTORM_VARIANCE_EGRAPH.md` attributes to Elliott's Pan and sets out to
+improve on. Extraction has no scope weighting; `DepsAnalysis` feeds NNUE
+features and tests only. And `optimize_runtime_arena` **bails out** of any
+arena containing a `Reduce` ("rewriting under a binder is unsound without
+binder-aware rules — none exist yet"), so reductions never reach the
+e-graph at all; they are unrolled in `legalize`, after it.
+
+The two gaps are one gap. `pixelflow-ir/src/variance.rs` already states the
+unifying fact: *"Scopes are binders. Coordinates are bound by the lattice
+nest, reduction indices by `Kernel::over` — the same kind of thing."* The
+collapse loop is a binder over X and Y. Hoisting out of X and hoisting out
+of `Σ_i` are the same rule — `deps(e) ∩ {binder} = ∅ ⇒ e lifts past it` —
+and the same analysis proves both.
+
+### What changes in the plan
+
+**Ownership.** *What* hoists, and *to which scope*, is decided by extraction
+under a scope-weighted cost, with the lattice supplying the scope order.
+Codegen receives a **scoped schedule** — the same three regions §3 names
+(`prologue` / `row` / `batch`), but as extraction's *output*, not something
+codegen re-derives from a flat `Vec<Def>`. `plan_collapse_hoist` is then
+deleted, not promoted into the allocator. What §3 says about the allocator
+seeing back edges and deciding *residency* (register vs. memory for a
+loop-carried value) stands unchanged: that is a *how* decision, and it is
+codegen's.
+
+**The lattice reaches the optimizer.** §1's `LoopShape` is not only a cache
+key component; it is the scope order extraction weights by. It therefore
+lives in `pixelflow-ir` beside `Variance` — the same vocabulary (which
+binders vary), one layer below both `pixelflow-search` and
+`pixelflow-codegen`, so both can name it. A node's scope is
+`deps(node) ∩ shape`: X present ⇒ per batch; Y only ⇒ per row; neither ⇒
+per call. `LoopShape` records only the axes the collapse ABI's loop nest can
+iterate (X, Y); Z and W are per-call constants in that ABI regardless of the
+lattice's extent along them, so recording them would mint cache entries for
+identical code — the inflation §2 and §6 warn about. If a future ABI loops Z,
+the type is extended then, not speculatively now.
+
+**Reductions reach the e-graph by unrolling first.** Binder-aware rewriting
+is a known hard problem (explicit substitution in egg-style e-graphs blows
+up), and today's reductions do not need it: `Kernel::over` extents are static
+and small, and `expand_reduce` unrolls them for codegen anyway — already
+sharing the index-invariant subtrees, i.e. already performing
+`⊕_i (f(i)·c) = c·⊕_i f(i)`. Moving that unroll ahead of saturation makes the
+arena binder-free, so factoring across the copies is ordinary rewriting, and
+the bail-out is deleted. Sound, cheap, and a strict capability gain. Real
+binder support remains needed for the one binder that cannot unroll — the
+lattice loop, whose trip counts are runtime — and that is what the scoped
+schedule and `LoopShape` are for.
+
+### Re-staged migration
+
+Each stage keeps a checkable invariant, as before.
+
+**Stage 0 — the lattice reaches the pipeline; reductions reach the e-graph.**
+`LoopShape` in `pixelflow-ir`; `Lattice::bake` computes it from
+`Lattice::loop_mask()` and passes it through `jit_cache::compile` to
+`optimize_runtime_arena` (key component; consulted by no rewrite yet) and
+into the `JitManifold`, whose `call_collapse` debug-asserts every `TileSlice`
+fits the shape it was compiled for — the promise the later stages will rely
+on, enforced from the day the type exists. `optimize_runtime_arena` unrolls
+`Reduce` after `lower_dwrt` and before building the e-graph; the `Nary`
+bail-out survives only for constructs that are still not modelled (`Tuple`).
+*Invariants:* emitted code is byte-identical for every `Reduce`-free kernel
+(`emit::compile` is untouched, so this is structural); `Reduce`-bearing
+kernels now optimize, pinned by `pixelflow-codegen/tests/reduction_binder.rs`
+against the interpreter oracle; the cache dedups within a shape and separates
+across shapes (pointer-identity tests, not entry counts — the cache is global
+and tests run in parallel); a synthetic resize sweep at one shape shares one
+entry.
+
+**Stage 1 — scope-weighted extraction emits a scoped schedule.**
+Extraction cost becomes `Σ cost(node) · weight(scope(node))` with the scope
+from `LoopShape` and the node's *chosen* variance (`Extraction::chosen_variance`
+already exists for the NNUE's benefit). The weights are the static prior's
+business, not the lattice's: ordinal, trip counts are runtime. Extraction's
+output — or a pure function of it, since once forms are chosen the partition
+is *determined* by variance — is the three-region schedule; codegen's
+`compile_via_backend` consumes it and `plan_collapse_hoist` /
+`schedule_variance` are deleted. The gather policy ("memory reads stay where
+the body had them") moves with the partition as a stated rule.
+*Invariant:* for every kernel in `collapse_loop.rs`/`spill_pressure.rs`, the
+regions extraction emits equal the regions `plan_collapse_hoist` computed on
+the same extracted form (a golden-partition test, run before the deletion);
+differential execution across all four backends.
+
+**Stage 2 — the allocator sees the three regions.** Former stage 1, unchanged
+in content: `RegisterAllocator::allocate` takes the scoped schedule, policy
+still "every loop-carried value gets a slot". Invariant as before.
+
+**Stage 3 — loop-carried values compete for registers.** Former stage 2.
+
+**Stage 4 — specialize on `LoopShape`.** Former stage 3.
+
+Stage 0 has no dependency on the escape-hatches steps. Stage 1 should land
+after escape-hatches step 1 (fixed registers declared) so the golden-partition
+test runs against a stable allocator; stage 3 still wants steps 1–2 first for
+the reason §6 gives.
+
+### Follow-ups this revision surfaces, not taken here
+
+- `Dwrt(Reduce(…))`: `legalize` runs `lower_dwrt` before `expand_reduce` and
+  `lower_dwrt` refuses a `Reduce`, so a derivative of a sum is a compile
+  error today. Unrolling first would make it a sum of derivatives — exact,
+  and free. The optimizer mirrors `legalize`'s order in stage 0 so the two
+  paths stay uniform; reordering both is a separate, tested change.
+- `push_reduce` encodes the combiner `OpKind` and the bound index as
+  `Const(f32)` children (CLAUDE.md names this). The unroll reads them back
+  through `const_val`. Unchanged here; it is the kind of convention a type
+  should hold.
+- Once the collapse loop is a binder the e-graph can *see* — the scoped
+  schedule is its extraction-side shadow — reduction fusion and `Σ_i c =
+  N·c` become rules with the variance side condition, as
+  `REDUCTIONS_AND_FOLDS.md` describes. Not needed while extents unroll.
 
 ## Verifying the premise
 
@@ -217,6 +357,10 @@ smaller, second win, not a prerequisite.
 
 ## 3. How the register allocator changes
 
+> **Revised 2026-09-02:** the *residency* half of this section stands; the
+> *partition* half (which values leave the loop, and for which scope) moves to
+> extraction — see the revision above. Kept as written for the record.
+
 ### The conflation this fixes
 
 `RegisterAllocator::allocate` (`pixelflow-codegen/src/emit/regalloc.rs:410`)
@@ -356,7 +500,7 @@ after the one-kernel-ABI refactor lands, since line numbers will move):
   lives in registers across the loop rather than being written down and read
   back every iteration.
 
-## 5. Staged migration
+## 5. Staged migration (superseded — see the re-staged migration above)
 
 Each stage has a checkable invariant, following this codebase's existing
 practice (byte-identity carried the ABI-unification refactor's pure-refactor

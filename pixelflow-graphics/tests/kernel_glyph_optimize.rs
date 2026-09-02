@@ -58,7 +58,11 @@ fn total_reachable(arena: &ExprArena, root: ExprId) -> usize {
 /// (arena, root) the emitter would actually schedule. Prints per-stage
 /// counts so a failure localizes to the stage that dropped the ball.
 fn bake_pipeline(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
-    let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root);
+    let optimized = pixelflow_search::runtime::optimize_runtime_arena(
+        arena,
+        root,
+        pixelflow_ir::LoopShape::FRAME,
+    );
     let (a, r) = optimized
         .as_deref()
         .map(|(a, r)| (a.clone(), *r))
@@ -210,8 +214,12 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
         let kernel = font.glyph_kernel_scaled(ch, 32.0).expect("glyph kernel");
         let (arena, root) = kernel.parts();
         let (raw, raw_root) = lower_dwrt_owned(arena, root).expect("lower raw");
-        let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root)
-            .expect("glyph arenas must optimize (pure arithmetic + Dwrt + masks)");
+        let optimized = pixelflow_search::runtime::optimize_runtime_arena(
+            arena,
+            root,
+            pixelflow_ir::LoopShape::FRAME,
+        )
+        .expect("glyph arenas must optimize (pure arithmetic + Dwrt + masks)");
         let (opt, opt_root) = (&optimized.0, optimized.1);
 
         for j in 0..32usize {

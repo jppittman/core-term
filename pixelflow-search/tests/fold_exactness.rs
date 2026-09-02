@@ -29,8 +29,9 @@ fn cancel(a: &mut ExprArena) -> ExprId {
 }
 
 fn opt_root(a: &ExprArena, root: ExprId) -> ExprNode {
-    let out = pixelflow_search::runtime::optimize_runtime_arena(a, root)
-        .expect("pure arithmetic must optimize");
+    let out =
+        pixelflow_search::runtime::optimize_runtime_arena(a, root, pixelflow_ir::LoopShape::FRAME)
+            .expect("pure arithmetic must optimize");
     out.0.node(out.1).clone()
 }
 

@@ -40,7 +40,7 @@ fn pow_half_extracts_to_hardware_sqrt() {
     let half = arena.push_const(0.5);
     let root = arena.push_binary(OpKind::Pow, x, half);
 
-    let optimized = optimize_runtime_arena(&arena, root)
+    let optimized = optimize_runtime_arena(&arena, root, pixelflow_ir::LoopShape::FRAME)
         .expect("pure arithmetic arena must be e-graph representable");
     let (opt_arena, opt_root) = (&optimized.0, optimized.1);
 
@@ -65,7 +65,7 @@ fn pow_neg_half_does_not_survive_as_pow() {
     let exp = arena.push_const(-0.5);
     let root = arena.push_binary(OpKind::Pow, x, exp);
 
-    let optimized = optimize_runtime_arena(&arena, root)
+    let optimized = optimize_runtime_arena(&arena, root, pixelflow_ir::LoopShape::FRAME)
         .expect("pure arithmetic arena must be e-graph representable");
     let kinds = reachable_kinds(&optimized.0, optimized.1);
     assert!(
