@@ -51,7 +51,7 @@ use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
 use super::cost::CostModel;
 use super::extract::{ChoiceCost, Extraction, IncrementalExtractor, Reranker, choices_to_arena};
-use super::graph::{EGraph, SaturationStats, SaturationStop};
+use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
 use super::guided::GuidedEpisode;
 use super::node::EClassId;
 #[cfg(feature = "provenance-journal")]
@@ -242,6 +242,7 @@ pub struct Optimizer {
     shape: LatticeShape,
     rerank: Option<Box<dyn Reranker>>,
     guide: Option<Box<dyn SaturationGuide>>,
+    mask: Option<ApplicationMask>,
     /// The guided episode's carried state — dedup set, feature constant,
     /// rule-embedding cache — created on the first guided [`Self::run`] and
     /// reused by later ones, so a caller stepping an anytime curve through
@@ -347,6 +348,7 @@ impl Optimizer {
             shape: LatticeShape::POINT,
             rerank: None,
             guide: None,
+            mask: None,
             episode: None,
             #[cfg(feature = "provenance-journal")]
             observer: None,
@@ -423,6 +425,29 @@ impl Optimizer {
     pub fn guide(mut self, guide: Option<Box<dyn SaturationGuide>>) -> Self {
         self.guide = guide;
         self.episode = None;
+        self
+    }
+
+    /// Withhold one named rewrite application (and, under
+    /// [`MaskScope::AllMatchingCandidate`](super::graph::MaskScope::AllMatchingCandidate),
+    /// every later application that would re-derive the same thing), so a
+    /// harness can measure what that application was worth:
+    /// `Δ_a = R(τ\a,B) − R(τ,B)`
+    /// (docs/plans/2026-09-01-guide-return-to-go.md §4.1).
+    ///
+    /// A field, not a second saturation entry point, for the same reason
+    /// [`Self::rerank`] and [`Self::guide`] are fields: withholding an
+    /// application is a *policy* over the same one loop, and #1085/#1108
+    /// exist to keep there being one loop. Like every other lever it is
+    /// covered by L4 — a withheld application can only leave the graph
+    /// holding fewer equalities, never different ones.
+    ///
+    /// Read [`EGraph::last_replay_mask_skips`] afterwards rather than
+    /// assuming the mask fired: under the confluence-aware scope it can fire
+    /// many times, and if its ordinal was never reached it fires not at all.
+    #[must_use]
+    pub fn mask(mut self, mask: Option<ApplicationMask>) -> Self {
+        self.mask = mask;
         self
     }
 
@@ -544,6 +569,11 @@ impl Optimizer {
 
         #[cfg(feature = "provenance-journal")]
         egraph.set_provenance_recording(self.observer.is_some());
+        // A fresh clone per run: the confluence-aware scope mutates its
+        // captured key as the run goes, and one optimizer replaying two
+        // expressions must not carry the first one's capture into the
+        // second.
+        egraph.set_replay_mask(self.mask.clone());
         let saturation = self.saturate(egraph, limits);
 
         // Name and budget from one lookup, so the panic below cannot name a

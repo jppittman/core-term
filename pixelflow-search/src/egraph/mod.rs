@@ -65,8 +65,8 @@ pub use extract::{
     compute_ref_counts, cost_of_choices, extract, extract_dag,
 };
 pub use graph::{
-    ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, RewriteTarget, SaturationStats,
-    SaturationStop, ScanStop,
+    ApplicationMask, ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, MaskScope, RewriteTarget,
+    SaturationStats, SaturationStop, ScanStop,
 };
 #[cfg(feature = "provenance-journal")]
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};

@@ -152,7 +152,13 @@ impl ClassContentKey {
         self.0.len()
     }
 
-    fn of(egraph: &EGraph, canonical: EClassId) -> Self {
+    /// The content key of `canonical` as the graph stands now.
+    ///
+    /// Crate-visible so the counterfactual-replay mask can read the key of
+    /// the application it is about to skip — it must be THE key that
+    /// application matched, read at that instant, not a caller's second
+    /// computation against a different graph state.
+    pub(crate) fn of(egraph: &EGraph, canonical: EClassId) -> Self {
         let mut shapes: Vec<NodeShape> = egraph
             .nodes(canonical)
             .iter()
