@@ -180,29 +180,39 @@ claim at all. Rerun `cargo mutants -p pixelflow-codegen --file
 pixelflow-codegen/src/emit/x86_64.rs -- --lib --test collapse_loop` and record
 real numbers, or soften the conclusion, before merging.
 
-### 2. #1072 — the harness it documents has been deleted. Recommend closing.
+### 2. #1072 — resolved by accepting the deletion, not by closing it.
 
-Its conflict is not a content conflict but **modify/delete**:
+Its conflict was `modify/delete`:
 `pixelflow-pipeline/src/bin/bootstrap_extraction_head.rs` was deleted from
 `main` by #1093 ("delete the extraction head's shape, keep its denotation"),
-and #1072 modifies it. The paper documents a training program whose harness has
-since been deliberately removed.
+and this branch modifies it (`b449143`, the latency-prior cold start). An
+earlier pass of this document recommended closing the branch. That was
+premature — accepting the upstream deletion is a legitimate resolution, and it
+is what landed (`bad5d2e7`):
 
-That compounds problems the first pass already recorded and the author already
-conceded: four unresolved P1s at the headline intervals (unsubtracted 4.272 ns
-call overhead in every reported ratio — #1089 verified this at
-`bench_extraction_3way.rs:2607` and noted the true regression is therefore
-*larger* than the reported 1.0153; confounded search initialization between the
-learned and static arms; an untested Round-3-vs-Round-2a comparison; a
-bootstrap that resamples kernels where the corpus defines `(band, seed)`
-families as the split unit), plus per-kernel artifacts and checkpoints that
-cannot be recovered because the run machine's worktree is gone.
+- The deleted binary stays deleted. The paper describes that cold-start change
+  in the past tense, so no claim in it becomes false — only unverifiable from
+  the tree, which `NUMBERS.md`'s reproduction-debt table already said.
+- `pixelflow-pipeline/examples/inspect_flip.rs` was removed too, and this is
+  the part worth flagging rather than burying: it **cannot** be ported —
+  `ExprNnue`, `IncrementalExtractor` and `EGraph::saturate_with_limit` all left
+  with #1093 — and it was already documented as unrunnable because its two
+  checkpoints were never committed. The debt table now records that recovering
+  §5.4's flip analysis needs the extraction head resurrected, not just its
+  weights.
+- One rustdoc comment in `factored.rs` claimed the deleted binary "now seeds
+  from" the latency prior; rewritten to past tense, naming the deletion, and
+  saying why the test it documents is still worth keeping.
 
-The measurements retain historical value. The branch does not: it cannot be
-rebased without reinstating a binary `main` deliberately deleted. Recommend
-extracting the paper and `NUMBERS.md` onto a fresh branch off current `main`,
-with the intervals marked provisional and the four P1s either re-analysed or
-disclosed, and closing this one.
+Reversible by design: if the extraction head is meant to come back, restore it
+upstream and re-add both files, rather than holding this branch un-mergeable
+against a deletion that has already landed.
+
+The four unresolved P1s on the paper's headline intervals were separately
+closed out (see the review-threads section) — the branch now has zero
+outstanding threads and merges clean. What remains is an editorial judgement
+about whether intervals with unrecoverable provenance should ship as they
+stand, and that is the author's, not a merge question.
 
 ### 3. #994 — still blocked on credentials that do not exist.
 
