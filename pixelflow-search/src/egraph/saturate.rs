@@ -886,6 +886,92 @@ mod guided_tests {
         );
     }
 
+    /// One e-class holding three `Add` nodes, all matching `Commutative`, so
+    /// all three share a single `CandidateKey` — the key is `(rule_idx,
+    /// class content)` and carries no node identity. `x+y` and `y+x` commute
+    /// into each other and are therefore no-ops; `z+w` has no commuted form
+    /// in the graph yet, so it is the one productive target, and it is last
+    /// in enumeration order.
+    fn one_class_three_matching_nodes_egraph() -> EGraph {
+        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
+        let mut eg = EGraph::with_rules(rules);
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let z = eg.add(ENode::Var(2));
+        let w = eg.add(ENode::Var(3));
+        let xy = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, y],
+        });
+        // Pre-existing commuted form: applying Commutative at `x+y` (or at
+        // `y+x`) can only re-derive a node that is already here.
+        eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![y, x],
+        });
+        let zw = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![z, w],
+        });
+        eg.union(xy, zw);
+        eg.rebuild();
+        eg
+    }
+
+    /// `Quiesced` is a claim about the graph, not about the loop's own
+    /// bookkeeping: if the guided loop says there is nothing left to apply,
+    /// an unguided sweep — which shares no `seen_keys` with it — must find
+    /// nothing either.
+    ///
+    /// This is the property the class-level candidate key broke. Several
+    /// nodes of one class can match one rule and share a `CandidateKey`;
+    /// collapsing them to a single target let a no-op application (91% of
+    /// recorded applications are exactly that) mark the key resolved while a
+    /// productive sibling was never attempted, and the next rescan then
+    /// deduped it away for good. `one_class_three_matching_nodes_egraph` is
+    /// the minimal graph that separates the two behaviours: attempting only
+    /// the group's first target reports `Quiesced` while `z+w` still has an
+    /// uncommuted form waiting.
+    #[test]
+    fn quiescence_must_mean_an_unguided_sweep_finds_nothing_left() {
+        for (label, mut eg) in [
+            (
+                "one-class-three-nodes",
+                one_class_three_matching_nodes_egraph(),
+            ),
+            ("commutative", commutative_only_egraph()),
+            ("two-rule", two_rule_egraph()),
+        ] {
+            let rule_embeds = [[0.0f32; EMBED_DIM]; 2];
+            let guide = SpyGuide {
+                calls: std::cell::RefCell::new(Vec::new()),
+            };
+            let guided = saturate_guided_until_applications(
+                &mut eg,
+                &guide,
+                &rule_embeds,
+                10_000,
+                200,
+                10_000,
+                Duration::from_secs(5),
+            );
+            assert_eq!(
+                guided.stop,
+                SaturationStop::Quiesced,
+                "{label}: expected the guided loop to quiesce under a generous budget: {guided:?}"
+            );
+
+            let after =
+                eg.saturate_until_applications(usize::MAX, 200, 10_000, Duration::from_secs(5));
+            assert_eq!(
+                after.total_unions, 0,
+                "{label}: the guided loop reported Quiesced, but an unguided sweep over the \
+                 same graph still merged {} classes — applicable work was left behind",
+                after.total_unions
+            );
+        }
+    }
+
     #[test]
     fn ordering_should_apply_the_higher_scored_candidate_before_the_lower_scored_one() {
         let mut eg = two_rule_egraph();
