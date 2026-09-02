@@ -289,10 +289,23 @@ impl SaturationConfig {
 /// macro tier, reachable-arena-node count for the runtime tier both serve
 /// equally well as "how big is this expression".
 pub fn config_for_node_count(node_count: usize) -> SaturationConfig {
+    tier_for_node_count(node_count).1
+}
+
+/// The one place the tier thresholds live: a tier's **name** and its
+/// **budget** come out of the same match, so a diagnostic that names a tier
+/// can never disagree with the budget it is describing.
+///
+/// [`config_for_node_count`] is the budget half. The name half exists for
+/// [`Optimizer::run`](super::optimizer::Optimizer::run)'s safety-ceiling
+/// panic, which has to say *which* tier's ceiling was exceeded — and which,
+/// spelled as its own `match` on `node_count`, would be a second copy of
+/// this table, free to drift out of step with it.
+pub(crate) fn tier_for_node_count(node_count: usize) -> (&'static str, SaturationConfig) {
     match node_count {
-        0..=10 => SaturationConfig::blitz(),
-        11..=50 => SaturationConfig::rapid(),
-        _ => SaturationConfig::classical(),
+        0..=10 => ("blitz", SaturationConfig::blitz()),
+        11..=50 => ("rapid", SaturationConfig::rapid()),
+        _ => ("classical", SaturationConfig::classical()),
     }
 }
 

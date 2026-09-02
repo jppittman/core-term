@@ -487,13 +487,14 @@ impl Optimizer {
         let saturation =
             egraph.saturate_budgeted(limits.iterations, limits.classes, limits.applications);
 
+        // Name and budget from one lookup, so the panic below cannot name a
+        // tier other than the one whose ceiling it is asserting.
+        let (tier, tier_config) = super::saturate::tier_for_node_count(node_count);
         let ceiling = match self.hard_ceiling {
             HardCeiling::None => None,
             HardCeiling::Fixed(d) => Some(d),
             HardCeiling::Tiered => match tiered_ceiling_override() {
-                CeilingOverride::UseTierDefault => {
-                    Some(super::saturate::config_for_node_count(node_count).safety_ceiling)
-                }
+                CeilingOverride::UseTierDefault => Some(tier_config.safety_ceiling),
                 CeilingOverride::Fixed(d) => Some(d),
                 CeilingOverride::Disabled => None,
             },
@@ -510,7 +511,6 @@ impl Optimizer {
                  unusually slow. Override with PIXELFLOW_SATURATION_CEILING_MS (milliseconds; \
                  `0` or `off` disables it) only for diagnosis — it can change whether this \
                  panics, never which kernel is emitted.",
-                tier = tier_name(node_count),
                 stop = saturation.stop,
             );
         }
@@ -561,16 +561,5 @@ impl Optimizer {
 impl Default for Optimizer {
     fn default() -> Self {
         Self::production()
-    }
-}
-
-/// The tier name matching [`config_for_node_count`](super::saturate::config_for_node_count)'s
-/// ranges, for the safety-ceiling panic message — named rather than left as
-/// a bare node count so the message reads the way the calibration doc does.
-fn tier_name(node_count: usize) -> &'static str {
-    match node_count {
-        0..=10 => "blitz",
-        11..=50 => "rapid",
-        _ => "classical",
     }
 }
