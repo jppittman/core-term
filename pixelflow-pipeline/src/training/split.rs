@@ -1345,4 +1345,15 @@ kernels = ["swirl"]
             m.dev_families
         );
     }
+
+    #[test]
+    fn checked_in_manifest_registers_the_bezier_ood_family() {
+        let text = include_str!("../../corpus_split.toml");
+        let m = SplitManifest::parse(text).expect("checked-in manifest must be valid");
+        assert!(
+            m.dev_families.contains(&"bezier".to_string()),
+            "round 1b registers `bezier` as the polynomial-only DEV-only OOD control family: {:?}",
+            m.dev_families
+        );
+    }
 }

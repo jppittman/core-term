@@ -41,13 +41,11 @@ seeds = [[0, 7]]
 # BwdGenerator system entirely — a structure-aware generator built once per
 # name, the same way `[final] kernels` names real production kernels rather
 # than a generator draw stream. Written to a SEPARATE file, corpus_dev_ood.bin
-# (pixelflow-pipeline/src/bin/gen_sh_corpus.rs) — never merged into
-# corpus_dev.bin, so Round 1's corpus_dev.bin MD5
-# (3026133ebba066eeca10f658da554400) stays untouched. `bezier` is registered
-# alongside `sh` in the plan but not yet implemented; adding it here ahead of
-# its generator would claim a family this manifest cannot back with a corpus,
-# so it stays out of this list until its generator lands.
-families = ["sh"]
+# (pixelflow-pipeline/src/bin/gen_sh_corpus.rs, gen_bezier_corpus.rs) — never
+# merged into corpus_dev.bin, so Round 1's corpus_dev.bin MD5
+# (3026133ebba066eeca10f658da554400) stays untouched. Both families
+# registered by the plan (`sh`, `bezier`) now have a generator.
+families = ["sh", "bezier"]
 
 [final]
 # Band 12 (depth 6, leaf 0.3, 4 vars): the fully held-out synthetic family,
