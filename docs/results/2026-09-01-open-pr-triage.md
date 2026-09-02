@@ -310,6 +310,34 @@ functions — `run_with_rules`, `anytime_curve_arena`, `csv_escape`,
 Note `main`'s copy is the version ported to `Optimizer`; taking #1101's wholesale
 would silently revert that.
 
+## The class-cap question three branches are independently answering
+
+Worth naming because it explains why this seam is contested rather than merely
+busy. Four PRs are answering **the same design question** — *what does it mean
+for saturation to stop at the class cap?* — and each answers it differently:
+
+| PR | Its answer |
+|---|---|
+| #1083 (landed) | A truncated sweep is `ClassCap`, and that **ends the run**. |
+| #1109 | Classification and termination are separable: record `ClassCap`, **keep sweeping**. Measured: the break leaves a more expensive arena on 140 of 204 real kernels. |
+| #1114 | `ClassCap` should name **which ceiling** bound — `ClassCeiling::{Live, Allocated}` — because one number was standing in for two populations. |
+| #1101 | Its `saturate_until_applications` reported `Quiesced` where `main`'s `saturate_bounded` reports `ClassCap` for the same run. |
+
+That last row is not a merge defect; it is the disagreement showing up as one.
+This pass ported #1101's harness onto `Optimizer`/`Budget::Explicit`
+mechanically — every API rename resolved, the workspace built — and its own
+`clamped_rows_freeze_the_final_state` test then failed with
+`left: ClassCap, right: Quiesced`. The test is the branch's own and passes on
+the branch. It is detecting a real behavioural difference between the entry
+point it was written against and the one that replaced it, not a slip in the
+port.
+
+So #1101 cannot be reconciled without deciding whose semantics it should be
+measured under, and that decision is shared with #1109 and #1114. Answering it
+once unblocks all three; answering it per-branch guarantees they disagree in
+the results. **This is the single highest-leverage decision on the board**, and
+nothing was pushed to #1101 pending it.
+
 ## The finding that matters most: the seam churns faster than reconciliation completes
 
 Reconciling a branch against this seam has a **short half-life**, and that is a
