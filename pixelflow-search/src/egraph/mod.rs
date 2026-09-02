@@ -36,6 +36,7 @@ mod node;
 pub mod ops;
 pub mod provenance;
 pub mod rewrite;
+pub mod rule_order;
 pub mod saturate;
 
 // Re-export public API
@@ -56,6 +57,7 @@ pub use provenance::{
     derivation_ancestors, format_derivation_trace,
 };
 pub use rewrite::{Rewrite, RewriteAction};
+pub use rule_order::{NUMERIC_FIRST_ORDER, RuleOrder, build_rule_set};
 pub use saturate::{
     SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
     saturate_with_budget, saturate_with_full_budget,
