@@ -67,6 +67,18 @@ pub struct EGraph {
     /// A name-keyed map collapsed all four `Commutative` instances into one
     /// bucket, so every per-rule report built on it was wrong by aggregation.
     pub match_counts: HashMap<RuleId, usize>,
+    /// Cumulative rule-match ATTEMPTS across this e-graph's whole lifetime —
+    /// every node checked against a rule, matched or not, summed from
+    /// [`ApplyResult::evals`] at the one site every rule-application path
+    /// funnels through.
+    ///
+    /// This is "raw matches enumerated"
+    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1): the
+    /// Guide-cost-flatness precondition needs it denominated per
+    /// application, and per application needs it cumulative across the
+    /// resumed budget calls an anytime curve makes, the same way
+    /// [`Self::application_count`] is.
+    total_evals: usize,
     /// Global monotonic counter minting `ENodeId`s in `add()`.
     next_enode_id: u64,
     /// Saturation-iteration counter, advanced once per `saturate_with_limits`
@@ -238,6 +250,7 @@ impl Clone for EGraph {
             rules: self.rules.clone(), // Arc clone - cheap, shares rules
             rule_ids: self.rule_ids.clone(),
             match_counts: self.match_counts.clone(),
+            total_evals: self.total_evals,
             next_enode_id: self.next_enode_id,
             step: self.step,
             provenance: self.provenance.clone(),
@@ -382,6 +395,7 @@ impl EGraph {
             rules: std::sync::Arc::new(Vec::new()),
             rule_ids: std::sync::Arc::new(Vec::new()),
             match_counts: HashMap::new(),
+            total_evals: 0,
             next_enode_id: 0,
             step: 0,
             provenance: Provenance::new(),
@@ -411,6 +425,7 @@ impl EGraph {
             rules: std::sync::Arc::new(rules),
             rule_ids: std::sync::Arc::new(ids),
             match_counts: HashMap::new(),
+            total_evals: 0,
             next_enode_id: 0,
             step: 0,
             provenance: Provenance::new(),
@@ -1597,11 +1612,20 @@ impl EGraph {
             scan = ScanStop::Deadline;
         }
 
+        self.total_evals += evals;
         ApplyResult {
             changes: unions,
             evals,
             scan,
         }
+    }
+
+    /// Cumulative rule-match attempts across this e-graph's whole lifetime
+    /// (see the `total_evals` field doc) — the raw-matches-enumerated
+    /// counter §7.1's Guide-overhead-flatness measurement denominates.
+    #[must_use]
+    pub const fn total_evals(&self) -> usize {
+        self.total_evals
     }
 
     /// How many applications the most recent installed mask skipped. `0`
@@ -1798,9 +1822,79 @@ impl EGraph {
         usize::from(self.find(a) == self.find(b))
     }
 
+    /// Materialize `template`'s subtree at `id` into this e-graph, bottom-up,
+    /// reading each metavariable leaf from `bindings` rather than creating a
+    /// node for it — the same convention every hand-written multi-node
+    /// [`RewriteAction`] uses (`Distribute`, `Canonicalize`, …), just driven
+    /// by a runtime pattern instead of a fixed shape. `self.add` is what
+    /// attributes every node created here to the active application's
+    /// provenance, so this must only ever be called from inside
+    /// `apply_action` (i.e. under `apply_action_from_rule`).
+    ///
+    /// # Panics
+    ///
+    /// On a `Param`/`Buffer` node (a rewrite RHS template must never contain
+    /// either), on an `OpKind` with no static [`Op`] (an arena/op-table
+    /// drift, not a runtime condition), or on a metavariable with no
+    /// binding.
+    fn instantiate_template(
+        &mut self,
+        template: &pixelflow_ir::ExprArena,
+        id: pixelflow_ir::ExprId,
+        bindings: &[EClassId],
+    ) -> EClassId {
+        use pixelflow_ir::arena::ExprNode;
+
+        match template.node(id) {
+            ExprNode::Var(mv) => {
+                let mv = *mv as usize;
+                assert!(
+                    mv < bindings.len(),
+                    "instantiate_template: metavariable {mv} has no binding \
+                     ({} supplied) — a TemplateRewrite construction bug, since \
+                     apply() refuses to instantiate a binding it cannot fill",
+                    bindings.len()
+                );
+                bindings[mv]
+            }
+            ExprNode::Const(v) => self.add(ENode::constant(*v)),
+            ExprNode::Param(p) => {
+                panic!("instantiate_template: Param({p}) in a rewrite RHS template")
+            }
+            ExprNode::Buffer(b) => {
+                panic!(
+                    "instantiate_template: Buffer({}) in a rewrite RHS template",
+                    b.0
+                )
+            }
+            _ => {
+                let kind = template.kind(id);
+                let static_op = ops::op_from_kind(kind).unwrap_or_else(|| {
+                    panic!("instantiate_template: no static Op for OpKind {kind:?}")
+                });
+                let children: Vec<EClassId> = template
+                    .children(id)
+                    .map(|c| self.instantiate_template(template, c, bindings))
+                    .collect();
+                self.add(ENode::Op {
+                    op: static_op,
+                    children,
+                })
+            }
+        }
+    }
+
     fn apply_action(&mut self, class_id: EClassId, action: RewriteAction) -> usize {
         match action {
             RewriteAction::Union(target_id) => self.union_counted(class_id, target_id),
+            RewriteAction::Instantiate {
+                template,
+                root,
+                bindings,
+            } => {
+                let result_id = self.instantiate_template(&template.0, root, &bindings);
+                self.union_counted(class_id, result_id)
+            }
             RewriteAction::Create(new_node) => {
                 let new_id = self.add(new_node);
                 self.union_counted(class_id, new_id)

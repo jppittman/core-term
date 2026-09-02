@@ -83,6 +83,31 @@ pub trait Observer {
     fn on_application(&mut self, record: &ApplicationRecord);
 }
 
+/// The observer for a caller that wants the journal **kept on the graph**
+/// rather than streamed: it consumes nothing, and its presence is what turns
+/// recording on.
+///
+/// The hindsight-label harnesses (`EpisodeLabels::compute_strict`,
+/// `derivation_ancestors`, the return-to-go minter) read the whole journal
+/// off [`EGraph::provenance`] after the run — as a graph, in an order the
+/// stream cannot give them. Each writing its own do-nothing `Observer` would
+/// be several copies of the same four lines, and the thing they actually
+/// mean — "record; I will read it later" — deserves a name.
+///
+/// Note that [`Optimizer::run`] replays the journal to its observer at the
+/// end of **every** call, so a resumed sequence of budgeted runs delivers
+/// earlier records again. That is harmless here (this observer consumes
+/// nothing) and is exactly why a harness reading the journal wants this
+/// rather than a counting observer.
+#[cfg(feature = "provenance-journal")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct KeepJournal;
+
+#[cfg(feature = "provenance-journal")]
+impl Observer for KeepJournal {
+    fn on_application(&mut self, _record: &ApplicationRecord) {}
+}
+
 /// What stops saturation.
 ///
 /// Every variant is deterministic: the same arena under the same budget
@@ -523,6 +548,19 @@ impl Optimizer {
     #[must_use]
     pub fn limits_for(&self, node_count: usize) -> Limits {
         self.budget.limits(node_count)
+    }
+
+    /// How many distinct candidate keys the carried guided episode has
+    /// resolved so far, or `None` when no guide is set.
+    ///
+    /// The guided loop's own unit of work: a key is scored once per episode
+    /// and never again, so this is "candidates this Guide was actually asked
+    /// to rank" — the denominator a Guide-overhead measurement needs, and
+    /// not derivable from the application count (a key can be scored and
+    /// then fail to fire).
+    #[must_use]
+    pub fn guided_keys_seen(&self) -> Option<usize> {
+        self.episode.as_ref().map(GuidedEpisode::seen_key_count)
     }
 
     /// The rule set, for a caller that has to name a rule this run applied.
