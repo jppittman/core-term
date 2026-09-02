@@ -9,9 +9,9 @@
 `pixelflow-compiler/src/optimize.rs` builds an e-graph from the expression AST, saturates
 it with the full rule set (`pixelflow_search::math::all_rules()`, 62 rules — count is
 machine-checked by `all_rules_count` in `pixelflow-search/src/math/mod.rs`), and extracts
-the minimum-cost DAG. Extraction cost comes from `CostModel::latency_prior()` by default;
-the NNUE extraction head is opt-in via `PIXELFLOW_NNUE_WEIGHTS` (see
-[NNUE_INTEGRATION_STATUS.md](NNUE_INTEGRATION_STATUS.md)).
+the minimum-cost DAG. Extraction cost comes from `CostModel::latency_prior()`, the only
+policy; a learned (NNUE) extraction head was tried and closed as an honest negative in
+2026-09 (see [NNUE_INTEGRATION_STATUS.md](NNUE_INTEGRATION_STATUS.md)).
 
 Saturation entry points: `EGraph::saturate` / `saturate_with_limit`
 (`pixelflow-search/src/egraph/graph.rs`) and the budget-tracking

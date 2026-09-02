@@ -174,8 +174,8 @@ Cargo workspace with 12 member crates:
 | `pixelflow-ir` | Shared IR. `ExprArena` (sole IR), OpKind enum, backend execution traits, JIT manifold. |
 | `pixelflow-graphics` | Font loading (TTF, SDF), colors (`Rgba8`, `Color`), rasterization, antialiasing, shapes. |
 | `pixelflow-ml` | Graphics ML experiments (harmonic attention, SH feature maps). Not part of the compiler cost model. |
-| `pixelflow-search` | E-graph optimization. Rewrite rules, saturation, cost extraction (static latency prior default; NNUE opt-in), rule provenance + hindsight labeling. |
-| `pixelflow-pipeline` | Cost-model tooling. JIT bench harness, corpus generation, extraction-head bootstrap, extraction-policy benchmarks. |
+| `pixelflow-search` | E-graph optimization. Rewrite rules, saturation, static latency-prior extraction, rule provenance + hindsight labeling, the saturation Guide. |
+| `pixelflow-pipeline` | Measurement harness. JIT bench session, corpus generation (quarantine/split/mint), Guide-program research bins. |
 | `pixelflow-runtime` | Display drivers (macOS Cocoa, X11, Metal; Web WASM driver exists but can't compile yet — pixelflow-ir's JIT emitter has no wasm32 backend), input handling, vsync, render pool. |
 | `actor-scheduler` | Priority channels with `troupe!` macro. Control > Management > Data lanes. |
 | `actor-scheduler-macros` | Procedural macros for actor system. |
@@ -206,25 +206,27 @@ Control creates backpressure by timing out senders who are too aggressive. If th
 ```
 Source → Lexer → Parser → Sema → Optimize → Codegen → Rust TokenStream
                    ↓           ↓
-               Symbol Table  E-graph + NNUE
+               Symbol Table  E-graph + latency prior
 ```
 
 The compiler uses e-graphs (equality graphs) to find optimal instruction sequences:
 1. **Build e-graph** from expression AST
 2. **Saturate** by applying rewrite rules (associativity, FMA fusion, etc.)
 3. **Extract** minimum-cost implementation using the **static latency-prior cost model**
-   (`CostModel::latency_prior()` — handwritten per-op cycle estimates, the DEFAULT)
+   (`CostModel::latency_prior()` — handwritten per-op cycle estimates, the only policy;
+   both tiers choose it through `env_extraction_policy()`)
 
-A learned NNUE cost model exists as **opt-in only** (`PIXELFLOW_NNUE_WEIGHTS` env var, read
-at proc-macro expansion time; hard-fails on bad weights). The e-graph also records
-**rule provenance** (node origins + union journal, `pixelflow-search/src/egraph/provenance.rs`),
-enabling hindsight labeling of which rule applications were load-bearing for an extraction
-(`labeler.rs`) — the substrate for guided-saturation research
-(docs/plans/2026-07-07-guided-saturation-redesign.md).
+A learned NNUE extraction cost model was tried (2026-07 to 2026-09) and closed as an honest
+negative: the static table ties it and every lever made it worse
+(docs/paper/2026-08-egraph-nnue-parity.md). It is deleted, not disabled; history is in VCS.
+The e-graph also records **rule provenance** (node origins + union journal,
+`pixelflow-search/src/egraph/provenance.rs`), enabling hindsight labeling of which rule
+applications were load-bearing for an extraction (`labeler.rs`) — the substrate for the
+successor program, the saturation Guide (docs/plans/2026-08-31-guide-design-revision.md).
 
 ### ExprArena
 
-`ExprArena` is the sole IR representation everywhere. The old `Expr` (Arc-based tree) is deleted. All paths use arena-based expressions: e-graph extraction, NNUE features, compiler codegen, rewrite rule templates.
+`ExprArena` is the sole IR representation everywhere. The old `Expr` (Arc-based tree) is deleted. All paths use arena-based expressions: e-graph extraction, the edge walker, compiler codegen, rewrite rule templates.
 
 ## Development Workflow
 
@@ -350,17 +352,20 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 - **Antialiasing:** Automatic differentiation via `Jet2` dual numbers
 - **Monomorphization:** Entire scene compiles to fused SIMD kernels
 
-## Cost-Model Training (offline, supervised)
+## Cost Model and the Guide (offline, supervised)
 
-The old AlphaZero-style self-play/critic/REINFORCE loop was removed in July 2026 after a
-four-agent audit found it methodologically unsound (deterministic policy under a REINFORCE
-estimator, advantage collapse, censored failures) and its trained policy unconsumed by the
-compiler. Full post-mortem and replacement architecture:
-docs/plans/2026-07-07-guided-saturation-redesign.md.
+Two learned programs have been closed here, each with its post-mortem in the tree:
+- The AlphaZero-style self-play/critic/REINFORCE loop, removed July 2026 after a four-agent
+  audit found it methodologically unsound (docs/plans/2026-07-07-guided-saturation-redesign.md).
+- The extraction head (learned NNUE cost model for extraction), closed September 2026 as an
+  honest negative — the static latency table ties it, every lever made it worse
+  (docs/paper/2026-08-egraph-nnue-parity.md). Deleted; history in VCS.
 
-What remains is simple and supervised:
-- `gen_bench_corpus` / `bootstrap_extraction_head` (pixelflow-pipeline, `--features training`):
-  mint (expression, measured-ns) pairs via the JIT bench harness (`jit_bench.rs`,
-  median-of-samples) and regress the extraction head on them.
-- Guided-saturation research (the Guide / rule-masking direction) trains on hindsight
-  provenance labels from `pixelflow-search`'s `egraph::labeler` — no critic, no RL.
+What remains:
+- The static latency prior (`CostModel::latency_prior()`) is the extraction cost model.
+  `pixelflow-pipeline`'s `measure_latency_prior` example and `jit_bench` (`BenchSession`,
+  median-of-samples, sentinel drift normalization) are how the table is re-derived.
+- `gen_bench_corpus` (pixelflow-pipeline, `--features training`) mints quarantined,
+  tier-split expression corpora for the Guide program's research bins.
+- The saturation Guide trains on hindsight provenance labels from `pixelflow-search`'s
+  `egraph::labeler` — no critic, no RL (docs/plans/2026-08-31-guide-design-revision.md).

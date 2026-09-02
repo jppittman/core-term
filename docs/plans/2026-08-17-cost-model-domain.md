@@ -3,6 +3,18 @@
 Synthesis of three independent analyses over the cost-model pipeline
 (pixelflow-search/src/{nnue,egraph}, pixelflow-pipeline/src/{training,bin,jit_bench.rs}):
 
+> **2026-09-01 closure note (annotation, not a rewrite).** The extraction-head program this
+> domain model was written for is closed honest-negative (`docs/paper/2026-08-egraph-nnue-parity.md`)
+> and deleted per JP's ruling. Rows that are now dead-letter because their object no longer
+> exists: **J3/J4** survive in `jit_bench` (harness, kept); **J6** (`VariantSet`) — PR #1044
+> closed unmerged; **J9** — the weights sidecar half is deleted, `SchemaIdentity` survives
+> for the corpus format only; **J12** (`RoundVerdict`) — `bench_extraction_3way` deleted;
+> **A6** — `EdgeAccumulator` and its `remove_*` API deleted (the O(Δ) question is moot);
+> §3 module-map rows `nnue/edge.rs`, `nnue/head.rs`, `src/eval/verdict.rs`, `src/eval/gates.rs`
+> and the §4(b) "bench_extraction_3way.rs harness-library split" have no object left to
+> split. **J2** (`Extraction`), **J7/J8** (`Fence`, `FenceKey`), **J10** (`SaturationGuide`),
+> **J11**, **J15** (`JournalEntry`) remain live.
+
 1. **Domain description + noun inventory** — what each stage MEANS, and whether each noun has a type, a convention, or nothing.
 2. **Name/argument analysis** — 1,330 fns parsed; namespace-in-name families and argument clusters that always travel together.
 3. **Dead inventory** — caller-verified live/dead disposition of the NNUE surface, plus the serialization consequence.
