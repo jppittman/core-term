@@ -399,6 +399,13 @@ So a production compile is now bounded by iterations and classes only. #1108
 consolidated the budget into `Budget`/`Limits` and the clock did not come with
 it.
 
+**All three tiers, not one.** Every production compile path builds
+`Optimizer::production()` with no ceiling: the macro tier
+(`pixelflow-compiler/src/optimize.rs:89`), the `Dwrt` tier
+(`ir_bridge.rs:734`), and the runtime tier (`runtime.rs:166`). The macro tier
+is the one to worry about first — it runs inside `rustc` at expansion time, so
+an unbounded run there does not slow a frame, it hangs the build.
+
 **The evidence is in CI, not inferred.** #1109's `Test on ubuntu-latest` timed
 out, and the telemetry it emitted shows runtime-tier compiles finishing at
 `wall_clock_us` 9,648,883 · 9,938,809 · 16,184,232 · 32,829,162 and one at
