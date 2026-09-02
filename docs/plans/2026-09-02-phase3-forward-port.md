@@ -1,6 +1,7 @@
 # Phase 3 forward-port: inventory and map
 
-**Status:** map only. Nothing ported yet.
+**Status:** Phase A (the `pixelflow-search` core) is ported. Phase B
+(`pixelflow-pipeline`'s harnesses) and the results docs are not — see §6.
 **Base:** `origin/main` @ `40c96ece` (#1118).
 **Sources (READ-ONLY):** `claude/phase3-guide` (#1084), `claude/phase3-domain-shift`
 (#1091), `claude/phase3-label-constfold` (#1095), `claude/phase3-r2g` (#1096),
@@ -400,3 +401,91 @@ production leaves `guide`/`mask` `None`, so nothing may move.
     make the numbers non-reproducible by a post-port re-run.
 22. `docs/plans/2026-09-01-guide-candidate-context.md` and
     `2026-09-01-guide-return-to-go.md` port as designs.
+
+
+---
+
+## 6. Port status (2026-09-02)
+
+### Phase A — landed
+
+| item | commit | notes |
+|---|---|---|
+| A1 `egraph/candidate.rs` | `feat: candidate-local features, keyed by rule identity` | `CandidateKey.rule: RuleId`, `Firing.rule: RuleId`. `REGISTERED_PRIMARY_BUDGET_APPLICATIONS = 100` byte-identical. Also adds the neutrality harness (below). |
+| A2 `SaturationGuide` v2 | `feat: the SaturationGuide v2 contract` | `guide/mod.rs` revision + `guide/scoring.rs` candidate tower. `CandidateSummary.rule: RuleId`. `GraphAccumulator` and `mask_score_all_rules_graph` kept as the segregated whole-graph seam. |
+| A3 `Optimizer::guide` + the guided loop | `feat: Optimizer::guide` | `egraph/guided.rs`. Merged from `phase3-guide` (ENodeId-keyed `RewriteTarget`) and `phase3-domain-shift` (all targets under one key attempted; quiescence test). Clock re-check dropped. L4 test included. |
+| A4 `egraph/anytime.rs` | `feat: the anytime curve, on Budget::Applications and dag_cost` | Shrank: the `AnytimeStepper` trait, `UnguidedStepper`, `AnytimeStep` and `run_anytime_curve_with` all collapse into one function over `&mut Optimizer`. |
+| A5 provenance / labeler | `feat: the strict and tight credit bounds` | `UnionEvent.application_id`, `derivation_ancestors_tight{,_from}`, `compute_tight`, `compute_strict`, all under `provenance-journal`. |
+| A6 `production_saturation_probe` | — | **Nothing to port.** Main already deleted `saturate_for_production`/`ProductionSaturation`/`env_extraction_policy`; `runtime.rs`'s telemetry harness is already on `Optimizer::production()`. §1.1's "(a) DELETE" verdict was right and main got there first. |
+| A7 `nnue/guide/linear.rs` | `feat: the cold-start linear Guide and its per-rule control arm` | `w_rule` keyed by `RuleId`, gated by `Fingerprint`. **No `serde_json` dependency** — parsing moved to `pixelflow-pipeline`, refusal kept at the constructor. |
+| A8 `Optimizer::mask` | `feat: Optimizer::mask` | `MaskScope`/`ApplicationMask`/`last_replay_mask_skips` behind an optimizer field, not `saturate_until_applications_observed`. Checked before the application counter increments, so a skipped ordinal goes to the next candidate. |
+
+### Phase A — not landed
+
+- **A9, Round-2 machinery** (`template.rs`, `math/{inflate,oracle,round2_rules}.rs`).
+  Untouched. §1.4's two open questions stand: the 11 harness-only
+  `RewriteAction` variants should be reconsidered before being committed to,
+  and the v3 `RuleOrder` variants are superseded by main's `rule_order.rs`.
+- **A10, `extract::class_costs_and_choices`.** Untouched. Main rewrote
+  `extract.rs` (+633) and `phase3-context` is an explicit pre-rebase WIP, so
+  this is a re-derivation against `extract_dag_scoped` /
+  `repair_choices_well_founded` / `cost_of_choices`, not a patch to re-apply.
+
+### Phase B — not started
+
+Items 11–19 (`pixelflow-pipeline`: ~19,000 lines of harness). Every one of
+them now has a seam to land on — `Optimizer::{guide, mask, rules, budget}`,
+`run_anytime_curve`, `EpisodeLabels::{compute_strict, compute_tight}`,
+`LinearWeights` — which is what Phase A was for. The `RuleId` migration
+(§2.2) and the `dag_cost` swap (§2.3) apply to every one of them.
+
+### Docs
+
+- The registrations (`2026-09-01-phase3-registration.md`, the Round-1b
+  domain-shift registration, the three Round-2 registrations, the rule-scaling
+  plan) and the two designs (`guide-candidate-context`,
+  `guide-return-to-go`) are ported **byte-identical** (`md5` checked). No
+  registered constant is edited.
+- `docs/results/2026-09-02-phase3-instrument-changes.md` is the new re-run
+  banner §2.1 and §2.3 call for, written once so every results doc can append
+  it rather than paraphrasing it.
+- The **results docs are deliberately not ported yet.** They travel with the
+  harness that produced them: a results doc on a branch whose binary does not
+  exist is an artifact with no route to reproduction, which is the exact state
+  its banner exists to warn about. They land with their Phase B binaries,
+  as-is, with their own banners intact plus the one above appended.
+
+### The neutrality proof
+
+`pixelflow-search/src/runtime.rs`'s `production_equivalence::production_extraction_digest`
+(ignored; `PIXELFLOW_EQUIV_DIR`/`PIXELFLOW_EQUIV_OUT`) replays the #1110
+dumpers' arenas through `optimize_runtime_arena_uncached` — the production
+entry point — and digests the extracted term. Run over
+`/private/tmp/classcap_corpus`: **206 kernels** (95 glyphs at each of two
+densities, three cell grids, twelve shaders, psychedelic), **0 bailouts**,
+**diverged = 0** at A1, A3, A8 and A7 against the pre-port baseline.
+
+That is the strong form of the claim: L4 says a lever cannot change what the
+extracted term *means*; this says it did not change the *term*. Every lever
+added here is an `Option` that `Optimizer::production()` leaves `None`.
+
+### One design note, stated because it is a deviation
+
+The task framing asked for the guided path to "reuse `saturate_bounded`".
+It does not, and cannot: `saturate_bounded` is a rule-then-class sweep and the
+guided path is enumerate-score-order-apply. Those are different traversals by
+construction — the difference *is* the lever — so folding one into the other
+would either change the unguided path (breaking the diverged=0 result above)
+or amount to a branch at the top of one function.
+
+What is genuinely shared, and what the "one loop" rule is actually about, is
+kept: there is **one public entry point** (`Optimizer::run`); both traversals
+resolve their limits through the same `Budget`/`Limits`; both report the same
+`SaturationStats` and the same `SaturationStop` vocabulary; both are clockless;
+and every mutation the guided path makes goes through
+`EGraph::apply_single_rule` into the same `apply_action_from_rule` the sweep
+uses, so the application counter — the budget's denominator — means one thing.
+A Guide never constructs a `RewriteAction`, never calls `union`, never touches
+`const_fact`, and never holds a `&mut EGraph`. That is the property L4 rests
+on, and it is what lets this PR owe a quality measurement instead of a
+correctness suite.
