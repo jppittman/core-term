@@ -11,20 +11,20 @@ correctness bug) — the question is how much, and whether it explains the
 production 5,000-class cap binding on most real kernels (#1087: 68.4% of real
 kernels, median 8.66% / p90 13.2% truncation cost).
 
-**Method.** For each kernel: run the exact production regime
-(`config_for_node_count(node_count)` → `SaturationConfig` tier,
-`saturate_with_full_budget` — literally `saturate_for_extraction`'s own body,
-called the same way `optimize_runtime_arena_uncached` calls it, `Dwrt`
-lowered and `Reduce` unrolled first). Then clone the post-saturation e-graph
-and run a **full upward-congruence-closure** sweep to fixpoint on the clone:
-repeatedly re-canonicalize every live class's e-nodes through `find` and
-union any two live classes whose canonicalized node forms now coincide,
-until a full pass finds zero new unions. This is exactly the "walk every
-e-node that references a changed class" step production's
-`union`/`rebuild_budgeted` never performs. The original (pre-closure) e-graph
-and its `SaturationResult` are untouched — closure only ever runs on a
-`.clone()`. Cost is `CostModel::latency_prior()` summed over the
-extracted arena's reachable op nodes (not `ExtractedDAG::total_cost`'s
+**Method.** For each kernel: run the exact production regime —
+`Optimizer::production()` (pixelflow-search#1108's "one optimizer entry
+point": the production rule set, `Budget::Production` == `config_for_node_count`'s
+tiers + `saturate_with_full_budget`'s semantics, `CostModel::latency_prior`),
+exactly as `optimize_runtime_arena_uncached` calls it (`Dwrt` lowered and
+`Reduce` unrolled first). Then clone the post-saturation e-graph and run a
+**full upward-congruence-closure** sweep to fixpoint on the clone: repeatedly
+re-canonicalize every live class's e-nodes through `find` and union any two
+live classes whose canonicalized node forms now coincide, until a full pass
+finds zero new unions. This is exactly the "walk every e-node that
+references a changed class" step production's `union`/`rebuild_budgeted`
+never performs. The original (pre-closure) e-graph is untouched — closure
+only ever runs on a `.clone()`. Cost is `CostModel::latency_prior()` summed
+over the extracted arena's reachable op nodes (not `ExtractedDAG::total_cost`'s
 cycle-penalty-inflated DP total).
 
 **Corpus.** 206 real kernels: 12 `shader_bench` ShaderToy ports, 1
@@ -34,7 +34,8 @@ the sizes core-term actually compiles (80×24@1×, 80×24@2×, 120×40@2×, each
 densities) — dumped via the `#[ignore]`d telemetry-dumper tests this probe's
 harness borrowed from `claude/rule-order-numeric-first` (cell-grid and glyph
 dumpers cherry-picked verbatim onto this branch; the shader/psychedelic
-dumper likewise). Plus 200 size-stratified synthetic classical expressions
+dumper likewise — that branch itself has diverged too far from `main` to
+merge wholesale). Plus 200 size-stratified synthetic classical expressions
 from `BwdGenerator` (max_depth ∈ {3,5,7,9,11} × 40 seeds, unoptimized/
 junkified form — the same generator `gen_bench_corpus`/`bootstrap_extraction_head`
 use for extraction-head training data). All numbers below are pooled over
@@ -45,20 +46,21 @@ test `missing_congruence_measurement`).
 ## The five numbers the task asked for
 
 1. **Additional unions closure finds**: **922 total**, pooled across all 406
-   kernels — **0.24%** of the pooled live-class count (922 / 389,252
-   summed `live_before`).
+   kernels — **0.24%** of the pooled live-class count (922 / 389,252 summed
+   `live_before`).
 2. **Median per-kernel live-class-count reduction**: **0.00%** (p90 0.49%,
    max 10.48% — see "biggest single-kernel effects" below). Most kernels have
    *zero* missing congruence at the point production saturation stops; the
    effect that exists is concentrated in a small tail.
 3. **Median extracted-cost change after closure**: **0.00%** (closure
    changes the extracted expression's cost on only 23/406 kernels = 5.7%;
-   among those 23, the median change is a **3.96% cost reduction** — closure
-   never made a kernel's extraction worse, only occasionally cheaper).
+   among those 23, the median change is a **3.96% cost reduction**, and
+   **zero** are regressions — closure never made a kernel's extraction
+   worse, only occasionally cheaper).
 4. **Kernels that hit the class cap that would NOT have with closure**: this
    number needs two readings, because the naive one is misleading — see
-   "the cap correction" below. Naive: 223/225 cap-hit kernels (99.1%) show
-   `live_after < max_classes`. Corrected: only **2/225** cap-hit kernels
+   "the cap correction" below. Naive: 229/231 cap-hit kernels (99.1%) show
+   `live_after < max_classes`. Corrected: only **2/231** cap-hit kernels
    have `live_before ≥ max_classes` in the first place (the cap binding on
    the *live/semantic* class count, not just the raw allocation count) — and
    closure rescues **0 of those 2**.
@@ -68,21 +70,21 @@ test `missing_congruence_measurement`).
 
 ## The cap correction (why naive #4 is the wrong number)
 
-`SaturationResult.classes_after` / the 5,000-class cap check
-(`self.classes.len() > max_classes` in `saturate_with_limits`) is the **raw
-allocation count** — `EGraph::classes` is an append-only `Vec` that never
-shrinks; `union` merges via the parent pointer but a merged-away class's slot
-stays allocated. It is *not* the live/canonical class count
+`OptimizerStats.classes` / the 5,000-class cap check
+(`self.classes.len() > max_classes` in `EGraph::saturate_bounded`) is the
+**raw allocation count** — `EGraph::classes` is an append-only `Vec` that
+never shrinks; `union` merges via the parent pointer but a merged-away
+class's slot stays allocated. It is *not* the live/canonical class count
 (`find(i) == i`). These two numbers are already very different **before any
-closure runs**: among the 225 cap-hit kernels, the median slack
-(`max_classes − live_before`) is **3,634 classes** out of a 5,000 cap — the
+closure runs**: among the 231 cap-hit kernels, the median slack
+(`max_classes − live_before`) is **3,648 classes** out of a 5,000 cap — the
 live/semantic graph is, on median, less than a third the size the raw
-allocation count suggests, with no closure involved at all. Only 2 of 225
+allocation count suggests, with no closure involved at all. Only 2 of 231
 cap-hit kernels have `live_before ≥ max_classes` — i.e. the cap is binding on
 something the closure could plausibly fix — and offline closure does not
 bring either of those two under the cap.
 
-So the naive "223/225 would avoid the cap" number is really measuring "the
+So the naive "229/231 would avoid the cap" number is really measuring "the
 live class count is usually already far below the raw allocation count,
 independent of closure" — a true fact, but not evidence that **missing
 upward congruence specifically** is what's inflating the raw count near the
@@ -104,8 +106,8 @@ genuine e-graph growth, not primarily on unrecognized duplicates.
 
 | | n | median class reduction | median cost change |
 |---|---|---|---|
-| ClassCap-stopped | 225 | 0.00% | 0.00% |
-| not ClassCap-stopped | 181 | 0.00% | 0.00% |
+| ClassCap-stopped | 231 | 0.00% | 0.00% |
+| not ClassCap-stopped | 175 | 0.00% | 0.00% |
 
 ## By category
 
@@ -114,13 +116,13 @@ genuine e-graph growth, not primarily on unrecognized duplicates.
 | cellgrid | 3 | 0.56% | 0.56% | 3/3 |
 | shader | 12 | 0.00% | 3.42% | 9/12 |
 | psychedelic | 1 | 0.85% | 0.85% | 1/1 |
-| glyph | 190 | 0.00% | 0.49% | 172/190 |
+| glyph | 190 | 0.00% | 0.49% | 178/190 |
 | synthetic | 200 | 0.00% | 0.32% | 40/200 |
 
 Classical-tier-only (`max_classes == 5000`, the specific "5,000-class cap"
-#1087 measured): 198/206 real kernels fall in this tier, and 181/198 (91.4%)
+#1087 measured): 198/206 real kernels fall in this tier, and 187/198 (94.4%)
 hit the cap — higher than #1087's 68.4% because this corpus is 92% glyph
-arenas (172/190 glyph arenas alone hit the cap), a heavier-tailed mix than
+arenas (178/190 glyph arenas alone hit the cap), a heavier-tailed mix than
 #1087's. The rate is corpus-composition-sensitive; the cap-correction finding
 above (live class count already far under the cap) held at the same
 magnitude within this subset too.
@@ -134,9 +136,9 @@ so the effect here is orthogonal to the cap story:
 
 | kernel | live_before | closure_unions | reduction | cost_before → cost_after |
 |---|---|---|---|---|
-| glyph16/32:U+0027 (apostrophe) | 61 | 7 | 10.48% | 152 → 135 (**−11.1%**) |
-| glyph16/32:U+005C, U+002F (`\`, `/`) | 37 | 3 | 8.28% | 147 → 130 (**−11.4%**) |
-| glyph16/32:U+0022 (quote) | 32 | 2 | 7.60% | 286 → 264 (**−7.7%**) |
+| glyph16/32:U+0027 (apostrophe) | 582 | 61 | 10.48% | 171 → 152 (**−11.1%**) |
+| glyph16/32:U+002F, U+005C (`/`, `\`) | 447 | 37 | 8.28% | 166 → 147 (**−11.4%**) |
+| glyph16/32:U+0022 (quote) | 421 | 32 | 7.60% | 310 → 286 (**−7.7%**) |
 
 These are real, measurable extraction-quality wins the defect costs today —
 just on tiny kernels, not the large ones that trip the cap.
@@ -179,11 +181,11 @@ extracted cost) improvement — but on this corpus it is **small** (922
 unions total, 0.24% of live classes; median per-kernel effect is exactly
 zero) and **does not explain** why the 5,000-class cap binds on most real
 kernels (the cap trips on raw allocation growth that is mostly genuine
-non-duplicate structure, not unrecognized congruence — only 2/225 cap-hit
+non-duplicate structure, not unrecognized congruence — only 2/231 cap-hit
 kernels have a live class count that even reaches the cap, and closure
 rescues neither). It is **not worth implementing as a fix for the cap/H-a
 story**; it may still be worth a small, targeted fix (an e-node parent
-index, upward-merging on `union`) purely for the ~5-10% extraction-cost wins
+index, upward-merging on `union`) purely for the ~5–11% extraction-cost wins
 it recovers on small kernels — but that is a much narrower case than "this
 is why the cap binds."
 

@@ -1184,7 +1184,7 @@ mod tests {
 mod congruence_gap_probe {
     use super::*;
     use crate::egraph::rule_order::{RuleOrder, build_rule_set};
-    use crate::egraph::{CostModel, SaturationStop};
+    use crate::egraph::{CostModel, RuleSet, SaturationStop, choices_to_arena};
     use crate::nnue::{BwdGenConfig, BwdGenerator};
     use pixelflow_ir::arena::{BufferId, BufferIdentity};
     use std::path::{Path, PathBuf};
@@ -1422,35 +1422,50 @@ mod congruence_gap_probe {
         let (arena, root) = pixelflow_ir::passes::expand_reduce_owned(&arena, root);
         let node_count = reachable_count(&arena, root);
 
-        let rules = build_rule_set(order);
-        let mut egraph = EGraph::with_rules(rules);
+        // THE production regime, through the one entry point
+        // `optimize_runtime_arena_uncached` itself now calls
+        // (pixelflow-search#1108, "one optimizer entry point"):
+        // `Optimizer::production()` bundles the rule set, `Budget::Production`
+        // (== `config_for_node_count`'s tiers), `CostModel::latency_prior`,
+        // and the extractor. `order` swaps only the rule set — everything
+        // else stays exactly production's configuration.
+        let mut optimizer = match order {
+            RuleOrder::Production => Optimizer::production(),
+            other => Optimizer::production().rules(RuleSet::new(build_rule_set(other))),
+        };
+        let mut egraph = optimizer.egraph();
         let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
         let root_class = arena_to_egraph(&arena, root, &mut egraph, &mut memo)
             .unwrap_or_else(|| panic!("{name}: arena_to_egraph returned None (unsupported node)"));
 
-        // THE production regime: config_for_node_count(node_count) picks the
-        // SaturationConfig tier, saturate_with_full_budget runs it. Exactly
-        // `saturate_for_extraction`'s own body.
-        let saturation_result = saturate_for_extraction(&mut egraph, node_count);
-        let max_classes = saturation_result.max_classes;
-        let hit_class_cap = saturation_result.stop == SaturationStop::ClassCap;
+        let optimized = optimizer.run(&mut egraph, root_class, node_count);
+        let max_classes = optimized.stats.limits.classes;
+        let hit_class_cap = optimized.stats.stop == SaturationStop::ClassCap;
 
         let live_before = live_class_count(&egraph);
 
         let model = CostModel::latency_prior();
-        let policy = env_extraction_policy();
-        let extraction_before = policy.extraction(&egraph, egraph.find(root_class));
-        let (extracted_before, extracted_before_root) = choices_to_arena(&extraction_before);
+        let (extracted_before, extracted_before_root) = optimized.to_arena(&egraph, root_class);
         let cost_before = arena_static_cost(&model, &extracted_before, extracted_before_root);
 
         // The offline upward-closure pass runs on a CLONE — production's own
-        // e-graph (and the saturation_result above) is untouched.
+        // e-graph (and `optimized.stats` above) is untouched.
         let mut closure_graph = egraph.clone();
         let closure_unions = full_upward_closure(&mut closure_graph);
         let live_after = live_class_count(&closure_graph);
 
         let root_class_closed = closure_graph.find(root_class);
-        let extraction_after = policy.extraction(&closure_graph, root_class_closed);
+        let dag_after = crate::egraph::extract::extract_dag_scoped(
+            &closure_graph,
+            root_class_closed,
+            &model,
+            LatticeShape::POINT,
+        );
+        let extraction_after = crate::egraph::Extraction::from_dp(
+            &closure_graph,
+            root_class_closed,
+            dag_after.choices,
+        );
         let (extracted_after, extracted_after_root) = choices_to_arena(&extraction_after);
         let cost_after = arena_static_cost(&model, &extracted_after, extracted_after_root);
 
@@ -1472,7 +1487,7 @@ mod congruence_gap_probe {
             rule_order: order.to_string(),
             node_count,
             max_classes,
-            stop: format!("{:?}", saturation_result.stop),
+            stop: format!("{:?}", optimized.stats.stop),
             hit_class_cap,
             live_before,
             closure_unions,

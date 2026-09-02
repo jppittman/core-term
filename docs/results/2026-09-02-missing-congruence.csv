@@ -17,7 +17,7 @@ glyph16:U+002B,glyph,production,247,5000,ClassCap,true,244,0,244,0.000000,319,31
 glyph16:U+002C,glyph,production,1694,5000,ClassCap,true,1366,0,1366,0.000000,2779,2779,0.000000,true
 glyph16:U+002D,glyph,production,119,5000,Quiesced,false,117,0,117,0.000000,133,133,0.000000,false
 glyph16:U+002E,glyph,production,1855,5000,ClassCap,true,1354,0,1354,0.000000,2881,2881,0.000000,true
-glyph16:U+002F,glyph,production,127,5000,Timeout,false,447,37,410,0.082774,166,147,-0.114458,false
+glyph16:U+002F,glyph,production,127,5000,ClassCap,true,447,37,410,0.082774,166,147,-0.114458,true
 glyph16:U+0030,glyph,production,5402,5000,ClassCap,true,2903,0,2903,0.000000,9970,9970,0.000000,true
 glyph16:U+0031,glyph,production,1452,5000,ClassCap,true,1323,0,1323,0.000000,2520,2520,0.000000,true
 glyph16:U+0032,glyph,production,3891,5000,ClassCap,true,2533,0,2533,0.000000,6980,6980,0.000000,true
@@ -62,10 +62,10 @@ glyph16:U+0058,glyph,production,343,5000,ClassCap,true,628,1,627,0.001592,652,65
 glyph16:U+0059,glyph,production,263,5000,ClassCap,true,412,1,411,0.002427,437,437,0.000000,true
 glyph16:U+005A,glyph,production,255,5000,ClassCap,true,459,0,459,0.000000,393,393,0.000000,true
 glyph16:U+005B,glyph,production,183,5000,Quiesced,false,175,0,175,0.000000,234,234,0.000000,false
-glyph16:U+005C,glyph,production,127,5000,Timeout,false,447,37,410,0.082774,166,147,-0.114458,false
+glyph16:U+005C,glyph,production,127,5000,ClassCap,true,447,37,410,0.082774,166,147,-0.114458,true
 glyph16:U+005D,glyph,production,183,5000,Quiesced,false,177,0,177,0.000000,244,244,0.000000,false
 glyph16:U+005E,glyph,production,199,5000,ClassCap,true,420,0,420,0.000000,319,319,0.000000,true
-glyph16:U+005F,glyph,production,119,5000,Timeout,false,321,0,321,0.000000,129,129,0.000000,false
+glyph16:U+005F,glyph,production,119,5000,ClassCap,true,321,0,321,0.000000,129,129,0.000000,true
 glyph16:U+0060,glyph,production,1722,5000,ClassCap,true,1342,0,1342,0.000000,2827,2827,0.000000,true
 glyph16:U+0061,glyph,production,5743,5000,ClassCap,true,3007,0,3007,0.000000,10612,10612,0.000000,true
 glyph16:U+0062,glyph,production,5129,5000,ClassCap,true,2824,0,2824,0.000000,9434,9434,0.000000,true
@@ -112,7 +112,7 @@ glyph32:U+002B,glyph,production,247,5000,ClassCap,true,244,0,244,0.000000,319,31
 glyph32:U+002C,glyph,production,1694,5000,ClassCap,true,1366,0,1366,0.000000,2779,2779,0.000000,true
 glyph32:U+002D,glyph,production,119,5000,Quiesced,false,116,0,116,0.000000,133,133,0.000000,false
 glyph32:U+002E,glyph,production,1855,5000,ClassCap,true,1354,0,1354,0.000000,2881,2881,0.000000,true
-glyph32:U+002F,glyph,production,127,5000,Timeout,false,447,37,410,0.082774,166,147,-0.114458,false
+glyph32:U+002F,glyph,production,127,5000,ClassCap,true,447,37,410,0.082774,166,147,-0.114458,true
 glyph32:U+0030,glyph,production,5402,5000,ClassCap,true,2903,0,2903,0.000000,9970,9970,0.000000,true
 glyph32:U+0031,glyph,production,1452,5000,ClassCap,true,1323,0,1323,0.000000,2520,2520,0.000000,true
 glyph32:U+0032,glyph,production,3891,5000,ClassCap,true,2533,0,2533,0.000000,6980,6980,0.000000,true
@@ -157,10 +157,10 @@ glyph32:U+0058,glyph,production,343,5000,ClassCap,true,628,1,627,0.001592,652,65
 glyph32:U+0059,glyph,production,263,5000,ClassCap,true,412,1,411,0.002427,437,437,0.000000,true
 glyph32:U+005A,glyph,production,255,5000,ClassCap,true,458,0,458,0.000000,393,393,0.000000,true
 glyph32:U+005B,glyph,production,183,5000,Quiesced,false,175,0,175,0.000000,234,234,0.000000,false
-glyph32:U+005C,glyph,production,127,5000,Timeout,false,447,37,410,0.082774,166,147,-0.114458,false
+glyph32:U+005C,glyph,production,127,5000,ClassCap,true,447,37,410,0.082774,166,147,-0.114458,true
 glyph32:U+005D,glyph,production,183,5000,Quiesced,false,177,0,177,0.000000,244,244,0.000000,false
 glyph32:U+005E,glyph,production,199,5000,ClassCap,true,420,0,420,0.000000,319,319,0.000000,true
-glyph32:U+005F,glyph,production,119,5000,Timeout,false,321,0,321,0.000000,129,129,0.000000,false
+glyph32:U+005F,glyph,production,119,5000,ClassCap,true,321,0,321,0.000000,129,129,0.000000,true
 glyph32:U+0060,glyph,production,1722,5000,ClassCap,true,1342,0,1342,0.000000,2827,2827,0.000000,true
 glyph32:U+0061,glyph,production,5743,5000,ClassCap,true,3007,0,3007,0.000000,10612,10612,0.000000,true
 glyph32:U+0062,glyph,production,5129,5000,ClassCap,true,2824,0,2824,0.000000,9434,9434,0.000000,true
