@@ -913,6 +913,7 @@ mod tests {
         path.to_str().unwrap().to_string()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fixture_row(
         expr_name: &str,
         trajectory_id: u32,
