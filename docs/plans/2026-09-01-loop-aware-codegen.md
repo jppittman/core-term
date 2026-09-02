@@ -230,6 +230,40 @@ emitted code byte-identical (`emit::compile` untouched); `reduction_binder.rs`
 and `kernel_bake.rs` pass.
 
 **Stage 1 — scope-weighted extraction emits the binder-nest schedule.**
+*Landed 2026-09-02 (#1097), with the measurement this plan's methodology
+note demands.* Extraction multiplies each node's cost by
+`LatticeShape::evals` of its chosen form's variance. Measured on a full
+1920×1080 collapse, best of seven, against the same kernels extracted at
+`POINT` (which weights everything by one, i.e. the old behavior):
+
+| hoistable terms | fused | scope-weighted | |
+|---|---|---|---|
+| 1 | 1.522 ms | 1.499 ms | −1.5% |
+| 4 | 1.481 ms | 1.471 ms | −0.7% |
+| 8 | 1.767 ms | 1.568 ms | **−11.3%** |
+
+The win grows with the number of terms that can leave the loop, which is
+what the model predicts. It is bought with accuracy, deliberately and within
+the contract `CLAUDE.md` sets out: the optimizer un-fuses an FMA whose
+multiplier is loop-invariant, trading one rounding for two per sample in
+exchange for hoisting the multiply, so a glyph bake sits ~8.5e-6 from the
+interpreter where it used to sit ~1.1e-6. Range is untouched; precision is
+the tunable.
+
+Two consequences worth stating plainly. **Two lattices are now two
+compilations**, and need not agree bit-for-bit — a test comparing a point
+bake against a frame bake at f32 tolerance was pinning a promise the
+compiler no longer makes, and now compares against the interpreter instead.
+And **trip-count weighting multiplies cost-model error by the trip count**:
+the FMA decision turns on the table pricing `MulAdd` at 5 cycles against
+`Add`'s 4, so a one-cycle error that used to move one instruction now
+decides the shape of a whole loop body. That is an argument for measuring
+the table against loop bodies, not only against straight-line kernels — the
+`latency_prior` table is a *latency* prior and a pixel loop is
+throughput-bound. Not acted on here.
+
+Original text follows.
+
 Extraction cost becomes `Σ cost(node) · Π extent(enclosing binders)`, with
 scopes from the node's *chosen* variance (`Extraction::chosen_variance`
 exists) against the nest. Output is the N-region schedule; codegen's

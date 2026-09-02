@@ -17,6 +17,11 @@ bench = false
 # combinator emitter. Not the default until the parity suite and font goldens
 # say so — see the routing note in `kernel`.
 arena-backend = []
+# Forwards to `pixelflow-search/saturation-telemetry`: the macro-tier
+# `optimize()` entry (`src/optimize.rs`) emits one JSONL saturation record
+# per e-graph pass when this is on. See `pixelflow-search/src/telemetry.rs`
+# for the record shape and sink.
+saturation-telemetry = ["pixelflow-search/saturation-telemetry"]
 
 [dependencies]
 syn = { version = "2", features = ["full", "fold", "extra-traits", "parsing"] }

@@ -29,13 +29,15 @@ pub(crate) mod cost;
 pub mod deps;
 pub mod derivative;
 pub(crate) mod extract;
-pub mod extraction;
 mod graph;
 mod labeler;
 mod node;
 pub mod ops;
+pub mod optimizer;
 pub mod provenance;
 pub mod rewrite;
+pub mod rule_order;
+pub mod rules;
 pub mod saturate;
 
 // Re-export public API
@@ -46,16 +48,20 @@ pub use extract::{
     ExtractedDAG, Extraction, build_extracted_dag_from_choices, choices_to_arena,
     compute_ref_counts, extract, extract_dag,
 };
-pub use extraction::{ExtractionPolicy, env_extraction_policy};
-pub use graph::{ApplyResult, EGraph, EGraphBatch, RewriteTarget, SaturationStats, SaturationStop};
+pub use graph::{
+    ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, RewriteTarget, SaturationStats,
+    SaturationStop, ScanStop,
+};
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode};
 pub use ops::Op;
+pub use optimizer::{Budget, Limits, Observer, Optimized, Optimizer, OptimizerStats};
 pub use provenance::{
     ApplicationId, ApplicationRecord, ENodeId, Origin, Provenance, UnionEvent,
     derivation_ancestors, format_derivation_trace,
 };
 pub use rewrite::{Rewrite, RewriteAction};
+pub use rules::{Fingerprint, RuleId, RuleSet, rule_label};
 pub use saturate::{
     SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
     saturate_with_budget, saturate_with_full_budget,

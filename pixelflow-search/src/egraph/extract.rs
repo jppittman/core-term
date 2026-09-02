@@ -5,9 +5,11 @@
 //! [`pixelflow_ir::ExprArena`].
 
 use super::cost::{CostFunction, CostModel};
+use super::deps::var_variance;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use alloc::vec::Vec;
+use pixelflow_ir::{LatticeShape, Variance};
 
 /// A witnessed selection: an e-graph, a root e-class, and a well-founded
 /// choice function from every e-class reachable from `root` to the node
@@ -277,12 +279,12 @@ pub trait Reranker {
 ///   rescoring each candidate through `reranker`. Accept the single best
 ///   strict improvement per class per pass. Repeat until a pass makes no
 ///   improvement (fixpoint) or `MAX_PASSES` is reached.
-pub struct IncrementalExtractor<'a, R: Reranker> {
+pub struct IncrementalExtractor<'a, R: Reranker + ?Sized> {
     reranker: &'a R,
     top_k: usize,
 }
 
-impl<'a, R: Reranker> IncrementalExtractor<'a, R> {
+impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
     /// `top_k` bounds how many alternative nodes per e-class are evaluated
     /// during refinement passes.
     pub fn new(reranker: &'a R, top_k: usize) -> Self {
@@ -586,6 +588,14 @@ fn choices_have_cycle_from(egraph: &EGraph, root: EClassId, choices: &[Option<us
         color[idx] = 1;
         stack.push((canonical, true));
 
+        // `unwrap_or(0)` here is an ANALYSIS default, not an identity
+        // sentinel, and the difference is why it stays: a class with no
+        // recorded choice contributes no edge to the extracted DAG, so
+        // walking its node 0 can only add phantom edges — which can only
+        // report a cycle that is not there (a rejected swap, i.e. cost),
+        // never miss one that is. Nothing materialised comes out of here;
+        // the one place a missing choice would become a wrong *term* is
+        // `choices_to_arena`, which panics on it instead.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
         if let Some(ENode::Op { children, .. }) = egraph.nodes(canonical).get(node_idx) {
             for &child in children.iter().rev() {
@@ -629,6 +639,9 @@ fn choices_have_cycle_through(
         if idx >= num_classes || !visited.insert(c.0) {
             continue;
         }
+        // Same analysis default as `choices_have_cycle_from`, safe for the
+        // same reason: extra edges can only over-report reachability, which
+        // costs a rejected swap and never a wrong term.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
         if let Some(ENode::Op { children, .. }) = egraph.nodes(c).get(node_idx) {
             for &child in children {
@@ -896,13 +909,20 @@ pub fn extract<C: CostFunction>(
                             CYCLE_COST
                         } else {
                             let op_cost = costs.node_cost(node, None);
+                            // Saturating fold, not `.sum()`: a child's own
+                            // `best_cost` can already sit at a prohibitive
+                            // sentinel (`Dwrt`'s `usize::MAX / 4` from
+                            // `CostModel::node_op_cost`, or this function's
+                            // own `CYCLE_COST`), so a node with several such
+                            // children overflows a plain `usize` sum. A real
+                            // `Dwrt`-bearing e-graph reaches that here.
                             let children_cost: usize = children
                                 .iter()
                                 .map(|&child| {
                                     let c = egraph.find(child);
                                     best_cost[c.0 as usize].unwrap_or(CYCLE_COST)
                                 })
-                                .sum();
+                                .fold(0usize, usize::saturating_add);
                             op_cost.saturating_add(children_cost)
                         }
                     }
@@ -1460,14 +1480,76 @@ impl ExtractedDAG {
 /// - Best node per e-class
 /// - Shared e-classes (for let-binding)
 /// - Topological order for emission
+/// The variance of one e-node, given the variance already chosen for the
+/// classes below it: the union of its children's, with leaves naming their
+/// own. A child whose form is not settled yet (a cycle under repair) counts
+/// as fully varying — the conservative direction, since it can only make a
+/// form look more expensive, never less.
+fn node_variance(
+    egraph: &EGraph,
+    node: &ENode,
+    best_var: &[Variance],
+    canonical: EClassId,
+) -> Variance {
+    match node {
+        ENode::Var(v) => var_variance(*v),
+        // A buffer's contents are fixed for the kernel's lifetime; a read of
+        // one varies with its index, which is the `Gather`'s other child.
+        ENode::Const(_) | ENode::Buffer(_) => Variance::CONST,
+        ENode::Op { children, .. } => children.iter().fold(Variance::CONST, |acc, &child| {
+            let c = egraph.find(child);
+            if c == canonical {
+                return Variance::ALL;
+            }
+            acc.union(best_var[c.0 as usize])
+        }),
+    }
+}
+
 pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> ExtractedDAG {
+    extract_dag_scoped(egraph, root, costs, LatticeShape::POINT)
+}
+
+/// [`extract_dag`], pricing each node by how often the lattice evaluates it.
+///
+/// The cost of a program is not the cost of its text but of its execution:
+/// a node's op cost is multiplied by [`LatticeShape::evals`] of the variance
+/// of the form chosen for it, so a subexpression that depends only on Z is
+/// priced once per frame while one that touches X is priced once per sample.
+/// Every extent is known at compile time, so this is the exact instruction
+/// count of the unrolled program rather than an ordinal preference.
+///
+/// That single change is what makes extraction the thing that *decides* the
+/// factorization: given `(X + Z) + Z` and its reassociation `X + (Z + Z)`,
+/// both two adds, the second leaves one of them outside the pixel loop and
+/// is therefore cheaper by a factor of the frame — which loop-invariant code
+/// motion after the fact can only discover, never choose between.
+///
+/// [`LatticeShape::POINT`] weights everything by one, so `extract_dag`'s
+/// behavior is unchanged.
+pub fn extract_dag_scoped<C: CostFunction>(
+    egraph: &EGraph,
+    root: EClassId,
+    costs: &C,
+    shape: LatticeShape,
+) -> ExtractedDAG {
     use alloc::collections::BTreeSet;
 
-    const CYCLE_COST: usize = 1_000_000;
+    // Above any weighted cost a real program can reach, so a self-reference
+    // never looks cheaper than an expensive-but-legitimate form. (A flat
+    // 1_000_000 was safely above every *unweighted* cost; weighting by a
+    // frame's sample count clears that by orders of magnitude.)
+    const CYCLE_COST: usize = usize::MAX / 4;
 
     let num_classes = egraph.num_classes();
     let mut best_cost: Vec<Option<usize>> = alloc::vec![None; num_classes];
     let mut best_node: Vec<Option<usize>> = alloc::vec![None; num_classes];
+    // The variance of the form chosen for each class, which is what its
+    // scope — and so its weight — is read from. Carried in the same DP as
+    // the cost because the two determine each other: a child's variance sets
+    // its parent's weight, and a parent's weight is part of what makes one
+    // child's form worth choosing over another's.
+    let mut best_var: Vec<Variance> = alloc::vec![Variance::CONST; num_classes];
 
     // Phase 1: Compute best node per e-class (same as regular extraction)
     let mut stack: Vec<(EClassId, bool)> = vec![(root, false)];
@@ -1503,24 +1585,36 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
             let nodes = egraph.nodes(canonical);
             let mut min_cost = usize::MAX;
             let mut min_idx = 0;
+            let mut min_var = Variance::CONST;
 
             for (idx, node) in nodes.iter().enumerate() {
+                let node_var = node_variance(egraph, node, &best_var, canonical);
+                let weight = shape.evals(node_var);
+                let scaled = |op_cost: usize| -> usize {
+                    usize::try_from((op_cost as u64).saturating_mul(weight)).unwrap_or(usize::MAX)
+                };
                 let this_node_cost = match node {
                     ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
-                        costs.node_cost(node, None)
+                        scaled(costs.node_cost(node, None))
                     }
                     ENode::Op { children, .. } => {
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             CYCLE_COST
                         } else {
-                            let op_cost = costs.node_cost(node, None);
+                            let op_cost = scaled(costs.node_cost(node, None));
+                            // Saturating fold, not `.sum()`: a child's own
+                            // `best_cost` can already sit at a prohibitive
+                            // sentinel (`Dwrt`'s `usize::MAX / 4` from
+                            // `CostModel::node_op_cost`, or this function's
+                            // own `CYCLE_COST`), so a node with several such
+                            // children overflows a plain `usize` sum.
                             let children_cost: usize = children
                                 .iter()
                                 .map(|&child| {
                                     let c = egraph.find(child);
                                     best_cost[c.0 as usize].unwrap_or(CYCLE_COST)
                                 })
-                                .sum();
+                                .fold(0usize, usize::saturating_add);
                             op_cost.saturating_add(children_cost)
                         }
                     }
@@ -1529,11 +1623,13 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
                 if this_node_cost < min_cost {
                     min_cost = this_node_cost;
                     min_idx = idx;
+                    min_var = node_var;
                 }
             }
 
             best_cost[canonical.0 as usize] = Some(min_cost);
             best_node[canonical.0 as usize] = Some(min_idx);
+            best_var[canonical.0 as usize] = min_var;
         }
     }
 
@@ -1658,6 +1754,69 @@ fn toposort_dag(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scope-weighted extraction un-fuses an FMA to move work out of the loop.
+    ///
+    /// One e-class holds two equal forms of `X + 2Z`: the fused
+    /// `MulAdd(2, Z, X)` — one instruction — and `X + (Z + Z)`, which is two.
+    /// Priced by text the FMA wins and always should. Priced against a
+    /// 256×256 frame it loses: its single instruction runs at every one of
+    /// the 65 536 samples, while the pair runs one add per sample and lifts
+    /// `Z + Z` out of the loop entirely, because `Z` does not vary across it.
+    ///
+    /// No saturation here — both forms are placed in the class by hand — so
+    /// this is a property of the cost model alone, and the choice flipping
+    /// with the lattice is the whole claim of scope-weighted extraction: the
+    /// factorization is *chosen*, not discovered afterwards by a hoisting
+    /// pass that arrives once the FMA has already welded `Z` into the
+    /// per-sample expression.
+    #[test]
+    fn scope_weighting_unfuses_an_fma_to_hoist_the_z_term() {
+        use crate::egraph::ops::op_from_kind;
+        use pixelflow_ir::OpKind;
+
+        let mut egraph = EGraph::new();
+        let x = egraph.add(ENode::Var(0));
+        let z = egraph.add(ENode::Var(2));
+        let two = egraph.add(ENode::Const(2.0f32.to_bits()));
+        let op = |kind| op_from_kind(kind).expect("op is modelled");
+
+        let fused = egraph.add(ENode::Op {
+            op: op(OpKind::MulAdd),
+            children: vec![two, z, x],
+        });
+        let z_plus_z = egraph.add(ENode::Op {
+            op: op(OpKind::Add),
+            children: vec![z, z],
+        });
+        let unfused = egraph.add(ENode::Op {
+            op: op(OpKind::Add),
+            children: vec![x, z_plus_z],
+        });
+        let root = egraph.union(fused, unfused);
+        egraph.rebuild();
+
+        let costs = CostModel::latency_prior();
+        let chosen = |shape| {
+            let dag = extract_dag_scoped(&egraph, root, &costs, shape);
+            let idx = dag.choices[egraph.find(root).0 as usize].expect("root is chosen");
+            match &egraph.nodes(egraph.find(root))[idx] {
+                ENode::Op { op, .. } => op.kind(),
+                other => panic!("root should be an op, got {other:?}"),
+            }
+        };
+
+        assert_eq!(
+            chosen(LatticeShape::POINT),
+            OpKind::MulAdd,
+            "with no lattice the fused form is one instruction against two"
+        );
+        assert_eq!(
+            chosen(LatticeShape::new([256, 256, 1, 1])),
+            OpKind::Add,
+            "over a frame the fused form pays for Z at every sample"
+        );
+    }
 
     #[test]
     fn extract_simple() {

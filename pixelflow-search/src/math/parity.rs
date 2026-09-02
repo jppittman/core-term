@@ -277,6 +277,10 @@ impl<T: Parity> Rewrite for ParityNegation<T> {
         }
     }
 
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        Some(T::op().kind())
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Op(neg(x))
         let ENode::Op { op, children } = node else {

@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use super::graph::{EGraph, SaturationStop};
 use super::node::EClassId;
+use super::rules::RuleId;
 
 /// Result of a budget-limited saturation run.
 ///
@@ -34,7 +35,11 @@ pub struct SaturationResult {
     /// Total unions performed across all iterations.
     pub total_unions: usize,
 
-    /// Whether saturation completed (no more changes) before budget exhausted.
+    /// Whether saturation completed (no more changes) before budget
+    /// exhausted. Exactly `stop == SaturationStop::Quiesced` — the same
+    /// decision the loop made, never a second opinion derived from the
+    /// counters (`iterations < max_iterations` is true of a class-cap and a
+    /// timeout break too).
     pub saturated: bool,
 
     /// Number of e-classes before saturation.
@@ -44,10 +49,23 @@ pub struct SaturationResult {
     pub classes_after: usize,
 
     /// Rule match counts by rule name.
-    pub rule_matches: HashMap<String, usize>,
+    /// Rule match counts, keyed by stable rule identity.
+    ///
+    /// Was keyed by `Rewrite::name()`, which is a *family* name: all four
+    /// `Commutative` instances answered to `"commutative"` and landed in one
+    /// bucket, so every per-rule number derived from this map was wrong by
+    /// aggregation. [`RuleId`](crate::egraph::RuleId) is per instance.
+    pub rule_matches: HashMap<RuleId, usize>,
 
     /// The rewrite budget that was used.
     pub budget: usize,
+
+    /// The rest of the budget triple this run was given (`budget` is its
+    /// `max_iterations`) — recorded on the result so an observer of the run
+    /// (the `saturation-telemetry` feature) reads the limits that actually
+    /// applied instead of re-deriving them from `node_count`.
+    pub max_classes: usize,
+    pub hard_timeout: std::time::Duration,
 
     /// Which condition ended the run — read off `EGraph::saturate_with_limits`'s
     /// own stopping decision, not inferred from the counts above (those can
@@ -125,7 +143,7 @@ pub fn saturate_with_full_budget(
     // the duplicate-loop drift the domain model doc calls out by name.
     let stats = egraph.saturate_with_limits(max_iterations, max_classes, timeout);
 
-    let saturated = stats.iterations < max_iterations || stats.total_unions == 0;
+    let saturated = stats.stop == SaturationStop::Quiesced;
     let classes_after = egraph.classes.len();
     let rule_matches = egraph.match_counts.clone();
 
@@ -137,6 +155,8 @@ pub fn saturate_with_full_budget(
         classes_after,
         rule_matches,
         budget: max_iterations,
+        max_classes,
+        hard_timeout: timeout,
         stop: stats.stop,
     }
 }
@@ -186,6 +206,48 @@ impl SaturationConfig {
             hard_timeout: std::time::Duration::from_millis(200),
             max_classes: 5000,
         }
+    }
+
+    /// The pre-2026-09 fixed budget — 10,000 e-classes and 500 ms — with the
+    /// caller's own round count.
+    ///
+    /// **Not a production preset.** Production sizes its budget from the
+    /// expression via [`config_for_node_count`], reached through
+    /// [`Optimizer::run`](super::optimizer::Optimizer::run).
+    /// This one exists for the non-production call sites that must reproduce
+    /// results from before that policy landed — unit tests, the hindsight
+    /// labeler, and offline measurement harnesses — so the budget is named
+    /// once here instead of the same two magic numbers being re-spelled at
+    /// every such site, where they would drift apart the moment one of them
+    /// was revised.
+    ///
+    /// The round count stays a parameter because it always was one: the
+    /// budget these sites inherited fixed the class cap and the deadline but
+    /// let each caller choose how many rewrite rounds it wanted. A site that
+    /// needs to vary one of the other two should say so at the call site,
+    /// with a reason:
+    ///
+    /// ```ignore
+    /// SaturationConfig {
+    ///     hard_timeout: SAFETY_CEILING, // offline: measuring caps, not the machine
+    ///     ..SaturationConfig::compatibility(100)
+    /// }
+    /// ```
+    pub fn compatibility(max_iterations: usize) -> Self {
+        Self {
+            max_iterations,
+            hard_timeout: std::time::Duration::from_millis(500),
+            max_classes: 10_000,
+        }
+    }
+
+    /// Run one saturation of `egraph` under this budget.
+    ///
+    /// The three fields are exactly [`EGraph::saturate_with_limits`]'s three
+    /// arguments, so this spares every caller from unpacking them — and from
+    /// re-deriving the order.
+    pub fn run(&self, egraph: &mut EGraph) -> super::graph::SaturationStats {
+        egraph.saturate_with_limits(self.max_iterations, self.max_classes, self.hard_timeout)
     }
 }
 
@@ -348,6 +410,8 @@ mod tests {
             classes_after: 15,
             rule_matches: HashMap::new(),
             budget: 100,
+            max_classes: 10_000,
+            hard_timeout: std::time::Duration::from_millis(500),
             stop: SaturationStop::Quiesced,
         };
 

@@ -1,5 +1,7 @@
 # NNUE Training Pipeline Design
 
+> **ARCHIVED.** Superseded 2026-07-07; predates the arena IR and the deletion of the RL loop. Current training story: [`../plans/2026-07-07-guided-saturation-redesign.md`](../plans/2026-07-07-guided-saturation-redesign.md).
+
 ## Metadata
 - **Author**: jppittman + claude
 - **Status**: REVISED - Curriculum Bootstrapping (Simplified)
