@@ -1,5 +1,7 @@
 # GNN-Guided E-Graph Rewrite Selection: Vision & Architecture
 
+> **ARCHIVED.** Superseded 2026-07-07; predates the arena IR and cites `pixelflow-ml/src/nnue.rs`, which is not on any compile path. The offline-teacher framing survives in [`../plans/2026-08-17-egraph-vsa-nnue-research-notes.md`](../plans/2026-08-17-egraph-vsa-nnue-research-notes.md).
+
 ## The Vision
 
 **Goal:** Learn which rewrites are most productive in which E-graph contexts using Graph Neural Networks (GNNs).

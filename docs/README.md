@@ -34,6 +34,11 @@ specified by [`templates/DESIGN_DOC.md`](templates/DESIGN_DOC.md). Use `Supersed
 
 ## Plan of record
 
+- [`plans/2026-09-02-optimizer-api.md`](plans/2026-09-02-optimizer-api.md) — the optimizer
+  entry point (`Optimizer`/`RuleSet`/`Budget` + optional `SaturationGuide`, `Reranker`,
+  `Observer`), the five denotational laws as audited against the code, and the gap table
+  (G1–G8) for the cost-model research sitting behind it. Nothing in the surface has landed;
+  the audit findings and the archive moves have.
 - [`plans/2026-07-20-kernel-unification.md`](plans/2026-07-20-kernel-unification.md) — the
   active migration from type-level combinator emission to arena-backed `Kernel` values. Its
   phase annotations distinguish landed slices from future work.
@@ -63,7 +68,9 @@ specified by [`templates/DESIGN_DOC.md`](templates/DESIGN_DOC.md). Use `Supersed
   [`AUTODIFF_RENDERING.md`](AUTODIFF_RENDERING.md), and the papers and paper notes in this
   directory — research context, not implementation contracts.
 - [`designs/BRAINSTORM_VARIANCE_EGRAPH.md`](designs/BRAINSTORM_VARIANCE_EGRAPH.md) and
-  [`GNN_REWRITE_GUIDANCE_VISION.md`](GNN_REWRITE_GUIDANCE_VISION.md) — exploratory ideas.
+  [`archive/GNN_REWRITE_GUIDANCE_VISION.md`](archive/GNN_REWRITE_GUIDANCE_VISION.md) — exploratory ideas
+  (the GNN vision is archived; its offline-teacher framing survives in
+  [`plans/2026-08-17-egraph-vsa-nnue-research-notes.md`](plans/2026-08-17-egraph-vsa-nnue-research-notes.md)).
 
 ## Historical or superseded
 
@@ -72,11 +79,11 @@ specified by [`templates/DESIGN_DOC.md`](templates/DESIGN_DOC.md). Use `Supersed
   guided-saturation redesign; do not use it as the live architecture.
 - [`SEARCH_PIPELINE_DESIGN.md`](SEARCH_PIPELINE_DESIGN.md) — unshipped MCTS/REINFORCE
   interface proposal, superseded by the guided-saturation redesign.
-- [`plans/2026-02-25-unified-training-design.md`](plans/2026-02-25-unified-training-design.md)
-  and [`plans/2026-02-25-unified-training-plan.md`](plans/2026-02-25-unified-training-plan.md)
+- [`plans/archive/2026-02-25-unified-training-design.md`](plans/archive/2026-02-25-unified-training-design.md)
+  and [`plans/archive/2026-02-25-unified-training-plan.md`](plans/archive/2026-02-25-unified-training-plan.md)
   — obsolete critic/REINFORCE training path (`NNUE_TRAINING_RECIPE.md`, which described the
   same deleted system, was removed 2026-08-05).
-- [`designs/nnue-training-pipeline.md`](designs/nnue-training-pipeline.md) — earlier curriculum
+- [`archive/nnue-training-pipeline.md`](archive/nnue-training-pipeline.md) — earlier curriculum
   and best-first proposal.
 - [`NNUE_INTEGRATION_STATUS.md`](NNUE_INTEGRATION_STATUS.md) and
   [`EGRAPH_SEARCH_INTEGRATION.md`](EGRAPH_SEARCH_INTEGRATION.md) — short current-state
