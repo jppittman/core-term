@@ -550,6 +550,19 @@ impl Optimizer {
         self.budget.limits(node_count)
     }
 
+    /// How many distinct candidate keys the carried guided episode has
+    /// resolved so far, or `None` when no guide is set.
+    ///
+    /// The guided loop's own unit of work: a key is scored once per episode
+    /// and never again, so this is "candidates this Guide was actually asked
+    /// to rank" — the denominator a Guide-overhead measurement needs, and
+    /// not derivable from the application count (a key can be scored and
+    /// then fail to fire).
+    #[must_use]
+    pub fn guided_keys_seen(&self) -> Option<usize> {
+        self.episode.as_ref().map(GuidedEpisode::seen_key_count)
+    }
+
     /// The rule set, for a caller that has to name a rule this run applied.
     #[must_use]
     pub fn rule_set(&self) -> &RuleSet {
