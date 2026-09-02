@@ -23,8 +23,8 @@
 //! arena to `jit_cache`.
 
 use crate::egraph::{
-    EClassId, EGraph, ENode, Op, all_rules, choices_to_arena, config_for_node_count,
-    env_extraction_policy,
+    EClassId, EGraph, ENode, Op, Rewrite, RuleOrder, all_rules, build_rule_set, choices_to_arena,
+    config_for_node_count, env_extraction_policy,
 };
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
@@ -1175,7 +1175,7 @@ mod tests {
 mod production_telemetry {
     use super::*;
     use crate::egraph::{
-        CostModel, ExtractionPolicy, SaturationConfig, SaturationStop, extract_dag,
+        CostModel, Extraction, ExtractionPolicy, SaturationConfig, SaturationStop, extract_dag,
     };
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
     use std::fmt::Write as _;
@@ -1360,8 +1360,30 @@ mod production_telemetry {
         max_classes: usize,
         timeout: Duration,
     ) -> Run {
+        run_with_rules(
+            arena,
+            root,
+            all_rules(),
+            max_iterations,
+            max_classes,
+            timeout,
+        )
+    }
+
+    /// [`run`], parameterized over the rule set (and its sweep order) —
+    /// `all_rules()` verbatim, only reordered. The rule-order harness below
+    /// (`rule_order_bench`) is the one caller that passes anything other
+    /// than production order.
+    fn run_with_rules(
+        arena: &ExprArena,
+        root: ExprId,
+        rules: Vec<Box<dyn Rewrite>>,
+        max_iterations: usize,
+        max_classes: usize,
+        timeout: Duration,
+    ) -> Run {
         // runtime.rs:122-124
-        let mut egraph = EGraph::with_rules(all_rules());
+        let mut egraph = EGraph::with_rules(rules);
         let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
         let root_class = arena_to_egraph(arena, root, &mut egraph, &mut memo)
             .expect("production arena must be e-graph representable (no Param/Nary)");
@@ -1402,6 +1424,101 @@ mod production_telemetry {
             dp_cost,
             extracted_nodes: reachable_count(&extracted, extracted_root),
         }
+    }
+
+    /// [`crate::egraph::run_anytime_curve`]'s loop
+    /// (`pixelflow-search/src/egraph/anytime.rs`), reimplemented locally
+    /// with [`arena_to_egraph`] in place of `EGraph::add_arena`.
+    ///
+    /// Real production arenas (the glyph dumps) contain the runtime-only
+    /// mask/int ops (`BitAnd`/`Shl`/...) that `runtime_op_from_kind`
+    /// resolves — `add_arena` only knows `crate::egraph::ops::op_from_kind`
+    /// and panics on them (`add_arena: no static Op for OpKind BitAnd`).
+    /// `arena_to_egraph` is private to this module by design (see its own
+    /// doc comment), so the anytime curve has to be re-driven here rather
+    /// than through the public `run_anytime_curve` — same budget semantics
+    /// (applications on the x-axis, one rule sweep per checkpoint
+    /// granularity, a live-run panic if the wall-clock safety ceiling
+    /// binds), just entered through the arena constructor that actually
+    /// works on every kernel this harness dumps.
+    ///
+    /// Returns `(cost at each `grid` target, how the run ended, cumulative
+    /// applications at the last live checkpoint)`.
+    fn anytime_curve_arena(
+        arena: &ExprArena,
+        root: ExprId,
+        rules: Vec<Box<dyn Rewrite>>,
+        grid: &[usize],
+        max_classes: usize,
+        max_sweeps: usize,
+        safety_timeout: Duration,
+        costs: &CostModel,
+    ) -> (Vec<usize>, SaturationStop, usize) {
+        assert!(!grid.is_empty(), "anytime: empty checkpoint grid");
+        assert!(
+            grid.windows(2).all(|w| w[0] < w[1]),
+            "anytime: checkpoint grid must be strictly increasing, got {grid:?}"
+        );
+
+        let mut egraph = EGraph::with_rules(rules);
+        let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
+        let root_class = arena_to_egraph(arena, root, &mut egraph, &mut memo)
+            .expect("anytime: arena must be e-graph representable (no Param/Nary)");
+        let deadline = Instant::now() + safety_timeout;
+
+        let mut costs_out: Vec<usize> = Vec::with_capacity(grid.len());
+        let mut sweeps_total = 0usize;
+        let mut ended: Option<SaturationStop> = None;
+        let mut last_cost: usize = 0;
+        let mut last_apps: usize = 0;
+
+        for &target in grid {
+            if ended.is_some() {
+                // Run already ended at an earlier checkpoint: freeze.
+                costs_out.push(last_cost);
+                continue;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "anytime: curve exceeded the {safety_timeout:?} safety ceiling before target \
+                 {target} — fail loud rather than report a partial curve as data"
+            );
+            let sweeps_left = max_sweeps.checked_sub(sweeps_total).unwrap_or_else(|| {
+                panic!("anytime: sweep accounting underflow (sweeps_total={sweeps_total})")
+            });
+            let stats =
+                egraph.saturate_until_applications(target, sweeps_left, max_classes, remaining);
+            assert!(
+                stats.stop != SaturationStop::Timeout,
+                "anytime: saturation hit the wall-clock safety ceiling at target {target} — \
+                 offline measurement must fail loud, never silently truncate"
+            );
+            sweeps_total += stats.iterations;
+            // NOT `extract_dag(...).total_cost` — that DP total pays a
+            // 1,000,000-per-cycle `CYCLE_COST` penalty for every
+            // cycle-breaking pick (`extract.rs`), which a bad rule order can
+            // hit repeatedly (a shuffled arm cycling through e-classes in an
+            // order that keeps re-creating unresolved back-references) and
+            // which does not describe the code that would actually be
+            // extracted. `arena_cost` on the materialized extracted arena is
+            // the real quality metric, matching `run_with_rules` above and
+            // its own `dp_cost`-is-a-raw-column-only comment.
+            let dag = extract_dag(&egraph, root_class, costs);
+            let extraction = Extraction::from_dp(&egraph, root_class, dag.choices);
+            let (extracted, extracted_root) = choices_to_arena(&extraction);
+            last_cost = arena_cost(&extracted, extracted_root, costs);
+            last_apps = stats.applications;
+            costs_out.push(last_cost);
+            if stats.stop != SaturationStop::ApplicationBudget {
+                ended = Some(stats.stop);
+            }
+        }
+        (
+            costs_out,
+            ended.unwrap_or(SaturationStop::ApplicationBudget),
+            last_apps,
+        )
     }
 
     fn tier_name(config: &SaturationConfig) -> &'static str {
@@ -1775,5 +1892,389 @@ mod production_telemetry {
             fatal.len(),
             fatal.join("\n")
         );
+    }
+
+    // ========================================================================
+    // Rule-order measurement on real kernels
+    // (docs/results/2026-09-01-rule-order-real-kernels.md).
+    //
+    // Arms: production `all_rules()` order, the numeric-first static
+    // reorder, and three seeded shuffles (`RuleOrder`, `rule_order.rs`).
+    // Kernels: whatever `*.arena` files are present in
+    // `PIXELFLOW_TELEMETRY_DIR` — the 12 `shader_bench` kernels + the
+    // psychedelic kernel (`shader_and_psychedelic_arena_dump.rs`), one
+    // packed cell-grid geometry, and the 95 ASCII glyphs at density 1.0 (and
+    // density 2.0 too, when `PIXELFLOW_RULE_ORDER_INCLUDE_D2=1`).
+    //
+    // Two measurements share one loaded arena per kernel:
+    // - production regime: the exact `run_with_rules` call
+    //   (`config_for_node_count`'s tier, `saturate_with_full_budget`,
+    //   extraction) under each arm's rule set — "does the reorder change
+    //   what ships".
+    // - anytime: `run_anytime_curve` at applications
+    //   B ∈ {100,200,400,800,1600,3200,6400,12800} per arm — the small-budget
+    //   effect Round 2 v3 found on synthetics, replayed here on real
+    //   kernels.
+
+    /// Application-count checkpoints for the anytime table — a fixed
+    /// sub-grid of `crate::egraph::APP_CHECKPOINT_GRID`
+    /// (docs/results/2026-09-01-rule-order-real-kernels.md's requested
+    /// range, 100..12800).
+    const ANYTIME_GRID: [usize; 8] = [100, 200, 400, 800, 1600, 3200, 6400, 12800];
+    /// Generous sweep ceiling for the anytime curve — well beyond the
+    /// classical tier's 100-sweep production cap, so a curve is never cut by
+    /// sweeps before it reaches the last grid target.
+    const ANYTIME_MAX_SWEEPS: usize = 20_000;
+    /// Per-(kernel, arm) wall-clock safety ceiling for the anytime curve.
+    /// `run_anytime_curve` PANICS if this binds (offline measurement must
+    /// fail loud, never silently truncate) — a bound this generous binding
+    /// on any of these kernel sizes (dozens to hundreds of nodes) would
+    /// itself be the finding.
+    const ANYTIME_SAFETY_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// One (kernel, arm) row: production regime + anytime curve, everything
+    /// the report's tables are built from.
+    struct OrderRow {
+        kernel: String,
+        group: String,
+        nodes: usize,
+        tier: &'static str,
+        arm: String,
+        prod_stop: SaturationStop,
+        prod_cost: usize,
+        prod_applications: usize,
+        prod_iterations: usize,
+        prod_elapsed_ms: f64,
+        /// Anytime cost at each `ANYTIME_GRID` checkpoint, same order.
+        anytime_cost: [usize; ANYTIME_GRID.len()],
+        anytime_ended: SaturationStop,
+        anytime_ended_at_apps: usize,
+    }
+
+    fn csv_escape(s: &str) -> String {
+        if s.contains(',') || s.contains('"') {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    }
+
+    #[test]
+    #[ignore = "measurement: PIXELFLOW_TELEMETRY_DIR=<dumps> [PIXELFLOW_RULE_ORDER_INCLUDE_D2=1] \
+                cargo test -p pixelflow-search --release -- --ignored rule_order_real_kernels --nocapture --test-threads=1"]
+    fn rule_order_real_kernels() {
+        let dir = PathBuf::from(env_required(DIR_VAR));
+        let include_d2 = std::env::var("PIXELFLOW_RULE_ORDER_INCLUDE_D2").as_deref() == Ok("1");
+
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+            .map(|e| e.expect("dir entry").path())
+            .filter(|p| p.extension().is_some_and(|x| x == "arena"))
+            .filter(|p| {
+                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if stem.starts_with("shader_") || stem == "psychedelic" {
+                    return true;
+                }
+                // One representative cell-grid geometry — the three dumped
+                // geometries are all 623 reachable nodes (the packed
+                // kernel's structure doesn't depend on cols/rows/density),
+                // so "the 623-node cell grid" is this one, not all three.
+                if stem == "cellgrid_80x24_d1" {
+                    return true;
+                }
+                if stem.starts_with("glyph16_") {
+                    return true;
+                }
+                if include_d2 && stem.starts_with("glyph32_") {
+                    return true;
+                }
+                false
+            })
+            .collect();
+        files.sort();
+        assert!(
+            !files.is_empty(),
+            "no matching *.arena files in {}",
+            dir.display()
+        );
+
+        let arms: Vec<RuleOrder> = vec![
+            RuleOrder::Production,
+            RuleOrder::NumericFirst,
+            RuleOrder::Shuffled(1),
+            RuleOrder::Shuffled(2),
+            RuleOrder::Shuffled(3),
+        ];
+        let costs = CostModel::latency_prior();
+
+        let load_start = load_averages();
+        println!("host load at start: {load_start}");
+        println!(
+            "{} kernels x {} arms = {} (kernel, arm) rows",
+            files.len(),
+            arms.len(),
+            files.len() * arms.len()
+        );
+
+        let mut rows: Vec<OrderRow> = Vec::with_capacity(files.len() * arms.len());
+        for path in &files {
+            let (name, raw_arena, raw_root) = load_arena(path);
+            let group = name.split(':').next().expect("group prefix").to_string();
+
+            // runtime.rs:120 — same lowering the production call runs, once
+            // per kernel since it's arm-independent.
+            let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(&raw_arena, raw_root)
+                .unwrap_or_else(|e| panic!("{name}: lower_dwrt failed: {e:?}"));
+            let node_count = reachable_count(&arena, root);
+            let config = config_for_node_count(node_count);
+            let tier = tier_name(&config);
+
+            for &order in &arms {
+                let prod = run_with_rules(
+                    &arena,
+                    root,
+                    build_rule_set(order),
+                    config.max_iterations,
+                    config.max_classes,
+                    config.hard_timeout,
+                );
+
+                let (curve_costs, curve_ended, curve_ended_at_apps) = anytime_curve_arena(
+                    &arena,
+                    root,
+                    build_rule_set(order),
+                    &ANYTIME_GRID,
+                    config.max_classes,
+                    ANYTIME_MAX_SWEEPS,
+                    ANYTIME_SAFETY_TIMEOUT,
+                    &costs,
+                );
+                let mut anytime_cost = [0usize; ANYTIME_GRID.len()];
+                anytime_cost.copy_from_slice(&curve_costs);
+
+                rows.push(OrderRow {
+                    kernel: name.clone(),
+                    group: group.clone(),
+                    nodes: node_count,
+                    tier,
+                    arm: order.to_string(),
+                    prod_stop: prod.stop,
+                    prod_cost: prod.cost,
+                    prod_applications: prod.applications,
+                    prod_iterations: prod.iterations,
+                    prod_elapsed_ms: prod.elapsed.as_secs_f64() * 1e3,
+                    anytime_cost,
+                    anytime_ended: curve_ended,
+                    anytime_ended_at_apps: curve_ended_at_apps,
+                });
+            }
+            print!(".");
+            use std::io::Write as _;
+            std::io::stdout().flush().ok();
+        }
+        println!();
+        let load_end = load_averages();
+        println!("host load at end: {load_end}");
+
+        // ---- CSV ----
+        let repo_root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+        let base = repo_root.join("docs/results/2026-09-01-rule-order-real-kernels");
+        let mut csv = String::new();
+        writeln!(
+            csv,
+            "kernel,group,nodes,tier,arm,prod_stop,prod_cost,prod_applications,prod_iterations,prod_elapsed_ms,{},anytime_ended,anytime_ended_at_apps",
+            ANYTIME_GRID
+                .iter()
+                .map(|b| format!("anytime_cost_at_{b}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+        .expect("write");
+        for r in &rows {
+            writeln!(
+                csv,
+                "{},{},{},{},{},{:?},{},{},{},{:.3},{},{:?},{}",
+                csv_escape(&r.kernel),
+                csv_escape(&r.group),
+                r.nodes,
+                r.tier,
+                r.arm,
+                r.prod_stop,
+                r.prod_cost,
+                r.prod_applications,
+                r.prod_iterations,
+                r.prod_elapsed_ms,
+                r.anytime_cost
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                r.anytime_ended,
+                r.anytime_ended_at_apps,
+            )
+            .expect("write");
+        }
+        let csv_path = base.with_extension("csv");
+        std::fs::write(&csv_path, &csv)
+            .unwrap_or_else(|e| panic!("write {}: {e}", csv_path.display()));
+        println!("wrote {} rows to {}", rows.len(), csv_path.display());
+
+        // ---- JSON ----
+        let mut json = String::new();
+        writeln!(json, "{{").expect("write");
+        writeln!(json, "  \"anytime_grid\": {ANYTIME_GRID:?},").expect("write");
+        writeln!(json, "  \"arms\": [\"production\", \"numeric-first\", \"shuffled(1)\", \"shuffled(2)\", \"shuffled(3)\"],").expect("write");
+        writeln!(json, "  \"load_start\": {:?},", load_start).expect("write");
+        writeln!(json, "  \"load_end\": {:?},", load_end).expect("write");
+        writeln!(json, "  \"rows\": [").expect("write");
+        for (i, r) in rows.iter().enumerate() {
+            let comma = if i + 1 < rows.len() { "," } else { "" };
+            writeln!(
+                json,
+                "    {{\"kernel\": {:?}, \"group\": {:?}, \"nodes\": {}, \"tier\": {:?}, \"arm\": {:?}, \
+                 \"prod_stop\": {:?}, \"prod_cost\": {}, \"prod_applications\": {}, \"prod_iterations\": {}, \
+                 \"prod_elapsed_ms\": {:.3}, \"anytime_cost\": {:?}, \"anytime_ended\": {:?}, \
+                 \"anytime_ended_at_apps\": {}}}{comma}",
+                r.kernel,
+                r.group,
+                r.nodes,
+                r.tier,
+                r.arm,
+                format!("{:?}", r.prod_stop),
+                r.prod_cost,
+                r.prod_applications,
+                r.prod_iterations,
+                r.prod_elapsed_ms,
+                r.anytime_cost,
+                format!("{:?}", r.anytime_ended),
+                r.anytime_ended_at_apps,
+            )
+            .expect("write");
+        }
+        writeln!(json, "  ]").expect("write");
+        writeln!(json, "}}").expect("write");
+        let json_path = base.with_extension("json");
+        std::fs::write(&json_path, &json)
+            .unwrap_or_else(|e| panic!("write {}: {e}", json_path.display()));
+        println!("wrote {}", json_path.display());
+
+        // ---- Summary tables (also the source for the .md report) ----
+        let kernels: Vec<&str> = {
+            let mut ks: Vec<&str> = rows.iter().map(|r| r.kernel.as_str()).collect();
+            ks.sort_unstable();
+            ks.dedup();
+            ks
+        };
+        let row_for = |kernel: &str, arm: &str| -> &OrderRow {
+            rows.iter()
+                .find(|r| r.kernel == kernel && r.arm == arm)
+                .unwrap_or_else(|| panic!("missing row for {kernel}/{arm}"))
+        };
+
+        // Production-regime distribution: cost(numeric-first)/cost(production).
+        // A kernel that extracts to cost 0 (the space glyph: an empty
+        // arena) has an undefined ratio — 0/0 — and is skipped from the
+        // distribution, same convention as `loss_pct` above for the
+        // ref/lifted comparison. It is NOT skipped from
+        // improved/unchanged/worse: both costs being 0 is `Equal`.
+        let mut ratios: Vec<f64> = Vec::with_capacity(kernels.len());
+        let mut improved = 0usize;
+        let mut unchanged = 0usize;
+        let mut worse = 0usize;
+        let mut zero_cost_kernels = 0usize;
+        for k in &kernels {
+            let a = row_for(k, "production");
+            let b = row_for(k, "numeric-first");
+            if a.prod_cost == 0 {
+                assert_eq!(
+                    b.prod_cost, 0,
+                    "{k}: production cost is 0 but numeric-first cost is not — a rule order \
+                     cannot introduce cost into an arena the production order extracts as free"
+                );
+                zero_cost_kernels += 1;
+                unchanged += 1;
+                continue;
+            }
+            let ratio = b.prod_cost as f64 / a.prod_cost as f64;
+            ratios.push(ratio);
+            match b.prod_cost.cmp(&a.prod_cost) {
+                std::cmp::Ordering::Less => improved += 1,
+                std::cmp::Ordering::Equal => unchanged += 1,
+                std::cmp::Ordering::Greater => worse += 1,
+            }
+        }
+        ratios.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        if zero_cost_kernels > 0 {
+            println!(
+                "({zero_cost_kernels} zero-cost kernel(s) excluded from the ratio distribution, \
+                 counted as unchanged)"
+            );
+        }
+        println!(
+            "\n== production regime: cost(numeric-first)/cost(production), n={} ==",
+            kernels.len()
+        );
+        println!(
+            "median={:.4} q1={:.4} q3={:.4} min={:.4} max={:.4} improved={improved} unchanged={unchanged} worse={worse}",
+            percentile(&ratios, 0.5),
+            percentile(&ratios, 0.25),
+            percentile(&ratios, 0.75),
+            ratios.first().copied().unwrap_or(f64::NAN),
+            ratios.last().copied().unwrap_or(f64::NAN),
+        );
+
+        // Anytime regret vs the best any arm reaches at any checkpoint, per
+        // arm per B, median across kernels.
+        let arm_names = [
+            "production",
+            "numeric-first",
+            "shuffled(1)",
+            "shuffled(2)",
+            "shuffled(3)",
+        ];
+        println!("\n== anytime: median regret %% vs best-any-arm-at-any-checkpoint ==");
+        println!(
+            "arm\t{}",
+            ANYTIME_GRID
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join("\t")
+        );
+        for arm in arm_names {
+            let mut per_b_median: Vec<String> = Vec::with_capacity(ANYTIME_GRID.len());
+            for (bi, _b) in ANYTIME_GRID.iter().enumerate() {
+                let mut regrets: Vec<f64> = Vec::with_capacity(kernels.len());
+                for k in &kernels {
+                    let best = arm_names
+                        .iter()
+                        .flat_map(|a| row_for(k, a).anytime_cost.iter().copied())
+                        .min()
+                        .expect("at least one checkpoint");
+                    let cost = row_for(k, arm).anytime_cost[bi];
+                    if best == 0 {
+                        continue; // 0-cost kernel: regret undefined, skip
+                    }
+                    regrets.push((cost as f64 - best as f64) / best as f64 * 100.0);
+                }
+                per_b_median.push(format!("{:.2}", percentile(&regrets, 0.5)));
+            }
+            println!("{arm}\t{}", per_b_median.join("\t"));
+        }
+
+        // Node counts / tiers.
+        let mut tier_counts: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for k in &kernels {
+            *tier_counts
+                .entry(row_for(k, "production").tier)
+                .or_insert(0) += 1;
+        }
+        println!("\n== tiers ==");
+        let mut tc: Vec<(&str, usize)> = tier_counts.into_iter().collect();
+        tc.sort();
+        for (t, n) in tc {
+            println!("{t}: {n} kernels");
+        }
     }
 }

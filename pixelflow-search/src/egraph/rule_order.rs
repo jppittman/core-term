@@ -252,8 +252,14 @@ mod tests {
         let n1 = names(&s1);
         let n2 = names(&s2);
         let n3 = names(&s3);
-        assert_ne!(n1, n2, "seeds 1 and 2 must not coincidentally produce the same order");
-        assert_ne!(n2, n3, "seeds 2 and 3 must not coincidentally produce the same order");
+        assert_ne!(
+            n1, n2,
+            "seeds 1 and 2 must not coincidentally produce the same order"
+        );
+        assert_ne!(
+            n2, n3,
+            "seeds 2 and 3 must not coincidentally produce the same order"
+        );
         let mut sorted1 = n1.clone();
         let mut sorted_all: Vec<String> = super::super::all_rules()
             .iter()

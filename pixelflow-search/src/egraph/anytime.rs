@@ -162,8 +162,7 @@ pub fn run_anytime_curve(
         let sweeps_left = max_sweeps.checked_sub(sweeps_total).unwrap_or_else(|| {
             panic!("anytime: sweep accounting underflow (sweeps_total={sweeps_total})")
         });
-        let stats =
-            egraph.saturate_until_applications(target, sweeps_left, max_classes, remaining);
+        let stats = egraph.saturate_until_applications(target, sweeps_left, max_classes, remaining);
         assert!(
             stats.stop != SaturationStop::Timeout,
             "anytime: saturation hit the wall-clock safety ceiling at target {target} — \
@@ -238,7 +237,9 @@ mod tests {
         for (cp, &target) in out.curve.checkpoints.iter().zip(grid.iter()) {
             assert_eq!(cp.app_target, target);
             assert!(
-                cp.clamped || cp.app_actual >= target || cp.stop != SaturationStop::ApplicationBudget,
+                cp.clamped
+                    || cp.app_actual >= target
+                    || cp.stop != SaturationStop::ApplicationBudget,
                 "live checkpoint below target without the run having ended: {cp:?}"
             );
         }

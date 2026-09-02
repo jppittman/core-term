@@ -782,7 +782,9 @@ fn main() {
         .collect();
     let tiers = ["blitz", "rapid", "classical"];
 
-    println!("\n=== anytime curves: regret% vs applications, synthetic corpus (n={synthetic_count}) ===");
+    println!(
+        "\n=== anytime curves: regret% vs applications, synthetic corpus (n={synthetic_count}) ==="
+    );
     for scope in ["ALL"].iter().chain(tiers.iter()) {
         println!("--- scope: {scope} ---");
         for curve in ["unguided", "oracle"] {
