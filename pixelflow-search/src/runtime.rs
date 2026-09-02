@@ -2053,5 +2053,617 @@ mod congruence_gap_probe {
 }
 
 #[cfg(test)]
+mod production_telemetry {
+    use super::*;
+    use crate::egraph::{
+        Budget, CostModel, Optimizer, SaturationConfig, SaturationStop, extract_dag,
+    };
+    use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
+    use std::fmt::Write as _;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    const DIR_VAR: &str = "PIXELFLOW_TELEMETRY_DIR";
+    const OUT_VAR: &str = "PIXELFLOW_TELEMETRY_OUT";
+    const REF_MULT_VAR: &str = "PIXELFLOW_TELEMETRY_REF_MULT";
+    const KERNEL_CEILING_VAR: &str = "PIXELFLOW_TELEMETRY_KERNEL_CEILING_S";
+    /// Generous-run multiplier over the production tier's iteration cap
+    /// (and, for the cap-lifted run, its class cap), mirroring the Guide
+    /// registration's "unguided-at-4B" comparison.
+    const DEFAULT_REF_MULT: usize = 4;
+    /// Per-KERNEL wall-clock ceiling shared by the two generous runs. It is
+    /// a harness bound, not a metric: a generous run it cuts reports
+    /// `Timeout` from the loop, the row's loss against that run is `NA`,
+    /// and the row is listed under "loss unmeasured" — never skipped.
+    const DEFAULT_KERNEL_CEILING_S: u64 = 1200;
+
+    fn env_required(var: &str) -> String {
+        std::env::var(var).unwrap_or_else(|e| panic!("{var} must be set ({e})"))
+    }
+
+    /// Inverse of the dumpers' `dump_arena` (cell_grid.rs tests /
+    /// pixelflow-graphics/tests/production_glyph_arena_dump.rs): replays
+    /// reachable nodes in original id order through the public `push_*`
+    /// API, which never hash-conses, so the rebuilt arena has exactly the
+    /// dumped node multiset and `reachable_count` is preserved. Buffer
+    /// identities are re-minted per distinct dumped ordinal, preserving the
+    /// equality structure (two slots naming one buffer still share an
+    /// identity) without depending on the dumping process's counter.
+    fn load_arena(path: &Path) -> (String, ExprArena, ExprId) {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("# pixelflow arena dump v1"),
+            "{}: bad header",
+            path.display()
+        );
+        let mut name = None;
+        let mut arena = ExprArena::new();
+        let mut idents: Vec<BufferIdentity> = Vec::new();
+        let mut root = None;
+        let mut next_id: u32 = 0;
+        let mut buf_count: u16 = 0;
+        let op = |s: &str| -> OpKind {
+            OpKind::all()
+                .find(|k| format!("{k:?}") == s)
+                .unwrap_or_else(|| panic!("{}: unknown OpKind {s:?}", path.display()))
+        };
+        let id = |s: &str| -> ExprId {
+            ExprId(
+                s.parse()
+                    .unwrap_or_else(|e| panic!("{}: bad id {s:?}: {e}", path.display())),
+            )
+        };
+        for line in lines {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let pushed = match f.as_slice() {
+                ["name", n] => {
+                    name = Some((*n).to_string());
+                    continue;
+                }
+                ["buf", ord, w, h] => {
+                    let ord: usize = ord.parse().expect("buf ordinal");
+                    while idents.len() <= ord {
+                        idents.push(BufferIdentity::mint());
+                    }
+                    let slot = arena.declare_buffer(BufferDecl {
+                        id: idents[ord],
+                        width: w.parse().expect("buf width"),
+                        height: h.parse().expect("buf height"),
+                    });
+                    assert_eq!(
+                        slot.0,
+                        buf_count,
+                        "{}: buffer slot order drifted",
+                        path.display()
+                    );
+                    buf_count += 1;
+                    continue;
+                }
+                ["root", r] => {
+                    root = Some(id(r));
+                    continue;
+                }
+                ["V", i] => arena.push_var(i.parse().expect("var index")),
+                ["C", bits] => arena.push_const(f32::from_bits(bits.parse().expect("const bits"))),
+                ["B", slot] => arena.push_buffer(pixelflow_ir::arena::BufferId(
+                    slot.parse().expect("buffer slot"),
+                )),
+                ["U", k, a] => arena.push_unary(op(k), id(a)),
+                ["Bi", k, a, b] => arena.push_binary(op(k), id(a), id(b)),
+                ["T", k, a, b, c] => arena.push_ternary(op(k), id(a), id(b), id(c)),
+                other => panic!("{}: unparseable line {other:?}", path.display()),
+            };
+            assert_eq!(
+                pushed,
+                ExprId(next_id),
+                "{}: replay drifted from dumped ids",
+                path.display()
+            );
+            next_id += 1;
+        }
+        let name = name.unwrap_or_else(|| panic!("{}: no name line", path.display()));
+        let root = root.unwrap_or_else(|| panic!("{}: no root line", path.display()));
+        (name, arena, root)
+    }
+
+    /// Latency-prior cost of the arena the JIT would actually execute: the
+    /// per-op table summed over every reachable operation once (DAG cost;
+    /// leaves are free, as in `CostModel::node_op_cost`). This is the
+    /// quality metric — NOT `ExtractedDAG::total_cost`, which adds a
+    /// 1,000,000 `CYCLE_COST` penalty per cycle-breaking pick and so does
+    /// not describe the emitted code.
+    fn arena_cost(arena: &ExprArena, root: ExprId, costs: &CostModel) -> usize {
+        let len = arena.nodes_raw().len();
+        let mut seen = vec![false; len];
+        let mut stack = vec![root];
+        let mut total = 0usize;
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut seen[id.0 as usize], true) {
+                continue;
+            }
+            let kind = match arena.node(id) {
+                ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Buffer(_) => None,
+                ExprNode::Unary(k, _)
+                | ExprNode::Binary(k, _, _)
+                | ExprNode::Ternary(k, _, _, _) => Some(*k),
+                other @ (ExprNode::Param(_) | ExprNode::Nary(..)) => {
+                    panic!("extracted arena contains {other:?}")
+                }
+            };
+            if let Some(k) = kind {
+                assert_ne!(k, OpKind::Dwrt, "Dwrt survived extraction");
+                total += costs.cost(k);
+            }
+            stack.extend(arena.children(id));
+        }
+        total
+    }
+
+    struct Run {
+        stop: SaturationStop,
+        iterations: usize,
+        total_unions: usize,
+        classes_after: usize,
+        applications: usize,
+        journal_unions: usize,
+        elapsed: Duration,
+        cost: usize,
+        dp_cost: usize,
+        extracted_nodes: usize,
+    }
+
+    impl Run {
+        /// The budget-independent trajectory signature: two runs of the same
+        /// arena that were never cut differently agree on all of these.
+        fn signature(&self) -> (usize, usize, usize, usize, usize) {
+            (
+                self.iterations,
+                self.total_unions,
+                self.classes_after,
+                self.applications,
+                self.cost,
+            )
+        }
+    }
+
+    /// The production sequence of `optimize_runtime_arena_uncached`
+    /// (`runtime.rs:106-137`) from the e-graph build onward, with the budget
+    /// as parameters so the same function runs the production tier and both
+    /// generous runs. `lower_dwrt_owned` (`:120`) and `config_for_node_count`
+    /// (`:126-127`) run once in the caller since they are budget-independent.
+    fn run(
+        arena: &ExprArena,
+        root: ExprId,
+        max_iterations: usize,
+        max_classes: usize,
+        timeout: Duration,
+    ) -> Run {
+        // Driven through `Optimizer` — the one entry point production itself
+        // uses since #1108 — with `Budget::Explicit` so the caps stay
+        // parameters, which this measurement varies between its production
+        // and generous regimes.
+        //
+        // The pre-#1108 version asserted `ExtractionPolicy::Static` here, to
+        // stop a stray `PIXELFLOW_NNUE_WEIGHTS` from silently changing what
+        // was being measured. `env_extraction_policy` no longer exists and
+        // production has no env-driven policy path, so there is nothing left
+        // to guard: `Optimizer::production()` IS the static latency prior.
+        let mut optimizer = Optimizer::production()
+            .budget(Budget::Explicit {
+                iterations: max_iterations,
+                classes: max_classes,
+                applications: None,
+            })
+            .hard_ceiling(timeout);
+
+        let mut egraph = optimizer.egraph();
+        let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
+        let root_class = arena_to_egraph(arena, root, &mut egraph, &mut memo)
+            .expect("production arena must be e-graph representable (no Param/Nary)");
+
+        let started = Instant::now();
+        let optimized = optimizer.run(&mut egraph, root_class, reachable_count(arena, root));
+        let elapsed = started.elapsed();
+
+        let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
+
+        let costs = CostModel::latency_prior();
+        // The Static arm's own DP (extraction.rs:59) re-run to read the
+        // total it computes and discards; same inputs, same answer. Kept as
+        // a raw column only — see `arena_cost` for why it is not the metric.
+        let dp_cost = extract_dag(&egraph, root_class, &costs).total_cost;
+
+        Run {
+            stop: optimized.stats.stop,
+            iterations: optimized.stats.iterations,
+            total_unions: optimized.stats.unions,
+            classes_after: optimized.stats.classes,
+            applications: optimized.stats.applications as usize,
+            journal_unions: egraph.provenance().union_count(),
+            elapsed,
+            cost: arena_cost(&extracted, extracted_root, &costs),
+            dp_cost,
+            extracted_nodes: reachable_count(&extracted, extracted_root),
+        }
+    }
+
+    fn tier_name(config: &SaturationConfig) -> &'static str {
+        match config.max_iterations {
+            20 => "blitz",
+            50 => "rapid",
+            100 => "classical",
+            other => panic!("unknown tier with max_iterations={other}"),
+        }
+    }
+
+    /// Production's cost over a generous run's, as a percentage. `None` when
+    /// the generous run was cut by the harness ceiling (nothing to compare
+    /// against) or when both costs are zero (the 1-node space glyph: 0/0 is
+    /// undefined, not 0%).
+    fn loss_pct(prod: &Run, generous: &Run) -> Option<f64> {
+        if generous.stop == SaturationStop::Timeout {
+            return None;
+        }
+        if generous.cost == 0 {
+            assert_eq!(
+                prod.cost, 0,
+                "generous run extracted cost 0 but production did not"
+            );
+            return None;
+        }
+        Some((prod.cost as f64 - generous.cost as f64) / generous.cost as f64 * 100.0)
+    }
+
+    fn fmt_opt(v: Option<f64>) -> String {
+        v.map_or_else(|| "NA".to_string(), |v| format!("{v:.2}"))
+    }
+
+    fn median(v: &[f64]) -> f64 {
+        assert!(!v.is_empty(), "median of nothing");
+        let mut v = v.to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        let n = v.len();
+        if n % 2 == 1 {
+            v[n / 2]
+        } else {
+            (v[n / 2 - 1] + v[n / 2]) / 2.0
+        }
+    }
+
+    fn percentile(v: &[f64], p: f64) -> f64 {
+        assert!(!v.is_empty(), "percentile of nothing");
+        let mut v = v.to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        let idx = ((v.len() - 1) as f64 * p).round() as usize;
+        v[idx]
+    }
+
+    /// `uptime`'s load averages, recorded so a run can be labelled quiet or
+    /// loaded. The 200ms production wall clock is the one budget whose
+    /// verdict depends on the host, so this is part of the measurement.
+    fn load_averages() -> String {
+        let out = std::process::Command::new("uptime")
+            .output()
+            .expect("uptime must be runnable to record host load");
+        assert!(out.status.success(), "uptime failed: {out:?}");
+        let text = String::from_utf8(out.stdout).expect("uptime output is utf-8");
+        let idx = text
+            .find("load average")
+            .unwrap_or_else(|| panic!("uptime output has no load average: {text:?}"));
+        text[idx..].trim().to_string()
+    }
+
+    #[test]
+    #[ignore = "measurement: PIXELFLOW_TELEMETRY_DIR=<dumps> PIXELFLOW_TELEMETRY_OUT=<tsv> cargo test -p pixelflow-search --release -- --ignored production_saturation_telemetry --nocapture --test-threads=1"]
+    fn production_saturation_telemetry() {
+        let dir = PathBuf::from(env_required(DIR_VAR));
+        let out_path = PathBuf::from(env_required(OUT_VAR));
+        let mult: usize = std::env::var(REF_MULT_VAR)
+            .map(|s| s.parse().expect("REF_MULT must be an integer"))
+            .unwrap_or(DEFAULT_REF_MULT);
+        let ceiling = Duration::from_secs(
+            std::env::var(KERNEL_CEILING_VAR)
+                .map(|s| s.parse().expect("KERNEL_CEILING_S must be an integer"))
+                .unwrap_or(DEFAULT_KERNEL_CEILING_S),
+        );
+        assert!(
+            std::env::var("PIXELFLOW_NNUE_WEIGHTS").is_err(),
+            "PIXELFLOW_NNUE_WEIGHTS is set; this measures the default production policy — unset it"
+        );
+
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+            .map(|e| e.expect("dir entry").path())
+            .filter(|p| p.extension().is_some_and(|x| x == "arena"))
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "no *.arena files in {}", dir.display());
+
+        let load_start = load_averages();
+        println!("host load at start: {load_start}");
+
+        let header = "name\tgroup\tnodes\ttier\tstop\tmachine_dependent\titers\tmax_iters\tclasses\tmax_classes\tapps\tunions\tjournal_unions\telapsed_ms\tcost\tdp_cost\text_nodes\
+                      \tref_stop\tref_iters\tref_classes\tref_apps\tref_elapsed_ms\tref_cost\tloss_vs_ref_pct\
+                      \tlifted_stop\tlifted_iters\tlifted_classes\tlifted_apps\tlifted_elapsed_ms\tlifted_cost\tloss_vs_lifted_pct\tcap_lift_changed\tanomaly";
+        let mut tsv = String::new();
+        writeln!(tsv, "{header}").expect("write");
+        println!("{header}");
+
+        struct Row {
+            name: String,
+            group: String,
+            stop: SaturationStop,
+            ref_stop: SaturationStop,
+            lifted_stop: SaturationStop,
+            loss_vs_ref: Option<f64>,
+            loss_vs_lifted: Option<f64>,
+            apps: usize,
+            anomaly: Option<String>,
+            fatal: bool,
+        }
+        let mut rows: Vec<Row> = Vec::new();
+
+        for path in &files {
+            let (name, raw_arena, raw_root) = load_arena(path);
+            let group = name.split(':').next().expect("group prefix").to_string();
+
+            // runtime.rs:120
+            let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(&raw_arena, raw_root)
+                .unwrap_or_else(|e| panic!("{name}: lower_dwrt failed: {e:?}"));
+            // runtime.rs:126-127
+            let node_count = reachable_count(&arena, root);
+            let config = crate::egraph::saturate::config_for_node_count(node_count);
+
+            let prod = run(
+                &arena,
+                root,
+                config.max_iterations,
+                config.max_classes,
+                config.hard_timeout,
+            );
+
+            // Two generous runs share one per-kernel ceiling: `refr` keeps
+            // production's class cap and lifts only the iterations and the
+            // clock (so its loss is the clock's bite alone); `lifted` lifts
+            // the class cap too (the whole budget's bite).
+            let ref_iters = config.max_iterations * mult;
+            let lifted_classes = config.max_classes * mult;
+            let refr = run(&arena, root, ref_iters, config.max_classes, ceiling);
+            let remaining = ceiling.saturating_sub(refr.elapsed);
+            let lifted = run(&arena, root, ref_iters, lifted_classes, remaining);
+
+            let loss_vs_ref = loss_pct(&prod, &refr);
+            let loss_vs_lifted = loss_pct(&prod, &lifted);
+            let cap_lift_changed = refr.signature() != lifted.signature();
+
+            let mut anomaly: Vec<String> = Vec::new();
+            let mut fatal = false;
+            let clock_did_not_decide = matches!(
+                prod.stop,
+                SaturationStop::Quiesced | SaturationStop::ClassCap
+            );
+            if clock_did_not_decide
+                && refr.stop != SaturationStop::Timeout
+                && prod.signature() != refr.signature()
+            {
+                // Production stopped on its own (no clock involved), so the
+                // same-cap run with more iterations and no clock must retrace
+                // it exactly. If it does not, the optimizer is
+                // nondeterministic and the row is not trustworthy.
+                fatal = true;
+                anomaly.push(format!(
+                    "production stopped {:?} but the same-cap generous run diverged: prod(iters={},unions={},classes={},apps={},cost={}) ref(iters={},unions={},classes={},apps={},cost={})",
+                    prod.stop,
+                    prod.iterations,
+                    prod.total_unions,
+                    prod.classes_after,
+                    prod.applications,
+                    prod.cost,
+                    refr.iterations,
+                    refr.total_unions,
+                    refr.classes_after,
+                    refr.applications,
+                    refr.cost
+                ));
+            }
+            if refr.stop == SaturationStop::Timeout {
+                anomaly.push(format!(
+                    "same-cap generous run cut by the {ceiling:?} harness ceiling after {} iterations: loss_vs_ref unmeasured",
+                    refr.iterations
+                ));
+            }
+            if lifted.stop == SaturationStop::Timeout {
+                anomaly.push(format!(
+                    "cap-lifted generous run cut by the harness ceiling ({remaining:?} left of {ceiling:?}) after {} iterations: loss_vs_lifted unmeasured",
+                    lifted.iterations
+                ));
+            }
+            if loss_vs_ref.is_some_and(|l| l < 0.0)
+                || loss_vs_lifted.is_some_and(|l| l < 0.0)
+                || (lifted.stop != SaturationStop::Timeout
+                    && refr.stop != SaturationStop::Timeout
+                    && refr.cost < lifted.cost)
+            {
+                anomaly.push(format!(
+                    "more saturation extracted WORSE: cost prod={} ref={} lifted={}",
+                    prod.cost, refr.cost, lifted.cost
+                ));
+            }
+            let anomaly = (!anomaly.is_empty()).then(|| anomaly.join("; "));
+
+            let line = format!(
+                "{name}\t{group}\t{node_count}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\
+                 \t{:?}\t{}\t{}\t{}\t{:.1}\t{}\t{}\
+                 \t{:?}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}",
+                tier_name(&config),
+                prod.stop,
+                prod.stop == SaturationStop::Timeout,
+                prod.iterations,
+                config.max_iterations,
+                prod.classes_after,
+                config.max_classes,
+                prod.applications,
+                prod.total_unions,
+                prod.journal_unions,
+                prod.elapsed.as_secs_f64() * 1e3,
+                prod.cost,
+                prod.dp_cost,
+                prod.extracted_nodes,
+                refr.stop,
+                refr.iterations,
+                refr.classes_after,
+                refr.applications,
+                refr.elapsed.as_secs_f64() * 1e3,
+                refr.cost,
+                fmt_opt(loss_vs_ref),
+                lifted.stop,
+                lifted.iterations,
+                lifted.classes_after,
+                lifted.applications,
+                lifted.elapsed.as_secs_f64() * 1e3,
+                lifted.cost,
+                fmt_opt(loss_vs_lifted),
+                cap_lift_changed,
+                anomaly.as_deref().unwrap_or("-"),
+            );
+            println!("{line}");
+            writeln!(tsv, "{line}").expect("write");
+            rows.push(Row {
+                name: name.clone(),
+                group,
+                stop: prod.stop,
+                ref_stop: refr.stop,
+                lifted_stop: lifted.stop,
+                loss_vs_ref,
+                loss_vs_lifted,
+                apps: prod.applications,
+                anomaly,
+                fatal,
+            });
+        }
+
+        assert_eq!(
+            rows.len(),
+            files.len(),
+            "every dumped kernel must produce a row"
+        );
+        std::fs::write(&out_path, &tsv)
+            .unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
+        let load_end = load_averages();
+        let meta_path = out_path.with_extension("meta");
+        std::fs::write(
+            &meta_path,
+            format!(
+                "kernels\t{}\nref_mult\t{mult}\nkernel_ceiling_s\t{}\nload_start\t{load_start}\nload_end\t{load_end}\n",
+                rows.len(),
+                ceiling.as_secs()
+            ),
+        )
+        .unwrap_or_else(|e| panic!("write {}: {e}", meta_path.display()));
+        println!("host load at end: {load_end}");
+
+        let mut groups: Vec<String> = rows.iter().map(|r| r.group.clone()).collect();
+        groups.sort();
+        groups.dedup();
+        groups.push("ALL".to_string());
+        println!(
+            "\n== summary (stop = SaturationResult::stop; ref = {mult}x iterations/same cap; lifted = {mult}x iterations/{mult}x cap; both without production's clock, under a {ceiling:?} per-kernel ceiling) =="
+        );
+        println!(
+            "group\tn\tquiesced\titer_ceiling\tclass_cap\ttimeout\tref_class_cap\tlifted_class_cap\tn_loss_ref\tmed_loss_ref%\tp90_loss_ref%\tmax_loss_ref%\tn_loss_lifted\tmed_loss_lifted%\tp90_loss_lifted%\tmax_loss_lifted%\tmed_apps\tmax_apps"
+        );
+        for g in &groups {
+            let sel: Vec<&Row> = rows
+                .iter()
+                .filter(|r| g == "ALL" || &r.group == g)
+                .collect();
+            let count = |s: SaturationStop| sel.iter().filter(|r| r.stop == s).count();
+            let lr: Vec<f64> = sel.iter().filter_map(|r| r.loss_vs_ref).collect();
+            let ll: Vec<f64> = sel.iter().filter_map(|r| r.loss_vs_lifted).collect();
+            let apps: Vec<f64> = sel.iter().map(|r| r.apps as f64).collect();
+            let q = |v: &[f64]| {
+                if v.is_empty() {
+                    "NA\tNA\tNA".to_string()
+                } else {
+                    format!(
+                        "{:.2}\t{:.2}\t{:.2}",
+                        median(v),
+                        percentile(v, 0.9),
+                        percentile(v, 1.0)
+                    )
+                }
+            };
+            println!(
+                "{g}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}",
+                sel.len(),
+                count(SaturationStop::Quiesced),
+                count(SaturationStop::IterationCeiling),
+                count(SaturationStop::ClassCap),
+                count(SaturationStop::Timeout),
+                sel.iter()
+                    .filter(|r| r.ref_stop == SaturationStop::ClassCap)
+                    .count(),
+                sel.iter()
+                    .filter(|r| r.lifted_stop == SaturationStop::ClassCap)
+                    .count(),
+                lr.len(),
+                q(&lr),
+                ll.len(),
+                q(&ll),
+                median(&apps),
+                percentile(&apps, 1.0),
+            );
+        }
+        let worse: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.anomaly.as_deref().is_some_and(|a| a.contains("WORSE")))
+            .collect();
+        println!(
+            "\nnon-fatal anomalies (more saturation extracted worse): {}",
+            worse.len()
+        );
+        let ceiling_hits: Vec<&Row> = rows
+            .iter()
+            .filter(|r| {
+                r.ref_stop == SaturationStop::Timeout || r.lifted_stop == SaturationStop::Timeout
+            })
+            .collect();
+        println!(
+            "loss unmeasured (a generous run hit the {ceiling:?} per-kernel harness ceiling): {}{}",
+            ceiling_hits.len(),
+            if ceiling_hits.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " — {}",
+                    ceiling_hits
+                        .iter()
+                        .map(|r| r.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        );
+
+        let fatal: Vec<String> = rows
+            .iter()
+            .filter(|r| r.fatal)
+            .map(|r| format!("{}: {}", r.name, r.anomaly.as_deref().unwrap_or("?")))
+            .collect();
+        assert!(
+            fatal.is_empty(),
+            "table complete ({} rows, written to {}) but {} row(s) are not trustworthy:\n{}",
+            rows.len(),
+            out_path.display(),
+            fatal.len(),
+            fatal.join("\n")
+        );
+    }
+}
+
+#[cfg(test)]
 #[path = "runtime/cap_break_ab.rs"]
 mod cap_break_ab;
