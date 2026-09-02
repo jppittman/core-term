@@ -176,3 +176,10 @@ path = "src/bin/gen_sh_corpus.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "gen_bezier_corpus"
+path = "src/bin/gen_bezier_corpus.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
