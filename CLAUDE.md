@@ -351,6 +351,7 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 - **Complex Manifold trait bounds**: Add explicit type annotations, break into named intermediates.
 - **"method not found" on Manifold**: Import `use pixelflow_core::Manifold;` and extension traits.
 - **Why did the e-graph pick that?**: Build with `--features saturation-telemetry` (e.g. `cargo run -p core-term --features saturation-telemetry`) and every production saturation run — macro-tier `kernel!` expansions and runtime-tier `Lattice::bake`/glyph bakes alike — appends a JSONL record (budget, stop reason, cost, wall clock) to `$PIXELFLOW_SATURATION_TELEMETRY` if set, else stderr; see `pixelflow-search/src/telemetry.rs`.
+- **Need rule provenance (origins, union journal, derivation ancestry, the hindsight labeler)?**: build `pixelflow-search` with `--features provenance-journal` (default OFF; `pixelflow-pipeline` and `pixelflow-search`'s own tests enable it already) — without it, `Provenance::origins`/`applications`/`unions` and friends don't exist as types, they don't just return empty; `EGraph::application_count()` (the saturation budget's denominator) stays available either way.
 
 ## Execution Notes
 
