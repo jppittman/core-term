@@ -37,6 +37,24 @@
 //! quality is close to this control's, the linear model learned little
 //! beyond a per-rule base rate; a real gap is evidence the candidate-local
 //! features (§4 of the design doc) earned their place.
+//!
+//! # The return-to-go head: [`LinearReturnGuide`]
+//!
+//! (`docs/plans/2026-09-01-guide-return-to-go.md` §3.3/§8.) The same linear
+//! *form* — one shared private [`LinearWeights`] — deployed a second time
+//! against a different training target: `pixelflow-pipeline`'s
+//! `train_guide_r2g` regresses the hindsight return-to-go (expression-
+//! centered log-regret) instead of the strict load-bearing bit, so its
+//! output is a predicted *cost*, not a probability. [`LinearWeights`] is the
+//! formula the two heads share (one definition of "what this checkpoint's
+//! weights compute", never restated); [`LinearCandidateGuide`] and
+//! [`LinearReturnGuide`] differ only in what their checkpoint's `objective`
+//! field says and in the *sign* they hand back to
+//! [`super::SaturationGuide::score_candidates`] — see [`LinearReturnGuide`]'s
+//! own doc for why lower predicted return outranks higher. A checkpoint
+//! written for one head is refused by the other's `load` (cross-loading a
+//! regression head as a logit head, or vice versa, is a loud error, never a
+//! silently reversed move ordering).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -149,17 +167,12 @@ fn op_features(
         .collect()
 }
 
-/// Deploys `train_guide`'s cold-start linear model as a [`SaturationGuide`]
-/// — see the module doc for why this must reproduce `Model::logit` exactly
-/// rather than approximate it.
-///
-/// Scores are raw logits (no sigmoid): [`SaturationGuide::score_candidates`]
-/// only needs a move-ordering rank, sigmoid is monotonic and so preserves
-/// it, and skipping it avoids a transcendental per candidate. The mandatory
-/// skew test compares this module's logit directly against
-/// `train_guide::Model::logit`, not against the trainer's reported
-/// (post-sigmoid) DEV probabilities.
-pub struct LinearCandidateGuide {
+/// The linear scoring formula shared by [`LinearCandidateGuide`] (a strict-
+/// bit logit) and [`LinearReturnGuide`] (a predicted return-to-go) — one
+/// weight layout, one forward pass, loaded from one checkpoint shape. See
+/// the module doc's "The return-to-go head" section for why these two heads
+/// share this type instead of each restating it.
+struct LinearWeights {
     bias: f32,
     w_rule: Vec<f32>,
     w_op: Vec<f32>,
@@ -175,25 +188,21 @@ pub struct LinearCandidateGuide {
     op_index: BTreeMap<String, usize>,
 }
 
-impl LinearCandidateGuide {
-    /// Load a checkpoint written by `pixelflow-pipeline`'s `train_guide`
-    /// (`GuideCheckpoint::write`). Fails loud (`Err`, never a default) on a
-    /// missing file, malformed JSON, or a checkpoint missing a field this
-    /// model needs — a Guide silently scoring with an all-zero weight it
-    /// couldn't find would corrupt saturation's move ordering without
-    /// saying so.
-    pub fn load(path: &Path) -> Result<Self, CheckpointError> {
-        let p = path.display().to_string();
-        let v = read_json(path)?;
-
-        let bias = as_f32(&v, &p, "bias")?;
-        let w_rule = as_f32_vec(&v, &p, "w_rule")?;
-        let w_op = as_f32_vec(&v, &p, "w_op")?;
-        let w_budget = as_f32(&v, &p, "w_budget")?;
-        let w_match_class = as_f32(&v, &p, "w_match_class")?;
-        let w_neighborhood = as_f32(&v, &p, "w_neighborhood")?;
-        let w_expr_size = as_f32(&v, &p, "w_expr_size")?;
-        let op_names = as_string_vec(&v, &p, "op_names")?;
+impl LinearWeights {
+    /// Parse the weight fields common to every checkpoint shape this module
+    /// loads, from an already-parsed [`Value`]. Fails loud (`Err`, never a
+    /// default) on a missing field or a malformed `op_names`/`w_op` pair —
+    /// a Guide silently scoring with an all-zero weight it couldn't find
+    /// would corrupt saturation's move ordering without saying so.
+    fn load(v: &Value, p: &str) -> Result<Self, CheckpointError> {
+        let bias = as_f32(v, p, "bias")?;
+        let w_rule = as_f32_vec(v, p, "w_rule")?;
+        let w_op = as_f32_vec(v, p, "w_op")?;
+        let w_budget = as_f32(v, p, "w_budget")?;
+        let w_match_class = as_f32(v, p, "w_match_class")?;
+        let w_neighborhood = as_f32(v, p, "w_neighborhood")?;
+        let w_expr_size = as_f32(v, p, "w_expr_size")?;
+        let op_names = as_string_vec(v, p, "op_names")?;
 
         if op_names.len() != w_op.len() {
             return Err(CheckpointError(format!(
@@ -224,13 +233,15 @@ impl LinearCandidateGuide {
 
     /// One candidate's logit — `train_guide::Model::logit`'s exact formula,
     /// the single computation the mandatory skew test checks bit-exactness
-    /// against.
+    /// against. Shared verbatim by both the strict-bit and return-to-go
+    /// heads: the *formula* never differed between them, only the label it
+    /// was trained to predict.
     ///
     /// # Why every step goes through `black_box`
     ///
-    /// This function and `train_guide::Model::logit` are two independent
-    /// implementations of the identical formula, by design (see this
-    /// module's doc — a shared helper would make the skew test check
+    /// This function and `train_guide`'s trainer-side `Model::logit` are two
+    /// independent implementations of the identical formula, by design (see
+    /// this module's doc — a shared helper would make the skew test check
     /// nothing). Written the obvious way, both agree bit-for-bit in an
     /// unoptimized build but can disagree by a handful of ULPs under
     /// release optimization: LLVM is free to fuse a `w*x + acc` pattern
@@ -248,7 +259,7 @@ impl LinearCandidateGuide {
     fn logit(&self, c: &CandidateSummary) -> f32 {
         let w_rule = *self.w_rule.get(c.rule_idx).unwrap_or_else(|| {
             panic!(
-                "LinearCandidateGuide: rule_idx {} has no entry in this checkpoint's \
+                "LinearWeights: rule_idx {} has no entry in this checkpoint's \
                  w_rule table ({} entries) — the checkpoint was trained against a \
                  different, smaller rule set than this candidate came from",
                 c.rule_idx,
@@ -272,9 +283,136 @@ impl LinearCandidateGuide {
     }
 }
 
+/// Deploys `train_guide`'s cold-start linear model as a [`SaturationGuide`]
+/// — see the module doc for why this must reproduce `Model::logit` exactly
+/// rather than approximate it.
+///
+/// Scores are raw logits (no sigmoid): [`SaturationGuide::score_candidates`]
+/// only needs a move-ordering rank, sigmoid is monotonic and so preserves
+/// it, and skipping it avoids a transcendental per candidate. The mandatory
+/// skew test compares this module's logit directly against
+/// `train_guide::Model::logit`, not against the trainer's reported
+/// (post-sigmoid) DEV probabilities.
+pub struct LinearCandidateGuide {
+    weights: LinearWeights,
+}
+
+impl LinearCandidateGuide {
+    /// Load a checkpoint written by `pixelflow-pipeline`'s `train_guide`
+    /// (`GuideCheckpoint::write`). Refuses (loudly) a checkpoint carrying an
+    /// `"objective"` field — that marks a [`LinearReturnGuide`] checkpoint
+    /// (`train_guide_r2g`'s output), whose weights predict a cost, not a
+    /// strict-bit logit; loading it here would silently reverse the move
+    /// ordering `score_candidates` produces, so it is refused instead. A
+    /// Round-1-era checkpoint has no `objective` field and loads exactly as
+    /// before.
+    pub fn load(path: &Path) -> Result<Self, CheckpointError> {
+        let p = path.display().to_string();
+        let v = read_json(path)?;
+        if let Some(obj) = v.get("objective") {
+            return Err(CheckpointError(format!(
+                "checkpoint {p}: has an \"objective\" field ({obj}) — this is a \
+                 LinearReturnGuide (return-to-go regression) checkpoint, not a strict-bit \
+                 classifier checkpoint; load it with LinearReturnGuide::load instead"
+            )));
+        }
+        Ok(Self {
+            weights: LinearWeights::load(&v, &p)?,
+        })
+    }
+}
+
 impl SaturationGuide for LinearCandidateGuide {
     fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
-        candidates.iter().map(|c| self.logit(c)).collect()
+        candidates.iter().map(|c| self.weights.logit(c)).collect()
+    }
+}
+
+/// Deploys `train_guide_r2g`'s linear return-to-go regressor as a
+/// [`SaturationGuide`] (`docs/plans/2026-09-01-guide-return-to-go.md` §3.3) —
+/// same [`LinearWeights`] formula as [`LinearCandidateGuide`], trained
+/// against a different target (expression-centered log-regret rather than
+/// the strict load-bearing bit), so its forward pass is a **predicted
+/// cost**, not a probability.
+///
+/// # The sign, spelled out
+///
+/// [`SaturationGuide::score_candidates`] is a move-ordering rank: the guided
+/// loop applies candidates in *descending* score order. A predicted return
+/// is a predicted **regret** (§1.2: `R = ln(cost/best)`, 0 = optimal, more
+/// positive = worse) — the candidate the loop should fire *first* is the
+/// one whose predicted return is **lowest**, not highest. `score_candidates`
+/// therefore returns `-predicted_return`, so "highest score" and "lowest
+/// predicted regret" agree: this is the one deliberate difference from
+/// [`LinearCandidateGuide`], whose logit is already in "bigger is better"
+/// orientation and needs no such flip.
+pub struct LinearReturnGuide {
+    weights: LinearWeights,
+    /// The checkpoint's own `"objective"` string (`"return-mse"` or
+    /// `"return-rank"`) — kept for callers that want to report or assert on
+    /// which loss trained the weights they loaded.
+    objective: String,
+}
+
+impl LinearReturnGuide {
+    /// Load a checkpoint written by `pixelflow-pipeline`'s `train_guide_r2g`.
+    /// Requires an `"objective"` field of `"return-mse"` or `"return-rank"`
+    /// — a checkpoint missing it (a [`LinearCandidateGuide`] strict-bit
+    /// checkpoint) or naming anything else is refused loudly rather than
+    /// loaded as if it were a return regressor.
+    pub fn load(path: &Path) -> Result<Self, CheckpointError> {
+        let p = path.display().to_string();
+        let v = read_json(path)?;
+        let objective = v.get("objective").and_then(Value::as_str).ok_or_else(|| {
+            CheckpointError(format!(
+                "checkpoint {p}: missing \"objective\" field — LinearReturnGuide requires a \
+                 return-mse or return-rank checkpoint (train_guide_r2g's output); a strict-bit \
+                 LinearCandidateGuide checkpoint has no such field and must be loaded with \
+                 LinearCandidateGuide::load instead"
+            ))
+        })?;
+        if objective != "return-mse" && objective != "return-rank" {
+            return Err(CheckpointError(format!(
+                "checkpoint {p}: objective {objective:?} is neither \"return-mse\" nor \
+                 \"return-rank\" — refusing to load an unrecognized objective as a \
+                 LinearReturnGuide"
+            )));
+        }
+        let objective = objective.to_string();
+        Ok(Self {
+            weights: LinearWeights::load(&v, &p)?,
+            objective,
+        })
+    }
+
+    /// The checkpoint's own `"objective"` string.
+    #[must_use]
+    pub fn objective(&self) -> &str {
+        &self.objective
+    }
+
+    /// One candidate's predicted return-to-go (§1.2's `R`, expression-
+    /// centered if the checkpoint was trained on the centered target) —
+    /// `LinearWeights::logit` under a name that matches what this head
+    /// predicts. Exposed (not just `score_candidates`'s negated form) so the
+    /// mandatory skew test can compare this value directly against
+    /// `train_guide_r2g`'s own forward pass, the same discipline
+    /// [`LinearCandidateGuide`]'s skew test applies to its logit.
+    #[must_use]
+    pub fn predicted_return(&self, c: &CandidateSummary) -> f32 {
+        self.weights.logit(c)
+    }
+}
+
+impl SaturationGuide for LinearReturnGuide {
+    fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
+        // Lower predicted return = higher priority: negate so "descending
+        // score" (what GuidedSaturation sorts by) means "ascending predicted
+        // regret" — see this type's doc, "The sign, spelled out".
+        candidates
+            .iter()
+            .map(|c| -self.predicted_return(c))
+            .collect()
     }
 }
 
@@ -467,6 +605,171 @@ mod tests {
         let scores = guide.score_candidates(&[candidate(0, vec![]), candidate(2, vec![])]);
         assert!((scores[0] - 0.02).abs() < 1e-9);
         assert!((scores[1] - 0.15).abs() < 1e-9);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── LinearReturnGuide ────────────────────────────────────────────────
+
+    fn write_r2g_checkpoint(dir: &Path, objective: &str) -> std::path::PathBuf {
+        let path = dir.join("r2g_checkpoint.json");
+        let json = serde_json::json!({
+            "objective": objective,
+            "bias": 0.1,
+            "w_rule": [1.0, -1.0, 0.0],
+            "w_op": [0.5, -0.25],
+            "w_budget": 2.0,
+            "w_match_class": 0.3,
+            "w_neighborhood": -0.2,
+            "w_expr_size": 0.05,
+            "op_names": ["Add", "Mul"],
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn linear_return_guide_loads_a_return_mse_checkpoint_and_reports_its_objective() {
+        let dir = std::env::temp_dir().join(format!("r2g_guide_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_r2g_checkpoint(&dir, "return-mse");
+
+        let guide = LinearReturnGuide::load(&path).unwrap();
+        assert_eq!(guide.objective(), "return-mse");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn linear_return_guide_loads_a_return_rank_checkpoint() {
+        let dir = std::env::temp_dir().join(format!("r2g_guide_rank_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_r2g_checkpoint(&dir, "return-rank");
+
+        let guide = LinearReturnGuide::load(&path).unwrap();
+        assert_eq!(guide.objective(), "return-rank");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn linear_return_guide_predicted_return_matches_the_shared_linear_weights_formula() {
+        let dir = std::env::temp_dir().join(format!("r2g_guide_formula_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_r2g_checkpoint(&dir, "return-mse");
+
+        let guide = LinearReturnGuide::load(&path).unwrap();
+        let c = candidate(0, vec![OpKind::Add, OpKind::Add, OpKind::Mul]);
+        let predicted = guide.predicted_return(&c);
+
+        // Same formula `LinearCandidateGuide`'s hand-computed-logit test
+        // checks — the whole point of sharing `LinearWeights`.
+        let expected = 0.1
+            + 1.0
+            + 2.0 * 0.4
+            + 0.3 * (4.0f32).ln()
+            + (-0.2) * (4.0f32).ln()
+            + 0.05 * (11.0f32).ln()
+            + 0.5 * (3.0f32).ln()
+            + (-0.25) * (2.0f32).ln();
+        assert!(
+            (predicted - expected).abs() < 1e-5,
+            "got {predicted}, expected {expected}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn linear_return_guide_score_is_the_negation_of_predicted_return() {
+        let dir = std::env::temp_dir().join(format!("r2g_guide_sign_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_r2g_checkpoint(&dir, "return-mse");
+
+        let guide = LinearReturnGuide::load(&path).unwrap();
+        let a = candidate(0, vec![OpKind::Add]);
+        let b = candidate(1, vec![OpKind::Mul]);
+        let candidates = vec![a, b];
+
+        let predicted: Vec<f32> = candidates
+            .iter()
+            .map(|c| guide.predicted_return(c))
+            .collect();
+        let scores = guide.score_candidates(&candidates);
+
+        for (p, s) in predicted.iter().zip(scores.iter()) {
+            assert!((s - (-p)).abs() < 1e-9, "score must be -predicted_return");
+        }
+        // Lower predicted return -> higher score -> fires first under
+        // GuidedSaturation's descending-score sort.
+        if predicted[0] < predicted[1] {
+            assert!(scores[0] > scores[1]);
+        } else if predicted[0] > predicted[1] {
+            assert!(scores[0] < scores[1]);
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn linear_return_guide_refuses_a_checkpoint_with_no_objective_field() {
+        let dir = std::env::temp_dir().join(format!("r2g_guide_no_obj_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A LinearCandidateGuide-shaped checkpoint (no "objective").
+        let path = write_checkpoint(&dir);
+
+        let result = LinearReturnGuide::load(&path);
+        assert!(
+            result.is_err(),
+            "a checkpoint with no objective field must not load as a LinearReturnGuide"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn linear_return_guide_refuses_an_unrecognized_objective() {
+        let dir = std::env::temp_dir().join(format!("r2g_guide_bad_obj_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_r2g_checkpoint(&dir, "strict-bce");
+
+        let result = LinearReturnGuide::load(&path);
+        assert!(
+            result.is_err(),
+            "an objective other than return-mse/return-rank must be refused"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn linear_candidate_guide_refuses_a_return_checkpoint_cross_loaded_as_a_strict_bit_guide() {
+        let dir = std::env::temp_dir().join(format!("cross_load_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_r2g_checkpoint(&dir, "return-mse");
+
+        let result = LinearCandidateGuide::load(&path);
+        assert!(
+            result.is_err(),
+            "a checkpoint carrying an objective field must be refused by \
+             LinearCandidateGuide::load — cross-loading a regression head as a logit head \
+             must be a loud error, never a silently reversed ordering"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn linear_candidate_guide_still_loads_a_frozen_round1_checkpoint_with_no_objective_field() {
+        // The frozen strict-v1 checkpoint predates the `objective` field
+        // entirely — this pins that LinearCandidateGuide::load keeps
+        // accepting it exactly as before this module gained a return head.
+        let dir = std::env::temp_dir().join(format!("frozen_v1_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_checkpoint(&dir);
+
+        let guide = LinearCandidateGuide::load(&path);
+        assert!(guide.is_ok());
 
         std::fs::remove_dir_all(&dir).ok();
     }
