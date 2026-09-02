@@ -1,5 +1,13 @@
 # Oracle-filtered anytime budget curves, recalibrated: curves have shape; rule-granularity filtering barely moves them (2026-09-01)
 
+> **SUPERSEDED (2026-09-02).** Every `cost` and `regret_pct` number below is the
+> extraction DP's **tree** cost standing in for the emitted kernel's cost (#1117). The
+> corrected run is
+> [docs/results/2026-09-02-oracle-filtered-budget-curves.md](2026-09-02-oracle-filtered-budget-curves.md),
+> which supersedes this file. The load-bearing conclusion (Finding 2) **survives** the
+> correction and is strengthened by it — the 94.9% -> 85.4% gap quoted below is itself a
+> tree-cost artifact and is 0.00 points on DAG cost. Nothing below has been edited.
+
 > **Predates the 2026-09-02 review fixes; a re-run is required.** The oracle rule set is
 > now derived from the minimum-cost checkpoint's extraction rather than the final one
 > (`extract_dag` is non-monotonic along a curve, and 21 of 225 unguided curves in the
