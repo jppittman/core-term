@@ -14,6 +14,7 @@ row at a time, and so a future run knows exactly what to commit.
 |---|---|---|
 | `D2a` / `D3` per-kernel JSONL | extraction overheads, gate counts, floor restatements, mechanism cross-reference, flip analysis | written under `pixelflow-pipeline/data/` (gitignored) on the run machine; those worktrees no longer exist |
 | The Round-2a and Round-3 checkpoints | Appendix B's `inspect_flip` recipe, which requires `--r2a-weights` and `--r3-weights` | never committed; the journal records weight *identities* and former paths, not the model bytes |
+| `inspect_flip` itself | Appendix B's recipe cannot be run even with the checkpoints | the tool inspected the extraction head, and #1093 deleted that program — `ExprNnue`, `IncrementalExtractor` and `EGraph::saturate_with_limit` are all gone, so the example no longer compiles and was removed rather than left broken. Recovering §5.4's flip analysis means resurrecting the head, not just the weights. |
 | Source revision `b706cb67-dirty` | the §5.1 learning curve and the best-calibration checkpoint | the base revision is absent from `git rev-list --all` and the uncommitted patch was never stored; a diff hash identifies a patch, it cannot reconstruct one |
 | The Round-2b journal line | every `R2B` figure in §5.3 | that worktree was discarded before the line was committed |
 

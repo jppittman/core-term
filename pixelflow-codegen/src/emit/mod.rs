@@ -1250,6 +1250,72 @@ fn plan_collapse_hoist(
     })
 }
 
+/// A schedule split by scope: the innermost body, plus one region per binder
+/// it can be lifted out of.
+///
+/// This is the loop nest as data. `regions` runs outermost first, so
+/// `regions[0]` is what happens once per call and the last region is what
+/// happens once per iteration of the next-to-innermost binder; `body` is what
+/// happens at every sample. Each region's `roots` are the values it computes
+/// for the regions inside it, which the emitter parks in hoist slots.
+struct ScopedSchedule {
+    /// One per binder, outermost first. A binder nothing can be lifted out of
+    /// still gets a region; it is simply empty.
+    regions: Vec<ScopeRegion>,
+    /// The innermost region: evaluated at every sample.
+    body: Vec<regalloc::Def>,
+}
+
+/// One scope of a [`ScopedSchedule`].
+struct ScopeRegion {
+    /// Values this region computes for the ones inside it.
+    roots: Vec<regalloc::ValueId>,
+    /// What it computes, in topological order.
+    schedule: Vec<regalloc::Def>,
+}
+
+/// Split a schedule by scope over `binders`, given innermost first.
+///
+/// One rule, applied once per binder from the outside in: a value is lifted
+/// out of a binder when its variance does not name that binder or any binder
+/// inside it. That is loop-invariant code motion, hoisting out of a
+/// reduction, and constant folding — the same question asked at each level,
+/// which is why this is a loop over binders rather than a tier per scope.
+///
+/// The lifted roots of an outer region are leaves to every region inside it,
+/// so each level sees a strictly smaller schedule and the last remainder is
+/// the per-sample body.
+fn partition_by_scope(
+    schedule: Vec<regalloc::Def>,
+    variance: &[pixelflow_ir::variance::Variance],
+    binders: &[u8],
+) -> ScopedSchedule {
+    let mut remaining = schedule;
+    let mut regions = Vec::with_capacity(binders.len());
+    // Outermost first: the scope outside binder `j` cannot depend on `j` or
+    // on anything bound inside it.
+    for j in (0..binders.len()).rev() {
+        let mask = binders[..=j].iter().fold(0u8, |m, b| m | (1 << b));
+        match plan_collapse_hoist(&remaining, variance, mask) {
+            Some(plan) => {
+                remaining = plan.body;
+                regions.push(ScopeRegion {
+                    roots: plan.roots,
+                    schedule: plan.prologue,
+                });
+            }
+            None => regions.push(ScopeRegion {
+                roots: Vec::new(),
+                schedule: Vec::new(),
+            }),
+        }
+    }
+    ScopedSchedule {
+        regions,
+        body: remaining,
+    }
+}
+
 /// The spill-frame size, in bytes, a schedule will need — without emitting it.
 ///
 /// [`regalloc::RegisterAllocator`] implementations and [`FrameLayout`] are
@@ -1870,22 +1936,19 @@ fn compile_via_backend<B: IsaBackend>(
 ) -> Result<CompileResult, CompileError> {
     let file = backend.register_file();
     let variance = schedule_variance(&schedule);
-    const X_SCOPE: u8 = 1 << 0;
-    const XY_SCOPE: u8 = (1 << 0) | (1 << 1);
 
-    // First lift values invariant across the whole X/Y loop nest. Then treat
-    // those parked roots as leaves while lifting Y-dependent, X-invariant
-    // values into the per-row prologue.
-    let frame_plan = plan_collapse_hoist(&schedule, &variance, XY_SCOPE);
-    let (frame_roots, frame_prologue, row_input) = match frame_plan {
-        Some(plan) => (plan.roots, plan.prologue, plan.body),
-        None => (Vec::new(), Vec::new(), schedule),
-    };
-    let row_plan = plan_collapse_hoist(&row_input, &variance, X_SCOPE);
-    let (row_roots, row_prologue, body_schedule) = match row_plan {
-        Some(plan) => (plan.roots, plan.prologue, plan.body),
-        None => (Vec::new(), Vec::new(), row_input),
-    };
+    // The collapse ABI's nest, innermost first: X steps by the batch width
+    // and resets per row, Y steps by one. Z and W are per-call in this ABI,
+    // so a value invariant in X and Y is invariant for the whole call.
+    // `partition_by_scope` asks one question per binder; the two regions it
+    // returns are the per-call and per-row prologues the scaffold frames.
+    const COLLAPSE_BINDERS: [u8; 2] = [0, 1];
+    let scoped = partition_by_scope(schedule, &variance, &COLLAPSE_BINDERS);
+    let [frame_region, row_region] = <[ScopeRegion; 2]>::try_from(scoped.regions)
+        .unwrap_or_else(|_| unreachable!("one region per collapse binder"));
+    let body_schedule = scoped.body;
+    let (frame_roots, frame_prologue) = (frame_region.roots, frame_region.schedule);
+    let (row_roots, row_prologue) = (row_region.roots, row_region.schedule);
 
     if frame_roots.is_empty() && row_roots.is_empty() {
         // Nothing loop-invariant worth hoisting: the plain loop nest.

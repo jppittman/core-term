@@ -50,7 +50,7 @@ Not for persistence. It has four callers and only one writes a file:
 | `pixelflow-pipeline/src/training/corpus.rs` | **yes** — a real corpus |
 | `pixelflow-codegen/src/jit_cache.rs` | no — `OnceLock<HashMap>` |
 | `pixelflow-search/src/runtime.rs` | no — `OnceLock<HashMap>` |
-| `pixelflow-pipeline/src/training/unified_backward.rs` | no — in-memory edge record |
+| `pixelflow-pipeline/src/training/unified_backward.rs` (deleted 2026-09-01 with the extraction-head program) | no — in-memory edge record |
 
 Three of four need an injective byte per op within one process and have no
 opinion about which byte. `marshal` is therefore an **encapsulation boundary**,
@@ -125,8 +125,9 @@ operation. A stale corpus is cheap to replace and expensive to misread.
 
 ## 5. Consequences to keep in mind
 
-- **Renumbering is allowed** and requires bumping `corpus::VERSION` and the
-  `ExprNnue` magic. Nothing detects it for you; that is the accepted trade.
+- **Renumbering is allowed** and requires bumping `corpus::VERSION` (and, until
+  its 2026-09-01 deletion, the `ExprNnue` weights magic — no weight file survives
+  in the tree now). Nothing detects it for you; that is the accepted trade.
 - **The numbering must not be pinned by a test.** A test asserting `Add == 2`
   recreates §3 by making an internal detail into a promise consumers can build
   on.

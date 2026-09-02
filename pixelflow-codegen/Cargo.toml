@@ -11,6 +11,12 @@ bench = false
 [lints]
 workspace = true
 
+[features]
+# Forwards to `pixelflow-search/saturation-telemetry`: `jit_cache::compile`
+# calls into `pixelflow_search::runtime::optimize_runtime_arena`, whose
+# telemetry hook is what this actually enables.
+saturation-telemetry = ["pixelflow-search/saturation-telemetry"]
+
 [dependencies]
 pixelflow-ir = { path = "../pixelflow-ir" }
 # The compile entries own the optimize-then-emit pipeline, which is the reason

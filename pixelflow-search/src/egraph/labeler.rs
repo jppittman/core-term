@@ -43,6 +43,7 @@ use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::provenance::{ApplicationId, ENodeId};
 use super::rewrite::Rewrite;
+use super::saturate::SaturationConfig;
 
 /// Binary hindsight label for one recorded rewrite application.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,8 +113,7 @@ impl EpisodeLabels {
     /// Label every recorded rewrite application in `egraph`, given a chosen
     /// extraction: `root` and `choices` (a `(canonical EClassId) -> node_idx`
     /// map, indexed by class id — the representation produced by
-    /// [`super::extract::extract_dag`] / [`super::extract::ExtractedDAG::choices`]
-    /// / `IncrementalExtractor::extract_choices_only`).
+    /// [`super::extract::extract_dag`] / [`super::extract::ExtractedDAG::choices`]).
     ///
     /// # Panics
     ///
@@ -291,7 +291,7 @@ pub fn run_episode(
 ) -> EpisodeResult {
     let mut egraph = EGraph::with_rules(rules);
     let root_class = egraph.add_arena(arena, root);
-    egraph.saturate();
+    SaturationConfig::compatibility(100).run(&mut egraph);
 
     let costs = CostModel::latency_prior();
     let extraction = extract::extract_dag(&egraph, root_class, &costs);
