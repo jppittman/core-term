@@ -37,35 +37,6 @@ pub use factored::{ArenaRuleTemplates, EMBED_DIM, MLP_HIDDEN, RuleTemplates};
 // Note: ExprGenConfig, ExprGenerator, BwdGenConfig, and BwdGenerator are already
 // public structs defined in this module - no re-export needed.
 
-// ============================================================================
-// HalfEP Features (Legacy - being phased out in favor of Factored)
-// ============================================================================
-
-/// Maximum depth we encode in features.
-pub const MAX_DEPTH: usize = 8;
-
-// ============================================================================
-// Dense Features
-// ============================================================================
-
-// ============================================================================
-// NNUE Network Architecture
-// ============================================================================
-
-// ============================================================================
-// Training Data Generation
-// ============================================================================
-
-// ============================================================================
-// Binpack I/O (requires std)
-// ============================================================================
-
-/// Magic number for depth-limited binpack files.
-pub const DEPTH_LIMITED_MAGIC: u32 = 0x444C4E55; // "DLNU" in ASCII
-
-/// Version number for depth-limited binpack format.
-pub const DEPTH_LIMITED_VERSION: u32 = 1;
-
 /// Configuration for random expression generation.
 #[derive(Clone, Debug)]
 pub struct ExprGenConfig {
