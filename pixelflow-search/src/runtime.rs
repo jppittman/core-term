@@ -1162,3 +1162,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "runtime/cap_break_ab.rs"]
+mod cap_break_ab;
