@@ -6,8 +6,11 @@
 //! every structurally identical glyph kernel in a bake sweep, produces a
 //! byte-identical schedule.
 //!
-//! Keys are the **canonical form of the reachable subgraph**: nodes in
-//! ascending id order with ids remapped dense. Construction garbage (dead
+//! Keys are the [`LatticeShape`] the kernel is compiled for — its extents,
+//! so a lattice of a different size is a different kernel and a window
+//! resize recompiles, by decision — plus the **canonical form of the
+//! reachable subgraph**: nodes in ascending id order with ids remapped
+//! dense. Construction garbage (dead
 //! nodes left behind by `substitute_params` / splicing rebuilds) does not
 //! perturb the key, so logically identical kernels hit regardless of build
 //! history. Keys are compared by full equality — a hash collision can cause
@@ -28,16 +31,26 @@ use std::vec::Vec;
 use crate::JitManifold;
 use crate::emit;
 use crate::error::CompileError;
+use pixelflow_ir::LatticeShape;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
 static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Arc<JitManifold>>>> = OnceLock::new();
 
-/// Compile the kernel rooted at `root` to an executable [`JitManifold`] (2D collapse loop),
-/// sharing previously compiled code for canonically identical kernels.
+/// Compile the kernel rooted at `root` to an executable [`JitManifold`] (2D collapse loop)
+/// for a lattice of the given `shape`, sharing previously compiled code for
+/// canonically identical kernels at the same extents.
 ///
 /// The returned `Arc` is the shared handle — two constructions of the same
-/// kernel yield pointer-equal manifolds.
-pub fn compile(arena: &ExprArena, root: ExprId) -> Result<Arc<JitManifold>, CompileError> {
+/// kernel at the same shape yield pointer-equal manifolds.
+///
+/// # Errors
+///
+/// Whatever [`emit::compile`] reports for the (optimized) arena.
+pub fn compile(
+    arena: &ExprArena,
+    root: ExprId,
+    shape: LatticeShape,
+) -> Result<Arc<JitManifold>, CompileError> {
     // Optimize, then emit. This is not a step callers get to sequence: an
     // arena reaching a backend unoptimized is never what anyone wanted, and
     // when the choice was on offer, two of the three production call sites
@@ -46,10 +59,10 @@ pub fn compile(arena: &ExprArena, root: ExprId) -> Result<Arc<JitManifold>, Comp
     // is the only place it cannot be forgotten.
     //
     // It bails to the arena as given for constructs the e-graph does not
-    // model (`Reduce`, the binder `Kernel::over` produces); those still
-    // compile, just without the extra fusion.
+    // model (a `Tuple` root; `Reduce` is unrolled ahead of saturation and
+    // does optimize); those still compile, just without the extra fusion.
     let emit_fn = |arena: &ExprArena, root: ExprId| {
-        let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root);
+        let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root, shape);
         let (arena, root) = optimized
             .as_deref()
             .map(|(a, r)| (a, *r))
@@ -57,15 +70,16 @@ pub fn compile(arena: &ExprArena, root: ExprId) -> Result<Arc<JitManifold>, Comp
         emit::compile(arena, root)
     };
 
-    let Some(key) = canonical_key(arena, root) else {
+    let Some(mut key) = canonical_key(arena, root) else {
         // Uncacheable (bound memory): compile fresh.
         let result = emit_fn(arena, root)?;
-        return Ok(Arc::new(JitManifold::new(result.code)));
+        return Ok(Arc::new(JitManifold::new(result.code, shape)));
     };
 
-    // Keyed on the arena *as handed in*, before optimization. Optimization is
-    // a deterministic function of that input, so equal inputs yield equal
-    // output and a hit skips the saturation as well as the codegen.
+    // Keyed on the arena *as handed in*, before optimization, plus the shape.
+    // Optimization is a deterministic function of those two, so equal inputs
+    // yield equal output and a hit skips the saturation as well as the codegen.
+    key.extend_from_slice(&shape.key_bytes());
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache.lock().expect("jit_cache: lock poisoned").get(&key) {
         return Ok(hit.clone());
@@ -75,7 +89,7 @@ pub fn compile(arena: &ExprArena, root: ExprId) -> Result<Arc<JitManifold>, Comp
     // don't serialize. A racing duplicate compile wastes work; the first
     // insertion wins so all callers share one region.
     let result = emit_fn(arena, root)?;
-    let compiled = Arc::new(JitManifold::new(result.code));
+    let compiled = Arc::new(JitManifold::new(result.code, shape));
     let mut guard = cache.lock().expect("jit_cache: lock poisoned");
     Ok(guard.entry(key).or_insert(compiled).clone())
 }
@@ -173,6 +187,8 @@ mod tests {
     use super::*;
     use pixelflow_ir::kind::OpKind;
 
+    const TEST_SHAPE: LatticeShape = LatticeShape::new([64, 64, 1, 1]);
+
     fn circle_arena(garbage: bool) -> (ExprArena, ExprId) {
         let mut a = ExprArena::new();
         if garbage {
@@ -193,8 +209,8 @@ mod tests {
     fn identical_kernels_share_code() {
         let (a1, r1) = circle_arena(false);
         let (a2, r2) = circle_arena(true);
-        let m1 = compile(&a1, r1).expect("compile");
-        let m2 = compile(&a2, r2).expect("compile");
+        let m1 = compile(&a1, r1, TEST_SHAPE).expect("compile");
+        let m2 = compile(&a2, r2, TEST_SHAPE).expect("compile");
         assert!(
             Arc::ptr_eq(&m1, &m2),
             "canonically identical kernels must share one compiled region"
@@ -208,8 +224,8 @@ mod tests {
         let x = a2.push_var(0);
         let y = a2.push_var(1);
         let r2 = a2.push_binary(OpKind::Sub, x, y);
-        let m1 = compile(&a1, r1).expect("compile");
-        let m2 = compile(&a2, r2).expect("compile");
+        let m1 = compile(&a1, r1, TEST_SHAPE).expect("compile");
+        let m2 = compile(&a2, r2, TEST_SHAPE).expect("compile");
         assert!(!Arc::ptr_eq(&m1, &m2));
     }
 
@@ -220,7 +236,7 @@ mod tests {
         let k = a.push_const(424_242.0);
         let r = a.push_binary(OpKind::Mul, x, k);
         let before = entry_count();
-        let _m1 = compile(&a, r).expect("compile");
+        let _m1 = compile(&a, r, TEST_SHAPE).expect("compile");
         let after_one = entry_count();
         assert!(
             after_one > before,
@@ -231,7 +247,7 @@ mod tests {
         let y = a2.push_var(1);
         let k2 = a2.push_const(535_353.0);
         let r2 = a2.push_binary(OpKind::Mul, y, k2);
-        let _m2 = compile(&a2, r2).expect("compile");
+        let _m2 = compile(&a2, r2, TEST_SHAPE).expect("compile");
         let after_two = entry_count();
         assert!(
             after_two > after_one,
@@ -262,8 +278,8 @@ mod tests {
         let r2b = a2.push_reduce(OpKind::Mul, 5, 9, body2b); // extent differs only here
         let root2 = a2.push_binary(OpKind::Add, r1b, r2b);
 
-        let m1 = compile(&a, root).expect("compile");
-        let m2 = compile(&a2, root2).expect("compile");
+        let m1 = compile(&a, root, TEST_SHAPE).expect("compile");
+        let m2 = compile(&a2, root2, TEST_SHAPE).expect("compile");
         assert!(
             !Arc::ptr_eq(&m1, &m2),
             "a change confined to the second reduce's extent must not share a cache entry"
@@ -282,11 +298,29 @@ mod tests {
         let s = a3.push_binary(OpKind::Add, y2, x2); // operand order flipped
         let r3 = a3.push_unary(OpKind::Sqrt, s);
 
-        let m1 = compile(&a1, r1).expect("compile");
-        let m3 = compile(&a3, r3).expect("compile");
+        let m1 = compile(&a1, r1, TEST_SHAPE).expect("compile");
+        let m3 = compile(&a3, r3, TEST_SHAPE).expect("compile");
         assert!(
             !Arc::ptr_eq(&m1, &m3),
             "flipping operand order must not share a cache entry"
         );
+    }
+
+    #[test]
+    fn same_kernel_at_two_extents_is_two_entries() {
+        let (a, r) = circle_arena(false);
+        let frame = compile(&a, r, TEST_SHAPE).expect("compile");
+        let again = compile(&a, r, TEST_SHAPE).expect("compile");
+        let wider = compile(&a, r, LatticeShape::new([65, 64, 1, 1])).expect("compile");
+        assert!(
+            Arc::ptr_eq(&frame, &again),
+            "the same kernel at the same extents must share one entry"
+        );
+        assert!(
+            !Arc::ptr_eq(&frame, &wider),
+            "one more column is a different lattice, hence a different kernel"
+        );
+        assert_eq!(frame.shape(), TEST_SHAPE);
+        assert_eq!(wider.shape().extent(), [65, 64, 1, 1]);
     }
 }

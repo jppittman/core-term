@@ -12,12 +12,7 @@
 //!
 //! This allows the e-graph extraction to use either:
 //! - Fast hardcoded costs (`CostModel`)
-//! - Learned neural costs (`ExprNnue` from pixelflow-nnue)
 //! - Custom domain-specific cost models
-
-use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 
 use super::node::ENode;
 use pixelflow_ir::OpKind;
@@ -30,11 +25,11 @@ use pixelflow_ir::kind::OpMap;
 /// Handcrafted per-op cycle-latency estimates, indexed by `OpKind::index()`.
 ///
 /// This is the ONE place these numbers are allowed to live. Both the static
-/// [`CostModel`] (via [`CostModel::latency_prior`]) and the NNUE's embedding
-/// initialization (`nnue::factored::OpEmbeddings::init_with_latency_prior`)
-/// derive their costs from this table so the two representations cannot
-/// drift apart. If you're tempted to hand-tune a number in one place,
-/// change it here instead.
+/// [`CostModel`] (via [`CostModel::latency_prior`]) and the Guide's op
+/// embedding initialization
+/// (`nnue::factored::OpEmbeddings::init_with_latency_prior`) derive their
+/// costs from this table so the two representations cannot drift apart. If
+/// you're tempted to hand-tune a number in one place, change it here instead.
 ///
 /// Handcrafted cycle estimates, one per op.
 ///
@@ -155,10 +150,6 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
 /// // Using the hardcoded cost model
 /// let costs = CostModel::default();
 /// let (tree, cost) = extract(&egraph, root, &costs);
-///
-/// // Using a learned neural cost model
-/// let nnue = ExprNnue::load("model.bin")?;
-/// let (tree, cost) = extract(&egraph, root, &nnue);
 /// ```
 pub trait CostFunction {
     /// Estimate the cost of a single ENode given its parent context.
@@ -213,7 +204,7 @@ impl CostModel {
     ///
     /// Source of truth: [`latency_prior_cycles`], shared with
     /// `nnue::factored::OpEmbeddings::init_with_latency_prior` so the static
-    /// and learned cost models cannot drift apart.
+    /// table and the Guide's op-embedding prior cannot drift apart.
     pub fn latency_prior() -> Self {
         Self {
             costs: latency_prior_cycles(),
@@ -274,6 +265,11 @@ impl CostModel {
     /// Calculate the hinge penalty for a given depth.
     #[inline]
     pub fn depth_cost(&self, depth: usize) -> usize {
+        // `>` is an equivalent mutant to `>=` under cargo-mutants: at
+        // `depth == self.depth_threshold` the multiplier `(depth -
+        // self.depth_threshold)` is 0 either way, so both branches return the
+        // same 0. No test can distinguish them — left as `>` to match the
+        // "strictly past the threshold" reading of a hinge penalty.
         if depth > self.depth_threshold {
             (depth - self.depth_threshold) * self.depth_penalty
         } else {
@@ -310,185 +306,6 @@ impl CostModel {
         let op = OpKind::from_name(name)
             .unwrap_or_else(|| panic!("CostModel::cost_by_name: unknown op name {name:?}"));
         self.cost(op)
-    }
-
-    // =========================================================================
-    // Persistence
-    // =========================================================================
-
-    /// Save cost model to a TOML file.
-    pub fn save_toml<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
-        let mut contents = String::from("# Learned cost model weights\n");
-        contents.push_str("# Generated from SIMD benchmark measurements\n\n");
-
-        for (op, cost) in self.costs.iter() {
-            contents.push_str(&format!("{} = {}\n", op.name(), cost));
-        }
-
-        contents.push_str(&format!("\ndepth_threshold = {}\n", self.depth_threshold));
-        contents.push_str(&format!("depth_penalty = {}\n", self.depth_penalty));
-
-        fs::write(path, contents)
-    }
-
-    /// Load cost model from a TOML file.
-    ///
-    /// Starts from [`CostModel::zero`] (not [`CostModel::latency_prior`]) so
-    /// the returned model reflects exactly what's in the file — mixing in
-    /// the latency prior for keys the file doesn't mention would silently
-    /// blend two cost sources together.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file can't be read, or if a `key = value`
-    /// line has a value that fails to parse as `usize`. A malformed line is
-    /// a real misconfiguration; silently skipping it would let a typo'd
-    /// weight file produce a model that looks valid but isn't.
-    pub fn load_toml<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
-        let contents = fs::read_to_string(path)?;
-        let mut model = Self::zero();
-
-        for (lineno, line) in contents.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            let Some((key, value)) = line.split_once('=') else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("cost model TOML line {}: missing '=': {line:?}", lineno + 1),
-                ));
-            };
-            let key = key.trim();
-            let value = value.trim();
-            let v = value.parse::<usize>().map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "cost model TOML line {}: value {value:?} for key {key:?} is not a usize: {e}",
-                        lineno + 1
-                    ),
-                )
-            })?;
-
-            if key == "depth_threshold" {
-                model.depth_threshold = v;
-            } else if key == "depth_penalty" {
-                model.depth_penalty = v;
-            } else if let Some(op) = OpKind::from_name(key) {
-                // O(1) lookup via OpKind::from_name
-                model.costs[op] = v;
-            } else {
-                // Unrecognized op name: this is an external, evolving file
-                // format (older/newer OpKind sets), so we don't hard-fail —
-                // but we don't stay silent either.
-                eprintln!(
-                    "warning: cost model TOML line {}: unknown key {key:?}, ignoring",
-                    lineno + 1
-                );
-            }
-        }
-
-        Ok(model)
-    }
-
-    /// Try to load from a standard location, falling back to the latency
-    /// prior if none is found.
-    ///
-    /// Each candidate location is tried in order. A location that simply
-    /// doesn't exist is expected (most of these are optional overrides) and
-    /// is skipped quietly; a location that exists but fails to *parse* is a
-    /// real misconfiguration and is reported loudly (`eprintln!`) before
-    /// moving on, so a typo'd cost file never fails silently into a
-    /// different cost model without a trace.
-    pub fn load_or_default() -> Self {
-        // Check environment variable first. If the user explicitly set
-        // PIXELFLOW_COST_MODEL, a missing/unparsable file is always loud —
-        // they asked for this specific file.
-        if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL") {
-            match Self::load_toml(&path) {
-                Ok(model) => return model,
-                Err(e) => eprintln!(
-                    "warning: PIXELFLOW_COST_MODEL={path:?} failed to load ({e}); falling back"
-                ),
-            }
-        }
-
-        // Try user config directory.
-        if let Some(home) = std::env::var_os("HOME") {
-            let config_path = Path::new(&home).join(".config/pixelflow/cost_model.toml");
-            match Self::load_toml(&config_path) {
-                Ok(model) => return model,
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                    eprintln!(
-                        "warning: cost model {config_path:?} exists but failed to load ({e}); falling back"
-                    );
-                }
-                Err(_) => {} // not found: expected, this is an optional override
-            }
-        }
-
-        // Try workspace data directory (for development).
-        let workspace_paths = [
-            "pixelflow-ml/data/learned_cost_model.toml",
-            "../pixelflow-ml/data/learned_cost_model.toml",
-        ];
-        for path in workspace_paths {
-            match Self::load_toml(path) {
-                Ok(model) => return model,
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                    eprintln!(
-                        "warning: cost model {path:?} exists but failed to load ({e}); falling back"
-                    );
-                }
-                Err(_) => {} // not found: expected, this is an optional override
-            }
-        }
-
-        // No override found anywhere: use the handcrafted latency prior.
-        // This is a loud, intentional default — NOT the old all-zero
-        // fallback, which made every op "free" and was useless for
-        // extraction. If you need a genuinely all-zero model, use
-        // `CostModel::zero()` explicitly.
-        Self::latency_prior()
-    }
-
-    // =========================================================================
-    // Interop
-    // =========================================================================
-
-    /// Create from HashMap (for backward compatibility).
-    ///
-    /// Starts from [`CostModel::zero`], not [`CostModel::latency_prior`] —
-    /// same reasoning as [`CostModel::load_toml`]: the caller handed us an
-    /// explicit map, so the result should reflect exactly that map, not a
-    /// blend with the handcrafted prior.
-    pub fn from_map(costs: &HashMap<String, usize>) -> Self {
-        let mut model = Self::zero();
-        for (key, &value) in costs {
-            if key == "depth_threshold" {
-                model.depth_threshold = value;
-            } else if key == "depth_penalty" {
-                model.depth_penalty = value;
-            } else if let Some(op) = OpKind::from_name(key) {
-                // O(1) lookup via OpKind::from_name
-                model.costs[op] = value;
-            }
-            // Unknown keys are silently ignored (external data format)
-        }
-        model
-    }
-
-    /// Convert to HashMap for interop.
-    pub fn to_map(&self) -> HashMap<String, usize> {
-        let mut map = HashMap::new();
-        for (op, cost) in self.costs.iter() {
-            map.insert(op.name().to_string(), *cost);
-        }
-        map.insert("depth_threshold".to_string(), self.depth_threshold);
-        map.insert("depth_penalty".to_string(), self.depth_penalty);
-        map
     }
 }
 
@@ -814,184 +631,6 @@ mod cost_model_accessors {
         assert_eq!(
             CostFunction::cost_by_kind(&model, OpKind::Log2, None),
             model.cost(OpKind::Log2)
-        );
-    }
-}
-
-#[cfg(test)]
-mod persistence {
-    use super::CostModel;
-    use pixelflow_ir::OpKind;
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Builds a path under the OS temp dir that's unique per call, so
-    /// parallel test threads never collide on the same file.
-    fn unique_temp_path(tag: &str) -> std::path::PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "pixelflow-cost-model-test-{tag}-{}-{n}.toml",
-            std::process::id()
-        ))
-    }
-
-    /// A model saved to TOML and loaded back must reproduce every op cost
-    /// and both depth-penalty fields — not just return a freshly
-    /// constructed default. The round trip also exercises the file's
-    /// header comment lines and blank line, which must be skipped rather
-    /// than rejected as malformed `key = value` lines.
-    #[test]
-    fn save_toml_then_load_toml_round_trips_costs_and_depth_fields() {
-        let path = unique_temp_path("roundtrip");
-
-        let mut original = CostModel::latency_prior();
-        original.set_cost(OpKind::Add, 111);
-        original.set_cost(OpKind::Sin, 222);
-        original.depth_threshold = 9;
-        original.depth_penalty = 13;
-
-        original.save_toml(&path).expect("save_toml should succeed");
-        let loaded = CostModel::load_toml(&path).expect("load_toml should succeed");
-        let _ = std::fs::remove_file(&path);
-
-        assert_eq!(loaded.cost(OpKind::Add), 111);
-        assert_eq!(loaded.cost(OpKind::Sin), 222);
-        assert_eq!(loaded.cost(OpKind::Mul), original.cost(OpKind::Mul));
-        assert_eq!(loaded.depth_threshold, 9);
-        assert_eq!(loaded.depth_penalty, 13);
-    }
-
-    /// A key the file never mentions is not silently filled in from the
-    /// latency prior — `load_toml` starts from an all-zero model, so an
-    /// omitted op stays at 0. Asserting the omitted op specifically is what
-    /// separates that from a `load_toml` that returned a default model,
-    /// where the omitted op would carry its latency-prior price instead.
-    #[test]
-    fn load_toml_leaves_unmentioned_ops_at_zero_rather_than_the_latency_prior() {
-        let path = unique_temp_path("sparse");
-        std::fs::write(&path, "add = 99\n").expect("write test fixture");
-
-        let loaded = CostModel::load_toml(&path).expect("load_toml should succeed");
-        let _ = std::fs::remove_file(&path);
-
-        assert_eq!(loaded.cost(OpKind::Add), 99);
-        assert_eq!(loaded.cost(OpKind::Mul), 0);
-    }
-
-    /// A line with no `=` is a malformed cost file and must be reported,
-    /// not skipped or silently ignored.
-    #[test]
-    fn load_toml_rejects_a_line_with_no_equals_sign() {
-        let path = unique_temp_path("no-equals");
-        std::fs::write(&path, "this line has no equals sign\n").expect("write test fixture");
-
-        let result = CostModel::load_toml(&path);
-        let _ = std::fs::remove_file(&path);
-
-        assert!(result.is_err(), "a line without '=' must be rejected");
-    }
-
-    /// A value that doesn't parse as `usize` (including a negative number)
-    /// is a malformed cost file and must be reported, not silently
-    /// defaulted to some other cost.
-    #[test]
-    fn load_toml_rejects_a_value_that_does_not_parse_as_usize() {
-        let path = unique_temp_path("bad-value");
-        std::fs::write(&path, "add = not_a_number\n").expect("write test fixture");
-
-        let result = CostModel::load_toml(&path);
-        let _ = std::fs::remove_file(&path);
-
-        assert!(result.is_err(), "a non-usize value must be rejected");
-    }
-
-    /// `to_map` then `from_map` must round-trip both op costs and the two
-    /// depth-penalty fields through the `HashMap<String, usize>` interop
-    /// format — not just produce a fresh default model.
-    #[test]
-    fn to_map_then_from_map_round_trips_costs_and_depth_fields() {
-        let mut original = CostModel::latency_prior();
-        original.set_cost(OpKind::Exp, 55);
-        original.depth_threshold = 3;
-        original.depth_penalty = 7;
-
-        let map: HashMap<String, usize> = original.to_map();
-        let restored = CostModel::from_map(&map);
-
-        assert_eq!(restored.cost(OpKind::Exp), 55);
-        assert_eq!(restored.depth_threshold, 3);
-        assert_eq!(restored.depth_penalty, 7);
-    }
-
-    /// The assertion half of
-    /// [`load_or_default_should_return_the_model_named_by_the_env_var_override`],
-    /// run in a child process that was spawned with `PIXELFLOW_COST_MODEL`
-    /// already set. `#[ignore]` keeps it out of the ordinary sweep, where
-    /// the variable is unset and there would be nothing to assert.
-    #[test]
-    #[ignore = "spawned by its parent test with PIXELFLOW_COST_MODEL set"]
-    fn env_var_override_child() {
-        let model = CostModel::load_or_default();
-
-        assert_eq!(
-            model.cost(OpKind::Add),
-            42,
-            "the env var names a file with `add = 42`; a default model would not have it"
-        );
-        assert_eq!(
-            model.cost(OpKind::Mul),
-            0,
-            "load_toml starts from zero, not the latency prior"
-        );
-    }
-
-    /// `load_or_default` must actually load and return the file named by
-    /// `PIXELFLOW_COST_MODEL` when it's set — not a freshly constructed
-    /// default model, which would happen to look identical for every op
-    /// this test doesn't check.
-    ///
-    /// The override is exercised in a **child process** rather than by
-    /// mutating this one's environment. `std::env::set_var` is unsafe
-    /// because it requires that no other thread touch the environment
-    /// concurrently, and the test harness runs tests on parallel threads —
-    /// a mutex private to one test cannot establish that, and
-    /// `load_or_default` itself goes on to read `HOME`. Spawning gives the
-    /// child an environment nothing races on, so there is no `unsafe` here
-    /// at all.
-    #[test]
-    fn load_or_default_should_return_the_model_named_by_the_env_var_override() {
-        let path = unique_temp_path("env-override");
-        std::fs::write(&path, "add = 42\n").expect("write test fixture");
-
-        const CHILD: &str = "egraph::cost::persistence::env_var_override_child";
-
-        let output = std::process::Command::new(
-            std::env::current_exe().expect("locate this test binary to re-run a single test"),
-        )
-        .args(["--exact", CHILD, "--ignored"])
-        .env("PIXELFLOW_COST_MODEL", &path)
-        .output()
-        .expect("spawn the child test process");
-
-        let _ = std::fs::remove_file(&path);
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Checked before `status.success()`, and the reason this is an
-        // `output()` rather than a `status()`: libtest exits 0 when a filter
-        // matches nothing, so a `CHILD` path that drifts out of date would
-        // make the success assertion below pass without ever running the
-        // assertions it is standing in for.
-        assert!(
-            stdout.contains("1 passed"),
-            "expected the child to run exactly one test; if `{CHILD}` no longer names it, \
-             this test is asserting nothing. Child stdout:\n{stdout}"
-        );
-        assert!(
-            output.status.success(),
-            "{CHILD} failed under PIXELFLOW_COST_MODEL={}. Child stdout:\n{stdout}",
-            path.display()
         );
     }
 }

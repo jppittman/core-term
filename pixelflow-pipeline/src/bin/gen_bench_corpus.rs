@@ -302,8 +302,7 @@ const BANDS: &[Band] = &[
 ];
 
 // The feature-quotient key lives in `pixelflow_pipeline::training::structural`
-// — shared with bootstrap_extraction_head's live-stream holdout fence and its
-// loaded-TRAIN revalidation, so all three stages agree on what "the model has
+// so every stage that fences by structure agrees on what "the model has
 // already seen this" means (P1(d)).
 
 // ============================================================================
@@ -386,7 +385,7 @@ impl<K: Eq + Hash> DedupLedger<K> {
 
 // ============================================================================
 // Named production kernels (FINAL tier) — verbatim from
-// bench_extraction_3way.rs / pixelflow-search/examples/rule_report.rs.
+// pixelflow-search/examples/rule_report.rs.
 // ============================================================================
 
 /// sin(sqrt(x*x + y*y) * freq) * amp + bias — the swirl shader core.

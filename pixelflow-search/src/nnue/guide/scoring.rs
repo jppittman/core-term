@@ -14,12 +14,9 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use libm::{log2f, sqrtf};
-use pixelflow_ir::arena::{ExprArena, ExprId};
 
 use super::accumulator::{GRAPH_ACC_DIM, GraphAccumulator};
-use crate::nnue::factored::{
-    EMBED_DIM, EdgeAccumulator, ExprNnue, HIDDEN_DIM, MLP_HIDDEN, SCALAR_FEATURE_COUNT,
-};
+use crate::nnue::factored::{EMBED_DIM, HIDDEN_DIM, MLP_HIDDEN, SCALAR_FEATURE_COUNT};
 
 /// Mask MLP input dimension: expr_embed / graph_embed directly (`EMBED_DIM`).
 /// `value_pred` was removed — it is a deterministic function of the
@@ -34,18 +31,16 @@ pub(crate) const GRAPH_INPUT_DIM: usize = GRAPH_ACC_DIM + SCALAR_FEATURE_COUNT;
 pub(crate) const RULE_CONCAT_DIM: usize = 4 * EMBED_DIM;
 
 /// The saturation head's own weights: mask MLP, bilinear interaction, rule
-/// projection, and the graph-state tower that feeds them.
+/// projection, the graph-state tower that feeds them, and the trunk the
+/// tower routes through.
 ///
-/// Deliberately **not** part of [`ExprNnue`] — that struct is the live
-/// extraction-head checkpoint (its own "TRIF" format); these weights are
-/// untrained noise until Phase 3 gives them a training loop, and keeping them
-/// in a separate struct is what lets that checkpoint carry only live params
-/// (see `nnue/factored.rs`'s save/load doc).
-///
-/// Shares the backbone (`OpEmbeddings`, the shared trunk, `expr_proj`) with
-/// the extraction head — every method below that needs backbone state takes
-/// `&ExprNnue` explicitly rather than owning a copy, so there is exactly one
-/// trunk in memory.
+/// These weights are untrained noise until Phase 3 gives them a training
+/// loop. The trunk used to be shared with the extraction head's expression
+/// tower; that head's shape is gone (deleted 2026-09-01; its denotation is
+/// kept, see docs/plans/2026-09-01-schedule-cost-model-denotation.md), so
+/// the trunk is this head's own. The only thing still shared across the
+/// crate is [`crate::nnue::factored::OpEmbeddings`], which a
+/// [`GraphAccumulator`] is built with before it reaches this struct.
 #[derive(Clone)]
 pub(crate) struct SaturationHead {
     /// Mask MLP layer 1 weights: embed (32) → hidden (16).
@@ -76,6 +71,14 @@ pub(crate) struct SaturationHead {
     graph_proj_w: [[f32; EMBED_DIM]; HIDDEN_DIM],
     /// Graph → embed projection bias.
     graph_proj_b: [f32; EMBED_DIM],
+
+    /// Trunk weights: `HIDDEN_DIM` x `HIDDEN_DIM`, applied (with ReLU) to the
+    /// graph tower's hidden state before projection. Initialized
+    /// near-identity so it preserves tower signal until training pulls it
+    /// away.
+    trunk_w: [[f32; HIDDEN_DIM]; HIDDEN_DIM],
+    /// Trunk biases.
+    trunk_b: [f32; HIDDEN_DIM],
 }
 
 impl Default for SaturationHead {
@@ -101,12 +104,16 @@ impl SaturationHead {
             graph_b1: [0.0; HIDDEN_DIM],
             graph_proj_w: [[0.0; EMBED_DIM]; HIDDEN_DIM],
             graph_proj_b: [0.0; EMBED_DIM],
+            trunk_w: [[0.0; HIDDEN_DIM]; HIDDEN_DIM],
+            trunk_b: [0.0; HIDDEN_DIM],
         }
     }
 
     /// Randomize all saturation-head weights (mask MLP, rule proj,
-    /// interaction, graph backbone). Does not touch the shared backbone —
-    /// that lives on [`ExprNnue`] and has its own `randomize`.
+    /// interaction, graph backbone, trunk). Does not touch the op
+    /// embeddings — those live on
+    /// [`OpEmbeddings`](crate::nnue::factored::OpEmbeddings) and have their
+    /// own `randomize`.
     pub(crate) fn randomize(&mut self, seed: u64) {
         let mut rng_state = seed.wrapping_add(54321);
 
@@ -181,20 +188,39 @@ impl SaturationHead {
         for b in &mut self.graph_proj_b {
             *b = next_f32().abs() * 0.1;
         }
+
+        // Trunk: identity + small noise (near-identity preserves tower signal).
+        for i in 0..HIDDEN_DIM {
+            for j in 0..HIDDEN_DIM {
+                self.trunk_w[i][j] = if i == j { 1.0 } else { 0.0 } + next_f32() * 0.01;
+            }
+        }
+        for b in &mut self.trunk_b {
+            *b = 0.0;
+        }
+    }
+
+    /// Apply the trunk: `HIDDEN_DIM -> HIDDEN_DIM` with ReLU.
+    #[inline]
+    fn apply_trunk(&self, tower_output: &[f32; HIDDEN_DIM]) -> [f32; HIDDEN_DIM] {
+        let mut out = self.trunk_b;
+        for i in 0..HIDDEN_DIM {
+            for j in 0..HIDDEN_DIM {
+                out[j] += tower_output[i] * self.trunk_w[i][j];
+            }
+        }
+        for h in &mut out {
+            *h = h.max(0.0);
+        }
+        out
     }
 
     /// Graph state forward pass: `GraphAccumulator` → hidden (`HIDDEN_DIM`).
     ///
-    /// Uses `1/sqrt(node_count)` scaling and log2 scalars, matching
-    /// `EdgeAccumulator::extraction_input`'s conventions, then routes through
-    /// `backbone`'s shared trunk — the same trunk the extraction head's
-    /// `forward_expr_only` uses.
+    /// Uses `1/sqrt(node_count)` scaling and log2 scalars, then routes
+    /// through the trunk.
     #[inline]
-    pub(crate) fn forward_graph(
-        &self,
-        backbone: &ExprNnue,
-        gacc: &GraphAccumulator,
-    ) -> [f32; HIDDEN_DIM] {
+    pub(crate) fn forward_graph(&self, gacc: &GraphAccumulator) -> [f32; HIDDEN_DIM] {
         let mut hidden = self.graph_b1;
 
         // Scale factor: 1/sqrt(N) prevents variance explosion from summing N embeddings.
@@ -231,14 +257,10 @@ impl SaturationHead {
             *h = h.max(0.0);
         }
 
-        // Shared trunk
-        backbone.apply_trunk(&hidden)
+        self.apply_trunk(&hidden)
     }
 
     /// Project graph hidden to graph embedding (`EMBED_DIM`).
-    ///
-    /// Same structure as `ExprNnue::compute_expr_embed` but with this head's
-    /// own `graph_proj_w`/`graph_proj_b`.
     #[inline]
     pub(crate) fn compute_graph_embed(&self, hidden: &[f32; HIDDEN_DIM]) -> [f32; EMBED_DIM] {
         let mut embed = self.graph_proj_b;
@@ -280,11 +302,10 @@ impl SaturationHead {
     #[must_use]
     pub(crate) fn mask_score_all_rules_graph(
         &self,
-        backbone: &ExprNnue,
         gacc: &GraphAccumulator,
         rule_embeds: &[[f32; EMBED_DIM]],
     ) -> Vec<f32> {
-        let hidden = self.forward_graph(backbone, gacc);
+        let hidden = self.forward_graph(gacc);
         let graph_embed = self.compute_graph_embed(&hidden);
         let mask_features = self.compute_mask_features(&graph_embed);
         rule_embeds
@@ -293,45 +314,20 @@ impl SaturationHead {
             .collect()
     }
 
-    /// Score all rules with a pre-computed shared-backbone hidden state
-    /// (e.g. the extraction head's own `forward_expr_only` output).
-    #[must_use]
-    pub(crate) fn mask_score_all_rules_with_hidden(
-        &self,
-        backbone: &ExprNnue,
-        hidden: &[f32; HIDDEN_DIM],
-        rule_embeds: &[[f32; EMBED_DIM]],
-    ) -> Vec<f32> {
-        let expr_embed = backbone.compute_expr_embed(hidden);
-        let mask_features = self.compute_mask_features(&expr_embed);
-        rule_embeds
-            .iter()
-            .map(|rule_embed| self.bilinear_score(&mask_features, rule_embed))
-            .collect()
-    }
-
-    /// Encode a single rule's LHS/RHS arena subtrees into a rule embedding.
+    /// Encode a rule from the embeddings of its two sides.
     ///
     /// 4-way concatenation `[z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS]`
-    /// projected to `EMBED_DIM`, using the same shared backbone as the
-    /// extraction head (`backbone.forward_expr_only` / `compute_expr_embed`)
-    /// — the design that replaced the legacy hand-crafted `RuleFeatures` path.
+    /// projected to `EMBED_DIM`: what the rule MATCHES, what it PRODUCES,
+    /// what CHANGED, what is SHARED. The tower that used to produce `z_lhs`
+    /// / `z_rhs` from arena templates was the extraction head's expression
+    /// tower and left with it; the candidate-context design supplies side
+    /// embeddings from its own tower.
     #[must_use]
-    pub(crate) fn encode_rule_from_arena(
+    pub(crate) fn encode_rule(
         &self,
-        backbone: &ExprNnue,
-        arena: &ExprArena,
-        lhs: ExprId,
-        rhs: ExprId,
+        z_lhs: &[f32; EMBED_DIM],
+        z_rhs: &[f32; EMBED_DIM],
     ) -> [f32; EMBED_DIM] {
-        let lhs_acc = EdgeAccumulator::from_arena_dag(arena, lhs, &backbone.embeddings);
-        let lhs_hidden = backbone.forward_expr_only(&lhs_acc);
-        let z_lhs = backbone.compute_expr_embed(&lhs_hidden);
-
-        let rhs_acc = EdgeAccumulator::from_arena_dag(arena, rhs, &backbone.embeddings);
-        let rhs_hidden = backbone.forward_expr_only(&rhs_acc);
-        let z_rhs = backbone.compute_expr_embed(&rhs_hidden);
-
         let mut concat = [0.0f32; RULE_CONCAT_DIM];
         for i in 0..EMBED_DIM {
             concat[i] = z_lhs[i];
@@ -376,10 +372,6 @@ impl SaturationHead {
 mod tests {
     use super::*;
     use crate::nnue::factored::{OpEmbeddings, OpKind};
-
-    fn test_backbone() -> ExprNnue {
-        ExprNnue::new_random(42)
-    }
 
     #[test]
     fn bilinear_score_should_match_manual_computation_for_all_ones_vectors() {
@@ -438,44 +430,68 @@ mod tests {
     }
 
     #[test]
-    fn forward_graph_should_use_the_backbone_trunk() {
-        let backbone = test_backbone();
+    fn forward_graph_should_produce_finite_hidden_embed_and_scores() {
+        let emb = OpEmbeddings::new_random(42);
         let mut head = SaturationHead::new();
         head.randomize(7);
 
         let mut gacc = GraphAccumulator::new();
-        gacc.add_edge(&backbone.embeddings, OpKind::Add, OpKind::Mul);
+        gacc.add_edge(&emb, OpKind::Add, OpKind::Mul);
         gacc.node_count = 2;
         gacc.edge_count = 1;
 
-        let hidden = head.forward_graph(&backbone, &gacc);
+        let hidden = head.forward_graph(&gacc);
         assert!(hidden.iter().all(|v| v.is_finite()));
 
         let embed = head.compute_graph_embed(&hidden);
         assert!(embed.iter().all(|v| v.is_finite()));
 
-        let scores = head.mask_score_all_rules_graph(&backbone, &gacc, &[[0.5f32; EMBED_DIM]]);
+        let scores = head.mask_score_all_rules_graph(&gacc, &[[0.5f32; EMBED_DIM]]);
         assert_eq!(scores.len(), 1);
         assert!(scores[0].is_finite());
     }
 
     #[test]
-    fn encode_rule_from_arena_should_be_deterministic() {
-        let backbone = test_backbone();
+    fn encode_rule_should_be_deterministic_and_order_sensitive() {
         let mut head = SaturationHead::new();
         head.randomize(3);
+        let (z_lhs, z_rhs) = sample_rule_embeddings();
 
-        let mut arena = ExprArena::with_capacity(4);
-        let x = arena.push_var(0);
-        let one = arena.push_const(1.0);
-        let lhs = arena.push_binary(OpKind::Add, x, one);
-        let rhs = arena.push_binary(OpKind::Mul, x, one);
-
-        let e1 = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
-        let e2 = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+        let e1 = head.encode_rule(&z_lhs, &z_rhs);
+        let e2 = head.encode_rule(&z_lhs, &z_rhs);
+        let swapped = head.encode_rule(&z_rhs, &z_lhs);
         for i in 0..EMBED_DIM {
             assert!((e1[i] - e2[i]).abs() < 1e-6, "must be deterministic");
             assert!(e1[i].is_finite());
+        }
+        // The difference block flips sign under a swap, so a rule and its
+        // reverse must not encode identically.
+        assert!(
+            e1.iter()
+                .zip(swapped.iter())
+                .any(|(a, b)| (a - b).abs() > 1e-6),
+            "swapping LHS/RHS must change the encoding"
+        );
+    }
+
+    #[test]
+    fn randomize_should_leave_the_trunk_near_identity() {
+        let mut head = SaturationHead::new();
+        head.randomize(42);
+        for i in 0..HIDDEN_DIM {
+            assert!(
+                (head.trunk_w[i][i] - 1.0).abs() < 0.05,
+                "trunk diagonal near 1.0"
+            );
+            for j in 0..HIDDEN_DIM {
+                if i != j {
+                    assert!(
+                        head.trunk_w[i][j].abs() < 0.05,
+                        "trunk off-diagonal near 0.0"
+                    );
+                }
+            }
+            assert_eq!(head.trunk_b[i], 0.0);
         }
     }
 
@@ -489,16 +505,16 @@ mod tests {
         assert_eq!(SCALAR_FEATURE_COUNT, 4);
     }
 
-    /// An `ExprNnue` whose shared trunk is the identity (zero bias, identity
-    /// weight matrix). `apply_trunk` then returns its input unchanged for any
+    /// A zero head whose trunk is the identity (zero bias, identity weight
+    /// matrix). `apply_trunk` then returns its input unchanged for any
     /// non-negative vector, letting `forward_graph` tests assert an exact
     /// pre-trunk hidden value without also having to hand-verify the trunk.
-    fn identity_trunk_backbone() -> ExprNnue {
-        let mut backbone = ExprNnue::new();
+    fn identity_trunk_head() -> SaturationHead {
+        let mut head = SaturationHead::new();
         for i in 0..HIDDEN_DIM {
-            backbone.trunk_w[i][i] = 1.0;
+            head.trunk_w[i][i] = 1.0;
         }
-        backbone
+        head
     }
 
     #[test]
@@ -515,8 +531,7 @@ mod tests {
         const LANE: usize = 7;
         const COLUMN: usize = 5;
 
-        let backbone = identity_trunk_backbone();
-        let mut head = SaturationHead::new();
+        let mut head = identity_trunk_head();
         head.graph_w1[LANE][COLUMN] = 3.0;
 
         let mut gacc = GraphAccumulator::new();
@@ -525,7 +540,7 @@ mod tests {
 
         // Every scalar-feature row is left at zero, so `log2(1 + node_count)`
         // being nonzero here contributes nothing either way.
-        let hidden = head.forward_graph(&backbone, &gacc);
+        let hidden = head.forward_graph(&gacc);
 
         for (j, &h) in hidden.iter().enumerate() {
             let want = if j == COLUMN { 6.0 } else { 0.0 };
@@ -538,8 +553,7 @@ mod tests {
 
     #[test]
     fn forward_graph_should_match_a_hand_computed_value_when_node_count_is_positive() {
-        let backbone = identity_trunk_backbone();
-        let mut head = SaturationHead::new();
+        let mut head = identity_trunk_head();
         head.graph_b1 = [10.0; HIDDEN_DIM];
         for i in 0..GRAPH_ACC_DIM {
             head.graph_w1[i] = [3.0; HIDDEN_DIM];
@@ -556,7 +570,7 @@ mod tests {
         gacc.node_budget = 5;
         gacc.epoch_budget = 6;
 
-        let hidden = head.forward_graph(&backbone, &gacc);
+        let hidden = head.forward_graph(&gacc);
 
         let scale = 1.0 / sqrtf(4.0f32);
         let main_sum = GRAPH_ACC_DIM as f32 * (2.0 * scale) * 3.0;
@@ -580,8 +594,7 @@ mod tests {
 
     #[test]
     fn forward_graph_should_use_a_scale_of_one_when_node_count_is_zero() {
-        let backbone = identity_trunk_backbone();
-        let mut head = SaturationHead::new();
+        let mut head = identity_trunk_head();
         head.graph_b1 = [5.0; HIDDEN_DIM];
         head.graph_w1[0] = [1.0; HIDDEN_DIM];
 
@@ -598,7 +611,7 @@ mod tests {
         // `1.0 / sqrtf(0.0)` = inf, sending the lane to inf rather than 13.0.
         let expected = 5.0 + 8.0 * 1.0;
 
-        let hidden = head.forward_graph(&backbone, &gacc);
+        let hidden = head.forward_graph(&gacc);
         for (j, &h) in hidden.iter().enumerate() {
             assert!(
                 (h - expected).abs() < 1e-6,
@@ -654,39 +667,6 @@ mod tests {
     }
 
     #[test]
-    fn mask_score_all_rules_with_hidden_should_match_a_manual_composition_of_backbone_and_head() {
-        let backbone = test_backbone();
-        let mut head = SaturationHead::new();
-        head.randomize(11);
-
-        let hidden = [0.3f32; HIDDEN_DIM];
-        let rule_embeds = [[0.2f32; EMBED_DIM], [0.7f32; EMBED_DIM]];
-
-        // Reference: replay the same two steps `mask_score_all_rules_with_hidden`
-        // is documented to perform, calling the same (private, same-module)
-        // helpers it calls.
-        let expr_embed = backbone.compute_expr_embed(&hidden);
-        let mask_features = head.compute_mask_features(&expr_embed);
-        let expected: Vec<f32> = rule_embeds
-            .iter()
-            .map(|re| head.bilinear_score(&mask_features, re))
-            .collect();
-
-        let actual = head.mask_score_all_rules_with_hidden(&backbone, &hidden, &rule_embeds);
-
-        assert_eq!(actual.len(), expected.len(), "one score per rule embed");
-        for (a, e) in actual.iter().zip(expected.iter()) {
-            assert!((a - e).abs() < 1e-4, "got {a}, expected {e}");
-        }
-        // Distinct rule embeddings must not collapse to the same score — guards
-        // against a constant-vector replacement of the whole function body.
-        assert!(
-            (actual[0] - actual[1]).abs() > 1e-6,
-            "distinct rule embeds should score differently"
-        );
-    }
-
-    #[test]
     fn bilinear_score_should_respond_to_bias_addition_and_rule_embed_scaling() {
         let mut head = SaturationHead::new();
         head.interaction = [[1.0; EMBED_DIM]; EMBED_DIM];
@@ -707,25 +687,23 @@ mod tests {
         );
     }
 
-    fn sample_rule_arena() -> (ExprArena, ExprId, ExprId) {
-        let mut arena = ExprArena::with_capacity(4);
-        let x = arena.push_var(0);
-        let one = arena.push_const(1.0);
-        let lhs = arena.push_binary(OpKind::Add, x, one);
-        let rhs = arena.push_binary(OpKind::Mul, x, one);
-        (arena, lhs, rhs)
-    }
-
-    fn embed_of(backbone: &ExprNnue, arena: &ExprArena, root: ExprId) -> [f32; EMBED_DIM] {
-        let acc = EdgeAccumulator::from_arena_dag(arena, root, &backbone.embeddings);
-        let hidden = backbone.forward_expr_only(&acc);
-        backbone.compute_expr_embed(&hidden)
+    /// Two distinct, non-degenerate side embeddings: ramps of opposite slope
+    /// so every concat block (sum-like, difference, product) is nonzero and
+    /// distinguishable lane by lane.
+    fn sample_rule_embeddings() -> ([f32; EMBED_DIM], [f32; EMBED_DIM]) {
+        let mut z_lhs = [0.0f32; EMBED_DIM];
+        let mut z_rhs = [0.0f32; EMBED_DIM];
+        for k in 0..EMBED_DIM {
+            z_lhs[k] = 0.1 * (k as f32 + 1.0);
+            z_rhs[k] = 0.5 - 0.03 * k as f32;
+        }
+        (z_lhs, z_rhs)
     }
 
     /// A `SaturationHead` whose `rule_proj_w` is a "selector": projecting
     /// picks out `concat[block_start + k]` (scaled by `weight`) as output `k`,
     /// with every other row zeroed. Lets a concat-block test read that block
-    /// straight out of `encode_rule_from_arena`'s output without disturbing
+    /// straight out of `encode_rule`'s output without disturbing
     /// the other three blocks (a real `RULE_CONCAT_DIM x EMBED_DIM` matrix
     /// would mix them all together).
     fn concat_block_selector(block_start: usize, weight: f32) -> SaturationHead {
@@ -737,13 +715,11 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_should_place_the_lhs_embedding_at_the_first_concat_block() {
-        let backbone = test_backbone();
-        let (arena, lhs, rhs) = sample_rule_arena();
-        let z_lhs = embed_of(&backbone, &arena, lhs);
+    fn encode_rule_should_place_the_lhs_embedding_at_the_first_concat_block() {
+        let (z_lhs, z_rhs) = sample_rule_embeddings();
 
         let head = concat_block_selector(0, 2.0);
-        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+        let out = head.encode_rule(&z_lhs, &z_rhs);
 
         for k in 0..EMBED_DIM {
             let expected = 2.0 * z_lhs[k];
@@ -756,13 +732,11 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_should_place_the_rhs_embedding_at_the_second_concat_block() {
-        let backbone = test_backbone();
-        let (arena, lhs, rhs) = sample_rule_arena();
-        let z_rhs = embed_of(&backbone, &arena, rhs);
+    fn encode_rule_should_place_the_rhs_embedding_at_the_second_concat_block() {
+        let (z_lhs, z_rhs) = sample_rule_embeddings();
 
         let head = concat_block_selector(EMBED_DIM, 2.0);
-        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+        let out = head.encode_rule(&z_lhs, &z_rhs);
 
         for k in 0..EMBED_DIM {
             let expected = 2.0 * z_rhs[k];
@@ -775,14 +749,11 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_should_place_the_elementwise_difference_at_the_third_concat_block() {
-        let backbone = test_backbone();
-        let (arena, lhs, rhs) = sample_rule_arena();
-        let z_lhs = embed_of(&backbone, &arena, lhs);
-        let z_rhs = embed_of(&backbone, &arena, rhs);
+    fn encode_rule_should_place_the_elementwise_difference_at_the_third_concat_block() {
+        let (z_lhs, z_rhs) = sample_rule_embeddings();
 
         let head = concat_block_selector(2 * EMBED_DIM, 2.0);
-        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+        let out = head.encode_rule(&z_lhs, &z_rhs);
 
         for k in 0..EMBED_DIM {
             let expected = 2.0 * (z_lhs[k] - z_rhs[k]);
@@ -795,14 +766,11 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_should_place_the_elementwise_product_at_the_fourth_concat_block() {
-        let backbone = test_backbone();
-        let (arena, lhs, rhs) = sample_rule_arena();
-        let z_lhs = embed_of(&backbone, &arena, lhs);
-        let z_rhs = embed_of(&backbone, &arena, rhs);
+    fn encode_rule_should_place_the_elementwise_product_at_the_fourth_concat_block() {
+        let (z_lhs, z_rhs) = sample_rule_embeddings();
 
         let head = concat_block_selector(3 * EMBED_DIM, 2.0);
-        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+        let out = head.encode_rule(&z_lhs, &z_rhs);
 
         for k in 0..EMBED_DIM {
             let expected = 2.0 * (z_lhs[k] * z_rhs[k]);
@@ -1074,21 +1042,19 @@ mod tests {
     }
 
     #[test]
-    fn forward_graph_should_clamp_a_negative_preactivation_before_the_shared_trunk() {
+    fn forward_graph_should_clamp_a_negative_preactivation_before_the_trunk() {
         // `apply_trunk` ends in its own ReLU, so an identity trunk cannot
         // separate the two stages — a negative lane is clamped either way.
         // A negating trunk can: clamped-then-negated stays 0, while
         // negated-without-clamping becomes positive and survives the trunk's
         // own ReLU.
-        let mut backbone = ExprNnue::new();
-        for i in 0..HIDDEN_DIM {
-            backbone.trunk_w[i][i] = -1.0;
-        }
-
         let mut head = SaturationHead::new();
+        for i in 0..HIDDEN_DIM {
+            head.trunk_w[i][i] = -1.0;
+        }
         head.graph_b1 = [-1.0; HIDDEN_DIM];
 
-        let hidden = head.forward_graph(&backbone, &GraphAccumulator::new());
+        let hidden = head.forward_graph(&GraphAccumulator::new());
 
         for (j, &h) in hidden.iter().enumerate() {
             assert!(
@@ -1100,21 +1066,20 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_should_start_the_projection_from_the_rule_bias() {
+    fn encode_rule_should_start_the_projection_from_the_rule_bias() {
         // Every selector fixture above leaves `rule_proj_b` at zero, and
         // `randomize` deliberately zeroes it too, so replacing
         // `let mut out = self.rule_proj_b` with an all-zero array is
         // invisible everywhere else. Zero the projection weights and give the
         // bias distinct lanes: the output is then exactly the bias.
-        let backbone = test_backbone();
-        let (arena, lhs, rhs) = sample_rule_arena();
+        let (z_lhs, z_rhs) = sample_rule_embeddings();
 
         let mut head = SaturationHead::new();
         for k in 0..EMBED_DIM {
             head.rule_proj_b[k] = k as f32 + 1.0;
         }
 
-        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+        let out = head.encode_rule(&z_lhs, &z_rhs);
 
         for (k, &v) in out.iter().enumerate() {
             let want = k as f32 + 1.0;
@@ -1127,12 +1092,9 @@ mod tests {
 
     #[test]
     fn mask_score_all_rules_graph_should_compose_the_graph_tower_projection_and_scorer() {
-        // `Guide::score_candidates` routes through this path, but the only
-        // exact composition test covers the `_with_hidden` variant; the graph
-        // variant was checked for length and finiteness alone. Rewiring it to
-        // `backbone.compute_expr_embed` instead of `self.compute_graph_embed`
-        // would go unnoticed.
-        let backbone = test_backbone();
+        // `Guide::score_candidates` routes through this path; pin the exact
+        // composition so a rewiring of any stage cannot go unnoticed behind a
+        // length-and-finiteness check.
         let mut head = SaturationHead::new();
         head.randomize(7);
 
@@ -1143,13 +1105,13 @@ mod tests {
         gacc.node_count = 3;
         gacc.edge_count = 2;
 
-        let (arena, lhs, rhs) = sample_rule_arena();
-        let rule = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+        let (z_lhs, z_rhs) = sample_rule_embeddings();
+        let rule = head.encode_rule(&z_lhs, &z_rhs);
         let rules = [rule];
 
-        let got = head.mask_score_all_rules_graph(&backbone, &gacc, &rules);
+        let got = head.mask_score_all_rules_graph(&gacc, &rules);
 
-        let hidden = head.forward_graph(&backbone, &gacc);
+        let hidden = head.forward_graph(&gacc);
         let graph_embed = head.compute_graph_embed(&hidden);
         let mask_features = head.compute_mask_features(&graph_embed);
         let want = head.bilinear_score(&mask_features, &rules[0]);

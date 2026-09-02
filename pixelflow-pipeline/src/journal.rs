@@ -1,10 +1,9 @@
 //! The one research-journal writer.
 //!
 //! A journal line is a claim about a run: what config produced it, what
-//! numbers came out. Two binaries write one — `bootstrap_extraction_head`
-//! (training quality) and `bench_extraction_3way` (extraction-policy
-//! benchmarks) — each with its own record schema (the fields genuinely
-//! differ; that stays), but both need the *same* append mechanics: serialize
+//! numbers came out. Every journal-writing binary has its own record schema
+//! (the fields genuinely differ; that stays), but all need the *same* append
+//! mechanics: serialize
 //! to one JSON line, create the parent directory if it's missing, refuse to
 //! corrupt an unsmudged Git LFS pointer, append-or-panic. That mechanism was
 //! two copies (one of them missing the LFS guard) before this module
@@ -14,11 +13,12 @@
 //!
 //! The mechanics above are the writer's easy half. Its other job — owning the
 //! *shape* every journal line takes, not just how the bytes land — used to be
-//! absent: `bench_extraction_3way` hand-rolled a `config_hash` from source
-//! revision, corpus bytes, weights bytes, protocol params, and the build
-//! environment, entirely inside that one binary; `bootstrap_extraction_head`
-//! wrote a journal line with none of that provenance at all — two runs of it
-//! against different corpora or different commits were indistinguishable.
+//! absent: the (since-deleted) extraction-policy bench hand-rolled a
+//! `config_hash` from source revision, corpus bytes, weights bytes, protocol
+//! params, and the build environment, entirely inside that one binary; the
+//! extraction-head trainer wrote a journal line with none of that provenance
+//! at all — two runs of it against different corpora or different commits
+//! were indistinguishable.
 //! [`ConfigHash`], [`ArtifactId`], and [`JournalEntry`] below are that shared
 //! shape (docs/plans/2026-08-17-cost-model-domain.md, J15): every
 //! journal-writing binary composes a `ConfigHash` the same way, names its
@@ -307,10 +307,9 @@ impl ArtifactId {
         }
     }
 
-    /// Name `path` with an identity already computed elsewhere (e.g.
-    /// [`crate::training::mint::MintMetadata::weights_fnv64`], so a caller
-    /// that already loaded the mint sidecar need not re-hash the weights
-    /// bytes just to fill this in).
+    /// Name `path` with an identity already computed elsewhere, so a caller
+    /// that already hashed the artifact's bytes need not re-hash them just
+    /// to fill this in.
     #[must_use]
     pub fn with_identity(path: impl Into<String>, identity: impl Into<String>) -> Self {
         Self {

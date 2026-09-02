@@ -526,6 +526,116 @@ pub fn find_hoistable_out_of(
 // which consume the whole per-node table; `find_hoistable_out_of` and
 // `find_hoistable_arena_nodes` are not callers at all — they take an
 // already-computed variance slice from theirs.
+/// The extents of the lattice a kernel is compiled for: samples per axis,
+/// `[x, y, z, w]`.
+///
+/// A kernel together with its lattice is a closed, finite, loop-free
+/// expression: every axis has a static extent, so the whole program is one
+/// straight-line DAG and a loop is only its run-length-encoded form. This is
+/// the compile-time half of `pixelflow_core::Lattice` — the same `extent`,
+/// with `origin` erased and nothing else erased. It is part of every compile
+/// cache key, so a lattice of a different size is a different kernel:
+/// resizing is recompilation, by decision
+/// (`docs/plans/2026-09-01-loop-aware-codegen.md`).
+///
+/// An axis of extent 1 is a per-call constant; an axis of larger extent is a
+/// binder the emitted code either distributes (unrolls) or factors (loops).
+/// [`varying`](Self::varying) names the binders as a [`Variance`], so
+/// `deps(node) ∩ shape.varying()` is the scope a node's value lives at.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct LatticeShape([u32; 4]);
+
+impl LatticeShape {
+    /// No lattice: one batch of caller-supplied points per call, as every
+    /// per-batch `eval` does. Nothing is a binder.
+    pub const POINT: Self = Self([1, 1, 1, 1]);
+
+    /// A lattice with these samples per axis.
+    #[inline]
+    #[must_use]
+    pub const fn new(extent: [u32; 4]) -> Self {
+        Self(extent)
+    }
+
+    /// Samples per axis, `[x, y, z, w]`.
+    #[inline]
+    #[must_use]
+    pub const fn extent(self) -> [u32; 4] {
+        self.0
+    }
+
+    /// The binders: one bit per axis of extent above 1, in [`Variance`]'s
+    /// order. Equal to `pixelflow_core::Lattice::loop_mask()` for the same
+    /// extents.
+    #[inline]
+    #[must_use]
+    pub const fn varying(self) -> Variance {
+        let mut bits = 0u8;
+        let mut axis = 0;
+        while axis < 4 {
+            if self.0[axis] > 1 {
+                bits |= 1 << axis;
+            }
+            axis += 1;
+        }
+        Variance(bits)
+    }
+
+    /// How many times this lattice evaluates a value whose dependencies are
+    /// `deps` — the weight its cost carries in the whole program.
+    ///
+    /// The loop nest runs W outermost to X innermost, and nothing is
+    /// materialized, so a value is recomputed once per iteration of the
+    /// innermost binder it depends on: the product of the extents from that
+    /// axis outward. A value depending on X runs at every sample; one
+    /// depending only on Z runs once per Z plane; one depending on nothing
+    /// runs once per call. That single rule is loop-invariant code motion,
+    /// hoisting out of a reduction, and constant folding, priced.
+    ///
+    /// A dependency on a reduction binder counts as the innermost scope: the
+    /// binder sits inside the coordinate nest and this type does not carry
+    /// its extent. Binders are distributed before the e-graph sees them, so
+    /// the case does not arise in practice.
+    #[inline]
+    #[must_use]
+    pub const fn evals(self, deps: Variance) -> u64 {
+        let innermost = if deps.depends_on_binder() {
+            0
+        } else {
+            let bits = deps.bits();
+            if bits == 0 {
+                return 1;
+            }
+            bits.trailing_zeros() as usize
+        };
+        let mut count: u64 = 1;
+        let mut axis = innermost;
+        while axis < 4 {
+            count *= self.0[axis] as u64;
+            axis += 1;
+        }
+        count
+    }
+
+    /// The extents serialized little-endian, for cache keys.
+    #[inline]
+    #[must_use]
+    pub const fn key_bytes(self) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        let mut axis = 0;
+        while axis < 4 {
+            let b = self.0[axis].to_le_bytes();
+            let mut k = 0;
+            while k < 4 {
+                out[axis * 4 + k] = b[k];
+                k += 1;
+            }
+            axis += 1;
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,5 +879,69 @@ mod tests {
                 .any(|id| matches!(arena.node(*id), ExprNode::Unary(OpKind::Sin, _))),
             "sin(Y) must not be hoistable out of Y, got {out_of_y:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod lattice_shape_tests {
+    use super::{LatticeShape, Variance};
+
+    #[test]
+    fn binders_are_the_axes_with_extent_above_one() {
+        assert_eq!(LatticeShape::POINT.varying(), Variance::CONST);
+        assert_eq!(LatticeShape::new([37, 1, 1, 1]).varying(), Variance::X);
+        assert_eq!(
+            LatticeShape::new([8, 8, 1, 1]).varying(),
+            Variance::X.union(Variance::Y)
+        );
+        assert_eq!(
+            LatticeShape::new([8, 8, 4, 1]).varying(),
+            Variance::X.union(Variance::Y).union(Variance::Z)
+        );
+        assert_eq!(LatticeShape::new([1, 1, 1, 2]).varying(), Variance::W);
+    }
+
+    #[test]
+    fn evals_counts_the_iterations_of_the_innermost_binder_depended_on() {
+        let frame = LatticeShape::new([1920, 1080, 1, 1]);
+        // Per sample, per row, per call — the three scopes the collapse loop
+        // already has, as numbers.
+        assert_eq!(frame.evals(Variance::X), 1920 * 1080);
+        assert_eq!(frame.evals(Variance::X.union(Variance::Y)), 1920 * 1080);
+        assert_eq!(frame.evals(Variance::Y), 1080);
+        assert_eq!(frame.evals(Variance::CONST), 1);
+        // Z and W are per-call in a frame, so anything not touching X or Y
+        // is evaluated once.
+        assert_eq!(frame.evals(Variance::Z), 1);
+        assert_eq!(frame.evals(Variance::Z.union(Variance::W)), 1);
+        // X dominates: the innermost dependency sets the scope.
+        assert_eq!(frame.evals(Variance::X.union(Variance::Z)), 1920 * 1080);
+
+        // A volume of Z planes: a Z-only value is computed once per plane.
+        let volume = LatticeShape::new([64, 32, 8, 2]);
+        assert_eq!(volume.evals(Variance::Z), 8 * 2);
+        assert_eq!(volume.evals(Variance::W), 2);
+        assert_eq!(volume.evals(Variance::Y), 32 * 8 * 2);
+        assert_eq!(volume.evals(Variance::X), 64 * 32 * 8 * 2);
+
+        // No lattice: everything is evaluated exactly once, so weighting a
+        // cost by `evals` leaves it unchanged.
+        for deps in [Variance::CONST, Variance::X, Variance::COORDS] {
+            assert_eq!(LatticeShape::POINT.evals(deps), 1);
+        }
+
+        // A reduction binder sits inside the coordinate nest, and this type
+        // does not carry its extent: count it as the innermost scope.
+        assert_eq!(frame.evals(Variance::from_var(4)), 1920 * 1080);
+    }
+
+    #[test]
+    fn key_bytes_are_the_extents_and_distinguish_sizes() {
+        let a = LatticeShape::new([8, 8, 1, 1]);
+        let b = LatticeShape::new([9, 8, 1, 1]);
+        assert_eq!(a.key_bytes()[..4], 8u32.to_le_bytes());
+        assert_eq!(a.key_bytes()[4..8], 8u32.to_le_bytes());
+        assert_ne!(a.key_bytes(), b.key_bytes());
+        assert_eq!(a.extent(), [8, 8, 1, 1]);
     }
 }

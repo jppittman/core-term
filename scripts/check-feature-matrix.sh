@@ -8,14 +8,14 @@
 # broken: nothing else in the workspace needed `bitflags/serde`, so
 # `--all-features` never noticed it wasn't wired up.
 #
-# One gap is already known and tracked elsewhere (pixelflow-search's std-off
-# build) -- see the `std-off-status` job. This script is not the place to fix
-# that; it exists so any *other*, *new* single-feature break gets caught
-# automatically instead of requiring another one-off manual audit like the
-# one that found the pixelflow-graphics bug in the first place.
+# No gap is currently known: KNOWN_BROKEN below is empty, and this script
+# exists so any single-feature break gets caught automatically instead of
+# requiring another one-off manual audit like the one that found the
+# pixelflow-graphics bug in the first place.
 # (pixelflow-ir's no_std build went green on 2026-08-02 and its `oracle`
-# feature on 2026-08-08; both are enforced by the `no-std` job now, so they
-# are deliberately NOT listed below -- a regression must fail this script.)
+# feature on 2026-08-08; pixelflow-search's std-off build joined them on
+# 2026-08-30. All three are enforced by the `no-std` job now, so they are
+# deliberately NOT listed below -- a regression must fail this script.)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,18 +24,13 @@ cd "$repo_root"
 # Each entry is "<crate>|<space-separated --no-default-features feature args>"
 # exactly as cargo-hack prints it in its "failed commands:" summary.
 #
-# Both pixelflow-search entries are the same single defect: `ExprNnue::from_bytes`
-# is used unguarded in `egraph/extraction.rs` while its definition sits behind the
-# `std` feature, so *every* std-off combination of that crate fails identically
-# (same error, same line). Adding a feature to pixelflow-search therefore adds a
-# row here rather than revealing anything new -- `extraction-profile` is off by
-# default and its own code compiles fine. The defect itself is tracked by the
-# `std-off-status` job and documented at the top of `egraph/extraction.rs`; when
-# it is fixed, both entries go away together.
-KNOWN_BROKEN=(
-  "pixelflow-search|"
-  "pixelflow-search|--features extraction-profile"
-)
+# Empty, and worth keeping that way: an entry here suppresses a real failure,
+# so every one is a hole in this job. The two pixelflow-search rows that lived
+# here were both the same defect -- a std-only weights loader used unguarded in
+# `egraph/extraction.rs` -- and both the loader and the feature that gated it
+# were deleted with the extraction-head program (2026-09-01). Nothing else is
+# known broken, so any failure below is news.
+KNOWN_BROKEN=()
 
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT

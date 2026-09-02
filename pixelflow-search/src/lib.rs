@@ -7,3 +7,5 @@ pub mod egraph;
 pub mod math;
 pub mod nnue;
 pub mod runtime;
+#[cfg(feature = "saturation-telemetry")]
+pub mod telemetry;

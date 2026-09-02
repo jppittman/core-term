@@ -73,3 +73,11 @@ display_cocoa = ["pixelflow-runtime/display_cocoa"]
 display_x11 = ["pixelflow-runtime/display_x11"]
 default = []
 profiling = ["pprof"]
+# `cargo run -p core-term --features saturation-telemetry` records every
+# e-graph saturation run (macro-tier `kernel!` expansions plus runtime-tier
+# glyph/lattice bakes) as JSONL — to `PIXELFLOW_SATURATION_TELEMETRY` if set,
+# else stderr. See `pixelflow-search/src/telemetry.rs`.
+saturation-telemetry = [
+    "pixelflow-core/saturation-telemetry",
+    "pixelflow-runtime/saturation-telemetry",
+]

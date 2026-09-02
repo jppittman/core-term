@@ -80,12 +80,11 @@ pub trait SchemaIdentity {
     const SCHEMA_IDENTITY: u64 = fnv1a64_const(Self::SCHEMA.as_bytes());
 }
 
-/// Unix seconds now — shared by every persisted-artifact timestamp
-/// ([`crate::journal::JournalEntry::ts_unix`],
-/// [`crate::training::mint::MintMetadata::written_at_unix_s`]) so the two
-/// don't drift into different clocks. Lives here (unconditionally compiled)
-/// rather than in the `training`-gated `mint` module, so `journal` — used
-/// regardless of the `training` feature — can share it too.
+/// Unix seconds now — the one clock every persisted-artifact timestamp
+/// ([`crate::journal::JournalEntry::ts_unix`]) is stamped from, so two
+/// artifacts cannot drift into different clocks. Lives here (unconditionally
+/// compiled) so `journal` — used regardless of the `training` feature — can
+/// share it.
 ///
 /// # Panics
 ///
