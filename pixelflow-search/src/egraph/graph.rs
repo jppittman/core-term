@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use super::cost::{CostFunction, CostModel};
 use super::node::{EClassId, ENode};
 use super::ops::{self, Op};
-use super::provenance::{ApplicationRecord, ENodeId, Origin, Provenance, UnionEvent};
+#[cfg(feature = "provenance-journal")]
+use super::provenance::{ApplicationRecord, Origin, UnionEvent};
+use super::provenance::{ENodeId, Provenance};
 use super::rewrite::{Rewrite, RewriteAction};
 use super::rules::RuleId;
 use pixelflow_ir::kind::OpKind;
@@ -35,6 +37,7 @@ pub(crate) struct EClass {
 /// responsible for e-nodes/unions created by `add()`/`union()`. Set for the
 /// duration of `apply_action_from_rule`, `None` otherwise (e.g. during
 /// `rebuild_budgeted`'s congruence-closure unions, or seed insertion).
+#[cfg(feature = "provenance-journal")]
 #[derive(Clone, Copy, Debug)]
 struct ActiveApplication {
     rule_idx: usize,
@@ -64,6 +67,7 @@ pub struct EGraph {
     provenance: Provenance,
     /// Which rewrite application (if any) is currently executing — read by
     /// `add()`/`union()` to attribute newly created nodes/unions.
+    #[cfg(feature = "provenance-journal")]
     active_application: Option<ActiveApplication>,
     /// The constant each class is known to equal, as f32 bits, indexed by
     /// class id — maintained independently of `EClass::nodes` on purpose.
@@ -82,7 +86,7 @@ pub struct EGraph {
     ///
     /// Independent of the provenance log on purpose: an application budget
     /// must be enforceable whether or not anyone is observing, and reading
-    /// the budget off `provenance().application_count()` would make
+    /// the budget off `provenance().recorded_count()` would make
     /// recording a load-bearing part of saturation rather than an
     /// observation of it.
     applications: u64,
@@ -92,6 +96,7 @@ pub struct EGraph {
     /// [`super::optimizer::Optimizer`] turns it on exactly when an
     /// [`Observer`](super::optimizer::Observer) is attached. Defaults to
     /// `true`, so every direct `EGraph` caller keeps what it had.
+    #[cfg(feature = "provenance-journal")]
     record_provenance: bool,
     /// Application ceiling for the current run, or `None`. Set for the
     /// duration of [`EGraph::saturate_budgeted`].
@@ -117,10 +122,12 @@ impl Clone for EGraph {
             next_enode_id: self.next_enode_id,
             step: self.step,
             provenance: self.provenance.clone(),
+            #[cfg(feature = "provenance-journal")]
             active_application: self.active_application,
             const_fact: self.const_fact.clone(),
             refused_const_unions: self.refused_const_unions.clone(),
             applications: self.applications,
+            #[cfg(feature = "provenance-journal")]
             record_provenance: self.record_provenance,
             application_cap: self.application_cap,
         }
@@ -257,10 +264,12 @@ impl EGraph {
             next_enode_id: 0,
             step: 0,
             provenance: Provenance::new(),
+            #[cfg(feature = "provenance-journal")]
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
             applications: 0,
+            #[cfg(feature = "provenance-journal")]
             record_provenance: true,
             application_cap: None,
         }
@@ -282,10 +291,12 @@ impl EGraph {
             next_enode_id: 0,
             step: 0,
             provenance: Provenance::new(),
+            #[cfg(feature = "provenance-journal")]
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
             applications: 0,
+            #[cfg(feature = "provenance-journal")]
             record_provenance: true,
             application_cap: None,
         }
@@ -357,11 +368,13 @@ impl EGraph {
     /// Off, the graph still counts applications and still enforces an
     /// application budget; it just does not build the log. Turning recording
     /// off does not erase what is already recorded.
+    #[cfg(feature = "provenance-journal")]
     pub fn set_provenance_recording(&mut self, on: bool) {
         self.record_provenance = on;
     }
 
     /// Whether provenance is being recorded.
+    #[cfg(feature = "provenance-journal")]
     #[must_use]
     pub fn provenance_recording(&self) -> bool {
         self.record_provenance
@@ -424,11 +437,14 @@ impl EGraph {
         let id = EClassId(self.classes.len() as u32);
         let enode_id = ENodeId(self.next_enode_id);
         self.next_enode_id += 1;
-        let origin = match self.active_application {
-            Some(active) => Origin::Rule(active.application_id),
-            None => Origin::Seed,
-        };
-        self.provenance.record_origin(enode_id, origin);
+        #[cfg(feature = "provenance-journal")]
+        {
+            let origin = match self.active_application {
+                Some(active) => Origin::Rule(active.application_id),
+                None => Origin::Seed,
+            };
+            self.provenance.record_origin(enode_id, origin);
+        }
         self.const_fact.push(node.as_f32().map(f32::to_bits));
         self.classes.push(EClass {
             nodes: vec![node.clone()],
@@ -518,6 +534,7 @@ impl EGraph {
             self.const_fact[parent.index()] = self.const_fact[child.index()];
         }
         self.worklist.push(parent);
+        #[cfg(feature = "provenance-journal")]
         self.provenance.record_union(UnionEvent {
             rule_idx: self.active_application.map(|a| a.rule_idx),
             step: self.step,
@@ -688,6 +705,7 @@ impl EGraph {
     /// chosen `(EClassId, ENodeId)` pairs (typically the nodes an extraction
     /// pass selected). See [`super::provenance::derivation_ancestors`] for
     /// the exact over-approximation made.
+    #[cfg(feature = "provenance-journal")]
     pub fn derivation_ancestors(
         &self,
         chosen_nodes: &[(EClassId, ENodeId)],
@@ -712,6 +730,7 @@ impl EGraph {
     /// Render a human-readable derivation trace for the given ancestry set
     /// (from [`EGraph::derivation_ancestors`]), resolving rule names via
     /// this e-graph's rule list.
+    #[cfg(feature = "provenance-journal")]
     pub fn format_derivation_trace(
         &self,
         ancestors: &std::collections::BTreeSet<super::provenance::ApplicationId>,
@@ -1420,34 +1439,45 @@ impl EGraph {
         // anyone is watching.
         self.applications += 1;
 
-        if !self.record_provenance {
-            return self.apply_action(class_id, action);
+        #[cfg(feature = "provenance-journal")]
+        {
+            if !self.record_provenance {
+                return self.apply_action(class_id, action);
+            }
+
+            let minted_from = self.next_enode_id;
+            let application_id = self.provenance.record_application(ApplicationRecord {
+                rule: self.rule_ids.get(rule_idx).copied(),
+                rule_idx,
+                step: self.step,
+                match_root: class_id,
+                minted: minted_from..minted_from,
+                unions: 0,
+            });
+            let previous = self.active_application.replace(ActiveApplication {
+                rule_idx,
+                application_id,
+            });
+            let result = self.apply_action(class_id, action);
+            self.active_application = previous;
+            // The record is opened before the action runs (so `add`/`union`
+            // can attribute to it) and closed after, which is the only order
+            // in which "what did this application mint" is answerable.
+            self.provenance.complete_application(
+                application_id,
+                minted_from..self.next_enode_id,
+                result,
+            );
+            return result;
         }
 
-        let minted_from = self.next_enode_id;
-        let application_id = self.provenance.record_application(ApplicationRecord {
-            rule: self.rule_ids.get(rule_idx).copied(),
-            rule_idx,
-            step: self.step,
-            match_root: class_id,
-            minted: minted_from..minted_from,
-            unions: 0,
-        });
-        let previous = self.active_application.replace(ActiveApplication {
-            rule_idx,
-            application_id,
-        });
-        let result = self.apply_action(class_id, action);
-        self.active_application = previous;
-        // The record is opened before the action runs (so `add`/`union` can
-        // attribute to it) and closed after, which is the only order in
-        // which "what did this application mint" is answerable.
-        self.provenance.complete_application(
-            application_id,
-            minted_from..self.next_enode_id,
-            result,
-        );
-        result
+        #[cfg(not(feature = "provenance-journal"))]
+        {
+            // `rule_idx` is only needed to attribute a journal record —
+            // with the journal compiled out there is nothing to attribute.
+            let _ = rule_idx;
+            self.apply_action(class_id, action)
+        }
     }
 
     /// Apply a rewrite action and return 1 if a union was made, 0 otherwise.
@@ -2785,7 +2815,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(eg.provenance().application_count(), 0);
+        assert_eq!(eg.provenance().recorded_count(), 0);
         assert_eq!(eg.provenance().union_count(), 0);
 
         let target = find_target(&eg, "commutative");
@@ -2796,7 +2826,7 @@ mod tests {
 
         // Hand-derivation: exactly one application recorded, for the
         // "commutative" rule, matched against `sum`'s class.
-        assert_eq!(eg.provenance().application_count(), 1);
+        assert_eq!(eg.provenance().recorded_count(), 1);
         let record = eg.provenance().application(ApplicationId(0)).unwrap();
         assert_eq!(record.rule_idx, target.rule_idx);
         assert_eq!(record.match_root, eg.find(sum));
@@ -2861,7 +2891,7 @@ mod tests {
         let target_b = find_target_in_class(&eg, "commutative", eg.find(outer));
         assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.node_idx));
         let app_b = ApplicationId(1);
-        assert_eq!(eg.provenance().application_count(), 2);
+        assert_eq!(eg.provenance().recorded_count(), 2);
 
         // Find B's produced node: the rule-created node in outer's class
         // whose origin is app_b.
@@ -2982,7 +3012,7 @@ mod tests {
             "provenance overhead: saturation took {:?}; origins={} applications={} unions={} classes={}",
             elapsed,
             eg.provenance().origin_count(),
-            eg.provenance().application_count(),
+            eg.provenance().recorded_count(),
             eg.provenance().union_count(),
             eg.num_classes(),
         );

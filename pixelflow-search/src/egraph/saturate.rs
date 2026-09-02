@@ -174,10 +174,24 @@ pub fn saturate_with_full_budget(
 pub struct SaturationConfig {
     /// Rewrite-round budget (each round applies every rule once).
     pub max_iterations: usize,
-    /// Wall-clock budget for the whole run.
-    pub hard_timeout: std::time::Duration,
     /// E-class count budget — caps pathological e-graph blowup.
     pub max_classes: usize,
+    /// Rule-application budget — deterministic replacement for wall clock
+    /// as a *stopping condition*. See
+    /// `docs/plans/2026-09-01-production-budget-determinism.md` for the
+    /// calibration (40 applications per e-class of the tier's own class
+    /// cap, 1.9x the highest applications-per-class ratio ever observed).
+    pub max_applications: u64,
+    /// Wall-clock **assertion**, not a budget dimension: exceeding it is a
+    /// bug in the budget (or the ceiling), so [`Optimizer::hard_ceiling`]
+    /// panics rather than silently truncating and reporting success — which
+    /// is what the old `hard_timeout` did when passed into
+    /// [`EGraph::saturate_with_limits`]. Named `safety_ceiling` rather than
+    /// `hard_timeout` to make that distinction unmissable at every call
+    /// site.
+    ///
+    /// [`Optimizer::hard_ceiling`]: super::optimizer::Optimizer::hard_ceiling
+    pub safety_ceiling: std::time::Duration,
 }
 
 impl SaturationConfig {
@@ -185,8 +199,9 @@ impl SaturationConfig {
     pub fn blitz() -> Self {
         Self {
             max_iterations: 20,
-            hard_timeout: std::time::Duration::from_millis(10),
             max_classes: 500,
+            max_applications: 20_000,
+            safety_ceiling: std::time::Duration::from_secs(30),
         }
     }
 
@@ -194,8 +209,9 @@ impl SaturationConfig {
     pub fn rapid() -> Self {
         Self {
             max_iterations: 50,
-            hard_timeout: std::time::Duration::from_millis(50),
-            max_classes: 2000,
+            max_classes: 2_000,
+            max_applications: 80_000,
+            safety_ceiling: std::time::Duration::from_secs(120),
         }
     }
 
@@ -203,13 +219,14 @@ impl SaturationConfig {
     pub fn classical() -> Self {
         Self {
             max_iterations: 100,
-            hard_timeout: std::time::Duration::from_millis(200),
-            max_classes: 5000,
+            max_classes: 5_000,
+            max_applications: 200_000,
+            safety_ceiling: std::time::Duration::from_secs(300),
         }
     }
 
-    /// The pre-2026-09 fixed budget — 10,000 e-classes and 500 ms — with the
-    /// caller's own round count.
+    /// The pre-2026-09 fixed budget — 10,000 e-classes and 500 ms, no
+    /// application cap — with the caller's own round count.
     ///
     /// **Not a production preset.** Production sizes its budget from the
     /// expression via [`config_for_node_count`], reached through
@@ -219,7 +236,10 @@ impl SaturationConfig {
     /// labeler, and offline measurement harnesses — so the budget is named
     /// once here instead of the same two magic numbers being re-spelled at
     /// every such site, where they would drift apart the moment one of them
-    /// was revised.
+    /// was revised. `max_applications` is `u64::MAX`: an application budget
+    /// was never one of the three dimensions this regime bounded, and giving
+    /// it a finite value here would silently change what these sites
+    /// reproduce.
     ///
     /// The round count stays a parameter because it always was one: the
     /// budget these sites inherited fixed the class cap and the deadline but
@@ -229,25 +249,31 @@ impl SaturationConfig {
     ///
     /// ```ignore
     /// SaturationConfig {
-    ///     hard_timeout: SAFETY_CEILING, // offline: measuring caps, not the machine
+    ///     safety_ceiling: SAFETY_CEILING, // offline: measuring caps, not the machine
     ///     ..SaturationConfig::compatibility(100)
     /// }
     /// ```
     pub fn compatibility(max_iterations: usize) -> Self {
         Self {
             max_iterations,
-            hard_timeout: std::time::Duration::from_millis(500),
             max_classes: 10_000,
+            max_applications: u64::MAX,
+            safety_ceiling: std::time::Duration::from_millis(500),
         }
     }
 
     /// Run one saturation of `egraph` under this budget.
     ///
-    /// The three fields are exactly [`EGraph::saturate_with_limits`]'s three
-    /// arguments, so this spares every caller from unpacking them — and from
-    /// re-deriving the order.
+    /// Goes through [`EGraph::saturate_with_limits`], which knows only
+    /// three limits (rounds, classes, a real wall-clock deadline) — the
+    /// same regime [`SaturationConfig::compatibility`] exists to reproduce.
+    /// `max_applications` is not threaded through here: no caller of this
+    /// method wants an application-budgeted, clock-truncated run at once,
+    /// and production reaches the application budget through
+    /// [`Optimizer::run`](super::optimizer::Optimizer::run) /
+    /// [`EGraph::saturate_budgeted`] instead, which never looks at a clock.
     pub fn run(&self, egraph: &mut EGraph) -> super::graph::SaturationStats {
-        egraph.saturate_with_limits(self.max_iterations, self.max_classes, self.hard_timeout)
+        egraph.saturate_with_limits(self.max_iterations, self.max_classes, self.safety_ceiling)
     }
 }
 
@@ -263,10 +289,23 @@ impl SaturationConfig {
 /// macro tier, reachable-arena-node count for the runtime tier both serve
 /// equally well as "how big is this expression".
 pub fn config_for_node_count(node_count: usize) -> SaturationConfig {
+    tier_for_node_count(node_count).1
+}
+
+/// The one place the tier thresholds live: a tier's **name** and its
+/// **budget** come out of the same match, so a diagnostic that names a tier
+/// can never disagree with the budget it is describing.
+///
+/// [`config_for_node_count`] is the budget half. The name half exists for
+/// [`Optimizer::run`](super::optimizer::Optimizer::run)'s safety-ceiling
+/// panic, which has to say *which* tier's ceiling was exceeded — and which,
+/// spelled as its own `match` on `node_count`, would be a second copy of
+/// this table, free to drift out of step with it.
+pub(crate) fn tier_for_node_count(node_count: usize) -> (&'static str, SaturationConfig) {
     match node_count {
-        0..=10 => SaturationConfig::blitz(),
-        11..=50 => SaturationConfig::rapid(),
-        _ => SaturationConfig::classical(),
+        0..=10 => ("blitz", SaturationConfig::blitz()),
+        11..=50 => ("rapid", SaturationConfig::rapid()),
+        _ => ("classical", SaturationConfig::classical()),
     }
 }
 

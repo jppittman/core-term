@@ -474,7 +474,7 @@ fn make_checkpoint(
     Checkpoint {
         frac,
         iteration,
-        applications: egraph.provenance().application_count(),
+        applications: egraph.provenance().recorded_count(),
         classes: egraph.num_classes(),
         nodes: egraph.node_count(),
         // The cost of the kernel this checkpoint would EMIT: each distinct
@@ -757,7 +757,7 @@ fn measure_expression(item: &CorpusItem) -> ExprMeasurement {
         oracle_quiesced_before_nominal: oc_quiesced.map(|q| q < n_iters).unwrap_or(false),
         better_form_gap_pct,
         load_bearing: labels.load_bearing.len(),
-        total_applications: uc_egraph.provenance().application_count(),
+        total_applications: uc_egraph.provenance().recorded_count(),
         credited_non_direct,
     }
 }

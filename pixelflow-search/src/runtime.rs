@@ -180,7 +180,7 @@ fn optimize_runtime_arena_uncached(
         tier: crate::telemetry::Tier::Runtime,
         node_count,
         stats: &optimized.stats,
-        union_count: egraph.provenance().union_count(),
+        union_count: optimized.stats.unions,
         extracted_arena: &extracted,
         extracted_root,
         wall_clock: telemetry_start.elapsed(),
@@ -2307,7 +2307,7 @@ mod production_telemetry {
                 root,
                 config.max_iterations,
                 config.max_classes,
-                config.hard_timeout,
+                config.safety_ceiling,
             );
 
             // Two generous runs share one per-kernel ceiling: `refr` keeps

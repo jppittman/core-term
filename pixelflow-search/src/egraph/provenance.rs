@@ -49,7 +49,10 @@
 //! larger provenance log for simpler, drift-proof bookkeeping (see that
 //! function's doc comment).
 
-use std::collections::{BTreeSet, HashMap};
+#[cfg(feature = "provenance-journal")]
+use std::collections::BTreeSet;
+#[cfg(feature = "provenance-journal")]
+use std::collections::HashMap;
 
 use super::node::EClassId;
 
@@ -82,6 +85,7 @@ impl ApplicationId {
 }
 
 /// Where an e-node came from.
+#[cfg(feature = "provenance-journal")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     /// Inserted directly (e.g. via `add_arena` before saturation, or any
@@ -97,6 +101,7 @@ pub enum Origin {
 /// `saturate_with_limits` loop iteration — coarser than per-rule-application
 /// but cheap (a single counter) and sufficient to order firings into
 /// generations for the derivation trace.
+#[cfg(feature = "provenance-journal")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApplicationRecord {
     /// Which rule fired, by stable identity.
@@ -127,6 +132,7 @@ pub struct ApplicationRecord {
     pub unions: usize,
 }
 
+#[cfg(feature = "provenance-journal")]
 impl ApplicationRecord {
     /// Whether this application changed the graph's partition.
     ///
@@ -152,6 +158,7 @@ impl ApplicationRecord {
 /// `rule_idx: None` marks unions performed by congruence closure during
 /// rebuild (i.e. `rebuild_budgeted` discovering two nodes are now equal
 /// after canonicalization) rather than by a rewrite rule directly.
+#[cfg(feature = "provenance-journal")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnionEvent {
     /// The rule that caused this union, if any (`None` for congruence
@@ -173,10 +180,13 @@ pub struct UnionEvent {
 #[derive(Clone, Debug, Default)]
 pub struct Provenance {
     /// `ENodeId -> Origin`, one entry per node ever created.
+    #[cfg(feature = "provenance-journal")]
     origins: HashMap<ENodeId, Origin>,
     /// Log of every rewrite firing, indexed by `ApplicationId`.
+    #[cfg(feature = "provenance-journal")]
     applications: Vec<ApplicationRecord>,
     /// Append-only journal of class merges (rule-driven and congruence).
+    #[cfg(feature = "provenance-journal")]
     unions: Vec<UnionEvent>,
 }
 
@@ -188,11 +198,13 @@ impl Provenance {
 
     /// Record the origin of a freshly created e-node. Called once per
     /// `EGraph::add` memo miss.
+    #[cfg(feature = "provenance-journal")]
     pub(crate) fn record_origin(&mut self, id: ENodeId, origin: Origin) {
         self.origins.insert(id, origin);
     }
 
     /// Record a rewrite firing, returning its `ApplicationId`.
+    #[cfg(feature = "provenance-journal")]
     pub(crate) fn record_application(&mut self, record: ApplicationRecord) -> ApplicationId {
         let id = ApplicationId(self.applications.len() as u64);
         self.applications.push(record);
@@ -201,6 +213,7 @@ impl Provenance {
 
     /// Close a record opened by [`Self::record_application`], now that the
     /// action has run and what it minted and merged is known.
+    #[cfg(feature = "provenance-journal")]
     pub(crate) fn complete_application(
         &mut self,
         id: ApplicationId,
@@ -216,36 +229,50 @@ impl Provenance {
     }
 
     /// Record a class-level merge.
+    #[cfg(feature = "provenance-journal")]
     pub(crate) fn record_union(&mut self, event: UnionEvent) {
         self.unions.push(event);
     }
 
     /// Look up the origin of a node, if known.
+    #[cfg(feature = "provenance-journal")]
     pub fn origin(&self, id: ENodeId) -> Option<Origin> {
         self.origins.get(&id).copied()
     }
 
     /// Look up an application record by id.
+    #[cfg(feature = "provenance-journal")]
     pub fn application(&self, id: ApplicationId) -> Option<&ApplicationRecord> {
         self.applications.get(id.0 as usize)
     }
 
-    /// Number of application records (rewrite firings) recorded.
-    pub fn application_count(&self) -> usize {
+    /// Number of application records (rewrite firings) recorded — the
+    /// journal's *length*.
+    ///
+    /// Distinct from [`super::graph::EGraph::application_count`] (identical
+    /// name, different type, unconditional): the two agree only because the
+    /// journal records every application when it is being kept at all. This
+    /// one is named `recorded_count` rather than `application_count` so the
+    /// two are never mistaken for the same quantity at a call site.
+    #[cfg(feature = "provenance-journal")]
+    pub fn recorded_count(&self) -> usize {
         self.applications.len()
     }
 
     /// Number of union events recorded.
+    #[cfg(feature = "provenance-journal")]
     pub fn union_count(&self) -> usize {
         self.unions.len()
     }
 
     /// Number of e-node origins recorded.
+    #[cfg(feature = "provenance-journal")]
     pub fn origin_count(&self) -> usize {
         self.origins.len()
     }
 
     /// All union events (in chronological order).
+    #[cfg(feature = "provenance-journal")]
     pub fn union_events(&self) -> &[UnionEvent] {
         &self.unions
     }
@@ -258,6 +285,7 @@ impl Provenance {
     /// guided-saturation scoping measurements (`derivation_ancestors`'s
     /// over-approximation looseness, docs/plans/2026-07-07-guided-saturation-redesign.md
     /// lines 88-90): purely additive, no existing behavior touched.
+    #[cfg(feature = "provenance-journal")]
     pub fn origins(&self) -> impl Iterator<Item = (ENodeId, Origin)> + '_ {
         self.origins.iter().map(|(&id, &origin)| (id, origin))
     }
@@ -265,6 +293,7 @@ impl Provenance {
     /// Iterate every recorded application, in firing order, paired with its
     /// `ApplicationId`. The counterpart to indexed lookup via [`Self::application`]
     /// for callers (e.g. the hindsight labeler) that need to walk the whole log.
+    #[cfg(feature = "provenance-journal")]
     pub fn applications(&self) -> impl Iterator<Item = (ApplicationId, &ApplicationRecord)> {
         self.applications
             .iter()
@@ -307,6 +336,7 @@ impl Provenance {
 ///
 /// `chosen_nodes`: the `(EClassId, ENodeId)` pairs whose ancestry to trace —
 /// typically the nodes extraction selected for the final expression.
+#[cfg(feature = "provenance-journal")]
 pub fn derivation_ancestors(
     tags_of: &impl Fn(EClassId) -> Vec<ENodeId>,
     children_of: &impl Fn(ENodeId) -> Vec<EClassId>,
@@ -421,6 +451,7 @@ pub fn derivation_ancestors(
 /// (e.g. the rule list changed since the trace was recorded) fall back to
 /// printing the raw index — this function never panics or silently drops a
 /// line for a resolution failure.
+#[cfg(feature = "provenance-journal")]
 pub fn format_derivation_trace(
     provenance: &Provenance,
     ancestors: &BTreeSet<ApplicationId>,
@@ -483,7 +514,7 @@ mod tests {
         let a1 = p.record_application(app(1, 1, EClassId(1)));
         assert_eq!(a0.as_u64(), 0);
         assert_eq!(a1.as_u64(), 1);
-        assert_eq!(p.application_count(), 2);
+        assert_eq!(p.recorded_count(), 2);
     }
 
     #[test]
