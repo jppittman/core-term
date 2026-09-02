@@ -408,6 +408,100 @@ pub trait RegisterAllocator {
     /// an implementation is free to permute what it is handed, and returns the
     /// order it settled on inside the [`Allocation`].
     fn allocate(&self, dag: Vec<Def>, file: &RegisterFile) -> Allocation;
+
+    /// Allocate a whole loop nest: every region, plus the slot order for the
+    /// values that outlive the region computing them.
+    ///
+    /// The emitter used to call [`allocate`](Self::allocate) once per region
+    /// and work out for itself which values crossed a back edge and where to
+    /// park them. That made loop-carried liveness the *emitter's* concept,
+    /// which is why it could only ever be answered one way — a fixed memory
+    /// slot. Handing the allocator the nest puts the question where the
+    /// answer lives: a value defined in one region and read in a region
+    /// inside it has a live range spanning a back edge, which is an ordinary
+    /// fact about liveness and not a special case.
+    ///
+    /// The policy here is still the old one — every carried value gets a
+    /// slot — so this changes nothing about the code that comes out. It
+    /// changes who is entitled to decide.
+    ///
+    /// Slots are named by index, not by offset: where slot `k` actually sits
+    /// depends on the scaffold's own frame, which is the emitter's business.
+    fn allocate_nest(&self, nest: ScopedSchedule, file: &RegisterFile) -> NestAllocation {
+        let regions = nest
+            .regions
+            .into_iter()
+            .map(|region| RegionAllocation {
+                allocation: self.allocate(region.schedule, file),
+                parked: region.roots,
+            })
+            .collect();
+        NestAllocation {
+            regions,
+            body: self.allocate(nest.body, file),
+        }
+    }
+}
+
+/// A schedule split by scope: the innermost body, plus one region per binder
+/// it can be lifted out of.
+///
+/// This is the loop nest as data. `regions` runs outermost first, so
+/// `regions[0]` is what happens once per call and the last region is what
+/// happens once per iteration of the next-to-innermost binder; `body` is what
+/// happens at every sample. Each region's `roots` are the values it computes
+/// for the regions inside it.
+///
+/// The body is a field rather than the last element of `regions` because it
+/// is genuinely a different thing: it is inside every back edge, it produces
+/// the result, and it parks nothing. A list that could hold it would let the
+/// two be confused.
+pub struct ScopedSchedule {
+    /// One per binder, outermost first. A binder nothing can be lifted out of
+    /// still gets a region; it is simply empty.
+    pub regions: Vec<ScopeRegion>,
+    /// The innermost region: evaluated at every sample.
+    pub body: Vec<Def>,
+}
+
+/// One scope of a [`ScopedSchedule`].
+pub struct ScopeRegion {
+    /// Values this region computes for the ones inside it.
+    pub roots: Vec<ValueId>,
+    /// What it computes, in topological order.
+    pub schedule: Vec<Def>,
+}
+
+/// What an allocator makes of a [`ScopedSchedule`].
+pub struct NestAllocation {
+    /// One per input region, in the same order — outermost first.
+    pub regions: Vec<RegionAllocation>,
+    /// The innermost body.
+    pub body: Allocation,
+}
+
+/// One region's allocation, and what it leaves behind for the regions inside.
+pub struct RegionAllocation {
+    /// Placements and evaluation order for this region alone.
+    pub allocation: Allocation,
+    /// The values this region computes that outlive it, in slot order.
+    pub parked: Vec<ValueId>,
+}
+
+impl NestAllocation {
+    /// Every carried value, outermost region first — the order that defines
+    /// slot indices.
+    pub fn carried(&self) -> impl Iterator<Item = ValueId> + '_ {
+        self.regions.iter().flat_map(|r| r.parked.iter().copied())
+    }
+
+    /// Allocations for every region and then the body, in emission order.
+    pub fn allocations(&self) -> impl Iterator<Item = &Allocation> + '_ {
+        self.regions
+            .iter()
+            .map(|r| &r.allocation)
+            .chain(core::iter::once(&self.body))
+    }
 }
 
 /// Linear scan with Belady eviction and constant rematerialization.
