@@ -20,8 +20,7 @@
 
 use pixelflow_codegen::emit::compile;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
-use pixelflow_search::egraph::{EGraph, SaturationConfig, choices_to_arena, env_extraction_policy};
-use pixelflow_search::math::all_rules;
+use pixelflow_search::egraph::{Budget, Optimizer};
 
 /// Build `sin(sqrt(x*x + y*y) * freq) * amp + bias` as an arena.
 fn build_swirl(freq: f32, amp: f32, bias: f32) -> (ExprArena, ExprId) {
@@ -50,16 +49,20 @@ fn reference(x: f32, y: f32, freq: f32, amp: f32, bias: f32) -> f32 {
 /// extraction policy, returning the extracted DAG. Prints a few diagnostics
 /// so the run is visible.
 fn optimize(arena: &ExprArena, root: ExprId, tag: &str) -> (ExprArena, ExprId) {
-    let mut eg = EGraph::with_rules(all_rules());
+    // The production entry point, held to this test's own round budget.
+    let mut optimizer = Optimizer::production().budget(Budget::Explicit {
+        iterations: 40,
+        classes: 10_000,
+        applications: None,
+    });
+    let mut eg = optimizer.egraph();
     let root_class = eg.add_arena(arena, root);
     let classes_before = eg.num_classes();
 
-    SaturationConfig::compatibility(40).run(&mut eg);
+    let optimized = optimizer.run(&mut eg, root_class, arena.len());
     let classes_after = eg.num_classes();
 
-    // Latency-prior extraction of the cheapest DAG.
-    let extraction = env_extraction_policy().extraction(&eg, root_class);
-    let (out_arena, out_root) = choices_to_arena(&extraction);
+    let (out_arena, out_root) = optimized.to_arena(&eg, root_class);
 
     eprintln!(
         "[{tag}] egraph {classes_before} -> {classes_after} classes, \

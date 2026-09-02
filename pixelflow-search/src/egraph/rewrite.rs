@@ -148,7 +148,31 @@ pub enum RewriteAction {
 /// during parallel trajectory generation.
 pub trait Rewrite: Send + Sync {
     /// Human-readable name for debugging.
+    ///
+    /// This is the *family* name, and eleven families have more than one
+    /// instance in [`crate::egraph::all_rules`] — four `Commutative`s, four
+    /// `Associative`s, and so on. A name alone therefore does not identify a
+    /// rule; [`specialization`](Rewrite::specialization) is the other half.
+    /// Reach for [`crate::egraph::RuleId`] whenever the answer has to survive
+    /// a reordering or an insertion.
     fn name(&self) -> &str;
+
+    /// The operator this instance of the family is specialised to, when the
+    /// family has more than one instance.
+    ///
+    /// `Commutative` is instantiated four times — over `Add`, `Mul`, `Min`,
+    /// `Max` — and all four answer `"commutative"` to
+    /// [`name`](Rewrite::name). The pair `(name, specialization)` is what
+    /// tells them apart, and is what [`crate::egraph::RuleId`] hashes.
+    ///
+    /// Answering with the *operator* rather than a decorated string is the
+    /// subtraction: no per-family string table, no arm to forget, and no
+    /// fallback that would silently re-alias an op nobody enumerated.
+    ///
+    /// Default: `None` — correct for every single-instance rule.
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        None
+    }
 
     /// Try to apply this rule to a node in an e-class.
     /// Returns `Some(action)` if the rule matches.

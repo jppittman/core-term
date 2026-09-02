@@ -121,6 +121,10 @@ impl<T: InversePair> Rewrite for Canonicalize<T> {
         "canonicalize"
     }
 
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        Some(T::derived().kind())
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         if !node_matches_op(node, T::derived()) {
             return None;
@@ -166,6 +170,10 @@ impl<T: InversePair> Default for Involution<T> {
 impl<T: InversePair> Rewrite for Involution<T> {
     fn name(&self) -> &str {
         "involution"
+    }
+
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        Some(T::derived().kind())
     }
     fn is_destructive(&self) -> bool {
         true
@@ -226,6 +234,10 @@ impl<T: InversePair> Default for Cancellation<T> {
 impl<T: InversePair> Rewrite for Cancellation<T> {
     fn name(&self) -> &str {
         "cancellation"
+    }
+
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        Some(T::derived().kind())
     }
     fn is_destructive(&self) -> bool {
         true
@@ -289,6 +301,10 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
         "inverse-annihilation"
     }
 
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        Some(T::derived().kind())
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         if !node_matches_op(node, T::base()) {
             return None;
@@ -349,6 +365,10 @@ impl Rewrite for Associative {
         "associative"
     }
 
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        Some(self.op.kind())
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
         if node_op.kind() != self.op.kind() {
@@ -403,6 +423,10 @@ impl ReverseAssociative {
 impl Rewrite for ReverseAssociative {
     fn name(&self) -> &str {
         "reverse-associative"
+    }
+
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        Some(self.op.kind())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -460,6 +484,10 @@ impl Commutative {
 impl Rewrite for Commutative {
     fn name(&self) -> &str {
         "commutative"
+    }
+
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        Some(self.op.kind())
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -642,6 +670,10 @@ impl Rewrite for Identity {
     fn name(&self) -> &str {
         "identity"
     }
+
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        Some(self.op.kind())
+    }
     fn is_destructive(&self) -> bool {
         true
     }
@@ -736,6 +768,10 @@ impl Idempotent {
 impl Rewrite for Idempotent {
     fn name(&self) -> &str {
         "idempotent"
+    }
+
+    fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
+        Some(self.op.kind())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

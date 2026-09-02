@@ -7,6 +7,7 @@ use super::node::{EClassId, ENode};
 use super::ops::{self, Op};
 use super::provenance::{ApplicationRecord, ENodeId, Origin, Provenance, UnionEvent};
 use super::rewrite::{Rewrite, RewriteAction};
+use super::rules::RuleId;
 use pixelflow_ir::kind::OpKind;
 
 /// A potential rewrite target: (rule, e-class, node within class).
@@ -47,7 +48,13 @@ pub struct EGraph {
     worklist: Vec<EClassId>,
     /// Rules are shared via Arc so EGraph can be cloned for search branching.
     rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
-    pub match_counts: HashMap<String, usize>,
+    /// Stable id per rule, parallel to `rules`. Kept so the graph can name a
+    /// rule by something that survives a reordering; see [`super::rules`].
+    rule_ids: std::sync::Arc<Vec<RuleId>>,
+    /// Matches found per rule, keyed by identity rather than by family name.
+    /// A name-keyed map collapsed all four `Commutative` instances into one
+    /// bucket, so every per-rule report built on it was wrong by aggregation.
+    pub match_counts: HashMap<RuleId, usize>,
     /// Global monotonic counter minting `ENodeId`s in `add()`.
     next_enode_id: u64,
     /// Saturation-iteration counter, advanced once per `saturate_with_limits`
@@ -71,6 +78,24 @@ pub struct EGraph {
     /// Distinct (bits, bits) pairs, kept for reporting and tests; see
     /// [`EGraph::union`].
     refused_const_unions: Vec<(u32, u32)>,
+    /// Rule applications this graph has performed, counted unconditionally.
+    ///
+    /// Independent of the provenance log on purpose: an application budget
+    /// must be enforceable whether or not anyone is observing, and reading
+    /// the budget off `provenance().application_count()` would make
+    /// recording a load-bearing part of saturation rather than an
+    /// observation of it.
+    applications: u64,
+    /// Whether to record provenance. Recording had no production consumer
+    /// (2026-09-01 integration audit) and a production compile discarded a
+    /// median 8 446 records per kernel;
+    /// [`super::optimizer::Optimizer`] turns it on exactly when an
+    /// [`Observer`](super::optimizer::Observer) is attached. Defaults to
+    /// `true`, so every direct `EGraph` caller keeps what it had.
+    record_provenance: bool,
+    /// Application ceiling for the current run, or `None`. Set for the
+    /// duration of [`EGraph::saturate_budgeted`].
+    application_cap: Option<u64>,
 }
 
 impl Default for EGraph {
@@ -87,6 +112,7 @@ impl Clone for EGraph {
             memo: self.memo.clone(),
             worklist: self.worklist.clone(),
             rules: self.rules.clone(), // Arc clone - cheap, shares rules
+            rule_ids: self.rule_ids.clone(),
             match_counts: self.match_counts.clone(),
             next_enode_id: self.next_enode_id,
             step: self.step,
@@ -94,6 +120,9 @@ impl Clone for EGraph {
             active_application: self.active_application,
             const_fact: self.const_fact.clone(),
             refused_const_unions: self.refused_const_unions.clone(),
+            applications: self.applications,
+            record_provenance: self.record_provenance,
+            application_cap: self.application_cap,
         }
     }
 }
@@ -131,6 +160,8 @@ pub enum ScanStop {
     /// commit that follows) was running. Both mean the same thing: this
     /// scan did not finish inside the ceiling.
     Deadline,
+    /// The rule-application budget was reached mid-scan.
+    ApplicationBudget,
 }
 
 /// Why an [`EGraph::saturate_with_limits`] call stopped — an explicit stop
@@ -155,7 +186,14 @@ pub enum SaturationStop {
     IterationCeiling,
     /// The wall-clock safety ceiling elapsed. Offline measurement callers
     /// should treat this as a hard error (fail loud), never as data.
+    ///
+    /// [`EGraph::saturate_budgeted`] can never report this: it takes no
+    /// clock, which is what makes it deterministic.
     Timeout,
+    /// The rule-application budget ran out. The one budget dimension that
+    /// means the same thing to every ordering policy, and so the one a
+    /// research arm can hold two policies to.
+    ApplicationBudget,
 }
 
 /// Result of one [`EGraph::saturate_with_limits`] run: how many rounds it
@@ -176,6 +214,33 @@ pub struct SaturationStats {
     pub stop: SaturationStop,
 }
 
+/// The ceiling on every class budget: no saturation driver grows the graph
+/// past this many e-classes, whatever cap its caller asks for.
+///
+/// This is memory protection for call sites that pass no meaningful cap
+/// (`usize::MAX`, or a number derived from an unbounded input). It lives
+/// here — at the growth decision — and NOT inside [`EGraph::add`], because
+/// `add` is the homomorphism onto the semantic quotient (law L1,
+/// `docs/plans/2026-09-02-optimizer-api.md` §1): a budget that stops `add`
+/// must hand the caller something that is not the class of the node it
+/// asked for, and there is no such thing. A budget that stops the *driver*
+/// leaves every class the graph does hold correct, which is what
+/// truncation has always meant here.
+///
+/// Two orders of magnitude above the production caps (500/2000/5000, see
+/// `SaturationConfig`), so no shipping configuration meets it.
+///
+/// It bounds the graph *approximately*: a sweep estimates the classes a
+/// pending action will mint (`RewriteAction::Union` 0, `Create` 1, every
+/// other variant 3) and then commits the batch it accepted, so a
+/// multi-node action can overshoot by the difference. That is precisely
+/// why the limit can live at the driver — it guards memory, not meaning,
+/// and a bounded overshoot of a 100 000-class ceiling costs memory nobody
+/// was going to miss. The old in-`add` limit bought exactness by returning
+/// `EClassId(0)`, a false class id that the `Create` handler then unioned
+/// against the match — asserting an equality that does not hold (#1105).
+pub const HARD_CLASS_LIMIT: usize = 100_000;
+
 impl EGraph {
     /// Create an empty e-graph with no rewrite rules.
     ///
@@ -187,6 +252,7 @@ impl EGraph {
             memo: HashMap::new(),
             worklist: Vec::new(),
             rules: std::sync::Arc::new(Vec::new()),
+            rule_ids: std::sync::Arc::new(Vec::new()),
             match_counts: HashMap::new(),
             next_enode_id: 0,
             step: 0,
@@ -194,6 +260,9 @@ impl EGraph {
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
+            applications: 0,
+            record_provenance: true,
+            application_cap: None,
         }
     }
 
@@ -201,12 +270,14 @@ impl EGraph {
     ///
     /// Rules are owned by the e-graph and shared via Arc when cloned.
     pub fn with_rules(rules: Vec<Box<dyn Rewrite>>) -> Self {
+        let ids: Vec<RuleId> = rules.iter().map(|r| RuleId::of(r.as_ref())).collect();
         Self {
             classes: Vec::new(),
             parent: Vec::new(),
             memo: HashMap::new(),
             worklist: Vec::new(),
             rules: std::sync::Arc::new(rules),
+            rule_ids: std::sync::Arc::new(ids),
             match_counts: HashMap::new(),
             next_enode_id: 0,
             step: 0,
@@ -214,6 +285,9 @@ impl EGraph {
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
+            applications: 0,
+            record_provenance: true,
+            application_cap: None,
         }
     }
 
@@ -223,9 +297,74 @@ impl EGraph {
     ///
     /// Panics if the e-graph has been cloned (rules are shared via Arc).
     pub fn add_rule(&mut self, rule: Box<dyn Rewrite>) {
+        let id = RuleId::of(rule.as_ref());
         std::sync::Arc::get_mut(&mut self.rules)
             .expect("Cannot add rules after EGraph has been cloned")
             .push(rule);
+        std::sync::Arc::get_mut(&mut self.rule_ids)
+            .expect("Cannot add rules after EGraph has been cloned")
+            .push(id);
+    }
+
+    /// An e-graph over a rule vector that is already shared.
+    ///
+    /// [`super::RuleSet`] holds its rules behind an `Arc` so an
+    /// [`super::optimizer::Optimizer`] can hand the same vocabulary to as
+    /// many graphs as it likes without rebuilding it, and so the ids it
+    /// computed once stay in agreement with the rules the graph applies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the two vectors disagree in length — an id vector that does
+    /// not name exactly the rules the graph will apply is a
+    /// silently-wrong-answer generator, not a recoverable input.
+    #[must_use]
+    pub fn with_shared_rules(
+        rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
+        rule_ids: std::sync::Arc<Vec<RuleId>>,
+    ) -> Self {
+        assert_eq!(
+            rules.len(),
+            rule_ids.len(),
+            "EGraph::with_shared_rules: {} rules but {} ids",
+            rules.len(),
+            rule_ids.len()
+        );
+        let mut eg = Self::new();
+        eg.rules = rules;
+        eg.rule_ids = rule_ids;
+        eg
+    }
+
+    /// The stable id of the rule at `idx`, if there is one.
+    #[must_use]
+    pub fn rule_id(&self, idx: usize) -> Option<RuleId> {
+        self.rule_ids.get(idx).copied()
+    }
+
+    /// Rule applications performed since this graph was created.
+    ///
+    /// Counted whether or not provenance is being recorded — the budget and
+    /// the observation are separate concerns, and conflating them is what
+    /// made recording impossible to turn off.
+    #[must_use]
+    pub fn application_count(&self) -> u64 {
+        self.applications
+    }
+
+    /// Turn provenance recording on or off. On by default.
+    ///
+    /// Off, the graph still counts applications and still enforces an
+    /// application budget; it just does not build the log. Turning recording
+    /// off does not erase what is already recorded.
+    pub fn set_provenance_recording(&mut self, on: bool) {
+        self.record_provenance = on;
+    }
+
+    /// Whether provenance is being recorded.
+    #[must_use]
+    pub fn provenance_recording(&self) -> bool {
+        self.record_provenance
     }
 
     pub fn find(&self, id: EClassId) -> EClassId {
@@ -260,18 +399,27 @@ impl EGraph {
         }
     }
 
+    /// Insert `node`, returning the e-class that contains it.
+    ///
+    /// **Total, and the law depends on it.** The returned class always
+    /// contains `node`: either the memo already had it, or this call
+    /// allocated a fresh class holding exactly it. There is no size at
+    /// which `add` returns something else, because there is nothing else
+    /// it could correctly return — this is law L1 (`add` is a homomorphism
+    /// from the term algebra onto the e-graph quotient,
+    /// `docs/plans/2026-09-02-optimizer-api.md` §1), and L4 (any saturation
+    /// policy preserves denotation) is proved from it.
+    ///
+    /// The class budget therefore is not enforced here. It is enforced
+    /// where growth is *decided* — the saturation drivers, each of which
+    /// clamps its caller's cap to [`HARD_CLASS_LIMIT`] and stops scanning
+    /// before it calls `add`. A driver that stops early leaves a graph
+    /// holding fewer equalities than an exhaustive run would; every one it
+    /// does hold is still true.
     pub fn add(&mut self, mut node: ENode) -> EClassId {
         self.canonicalize_node(&mut node);
         if let Some(&id) = self.memo.get(&node) {
             return self.find(id);
-        }
-        // Hard class limit: never allocate beyond this. Prevents unbounded
-        // memory growth when resource limits are missing from call sites.
-        const HARD_CLASS_LIMIT: usize = 100_000;
-        if self.classes.len() >= HARD_CLASS_LIMIT {
-            // Return a sentinel pointing at class 0. The e-graph is over
-            // budget; further growth would be useless anyway.
-            return EClassId(0);
         }
         let id = EClassId(self.classes.len() as u32);
         let enode_id = ENodeId(self.next_enode_id);
@@ -819,12 +967,31 @@ impl EGraph {
     ///
     /// Returns true if the rule matched and produced a change.
     /// This is used by guided search to apply rules one at a time.
+    ///
+    /// Unlike the sweeps, this takes no class budget: one call applies at
+    /// most one action, so it cannot itself grow the graph without bound —
+    /// the loop that calls it can, and that loop owns the budget. Reaching
+    /// [`HARD_CLASS_LIMIT`] here therefore means a caller is driving
+    /// rewrites with no budget at all, and it **panics** rather than
+    /// returning `false`: `false` already means "the rule did not fire",
+    /// and a budget exhaustion that is indistinguishable from a non-match
+    /// is the silent failure this ceiling exists to prevent. No production
+    /// path calls this, and the production caps are two orders of
+    /// magnitude below the limit.
     pub fn apply_single_rule(
         &mut self,
         rule_idx: usize,
         class_id: EClassId,
         node_idx: usize,
     ) -> bool {
+        assert!(
+            self.classes.len() < HARD_CLASS_LIMIT,
+            "apply_single_rule: e-graph is at the hard class limit \
+             ({} classes, limit {HARD_CLASS_LIMIT}) — this entry point applies \
+             one action per call and carries no budget, so the caller's \
+             rewrite loop must impose one (see `saturate_with_limits`)",
+            self.classes.len(),
+        );
         let Some(rule) = self.rules.get(rule_idx) else {
             return false;
         };
@@ -864,11 +1031,11 @@ impl EGraph {
     /// re-decides when a run stops. Callers reach it through one of two
     /// entry points:
     ///
-    /// - [`saturate_for_extraction`](super::extraction::saturate_for_extraction)
-    ///   — the production path. It picks a
-    ///   [`SaturationConfig`](super::saturate::SaturationConfig) preset from
-    ///   an expression-size measure, so the budget scales with the input.
-    ///   Both compile tiers and the `Dwrt`-differentiation tier use it.
+    /// - [`Optimizer::run`](super::optimizer::Optimizer::run) — the
+    ///   production path, through [`Self::saturate_budgeted`]. It picks its
+    ///   limits from a [`Budget`](super::optimizer::Budget), so the budget
+    ///   scales with the input and carries no clock. All three production
+    ///   tiers use it.
     /// - This method, called directly only where a budget must be pinned
     ///   rather than inherited — tests, the hindsight labeler, and
     ///   measurement harnesses, which spell it
@@ -896,8 +1063,59 @@ impl EGraph {
         max_classes: usize,
         timeout: std::time::Duration,
     ) -> SaturationStats {
+        self.saturate_bounded(max_iters, max_classes, None, Some(timeout))
+    }
+
+    /// Saturate under deterministic limits only — rounds, classes, and
+    /// optionally rule applications — with no clock.
+    ///
+    /// This is what [`super::optimizer::Optimizer`] drives, and the
+    /// difference from [`Self::saturate_with_limits`] is the whole point:
+    /// every limit here is a property of the input and the configuration, so
+    /// the same term under the same limits produces the same graph on any
+    /// machine at any load. `saturate_with_limits`'s `timeout` is not — it
+    /// stops the run at a wall-clock boundary and the result then depends on
+    /// what else the machine was doing. A wall-clock ceiling is still
+    /// available, on the optimizer, where exceeding it panics instead of
+    /// quietly changing the answer.
+    ///
+    /// `SaturationStop::Timeout` is unreachable from here.
+    pub fn saturate_budgeted(
+        &mut self,
+        max_iters: usize,
+        max_classes: usize,
+        max_applications: Option<u64>,
+    ) -> SaturationStats {
+        self.saturate_bounded(max_iters, max_classes, max_applications, None)
+    }
+
+    /// The one rewrite-until-budget-exhausted loop. Every saturation entry
+    /// point in this crate funnels here rather than re-deciding, in a second
+    /// copy, when to stop.
+    fn saturate_bounded(
+        &mut self,
+        max_iters: usize,
+        max_classes: usize,
+        max_applications: Option<u64>,
+        timeout: Option<std::time::Duration>,
+    ) -> SaturationStats {
+        // Growth is decided here and in `apply_rule_at_index_timed`, so the
+        // ceiling is applied here: a caller asking for `usize::MAX` classes
+        // gets `HARD_CLASS_LIMIT` and a truthful `ClassCap` stop, not a
+        // graph that grows until `add` starts refusing to insert. Applied in
+        // the shared loop rather than in `saturate_with_limits`, so
+        // `saturate_budgeted` — and therefore every production tier — is
+        // held to it too.
+        let max_classes = max_classes.min(HARD_CLASS_LIMIT);
         let start = std::time::Instant::now();
-        let deadline = start + timeout;
+        // `Instant + Duration::MAX` panics, so the deadline is optional
+        // rather than "infinitely far away".
+        let deadline = timeout.map(|t| start + t);
+        // The cap is enforced deep inside the scan, where an application is
+        // about to commit — the only place that can stop mid-round without
+        // letting the round decide how far past the budget to go.
+        let previous_cap = self.application_cap;
+        self.application_cap = max_applications.map(|n| self.applications.saturating_add(n));
         let mut iterations = 0;
         let mut total_unions = 0;
         // Recorded at the point the loop decides to stop — never inferred
@@ -905,12 +1123,21 @@ impl EGraph {
         let mut stop = SaturationStop::IterationCeiling;
 
         for _ in 0..max_iters {
-            if start.elapsed() >= timeout {
-                stop = SaturationStop::Timeout;
-                break;
+            if let Some(t) = timeout {
+                if start.elapsed() >= t {
+                    stop = SaturationStop::Timeout;
+                    break;
+                }
             }
             if self.classes.len() > max_classes {
                 stop = SaturationStop::ClassCap;
+                break;
+            }
+            if self
+                .application_cap
+                .is_some_and(|cap| self.applications >= cap)
+            {
+                stop = SaturationStop::ApplicationBudget;
                 break;
             }
             iterations += 1;
@@ -931,7 +1158,7 @@ impl EGraph {
                         sweep = ScanStop::ClassCap;
                         break;
                     }
-                    let result = batch.apply_rule(rule_idx, max_classes, Some(deadline));
+                    let result = batch.apply_rule(rule_idx, max_classes, deadline);
                     total += result.changes;
                     match result.scan {
                         ScanStop::Completed => {}
@@ -944,6 +1171,13 @@ impl EGraph {
                         // another rule's scan on the far side of it.
                         ScanStop::Deadline => {
                             sweep = ScanStop::Deadline;
+                            break;
+                        }
+                        // The application budget is spent for the whole run,
+                        // not just this rule: no later rule can commit
+                        // anything either.
+                        ScanStop::ApplicationBudget => {
+                            sweep = ScanStop::ApplicationBudget;
                             break;
                         }
                     }
@@ -974,6 +1208,10 @@ impl EGraph {
                     stop = SaturationStop::Timeout;
                     break;
                 }
+                ScanStop::ApplicationBudget => {
+                    stop = SaturationStop::ApplicationBudget;
+                    break;
+                }
                 // A full sweep that changed nothing is the one diagnostic
                 // fixed point this loop can report.
                 ScanStop::Completed => {
@@ -988,6 +1226,8 @@ impl EGraph {
                 }
             }
         }
+
+        self.application_cap = previous_cap;
 
         SaturationStats {
             iterations,
@@ -1031,6 +1271,10 @@ impl EGraph {
         max_nodes: usize,
         deadline: Option<std::time::Instant>,
     ) -> ApplyResult {
+        // See `HARD_CLASS_LIMIT`: the scan below is one of the two places
+        // the graph decides to grow, so it is one of the two places the
+        // ceiling is applied.
+        let max_nodes = max_nodes.min(HARD_CLASS_LIMIT);
         if rule_idx >= self.rules.len() {
             return ApplyResult {
                 changes: 0,
@@ -1064,6 +1308,18 @@ impl EGraph {
         let mut estimated_new_nodes: usize = 0;
         let mut scan = ScanStop::Completed;
 
+        // An application budget is spent by *applications*, so the scan stops
+        // once it has queued its whole allowance. Checked here and not only
+        // between rounds: a round is 62 rules over every e-class, so a
+        // between-rounds check alone overshoots a small budget by orders of
+        // magnitude — the budget has to bound the work, not describe it
+        // afterwards.
+        let allowance_spent = |graph: &Self, queued: usize| {
+            graph
+                .application_cap
+                .is_some_and(|cap| graph.applications + queued as u64 >= cap)
+        };
+
         let canonical_ids = self.canonical_class_ids();
         'scan: for canonical in canonical_ids {
             // Budget check: current graph + pending creates must stay under limit
@@ -1073,6 +1329,10 @@ impl EGraph {
             }
             if expired(deadline) {
                 scan = ScanStop::Deadline;
+                break;
+            }
+            if allowance_spent(self, updates.len()) {
+                scan = ScanStop::ApplicationBudget;
                 break;
             }
 
@@ -1104,8 +1364,12 @@ impl EGraph {
                     updates.push((canonical, action));
                     *self
                         .match_counts
-                        .entry(self.rules[rule_idx].name().to_string())
+                        .entry(RuleId::of(self.rules[rule_idx].as_ref()))
                         .or_insert(0) += 1;
+                    if allowance_spent(self, updates.len()) {
+                        scan = ScanStop::ApplicationBudget;
+                        break 'scan;
+                    }
                 }
             }
         }
@@ -1114,6 +1378,10 @@ impl EGraph {
         // Do NOT rebuild here — caller is responsible for calling rebuild()
         // after all rules for the epoch are applied (lazy/batched rebuild).
         for (class_id, action) in updates {
+            if allowance_spent(self, 0) {
+                scan = ScanStop::ApplicationBudget;
+                break;
+            }
             unions += self.apply_action_from_rule(rule_idx, class_id, action);
         }
 
@@ -1154,10 +1422,22 @@ impl EGraph {
         class_id: EClassId,
         action: RewriteAction,
     ) -> usize {
+        // Counted unconditionally: the budget must not depend on whether
+        // anyone is watching.
+        self.applications += 1;
+
+        if !self.record_provenance {
+            return self.apply_action(class_id, action);
+        }
+
+        let minted_from = self.next_enode_id;
         let application_id = self.provenance.record_application(ApplicationRecord {
+            rule: self.rule_ids.get(rule_idx).copied(),
             rule_idx,
             step: self.step,
             match_root: class_id,
+            minted: minted_from..minted_from,
+            unions: 0,
         });
         let previous = self.active_application.replace(ActiveApplication {
             rule_idx,
@@ -1165,6 +1445,14 @@ impl EGraph {
         });
         let result = self.apply_action(class_id, action);
         self.active_application = previous;
+        // The record is opened before the action runs (so `add`/`union` can
+        // attribute to it) and closed after, which is the only order in
+        // which "what did this application mint" is answerable.
+        self.provenance.complete_application(
+            application_id,
+            minted_from..self.next_enode_id,
+            result,
+        );
         result
     }
 
@@ -1885,6 +2173,8 @@ impl EGraph {
     }
 
     fn apply_rules_budgeted(&mut self, max_nodes: usize) -> usize {
+        // See `HARD_CLASS_LIMIT`.
+        let max_nodes = max_nodes.min(HARD_CLASS_LIMIT);
         // One call = one "apply all rules once" pass, the same granularity
         // saturate_with_limits uses for its step counter.
         self.step += 1;
@@ -1905,7 +2195,7 @@ impl EGraph {
                         updates.push((rule_idx, canonical, action));
                         *self
                             .match_counts
-                            .entry(rule.name().to_string())
+                            .entry(RuleId::of(rule.as_ref()))
                             .or_insert(0) += 1;
                     }
                 }
@@ -1945,10 +2235,20 @@ impl EGraph {
                 break;
             }
         }
-        cost_table
-            .get(&root)
-            .map(|(_, node)| node.clone())
-            .unwrap_or(ENode::Const(0))
+        // `ENode::Const(0)` used to stand in here — the number 0.0 wearing
+        // an extracted term's type, returned for a root the fixpoint never
+        // priced. The fixpoint visits every canonical class and every class
+        // holds at least one node, so a miss is a bug in this loop, and the
+        // caller has no way to tell 0.0-the-answer from 0.0-the-excuse.
+        let Some((_, node)) = cost_table.get(&root) else {
+            panic!(
+                "extract_with_costs: root e-class {} was never priced by the \
+                 fixpoint — every canonical class holds at least one node, so \
+                 this is a bug in the loop above, not an empty graph",
+                root.0
+            )
+        };
+        node.clone()
     }
 
     fn node_cost_with_model(
@@ -2691,6 +2991,243 @@ mod tests {
             eg.provenance().application_count(),
             eg.provenance().union_count(),
             eg.num_classes(),
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // The laws. `docs/plans/2026-09-02-optimizer-api.md` §1 states each one
+    // and names the test that should pin it; these are those tests. They
+    // assert the *property*, never the mechanism — a future fix that moves
+    // the class budget somewhere else entirely should keep them passing.
+    // ------------------------------------------------------------------
+
+    /// Seed a graph whose rules certainly have work to do, and return the
+    /// probe ids the law tests watch. `Sub` guarantees a `Canonicalize`
+    /// firing (`a - b → a + (-b)`), which is a *node-minting* action — the
+    /// kind that used to route through the over-budget hole in `add`.
+    fn seed_probes(eg: &mut EGraph) -> Vec<EClassId> {
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let z = eg.add(ENode::Var(2));
+        let sum = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, y],
+        });
+        let diff = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![x, y],
+        });
+        let prod = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![sum, z],
+        });
+        let scaled = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![diff, z],
+        });
+        vec![x, y, z, sum, diff, prod, scaled]
+    }
+
+    /// The pairs of probes the graph currently calls equal.
+    fn equal_pairs(eg: &EGraph, probes: &[EClassId]) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+        for i in 0..probes.len() {
+            for j in (i + 1)..probes.len() {
+                if eg.find(probes[i]) == eg.find(probes[j]) {
+                    pairs.push((i, j));
+                }
+            }
+        }
+        pairs
+    }
+
+    /// **L1 — soundness.** `add` is a homomorphism onto the semantic
+    /// quotient: the class it names always contains the node it was given,
+    /// and no amount of graph growth changes that. Consequently an
+    /// over-budget run can discover *fewer* equalities than an exhaustive
+    /// one, never a different one.
+    ///
+    /// This is the regression test for #1105. Before the fix, `add`
+    /// answered `EClassId(0)` once the graph reached the hard class limit —
+    /// a sentinel, not an insertion — and `RewriteAction`'s node-minting
+    /// handlers unioned the matched class against it, asserting that some
+    /// unrelated term equals whatever was added first. Both halves are
+    /// asserted here: that `add` past the limit still names a class holding
+    /// the node, and that a saturation run driven past the limit invents no
+    /// equality among terms that are not equal.
+    ///
+    /// Deliberately mechanism-blind: it says nothing about *how* growth is
+    /// refused, only that nothing false comes out.
+    #[test]
+    fn over_budget_growth_cannot_assert_a_false_equality() {
+        let mut eg = egraph_with_rules();
+
+        // Class 0 is the term every false union used to land on, so make it
+        // something no probe below is equal to.
+        let class_zero = eg.add(ENode::constant(-1.0));
+        assert_eq!(class_zero, EClassId(0), "class 0 must be the first add");
+
+        let probes = seed_probes(&mut eg);
+        assert!(
+            equal_pairs(&eg, &probes).is_empty(),
+            "probes start distinct"
+        );
+
+        // Pad to one short of the ceiling with distinct constants, so the
+        // next rewrite that wants to mint a node is over budget — and so the
+        // graph lands *exactly* on the ceiling after the `add` below, which
+        // keeps the saturation run below inside the sweep rather than
+        // bailing at `saturate_with_limits`'s own pre-sweep check.
+        let mut pad = 0.0f32;
+        while eg.classes.len() < HARD_CLASS_LIMIT - 1 {
+            let _ = eg.add(ENode::constant(pad));
+            pad += 1.0;
+        }
+
+        // `add` is still total at the ceiling: the class it returns holds
+        // the node, and it is not class 0's term.
+        let fresh = eg.add(ENode::Var(200));
+        assert_eq!(eg.classes.len(), HARD_CLASS_LIMIT);
+        assert!(
+            matches!(eg.nodes(eg.find(fresh)).first(), Some(ENode::Var(200))),
+            "add past the limit returned a class that does not hold the node"
+        );
+        assert_ne!(
+            eg.find(fresh),
+            eg.find(class_zero),
+            "add past the limit aliased an unrelated class"
+        );
+
+        // Drive saturation with a cap no smaller than the graph, so the
+        // ceiling — not the caller's budget — is what has to hold.
+        let stats = eg.saturate_with_limits(4, usize::MAX, std::time::Duration::from_secs(60));
+        eprintln!("over-budget saturation: {stats:?}");
+
+        // The load-bearing assertion: nothing new is equal.
+        assert!(
+            equal_pairs(&eg, &probes).is_empty(),
+            "over-budget saturation invented an equality among distinct terms"
+        );
+        for (i, &p) in probes.iter().enumerate() {
+            assert_ne!(
+                eg.find(p),
+                eg.find(class_zero),
+                "probe {i} was falsely unioned with class 0"
+            );
+        }
+        assert_ne!(eg.find(fresh), eg.find(class_zero));
+    }
+
+    /// Seed a graph in which equalities are *derivable* and arrive at
+    /// different depths, so that a budget ladder has something to be
+    /// monotone about. Returns the probes, several of which the rules
+    /// eventually prove congruent.
+    fn seed_derivable_probes(eg: &mut EGraph) -> Vec<EClassId> {
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let zero = eg.add(ENode::constant(0.0));
+        let one = eg.add(ENode::constant(1.0));
+
+        // x + 0 = x, one Identity firing away.
+        let x_plus_zero = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, zero],
+        });
+        // (x + 0) * 1 = x, two firings away.
+        let scaled = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![x_plus_zero, one],
+        });
+        // x * 0 = 0, via Annihilator.
+        let annihilated = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![x, zero],
+        });
+        // x + y = y + x, via Commutative.
+        let xy = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, y],
+        });
+        let yx = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![y, x],
+        });
+
+        vec![x, y, zero, one, x_plus_zero, scaled, annihilated, xy, yx]
+    }
+
+    /// **L2 — monotonicity.** Saturation only ever adds equalities. A pair
+    /// the graph already calls equal is still equal after a run at any
+    /// budget, and the partition at a larger budget refines the partition at
+    /// a smaller one.
+    ///
+    /// Budget truncation is allowed to stop discovery; it is not allowed to
+    /// retract a discovery. That is what lets a budget stay a
+    /// quality/compile-time dial instead of a correctness one, and it is half
+    /// the proof of L4 (any saturation policy preserves denotation) — the
+    /// other half is L1, above.
+    ///
+    /// Two things are asserted, in increasing strength: a hand-made union
+    /// that no rule could have derived survives every budget, and the set of
+    /// probe pairs the graph calls equal only ever grows as the budget does.
+    ///
+    /// Note what is *not* asserted, because this rebuild does not do it:
+    /// upward congruence. `union` enqueues only the merged class, never its
+    /// parents, so `a = b` does not by itself re-canonicalize `f(a)` and
+    /// `f(b)` into one class — they merge when a later sweep re-walks them,
+    /// or not at all. That is an incompleteness (fewer equalities than an
+    /// ideal congruence closure), which is exactly the direction L2 permits;
+    /// it is filed as #1106 rather than assumed here.
+    #[test]
+    fn saturation_at_any_budget_never_removes_an_equality() {
+        // Strictly increasing, spanning "cannot even finish one rule" to the
+        // ceiling itself.
+        let ladder = [1usize, 2, 8, 64, 512, 4096, HARD_CLASS_LIMIT];
+        let mut previous: Option<(usize, Vec<(usize, usize)>)> = None;
+        let mut ever_found = 0usize;
+
+        for max_classes in ladder {
+            let mut eg = egraph_with_rules();
+            let probes = seed_derivable_probes(&mut eg);
+
+            // A hand-asserted equality between two terms no rule in this
+            // vocabulary relates: only a retraction could ever break it.
+            let a = eg.add(ENode::Var(30));
+            let b = eg.add(ENode::Var(31));
+            eg.union(a, b);
+            eg.rebuild();
+            assert_eq!(eg.find(a), eg.find(b), "union did not take");
+
+            eg.saturate_with_limits(20, max_classes, std::time::Duration::from_secs(30));
+
+            assert_eq!(
+                eg.find(a),
+                eg.find(b),
+                "budget {max_classes} retracted a hand-made equality"
+            );
+
+            // Refinement: every pair equal at a smaller budget is still
+            // equal at this one.
+            let pairs = equal_pairs(&eg, &probes);
+            if let Some((smaller, before)) = &previous {
+                for pair in before {
+                    assert!(
+                        pairs.contains(pair),
+                        "budget {max_classes} lost probe pair {pair:?} that budget \
+                         {smaller} had found — saturation is not monotone"
+                    );
+                }
+            }
+            ever_found = ever_found.max(pairs.len());
+            previous = Some((max_classes, pairs));
+        }
+
+        // Guard against the ladder asserting nothing: if no budget ever
+        // derived an equality, the refinement check above was vacuous.
+        assert!(
+            ever_found > 0,
+            "no budget derived any probe equality — the monotonicity ladder \
+             is vacuous and no longer tests L2"
         );
     }
 }

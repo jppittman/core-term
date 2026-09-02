@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use super::graph::{EGraph, SaturationStop};
 use super::node::EClassId;
+use super::rules::RuleId;
 
 /// Result of a budget-limited saturation run.
 ///
@@ -48,7 +49,13 @@ pub struct SaturationResult {
     pub classes_after: usize,
 
     /// Rule match counts by rule name.
-    pub rule_matches: HashMap<String, usize>,
+    /// Rule match counts, keyed by stable rule identity.
+    ///
+    /// Was keyed by `Rewrite::name()`, which is a *family* name: all four
+    /// `Commutative` instances answered to `"commutative"` and landed in one
+    /// bucket, so every per-rule number derived from this map was wrong by
+    /// aggregation. [`RuleId`](crate::egraph::RuleId) is per instance.
+    pub rule_matches: HashMap<RuleId, usize>,
 
     /// The rewrite budget that was used.
     pub budget: usize,
@@ -206,7 +213,7 @@ impl SaturationConfig {
     ///
     /// **Not a production preset.** Production sizes its budget from the
     /// expression via [`config_for_node_count`], reached through
-    /// [`saturate_for_extraction`](super::extraction::saturate_for_extraction).
+    /// [`Optimizer::run`](super::optimizer::Optimizer::run).
     /// This one exists for the non-production call sites that must reproduce
     /// results from before that policy landed — unit tests, the hindsight
     /// labeler, and offline measurement harnesses — so the budget is named

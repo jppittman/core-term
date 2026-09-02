@@ -13,7 +13,7 @@
 //! PR #1101's, reused verbatim rather than rebuilt.
 
 use super::*;
-use crate::egraph::{CostModel, SaturationStop};
+use crate::egraph::{Budget, CostModel, Optimizer, SaturationStop};
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -171,7 +171,13 @@ struct Run {
 }
 
 /// The production sequence of `optimize_runtime_arena_uncached` from the
-/// e-graph build onward, with the budget as parameters. PR #1101's `run`.
+/// e-graph build onward, with the budget as parameters.
+///
+/// Driven through `Optimizer` — the one entry point production itself now
+/// uses (#1108) — rather than through `saturate_with_full_budget` plus a
+/// hand-rolled extraction. `Budget::Explicit` is what lets the budget stay a
+/// parameter, which this A/B needs: both arms must meet the same caps so the
+/// only difference between them is the control flow under test.
 fn run(
     arena: &ExprArena,
     root: ExprId,
@@ -179,27 +185,32 @@ fn run(
     max_classes: usize,
     timeout: Duration,
 ) -> Run {
-    let mut egraph = EGraph::with_rules(all_rules());
+    let mut optimizer = Optimizer::production()
+        .budget(Budget::Explicit {
+            iterations: max_iterations,
+            classes: max_classes,
+            applications: None,
+        })
+        .hard_ceiling(timeout);
+
+    let mut egraph = optimizer.egraph();
     let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
     let root_class = arena_to_egraph(arena, root, &mut egraph, &mut memo)
         .expect("production arena must be e-graph representable (no Param/Nary)");
 
     let started = Instant::now();
-    let result =
-        crate::egraph::saturate_with_full_budget(&mut egraph, max_iterations, max_classes, timeout);
+    let optimized = optimizer.run(&mut egraph, root_class, reachable_count(arena, root));
     let elapsed = started.elapsed();
 
-    let policy = env_extraction_policy();
-    let extraction = policy.extraction(&egraph, root_class);
-    let (extracted, extracted_root) = choices_to_arena(&extraction);
+    let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
     let costs = CostModel::latency_prior();
 
     Run {
-        stop: result.stop,
-        iterations: result.iterations,
-        total_unions: result.total_unions,
-        classes_after: result.classes_after,
-        applications: egraph.provenance().application_count(),
+        stop: optimized.stats.stop,
+        iterations: optimized.stats.iterations,
+        total_unions: optimized.stats.unions,
+        classes_after: optimized.stats.classes,
+        applications: optimized.stats.applications as usize,
         elapsed,
         cost: arena_cost(&extracted, extracted_root, &costs),
         extracted_nodes: reachable_count(&extracted, extracted_root),
@@ -286,7 +297,7 @@ fn cap_break_ab_real_kernels() {
         let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(&raw_arena, raw_root)
             .unwrap_or_else(|e| panic!("{name}: lower_dwrt failed: {e:?}"));
         let node_count = reachable_count(&arena, root);
-        let config = config_for_node_count(node_count);
+        let config = crate::egraph::saturate::config_for_node_count(node_count);
 
         // Regime 1: the production budget exactly as it ships.
         let prod = run(
