@@ -1636,16 +1636,20 @@ mod tests {
         ] {
             let tile_px = (CELL_H_PT * density).round().max(1.0) as u32;
             let slot_px = tile_px + 2 * ATLAS_PAD;
+            let cell_w = CELL_W_PT * density;
+            let cell_h = CELL_H_PT * density;
             let geom = CellGridGeometry {
                 cols,
                 rows,
-                cell_w: CELL_W_PT * density,
-                cell_h: CELL_H_PT * density,
+                cell_w,
+                cell_h,
                 density: 1.0,
                 atlas_width: ATLAS_SLOTS_PER_ROW * slot_px,
                 atlas_height: ATLAS_SLOT_ROWS * slot_px,
                 tile_w: tile_px,
                 tile_h: tile_px,
+                frame_w: (cols as f32 * cell_w).round() as u32,
+                frame_h: (rows as f32 * cell_h).round() as u32,
             };
             // Same preconditions `CellGridPackedProgram::compile` enforces.
             assert_compilable(&geom);
