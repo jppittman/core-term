@@ -1,23 +1,33 @@
 # NNUE Integration Status
 
+> **Shape deleted 2026-09-01; denotation kept.** The extraction-head program this doc tracked
+> — a learned NNUE cost model for e-graph extraction, opt-in behind a weights-file env var —
+> tied the static latency table on schedule-free expression kernels
+> ([`paper/2026-08-egraph-nnue-parity.md`](paper/2026-08-egraph-nnue-parity.md)). JP's ruling
+> (2026-09-01): "delete the shape, keep the denotation" — the bag-of-edges value head, its
+> checkpoint format, the NNUE-scored extractor, the trainer and the 3-way gate are in git
+> history, not in the tree. What stays is the seam a schedule-cost residual needs: the
+> swap-refinement search behind an unimplemented `Reranker` trait, op embeddings seeded from
+> the latency prior, the typed edge stream, per-node variance classification, and the bench
+> harness — specified in
+> [`plans/2026-09-01-schedule-cost-model-denotation.md`](plans/2026-09-01-schedule-cost-model-denotation.md).
+> The saturation Guide ([`plans/2026-08-31-guide-design-revision.md`](plans/2026-08-31-guide-design-revision.md))
+> reuses the embeddings, the graph accumulator and scoring head, and provenance/labeling.
+>
 > Rewritten 2026-08-05. The previous version of this doc described systems deleted in the
 > July 2026 cleanup (`train_unified`, the Guide/self-play loop, `critic_server.py`) as extant.
 
 ## What exists today
 
-- **Extraction head** (`ExprNnue`, `pixelflow-search/src/nnue/factored.rs`): predicts
-  expression execution cost from an `EdgeAccumulator` built over `ExprArena`. Consumed by
-  e-graph extraction (`pixelflow-search/src/egraph/extract.rs`,
-  `extract_neural_to_arena`).
-- **Compiler integration** (`pixelflow-compiler/src/optimize.rs`): the DEFAULT extraction
-  cost model is the static `CostModel::latency_prior()`. The NNUE extraction head is
-  **opt-in only**, via the `PIXELFLOW_NNUE_WEIGHTS` env var read at proc-macro expansion
-  time; bad weights hard-fail the build.
-- **Training** (supervised, offline): `gen_bench_corpus` mints (expression, measured-ns)
-  pairs via the JIT bench harness (`pixelflow-pipeline/src/jit_bench.rs`);
-  `bootstrap_extraction_head` regresses the head on them. Both require
-  `-p pixelflow-pipeline --features training`.
-- **Gate**: `bench_extraction_3way` compares no-swap vs latency prior vs NNUE end-to-end.
+- **Compiler integration** (`pixelflow-compiler/src/optimize.rs`, `pixelflow-search/src/runtime.rs`):
+  extraction cost is the static `CostModel::latency_prior()`, chosen by both tiers through
+  `egraph::env_extraction_policy()` — the one seam a future policy would be chosen at.
+- **Op embeddings and the typed edge stream** (`pixelflow-search/src/nnue/factored.rs`):
+  `OpEmbeddings` (dimension 0 seedable from the latency table) and `EdgeTrace`/`CostEdge`,
+  the parent→child edge walk over an arena or an e-graph extraction — reused by the Guide.
+- **Corpus minting** (`gen_bench_corpus`, `-p pixelflow-pipeline --features training`) via the
+  JIT bench harness (`pixelflow-pipeline/src/jit_bench.rs`), with the shared quarantine,
+  tiered split and sentinel-normalized labels. `measure_latency_prior` re-derives the table.
 - **Provenance substrate** for guided-saturation research: rule provenance
   (`pixelflow-search/src/egraph/provenance.rs`) and hindsight labeling
   (`pixelflow-search/src/egraph/labeler.rs`).

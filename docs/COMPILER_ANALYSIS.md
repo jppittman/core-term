@@ -169,6 +169,14 @@ pub fn optimize(analyzed: AnalyzedKernel) -> AnalyzedKernel {
 
 ### 2. 🟡 HIGH PRIORITY: No Cost Model Calibration from Benchmarks
 
+> **2026-09-01 note (annotation, not a rewrite).** The `calibrate_costs` binary and the
+> `CostModel::{save_toml,load_toml,load_or_default,from_map,to_map}` persistence path this
+> section proposed (and the "Fix #2 COMPLETED" note below) were deleted per the 2026-09-01
+> dead-code inventory (D3): zero callers, and `load_or_default` silently probed
+> `$PIXELFLOW_COST_MODEL` / `~/.config/pixelflow/cost_model.toml` for a production override.
+> The idea lives on as `pixelflow-pipeline/examples/measure_latency_prior.rs`, which measures
+> the JIT's own lowered form and is the protocol `latency_prior_cycles()` cites.
+
 **Severity:** Medium
 **Effort:** Low (infrastructure exists, just needs integration)
 **Impact:** High (immediate optimization quality improvement)

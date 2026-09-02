@@ -29,8 +29,12 @@ fn cancel(a: &mut ExprArena) -> ExprId {
 }
 
 fn opt_root(a: &ExprArena, root: ExprId) -> ExprNode {
-    let out = pixelflow_search::runtime::optimize_runtime_arena(a, root)
-        .expect("pure arithmetic must optimize");
+    let out = pixelflow_search::runtime::optimize_runtime_arena(
+        a,
+        root,
+        pixelflow_ir::LatticeShape::POINT,
+    )
+    .expect("pure arithmetic must optimize");
     out.0.node(out.1).clone()
 }
 
@@ -65,13 +69,13 @@ fn cancellation_extracts_one_consistent_constant() {
 /// The refusal is journaled: the collision is loud, not silent.
 #[test]
 fn refused_union_is_journaled() {
-    use pixelflow_search::egraph::{EGraph, all_rules};
+    use pixelflow_search::egraph::{EGraph, SaturationConfig, all_rules};
 
     let mut a = ExprArena::new();
     let d = cancel(&mut a);
     let mut eg = EGraph::with_rules(all_rules());
     let root = eg.add_arena(&a, d);
-    eg.saturate_with_limit(60);
+    SaturationConfig::compatibility(60).run(&mut eg);
     let _ = root;
     assert!(
         !eg.refused_const_unions().is_empty(),

@@ -579,20 +579,45 @@ mod tests {
     #[test]
     fn cached_glyph_matches_analytical_at_pixel_centers() {
         // At pixel centers the bilinear weights vanish, so the cached glyph
-        // must reproduce the analytical coverage kernel exactly (up to f32
-        // noise) — the bake tabulates the same fused kernel.
+        // must reproduce the analytical coverage kernel to f32 tolerance.
+        //
+        // The reference is the interpreter, not a second bake. This used to
+        // compare against `Lattice::point(x, y, ..).bake(&kernel)`, which was
+        // bit-exact while every lattice compiled identically. Extraction is
+        // now priced against the lattice a kernel runs over, so a point and a
+        // 32×32 frame are two compilations of the same function: over a frame
+        // the optimizer un-fuses an FMA whose multiplier is Y-invariant,
+        // trading one rounding for two in exchange for hoisting the multiply
+        // out of the pixel loop. Comparing two compilations at f32 tolerance
+        // pinned a promise the compiler no longer makes; comparing against
+        // the reference evaluation pins the one it does.
+        //
+        // The tolerance holds the measured divergence with room: the baked
+        // glyph sits ~8.5e-6 from the interpreter at the worst of these
+        // points, and a genuinely mistabulated glyph (a half-texel offset,
+        // say) is off by O(0.1).
         let font = Font::parse(FONT_DATA).unwrap();
         let kernel = font.glyph_kernel_scaled('A', 32.0).unwrap();
         let cached = CachedGlyph::from_kernel(&kernel, 32, 1.0);
+        let (arena, root) = kernel.parts();
+        // `Dwrt` (the antialiasing gradient) has no scalar evaluation until
+        // it is lowered, exactly as the compile entries lower it.
+        let (lowered, lowered_root) =
+            pixelflow_ir::passes::lower_dwrt_owned(arena, root).expect("glyph kernel lowers");
 
         for &(i, j) in &[(4usize, 4usize), (10, 16), (16, 8), (16, 20), (24, 28)] {
             let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
-            let direct = Lattice::point(x, y, 0.0, 0.0).bake(&kernel).into_buffer()[0];
+            let reference = pixelflow_ir::eval_scalar(
+                &lowered,
+                lowered_root,
+                &[x, y, 0.0, 0.0],
+                &pixelflow_ir::BindingTable::empty(),
+            );
             let baked = sample(&cached, x, y);
             assert!(
-                (direct - baked).abs() < 1e-5,
+                (reference - baked).abs() < 1e-4,
                 "cached glyph diverges from the analytical kernel at pixel center ({x}, {y}): \
-                 direct {direct}, baked {baked}"
+                 reference {reference}, baked {baked}"
             );
         }
     }

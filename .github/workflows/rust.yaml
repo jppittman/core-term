@@ -536,8 +536,20 @@ jobs:
   # `use alloc::vec::Vec;` lines; the rest were `format!`/`String`/`vec!`
   # imports and seven `f32` inherent methods routed through the `libm`
   # dependency the crate already carried.
+  #
+  # `pixelflow-search --no-default-features` is checked here too. It used to
+  # gate the NNUE weights opt-in behind a `std` feature (2026-08-30); that
+  # opt-in and the feature were deleted with the extraction-head program on
+  # 2026-09-01, so the crate now has no Cargo features and this step proves
+  # only that it builds with none requested.
+  #
+  # Unlike the pixelflow-ir check above, this is not a no_std guarantee:
+  # pixelflow-search's `lib.rs` never applies `#![no_std]`, `egraph/graph.rs`
+  # and `egraph/cost.rs` use `std::` unconditionally, and this crate's own
+  # Cargo.toml hard-forces its `pixelflow-ir` dependency's `std` feature on.
+  # Making pixelflow-search genuinely no_std is separate, larger work.
   no-std:
-    name: pixelflow-ir builds with std off
+    name: pixelflow-ir no_std + pixelflow-search std-feature-off builds
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -565,31 +577,5 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings"
 
-  # `pixelflow-search` still declares `std` as an optional, default-on feature
-  # it cannot honour: `env_extraction_policy`/`load_opt_in_weights` in
-  # `egraph/extraction.rs` call `std::env::var`/`std::fs::read`/
-  # `ExprNnue::from_bytes` unconditionally, with no matching
-  # `#[cfg(feature = "std")]` gate on the callers. Gating them is real work of
-  # unknown scope, so this job keeps the gap visible rather than dark. Delete
-  # it once the crate passes and fold the check into `no-std` above.
-  std-off-status:
-    name: pixelflow-search std-off status (informational, non-blocking)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 15
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Check with std off
-        shell: bash
-        run: |
-          set -uo pipefail
-          if cargo check -p pixelflow-search --no-default-features; then
-            echo "PASS: pixelflow-search --no-default-features -- fold this into the no-std job"
-          else
-            echo "::warning::FAIL (known, tracked): pixelflow-search --no-default-features"
-          fi
+      - name: cargo check -p pixelflow-search --no-default-features
+        run: cargo check -p pixelflow-search --no-default-features

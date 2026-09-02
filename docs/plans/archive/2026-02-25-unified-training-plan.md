@@ -1,5 +1,7 @@
 # Unified Training Flow Implementation Plan
 
+> **ARCHIVED.** The self-play/critic/REINFORCE loop this describes was removed in July 2026; the binaries it names (`train_online`, `collect_guide_data`, `train_mask*`) no longer exist. Post-mortem and replacement: [`../2026-07-07-guided-saturation-redesign.md`](../2026-07-07-guided-saturation-redesign.md). Kept for the credit-assignment framing only.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Replace the fragmented training pipeline (train_online, collect_guide_data, train_mask_reinforce, graph_teacher online-train) with a single self-play loop that jointly trains both heads through a shared backbone, using a Python Causal Transformer Critic for temporal credit assignment.
