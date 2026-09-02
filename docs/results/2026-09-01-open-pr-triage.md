@@ -104,39 +104,51 @@ framing was too narrow, and the general lesson is the one the conflict table
 above makes concrete: **a clean `git merge-tree` is not evidence that a branch
 still builds.**
 
-## Review threads: the headline number was wrong
+## Review threads: zero outstanding
 
 Both earlier passes carried "~60 unresolved threads across 8 PRs, 13 of them
-P1." That figure was minted on 2026-09-01 and never re-derived. Re-derived now,
-across all fifteen open PRs:
-
-**There is exactly one unresolved review thread.**
+P1." That figure was minted on 2026-09-01 and never re-derived. Re-derived
+across all fifteen open PRs, and then closed out: **there are none left.**
 
 | PR | threads | resolved | unresolved |
 |---|---|---|---|
 | #1084 | 28 | 28 | 0 |
-| #1072 | 24 | 23 | **1** (P2) |
+| #1072 | 24 | 24 | 0 |
 | #1091 | 9 | 9 | 0 |
 | #1054 | 2 | 2 | 0 |
-| #994, #1086, #1087, #1088, #1095, #1096, #1101, #1103, #1109, #1113, #1114 | 0 | — | 0 |
+| the other eleven | 0 | — | 0 |
 
-Two things caused the drift. Seven of the PRs carrying threads merged overnight
-(#1049, #1051, #1053, #1079, #1081, #1083, #1085) and took their threads with
-them. And the branch owners worked through the rest: #1084 closed all 28,
-#1091 all 9, each with a substantive reply rather than a dismissal — the #1091
-responses in particular confirm the finding against source, name the fix, and
-disclose which committed numbers the fix invalidates.
+Most of the drift was not work being done by this pass. Seven of the PRs
+carrying threads merged overnight (#1049, #1051, #1053, #1079, #1081, #1083,
+#1085) and took their threads with them, and the branch owners worked through
+the rest — #1084 closed all 28, #1091 all 9, each with a reply that confirms
+the finding against source, names the fix, and discloses which committed
+numbers the fix invalidates.
 
-The remaining one is on #1072 (`Recompute baselines on the Round-3 DEV corpus`,
-P2) — a branch this document already recommends closing, so it will most likely
-be resolved by that decision rather than by a fix.
+The last one standing was on #1072 (`Recompute baselines on the Round-3 DEV
+corpus`), and it turned out to be live rather than stale. §1's abstract had
+been qualified in `f00ee6f3`, but two restatements had not, and one asserted
+the opposite outright: §5.1 claimed the model out-ranked the static table
+(ρ 0.9438) and a bare op count (ρ 0.9486) "on the same corpus", when both
+baselines are Round 1's 392-kernel DEV tier and the table above them is Round
+3's 784. §6 listed all three ρ values in one breath. Fixed in `c2ce860a`:
+each value is now attributed to its tier, §5.1 says the margin is not a
+measured head-to-head and names the run that would settle it, §6 notes its own
+argument survives regardless (it needs only that a bare op count sits near the
+ceiling, true on whichever tier), and `NUMBERS.md`'s provenance row records the
+tier rather than only the source document. The §4 line comparing the two
+baselines *to each other* was left alone — both come from the same tier, so
+that one is accurate as written.
 
-The lesson is the same one the #1044 correction taught, pointing the other way:
-a thread count is a snapshot of a moving target, and quoting a stale one
-overstates the work as badly as misreading a zero understates it. Any future
-sweep should re-derive it rather than carry it forward.
+Two lessons, pointing opposite ways, and both earned here. A stale thread count
+overstates the work as badly as misreading a zero understates it (the #1044
+correction below is the same error inverted), so re-derive it rather than carry
+it forward. And an *unresolved* thread is not evidence of unfinished work, nor
+a resolved one evidence of finished: the #1072 thread had been partly fixed and
+left open, while several elsewhere were closed with the fix genuinely in place.
+Read the code, not the badge.
 
-## Complications
+## Complications## Complications
 
 ### 1. #1054 — was red, now fixed. Recommend a mutants rerun, then merge.
 
