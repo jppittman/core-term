@@ -2,6 +2,8 @@
 
 Measurement only. Nothing in production changed: same rule set, same `Budget::Production`, same `CostModel::latency_prior()`, same `extract_dag`.
 
+Context: the defects measured here are issue #1111 and §1.L5 of `docs/plans/2026-09-02-optimizer-api.md`; the budget trades whose sequencing they decide are #1101 (numeric-first rule order), #1109 (removing the class-cap break) and #1114 (live-counted class budget). **The decision input is [§ The decision input](#the-decision-input);** everything after it is the evidence.
+
 ## Headline
 
 **The measurable half needs no time limit.** Knuth's algorithm gives the exact minimum TREE cost — the objective `extract_dag` names — in polynomial time, on every kernel. Against it, over ALL **302** kernels with nothing excluded:
@@ -18,7 +20,147 @@ The NP-hard half, with a time limit:
 - Greedy is **exactly optimal on 86 of 89 solved kernels**.
 - Certified floor across ALL kernels (an unsolved search still returns a term, which upper-bounds the optimum): median `greedy/best-found` **1.0000**, strictly beaten on **81**.
 
+## The decision input
+
+This section is the part a sequencing decision needs: how big the gap is, which
+of the three defects is worth fixing first, and whether that should happen
+before or after the three budget trades already on the table — the numeric-first
+rule order (#1101), removing the class-cap break (#1109), and the live-counted
+class budget (#1114). The defects themselves are #1111 and §1.L5 of
+`docs/plans/2026-09-02-optimizer-api.md`.
+
+### 1. The headline gap, and what it is not
+
+There are two optima, and only one of them is measurable at production scale.
+
+| reference | scope | pooled recovery vs greedy | per-kernel |
+|---|---|---|---|
+| **tree optimum** (Knuth, exact, polynomial, no time limit) | **all 302, nothing excluded** | **0.258%** (real-only 0.284%; shaders 2.62%) | median 0.000%, p90 0.403%, worst **14.557%**; strictly better on **68**, greedy ahead on 4 |
+| **DAG optimum** (branch and bound, 4s cap) | **89 of 302 proved** | 0.228% on those 89 | median ratio 1.0000, greedy already exactly optimal on **86 of 89**, worst **1.1212** |
+| **certified floor** (cheapest term the search actually exhibited; a valid upper bound on the optimum even when UNSOLVED) | all 302 | 0.286% | strictly beats greedy on **81**; on those 81 median 0.428%, p90 5.727%, max 14.557% |
+
+**The headline number is 0.26% pooled / 14.6% worst case, and it is a floor.**
+
+Three caveats that have to travel with it:
+
+1. **Which optimum.** The 0.26% is against the *tree* optimum — the objective
+   `extract_dag` names. The true DAG optimum is lower, but it is NP-hard and
+   only closed on 89 kernels.
+2. **What fraction was solvable.** Exact DAG extraction stops being computable
+   at roughly 100–200 reachable e-classes. A production glyph saturates to a
+   median of **1,755** reachable classes, so 213/302 are UNSOLVED and excluded
+   from the exact statistic. The exact number is measured where it is
+   measurable, which is not where production lives — that is precisely why the
+   tree-optimal reference, which has no such limit, is the decision-relevant one.
+3. **The size boundary cuts the mechanism split in half.** All 68 kernels where
+   the tree optimum beats greedy are **real** (64 glyph, 4 shader) — **zero
+   synthetic**. The synthetic ladder is where most of the 89 exact solves live.
+   So the two references are describing different populations, and any single
+   ratio that averages them is misleading.
+
+For scale: #1114 buys **+2.03% for 2.00x rule applications**. Pooled, 0.26% is
+smaller than that. In the tail it is not — 2.62% pooled on shaders, 5.6% on
+`shader:julia_set` at the production budget with no budget change at all, and
+10.5% on the two `U+004B` glyphs #1114 regresses.
+
+### 2. The mechanism split, and what each fix recovers
+
+| # | defect (§1.L5 / #1111) | share of the proved loss | what fixing it recovers | cost to fix |
+|---|---|---|---|---|
+| (i) | single DFS, not a fixpoint — a class whose child is `on_stack` is scored `CYCLE_COST` and never revisited | 10 of 195 units (5%) | **0.258% pooled over all 302, p90 0.403%, worst 14.557%, 68 kernels strictly improved** — and it settles both `U+004B` regressions (1132 → 1013) | small: a worklist to fixpoint replacing one DFS |
+| (ii) | tree cost, not DAG cost — sharing is never priced | 185 of 195 units (95%) | **0.028% pooled beyond the tree optimum** (real-only 0.013%); 17 kernels improved further | large: NP-hard; needs a DAG-aware heuristic, not the reference |
+| (iii) | `total_cost` read at `extract.rs:1636` before `repair_choices_well_founded` mutates the choices at `:1639` | 0 units | **no cost at all** — it is an evidence bug, not a speed bug | trivial: recompute after repair |
+
+**The 95/5 split is a small-kernel statement and does not survive to production
+scale.** It is computed only where the branch and bound closed, i.e. on small
+e-graphs — where the DFS rarely stumbles and unpriced sharing is the whole
+story. Over the full corpus the picture inverts: the tree optimum is worth
+0.258% pooled and the entire remaining certified headroom beyond it is 0.028%.
+Both statements are true; they describe different kernels.
+
+**Fix (i) first.** It is the largest measurable recovery at production scale, it
+is the cheapest of the three, it is what the #1114 regressions actually are, and
+it is a prerequisite for (ii) — a DAG-cost DP that is still a single DFS just
+produces a different set of `CYCLE_COST`-poisoned classes. Cycle-priced classes
+are not rare: **238 of 302** kernels have at least one (median 10, max 284), and
+on **203 of 302** the best term the search holds *uses* a class the greedy DP
+priced at `CYCLE_COST` — a floor, since on an UNSOLVED kernel that term is only
+the seed.
+
+**Do not chase (ii) next.** The measurement's most useful negative result is
+that exact DAG extraction is worth **0.028% pooled** beyond the tree optimum on
+this corpus. That does not license shipping a branch and bound in the compiler,
+and it says the sharing-aware objective is a research direction, not a fix.
+
+**(iii) is worse than "stale", and free to fix.** On the 132 of 302 kernels
+where `total_cost` fails to describe the returned term, **not one** is an
+ordinary-magnitude discrepancy: **92** report exactly `usize::MAX` (the
+`.unwrap_or(usize::MAX)` at `:1636`, taken when the single DFS never resolves
+the root class) and **40** report 1x, 2x or 3x `usize::MAX / 4` — the `Dwrt`
+sentinel from `cost.rs:292`, summed into a number typed as a cost. On those
+kernels `total_cost` is not a slightly-wrong cost; it is arithmetic garbage
+wearing a cost's type, and it is what a naive A/B would read.
+
+No shipped result is known to be corrupted by it, and that is worth stating
+precisely rather than leaving as a worry: the harnesses that decided #1101,
+#1109 and #1114 re-score the returned arena (`arena_static_cost`,
+`runtime.rs:1278`) instead of reading `total_cost`, and the one live consumer
+that does read it — `guide_headroom.rs:395` — ran on an 800-expression corpus
+containing no sentinel value. So (iii) is a live trap, not a live wound. It
+should still be fixed first in wall-clock order, because it costs nothing and it
+is the reason a future A/B could be silently wrong.
+
+### 3. Sequencing — one sentence
+
+**Fix extraction before taking any of the three budget trades:** the fixpoint
+fix is free at run time, recovers more on real kernels (0.284% pooled, 14.6%
+worst) than #1114 buys for 2x the rule applications on the kernels where they
+overlap, and — decisively — turns #1114's two `U+004B` regressions from
+regressions into improvements, which no budget tuning can do.
+
+### 4. The finding that settles it
+
+On `glyph16:U+004B` and `glyph32:U+004B`, two of #1114's four regressions, the
+roomier e-graph **provably contains a term costing 1013** while greedy returns
+**1132** on it and **1047** on the smaller production graph. A larger e-graph
+holds a superset of the equalities, so the optimum over it can only fall; the
+graph got strictly better and the chooser gave up 8.1% anyway. **Those two
+regressions are extraction failures, not budget failures**, and a chooser that
+attained its own stated objective would have reported an improvement there. The
+same reference shows `shader:julia_set` leaving **5.6%** on the table at the
+production budget with no budget change in play.
+
+The remaining regression, `psychedelic` (766 → 816), is **unresolved, not
+exonerated**: no cheaper term was exhibited in the roomier graph inside the time
+limit, and at 946 reachable classes it is well past where the exact reference
+stops. It does not license the trade and it does not condemn it.
+
+### 5. What a fixed extractor would cost
+
+**Estimate, not a measurement** — the probe does not time the Knuth pass
+separately, and nothing here was benchmarked as production code.
+
+The fixpoint version of `extract_dag` is Knuth's algorithm: a Dijkstra over the
+AND-OR graph in which each e-node is relaxed once per settled child, i.e.
+`O(sum of arities * log V)` with a binary heap, against the current single
+DFS's `O(sum of arities)`. A small constant and a log — not an order. What the
+run does pin: the Knuth reference completed on **all 302** kernels including the
+4,847-class `psychedelic` and the 5,226-class `U+0040` glyph, inside a probe
+whose per-kernel wall time was dominated by the 4s branch and bound. It is not
+the expensive part.
+
+**The asymmetry is the argument.** Extraction runs **once per compile**.
+Saturation runs thousands to a million rule applications per compile — the
+guide-headroom corpus is **8,729,067 applications over 800 expressions** (median
+194.5, p90 31,197, max 996,047) — and #1114 proposes to double that for +2.03%.
+A log factor on a once-per-compile pass, buying 0.28% pooled and up to 14.6% on
+individual real kernels, is a different kind of trade from 2x on the pass that
+already dominates compile time. **This is the cheap place to spend.**
+
+
 ## The mechanism split
+
+*(Evidence for §2 above: how the decomposition is defined and why it is exact.)*
 
 The loss decomposes exactly, because the middle term is itself an argmin:
 
