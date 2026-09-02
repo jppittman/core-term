@@ -466,7 +466,9 @@ mod tests {
         // The difference block flips sign under a swap, so a rule and its
         // reverse must not encode identically.
         assert!(
-            e1.iter().zip(swapped.iter()).any(|(a, b)| (a - b).abs() > 1e-6),
+            e1.iter()
+                .zip(swapped.iter())
+                .any(|(a, b)| (a - b).abs() > 1e-6),
             "swapping LHS/RHS must change the encoding"
         );
     }
@@ -476,10 +478,16 @@ mod tests {
         let mut head = SaturationHead::new();
         head.randomize(42);
         for i in 0..HIDDEN_DIM {
-            assert!((head.trunk_w[i][i] - 1.0).abs() < 0.05, "trunk diagonal near 1.0");
+            assert!(
+                (head.trunk_w[i][i] - 1.0).abs() < 0.05,
+                "trunk diagonal near 1.0"
+            );
             for j in 0..HIDDEN_DIM {
                 if i != j {
-                    assert!(head.trunk_w[i][j].abs() < 0.05, "trunk off-diagonal near 0.0");
+                    assert!(
+                        head.trunk_w[i][j].abs() < 0.05,
+                        "trunk off-diagonal near 0.0"
+                    );
                 }
             }
             assert_eq!(head.trunk_b[i], 0.0);

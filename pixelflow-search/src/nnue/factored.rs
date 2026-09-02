@@ -18,9 +18,9 @@
 //!   [`EdgeSink`] is where a walk sends it — a parent-child edge is the
 //!   up/down context primitive the Guide's candidate-context design folds.
 //!
-//! The extraction (value) head that used to sit on top of this — the
-//! `EdgeAccumulator` feature vector, the `ExprNnue` backbone + value MLP, its
-//! TRIF checkpoint — was closed as an honest negative
+//! The extraction (value) head that used to sit on top of this — an
+//! accumulator feature vector, a backbone + value MLP, its checkpoint format
+//! — was closed as an honest negative
 //! (docs/paper/2026-08-egraph-nnue-parity.md) and deleted on 2026-09-01;
 //! history is in VCS.
 
@@ -523,7 +523,6 @@ const fn const_cos(x: f64) -> f64 {
     }
     result
 }
-
 
 // ============================================================================
 // Typed Feature Edges (the walker's replayable output)

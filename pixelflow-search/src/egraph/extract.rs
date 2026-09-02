@@ -1753,7 +1753,9 @@ mod tests {
         let reloads = trace
             .edges()
             .iter()
-            .filter(|e| e.parent == pixelflow_ir::OpKind::Mul && e.child == pixelflow_ir::OpKind::Var)
+            .filter(|e| {
+                e.parent == pixelflow_ir::OpKind::Mul && e.child == pixelflow_ir::OpKind::Var
+            })
             .count();
         assert_eq!(reloads, 1);
     }
@@ -1901,7 +1903,6 @@ mod tests {
              Const(0), or its stream will disagree with the arena choices_to_arena emits"
         );
     }
-
 
     // =========================================================================
     // choices_to_arena tests
