@@ -158,3 +158,10 @@ path = "src/bin/gen_bezier_corpus.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "counterfactual_credit"
+path = "src/bin/counterfactual_credit.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false

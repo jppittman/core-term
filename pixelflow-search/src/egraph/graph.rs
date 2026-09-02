@@ -71,6 +71,31 @@ pub struct EGraph {
     /// Distinct (bits, bits) pairs, kept for reporting and tests; see
     /// [`EGraph::union`].
     refused_const_unions: Vec<(u32, u32)>,
+    /// Counterfactual-replay mask (docs/plans/2026-09-01-guide-return-to-go.md
+    /// §4.1): when `Some`, the application that would otherwise be assigned
+    /// this ordinal is skipped entirely by `apply_action_from_rule` — not
+    /// recorded, not applied, and the ordinal it would have consumed is left
+    /// for whatever candidate comes next in the same scan order. Consumed
+    /// (reset to `None`) the instant it fires, so it names exactly one
+    /// application, never a sequence. `None` on every path except
+    /// [`EGraph::saturate_until_applications_observed`], so every existing
+    /// caller is unaffected.
+    replay_mask: Option<ApplicationMask>,
+}
+
+/// Names exactly one application to skip in a counterfactual replay of the
+/// unguided sweep — see [`EGraph::saturate_until_applications_observed`] and
+/// docs/plans/2026-09-01-guide-return-to-go.md §4.1.
+///
+/// `skip_ordinal` is the [`super::provenance::ApplicationId`] (as `u64`) the
+/// skipped application would otherwise have received. Replay is deterministic
+/// and identical to the original run up to the point of divergence, so
+/// replaying the same expression through the same ordering policy and
+/// masking the ordinal that was `a` in the original trajectory reproduces
+/// `τ \ a` exactly (§4.1's `Δ_a = R(τ\a,B) − R(τ,B)`).
+#[derive(Clone, Copy, Debug)]
+pub struct ApplicationMask {
+    pub skip_ordinal: u64,
 }
 
 impl Default for EGraph {
@@ -94,6 +119,7 @@ impl Clone for EGraph {
             active_application: self.active_application,
             const_fact: self.const_fact.clone(),
             refused_const_unions: self.refused_const_unions.clone(),
+            replay_mask: self.replay_mask,
         }
     }
 }
@@ -188,6 +214,7 @@ impl EGraph {
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
+            replay_mask: None,
         }
     }
 
@@ -208,6 +235,7 @@ impl EGraph {
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
+            replay_mask: None,
         }
     }
 
@@ -1015,6 +1043,34 @@ impl EGraph {
         max_classes: usize,
         timeout: std::time::Duration,
     ) -> AppBudgetSaturationStats {
+        self.saturate_until_applications_observed(
+            max_total_applications,
+            max_iters,
+            max_classes,
+            timeout,
+            None,
+        )
+    }
+
+    /// [`Self::saturate_until_applications`], with an optional counterfactual
+    /// replay mask (docs/plans/2026-09-01-guide-return-to-go.md §4.1): the
+    /// unguided sweep runs exactly as it always does, except the application
+    /// that would be assigned `mask.skip_ordinal` is never recorded or
+    /// applied — see [`ApplicationMask`] and `apply_action_from_rule`, the
+    /// one place that checks it. `mask: None` is the whole of
+    /// `saturate_until_applications`'s own body; this function's control
+    /// flow is byte-for-byte that function's previous body, so passing
+    /// `None` here reproduces its behavior exactly (pinned by
+    /// `unguided_replay_without_mask_matches_original_bit_for_bit`).
+    pub fn saturate_until_applications_observed(
+        &mut self,
+        max_total_applications: usize,
+        max_iters: usize,
+        max_classes: usize,
+        timeout: std::time::Duration,
+        mask: Option<ApplicationMask>,
+    ) -> AppBudgetSaturationStats {
+        self.replay_mask = mask;
         let start = std::time::Instant::now();
         let deadline = start + timeout;
         let mut iterations = 0;
@@ -1080,6 +1136,11 @@ impl EGraph {
                 break 'outer SaturationStop::Quiesced;
             }
         };
+
+        // Defensive cleanup: a mask whose `skip_ordinal` was never reached
+        // (e.g. the sweep stopped before that ordinal fired) must not leak
+        // into whatever this `EGraph` does next.
+        self.replay_mask = None;
 
         AppBudgetSaturationStats {
             iterations,
@@ -1216,6 +1277,22 @@ impl EGraph {
         class_id: EClassId,
         action: RewriteAction,
     ) -> usize {
+        // Counterfactual replay: the application that would be recorded next
+        // is the one named by `replay_mask.skip_ordinal` (ApplicationIds are
+        // assigned as `provenance.application_count()` at record time, so
+        // the count right now IS the ordinal about to be minted). Skip it —
+        // don't record, don't apply — and consume the mask so it fires
+        // exactly once. Everything downstream (the scan already collected
+        // in `apply_rule_at_index_timed`, the rest of this sweep, later
+        // sweeps) proceeds exactly as it would against a live graph that
+        // simply never received this application, per
+        // docs/plans/2026-09-01-guide-return-to-go.md §4.1.
+        if let Some(mask) = self.replay_mask {
+            if mask.skip_ordinal == self.provenance.application_count() as u64 {
+                self.replay_mask = None;
+                return 0;
+            }
+        }
         let application_id = self.provenance.record_application(ApplicationRecord {
             rule_idx,
             step: self.step,
@@ -2752,6 +2829,83 @@ mod tests {
             eg.provenance().application_count(),
             eg.provenance().union_count(),
             eg.num_classes(),
+        );
+    }
+
+    /// docs/plans/2026-09-01-guide-return-to-go.md §4.1/§5: counterfactual
+    /// replay must reduce to the original, unmasked trajectory when no
+    /// application is skipped — `saturate_until_applications` now delegates
+    /// to `saturate_until_applications_observed(..., None)`, and this pins
+    /// that the delegation changed nothing observable: identical stop
+    /// reason, identical cumulative counts, an identical
+    /// (`rule_idx`, `step`, `match_root`) sequence for every recorded
+    /// application, and an identical extracted cost.
+    #[test]
+    fn saturate_until_applications_observed_without_mask_matches_original_bit_for_bit() {
+        use pixelflow_ir::ExprArena;
+
+        // A nontrivial expression: enough shape (Add/Sub/Mul/Sqrt over two
+        // vars) that a real budgeted sweep fires many rules and mid-budget
+        // cutoffs are exercised, not just a fixpoint reached in one sweep.
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        let y = arena.push_var(1);
+        let xx = arena.push_binary(pixelflow_ir::OpKind::Mul, x, x);
+        let yy = arena.push_binary(pixelflow_ir::OpKind::Mul, y, y);
+        let sum = arena.push_binary(pixelflow_ir::OpKind::Add, xx, yy);
+        let dist = arena.push_unary(pixelflow_ir::OpKind::Sqrt, sum);
+        let doubled = arena.push_binary(pixelflow_ir::OpKind::Add, dist, dist);
+        let root = arena.push_binary(pixelflow_ir::OpKind::Sub, doubled, doubled);
+
+        const BUDGET: usize = 60;
+        const MAX_ITERS: usize = 100;
+        const MAX_CLASSES: usize = 2_000;
+        let timeout = std::time::Duration::from_secs(30);
+
+        let mut original = EGraph::with_rules(crate::egraph::all_rules());
+        let original_root = original.add_arena(&arena, root);
+        let original_stats =
+            original.saturate_until_applications(BUDGET, MAX_ITERS, MAX_CLASSES, timeout);
+
+        let mut replayed = EGraph::with_rules(crate::egraph::all_rules());
+        let replayed_root = replayed.add_arena(&arena, root);
+        let replayed_stats = replayed
+            .saturate_until_applications_observed(BUDGET, MAX_ITERS, MAX_CLASSES, timeout, None);
+
+        assert_eq!(original_stats.stop, replayed_stats.stop);
+        assert_eq!(original_stats.iterations, replayed_stats.iterations);
+        assert_eq!(original_stats.total_unions, replayed_stats.total_unions);
+        assert_eq!(original_stats.applications, replayed_stats.applications);
+        assert!(
+            original_stats.applications >= BUDGET,
+            "test fixture must actually exercise a mid-run budget cutoff, got {} applications",
+            original_stats.applications
+        );
+
+        let original_log: Vec<(usize, usize, EClassId)> = original
+            .provenance()
+            .applications()
+            .map(|(_, r)| (r.rule_idx, r.step, r.match_root))
+            .collect();
+        let replayed_log: Vec<(usize, usize, EClassId)> = replayed
+            .provenance()
+            .applications()
+            .map(|(_, r)| (r.rule_idx, r.step, r.match_root))
+            .collect();
+        assert_eq!(
+            original_log, replayed_log,
+            "an unmasked observed replay must record byte-for-byte the same \
+             (rule_idx, step, match_root) sequence as the original unguided sweep"
+        );
+
+        let costs = CostModel::latency_prior();
+        let original_cost =
+            crate::egraph::extract_dag(&original, original_root, &costs).total_cost;
+        let replayed_cost =
+            crate::egraph::extract_dag(&replayed, replayed_root, &costs).total_cost;
+        assert_eq!(
+            original_cost, replayed_cost,
+            "an unmasked observed replay must extract to the same cost as the original run"
         );
     }
 }
