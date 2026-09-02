@@ -491,6 +491,15 @@ impl Optimizer {
         self.rules.fingerprint()
     }
 
+    /// The limits this optimizer's budget resolves to for an input of
+    /// `node_count` nodes — the *environment* an
+    /// [`anytime`](super::anytime) curve holds fixed while it varies only
+    /// the application dimension.
+    #[must_use]
+    pub fn limits_for(&self, node_count: usize) -> Limits {
+        self.budget.limits(node_count)
+    }
+
     /// The rule set, for a caller that has to name a rule this run applied.
     #[must_use]
     pub fn rule_set(&self) -> &RuleSet {
