@@ -1344,12 +1344,11 @@ mod production_telemetry {
         );
         let elapsed = started.elapsed();
 
-        // runtime.rs:135-137
+        // runtime.rs:135-137 — env_extraction_policy() is unconditionally
+        // the static latency prior now (the NNUE extraction-head arm was
+        // deleted); no env-var guard is needed to measure "the default
+        // production policy" any more.
         let policy = env_extraction_policy();
-        assert!(
-            matches!(policy, ExtractionPolicy::Static(_)),
-            "PIXELFLOW_NNUE_WEIGHTS is set; this measures the default production policy — unset it"
-        );
         let extraction = policy.extraction(&egraph, root_class);
         let (extracted, extracted_root) = choices_to_arena(&extraction);
 
