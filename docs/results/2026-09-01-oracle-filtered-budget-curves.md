@@ -1,5 +1,11 @@
 # Oracle-filtered anytime budget curves, recalibrated: curves have shape; rule-granularity filtering barely moves them (2026-09-01)
 
+> **Predates the 2026-09-02 review fixes; a re-run is required.** The oracle rule set is
+> now derived from the minimum-cost checkpoint's extraction rather than the final one
+> (`extract_dag` is non-monotonic along a curve, and 21 of 225 unguided curves in the
+> committed CSV end above their own minimum), so the filtered rule sets — and every
+> oracle curve below — change. Nothing here has been edited to match the new code.
+
 Reproduce:
 ```
 cargo run --release -p pixelflow-search --example oracle_filtered_budget_curves

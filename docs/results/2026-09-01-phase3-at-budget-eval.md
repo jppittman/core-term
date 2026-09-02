@@ -1,13 +1,36 @@
 # Phase 3 at-budget evaluation on DEV: the registered claim holds, and per-rule base rates carry most of it (2026-09-01)
 
+> **This page's numbers predate the 2026-09-02 review fixes and a re-run is required.**
+> Six corrections landed after this run and each of them changes numbers here: the guided
+> loop now applies every node-level match sharing one candidate key and re-resolves a
+> matched node by stable identity before applying it; `derivation_ancestors_tight`
+> canonicalizes class ids and takes the extraction's complete choice map (the enabler
+> diagnostic); `train_guide` excludes `dedup_repeat` rows, sizes its rule table from the
+> registered rule set, and applies L2 to every weight — so the checkpoint the guided arms
+> deploy is not the one measured here; and `average_precision` now groups tied scores, which
+> moves the reported PR-AUCs. The verdict below is recorded as it was reproduced; nothing in
+> it has been edited to match the new code. Re-run before citing any figure.
+
 Reproduce:
 ```
+# Prerequisites — the trained checkpoint and the strict-label splits are NOT committed
+# (`pixelflow-pipeline/data/*` is gitignored); regenerate them first, in this order:
+cargo run --release -p pixelflow-pipeline --features training --bin gen_bench_corpus -- \
+    --target 4000 --seed 42
+cargo run --release -p pixelflow-pipeline --features training --bin gen_strict_labels
+cargo run --release -p pixelflow-pipeline --features training --bin train_guide -- \
+    --report-json docs/results/2026-09-01-train-guide-report.json
+# ...then the evaluation itself:
 cargo run --release -p pixelflow-pipeline --features training --bin phase3_at_budget_eval -- \
     --classical-samples 0 --other-samples 30
 # per-expression rows: docs/results/2026-09-01-phase3-at-budget-eval.jsonl
 # aggregates:          docs/results/2026-09-01-phase3-at-budget-eval.json
 # generated tables:    docs/results/2026-09-01-phase3-at-budget-eval-report.md
 ```
+Every step is seeded and deterministic, so a clean checkout reproduces the same artifacts.
+`phase3_at_budget_eval` writes a `…-eval.config.json` fingerprint beside its JSONL and
+refuses to resume into rows written under a different guided grid, checkpoint, control
+report, or sampling configuration.
 
 This is the §5 experiment of `docs/plans/2026-08-31-guide-design-revision.md`, run against the
 committed registration `docs/plans/2026-09-01-phase3-registration.md` (nothing in it was revised;

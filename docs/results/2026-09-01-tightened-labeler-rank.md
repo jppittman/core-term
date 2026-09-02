@@ -1,5 +1,12 @@
 # Tightened-labeler re-measurement: does narrowing the over-approximation reorder the rule ranking? (2026-09-01)
 
+> **Predates the 2026-09-02 review fixes; a re-run is required.** The per-rule Spearman
+> vectors are now pooled by rule NAME (the library registers several indexed operator
+> variants under one name, and keying by index overweighted the families with more of
+> them), non-quiescent replays are excluded rather than pooled, and
+> `derivation_ancestors_tight` canonicalizes class ids — all three move the numbers
+> below. Nothing here has been edited to match the new code.
+
 Reproduce:
 ```
 cargo run --release -p pixelflow-pipeline --features training --bin tightened_labeler_rank -- \
