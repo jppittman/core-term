@@ -858,36 +858,38 @@ impl EGraph {
         self.nodes(id).iter().any(|n| n.is_const(val))
     }
 
-    /// Saturate the e-graph with time and size limits.
+    /// The one rewrite-until-budget-exhausted loop.
     ///
-    /// Uses chess-style time management:
-    /// - 500ms hard timeout (never exceed)
-    /// - 10000 class limit (prevent memory explosion)
-    /// - 100 iteration limit (budget control)
-    pub fn saturate(&mut self) {
-        self.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
-    }
-
-    /// Saturate with just an iteration limit (simple compatibility API).
+    /// Every saturation in the workspace bottoms out here, and nothing else
+    /// re-decides when a run stops. Callers reach it through one of two
+    /// entry points:
     ///
-    /// Warning: This can hang on complex expressions. Prefer `saturate_with_limits`.
-    pub fn saturate_with_limit(&mut self, max_iters: usize) {
-        self.saturate_with_limits(max_iters, 10_000, std::time::Duration::from_millis(500));
-    }
-
-    /// Saturate with full time and size control.
+    /// - [`saturate_for_extraction`](super::extraction::saturate_for_extraction)
+    ///   — the production path. It picks a
+    ///   [`SaturationConfig`](super::saturate::SaturationConfig) preset from
+    ///   an expression-size measure, so the budget scales with the input.
+    ///   Both compile tiers and the `Dwrt`-differentiation tier use it.
+    /// - This method, called directly only where a budget must be pinned
+    ///   rather than inherited — tests, the hindsight labeler, and
+    ///   measurement harnesses, which spell it
+    ///   [`SaturationConfig::compatibility`](super::saturate::SaturationConfig::compatibility).
     ///
-    /// Returns when any limit is hit:
-    /// - `max_iters` iterations completed
-    /// - `max_classes` e-classes reached (memory protection)
-    /// - `timeout` elapsed (time protection)
-    /// - Saturation achieved (no more changes)
+    /// The three arguments are independent stopping conditions, checked
+    /// between rewrite rounds; the run returns as soon as any one of them —
+    /// or saturation itself — is reached, whichever comes first:
     ///
-    /// This is the one rewrite-until-budget-exhausted loop
-    /// (docs/plans/2026-08-17-cost-model-domain.md, J11) — the training-data
-    /// policy layer in `super::saturate` drives its whole multi-iteration run
-    /// through a single call here rather than re-deciding, in a second copy,
-    /// when to stop.
+    /// - `max_iters` — how many rewrite rounds may run. One round applies
+    ///   every rule once and rebuilds once.
+    /// - `max_classes` — e-class ceiling. Bounds memory against e-graph
+    ///   blowup, and is the only limit also checked *between rules within* a
+    ///   round.
+    /// - `timeout` — wall-clock ceiling measured from entry. It is the only
+    ///   limit pushed down into a single rule's matching, as a deadline, so
+    ///   it is what bounds a round that would otherwise run long.
+    ///
+    /// Returns the [`SaturationStats`] the run actually achieved;
+    /// `stats.iterations < max_iters` is how a caller tells convergence from
+    /// an exhausted round budget.
     pub fn saturate_with_limits(
         &mut self,
         max_iters: usize,
@@ -2010,6 +2012,7 @@ mod tests {
     use super::*;
     use crate::egraph::ops;
     use crate::egraph::provenance::ApplicationId;
+    use crate::egraph::saturate::SaturationConfig;
     use crate::math::algebra::{
         AddNeg, Annihilator, Cancellation, Canonicalize, Commutative, Distributive, Identity,
         InverseAnnihilation, Involution, MulRecip,
@@ -2169,7 +2172,7 @@ mod tests {
             op: &ops::Add,
             children: vec![x, neg_x],
         });
-        eg.saturate();
+        SaturationConfig::compatibility(100).run(&mut eg);
         let zero = eg.add(ENode::constant(0.0));
         assert_eq!(eg.find(sum), eg.find(zero));
     }
@@ -2186,7 +2189,7 @@ mod tests {
             op: &ops::Mul,
             children: vec![x, recip_x],
         });
-        eg.saturate();
+        SaturationConfig::compatibility(100).run(&mut eg);
         let one = eg.add(ENode::constant(1.0));
         assert_eq!(eg.find(product), eg.find(one));
     }
@@ -2204,7 +2207,7 @@ mod tests {
             op: &ops::Div,
             children: vec![prod, x],
         });
-        eg.saturate();
+        SaturationConfig::compatibility(100).run(&mut eg);
         assert_eq!(eg.find(div), eg.find(five));
     }
 
@@ -2227,7 +2230,7 @@ mod tests {
             children: vec![a, b_minus_c],
         }); // 10 - 4 = 6
 
-        eg.saturate();
+        SaturationConfig::compatibility(100).run(&mut eg);
 
         // Extract and verify structure
         let costs = CostModel::default();
@@ -2258,7 +2261,7 @@ mod tests {
             children: vec![d_sq, inner_sub],
         });
 
-        eg.saturate();
+        SaturationConfig::compatibility(100).run(&mut eg);
 
         let costs = CostModel::default();
         let (arena, root) = eg.extract_expr_with_costs(result, &costs);
@@ -2287,7 +2290,7 @@ mod tests {
             children: vec![x_sq, inner_sub],
         });
 
-        eg.saturate();
+        SaturationConfig::compatibility(100).run(&mut eg);
 
         let costs = CostModel::default();
         let (arena, root) = eg.extract_expr_with_costs(result, &costs);
@@ -2320,7 +2323,7 @@ mod tests {
             children: vec![x_sq, inner_sub],
         });
 
-        eg.saturate();
+        SaturationConfig::compatibility(100).run(&mut eg);
 
         // Use default costs like the kernel! macro does
         let costs = CostModel::new();
@@ -2372,7 +2375,7 @@ mod tests {
             children: vec![d_sq, inner],
         });
 
-        eg.saturate();
+        SaturationConfig::compatibility(100).run(&mut eg);
 
         let costs = CostModel::new();
         let (arena, root) = eg.extract_expr_with_costs(result, &costs);
@@ -2420,7 +2423,7 @@ mod tests {
             });
         }
 
-        eg.saturate();
+        SaturationConfig::compatibility(100).run(&mut eg);
 
         // Extract with default costs (high threshold)
         let default_costs = CostModel::default();
@@ -2672,7 +2675,7 @@ mod tests {
         }
 
         let start = std::time::Instant::now();
-        eg.saturate();
+        SaturationConfig::compatibility(100).run(&mut eg);
         let elapsed = start.elapsed();
 
         eprintln!(

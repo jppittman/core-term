@@ -52,16 +52,18 @@ usually `all_rules()`, so a test or compiler phase can constrain the algebra it 
 
 ```rust
 use pixelflow_ir::{ExprArena, OpKind};
-use pixelflow_search::egraph::{CostModel, EGraph, all_rules};
+use pixelflow_search::egraph::{CostModel, EGraph, all_rules, saturate_for_extraction};
 
 let mut arena = ExprArena::new();
 let x = arena.push_var(0);
 let zero = arena.push_const(0.0);
 let root = arena.push_binary(OpKind::Add, x, zero);
 
+let node_count = arena.node_count_subtree(root);
+
 let mut egraph = EGraph::with_rules(all_rules());
 let root_class = egraph.add_arena(&arena, root);
-egraph.saturate();
+saturate_for_extraction(&mut egraph, node_count);
 
 let costs = CostModel::default();
 let (optimized, optimized_root, estimated_cost) =
@@ -71,8 +73,14 @@ assert!(optimized.node_count_subtree(optimized_root) > 0);
 assert!(estimated_cost <= costs.cost(OpKind::Add));
 ```
 
-`saturate()` has built-in iteration, e-class, and wall-clock limits. Lower-level APIs expose
-explicit budgets for experiments that need a different stopping policy.
+`saturate_for_extraction()` is the production entry point: it sizes the iteration, e-class,
+and wall-clock budget from `node_count`, so a three-node expression is not given a budget
+meant for a hundred-node one. It is the only entry point that decides a budget.
+
+`EGraph::saturate_with_limits()` is the other one — the same loop with the three limits
+supplied by the caller, for tests and experiments that must pin an exact stopping policy
+rather than inherit the size-tiered one. Those call sites spell the budget as
+`SaturationConfig::compatibility(rounds)` instead of repeating literals.
 
 ## Cost model
 

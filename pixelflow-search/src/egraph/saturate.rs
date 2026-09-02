@@ -200,6 +200,48 @@ impl SaturationConfig {
             max_classes: 5000,
         }
     }
+
+    /// The pre-2026-09 fixed budget — 10,000 e-classes and 500 ms — with the
+    /// caller's own round count.
+    ///
+    /// **Not a production preset.** Production sizes its budget from the
+    /// expression via [`config_for_node_count`], reached through
+    /// [`saturate_for_extraction`](super::extraction::saturate_for_extraction).
+    /// This one exists for the non-production call sites that must reproduce
+    /// results from before that policy landed — unit tests, the hindsight
+    /// labeler, and offline measurement harnesses — so the budget is named
+    /// once here instead of the same two magic numbers being re-spelled at
+    /// every such site, where they would drift apart the moment one of them
+    /// was revised.
+    ///
+    /// The round count stays a parameter because it always was one: the
+    /// budget these sites inherited fixed the class cap and the deadline but
+    /// let each caller choose how many rewrite rounds it wanted. A site that
+    /// needs to vary one of the other two should say so at the call site,
+    /// with a reason:
+    ///
+    /// ```ignore
+    /// SaturationConfig {
+    ///     hard_timeout: SAFETY_CEILING, // offline: measuring caps, not the machine
+    ///     ..SaturationConfig::compatibility(100)
+    /// }
+    /// ```
+    pub fn compatibility(max_iterations: usize) -> Self {
+        Self {
+            max_iterations,
+            hard_timeout: std::time::Duration::from_millis(500),
+            max_classes: 10_000,
+        }
+    }
+
+    /// Run one saturation of `egraph` under this budget.
+    ///
+    /// The three fields are exactly [`EGraph::saturate_with_limits`]'s three
+    /// arguments, so this spares every caller from unpacking them — and from
+    /// re-deriving the order.
+    pub fn run(&self, egraph: &mut EGraph) -> super::graph::SaturationStats {
+        egraph.saturate_with_limits(self.max_iterations, self.max_classes, self.hard_timeout)
+    }
 }
 
 /// Pick a [`SaturationConfig`] preset from a rough expression-size measure.

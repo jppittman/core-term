@@ -32,7 +32,7 @@
 
 use crate::egraph::{
     EClassId, EGraph, ENode, Op, all_rules, choices_to_arena, config_for_node_count,
-    env_extraction_policy,
+    env_extraction_policy, saturate_for_extraction,
 };
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
@@ -157,15 +157,9 @@ fn optimize_runtime_arena_uncached(
     let root_class = arena_to_egraph(&arena, root, &mut egraph, &mut memo)?;
 
     let node_count = reachable_count(&arena, root);
-    let config = config_for_node_count(node_count);
     #[cfg(feature = "saturation-telemetry")]
     let telemetry_start = std::time::Instant::now();
-    let saturation_result = crate::egraph::saturate_with_full_budget(
-        &mut egraph,
-        config.max_iterations,
-        config.max_classes,
-        config.hard_timeout,
-    );
+    let saturation_result = saturate_for_extraction(&mut egraph, node_count);
 
     // Priced against the lattice this kernel is compiled for: the extents
     // are known, so extraction minimizes the instruction count of the whole
