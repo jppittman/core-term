@@ -48,6 +48,16 @@ pub struct EGraph {
     /// Rules are shared via Arc so EGraph can be cloned for search branching.
     rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
     pub match_counts: HashMap<String, usize>,
+    /// Cumulative rule-match ATTEMPTS across the e-graph's whole lifetime —
+    /// every node checked against a rule, matched or not, summed from
+    /// `ApplyResult::evals` at the single site (`apply_rule_at_index_timed`)
+    /// every rule-application path funnels through. This is "raw matches
+    /// enumerated" (`docs/plans/2026-09-01-phase3-round2-registration-v2.md`
+    /// §7.1): the Guide-cost-flatness precondition needs it denominated per
+    /// application, and per application needs it cumulative across resumed
+    /// `saturate_until_applications` calls the same way
+    /// `provenance.application_count()` is.
+    total_evals: usize,
     /// Global monotonic counter minting `ENodeId`s in `add()`.
     next_enode_id: u64,
     /// Saturation-iteration counter, advanced once per `saturate_with_limits`
@@ -88,6 +98,7 @@ impl Clone for EGraph {
             worklist: self.worklist.clone(),
             rules: self.rules.clone(), // Arc clone - cheap, shares rules
             match_counts: self.match_counts.clone(),
+            total_evals: self.total_evals,
             next_enode_id: self.next_enode_id,
             step: self.step,
             provenance: self.provenance.clone(),
@@ -166,6 +177,13 @@ pub struct AppBudgetSaturationStats {
     /// Cumulative provenance application count at stop (across the whole
     /// e-graph lifetime, not just this call) — the anytime x-axis value.
     pub applications: usize,
+    /// Cumulative rule-match attempts at stop (across the whole e-graph
+    /// lifetime, not just this call) — see `EGraph::total_evals`. The raw
+    /// "matches enumerated" counter for §7.1's Guide-overhead measurement;
+    /// `evals / applications` is matches enumerated per application (the
+    /// unguided stand-in for a scored-candidate count, since unguided
+    /// saturation has no scorer).
+    pub evals: usize,
     /// Which condition ended this call.
     pub stop: SaturationStop,
 }
@@ -182,6 +200,7 @@ impl EGraph {
             worklist: Vec::new(),
             rules: std::sync::Arc::new(Vec::new()),
             match_counts: HashMap::new(),
+            total_evals: 0,
             next_enode_id: 0,
             step: 0,
             provenance: Provenance::new(),
@@ -202,6 +221,7 @@ impl EGraph {
             worklist: Vec::new(),
             rules: std::sync::Arc::new(rules),
             match_counts: HashMap::new(),
+            total_evals: 0,
             next_enode_id: 0,
             step: 0,
             provenance: Provenance::new(),
@@ -291,6 +311,14 @@ impl EGraph {
     #[must_use]
     pub fn refused_const_unions(&self) -> &[(u32, u32)] {
         &self.refused_const_unions
+    }
+
+    /// Cumulative rule-match attempts across the e-graph's whole lifetime
+    /// (see the field doc on `total_evals`) — the raw-matches-enumerated
+    /// counter for the §7.1 Guide-overhead-flatness measurement.
+    #[must_use]
+    pub fn total_evals(&self) -> usize {
+        self.total_evals
     }
 
     pub fn union(&mut self, a: EClassId, b: EClassId) -> EClassId {
@@ -1085,6 +1113,7 @@ impl EGraph {
             iterations,
             total_unions,
             applications: self.provenance.application_count(),
+            evals: self.total_evals,
             stop,
         }
     }
@@ -1186,6 +1215,13 @@ impl EGraph {
         for (class_id, action) in updates {
             unions += self.apply_action_from_rule(rule_idx, class_id, action);
         }
+
+        // Single accumulation site for cumulative evals — every
+        // rule-application path (`saturate_with_limits`,
+        // `saturate_until_applications`, direct callers) funnels through
+        // this function, so `total_evals()` stays honest without each
+        // caller having to remember to add it up itself.
+        self.total_evals += evals;
 
         ApplyResult {
             changes: unions,

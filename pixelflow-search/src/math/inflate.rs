@@ -45,24 +45,70 @@ impl std::fmt::Display for InflationMode {
     }
 }
 
+/// Sweep order for an inflated rule set (Round 2 v2,
+/// `docs/plans/2026-09-01-phase3-round2-registration-v2.md`).
+///
+/// `Append` is Round 2 v1's order: the 62-rule production prefix in
+/// `all_rules()` order, inflation appended at indices ≥ 62. It is kept only
+/// to reproduce v1 — H1 was unobservable under it (an appended rule cannot
+/// fire before every one of the 62 has swept once, and on classical
+/// expressions one pass over the prefix alone already exceeds B=100).
+///
+/// `Interleave(seed)` is v2's order: base + inflation shuffled together by a
+/// seeded Fisher-Yates permutation, so an inflated rule can be reached inside
+/// the very first sweep. The `|R|=62` point itself (the `"base"` spec, and
+/// the base prefix conceptually) is **never** shuffled by either order —
+/// `build_rule_set` returns `all_rules()` verbatim whenever `total == 62`, so
+/// that point stays byte-comparable to Round 1 regardless of order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleOrder {
+    /// v1 reproduction: base prefix, inflation appended, both unshuffled.
+    Append,
+    /// v2 default: base + inflation shuffled together by this seed.
+    Interleave(u64),
+}
+
+/// The fixed seed Round 2 v2 registers as its default interleave order
+/// (`docs/plans/2026-09-01-phase3-round2-registration-v2.md`). Encodes this
+/// registration's date; chosen for a stable, greppable default, not for any
+/// statistical property beyond "one fixed seed, stated and reused everywhere
+/// v2's default order is used."
+pub const DEFAULT_INTERLEAVE_SEED: u64 = 0x2026_0901;
+
+impl std::fmt::Display for RuleOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Append => write!(f, "append"),
+            Self::Interleave(seed) => write!(f, "interleave:0x{seed:x}"),
+        }
+    }
+}
+
 /// A parsed `--rule-set` argument: `"base"` (the production 62), or
 /// `"dup:<total>"` / `"comp:<total>"` where `<total>` is the TOTAL rule
 /// count requested (base 62 plus that mode's inflation), not the inflation
-/// alone.
+/// alone — optionally suffixed `:append` or `:interleave:<seed>` to pick the
+/// sweep order (`RuleOrder`). Omitting the suffix on an inflated spec
+/// defaults to `Interleave(DEFAULT_INTERLEAVE_SEED)` — v2's registered
+/// default. `"base"` ignores order entirely: it is always the unshuffled
+/// production 62.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSetSpec {
     pub mode: Option<InflationMode>,
     pub total: usize,
+    pub order: RuleOrder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuleSetSpecError {
-    /// Not `"base"` and not `"<mode>:<count>"`.
+    /// Not `"base"` and not `"<mode>:<count>[:<order>]"`.
     Malformed(String),
     /// The `<mode>` tag isn't one this harness builds.
     UnknownMode(String),
     /// The `<count>` half didn't parse as a `usize`.
     BadCount(String),
+    /// The optional `<order>` suffix wasn't `append` or `interleave:<seed>`.
+    BadOrder(String),
 }
 
 impl std::fmt::Display for RuleSetSpecError {
@@ -70,29 +116,50 @@ impl std::fmt::Display for RuleSetSpecError {
         match self {
             Self::Malformed(s) => write!(
                 f,
-                "rule-set spec {s:?}: expected \"base\", \"dup:<total>\", or \"comp:<total>\""
+                "rule-set spec {s:?}: expected \"base\", \"dup:<total>[:<order>]\", or \
+                 \"comp:<total>[:<order>]\""
             ),
             Self::UnknownMode(s) => write!(f, "rule-set spec {s:?}: unknown mode (want dup/comp)"),
             Self::BadCount(s) => write!(f, "rule-set spec: {s:?} is not a valid rule count"),
+            Self::BadOrder(s) => write!(
+                f,
+                "rule-set spec: order {s:?} is not \"append\" or \"interleave:<seed>\" \
+                 (seed as decimal or 0x-prefixed hex)"
+            ),
         }
     }
 }
 
 impl std::error::Error for RuleSetSpecError {}
 
+fn parse_seed(s: &str) -> Option<u64> {
+    match s.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => s.parse().ok(),
+    }
+}
+
 impl RuleSetSpec {
-    /// Parse `"base"` | `"dup:<count>"` | `"comp:<count>"`. `<count>` is the
-    /// TOTAL `|R|`, matching every column in
+    /// Parse `"base"` | `"dup:<count>[:<order>]"` | `"comp:<count>[:<order>]"`.
+    /// `<count>` is the TOTAL `|R|`, matching every column in
     /// `docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §3's grid.
+    /// `<order>` is `"append"` (v1 reproduction) or `"interleave:<seed>"`;
+    /// omitted, it defaults to `Interleave(DEFAULT_INTERLEAVE_SEED)`.
     pub fn parse(s: &str) -> Result<Self, RuleSetSpecError> {
         if s == "base" {
             return Ok(Self {
                 mode: None,
                 total: all_rules().len(),
+                order: RuleOrder::Append,
             });
         }
-        let (tag, rest) = s
-            .split_once(':')
+        let mut parts = s.splitn(3, ':');
+        let tag = parts
+            .next()
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| RuleSetSpecError::Malformed(s.to_string()))?;
+        let rest = parts
+            .next()
             .ok_or_else(|| RuleSetSpecError::Malformed(s.to_string()))?;
         let mode = match tag {
             "dup" => InflationMode::Duplicates,
@@ -102,9 +169,18 @@ impl RuleSetSpec {
         let total: usize = rest
             .parse()
             .map_err(|_| RuleSetSpecError::BadCount(rest.to_string()))?;
+        let order = match parts.next() {
+            None => RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED),
+            Some("append") => RuleOrder::Append,
+            Some(tail) => match tail.strip_prefix("interleave:").and_then(parse_seed) {
+                Some(seed) => RuleOrder::Interleave(seed),
+                None => return Err(RuleSetSpecError::BadOrder(tail.to_string())),
+            },
+        };
         Ok(Self {
             mode: Some(mode),
             total,
+            order,
         })
     }
 }
@@ -173,13 +249,30 @@ impl std::fmt::Display for RuleSetError {
 impl std::error::Error for RuleSetError {}
 
 /// THE one constructor for every rule set the Round 2 harness runs. The
-/// prefix is always `all_rules()` in its exact production order (indices
-/// 0..62 mean the same thing at every `|R|`); inflation is appended after.
+/// `|R|=62` point (`spec.mode == None`, or an inflated spec whose `total ==
+/// 62`) is always `all_rules()` in its exact production order — never
+/// shuffled, regardless of `spec.order` — so that point stays comparable to
+/// Round 1 under both v1 (append) and v2 (interleave). For `total > 62`,
+/// `spec.order` picks how the base+inflation list is ordered: `Append`
+/// reproduces v1 (base prefix, inflation appended, both unshuffled);
+/// `Interleave(seed)` (v2's default) shuffles the whole base+inflation list
+/// together by that seed, so an inflated rule can fire inside the first
+/// sweep.
 pub fn build_rule_set(spec: &RuleSetSpec) -> Result<Vec<Box<dyn Rewrite>>, RuleSetError> {
     match spec.mode {
         None => Ok(all_rules()),
-        Some(InflationMode::Duplicates) => build_duplicate_set(spec.total),
-        Some(InflationMode::Compositions) => build_composition_set(spec.total),
+        Some(InflationMode::Duplicates) => build_duplicate_set(spec.total, spec.order),
+        Some(InflationMode::Compositions) => build_composition_set(spec.total, spec.order),
+    }
+}
+
+/// Apply `order` to a freshly-built base+inflation list, in place. A no-op
+/// for `Append` (the list is already base-prefix-then-inflation, which IS
+/// append order) and for a bare 62-rule list (callers never pass one here —
+/// both builders return early on `total == 62` before this is reached).
+fn apply_order(rules: &mut [Box<dyn Rewrite>], order: RuleOrder) {
+    if let RuleOrder::Interleave(seed) = order {
+        fisher_yates(rules, seed);
     }
 }
 
@@ -227,7 +320,10 @@ impl Rewrite for DuplicateRule {
 /// The five |R| points mode (i) is registered at (§3).
 pub const DUPLICATE_GRID: &[usize] = &[62, 93, 124, 186, 248];
 
-fn build_duplicate_set(total: usize) -> Result<Vec<Box<dyn Rewrite>>, RuleSetError> {
+fn build_duplicate_set(
+    total: usize,
+    order: RuleOrder,
+) -> Result<Vec<Box<dyn Rewrite>>, RuleSetError> {
     if !DUPLICATE_GRID.contains(&total) {
         return Err(RuleSetError::UnreachableTotal {
             mode: InflationMode::Duplicates,
@@ -237,6 +333,8 @@ fn build_duplicate_set(total: usize) -> Result<Vec<Box<dyn Rewrite>>, RuleSetErr
     }
     let mut rules = all_rules();
     if total == 62 {
+        // Never shuffled — the base point stays Round-1-comparable under
+        // every order.
         return Ok(rules);
     }
     if total == 93 {
@@ -250,6 +348,7 @@ fn build_duplicate_set(total: usize) -> Result<Vec<Box<dyn Rewrite>>, RuleSetErr
             .map(|(_, r)| Box::new(DuplicateRule::new(r, 1)) as Box<dyn Rewrite>)
             .collect();
         rules.extend(half);
+        apply_order(&mut rules, order);
         return Ok(rules);
     }
     let cycles = match total {
@@ -265,6 +364,7 @@ fn build_duplicate_set(total: usize) -> Result<Vec<Box<dyn Rewrite>>, RuleSetErr
             .collect();
         rules.extend(cycle);
     }
+    apply_order(&mut rules, order);
     Ok(rules)
 }
 
@@ -428,7 +528,10 @@ pub fn composition_pool(base: &[Box<dyn Rewrite>], seed: u64) -> Vec<Composition
 pub const COMPOSITION_GRID: &[(usize, usize)] =
     &[(62, 0), (93, 31), (124, 62), (186, 124), (248, 186)];
 
-fn build_composition_set(total: usize) -> Result<Vec<Box<dyn Rewrite>>, RuleSetError> {
+fn build_composition_set(
+    total: usize,
+    order: RuleOrder,
+) -> Result<Vec<Box<dyn Rewrite>>, RuleSetError> {
     let Some(&(_, inflation)) = COMPOSITION_GRID.iter().find(|(t, _)| *t == total) else {
         return Err(RuleSetError::UnreachableTotal {
             mode: InflationMode::Compositions,
@@ -438,8 +541,14 @@ fn build_composition_set(total: usize) -> Result<Vec<Box<dyn Rewrite>>, RuleSetE
     };
     let mut rules = all_rules();
     if inflation == 0 {
+        // Never shuffled — the base point stays Round-1-comparable under
+        // every order.
         return Ok(rules);
     }
+    // The pool's own seeded shuffle (COMPOSITION_SEED) picks WHICH
+    // compositions are in the prefix — orthogonal to `order`, which picks
+    // where those compositions sit in the SWEEP. Both are seeded and fixed;
+    // neither is re-derived here.
     let pool = composition_pool(&all_rules(), COMPOSITION_SEED);
     if pool.len() < inflation {
         return Err(RuleSetError::PoolTooSmall {
@@ -452,6 +561,7 @@ fn build_composition_set(total: usize) -> Result<Vec<Box<dyn Rewrite>>, RuleSetE
             .take(inflation)
             .map(|c| Box::new(c.rule) as Box<dyn Rewrite>),
     );
+    apply_order(&mut rules, order);
     Ok(rules)
 }
 
@@ -482,6 +592,7 @@ mod tests {
             let rules = build_rule_set(&RuleSetSpec {
                 mode: Some(InflationMode::Duplicates),
                 total,
+                order: RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED),
             })
             .unwrap_or_else(|e| panic!("dup:{total} should build: {e}"));
             assert_eq!(rules.len(), total, "dup:{total} produced the wrong count");
@@ -489,7 +600,8 @@ mod tests {
         assert!(
             build_rule_set(&RuleSetSpec {
                 mode: Some(InflationMode::Duplicates),
-                total: 100
+                total: 100,
+                order: RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED),
             })
             .is_err(),
             "an off-grid total must error, never pad"
@@ -549,6 +661,7 @@ mod tests {
             let result = build_rule_set(&RuleSetSpec {
                 mode: Some(InflationMode::Compositions),
                 total,
+                order: RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED),
             });
             if inflation <= pool_size {
                 let rules = result.unwrap_or_else(|e| panic!("comp:{total} should build: {e}"));
@@ -571,8 +684,166 @@ mod tests {
         let dup = build_rule_set(&RuleSetSpec {
             mode: Some(InflationMode::Duplicates),
             total: 93,
+            order: RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED),
         })
         .unwrap();
         assert_ne!(rule_set_fingerprint(&a), rule_set_fingerprint(&dup));
+    }
+
+    #[test]
+    fn append_and_interleave_fingerprint_differently_for_the_same_content() {
+        // Two orders of the SAME set of rules (same names, same multiset)
+        // must fingerprint differently — the fingerprint covers order, not
+        // just membership. This is the load-bearing guarantee for telling a
+        // v1 (append) artifact apart from a v2 (interleave) one at the same
+        // |R|.
+        let spec_append = RuleSetSpec {
+            mode: Some(InflationMode::Duplicates),
+            total: 124,
+            order: RuleOrder::Append,
+        };
+        let spec_interleave = RuleSetSpec {
+            mode: Some(InflationMode::Duplicates),
+            total: 124,
+            order: RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED),
+        };
+        let appended = build_rule_set(&spec_append).unwrap();
+        let interleaved = build_rule_set(&spec_interleave).unwrap();
+        assert_eq!(
+            appended.len(),
+            interleaved.len(),
+            "same content, different order — the whole point of this test"
+        );
+        let mut appended_names: Vec<&str> = appended.iter().map(|r| r.name()).collect();
+        let mut interleaved_names: Vec<&str> = interleaved.iter().map(|r| r.name()).collect();
+        appended_names.sort_unstable();
+        interleaved_names.sort_unstable();
+        assert_eq!(
+            appended_names, interleaved_names,
+            "interleaving must be a permutation, not a different rule set"
+        );
+        assert_ne!(
+            rule_set_fingerprint(&appended),
+            rule_set_fingerprint(&interleaved),
+            "same rule multiset, different sweep order, must fingerprint differently"
+        );
+
+        // Two different interleave seeds must also (almost certainly)
+        // differ — same requirement, different axis.
+        let other_seed = build_rule_set(&RuleSetSpec {
+            order: RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED ^ 0xFFFF_FFFF),
+            ..spec_interleave
+        })
+        .unwrap();
+        assert_ne!(
+            rule_set_fingerprint(&interleaved),
+            rule_set_fingerprint(&other_seed)
+        );
+    }
+
+    #[test]
+    fn the_62_rule_point_is_never_reordered() {
+        // `total == 62` must return `all_rules()` verbatim under EVERY
+        // order — Append, Interleave, any seed — so the |R|=62 point stays
+        // byte-comparable to Round 1 regardless of which order the rest of
+        // the grid uses.
+        let production = all_rules();
+        let production_fp = rule_set_fingerprint(&production);
+        for spec in [
+            RuleSetSpec {
+                mode: None,
+                total: 62,
+                order: RuleOrder::Append,
+            },
+            RuleSetSpec {
+                mode: Some(InflationMode::Duplicates),
+                total: 62,
+                order: RuleOrder::Append,
+            },
+            RuleSetSpec {
+                mode: Some(InflationMode::Duplicates),
+                total: 62,
+                order: RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED),
+            },
+            RuleSetSpec {
+                mode: Some(InflationMode::Compositions),
+                total: 62,
+                order: RuleOrder::Interleave(0xDEAD_BEEF),
+            },
+        ] {
+            let rules = build_rule_set(&spec).unwrap();
+            assert_eq!(
+                rule_set_fingerprint(&rules),
+                production_fp,
+                "|R|=62 must be all_rules() verbatim under {:?}",
+                spec.order
+            );
+        }
+    }
+
+    #[test]
+    fn parse_defaults_to_interleave_and_accepts_append_and_explicit_seed() {
+        let default = RuleSetSpec::parse("dup:124").unwrap();
+        assert_eq!(
+            default.order,
+            RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED)
+        );
+
+        let appended = RuleSetSpec::parse("dup:124:append").unwrap();
+        assert_eq!(appended.order, RuleOrder::Append);
+
+        let explicit = RuleSetSpec::parse("comp:93:interleave:0x2A").unwrap();
+        assert_eq!(explicit.order, RuleOrder::Interleave(0x2A));
+        assert_eq!(explicit.mode, Some(InflationMode::Compositions));
+        assert_eq!(explicit.total, 93);
+
+        let decimal_seed = RuleSetSpec::parse("dup:93:interleave:42").unwrap();
+        assert_eq!(decimal_seed.order, RuleOrder::Interleave(42));
+
+        assert!(RuleSetSpec::parse("dup:124:bogus-order").is_err());
+        // "base" ignores order entirely — always the unshuffled production
+        // 62, no suffix accepted (it never carries inflation to order).
+        assert_eq!(RuleSetSpec::parse("base").unwrap().order, RuleOrder::Append);
+    }
+
+    /// The full v2 grid's fingerprints, pinned — both orders, every
+    /// realized `|R|` point of modes (i)/(ii). These are the exact values in
+    /// `docs/plans/2026-09-01-phase3-round2-registration-v2.md` §2; a change
+    /// here (a rule added/removed/reordered upstream, a shuffle change) must
+    /// change this test AND that table together, never silently drift apart.
+    /// `_app` reproduces v1's committed fingerprints exactly (the append
+    /// order is unchanged code); `_int` is v2's new default order.
+    #[test]
+    fn v2_grid_fingerprints_are_pinned() {
+        fn fp(mode: InflationMode, total: usize, order: RuleOrder) -> RuleSetFingerprint {
+            let rules = build_rule_set(&RuleSetSpec {
+                mode: Some(mode),
+                total,
+                order,
+            })
+            .unwrap_or_else(|e| panic!("{mode}:{total} under {order:?} should build: {e}"));
+            rule_set_fingerprint(&rules)
+        }
+        let interleave = RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED);
+        let dup = InflationMode::Duplicates;
+        let comp = InflationMode::Compositions;
+
+        assert_eq!(fp(dup, 93, interleave).0, 0x83e6_10e3_3e78_2a68);
+        assert_eq!(fp(dup, 93, RuleOrder::Append).0, 0xfdd6_1724_6eb9_8590);
+        assert_eq!(fp(dup, 124, interleave).0, 0xb207_aa33_1bb6_25ab);
+        assert_eq!(fp(dup, 124, RuleOrder::Append).0, 0x87fe_fd5a_6357_5175);
+        assert_eq!(fp(dup, 186, interleave).0, 0x3a00_c565_900b_48e6);
+        assert_eq!(fp(dup, 186, RuleOrder::Append).0, 0x37a4_c537_606a_549b);
+        assert_eq!(fp(dup, 248, interleave).0, 0x43c4_3d76_4ef7_f76b);
+        assert_eq!(fp(dup, 248, RuleOrder::Append).0, 0x809a_0f52_b61f_e6c0);
+
+        assert_eq!(fp(comp, 93, interleave).0, 0x904c_eec9_b110_e89e);
+        assert_eq!(fp(comp, 93, RuleOrder::Append).0, 0x0c3f_d6f3_5f44_4a59);
+        assert_eq!(fp(comp, 124, interleave).0, 0xa760_0e59_42f0_baa5);
+        assert_eq!(fp(comp, 124, RuleOrder::Append).0, 0x5217_98ae_521a_0572);
+        assert_eq!(fp(comp, 186, interleave).0, 0x9e9b_f3a4_458a_3045);
+        assert_eq!(fp(comp, 186, RuleOrder::Append).0, 0xff65_cfba_bc95_a6cf);
+        assert_eq!(fp(comp, 248, interleave).0, 0xb89d_841e_ada6_3c13);
+        assert_eq!(fp(comp, 248, RuleOrder::Append).0, 0xdfc1_76cd_60c7_124f);
     }
 }

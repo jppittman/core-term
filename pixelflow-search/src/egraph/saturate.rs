@@ -572,6 +572,17 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
             iterations,
             total_unions,
             applications: egraph.provenance().application_count(),
+            // Guided saturation applies pre-scored candidates directly
+            // (`apply_single_rule`) rather than scanning through
+            // `apply_rule_at_index_timed`, so this stays at whatever
+            // `total_evals()` already was — honest (never fabricated), just
+            // not this call's own raw-match count. The §7.1 flatness
+            // measurement this field exists for is registered for the
+            // UNGUIDED harness only (`docs/plans/2026-09-01-phase3-round2-
+            // registration-v2.md`); a guided-side raw-match/candidate-score
+            // counter is a separate, not-yet-built instrument (design §8),
+            // out of this task's scope.
+            evals: egraph.total_evals(),
             stop,
         }
     }

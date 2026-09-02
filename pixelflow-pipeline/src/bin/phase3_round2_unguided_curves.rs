@@ -26,10 +26,30 @@ use clap::Parser;
 use pixelflow_ir::{ExprArena, ExprId};
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_search::egraph::{
-    APP_CHECKPOINT_GRID, AnytimeCurveOutput, CostModel, SaturationStop, config_for_node_count,
-    run_anytime_curve,
+    APP_CHECKPOINT_GRID, AnytimeCurveOutput, CostModel, EGraph, Rewrite, SaturationStop,
+    config_for_node_count, run_anytime_curve,
 };
 use pixelflow_search::math::inflate::{RuleSetSpec, build_rule_set, rule_set_fingerprint};
+
+/// Applications recorded by exactly one full rule sweep, on a fresh e-graph
+/// for `(arena, root)` under `rules` — a throwaway probe, discarded
+/// immediately after, never sharing state with the real curve run. `max_iters
+/// = 1` guarantees the sweep runs to completion (or to quiescence, which
+/// still completes rule 0's pass before checking) rather than being cut off
+/// by the application budget: the budget is `usize::MAX` so only the
+/// iteration ceiling can stop it.
+fn apps_per_sweep_probe(
+    arena: &ExprArena,
+    root: ExprId,
+    rules: Vec<Box<dyn Rewrite>>,
+    max_classes: usize,
+    safety_timeout: Duration,
+) -> usize {
+    let mut egraph = EGraph::with_rules(rules);
+    egraph.add_arena(arena, root);
+    let stats = egraph.saturate_until_applications(usize::MAX, 1, max_classes, safety_timeout);
+    stats.applications
+}
 
 #[derive(Parser)]
 #[command(name = "phase3_round2_unguided_curves")]
@@ -108,6 +128,22 @@ struct ExprCurve {
     node_count: usize,
     cost_at: Vec<usize>,
     apps_at: Vec<usize>,
+    /// Cumulative completed sweeps at each grid checkpoint (diagnostic,
+    /// mirrors `apps_at`) — divides `evals_at` into "raw matches enumerated
+    /// per round" per §7.1.
+    sweeps_at: Vec<usize>,
+    /// Cumulative rule-match attempts (`EGraph::total_evals`) at each grid
+    /// checkpoint — "raw matches enumerated" per §7.1; unguided has no
+    /// scorer, so `evals_at[j] / apps_at[j]` stands in for a scored-
+    /// candidate-per-application count.
+    evals_at: Vec<usize>,
+    /// Applications recorded in exactly one full sweep of this rule set on
+    /// this expression, measured by a separate one-sweep probe run before
+    /// the real curve (§9 step 2's "apps_per_sweep" addition) — lets every
+    /// `app_actual` be read off in SWEEPS, not just applications, per the
+    /// v2 registration's binding rule that every budget is reported both
+    /// ways.
+    apps_per_sweep: usize,
     ended: SaturationStop,
     ended_at_apps: usize,
 }
@@ -197,7 +233,7 @@ fn main() {
     writeln!(
         csv_f,
         "rule_set,num_rules,fingerprint,expr_name,origin,tier,node_count,app_target,app_actual,\
-         cost,ended,ended_at_apps"
+         sweeps_actual,evals_actual,apps_per_sweep,cost,ended,ended_at_apps"
     )
     .unwrap();
 
@@ -235,6 +271,10 @@ fn main() {
             // e-graph consumes it. Rebuilding per expression, per rule-set,
             // is the cost this binary pays for `build_rule_set`'s honesty
             // (never silently reusing a stale rule set across runs).
+            let probe_rules = build_rule_set(&spec)
+                .unwrap_or_else(|e| panic!("rule set became unbuildable mid-run: {e}"));
+            let apps_per_sweep =
+                apps_per_sweep_probe(arena, *root, probe_rules, class_cap, safety_timeout);
             let rules_for_this_expr = build_rule_set(&spec)
                 .unwrap_or_else(|e| panic!("rule set became unbuildable mid-run: {e}"));
             let AnytimeCurveOutput { curve, .. } = run_anytime_curve(
@@ -254,6 +294,9 @@ fn main() {
                 node_count,
                 cost_at: curve.checkpoints.iter().map(|c| c.cost).collect(),
                 apps_at: curve.checkpoints.iter().map(|c| c.app_actual).collect(),
+                sweeps_at: curve.checkpoints.iter().map(|c| c.sweeps).collect(),
+                evals_at: curve.checkpoints.iter().map(|c| c.evals_actual).collect(),
+                apps_per_sweep,
                 ended: curve.ended,
                 ended_at_apps: curve.ended_at_apps,
             });
@@ -270,13 +313,16 @@ fn main() {
             for (j, &target) in grid.iter().enumerate() {
                 writeln!(
                     csv_f,
-                    "{spec_str},{num_rules},{fingerprint},{},{},{},{},{},{},{},{},{}",
+                    "{spec_str},{num_rules},{fingerprint},{},{},{},{},{},{},{},{},{},{},{},{}",
                     c.name,
                     c.origin,
                     c.tier,
                     c.node_count,
                     target,
                     c.apps_at[j],
+                    c.sweeps_at[j],
+                    c.evals_at[j],
+                    c.apps_per_sweep,
                     c.cost_at[j],
                     stop_name(c.ended),
                     c.ended_at_apps,
@@ -360,15 +406,19 @@ fn main() {
             per_expr_json.push_str(&format!(
                 "      {{\"name\": {:?}, \"origin\": \"{}\", \"tier\": \"{}\", \
                  \"node_count\": {}, \"ended\": \"{}\", \"ended_at_apps\": {}, \
-                 \"cost_at\": {:?}, \"app_actual_at\": {:?}}}{}\n",
+                 \"apps_per_sweep\": {}, \"cost_at\": {:?}, \"app_actual_at\": {:?}, \
+                 \"sweeps_actual_at\": {:?}, \"evals_actual_at\": {:?}}}{}\n",
                 c.name,
                 c.origin,
                 c.tier,
                 c.node_count,
                 stop_name(c.ended),
                 c.ended_at_apps,
+                c.apps_per_sweep,
                 c.cost_at,
                 c.apps_at,
+                c.sweeps_at,
+                c.evals_at,
                 if i + 1 < curves.len() { "," } else { "" }
             ));
         }
