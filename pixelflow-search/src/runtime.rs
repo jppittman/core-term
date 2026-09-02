@@ -2160,7 +2160,7 @@ mod congruence_gap_probe {
 }
 
 #[cfg(test)]
-mod production_telemetry {
+pub(crate) mod production_telemetry {
     use super::*;
     use crate::egraph::{Budget, CostModel, Optimizer, SaturationConfig, SaturationStop};
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
@@ -2194,7 +2194,7 @@ mod production_telemetry {
     /// identities are re-minted per distinct dumped ordinal, preserving the
     /// equality structure (two slots naming one buffer still share an
     /// identity) without depending on the dumping process's counter.
-    fn load_arena(path: &Path) -> (String, ExprArena, ExprId) {
+    pub(crate) fn load_arena(path: &Path) -> (String, ExprArena, ExprId) {
         let text = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         let mut lines = text.lines();
@@ -2770,6 +2770,108 @@ mod production_telemetry {
             out_path.display(),
             fatal.len(),
             fatal.join("\n")
+        );
+    }
+}
+
+/// The neutrality check every Phase 3 optimizer-lever PR owes: replay the
+/// arenas production actually compiles through the production entry point,
+/// and digest what comes out.
+///
+/// The research levers ([`Optimizer::guide`](crate::egraph::Optimizer::guide),
+/// [`Optimizer::rerank`](crate::egraph::Optimizer::rerank),
+/// [`Optimizer::mask`](crate::egraph::Optimizer::mask)) are all
+/// `Option`s that [`Optimizer::production`](crate::egraph::Optimizer::production)
+/// leaves `None`, so adding one may not move a single production byte. L4
+/// (`docs/plans/2026-09-02-optimizer-api.md`) says a lever cannot change
+/// *meaning*; this says the stronger thing a port needs — that it did not
+/// change the *term*, either.
+///
+/// Run it on both sides of a change and diff the two TSVs:
+///
+/// ```text
+/// PIXELFLOW_EQUIV_DIR=/private/tmp/classcap_corpus \
+/// PIXELFLOW_EQUIV_OUT=/tmp/before.tsv \
+///   cargo test -p pixelflow-search --release --test-threads=1 \
+///     -- --ignored production_extraction_digest --nocapture
+/// ```
+#[cfg(test)]
+mod production_equivalence {
+    use super::production_telemetry::load_arena;
+    use super::*;
+    use std::fmt::Write as _;
+
+    const DIR_VAR: &str = "PIXELFLOW_EQUIV_DIR";
+    const OUT_VAR: &str = "PIXELFLOW_EQUIV_OUT";
+
+    /// FNV-1a over the optimized arena's canonical serialization — the same
+    /// stable digest [`RuleId`](crate::egraph::RuleId) uses, for the same
+    /// reason: it has to be reproducible by a different build.
+    fn digest(arena: &ExprArena, root: ExprId) -> String {
+        let mut text = String::new();
+        let len = arena.nodes_raw().len();
+        let mut reachable = vec![false; len];
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut reachable[id.0 as usize], true) {
+                continue;
+            }
+            stack.extend(arena.children(id));
+        }
+        let mut nodes = 0usize;
+        for (idx, live) in reachable.iter().enumerate() {
+            if !*live {
+                continue;
+            }
+            nodes += 1;
+            writeln!(text, "{idx} {:?}", arena.node(ExprId(idx as u32))).expect("fmt");
+        }
+        writeln!(text, "root {}", root.0).expect("fmt");
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in text.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{h:016x}\t{nodes}")
+    }
+
+    #[test]
+    #[ignore = "equivalence check: PIXELFLOW_EQUIV_DIR=<dumps> PIXELFLOW_EQUIV_OUT=<tsv> cargo test -p pixelflow-search --release -- --ignored production_extraction_digest --nocapture"]
+    fn production_extraction_digest() {
+        let dir = std::path::PathBuf::from(
+            std::env::var(DIR_VAR).unwrap_or_else(|e| panic!("{DIR_VAR} must be set ({e})")),
+        );
+        let out = std::path::PathBuf::from(
+            std::env::var(OUT_VAR).unwrap_or_else(|e| panic!("{OUT_VAR} must be set ({e})")),
+        );
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+            .map(|e| e.expect("dir entry").path())
+            .filter(|p| p.extension().is_some_and(|x| x == "arena"))
+            .collect();
+        paths.sort();
+        assert!(!paths.is_empty(), "{}: no .arena dumps", dir.display());
+
+        let mut text = String::new();
+        for path in &paths {
+            let (name, arena, root) = load_arena(path);
+            // The production entry point itself, uncached — a static cache
+            // would make the second kernel with an equal arena report the
+            // first one's answer rather than recomputing it.
+            let line = match optimize_runtime_arena_uncached(&arena, root, LatticeShape::POINT) {
+                Some((opt, opt_root)) => digest(&opt, opt_root),
+                // `None` is a real production outcome (an arena
+                // `optimize_runtime_arena` bails on), and it must stay the
+                // same outcome across the change, so it is a row, not a skip.
+                None => String::from("BAILED\t0"),
+            };
+            writeln!(text, "{name}\t{line}").expect("fmt");
+        }
+        std::fs::write(&out, &text).unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
+        println!(
+            "digested {} production arenas -> {}",
+            paths.len(),
+            out.display()
         );
     }
 }
