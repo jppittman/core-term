@@ -12,7 +12,6 @@
 //!
 //! This allows the e-graph extraction to use either:
 //! - Fast hardcoded costs (`CostModel`)
-//! - Learned neural costs (`ExprNnue` from pixelflow-nnue)
 //! - Custom domain-specific cost models
 
 use std::collections::HashMap;
@@ -30,11 +29,11 @@ use pixelflow_ir::kind::OpMap;
 /// Handcrafted per-op cycle-latency estimates, indexed by `OpKind::index()`.
 ///
 /// This is the ONE place these numbers are allowed to live. Both the static
-/// [`CostModel`] (via [`CostModel::latency_prior`]) and the NNUE's embedding
-/// initialization (`nnue::factored::OpEmbeddings::init_with_latency_prior`)
-/// derive their costs from this table so the two representations cannot
-/// drift apart. If you're tempted to hand-tune a number in one place,
-/// change it here instead.
+/// [`CostModel`] (via [`CostModel::latency_prior`]) and the Guide's op
+/// embedding initialization
+/// (`nnue::factored::OpEmbeddings::init_with_latency_prior`) derive their
+/// costs from this table so the two representations cannot drift apart. If
+/// you're tempted to hand-tune a number in one place, change it here instead.
 ///
 /// Handcrafted cycle estimates, one per op.
 ///
@@ -155,10 +154,6 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
 /// // Using the hardcoded cost model
 /// let costs = CostModel::default();
 /// let (tree, cost) = extract(&egraph, root, &costs);
-///
-/// // Using a learned neural cost model
-/// let nnue = ExprNnue::load("model.bin")?;
-/// let (tree, cost) = extract(&egraph, root, &nnue);
 /// ```
 pub trait CostFunction {
     /// Estimate the cost of a single ENode given its parent context.
@@ -213,7 +208,7 @@ impl CostModel {
     ///
     /// Source of truth: [`latency_prior_cycles`], shared with
     /// `nnue::factored::OpEmbeddings::init_with_latency_prior` so the static
-    /// and learned cost models cannot drift apart.
+    /// table and the Guide's op-embedding prior cannot drift apart.
     pub fn latency_prior() -> Self {
         Self {
             costs: latency_prior_cycles(),

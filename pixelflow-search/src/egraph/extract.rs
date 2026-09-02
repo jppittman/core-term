@@ -5,12 +5,9 @@
 //! [`pixelflow_ir::ExprArena`].
 
 use super::cost::{CostFunction, CostModel};
-use super::deps::var_variance;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use crate::nnue::EdgeAccumulator;
 use alloc::vec::Vec;
-use pixelflow_ir::Variance;
 
 /// A witnessed selection: an e-graph, a root e-class, and a well-founded
 /// choice function from every e-class reachable from `root` to the node
@@ -28,9 +25,8 @@ use pixelflow_ir::Variance;
 /// [`repair_choices_well_founded`]) and [`Extraction::from_backfill`]
 /// (wraps [`backfill_well_founded`]) — both establish well-foundedness as
 /// part of construction, so a bare unvalidated vector can never cross into
-/// [`choices_to_arena`] or the extraction-head accumulator builders
-/// ([`EdgeAccumulator::from_dag_choices`],
-/// [`EdgeAccumulator::from_dag_choices_with_variance`]), which accept only
+/// [`choices_to_arena`] or the edge walker
+/// ([`crate::nnue::EdgeTrace::from_extraction`]), which accept only
 /// `&Extraction`. See docs/plans/2026-08-17-cost-model-domain.md §1
 /// "Extraction (J2)".
 pub struct Extraction<'g> {
@@ -122,15 +118,12 @@ impl<'g> Extraction<'g> {
     /// arithmetic that is value-equal to a constant without being one
     /// (e.g. `Y - Y` merged with `Const(0)`).
     ///
-    /// Any consumer that computes *features* from an `Extraction` — not just
+    /// Any consumer that walks an `Extraction` — not just
     /// [`choices_to_arena`] itself — must walk this view, not [`Self::choices`]
-    /// directly: featurizing the raw (possibly non-`Const`) choice for a
+    /// directly: describing the raw (possibly non-`Const`) choice for a
     /// count class would describe a DAG that is not the one actually
-    /// compiled, reintroducing the same train/deploy skew `Self::chosen_variance`
-    /// exists to remove for the class-wide-meet case (P1(c)). See
-    /// [`Self::chosen_variance`] and `ChoicesCostDag` in `crate::nnue::factored`,
-    /// both of which take this view rather than re-deriving it (one
-    /// definition, imported, not restated).
+    /// compiled. `ChoicesCostDag` in `crate::nnue::factored` takes this view
+    /// rather than re-deriving it (one definition, imported, not restated).
     pub(crate) fn pinned_choices(&self) -> Vec<Option<usize>> {
         pin_shift_counts(self.egraph, self.root, &self.choices)
     }
@@ -142,104 +135,6 @@ impl<'g> Extraction<'g> {
     /// predate this type; new code should consume `&Extraction` instead.
     pub(crate) fn into_choices(self) -> Vec<Option<usize>> {
         self.choices
-    }
-
-    /// Variance (coordinate dependency) of the node this extraction
-    /// actually selected for each reachable e-class — computed
-    /// recursively over the CHOSEN nodes, not the class-wide meet
-    /// [`super::deps::DepsAnalysis`] computes.
-    ///
-    /// `DepsAnalysis::get` answers "what's the best variance ANY node in
-    /// this class could give" (a meet across every e-node in the class).
-    /// Once a rewrite merges a pixel-varying node into a class alongside a
-    /// constant one (e.g. `Sub(X, X)` unioned with `Const(0)`), that meet
-    /// reports CONST even when the extraction actually chose the varying
-    /// node — so deploy-path features would silently disagree with what
-    /// [`EdgeAccumulator::from_arena_dag`] computes on the exact arena the
-    /// extraction emits (P1(c)). This walk instead evaluates variance of
-    /// exactly the node [`Self::choice`] selected, recursing into its
-    /// children's chosen variance — the deploy-side counterpart of
-    /// `pixelflow_ir::variance::compute_arena_variance`.
-    ///
-    /// Returned as a dense `Vec<Option<Variance>>` indexed by canonical
-    /// e-class id; `None` for classes with no recorded choice (unreachable
-    /// from root).
-    ///
-    /// Takes `pinned` — [`Self::pinned_choices`] — rather than deriving it
-    /// internally, so the caller's structural walk of the same `Extraction`
-    /// (`ChoicesCostDag` in `crate::nnue::factored`) is forced to use the
-    /// identical pinned view: a shift count e-class that legitimately holds
-    /// both a `Const` and a value-equal varying-shaped alternative (the same
-    /// merged-class situation as the `Sub(X, X)`/`Const(0)` example above,
-    /// but for a `Shl`/`Shr` count child) must be walked here as whatever
-    /// [`choices_to_arena`] will actually emit, or this variance disagrees
-    /// with the arena [`EdgeAccumulator::from_arena_dag`] featurizes for
-    /// exactly the reason unpinned [`Self::choice`] alone caused P1(c).
-    pub(crate) fn chosen_variance(&self, pinned: &[Option<usize>]) -> Vec<Option<Variance>> {
-        enum Task {
-            Visit(EClassId),
-            /// All children of this e-class's chosen node have been
-            /// resolved; combine them. `(canonical_id, node_idx)`.
-            Complete(u32, usize),
-        }
-
-        let choice_of = |class: EClassId| -> Option<usize> {
-            let idx = self.egraph.find(class).0 as usize;
-            pinned.get(idx).copied().flatten()
-        };
-
-        let mut variance: Vec<Option<Variance>> = alloc::vec![None; self.egraph.num_classes()];
-        let mut stack: Vec<Task> = alloc::vec![Task::Visit(self.root)];
-
-        while let Some(task) = stack.pop() {
-            match task {
-                Task::Visit(class) => {
-                    let canonical = self.egraph.find(class);
-                    let idx = canonical.0 as usize;
-                    if variance[idx].is_some() {
-                        continue; // Diamond sharing: already resolved.
-                    }
-                    let Some(node_idx) = choice_of(canonical) else {
-                        continue; // Not reachable via a recorded choice.
-                    };
-                    let nodes = self.egraph.nodes(canonical);
-                    match &nodes[node_idx] {
-                        ENode::Var(v) => variance[idx] = Some(var_variance(*v)),
-                        ENode::Const(_) | ENode::Buffer(_) => {
-                            variance[idx] = Some(Variance::CONST);
-                        }
-                        ENode::Op { children, .. } => {
-                            stack.push(Task::Complete(canonical.0, node_idx));
-                            for &child in children {
-                                stack.push(Task::Visit(child));
-                            }
-                        }
-                    }
-                }
-                Task::Complete(canonical_id, node_idx) => {
-                    let idx = canonical_id as usize;
-                    if variance[idx].is_some() {
-                        continue; // Diamond sharing: already resolved.
-                    }
-                    let canonical = EClassId(canonical_id);
-                    let nodes = self.egraph.nodes(canonical);
-                    let ENode::Op { children, .. } = &nodes[node_idx] else {
-                        panic!(
-                            "Extraction::chosen_variance: Complete task for non-Op node \
-                             (e-class {canonical_id})"
-                        );
-                    };
-                    let mut v = Variance::CONST;
-                    for &child in children {
-                        let cidx = self.egraph.find(child).0 as usize;
-                        v = v.union(variance[cidx].unwrap_or(Variance::ALL));
-                    }
-                    variance[idx] = Some(v);
-                }
-            }
-        }
-
-        variance
     }
 }
 
@@ -850,8 +745,8 @@ pub fn build_extracted_dag_from_choices(
 /// by definition: same class means equal value.
 ///
 /// Scoped to classes reachable from `root` via the ORIGINAL (unpinned)
-/// `choices` — the same traversal [`Extraction::chosen_variance`] and
-/// [`choices_to_arena`] perform once pinning has settled. `choices` can
+/// `choices` — the same traversal [`choices_to_arena`] performs once pinning
+/// has settled. `choices` can
 /// (and, on a graph whose choices were built up by several backfill
 /// passes, routinely does) hold `Some` entries for classes no longer
 /// reachable from `root` under the CURRENT choice function — a backfill
@@ -859,7 +754,7 @@ pub fn build_extracted_dag_from_choices(
 /// candidate. Walking `0..egraph.num_classes()`
 /// unconditionally, as this used to, re-derives and re-pins every one of
 /// those stale entries even though nothing downstream ever reads them
-/// (`choices_to_arena`/`chosen_variance` only ever visit classes reachable
+/// (`choices_to_arena` only ever visits classes reachable
 /// from `root`) — pure wasted work on a saturated e-graph's full class
 /// count, not the reachable subtree's.
 ///
@@ -1820,11 +1715,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dag_accumulator_handles_shared_subexpressions() {
-        use crate::nnue::{EdgeAccumulator, ExprNnue};
+    // =========================================================================
+    // Train/deploy feature-path equivalence (2026-08 round-0 skew guard)
+    // =========================================================================
 
-        // sin(X) * sin(X): tree has 2x sin edges, DAG has 1x sin + 1x var_ref
+    #[test]
+    fn edge_trace_records_a_reload_for_a_shared_subexpression() {
+        use crate::nnue::EdgeTrace;
+
+        // sqrt(X) * sqrt(X): tree has 2x sqrt edges, DAG has 1x sqrt + 1x reload
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
         let sqrt_x = egraph.add(ENode::Op {
@@ -1842,41 +1741,40 @@ mod tests {
         choices[egraph.find(sqrt_x).0 as usize] = Some(0);
         choices[egraph.find(x).0 as usize] = Some(0);
 
-        let nnue = ExprNnue::new_with_latency_prior(42);
-
-        // DAG accumulator
         let extraction = Extraction::from_backfill(&egraph, product, choices);
-        let dag_acc = EdgeAccumulator::from_dag_choices(&extraction, &nnue.embeddings);
+        let trace = EdgeTrace::from_extraction(&extraction);
 
-        assert_eq!(dag_acc.node_count, 3, "DAG acc should count 3 unique nodes");
+        assert_eq!(trace.node_count(), 3, "3 unique nodes");
         assert_eq!(
-            dag_acc.edge_count, 3,
-            "shared reuse should contribute a var_ref edge"
+            trace.edges().len(),
+            3,
+            "shared reuse should contribute a reload edge"
         );
+        let reloads = trace
+            .edges()
+            .iter()
+            .filter(|e| e.parent == pixelflow_ir::OpKind::Mul && e.child == pixelflow_ir::OpKind::Var)
+            .count();
+        assert_eq!(reloads, 1);
     }
 
     // =========================================================================
-    // Train/deploy feature-path equivalence (2026-08 round-0 skew guard)
+    // Arena/extraction edge-walk equivalence (2026-08 round-0 skew guard)
     // =========================================================================
 
-    /// The trainer featurizes arenas (`EdgeAccumulator::from_arena_dag`); the
-    /// extractor featurizes e-graph choices
-    /// (`EdgeAccumulator::from_dag_choices_with_variance`). Both are thin
-    /// adapters over one walker, and this test pins that: for the same DAG —
-    /// shared subexpressions, shared leaves, mixed variance — the two paths
-    /// must produce bit-identical features and identical predictions. If a
-    /// future change gives either path its own edge policy, scalar slots, or
-    /// variance classification, this fails.
+    /// The arena walk (`EdgeTrace::from_arena_dag`) and the e-graph walk
+    /// (`EdgeTrace::from_extraction`) are thin adapters over one walker, and
+    /// this test pins that: for the same DAG — shared subexpressions, shared
+    /// leaves — the two paths must record the identical edge stream. If a
+    /// future change gives either path its own edge policy, this fails.
     #[test]
-    fn train_and_deploy_feature_paths_agree() {
-        use crate::nnue::{EdgeAccumulator, ExprNnue};
+    fn arena_and_extraction_walks_record_the_same_edge_stream() {
+        use crate::nnue::EdgeTrace;
         use pixelflow_ir::{ExprArena, OpKind};
 
         // Arena: (sin(Z * 0.3) * (X + Y) + sin(Z * 0.3)) + Y * 0.3
         // - sin(Z * 0.3) is SHARED (register reload on the second reference)
         // - Y and 0.3 are shared leaves (leaf reload policy)
-        // - variance mix: const (0.3), frame (Z chain), scanline (Y, Y*0.3),
-        //   pixel (everything touching X)
         let mut arena = ExprArena::new();
         let z = arena.push_var(2);
         let c = arena.push_const(0.3);
@@ -1929,127 +1827,24 @@ mod tests {
         let choices: Vec<Option<usize>> = alloc::vec![None; eg.num_classes()];
         let extraction = Extraction::from_backfill(&eg, eroot, choices);
 
-        let nnue = ExprNnue::new_with_latency_prior(7);
-        let deploy =
-            EdgeAccumulator::from_dag_choices_with_variance(&extraction, &nnue.embeddings, true);
-        let train = EdgeAccumulator::from_arena_dag(&arena, root, &nnue.embeddings);
+        let from_arena = EdgeTrace::from_arena_dag(&arena, root);
+        let from_egraph = EdgeTrace::from_extraction(&extraction);
 
-        assert_eq!(train.node_count, deploy.node_count, "node_count");
-        assert_eq!(train.edge_count, deploy.edge_count, "edge_count");
-        for i in 0..train.values.len() {
-            assert_eq!(
-                train.values[i], deploy.values[i],
-                "accumulator values[{i}] diverge between the train-path and \
-                 deploy-path feature builders"
-            );
-        }
-        assert_eq!(train.variance_frac_const, deploy.variance_frac_const);
-        assert_eq!(train.variance_frac_frame, deploy.variance_frac_frame);
-        assert_eq!(train.variance_frac_scanline, deploy.variance_frac_scanline);
-        assert_eq!(train.variance_frac_pixel, deploy.variance_frac_pixel);
-
-        // Pin the variance semantics themselves, not just path symmetry:
-        // 11 nodes — const {0.3}; frame {Z, Z*0.3, sin}; scanline {Y, Y*0.3};
-        // pixel {X, X+Y, mul, add, root}.
-        assert_eq!(train.node_count, 11);
-        assert!((train.variance_frac_const - 1.0 / 11.0).abs() < 1e-6);
-        assert!((train.variance_frac_frame - 3.0 / 11.0).abs() < 1e-6);
-        assert!((train.variance_frac_scanline - 2.0 / 11.0).abs() < 1e-6);
-        assert!((train.variance_frac_pixel - 5.0 / 11.0).abs() < 1e-6);
-
-        // And the predictions extraction would act on are identical.
-        let p_train = nnue.predict_log_cost_with_features(&train);
-        let p_deploy = nnue.predict_log_cost_with_features(&deploy);
+        assert_eq!(from_arena.node_count(), 11, "11 distinct nodes");
         assert_eq!(
-            p_train, p_deploy,
-            "identical features must produce identical predicted log-cost"
-        );
-        assert!(p_train.is_finite());
-
-        // ---------------------------------------------------------------
-        // P1(c) extension: a merged e-class holding BOTH a pixel-varying
-        // node (Sub(X, X)) and a constant (Const(0)) — the class-wide meet
-        // `DepsAnalysis` computes collapses this to CONST (see
-        // `deps::meet_across_enodes_x_minus_x_is_const`), but if the
-        // extraction actually CHOSE the varying node, the emitted arena is
-        // pixel-varying and the deploy features must say so too. This is
-        // exactly the scenario that fails under the old meet-based lookup.
-        // ---------------------------------------------------------------
-        let mut arena2 = ExprArena::new();
-        let x2 = arena2.push_var(0);
-        let sub2 = arena2.push_binary(OpKind::Sub, x2, x2);
-        let train2 = EdgeAccumulator::from_arena_dag(&arena2, sub2, &nnue.embeddings);
-
-        let mut eg2 = EGraph::new();
-        let ex2 = eg2.add(ENode::Var(0));
-        let esub2 = eg2.add(ENode::Op {
-            op: &ops::Sub,
-            children: alloc::vec![ex2, ex2],
-        });
-        let econst2 = eg2.add(ENode::constant(0.0));
-        let merged2 = eg2.union(esub2, econst2); // Sub(X, X) = 0
-        eg2.rebuild();
-
-        // Sanity: the class-wide meet DOES collapse to CONST — the exact
-        // data source P1(c) replaces. If this assumption ever stops
-        // holding, the regression below is no longer exercising the bug.
-        let canonical2 = eg2.find(merged2);
-        let meet = crate::egraph::deps::DepsAnalysis::analyze(&eg2);
-        assert_eq!(
-            meet.get(&eg2, canonical2),
-            pixelflow_ir::Variance::CONST,
-            "test assumes the class-wide meet collapses to CONST after the merge"
-        );
-
-        // Choose the Sub(X, X) node explicitly — not the Const — the
-        // extraction scenario the bug requires.
-        let sub_idx = eg2
-            .nodes(canonical2)
-            .iter()
-            .position(|n| matches!(n, ENode::Op { .. }))
-            .expect("merged class holds the Sub node");
-        // `backfill_well_founded` (and thus `Extraction::from_backfill`)
-        // short-circuits the moment `root`'s own entry is already `Some` —
-        // it never descends to fill still-missing descendants in that case
-        // (that's what makes `Extraction::try_swap`'s per-child calls
-        // necessary during refinement). So the merged class's leaf, `X`,
-        // needs its own choice set explicitly too.
-        let mut choices2: Vec<Option<usize>> = alloc::vec![None; eg2.num_classes()];
-        choices2[canonical2.0 as usize] = Some(sub_idx);
-        choices2[eg2.find(ex2).0 as usize] = Some(0);
-        let extraction2 = Extraction::from_backfill(&eg2, merged2, choices2);
-
-        let deploy2 =
-            EdgeAccumulator::from_dag_choices_with_variance(&extraction2, &nnue.embeddings, true);
-
-        assert_eq!(
-            train2.node_count, deploy2.node_count,
-            "node_count (merged-class case)"
-        );
-        assert_eq!(
-            train2.variance_frac_pixel, deploy2.variance_frac_pixel,
-            "variance_frac_pixel must reflect the CHOSEN Sub(X, X) node, not the \
-             class-wide meet"
-        );
-        assert_eq!(train2.variance_frac_const, deploy2.variance_frac_const);
-        assert!(
-            deploy2.variance_frac_pixel > 0.0,
-            "deploy path must classify the chosen Sub(X, X) as pixel-varying, not fold \
-             it into CONST via the class-wide meet"
+            from_arena, from_egraph,
+            "the arena walk and the e-graph walk must record the identical edge stream"
         );
 
         // ---------------------------------------------------------------
-        // Shift-count pinning (review thread on PR #1019, factored.rs:984):
-        // a Shl/Shr count e-class can legitimately hold both a Const and a
-        // value-equal varying-shaped alternative (same situation as the
-        // Sub(X, X)/Const(0) merge above, but for the count child of a
-        // shift). `choices_to_arena` always pins that child to the Const
-        // representative (`pin_shift_counts` — the emitter's shift lowering
-        // requires an immediate), so if the extraction chose the varying
-        // node, the deploy-path features must reflect the PINNED arena, not
-        // the raw choice — otherwise this walker both double-counts nodes
-        // `choices_to_arena` never emits and disagrees with the arena's
-        // variance histogram.
+        // Shift-count pinning (review thread on PR #1019): a Shl/Shr count
+        // e-class can legitimately hold both a Const and a value-equal
+        // varying-shaped alternative. `choices_to_arena` always pins that
+        // child to the Const representative (`pin_shift_counts` — the
+        // emitter's shift lowering requires an immediate), so if the
+        // extraction chose the varying node, the e-graph walk must describe
+        // the PINNED arena, not the raw choice — otherwise it records nodes
+        // `choices_to_arena` never emits.
         // ---------------------------------------------------------------
         struct ShlOp;
         impl crate::egraph::ops::Op for ShlOp {
@@ -2065,7 +1860,7 @@ mod tests {
         let x3 = arena3.push_var(0);
         let zero3 = arena3.push_const(0.0);
         let shl3 = arena3.push_binary(OpKind::Shl, x3, zero3);
-        let train3 = EdgeAccumulator::from_arena_dag(&arena3, shl3, &nnue.embeddings);
+        let from_arena3 = EdgeTrace::from_arena_dag(&arena3, shl3);
 
         let mut eg3 = EGraph::new();
         let ex3 = eg3.add(ENode::Var(0));
@@ -2098,43 +1893,15 @@ mod tests {
         choices3[eg3.find(ey3).0 as usize] = Some(0);
         let extraction3 = Extraction::from_backfill(&eg3, eshl3, choices3);
 
-        let deploy3 =
-            EdgeAccumulator::from_dag_choices_with_variance(&extraction3, &nnue.embeddings, true);
+        let from_egraph3 = EdgeTrace::from_extraction(&extraction3);
 
         assert_eq!(
-            train3.node_count, deploy3.node_count,
-            "node_count (shift-count pinning case): the deploy path must not walk into \
-             Sub(Y, Y) once the count is pinned to Const(0), or its node count will \
-             disagree with the arena choices_to_arena actually emits"
+            from_arena3, from_egraph3,
+            "the e-graph walk must not walk into Sub(Y, Y) once the count is pinned to \
+             Const(0), or its stream will disagree with the arena choices_to_arena emits"
         );
-        assert_eq!(
-            train3.edge_count, deploy3.edge_count,
-            "edge_count (shift-count pinning case)"
-        );
-        assert_eq!(
-            train3.variance_frac_pixel, deploy3.variance_frac_pixel,
-            "variance_frac_pixel (shift-count pinning case)"
-        );
-        assert_eq!(
-            train3.variance_frac_scanline, deploy3.variance_frac_scanline,
-            "deploy path must not count Y's scanline variance from the un-pinned \
-             Sub(Y, Y) count child"
-        );
-        assert_eq!(
-            train3.variance_frac_const, deploy3.variance_frac_const,
-            "variance_frac_const (shift-count pinning case)"
-        );
-        assert_eq!(
-            train3.variance_frac_frame, deploy3.variance_frac_frame,
-            "variance_frac_frame (shift-count pinning case)"
-        );
-        for i in 0..train3.values.len() {
-            assert_eq!(
-                train3.values[i], deploy3.values[i],
-                "accumulator values[{i}] diverge on the shift-count pinning case"
-            );
-        }
     }
+
 
     // =========================================================================
     // choices_to_arena tests

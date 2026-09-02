@@ -5,8 +5,10 @@ implemented core builds an e-graph from `pixelflow-ir::ExprArena`, applies rewri
 explicit budgets, records rule provenance, and extracts an equivalent arena with a pluggable
 cost function.
 
-Learned extraction machinery also exists, but learned rule guidance is an experiment with
-decision gates—not the default optimizer and not a completed training product.
+Learned rule guidance (the saturation Guide) is an experiment with decision gates—not the
+default optimizer and not a completed training product. A learned extraction cost model was
+tried and closed as an honest negative (see below); the static latency prior is the extraction
+policy.
 
 ## Status at a glance
 
@@ -18,7 +20,7 @@ decision gates—not the default optimizer and not a completed training product.
 | Static latency-prior extraction | Implemented; compiler default |
 | DAG-aware extraction and arena reconstruction | Implemented |
 | Rule-application provenance and hindsight labels | Implemented |
-| NNUE expression-cost model and incremental extractor | Implemented; opt-in consumer path |
+| Learned (NNUE) extraction cost model | Closed honest-negative 2026-09; deleted, history in VCS |
 | Trained provenance guide for choosing rewrites | Research plan; thesis experiment not yet completed |
 | Beam/lookahead search over rewrite applications | Conditional future work |
 
@@ -81,11 +83,14 @@ latency prior. This is the compiler's normal extraction policy. The values are e
 portable benchmark results; calibration and learned alternatives belong to the research
 tooling.
 
-The compiler enables learned extraction only when `PIXELFLOW_NNUE_WEIGHTS` names a weights
-file. Missing, unreadable, or incompatible opt-in weights fail loudly. With the variable
-unset, compilation uses the static latency prior.
+Both compiler tiers (the `kernel!` macros and runtime-built kernels) choose the policy through
+one seam, `egraph::env_extraction_policy()`, which returns the latency prior. A learned
+extraction head sat behind that seam from 2026-07 to 2026-09 and was closed as an honest
+negative — the static table tied it and every lever made it worse
+([`docs/paper/2026-08-egraph-nnue-parity.md`](../docs/paper/2026-08-egraph-nnue-parity.md)).
+It is deleted, not disabled.
 
-This opt-in path selects an expression from an already-built e-graph. It should not be confused
+Extraction selects an expression from an already-built e-graph. It should not be confused
 with a learned policy that decides which rewrite applications to admit during saturation.
 
 ## Provenance and labels
@@ -133,7 +138,7 @@ AlphaZero-like loop, or a learned cost model has beaten the static baseline.
 |---|---|
 | `egraph` | Graph, rewrites, saturation, extraction, provenance, and labeling |
 | `math` | Algebraic, calculus, parity, exponential, and trigonometric rewrite families |
-| `nnue` | Expression embeddings, model representation, and opt-in neural extraction support |
+| `nnue` | Op embeddings, the typed edge stream, the saturation Guide, and the backward expression generator |
 
 Training corpora, JIT measurement, and extraction comparisons live in `pixelflow-pipeline`
 rather than in this crate. Commands documented here are limited to targets that currently

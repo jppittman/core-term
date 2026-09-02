@@ -26,10 +26,10 @@ cd "$repo_root"
 #
 # Empty, and worth keeping that way: an entry here suppresses a real failure,
 # so every one is a hole in this job. The two pixelflow-search rows that lived
-# here were both the same defect -- `ExprNnue::from_bytes` used unguarded in
-# `egraph/extraction.rs` while its definition sits behind `std` -- and both are
-# gone now that the callers carry the matching gate. Nothing else is known
-# broken, so any failure below is news.
+# here were both the same defect -- a std-only weights loader used unguarded in
+# `egraph/extraction.rs` -- and both the loader and the feature that gated it
+# were deleted with the extraction-head program (2026-09-01). Nothing else is
+# known broken, so any failure below is news.
 KNOWN_BROKEN=()
 
 log="$(mktemp)"

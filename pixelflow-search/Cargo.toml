@@ -16,13 +16,3 @@ pixelflow-ir = { path = "../pixelflow-ir", default-features = false, features = 
 # Rewrite-soundness tests check a rule's two sides numerically against the
 # language's own semantics; `oracle` is what exposes that walker.
 pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
-
-[features]
-# Gates the capabilities that need a process environment or filesystem:
-# `ExprNnue::save`/`load`/`from_bytes` and the `PIXELFLOW_NNUE_WEIGHTS`
-# opt-in branch of `env_extraction_policy`. With `std` off, the static
-# latency prior is the only extraction policy compiled in — not a fallback,
-# the opt-in mechanism simply doesn't exist without an environment. CI's
-# `no-std` job checks this configuration keeps building.
-std = []
-default = ["std"]
