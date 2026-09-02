@@ -1440,7 +1440,7 @@ mod congruence_gap_probe {
 
         let optimized = optimizer.run(&mut egraph, root_class, node_count);
         let max_classes = optimized.stats.limits.classes;
-        let hit_class_cap = optimized.stats.stop == SaturationStop::ClassCap;
+        let hit_class_cap = matches!(optimized.stats.stop, SaturationStop::ClassCap(_));
 
         let live_before = live_class_count(&egraph);
 
@@ -2072,6 +2072,10 @@ mod congruence_gap_probe {
 /// (`pub(crate)`, graph.rs) so this module can read the memo table's size
 /// without exposing it.
 #[cfg(test)]
+#[path = "runtime/class_cap_live_ab.rs"]
+mod class_cap_live_ab;
+
+#[cfg(test)]
 mod class_cap_ghosts {
     use super::congruence_gap_probe::{
         arena_static_cost, category_of, load_arena_dump, median, percentile,
@@ -2126,7 +2130,7 @@ mod class_cap_ghosts {
 
         let optimized = optimizer.run(&mut egraph, root_class, node_count);
         let cap = optimized.stats.limits.classes;
-        let hit_cap = optimized.stats.stop == SaturationStop::ClassCap;
+        let hit_cap = matches!(optimized.stats.stop, SaturationStop::ClassCap(_));
         let allocated = egraph.num_classes();
         let live = egraph.class_ids().count();
         let nodes = egraph.node_count();
@@ -2178,6 +2182,7 @@ mod class_cap_ghosts {
             Budget::Explicit {
                 iterations: preset.max_iterations,
                 classes: raised,
+                allocated_classes: crate::egraph::HARD_CLASS_LIMIT,
                 applications: None,
             },
         )
