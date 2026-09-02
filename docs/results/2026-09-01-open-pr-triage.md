@@ -103,7 +103,7 @@ still builds.**
 
 ## Complications
 
-### 1. #1054 — red, and now twice-superseded. Recommend closing.
+### 1. #1054 — was red, now fixed. Recommend a mutants rerun, then merge.
 
 Green at `136cc63`, red the moment it was brought up to date. Nine compile
 errors in `pixelflow-codegen/src/emit/x86_64.rs`: `X86Backend::epilogue` no
@@ -113,12 +113,25 @@ longer exists (#1082 removed `prologue`/`epilogue`, methods moved into a
 levels. **Git merged it cleanly and it does not compile** — the clearest
 instance on this board of a semantic conflict that no merge check catches.
 
-This is the second encoder refactor to invalidate the branch; the first
-(#1055–#1062's Vex-builder rewrite) is already in its own history at
-`4435869f`, which discarded and rewrote the original tests. Its tests keep
-being deleted out from under it by the file it targets. Funding a third
-re-close pass against a file still in motion is not a good trade — close it,
-and re-run the mutation audit once `x86_64.rs` settles.
+**Fixed** in `a42a16d5`: `emit_movups_store_base_*` now drive
+`emit_movups_store` through a `NoDisp` address (the encoding the deleted
+function produced), the redzone overflow test compares against
+`CompileError::Internal(..)`, and the four `prologue_*`/`epilogue_*` tests are
+removed. That removal was checked rather than assumed: `prologue`/`epilogue`
+appear nowhere in the workspace, and `frame_alloc`/`frame_free` are
+unconditional one-line delegations to `emit_sub_rsp`/`emit_add_rsp`
+(`x86_64.rs:1298-1304`) with no `frame_bytes > 0` branch left to cover. Deleting
+tests for deleted code, not dropping tests for green. Gates: `-p
+pixelflow-codegen --lib` 125/0, full workspace green, clippy `-D warnings`
+clean, `fmt` clean.
+
+Still open: this is the second encoder refactor to invalidate the branch (the
+first, #1055–#1062's Vex-builder rewrite, is in its own history at `4435869f`),
+and the audit's "0 real gaps" conclusion has never been re-verified since
+either — `emit_vpextrd_to_gpr` and `emit_vmovss_load_scaled` carry no coverage
+claim at all. Rerun `cargo mutants -p pixelflow-codegen --file
+pixelflow-codegen/src/emit/x86_64.rs -- --lib --test collapse_loop` and record
+real numbers, or soften the conclusion, before merging.
 
 ### 2. #1072 — the harness it documents has been deleted. Recommend closing.
 
@@ -153,21 +166,78 @@ until someone pushes `v*.*.*`. Three weeks of drift on something CI cannot
 validate. Merge it as dormant infrastructure or close it — but decide, because
 leaving it open costs a rebase every time `main` moves.
 
-### 4. The nine saturation-family conflicts
+### 4. The saturation-family conflicts, and what kind of work they actually are
 
-#1084, #1087, #1088, #1091, #1095, #1096, #1101, #1103, #1109 all need a merge
-from `main` and real reconciliation against the landed
-`SaturationStopReason` / optimizer-entry-point work. Several are large (#1088
-and #1096 are 38 commits ahead) and several have active sessions. This is
-rework that has to happen branch by branch by whoever owns each; it is not
-mechanical, because the conflicts are in the type that four separate PRs each
-redefined.
+#1084, #1087, #1088, #1091, #1095, #1096, #1101, #1103 need a merge from `main`
+and reconciliation against the landed stop-reason and optimizer-entry-point
+work. #1109 was in this set and is now resolved (below), which is what makes
+the rest classifiable rather than merely daunting.
 
-The one piece of good news: #1083's landed version deliberately converged its
-stop-reason type onto the names #1084 independently chose
+Each conflicted branch is **two separable jobs**, and conflating them is what
+makes the pile look worse than it is.
+
+**(a) The core delta is superseded, and resolving it is mechanical.** Every one
+of these branches carries its own answer to "why did saturation stop," written
+before #1083 landed one. #1087 is the clearest case: its `graph.rs` conflict is
+ten hunks of `bool truncated` against `main`'s `ScanStop { Completed, ClassCap,
+Deadline }`. That is the same fact at strictly more resolution — and it is this
+codebase's own rule, *extend the type, not the convention*, already applied on
+the `main` side. There is nothing to weigh: take `main`'s. The same shape holds
+for the `saturate.rs`, `mod.rs`, and test-import hunks.
+
+**(b) The harness collision is the real work.** These branches also add
+`#[ignore]`d measurement modules, and `main` has since added its own in the same
+file regions. #1087's `runtime.rs` conflict includes a single 456-vs-668-line
+hunk where its telemetry harness meets `main`'s #1106 congruence probe, each
+with near-duplicate helpers under different names (`load_arena` vs
+`load_arena_dump`, `arena_cost` vs `arena_static_cost`). Both must survive, and
+the helpers want deduplicating rather than both being kept. That is ~1,100 lines
+of careful test-only reconciliation per branch. It cannot break production — it
+is all `#[cfg(test)]` — but it decides whether a published measurement is
+reproducible, so it should be done by someone who can say which helper is
+authoritative.
+
+The branches also do **not** share a resolvable base. #1084, #1088, #1091,
+#1095 and #1096 all fork from the same merge-base with `main`, but none is an
+ancestor of another: five independent lines, five registered experiments, no
+single resolution that templates them.
+
+The one shortcut worth knowing: #1083's landed version deliberately converged
+its stop-reason type onto the names #1084 independently chose
 (`SaturationStop { Quiesced, ClassCap, IterationCeiling, Timeout }`, field
-`stop`), so for #1084 at least the reconciliation should be closer to a
-duplicate-delete than a rename.
+`stop`), so #1084's job (a) should be closer to a duplicate-delete than a
+rename.
+
+### 5. #1109 — resolved, and the template for job (a)
+
+Worth recording because its raw conflict was the most alarming on the board and
+the least real: an ~890-line region in `runtime.rs`, which turned out to be
+nothing but both sides appending an independent module at end-of-file
+(`main`'s #1106 probe and this branch's `cap_break_ab`). Both kept; neither
+touches the other. Its actual subject — classify a `ClassCap` sweep without
+ending the run, and re-arm `stop` so it names the *last* sweep — is two lines in
+`graph.rs` and merged clean.
+
+The genuine work was porting its harness: it drove `saturate_with_full_budget`
+and extracted through `env_extraction_policy()`, which #1108 deleted. It now
+runs through `Optimizer` — production's own entry point — with
+`Budget::Explicit` plus `hard_ceiling`, which is what keeps the caps as
+parameters, and this A/B requires that: both arms must meet identical caps for
+the control flow to be the only difference between them. Stats come off
+`OptimizerStats`, extraction off `Optimized::to_arena`.
+
+One consequence flagged rather than buried: the old path honoured
+`PIXELFLOW_NNUE_WEIGHTS` through `env_extraction_policy`; the new one takes
+production's default static latency prior. That matches what production does
+today, but a previously recorded NNUE arm would not reproduce through this
+harness.
+
+Verified before pushing: all 7 of `saturation_stop.rs` — including
+`class_cap_reports_class_cap_not_quiesced` and
+`productive_but_class_capped_final_sweep_is_class_cap`, the two that would catch
+this exact change going wrong — and all 7 of `optimizer_laws.rs`, plus
+`cargo test -p pixelflow-search` 197/4/2/7/7 passing, clippy `-D warnings`
+clean, `fmt --check` clean.
 
 ## Recommended order
 
