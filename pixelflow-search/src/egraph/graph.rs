@@ -662,6 +662,7 @@ impl EGraph {
         #[cfg(feature = "provenance-journal")]
         self.provenance.record_union(UnionEvent {
             rule_idx: self.active_application.map(|a| a.rule_idx),
+            application_id: self.active_application.map(|a| a.application_id),
             step: self.step,
             class_a: parent,
             class_b: child,
@@ -848,6 +849,53 @@ impl EGraph {
             &tags_of,
             &children_of,
             &self.provenance,
+            chosen_nodes,
+        )
+    }
+
+    /// The tightened counterpart to [`EGraph::derivation_ancestors`] — see
+    /// [`super::provenance::derivation_ancestors_tight`] for exactly which
+    /// over-approximation axes are narrowed and why the result is still safe
+    /// (a subset of `derivation_ancestors`'s result, a superset of the
+    /// strict node-on-path bound). Additive: does not change what
+    /// `derivation_ancestors` computes, so both can be run on the same
+    /// episode for comparison.
+    #[cfg(feature = "provenance-journal")]
+    pub fn derivation_ancestors_tight(
+        &self,
+        chosen_nodes: &[(EClassId, ENodeId)],
+    ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
+        self.derivation_ancestors_tight_from(chosen_nodes, chosen_nodes)
+    }
+
+    /// [`EGraph::derivation_ancestors_tight`] for a walk that starts from a
+    /// SUBSET of the extraction — one application's chosen output node, say
+    /// — while still pruning with the extraction's complete choice map. See
+    /// [`super::provenance::derivation_ancestors_tight`] for why passing
+    /// only the seeds as the choice map degrades the walk back to the loose
+    /// bound for every class it descends into.
+    #[cfg(feature = "provenance-journal")]
+    pub fn derivation_ancestors_tight_from(
+        &self,
+        seeds: &[(EClassId, ENodeId)],
+        chosen_nodes: &[(EClassId, ENodeId)],
+    ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
+        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).to_vec() };
+        let children_of = |tag: ENodeId| -> Vec<EClassId> {
+            for class in self.classes.iter() {
+                if let Some(idx) = class.tags.iter().position(|&t| t == tag) {
+                    return class.nodes[idx].children();
+                }
+            }
+            Vec::new()
+        };
+        let canonical_of = |class: EClassId| -> EClassId { self.find(class) };
+        super::provenance::derivation_ancestors_tight(
+            &tags_of,
+            &children_of,
+            &canonical_of,
+            &self.provenance,
+            seeds,
             chosen_nodes,
         )
     }
