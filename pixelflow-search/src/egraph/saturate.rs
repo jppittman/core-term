@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use super::graph::EGraph;
+use super::graph::{EGraph, SaturationStop};
 use super::node::EClassId;
 
 /// Result of a budget-limited saturation run.
@@ -34,7 +34,11 @@ pub struct SaturationResult {
     /// Total unions performed across all iterations.
     pub total_unions: usize,
 
-    /// Whether saturation completed (no more changes) before budget exhausted.
+    /// Whether saturation completed (no more changes) before budget
+    /// exhausted. Exactly `stop == SaturationStop::Quiesced` — the same
+    /// decision the loop made, never a second opinion derived from the
+    /// counters (`iterations < max_iterations` is true of a class-cap and a
+    /// timeout break too).
     pub saturated: bool,
 
     /// Number of e-classes before saturation.
@@ -48,6 +52,19 @@ pub struct SaturationResult {
 
     /// The rewrite budget that was used.
     pub budget: usize,
+
+    /// The rest of the budget triple this run was given (`budget` is its
+    /// `max_iterations`) — recorded on the result so an observer of the run
+    /// (the `saturation-telemetry` feature) reads the limits that actually
+    /// applied instead of re-deriving them from `node_count`.
+    pub max_classes: usize,
+    pub hard_timeout: std::time::Duration,
+
+    /// Which condition ended the run — read off `EGraph::saturate_with_limits`'s
+    /// own stopping decision, not inferred from the counts above (those can
+    /// tie: a class-cap or timeout break can leave `iterations <
+    /// max_iterations` exactly like a quiesced run).
+    pub stop: SaturationStop,
 }
 
 impl SaturationResult {
@@ -119,7 +136,7 @@ pub fn saturate_with_full_budget(
     // the duplicate-loop drift the domain model doc calls out by name.
     let stats = egraph.saturate_with_limits(max_iterations, max_classes, timeout);
 
-    let saturated = stats.iterations < max_iterations || stats.total_unions == 0;
+    let saturated = stats.stop == SaturationStop::Quiesced;
     let classes_after = egraph.classes.len();
     let rule_matches = egraph.match_counts.clone();
 
@@ -131,6 +148,9 @@ pub fn saturate_with_full_budget(
         classes_after,
         rule_matches,
         budget: max_iterations,
+        max_classes,
+        hard_timeout: timeout,
+        stop: stats.stop,
     }
 }
 
@@ -341,6 +361,9 @@ mod tests {
             classes_after: 15,
             rule_matches: HashMap::new(),
             budget: 100,
+            max_classes: 10_000,
+            hard_timeout: std::time::Duration::from_millis(500),
+            stop: SaturationStop::Quiesced,
         };
 
         assert!((result.growth_ratio() - 1.5).abs() < 0.01);

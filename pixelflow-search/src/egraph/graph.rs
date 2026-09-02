@@ -107,17 +107,73 @@ impl Clone for EGraph {
 pub struct ApplyResult {
     pub changes: usize,
     pub evals: usize,
+    /// How the scan ended. `changes == 0` is quiescence only when this is
+    /// [`ScanStop::Completed`]; under either budget the rest of the graph
+    /// was never looked at, so nothing is known about it.
+    pub scan: ScanStop,
+}
+
+/// How a single rule's scan over the e-graph ended.
+///
+/// Two budgets can cut a scan short and they are *different facts*, so this
+/// is a three-valued type rather than a `truncated: bool` the caller has to
+/// disambiguate afterwards by asking which budget looks closer — that
+/// inference is exactly what a stop reason exists to replace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanStop {
+    /// Every e-class was visited and every match committed.
+    Completed,
+    /// The class budget `max_nodes` stopped the scan: the graph (plus the
+    /// nodes the pending actions would create) reached the cap.
+    ClassCap,
+    /// The wall-clock deadline elapsed before the scan finished — either it
+    /// cut the walk short, or it passed while a rule's `apply` (or the
+    /// commit that follows) was running. Both mean the same thing: this
+    /// scan did not finish inside the ceiling.
+    Deadline,
+}
+
+/// Why an [`EGraph::saturate_with_limits`] call stopped — an explicit stop
+/// reason instead of the `SaturationStats` proxy game every measurement
+/// harness had to play (`iterations < max_iters && classes <= cap` ≈
+/// "probably quiesced"; `pixelflow-pipeline/src/bin/guide_headroom.rs` names
+/// it as the one ambiguity that proxy can't resolve). Read off the loop that
+/// decides when to stop, never inferred from the counts afterwards.
+/// Budget-only framing: none of these certify a fixpoint;
+/// [`SaturationStop::Quiesced`] is a diagnostic condition (one full rule
+/// sweep ran to completion and produced zero unions), never a closure claim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaturationStop {
+    /// A full rule sweep completed with zero unions. Diagnostic, not a
+    /// certified fixpoint.
+    Quiesced,
+    /// The class budget `max_classes` stopped the run (memory protection) —
+    /// either the count exceeded it outright, or a sweep produced zero
+    /// unions only because every remaining action was discarded for budget.
+    ClassCap,
+    /// `max_iters` sweeps completed without any other condition firing.
+    IterationCeiling,
+    /// The wall-clock safety ceiling elapsed. Offline measurement callers
+    /// should treat this as a hard error (fail loud), never as data.
+    Timeout,
 }
 
 /// Result of one [`EGraph::saturate_with_limits`] run: how many rounds it
 /// took and how many rule applications fired in total, whichever limit
 /// (iteration count, class count, timeout, or convergence) ended the run.
-#[derive(Clone, Copy, Debug, Default)]
+///
+/// Deliberately not `Default`: a defaulted `stop` would be an invented
+/// stop reason, and nothing constructs an empty stats value.
+#[derive(Clone, Copy, Debug)]
 pub struct SaturationStats {
     /// Number of rewrite rounds completed before the run stopped.
     pub iterations: usize,
     /// Sum of `ApplyResult::changes` across every round.
     pub total_unions: usize,
+    /// Which condition ended the run — READ from the loop that stopped, so a
+    /// caller never has to infer "quiesced" from `iterations < max_iters`
+    /// (which conflates a timeout or class cap with quiescence).
+    pub stop: SaturationStop,
 }
 
 impl EGraph {
@@ -842,12 +898,17 @@ impl EGraph {
         let deadline = start + timeout;
         let mut iterations = 0;
         let mut total_unions = 0;
+        // Recorded at the point the loop decides to stop — never inferred
+        // afterwards from the counters.
+        let mut stop = SaturationStop::IterationCeiling;
 
         for _ in 0..max_iters {
             if start.elapsed() >= timeout {
+                stop = SaturationStop::Timeout;
                 break;
             }
             if self.classes.len() > max_classes {
+                stop = SaturationStop::ClassCap;
                 break;
             }
             iterations += 1;
@@ -858,29 +919,72 @@ impl EGraph {
             self.step += 1;
 
             // Apply all rules in a single batch — one rebuild per iteration
-            let unions = {
+            let (unions, sweep) = {
                 let mut batch = self.batch();
                 let n_rules = batch.graph.rules.len();
                 let mut total = 0;
+                let mut sweep = ScanStop::Completed;
                 for rule_idx in 0..n_rules {
                     if batch.node_count() > max_classes {
+                        sweep = ScanStop::ClassCap;
                         break;
                     }
                     let result = batch.apply_rule(rule_idx, max_classes, Some(deadline));
                     total += result.changes;
+                    match result.scan {
+                        ScanStop::Completed => {}
+                        // The class budget cut this rule short. A later rule
+                        // may still fit inside the cap, so the sweep goes on
+                        // — but it is no longer a full sweep, and can never
+                        // read as quiescence.
+                        ScanStop::ClassCap => sweep = ScanStop::ClassCap,
+                        // The wall-clock ceiling is hard: do not start
+                        // another rule's scan on the far side of it.
+                        ScanStop::Deadline => {
+                            sweep = ScanStop::Deadline;
+                            break;
+                        }
+                    }
                 }
-                total
+                (total, sweep)
                 // rebuild happens here on drop
             };
             total_unions += unions;
-            if unions == 0 {
-                break; // Saturated
+            // The union count and the stop reason are independent facts: a
+            // sweep that a budget cut short classifies as that budget whether
+            // or not it also committed unions. Consulting `truncated` only on
+            // the `unions == 0` path missed every truncated-but-productive
+            // sweep, and if that was the last allowed iteration the run fell
+            // through to this loop's default `IterationCeiling`.
+            //
+            // `apply_rule` holds `classes.len()` at or under `max_classes` by
+            // truncating its own scan, so the cheap check at the top of this
+            // loop almost never sees a capped run — the sweep's own report is
+            // what makes `ClassCap` observable at all.
+            match sweep {
+                ScanStop::ClassCap => {
+                    stop = SaturationStop::ClassCap;
+                    break;
+                }
+                ScanStop::Deadline => {
+                    stop = SaturationStop::Timeout;
+                    break;
+                }
+                // A full sweep that changed nothing is the one diagnostic
+                // fixed point this loop can report.
+                ScanStop::Completed => {
+                    if unions == 0 {
+                        stop = SaturationStop::Quiesced;
+                        break;
+                    }
+                }
             }
         }
 
         SaturationStats {
             iterations,
             total_unions,
+            stop,
         }
     }
 
@@ -923,33 +1027,55 @@ impl EGraph {
             return ApplyResult {
                 changes: 0,
                 evals: 0,
+                scan: ScanStop::Completed,
             };
         }
+
+        // `Instant::now()` costs tens of nanoseconds — the same order as the
+        // cheapest rule's `apply` — so polling it once per node would be a
+        // measurable tax on every scan. It is polled instead at the three
+        // places that make the ceiling hard without that tax: once per
+        // e-class (the boundary already clones the class's node vector, so a
+        // clock read is lost in the noise), every `DEADLINE_POLL_NODES` nodes
+        // within a class (so one enormous e-class cannot run unbounded), and
+        // once after the scan and its commit (so a deadline that elapsed
+        // inside an opaque `apply` is still seen). The bound that buys is an
+        // overrun of at most `DEADLINE_POLL_NODES` rule evaluations plus one
+        // `apply`; the timeout is a fail-loud safety ceiling, not a
+        // scheduling knob, so shrinking that bound further buys nothing worth
+        // a clock read per node.
+        const DEADLINE_POLL_NODES: usize = 256;
+        let expired = |deadline: Option<std::time::Instant>| match deadline {
+            Some(dl) => std::time::Instant::now() > dl,
+            None => false,
+        };
 
         let mut unions = 0;
         let mut evals = 0usize;
         let mut updates: Vec<(EClassId, RewriteAction)> = Vec::new();
         let mut estimated_new_nodes: usize = 0;
+        let mut scan = ScanStop::Completed;
 
         let canonical_ids = self.canonical_class_ids();
         'scan: for canonical in canonical_ids {
             // Budget check: current graph + pending creates must stay under limit
             if self.classes.len() + estimated_new_nodes > max_nodes {
+                scan = ScanStop::ClassCap;
                 break;
             }
-            // Deadline check
-            if evals & 1023 == 0 {
-                if let Some(dl) = deadline {
-                    if std::time::Instant::now() > dl {
-                        break;
-                    }
-                }
+            if expired(deadline) {
+                scan = ScanStop::Deadline;
+                break;
             }
 
             let nodes: Vec<ENode> = self.classes[canonical.index()].nodes.clone();
 
             for node in &nodes {
                 evals += 1;
+                if evals % DEADLINE_POLL_NODES == 0 && expired(deadline) {
+                    scan = ScanStop::Deadline;
+                    break 'scan;
+                }
                 if let Some(action) = self.rules[rule_idx].apply(self, canonical, node) {
                     // Track how many nodes this action would create
                     let action_cost = match &action {
@@ -963,6 +1089,7 @@ impl EGraph {
                     // If this action would push us over budget, stop scanning
                     if self.classes.len() + estimated_new_nodes > max_nodes {
                         // Don't add this action — discard it and stop
+                        scan = ScanStop::ClassCap;
                         break 'scan;
                     }
 
@@ -982,9 +1109,17 @@ impl EGraph {
             unions += self.apply_action_from_rule(rule_idx, class_id, action);
         }
 
+        // A deadline that elapsed inside a rule's `apply` or inside the commit
+        // above reached none of the checks in the walk. Left as `Completed`,
+        // a sweep that blew the hard ceiling would be recorded as quiescence.
+        if scan == ScanStop::Completed && expired(deadline) {
+            scan = ScanStop::Deadline;
+        }
+
         ApplyResult {
             changes: unions,
             evals,
+            scan,
         }
     }
 

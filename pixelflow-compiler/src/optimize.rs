@@ -101,12 +101,22 @@ pub fn optimize(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
 /// latency prior, selected through `env_extraction_policy`).
 pub fn optimize_with_model(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
     let extraction = env_extraction_policy();
-    analyzed.def.body = optimize_expr_with_model(analyzed.def.body, &extraction);
+    // Named kernels (`kernel! { pub struct Circle |...| {...} }`) carry a
+    // real identity; anonymous closures don't — telemetry never invents one
+    // for those (`kernel_label: None`), per the saturation-telemetry spec.
+    // Passed as the borrowed `Ident` so nothing is allocated for the label
+    // unless the telemetry record is actually being written.
+    let kernel_label = analyzed.def.struct_decl.as_ref().map(|s| &s.name);
+    analyzed.def.body = optimize_expr_with_model(analyzed.def.body, &extraction, kernel_label);
     analyzed
 }
 
 /// Optimize a single expression using e-graph saturation and cost-guided extraction.
-fn optimize_expr_with_model(expr: Expr, extraction: &ExtractionPolicy) -> Expr {
+fn optimize_expr_with_model(
+    expr: Expr,
+    extraction: &ExtractionPolicy,
+    kernel_label: Option<&syn::Ident>,
+) -> Expr {
     // Blocks: pass directly to optimize_via_model. The e-graph's expr_to_egraph
     // already handles Block by adding each let-binding to var_to_eclass, so
     // references share e-classes. Let-bindings are CSE hints. The e-graph sees
@@ -116,13 +126,13 @@ fn optimize_expr_with_model(expr: Expr, extraction: &ExtractionPolicy) -> Expr {
     // preserve structure. Pure arithmetic blocks go through the e-graph whole.
     if let Expr::Block(block) = expr {
         if block_has_opaque_with_locals(&block) {
-            return optimize_block_preserving_structure(block, extraction);
+            return optimize_block_preserving_structure(block, extraction, kernel_label);
         }
-        return optimize_via_model(&Expr::Block(block), extraction);
+        return optimize_via_model(&Expr::Block(block), extraction, kernel_label);
     }
 
     // For non-block expressions, treat as a unit for global optimization.
-    optimize_via_model(&expr, extraction)
+    optimize_via_model(&expr, extraction, kernel_label)
 }
 
 /// Optimize an expression via e-graph with cost-guided extraction + DAG CSE.
@@ -136,13 +146,19 @@ fn optimize_expr_with_model(expr: Expr, extraction: &ExtractionPolicy) -> Expr {
 /// expressions correctly (returns the expression without a block wrapper),
 /// so the old "no sharing — simple tree" fallback is unnecessary and
 /// removed. CSE is always preserved.
-fn optimize_via_model(expr: &Expr, extraction: &ExtractionPolicy) -> Expr {
+fn optimize_via_model(
+    expr: &Expr,
+    extraction: &ExtractionPolicy,
+    _kernel_label: Option<&syn::Ident>,
+) -> Expr {
     let mut ctx = EGraphContext::new();
     let root = ctx.expr_to_egraph(expr);
 
     let node_count = count_ast_nodes(expr);
     let config = config_for_node_count(node_count);
-    saturate_with_full_budget(
+    #[cfg(feature = "saturation-telemetry")]
+    let telemetry_start = std::time::Instant::now();
+    let _saturation_result = saturate_with_full_budget(
         &mut ctx.egraph,
         config.max_iterations,
         config.max_classes,
@@ -151,6 +167,42 @@ fn optimize_via_model(expr: &Expr, extraction: &ExtractionPolicy) -> Expr {
 
     // Extract via arena path (CSE-preserving) then convert choices → DAG.
     let choices = extraction.choices(&ctx.egraph, root);
+
+    // Stop the clock here: `wall_clock` is documented (see
+    // `telemetry::SaturationInvocation::wall_clock`) as saturate+extract,
+    // and the `choices()` call just above is that one real extraction pass.
+    // Sampled before the telemetry-only second pass below, so a large-graph
+    // extraction isn't double-counted into this number just because
+    // telemetry happens to be on.
+    #[cfg(feature = "saturation-telemetry")]
+    let wall_clock = telemetry_start.elapsed();
+
+    #[cfg(feature = "saturation-telemetry")]
+    {
+        // A second, telemetry-only extraction pass on the same (unmutated)
+        // e-graph, purely to get an `ExprArena` to cost — the AST/DAG path
+        // above never materializes one. Deterministic given a fixed egraph
+        // + root (see `Extraction`'s own doc comment on the refinement
+        // search's determinism harness), so this reproduces the same
+        // choices `extraction.choices()` just made; it is not consulted for
+        // the actual compiled output, and (per the `wall_clock` capture
+        // above) not counted in the reported timing either.
+        let telemetry_extraction = extraction.extraction(&ctx.egraph, root);
+        let (telemetry_arena, telemetry_root) =
+            pixelflow_search::egraph::choices_to_arena(&telemetry_extraction);
+        let kernel_label = _kernel_label.map(|ident| ident.to_string());
+        pixelflow_search::telemetry::record(pixelflow_search::telemetry::SaturationInvocation {
+            tier: pixelflow_search::telemetry::Tier::Macro,
+            node_count,
+            result: &_saturation_result,
+            application_count: ctx.egraph.provenance().application_count(),
+            union_count: ctx.egraph.provenance().union_count(),
+            extracted_arena: &telemetry_arena,
+            extracted_root: telemetry_root,
+            wall_clock,
+            kernel_label: kernel_label.as_deref(),
+        });
+    }
 
     // Build ExtractedDAG: ref_counts drive let-binding placement.
     // dag_to_expr emits let-bindings for shared subexpressions and returns
@@ -437,15 +489,20 @@ fn is_coordinate_intrinsic(name: &str) -> bool {
 fn optimize_block_preserving_structure(
     mut block: BlockExpr,
     extraction: &ExtractionPolicy,
+    kernel_label: Option<&syn::Ident>,
 ) -> Expr {
     for stmt in &mut block.stmts {
         if let Stmt::Let(let_stmt) = stmt {
             let init = std::mem::replace(&mut let_stmt.init, make_literal(0.0, Span::call_site()));
-            let_stmt.init = optimize_expr_with_model(init, extraction);
+            let_stmt.init = optimize_expr_with_model(init, extraction, kernel_label);
         }
     }
     if let Some(final_expr) = block.expr.take() {
-        block.expr = Some(Box::new(optimize_expr_with_model(*final_expr, extraction)));
+        block.expr = Some(Box::new(optimize_expr_with_model(
+            *final_expr,
+            extraction,
+            kernel_label,
+        )));
     }
     Expr::Block(block)
 }
@@ -1556,7 +1613,7 @@ mod tests {
         let static_extraction = ExtractionPolicy::with_costs(CostModel::latency_prior());
         analyzed_for_static_path.def.body = optimize_expr(analyzed_for_static_path.def.body);
         analyzed_for_static_path.def.body =
-            optimize_expr_with_model(analyzed_for_static_path.def.body, &static_extraction);
+            optimize_expr_with_model(analyzed_for_static_path.def.body, &static_extraction, None);
         let explicit_static_output = codegen::emit(analyzed_for_static_path).to_string();
 
         assert_eq!(

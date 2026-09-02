@@ -16,3 +16,14 @@ pixelflow-ir = { path = "../pixelflow-ir", default-features = false, features = 
 # Rewrite-soundness tests check a rule's two sides numerically against the
 # language's own semantics; `oracle` is what exposes that walker.
 pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
+
+[features]
+# Feature-flagged saturation telemetry: one JSONL record per production
+# e-graph optimizer invocation (see `src/telemetry.rs` and `runtime.rs`'s
+# module docs for the two-line usage). The sink is `std::fs`/`std::io`;
+# this crate is std unconditionally (the former `std` feature left with the
+# NNUE weights opt-in it gated, #1093). Default OFF — with the feature off,
+# `telemetry` is not even declared as a module in `lib.rs`
+# (`#[cfg(feature = "saturation-telemetry")] pub mod telemetry;`), so there
+# is nothing in the binary to reference either way.
+saturation-telemetry = []
