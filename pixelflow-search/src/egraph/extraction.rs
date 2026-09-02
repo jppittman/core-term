@@ -22,8 +22,8 @@ use super::cost::CostModel;
 use super::extract::{Extraction, extract_dag_scoped};
 use super::graph::EGraph;
 use super::node::EClassId;
-use alloc::vec::Vec;
 use super::saturate::{SaturationResult, config_for_node_count, saturate_with_full_budget};
+use alloc::vec::Vec;
 use pixelflow_ir::LatticeShape;
 
 /// Saturate `egraph` under the ONE production budget policy —

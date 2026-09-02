@@ -683,21 +683,8 @@ fn encode_params_as_vars(arena: &ExprArena) -> ExprArena {
 /// A budget miss is legitimate behavior, not a failure: the output's only
 /// contract is that a `Some` is `Dwrt`-free and mathematically equivalent.
 fn differentiate_in_optimizer(arena: &ExprArena, root: ExprId) -> Option<(ExprArena, ExprId)> {
-    differentiate_with_policy(arena, root, pixelflow_search::egraph::env_extraction_policy)
-}
-
-/// [`differentiate_in_optimizer`] with the extraction policy injected.
-/// Production passes `env_extraction_policy` (read after saturation, exactly
-/// where the single-tier version read it); tests pass a policy of their own
-/// so the `Nnue` arm can be exercised on a `Dwrt` e-graph without touching
-/// process-global env.
-fn differentiate_with_policy<'p>(
-    arena: &ExprArena,
-    root: ExprId,
-    select_policy: impl FnOnce() -> pixelflow_search::egraph::ExtractionPolicy<'p>,
-) -> Option<(ExprArena, ExprId)> {
     use pixelflow_ir::arena::ExprNode;
-    use pixelflow_search::egraph::{EGraph, saturate_for_extraction};
+    use pixelflow_search::egraph::{EGraph, env_extraction_policy, saturate_for_extraction};
 
     if !contains_dwrt(arena) {
         return None;
@@ -743,27 +730,28 @@ fn differentiate_with_policy<'p>(
     // `pixelflow-search::runtime::optimize_runtime_arena`'s runtime tier):
     // `config_for_node_count` sizes the budget off a reachable-node count
     // (`saturate_for_extraction`), and extraction goes through
-    // `env_extraction_policy()` — honoring `PIXELFLOW_NNUE_WEIGHTS` here too
-    // instead of silently ignoring it — via the DAG-preserving
-    // `ExtractionPolicy::extraction` / `choices_to_arena`, not the tree
-    // `extract`. One policy, no second copy (2026-09-01 integration audit).
+    // `env_extraction_policy()` — the one place the policy is chosen, so a
+    // future policy change reaches this tier too instead of being silently
+    // skipped — via the DAG-preserving `ExtractionPolicy::extraction` /
+    // `choices_to_arena`, not the tree `extract`. One policy, no second copy
+    // (2026-09-01 integration audit).
     let mut eg = EGraph::with_rules(crate::optimize::standard_rules());
     let root_class = eg.add_arena(&encoded, root);
     let node_count = reachable_node_count(&encoded, root);
     saturate_for_extraction(&mut eg, node_count);
 
-    extract_dwrt_free(&eg, root_class, &select_policy())
+    extract_dwrt_free(&eg, root_class, &env_extraction_policy())
 }
 
 /// Extract `root_class` from a saturated `Dwrt`-bearing e-graph under
 /// `policy` and undo [`encode_params_as_vars`]. `None` if a `Dwrt` survived
 /// extraction — saturation stopped short of the chain rule's fixed point
-/// (budget), or the policy (the `Nnue` arm prices nothing prohibitively)
-/// picked one — and the runtime `lower_dwrt` tier takes over.
+/// (budget), or the policy picked one — and the runtime `lower_dwrt` tier
+/// takes over.
 fn extract_dwrt_free(
     eg: &pixelflow_search::egraph::EGraph,
     root_class: pixelflow_search::egraph::EClassId,
-    policy: &pixelflow_search::egraph::ExtractionPolicy<'_>,
+    policy: &pixelflow_search::egraph::ExtractionPolicy,
 ) -> Option<(ExprArena, ExprId)> {
     use pixelflow_ir::arena::ExprNode;
 
@@ -1184,39 +1172,22 @@ mod expansion_derivative_tests {
     /// headroom, not a constraint; when `differentiate_in_optimizer` does
     /// bail on this body it is the tier's 50ms deadline on a loaded or
     /// unoptimized (proc-macro) build, and the runtime `lower_dwrt` tier is
-    /// the documented fallback. Both policy arms are checked on the same
-    /// saturated graph: `Static` (the default) and `Nnue` (the
-    /// `PIXELFLOW_NNUE_WEIGHTS` opt-in, here with zero-initialized weights —
-    /// `IncrementalExtractor` prices nothing prohibitively, so this is the
-    /// arm that could pick a surviving `Dwrt` and must be shown not to on
-    /// a converged graph).
+    /// the documented fallback. Extraction is checked under the production
+    /// policy (the static latency prior, spelled explicitly so the test
+    /// does not depend on `env_extraction_policy`'s selection).
     #[test]
-    fn rapid_caps_resolve_winding_ramp_dwrt_under_both_policies() {
+    fn rapid_caps_resolve_winding_ramp_dwrt_under_static_policy() {
         use pixelflow_search::egraph::{CostModel, ExtractionPolicy};
-        use pixelflow_search::nnue::ExprNnue;
 
         let (a, root, eg, root_class) = saturate_winding_ramp_under_rapid_caps();
 
         let (out, out_root) = super::extract_dwrt_free(
             &eg,
             root_class,
-            &ExtractionPolicy::Static(Box::new(CostModel::latency_prior())),
+            &ExtractionPolicy::with_costs(CostModel::latency_prior()),
         )
         .expect("Static: Dwrt must not survive a converged rapid-tier saturation");
         eprintln!("[Static] extracted(dag) node_count={}", out.len());
-        RuntimeTierReference {
-            arena: &a,
-            root,
-            params: &WINDING_PARAMS,
-            pts: &WINDING_POINTS,
-        }
-        .assert_agrees(&out, out_root);
-
-        let nnue = ExprNnue::new();
-        let (out, out_root) =
-            super::extract_dwrt_free(&eg, root_class, &ExtractionPolicy::Nnue(&nnue))
-                .expect("Nnue: Dwrt must not survive a converged rapid-tier saturation");
-        eprintln!("[Nnue] extracted(dag) node_count={}", out.len());
         RuntimeTierReference {
             arena: &a,
             root,
@@ -1285,62 +1256,5 @@ mod expansion_derivative_tests {
             }
             .assert_agrees(&out, out_root);
         }
-    }
-
-    /// Runs in a child process only (see
-    /// [`nnue_opt_in_env_reaches_dwrt_path`]): with `PIXELFLOW_NNUE_WEIGHTS`
-    /// pointing at a file that does not exist, the production path must
-    /// hard-fail — proof the opt-in is read on the `Dwrt` tier at all,
-    /// which is what the pre-unification `CostModel::default()` extract
-    /// silently skipped.
-    #[test]
-    #[ignore = "helper: spawned by nnue_opt_in_env_reaches_dwrt_path with the env var set"]
-    fn helper_differentiate_winding_ramp_under_env_policy() {
-        let mut a = ExprArena::new();
-        let root = winding_ramp_core(&mut a);
-        let outcome = differentiate_in_optimizer(&a, root);
-        eprintln!(
-            "helper: differentiate_in_optimizer returned Some={}",
-            outcome.is_some()
-        );
-    }
-
-    /// `PIXELFLOW_NNUE_WEIGHTS` is process-global, so it is set on a child
-    /// re-invocation of this test binary rather than in this process (where
-    /// it would poison every concurrently running test that selects a
-    /// policy). The child must die with the loader's diagnostic: the env
-    /// read happens after saturation, unconditionally, so this holds
-    /// whether or not the 50ms budget converged.
-    #[test]
-    fn nnue_opt_in_env_reaches_dwrt_path() {
-        let exe = std::env::current_exe().expect("test binary path");
-        let bogus = std::env::temp_dir().join(format!(
-            "pixelflow-nnue-weights-that-do-not-exist-{}",
-            std::process::id()
-        ));
-        assert!(!bogus.exists(), "{bogus:?} unexpectedly exists");
-        let output = std::process::Command::new(exe)
-            .args([
-                "--ignored",
-                "--exact",
-                "ir_bridge::expansion_derivative_tests::helper_differentiate_winding_ramp_under_env_policy",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env("PIXELFLOW_NNUE_WEIGHTS", &bogus)
-            .output()
-            .expect("spawn child test binary");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            !output.status.success(),
-            "child must hard-fail on an unreadable PIXELFLOW_NNUE_WEIGHTS; \
-             stdout:\n{stdout}\nstderr:\n{stderr}"
-        );
-        assert!(
-            stderr.contains("PIXELFLOW_NNUE_WEIGHTS") && stderr.contains("could not be read"),
-            "child failed for a reason other than the weights loader; \
-             stdout:\n{stdout}\nstderr:\n{stderr}"
-        );
     }
 }
