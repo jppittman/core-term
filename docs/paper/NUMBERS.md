@@ -206,7 +206,7 @@ shared-trunk entry 20% relative vs 5% tolerance).
 | TRAIN/DEV byte-identical across 2a and 3 | `train=c5b6df3a…;dev=1daa131a…` | `J@1786995939…1786997047.config.corpus_identity` vs `J@1788246968…1788248059` |
 | FINAL re-mint post-refactor, 0 miscompiles | `final=89c48822…` → `final=90b84039…` | `J@1786995939` vs `J@1788230699` `config.corpus_identity`; 0-miscompile: Round-3 mint report (`RUN3` header: "corpus freshly minted post-refactor … 0 miscompiles") |
 | decision band ±5%, kill gate 5 rounds, honest-negative fallback | `PLAN` §4.3, §6 |
-| corpus-ranking baselines: static table ρ 0.9438, bare op count ρ 0.9486 | `NOTES` §1.5 |
+| corpus-ranking baselines: static table ρ 0.9438, bare op count ρ 0.9486 | `NOTES` §1.5 — **Round 1's 392-kernel DEV tier**, not Round 3's 784. Any comparison against a Round-3 ρ is cross-population; see §5.1. |
 
 ## Incrementality and Guide economics (§5.6, §9)
 

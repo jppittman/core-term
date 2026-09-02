@@ -512,7 +512,14 @@ recipe topped out at MAE 0.145 / ρ 0.9875 at the same 50k budget — so the
 trained embeddings and the prior seed both help *calibration*, measurably.
 
 Unbiased, correctly dispersed, and better-ranked than the static table
-(ρ = 0.9438) or a bare op count (ρ = 0.9486) on the same corpus. By every
+(ρ = 0.9438) or a bare op count (ρ = 0.9486) — but **not on this corpus**:
+both baselines come from Round 1's 392-kernel DEV tier
+(`2026-08-17-egraph-vsa-nnue-research-notes.md` §1.5), while the table above
+is Round 3's 784. Spearman is a property of the evaluated population, not of
+the estimator alone, so this is a cross-population comparison and the margin
+is not a measured head-to-head. Recomputing both baselines on the 784-kernel
+tier is a cheap run that was not made; until it is, read the ordering as
+indicative and the gap as unquantified. By every
 intrinsic metric each successive model should win, and the best one should
 win most. Neither happens, and §6 explains why the intrinsic metrics were
 the wrong ones.
@@ -800,11 +807,18 @@ up.)
 
 **The objective is nearly additive, and DP over an additive table already
 optimizes it exactly.** A bare count of
-transcendental/divide ops reaches Spearman ρ = 0.9486 on the DEV corpus;
-the handwritten table reaches 0.9438; the NNUE reaches 0.9887. Corpus-wide
+transcendental/divide ops reaches Spearman ρ = 0.9486; the handwritten
+table reaches 0.9438; the NNUE reaches 0.9887. The first two are Round 1's
+392-kernel DEV tier and the third is Round 3's 784, so read them as three
+points about how little headroom there is above a size proxy, not as a
+ranked head-to-head on one population (§5.1). Corpus-wide
 ranking is saturated by expression size — nearly all between-expression
 variance is "how many expensive ops" — and extraction with the static
 table already optimizes an additive quantity by dynamic programming.
+
+The argument this section makes does not depend on the margin: it needs
+only that a bare op count already sits near the ceiling, which is true on
+whichever tier it is measured.
 
 Two qualifications on "optimally", both of which narrow the claim without
 changing its force. The DP recurrence in `egraph::extract` sums each
