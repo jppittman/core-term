@@ -274,7 +274,9 @@ fn bench_dag_kernels(c: &mut Criterion) {
     }}
 
 "#,
-            cost = dag.total_cost,
+            // The generated comment names what the benched kernel costs, so
+            // it is the DAG cost, not the DP's tree cost (#1111).
+            cost = dag.dag_cost,
         ));
     }
 

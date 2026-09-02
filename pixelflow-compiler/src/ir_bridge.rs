@@ -1378,8 +1378,10 @@ mod production_telemetry {
 
     /// Latency-prior DAG cost (leaves free, each reachable op counted once) —
     /// NOT `extract`'s own returned cost, which (like `extract_dag`'s
-    /// `total_cost`) folds in a 1,000,000-per-cycle `CYCLE_COST` penalty
-    /// (`extract.rs:958`) that does not describe emitted code. See
+    /// `total_cost`) is a TREE cost and pays a shared subterm once per use.
+    /// Since #1111 both are costed from the repaired choices, so neither
+    /// carries `CYCLE_COST` inflation any more; the tree/DAG difference is
+    /// what remains, and it is the whole gap on a sharing-heavy kernel. See
     /// `runtime.rs`'s `arena_cost` for the sibling of this function.
     fn arena_cost(arena: &ExprArena, root: ExprId, costs: &CostModel) -> usize {
         use pixelflow_ir::arena::ExprNode;

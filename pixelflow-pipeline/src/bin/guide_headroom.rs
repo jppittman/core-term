@@ -151,6 +151,8 @@ struct ExprMeasurement {
     total_applications: usize,
     labeler_load_bearing: usize,
     strict_load_bearing: usize,
+    /// Latency-prior **DAG** cost of the extracted term — each distinct
+    /// chosen e-class priced once, which is what the emitted kernel pays.
     extracted_cost: usize,
     /// See module docs' "Quiescence diagnostic" section: `true` means the
     /// run stopped before exhausting either the iteration or class-count
@@ -392,7 +394,9 @@ fn main() {
             total_applications,
             labeler_load_bearing: labeler_lb,
             strict_load_bearing: strict_lb,
-            extracted_cost: extraction.total_cost,
+            // The DAG cost — what the emitted kernel pays — not the DP's
+            // tree cost, which prices a shared subterm once per use (#1111).
+            extracted_cost: extraction.dag_cost,
             quiesced_before_cap,
             saturation_iterations: sat_stats.iterations,
             exceeded_production_deadline,

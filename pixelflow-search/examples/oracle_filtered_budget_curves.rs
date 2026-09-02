@@ -477,7 +477,12 @@ fn make_checkpoint(
         applications: egraph.provenance().application_count(),
         classes: egraph.num_classes(),
         nodes: egraph.node_count(),
-        cost: extraction.total_cost,
+        // The cost of the kernel this checkpoint would EMIT: each distinct
+        // chosen e-class once. `total_cost` is the DP's tree cost, which
+        // pays a shared subterm once per use and so tracks how much sharing
+        // saturation happened to expose rather than how good the extraction
+        // is — not the quantity a regret curve is asking about (#1111).
+        cost: extraction.dag_cost,
     }
 }
 
