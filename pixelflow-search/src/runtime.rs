@@ -2307,7 +2307,7 @@ mod production_telemetry {
                 root,
                 config.max_iterations,
                 config.max_classes,
-                config.hard_timeout,
+                config.safety_ceiling,
             );
 
             // Two generous runs share one per-kernel ceiling: `refr` keeps

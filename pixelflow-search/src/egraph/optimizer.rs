@@ -141,7 +141,11 @@ impl Budget {
             Self::Production => Limits {
                 iterations: preset.max_iterations,
                 classes: preset.max_classes,
-                applications: None,
+                // Deterministic replacement for the wall clock this used to
+                // carry (docs/plans/2026-09-01-production-budget-determinism.md):
+                // calibrated per tier so it binds strictly after the class
+                // cap or quiescence on every kernel measured 2026-09-01.
+                applications: Some(preset.max_applications),
             },
             Self::Applications(n) => Limits {
                 iterations: preset.max_iterations,
@@ -234,7 +238,84 @@ pub struct Optimizer {
     shape: LatticeShape,
     rerank: Option<Box<dyn Reranker>>,
     observer: Option<Box<dyn Observer>>,
-    hard_ceiling: Option<core::time::Duration>,
+    hard_ceiling: HardCeiling,
+}
+
+/// [`Optimizer::hard_ceiling`]'s resolved policy.
+///
+/// A fixed [`core::time::Duration`] isn't enough on its own:
+/// [`Optimizer::production`]'s default ceiling must scale with the tier
+/// [`Budget::Production`] resolves to (blitz/rapid/classical carry different
+/// `safety_ceiling`s), which is only known once `node_count` reaches
+/// [`Optimizer::run`] — not at construction time, when
+/// `.hard_ceiling(d)`'s fixed override *is* already known. `None` stays a
+/// third state (rather than `Fixed` with a sentinel) for non-production
+/// configurations that want no assertion at all.
+#[derive(Clone, Copy, Debug)]
+enum HardCeiling {
+    /// No wall-clock assertion.
+    None,
+    /// A caller-chosen duration, regardless of tier. Set by
+    /// [`Optimizer::hard_ceiling`]; exempt from
+    /// `PIXELFLOW_SATURATION_CEILING_MS` — a measurement harness that asks
+    /// for a specific ceiling gets exactly that ceiling.
+    Fixed(core::time::Duration),
+    /// [`SaturationConfig::safety_ceiling`](super::saturate::SaturationConfig::safety_ceiling)
+    /// for the tier `node_count` resolves to, subject to
+    /// `PIXELFLOW_SATURATION_CEILING_MS`. [`Optimizer::production`]'s
+    /// default.
+    Tiered,
+}
+
+/// The three things `PIXELFLOW_SATURATION_CEILING_MS` can ask for. See
+/// [`tiered_ceiling_override`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CeilingOverride {
+    /// The variable is unset: use the tier's own `safety_ceiling`.
+    UseTierDefault,
+    /// A positive millisecond count: this ceiling, at every tier.
+    Fixed(core::time::Duration),
+    /// `0` or `off`: no ceiling at all.
+    Disabled,
+}
+
+/// `PIXELFLOW_SATURATION_CEILING_MS`, read fresh on every call (cheap — one
+/// env lookup) rather than cached once: a diagnostic override a test can
+/// flip between runs in-process would otherwise need the process restarted
+/// to take effect. Read at the same two places `PIXELFLOW_NNUE_WEIGHTS` is:
+/// proc-macro expansion time for the macro tier, process start (in practice,
+/// per-call — this crate has no init hook) for the runtime tier.
+///
+/// | value | effect |
+/// |---|---|
+/// | unset | the tier default |
+/// | a positive integer | that many milliseconds, at every tier |
+/// | `0` or `off` (case-insensitive) | ceiling disabled |
+/// | anything else | panic, quoting the offending value — no silent failures |
+///
+/// This variable can only change *whether [`Optimizer::run`] panics*, never
+/// what it computes: it is read after saturation and extraction have already
+/// produced their result, purely to decide whether to assert on the elapsed
+/// time. That is the property that makes it safe to leave permanently
+/// available rather than a debug-only cfg.
+fn tiered_ceiling_override() -> CeilingOverride {
+    const VAR: &str = "PIXELFLOW_SATURATION_CEILING_MS";
+    let Ok(raw) = std::env::var(VAR) else {
+        return CeilingOverride::UseTierDefault;
+    };
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("off") {
+        return CeilingOverride::Disabled;
+    }
+    match trimmed.parse::<u64>() {
+        Ok(0) => CeilingOverride::Disabled,
+        Ok(ms) => CeilingOverride::Fixed(core::time::Duration::from_millis(ms)),
+        Err(_) => panic!(
+            "{VAR}={raw:?} is not unset, a positive integer, `0`, or `off`. This variable can \
+             only change whether a saturation run's safety ceiling panics, never which kernel \
+             it produces — so an unparsable value fails loudly rather than picking a default."
+        ),
+    }
 }
 
 /// How many alternatives per e-class the reranking search evaluates. Matches
@@ -254,7 +335,11 @@ impl Optimizer {
             shape: LatticeShape::POINT,
             rerank: None,
             observer: None,
-            hard_ceiling: None,
+            // The tier's own `SaturationConfig::safety_ceiling`, resolved
+            // from `node_count` at `run()` time — every production call site
+            // gets a fail-loud ceiling without having to remember to ask for
+            // one. See `HardCeiling::Tiered`.
+            hard_ceiling: HardCeiling::Tiered,
         }
     }
 
@@ -307,13 +392,31 @@ impl Optimizer {
         self
     }
 
-    /// A fail-loud wall-clock ceiling. **Not** a budget dimension: exceeding
-    /// it is a bug in the budget, so it panics rather than silently
-    /// truncating and reporting success, which is what the old `hard_timeout`
-    /// did. Default: none.
+    /// A fail-loud wall-clock ceiling, fixed regardless of tier. **Not** a
+    /// budget dimension: exceeding it is a bug in the budget, so it panics
+    /// rather than silently truncating and reporting success, which is what
+    /// the old `hard_timeout` did.
+    ///
+    /// [`Optimizer::production`]'s default is *not* "none" — it is
+    /// [`config_for_node_count`](super::saturate::config_for_node_count)'s
+    /// tier-appropriate `safety_ceiling`, resolved once `node_count` is
+    /// known. Call this only to override that with a fixed value regardless
+    /// of tier (measurement harnesses that vary the budget independently of
+    /// input size); the override is exempt from
+    /// `PIXELFLOW_SATURATION_CEILING_MS`, which affects only the tiered
+    /// default.
     #[must_use]
     pub fn hard_ceiling(mut self, d: core::time::Duration) -> Self {
-        self.hard_ceiling = Some(d);
+        self.hard_ceiling = HardCeiling::Fixed(d);
+        self
+    }
+
+    /// Disable the wall-clock ceiling assertion entirely. Exists for
+    /// configurations (research budgets sweeping deliberately extreme
+    /// inputs) that want no ceiling at all rather than a very generous one.
+    #[must_use]
+    pub fn no_ceiling(mut self) -> Self {
+        self.hard_ceiling = HardCeiling::None;
         self
     }
 
@@ -378,15 +481,31 @@ impl Optimizer {
         let saturation =
             egraph.saturate_budgeted(limits.iterations, limits.classes, limits.applications);
 
-        if let Some(ceiling) = self.hard_ceiling {
+        let ceiling = match self.hard_ceiling {
+            HardCeiling::None => None,
+            HardCeiling::Fixed(d) => Some(d),
+            HardCeiling::Tiered => match tiered_ceiling_override() {
+                CeilingOverride::UseTierDefault => {
+                    Some(super::saturate::config_for_node_count(node_count).safety_ceiling)
+                }
+                CeilingOverride::Fixed(d) => Some(d),
+                CeilingOverride::Disabled => None,
+            },
+        };
+        if let Some(ceiling) = ceiling {
             let elapsed = started.elapsed();
+            let applications = egraph.application_count();
             assert!(
                 elapsed <= ceiling,
-                "Optimizer::run exceeded its hard ceiling: {elapsed:?} > {ceiling:?} \
-                 under {limits:?} (stop: {:?}). A ceiling is an assertion about the \
-                 budget, not a budget dimension — either the budget is wrong for this \
-                 input or the ceiling is.",
-                saturation.stop
+                "Optimizer::run exceeded its safety ceiling: {elapsed:?} > {ceiling:?} \
+                 (tier {tier}, {node_count} nodes, {applications} applications reached, \
+                 stop: {stop:?}). A ceiling is an assertion about the budget, not a budget \
+                 dimension — either the budget is wrong for this input or the machine is \
+                 unusually slow. Override with PIXELFLOW_SATURATION_CEILING_MS (milliseconds; \
+                 `0` or `off` disables it) only for diagnosis — it can change whether this \
+                 panics, never which kernel is emitted.",
+                tier = tier_name(node_count),
+                stop = saturation.stop,
             );
         }
 
@@ -435,5 +554,16 @@ impl Optimizer {
 impl Default for Optimizer {
     fn default() -> Self {
         Self::production()
+    }
+}
+
+/// The tier name matching [`config_for_node_count`](super::saturate::config_for_node_count)'s
+/// ranges, for the safety-ceiling panic message — named rather than left as
+/// a bare node count so the message reads the way the calibration doc does.
+fn tier_name(node_count: usize) -> &'static str {
+    match node_count {
+        0..=10 => "blitz",
+        11..=50 => "rapid",
+        _ => "classical",
     }
 }

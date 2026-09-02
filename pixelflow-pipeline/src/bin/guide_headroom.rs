@@ -133,7 +133,7 @@ const SATURATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60)
 /// leaving a third private copy behind.
 fn saturation_budget() -> SaturationConfig {
     SaturationConfig {
-        hard_timeout: SATURATE_TIMEOUT,
+        safety_ceiling: SATURATE_TIMEOUT,
         ..SaturationConfig::compatibility(100)
     }
 }
@@ -338,7 +338,7 @@ fn main() {
         let saturate_elapsed = saturate_started.elapsed();
         let hit_iteration_cap = sat_stats.iterations >= budget.max_iterations;
         let hit_class_cap = egraph.num_classes() > budget.max_classes;
-        let hit_safety_timeout = saturate_elapsed >= budget.hard_timeout;
+        let hit_safety_timeout = saturate_elapsed >= budget.safety_ceiling;
         assert!(
             !hit_safety_timeout,
             "guide_headroom: expression '{name}' ran {saturate_elapsed:?}, hitting the \
