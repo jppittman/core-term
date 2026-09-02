@@ -146,6 +146,13 @@ required-features = ["training"]
 bench = false
 
 [[bin]]
+name = "strict_label_output_class_recount"
+path = "src/bin/strict_label_output_class_recount.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
 name = "gen_sh_corpus"
 path = "src/bin/gen_sh_corpus.rs"
 required-features = ["training"]
