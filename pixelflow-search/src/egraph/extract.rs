@@ -588,6 +588,14 @@ fn choices_have_cycle_from(egraph: &EGraph, root: EClassId, choices: &[Option<us
         color[idx] = 1;
         stack.push((canonical, true));
 
+        // `unwrap_or(0)` here is an ANALYSIS default, not an identity
+        // sentinel, and the difference is why it stays: a class with no
+        // recorded choice contributes no edge to the extracted DAG, so
+        // walking its node 0 can only add phantom edges — which can only
+        // report a cycle that is not there (a rejected swap, i.e. cost),
+        // never miss one that is. Nothing materialised comes out of here;
+        // the one place a missing choice would become a wrong *term* is
+        // `choices_to_arena`, which panics on it instead.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
         if let Some(ENode::Op { children, .. }) = egraph.nodes(canonical).get(node_idx) {
             for &child in children.iter().rev() {
@@ -631,6 +639,9 @@ fn choices_have_cycle_through(
         if idx >= num_classes || !visited.insert(c.0) {
             continue;
         }
+        // Same analysis default as `choices_have_cycle_from`, safe for the
+        // same reason: extra edges can only over-report reachability, which
+        // costs a rejected swap and never a wrong term.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
         if let Some(ENode::Op { children, .. }) = egraph.nodes(c).get(node_idx) {
             for &child in children {

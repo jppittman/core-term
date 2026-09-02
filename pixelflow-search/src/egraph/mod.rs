@@ -48,7 +48,8 @@ pub use extract::{
 };
 pub use extraction::{ExtractionPolicy, env_extraction_policy, saturate_for_extraction};
 pub use graph::{
-    ApplyResult, EGraph, EGraphBatch, RewriteTarget, SaturationStats, SaturationStop, ScanStop,
+    ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, RewriteTarget, SaturationStats,
+    SaturationStop, ScanStop,
 };
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode};
