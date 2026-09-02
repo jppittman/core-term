@@ -6,6 +6,8 @@
 //! # Module Structure
 //!
 //! - [`node`]: Core data structures (EClassId, Op, ENode)
+//! - [`candidate`]: Candidate-local features and the dedup key a guided
+//!   saturation loop orders by
 //! - [`cost`]: Cost model for extraction
 //! - [`rewrite`]: Rewrite rule infrastructure
 //! - [`extract`]: Expression tree extraction, including DAG-aware extraction
@@ -24,6 +26,7 @@
 //! front door — insert an [`pixelflow_ir::arena::ExprArena`] directly, no AST
 //! involved.
 
+pub mod candidate;
 pub mod codegen;
 pub(crate) mod cost;
 pub mod deps;
@@ -45,6 +48,10 @@ pub mod rules;
 pub mod saturate;
 
 // Re-export public API
+pub use candidate::{
+    CandidateFeatures, CandidateKey, ClassContentKey, Firing,
+    REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
+};
 pub use cost::{CostFunction, CostModel};
 pub use deps::{Deps, DepsAnalysis};
 pub use derivative::{ChainRule, derivative_rules};
