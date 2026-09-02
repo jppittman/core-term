@@ -40,25 +40,28 @@ the branches queued behind them. It was foreseeable — it was, in fact,
 foreseen — and the cheap mitigation was to rebase the queue after the first of
 the four landed rather than after all four.
 
-## Board at 2026-09-02 10:10 UTC
+## Board at 2026-09-02 10:40 UTC
 
-| PR | Branch | Ahead | Behind | Merges? |
-|---|---|---|---|---|
-| #1114 | `claude/class-cap-live` | 1 | 0 | clean |
-| #1113 | `claude/upward-congruence` | 3 | 0 | clean |
-| #1109 | `claude/cap-break-ab` | 1 | 3 | **conflict** — `runtime.rs` |
-| #1103 | `claude/all-rules-numeric-first` | 10 | 9 | **conflict** — `graph.rs` + 5 |
-| #1101 | `claude/rule-order-numeric-first` | 9 | 6 | **conflict** |
-| #1096 | `claude/phase3-r2g` | 38 | 9 | **conflict** |
-| #1095 | `claude/phase3-label-constfold` | 32 | 9 | **conflict** |
-| #1091 | `claude/phase3-domain-shift` | 32 | 5 | **conflict** |
-| #1088 | `claude/phase3-round2` | 38 | 9 | **conflict** |
-| #1087 | `claude/saturation-telemetry` | 6 | 10 | **conflict** — + `cell_grid.rs` |
-| #1086 | `claude/brave-faraday-tw3054` | — | 0 | clean (this doc) |
-| #1084 | `claude/phase3-guide` | 26 | 9 | **conflict** — `graph.rs` + 4 |
-| #1072 | `claude/workshop-writeup` | 12 | 17 | **conflict** — modify/delete |
-| #1054 | `claude/zen-babbage-wjmnit` | 9 | 17 | clean, but **CI red** |
-| #994 | `claude/macos-release-signing-pipeline` | 3 | 17 | clean |
+Six of fifteen merge cleanly; the one red CI is fixed. Rows this pass changed
+are marked.
+
+| PR | Branch | Behind | Merges? |
+|---|---|---|---|
+| #1114 | `claude/class-cap-live` | 0 | clean |
+| #1113 | `claude/upward-congruence` | 0 | clean |
+| #1109 | `claude/cap-break-ab` | 0 | **clean — reconciled this pass** |
+| #1103 | `claude/all-rules-numeric-first` | 9 | conflict (6 files) |
+| #1101 | `claude/rule-order-numeric-first` | 6 | conflict (5 files) |
+| #1096 | `claude/phase3-r2g` | 9 | conflict (4 files) |
+| #1095 | `claude/phase3-label-constfold` | 9 | conflict (4 files) |
+| #1091 | `claude/phase3-domain-shift` | 5 | conflict (4 files, 12 hunks) |
+| #1088 | `claude/phase3-round2` | 9 | conflict (4 files) |
+| #1087 | `claude/saturation-telemetry` | 10 | conflict (6 files, 23 hunks) |
+| #1086 | `claude/brave-faraday-tw3054` | 0 | clean (this doc) |
+| #1084 | `claude/phase3-guide` | 9 | conflict (5 files) |
+| #1072 | `claude/workshop-writeup` | 17 | conflict — modify/delete |
+| #1054 | `claude/zen-babbage-wjmnit` | 0 | **clean, CI fixed this pass** |
+| #994 | `claude/macos-release-signing-pipeline` | 0 | **clean, brought current** |
 
 ## What the first pass recommended, and what happened
 
