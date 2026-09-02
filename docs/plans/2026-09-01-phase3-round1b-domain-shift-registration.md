@@ -317,3 +317,36 @@ advance the 5-clean-rounds kill gate. It can only redirect Round 2 as tabled abo
 ## 7. Results appended against the gates
 
 (none yet — appended only after the run, per this document's own rule)
+
+### 7.1 Run of 2026-09-01 (`docs/results/2026-09-01-phase3-round1b-domain-shift.md`)
+
+Checkpoint unchanged; DEV re-run reproduces Round 1 exactly (D_A^DEV = 0.0000 at both tiers).
+`sh`: 95 classical of 100 generated; `bezier`: 80 / 80. Every set below has n ≥ 30.
+
+| set | B | m_control^S | m_linear^S | D_control | D_linear | D_control − D_linear | M_B | verdict |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| **`sh` (primary)** | **100** | 0.9028 | 0.9039 | +0.3373 | +0.3673 | **−0.0300** | 0.06 | **H_null** |
+| `sh` | 200 | 0.8940 | 0.8959 | +0.1949 | +0.2000 | −0.0051 | 0.07 | H_null |
+| `bezier` | 100 | 0.9098 | 0.9098 | +0.3443 | +0.3732 | −0.0289 | 0.06 | H_null; §1.2 prediction **FAILS** (both arms, both forms) |
+| `bezier` | 200 | 0.9098 | 0.8855 | +0.2107 | +0.1896 | +0.0212 | 0.07 | H_null; §1.2 prediction **FAILS** |
+| DEV `trig-heavy` (287 / 334 — the stratum is DEV) | 100 | 0.5701 | 0.5399 | +0.0046 | +0.0033 | +0.0013 | 0.06 | H_null |
+| DEV `trig-heavy` | 200 | 0.6724 | 0.6654 | −0.0267 | −0.0305 | +0.0038 | 0.07 | H_null |
+| DEV `transcendental-heavy` (47) | 100 | 0.5089 | 0.5197 | −0.0566 | −0.0169 | −0.0398 | 0.06 | H_null |
+| DEV `transcendental-heavy` | 200 | 1.0000 | 1.0000 | +0.3009 | +0.3041 | −0.0032 | 0.07 | H_null |
+
+**Primary verdict: H_null.** H_shift and H_inv rejected on every set. The §1.2 Bézier prediction
+fails for both arms by the same +0.34 as `sh` moved: the shift is the unguided baseline's regime on
+structured kernels (flat, unconverged curve — truncation loss +0.18% / +5.6% between B and 4B against
+20% / 30% regret; production quiesces at ~11,000 applications), not rule suppression. Both guided arms
+still improve every OOD expression and beat unguided-at-4B at B=100 on both families, ending the
+800-application grid un-quiesced with 8–18% regret left.
+
+§1.3 diagnostics on `sh`: `half-angle-product` fires under BOTH Guides within the first 100
+applications (393 / 360 pooled, 32.3% / 37.2% strict-positive — the best-paying rule of the prefix;
+unguided fires it 0 times in its first 200) — the per-rule prior is an ordering, not a filter, and
+0.0045 > 0.0 (structural) already ranks it first on a trig-dense pool. `pythagorean` matches on 19 `sh`
+expressions (unguided: 231 firings), is fired by neither Guide (score exactly 0.0), and is
+strict-positive 0 / 231 even for unguided (0 / 225 on DEV) — referred to the labeling stream as a
+possible constant-output blind spot of the strict label. Consequence per §5: H_null row (coverage, not
+capacity) **plus** the Bézier-fails row (dedup-closure / budget-regime investigation promoted ahead of
+labels).
