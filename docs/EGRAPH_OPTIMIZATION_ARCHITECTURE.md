@@ -1,6 +1,14 @@
 # E-Graph Optimization Architecture
 
-This is the current optimization and training spine.
+**Classification:** Historical/superseded (annotated 2026-09-01, not rewritten).
+The `IncrementalExtractor` step and the `unified_backward.rs` gradient path this
+document describes belonged to the extraction-head program, which was closed as an
+honest negative (`paper/2026-08-egraph-nnue-parity.md`) and deleted on 2026-09-01;
+extraction is the static latency prior only (`CLAUDE.md`, "Compiler Pipeline"). The
+live successor is the saturation Guide (`plans/2026-08-31-guide-design-revision.md`).
+The rest of this file is left as it was written.
+
+This was the optimization and training spine as of mid-2026.
 
 ## Canonical Representation
 
