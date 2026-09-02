@@ -128,6 +128,23 @@ impl<'g> Extraction<'g> {
         pin_shift_counts(self.egraph, self.root, &self.choices)
     }
 
+    /// Variance histogram (fraction const / frame-uniform / scanline-uniform
+    /// / pixel-varying) of the CHOSEN nodes, not the class-wide meet
+    /// [`super::DepsAnalysis`] would compute over the whole e-graph.
+    ///
+    /// Materialises the choice function once via [`choices_to_arena`] and
+    /// classifies that arena — P1(c) of
+    /// docs/plans/2026-08-17-cost-model-domain.md: once a rewrite merges a
+    /// pixel-varying node into a class alongside a constant one, the
+    /// class-wide meet reports CONST regardless of which node the
+    /// extraction actually chose, so only the materialised DAG describes
+    /// what was picked.
+    #[must_use]
+    pub fn chosen_variance(&self) -> [f32; crate::nnue::factored::SCALAR_FEATURE_COUNT] {
+        let (arena, _root) = choices_to_arena(self);
+        crate::nnue::factored::variance_histogram(&arena)
+    }
+
     /// Unwrap into the raw choice vector.
     ///
     /// Kept for legacy raw-vector consumers (`ExtractionPolicy::choices`,
@@ -2309,6 +2326,76 @@ mod tests {
             "the e-graph walk must not walk into Sub(Y, Y) once the count is pinned to \
              Const(0), or its stream will disagree with the arena choices_to_arena emits"
         );
+    }
+
+    // =========================================================================
+    // Extraction::chosen_variance (2026-09-01: denotation kept, accumulator
+    // shape deleted — see the module doc comment above
+    // `crate::nnue::factored::variance_histogram`)
+    // =========================================================================
+
+    /// A known const/frame/scanline/pixel mix, built once as an arena and
+    /// once as the equivalent e-graph, must classify identically through
+    /// both entry points — mirroring
+    /// `arena_and_extraction_walks_record_the_same_edge_stream` above.
+    #[test]
+    fn arena_and_extraction_classify_a_known_variance_mix_identically() {
+        use crate::nnue::factored::variance_histogram;
+        use pixelflow_ir::{ExprArena, OpKind};
+
+        // Add(Add(Const(2.0), W), Add(Y, X)):
+        // - Const(2.0)        -> const
+        // - W (var 3)         -> frame     (no X, no Y)
+        // - Add(Const, W)     -> frame
+        // - Y (var 1)         -> scanline  (no X)
+        // - X (var 0)         -> pixel
+        // - Add(Y, X)         -> pixel     (depends on X)
+        // - root Add          -> pixel     (depends on X)
+        // 1 const, 2 frame, 1 scanline, 3 pixel of 7 nodes.
+        let mut arena = ExprArena::new();
+        let c = arena.push_const(2.0);
+        let w = arena.push_var(3);
+        let frame_sum = arena.push_binary(OpKind::Add, c, w);
+        let y = arena.push_var(1);
+        let x = arena.push_var(0);
+        let xy = arena.push_binary(OpKind::Add, y, x);
+        let root = arena.push_binary(OpKind::Add, frame_sum, xy);
+
+        use crate::egraph::ops;
+        let mut eg = EGraph::new();
+        let ec = eg.add(ENode::constant(2.0));
+        let ew = eg.add(ENode::Var(3));
+        let efs = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: alloc::vec![ec, ew],
+        });
+        let ey = eg.add(ENode::Var(1));
+        let ex = eg.add(ENode::Var(0));
+        let exy = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: alloc::vec![ey, ex],
+        });
+        let eroot = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: alloc::vec![efs, exy],
+        });
+
+        let choices: Vec<Option<usize>> = alloc::vec![None; eg.num_classes()];
+        let extraction = Extraction::from_backfill(&eg, eroot, choices);
+
+        let from_arena = variance_histogram(&arena);
+        let from_extraction = extraction.chosen_variance();
+
+        assert_eq!(
+            from_arena, from_extraction,
+            "arena and extraction must classify the same DAG identically"
+        );
+        assert_eq!(
+            from_arena,
+            [1.0 / 7.0, 2.0 / 7.0, 1.0 / 7.0, 3.0 / 7.0],
+            "known const/frame/scanline/pixel mix: {from_arena:?}"
+        );
+        let _ = root; // arena root; classification is over every node.
     }
 
     // =========================================================================

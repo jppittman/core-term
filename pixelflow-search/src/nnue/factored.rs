@@ -868,334 +868,34 @@ impl CostDag for ChoicesCostDag<'_> {
 }
 
 // ============================================================================
-// Per-level sectioned edge features (no consumer today)
+// Variance classification (denotation kept, accumulator shape deleted)
 // ============================================================================
 //
 // The extraction-head program's value head — `ExprNnue`'s trunk and value
-// MLP, which consumed this accumulator's output — was deleted as an honest
-// negative (docs/paper/2026-08-egraph-nnue-parity.md). JP's 2026-09-01
-// ruling was narrower than "delete everything that fed it", though: the
-// per-loop-level accumulation itself — EdgeAccumulator's sections split by
-// variance class (const/frame/scanline/pixel) — is Halide's per-stage
-// features in embryo, kept here as a plain feature type for a future
-// residual reranker (the `Reranker` seam in `egraph::extract`) to consume.
-// Nothing builds on it today; it exists so that work does not start from
-// scratch.
-
-/// Total input dimension: 4K (dual accumulator: 2K flat + 2K depth-encoded)
-/// + [`SCALAR_FEATURE_COUNT`] scalars (the variance histogram — see
-/// [`LevelSectionedEdges::features`]).
-pub const INPUT_DIM: usize = 4 * K + SCALAR_FEATURE_COUNT;
-
-/// Look up the sinusoidal positional encoding for a given raw depth,
-/// clamping exactly as [`PeSlot::from_effective_depth`] does. Kept separate
-/// from `PeSlot` for callers (e.g. a future per-instruction-window
-/// accumulator) that hold a raw depth rather than an already-clamped slot.
-#[inline]
-#[must_use]
-pub fn depth_pe(depth: u32) -> &'static [f32; K] {
-    &DEPTH_PE[depth.min((MAX_DEPTH - 1) as u32) as usize]
-}
-
-/// Per-loop-level edge features, split into throughput and geometry halves.
-///
-/// - **Flat half (`0..2K`):** `Σ E[parent]` and `Σ E[child]` — pure
-///   throughput, independent of tree position.
-/// - **Depth-encoded half (`2K..4K`):** `Σ (E[parent] ⊙ PE[depth])` and
-///   `Σ (E[child] ⊙ PE[depth])` — the Hadamard product with the sinusoidal
-///   PE table binds each operation to its tree position without destroying
-///   its magnitude.
-/// - **Variance histogram** (appended by [`Self::features`]): the fraction
-///   of nodes that are compile-time-constant, frame-uniform, scanline-
-///   uniform, and pixel-varying — per-loop-level structure a bag-of-edges
-///   count cannot see.
-///
-/// Both halves support O(1) incremental updates via vector addition/
-/// subtraction ([`Self::add_edge`] / [`Self::remove_edge`]) — kept per A6 of
-/// docs/plans/2026-08-17-cost-model-domain.md even though nothing calls
-/// `remove_*` today: the measured edge-multiset churn between candidates
-/// (44.9% median symmetric difference) makes an O(Δ) search worth ~2x, not
-/// the ~98% a naive chess-engine analogy would suggest, so building an
-/// incremental search on top of this is deferred, not ruled out.
-#[derive(Clone)]
-pub struct LevelSectionedEdges {
-    /// - `[0..K)`:    flat parent sum (throughput)
-    /// - `[K..2K)`:   flat child sum (throughput)
-    /// - `[2K..3K)`:  depth-encoded parent sum (geometry)
-    /// - `[3K..4K)`:  depth-encoded child sum (geometry)
-    pub values: [f32; 4 * K],
-    /// Edge count (O(1) additive scalar).
-    pub edge_count: u32,
-    /// Node count (O(1) additive scalar) — also the `1/sqrt(node_count)`
-    /// feature scale [`Self::features`] applies.
-    pub node_count: u32,
-    /// Fraction of nodes that are compile-time constants (variance = {}).
-    pub variance_frac_const: f32,
-    /// Fraction of nodes that are frame-uniform (variance ⊆ {Z, W}, no X or Y).
-    pub variance_frac_frame: f32,
-    /// Fraction of nodes that are scanline-uniform (have Y but no X).
-    pub variance_frac_scanline: f32,
-    /// Fraction of nodes that are pixel-varying (have X).
-    pub variance_frac_pixel: f32,
-}
-
-impl Default for LevelSectionedEdges {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LevelSectionedEdges {
-    /// Create a zero-initialized accumulator.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            values: [0.0; 4 * K],
-            edge_count: 0,
-            node_count: 0,
-            variance_frac_const: 0.0,
-            variance_frac_frame: 0.0,
-            variance_frac_scanline: 0.0,
-            variance_frac_pixel: 0.0,
-        }
-    }
-
-    /// Reset to zero state.
-    pub fn reset(&mut self) {
-        *self = Self::new();
-    }
-
-    /// The dense feature vector: the dual accumulator scaled by
-    /// `1/sqrt(node_count)` (prevents variance explosion from summing N
-    /// embedding vectors), followed by the variance histogram.
-    #[must_use]
-    pub fn features(&self) -> [f32; INPUT_DIM] {
-        let mut input = [0.0f32; INPUT_DIM];
-
-        let scale = if self.node_count > 0 {
-            1.0 / sqrtf(self.node_count as f32)
-        } else {
-            1.0
-        };
-        for (slot, &val) in input.iter_mut().zip(self.values.iter()) {
-            *slot = val * scale;
-        }
-
-        input[4 * K] = self.variance_frac_const;
-        input[4 * K + 1] = self.variance_frac_frame;
-        input[4 * K + 2] = self.variance_frac_scanline;
-        input[4 * K + 3] = self.variance_frac_pixel;
-        input
-    }
-
-    /// Fold one typed [`CostEdge`] into the accumulator — the same fold
-    /// [`Self::from_edge_trace`] repeats for every edge in a recorded trace.
-    #[inline]
-    pub fn accumulate_edge(&mut self, emb: &OpEmbeddings, edge: CostEdge) {
-        self.add_edge_with_pe(emb, edge.parent, edge.child, edge.pe.pe());
-    }
-
-    /// Add a single edge contribution (both flat and depth-encoded).
-    ///
-    /// Flat half: raw embedding addition (preserves magnitude).
-    /// Depth half: complex multiplication — each pair `(2f, 2f+1)` represents
-    /// `(real, imaginary)` for frequency `f`. PE stores `sin` at even, `cos` at
-    /// odd indices. Complex: `(emb_re + j·emb_im) × (cos + j·sin)`.
-    #[inline]
-    pub fn add_edge(
-        &mut self,
-        emb: &OpEmbeddings,
-        parent_op: OpKind,
-        child_op: OpKind,
-        depth: u32,
-    ) {
-        self.add_edge_with_pe(emb, parent_op, child_op, depth_pe(depth));
-    }
-
-    /// Add a single edge with a caller-provided PE row.
-    #[inline]
-    pub fn add_edge_with_pe(
-        &mut self,
-        emb: &OpEmbeddings,
-        parent_op: OpKind,
-        child_op: OpKind,
-        pe: &[f32; K],
-    ) {
-        let parent_emb = emb.get(parent_op);
-        let child_emb = emb.get(child_op);
-
-        for i in 0..K {
-            self.values[i] += parent_emb[i];
-            self.values[K + i] += child_emb[i];
-        }
-
-        for f in 0..K / 2 {
-            let sin_d = pe[2 * f];
-            let cos_d = pe[2 * f + 1];
-
-            let p_re = parent_emb[2 * f];
-            let p_im = parent_emb[2 * f + 1];
-            self.values[2 * K + 2 * f] += p_re * cos_d - p_im * sin_d;
-            self.values[2 * K + 2 * f + 1] += p_re * sin_d + p_im * cos_d;
-
-            let c_re = child_emb[2 * f];
-            let c_im = child_emb[2 * f + 1];
-            self.values[3 * K + 2 * f] += c_re * cos_d - c_im * sin_d;
-            self.values[3 * K + 2 * f + 1] += c_re * sin_d + c_im * cos_d;
-        }
-        self.edge_count += 1;
-    }
-
-    /// Remove a single edge contribution (inverse of [`Self::add_edge`]) —
-    /// kept per A6, no incremental-search consumer today.
-    #[inline]
-    pub fn remove_edge(
-        &mut self,
-        emb: &OpEmbeddings,
-        parent_op: OpKind,
-        child_op: OpKind,
-        depth: u32,
-    ) {
-        self.remove_edge_with_pe(emb, parent_op, child_op, depth_pe(depth));
-    }
-
-    /// Remove a single edge with a caller-provided PE row (inverse of
-    /// [`Self::add_edge_with_pe`]) — kept per A6, no incremental-search
-    /// consumer today.
-    #[inline]
-    pub fn remove_edge_with_pe(
-        &mut self,
-        emb: &OpEmbeddings,
-        parent_op: OpKind,
-        child_op: OpKind,
-        pe: &[f32; K],
-    ) {
-        let parent_emb = emb.get(parent_op);
-        let child_emb = emb.get(child_op);
-
-        for i in 0..K {
-            self.values[i] -= parent_emb[i];
-            self.values[K + i] -= child_emb[i];
-        }
-
-        for f in 0..K / 2 {
-            let sin_d = pe[2 * f];
-            let cos_d = pe[2 * f + 1];
-
-            let p_re = parent_emb[2 * f];
-            let p_im = parent_emb[2 * f + 1];
-            self.values[2 * K + 2 * f] -= p_re * cos_d - p_im * sin_d;
-            self.values[2 * K + 2 * f + 1] -= p_re * sin_d + p_im * cos_d;
-
-            let c_re = child_emb[2 * f];
-            let c_im = child_emb[2 * f + 1];
-            self.values[3 * K + 2 * f] -= c_re * cos_d - c_im * sin_d;
-            self.values[3 * K + 2 * f + 1] -= c_re * sin_d + c_im * cos_d;
-        }
-        self.edge_count = self.edge_count.saturating_sub(1);
-    }
-
-    /// Add N var-reference edges (register loads of a shared value): each is
-    /// `(parent_op, Var)` at `depth`.
-    pub fn add_var_ref_edges(
-        &mut self,
-        emb: &OpEmbeddings,
-        parent_op: OpKind,
-        depth: u32,
-        count: u32,
-    ) {
-        for _ in 0..count {
-            self.add_edge(emb, parent_op, OpKind::Var, depth);
-        }
-    }
-
-    /// Remove N var-reference edges (inverse of [`Self::add_var_ref_edges`])
-    /// — kept per A6, no incremental-search consumer today.
-    pub fn remove_var_ref_edges(
-        &mut self,
-        emb: &OpEmbeddings,
-        parent_op: OpKind,
-        depth: u32,
-        count: u32,
-    ) {
-        for _ in 0..count {
-            self.remove_edge(emb, parent_op, OpKind::Var, depth);
-        }
-    }
-
-    /// Fold a recorded [`EdgeTrace`] into a fresh accumulator (no variance
-    /// histogram — see [`Self::from_arena_dag`] / [`Self::from_extraction`]
-    /// for the variance-populated adapters).
-    #[must_use]
-    pub fn from_edge_trace(trace: &EdgeTrace, emb: &OpEmbeddings) -> Self {
-        let mut acc = Self::new();
-        for &edge in trace.edges() {
-            acc.accumulate_edge(emb, edge);
-        }
-        acc.node_count = trace.node_count();
-        acc
-    }
-
-    /// Build features from an arena DAG, variance histogram populated from
-    /// [`pixelflow_ir::variance::compute_arena_variance`] over the same
-    /// subtree the edge trace walks — the training-side entry point (labels
-    /// are minted by JIT-timing the arena, so featurizing the exact object
-    /// measured keeps features faithful to it).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the subtree contains `ExprNode::Param` — substitute
-    /// parameters before featurizing (see [`EdgeTrace::from_arena_dag`]).
-    #[must_use]
-    pub fn from_arena_dag(arena: &ExprArena, root: ExprId, emb: &OpEmbeddings) -> Self {
-        let trace = EdgeTrace::from_arena_dag(arena, root);
-        let mut acc = Self::from_edge_trace(&trace, emb);
-        acc.set_variance_histogram(variance_histogram(arena));
-        acc
-    }
-
-    /// Build features from an
-    /// [`Extraction`](crate::egraph::extract::Extraction) — the
-    /// deployment-side adapter. When `with_variance` is set, the choice
-    /// function is materialised once via
-    /// [`choices_to_arena`](crate::egraph::extract::choices_to_arena) and
-    /// classified the same way [`Self::from_arena_dag`] does — recursing
-    /// over the CHOSEN nodes, not the class-wide meet `DepsAnalysis`
-    /// computes, per P1(c) in docs/plans/2026-08-17-cost-model-domain.md:
-    /// once a rewrite merges a pixel-varying node into a class alongside a
-    /// constant one, the class-wide meet reports CONST regardless of which
-    /// node the extraction actually chose.
-    #[must_use]
-    pub fn from_extraction(
-        extraction: &crate::egraph::extract::Extraction<'_>,
-        emb: &OpEmbeddings,
-        with_variance: bool,
-    ) -> Self {
-        let trace = EdgeTrace::from_extraction(extraction);
-        let mut acc = Self::from_edge_trace(&trace, emb);
-        if with_variance {
-            let (arena, _root) = crate::egraph::extract::choices_to_arena(extraction);
-            acc.set_variance_histogram(variance_histogram(&arena));
-        }
-        acc
-    }
-
-    fn set_variance_histogram(&mut self, hist: [f32; SCALAR_FEATURE_COUNT]) {
-        self.variance_frac_const = hist[0];
-        self.variance_frac_frame = hist[1];
-        self.variance_frac_scanline = hist[2];
-        self.variance_frac_pixel = hist[3];
-    }
-}
+// MLP — was deleted as an honest negative
+// (docs/paper/2026-08-egraph-nnue-parity.md). An earlier pass on this branch
+// also restored the 4K per-level-sectioned edge accumulator that used to
+// feed it (flat + depth-encoded, × parent/child, plus this variance
+// histogram) under the name `LevelSectionedEdges`. Per JP's 2026-09-01
+// ruling — "delete the shape, keep the denotation" — that accumulator was
+// never actually level-indexed (variance entered only as four scalar
+// fractions bolted onto a bag-of-edges sum), so restoring it was restoring
+// the deleted SHAPE under a new name. It has been removed again; a
+// genuinely level-indexed accumulator is specified for the future in
+// docs/plans/2026-09-01-schedule-cost-model-denotation.md and is not built
+// here. What survives is the denotation underneath it: per-node variance
+// classification, kept as the free function below plus
+// [`crate::egraph::extract::Extraction::chosen_variance`], which classifies
+// the materialised (chosen) DAG rather than re-deriving variance from the
+// e-graph (P1(c) of docs/plans/2026-08-17-cost-model-domain.md).
 
 /// Classify every node of `arena` into const / frame-uniform / scanline-
 /// uniform / pixel-varying, and return the fraction in each bucket. Shared
-/// by [`LevelSectionedEdges::from_arena_dag`] and
-/// [`LevelSectionedEdges::from_extraction`] — the latter classifies the
-/// materialised (chosen) arena rather than re-deriving variance from the
-/// e-graph, so both entry points run the same classification over the same
-/// kind of object (one definition, imported, not restated).
-fn variance_histogram(arena: &ExprArena) -> [f32; SCALAR_FEATURE_COUNT] {
+/// by any caller that classifies an [`ExprArena`] directly and by
+/// [`crate::egraph::extract::Extraction::chosen_variance`], which
+/// materialises the chosen DAG via `choices_to_arena` and classifies that —
+/// one definition, imported, not restated.
+pub(crate) fn variance_histogram(arena: &ExprArena) -> [f32; SCALAR_FEATURE_COUNT] {
     let variance = pixelflow_ir::variance::compute_arena_variance(arena);
     let total = variance.len() as f32;
     if total == 0.0 {
@@ -1311,29 +1011,12 @@ mod tests {
     }
 
     // ========================================================================
-    // LevelSectionedEdges (per-level feature type, no consumer today)
+    // Variance classification (denotation kept, accumulator shape deleted —
+    // see the module doc comment above `variance_histogram`). The
+    // arena/extraction parity test lives in `egraph::extract` next to
+    // `Extraction::chosen_variance`, mirroring
+    // `arena_and_extraction_walks_record_the_same_edge_stream`.
     // ========================================================================
-
-    #[test]
-    fn edge_accumulator_add_then_remove_should_return_to_zero() {
-        let emb = OpEmbeddings::new_random(7);
-        let mut acc = LevelSectionedEdges::new();
-        acc.add_edge(&emb, OpKind::Add, OpKind::Mul, 3);
-        acc.add_edge(&emb, OpKind::Sqrt, OpKind::Var, 1);
-        acc.add_var_ref_edges(&emb, OpKind::Add, 0, 2);
-
-        acc.remove_var_ref_edges(&emb, OpKind::Add, 0, 2);
-        acc.remove_edge(&emb, OpKind::Sqrt, OpKind::Var, 1);
-        acc.remove_edge(&emb, OpKind::Add, OpKind::Mul, 3);
-
-        for (i, &v) in acc.values.iter().enumerate() {
-            assert!(
-                v.abs() < 1e-5,
-                "residual {v} at values[{i}] after add/remove round trip"
-            );
-        }
-        assert_eq!(acc.edge_count, 0);
-    }
 
     #[test]
     fn variance_histogram_classifies_a_pure_constant_arena_as_all_const() {
@@ -1364,81 +1047,6 @@ mod tests {
         assert!(
             (hist[3] - 2.0 / 3.0).abs() < 1e-6,
             "X and Add are pixel: {hist:?}"
-        );
-    }
-
-    #[test]
-    fn from_arena_dag_and_from_extraction_agree_on_the_variance_histogram() {
-        // The same DAG built two ways, mirroring
-        // `arena_and_extraction_walks_record_the_same_edge_stream` in
-        // `egraph::extract` — train-side (arena) and deploy-side
-        // (extraction) variance classification must agree, since
-        // `from_extraction` classifies the materialised (chosen) arena
-        // rather than re-deriving variance from the e-graph.
-        use crate::egraph::{EGraph, ENode, ops};
-
-        let mut arena = ExprArena::new();
-        let x = arena.push_var(0);
-        let y = arena.push_var(1);
-        let root = arena.push_binary(OpKind::Mul, x, y);
-
-        let mut eg = EGraph::new();
-        let ex = eg.add(ENode::Var(0));
-        let ey = eg.add(ENode::Var(1));
-        let eroot = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: alloc::vec![ex, ey],
-        });
-        let choices: Vec<Option<usize>> = alloc::vec![None; eg.num_classes()];
-        let extraction = Extraction::from_backfill(&eg, eroot, choices);
-
-        let emb = OpEmbeddings::new_random(11);
-        let from_arena = LevelSectionedEdges::from_arena_dag(&arena, root, &emb);
-        let from_egraph = LevelSectionedEdges::from_extraction(&extraction, &emb, true);
-
-        assert_eq!(
-            from_arena.variance_frac_const,
-            from_egraph.variance_frac_const
-        );
-        assert_eq!(
-            from_arena.variance_frac_frame,
-            from_egraph.variance_frac_frame
-        );
-        assert_eq!(
-            from_arena.variance_frac_scanline,
-            from_egraph.variance_frac_scanline
-        );
-        assert_eq!(
-            from_arena.variance_frac_pixel,
-            from_egraph.variance_frac_pixel
-        );
-        assert_eq!(from_arena.node_count, from_egraph.node_count);
-    }
-
-    #[test]
-    fn from_extraction_without_variance_leaves_the_histogram_at_zero() {
-        use crate::egraph::{EGraph, ENode, ops};
-
-        let mut eg = EGraph::new();
-        let ex = eg.add(ENode::Var(0));
-        let ey = eg.add(ENode::Var(1));
-        let eroot = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: alloc::vec![ex, ey],
-        });
-        let choices: Vec<Option<usize>> = alloc::vec![None; eg.num_classes()];
-        let extraction = Extraction::from_backfill(&eg, eroot, choices);
-
-        let emb = OpEmbeddings::new_random(11);
-        let acc = LevelSectionedEdges::from_extraction(&extraction, &emb, false);
-        assert_eq!(
-            [
-                acc.variance_frac_const,
-                acc.variance_frac_frame,
-                acc.variance_frac_scanline,
-                acc.variance_frac_pixel
-            ],
-            [0.0, 0.0, 0.0, 0.0]
         );
     }
 }
