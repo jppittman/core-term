@@ -21,8 +21,13 @@ finding, rather than leaving it latent inside every inflated-point comparison.
 
 **Date:** 2026-09-01
 **Status:** REGISTERED. §3–§5.2's Register run is complete (§8, Entry 1) — every constant
-previously marked **TBD** is now fixed. Committed before any guided run at `|R| > 62` uses this
-document, per the binding rule inherited from v1/v2.
+previously marked **TBD** is now fixed; §2.1, §3's v1-definition Δ1 test, §5.3–§5.6 (Δ1 under v1's
+definition, Y from the order-matched truncation loss, Δ2(v3), the §7.1 overhead check), §6.1 (H2
+UNTESTED, with its rule) and §9 (the grep proof) are filled from the same unguided data (§8,
+Entry 2 — no new run). Committed before any guided run at `|R| > 62` uses this document, per the
+binding rule inherited from v1/v2. **Headline:** with order held fixed the `|R|` effect is null to
+adverse (§3); the order effect is the finding (§4), and a static reorder of the production rule
+list is a measured, unadopted quick win.
 
 **Authority:** carries forward v2's full authority chain (`docs/plans/2026-08-31-guide-design-revision.md`
 §5 protocol; `docs/plans/2026-09-01-phase3-registration.md` — Round 1, FROZEN; `docs/plans/2026-09-01-phase3-round2-rule-scaling.md`
@@ -90,6 +95,44 @@ re-attempted by this document** — same wall, out of scope here), mode (iii) `{
 document adds no new inflated points; it adds a new *reference* (§3) and a new *independent
 measurement* (§4) over the same grid.
 
+### 2.1 Realized grid and seeds (filled 2026-09-01, §8 Entry 2)
+
+Every rule set this document's numbers touch, with its order-inclusive fingerprint
+(`rule_set_fingerprint`), median one-sweep-probe `apps_per_sweep` (`aps`) on the 188 classical
+expressions, and B in sweeps (`B / aps`, per v2 §0.1's binding rule). Seeds: interleave seed
+`0x2026_0901` (registered in v2 §1, reused unchanged as the `OrderMatchedBase` seed); order-effect
+seeds `SEED_A/B/C = 1/2/3` (§1, pre-committed in the skeleton commit before any `Shuffled(*)` curve
+ran); seed-sensitivity interleave seeds `1`, `2` (§4 addendum). Source:
+`docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.md`, "Registration extras" table.
+
+| rule set | `\|R\|` | fingerprint | aps | B=100 sweeps | B=200 sweeps | role |
+|---|---:|---|---:|---:|---:|---|
+| `base` | 62 | `e99af8402beaff5d` | 100 | 1.01 | 2.01 | production order; = v2's \|R\|=62 point, byte-identical (re-measured in the order-effect run, loader dedup-asserted) |
+| `base:matched:0x20260901:93` | 62 | `ab09ee08705f96aa` | 84 | 1.18 | 2.37 | §3 reference for `dup:93` **and** `comp:93` (mode-independent, §0) |
+| `base:matched:0x20260901:124` | 62 | `5c6917e6bde09de4` | 82 | 1.21 | 2.42 | §3 reference for `dup:124`, `comp:124` |
+| `base:matched:0x20260901:186` | 62 | `4c185b36d078890c` | 86 | 1.16 | 2.33 | §3 reference for `dup:186` |
+| `base:matched:0x20260901:248` | 62 | `2baca95771460159` | 85 | 1.18 | 2.35 | §3 reference for `dup:248` |
+| `base:matched:0x20260901:95` | 62 | `51d425eb78ad5821` | 85 | 1.18 | 2.35 | §3 reference for `new:95` |
+| `base:shuffled:1` | 62 | `0b5612ba8d0abf82` | 88 | 1.14 | 2.29 | §4 order effect, `SEED_A` |
+| `base:shuffled:2` | 62 | `02c5ed25ec0daff4` | 85 | 1.18 | 2.35 | §4 order effect, `SEED_B` |
+| `base:shuffled:3` | 62 | `185ebacfa932f651` | 85 | 1.18 | 2.35 | §4 order effect, `SEED_C` |
+| `base:static:numeric-first` | 62 | `9e6d66598d997f37` | 88 | 1.14 | 2.29 | §4 quick-win candidate |
+| `dup:93` / `dup:124` / `dup:186` / `dup:248` | 93/124/186/248 | `83e610e33e782a68` / `b207aa331bb625ab` / `3a00c565900b48e6` / `43c43d764ef7f76b` | 142/300/502/996 | 0.70/0.33/0.20/0.10 | 1.41/0.67/0.40/0.20 | mode (i), inherited from v2 unchanged |
+| `comp:93` / `comp:124` | 93/124 | `904ceec9b110e89e` / `a7600e5942f0baa5` | 87/90 | 1.15/1.12 | 2.30/2.23 | mode (ii), inherited from v2 unchanged |
+| `new:95` | 95 | `113cca49c99cc850` | 292 | 0.34 | 0.69 | mode (iii), inherited from v2 unchanged |
+| `dup:124:interleave:1` / `:2` | 124 | `6333431113f09bde` / `5ca26c601faaf74c` | 266/293 | 0.38/0.34 | 0.75/0.68 | §4 addendum, seed sensitivity |
+| `comp:93:interleave:1` / `:2` | 93 | `71851d821506a78b` / `437971d00006a362` | 86/90 | 1.16/1.12 | 2.31/2.23 | §4 addendum, seed sensitivity |
+
+Two things the table makes visible that the prose above does not: (a) a reorder of the same 62
+rules changes `apps_per_sweep` (100 in production order, 82–88 under every other base-62 order;
+the probe is one front-to-back pass, and how many applications one pass records depends on which
+rules have already fired when each rule's turn comes) — so B=100 is 1.01 sweeps in production order but
+1.14–1.21 sweeps under every reordered base-62 set, and every `ΔU` in §3 compares two curves that
+are both ~1.2 sweeps at B=100, not one at 1.0 and one at 0.1–0.7; (b) `dup:93` and `comp:93` have
+*different* `apps_per_sweep` (142 vs 87) despite sharing one `OrderMatchedBase` reference —
+duplicate rules re-record every application of their original, composition rules mostly do not
+fire at this budget (§5.2's `comp:93` Δ1 of 0.00).
+
 ## 3. H1 (v3): the `|R|` effect, order held fixed
 
 For every inflated point `p = (mode, |R|)` at the registered interleave seed `s =
@@ -149,6 +192,33 @@ regardless of effect size, and both modes' `ΔU` values are small-to-moderate an
 sign between B=100/B=200. Full numbers, per-expression pairing, and the bootstrap detail:
 `docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.{json,md}`.
 
+**`ΔU` vs `|R|` with the `≥ +Δ1` test under v1's definition (appended 2026-09-01, §8 Entry 2).**
+The table above tests `ΔU(max)` against `Δ1(v3)` (paired, §5.2), which is near zero in modes
+(i)/(ii) because the smallest inflated point barely differs from its matched reference — a
+near-zero minimum detectable effect makes the effect condition easy to clear, so it is also
+evaluated against the inherited, far more conservative `Δ1` of v1's definition (§5.3: 28.23 pts at
+B=100, 12.34 pts at B=200 — the bootstrap half-width of median `U(62)` itself):
+
+| Mode | B | `ΔU`(max) | Δ1 (v1 def.) | ratio | `ΔU`(max) ≥ +Δ1? | with ρ (§3 table) |
+|---|---:|---:|---:|---:|---|---|
+| (i) | 100 | +34.34 | 28.23 | +1.22× | **yes** | ρ = 1.000 → H1(v3) HOLDS, adverse sign |
+| (i) | 200 | +23.66 | 12.34 | +1.92× | **yes** | ρ = 0.800 → HOLDS, adverse sign |
+| (ii) | 100 | −2.19 | 28.23 | −0.08× | no | n=2, no trend readable |
+| (ii) | 200 | +4.33 | 12.34 | +0.35× | no | n=2, no trend readable |
+| (iii) | 100 | −15.14 | 28.23 | −0.54× | no | n=1, ρ undefined |
+| (iii) | 200 | +24.54 | 12.34 | +1.99× | yes (one point, no trend) | n=1, ρ undefined |
+
+**Stated plainly.** With order held fixed, the `|R|` effect on unguided regret is **null to
+adverse** on this grid. In the one mode with a readable trend (i), regret at fixed applications
+*rises* with `|R|` — by 34 points from `dup:93` to `dup:248` at B=100, clearing even v1's
+conservative Δ1 — and since those rules are exact duplicates with `base`'s closure, the rise is the
+cost of paying for more rule slots per sweep out of a fixed application budget, not a change in
+what the search can reach. Modes (ii)/(iii), which do add closure, show `ΔU` within ±5 points at
+their 2 and 1 points except `new:95`'s single B-dependent swing (−15.1 / +24.5), which one point
+cannot resolve into a trend. **That is the capacity finding: on this corpus, at these budgets,
+adding rules does not lower unguided regret once the order confound is removed — and it is not a
+reason to touch the grid.** v2's raw `U(|R|)` drop (96.6% → 15–44%) was the order effect (§4).
+
 ## 4. The order effect, as its own registered finding
 
 Independent of `|R|` entirely — every rule set measured here is 62 rules. Two sub-measurements,
@@ -172,7 +242,7 @@ state how much of the sample a pure reorder (no rule added or removed) touches.
 
 | Rule set | B=100 median U | B=200 median U | differing from `base` @100/@200 (of 188) |
 |---|---:|---:|---|
-| `base` (production order, = v2's |R|=62 point) | 96.58 | 40.49 | — (reference row) |
+| `base` (production order, = v2's \|R\|=62 point) | 96.58 | 40.49 | — (reference row) |
 | `Shuffled(SEED_A=1)` | 43.74 | 23.57 | 175 / 150 |
 | `Shuffled(SEED_B=2)` | 46.19 | 25.70 | 186 / 143 |
 | `Shuffled(SEED_C=3)` | 26.28 | 1.49 | 186 / 151 |
@@ -192,6 +262,14 @@ value. Every tested order — random or static — still beats `base` by a wide 
 number is. `rapid`/`blitz` bands: U=0.00% at every order tested (differing counts nonzero, so the
 orders do change costs somewhere in the sample — the differences just don't survive to that
 budget's regret at those node-count scales); reported for completeness, no claim drawn from them.
+
+**Production quick-win, in one sentence (appended 2026-09-01, §8 Entry 2):** the static
+numeric-first reorder of the identical 62 production rules — no rule added, removed, or changed,
+zero runtime cost — takes median unguided regret at B=100 from **96.58% (production order) to
+1.12%**, and at B=200 from **40.49% to 0.44%**, changing extracted cost@B on **186 / 140** of the
+188 classical expressions (B=100 / 200) and beating all three random shuffles (26.3–46.2% at
+B=100); **adopting it as `all_rules()`'s order is JP's decision, in its own PR** — this branch
+registers the measurement and leaves `all_rules()` untouched (§0).
 
 **Seed sensitivity of an inflated point (addendum, not in the original skeleton).** `dup:124` and
 `comp:93` re-run under two additional interleave seeds (`1`, `2`) alongside the registered seed —
@@ -239,6 +317,104 @@ statistics (design §1.3); `DEFAULT_INTERLEAVE_SEED = 0x2026_0901` (v2 §1, reus
     B=200 **16.74 pts** (median +6.12).
 - Every other v3-specific number in §3/§4's tables: filled by this run (§8, Entry 1).
 
+### 5.3 Δ1 — v1's definition, on v3 data (appended 2026-09-01, §8 Entry 2)
+
+v1/v2's Δ1 is the 95% bootstrap CI half-width of the median unguided regret at `|R| = 62` in
+production order (10,000 resamples, seed 42, order-statistic 2.5/97.5 percentiles). The `base`
+curve was re-measured by this document's order-effect run and is byte-identical to v2's (the
+loader asserts it, §8 Entry 1), so the CI is recomputed here rather than copied — and comes out
+identical:
+
+| B | median U(62) | CI | **Δ1 (v1 def.)** |
+|---:|---:|---|---:|
+| 100 | 0.9658 (96.58%) | [0.7312, 1.2958] | **0.2823 (28.23 pts)** |
+| 200 | 0.4049 (40.49%) | [0.2570, 0.5039] | **0.1234 (12.34 pts)** |
+
+Both Δ1s are registered: Δ1(v3) (§5.2, paired, the statistic §3's H1(v3) names) and Δ1 (v1 def.)
+(this section, the conservative floor §3's second table applies). Where they disagree on a
+verdict — mode (ii) at B=200 (+4.33 clears 0.00, not 12.34) and mode (iii) at B=100 (−15.14 vs
+11.45 / 28.23, fails both) — the conservative one is the reading this document reports.
+
+### 5.4 Y per point, from the order-matched truncation loss (appended 2026-09-01, §8 Entry 2)
+
+`Y = 1 − (1 + L/2)/(1 + L)` with `L` the median truncation loss (cost@B vs cost@4B, Round 1's
+convention), classical band. `Y(p)` for the seven inflated points is v2 §5.2's number, unchanged;
+`Y(matched)` is new, from each point's `OrderMatchedBase` reference; `ΔY = Y(p) − Y(matched)` is
+the order-held-fixed analogue of §3's `ΔU`.
+
+| Mode | rule set | `\|R\|` | L(matched)@100 | Y(p)@100 | Y(matched)@100 | **ΔY@100** | L(matched)@200 | Y(p)@200 | Y(matched)@200 | **ΔY@200** |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| (i) | `dup:93` | 93 | 24.384 | 8.65 | 9.80 | −1.15 | 0.160 | 0.09 | 0.08 | +0.01 |
+| (i) | `dup:124` | 124 | 16.767 | 6.75 | 7.18 | −0.43 | 1.763 | 2.42 | 0.87 | +1.55 |
+| (i) | `dup:186` | 186 | 1.692 | 1.25 | 0.83 | +0.42 | 0.776 | 0.52 | 0.38 | +0.13 |
+| (i) | `dup:248` | 248 | 0.623 | 4.95 | 0.31 | **+4.64** | 0.477 | 3.27 | 0.24 | **+3.03** |
+| (ii) | `comp:93` | 93 | 24.384 | 9.87 | 9.80 | +0.07 | 0.160 | 0.09 | 0.08 | +0.01 |
+| (ii) | `comp:124` | 124 | 16.767 | 6.28 | 7.18 | −0.90 | 1.763 | 1.31 | 0.87 | +0.44 |
+| (iii) | `new:95` | 95 | 17.706 | −0.00 | 7.52 | −7.52 | 16.837 | 0.00 | 7.21 | −7.21 |
+
+For the order-effect sets (§4, all `|R|=62`): `base` L/Y@100 = 48.467 / 16.32, @200 = 21.922 /
+8.99; `Shuffled(1)` 13.672 / 6.01, 14.957 / 6.51; `Shuffled(2)` 18.585 / 7.84, 7.934 / 3.68;
+`Shuffled(3)` 13.448 / 5.93, 0.499 / 0.25; `StaticReorder(NumericFirst)` 0.599 / 0.30, 0.002 /
+0.00. Read through the truncation-loss lens the order effect is the same size as through the
+regret lens: production order leaves 16 points of Y on the table at B=100 that the static reorder
+leaves 0.3 of. Mode (i)'s `ΔY` rises with `|R|` exactly as its `ΔU` does (−1.15 → +4.64 at B=100):
+the duplicates' dilution cost shows up as truncation loss too, because the matched reference
+quiesces sooner (L(matched)@100 falls from 24.4 to 0.6 across 93 → 248 — the reordered 62 rules
+alone reach their 4B cost within B, and adding duplicate slots is what stops the inflated set from
+doing the same).
+
+### 5.5 Δ2 — H2's minimum effect, per mode, order held fixed (appended 2026-09-01, §8 Entry 2)
+
+v2 §5.4's Δ2 (`max(0.02, Y(|R|max) − Y(62))`, against production-order `base`) is inherited
+unchanged: 0.02 (floor) in every mode, every raw difference negative. Under this document's
+reference the same rule reads `Δ2(v3) = max(0.02, ΔY at |R|max)` with `ΔY` from §5.4:
+
+| Mode | `\|R\|`max | ΔY@100 | **Δ2(v3)@100** | ΔY@200 | **Δ2(v3)@200** |
+|---|---:|---:|---:|---:|---:|
+| (i) | 248 | +4.64 pts | **0.0464** | +3.03 pts | **0.0303** |
+| (ii) | 124 (not 248 — §2) | −0.90 pts | 0.020 (floor; negative) | +0.44 pts | 0.020 (floor; 0.0044 < 0.02) |
+| (iii) | 95 | −7.52 pts | 0.020 (floor; negative) | −7.21 pts | 0.020 (floor; negative) |
+
+Mode (i) is the only mode whose Δ2(v3) lifts off the floor — and it does so for the same dilution
+reason as its `ΔU` (§3), so a guided arm in mode (i) would have to beat a *worse* unguided baseline
+by 4.6 points of Y to register, not a better one. Modes (ii)/(iii) stay on the floor as in v2.
+
+### 5.6 The §7.1 overhead precondition, unguided half — order held fixed (appended 2026-09-01, §8 Entry 2)
+
+Threshold inherited from v2 §5.6 verbatim: flat ⇔ median `evals_actual / app_actual` at B is
+≤ 2× its production-order `|R| = 62` value, i.e. **≤ 62.41 at B = 100 and ≤ 79.08 at B = 200**
+(v2 printed 62.40 — 2 × 31.20 rounded twice; 2 × 31.2049 is 62.41 — no rule set sits between the
+two, so every v2 verdict is unchanged). Measured for every set new to this document:
+
+| rule set | `\|R\|` | evals/app @100 | × base | flat @100? | evals/app @200 | × base | flat @200? |
+|---|---:|---:|---:|---|---:|---:|---|
+| `base` (production order) | 62 | 31.20 | 1.00 | — | 39.54 | 1.00 | — |
+| `base:matched:0x20260901:93` | 62 | 59.36 | 1.90 | yes | 63.11 | 1.60 | yes |
+| `base:matched:0x20260901:124` | 62 | 40.29 | 1.29 | yes | 49.82 | 1.26 | yes |
+| `base:matched:0x20260901:186` | 62 | 79.36 | 2.54 | no | 77.94 | 1.97 | yes |
+| `base:matched:0x20260901:248` | 62 | 144.96 | **4.65** | no | 121.30 | 3.07 | no |
+| `base:matched:0x20260901:95` | 62 | 67.98 | 2.18 | no | 69.84 | 1.77 | yes |
+| `base:shuffled:1` | 62 | 58.72 | 1.88 | yes | 59.58 | 1.51 | yes |
+| `base:shuffled:2` | 62 | 22.20 | **0.71** | yes | 41.41 | 1.05 | yes |
+| `base:shuffled:3` | 62 | 130.67 | 4.19 | no | 115.81 | 2.93 | no |
+| `base:static:numeric-first` | 62 | 46.76 | 1.50 | yes | 57.55 | 1.46 | yes |
+| `dup:124:interleave:1` / `:2` | 124 | 97.46 / 61.67 | 3.12 / 1.98 | no / yes | 89.30 / 69.46 | 2.26 / 1.76 | no / yes |
+| `comp:93:interleave:1` / `:2` | 93 | 94.87 / 128.14 | 3.04 / 4.11 | no / no | 99.45 / 123.49 | 2.51 / 3.12 | no / no |
+
+(v2's seven inflated points are in v2 §5.6 and are unchanged.)
+
+**Result.** The overhead ratio is **order-confounded in the same way `U` was**: reordering the
+identical 62 rules moves `evals/app` at B=100 from 0.71× to 4.65× the production-order value —
+a wider range than v2 measured across the whole inflated grid (2.2–3.2×). So v2 §5.6's "every
+completed inflated point exceeds 2×" is not evidence that `|R|` raises per-application enumeration
+cost; against the order-matched reference (the two columns above, divided — `evals/app(p) /
+evals/app(matched)`, straight from this table and v2 §5.6's), the inflated points sit at 1.27
+(`dup:93`), 1.94 (`dup:124`), 1.16 (`dup:186`), **0.54** (`dup:248`), 1.44 (`comp:93`), 2.50
+(`comp:124`), 1.02 (`new:95`) at B=100 and 1.26 / 1.53 / 1.19 / 0.62 / 1.46 / 2.06 / 0.89 at
+B=200 — under 2× everywhere but `comp:124`, and *below* 1× at the largest duplicate point. The
+static reorder (the quick-win candidate) is flat at both budgets (1.50× / 1.46×). The guided half
+(scored-candidate count, `GuidedEpisodeStats`) remains unmeasured — unchanged from v1 §9 point 3.
+
 ## 6. Gates
 
 Same accept/kill/honest-fallback shape as v2 §8, evaluated against v3's `ΔU` statistic (§3) in
@@ -258,6 +434,25 @@ place of v2's raw `U` statistic wherever this document supersedes v2's reading.
   (mode i) is small and adverse relative to it (§4's order effect: 50–95 points at B=100 from a
   reorder alone, vs mode (i)'s +34.3-point `ΔU` maximum). This is the honest-fallback outcome
   §6 anticipated, now recorded as data (§8, Entry 1).
+
+### 6.1 H2: UNTESTED — and its rule (appended 2026-09-01, §8 Entry 2)
+
+**H2 status: UNTESTED.** No guided run exists at any `|R| > 62` (§9 is the grep proof, run fresh
+at this commit), so nothing in this document evaluates H2. Its statistics (`Q`, `G`, design §1.3),
+its per-part reading rule (v1 §7: parts 1/3 testable at every point, part 2 — the Guide's
+advantage growing with `|R|` — live in modes (ii)/(iii) and impossible by construction in mode (i)),
+and the two-arm reference convention (v2 §3) stand unchanged and are neither weakened nor
+pre-judged by §3/§4. **The rule this document adds:** any guided run that consumes this
+registration at `|R| > 62` must report its guided curve against the **`OrderMatchedBase`
+reference at that `|R|`** as well as against `base` — otherwise its "advantage over unguided" would
+inherit the same order confound v2 §6b found in `U`, and Round 1's Guide-vs-unguided win is itself
+the case in point (v2's Round 1 note: at `|R| = 62`, B = 100 is 1.01 sweeps in production order,
+and §4 shows a reorder alone closes most of that gap). Headroom `1 − Y` (the window a guided arm
+would have to close, v2 §7's lens) under the order-matched reference: `|R|` = 93: 90.20% / 99.92%
+(B=100 / 200); 124: 92.82% / 99.13%; 186: 99.17% / 99.62%; 248: 99.69% / 99.76%; 95: 92.48% /
+92.79% — versus 83.68% / 91.01% under production-order `base` and 99.70% / 100.00% under
+`StaticReorder(NumericFirst)`. Every reordered base-62 set leaves a guided arm *less* to win than
+production order does; whatever H2 part 2 would need to show, it must show it against that window.
 
 ## 7. Reproduction (commands actually run for Entry 1, §8)
 
@@ -342,3 +537,84 @@ adopting it as `all_rules()`'s order is JP's decision on this data, out of this 
 -v3.{csv,json,md}` (the union CSV and the aggregate stats + narrative this document's numbers are
 drawn from); `pixelflow-pipeline/scripts/round2_register_stats_v3.py` (the aggregation script, new
 this commit).
+
+**Entry 2 (2026-09-01, this commit).** Registration filled — **no new run, no new rule set, no
+code change outside the aggregation script.** `round2_register_stats_v3.py` gained a
+`registration_extras` block (same §7 command, re-run; every SS3/SS4/seed-sensitivity number it
+already emitted is unchanged, diff-verified additive-only) that computes, from the same four CSVs:
+per-rule-set identity + `apps_per_sweep` + B in sweeps (§2.1), Δ1 under v1's definition (§5.3 —
+recomputed on the re-measured `base` copy, identical to v2: 28.23 / 12.34 pts), `L`/`Y` for every
+set and paired `ΔY` (§5.4), Δ2(v3) (§5.5 — mode (i) 0.0464 / 0.0303, modes (ii)/(iii) on the 0.02
+floor), the §7.1 overhead ratio and flatness verdict per set (§5.6 — threshold 62.41 / 79.08), and
+`ΔU(max)` against v1's Δ1 (§3, second table). §6.1 records H2 as UNTESTED with the rule a
+consuming guided run must obey; §9 is the fresh grep proof.
+
+**H1 verdict, final form (unguided data, order held fixed):** mode (i) — `ΔU` grows with `|R|`
+(ρ = 1.000 / 0.800) and `ΔU(max)` = +34.34 / +23.66 pts clears both Δ1(v3) and v1's Δ1
+(1.22× / 1.92×) — H1(v3) HOLDS as a statistic, with the **adverse** sign: regret rises with rule
+count at fixed applications; modes (ii)/(iii) — `ΔU(max)` fails v1's Δ1 at B=100 (−2.19, −15.14)
+and has 2 / 1 grid points, no trend readable. **The `|R|` effect with order fixed is null to
+adverse; the order effect (§4: 50–95 points from a reorder alone; static reorder 96.58% → 1.12%)
+is the finding.** H2 UNTESTED (§6.1). Honest fallback fired (§6), unchanged from Entry 1.
+
+## 9. Proof that no guided run at `|R| > 62` exists under this registration
+
+Same obligation as v2 §10, inherited through §5's binding rule, run fresh at this commit on
+`claude/phase3-round2` — every fingerprint from §2.1 (the 13 sets new to this document, `base`, and
+v2's 7 realized + 2 never-realized inflated points), excluding only the two registration documents
+themselves from the search (they quote the fingerprints as text):
+
+```text
+$ for fp in ab09ee08705f96aa 5c6917e6bde09de4 4c185b36d078890c 2baca95771460159 51d425eb78ad5821 \
+           0b5612ba8d0abf82 02c5ed25ec0daff4 185ebacfa932f651 9e6d66598d997f37 \
+           6333431113f09bde 5ca26c601faaf74c 71851d821506a78b 437971d00006a362 \
+           e99af8402beaff5d 83e610e33e782a68 b207aa331bb625ab 3a00c565900b48e6 43c43d764ef7f76b \
+           904ceec9b110e89e a7600e5942f0baa5 113cca49c99cc850 9e9bf3a4458a3045 b89d841eada63c13; do
+    printf '%s: ' $fp; git grep -l "$fp" -- . ':!docs/plans/2026-09-01-phase3-round2-registration-v2.md' \
+        ':!docs/plans/2026-09-01-phase3-round2-registration-v3.md' | tr '\n' ' '; echo; done
+ab09ee08705f96aa: docs/results/2026-09-01-round2-order-matched-base-v3.csv docs/results/2026-09-01-round2-order-matched-base-v3.json docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.csv
+5c6917e6bde09de4: (same three files)
+4c185b36d078890c: (same three files)
+2baca95771460159: (same three files)
+51d425eb78ad5821: (same three files)
+0b5612ba8d0abf82: docs/results/2026-09-01-round2-order-effect-v3.csv docs/results/2026-09-01-round2-order-effect-v3.json docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.csv
+02c5ed25ec0daff4: (same three files)
+185ebacfa932f651: (same three files)
+9e6d66598d997f37: (same three files)
+6333431113f09bde: docs/results/2026-09-01-round2-seed-sensitivity-v3.csv docs/results/2026-09-01-round2-seed-sensitivity-v3.json docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.csv
+5ca26c601faaf74c: (same three files)
+71851d821506a78b: (same three files)
+437971d00006a362: (same three files)
+e99af8402beaff5d: docs/plans/2026-09-01-phase3-round2-registration.md docs/results/2026-09-01-phase3-round2-registration-tables.md docs/results/2026-09-01-phase3-round2-registration-v2.json docs/results/2026-09-01-phase3-round2-registration.json docs/results/2026-09-01-round2-order-effect-v3.csv docs/results/2026-09-01-round2-order-effect-v3.json docs/results/2026-09-01-round2-unguided-vs-rulecount-mode-iii.csv docs/results/2026-09-01-round2-unguided-vs-rulecount-modes-i-ii.csv docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.csv docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.json docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.md docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.csv
+83e610e33e782a68: docs/results/2026-09-01-phase3-round2-registration-v2.json docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.csv docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.json docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.md
+b207aa331bb625ab, 3a00c565900b48e6, 43c43d764ef7f76b, 904ceec9b110e89e, a7600e5942f0baa5, 113cca49c99cc850: (same four v2 unguided files)
+9e9bf3a4458a3045:                                   <- comp:186 interleaved: no file anywhere (never realized)
+b89d841eada63c13:                                   <- comp:248 interleaved: no file anywhere (never realized)
+
+$ git grep -l -E 'RuleOrder::(Interleave|OrderMatchedBase|Shuffled|StaticReorder)|DEFAULT_INTERLEAVE_SEED|NUMERIC_FIRST_ORDER'
+docs/plans/2026-09-01-phase3-round2-registration-v2.md
+docs/plans/2026-09-01-phase3-round2-registration-v3.md
+docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.md
+docs/results/journal.jsonl                          <- the unguided runs' own journal records
+pixelflow-pipeline/scripts/round2_register_stats_v3.py   <- a comment naming the seed constant
+pixelflow-search/src/math/inflate.rs                <- the types' definitions and their pinning tests
+
+$ grep -c 'nnue::guide\|GuidedSaturation' pixelflow-pipeline/src/bin/phase3_round2_unguided_curves.rs
+0
+
+$ grep -rl 'math::inflate\|inflate::' pixelflow-pipeline/src/bin/
+pixelflow-pipeline/src/bin/phase3_round2_new_rules.rs
+pixelflow-pipeline/src/bin/phase3_round2_unguided_curves.rs   <- the only two binaries that can build a reordered or inflated set; neither links a Guide
+
+$ grep -n 'all_rules()' pixelflow-pipeline/src/bin/phase3_at_budget_eval.rs   # the guided harness
+623:        all_rules(),
+648:        all_rules(),                                <- hard-wired to |R| = 62 in production order; no rule-set or order argument exists
+```
+
+So: every fingerprint of every set this document measured occurs, as data, only in this
+registration's own unguided output files (and, for `base`, in Round 1's / v1's / v2's unguided
+files, where the production-order 62-rule set has always lived); the two never-realized points
+occur as data nowhere. The only binary that can select a non-production order is the unguided
+curves binary, which links no Guide. No Guide checkpoint, label set, or `phase3_at_budget_eval`
+output on the branch carries any fingerprint but production-order `base`'s — there is no guided
+run at any `|R| > 62`, and none at `|R| = 62` under any order other than production's.

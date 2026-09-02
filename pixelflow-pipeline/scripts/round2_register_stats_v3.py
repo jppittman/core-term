@@ -46,8 +46,17 @@ from collections import defaultdict
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from round2_register_stats import (  # noqa: E402
     HEADER, GRID, BUDGETS, per_rule_set, quartiles, fmt_pct,
-    bootstrap_median_ci, BOOTSTRAP_RESAMPLES, BOOTSTRAP_SEED,
+    bootstrap_median_ci, BOOTSTRAP_RESAMPLES, BOOTSTRAP_SEED, DELTA2_FLOOR,
 )
+
+# Design SS7.1's flatness threshold for the unguided half of the overhead
+# precondition (v2 SS5.6): median evals_actual/app_actual at B must stay
+# within this multiple of its |R|=62 (production-order `base`) value.
+OVERHEAD_FLAT_MULTIPLE = 2.0
+
+# |R|max per mode on the realized grid (v2 SS4: comp:186/comp:248 never
+# completed), where Delta2(v3) is read off.
+LARGEST_INFLATED = {"i": "dup:248", "ii": "comp:124", "iii": "new:95"}
 
 # The interleave seed every v2 inflated point (and thus v3's OrderMatchedBase
 # reference) was built with — DEFAULT_INTERLEAVE_SEED, decimal form.
@@ -285,6 +294,98 @@ def main():
             }
         result["seed_sensitivity"][base_rs] = entry
 
+    # ================================================================
+    # Registration extras (registration-v3 SS2/SS5.3-SS5.6): every rule
+    # set's identity + B in sweeps + L/Y + the SS7.1 overhead ratio, Delta1
+    # under v1's definition, paired Delta_Y and Delta2(v3). classical only.
+    # ================================================================
+    base_c = c["base"]
+    threshold = {
+        b: OVERHEAD_FLAT_MULTIPLE * base_c[f"B{b}"]["evals_per_app_at_B"]["median"] for b in BUDGETS
+    }
+    ordered_sets = (
+        ["base"]
+        + [p[2] for m in MODE_POINTS.values() for p in m]
+        + ORDER_ROW_SETS[1:]
+        + [p[0] for m in MODE_POINTS.values() for p in m]
+        + [rs for sets in SEED_SETS.values() for rs in sets[1:]]
+    )
+    seen, per_set = set(), []
+    for rs in ordered_sets:
+        if rs in seen:
+            continue
+        seen.add(rs)
+        s = c[rs]
+        aps = s["apps_per_sweep"]["median"]
+        row = {
+            "rule_set": rs, "num_rules": meta[rs]["num_rules"],
+            "fingerprint": meta[rs]["fingerprint"], "apps_per_sweep_median": aps,
+        }
+        for b in BUDGETS:
+            sb = s[f"B{b}"]
+            ev = sb["evals_per_app_at_B"]
+            if ev is None:
+                die(f"{rs}: evals_per_app undefined at B={b} — cannot evaluate SS7.1")
+            row[f"B{b}"] = {
+                "B_in_sweeps": b / aps,
+                "U": sb["regret"]["median"],
+                "L": sb["trunc_loss_pct"]["median"],
+                "Y": sb["Y"],
+                "evals_per_app": ev["median"],
+                "evals_per_app_x_base": ev["median"] / base_c[f"B{b}"]["evals_per_app_at_B"]["median"],
+                "flat": ev["median"] <= threshold[b],
+                "differing_from_base": (
+                    0 if rs == "base" else differing_count(curves, rs, "base", "classical", b)
+                ),
+            }
+        per_set.append(row)
+
+    delta1_v1 = {}
+    for b in BUDGETS:
+        regs = base_c[f"B{b}"]["_regrets"]
+        lo, hi = bootstrap_median_ci(regs, BOOTSTRAP_RESAMPLES, BOOTSTRAP_SEED)
+        delta1_v1[f"B{b}"] = {
+            "median_U_base": statistics.median(regs), "ci_lo": lo, "ci_hi": hi,
+            "half_width": (hi - lo) / 2.0,
+        }
+
+    by_set = {r["rule_set"]: r for r in per_set}
+    delta_y, delta2_v3, h1_v1_test = {}, {}, {}
+    for mode, points in MODE_POINTS.items():
+        delta_y[mode] = []
+        for rs, R, ref_rs in points:
+            row = {"rule_set": rs, "R": R, "order_matched_base": ref_rs}
+            for b in BUDGETS:
+                yp, ym = by_set[rs][f"B{b}"]["Y"], by_set[ref_rs][f"B{b}"]["Y"]
+                row[f"Y_B{b}"], row[f"Y_matched_B{b}"], row[f"delta_Y_B{b}"] = yp, ym, yp - ym
+            delta_y[mode].append(row)
+        largest = next(r for r in delta_y[mode] if r["rule_set"] == LARGEST_INFLATED[mode])
+        delta2_v3[mode] = {
+            "at_rule_set": LARGEST_INFLATED[mode],
+            **{f"B{b}": {"delta_Y": largest[f"delta_Y_B{b}"],
+                         "delta2": max(DELTA2_FLOOR, largest[f"delta_Y_B{b}"]),
+                         "floored": largest[f"delta_Y_B{b}"] < DELTA2_FLOOR}
+               for b in BUDGETS},
+        }
+        h1_v1_test[mode] = {}
+        for b in BUDGETS:
+            du_max = result["modes"][mode][f"delta_U_at_max_R_B{b}"]
+            d1 = delta1_v1[f"B{b}"]["half_width"]
+            h1_v1_test[mode][f"B{b}"] = {
+                "delta_U_max": du_max, "delta1_v1": d1, "ratio": du_max / d1,
+                "clears": du_max >= d1,
+            }
+
+    result["registration_extras"] = {
+        "overhead_flat_multiple": OVERHEAD_FLAT_MULTIPLE,
+        "overhead_threshold_evals_per_app": {f"B{b}": threshold[b] for b in BUDGETS},
+        "per_rule_set": per_set,
+        "delta1_v1_definition": delta1_v1,
+        "delta_Y": delta_y,
+        "delta2_v3": delta2_v3,
+        "h1_delta_U_vs_delta1_v1": h1_v1_test,
+    }
+
     with open(args.out_json, "w") as f:
         json.dump(result, f, indent=1, sort_keys=True)
     print(f"wrote {args.out_json}")
@@ -363,6 +464,58 @@ def render_md(result):
             f"{fmt_pct(entry['B']['B100']['range'])} pts, B=200 = "
             f"{fmt_pct(entry['B']['B200']['range'])} pts.\n\n"
         )
+
+    x = result["registration_extras"]
+    thr = x["overhead_threshold_evals_per_app"]
+    out.append("## Registration extras (SS2 / SS5.3-SS5.6 of the v3 registration)\n\n")
+    out.append("Every rule set this registration's numbers touch, classical band (n=188). "
+                "`B in sweeps` = B / median apps_per_sweep (one-sweep probe per expression). "
+                f"SS7.1 flat <=> evals/app at B <= {x['overhead_flat_multiple']:.0f}x `base`'s "
+                f"({thr['B100']:.2f} @100, {thr['B200']:.2f} @200).\n\n")
+    out.append("| rule set | \\|R\\| | fingerprint | aps med | B100 sweeps | B200 sweeps | U@100 | L@100 | "
+                "Y@100 | U@200 | L@200 | Y@200 | ev/app@100 | x base | flat@100 | ev/app@200 | x base | "
+                "flat@200 | differing@100/@200 |\n"
+                "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---|---|\n")
+    for r in x["per_rule_set"]:
+        b1, b2 = r["B100"], r["B200"]
+        out.append(
+            f"| `{r['rule_set']}` | {r['num_rules']} | `{r['fingerprint']}` | {r['apps_per_sweep_median']:.0f} | "
+            f"{b1['B_in_sweeps']:.2f} | {b2['B_in_sweeps']:.2f} | {fmt_pct(b1['U'])} | {b1['L']:.3f} | "
+            f"{fmt_pct(b1['Y'])} | {fmt_pct(b2['U'])} | {b2['L']:.3f} | {fmt_pct(b2['Y'])} | "
+            f"{b1['evals_per_app']:.2f} | {b1['evals_per_app_x_base']:.2f} | {'yes' if b1['flat'] else 'no'} | "
+            f"{b2['evals_per_app']:.2f} | {b2['evals_per_app_x_base']:.2f} | {'yes' if b2['flat'] else 'no'} | "
+            f"{b1['differing_from_base']} / {b2['differing_from_base']} |\n"
+        )
+    d1 = x["delta1_v1_definition"]
+    out.append("\nDelta1 under v1's definition (95% bootstrap CI half-width of median U at `base`, "
+                f"{BOOTSTRAP_RESAMPLES} resamples, seed {BOOTSTRAP_SEED}): B=100 = "
+                f"{fmt_pct(d1['B100']['half_width'])} pts (median {fmt_pct(d1['B100']['median_U_base'])}, "
+                f"CI [{fmt_pct(d1['B100']['ci_lo'])}, {fmt_pct(d1['B100']['ci_hi'])}]); B=200 = "
+                f"{fmt_pct(d1['B200']['half_width'])} pts (median {fmt_pct(d1['B200']['median_U_base'])}, "
+                f"CI [{fmt_pct(d1['B200']['ci_lo'])}, {fmt_pct(d1['B200']['ci_hi'])}]).\n\n")
+    out.append("**Delta_U(max) vs Delta1 (v1's definition)**\n\n| mode | B | Delta_U(max) | Delta1(v1) | "
+                "ratio | clears? |\n|---|---:|---:|---:|---:|---|\n")
+    for mode, t in x["h1_delta_U_vs_delta1_v1"].items():
+        for b in BUDGETS:
+            e = t[f"B{b}"]
+            out.append(f"| ({mode}) | {b} | {fmt_pct(e['delta_U_max'])} | {fmt_pct(e['delta1_v1'])} | "
+                       f"{e['ratio']:+.2f} | {'yes' if e['clears'] else 'no'} |\n")
+    out.append("\n**Paired Delta_Y(p) = Y(p) - Y(OrderMatchedBase) and Delta2(v3) = "
+                f"max({DELTA2_FLOOR}, Delta_Y at |R|max)**\n\n| mode | rule set | \\|R\\| | Y(p)@100 | "
+                "Y(matched)@100 | Delta_Y@100 | Y(p)@200 | Y(matched)@200 | Delta_Y@200 |\n"
+                "|---|---|---:|---:|---:|---:|---:|---:|---:|\n")
+    for mode, rows in x["delta_Y"].items():
+        for r in rows:
+            out.append(f"| ({mode}) | `{r['rule_set']}` | {r['R']} | {fmt_pct(r['Y_B100'])} | "
+                       f"{fmt_pct(r['Y_matched_B100'])} | {fmt_pct(r['delta_Y_B100'])} | "
+                       f"{fmt_pct(r['Y_B200'])} | {fmt_pct(r['Y_matched_B200'])} | "
+                       f"{fmt_pct(r['delta_Y_B200'])} |\n")
+    out.append("\n| mode | at | Delta2(v3)@100 | Delta2(v3)@200 |\n|---|---|---:|---:|\n")
+    for mode, d in x["delta2_v3"].items():
+        out.append(f"| ({mode}) | `{d['at_rule_set']}` | {d['B100']['delta2']:.4f}"
+                   f"{' (floor)' if d['B100']['floored'] else ''} | {d['B200']['delta2']:.4f}"
+                   f"{' (floor)' if d['B200']['floored'] else ''} |\n")
+    out.append("\n")
     return "".join(out)
 
 
