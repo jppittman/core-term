@@ -61,6 +61,7 @@
 //! own (`scoring.rs`).
 
 mod accumulator;
+pub mod linear;
 mod scoring;
 
 extern crate alloc;
