@@ -20,9 +20,8 @@ committed on this branch), and measures the order effect on its own, as an indep
 finding, rather than leaving it latent inside every inflated-point comparison.
 
 **Date:** 2026-09-01
-**Status:** SKELETON. This document fixes v3's grid, references, statistics, seeds, and gates.
-**No data has been collected under it yet** — every constant marked **TBD** is fixed only by an
-unguided Register run on this harness (§5), committed before any guided run at `|R| > 62` uses this
+**Status:** REGISTERED. §3–§5.2's Register run is complete (§8, Entry 1) — every constant
+previously marked **TBD** is now fixed. Committed before any guided run at `|R| > 62` uses this
 document, per the binding rule inherited from v1/v2.
 
 **Authority:** carries forward v2's full authority chain (`docs/plans/2026-08-31-guide-design-revision.md`
@@ -122,14 +121,33 @@ real closure (mechanical compositions, genuinely new rules) and are where a nonz
 `ΔU` — if it exists — would be a genuine capacity/coverage effect, not an order artifact. This
 document does not assert either outcome; §8 registers whichever the data show.
 
-| Mode | grid `\|R\|` | B | `U(p)` (v2, unchanged) | `U(`OrderMatchedBase`)` (TBD) | `ΔU(p)` (TBD) | Spearman ρ (TBD) | `ΔU`(max) (TBD) | ≥ +Δ1(v3)? (TBD) | **verdict** |
+`ΔU` is undefined at `|R|=62` itself (that point is never reordered — §0/§2 invariant — so it has
+no `OrderMatchedBase` counterpart); rows below cover the 7 realized inflated points only.
+
+| Mode | grid `\|R\|` | B | `U(p)` (v2, unchanged) | `U(`OrderMatchedBase`)` | `ΔU(p)` | Spearman ρ | `ΔU`(max) | ≥ +Δ1(v3)? | **verdict** |
 |---|---|---:|---|---|---|---:|---:|---|---|
-| (i) | 62,93,124,186,248 | 100 | 96.59, 43.76, 41.12, 15.44, 38.67 | TBD | TBD | TBD | TBD | TBD | TBD |
-| (i) | 62,93,124,186,248 | 200 | 40.49, 6.69, 25.44, 9.47, 27.02 | TBD | TBD | TBD | TBD | TBD | TBD |
-| (ii) | 62,93,124 | 100 | 96.59, 60.55, 41.69 | TBD | TBD | TBD | TBD | TBD | TBD |
-| (ii) | 62,93,124 | 200 | 40.49, 25.60, 21.22 | TBD | TBD | TBD | TBD | TBD | TBD |
-| (iii) | 62,95 | 100 | 96.59, 33.11 | TBD | TBD | TBD | TBD | TBD | TBD |
-| (iii) | 62,95 | 200 | 40.49, 52.06 | TBD | TBD | TBD | TBD | TBD | TBD |
+| (i) | 93,124,186,248 | 100 | 43.76, 41.12, 15.44, 38.67 | 60.55, 43.88, 13.85, 4.33 | -16.79, -2.76, +1.59, **+34.34** | **1.000** | +34.34 | YES (Δ1=0.05) | **HOLDS** (direction + effect) |
+| (i) | 93,124,186,248 | 200 | 6.69, 25.44, 9.47, 27.02 | 24.82, 16.89, 4.70, 3.36 | -18.13, +8.55, +4.76, **+23.66** | 0.800 | +23.66 | YES (Δ1=4.82) | **HOLDS** (direction + effect) |
+| (ii) | 93,124 | 100 | 60.55, 41.69 | 60.55, 43.88 | 0.00, -2.19 | -1.000 (n=2, degenerate) | -2.19 | trivially, Δ1≈0 | direction FAILS; only 2 points, not a real trend read |
+| (ii) | 93,124 | 200 | 25.60, 21.22 | 24.82, 16.89 | +0.78, +4.33 | +1.000 (n=2, degenerate) | +4.33 | trivially, Δ1≈0 | direction FAILS (n=2 rho uninformative); effect clears a near-zero Δ1 |
+| (iii) | 95 | 100 | 33.11 | 48.25 | -15.14 | undefined (n=1) | -15.14 | NO (Δ1=11.45) | direction undefined; effect FAILS |
+| (iii) | 95 | 200 | 52.06 | 27.52 | +24.54 | undefined (n=1) | +24.54 | YES (Δ1=16.74) | direction undefined; effect HOLDS |
+
+**Reading.** Mode (i) is the only mode with enough grid points (4) for a Spearman read, and it
+holds cleanly at both budgets — but the sign is *increasing* regret with `|R|`, not decreasing:
+`ΔU` climbs from -16.8% at `dup:93` to +34.3% at `dup:248` (B=100). Since mode (i) cannot change
+what saturation can reach (exact duplicates, closure identical to `base` at every point), this is
+not a capacity effect — it is application-budget dilution: a fixed *count* of applications buys a
+shrinking share of productive (non-duplicate) matches as redundant duplicate slots are added to
+every sweep, even with the 62 real rules' relative sweep position held fixed via
+`OrderMatchedBase`. This is the opposite of §3's stated advance prediction (mode (i) `ΔU` sitting
+near zero) — the prediction assumed holding order fixed would leave nothing for `|R|` to move;
+what it misses is that `|R|` still governs how much of a fixed *application* budget each sweep
+pass costs, independent of order or closure. Modes (ii) (2 points) and (iii) (1 point) do not have
+enough grid points to read a trend at all — mode (ii)'s two-point Spearman ρ is ±1 by construction
+regardless of effect size, and both modes' `ΔU` values are small-to-moderate and inconsistent in
+sign between B=100/B=200. Full numbers, per-expression pairing, and the bootstrap detail:
+`docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.{json,md}`.
 
 ## 4. The order effect, as its own registered finding
 
@@ -152,20 +170,46 @@ expressions whose extracted cost@B differs from `base`'s** at B=100 and B=200 �
 "differing" convention v2 §4 used to state that inflated points were reachable at all, here used to
 state how much of the sample a pure reorder (no rule added or removed) touches.
 
-| Rule set | B=100 median U (TBD) | B=200 median U (TBD) | differing from `base` @100/@200 (of 188, TBD) |
+| Rule set | B=100 median U | B=200 median U | differing from `base` @100/@200 (of 188) |
 |---|---:|---:|---|
-| `base` (production order, = v2's |R|=62 point) | 96.59 | 40.49 | — (reference row) |
-| `Shuffled(SEED_A=1)` | TBD | TBD | TBD |
-| `Shuffled(SEED_B=2)` | TBD | TBD | TBD |
-| `Shuffled(SEED_C=3)` | TBD | TBD | TBD |
-| `StaticReorder(NumericFirst)` | TBD | TBD | TBD |
+| `base` (production order, = v2's |R|=62 point) | 96.58 | 40.49 | — (reference row) |
+| `Shuffled(SEED_A=1)` | 43.74 | 23.57 | 175 / 150 |
+| `Shuffled(SEED_B=2)` | 46.19 | 25.70 | 186 / 143 |
+| `Shuffled(SEED_C=3)` | 26.28 | 1.49 | 186 / 151 |
+| `StaticReorder(NumericFirst)` | **1.12** | **0.44** | 186 / 140 |
 
-**Reading rule, stated in advance:** if `StaticReorder(NumericFirst)`'s median U at B=100 sits
-substantially below `base`'s 96.59% — on the order of the per-rule-control's 0.565 the orchestrator
-finding cites, or better — that is the production quick-win registered as data, not yet as a
-production change (§0). If the three `Shuffled` seeds spread widely, the order effect itself is
-seed-sensitive and `ΔU` (§3) inherits that sensitivity; if they cluster, `0x2026_0901` was not an
-outlier draw and §3's single-seed `ΔU` is a reasonable stand-in for "a typical shuffle's" effect.
+**Reading (the prediction above, evaluated).** `StaticReorder(NumericFirst)`'s median U sits at
+1.12% (B=100) — not merely "substantially below" `base`'s 96.58%, but ~86x smaller, far past the
+per-rule-control's 0.565 benchmark the orchestrator finding cited, and better than every one of
+the three random shuffles too (26–46%). This is the production quick-win registered as data, not
+yet as a production change (§0). The three `Shuffled` seeds do spread meaningfully (26–46% at
+B=100, 1.5–25.7% at B=200) — `0x2026_0901` (v2's single interleave seed, itself equivalent to a
+4th random draw once inflation content is stripped out — see the seed-sensitivity addendum below)
+was not an outlier in the sense of falling outside this range, but the range itself is wide enough
+that a single seed's `ΔU` (§3) should be read with that spread as its uncertainty, not as an exact
+value. Every tested order — random or static — still beats `base` by a wide margin, so the
+*existence and direction* of the order effect is not seed-fragile even though a specific `ΔU`
+number is. `rapid`/`blitz` bands: U=0.00% at every order tested (differing counts nonzero, so the
+orders do change costs somewhere in the sample — the differences just don't survive to that
+budget's regret at those node-count scales); reported for completeness, no claim drawn from them.
+
+**Seed sensitivity of an inflated point (addendum, not in the original skeleton).** `dup:124` and
+`comp:93` re-run under two additional interleave seeds (`1`, `2`) alongside the registered seed —
+classical band:
+
+| Rule set | seed | U@100 | U@200 |
+|---|---|---:|---:|
+| `dup:124` | `0x20260901` (registered) | 41.12 | 25.44 |
+| `dup:124:interleave:1` | 1 | 37.80 | 32.37 |
+| `dup:124:interleave:2` | 2 | 50.33 | 22.62 |
+| `comp:93` | `0x20260901` (registered) | 60.55 | 25.60 |
+| `comp:93:interleave:1` | 1 | 39.95 | 18.77 |
+| `comp:93:interleave:2` | 2 | 38.70 | 13.07 |
+
+Spread (range) across the 3 seeds: `dup:124` 12.5 pts @100 / 9.8 pts @200; `comp:93` 21.9 pts @100
+/ 12.5 pts @200 — real, on the same order as the base-62 spread above, another sign that a single
+inflated point's `U` (and thus §3's `ΔU`, anchored to one seed) carries seed noise of this
+magnitude. Full numbers: `docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.{json,md}`.
 
 ## 5. Registered constants
 
@@ -183,26 +227,39 @@ statistics (design §1.3); `DEFAULT_INTERLEAVE_SEED = 0x2026_0901` (v2 §1, reus
 ### 5.2 New this document
 - Order-effect seeds: `SEED_A = 1`, `SEED_B = 2`, `SEED_C = 3` (§1) — pre-committed here, before any
   `Shuffled(*)` curve is run.
-- **Δ1(v3): TBD** — 95% bootstrap CI of median `ΔU` at the smallest inflated point per mode (same
-  resampling protocol as v2 §5.3), filled once §3's Register run exists.
-- Every other v3-specific number in §3/§4's tables: TBD, filled by the same run.
+- **Δ1(v3)**, per mode, at the smallest inflated point, computed on PAIRED per-expression
+  `regret_p(e) − regret_matched(e)` (10,000 resamples, seed 42, same protocol as v2 §5.3):
+  - Mode (i) at `dup:93`: B=100 half-width **0.05 pts** (median 0.00, CI [-0.09, 0.00]); B=200
+    **4.82 pts** (median -4.21).
+  - Mode (ii) at `comp:93`: B=100 half-width **0.00 pts** (median 0.00, CI [0.00, 0.00] — the
+    composition rules barely fire within B=100 at |R|=93, so `dup:93`/`comp:93` are nearly
+    identical to their `OrderMatchedBase` reference for almost every expression); B=200 **0.00
+    pts** (same).
+  - Mode (iii) at `new:95`: B=100 half-width **11.45 pts** (median -0.18, CI [-21.22, +1.67]);
+    B=200 **16.74 pts** (median +6.12).
+- Every other v3-specific number in §3/§4's tables: filled by this run (§8, Entry 1).
 
 ## 6. Gates
 
 Same accept/kill/honest-fallback shape as v2 §8, evaluated against v3's `ΔU` statistic (§3) in
-place of v2's raw `U` statistic wherever this document supersedes v2's reading. **Not yet
-evaluable** — no data exists under this document (§ Status). Recorded here as structure only:
+place of v2's raw `U` statistic wherever this document supersedes v2's reading.
 
 - **Accept gate (per mode):** H1(v3) (§3) AND H2 (design §1.3, unchanged) hold on DEV classical
-  (n=334) at B=100.
-- **Kill gate (per mode):** H2 part 3 failing at any `|R|` point on DEV, after one clean
-  re-mint/re-train.
-- **Honest fallback:** if `ΔU` shows no `|R|`-growing effect in any mode once order is held fixed,
-  that is itself the deliverable — v2 §6b's confound argument would then be the WHOLE explanation
-  for v2's raw `U(|R|)` finding, with nothing left over once order is controlled for. This is not
-  presumed; §8 records whichever way the data land.
+  (n=334) at B=100. **Not evaluated here** — this Register run is TRAIN+DEV-sample unguided data
+  only (§1, inherited from v2), matching v1/v2's own scope; no DEV-only re-split or guided run was
+  performed under this document. H2 remains UNTESTED, as it was left in v2 §11 Entry 2.
+- **Kill gate (per mode):** H2 part 3 failing at any `|R|` point on DEV — not triggered; H2 was not
+  evaluated (above).
+- **Honest fallback — this is what fired.** `ΔU` shows an `|R|`-growing effect only in mode (i)
+  (§3), and it is a dilution cost (increasing regret), not a coverage gain — the opposite sign
+  from what would make `|R|` itself a reason to add rules. Modes (ii)/(iii) have too few grid
+  points to assert a trend either way. So: v2 §6b's confound argument is essentially the WHOLE
+  explanation for v2's raw `U(|R|)` finding — order dominates, and the residual `|R|` effect
+  (mode i) is small and adverse relative to it (§4's order effect: 50–95 points at B=100 from a
+  reorder alone, vs mode (i)'s +34.3-point `ΔU` maximum). This is the honest-fallback outcome
+  §6 anticipated, now recorded as data (§8, Entry 1).
 
-## 7. Reproduction (skeleton — commands to run when this Register run happens)
+## 7. Reproduction (commands actually run for Entry 1, §8)
 
 ```bash
 # §3 — OrderMatchedBase references, one 62-rule curve per inflated |R| point
@@ -221,13 +278,67 @@ cargo run --release -p pixelflow-pipeline --bin phase3_round2_unguided_curves --
     --out-json docs/results/2026-09-01-round2-order-effect-v3.json \
     --rule-sets base,base:shuffled:1,base:shuffled:2,base:shuffled:3,base:static:numeric-first
 
+# §4 addendum — seed sensitivity of an inflated point: dup:124 and comp:93 under
+# 2 additional interleave seeds (the registered-seed rows are reused from v2's CSV)
+cargo run --release -p pixelflow-pipeline --bin phase3_round2_unguided_curves -- \
+    --corpus-dir pixelflow-pipeline/data --samples 400 \
+    --out-csv docs/results/2026-09-01-round2-seed-sensitivity-v3.csv \
+    --out-json docs/results/2026-09-01-round2-seed-sensitivity-v3.json \
+    --rule-sets dup:124:interleave:1,dup:124:interleave:2,comp:93:interleave:1,comp:93:interleave:2
+
 # fingerprint + mode-independence + pinned-order guarantees for the three new RuleOrder variants
 cargo test -p pixelflow-search math::inflate -- --nocapture
-```
 
-`round2_register_stats.py` (or a v3-specific successor, if the `ΔU` statistic needs a script change
-the existing one doesn't already support) computes §3/§4's tables from the two CSVs above.
+# raw-row union under one header (the .csv this document's numbers trace back to)
+{ head -1 docs/results/2026-09-01-round2-order-matched-base-v3.csv; \
+  tail -n +2 docs/results/2026-09-01-round2-order-matched-base-v3.csv; \
+  tail -n +2 docs/results/2026-09-01-round2-order-effect-v3.csv; \
+  tail -n +2 docs/results/2026-09-01-round2-seed-sensitivity-v3.csv; \
+} > docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.csv
+
+# aggregate stats — ΔU, the order table, seed spread (round2_register_stats.py's
+# per_rule_set/quartiles/bootstrap machinery, imported not re-derived; new script
+# because base_rs in the shared tool is hard-wired to "base", and §3 needs an
+# arbitrary per-point reference)
+python3 pixelflow-pipeline/scripts/round2_register_stats_v3.py \
+    --v2-csv docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.csv \
+    --matched-csv docs/results/2026-09-01-round2-order-matched-base-v3.csv \
+    --order-csv docs/results/2026-09-01-round2-order-effect-v3.csv \
+    --seed-csv docs/results/2026-09-01-round2-seed-sensitivity-v3.csv \
+    --out-json docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.json \
+    --out-md docs/results/2026-09-01-round2-unguided-vs-rulecount-v3.md
+```
 
 ## 8. Results appended against the gates
 
-(Append-only, as in v1/v2. Empty — no Register run has been made under this document yet.)
+(Append-only, as in v1/v2.)
+
+**Entry 1 (2026-09-01, this commit).** Unguided Register run under this document, `phase3_round2
+_unguided_curves --release`, same 400-expression sample as v1/v2 (188 classical). v2's 8 already-
+measured rule sets (`base`, `dup:93/124/186/248`, `comp:93/124`, `new:95`) are **not re-run** —
+reused byte-identical from `docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.csv` (the
+loader in `round2_register_stats_v3.py` asserts byte-identity wherever a `(rule_set, expr,
+checkpoint)` key appears in more than one input file, which it does for `base` here, and it did
+not die). 3 new binary runs, 13 new rule-set curves total: 5 `OrderMatchedBase` references (§3),
+5 order-effect sets (`base` re-measured + 3 `Shuffled` seeds + `StaticReorder(NumericFirst)`, §4),
+4 seed-sensitivity curves (`dup:124`/`comp:93` × 2 additional seeds, §4 addendum). All at
+`|R| ∈ {62, 93, 124}` — no run in this document touches `|R| ≥ 186`, so none of it revisits the
+`comp:186`/`comp:248` wall (§2) or v2's safety-ceiling panics.
+
+**H1(v3) verdict: mode (i) HOLDS (direction + effect, both budgets) — but in the dilution
+direction, not the coverage direction §3 flagged as the alternative to watch for. Modes (ii)/(iii)
+are underdetermined (2 and 1 grid points).** Full tables: §3/§4 above. **§6's honest fallback
+fired**: order dominates and the residual `|R|` effect, where measurable, is small and adverse.
+
+**Production quick-win, measured directly:** `StaticReorder(NumericFirst)` — descending TRAIN
+strict-positive rate, ties by production index, zero runtime cost, no rule added or removed —
+cuts median unguided regret at B=100 from `base`'s 96.58% to 1.12% (188-expression classical
+sample), beating every random shuffle tested too. This is data, not a production change (§0) —
+adopting it as `all_rules()`'s order is JP's decision on this data, out of this branch's scope.
+
+**Files:** `docs/results/2026-09-01-round2-order-matched-base-v3.{csv,json}`, `docs/results/2026
+-09-01-round2-order-effect-v3.{csv,json}`, `docs/results/2026-09-01-round2-seed-sensitivity-v3.
+{csv,json}` (the three raw per-run outputs); `docs/results/2026-09-01-round2-unguided-vs-rulecount
+-v3.{csv,json,md}` (the union CSV and the aggregate stats + narrative this document's numbers are
+drawn from); `pixelflow-pipeline/scripts/round2_register_stats_v3.py` (the aggregation script, new
+this commit).
