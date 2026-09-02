@@ -61,6 +61,10 @@
 //! own (`scoring.rs`).
 
 mod accumulator;
+/// The checkpoint loader reads JSON off the filesystem, which nothing in a
+/// compile path does — see the `guide-checkpoint` feature in this crate's
+/// `Cargo.toml` for why it is opt-in.
+#[cfg(feature = "guide-checkpoint")]
 pub mod linear;
 mod scoring;
 

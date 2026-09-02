@@ -113,6 +113,69 @@ fn as_string_vec(v: &Value, path: &str, name: &str) -> Result<Vec<String>, Check
         .collect()
 }
 
+fn as_str(v: &Value, path: &str, name: &str) -> Result<String, CheckpointError> {
+    field(v, path, name)?
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CheckpointError(format!("checkpoint {path}: field {name:?} is not a string"))
+        })
+}
+
+fn as_usize(v: &Value, path: &str, name: &str) -> Result<usize, CheckpointError> {
+    field(v, path, name)?
+        .as_u64()
+        .map(|x| x as usize)
+        .ok_or_else(|| {
+            CheckpointError(format!(
+                "checkpoint {path}: field {name:?} is not a non-negative integer"
+            ))
+        })
+}
+
+/// FNV-1a 64, hex — `pixelflow-pipeline`'s `schema::fnv1a64_hex` recomputed
+/// here rather than imported because the dependency runs the other way
+/// (that crate depends on this one). The two are held together by
+/// `checkpoint_hash_agrees_with_the_writer` in `train_guide`'s own tests: a
+/// checkpoint it writes must load here, so a drift in either function is a
+/// test failure rather than a silent mis-validation.
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// `train_guide::GuideCheckpoint::weights_fingerprint`, recomputed from the
+/// parsed JSON: FNV-1a 64 over the weight-bearing fields in a fixed order at
+/// a fixed precision. Anything that edits a weight without rewriting the
+/// checkpoint — a hand-patched file, a partial copy, a merge of two
+/// checkpoints — changes this and not the recorded hash.
+fn weights_fingerprint(
+    bias: f32,
+    w_rule: &[f32],
+    w_op: &[f32],
+    w_budget: f32,
+    w_match_class: f32,
+    w_neighborhood: f32,
+    w_expr_size: f32,
+) -> String {
+    let mut buf = String::new();
+    buf.push_str(&format!("{bias:.9}\n"));
+    for w in w_rule {
+        buf.push_str(&format!("{w:.9}\n"));
+    }
+    for w in w_op {
+        buf.push_str(&format!("{w:.9}\n"));
+    }
+    buf.push_str(&format!(
+        "{w_budget:.9}\n{w_match_class:.9}\n{w_neighborhood:.9}\n{w_expr_size:.9}\n"
+    ));
+    fnv1a64_hex(buf.as_bytes())
+}
+
 fn read_json(path: &Path) -> Result<Value, CheckpointError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| CheckpointError(format!("cannot read {}: {e}", path.display())))?;
@@ -177,12 +240,24 @@ pub struct LinearCandidateGuide {
 
 impl LinearCandidateGuide {
     /// Load a checkpoint written by `pixelflow-pipeline`'s `train_guide`
-    /// (`GuideCheckpoint::write`). Fails loud (`Err`, never a default) on a
-    /// missing file, malformed JSON, or a checkpoint missing a field this
-    /// model needs — a Guide silently scoring with an all-zero weight it
-    /// couldn't find would corrupt saturation's move ordering without
-    /// saying so.
-    pub fn load(path: &Path) -> Result<Self, CheckpointError> {
+    /// (`GuideCheckpoint::write`) and bind it to the rule table it will
+    /// score against. Fails loud (`Err`, never a default) on a missing file,
+    /// malformed JSON, a checkpoint missing a field this model needs, a
+    /// checkpoint whose recorded content hash does not match its own
+    /// weights, or a rule table that disagrees with the one the weights were
+    /// trained against — a Guide silently scoring with an all-zero weight it
+    /// couldn't find, or with `w_rule[i]` naming a different rewrite than it
+    /// did at training time, would corrupt saturation's move ordering
+    /// without saying so.
+    ///
+    /// `rules` is the caller's live rule list in `rule_idx` order — the same
+    /// `all_rules()` the e-graph is built with. `w_rule` is indexed by
+    /// `rule_idx` and nothing about the index space is self-describing, so
+    /// the checkpoint's `rule_names` is the only thing that can catch a
+    /// reordered rule table; it is a required argument rather than an
+    /// optional `verify` call because a guide constructed without the check
+    /// is exactly the object that must not exist.
+    pub fn load(path: &Path, rules: &[&str]) -> Result<Self, CheckpointError> {
         let p = path.display().to_string();
         let v = read_json(path)?;
 
@@ -194,14 +269,72 @@ impl LinearCandidateGuide {
         let w_neighborhood = as_f32(&v, &p, "w_neighborhood")?;
         let w_expr_size = as_f32(&v, &p, "w_expr_size")?;
         let op_names = as_string_vec(&v, &p, "op_names")?;
+        let rule_names = as_string_vec(&v, &p, "rule_names")?;
+        let num_rules = as_usize(&v, &p, "num_rules")?;
+        let num_ops = as_usize(&v, &p, "num_ops")?;
+        let recorded_hash = as_str(&v, &p, "weights_fnv64")?;
+        // Read so a checkpoint without one is refused; the identity's
+        // *value* is computed by `pixelflow-pipeline`'s `SchemaIdentity`,
+        // which this crate is below in the dependency graph and so cannot
+        // evaluate. The content hash below is the check that has teeth here.
+        let _schema_identity = as_str(&v, &p, "schema_identity")?;
 
-        if op_names.len() != w_op.len() {
+        let actual_hash = weights_fingerprint(
+            bias,
+            &w_rule,
+            &w_op,
+            w_budget,
+            w_match_class,
+            w_neighborhood,
+            w_expr_size,
+        );
+        if recorded_hash != actual_hash {
             return Err(CheckpointError(format!(
-                "checkpoint {p}: op_names has {} entries but w_op has {} — the \
-                 checkpoint's own two array lengths disagree, cannot build a \
+                "checkpoint {p}: recorded weights_fnv64 {recorded_hash} but the weights \
+                 in the file hash to {actual_hash} — the file was edited, partially \
+                 copied, or merged after `train_guide` wrote it; retrain rather than \
+                 deploy weights whose provenance is broken"
+            )));
+        }
+
+        if num_ops != w_op.len() || op_names.len() != w_op.len() {
+            return Err(CheckpointError(format!(
+                "checkpoint {p}: num_ops={num_ops}, op_names has {} entries, w_op has {} \
+                 — the checkpoint's own op-array lengths disagree, cannot build a \
                  trustworthy op index",
                 op_names.len(),
                 w_op.len()
+            )));
+        }
+        if num_rules != w_rule.len() || rule_names.len() != w_rule.len() {
+            return Err(CheckpointError(format!(
+                "checkpoint {p}: num_rules={num_rules}, rule_names has {} entries, w_rule \
+                 has {} — the checkpoint's own rule-array lengths disagree",
+                rule_names.len(),
+                w_rule.len()
+            )));
+        }
+        if rules.len() < w_rule.len() {
+            return Err(CheckpointError(format!(
+                "checkpoint {p}: trained against {} rules but this caller's rule table has \
+                 only {} — every trained `rule_idx` must name a rule that still exists",
+                w_rule.len(),
+                rules.len()
+            )));
+        }
+        // `""` marks a `rule_idx` never observed in TRAIN or DEV, so the
+        // checkpoint has no name to check against — its weight is the
+        // untrained zero either way.
+        for (idx, trained) in rule_names.iter().enumerate() {
+            if trained.is_empty() || trained == rules[idx] {
+                continue;
+            }
+            return Err(CheckpointError(format!(
+                "checkpoint {p}: rule_idx {idx} was trained against rule {trained:?} but \
+                 this caller's rule table has {:?} there — the rule table was reordered or \
+                 edited since training, so every w_rule weight past this index is attached \
+                 to the wrong rewrite; retrain against the current table",
+                rules[idx]
             )));
         }
         let op_index: BTreeMap<String, usize> = op_names
@@ -364,17 +497,30 @@ mod tests {
     use super::*;
     use crate::nnue::factored::EMBED_DIM;
 
+    const TEST_RULES: [&str; 3] = ["r0", "r1", "r2"];
+
     fn write_checkpoint(dir: &Path) -> std::path::PathBuf {
+        let (bias, w_budget, w_match_class, w_neighborhood, w_expr_size) =
+            (0.1f32, 2.0f32, 0.3f32, -0.2f32, 0.05f32);
+        let w_rule = [1.0f32, -1.0, 0.0];
+        let w_op = [0.5f32, -0.25];
         let path = dir.join("checkpoint.json");
         let json = serde_json::json!({
-            "bias": 0.1,
-            "w_rule": [1.0, -1.0, 0.0],
-            "w_op": [0.5, -0.25],
-            "w_budget": 2.0,
-            "w_match_class": 0.3,
-            "w_neighborhood": -0.2,
-            "w_expr_size": 0.05,
+            "schema_identity": "0000000000000000",
+            "num_rules": 3,
+            "num_ops": 2,
+            "rule_names": TEST_RULES,
+            "bias": bias,
+            "w_rule": w_rule,
+            "w_op": w_op,
+            "w_budget": w_budget,
+            "w_match_class": w_match_class,
+            "w_neighborhood": w_neighborhood,
+            "w_expr_size": w_expr_size,
             "op_names": ["Add", "Mul"],
+            "weights_fnv64": weights_fingerprint(
+                bias, &w_rule, &w_op, w_budget, w_match_class, w_neighborhood, w_expr_size,
+            ),
         });
         std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
         path
@@ -397,7 +543,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = write_checkpoint(&dir);
 
-        let guide = LinearCandidateGuide::load(&path).unwrap();
+        let guide = LinearCandidateGuide::load(&path, &TEST_RULES).unwrap();
         let c = candidate(0, vec![OpKind::Add, OpKind::Add, OpKind::Mul]);
         let scores = guide.score_candidates(&[c]);
 
@@ -423,8 +569,45 @@ mod tests {
 
     #[test]
     fn load_refuses_a_missing_file_loudly() {
-        let result = LinearCandidateGuide::load(Path::new("/nonexistent/checkpoint.json"));
+        let result =
+            LinearCandidateGuide::load(Path::new("/nonexistent/checkpoint.json"), &TEST_RULES);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_refuses_a_checkpoint_whose_recorded_hash_does_not_match_its_weights() {
+        let dir = std::env::temp_dir().join(format!("linear_guide_tamper_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_checkpoint(&dir);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut v: Value = serde_json::from_str(&text).unwrap();
+        v["w_rule"][0] = serde_json::json!(9.0);
+        std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+
+        let Err(err) = LinearCandidateGuide::load(&path, &TEST_RULES) else {
+            panic!("a hand-edited weight must not deploy");
+        };
+        assert!(
+            err.to_string().contains("weights_fnv64"),
+            "error should name the hash it checked: {err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_refuses_a_rule_table_that_disagrees_with_the_checkpoint() {
+        let dir = std::env::temp_dir().join(format!("linear_guide_rules_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_checkpoint(&dir);
+
+        let Err(err) = LinearCandidateGuide::load(&path, &["r0", "REORDERED", "r2"]) else {
+            panic!("a reordered rule table attaches every weight to the wrong rewrite");
+        };
+        assert!(
+            err.to_string().contains("rule_idx 1"),
+            "error should name the index that disagrees: {err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -433,7 +616,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("linear_guide_oob_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = write_checkpoint(&dir);
-        let guide = LinearCandidateGuide::load(&path).unwrap();
+        let guide = LinearCandidateGuide::load(&path, &TEST_RULES).unwrap();
         let _ = guide.score_candidates(&[candidate(99, vec![])]);
     }
 

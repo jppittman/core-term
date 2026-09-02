@@ -237,17 +237,36 @@ pub fn average_precision(scores: &[f32], labels: &[f32]) -> Option<f64> {
             .partial_cmp(&scores[a])
             .unwrap_or_else(|| panic!("average_precision: NaN score"))
     });
+    // Advance the curve once per DISTINCT score, not once per row: sklearn's
+    // convention is a step per threshold, and a per-row loop makes AP depend
+    // on the input order of tied rows. That is not hypothetical here —
+    // `PerRuleRateGuide` gives every candidate of a rule the same score, so
+    // the control arm's PR-AUC would otherwise be an artifact of enumeration
+    // order. `auc_roc` above already averages ranks within a tie group; this
+    // is the same correction for the precision-recall curve.
     let mut tp = 0usize;
     let mut fp = 0usize;
     let mut ap = 0.0f64;
-    for &i in &idx {
-        if labels[i] > 0.5 {
-            tp += 1;
-            let precision = tp as f64 / (tp + fp) as f64;
-            ap += precision / n_pos as f64;
-        } else {
-            fp += 1;
+    let mut i = 0usize;
+    while i < idx.len() {
+        let mut j = i;
+        while j + 1 < idx.len() && scores[idx[j + 1]] == scores[idx[i]] {
+            j += 1;
         }
+        let tp_before = tp;
+        for &k in &idx[i..=j] {
+            if labels[k] > 0.5 {
+                tp += 1;
+            } else {
+                fp += 1;
+            }
+        }
+        let recall_delta = (tp - tp_before) as f64 / n_pos as f64;
+        if recall_delta > 0.0 {
+            let precision = tp as f64 / (tp + fp) as f64;
+            ap += precision * recall_delta;
+        }
+        i = j + 1;
     }
     Some(ap)
 }

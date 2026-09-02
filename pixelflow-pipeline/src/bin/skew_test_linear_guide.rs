@@ -181,7 +181,9 @@ fn main() {
         w_expr_size: weights.w_expr_size,
     };
 
-    let guide = LinearCandidateGuide::load(std::path::Path::new(&args.checkpoint))
+    let rules = pixelflow_search::egraph::all_rules();
+    let rule_names: Vec<&str> = rules.iter().map(|r| r.name()).collect();
+    let guide = LinearCandidateGuide::load(std::path::Path::new(&args.checkpoint), &rule_names)
         .unwrap_or_else(|e| panic!("skew_test_linear_guide: {e}"));
 
     let file = std::fs::File::open(&args.dev)

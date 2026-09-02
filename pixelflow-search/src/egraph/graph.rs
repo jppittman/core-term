@@ -942,12 +942,14 @@ impl EGraph {
             self.step += 1;
 
             // Apply all rules in a single batch — one rebuild per iteration
+            let mut mid_sweep_stop: Option<SaturationStop> = None;
             let unions = {
                 let mut batch = self.batch();
                 let n_rules = batch.graph.rules.len();
                 let mut total = 0;
                 for rule_idx in 0..n_rules {
                     if batch.node_count() > max_classes {
+                        mid_sweep_stop = Some(SaturationStop::ClassCap);
                         break;
                     }
                     let result = batch.apply_rule(rule_idx, max_classes, Some(deadline));
@@ -957,6 +959,18 @@ impl EGraph {
                 // rebuild happens here on drop
             };
             total_unions += unions;
+            // A sweep cut short by the class cap is a truncated sweep, not a
+            // complete one, so its union count says nothing about quiescence.
+            // The cap is checked against `batch.node_count()` (which counts
+            // the batch's pending nodes) while the loop head checks
+            // `self.classes.len()`, so this fires on rounds the loop head
+            // does not catch — exactly the case that would otherwise report
+            // `Quiesced` for a capped run. `saturate_until_applications`
+            // already draws this distinction; this is the same one.
+            if let Some(stop_reason) = mid_sweep_stop {
+                stop = stop_reason;
+                break;
+            }
             if unions == 0 {
                 // `apply_rule` truncates its own scan once the deadline has
                 // passed, so a zero-union sweep with the deadline expired is

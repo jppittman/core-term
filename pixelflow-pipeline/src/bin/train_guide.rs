@@ -1363,6 +1363,20 @@ mod tests {
             GuideCheckpoint::current_schema_identity()
         );
 
+        // The deployed loader lives one crate down and recomputes this
+        // file's content hash from its own copy of the formula. A drift in
+        // either side has to fail here rather than silently mis-validate a
+        // real checkpoint.
+        use pixelflow_search::nnue::guide::linear::LinearCandidateGuide;
+        LinearCandidateGuide::load(&path, &["a", "b"])
+            .expect("the deployed loader must accept a checkpoint train_guide just wrote");
+        let reordered = LinearCandidateGuide::load(&path, &["b", "a"]);
+        assert!(
+            reordered.is_err(),
+            "a rule table whose names disagree with the checkpoint's must be refused — \
+             the weights would attach to the wrong rewrites"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

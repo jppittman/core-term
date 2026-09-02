@@ -122,6 +122,16 @@ struct ExprCurve {
     apps_at: Vec<usize>,
     ended: SaturationStop,
     ended_at_apps: usize,
+    /// Per-checkpoint stop reason, in grid order. A checkpoint is LIVE — its
+    /// cost can still move at a later grid target — exactly when it stopped
+    /// on [`SaturationStop::ApplicationBudget`], which is what
+    /// `AnytimeCheckpoint::stop`'s own doc says. `ended_at_apps > b` is not
+    /// the same predicate: the budget is crossed at rule-sweep granularity,
+    /// so a run can quiesce while overshooting B (the B=100 checkpoint
+    /// finishing quiesced at 150 applications), and counting that finalized
+    /// checkpoint as live inflates `live_at_B` and the live-conditioned
+    /// loss statistics with rows whose cost cannot change.
+    stop_at: Vec<SaturationStop>,
 }
 
 /// Truncation loss in percent: how much worse `cost_b` is than `cost_4b`.
@@ -277,6 +287,7 @@ fn main() {
             apps_at: curve.checkpoints.iter().map(|c| c.app_actual).collect(),
             ended: curve.ended,
             ended_at_apps: curve.ended_at_apps,
+            stop_at: curve.checkpoints.iter().map(|c| c.stop).collect(),
         });
         if (i + 1) % 50 == 0 || i + 1 == sampled.len() {
             eprintln!(
@@ -401,14 +412,19 @@ fn main() {
             let fi = idx_of[&(b * 4)];
             let rows: Vec<(f64, bool)> = sub
                 .iter()
-                .map(|c| (loss_pct(c.cost_at[bi], c.cost_at[fi]), c.ended_at_apps > b))
+                .map(|c| {
+                    (
+                        loss_pct(c.cost_at[bi], c.cost_at[fi]),
+                        c.stop_at[bi] == SaturationStop::ApplicationBudget,
+                    )
+                })
                 .collect();
             let half_rows: Vec<(f64, bool)> = sub
                 .iter()
                 .map(|c| {
                     (
                         loss_pct(c.cost_at[hi], c.cost_at[fi]),
-                        c.ended_at_apps > b / 2,
+                        c.stop_at[hi] == SaturationStop::ApplicationBudget,
                     )
                 })
                 .collect();

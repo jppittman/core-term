@@ -8,6 +8,14 @@ description = "A generic graph search framework for algebraic optimization and s
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
 
+[features]
+# Cold-start Guide checkpoint loading (`nnue::guide::linear`). OFF by
+# default: `pixelflow-compiler` depends on this crate from a proc macro, so
+# every workspace build compiles it, and nothing in a compile path reads a
+# Guide checkpoint — only `pixelflow-pipeline`'s research binaries do.
+# Gating keeps `serde_json`/`serde` out of the build for everyone else.
+guide-checkpoint = ["dep:serde_json"]
+
 [dependencies]
 libm = "0.2.15"
 pixelflow-ir = { path = "../pixelflow-ir", default-features = false, features = ["std"] }
@@ -17,7 +25,7 @@ pixelflow-ir = { path = "../pixelflow-ir", default-features = false, features = 
 # layer up the dependency graph) owns the schema; this crate only reads the
 # handful of named fields it needs, so a `Deserialize`-derived struct here
 # would be a second, drift-prone restatement of a schema it doesn't own.
-serde_json = "1.0"
+serde_json = { version = "1.0", optional = true }
 
 [dev-dependencies]
 # Rewrite-soundness tests check a rule's two sides numerically against the

@@ -274,3 +274,20 @@ recorded here as a referral with the numbers, not chased.
   report for each corpus.
 - `docs/results/journal.jsonl` — one `phase3_round1b_domain_shift` record.
 - `docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md` §7 — results against the gates.
+
+## Harness corrections landed after these numbers were minted (2026-09-02)
+
+The 2026-09-02 review round found five defects in the harness code this PR adds. All are fixed on
+this branch; the numbers above were produced *before* the fixes, and are left as recorded rather than
+silently restated under new code. What each one can and cannot move:
+
+| Fix | What was wrong | Effect on the numbers above |
+|---|---|---|
+| Guided loop: siblings sharing a `CandidateKey` are now **all** attempted before the key is marked seen (`egraph/saturate.rs`) | Several nodes of one e-class can match one rule and share the key. Only the first was applied; if it recorded an application that changed nothing — 91% of recorded applications are exact no-ops (`2026-08-30-guide-scope-saturation-delta.md`) — the key was marked resolved and a productive sibling was never attempted, so the loop could report `Quiesced` with applicable work left. | **Can move both guided arms** (`control`, `linear`), never the `unguided` arm, which does not go through this loop. Direction: guided arms could only have been *under*-saturated, so both D statistics were measured against a slightly weakened guided side. The registered comparison is control-vs-linear and both arms shared the defect, so the H_null verdict is not obviously at risk — but it has not been re-measured, and that is the honest statement. |
+| `saturate_with_limits` records a mid-sweep `ClassCap` instead of falling through to `Quiesced` (`egraph/graph.rs`) | The per-rule loop breaks on `batch.node_count() > max_classes`; a truncated sweep with zero unions then reported `Quiesced`. The cap is checked against a different quantity than the loop head, so the loop head does not catch it. | Stop-reason reporting only — no cost or ratio changes. Affects `production_saturation_probe` rows and any `ended` field sourced from this loop. |
+| `live_at_B` is classified from each checkpoint's own stop reason, not `ended_at_apps > b` (`phase3_unguided_baseline.rs`) | The budget is crossed at rule-sweep granularity, so a run can quiesce while overshooting B (a B=100 checkpoint finishing quiesced at 150 applications). That finalized checkpoint was counted live. | Changes `live@B`, `live_med%`, and `live>0 cnt` in `2026-09-01-phase3-unguided-baseline.{md,csv,json}` — the live-conditioned columns were inflated. The unconditioned truncation-loss columns are unaffected. |
+| `average_precision` advances the PR curve once per distinct score (`training/guide_linear.rs`) | Ties were processed in input order, so AP depended on row order — worst for `PerRuleRateGuide`, where every candidate of a rule carries the same score. | Changes the reported `dev_pr_auc` for the control arm in `2026-09-01-control-guide-comparison.{md,json}` and `2026-09-01-train-guide-report.{md,json}`. Does not touch AUC-ROC (which already averaged ranks within a tie group) and does not touch any at-budget ratio. |
+| `gen_sh_corpus` filters on the compacted unique-node count and merges into `corpus_dev_ood.bin` instead of overwriting it (`bin/gen_sh_corpus.rs`) | `node_count_subtree` counts a shared node once per parent; SH deliberately shares its trigonometric basis, so the filter admitted entries the evaluator then classified below `classical` — the 95-of-100 disclosed above. Separately, the generator overwrote the shared OOD corpus, deleting `dev_bezier_*` if run second. | A regenerated `sh` corpus will differ from the one behind these numbers (the 5 rapid-band entries would not be admitted, and replacements would be drawn). **`corpus_dev_ood.bin` MD5 `0c7cbe710c50175afb3cd91f60960b64` is the corpus these results were measured on**; regenerating it invalidates the reproduce line at the top of this document. |
+
+Re-running the round under the corrected harness is Round 2's first item, not a change made inside a
+results document.

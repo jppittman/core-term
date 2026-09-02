@@ -22,7 +22,10 @@ profiling = ["pprof"]
 [dependencies]
 pixelflow-codegen = { path = "../pixelflow-codegen" }
 pixelflow-ir = { path = "../pixelflow-ir" }
-pixelflow-search = { path = "../pixelflow-search" }
+# `guide-checkpoint`: this crate's research binaries are the only readers of
+# a `train_guide` checkpoint, so the loader (and its `serde_json`) is enabled
+# here rather than for every consumer of `pixelflow-search`.
+pixelflow-search = { path = "../pixelflow-search", features = ["guide-checkpoint"] }
 pixelflow-core = { path = "../pixelflow-core" }
 pixelflow-compiler = { path = "../pixelflow-compiler" }
 libm = "0.2.15"

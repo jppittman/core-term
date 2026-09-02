@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
-use pixelflow_pipeline::training::corpus::{read_corpus, write_corpus};
+use pixelflow_pipeline::training::corpus::{reachable_subtree, read_corpus, write_corpus};
 use pixelflow_pipeline::training::quarantine::Quarantine;
 use pixelflow_pipeline::training::sh_family::{self, Rng};
 use pixelflow_pipeline::training::split::SplitManifest;
@@ -76,8 +76,10 @@ const TRIG_OPS: &[OpKind] = &[
 #[command(name = "gen_sh_corpus")]
 #[command(about = "Generate the round-1b `sh` out-of-distribution DEV corpus")]
 struct Args {
-    /// Directory holding `corpus_train.bin` (fence source) and where
-    /// `corpus_dev_ood.bin` is written.
+    /// Directory holding `corpus_train.bin` (fence source, read-only) and
+    /// `corpus_dev_ood.bin` (write target — merged, not overwritten: any
+    /// non-`dev_sh_*` entries already there, e.g. the `bezier` family, are
+    /// preserved verbatim).
     #[arg(long, default_value = "pixelflow-pipeline/data")]
     output: String,
 
@@ -211,7 +213,17 @@ fn main() {
     while admitted.len() < args.target && attempts < args.max_attempts {
         attempts += 1;
         let (arena, root) = sh_family::draw(&mut rng);
-        let n = arena.node_count_subtree(root);
+        // The compacted, unique-node count — `write_corpus` stores
+        // `reachable_subtree(arena, root)` and `phase3_at_budget_eval`
+        // classifies the band from `arena.nodes_raw().len()` of what it
+        // reads back. `node_count_subtree` counts per *reference* instead,
+        // so a shared node is counted once per parent; SH expressions
+        // deliberately share their trigonometric basis nodes, which made
+        // that number strictly larger than the one the registered band is
+        // measured against and admitted candidates the evaluator then
+        // classified below `classical`.
+        let (compact, _) = reachable_subtree(&arena, root);
+        let n = compact.len();
         if !(MIN_NODES..=MAX_NODES).contains(&n) {
             out_of_band += 1;
             continue;
@@ -274,8 +286,31 @@ fn main() {
         );
     }
 
+    // Merge into corpus_dev_ood.bin: preserve any entry that is not a
+    // `dev_sh_*` name (e.g. the `bezier` family) untouched, replace the sh
+    // entries wholesale with this run's admissions. `corpus_dev_ood.bin` is
+    // shared by every registered OOD family, so overwriting it would delete
+    // whichever family happened to be generated first — the same merge
+    // `gen_bezier_corpus` already performs from its side.
     let out_path = PathBuf::from(&args.output).join("corpus_dev_ood.bin");
-    write_corpus(&out_path, &admitted)
+    let existing = if out_path.exists() {
+        read_corpus(&out_path)
+            .unwrap_or_else(|e| panic!("failed to read existing {}: {e}", out_path.display()))
+    } else {
+        Vec::new()
+    };
+    let preserved: Vec<(String, ExprArena, ExprId)> = existing
+        .into_iter()
+        .filter(|(name, _, _)| !name.starts_with("dev_sh_"))
+        .collect();
+    println!(
+        "Preserved {} non-`dev_sh_*` entries already in {}",
+        preserved.len(),
+        out_path.display()
+    );
+    let mut out_entries = preserved;
+    out_entries.extend(admitted.iter().map(|(n, a, r)| (n.clone(), a.clone(), *r)));
+    write_corpus(&out_path, &out_entries)
         .unwrap_or_else(|e| panic!("failed to write {}: {e}", out_path.display()));
 
     let mut sorted_nodes = node_counts.clone();

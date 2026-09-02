@@ -473,11 +473,21 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
             // median ~50% of its applications-to-quiescence versus sampling
             // at 100 directly — the curve definition was silently
             // handicapping exactly the arm it exists to measure.
-            // `round_keys` only dedups within this round's match list (two
-            // nodes of one class matching the same rule).
+            // Within a round, several nodes of one class can match the same
+            // rule; they share a `CandidateKey` (which is `(rule_idx, class
+            // content)`) and so are scored once, as one candidate. They are
+            // NOT collapsed to one *target*: `apply_single_rule` on the first
+            // of them can record an application that changes nothing (per
+            // `docs/results/2026-08-30-guide-scope-saturation-delta.md`, 91%
+            // of recorded applications are exact no-ops), which would mark
+            // the shared key seen while a sibling target that would have
+            // unioned a class was never attempted at all — the loop could
+            // then report `Quiesced` with applicable work left. So the
+            // targets sharing a key are kept together and all of them are
+            // applied before the key is marked seen.
             let ordinal = egraph.provenance().application_count() as u64;
-            let mut survivors: Vec<(RewriteTarget, CandidateFeatures)> = Vec::new();
-            let mut round_keys: HashSet<CandidateKey> = HashSet::new();
+            let mut survivors: Vec<(Vec<RewriteTarget>, CandidateFeatures)> = Vec::new();
+            let mut round_slot: HashMap<CandidateKey, usize> = HashMap::new();
             for target in matches {
                 let firing = Firing {
                     rule_idx: target.rule_idx,
@@ -489,8 +499,12 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
                 if seen_keys.contains(&features.key) {
                     continue;
                 }
-                if round_keys.insert(features.key.clone()) {
-                    survivors.push((target, features));
+                match round_slot.get(&features.key) {
+                    Some(&slot) => survivors[slot].0.push(target),
+                    None => {
+                        round_slot.insert(features.key.clone(), survivors.len());
+                        survivors.push((vec![target], features));
+                    }
                 }
             }
 
@@ -501,14 +515,18 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
             // Batch-score (never one candidate at a time — binding rule).
             let summaries: Vec<CandidateSummary> = survivors
                 .iter()
-                .map(|(target, features)| {
-                    let rule_embed = *rule_embeds.get(target.rule_idx).unwrap_or_else(|| {
+                .map(|(targets, features)| {
+                    // Every target in the group shares the key's `rule_idx`
+                    // (it is half of `CandidateKey`), so any of them names
+                    // the rule this candidate is.
+                    let rule_idx = targets[0].rule_idx;
+                    let rule_embed = *rule_embeds.get(rule_idx).unwrap_or_else(|| {
                         panic!(
                             "saturate_guided_until_applications: rule_embeds has {} entries, \
                          but a match fired rule_idx {} — the caller must supply one \
                          embedding per registered rule",
                             rule_embeds.len(),
-                            target.rule_idx
+                            rule_idx
                         )
                     });
                     CandidateSummary::new(features, rule_embed, expr_node_count)
@@ -544,26 +562,37 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
             // see the doc's "Approximation, stated plainly" section for why a
             // stale `node_idx` mid-round is safe rather than silently wrong.
             for idx in order {
-                if egraph.provenance().application_count() >= max_total_applications {
-                    break 'outer SaturationStop::ApplicationBudget;
+                let (targets, features) = &survivors[idx];
+                let (targets, key) = (targets.clone(), features.key.clone());
+                // Every target sharing this key is attempted before the key
+                // is marked seen — see the grouping comment above for why a
+                // single target is not enough.
+                let mut recorded_any = false;
+                for target in &targets {
+                    if egraph.provenance().application_count() >= max_total_applications {
+                        break 'outer SaturationStop::ApplicationBudget;
+                    }
+                    if start.elapsed() >= timeout {
+                        break 'outer SaturationStop::Timeout;
+                    }
+                    let before = egraph.provenance().application_count();
+                    if egraph.apply_single_rule(target.rule_idx, target.class_id, target.node_idx) {
+                        total_unions += 1;
+                    }
+                    if egraph.provenance().application_count() > before {
+                        recorded_any = true;
+                    }
+                    if egraph.num_classes() > max_classes {
+                        break 'outer SaturationStop::ClassCap;
+                    }
                 }
-                if start.elapsed() >= timeout {
-                    break 'outer SaturationStop::Timeout;
-                }
-                let (target, features) = &survivors[idx];
-                let before = egraph.provenance().application_count();
-                if egraph.apply_single_rule(target.rule_idx, target.class_id, target.node_idx) {
-                    total_unions += 1;
-                }
-                // Recorded (whether or not it changed anything): this key
-                // is resolved. Not recorded (stale index, no match): leave
-                // it unseen so the next rescan can retry it with a fresh
-                // index — see the dedup comment above.
-                if egraph.provenance().application_count() > before {
-                    seen_keys.insert(features.key.clone());
-                }
-                if egraph.num_classes() > max_classes {
-                    break 'outer SaturationStop::ClassCap;
+                // At least one target recorded (whether or not it changed
+                // anything): this key is resolved. None recorded (every
+                // index stale, no match left): leave it unseen so the next
+                // rescan can retry with fresh indices — see the dedup
+                // comment above.
+                if recorded_any {
+                    seen_keys.insert(key);
                 }
             }
         };

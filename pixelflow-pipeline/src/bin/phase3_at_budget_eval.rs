@@ -92,6 +92,7 @@ use serde::{Deserialize, Serialize};
 
 use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 use pixelflow_pipeline::journal::append_record;
+use pixelflow_pipeline::schema::fnv1a64_hex;
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_pipeline::training::structural::FenceKey;
 use pixelflow_search::egraph::{
@@ -597,6 +598,14 @@ struct EnablerDiag {
 #[derive(Serialize, Deserialize, Clone)]
 struct ExprRow {
     name: String,
+    /// Identity of the evaluation configuration that produced this row —
+    /// see [`run_config_identity`]. Resumption reuses a row only when this
+    /// matches the current run, because a name alone says nothing about
+    /// which checkpoint, guided grid, corpus, or revision produced the
+    /// numbers under it. `None` on rows written before this field existed
+    /// (aggregation still reads them; resumption refuses to extend them).
+    #[serde(default)]
+    run_config: Option<String>,
     tier: String,
     node_count: usize,
     class_cap: usize,
@@ -1038,6 +1047,8 @@ fn evaluate_expression(
 
     ExprRow {
         name: name.to_string(),
+        // Stamped by the caller, which owns the run's configuration.
+        run_config: None,
         tier: tier_name(node_count).to_string(),
         node_count,
         class_cap,
@@ -2195,6 +2206,38 @@ fn uptime() -> String {
         .unwrap_or_else(|e| format!("uptime unavailable: {e}"))
 }
 
+/// FNV-1a 64 hex over the inputs that decide what a row *means*: the source
+/// revision, the two guide artifacts by content (not by path — a path is
+/// stable across a retrain), the corpus by content, the guided grid, and the
+/// arm/rule sets. Two runs that agree on all of these produce comparable
+/// rows; two that do not must not be aggregated together, and a name-only
+/// resume check cannot tell them apart.
+fn run_config_identity(
+    checkpoint: &str,
+    train_guide_report: &str,
+    corpus: &Path,
+    guided_grid: &[usize],
+    stratify_by_ops: bool,
+) -> String {
+    let content = |label: &str, path: &str| match std::fs::read(path) {
+        Ok(bytes) => format!("{label}={}\n", fnv1a64_hex(&bytes)),
+        Err(e) => {
+            panic!("phase3_at_budget_eval: cannot read {label} {path} to identify this run: {e}")
+        }
+    };
+    let mut buf = String::new();
+    buf.push_str(&format!("source_rev={}\n", git_rev()));
+    buf.push_str(&content("checkpoint", checkpoint));
+    buf.push_str(&content("train_guide_report", train_guide_report));
+    buf.push_str(&content("corpus", &corpus.display().to_string()));
+    buf.push_str(&format!("guided_grid={guided_grid:?}\n"));
+    buf.push_str(&format!("unguided_grid={APP_CHECKPOINT_GRID:?}\n"));
+    buf.push_str(&format!("arms={ARM_NAMES:?}\n"));
+    buf.push_str(&format!("structural_rules={STRUCTURAL_RULES:?}\n"));
+    buf.push_str(&format!("stratify_by_ops={stratify_by_ops}\n"));
+    fnv1a64_hex(buf.as_bytes())
+}
+
 fn git_rev() -> String {
     std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -2430,10 +2473,41 @@ fn main() {
             ));
         }
 
-        let existing: HashSet<String> =
-            read_rows(&jsonl_path).into_iter().map(|r| r.name).collect();
+        let run_config = run_config_identity(
+            &args.checkpoint,
+            &args.train_guide_report,
+            &dev_path,
+            &guided_grid,
+            args.stratify_by_ops,
+        );
+        // Resumption reuses a row only if it was produced by THIS
+        // configuration. A name is not proof of reusability: the same
+        // expression evaluated against a different checkpoint, guided grid,
+        // corpus, or source revision is a different measurement, and mixing
+        // the two would report a heterogeneous aggregate under a context
+        // block that names only the current run.
+        let existing: HashSet<String> = read_rows(&jsonl_path)
+            .into_iter()
+            .map(|r| {
+                assert_eq!(
+                    r.run_config.as_deref(),
+                    Some(run_config.as_str()),
+                    "{}: row {:?} was produced by run configuration {:?}, but this run is \
+                     {run_config:?} — appending would mix incomparable measurements under one \
+                     report. Write to a new --out-jsonl path, or delete the existing file to \
+                     re-evaluate every expression under the current configuration.",
+                    jsonl_path.display(),
+                    r.name,
+                    r.run_config
+                        .as_deref()
+                        .unwrap_or("<absent: pre-identity row>"),
+                );
+                r.name
+            })
+            .collect();
         eprintln!(
-            "phase3_at_budget_eval: {} selected, {} already done, {} skipped by flag",
+            "phase3_at_budget_eval: {} selected, {} already done, {} skipped by flag \
+             (run_config {run_config})",
             selected.len(),
             existing.len(),
             skipped.len()
@@ -2442,8 +2516,12 @@ fn main() {
         let guides = Guides {
             control: PerRuleRateGuide::from_train_guide_report(Path::new(&args.train_guide_report))
                 .unwrap_or_else(|e| panic!("control guide: {e}")),
-            linear: LinearCandidateGuide::load(Path::new(&args.checkpoint))
-                .unwrap_or_else(|e| panic!("linear guide: {e}")),
+            linear: {
+                let rules = all_rules();
+                let rule_names: Vec<&str> = rules.iter().map(|r| r.name()).collect();
+                LinearCandidateGuide::load(Path::new(&args.checkpoint), &rule_names)
+                    .unwrap_or_else(|e| panic!("linear guide: {e}"))
+            },
             embeds: vec![[0.0f32; EMBED_DIM]; all_rules().len()],
         };
 
@@ -2476,7 +2554,8 @@ fn main() {
                 costs: &costs,
                 guided_grid: &guided_grid,
             };
-            let row = evaluate_expression(name, &input, &guides, args.stratify_by_ops);
+            let mut row = evaluate_expression(name, &input, &guides, args.stratify_by_ops);
+            row.run_config = Some(run_config.clone());
             let line = serde_json::to_string(&row).expect("serialize row");
             writeln!(out, "{line}")
                 .unwrap_or_else(|e| panic!("write {}: {e}", jsonl_path.display()));
@@ -2594,6 +2673,12 @@ fn main() {
 
     let mut context = BTreeMap::new();
     context.insert("source_rev".to_string(), git_rev());
+    context.insert(
+        "run_config".to_string(),
+        rows.first()
+            .and_then(|r| r.run_config.clone())
+            .unwrap_or_else(|| "<absent: rows predate run-config identity>".to_string()),
+    );
     context.insert("corpus".to_string(), dev_path.display().to_string());
     context.insert("load_at_start".to_string(), load_start);
     context.insert("load_at_end".to_string(), uptime());
