@@ -40,19 +40,24 @@ fn opt_root(a: &ExprArena, root: ExprId) -> ExprNode {
 
 /// The collision leaves ONE constant owning the class — whichever prover
 /// got there first under the (deterministic) rule schedule — and everything
-/// downstream agrees with it. Under the current schedule the symbolic
-/// cancellation wins and the ℝ answer comes out; the pinned VALUES below are
-/// schedule-dependent, the pinned INVARIANT — one constant, consistent
-/// downstream, never a tie-break between two — is not.
+/// downstream agrees with it. Under the numeric-first sweep order
+/// (`pixelflow_search::math::rule_order`) `constant-fold` sweeps before the
+/// two `cancellation` rules, so the f32 prover wins and the f32 answer (0)
+/// comes out — the value the unoptimized kernel computes. Under the legacy
+/// concatenation order `cancellation` ran first and the ℝ answer (X) won.
+/// The pinned VALUES below are schedule-dependent; the pinned INVARIANT —
+/// one constant, consistent downstream, never a tie-break between two — is
+/// not.
 #[test]
 fn cancellation_extracts_one_consistent_constant() {
     let mut a = ExprArena::new();
     let d = cancel(&mut a);
     assert_eq!(
         opt_root(&a, d),
-        ExprNode::Const(X),
-        "the class must hold exactly one constant (currently the symbolic \
-         ℝ answer); two constants tie-breaking arbitrarily is the bug"
+        ExprNode::Const(0.0),
+        "the class must hold exactly one constant (currently the f32 answer, \
+         since constant-fold sweeps first); two constants tie-breaking \
+         arbitrarily is the bug"
     );
 
     let mut a = ExprArena::new();
@@ -61,7 +66,7 @@ fn cancellation_extracts_one_consistent_constant() {
     let m = a.push_binary(OpKind::Mul, d, c);
     assert_eq!(
         opt_root(&a, m),
-        ExprNode::Const(128.0),
+        ExprNode::Const(0.0),
         "downstream arithmetic must fold from the class's single constant"
     );
 }

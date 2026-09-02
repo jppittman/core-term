@@ -57,6 +57,7 @@ pub mod exp;
 pub mod fusion;
 pub mod parity;
 pub mod power;
+pub mod rule_order;
 pub mod trig;
 
 #[cfg(test)]
@@ -78,6 +79,7 @@ pub use parity::{
     parity_rules,
 };
 pub use power::power_rules;
+pub use rule_order::{NUMERIC_FIRST_ORDER, TRAIN_STRICT_POSITIVE_RATE, rule_library_identity};
 pub use trig::{
     AngleAddition, AngleExpansion, CosAngleAddition, Sign, SinAngleAddition, trig_rules,
 };
@@ -108,13 +110,35 @@ pub fn all_math_rules() -> Vec<Box<dyn Rewrite>> {
     rules
 }
 
-/// All rewrite rules: math (59) + fusion (2) + differentiation (1) = 62 total.
+/// All rewrite rules: math (59) + fusion (2) + differentiation (1) = 62 total,
+/// in the sweep order they ship in.
 ///
 /// This is the complete rule set for optimization. Use this for training
 /// and production optimization where all rules should be available. The
 /// differentiation rule is inert unless the expression contains a `Dwrt`
 /// node, so it costs nothing for derivative-free kernels.
+///
+/// The order is *numeric-first* ([`rule_order::NUMERIC_FIRST_ORDER`] applied
+/// to [`production_order_2026_08`]): the rules a budget-truncated sweep most
+/// wants to have fired first — `power-rsqrt`, `recip-sqrt`, `power-recip`,
+/// `power-sqrt`, ... — come first, and the four `commutative` rules and
+/// their kin, which almost never bound a strictly better extraction on their
+/// own, come last. Same 62 rules as before; only the sequence changed. Why,
+/// and what it measured, is [`rule_order`]'s module doc. A `rule_idx` is a
+/// position in *this* order.
 pub fn all_rules() -> Vec<Box<dyn Rewrite>> {
+    rule_order::permute(production_order_2026_08(), &NUMERIC_FIRST_ORDER)
+}
+
+/// The 62 rules in the order `all_rules()` returned them until 2026-09-01:
+/// module concatenation — algebra, parity, trig, exp, power, fusion,
+/// differentiation. This is the numbering every artifact minted before the
+/// reorder is keyed by (`docs/results/2026-09-01-train-guide-report.md`'s
+/// `idx` column, the 2026-08-30 guide-headroom and scope-delta JSONs), the
+/// reference frame [`rule_order::TRAIN_STRICT_POSITIVE_RATE`] is written in,
+/// and the "legacy" arm the rule-order harness in `crate::runtime` replays.
+/// Not a production entry point: production sweeps [`all_rules`].
+pub(crate) fn production_order_2026_08() -> Vec<Box<dyn Rewrite>> {
     let mut rules = all_math_rules();
     rules.extend(fusion_rules());
     rules.extend(crate::egraph::derivative::derivative_rules());
@@ -455,13 +479,18 @@ mod tests {
 
     #[test]
     fn all_rules_count() {
-        // Verify we have the expected number of rules after removal.
-        let rules = all_rules();
-        assert_eq!(
-            rules.len(),
-            62,
-            "Expected 62 rules (59 math + 2 fusion + 1 differentiation), got {}",
-            rules.len()
-        );
+        // The set is 62 rules whichever order it is swept in; the order
+        // itself is pinned by `rule_order::tests`.
+        for (label, rules) in [
+            ("all_rules()", all_rules()),
+            ("production_order_2026_08()", production_order_2026_08()),
+        ] {
+            assert_eq!(
+                rules.len(),
+                62,
+                "Expected 62 rules (59 math + 2 fusion + 1 differentiation) from {label}, got {}",
+                rules.len()
+            );
+        }
     }
 }

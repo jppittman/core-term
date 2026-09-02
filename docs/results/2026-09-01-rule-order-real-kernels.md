@@ -237,3 +237,86 @@ that lands, "kernel size" for this question changes by another order of
 magnitude and this measurement's tier/regret numbers should be re-taken
 against whatever kernel that thread produces rather than assumed to
 extrapolate.
+
+## Addendum (2026-09-01, later): the reorder shipped
+
+JP's ruling on the measurement above: take it. `all_rules()` now returns
+the same 62 rules in the numeric-first order (`pixelflow-search/src/math/
+rule_order.rs`: the TRAIN strict-positive-rate table transcribed from
+`2026-09-01-train-guide-report.md` as `TRAIN_STRICT_POSITIVE_RATE`, the
+permutation it sorts to pinned as `NUMERIC_FIRST_ORDER`, and three tests
+that re-derive each from the next). The old concatenation order survives
+only as `pub(crate) production_order_2026_08()`, so this harness can keep
+replaying the "production" arm above — which it now labels
+`legacy-2026-08`; `RuleOrder::Production` still means "`all_rules()`
+verbatim" and is therefore now the numeric-first arm.
+
+### The 21 kernels the reorder makes costlier in the production regime
+
+Not shipped blind: these are every kernel whose production-regime
+extraction cost went *up* under numeric-first (CSV column `prod_cost`,
+arm `numeric-first` vs. `production`; static latency prior, deterministic,
+load-independent). Twenty-one of 204; the largest is one shader at +8.1%,
+the largest glyph at +3.5%; median across the 21 is +0.7%. Nine of them
+are the same glyph at both densities (identical arenas at both sizes, so
+identical costs).
+
+| kernel | group | nodes | legacy cost | numeric-first cost | delta | ratio |
+|---|---|---:|---:|---:|---:|---:|
+| shader:smooth_min_scene | shader | 43 | 124 | 134 | +10 | 1.0806 |
+| psychedelic | psychedelic | 102 | 766 | 800 | +34 | 1.0444 |
+| glyph16:U+0031 | glyph16 | 1452 | 2420 | 2505 | +85 | 1.0351 |
+| glyph32:U+0031 | glyph32 | 1452 | 2420 | 2505 | +85 | 1.0351 |
+| glyph16:U+0069 | glyph16 | 2123 | 3395 | 3465 | +70 | 1.0206 |
+| glyph32:U+0069 | glyph32 | 2123 | 3395 | 3465 | +70 | 1.0206 |
+| shader:domain_warp_fbm | shader | 84 | 441 | 449 | +8 | 1.0181 |
+| shader:cosine_palette | shader | 40 | 292 | 296 | +4 | 1.0137 |
+| glyph16:U+006E | glyph16 | 2264 | 3708 | 3746 | +38 | 1.0102 |
+| glyph32:U+006E | glyph32 | 2264 | 3708 | 3746 | +38 | 1.0102 |
+| glyph16:U+0050 | glyph16 | 2409 | 3971 | 3999 | +28 | 1.0071 |
+| glyph32:U+0050 | glyph32 | 2409 | 3971 | 3999 | +28 | 1.0071 |
+| glyph16:U+0076 | glyph16 | 1115 | 1625 | 1632 | +7 | 1.0043 |
+| glyph32:U+0076 | glyph32 | 1115 | 1637 | 1644 | +7 | 1.0043 |
+| glyph16:U+006B | glyph16 | 1460 | 2430 | 2439 | +9 | 1.0037 |
+| glyph16:U+0066 | glyph16 | 2364 | 3925 | 3938 | +13 | 1.0033 |
+| glyph32:U+0066 | glyph32 | 2364 | 3925 | 3938 | +13 | 1.0033 |
+| glyph16:U+0074 | glyph16 | 2421 | 4088 | 4100 | +12 | 1.0029 |
+| glyph32:U+0074 | glyph32 | 2421 | 4088 | 4100 | +12 | 1.0029 |
+| glyph16:U+0075 | glyph16 | 2493 | 4135 | 4141 | +6 | 1.0015 |
+| glyph32:U+0075 | glyph32 | 2493 | 4135 | 4141 | +6 | 1.0015 |
+
+Against those: 146 kernels cheaper (down to ratio 0.7379), 37 byte-identical.
+The shipping PR is held as a draft on this table until JP has seen it.
+
+### What a `rule_idx` means now
+
+`rule_idx` — in `ApplicationRecord`, `UnionEvent`, every per-rule table a
+harness prints — is a position in `all_rules()`, so the reorder is a
+renumbering: new index `i` is legacy index `NUMERIC_FIRST_ORDER[i]`. Every
+artifact minted before it is in the legacy numbering and stays correct
+*as a document* (this file, `2026-09-01-train-guide-report.{md,json}`'s
+`idx` column, `2026-08-30-guide-headroom.json`,
+`2026-08-30-guide-scope-saturation-delta.json`), but nothing may index
+today's `all_rules()` with those numbers. Concretely:
+
+- `docs/results/2026-09-01-train-guide-report.md` `idx` column: legacy
+  numbering by definition; `TRAIN_STRICT_POSITIVE_RATE` is keyed by it and
+  the `table_is_the_train_guide_report` test reads it that way.
+- Guide checkpoints keyed by `rule_idx` (`claude/phase3-guide`'s
+  `LinearCandidateGuide` with its dense `w_rule[rule_idx]`, its
+  `guide_checkpoint_strict_v1.json`, and `PerRuleRateGuide::
+  from_train_guide_report`, which reads the report's `rule_idx` field
+  directly): **stale under the new numbering** — retrain, or remap through
+  `NUMERIC_FIRST_ORDER` on load. Their `schema_identity` hashes prose and
+  cannot see a renumbering; fold `pixelflow_search::math::
+  rule_library_identity()` (pinned at `0x44d7e351168f91cf` for this order)
+  into it so the next reorder refuses the checkpoint at load.
+- `claude/phase3-round2`'s `inflate.rs` `NUMERIC_FIRST_ORDER`: the same
+  permutation, written against the legacy order it permutes; once
+  rebased it is `crate::math::NUMERIC_FIRST_ORDER` applied to
+  `production_order_2026_08()`, not to `all_rules()` (which would permute
+  twice).
+- `main` itself persists no `rule_idx`: the extraction head's
+  `ArenaRuleTemplates` are rebuilt from the live rule set at load, and the
+  `SaturationGuide` on `main` encodes a rule by its LHS/RHS templates, not
+  its index.

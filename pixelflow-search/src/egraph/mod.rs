@@ -64,7 +64,7 @@ pub use provenance::{
     derivation_ancestors, derivation_ancestors_tight, format_derivation_trace,
 };
 pub use rewrite::{Rewrite, RewriteAction};
-pub use rule_order::{NUMERIC_FIRST_ORDER, RuleOrder, build_rule_set};
+pub use rule_order::{RuleOrder, build_rule_set};
 pub use saturate::{
     SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
     saturate_with_budget, saturate_with_full_budget,

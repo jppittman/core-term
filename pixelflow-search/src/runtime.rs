@@ -1866,8 +1866,12 @@ mod production_telemetry {
     // Rule-order measurement on real kernels
     // (docs/results/2026-09-01-rule-order-real-kernels.md).
     //
-    // Arms: production `all_rules()` order, the numeric-first static
-    // reorder, and three seeded shuffles (`RuleOrder`, `rule_order.rs`).
+    // Arms: the legacy 2026-08 concatenation order (`production_order_2026_08`,
+    // what shipped when docs/results/2026-09-01-rule-order-real-kernels.md
+    // was measured), the numeric-first static reorder (`all_rules()` since
+    // that measurement), and three seeded shuffles (`RuleOrder`,
+    // `egraph/rule_order.rs`). The results doc's "production" arm is this
+    // harness's "legacy-2026-08" arm.
     // Kernels: whatever `*.arena` files are present in
     // `PIXELFLOW_TELEMETRY_DIR` — the 12 `shader_bench` kernels + the
     // psychedelic kernel (`shader_and_psychedelic_arena_dump.rs`), one
@@ -1967,7 +1971,7 @@ mod production_telemetry {
         );
 
         let arms: Vec<RuleOrder> = vec![
-            RuleOrder::Production,
+            RuleOrder::Legacy2026_08,
             RuleOrder::NumericFirst,
             RuleOrder::Shuffled(1),
             RuleOrder::Shuffled(2),
@@ -2091,7 +2095,7 @@ mod production_telemetry {
         let mut json = String::new();
         writeln!(json, "{{").expect("write");
         writeln!(json, "  \"anytime_grid\": {ANYTIME_GRID:?},").expect("write");
-        writeln!(json, "  \"arms\": [\"production\", \"numeric-first\", \"shuffled(1)\", \"shuffled(2)\", \"shuffled(3)\"],").expect("write");
+        writeln!(json, "  \"arms\": [\"legacy-2026-08\", \"numeric-first\", \"shuffled(1)\", \"shuffled(2)\", \"shuffled(3)\"],").expect("write");
         writeln!(json, "  \"load_start\": {:?},", load_start).expect("write");
         writeln!(json, "  \"load_end\": {:?},", load_end).expect("write");
         writeln!(json, "  \"rows\": [").expect("write");
@@ -2139,7 +2143,7 @@ mod production_telemetry {
                 .unwrap_or_else(|| panic!("missing row for {kernel}/{arm}"))
         };
 
-        // Production-regime distribution: cost(numeric-first)/cost(production).
+        // Production-regime distribution: cost(numeric-first)/cost(legacy-2026-08).
         // A kernel that extracts to cost 0 (the space glyph: an empty
         // arena) has an undefined ratio — 0/0 — and is skipped from the
         // distribution, same convention as `loss_pct` above for the
@@ -2151,13 +2155,13 @@ mod production_telemetry {
         let mut worse = 0usize;
         let mut zero_cost_kernels = 0usize;
         for k in &kernels {
-            let a = row_for(k, "production");
+            let a = row_for(k, "legacy-2026-08");
             let b = row_for(k, "numeric-first");
             if a.prod_cost == 0 {
                 assert_eq!(
                     b.prod_cost, 0,
-                    "{k}: production cost is 0 but numeric-first cost is not — a rule order \
-                     cannot introduce cost into an arena the production order extracts as free"
+                    "{k}: legacy-order cost is 0 but numeric-first cost is not — a rule order \
+                     cannot introduce cost into an arena the legacy order extracts as free"
                 );
                 zero_cost_kernels += 1;
                 unchanged += 1;
@@ -2179,7 +2183,7 @@ mod production_telemetry {
             );
         }
         println!(
-            "\n== production regime: cost(numeric-first)/cost(production), n={} ==",
+            "\n== production regime: cost(numeric-first)/cost(legacy-2026-08), n={} ==",
             kernels.len()
         );
         println!(
@@ -2194,7 +2198,7 @@ mod production_telemetry {
         // Anytime regret vs the best any arm reaches at any checkpoint, per
         // arm per B, median across kernels.
         let arm_names = [
-            "production",
+            "legacy-2026-08",
             "numeric-first",
             "shuffled(1)",
             "shuffled(2)",
@@ -2235,7 +2239,7 @@ mod production_telemetry {
             std::collections::HashMap::new();
         for k in &kernels {
             *tier_counts
-                .entry(row_for(k, "production").tier)
+                .entry(row_for(k, "legacy-2026-08").tier)
                 .or_insert(0) += 1;
         }
         println!("\n== tiers ==");
