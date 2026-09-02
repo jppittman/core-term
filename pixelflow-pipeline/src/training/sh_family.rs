@@ -591,9 +591,9 @@ mod tests {
 
     #[test]
     fn draw_produces_finite_values_at_seeded_points() {
-        let mut rng = Rng::new(0xC0FF_EE);
+        let mut rng = Rng::new(0x00C0_FFEE);
         for i in 0..200u64 {
-            let mut draw_rng = Rng::new(0xC0FF_EE ^ i.wrapping_mul(0x9E37_79B9));
+            let mut draw_rng = Rng::new(0x00C0_FFEE ^ i.wrapping_mul(0x9E37_79B9));
             let (arena, root) = draw(&mut draw_rng);
             for theta in [-2.0f32, -0.5, 0.0, 0.5, 2.0] {
                 for phi in [-2.0f32, -0.5, 0.0, 0.5, 2.0] {
@@ -640,7 +640,7 @@ mod tests {
             (-1.1, 2.3),
             (2.0, -0.7),
             (0.0, 0.0),
-            (1.5707963, 3.0),
+            (core::f32::consts::FRAC_PI_2, 3.0),
         ];
         for form in [Form::Direct, Form::Expanded] {
             for l in 0..=4u32 {
