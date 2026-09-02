@@ -333,10 +333,37 @@ point it was written against and the one that replaced it, not a slip in the
 port.
 
 So #1101 cannot be reconciled without deciding whose semantics it should be
-measured under, and that decision is shared with #1109 and #1114. Answering it
-once unblocks all three; answering it per-branch guarantees they disagree in
-the results. **This is the single highest-leverage decision on the board**, and
-nothing was pushed to #1101 pending it.
+measured under — and **that same decision blocks every other conflicted
+saturation branch.** All seven depend on the deleted `saturate_until_
+applications` and on `run_anytime_curve`:
+
+| PR | `saturate_until_applications` call sites | files using the anytime curve |
+|---|---|---|
+| #1096 | 27 | 7 |
+| #1091 | 18 | 5 |
+| #1088 | 18 | 7 |
+| #1095 | 17 | 6 |
+| #1084 | 16 | 5 |
+| #1101 | 6 | 3 |
+| #1103 | 6 | 3 |
+
+`main` deleted that entry point in favour of `Budget::Applications`, and the
+two do not agree on when a class cap ends a run. Every one of these branches
+must be ported across that difference, and porting it *per branch* is how seven
+registered experiments end up measured under seven slightly different stopping
+rules.
+
+**So the conflict count is misleading.** This is not eight independent
+reconciliations; it is **one unresolved design decision with seven branches
+queued behind it**, plus #1072, which is unrelated and structural. Answering it
+once — does an application-budgeted anytime run stop at the class cap, or
+record it and continue? — converts all seven from "needs judgement" into the
+mechanical recipe already written down above, which this pass has now executed
+end to end three times (#1087, #1109, #1114).
+
+That is the single highest-leverage item on this board, and nothing was pushed
+to #1101 pending it.
+
 
 ## The finding that matters most: the seam churns faster than reconciliation completes
 
