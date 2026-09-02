@@ -10,7 +10,7 @@
 
 2. **On the anytime ladder the regime-trained R2G loses to the frozen strict bit in distribution, ties on `sh`, and beats it on `bezier`.** Per-expression head-to-head at B = 100: DEV band 101-1000 **70 wins / 119 losses / 19 ties**; `sh` **43 / 45 / 7**; `bezier` **60 / 0 / 20** (median cost ratio 0.942). Round 3's "ties the strict bit everywhere" is no longer the result — the two heads now disagree, in opposite directions on the two OOD families.
 
-3. **Leave-one-out systematically understates credit, and the amount is measurable.** Masking every application of the seed's `(rule, canonical match)` rather than just the seed itself moves **77 of 1012** (7.6%) of leave-one-out's Δ = 0 applications to Δ > 0. Every proxy ranks better against the confluence-aware truth; the strict bit's ρ nearly doubles (0.3893 → 0.7254). **The Δ = 0 mass leave-one-out reports is substantially re-derivation noise, not irrelevance** — which is exactly the failure mode that would make a credit signal look absent when it is present.
+3. **Leave-one-out systematically understates credit, and the amount is measurable.** Masking every application of the seed's `(rule, canonical match)` rather than just the seed itself moves **77 of 1012** (7.6%) of leave-one-out's Δ = 0 applications to Δ > 0. The strict bit's ρ against that truth nearly doubles (0.3893 → 0.7254), and every proxy rises on the unbanded sample. **The Δ = 0 mass leave-one-out reports is substantially re-derivation noise, not irrelevance** — which is exactly the failure mode that would make a credit signal look absent when it is present. Inside the band the two truths separate the bounds from the models: `strict` still rises (0.5096 → 0.5645) while every *model* proxy falls (R2G 0.1987 → 0.1450, per-rule 0.2881 → 0.2020) — the models were tracking the leave-one-out artifact more than the credit.
 
 4. **The strict bit remains the best predictor of the counterfactual, by a wide margin, under both masks.** Nothing in this round displaces it; the R2G head is now non-zero but still ranks below both the strict bit and the per-rule-rate control on the in-regime sample.
 
@@ -109,6 +109,8 @@ n = 3000 sampled state-changing applications, B = 100.
 | `strict_by_output_class` | 0.0109 | 0.0310 |
 
 `loose`/`tight` have no variance on this sample (every sampled application is load-bearing under both) — reported as n/a, never as 0.
+
+**The two samples disagree about the models, and that is itself the finding.** Unbanded, every proxy ranks higher against the multi-mask truth. In-band, only the hindsight *bounds* (`strict`, `strict_by_output_class`) rise; all three *model* proxies fall. A learned score that tracks leave-one-out better than it tracks the confluence-aware Δ is fitting the instrument's zero-inflation, not the credit — so in-band, where the budget genuinely binds, the models look worse the more accurately the truth is measured.
 
 
 ## 4. What this does and does not settle

@@ -628,11 +628,14 @@ missing. Full numbers: `docs/results/2026-09-01-guide-r2g-spread-first.{md,json,
   masks the seed and every later application sharing its `(rule_idx, canonical matched-class
   content)`, so an alternative re-derivation cannot silently restore what leave-one-out removed.
   On the round-3 sample (n = 1,095): **77 of 1,012 (7.6%) leave-one-out Δ = 0 applications become
-  Δ > 0**; 435/1,095 multi-masks skipped more than the seed (mean 1.57, max 6). Every proxy ranks
-  better against the confluence-aware truth — `strict` 0.389 → 0.725, `strict_v1_linear`
+  Δ > 0**; 435/1,095 multi-masks skipped more than the seed (mean 1.57, max 6). On that sample every
+  proxy ranks better against the confluence-aware truth — `strict` 0.389 → 0.725, `strict_v1_linear`
   0.170 → 0.345, `per_rule_rate` 0.182 → 0.267, R2G(regime) 0.103 → 0.249. Inside the band
-  (n = 3,000) the same pattern holds at lower magnitude (90/2,525 = 3.6% flip; `strict`
-  0.510 → 0.565). **Round 3's ρ table — including its R2G ρ = −0.004 — was computed against a
-  truth biased toward zero.** The strict bit remains the best predictor under both masks.
+  (n = 3,000, 90/2,525 = 3.6% flip) the two truths *separate the bounds from the models*: `strict`
+  still rises (0.510 → 0.565) while every model proxy falls (R2G 0.199 → 0.145, `per_rule_rate`
+  0.288 → 0.202) — a learned score that tracks leave-one-out better than the confluence-aware Δ is
+  fitting the instrument's zero-inflation, not the credit. **Round 3's ρ table — including its
+  R2G ρ = −0.004 — was computed against a truth biased toward zero.** The strict bit remains the
+  best predictor under both masks and on both samples.
 - Kill-gate accounting: unchanged (this round trains a new checkpoint against a registered regime
   and reports it; no clause is claimed or waived).
