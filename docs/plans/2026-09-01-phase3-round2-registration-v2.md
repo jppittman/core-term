@@ -433,6 +433,48 @@ binding at these rule counts on this corpus under an order that can reach the ad
 grid, a third budget, or a third sweep order would be a third registration, and nothing in this
 document's data motivates one.
 
+## 6b. Confound: rule order (2026-09-01, appended after §11 Entry 2)
+
+**§6's H1-FAILS reading conflates two different changes and mode (i) proves it.** Mode (i)
+(`dup:*`) adds *exact duplicates* of existing rules — a duplicate has the identical LHS/RHS
+template and closure as its original (§0 of this document, `DuplicateRule` delegates `apply`
+verbatim), so it can never let saturation reach a node the base 62 rules could not already reach.
+Its closure is unchanged by construction. Yet §6's own table shows U(|R|) falling just as sharply
+under mode (i) as under modes (ii)/(iii) — U(62) = 96.59% → `dup:93` = 43.76% → `dup:124` = 41.12%
+→ `dup:186` = 15.44% → `dup:248` = 38.67% at B = 100 (ρ = −0.900) — which cannot be a *closure*
+effect (duplicates add zero closure) and therefore cannot be a genuine `|R|` effect either. What
+changed between the `base` point and every `dup:*` point is not "more distinguishable rules," it is
+*where the 62 real rules sit inside the swept vector*: `Interleave(seed)` Fisher-Yates-shuffles the
+whole base+duplicate list together, so the seed relocates each of the 62 base rules to a new
+position, and B = 100 is sub-sweep at every inflated point (§4.1: 1.01 sweeps at `base`/|R|=62,
+falling to 0.10 sweeps at `dup:248`) — so which rules the budget actually reaches is decided almost
+entirely by where the shuffle happened to put them, not by how many total rules exist. Production's
+`all_rules()` order puts algebra/structural rules first and the high-yield numeric-fusion rules
+(`power-rsqrt`, `power-recip`, `recip-sqrt`, `power-sqrt` — the four highest TRAIN strict-positive
+rates in `docs/results/2026-09-01-train-guide-report.md`, 13–18%) near indices 51–60, so `base`'s
+own B=100 pass already runs out before reaching most of them; any shuffle that moves even one of
+those four earlier reaches a cheaper rewrite sooner, at any `|R|`. Modes (ii)/(iii) inherit the
+identical confound (ρ = −1.000, −1.000) for the same structural reason — their inflation is also
+shuffled into the front of the vector by the same seeded Fisher-Yates — but mode (i) is the clean
+proof, because it is the one mode where "more rules" is verifiably not the explanation.
+
+**Consequence for this document, and the production implication that follows from it.** v2's H1
+verdict ("H1 fails, decisively, unguided regret at fixed B falls as `|R|` grows") is **superseded by
+v3 as a *reading*, not retracted as *data*** — every measured number in §4/§5/§6 (the curves, the
+fingerprints, `U(|R|)`, ρ, Δ1/Δ2) stands exactly as run and is not rerun or revised; what v3 changes
+is the causal attribution, by holding order fixed via `RuleOrder::OrderMatchedBase` (§0 below) and
+re-measuring the `|R|` effect against a reference that already reflects the seed's reordering of the
+base 62, rather than against the unshuffled `base` point this document used. This is exactly the
+gap v2's own §0.1(a) flagged as unmeasured ("a seed-sensitivity check is not part of this
+registration; its absence is a stated limitation") — v3 closes it. It also surfaces a **production
+quick win** independent of any inflated-rule-count question at all: if a *fixed* reordering of the
+existing 62 rules — one that front-loads the high-yield numeric rules `all_rules()`'s module-major
+order defers — recovers a meaningful share of Round 1's Guide-vs-unguided B=100 win at zero runtime
+cost (no scoring, no learned model), that is a change to `all_rules()`'s own order, a decision for
+JP to make on v3's data, not a claim this document makes or a change this branch makes to
+production (`all_rules()` is unchanged by every commit on `claude/phase3-round2`, per the branch's
+binding rules).
+
 ## 7. What remains testable for H2 under this Register
 
 **H2 status: UNTESTED.** No guided run exists at any |R| > 62 (§10), so nothing in this document
