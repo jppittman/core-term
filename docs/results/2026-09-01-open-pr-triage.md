@@ -375,6 +375,56 @@ That is the single highest-leverage item on this board, and nothing was pushed
 to #1101 pending it.
 
 
+## Production saturation has no wall-clock bound on `main`
+
+Found while reconciling #1109, but it is not #1109's: **the per-tier
+`hard_timeout` no longer reaches the production compile path.**
+
+The chain, each link checked against `origin/main` at `193ebef1`:
+
+- `SaturationConfig` still defines `hard_timeout` per tier — 10 ms / 50 ms /
+  200 ms (`saturate.rs:68,178,188`). The values are still there and still look
+  authoritative.
+- `Budget::limits()` reads that preset — and returns
+  `Limits { iterations, classes, applications }`. **`hard_timeout` is dropped
+  on the floor** (`optimizer.rs:128-150`).
+- `Optimizer::production()` sets `hard_ceiling: None` (`optimizer.rs:250`).
+- `Optimizer::run` calls `egraph.saturate_budgeted(...)`, whose own doc says
+  "with no clock", and then only *asserts* against `hard_ceiling` if one was
+  set (`optimizer.rs:366-385`).
+- The single `hard_ceiling` call site in the crate is `runtime.rs:2260` — the
+  telemetry harness, not production.
+
+So a production compile is now bounded by iterations and classes only. #1108
+consolidated the budget into `Budget`/`Limits` and the clock did not come with
+it.
+
+**The evidence is in CI, not inferred.** #1109's `Test on ubuntu-latest` timed
+out, and the telemetry it emitted shows runtime-tier compiles finishing at
+`wall_clock_us` 9,648,883 · 9,938,809 · 16,184,232 · 32,829,162 and one at
+**352,985,035 — 353 seconds for a 279-node kernel** — every one of them
+`"stop_reason":"class_cap"` at `"iterations":100`, the full ceiling, against a
+nominal 200 ms tier budget.
+
+This is the failure mode `CLAUDE.md` names outright: a value that still exists,
+still reads as authoritative, and is silently no longer consulted.
+`config_for_node_count`'s `hard_timeout` is now dead data, and nothing fails
+when it is ignored.
+
+Two consequences worth separating:
+
+1. **For `main`:** either `Limits` grows a timeout and `Budget::Production`
+   carries the preset's, or `hard_timeout` should be deleted from
+   `SaturationConfig` so it stops advertising a bound nothing enforces.
+   Leaving it is the worst of the three.
+2. **For the class-cap decision:** #1109 measured that *not* breaking on
+   `ClassCap` lands a cheaper program on 140 of 204 kernels. That measurement
+   was taken in a world where nothing bounds the clock, so its cost side is
+   unbounded compile time — the 353-second row above is what "keep sweeping"
+   costs when the deadline is missing. The decision should be made against a
+   restored clock, or it is choosing between a measured benefit and an
+   unmeasured cost.
+
 ## The finding that matters most: the seam churns faster than reconciliation completes
 
 Reconciling a branch against this seam has a **short half-life**, and that is a
