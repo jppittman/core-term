@@ -1345,7 +1345,7 @@ pub fn benchmark_compile_cached_miss(kernels: Vec<(ExprArena, ExprId)>) -> Resul
     let mut kernels = kernels.into_iter();
 
     for (arena, root) in kernels.by_ref().take(COMPILE_WARMUP_ITERS) {
-        let compiled = jit_cache::compile(&arena, root, pixelflow_ir::LoopShape::FRAME)
+        let compiled = jit_cache::compile(&arena, root, pixelflow_ir::LatticeShape::POINT)
             .map_err(BenchError::CompileFailed)?;
         std::hint::black_box(&compiled);
     }
@@ -1354,7 +1354,7 @@ pub fn benchmark_compile_cached_miss(kernels: Vec<(ExprArena, ExprId)>) -> Resul
     for t in &mut times {
         let (arena, root) = kernels.next().expect("stream length asserted above");
         let start = nanos_now();
-        let compiled = jit_cache::compile(&arena, root, pixelflow_ir::LoopShape::FRAME)
+        let compiled = jit_cache::compile(&arena, root, pixelflow_ir::LatticeShape::POINT)
             .map_err(BenchError::CompileFailed)?;
         std::hint::black_box(&compiled);
         *t = nanos_now() - start;

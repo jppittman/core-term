@@ -61,7 +61,7 @@ fn bake_pipeline(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
     let optimized = pixelflow_search::runtime::optimize_runtime_arena(
         arena,
         root,
-        pixelflow_ir::LoopShape::FRAME,
+        pixelflow_ir::LatticeShape::POINT,
     );
     let (a, r) = optimized
         .as_deref()
@@ -217,7 +217,7 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
         let optimized = pixelflow_search::runtime::optimize_runtime_arena(
             arena,
             root,
-            pixelflow_ir::LoopShape::FRAME,
+            pixelflow_ir::LatticeShape::POINT,
         )
         .expect("glyph arenas must optimize (pure arithmetic + Dwrt + masks)");
         let (opt, opt_root) = (&optimized.0, optimized.1);

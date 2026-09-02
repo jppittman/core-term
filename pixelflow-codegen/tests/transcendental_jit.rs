@@ -58,7 +58,7 @@ fn eval_points_2d(jit: &pixelflow_codegen::JitManifold, inputs: &[(f32, f32)]) -
 
 fn check(name: &str, k: &Kernel, inputs: &[f32], reference: impl Fn(f32) -> f32) {
     let (arena, root) = k.parts();
-    let jit = jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME)
+    let jit = jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT)
         .unwrap_or_else(|e| panic!("{name}: kernel failed to compile on this backend: {e}"));
     let results = eval_points_1d(&jit, inputs);
     for (&x, got) in inputs.iter().zip(results) {
@@ -102,7 +102,7 @@ fn sin_cos_stay_bounded_and_nan_outside_domain() {
 
     for (name, k) in [("sin", Kernel::x().sin()), ("cos", Kernel::x().cos())] {
         let (arena, root) = k.parts();
-        let jit = jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME)
+        let jit = jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT)
             .unwrap_or_else(|e| panic!("{name}: failed to compile on this backend: {e}"));
 
         // One argument per binade across the whole finite f32 range, plus the
@@ -162,7 +162,7 @@ fn sin_cos_stay_bounded_and_nan_outside_domain() {
 /// Every lane of a binary kernel, JIT vs oracle, on edge-case inputs.
 fn assert_tiers_agree_binary(name: &str, k: &Kernel, op: pixelflow_ir::OpKind) {
     let (arena, root) = k.parts();
-    let jit = jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME)
+    let jit = jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT)
         .unwrap_or_else(|e| panic!("{name}: {e}"));
     let nan = f32::NAN;
     let inputs: Vec<(f32, f32)> = [
@@ -217,7 +217,7 @@ fn nan_comparisons_agree_between_tiers() {
         ("le", OpKind::Le, Kernel::x().le(&Kernel::y())),
     ] {
         let (arena, root) = k.parts();
-        let jit = jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME)
+        let jit = jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         let inputs: Vec<(f32, f32)> = [
             (1.0f32, nan),
@@ -269,7 +269,7 @@ fn a_folded_mask_blends_like_a_computed_one() {
         .and(&Kernel::constant(folded))
         .select(&Kernel::constant(7.0), &Kernel::constant(9.0));
     let (arena, root) = k.parts();
-    let jit = jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME)
+    let jit = jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT)
         .expect("mask kernel compiles");
 
     let res = eval_points_1d(&jit, &[1.0, -1.0]);
@@ -283,7 +283,7 @@ fn round_agrees_between_tiers_away_from_ties() {
     let rounded = Kernel::x().round();
     let (arena, root) = rounded.parts();
     let jit =
-        jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME).expect("round compiles");
+        jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT).expect("round compiles");
     // Non-ties only. At a tie the three tiers disagree by design (x86
     // nearest-even, aarch64 FRINTA ties-away, combinator `(x+0.5).floor()`), so
     // there is no answer to assert — see `tie_result_is_platform_specific`.

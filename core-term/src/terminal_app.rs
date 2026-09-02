@@ -112,8 +112,8 @@ pub struct TerminalApp {
     /// The compiled cell-grid scene: ONE packed kernel producing finished
     /// `u32` pixels, byte order bound by the platform's ColorCube inside
     /// pixelflow-graphics. Recompiled whenever the geometry it was compiled
-    /// against — grid dimensions, cell size, density, atlas extents —
-    /// changes; `None` until the first frame. This is the JIT answer to
+    /// against — grid dimensions, cell size, density, atlas extents, the
+    /// frame's pixel size — changes; `None` until the first frame. This is the JIT answer to
     /// dynamic resize: the program's size and compile time are independent
     /// of the grid's.
     program: Option<CellGridPackedProgram>,
@@ -128,6 +128,11 @@ pub struct TerminalApp {
     /// The scene stays in point space; this is only a density hint for the
     /// glyph cache so bakes match the platform's sample lattice.
     density: f32,
+    /// The window's frame in device pixels, from the last `WindowCreated` /
+    /// `Resized`. The cell-grid program is compiled for exactly this lattice
+    /// (`CellGridGeometry::frame_w/frame_h`), so it is part of the geometry
+    /// the recompile check compares.
+    frame_px: [u32; 2],
 }
 
 /// Parameters for constructing a TerminalApp.
@@ -213,6 +218,7 @@ impl TerminalApp {
             atlas,
             program: None,
             has_presented: false,
+            frame_px: [0, 0],
             pressed_mouse_button: None,
             density: 1.0,
         }
@@ -369,6 +375,8 @@ impl TerminalApp {
             atlas_height: self.atlas.height() as u32,
             tile_w: self.atlas.tile_px() as u32,
             tile_h: self.atlas.tile_px() as u32,
+            frame_w: self.frame_px[0],
+            frame_h: self.frame_px[1],
         };
         if self.program.as_ref().map(CellGridPackedProgram::geometry) != Some(&geom) {
             log::info!(
@@ -466,6 +474,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                     scale
                 );
                 self.set_density(scale);
+                self.frame_px = [width_px, height_px];
 
                 // Window is now ready - send initial frame to start VSync loop
                 self.send_frame();
@@ -475,6 +484,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 width_px,
                 height_px,
             } => {
+                self.frame_px = [width_px, height_px];
                 use crate::term::{ControlEvent, EmulatorAction, EmulatorInput};
                 // Convert u32 pixels to u16 for ControlEvent
                 // Saturate at u16::MAX to prevent overflow panics

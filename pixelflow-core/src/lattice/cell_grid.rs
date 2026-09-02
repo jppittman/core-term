@@ -93,6 +93,15 @@ pub struct CellGridGeometry {
     pub tile_w: u32,
     /// Tile content height in texels (see `tile_w`).
     pub tile_h: u32,
+    /// Width in pixels of the frame this program renders. Every
+    /// [`PlaneRegion`] baked through it lies within `frame_w × frame_h`;
+    /// pixels past the grid's own edge (a frame is rarely a whole number of
+    /// cells) show the default background. Part of the geometry because the
+    /// compiled kernels are specialized to the frame's lattice: a resize is
+    /// a recompile.
+    pub frame_w: u32,
+    /// Height in pixels of the frame this program renders (see `frame_w`).
+    pub frame_h: u32,
 }
 
 impl CellGridGeometry {
@@ -390,8 +399,12 @@ impl CellGridProgram {
             // of rows for a channel. Bound-memory arenas are uncacheable
             // (the code bakes buffer slot metadata); the cache recognizes
             // that and compiles fresh.
-            pixelflow_codegen::jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME)
-                .expect("cell-grid channel failed to compile")
+            pixelflow_codegen::jit_cache::compile(
+                arena,
+                root,
+                pixelflow_ir::LatticeShape::new([geom.frame_w, geom.frame_h, 1, 1]),
+            )
+            .expect("cell-grid channel failed to compile")
         });
         Self {
             geom,
@@ -431,6 +444,7 @@ impl CellGridProgram {
         CellGridFrame {
             jits: self.jits.clone(),
             slots: self.slots.clone(),
+            frame: [self.geom.frame_w, self.geom.frame_h],
             cells,
             atlas,
         }
@@ -443,6 +457,8 @@ impl CellGridProgram {
 pub struct CellGridFrame {
     jits: [Arc<JitManifold>; 4],
     slots: Arc<[SlotReads]>,
+    /// The pixel frame the kernels were compiled for (`geom.frame_w/frame_h`).
+    frame: [u32; 2],
     cells: Arc<Vec<f32>>,
     atlas: Arc<Vec<f32>>,
 }
@@ -457,6 +473,20 @@ pub struct PlaneRegion {
     pub y0: usize,
     /// Number of rows.
     pub rows: usize,
+}
+
+/// The kernels were compiled for `frame` (`geom.frame_w × geom.frame_h`); a
+/// region outside it would run the collapse loop past the lattice they were
+/// specialized to.
+fn assert_region_in_frame(what: &str, frame: [u32; 2], region: PlaneRegion) {
+    let (fw, fh) = (frame[0] as usize, frame[1] as usize);
+    assert!(
+        region.width <= fw && region.y0.saturating_add(region.rows) <= fh,
+        "{what}: region {}×{} at row {} lies outside the {fw}×{fh} frame this program was compiled for",
+        region.width,
+        region.rows,
+        region.y0
+    );
 }
 
 impl CellGridFrame {
@@ -487,6 +517,7 @@ impl CellGridFrame {
     pub fn bake_channel_rows(&self, channel: usize, region: PlaneRegion, out: &mut [f32]) {
         let PlaneRegion { width, y0, rows } = region;
         assert!(width > 0, "bake_channel_rows: zero width");
+        assert_region_in_frame("bake_channel_rows", self.frame, region);
         let stride = Self::padded_width(width);
         // Checked for the same reason as `bake_packed_rows`: a wrapped
         // product would admit an undersized `out` while the unsafe collapse
@@ -595,9 +626,12 @@ impl CellGridPackedProgram {
             "packed cell-grid kernel did not merge its atlas reads to one slot"
         );
         let (arena, root) = kernel.parts();
-        let jit =
-            pixelflow_codegen::jit_cache::compile(arena, root, pixelflow_ir::LoopShape::FRAME)
-                .expect("packed cell-grid kernel failed to compile");
+        let jit = pixelflow_codegen::jit_cache::compile(
+            arena,
+            root,
+            pixelflow_ir::LatticeShape::new([geom.frame_w, geom.frame_h, 1, 1]),
+        )
+        .expect("packed cell-grid kernel failed to compile");
         Self {
             geom,
             shifts,
@@ -648,6 +682,7 @@ impl CellGridPackedProgram {
             shifts: self.shifts,
             jit: self.jit.clone(),
             slots: self.slots.clone(),
+            frame: [self.geom.frame_w, self.geom.frame_h],
             cells,
             atlas,
         }
@@ -663,6 +698,8 @@ pub struct CellGridPackedFrame {
     shifts: [u32; 4],
     jit: Arc<JitManifold>,
     slots: Arc<[SlotReads]>,
+    /// The pixel frame the kernel was compiled for (`geom.frame_w/frame_h`).
+    frame: [u32; 2],
     cells: Arc<Vec<f32>>,
     atlas: Arc<Vec<f32>>,
 }
@@ -693,6 +730,7 @@ impl CellGridPackedFrame {
     pub fn bake_packed_rows(&self, region: PlaneRegion, out: &mut [u32]) {
         let PlaneRegion { width, y0, rows } = region;
         assert!(width > 0, "bake_packed_rows: zero width");
+        assert_region_in_frame("bake_packed_rows", self.frame, region);
         let stride = CellGridFrame::padded_width(width);
         // Checked: `rows * stride` wraps in release for a caller-supplied
         // region large enough, and a wrapped product would let an undersized
@@ -777,6 +815,8 @@ mod tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 12,
+            frame_h: 6,
         };
         let program = CellGridProgram::compile(geom, [0.9, 0.8, 0.7, 0.6]);
         // Cell 0 → tile 0, red-on-black; cell 1 → tile 1, white-on-blue.
@@ -806,6 +846,8 @@ mod tests {
             atlas_height: 32,
             tile_w: 12,
             tile_h: 24,
+            frame_w: 2560,
+            frame_h: 1584,
         };
         let program = CellGridPackedProgram::compile(geom, [0.1, 0.1, 0.1, 1.0], [0, 8, 16, 24]);
         let code = program.jits_code_bytes();
@@ -865,6 +907,8 @@ mod tests {
             atlas_height: 6,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 8,
+            frame_h: 4,
         };
         let bufs = GridBuffers::mint();
         let kernel = channel_kernel(&geom, bufs, 0, 0.0);
@@ -998,6 +1042,8 @@ mod tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 5,
+            frame_h: 5,
         };
         let program = CellGridProgram::compile(geom, [0.0; 4]);
         let cells = vec![
@@ -1038,6 +1084,8 @@ mod tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 8,
+            frame_h: 4,
         };
         let program = CellGridProgram::compile(geom, [0.0; 4]);
         let cells = vec![
@@ -1074,6 +1122,8 @@ mod tests {
             atlas_height: 1 << 12, // 2^25 texels: past exact f32 indexing
             tile_w: 4,
             tile_h: 4,
+            frame_w: 4,
+            frame_h: 4,
         };
         let _refused = CellGridProgram::compile(geom, [0.0; 4]);
     }
@@ -1098,6 +1148,8 @@ mod tests {
             atlas_height: 6,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 12,
+            frame_h: 8,
         };
         assert_eq!(geom.cells_len(), 3 * 2 * CELL_STRIDE);
         assert_eq!(geom.atlas_len(), 12 * 6);
@@ -1155,6 +1207,8 @@ mod tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 4,
+            frame_h: 8,
         };
         let program = CellGridProgram::compile(geom, [0.0; 4]);
         let cells = vec![
@@ -1197,6 +1251,8 @@ mod tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 8,
+            frame_h: 8,
         };
         let program = CellGridProgram::compile(geom, [0.4; 4]);
         let block: [f32; CELL_STRIDE] = [
@@ -1245,6 +1301,8 @@ mod tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 4,
+            frame_h: 8,
         };
         let program = CellGridProgram::compile(geom, [0.0; 4]);
         let cells = vec![
@@ -1360,6 +1418,8 @@ mod tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 6,
+            frame_h: 10,
         };
         let default_bg = [0.25, 0.5, 0.75, 1.0];
         let cells = Arc::new(vec![
@@ -1401,6 +1461,8 @@ mod tests {
             atlas_height: 6,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 8,
+            frame_h: 4,
         };
         let bufs = GridBuffers::mint();
         let kernel = packed_kernel(&geom, bufs, [0.0; 4], RGBA_SHIFTS);
@@ -1436,6 +1498,8 @@ mod tests {
             atlas_height: 6,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 8,
+            frame_h: 4,
         };
         let bufs = GridBuffers::mint();
         let kernel = packed_kernel(&geom, bufs, [0.0; 4], RGBA_SHIFTS);
@@ -1471,6 +1535,8 @@ mod tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 4,
+            frame_h: 8,
         };
         let program = CellGridPackedProgram::compile(geom, [0.0; 4], RGBA_SHIFTS);
         let cells = Arc::new(vec![
@@ -1515,6 +1581,8 @@ mod tests {
             atlas_height: 6,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 4,
+            frame_h: 4,
         };
         // R and B both at bit 0: the OR would blend two channels' bytes.
         let _refused = CellGridPackedProgram::compile(geom, [0.0; 4], [0, 8, 0, 24]);

@@ -105,7 +105,7 @@ fn an_unspilled_muladd_rounds_the_way_this_target_does() {
 
     let result = compile(&a, root).expect("compile MulAdd(X, Y, Z)");
     assert_eq!(result.spill_count, 0, "this scenario must not spill");
-    let got = JitManifold::new(result.code, pixelflow_ir::LoopShape::FRAME)
+    let got = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT)
         .eval_at(Point4::new(A, B, C, 0.0));
 
     #[cfg(target_feature = "fma")]
@@ -170,7 +170,7 @@ fn a_spilled_muladd_rounds_twice_on_every_target() {
         result.spill_count > 0,
         "scenario failed to create register pressure"
     );
-    let got = JitManifold::new(result.code, pixelflow_ir::LoopShape::FRAME)
+    let got = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT)
         .eval_at(Point4::new(HALF_A, HALF_B, C, 0.0));
     assert_bits("decomposed MulAdd", got, decomposed(A, B, C));
 }

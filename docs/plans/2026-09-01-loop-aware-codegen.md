@@ -132,6 +132,48 @@ body e-classes freely because each still evaluates them inside its own
 scope. That discipline is the scope rule itself. The "binder-aware rules"
 the old bail-out asked for were never the missing piece; the scope rule was.
 
+**Distribution is a rewrite, and it is the same rewrite that proves Gauss.**
+A fold is defined by two equations,
+
+```
+⊕_{i<0}   body(i) = e                                   (identity)
+⊕_{i<N+1} body(i) = (⊕_{i<N} body(i)) ⊕ body[i := N]    (peel)
+```
+
+and peel *is* the unroll: applied N times to a static extent it yields the
+distributed form. It is also the proof of every closed form the e-graph
+discovers — `Σ_{i<4} i²` came out as `Const(14)` in #1092 because four peels
+and `ConstantFold` derive it. `Σ_{i<N} i = N(N−1)/2` and `Σ_i c = N·c` are
+the *factored* statements of what peel-plus-fold computes, valid without N
+steps: theorems the e-graph can prove for any concrete N, and lemmas it
+should carry so it need not (rule provenance and hindsight labeling in
+`pixelflow-search` are the machinery for noticing a derivation worth keeping).
+Both the factored `Reduce` and its peeled expansion then sit in one e-class,
+and **extraction chooses**: pick the peeled member and codegen emits copies;
+pick the binder and codegen emits a loop. Unroll-or-not is the extractor
+comparing `N·cost(body) + (N−1)·cost(⊕)` against loop overhead with N a
+number it knows — not a codegen policy after all, which supersedes the
+"per-binder codegen policy" wording above.
+
+The one requirement is that `body[i := N]` be something the rewrite engine
+can do. E-graphs cannot substitute natively (the classic binder problem), so
+substitution is an explicit node with three rules:
+
+```
+Subst(a ⊕ b, i, k) = Subst(a, i, k) ⊕ Subst(b, i, k)     (distribute)
+Subst(e, i, k)     = e            when i ∉ deps(e)        (factor)
+Subst(Var i, i, k) = Const k
+```
+
+The second rule is `unroll_reduce`'s sharing of index-invariant subtrees,
+stated as a rewrite with variance as its side condition. Peel on a 1920-wide
+axis is 1920 saturation steps, so the rule needs an extent-gated mask (the
+guided-saturation direction already on file); and a lattice axis is a fold
+with `Store` as its monoid, so its peel is a tile split and a point kernel is
+`Store_{i<1} body = body[i := 0]`, the same rule at N = 1. This answers
+stage 1's IR question: a `Binder` node with `Fold(op) | Store`, a `Subst`
+node, three rules, and `expand_reduce` becomes deletable.
+
 ### The shape type
 
 `LoopShape` as landed in #1092 (X/Y loop mask) is the *wrong denotation*

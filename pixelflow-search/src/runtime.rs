@@ -26,7 +26,7 @@ use crate::egraph::{
     EClassId, EGraph, ENode, Op, all_rules, choices_to_arena, config_for_node_count,
     env_extraction_policy,
 };
-use pixelflow_ir::LoopShape;
+use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
 use std::collections::HashMap;
@@ -59,11 +59,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// Callers compile the original arena unchanged in that case — `optimize_runtime_arena`
 /// is strictly an optimization, never required for correctness.
 ///
-/// `shape` is the lattice shape the kernel is compiled for. It is part of the
-/// cache key and is consulted by no rewrite yet: stage 0 of
-/// `docs/plans/2026-09-01-loop-aware-codegen.md`, so that scope-weighted
+/// `shape` is the extent of the lattice the kernel is compiled for. It is
+/// part of the cache key and is consulted by no rewrite yet (stage 0′ of
+/// `docs/plans/2026-09-01-loop-aware-codegen.md`), so that extent-weighted
 /// extraction (stage 1) is a policy change here and a signature change
-/// nowhere.
+/// nowhere. Saturation does not depend on it; when stage 1 lands, this cache
+/// should hold the saturated e-graph per structure and extract per extent.
 ///
 /// Cached by the structural shape of the reachable subgraph (mirroring
 /// `pixelflow_codegen::jit_cache`'s own canonical-key cache): a caller that bakes
@@ -83,7 +84,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub fn optimize_runtime_arena(
     arena: &ExprArena,
     root: ExprId,
-    shape: LoopShape,
+    shape: LatticeShape,
 ) -> Option<Arc<(ExprArena, ExprId)>> {
     static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Option<Arc<(ExprArena, ExprId)>>>>> =
         OnceLock::new();
@@ -98,7 +99,7 @@ pub fn optimize_runtime_arena(
     }
 
     let mut key = canonical_key(arena, root);
-    key.push(shape.bits());
+    key.extend_from_slice(&shape.key_bytes());
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache
         .lock()
@@ -568,8 +569,8 @@ mod tests {
 
         let (a1, r1) = build_arena();
         let cold_start = std::time::Instant::now();
-        let arc1 =
-            optimize_runtime_arena(&a1, r1, pixelflow_ir::LoopShape::FRAME).expect("must optimize");
+        let arc1 = optimize_runtime_arena(&a1, r1, pixelflow_ir::LatticeShape::POINT)
+            .expect("must optimize");
         let opt1 = &arc1.0;
         let cold = cold_start.elapsed();
 
@@ -577,8 +578,8 @@ mod tests {
         // proves the cache keys on shape, not on the first call's identity.
         let (a2, r2) = build_arena();
         let warm_start = std::time::Instant::now();
-        let arc2 =
-            optimize_runtime_arena(&a2, r2, pixelflow_ir::LoopShape::FRAME).expect("must optimize");
+        let arc2 = optimize_runtime_arena(&a2, r2, pixelflow_ir::LatticeShape::POINT)
+            .expect("must optimize");
         let opt2 = &arc2.0;
         let warm = warm_start.elapsed();
 
@@ -605,7 +606,7 @@ mod tests {
         let mul = a.push_binary(OpKind::Mul, x, y);
         let root = a.push_binary(OpKind::Add, mul, z);
 
-        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("pure arithmetic arena must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
@@ -631,7 +632,7 @@ mod tests {
         let sq = a.push_binary(OpKind::Mul, s, s);
         let root = a.push_binary(OpKind::Add, sq, s);
 
-        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("trig arena must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
         assert_semantics_preserved(&a, root, &(opt_arena, opt_root));
@@ -655,7 +656,7 @@ mod tests {
         let var_x = a.push_const(0.0); // Dwrt's second child is the var index, wrt X (0)
         let dx = a.push_binary(OpKind::Dwrt, d, var_x);
 
-        let arc = optimize_runtime_arena(&a, dx, pixelflow_ir::LoopShape::FRAME)
+        let arc = optimize_runtime_arena(&a, dx, pixelflow_ir::LatticeShape::POINT)
             .expect("Dwrt-bearing arena must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
@@ -770,7 +771,7 @@ mod tests {
         let one = a.push_const(1.0);
         let root = a.push_binary(OpKind::Add, g, one);
 
-        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("a Gather-bearing arena must optimize, not bail");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
@@ -824,7 +825,7 @@ mod tests {
             "input must contain the duplicate"
         );
 
-        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
         let after = reachable_count(&opt_arena, opt_root);
@@ -871,7 +872,7 @@ mod tests {
         let ga = a.push_gather(buf_a, x, y);
         let root = a.push_binary(OpKind::Add, gb, ga);
 
-        let out = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+        let out = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("buffer kernel must optimize");
         let input: Vec<_> = a.buffers().iter().map(|d| d.id).collect();
         let output: Vec<_> = out.0.buffers().iter().map(|d| d.id).collect();
@@ -904,7 +905,7 @@ mod tests {
         let gb = a.push_gather(buf_b, x, y);
         let root = a.push_binary(OpKind::Sub, ga, gb);
 
-        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
@@ -992,7 +993,7 @@ mod tests {
         let before = reachable_count(&a, root);
         assert_eq!(count_gathers(&a, root), 9);
 
-        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
         let after = reachable_count(&opt_arena, opt_root);
@@ -1030,7 +1031,7 @@ mod tests {
         let body = a.push_binary(OpKind::Mul, i, i);
         let root = a.push_reduce(OpKind::Add, 4, 4, body);
 
-        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("a Reduce-bearing arena must optimize once unrolled");
         let (opt, opt_root) = &*arc;
         assert!(
@@ -1047,7 +1048,7 @@ mod tests {
         let body = b.push_binary(OpKind::Mul, x, j);
         let root = b.push_reduce(OpKind::Add, 5, 3, body);
         let (unrolled, unrolled_root) = pixelflow_ir::passes::expand_reduce_owned(&b, root);
-        let arc = optimize_runtime_arena(&b, root, pixelflow_ir::LoopShape::FRAME)
+        let arc = optimize_runtime_arena(&b, root, pixelflow_ir::LatticeShape::POINT)
             .expect("X-dependent Reduce must optimize");
         let (opt, opt_root) = &*arc;
         for x in [0.0f32, 1.5, -2.25, 7.0] {
@@ -1072,7 +1073,7 @@ mod tests {
         let times_one = a.push_binary(OpKind::Mul, plus_zero, one);
         let root = times_one;
 
-        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LoopShape::FRAME)
+        let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("identity arena must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
         assert_semantics_preserved(&a, root, &(opt_arena.clone(), opt_root));

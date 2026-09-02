@@ -401,7 +401,7 @@ impl Lattice {
         let jit = pixelflow_codegen::jit_cache::compile(
             arena,
             root,
-            pixelflow_ir::LoopShape::from_loop_mask(self.loop_mask()),
+            pixelflow_ir::LatticeShape::new(self.extent),
         )
         .expect("kernel failed to compile");
 
@@ -878,7 +878,7 @@ impl DiscreteManifold {
         // metadata); compile recognizes that and compiles fresh.
         // Sampled one batch at a time through `Manifold::eval`: a point shape.
         let jit =
-            pixelflow_codegen::jit_cache::compile(&arena, root, pixelflow_ir::LoopShape::POINT)
+            pixelflow_codegen::jit_cache::compile(&arena, root, pixelflow_ir::LatticeShape::POINT)
                 .expect("bilinear sampler failed to compile");
         BilinearSampler { tex: self, jit }
     }

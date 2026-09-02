@@ -78,39 +78,24 @@ fn kernel_bakes_at_every_lattice_shape() {
 }
 
 #[test]
-fn resizing_a_frame_keeps_one_compiled_kernel() {
+fn each_lattice_extent_is_its_own_kernel() {
     use pixelflow_codegen::jit_cache;
-    use pixelflow_ir::LoopShape;
+    use pixelflow_ir::LatticeShape;
 
-    // The shape a lattice compiles under is its loop axes, not its extents:
-    // every frame-shaped domain of this kernel shares one cache entry, so a
-    // window resize never mints a new kernel. This is the property that
-    // makes specializing on the shape affordable.
+    // The kernel is compiled for its lattice's extents: the same extents
+    // share one cache entry, one more column is a different lattice and a
+    // different kernel. Resizing is recompilation, by decision.
     let sdf = circle_sdf();
     let (arena, root) = sdf.parts();
-    let shape_of = |l: Lattice| LoopShape::from_loop_mask(l.loop_mask());
+    let shape_of = |l: Lattice| LatticeShape::new(l.extent);
     let first =
         jit_cache::compile(arena, root, shape_of(Lattice::frame(8, 8, 0.0))).expect("compile");
-    for (w, h) in [(9usize, 8usize), (640, 480), (1920, 1080), (2, 2)] {
-        let again =
-            jit_cache::compile(arena, root, shape_of(Lattice::frame(w, h, 0.0))).expect("compile");
-        assert!(
-            std::sync::Arc::ptr_eq(&first, &again),
-            "frame({w}, {h}) must reuse the frame-shaped kernel"
-        );
-    }
-    // A volume loops Z at the lattice level, but the collapse kernel is
-    // called once per Z plane: same shape, same entry.
-    let volume = Lattice {
-        extent: [8, 8, 4, 1],
-        origin: [0.0; 4],
-    };
-    let plane = jit_cache::compile(arena, root, shape_of(volume)).expect("compile");
-    assert!(std::sync::Arc::ptr_eq(&first, &plane));
-
-    // A scanline of the same kernel is a different shape, hence its own entry.
-    let line = jit_cache::compile(arena, root, shape_of(Lattice::scanline(8, 0.0, 0.0, 0.0)))
-        .expect("compile");
-    assert!(!std::sync::Arc::ptr_eq(&first, &line));
-    assert_eq!(line.shape(), LoopShape::SCANLINE);
+    let again =
+        jit_cache::compile(arena, root, shape_of(Lattice::frame(8, 8, 0.0))).expect("compile");
+    let wider =
+        jit_cache::compile(arena, root, shape_of(Lattice::frame(9, 8, 0.0))).expect("compile");
+    assert!(std::sync::Arc::ptr_eq(&first, &again));
+    assert!(!std::sync::Arc::ptr_eq(&first, &wider));
+    assert_eq!(first.shape().extent(), [8, 8, 1, 1]);
+    assert_eq!(wider.shape().extent(), [9, 8, 1, 1]);
 }

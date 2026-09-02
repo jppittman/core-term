@@ -254,6 +254,8 @@ mod tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 10,
+            frame_h: 10,
         };
         let program = CellGridPackedProgram::compile(
             geom,
@@ -336,6 +338,8 @@ mod tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 8,
+            frame_h: 8,
         };
         let program = super::compile_platform_cell_grid(geom, [0.0, 0.0, 0.0, 1.0]);
         // Zero coverage everywhere, so every in-grid pixel shows its cell's
@@ -395,6 +399,8 @@ mod frame_bench {
             atlas_height: 32,
             tile_w: 12,
             tile_h: 24,
+            frame_w: 2560,
+            frame_h: 1584,
         };
         let mut atlas = vec![0.0f32; geom.atlas_len()];
         for (i, t) in atlas.iter_mut().enumerate() {
@@ -548,6 +554,8 @@ mod pixel_format_tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 8,
+            frame_h: 8,
         };
         // Compiled for Rgba8's lanes...
         let program = compile_cell_grid_for::<Rgba8>(geom, [0.0, 0.0, 0.0, 1.0]);
@@ -574,6 +582,8 @@ mod pixel_format_tests {
             atlas_height: ah as u32,
             tile_w: 4,
             tile_h: 4,
+            frame_w: 8,
+            frame_h: 8,
         };
         // Opaque red background everywhere: coverage is zero (empty atlas),
         // so every in-grid pixel is its cell's background.
