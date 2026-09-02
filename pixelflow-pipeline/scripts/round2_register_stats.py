@@ -41,7 +41,8 @@ from collections import defaultdict
 
 HEADER = [
     "rule_set", "num_rules", "fingerprint", "expr_name", "origin", "tier",
-    "node_count", "app_target", "app_actual", "cost", "ended", "ended_at_apps",
+    "node_count", "app_target", "app_actual", "sweeps_actual", "evals_actual",
+    "apps_per_sweep", "cost", "ended", "ended_at_apps",
 ]
 GRID = [25, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200, 102400, 204800]
 BUDGETS = [100, 200]
@@ -179,6 +180,13 @@ def per_rule_set(curves, rs, tier, base_rs="base"):
     if not exprs:
         die(f"no {tier} curves for rule set {rs}")
     out = {"n": len(exprs)}
+    # apps_per_sweep is fixed per (rule_set, expr) curve — one throwaway
+    # probe value, identical at every grid checkpoint of that curve — so any
+    # single checkpoint's row carries it; §0's binding rule ("every budget
+    # reported in sweeps") reads off B in sweeps as B / this median.
+    out["apps_per_sweep"] = quartiles(
+        [int(curves[(rs, e)][GRID[0]]["apps_per_sweep"]) for e in exprs]
+    )
     refs = {}
     for e in exprs:
         refs[e] = min(int(r["cost"]) for r in curves[(rs, e)].values())
@@ -187,6 +195,12 @@ def per_rule_set(curves, rs, tier, base_rs="base"):
         cost_b = [int(curves[(rs, e)][b]["cost"]) for e in exprs]
         cost_4b = [int(curves[(rs, e)][4 * b]["cost"]) for e in exprs]
         app_b = [int(curves[(rs, e)][b]["app_actual"]) for e in exprs]
+        sweeps_b = [int(curves[(rs, e)][b]["sweeps_actual"]) for e in exprs]
+        evals_b = [int(curves[(rs, e)][b]["evals_actual"]) for e in exprs]
+        # Matches enumerated per application, cumulative through checkpoint B
+        # (the §7.1 overhead curve) — undefined (skipped) for a curve that
+        # quiesced with zero applications recorded at B.
+        evals_per_app_b = [ev / ap for ev, ap in zip(evals_b, app_b) if ap > 0]
         regs = [regret(c, refs[e]) for e, c in zip(exprs, cost_b)]
         losses = [loss_pct(c, c4) for c, c4 in zip(cost_b, cost_4b)]
         finite_losses = [l for l in losses if math.isfinite(l)]
@@ -199,6 +213,8 @@ def per_rule_set(curves, rs, tier, base_rs="base"):
             "cost_at_B": quartiles(cost_b),
             "cost_at_4B": quartiles(cost_4b),
             "app_actual_at_B": quartiles(app_b),
+            "sweeps_actual_at_B": quartiles(sweeps_b),
+            "evals_per_app_at_B": quartiles(evals_per_app_b) if evals_per_app_b else None,
             "regret": quartiles(regs),
             "regret_infinite_count": sum(1 for r in regs if math.isinf(r)),
             "trunc_loss_pct": quartiles(finite_losses),
@@ -373,6 +389,24 @@ def render_md(result, expected):
         out.append(f"| `{rs}` | {rs_R[rs]['num_rules']} | {fmt_pct(r1['median'])} | {fmt_pct(r1['p25'])} | {fmt_pct(r1['p75'])} | {fmt_pct(r1['p90'])} | "
                    f"{fmt_pct(r2['median'])} | {fmt_pct(r2['p25'])} | {fmt_pct(r2['p75'])} | {fmt_pct(r2['p90'])} | "
                    f"{b1['trunc_loss_pct']['median']:.3f} | {b1['Y'] * 100:.2f} | {b2['trunc_loss_pct']['median']:.3f} | {b2['Y'] * 100:.2f} | {fid_s} |\n")
+    out.append("\n**Sweeps and match-enumeration overhead (classical, v2 §0.2/§7.1).** "
+               "`apps_per_sweep` is one throwaway one-sweep probe per expression, median over the "
+               "band; `B in sweeps` = B / that median (how much of one full rule-order pass a "
+               "budget spends); `evals/app@B` = cumulative `EGraph::total_evals` / cumulative "
+               "applications through checkpoint B — matches enumerated per application actually "
+               "taken, the §7.1 flatness check.\n\n")
+    out.append("| rule set | \\|R\\| | apps_per_sweep med | B=100 in sweeps | B=200 in sweeps | "
+               "sweeps_actual@100 med | sweeps_actual@200 med | evals/app@100 med | evals/app@200 med |\n"
+               "|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+    for rs in expected:
+        x = c[rs]
+        aps = x["apps_per_sweep"]["median"]
+        b1, b2 = x["B100"], x["B200"]
+        ev1 = b1["evals_per_app_at_B"]["median"] if b1["evals_per_app_at_B"] else float("nan")
+        ev2 = b2["evals_per_app_at_B"]["median"] if b2["evals_per_app_at_B"] else float("nan")
+        out.append(f"| `{rs}` | {rs_R[rs]['num_rules']} | {aps:.1f} | {100 / aps:.2f} | {200 / aps:.2f} | "
+                   f"{b1['sweeps_actual_at_B']['median']:.2f} | {b2['sweeps_actual_at_B']['median']:.2f} | "
+                   f"{ev1:.2f} | {ev2:.2f} |\n")
     for tier in ["blitz", "rapid"]:
         t = result["tiers"][tier]
         n = next(iter(t.values()))["n"]

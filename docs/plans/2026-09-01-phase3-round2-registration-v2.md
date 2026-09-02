@@ -12,17 +12,17 @@ interleaving as option (b) and adopted nothing (correct discipline for that docu
 document adopts it.
 
 **Date:** 2026-09-01
-**Status:** DESIGN SKELETON — this document commits the mechanism (interleaved order, seed,
-sweep-denominated reporting, the §7.1 overhead measurement) and the statistical machinery carried
-over from v1 UNCHANGED. It does **not** yet commit numbers. Every quantity that v1 computed from
-its (now-superseded) unguided curves — §4's measured tables, §5's registered constants (Δ1, Δ2,
-Y(|R|) per point, the H1 verdict, the overhead thresholds) — is marked **TBD** below and is filled
-by a Register run of the interleaved-order harness on the same 400-expression sample, following
-v1's exact procedure. Nothing in §5 may be copied from v1: v1's numbers were computed under the
-order this document replaces, and are not valid for a different sweep order (a different rule
-order can change which application lands at which checkpoint, hence `app_actual`, cost@B, and
-every downstream statistic). Until §5 is filled and committed, no guided run at |R| > 62 may use
-this document as its registration — the same rule v1 stated for itself.
+**Status:** REGISTERED — §4/§5/§6 are filled from a completed Register run (§11 Entry 1,
+2026-09-01): 8 of 9 grid points (`comp:186`/`comp:248` did not complete within the |R|-scaled
+safety ceiling on two independent attempts — §4). **H1 FAILS on this grid, decisively, in every
+mode measured** — not unobservable (v1's outcome under append order), but a large, consistent
+effect in the direction opposite H1's prediction (§6). Nothing in §5 is copied from v1: v1's
+numbers were computed under the order this document replaces, and are not valid for a different
+sweep order (a different rule order changes which application lands at which checkpoint, hence
+`app_actual`, cost@B, and every downstream statistic). Per the rule inherited from v1, §5 as filled
+here may not be revised except by append (§11) or a further superseding registration; a guided run
+at |R| > 62 may use this document as its registration for the 8 completed points, but not for mode
+(ii) past |R|=124 (comp:186/comp:248 remain unregistered).
 **Authority:** `docs/plans/2026-08-31-guide-design-revision.md` (§5 protocol);
 `docs/plans/2026-09-01-phase3-registration.md` (Round 1 — FROZEN; B, Y's formula, the grid, the
 curve runner, and the reference convention are inherited from it verbatim, via v1);
@@ -125,6 +125,7 @@ values on every test run — this table is not hand-computed.
 | (ii) | `comp:124` | 124 | `a7600e5942f0baa5` | `521798ae521a0572` |
 | (ii) | `comp:186` | 186 | `9e9bf3a4458a3045` | `ff65cfbabc95a6cf` |
 | (ii) | `comp:248` | 248 | `b89d841eada63c13` | `dfc176cd60c7124f` |
+| (iii) | `new:95` | 95 | `113cca49c99cc850` | `4f4a4cbd2e4f89cb` |
 
 The `:append` fingerprints for `dup:93/124/186/248` and `comp:93/124` reproduce v1's §2 table
 exactly (same code path, unchanged) — confirmed by
@@ -133,9 +134,30 @@ fingerprints are newly computed here: v1 never finished writing curve rows for t
 (v1 §2.2 — the process producing the committed CSV did not survive), but the rule sets themselves
 were always fully specified and cheap to fingerprint (no curve run needed for a fingerprint); they
 are included for completeness and because the interleaved-order Register run below intends to
-realize the full 9-point grid this time.
+realize the full 9-point grid this time. `new:95`'s `:append` fingerprint reproduces
+`phase3_round2_new_rules.rs`'s original `all_rules() + experimental_rules()` splice byte-for-byte
+(same content, same order) — mode (iii) now goes through the same `RuleSetSpec` path as the other
+two modes, per the "Mode (iii) update" note above.
 
-**Mode (iii) is out of scope for this document.** Mode (iii)'s harness
+**Mode (iii) update (JP's follow-up directive, same date):** the paragraph below described this
+document's FIRST commit, which left mode (iii) out. JP's next instruction explicitly asked for
+`new:95` on the same interleaved-order grid, so a later commit on this branch gave mode (iii) its
+own `InflationMode::NewRules` variant and `build_new_rule_set` in `inflate.rs` — `"new:95"` now
+goes through the same `RuleSetSpec`/`build_rule_set`/`RuleOrder` path as `dup`/`comp`, exactly
+like the two existing modes, rather than staying a separate hand-rolled `all_rules() +
+experimental_rules()` splice in `phase3_round2_new_rules.rs`. `NEW_RULES_GRID = &[95]` is
+mode (iii)'s one point (`62 + experimental_rules().len()`, pinned by
+`math::inflate::tests::new_rules_grid_matches_experimental_rules_len` against a future edit to the
+batch silently drifting the registered count); order applies to it exactly as §0 describes for
+`dup`/`comp` (the 62-point never shuffled, `Interleave(DEFAULT_INTERLEAVE_SEED)` the default,
+`:append` reproducing v1's `all_rules() + experimental_rules()` splice byte-for-byte). This
+supersedes the "out of scope"/"parked" framing directly below, which is kept for the historical
+record of the design's first pass rather than deleted. v1's mode (iii) finding (H1 fails, +12.0
+points at B=100, entirely a reference/fidelity effect — v1 §6 point 4) was measured under append
+order and is superseded by §4/§6's `new:95` row below, for the same reason every other mode's v1
+number is superseded (§3's "what changes under interleaving").
+
+**Original paragraph, kept for the record — no longer current, see above.** Mode (iii)'s harness
 (`round2_rules::experimental_rules()`, `phase3_round2_new_rules.rs`) does not build rule sets
 through `RuleSetSpec`/`build_rule_set` — it extends `all_rules()` directly with a fixed batch — so
 `RuleOrder` does not apply to it as written. v1's mode (iii) finding (H1 fails, +12.0 points at
@@ -175,30 +197,37 @@ rules has swept, because inflated rules are no longer confined to the tail of ea
 the intended effect (§0), not a bug; it is exactly why `ref_U`, cost@B, and every statistic below
 must be recomputed under this order rather than read off v1's tables.
 
-## 4. Measured interleaved-order curves — TBD
+## 4. Measured interleaved-order curves — RUN, 8 of 9 grid points
 
-**Not yet run.** This section is filled by the Register run: `phase3_round2_unguided_curves` over
-the full 9-set default-order grid (`base,dup:93,dup:124,dup:186,dup:248,comp:93,comp:124,comp:186,
-comp:248` — the same default strings as v1's invocation; the interleaved order is now what those
-strings mean, per §0), on the same 400-expression sample, writing the same CSV shape as v1 plus
-the three new columns (§0). Table shapes to fill, mirroring v1 §4 exactly (absolute cost, `visible
-@B`/`visible@200`/`first visible`, sweep-denominated `app_actual` alongside applications,
-`evals_actual`-derived matches-per-application) plus v1 §4's regret/truncation-loss/closure-gain
-table — **TBD**.
+Register run, `phase3_round2_unguided_curves --release`, same 400-expression sample, same CSV
+shape plus the three new columns. Full tables (absolute cost, `visible@100`/`visible@200`/`first
+visible`, sweeps/`evals_actual` overhead, regret/truncation-loss/closure-gain, per-tier, H1
+statistics) live in `docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.md` — not
+retranscribed here to avoid a second, driftable copy; this section states what changed and points
+there.
 
-The expected qualitative difference from v1, stated in advance so it is a prediction and not a
-post-hoc read: under interleaving, `visible@100`/`visible@200` should be nonzero even in mode (i)
-(duplicates), because a copy can now be swept before the useful rules that dominate v1's
-first-sweep budget — this is the observation the mechanism exists to make visible. Whether the
-direction and magnitude clear Δ1 (§5.3, TBD) is exactly what the Register run measures; it is not
-assumed here.
+**`comp:186` and `comp:248` did not complete.** Two independent attempts each ran `comp:186` to
+curve 200/400 then hit `anytime.rs`'s wall-clock safety ceiling panic at the same ~25-expression
+window, under different system load (16.45 then 12.35) — treated as a genuine compute wall for at
+least one expression at `|R|=186`, not contention, per the results doc's "Grid coverage" section.
+Mode (ii)'s grid below is therefore `[62, 93, 124]` only, not the full 5 points modes (i)/(iii)
+mirror; `comp:186`/`comp:248` remain open, exactly as they did in v1 (§2), for a different
+proximate reason (v1's process didn't survive; v2's hits the scaled ceiling deterministically).
 
-## 5. Registered constants — TBD from the interleaved-order Register run
+**The prediction stated in advance was correct, and understated:** `visible@100`/`visible@200` are
+nonzero in every mode, including mode (i) — but not merely nonzero: **159–188 of 188** classical
+expressions differ from `base` at B=100 for every one of the 7 completed inflated sets (`new:95`
+is 188/188 — literally every classical expression), versus v1's committed 0/188 for any set. This
+is the direct before/after evidence §6 draws on.
 
-Everything in this section is **TBD**. Per the binding rule inherited from v1 (§6 of the design,
-carried forward), Register may fix these ONLY from unguided data on the interleaved-order harness,
-committed before any guided run at |R| > 62 under this order, and — once committed — may not be
-revised except by append or by a further superseding registration.
+## 5. Registered constants — from the interleaved-order Register run (§11 Entry 1)
+
+Per the binding rule inherited from v1 (§6 of the design, carried forward), these are fixed ONLY
+from unguided data on the interleaved-order harness, committed before any guided run at |R| > 62
+under this order, and — now committed — may not be revised except by append (§11) or by a further
+superseding registration. Mode (ii) below is fixed only through |R|=124 (`comp:186`/`comp:248`
+incomplete, §4) — its numbers are registered for the points that exist, not extrapolated to the
+missing two.
 
 ### 5.1 Inherited, not re-derived
 B = 100 / 200 (classical); Y's formula `Y = 1 − (1 + L/2)/(1 + L)`; ε = 0.005; the 0.02 floor on
@@ -208,67 +237,149 @@ the reference convention (§3); the H2 statistics (design §1.3). **New this doc
 interleave seed `0x2026_0901` (§1), now also part of "what is fixed, not re-derived" once §4/§5
 are filled.
 
-### 5.2 Y(|R|) per mode and B — TBD
+### 5.2 Y(|R|) per mode and B
 
 | Mode | \|R\| | L@100 | **Y@100** | L@200 | **Y@200** |
 |---|---:|---:|---:|---:|---:|
-| (i) | 93, 124, 186, 248 | TBD | TBD | TBD | TBD |
-| (ii) | 93, 124, 186, 248 | TBD | TBD | TBD | TBD |
+| (i) | 93 | 20.910 | 8.65 | 0.181 | 0.09 |
+| (i) | 124 | 15.597 | 6.75 | 5.088 | 2.42 |
+| (i) | 186 | 2.565 | 1.25 | 1.047 | 0.52 |
+| (i) | 248 | 10.996 | 4.95 | 6.997 | 3.27 |
+| (ii) | 93 | 24.604 | 9.87 | 0.175 | 0.09 |
+| (ii) | 124 | 14.371 | 6.28 | 2.684 | 1.31 |
+| (ii) | 186, 248 | — | — | — | — (missing, §4) |
+| (iii) | 95 | −0.000 | −0.00 | 0.000 | 0.00 |
 
-### 5.3 Δ1 — H1's minimum effect (from |R| = 62 only) — TBD
+(`base`, |R|=62: L@100 = 48.467, Y@100 = 16.32; L@200 = 21.922, Y@200 = 8.99 — the reference row,
+restated here since every Δ2 below subtracts it.)
+
+### 5.3 Δ1 — H1's minimum effect (from |R| = 62 only)
 
 95% bootstrap CI of the median unguided regret at |R| = 62 on the 188 classical expressions
-(10,000 resamples, seed 42, order-statistic 2.5/97.5 percentiles) — same procedure as v1 §5.3, run
-fresh because it is measured, not inherited (the |R| = 62 point's rule set is unchanged, but a
-fresh Register run is the discipline v1 itself used rather than reusing a prior run's number).
+(10,000 resamples, seed 42, order-statistic 2.5/97.5 percentiles), run fresh under the interleaved
+harness (the |R| = 62 rule set and its curve are byte-identical to v1's — §0 — but the CI is
+recomputed rather than copied, per v1's own discipline).
 
 | B | median U(62) | CI | **Δ1** |
 |---:|---:|---|---:|
-| 100 | TBD | TBD | TBD |
-| 200 | TBD | TBD | TBD |
+| 100 | 0.9658 (96.58%) | [0.7312, 1.2958] | **0.2823 (28.23 pts)** |
+| 200 | 0.4049 (40.49%) | [0.2570, 0.5039] | **0.1234 (12.34 pts)** |
 
-### 5.4 Δ2 — H2's minimum effect, per mode — TBD
+### 5.4 Δ2 — H2's minimum effect, per mode
 
-`Δ2 = max(0.02, Y(|R|max) − Y(62))`, computed once §5.2 exists.
+`Δ2 = max(0.02, Y(|R|max) − Y(62))`, |R|max = the largest COMPLETED point per mode (§4):
 
-### 5.5 The H2 slope-ratio threshold — TBD
+| Mode | \|R\|max | Y(\|R\|max) − Y(62) @100 | **Δ2@100** | Y(\|R\|max) − Y(62) @200 | **Δ2@200** |
+|---|---:|---:|---:|---:|---:|
+| (i) | 248 | 4.95 − 16.32 = −11.37 pts | 0.020 (floor; negative) | 3.27 − 8.99 = −5.72 pts | 0.020 (floor; negative) |
+| (ii) | 124 (not 248 — §4) | 6.28 − 16.32 = −10.04 pts | 0.020 (floor; negative) | 1.31 − 8.99 = −7.68 pts | 0.020 (floor; negative) |
+| (iii) | 95 | −0.00 − 16.32 = −16.32 pts | 0.020 (floor; negative) | 0.00 − 8.99 = −8.99 pts | 0.020 (floor; negative) |
 
-Same derivation rule as v1 §5.5 (the ratio is evidence only when the 95% bootstrap CI of
-`slope_U` excludes zero and `slope_U > 0`); recomputed from this document's own `slope_U`, not
-copied from v1's (v1's `slope_U` was measured under append order and is not informative about the
-interleaved order's slope).
+Every mode's raw `Y(|R|max) − Y(62)` is negative (Y falls, it does not rise), so every Δ2 sits at
+the 0.02 floor — the same outcome §6 reaches from U directly: the effect is real and large, in the
+opposite direction from what Δ2 (built to test "does Y rise enough") is shaped to detect.
 
-### 5.6 Per-candidate Guide overhead — the §7.1 flatness check — TBD
+### 5.5 The H2 slope-ratio threshold
 
-Unguided half (§0.2): median and quartiles of `evals_actual / app_actual` at B, per (mode, |R|),
-against the same "≤ 2× its value at |R| = 62" threshold design §7.1 pre-commits. Guided half
-remains out of scope pending `GuidedEpisodeStats` (unchanged from v1 §9 point 3).
+Same derivation rule as v1 §5.5 (evidence only when the 95% bootstrap CI of `slope_U` excludes
+zero and `slope_U > 0`). Every completed mode's least-squares `slope_U` (results doc, H1 table) is
+**negative** — mode (i)@100: −0.268 pts/rule; (i)@200: −0.036; (ii)@100: −0.885; (ii)@200: −0.311;
+(iii)@100: −1.923; (iii)@200: +0.351 (the lone exception, a 2-point line, not a fit with a CI). The
+precondition `slope_U > 0` fails everywhere it can be checked, so the H2 slope-ratio threshold is
+**not evidence-bearing on this grid** — it was designed to interpret a rising slope, and finds a
+falling one instead.
 
-## 6. H1 verdict on this grid — TBD, recorded only after the interleaved-order Register run exists
+### 5.6 Per-candidate Guide overhead — the §7.1 flatness check
+
+Unguided half (§0.2), median `evals_actual / app_actual` at B, per (mode, |R|) — full table in the
+results doc's "Sweeps and match-enumeration overhead" section. Against the base (|R|=62) values
+(31.20 @100, 39.54 @200), every inflated point's ratio is 2.0–3.3× the base value at B=100 (e.g.
+`dup:248` 78.85/31.20 = 2.53×; `comp:124` 100.60/31.20 = 3.23×; `new:95` 69.33/31.20 = 2.22×) —
+**every completed inflated point exceeds design §7.1's "≤ 2× its value at |R| = 62" flatness
+threshold at B=100**, though several (e.g. `dup:186` 91.81/31.20 = 2.94×, `new:95`'s ratio falls to
+1.57× at B=200) sit close to or under it at B=200. This is the raw-match-enumeration precondition
+only (§0.2) — a Guide's SCORED-candidate overhead is a separate, still-unmeasured quantity pending
+`GuidedEpisodeStats` (unchanged from v1 §9 point 3) — but it is worth flagging now: whatever guided
+mechanism eventually runs at these |R| values inherits a raw enumeration cost per application that
+is already 2–3× the |R|=62 baseline before any scoring is added.
+
+## 6. H1 verdict on this grid
 
 Per design §1.2 and v1's own discipline, H1 is entirely an unguided measurement, computed here
-under the interleaved order, before any guided run at |R| > 62 exists under this registration. The
-table shape is v1 §6's (mode, grid, B, U(|R|), Spearman ρ, U(max) − U(62), Δ1, direction, effect,
-verdict) — **TBD**, filled together with §4/§5, never partially.
+under the interleaved order, before any guided run at |R| > 62 exists under this registration.
 
-## 7. What remains testable for H2 under this Register — carried forward, TBD numbers
+| Mode | grid \|R\| | B | U(\|R\|) (%) | Spearman ρ | U(max) − U(62) | Δ1 | direction | effect | **verdict** |
+|---|---|---:|---|---:|---:|---:|---|---|---|
+| (i) | 62,93,124,186,248 | 100 | 96.59, 43.76, 41.12, 15.44, 38.67 | −0.900 | −57.92 pts | 28.23 | FAILS | FAILS | **H1 FAILS (opposite direction)** |
+| (i) | 62,93,124,186,248 | 200 | 40.49, 6.69, 25.44, 9.47, 27.02 | −0.100 | −13.46 pts | 12.34 | FAILS | FAILS | **H1 FAILS** |
+| (ii) | 62,93,124 (incomplete, §4) | 100 | 96.59, 60.55, 41.69 | −1.000 | −54.89 pts | 28.23 | FAILS | FAILS | **H1 FAILS**, grid incomplete |
+| (ii) | 62,93,124 (incomplete, §4) | 200 | 40.49, 25.60, 21.22 | −1.000 | −19.27 pts | 12.34 | FAILS | FAILS | **H1 FAILS**, grid incomplete |
+| (iii) | 62,95 | 100 | 96.59, 33.11 | −1.000 | −63.47 pts | 28.23 | FAILS | FAILS | **H1 FAILS** |
+| (iii) | 62,95 | 200 | 40.49, 52.06 | +1.000 (2-pt) | +11.57 pts | 12.34 | holds (2-pt) | FAILS | **H1 FAILS** (effect test still fails; a 2-point ρ is not evidence of a trend) |
+
+**H1 fails on this grid, decisively, in every mode measured — but not by being unobservable (v1's
+outcome).** U(|R|) falls sharply and monotonically-in-the-large as |R| grows in modes (i) and (ii)
+(ρ ≤ −0.90 wherever more than 2 points exist); mode (iii)'s single step also moves in the
+"wrong" direction at B=100. Every |U(max) − U(62)| clears Δ1 by 2–5×, so this is not a
+noise-floor call — it is a real, large effect, opposite in sign to H1's prediction that unguided
+regret at fixed B should RISE with |R|. **Reading:** more rules, swept in an order where they can
+actually be reached inside the budget, let unguided saturation find a cheaper form FASTER on
+these classical expressions than the base 62-rule set does at the same B — the added search
+surface is net productive within B=100–200 applications on this sample, not merely more haystack
+around the same needle. This directly falsifies the premise a Guide's B=100/200 advantage would
+need to grow FROM (H2 part 2, §7) on this grid: if unguided search itself gets closer to the
+reference as |R| grows, the guided/unguided gap `Q(|R|)` has less room to widen, not more. §7
+below restates this precisely as what remains testable for H2.
+
+**Honest fallback fires, per §8:** this is v1's own contingency ("if H1 fails here too, §6 is the
+deliverable... exactly as v1's fallback fired"), now realized with an observable, decisive result
+instead of v1's null-by-construction one. The capacity finding is: unguided saturation absorbs
+rule-count growth well within a 100–200 application budget on this sample, at least through
+|R|=248 (modes i) and |R|=95 (mode iii); mode (ii)'s ceiling is unmeasured past |R|=124 (§4).
+
+## 7. What remains testable for H2 under this Register
 
 Structure carried verbatim from v1 §7 (H2 part 1/part 3 fully testable at every point; part 2
 requires the Guide's advantage to grow, live in modes (ii)/(iii) and impossible-by-construction in
 mode (i) exactly as v1 argued — sweep order does not change that argument, only the numbers it is
-evaluated against). Thresholds (`1 − Y` at each |R|) are **TBD** pending §5.2.
+evaluated against). Thresholds `1 − Y(|R|)` (§5.2), the headroom an unguided curve leaves for a
+guided arm to close at each point:
 
-## 8. Gates (structure fixed, numbers TBD)
+| Mode | \|R\| | 1−Y@100 | 1−Y@200 |
+|---|---:|---:|---:|
+| shared | 62 | 83.68% | 91.01% |
+| (i) | 93 | 91.35% | 99.91% |
+| (i) | 124 | 93.25% | 97.58% |
+| (i) | 186 | 98.75% | 99.48% |
+| (i) | 248 | 95.05% | 96.73% |
+| (ii) | 93 | 90.13% | 99.91% |
+| (ii) | 124 | 93.72% | 98.69% |
+| (iii) | 95 | ~100.00% | ~100.00% |
+
+Every inflated point's headroom is HIGHER than |R|=62's, not lower — the same direction as §6's
+finding (unguided gets closer to the reference as |R| grows within this budget), read through the
+truncation-loss lens instead of the regret lens. `new:95` leaves essentially no headroom at either
+B — consistent with `L@100`/`L@200` both being ~0 in §5.2 (unguided saturation at |R|=95 is
+already within noise of its own quiescent cost by B=100 on this sample). Whatever H2 part 2 (the
+Guide's advantage growing with |R|) would need to show, it needs to show it against a shrinking
+window, not a growing one, on this grid.
+
+## 8. Gates
 
 **Accept gate (per mode):** unchanged from v1 §8 — H1 AND H2 hold on DEV classical (n = 334) at
-B = 100, full per-expression distributions reported; FINAL required for publication.
+B = 100, full per-expression distributions reported; FINAL required for publication. **Does not
+fire for any mode on this grid** — H1 fails everywhere measured (§6), so the accept gate's
+precondition is not met for modes (i), (ii, incomplete), or (iii).
 
 **Kill gate (per mode):** unchanged from v1 §8 — H2 part 3 failing at any |R| point on DEV, after
-one clean re-mint/re-train, stops that mode.
+one clean re-mint/re-train, stops that mode. Not evaluated by this document — this Register run is
+unguided-only (§9), so H2 part 3 (a guided-arm statistic) has no data here to fail or pass; the
+kill gate is a question for whichever future guided run consumes this registration.
 
-**Honest fallback:** unchanged in shape — if H1 fails here too, §6 is the deliverable (capacity
-finding plus absolute-cost/closure-gain columns), exactly as v1's fallback fired. Whether it fires
-again under interleaving is precisely what §4/§6 will show; it is not assumed.
+**Honest fallback: FIRES.** H1 fails on this grid (§6), so §6 is the deliverable — a large,
+decisive capacity finding (unguided regret falls, not rises, with |R|, well past Δ1 in every
+mode), rather than v1's null-by-construction non-finding. This is the SAME fallback shape v1
+predicted for itself, realized for the first time with actual signal to read.
 
 ## 9. Protocol prerequisites for step 3 (must exist before any guided run at |R| > 62) — unchanged from v1 §9
 
@@ -282,58 +393,91 @@ registration, a grep proof analogous to v1 §10 must show no such run exists yet
 own §10 proof is about v1's fingerprints and does not cover this document's interleaved-order
 fingerprints).
 
-## 10. Proof that no guided run at |R| > 62 exists under this registration at this commit
+## 10. Proof that no guided run at |R| > 62 exists under this registration
 
-- `git grep` for every interleaved-order fingerprint in §2 (`83e610e33e782a68`, `b207aa331bb625ab`,
-  `3a00c565900b48e6`, `43c43d764ef7f76b`, `904ceec9b110e89e`, `a7600e5942f0baa5`,
-  `9e9bf3a4458a3045`, `b89d841eada63c13`) outside `pixelflow-search/src/math/inflate.rs` (the test
-  that pins them) returns nothing — no result file, label dataset, or checkpoint under
-  `docs/results/` mentions any of them yet, because none has been produced.
-- `git grep -l -E 'RuleOrder::Interleave|DEFAULT_INTERLEAVE_SEED'` outside `inflate.rs` matches
-  only `phase3_round2_unguided_curves.rs`'s doc comment (referring to the default spec string
-  meaning, not constructing a `RuleOrder` value directly) and this document.
+**Updated after the Register run (§4–§6 now filled):** the first bullet below is no longer
+literally true as v1 originally wrote it ("no result file... mentions any of them yet") — the
+Register run's OWN unguided curve CSV/JSON now legitimately carry these fingerprints, because that
+is the run this document commits. The bullet is restated below to say what actually still holds:
+no GUIDED artifact carries them.
+
+- `git grep` for every interleaved-order fingerprint in §2 finds them in exactly the expected
+  unguided places: `pixelflow-search/src/math/inflate.rs` (the pinning test),
+  `docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.{csv,json,md}`, and
+  `docs/results/2026-09-01-phase3-round2-registration-v2.json` (the stats output) — every hit is
+  this Register run's own unguided data or this document. No hit is a Guide checkpoint, a training
+  label file, or anything under a `train_guide`/`gen_strict_labels` output path.
+- `git grep -l -E 'RuleOrder::Interleave|DEFAULT_INTERLEAVE_SEED'` (verified fresh for this entry)
+  matches only `inflate.rs` (the type/constant's own definition and its pinning tests) and this
+  document — `phase3_round2_unguided_curves.rs` selects `Interleave` only indirectly, through
+  `RuleSetSpec::parse`'s default (a bare `"dup:93"` string, no literal `RuleOrder::Interleave` or
+  `DEFAULT_INTERLEAVE_SEED` token in that file) — nothing under a Guide training or checkpoint
+  path either way.
 - No Guide checkpoint or label artifact anywhere in `docs/results/` carries any fingerprint from
   §2's interleave column — the only Guide artifacts on the branch remain Round 1's, at |R| = 62,
-  predating this document (same three files v1 §10 named).
-- `phase3_round2_unguided_curves` imports no `nnue::guide` symbol (unchanged from v1; this
-  commit's diff to that file is the three new columns and the probe function, nothing
-  guided-path-shaped).
+  predating this document (same three files v1 §10 named); this Register run added zero Guide
+  artifacts.
+- `phase3_round2_unguided_curves` imports no `nnue::guide` symbol (unchanged from v1 and from this
+  document's earlier commits; the Register run's diff to that binary was the sweeps/evals columns
+  and the probe function only — nothing guided-path-shaped was added to realize §4).
 
 ## 11. Results appended against the gates
 
-(Append-only, as in v1. First entry: the interleaved-order Register run's full §4/§5/§6 numbers,
-committed together, before any guided run at |R| > 62 under this registration.)
+(Append-only, as in v1.)
 
-**Note on the stats script (honest, not silent):** `round2_register_stats.py` asserts its input
-CSV's header EXACTLY (`die()` on any mismatch, by design — no silent misread of a changed schema).
-The three new columns (§0) mean the CSV this document's harness now writes does not match that
-assertion as-is. This commit does not update the script — filling §4/§5/§6 from the new CSV is
-Register-phase work, and updating `HEADER`/the column reads to match is part of that work, not
-assumed done here. Running the §12 command against today's script will fail loud at the header
-check, which is the correct behavior for an unreconciled schema change, not a bug to route around.
+**Entry 1 (2026-09-01, this commit).** Interleaved-order Register run, `phase3_round2_unguided_curves
+--release`, 400-expression sample, 8 of 9 grid points completed (`comp:186`/`comp:248` did not —
+§4). Full numbers: `docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.md` (tables + narrative),
+`.csv`/`.json` (raw per-expression-per-checkpoint rows), `docs/results/2026-09-01-phase3-round2
+-registration-v2.json` (aggregate stats, this document's §4–§6 source). **H1 verdict: FAILS in
+every mode measured, decisively (§6)** — not unobservable (v1's outcome), but a real, large effect
+in the direction opposite H1's prediction: unguided regret at B=100/200 FALLS as |R| grows on this
+sample, for every completed inflated set. The honest fallback (§8) fires: §6's capacity finding is
+the deliverable. `comp:186`/`comp:248` remain open grid points (mode (ii) incomplete past |R|=124),
+documented, not padded or extrapolated.
+
+**Note on the stats script (resolved by this commit):** `round2_register_stats.py`'s `HEADER` now
+includes the three new columns (`sweeps_actual`, `evals_actual`, `apps_per_sweep`) and computes
+`sweeps_actual_at_B`/`evals_per_app_at_B`/`apps_per_sweep` per rule set, rendered in the results
+doc's "Sweeps and match-enumeration overhead" table — the schema gap this section originally
+flagged is closed as part of this same commit, not deferred further.
 
 ## 12. Reproduction
 
+The commands actually run for Entry 1 (§11) — updated from the pre-run skeleton this section
+originally sketched, to match what was executed rather than what was planned:
+
 ```bash
-# unguided curves, modes (i)/(ii), interleaved order (the new default) — full 9-set grid
+# unguided curves, modes (i)/(ii)/(iii), interleaved order (the default) — 8 of 9 grid points
+# (comp:186/comp:248 excluded — they do not complete, see §4; run separately below)
 cargo run --release -p pixelflow-pipeline --bin phase3_round2_unguided_curves -- \
     --corpus-dir pixelflow-pipeline/data --samples 400 \
-    --out-csv docs/results/2026-09-01-round2v2-unguided-vs-rulecount-modes-i-ii.csv \
-    --out-json docs/results/2026-09-01-round2v2-unguided-vs-rulecount-modes-i-ii.json
-# same grid, v1's append order, for a direct before/after comparison at identical rule content
+    --out-csv docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.csv \
+    --out-json docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.json \
+    --rule-sets base,dup:93,dup:124,dup:186,dup:248,comp:93,comp:124,new:95
+
+# comp:186/comp:248 — expect the |R|-scaled wall-clock safety ceiling to panic (§4); this is the
+# correct, honest outcome (CLAUDE.md "fail loud, never silently truncate"), not a bug to route
+# around. Two independent runs of this exact command both panicked at the same point.
 cargo run --release -p pixelflow-pipeline --bin phase3_round2_unguided_curves -- \
     --corpus-dir pixelflow-pipeline/data --samples 400 \
-    --out-csv docs/results/2026-09-01-round2v2-unguided-vs-rulecount-modes-i-ii-append.csv \
-    --out-json docs/results/2026-09-01-round2v2-unguided-vs-rulecount-modes-i-ii-append.json \
-    --rule-sets base,dup:93:append,dup:124:append,dup:186:append,dup:248:append,comp:93:append,comp:124:append,comp:186:append,comp:248:append
-# fingerprint + order-sensitivity + 62-never-reordered guarantees
+    --out-csv /tmp/comp186_248.csv --out-json /tmp/comp186_248.json \
+    --rule-sets comp:186,comp:248
+
+# fingerprint + order-sensitivity + 62-never-reordered guarantees, incl. new:95's NewRules variant
 cargo test -p pixelflow-search math::inflate -- --nocapture
-# every registered number (once the CSV above exists) — v1's script, same schema plus the new
-# sweeps_actual/evals_actual/apps_per_sweep columns; --expect/--modes unchanged from v1's invocation
+
+# every registered number in §4/§5/§6 and the results doc's tables
 python3 pixelflow-pipeline/scripts/round2_register_stats.py \
-    --csv docs/results/2026-09-01-round2v2-unguided-vs-rulecount-modes-i-ii.csv \
-    --expect base,dup:93,dup:124,dup:186,dup:248,comp:93,comp:124,comp:186,comp:248 \
-    --modes 'i=base,dup:93,dup:124,dup:186,dup:248;ii=base,comp:93,comp:124,comp:186,comp:248' \
+    --csv docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.csv \
+    --expect base,dup:93,dup:124,dup:186,dup:248,comp:93,comp:124,new:95 \
+    --modes 'i=base,dup:93,dup:124,dup:186,dup:248;ii=base,comp:93,comp:124;iii=base,new:95' \
     --out-json docs/results/2026-09-01-phase3-round2-registration-v2.json \
-    --out-md docs/results/2026-09-01-phase3-round2-registration-v2-tables.md
+    --out-md /tmp/round2v2_final_tables.md   # embedded into the results .md's "Tables" section
 ```
+
+Not run: the `:append`-order comparison over the full grid (v1 reproduction at every point) — the
+results doc's per-point `:append` fingerprints (§2) and v1's own committed numbers already give the
+before/after comparison this document's §4/§6 draw on; a full second 8-set curve run under
+`:append` would reproduce v1's original run (already committed) rather than add new information,
+so it was not spent from this run's time budget.

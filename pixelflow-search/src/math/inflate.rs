@@ -7,14 +7,13 @@
 //! inflated set built here is a `Vec<Box<dyn Rewrite>>` a research binary
 //! hands to `EGraph::with_rules` directly.
 //!
-//! Two of the design's three inflation modes live here — (i) exact
-//! duplicates, the "learnable overhead" control, and (ii) mechanical
+//! All three of the design's inflation modes live here — (i) exact
+//! duplicates, the "learnable overhead" control; (ii) mechanical
 //! compositions, real closure-preserving shortcuts built by unifying one
-//! rule's RHS against another's LHS (`crate::egraph::template`). Mode (iii)
-//! (genuinely new rules) is a separate task; this module never constructs
-//! [`InflationMode::NewRules`] because it has no variant for it — adding one
-//! without a builder would be exactly the silent gap this codebase's
-//! CLAUDE.md warns against.
+//! rule's RHS against another's LHS (`crate::egraph::template`); and (iii)
+//! genuinely new rules, `all_rules()` plus
+//! [`round2_rules::experimental_rules`] verbatim at the one grid point
+//! [`NEW_RULES_GRID`] names (`"new:95"`).
 
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
@@ -23,6 +22,7 @@ use std::hash::{Hash, Hasher};
 use pixelflow_ir::arena::ExprArena;
 
 use super::all_rules;
+use super::round2_rules;
 use crate::egraph::rewrite::{Rewrite, RewriteAction};
 use crate::egraph::template::{self, TemplateRewrite};
 use crate::egraph::{EClassId, EGraph, ENode};
@@ -34,6 +34,10 @@ pub enum InflationMode {
     Duplicates,
     /// Mechanical compositions A∘B of two existing rules (§2.2).
     Compositions,
+    /// The mode (iii) fidelity batch: `all_rules()` plus
+    /// [`round2_rules::experimental_rules`] verbatim (§2.3) — the ONE grid
+    /// point on [`NEW_RULES_GRID`], `62 + experimental_rules().len() == 95`.
+    NewRules,
 }
 
 impl std::fmt::Display for InflationMode {
@@ -41,6 +45,7 @@ impl std::fmt::Display for InflationMode {
         match self {
             Self::Duplicates => write!(f, "dup"),
             Self::Compositions => write!(f, "comp"),
+            Self::NewRules => write!(f, "new"),
         }
     }
 }
@@ -116,10 +121,12 @@ impl std::fmt::Display for RuleSetSpecError {
         match self {
             Self::Malformed(s) => write!(
                 f,
-                "rule-set spec {s:?}: expected \"base\", \"dup:<total>[:<order>]\", or \
-                 \"comp:<total>[:<order>]\""
+                "rule-set spec {s:?}: expected \"base\", \"dup:<total>[:<order>]\", \
+                 \"comp:<total>[:<order>]\", or \"new:<total>[:<order>]\""
             ),
-            Self::UnknownMode(s) => write!(f, "rule-set spec {s:?}: unknown mode (want dup/comp)"),
+            Self::UnknownMode(s) => {
+                write!(f, "rule-set spec {s:?}: unknown mode (want dup/comp/new)")
+            }
             Self::BadCount(s) => write!(f, "rule-set spec: {s:?} is not a valid rule count"),
             Self::BadOrder(s) => write!(
                 f,
@@ -164,6 +171,7 @@ impl RuleSetSpec {
         let mode = match tag {
             "dup" => InflationMode::Duplicates,
             "comp" => InflationMode::Compositions,
+            "new" => InflationMode::NewRules,
             _ => return Err(RuleSetSpecError::UnknownMode(s.to_string())),
         };
         let total: usize = rest
@@ -263,6 +271,7 @@ pub fn build_rule_set(spec: &RuleSetSpec) -> Result<Vec<Box<dyn Rewrite>>, RuleS
         None => Ok(all_rules()),
         Some(InflationMode::Duplicates) => build_duplicate_set(spec.total, spec.order),
         Some(InflationMode::Compositions) => build_composition_set(spec.total, spec.order),
+        Some(InflationMode::NewRules) => build_new_rule_set(spec.total, spec.order),
     }
 }
 
@@ -565,6 +574,44 @@ fn build_composition_set(
     Ok(rules)
 }
 
+// ============================================================================
+// Mode (iii): genuinely new rules (§2.3)
+// ============================================================================
+
+/// The ONE `|R|` point mode (iii) is registered at: `62 +
+/// round2_rules::experimental_rules().len()`. A `const` (not computed at
+/// call sites) so every consumer — the parser's grid check, the error
+/// message, the doc comment — reads the same fixed number; pinned equal to
+/// `62 + experimental_rules().len()` by
+/// `new_rules_grid_matches_experimental_rules_len` below so a future edit to
+/// the batch fails loud here rather than silently drifting the registered
+/// grid point.
+pub const NEW_RULES_GRID: &[usize] = &[95];
+
+fn build_new_rule_set(
+    total: usize,
+    order: RuleOrder,
+) -> Result<Vec<Box<dyn Rewrite>>, RuleSetError> {
+    if !NEW_RULES_GRID.contains(&total) {
+        return Err(RuleSetError::UnreachableTotal {
+            mode: InflationMode::NewRules,
+            requested: total,
+            grid: NEW_RULES_GRID,
+        });
+    }
+    let mut rules = all_rules();
+    if total == 62 {
+        // Unreachable today (NEW_RULES_GRID has no 62 entry) but kept for
+        // the same reason the other two builders keep it: the base point
+        // must never be shuffled under any order, by construction, not by
+        // omission.
+        return Ok(rules);
+    }
+    rules.extend(round2_rules::experimental_rules());
+    apply_order(&mut rules, order);
+    Ok(rules)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,10 +627,60 @@ mod tests {
         assert_eq!(c.total, 186);
         assert!(RuleSetSpec::parse("bogus").is_err());
         assert!(RuleSetSpec::parse("dup:notanumber").is_err());
+        let n = RuleSetSpec::parse("new:95").unwrap();
+        assert_eq!(n.mode, Some(InflationMode::NewRules));
+        assert_eq!(n.total, 95);
         assert!(
-            RuleSetSpec::parse("new:31").is_err(),
-            "mode (iii) has no builder here"
+            build_rule_set(&RuleSetSpec {
+                mode: Some(InflationMode::NewRules),
+                total: 31,
+                order: RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED),
+            })
+            .is_err(),
+            "31 is off mode (iii)'s one-point grid — never padded"
         );
+    }
+
+    #[test]
+    fn new_rules_grid_matches_experimental_rules_len() {
+        assert_eq!(
+            NEW_RULES_GRID,
+            &[62 + round2_rules::experimental_rules().len()],
+            "NEW_RULES_GRID must track experimental_rules().len() exactly — a future edit to \
+             the mode (iii) batch that doesn't update this constant must fail here, loudly, \
+             rather than silently registering the wrong |R|"
+        );
+    }
+
+    #[test]
+    fn new_rule_set_never_shuffles_base_at_the_grid_point_content() {
+        // The 95-rule set must contain exactly all_rules() plus
+        // experimental_rules() (as a multiset of names) under both orders —
+        // order only permutes position, never membership.
+        let base_names: HashSet<String> =
+            all_rules().iter().map(|r| r.name().to_string()).collect();
+        let new_names: HashSet<String> = round2_rules::experimental_rules()
+            .iter()
+            .map(|r| r.name().to_string())
+            .collect();
+        for order in [
+            RuleOrder::Append,
+            RuleOrder::Interleave(DEFAULT_INTERLEAVE_SEED),
+        ] {
+            let rules = build_rule_set(&RuleSetSpec {
+                mode: Some(InflationMode::NewRules),
+                total: 95,
+                order,
+            })
+            .unwrap_or_else(|e| panic!("new:95 should build under {order}: {e}"));
+            assert_eq!(rules.len(), 95);
+            let got: HashSet<String> = rules.iter().map(|r| r.name().to_string()).collect();
+            let want: HashSet<String> = base_names.union(&new_names).cloned().collect();
+            assert_eq!(
+                got, want,
+                "new:95 must be exactly base ∪ experimental, under {order}"
+            );
+        }
     }
 
     #[test]
@@ -845,5 +942,12 @@ mod tests {
         assert_eq!(fp(comp, 186, RuleOrder::Append).0, 0xff65_cfba_bc95_a6cf);
         assert_eq!(fp(comp, 248, interleave).0, 0xb89d_841e_ada6_3c13);
         assert_eq!(fp(comp, 248, RuleOrder::Append).0, 0xdfc1_76cd_60c7_124f);
+
+        let new_rules = InflationMode::NewRules;
+        assert_eq!(fp(new_rules, 95, interleave).0, 0x113c_ca49_c99c_c850);
+        assert_eq!(
+            fp(new_rules, 95, RuleOrder::Append).0,
+            0x4f4a_4cbd_2e4f_89cb
+        );
     }
 }
