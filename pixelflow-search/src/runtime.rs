@@ -30,19 +30,16 @@
 //! `PIXELFLOW_SATURATION_TELEMETRY=/path/to/log.jsonl cargo run --features saturation-telemetry`,
 //! or leave it unset to see records on stderr.
 
-use crate::egraph::{
-    EClassId, EGraph, ENode, Op, all_rules, choices_to_arena, config_for_node_count,
-    env_extraction_policy, saturate_for_extraction,
-};
+use crate::egraph::{EClassId, EGraph, ENode, Op, Optimizer};
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// Optimize a runtime-built arena via bounded e-graph saturation, using the
-/// same rule set and extraction policy (the static latency prior, through
-/// `env_extraction_policy`) as the `kernel!`/`kernel_jit!` macros.
+/// Optimize a runtime-built arena via bounded e-graph saturation, through
+/// the same [`Optimizer`] entry point — rule set, budget, cost model,
+/// extractor — as the `kernel!`/`kernel_jit!` macros.
 ///
 /// `Buffer`/`Gather` (bound-memory reads) are representable: they enter the
 /// e-graph as opaque structure — no rewrite rule can name them, so their
@@ -108,6 +105,14 @@ pub fn optimize_runtime_arena(
 
     let mut key = canonical_key(arena, root);
     key.extend_from_slice(&shape.key_bytes());
+    // Optimization is a deterministic function of the arena, the shape, and
+    // the *optimizer configuration* — the third term was missing, and the
+    // claim that the first two suffice becomes false the moment two
+    // configurations coexist in a process (a warm-up at one budget and
+    // steady state at another, some kernels reranked and some not). It is a
+    // constant today because production names exactly one configuration;
+    // keying on it is what keeps that from being load-bearing.
+    key.extend_from_slice(&Optimizer::production().fingerprint().to_bytes());
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache
         .lock()
@@ -152,28 +157,29 @@ fn optimize_runtime_arena_uncached(
     // arithmetic it can CSE and fold across the terms.
     let (arena, root) = pixelflow_ir::passes::expand_reduce_owned(&arena, root);
 
-    let mut egraph = EGraph::with_rules(all_rules());
+    // One entry point, shared with the AOT macro tier and the `Dwrt`
+    // expansion tier: the rule set, the budget, the cost model, and the
+    // extractor are decided in `Optimizer`, not re-decided here. Priced
+    // against the lattice this kernel is compiled for — the extents are
+    // known, so extraction minimizes the instruction count of the whole
+    // program rather than of its text.
+    let mut optimizer = Optimizer::production().for_lattice(shape);
+
+    let mut egraph = optimizer.egraph();
     let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
     let root_class = arena_to_egraph(&arena, root, &mut egraph, &mut memo)?;
 
     let node_count = reachable_count(&arena, root);
     #[cfg(feature = "saturation-telemetry")]
     let telemetry_start = std::time::Instant::now();
-    let saturation_result = saturate_for_extraction(&mut egraph, node_count);
-
-    // Priced against the lattice this kernel is compiled for: the extents
-    // are known, so extraction minimizes the instruction count of the whole
-    // program rather than of its text.
-    let policy = env_extraction_policy().for_lattice(shape);
-    let extraction = policy.extraction(&egraph, root_class);
-    let (extracted, extracted_root) = choices_to_arena(&extraction);
+    let optimized = optimizer.run(&mut egraph, root_class, node_count);
+    let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
 
     #[cfg(feature = "saturation-telemetry")]
     crate::telemetry::record(crate::telemetry::SaturationInvocation {
         tier: crate::telemetry::Tier::Runtime,
         node_count,
-        result: &saturation_result,
-        application_count: egraph.provenance().application_count(),
+        stats: &optimized.stats,
         union_count: egraph.provenance().union_count(),
         extracted_arena: &extracted,
         extracted_root,

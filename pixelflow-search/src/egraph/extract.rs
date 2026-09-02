@@ -279,12 +279,12 @@ pub trait Reranker {
 ///   rescoring each candidate through `reranker`. Accept the single best
 ///   strict improvement per class per pass. Repeat until a pass makes no
 ///   improvement (fixpoint) or `MAX_PASSES` is reached.
-pub struct IncrementalExtractor<'a, R: Reranker> {
+pub struct IncrementalExtractor<'a, R: Reranker + ?Sized> {
     reranker: &'a R,
     top_k: usize,
 }
 
-impl<'a, R: Reranker> IncrementalExtractor<'a, R> {
+impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
     /// `top_k` bounds how many alternative nodes per e-class are evaluated
     /// during refinement passes.
     pub fn new(reranker: &'a R, top_k: usize) -> Self {
