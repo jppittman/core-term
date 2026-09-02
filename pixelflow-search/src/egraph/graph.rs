@@ -127,6 +127,12 @@ pub enum SaturationStop {
     /// A full rule sweep completed with zero unions. Diagnostic, not a
     /// certified fixpoint.
     Quiesced,
+    /// The cumulative provenance application count reached the requested
+    /// budget ([`EGraph::saturate_until_applications`] only). Granularity is
+    /// one rule sweep: the count may overshoot the budget by however many
+    /// matches the final sweep committed, and the caller reads the exact
+    /// count from [`AppBudgetSaturationStats::applications`].
+    ApplicationBudget,
     /// The class budget `max_classes` stopped the run (memory protection) —
     /// either the count exceeded it outright, or a sweep produced zero
     /// unions only because every remaining action was discarded for budget.
@@ -154,33 +160,6 @@ pub struct SaturationStats {
     /// caller never has to infer "quiesced" from `iterations < max_iters`
     /// (which conflates a timeout or class cap with quiescence).
     pub stop: SaturationStop,
-}
-
-/// Why an [`EGraph::saturate_until_applications`] call stopped — an explicit
-/// stop reason instead of the `SaturationStats` proxy game every measurement
-/// harness had to play (`iterations < max_iters && classes <= cap` ≈
-/// "probably quiesced"). Budget-only framing: none of these certify a
-/// fixpoint; [`SaturationStop::Quiesced`] is a diagnostic condition (one full
-/// rule sweep ran to completion and produced zero unions), never a closure
-/// claim.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SaturationStop {
-    /// A full rule sweep completed with zero unions. Diagnostic, not a
-    /// certified fixpoint.
-    Quiesced,
-    /// The cumulative provenance application count reached the requested
-    /// budget. Granularity is one rule sweep: the count may overshoot the
-    /// budget by however many matches the final sweep committed, and the
-    /// caller reads the exact count from
-    /// [`AppBudgetSaturationStats::applications`].
-    ApplicationBudget,
-    /// Class count exceeded `max_classes` (memory protection).
-    ClassCap,
-    /// `max_iters` sweeps completed without any other condition firing.
-    IterationCeiling,
-    /// The wall-clock safety ceiling elapsed. Offline measurement callers
-    /// should treat this as a hard error (fail loud), never as data.
-    Timeout,
 }
 
 /// Result of one [`EGraph::saturate_until_applications`] run.
