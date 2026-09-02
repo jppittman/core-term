@@ -19,14 +19,17 @@
 //! earns its place the type below refuses to represent a second choice.
 
 use super::cost::CostModel;
-use super::extract::{Extraction, extract_dag};
+use super::extract::{Extraction, extract_dag_scoped};
 use super::graph::EGraph;
 use super::node::EClassId;
 use alloc::vec::Vec;
+use pixelflow_ir::LatticeShape;
 
-/// The cost model that drives e-graph extraction: a static per-op cost table.
+/// The cost model that drives e-graph extraction: a static per-op cost table,
+/// priced against the lattice the kernel will run over.
 pub struct ExtractionPolicy {
     costs: CostModel,
+    shape: LatticeShape,
 }
 
 impl ExtractionPolicy {
@@ -41,14 +44,29 @@ impl ExtractionPolicy {
     /// [`env_extraction_policy`].
     #[must_use]
     pub fn with_costs(costs: CostModel) -> Self {
-        Self { costs }
+        Self {
+            costs,
+            shape: LatticeShape::POINT,
+        }
+    }
+
+    /// Price this policy against `shape`: a node's cost is multiplied by how
+    /// many times that lattice evaluates it
+    /// ([`LatticeShape::evals`]), so extraction chooses the factorization
+    /// rather than leaving it to a later hoisting pass. The default,
+    /// [`LatticeShape::POINT`], weights everything by one — what a caller
+    /// with no lattice (the `kernel!` macros, expanding before any bake)
+    /// should use.
+    #[must_use]
+    pub fn for_lattice(self, shape: LatticeShape) -> Self {
+        Self { shape, ..self }
     }
 
     /// Per-e-class extraction choices under this policy, as a validated
     /// [`Extraction`] — the well-founded (egraph, root, choices) triple
     /// [`super::extract::choices_to_arena`] requires.
     pub fn extraction<'g>(&self, egraph: &'g EGraph, root: EClassId) -> Extraction<'g> {
-        let dag = extract_dag(egraph, root, &self.costs);
+        let dag = extract_dag_scoped(egraph, root, &self.costs, self.shape);
         // `extract_dag` already repairs `dag.choices` into a well-founded set
         // internally; `from_dp`'s repair pass is then a verified no-op
         // (drain phase only).
