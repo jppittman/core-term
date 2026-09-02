@@ -112,8 +112,7 @@ impl EpisodeLabels {
     /// Label every recorded rewrite application in `egraph`, given a chosen
     /// extraction: `root` and `choices` (a `(canonical EClassId) -> node_idx`
     /// map, indexed by class id — the representation produced by
-    /// [`super::extract::extract_dag`] / [`super::extract::ExtractedDAG::choices`]
-    /// / `IncrementalExtractor::extract_choices_only`).
+    /// [`super::extract::extract_dag`] / [`super::extract::ExtractedDAG::choices`]).
     ///
     /// # Panics
     ///

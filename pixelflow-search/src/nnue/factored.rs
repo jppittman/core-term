@@ -1264,26 +1264,17 @@ impl EdgeAccumulator {
         // `ChoicesCostDag::pinned`'s doc comment for why splitting these
         // across two different choice views is a train/deploy skew, not
         // just a redundant computation.
-        let pinned =
-            crate::egraph::profile::timed(crate::egraph::profile::Bucket::PinnedChoices, || {
-                extraction.pinned_choices()
-            });
-        let variance = with_variance.then(|| {
-            crate::egraph::profile::timed(crate::egraph::profile::Bucket::ChosenVariance, || {
-                extraction.chosen_variance(&pinned)
-            })
-        });
-        crate::egraph::profile::timed(crate::egraph::profile::Bucket::AccumulatorRebuild, || {
-            Self::from_cost_dag_scratch(
-                &ChoicesCostDag {
-                    extraction,
-                    pinned,
-                    variance,
-                },
-                emb,
-                scratch,
-            )
-        })
+        let pinned = extraction.pinned_choices();
+        let variance = with_variance.then(|| extraction.chosen_variance(&pinned));
+        Self::from_cost_dag_scratch(
+            &ChoicesCostDag {
+                extraction,
+                pinned,
+                variance,
+            },
+            emb,
+            scratch,
+        )
     }
 
     /// Add N var-reference edges (representing register loads of a shared value).
@@ -1398,8 +1389,7 @@ impl CostDag for ArenaCostDag<'_> {
 }
 
 /// Deployment-side [`CostDag`]: an [`Extraction`](crate::egraph::extract::Extraction)
-/// (an e-graph plus a validated, well-founded choice function), as produced
-/// by `IncrementalExtractor::extract_choices_only`.
+/// (an e-graph plus a validated, well-founded choice function).
 struct ChoicesCostDag<'a> {
     extraction: &'a crate::egraph::extract::Extraction<'a>,
     /// [`Extraction::pinned_choices`] — the same `Shl`/`Shr` count

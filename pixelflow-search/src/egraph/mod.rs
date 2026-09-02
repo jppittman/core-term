@@ -34,7 +34,6 @@ mod graph;
 mod labeler;
 mod node;
 pub mod ops;
-pub mod profile;
 pub mod provenance;
 pub mod rewrite;
 pub mod saturate;
@@ -44,8 +43,8 @@ pub use cost::{CostFunction, CostModel};
 pub use deps::{Deps, DepsAnalysis};
 pub use derivative::{ChainRule, derivative_rules};
 pub use extract::{
-    ExtractedDAG, Extraction, IncrementalExtractor, build_extracted_dag_from_choices,
-    choices_to_arena, compute_ref_counts, extract, extract_dag, extract_neural_to_arena,
+    ExtractedDAG, Extraction, build_extracted_dag_from_choices, choices_to_arena,
+    compute_ref_counts, extract, extract_dag,
 };
 pub use extraction::{ExtractionPolicy, env_extraction_policy};
 pub use graph::{ApplyResult, EGraph, EGraphBatch, RewriteTarget, SaturationStats};
