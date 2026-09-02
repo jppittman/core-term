@@ -375,62 +375,58 @@ That is the single highest-leverage item on this board, and nothing was pushed
 to #1101 pending it.
 
 
-## Production saturation has no wall-clock bound on `main`
+## Production saturation is unbounded in wall-clock time — deliberately
 
-Found while reconciling #1109, but it is not #1109's: **the per-tier
-`hard_timeout` no longer reaches the production compile path.**
+**Correction.** An earlier revision of this section called this a regression on
+`main`. That was wrong, and the mistake is worth recording rather than quietly
+editing away: I traced the mechanism correctly and then misread intent from it.
 
-The chain, each link checked against `origin/main` at `193ebef1`:
+The mechanism is real. `SaturationConfig` still defines `hard_timeout` per tier
+(10/50/200 ms), `Budget::limits()` reads the preset and returns
+`Limits { iterations, classes, applications }` without it,
+`Optimizer::production()` sets `hard_ceiling: None`, and `Optimizer::run` calls
+`saturate_budgeted` — documented "with no clock". All three production paths do
+this: macro (`pixelflow-compiler/src/optimize.rs:89`), `Dwrt`
+(`ir_bridge.rs:734`), runtime (`runtime.rs:166`).
 
-- `SaturationConfig` still defines `hard_timeout` per tier — 10 ms / 50 ms /
-  200 ms (`saturate.rs:68,178,188`). The values are still there and still look
-  authoritative.
-- `Budget::limits()` reads that preset — and returns
-  `Limits { iterations, classes, applications }`. **`hard_timeout` is dropped
-  on the floor** (`optimizer.rs:128-150`).
-- `Optimizer::production()` sets `hard_ceiling: None` (`optimizer.rs:250`).
-- `Optimizer::run` calls `egraph.saturate_budgeted(...)`, whose own doc says
-  "with no clock", and then only *asserts* against `hard_ceiling` if one was
-  set (`optimizer.rs:366-385`).
-- The single `hard_ceiling` call site in the crate is `runtime.rs:2260` — the
-  telemetry harness, not production.
+But `Budget`'s own doc says why, in as many words:
 
-So a production compile is now bounded by iterations and classes only. #1108
-consolidated the budget into `Budget`/`Limits` and the clock did not come with
-it.
+> Every variant is deterministic: the same arena under the same budget produces
+> the same graph on any machine, at any load. Wall clock is deliberately **not**
+> a variant. […] Compiler output was therefore a function of machine load, and
+> "the same kernel compiles to the same code" was not a claim anyone could
+> make. Under `Budget` it is.
 
-**All three tiers, not one.** Every production compile path builds
-`Optimizer::production()` with no ceiling: the macro tier
-(`pixelflow-compiler/src/optimize.rs:89`), the `Dwrt` tier
-(`ir_bridge.rs:734`), and the runtime tier (`runtime.rs:166`). The macro tier
-is the one to worry about first — it runs inside `rustc` at expansion time, so
-an unbounded run there does not slow a frame, it hangs the build.
+So the clock was traded away on purpose, for reproducible compiler output. The
+law `observation_is_optional_and_does_not_move_the_budget` encodes the same
+choice — I wrote a patch restoring the deadline and it failed that law
+immediately, which is the design defending itself. The patch was discarded.
 
-**The evidence is in CI, not inferred.** #1109's `Test on ubuntu-latest` timed
-out, and the telemetry it emitted shows runtime-tier compiles finishing at
+**What is genuinely new here is the cost of that trade, which does not appear
+to have been measured.** From #1109's CI run, runtime-tier telemetry:
 `wall_clock_us` 9,648,883 · 9,938,809 · 16,184,232 · 32,829,162 and one at
-**352,985,035 — 353 seconds for a 279-node kernel** — every one of them
-`"stop_reason":"class_cap"` at `"iterations":100`, the full ceiling, against a
-nominal 200 ms tier budget.
+**352,985,035 — 353 seconds for a 279-node kernel** — each `"stop_reason":
+"class_cap"` at `"iterations":100`, the full ceiling. The
+`fonts::atlas::tests::growth_preserves_tiles_and_bumps_epoch` test timed out as
+a result.
 
-This is the failure mode `CLAUDE.md` names outright: a value that still exists,
-still reads as authoritative, and is silently no longer consulted.
-`config_for_node_count`'s `hard_timeout` is now dead data, and nothing fails
-when it is ignored.
+Three things follow, none of which is "revert #1108":
 
-Two consequences worth separating:
-
-1. **For `main`:** either `Limits` grows a timeout and `Budget::Production`
-   carries the preset's, or `hard_timeout` should be deleted from
-   `SaturationConfig` so it stops advertising a bound nothing enforces.
-   Leaving it is the worst of the three.
-2. **For the class-cap decision:** #1109 measured that *not* breaking on
-   `ClassCap` lands a cheaper program on 140 of 204 kernels. That measurement
-   was taken in a world where nothing bounds the clock, so its cost side is
-   unbounded compile time — the 353-second row above is what "keep sweeping"
-   costs when the deadline is missing. The decision should be made against a
-   restored clock, or it is choosing between a measured benefit and an
-   unmeasured cost.
+1. **The macro tier is the sharp end.** It runs inside `rustc` at expansion
+   time, so an unbounded saturation there does not slow a frame — it hangs the
+   build. Determinism is worth a lot; a build that does not terminate is worth
+   less. Whatever bound replaces the clock (an application cap is the obvious
+   deterministic candidate, and `Budget::Applications` already exists) probably
+   needs to be *on* by default for that tier.
+2. **`SaturationConfig::hard_timeout` is now dead for production** — only
+   `saturate_with_limits` still reads it. Leaving a 10/50/200 ms field that
+   nothing in the compile path consults is exactly the "convention written in a
+   comment" failure `CLAUDE.md` warns about, one layer up. Delete it or route
+   it somewhere real.
+3. **The class-cap decision inherits this.** #1109 measured that not breaking
+   on `ClassCap` yields a cheaper program on 140 of 204 kernels. With no clock,
+   the cost side of that trade is unbounded, and the 353-second row is what it
+   looks like. Decide the two together.
 
 ## The finding that matters most: the seam churns faster than reconciliation completes
 
