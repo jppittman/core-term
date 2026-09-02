@@ -1168,3 +1168,886 @@ mod tests {
         );
     }
 }
+
+/// Read-only probe for issue #1106: how much congruence does the production
+/// e-graph MISS because `union` only enqueues the merged class itself, never
+/// its parents (no e-node parent list exists — `EGraph::parent` is the
+/// union-find parent, not a parents-of-a-class list)? See
+/// docs/results/2026-09-02-missing-congruence.md for the measurement this
+/// module produces and its verdict.
+///
+/// Everything here is offline: it clones the post-saturation e-graph and
+/// runs a from-scratch upward-closure sweep to fixpoint on the clone. It
+/// changes nothing about production `optimize_runtime_arena` or `all_rules()`
+/// ordering — this is measurement only, not the fix.
+#[cfg(test)]
+mod congruence_gap_probe {
+    use super::*;
+    use crate::egraph::rule_order::{RuleOrder, build_rule_set};
+    use crate::egraph::{CostModel, RuleSet, SaturationStop, choices_to_arena};
+    use crate::nnue::{BwdGenConfig, BwdGenerator};
+    use pixelflow_ir::arena::{BufferId, BufferIdentity};
+    use std::path::{Path, PathBuf};
+
+    /// Inverse of the dumpers' `dump_arena` (`pixelflow-core/src/lattice/cell_grid.rs`,
+    /// `pixelflow-graphics/tests/production_glyph_arena_dump.rs`,
+    /// `pixelflow-pipeline/tests/shader_and_psychedelic_arena_dump.rs`):
+    /// replays reachable nodes in original id order through the public
+    /// `push_*` API, which never hash-conses, so the rebuilt arena has
+    /// exactly the dumped node multiset.
+    fn load_arena_dump(path: &Path) -> (String, ExprArena, ExprId) {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("# pixelflow arena dump v1"),
+            "{}: bad header",
+            path.display()
+        );
+        let mut name = None;
+        let mut arena = ExprArena::new();
+        let mut idents: Vec<BufferIdentity> = Vec::new();
+        let mut root = None;
+        let mut next_id: u32 = 0;
+        let mut buf_count: u16 = 0;
+        let op = |s: &str| -> OpKind {
+            OpKind::all()
+                .find(|k| format!("{k:?}") == s)
+                .unwrap_or_else(|| panic!("{}: unknown OpKind {s:?}", path.display()))
+        };
+        let id = |s: &str| -> ExprId {
+            ExprId(
+                s.parse()
+                    .unwrap_or_else(|e| panic!("{}: bad id {s:?}: {e}", path.display())),
+            )
+        };
+        for line in lines {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let pushed = match f.as_slice() {
+                ["name", n] => {
+                    name = Some((*n).to_string());
+                    continue;
+                }
+                ["buf", ord, w, h] => {
+                    let ord: usize = ord.parse().expect("buf ordinal");
+                    while idents.len() <= ord {
+                        idents.push(BufferIdentity::mint());
+                    }
+                    let slot = arena.declare_buffer(BufferDecl {
+                        id: idents[ord],
+                        width: w.parse().expect("buf width"),
+                        height: h.parse().expect("buf height"),
+                    });
+                    assert_eq!(
+                        slot.0,
+                        buf_count,
+                        "{}: buffer slot order drifted",
+                        path.display()
+                    );
+                    buf_count += 1;
+                    continue;
+                }
+                ["root", r] => {
+                    root = Some(id(r));
+                    continue;
+                }
+                ["V", i] => arena.push_var(i.parse().expect("var index")),
+                ["C", bits] => arena.push_const(f32::from_bits(bits.parse().expect("const bits"))),
+                ["B", slot] => arena.push_buffer(BufferId(slot.parse().expect("buffer slot"))),
+                ["U", k, a] => arena.push_unary(op(k), id(a)),
+                ["Bi", k, a, b] => arena.push_binary(op(k), id(a), id(b)),
+                ["T", k, a, b, c] => arena.push_ternary(op(k), id(a), id(b), id(c)),
+                other => panic!("{}: unparseable line {other:?}", path.display()),
+            };
+            assert_eq!(
+                pushed,
+                ExprId(next_id),
+                "{}: replay drifted from dumped ids",
+                path.display()
+            );
+            next_id += 1;
+        }
+        let name = name.unwrap_or_else(|| panic!("{}: no name line", path.display()));
+        let root = root.unwrap_or_else(|| panic!("{}: no root line", path.display()));
+        (name, arena, root)
+    }
+
+    /// Number of canonical (live) e-classes: `find(i) == i`. Distinct from
+    /// `SaturationResult::classes_after`, which is `EGraph::classes.len()` —
+    /// the raw allocation count, which never shrinks on `union` (the
+    /// production 5,000-class cap is checked against THIS raw count, not the
+    /// live count — see `EGraph::saturate_with_limits`,
+    /// `self.classes.len() > max_classes`).
+    fn live_class_count(egraph: &EGraph) -> usize {
+        (0..egraph.classes.len())
+            .filter(|&i| egraph.find(EClassId(i as u32)) == EClassId(i as u32))
+            .count()
+    }
+
+    /// Full upward congruence closure, offline, to fixpoint, on whatever
+    /// graph is passed in (call on a `.clone()` to keep the original
+    /// untouched). Each pass re-canonicalizes every live class's e-nodes
+    /// through `find` and unions any two live classes whose canonicalized
+    /// node forms coincide — the "walk every e-node that references a
+    /// changed class" step production's `union`/`rebuild_budgeted` never
+    /// performs, because no parent-of-a-class index exists. Repeats until a
+    /// full pass finds zero new unions.
+    ///
+    /// Returns the number of NEW unions this pass performed (== the live
+    /// class-count reduction, since every `union` call here merges two
+    /// distinct live classes into one).
+    fn full_upward_closure(egraph: &mut EGraph) -> usize {
+        const MAX_PASSES: usize = 20_000;
+        let mut total_unions = 0usize;
+        for _pass in 0..MAX_PASSES {
+            let n = egraph.classes.len();
+            let mut local_memo: HashMap<ENode, EClassId> = HashMap::new();
+            let mut pending: Vec<(EClassId, EClassId)> = Vec::new();
+            for idx in 0..n {
+                let id = EClassId(idx as u32);
+                let canon = egraph.find(id);
+                if canon != id {
+                    // Merged-away class: `union`'s mem::take already moved
+                    // its nodes onto the surviving parent, so its own node
+                    // vector is empty and re-scanning it would be a no-op.
+                    continue;
+                }
+                let nodes = egraph.classes[idx].nodes.clone();
+                for node in nodes {
+                    let cnode = match &node {
+                        ENode::Op { op, children } => ENode::Op {
+                            op: *op,
+                            children: children.iter().map(|c| egraph.find(*c)).collect(),
+                        },
+                        other => other.clone(),
+                    };
+                    match local_memo.get(&cnode) {
+                        Some(&existing) => {
+                            let existing_canon = egraph.find(existing);
+                            if existing_canon != canon {
+                                pending.push((canon, existing_canon));
+                            }
+                        }
+                        None => {
+                            local_memo.insert(cnode, canon);
+                        }
+                    }
+                }
+            }
+            if pending.is_empty() {
+                return total_unions;
+            }
+            for (a, b) in pending {
+                let ra = egraph.find(a);
+                let rb = egraph.find(b);
+                if ra != rb {
+                    egraph.union(ra, rb);
+                    total_unions += 1;
+                }
+            }
+        }
+        panic!(
+            "full_upward_closure: did not reach fixpoint in {MAX_PASSES} passes \
+             (total_unions so far: {total_unions}) — either a real non-termination \
+             bug or MAX_PASSES needs raising for this corpus"
+        );
+    }
+
+    /// Sum of per-op latency-prior cost over the nodes reachable from `root`
+    /// — the "materialized extracted arena's real cost" the rule-order
+    /// harness this probe borrows its corpus from also uses (`arena_cost` in
+    /// `docs/results/2026-09-01-rule-order-real-kernels.md`), not
+    /// `ExtractedDAG::total_cost`'s cycle-penalty-inflated DP total.
+    fn arena_static_cost(model: &CostModel, arena: &ExprArena, root: ExprId) -> usize {
+        let len = arena.nodes_raw().len();
+        let mut seen = vec![false; len];
+        let mut stack = vec![root];
+        let mut total = 0usize;
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut seen[id.0 as usize], true) {
+                continue;
+            }
+            let kind = match arena.node(id) {
+                ExprNode::Unary(k, _)
+                | ExprNode::Binary(k, _, _)
+                | ExprNode::Ternary(k, _, _, _) => Some(*k),
+                _ => None,
+            };
+            if let Some(k) = kind {
+                total += model.cost(k);
+            }
+            stack.extend(arena.children(id));
+        }
+        total
+    }
+
+    #[derive(Clone, Debug)]
+    struct CongruenceRow {
+        name: String,
+        category: &'static str,
+        rule_order: String,
+        node_count: usize,
+        max_classes: usize,
+        stop: String,
+        hit_class_cap: bool,
+        live_before: usize,
+        closure_unions: usize,
+        live_after: usize,
+        reduction_frac: f64,
+        cost_before: usize,
+        cost_after: usize,
+        cost_change_frac: f64,
+        would_avoid_cap: bool,
+    }
+
+    /// Run the production regime — `config_for_node_count` + `saturate_with_full_budget`,
+    /// exactly as `optimize_runtime_arena_uncached` calls them — under rule
+    /// order `order`, then measure the offline upward-closure gap on a clone.
+    fn measure_one(
+        name: &str,
+        category: &'static str,
+        order: RuleOrder,
+        arena: &ExprArena,
+        root: ExprId,
+    ) -> CongruenceRow {
+        // Same two lowering passes `optimize_runtime_arena_uncached` runs
+        // before the e-graph ever sees the arena (Dwrt resolved first so
+        // ConstantFold can cascade over the constants it manufactures, then
+        // Reduce unrolled). Real production dumps (the glyph corpus) still
+        // carry raw `Dwrt` markers at this point — `Font::glyph_kernel_scaled`
+        // returns `kernel.parts()` before this step runs.
+        let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(arena, root)
+            .unwrap_or_else(|e| panic!("{name}: lower_dwrt failed: {e:?}"));
+        let (arena, root) = pixelflow_ir::passes::expand_reduce_owned(&arena, root);
+        let node_count = reachable_count(&arena, root);
+
+        // THE production regime, through the one entry point
+        // `optimize_runtime_arena_uncached` itself now calls
+        // (pixelflow-search#1108, "one optimizer entry point"):
+        // `Optimizer::production()` bundles the rule set, `Budget::Production`
+        // (== `config_for_node_count`'s tiers), `CostModel::latency_prior`,
+        // and the extractor. `order` swaps only the rule set — everything
+        // else stays exactly production's configuration.
+        let mut optimizer = match order {
+            RuleOrder::Production => Optimizer::production(),
+            other => Optimizer::production().rules(RuleSet::new(build_rule_set(other))),
+        };
+        let mut egraph = optimizer.egraph();
+        let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
+        let root_class = arena_to_egraph(&arena, root, &mut egraph, &mut memo)
+            .unwrap_or_else(|| panic!("{name}: arena_to_egraph returned None (unsupported node)"));
+
+        let optimized = optimizer.run(&mut egraph, root_class, node_count);
+        let max_classes = optimized.stats.limits.classes;
+        let hit_class_cap = optimized.stats.stop == SaturationStop::ClassCap;
+
+        let live_before = live_class_count(&egraph);
+
+        let model = CostModel::latency_prior();
+        let (extracted_before, extracted_before_root) = optimized.to_arena(&egraph, root_class);
+        let cost_before = arena_static_cost(&model, &extracted_before, extracted_before_root);
+
+        // The offline upward-closure pass runs on a CLONE — production's own
+        // e-graph (and `optimized.stats` above) is untouched.
+        let mut closure_graph = egraph.clone();
+        let closure_unions = full_upward_closure(&mut closure_graph);
+        let live_after = live_class_count(&closure_graph);
+
+        let root_class_closed = closure_graph.find(root_class);
+        let dag_after = crate::egraph::extract::extract_dag_scoped(
+            &closure_graph,
+            root_class_closed,
+            &model,
+            LatticeShape::POINT,
+        );
+        let extraction_after = crate::egraph::Extraction::from_dp(
+            &closure_graph,
+            root_class_closed,
+            dag_after.choices,
+        );
+        let (extracted_after, extracted_after_root) = choices_to_arena(&extraction_after);
+        let cost_after = arena_static_cost(&model, &extracted_after, extracted_after_root);
+
+        let reduction_frac = if live_before > 0 {
+            closure_unions as f64 / live_before as f64
+        } else {
+            0.0
+        };
+        let cost_change_frac = if cost_before > 0 {
+            (cost_after as f64 - cost_before as f64) / cost_before as f64
+        } else {
+            0.0
+        };
+        let would_avoid_cap = hit_class_cap && live_after < max_classes;
+
+        CongruenceRow {
+            name: name.to_string(),
+            category,
+            rule_order: order.to_string(),
+            node_count,
+            max_classes,
+            stop: format!("{:?}", optimized.stats.stop),
+            hit_class_cap,
+            live_before,
+            closure_unions,
+            live_after,
+            reduction_frac,
+            cost_before,
+            cost_after,
+            cost_change_frac,
+            would_avoid_cap,
+        }
+    }
+
+    fn category_of(filename: &str) -> &'static str {
+        if filename.starts_with("cellgrid_") {
+            "cellgrid"
+        } else if filename.starts_with("shader_") {
+            "shader"
+        } else if filename.starts_with("psychedelic") {
+            "psychedelic"
+        } else if filename.starts_with("glyph") {
+            "glyph"
+        } else {
+            "unknown"
+        }
+    }
+
+    fn median(xs: &mut [f64]) -> f64 {
+        if xs.is_empty() {
+            return f64::NAN;
+        }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = xs.len();
+        if n % 2 == 1 {
+            xs[n / 2]
+        } else {
+            (xs[n / 2 - 1] + xs[n / 2]) / 2.0
+        }
+    }
+
+    fn percentile(xs: &mut [f64], p: f64) -> f64 {
+        if xs.is_empty() {
+            return f64::NAN;
+        }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = xs.len();
+        let idx = ((p / 100.0) * (n as f64 - 1.0)).round() as usize;
+        xs[idx.min(n - 1)]
+    }
+
+    /// THE measurement (issue #1106): for the 204-real-kernel corpus (the
+    /// #1101 shader/psychedelic/cell-grid/glyph dumps, reused verbatim —
+    /// `PIXELFLOW_CONGRUENCE_ARENA_DIR` points at a directory produced by
+    /// running the three `dump_*` `#[ignore]`d tests those dumpers live in)
+    /// plus a size-stratified synthetic corpus from `BwdGenerator`, measure
+    /// how much congruence the production e-graph misses under
+    /// `all_rules()`'s production order, and how much of that is the H-b
+    /// rule-order confound on a handful of the real kernels.
+    ///
+    /// Read-only: never changes `union`, `rebuild_budgeted`, or `all_rules()`
+    /// order. Writes docs/results/2026-09-02-missing-congruence.{md,csv,json}.
+    #[test]
+    #[ignore = "offline measurement: PIXELFLOW_CONGRUENCE_ARENA_DIR=<dir of .arena dumps> cargo test -p pixelflow-search --release --lib -- --ignored missing_congruence_measurement"]
+    fn missing_congruence_measurement() {
+        let dir = PathBuf::from(
+            std::env::var("PIXELFLOW_CONGRUENCE_ARENA_DIR")
+                .expect("PIXELFLOW_CONGRUENCE_ARENA_DIR must be set"),
+        );
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+            .map(|e| e.expect("dir entry").path())
+            .filter(|p| p.extension().map(|e| e == "arena").unwrap_or(false))
+            .collect();
+        paths.sort();
+        assert!(
+            !paths.is_empty(),
+            "no .arena files found in {}",
+            dir.display()
+        );
+        eprintln!("congruence probe: {} real-kernel arena dumps", paths.len());
+
+        let mut rows: Vec<CongruenceRow> = Vec::new();
+        for path in &paths {
+            let (name, arena, root) = load_arena_dump(path);
+            let category = category_of(&path.file_name().unwrap().to_string_lossy());
+            rows.push(measure_one(
+                &name,
+                category,
+                RuleOrder::Production,
+                &arena,
+                root,
+            ));
+        }
+        let real_kernel_count = rows.len();
+
+        // H-b, cheap: does the MISSING-congruence count differ between
+        // production order and numeric-first order, on a handful of real
+        // kernels (one from each category present)?
+        let mut hb_rows: Vec<CongruenceRow> = Vec::new();
+        for prefix in [
+            "cellgrid_80x24_d1",
+            "shader_",
+            "psychedelic",
+            "glyph16_U0041",
+        ] {
+            if let Some(path) = paths
+                .iter()
+                .find(|p| p.file_name().unwrap().to_string_lossy().starts_with(prefix))
+            {
+                let (name, arena, root) = load_arena_dump(path);
+                let category = category_of(&path.file_name().unwrap().to_string_lossy());
+                hb_rows.push(measure_one(
+                    &format!("{name} [production]"),
+                    category,
+                    RuleOrder::Production,
+                    &arena,
+                    root,
+                ));
+                hb_rows.push(measure_one(
+                    &format!("{name} [numeric-first]"),
+                    category,
+                    RuleOrder::NumericFirst,
+                    &arena,
+                    root,
+                ));
+            }
+        }
+
+        // Synthetic classical corpus: size-stratified via BwdGenerator's
+        // max_depth, ~200 samples (5 depth bands x 40 seeds), using the
+        // UNOPTIMIZED (junkified) form — the realistic pre-optimization
+        // shape the same generator mints for extraction-head training data.
+        let templates = crate::egraph::collect_rule_templates();
+        for &max_depth in &[3usize, 5, 7, 9, 11] {
+            for seed in 0u64..40 {
+                let config = BwdGenConfig {
+                    max_depth,
+                    ..Default::default()
+                };
+                let mut generator = BwdGenerator::new(
+                    seed.wrapping_add(max_depth as u64 * 10_000),
+                    config,
+                    templates.clone(),
+                );
+                let pair = generator.generate_arena();
+                let name = format!("synth_d{max_depth}_s{seed}");
+                rows.push(measure_one(
+                    &name,
+                    "synthetic",
+                    RuleOrder::Production,
+                    &pair.arena,
+                    pair.unoptimized,
+                ));
+            }
+        }
+        let synthetic_count = rows.len() - real_kernel_count;
+        eprintln!("congruence probe: {synthetic_count} synthetic classical expressions");
+
+        // ---- Aggregate stats ----
+        let mut all_reduction_frac: Vec<f64> = rows.iter().map(|r| r.reduction_frac).collect();
+        let mut all_cost_change_frac: Vec<f64> = rows.iter().map(|r| r.cost_change_frac).collect();
+        let total_closure_unions: usize = rows.iter().map(|r| r.closure_unions).sum();
+        let total_live_before: usize = rows.iter().map(|r| r.live_before).sum();
+        let class_reduction_frac_overall = if total_live_before > 0 {
+            total_closure_unions as f64 / total_live_before as f64
+        } else {
+            0.0
+        };
+        let cap_hit_rows: Vec<&CongruenceRow> = rows.iter().filter(|r| r.hit_class_cap).collect();
+        let cap_hit_count = cap_hit_rows.len();
+        let would_avoid_cap_count = rows.iter().filter(|r| r.would_avoid_cap).count();
+
+        let mut capped_reduction: Vec<f64> =
+            cap_hit_rows.iter().map(|r| r.reduction_frac).collect();
+        let mut uncapped_reduction: Vec<f64> = rows
+            .iter()
+            .filter(|r| !r.hit_class_cap)
+            .map(|r| r.reduction_frac)
+            .collect();
+        let mut capped_cost_change: Vec<f64> =
+            cap_hit_rows.iter().map(|r| r.cost_change_frac).collect();
+        let mut uncapped_cost_change: Vec<f64> = rows
+            .iter()
+            .filter(|r| !r.hit_class_cap)
+            .map(|r| r.cost_change_frac)
+            .collect();
+
+        // The five headline numbers (task spec):
+        let num1_additional_unions = total_closure_unions;
+        let num1_frac_of_classes = class_reduction_frac_overall;
+        let num2_median_class_reduction_frac = median(&mut all_reduction_frac.clone());
+        let num3_median_cost_change_frac = median(&mut all_cost_change_frac.clone());
+        let num4_would_avoid_cap = would_avoid_cap_count;
+        let num4_of_cap_hits = cap_hit_count;
+
+        eprintln!("=== headline numbers ===");
+        eprintln!(
+            "(1) additional unions found by closure: {num1_additional_unions} \
+             ({:.2}% of live classes, pooled)",
+            num1_frac_of_classes * 100.0
+        );
+        eprintln!(
+            "(2) median per-kernel live-class-count reduction: {:.2}%",
+            num2_median_class_reduction_frac * 100.0
+        );
+        eprintln!(
+            "(3) median extracted-cost change after closure: {:.3}%",
+            num3_median_cost_change_frac * 100.0
+        );
+        eprintln!(
+            "(4) kernels that hit the class cap that would NOT have with closure: \
+             {num4_would_avoid_cap} / {num4_of_cap_hits} cap-hits ({} total kernels)",
+            rows.len()
+        );
+        eprintln!(
+            "(5a) ClassCap-stopped: median class reduction {:.2}%, median cost change {:.3}% (n={})",
+            median(&mut capped_reduction) * 100.0,
+            median(&mut capped_cost_change) * 100.0,
+            cap_hit_count
+        );
+        eprintln!(
+            "(5b) not ClassCap-stopped: median class reduction {:.2}%, median cost change {:.3}% (n={})",
+            median(&mut uncapped_reduction) * 100.0,
+            median(&mut uncapped_cost_change) * 100.0,
+            rows.len() - cap_hit_count
+        );
+        for (label, rows) in [("production", &rows), ("H-b sample", &hb_rows)] {
+            for r in rows
+                .iter()
+                .filter(|r| hb_rows.iter().any(|h| h.name.starts_with(&r.name)))
+            {
+                eprintln!(
+                    "  H-b [{label}] {}: order={} closure_unions={} live_before={}",
+                    r.name, r.rule_order, r.closure_unions, r.live_before
+                );
+            }
+        }
+
+        // ---- Write docs/results/2026-09-02-missing-congruence.{csv,json,md} ----
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("pixelflow-search has a parent directory");
+        let results_dir = repo_root.join("docs/results");
+        std::fs::create_dir_all(&results_dir).expect("create docs/results");
+
+        write_csv(
+            &results_dir.join("2026-09-02-missing-congruence.csv"),
+            &rows,
+            &hb_rows,
+        );
+        write_json(
+            &results_dir.join("2026-09-02-missing-congruence.json"),
+            &rows,
+            &hb_rows,
+            real_kernel_count,
+            synthetic_count,
+        );
+        write_md(
+            &results_dir.join("2026-09-02-missing-congruence.md"),
+            &rows,
+            &hb_rows,
+            real_kernel_count,
+            synthetic_count,
+            num1_additional_unions,
+            num1_frac_of_classes,
+            num2_median_class_reduction_frac,
+            num3_median_cost_change_frac,
+            num4_would_avoid_cap,
+            num4_of_cap_hits,
+        );
+
+        eprintln!(
+            "wrote docs/results/2026-09-02-missing-congruence.{{md,csv,json}} ({} real + {} synthetic rows)",
+            real_kernel_count, synthetic_count
+        );
+    }
+
+    fn write_csv(path: &Path, rows: &[CongruenceRow], hb_rows: &[CongruenceRow]) {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        writeln!(
+            out,
+            "name,category,rule_order,node_count,max_classes,stop,hit_class_cap,\
+             live_before,closure_unions,live_after,reduction_frac,cost_before,\
+             cost_after,cost_change_frac,would_avoid_cap"
+        )
+        .unwrap();
+        for r in rows.iter().chain(hb_rows.iter()) {
+            writeln!(
+                out,
+                "{},{},{},{},{},{},{},{},{},{},{:.6},{},{},{:.6},{}",
+                csv_escape(&r.name),
+                r.category,
+                r.rule_order,
+                r.node_count,
+                r.max_classes,
+                r.stop,
+                r.hit_class_cap,
+                r.live_before,
+                r.closure_unions,
+                r.live_after,
+                r.reduction_frac,
+                r.cost_before,
+                r.cost_after,
+                r.cost_change_frac,
+                r.would_avoid_cap,
+            )
+            .unwrap();
+        }
+        std::fs::write(path, out).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    }
+
+    fn csv_escape(s: &str) -> String {
+        if s.contains(',') || s.contains('"') {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    }
+
+    fn json_escape(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    }
+
+    fn row_json(r: &CongruenceRow) -> String {
+        format!(
+            "{{\"name\":\"{}\",\"category\":\"{}\",\"rule_order\":\"{}\",\"node_count\":{},\
+             \"max_classes\":{},\"stop\":\"{}\",\"hit_class_cap\":{},\"live_before\":{},\
+             \"closure_unions\":{},\"live_after\":{},\"reduction_frac\":{:.6},\
+             \"cost_before\":{},\"cost_after\":{},\"cost_change_frac\":{:.6},\
+             \"would_avoid_cap\":{}}}",
+            json_escape(&r.name),
+            r.category,
+            r.rule_order,
+            r.node_count,
+            r.max_classes,
+            r.stop,
+            r.hit_class_cap,
+            r.live_before,
+            r.closure_unions,
+            r.live_after,
+            r.reduction_frac,
+            r.cost_before,
+            r.cost_after,
+            r.cost_change_frac,
+            r.would_avoid_cap,
+        )
+    }
+
+    fn write_json(
+        path: &Path,
+        rows: &[CongruenceRow],
+        hb_rows: &[CongruenceRow],
+        real_kernel_count: usize,
+        synthetic_count: usize,
+    ) {
+        let mut out = String::new();
+        out.push_str("{\n");
+        out.push_str(&format!(
+            "  \"real_kernel_count\": {real_kernel_count},\n  \"synthetic_count\": {synthetic_count},\n"
+        ));
+        out.push_str("  \"rows\": [\n");
+        for (i, r) in rows.iter().enumerate() {
+            out.push_str("    ");
+            out.push_str(&row_json(r));
+            if i + 1 < rows.len() {
+                out.push(',');
+            }
+            out.push('\n');
+        }
+        out.push_str("  ],\n  \"rule_order_hb_rows\": [\n");
+        for (i, r) in hb_rows.iter().enumerate() {
+            out.push_str("    ");
+            out.push_str(&row_json(r));
+            if i + 1 < hb_rows.len() {
+                out.push(',');
+            }
+            out.push('\n');
+        }
+        out.push_str("  ]\n}\n");
+        std::fs::write(path, out).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_md(
+        path: &Path,
+        rows: &[CongruenceRow],
+        hb_rows: &[CongruenceRow],
+        real_kernel_count: usize,
+        synthetic_count: usize,
+        num1_additional_unions: usize,
+        num1_frac_of_classes: f64,
+        num2_median_class_reduction_frac: f64,
+        num3_median_cost_change_frac: f64,
+        num4_would_avoid_cap: usize,
+        num4_of_cap_hits: usize,
+    ) {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        writeln!(out, "# Missing congruence measurement (issue #1106)\n").unwrap();
+        writeln!(
+            out,
+            "Read-only offline probe: after production saturation \
+             (`config_for_node_count` + `saturate_with_full_budget`, exactly as \
+             `optimize_runtime_arena_uncached` calls them), clone the e-graph and \
+             run a full upward-congruence-closure sweep to fixpoint. Reports how \
+             much congruence production's `union`/`rebuild_budgeted` missed \
+             because no e-node parent list exists.\n"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "Corpus: {real_kernel_count} real kernels (12 shader_bench ports, 1 \
+             psychedelic shader, 3 packed cell-grid geometries at the sizes \
+             core-term actually compiles, 190 glyph arenas across both display \
+             densities) + {synthetic_count} size-stratified synthetic classical \
+             expressions (`BwdGenerator`, max_depth in {{3,5,7,9,11}}, 40 seeds \
+             each, unoptimized/junkified form).\n"
+        )
+        .unwrap();
+
+        writeln!(out, "## The five numbers\n").unwrap();
+        writeln!(
+            out,
+            "1. **Additional unions closure finds**: {num1_additional_unions} total \
+             (pooled across all {} kernels), {:.2}% of the pooled live-class count.",
+            rows.len(),
+            num1_frac_of_classes * 100.0
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "2. **Median per-kernel live-class-count reduction**: {:.2}%",
+            num2_median_class_reduction_frac * 100.0
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "3. **Median extracted-cost change after closure** (latency_prior, \
+             positive = closure found a CHEAPER extraction): {:.3}%",
+            -num3_median_cost_change_frac * 100.0
+        )
+        .unwrap();
+        let cap_pct = if num4_of_cap_hits > 0 {
+            100.0 * num4_would_avoid_cap as f64 / num4_of_cap_hits as f64
+        } else {
+            0.0
+        };
+        writeln!(
+            out,
+            "4. **Kernels that hit the 5,000-class cap that would NOT have with \
+             closure**: {num4_would_avoid_cap} / {num4_of_cap_hits} cap-hit \
+             kernels ({cap_pct:.1}%) — this is the number H-a asked for. Caveat: \
+             this compares the CLOSURE's live-class count (a lower-bound proxy \
+             for what an eagerly-congruent search would have allocated) against \
+             the cap, on the frozen post-cap node set; it is not a re-simulation \
+             of search under an eager-congruence fix."
+        )
+        .unwrap();
+
+        writeln!(out, "\n## Split by ClassCap-stopped\n").unwrap();
+        writeln!(out, "| | n | median class reduction | median cost change |").unwrap();
+        writeln!(out, "|---|---|---|---|").unwrap();
+        let cap_rows: Vec<&CongruenceRow> = rows.iter().filter(|r| r.hit_class_cap).collect();
+        let noncap_rows: Vec<&CongruenceRow> = rows.iter().filter(|r| !r.hit_class_cap).collect();
+        let mut cap_red: Vec<f64> = cap_rows.iter().map(|r| r.reduction_frac).collect();
+        let mut cap_cost: Vec<f64> = cap_rows.iter().map(|r| r.cost_change_frac).collect();
+        let mut noncap_red: Vec<f64> = noncap_rows.iter().map(|r| r.reduction_frac).collect();
+        let mut noncap_cost: Vec<f64> = noncap_rows.iter().map(|r| r.cost_change_frac).collect();
+        writeln!(
+            out,
+            "| ClassCap-stopped | {} | {:.2}% | {:.3}% |",
+            cap_rows.len(),
+            median(&mut cap_red) * 100.0,
+            median(&mut cap_cost) * 100.0
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "| not ClassCap-stopped | {} | {:.2}% | {:.3}% |",
+            noncap_rows.len(),
+            median(&mut noncap_red) * 100.0,
+            median(&mut noncap_cost) * 100.0
+        )
+        .unwrap();
+
+        writeln!(out, "\n## By category\n").unwrap();
+        writeln!(
+            out,
+            "| category | n | median class reduction | p90 class reduction | median cost change |"
+        )
+        .unwrap();
+        writeln!(out, "|---|---|---|---|---|").unwrap();
+        for cat in ["cellgrid", "shader", "psychedelic", "glyph", "synthetic"] {
+            let cat_rows: Vec<&CongruenceRow> = rows.iter().filter(|r| r.category == cat).collect();
+            if cat_rows.is_empty() {
+                continue;
+            }
+            let mut red: Vec<f64> = cat_rows.iter().map(|r| r.reduction_frac).collect();
+            let mut red2 = red.clone();
+            let mut cost: Vec<f64> = cat_rows.iter().map(|r| r.cost_change_frac).collect();
+            writeln!(
+                out,
+                "| {cat} | {} | {:.2}% | {:.2}% | {:.3}% |",
+                cat_rows.len(),
+                median(&mut red) * 100.0,
+                percentile(&mut red2, 90.0) * 100.0,
+                median(&mut cost) * 100.0
+            )
+            .unwrap();
+        }
+
+        writeln!(
+            out,
+            "\n## H-b: does rule order change the missing-congruence count?\n"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "Cheap check on one kernel per category present: production `all_rules()` \
+             order vs. the pinned numeric-first static reorder \
+             (`docs/results/2026-09-01-rule-order-real-kernels.md`'s `NUMERIC_FIRST_ORDER`), \
+             same production budget, same offline closure.\n"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "| kernel | order | live_before | closure_unions | reduction_frac | cost_change_frac |"
+        )
+        .unwrap();
+        writeln!(out, "|---|---|---|---|---|---|").unwrap();
+        for r in hb_rows {
+            writeln!(
+                out,
+                "| {} | {} | {} | {} | {:.2}% | {:.3}% |",
+                r.name,
+                r.rule_order,
+                r.live_before,
+                r.closure_unions,
+                r.reduction_frac * 100.0,
+                r.cost_change_frac * 100.0
+            )
+            .unwrap();
+        }
+        writeln!(
+            out,
+            "\nIf `closure_unions` (or `reduction_frac`) differs materially between the \
+             two orders for the SAME kernel, the order that looks better in \
+             #1101/#1088 may simply be the one that stumbles into more congruence \
+             by construction — reframing those results as partially measuring this \
+             gap rather than a pure rule-order effect."
+        )
+        .unwrap();
+
+        writeln!(out, "\n## Raw data\n").unwrap();
+        writeln!(
+            out,
+            "See `2026-09-02-missing-congruence.csv` / `.json` for every kernel's row."
+        )
+        .unwrap();
+
+        std::fs::write(path, out).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    }
+}
