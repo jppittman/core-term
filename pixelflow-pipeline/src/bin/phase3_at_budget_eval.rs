@@ -49,9 +49,23 @@
 //!
 //! # Corpus discipline
 //!
-//! Reads `corpus_dev.bin` ONLY. TRAIN is not needed (the Guide was trained on
-//! it); `corpus_final.bin` is never opened — FINAL stays untouched until a
-//! publication run.
+//! Reads `corpus_dev.bin` by default, or a `--corpus` file of DEV-only
+//! out-of-distribution families (round 1b:
+//! `docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md`,
+//! `corpus_dev_ood.bin`, one family selected with `--name-prefix`). Whatever
+//! is loaded is fence-checked against `corpus_train.bin` (a structural
+//! collision with TRAIN is a hard error); `corpus_final.bin` is never opened
+//! — FINAL stays untouched until a publication run.
+//!
+//! # Round 1b additions
+//!
+//! `--stratify-by-ops` labels every classical row with the registration's
+//! op-composition stratum (rows written without one are labelled from the
+//! corpus in aggregate), each arm records per-rule-INDEX firings and
+//! strict-positives at B and over the whole run (`by_rule_idx`, `full_run`),
+//! and every classical-sized set reports `D_A = m_A^S − m_A^DEV` against the
+//! registered margin `M_B` with the pre-committed H_shift / H_null / H_inv
+//! verdict.
 //!
 //! # Resumability
 //!
@@ -106,6 +120,13 @@ struct Args {
     /// collision is a hard error regardless of which corpus is loaded.
     #[arg(long)]
     corpus: Option<String>,
+
+    /// Evaluate only entries whose name starts with this prefix — selects
+    /// one named family out of a multi-family file (`corpus_dev_ood.bin`
+    /// holds `dev_sh_*` and `dev_bezier_*`). The TRAIN fence is still
+    /// checked over the whole file. Empty = every entry.
+    #[arg(long, default_value = "")]
+    name_prefix: String,
 
     /// Emit the registered op-composition stratum
     /// (docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §2)
@@ -254,6 +275,13 @@ fn registered_margin(b: usize) -> f64 {
 /// A verdict is claimed only on a set with n >= 30 classical expressions
 /// (§1, "Primary test").
 const MIN_N_FOR_VERDICT: usize = 30;
+
+/// The rules the global prior suppresses (round-1b registration §4), by
+/// `all_rules()` index: the enabler `doubling` (20), the parity rules on
+/// Sin/Tan/Asin/Atan/Cos (30–34), and the trig identities (36–40). Reported
+/// per arm and per set as firings within the first B applications and over
+/// the whole run, each with its strict-positive count (§1.3).
+const TRIG_RULE_IDX: [usize; 11] = [20, 30, 31, 32, 33, 34, 36, 37, 38, 39, 40];
 
 // ---------------------------------------------------------------------------
 // DEV stratification by op composition (round-1b registration §2). First
@@ -509,6 +537,25 @@ struct AtBudgetDiag {
     strict_positive: usize,
     rounds: usize,
     rule_hist: BTreeMap<String, usize>,
+    /// Round 1b: the same prefix keyed by rule INDEX (`all_rules()` order),
+    /// with each rule's strict-positive count. `name()` is not a key here
+    /// because it merges the six parity rules under two names
+    /// (`odd-negation` for idx 30–33, `even-negation` for 34–35) and the
+    /// registration asks about idx 30 (Sin) separately from idx 31 (Tan).
+    /// `None` on rows written before this field existed (Round 1) — the
+    /// aggregate reports how many rows carry it rather than counting a
+    /// missing histogram as zero firings.
+    #[serde(default)]
+    by_rule_idx: Option<BTreeMap<usize, RuleFiring>>,
+}
+
+/// Firings of one rule within a prefix of one arm's run, and how many of
+/// them were strict-positive (output node on that arm's own final
+/// extracted path).
+#[derive(Serialize, Deserialize, Clone, Copy, Default)]
+struct RuleFiring {
+    fired: usize,
+    strict_positive: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -560,6 +607,11 @@ struct ExprRow {
     arms: BTreeMap<String, ArmCurve>,
     /// arm -> B -> diagnostics at B.
     at_budget: BTreeMap<String, BTreeMap<usize, AtBudgetDiag>>,
+    /// Round 1b: arm -> the same diagnostics over EVERY recorded application
+    /// of the run (registration §1.3: "applied at all by any arm at any
+    /// checkpoint"). `None` on Round-1 rows.
+    #[serde(default)]
+    full_run: Option<BTreeMap<String, AtBudgetDiag>>,
     enabler: EnablerDiag,
     production: Option<ProductionRow>,
 }
@@ -603,10 +655,33 @@ fn at_budget_diag(
     positives: &BTreeSet<ApplicationId>,
     b: usize,
 ) -> AtBudgetDiag {
-    let applications = arm.apps_at(b);
+    prefix_diag(out, arm.apps_at(b), arm.rounds_at(b), positives)
+}
+
+/// Diagnostics over the whole run: every recorded application, and the
+/// sweep count at the curve's last checkpoint.
+fn full_run_diag(
+    out: &AnytimeCurveOutput,
+    arm: &ArmCurve,
+    positives: &BTreeSet<ApplicationId>,
+) -> AtBudgetDiag {
+    let total = out.egraph.provenance().applications().count();
+    let rounds = *arm.rounds.last().expect("non-empty curve");
+    prefix_diag(out, total, rounds, positives)
+}
+
+/// What the first `applications` recorded applications of one arm's run
+/// looked like.
+fn prefix_diag(
+    out: &AnytimeCurveOutput,
+    applications: usize,
+    rounds: usize,
+    positives: &BTreeSet<ApplicationId>,
+) -> AtBudgetDiag {
     let mut structural = 0usize;
     let mut strict_positive = 0usize;
     let mut rule_hist: BTreeMap<String, usize> = BTreeMap::new();
+    let mut by_rule_idx: BTreeMap<usize, RuleFiring> = BTreeMap::new();
     for (id, rec) in out.egraph.provenance().applications() {
         if id.as_u64() as usize >= applications {
             continue;
@@ -615,17 +690,24 @@ fn at_budget_diag(
         if is_structural(&name) {
             structural += 1;
         }
-        if positives.contains(&id) {
+        let positive = positives.contains(&id);
+        if positive {
             strict_positive += 1;
         }
         *rule_hist.entry(name).or_default() += 1;
+        let f = by_rule_idx.entry(rec.rule_idx).or_default();
+        f.fired += 1;
+        if positive {
+            f.strict_positive += 1;
+        }
     }
     AtBudgetDiag {
         applications,
         structural,
         strict_positive,
-        rounds: arm.rounds_at(b),
+        rounds,
         rule_hist,
+        by_rule_idx: Some(by_rule_idx),
     }
 }
 
@@ -911,6 +993,7 @@ fn evaluate_expression(
 
     let mut arms = BTreeMap::new();
     let mut at_budget = BTreeMap::new();
+    let mut full_run = BTreeMap::new();
     let mut unguided_positives = BTreeSet::new();
     for (arm_name, out, seen) in outs {
         let arm = curve_to_arm(out, seen);
@@ -919,6 +1002,7 @@ fn evaluate_expression(
         for (b, _, _) in REGISTERED_TIERS {
             per_b.insert(b, at_budget_diag(out, &arm, &positives, b));
         }
+        full_run.insert(arm_name.to_string(), full_run_diag(out, &arm, &positives));
         if arm_name == "unguided" {
             unguided_positives = positives;
         }
@@ -960,6 +1044,7 @@ fn evaluate_expression(
         stratum: stratify_by_ops.then(|| ops_stratum(arena).to_string()),
         arms,
         at_budget,
+        full_run: Some(full_run),
         enabler,
         production,
     }
@@ -1095,6 +1180,12 @@ struct Round1bStat {
     margin_m: f64,
     /// `D_control - D_linear`.
     d_diff_control_minus_linear: f64,
+    /// Registration §1.2 (the Bézier / polynomial-only prediction): point
+    /// prediction `D_A <= 0` for both arms, and the binding form
+    /// `D_A <= +M_B` for both arms. Reported on every set; only meaningful
+    /// as a prediction on `bezier` and the `polynomial-only` stratum.
+    both_arms_d_le_zero: bool,
+    both_arms_d_le_margin: bool,
     /// `H_shift` / `H_null` / `H_inv` / `underpowered (n < 30)`, per §1's
     /// pre-committed decision rule. `unclassified` covers the residual case
     /// `D_control - D_linear > M` with `D_control <= 0` — outside all three
@@ -1189,6 +1280,9 @@ struct Report {
     /// Round-1b op-composition stratification (registration §2); `None`
     /// unless `--stratify-by-ops` was set.
     strata: Option<StrataReport>,
+    /// Round-1b §1.3 trig-rule firings: one entry for the classical band and
+    /// one per op-composition stratum evaluated.
+    rule_firing: Vec<RuleFiringSummary>,
     context: BTreeMap<String, String>,
 }
 
@@ -1415,6 +1509,8 @@ fn tier_result(rows: &[&ExprRow], band: &str, budget: TierBudget) -> TierResult 
             d_arm,
             margin_m,
             d_diff_control_minus_linear,
+            both_arms_d_le_zero: d_control <= 0.0 && d_linear <= 0.0,
+            both_arms_d_le_margin: d_control <= margin_m && d_linear <= margin_m,
             verdict,
         }
     });
@@ -1602,6 +1698,146 @@ fn enabler_summary(rows: &[&ExprRow], band: &str) -> EnablerSummary {
     s
 }
 
+/// One registered trig rule's pooled firings in one set, per arm
+/// (round-1b registration §1.3).
+#[derive(Serialize, Clone, Default)]
+struct RuleFiringAgg {
+    rule_name: String,
+    /// Pooled over the set: firings within the first B applications and
+    /// how many of them were strict-positive, B = 100 / 200.
+    fired_at_100: usize,
+    strict_at_100: usize,
+    fired_at_200: usize,
+    strict_at_200: usize,
+    /// Pooled over every recorded application of the run.
+    fired_full: usize,
+    strict_full: usize,
+    /// Expressions on which the rule fired at all, at any point of the run.
+    exprs_with_firing_full: usize,
+}
+
+#[derive(Serialize, Clone)]
+struct RuleFiringSummary {
+    set: String,
+    n: usize,
+    /// Rows that carry the per-rule-index histogram (Round-1 rows do not);
+    /// every count below is pooled over exactly these rows.
+    n_with_rule_index: usize,
+    /// arm -> rule idx -> pooled firings.
+    arms: BTreeMap<String, BTreeMap<usize, RuleFiringAgg>>,
+}
+
+fn rule_firing_summary(rows: &[&ExprRow], set: &str) -> RuleFiringSummary {
+    let names: Vec<String> = all_rules().iter().map(|r| r.name().to_string()).collect();
+    let mut arms: BTreeMap<String, BTreeMap<usize, RuleFiringAgg>> = BTreeMap::new();
+    for arm in ARM_NAMES {
+        let mut per_rule = BTreeMap::new();
+        for &idx in &TRIG_RULE_IDX {
+            per_rule.insert(
+                idx,
+                RuleFiringAgg {
+                    rule_name: names
+                        .get(idx)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "registered trig rule idx {idx} is outside all_rules() ({} rules)",
+                                names.len()
+                            )
+                        })
+                        .clone(),
+                    ..RuleFiringAgg::default()
+                },
+            );
+        }
+        arms.insert(arm.to_string(), per_rule);
+    }
+    let mut n_with_rule_index = 0usize;
+    for r in rows {
+        let Some(full) = &r.full_run else {
+            continue;
+        };
+        n_with_rule_index += 1;
+        for arm in ARM_NAMES {
+            let per_rule = arms.get_mut(arm).expect("arm registered");
+            let at = |b: usize| -> &BTreeMap<usize, RuleFiring> {
+                r.at_budget[arm][&b]
+                    .by_rule_idx
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{}: {arm}@{b} has full_run but no by_rule_idx — a row written by two different harness revisions", r.name))
+            };
+            let (h100, h200) = (at(100), at(200));
+            let hfull = full[arm]
+                .by_rule_idx
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}: {arm} full_run has no by_rule_idx", r.name));
+            for (&idx, agg) in per_rule.iter_mut() {
+                let f100 = h100.get(&idx).copied().unwrap_or_default();
+                let f200 = h200.get(&idx).copied().unwrap_or_default();
+                let ffull = hfull.get(&idx).copied().unwrap_or_default();
+                agg.fired_at_100 += f100.fired;
+                agg.strict_at_100 += f100.strict_positive;
+                agg.fired_at_200 += f200.fired;
+                agg.strict_at_200 += f200.strict_positive;
+                agg.fired_full += ffull.fired;
+                agg.strict_full += ffull.strict_positive;
+                if ffull.fired > 0 {
+                    agg.exprs_with_firing_full += 1;
+                }
+            }
+        }
+    }
+    RuleFiringSummary {
+        set: set.to_string(),
+        n: rows.len(),
+        n_with_rule_index,
+        arms,
+    }
+}
+
+fn fmt_rate(fired: usize, strict: usize) -> String {
+    if fired == 0 {
+        "0".to_string()
+    } else {
+        format!(
+            "{fired} ({strict}, {:.1}%)",
+            100.0 * strict as f64 / fired as f64
+        )
+    }
+}
+
+/// Round-1b §1.3 trig-rule firing section: per set, per arm, per registered
+/// rule index — firings (strict-positives, strict rate) at B=100, B=200 and
+/// over the full run, plus the number of expressions the rule fired on.
+fn write_rule_firing(md: &mut String, summaries: &[RuleFiringSummary]) {
+    md.push_str("## Trig-rule firings (round-1b registration §1.3 / §4)\n\n");
+    md.push_str("Cells are `fired (strict-positive, strict rate)` pooled over the set's rows that carry the per-rule-index histogram; `exprs` = expressions on which the arm fired the rule at any point of its run. A rule with 0 firings in every arm on a set has no live match there — a precondition to state before reading D on that set.\n\n");
+    for s in summaries {
+        md.push_str(&format!(
+            "### set = {} (n = {}, rows with rule-index histogram = {})\n\n",
+            s.set, s.n, s.n_with_rule_index
+        ));
+        if s.n_with_rule_index == 0 {
+            md.push_str("No row in this set carries the per-rule-index histogram (rows predate it); nothing is counted here — NOT zero firings.\n\n");
+            continue;
+        }
+        md.push_str("| idx | rule | arm | @100 | @200 | full run | exprs |\n|---:|---|---|---|---|---|---:|\n");
+        for &idx in &TRIG_RULE_IDX {
+            for arm in ARM_NAMES {
+                let a = &s.arms[arm][&idx];
+                md.push_str(&format!(
+                    "| {idx} | {} | {arm} | {} | {} | {} | {} |\n",
+                    a.rule_name,
+                    fmt_rate(a.fired_at_100, a.strict_at_100),
+                    fmt_rate(a.fired_at_200, a.strict_at_200),
+                    fmt_rate(a.fired_full, a.strict_full),
+                    a.exprs_with_firing_full,
+                ));
+            }
+        }
+        md.push('\n');
+    }
+}
+
 fn fmt_d(d: &Dist) -> String {
     if d.n == 0 {
         return "n=0".to_string();
@@ -1655,8 +1891,11 @@ fn write_round1b(md: &mut String, set_name: &str, r: &Round1bStat) {
         ));
     }
     md.push_str(&format!(
-        "D_control − D_linear = {:.4} → **{}**.\n\n",
-        r.d_diff_control_minus_linear, r.verdict
+        "D_control − D_linear = {:.4} → **{}**. §1.2 polynomial prediction: both arms D ≤ 0: {}; both arms D ≤ M_B: {}.\n\n",
+        r.d_diff_control_minus_linear,
+        r.verdict,
+        if r.both_arms_d_le_zero { "holds" } else { "FAILS" },
+        if r.both_arms_d_le_margin { "holds" } else { "FAILS" },
     ));
 }
 
@@ -1834,6 +2073,8 @@ Strict-oracle arm: not run (see the harness module doc — no cheap provenance r
     if let Some(strata) = &report.strata {
         write_strata(&mut md, strata);
     }
+
+    write_rule_firing(&mut md, &report.rule_firing);
 
     md.push_str("## Enabler-starvation diagnostics\n\n");
     for e in &report.enabler {
@@ -2072,6 +2313,38 @@ fn main() {
     // Populated only when `--stratify-by-ops` runs the corpus-population
     // scan below (skipped in `--aggregate-only`, which reads no corpus).
     let mut strata_population_out: Option<BTreeMap<String, usize>> = None;
+    // `--stratify-by-ops`: name -> stratum over the loaded corpus, so rows
+    // written without a stratum label (Round 1's) can be stratified in
+    // aggregate from the corpus alone — registration §2: "no re-evaluation
+    // is needed for the stratified numbers, only the per-expression op
+    // counts, read from corpus_dev.bin".
+    let mut stratum_by_name: Option<BTreeMap<String, String>> = None;
+    let corpus_dir = PathBuf::from(&args.corpus_dir);
+    let dev_path: PathBuf = args
+        .corpus
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| corpus_dir.join("corpus_dev.bin"));
+
+    if args.aggregate_only && args.stratify_by_ops {
+        let entries = read_corpus(&dev_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", dev_path.display()));
+        enforce_train_fence(&dev_path, &corpus_dir, &entries);
+        let classical: Vec<(String, ExprArena, ExprId)> = entries
+            .into_iter()
+            .filter(|(name, arena, _)| {
+                name.starts_with(&args.name_prefix)
+                    && tier_name(arena.nodes_raw().len()) == "classical"
+            })
+            .collect();
+        strata_population_out = Some(strata_counts(&classical));
+        stratum_by_name = Some(
+            classical
+                .iter()
+                .map(|(name, arena, _)| (name.clone(), ops_stratum(arena).to_string()))
+                .collect(),
+        );
+    }
 
     if !args.aggregate_only {
         let costs = CostModel::latency_prior();
@@ -2094,15 +2367,24 @@ fn main() {
                 4 * b
             );
         }
-        let corpus_dir = PathBuf::from(&args.corpus_dir);
-        let dev_path: PathBuf = args
-            .corpus
-            .as_ref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| corpus_dir.join("corpus_dev.bin"));
         let mut entries = read_corpus(&dev_path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", dev_path.display()));
         enforce_train_fence(&dev_path, &corpus_dir, &entries);
+        if !args.name_prefix.is_empty() {
+            let before = entries.len();
+            entries.retain(|(name, _, _)| name.starts_with(&args.name_prefix));
+            assert!(
+                !entries.is_empty(),
+                "--name-prefix {:?} matches none of the {before} entries in {}",
+                args.name_prefix,
+                dev_path.display()
+            );
+            eprintln!(
+                "phase3_at_budget_eval: --name-prefix {:?} kept {} of {before} entries",
+                args.name_prefix,
+                entries.len()
+            );
+        }
         entries.sort_by(|a, b| {
             a.1.nodes_raw()
                 .len()
@@ -2129,6 +2411,11 @@ fn main() {
                 by_band.get("classical").map_or(0, Vec::len),
             );
             strata_population_out = Some(classical_strata);
+            stratum_by_name = by_band.get("classical").map(|v| {
+                v.iter()
+                    .map(|(name, arena, _)| (name.clone(), ops_stratum(arena).to_string()))
+                    .collect()
+            });
         }
 
         let mut selected: Vec<(String, ExprArena, ExprId)> = Vec::new();
@@ -2200,12 +2487,34 @@ fn main() {
     // ------------------------------------------------------------------
     // Aggregate.
     // ------------------------------------------------------------------
-    let rows = read_rows(&jsonl_path);
+    let mut rows = read_rows(&jsonl_path);
     assert!(
         !rows.is_empty(),
         "no rows in {} — nothing to aggregate",
         jsonl_path.display()
     );
+    if let Some(map) = &stratum_by_name {
+        for r in rows.iter_mut().filter(|r| r.tier == "classical") {
+            let from_corpus = map.get(&r.name).unwrap_or_else(|| {
+                panic!(
+                    "{}: classical row {} is not in the loaded corpus {} — cannot stratify it",
+                    jsonl_path.display(),
+                    r.name,
+                    dev_path.display()
+                )
+            });
+            match &r.stratum {
+                Some(s) => assert_eq!(
+                    s,
+                    from_corpus,
+                    "{}: row {} carries stratum {s} but the corpus says {from_corpus}",
+                    jsonl_path.display(),
+                    r.name
+                ),
+                None => r.stratum = Some(from_corpus.clone()),
+            }
+        }
+    }
     let mut n_by_band: BTreeMap<String, usize> = BTreeMap::new();
     for r in &rows {
         *n_by_band.entry(r.tier.clone()).or_default() += 1;
@@ -2266,8 +2575,26 @@ fn main() {
         }
     });
 
+    let mut rule_firing = Vec::new();
+    {
+        let classical: Vec<&ExprRow> = rows.iter().filter(|r| r.tier == "classical").collect();
+        if !classical.is_empty() {
+            rule_firing.push(rule_firing_summary(&classical, "classical"));
+        }
+        let mut by_stratum: BTreeMap<String, Vec<&ExprRow>> = BTreeMap::new();
+        for r in &classical {
+            if let Some(s) = &r.stratum {
+                by_stratum.entry(s.clone()).or_default().push(r);
+            }
+        }
+        for (stratum, sub) in &by_stratum {
+            rule_firing.push(rule_firing_summary(sub, stratum));
+        }
+    }
+
     let mut context = BTreeMap::new();
     context.insert("source_rev".to_string(), git_rev());
+    context.insert("corpus".to_string(), dev_path.display().to_string());
     context.insert("load_at_start".to_string(), load_start);
     context.insert("load_at_end".to_string(), uptime());
     context.insert("checkpoint".to_string(), args.checkpoint.clone());
@@ -2300,6 +2627,7 @@ fn main() {
         production,
         enabler,
         strata,
+        rule_firing,
         context,
     };
     let json = serde_json::to_string_pretty(&report).expect("serialize report");
@@ -2339,6 +2667,28 @@ fn main() {
             t.unguided_regret_at_4b_pct.median,
         );
     }
+    let round1b_sets = report
+        .tiers
+        .iter()
+        .chain(report.strata.iter().flat_map(|s| s.evaluated.iter()));
+    for t in round1b_sets {
+        let Some(r) = &t.round1b else {
+            continue;
+        };
+        println!(
+            "round1b S={} B={}: n={} | D_control {:+.4} D_linear {:+.4} | D_control-D_linear {:+.4} vs M={:.2} -> {} | poly prediction (D<=0 both / D<=M both): {} / {}",
+            t.band,
+            t.b,
+            t.n,
+            r.d_arm["control"],
+            r.d_arm["linear"],
+            r.d_diff_control_minus_linear,
+            r.margin_m,
+            r.verdict,
+            r.both_arms_d_le_zero,
+            r.both_arms_d_le_margin,
+        );
+    }
     for p in &report.production {
         println!(
             "production {}: n={} stops {:?} effective-B median {:.0} (q1 {:.0}, q3 {:.0}) share>=100 {:.1}% >=200 {:.1}%",
@@ -2359,7 +2709,7 @@ fn main() {
         "ts_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_secs(),
         "config": {
             "source_rev": report.context["source_rev"],
-            "corpus": "corpus_dev.bin only (FINAL untouched)",
+            "corpus": format!("{} (FINAL untouched)", dev_path.display()),
             "protocol": format!("arms=unguided,control,linear;guided_grid={GUIDED_GRID:?};cost=latency_prior;class_cap=production_tier;registered_tiers={REGISTERED_TIERS:?}"),
             "checkpoint": args.checkpoint,
         },
