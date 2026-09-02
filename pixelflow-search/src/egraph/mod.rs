@@ -9,8 +9,8 @@
 //! - [`cost`]: Cost model for extraction
 //! - [`rewrite`]: Rewrite rule infrastructure
 //! - [`extract`]: Expression tree extraction, including DAG-aware extraction
-//! - [`extraction`]: Cost-model policy selection (static latency-prior vs.
-//!   opt-in NNUE) shared by the AOT macro tier and [`crate::runtime`]
+//! - [`extraction`]: Cost-model policy selection (the static latency prior)
+//!   shared by the AOT macro tier and [`crate::runtime`]
 //! - [`saturate`]: Budget-limited saturation, plus the size-based
 //!   [`saturate::SaturationConfig`] presets both tiers drive it with
 //! - [`graph`]: The EGraph itself

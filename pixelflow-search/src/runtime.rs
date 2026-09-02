@@ -33,8 +33,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Optimize a runtime-built arena via bounded e-graph saturation, using the
-/// same rule set and extraction policy (static latency-prior by default,
-/// `PIXELFLOW_NNUE_WEIGHTS` opt-in) as the `kernel!`/`kernel_jit!` macros.
+/// same rule set and extraction policy (the static latency prior, through
+/// `env_extraction_policy`) as the `kernel!`/`kernel_jit!` macros.
 ///
 /// `Buffer`/`Gather` (bound-memory reads) are representable: they enter the
 /// e-graph as opaque structure — no rewrite rule can name them, so their
