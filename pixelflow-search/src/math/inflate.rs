@@ -71,6 +71,48 @@ pub enum RuleOrder {
     Append,
     /// v2 default: base + inflation shuffled together by this seed.
     Interleave(u64),
+    /// v3 (`docs/plans/2026-09-01-phase3-round2-registration-v3.md` §6b):
+    /// the base-62 rules, reordered to the exact relative order they occupy
+    /// inside `Interleave(seed)` of the `total`-rule inflated set — i.e. the
+    /// subsequence of the interleaved vector restricted to base indices.
+    /// This is the confound-controlled reference for an inflated point at
+    /// `(seed, total)`: ΔU(p) = U(p) − U(OrderMatchedBase(seed, total)) holds
+    /// order fixed and isolates the |R| effect. Applies only to the base-62
+    /// set (`spec.mode == None`) — see [`order_matched_base`] for why this is
+    /// well-defined independent of which mode (`dup`/`comp`) the inflation at
+    /// `total` came from: [`fisher_yates`] permutes purely by vector length.
+    OrderMatchedBase(u64, usize),
+    /// v3: the base-62 rules, fully shuffled by this seed (no inflation
+    /// content at all) — isolates seed sensitivity of the order effect
+    /// itself, independent of any inflated point.
+    Shuffled(u64),
+    /// v3: a fixed, hand-derived heuristic reorder of the base-62 — the
+    /// harness-selectable form of the production quick-win candidate named in
+    /// `docs/plans/2026-09-01-phase3-round2-registration-v2.md`'s §6
+    /// orchestrator finding (adopting it in `all_rules()` itself is a
+    /// separate, unmade decision — see [`static_reorder_base`]).
+    StaticReorder(StaticReorderKind),
+}
+
+/// Which fixed heuristic [`RuleOrder::StaticReorder`] selects. One kind for
+/// now (`docs/plans/2026-09-01-phase3-round2-registration-v3.md` §6b task).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StaticReorderKind {
+    /// Base-62 ordered by descending TRAIN strict-positive rate
+    /// (`docs/results/2026-09-01-train-guide-report.md`'s per-rule table),
+    /// ties broken by ascending production index. A rule absent from that
+    /// report (never observed a candidate during label mining) is treated as
+    /// rate 0.0 — tied with every measured-zero rule, broken by index like
+    /// any other tie. See [`NUMERIC_FIRST_ORDER`] for the pinned result.
+    NumericFirst,
+}
+
+impl std::fmt::Display for StaticReorderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NumericFirst => write!(f, "numeric-first"),
+        }
+    }
 }
 
 /// The fixed seed Round 2 v2 registers as its default interleave order
@@ -85,18 +127,38 @@ impl std::fmt::Display for RuleOrder {
         match self {
             Self::Append => write!(f, "append"),
             Self::Interleave(seed) => write!(f, "interleave:0x{seed:x}"),
+            Self::OrderMatchedBase(seed, total) => write!(f, "matched:0x{seed:x}:{total}"),
+            Self::Shuffled(seed) => write!(f, "shuffled:0x{seed:x}"),
+            Self::StaticReorder(kind) => write!(f, "static:{kind}"),
         }
     }
 }
 
-/// A parsed `--rule-set` argument: `"base"` (the production 62), or
-/// `"dup:<total>"` / `"comp:<total>"` where `<total>` is the TOTAL rule
-/// count requested (base 62 plus that mode's inflation), not the inflation
-/// alone — optionally suffixed `:append` or `:interleave:<seed>` to pick the
-/// sweep order (`RuleOrder`). Omitting the suffix on an inflated spec
-/// defaults to `Interleave(DEFAULT_INTERLEAVE_SEED)` — v2's registered
-/// default. `"base"` ignores order entirely: it is always the unshuffled
-/// production 62.
+/// A parsed `--rule-set` argument: `"base"` (the production 62, unshuffled),
+/// or `"dup:<total>"` / `"comp:<total>"` / `"new:<total>"` where `<total>` is
+/// the TOTAL rule count requested (base 62 plus that mode's inflation), not
+/// the inflation alone — optionally suffixed `:append` or
+/// `:interleave:<seed>` to pick the sweep order (`RuleOrder`). Omitting the
+/// suffix on an inflated spec defaults to `Interleave(DEFAULT_INTERLEAVE_SEED)`
+/// — v2's registered default.
+///
+/// `"base"` alone ignores order entirely: always the unshuffled production
+/// 62. Three more `"base:"`-prefixed forms (v3) select a *reordered* base-62,
+/// still `|R| = 62`, for the order-effect-in-isolation and confound-control
+/// measurements (`docs/plans/2026-09-01-phase3-round2-registration-v3.md` §6b):
+/// - `"base:matched:<seed>:<total>"` → `RuleOrder::OrderMatchedBase(seed, total)`
+///   — the base rules in the relative order they occupy inside
+///   `Interleave(seed)` of the `total`-rule inflated set; the reference each
+///   inflated point's ΔU is measured against.
+/// - `"base:shuffled:<seed>"` → `RuleOrder::Shuffled(seed)` — base-62 fully
+///   shuffled by `seed`, no inflation.
+/// - `"base:static:numeric-first"` → `RuleOrder::StaticReorder(StaticReorderKind::NumericFirst)`
+///   — base-62 ordered by descending TRAIN strict-positive rate (the
+///   production quick-win candidate).
+///
+/// `<seed>` is decimal or `0x`-prefixed hex, with **no underscores** (unlike
+/// the `0x2026_0901` Rust literal spelling used in doc comments/prose, the
+/// CLI string form is a plain hex digit run, e.g. `0x20260901`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuleSetSpec {
     pub mode: Option<InflationMode>,
@@ -130,8 +192,9 @@ impl std::fmt::Display for RuleSetSpecError {
             Self::BadCount(s) => write!(f, "rule-set spec: {s:?} is not a valid rule count"),
             Self::BadOrder(s) => write!(
                 f,
-                "rule-set spec: order {s:?} is not \"append\" or \"interleave:<seed>\" \
-                 (seed as decimal or 0x-prefixed hex)"
+                "rule-set spec: order {s:?} is not \"append\", \"interleave:<seed>\", \
+                 \"matched:<seed>:<total>\", \"shuffled:<seed>\", or \"static:numeric-first\" \
+                 (seed as decimal or 0x-prefixed hex, no underscores)"
             ),
         }
     }
@@ -143,6 +206,29 @@ fn parse_seed(s: &str) -> Option<u64> {
     match s.strip_prefix("0x") {
         Some(hex) => u64::from_str_radix(hex, 16).ok(),
         None => s.parse().ok(),
+    }
+}
+
+/// Parse the tail of a `"base:<tail>"` spec into the v3 base-only orders
+/// (§ of `RuleSetSpec::parse`'s doc comment). `None` on anything unrecognized
+/// — the caller wraps it as `RuleSetSpecError::BadOrder`.
+fn parse_base_order(s: &str) -> Option<RuleOrder> {
+    let mut parts = s.splitn(3, ':');
+    match parts.next()? {
+        "matched" => {
+            let seed = parse_seed(parts.next()?)?;
+            let total: usize = parts.next()?.parse().ok()?;
+            Some(RuleOrder::OrderMatchedBase(seed, total))
+        }
+        "shuffled" => {
+            let seed = parse_seed(parts.next()?)?;
+            Some(RuleOrder::Shuffled(seed))
+        }
+        "static" => match parts.next()? {
+            "numeric-first" => Some(RuleOrder::StaticReorder(StaticReorderKind::NumericFirst)),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -158,6 +244,15 @@ impl RuleSetSpec {
                 mode: None,
                 total: all_rules().len(),
                 order: RuleOrder::Append,
+            });
+        }
+        if let Some(rest) = s.strip_prefix("base:") {
+            let order = parse_base_order(rest)
+                .ok_or_else(|| RuleSetSpecError::BadOrder(rest.to_string()))?;
+            return Ok(Self {
+                mode: None,
+                total: all_rules().len(),
+                order,
             });
         }
         let mut parts = s.splitn(3, ':');
@@ -268,7 +363,12 @@ impl std::error::Error for RuleSetError {}
 /// sweep.
 pub fn build_rule_set(spec: &RuleSetSpec) -> Result<Vec<Box<dyn Rewrite>>, RuleSetError> {
     match spec.mode {
-        None => Ok(all_rules()),
+        None => Ok(match spec.order {
+            RuleOrder::Append | RuleOrder::Interleave(_) => all_rules(),
+            RuleOrder::OrderMatchedBase(seed, total) => order_matched_base(seed, total),
+            RuleOrder::Shuffled(seed) => shuffled_base(seed),
+            RuleOrder::StaticReorder(kind) => static_reorder_base(kind),
+        }),
         Some(InflationMode::Duplicates) => build_duplicate_set(spec.total, spec.order),
         Some(InflationMode::Compositions) => build_composition_set(spec.total, spec.order),
         Some(InflationMode::NewRules) => build_new_rule_set(spec.total, spec.order),
@@ -279,9 +379,115 @@ pub fn build_rule_set(spec: &RuleSetSpec) -> Result<Vec<Box<dyn Rewrite>>, RuleS
 /// for `Append` (the list is already base-prefix-then-inflation, which IS
 /// append order) and for a bare 62-rule list (callers never pass one here —
 /// both builders return early on `total == 62` before this is reached).
+///
+/// The three v3 base-only orders (`OrderMatchedBase`/`Shuffled`/
+/// `StaticReorder`) do not define a meaning for an inflated (`total > 62`)
+/// list — per CLAUDE.md's "no silent failures," a caller that reaches this
+/// function with one of them gets a loud panic, not a silently-ignored no-op.
 fn apply_order(rules: &mut [Box<dyn Rewrite>], order: RuleOrder) {
-    if let RuleOrder::Interleave(seed) = order {
-        fisher_yates(rules, seed);
+    match order {
+        RuleOrder::Append => {}
+        RuleOrder::Interleave(seed) => fisher_yates(rules, seed),
+        RuleOrder::OrderMatchedBase(..)
+        | RuleOrder::Shuffled(..)
+        | RuleOrder::StaticReorder(..) => {
+            panic!(
+                "RuleOrder::{order} has no defined meaning for an inflated (total > 62) rule \
+                 set — it selects a reordering of the base-62 only (spec.mode == None)"
+            )
+        }
+    }
+}
+
+// ============================================================================
+// v3: base-only orders (registration-v3 §6b) — confound control, seed
+// sensitivity, and the static-reorder production quick-win candidate.
+// ============================================================================
+
+/// The `|R|=62` base rules, reordered to the exact relative order they
+/// occupy inside `Interleave(seed)` of the `total`-rule inflated set — the
+/// subsequence of that interleaved vector restricted to base indices
+/// (positions `0..62` of the pre-shuffle base+inflation list, in the order
+/// the shuffle leaves them).
+///
+/// **Well-defined independent of mode.** [`fisher_yates`]'s swap sequence is
+/// a function of the slice's LENGTH only (`1..v.len()`, never its content),
+/// so for a fixed `(seed, total)` the permutation is identical whether the
+/// `total - 62` inflation positions were filled by `dup:<total>` or
+/// `comp:<total>` — both grids share the same total↔inflation-count mapping
+/// (`DUPLICATE_GRID`/`COMPOSITION_GRID`), so this never has to pick a mode.
+/// Pinned by `order_matched_base_is_the_interleaved_subsequence` below.
+///
+/// This is the reference `docs/plans/2026-09-01-phase3-round2-registration-v3.md`
+/// §6b's H1 measures each inflated point against: `ΔU(p) = U(p) −
+/// U(OrderMatchedBase(seed, |p|))`, holding sweep order fixed so the
+/// remaining difference is attributable to `|R|` alone.
+#[must_use]
+pub fn order_matched_base(seed: u64, total: usize) -> Vec<Box<dyn Rewrite>> {
+    let base_len = all_rules().len();
+    assert!(
+        total >= base_len,
+        "order_matched_base: total ({total}) must be >= the base rule count ({base_len})"
+    );
+    let mut idx: Vec<usize> = (0..total).collect();
+    fisher_yates(&mut idx, seed);
+    let mut base: Vec<Option<Box<dyn Rewrite>>> = all_rules().into_iter().map(Some).collect();
+    idx.into_iter()
+        .filter(|&i| i < base_len)
+        .map(|i| {
+            base[i]
+                .take()
+                .unwrap_or_else(|| panic!("order_matched_base: base index {i} visited twice"))
+        })
+        .collect()
+}
+
+/// The base-62 rules, fully shuffled by `seed` — no inflation content at
+/// all. Isolates seed sensitivity of the order effect itself, independent of
+/// any inflated point (registration-v3 §6b's "ORDER effect" measurement).
+#[must_use]
+pub fn shuffled_base(seed: u64) -> Vec<Box<dyn Rewrite>> {
+    let mut rules = all_rules();
+    fisher_yates(&mut rules, seed);
+    rules
+}
+
+/// Base-62 production indices (into `all_rules()`, matching
+/// `docs/results/2026-09-01-train-guide-report.md`'s "idx" column) ordered by
+/// descending TRAIN strict-positive rate, ties broken by ascending index. A
+/// rule the report never mined a candidate for (10 of the 62: 5, 32, 33, 40,
+/// 46, 50, 54, 55, 57, 61) is treated as rate 0.0, tied with every
+/// measured-zero rule. Computed offline from the report's "train rate"
+/// column; pinned (not recomputed at runtime — the report is a frozen
+/// artifact) by `static_reorder_numeric_first_is_pinned` below, which also
+/// checks this is a permutation of `0..62`.
+#[rustfmt::skip]
+pub const NUMERIC_FIRST_ORDER: [usize; 62] = [
+    53, 60, 52, 51, 48, 35, 34, 47, 8, 0,
+    3, 30, 38, 37, 20, 39, 59, 25, 31, 36,
+    19, 27, 23, 22, 26, 21, 1, 2, 4, 5,
+    6, 7, 9, 10, 11, 12, 13, 14, 15, 16,
+    17, 18, 24, 28, 29, 32, 33, 40, 41, 42,
+    43, 44, 45, 46, 49, 50, 54, 55, 56, 57,
+    58, 61,
+];
+
+/// Build the base-62 in the order [`RuleOrder::StaticReorder`] selects.
+#[must_use]
+pub fn static_reorder_base(kind: StaticReorderKind) -> Vec<Box<dyn Rewrite>> {
+    match kind {
+        StaticReorderKind::NumericFirst => {
+            let mut base: Vec<Option<Box<dyn Rewrite>>> =
+                all_rules().into_iter().map(Some).collect();
+            NUMERIC_FIRST_ORDER
+                .iter()
+                .map(|&i| {
+                    base[i].take().unwrap_or_else(|| {
+                        panic!("static_reorder_base: NumericFirst index {i} visited twice")
+                    })
+                })
+                .collect()
+        }
     }
 }
 
@@ -949,5 +1155,188 @@ mod tests {
             fp(new_rules, 95, RuleOrder::Append).0,
             0x4f4a_4cbd_2e4f_89cb
         );
+    }
+
+    // ========================================================================
+    // v3: base-only orders (registration-v3 §6b)
+    // ========================================================================
+
+    #[test]
+    fn order_matched_base_is_the_interleaved_subsequence_and_mode_independent() {
+        // The base rules' relative order inside `order_matched_base(seed,
+        // total)` must equal their relative order inside the FULL
+        // Interleave(seed) vector at that total — checked against BOTH dup
+        // and comp at the same total, proving the mode-independence claim in
+        // `order_matched_base`'s doc comment (fisher_yates permutes by
+        // length only, never content).
+        let seed = DEFAULT_INTERLEAVE_SEED;
+        let base_names: HashSet<String> =
+            all_rules().iter().map(|r| r.name().to_string()).collect();
+        for total in [93usize, 124, 186, 248] {
+            let matched = order_matched_base(seed, total);
+            assert_eq!(
+                matched.len(),
+                62,
+                "order_matched_base(_, {total}) must return exactly the base-62"
+            );
+            let matched_names: Vec<String> = matched.iter().map(|r| r.name().to_string()).collect();
+            assert_eq!(
+                matched_names.iter().cloned().collect::<HashSet<_>>(),
+                base_names,
+                "order_matched_base must be a permutation of the base-62, never a different set"
+            );
+
+            for (mode, dup_or_comp) in [
+                (InflationMode::Duplicates, "dup"),
+                (InflationMode::Compositions, "comp"),
+            ] {
+                let full = build_rule_set(&RuleSetSpec {
+                    mode: Some(mode),
+                    total,
+                    order: RuleOrder::Interleave(seed),
+                })
+                .unwrap_or_else(|e| panic!("{dup_or_comp}:{total} should build: {e}"));
+                // Duplicates carry a "#dup<N>" suffix and compositions carry
+                // their own synthesized names — neither is a base name, so
+                // filtering by exact membership in `base_names` keeps only
+                // the true base rules, in their post-shuffle order.
+                let full_base_subsequence: Vec<String> = full
+                    .iter()
+                    .map(|r| r.name().to_string())
+                    .filter(|n| base_names.contains(n.as_str()))
+                    .collect();
+                assert_eq!(
+                    full_base_subsequence, matched_names,
+                    "order_matched_base({seed}, {total}) must equal the base subsequence of \
+                     Interleave({seed}) applied to {dup_or_comp}:{total}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "must be >= the base rule count")]
+    fn order_matched_base_rejects_a_total_below_the_base_count() {
+        let _ = order_matched_base(DEFAULT_INTERLEAVE_SEED, 10);
+    }
+
+    #[test]
+    fn shuffled_base_permutes_without_changing_membership() {
+        let base_names: HashSet<String> =
+            all_rules().iter().map(|r| r.name().to_string()).collect();
+        let shuffled = shuffled_base(0xC0FF_EE);
+        assert_eq!(shuffled.len(), 62);
+        let shuffled_names: HashSet<String> =
+            shuffled.iter().map(|r| r.name().to_string()).collect();
+        assert_eq!(
+            shuffled_names, base_names,
+            "shuffling must not change membership"
+        );
+        let original = all_rules();
+        let original_names: Vec<&str> = original.iter().map(|r| r.name()).collect();
+        let shuffled_order: Vec<&str> = shuffled.iter().map(|r| r.name()).collect();
+        assert_ne!(
+            original_names, shuffled_order,
+            "seed 0xC0FFEE must actually move at least one rule (checked, not assumed)"
+        );
+    }
+
+    #[test]
+    fn static_reorder_numeric_first_is_pinned() {
+        // NUMERIC_FIRST_ORDER must be a permutation of 0..62 — catches a
+        // transcription error in the pinned array immediately, not as a
+        // silent duplicate/missing index.
+        let mut sorted = NUMERIC_FIRST_ORDER;
+        sorted.sort_unstable();
+        let identity: [usize; 62] = std::array::from_fn(|i| i);
+        assert_eq!(
+            sorted, identity,
+            "NUMERIC_FIRST_ORDER must be a permutation of every base index exactly once"
+        );
+
+        let rules = static_reorder_base(StaticReorderKind::NumericFirst);
+        assert_eq!(rules.len(), 62);
+        let names: Vec<&str> = rules.iter().map(|r| r.name()).collect();
+        // The pinned top-of-list, read straight from
+        // docs/results/2026-09-01-train-guide-report.md's "train rate"
+        // column: power-rsqrt (idx53, 0.18105) first, power-zero (idx48,
+        // 0.12500) fifth (ahead of every even-negation despite the report's
+        // print order, since 0.12500 > 0.05533/0.05557).
+        assert_eq!(
+            &names[..8],
+            &[
+                "power-rsqrt",
+                "recip-sqrt",
+                "power-recip",
+                "power-sqrt",
+                "power-zero",
+                "even-negation",
+                "even-negation",
+                "power-combine",
+            ]
+        );
+        // Every base name still present, once each.
+        let got_owned: HashSet<String> = names.iter().map(|s| s.to_string()).collect();
+        let base_owned: HashSet<String> =
+            all_rules().iter().map(|r| r.name().to_string()).collect();
+        assert_eq!(got_owned, base_owned);
+    }
+
+    #[test]
+    fn base_order_specs_parse_and_round_trip_through_build_rule_set() {
+        let matched = RuleSetSpec::parse("base:matched:0x20260901:93").unwrap();
+        assert_eq!(matched.mode, None);
+        assert_eq!(
+            matched.order,
+            RuleOrder::OrderMatchedBase(DEFAULT_INTERLEAVE_SEED, 93)
+        );
+        assert_eq!(build_rule_set(&matched).unwrap().len(), 62);
+
+        let shuffled = RuleSetSpec::parse("base:shuffled:42").unwrap();
+        assert_eq!(shuffled.order, RuleOrder::Shuffled(42));
+        assert_eq!(build_rule_set(&shuffled).unwrap().len(), 62);
+
+        let static_reorder = RuleSetSpec::parse("base:static:numeric-first").unwrap();
+        assert_eq!(
+            static_reorder.order,
+            RuleOrder::StaticReorder(StaticReorderKind::NumericFirst)
+        );
+        assert_eq!(build_rule_set(&static_reorder).unwrap().len(), 62);
+
+        assert!(RuleSetSpec::parse("base:bogus").is_err());
+        assert!(RuleSetSpec::parse("base:static:not-a-kind").is_err());
+        assert!(
+            RuleSetSpec::parse("base:matched:42").is_err(),
+            "matched needs a total too"
+        );
+    }
+
+    #[test]
+    fn base_only_orders_fingerprint_differently_from_each_other_and_from_production() {
+        let production_fp = rule_set_fingerprint(&all_rules());
+        let matched_fp = rule_set_fingerprint(&order_matched_base(DEFAULT_INTERLEAVE_SEED, 93));
+        let shuffled_fp = rule_set_fingerprint(&shuffled_base(DEFAULT_INTERLEAVE_SEED));
+        let static_fp = rule_set_fingerprint(&static_reorder_base(StaticReorderKind::NumericFirst));
+        let fps = [production_fp, matched_fp, shuffled_fp, static_fp];
+        for i in 0..fps.len() {
+            for j in (i + 1)..fps.len() {
+                assert_ne!(
+                    fps[i], fps[j],
+                    "every base-62 order (production, matched, shuffled, static) must \
+                     fingerprint distinctly at indices {i} and {j}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "has no defined meaning for an inflated")]
+    fn v3_base_only_orders_panic_rather_than_silently_no_op_when_applied_to_an_inflated_set() {
+        // NO SILENT FAILURES: a v3 order used where only Append/Interleave
+        // are defined (an inflated, total > 62 build) must fail loudly, not
+        // quietly reduce to Append.
+        let mut rules = all_rules();
+        rules.push(Box::new(DuplicateRule::new(all_rules().remove(0), 1)));
+        apply_order(&mut rules, RuleOrder::Shuffled(1));
     }
 }
