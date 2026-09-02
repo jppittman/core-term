@@ -5,8 +5,11 @@ implemented core builds an e-graph from `pixelflow-ir::ExprArena`, applies rewri
 explicit budgets, records rule provenance, and extracts an equivalent arena with a pluggable
 cost function.
 
-Learned extraction machinery also exists, but learned rule guidance is an experiment with
-decision gates—not the default optimizer and not a completed training product.
+Learned rule guidance (the saturation Guide) is an experiment with decision gates—not the
+default optimizer and not a completed training product. A learned extraction cost model was
+tried and tied the static table on schedule-free kernels (see below); the static latency prior
+is the extraction policy, and the learned model's seam (`Reranker`) is kept for a future
+schedule-cost residual.
 
 ## Status at a glance
 
@@ -18,7 +21,7 @@ decision gates—not the default optimizer and not a completed training product.
 | Static latency-prior extraction | Implemented; compiler default |
 | DAG-aware extraction and arena reconstruction | Implemented |
 | Rule-application provenance and hindsight labels | Implemented |
-| NNUE expression-cost model and incremental extractor | Implemented; opt-in consumer path |
+| Learned (NNUE) extraction cost model | Shape deleted 2026-09 (tied the table on schedule-free kernels); `Reranker` seam kept, denotation in `docs/plans/2026-09-01-schedule-cost-model-denotation.md` |
 | Trained provenance guide for choosing rewrites | Research plan; thesis experiment not yet completed |
 | Beam/lookahead search over rewrite applications | Conditional future work |
 
@@ -49,16 +52,18 @@ usually `all_rules()`, so a test or compiler phase can constrain the algebra it 
 
 ```rust
 use pixelflow_ir::{ExprArena, OpKind};
-use pixelflow_search::egraph::{CostModel, EGraph, all_rules};
+use pixelflow_search::egraph::{CostModel, EGraph, all_rules, saturate_for_extraction};
 
 let mut arena = ExprArena::new();
 let x = arena.push_var(0);
 let zero = arena.push_const(0.0);
 let root = arena.push_binary(OpKind::Add, x, zero);
 
+let node_count = arena.node_count_subtree(root);
+
 let mut egraph = EGraph::with_rules(all_rules());
 let root_class = egraph.add_arena(&arena, root);
-egraph.saturate();
+saturate_for_extraction(&mut egraph, node_count);
 
 let costs = CostModel::default();
 let (optimized, optimized_root, estimated_cost) =
@@ -68,8 +73,14 @@ assert!(optimized.node_count_subtree(optimized_root) > 0);
 assert!(estimated_cost <= costs.cost(OpKind::Add));
 ```
 
-`saturate()` has built-in iteration, e-class, and wall-clock limits. Lower-level APIs expose
-explicit budgets for experiments that need a different stopping policy.
+`saturate_for_extraction()` is the production entry point: it sizes the iteration, e-class,
+and wall-clock budget from `node_count`, so a three-node expression is not given a budget
+meant for a hundred-node one. It is the only entry point that decides a budget.
+
+`EGraph::saturate_with_limits()` is the other one — the same loop with the three limits
+supplied by the caller, for tests and experiments that must pin an exact stopping policy
+rather than inherit the size-tiered one. Those call sites spell the budget as
+`SaturationConfig::compatibility(rounds)` instead of repeating literals.
 
 ## Cost model
 
@@ -81,11 +92,14 @@ latency prior. This is the compiler's normal extraction policy. The values are e
 portable benchmark results; calibration and learned alternatives belong to the research
 tooling.
 
-The compiler enables learned extraction only when `PIXELFLOW_NNUE_WEIGHTS` names a weights
-file. Missing, unreadable, or incompatible opt-in weights fail loudly. With the variable
-unset, compilation uses the static latency prior.
+Both compiler tiers (the `kernel!` macros and runtime-built kernels) choose the policy through
+one seam, `egraph::env_extraction_policy()`, which returns the latency prior. A learned
+extraction head sat behind that seam from 2026-07 to 2026-09 and was closed as an honest
+negative — the static table tied it and every lever made it worse
+([`docs/paper/2026-08-egraph-nnue-parity.md`](../docs/paper/2026-08-egraph-nnue-parity.md)).
+It is deleted, not disabled.
 
-This opt-in path selects an expression from an already-built e-graph. It should not be confused
+Extraction selects an expression from an already-built e-graph. It should not be confused
 with a learned policy that decides which rewrite applications to admit during saturation.
 
 ## Provenance and labels
@@ -133,7 +147,7 @@ AlphaZero-like loop, or a learned cost model has beaten the static baseline.
 |---|---|
 | `egraph` | Graph, rewrites, saturation, extraction, provenance, and labeling |
 | `math` | Algebraic, calculus, parity, exponential, and trigonometric rewrite families |
-| `nnue` | Expression embeddings, model representation, and opt-in neural extraction support |
+| `nnue` | Op embeddings, the typed edge stream, the saturation Guide, and the backward expression generator |
 
 Training corpora, JIT measurement, and extraction comparisons live in `pixelflow-pipeline`
 rather than in this crate. Commands documented here are limited to targets that currently

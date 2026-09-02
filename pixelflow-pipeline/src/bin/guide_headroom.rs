@@ -81,7 +81,9 @@ use clap::Parser;
 
 use pixelflow_ir::ExprArena;
 use pixelflow_pipeline::training::corpus::read_corpus;
-use pixelflow_search::egraph::{CostModel, EGraph, EpisodeLabels, Origin, extract_dag};
+use pixelflow_search::egraph::{
+    CostModel, EGraph, EpisodeLabels, Origin, SaturationConfig, extract_dag,
+};
 use pixelflow_search::math::all_rules;
 
 #[derive(Parser)]
@@ -114,17 +116,27 @@ struct Args {
     out: Option<String>,
 }
 
-/// Iteration/class-count budget — identical to `EGraph::saturate()`'s
-/// hardcoded defaults, called out explicitly here because this binary needs
-/// the `SaturationStats` that `saturate()` discards.
-const SATURATE_MAX_ITERS: usize = 100;
-const SATURATE_MAX_CLASSES: usize = 10_000;
 /// Safety ceiling only, per the module doc — deliberately NOT production's
 /// 500ms (a latency-sensitivity budget for the interactive compiler path,
 /// not this offline measurement). 60s is expected to never bind; if it ever
 /// does, `hit_safety_timeout` reports it rather than silently mislabeling a
 /// truncated run as converged.
 const SATURATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// This binary's saturation budget: the named compatibility budget
+/// ([`SaturationConfig::compatibility`], 100 rounds / 10,000 classes) with
+/// the wall clock swapped for [`SATURATE_TIMEOUT`].
+///
+/// Naming it rather than re-spelling the round and class caps is what keeps
+/// this binary's headroom numbers comparable with the other non-production
+/// harnesses: revising the shared budget reaches here too, instead of
+/// leaving a third private copy behind.
+fn saturation_budget() -> SaturationConfig {
+    SaturationConfig {
+        hard_timeout: SATURATE_TIMEOUT,
+        ..SaturationConfig::compatibility(100)
+    }
+}
 /// Informational-only threshold: did this expression's saturation call take
 /// long enough that it WOULD have hit production's 500ms deadline, had this
 /// binary reused it? Never gates correctness or which samples count — purely
@@ -318,13 +330,13 @@ fn main() {
     for (i, (name, arena, root)) in entries.iter().enumerate() {
         let mut egraph = EGraph::with_rules(all_rules());
         let root_class = egraph.add_arena(arena, *root);
+        let budget = saturation_budget();
         let saturate_started = std::time::Instant::now();
-        let sat_stats =
-            egraph.saturate_with_limits(SATURATE_MAX_ITERS, SATURATE_MAX_CLASSES, SATURATE_TIMEOUT);
+        let sat_stats = budget.run(&mut egraph);
         let saturate_elapsed = saturate_started.elapsed();
-        let hit_iteration_cap = sat_stats.iterations >= SATURATE_MAX_ITERS;
-        let hit_class_cap = egraph.num_classes() > SATURATE_MAX_CLASSES;
-        let hit_safety_timeout = saturate_elapsed >= SATURATE_TIMEOUT;
+        let hit_iteration_cap = sat_stats.iterations >= budget.max_iterations;
+        let hit_class_cap = egraph.num_classes() > budget.max_classes;
+        let hit_safety_timeout = saturate_elapsed >= budget.hard_timeout;
         assert!(
             !hit_safety_timeout,
             "guide_headroom: expression '{name}' ran {saturate_elapsed:?}, hitting the \

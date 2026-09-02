@@ -86,6 +86,7 @@ pub fn derivative_rules() -> Vec<Box<dyn Rewrite>> {
 mod tests {
     use super::super::CostModel;
     use super::super::extract::extract;
+    use super::super::saturate::SaturationConfig;
     use super::*;
     use crate::arena_pat;
     use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
@@ -119,7 +120,7 @@ mod tests {
         // budgeting concern orthogonal to autodiff.)
         let mut eg = EGraph::with_rules(derivative_rules());
         let root_class = eg.add_arena(&a, root);
-        eg.saturate_with_limit(60);
+        SaturationConfig::compatibility(60).run(&mut eg);
 
         let (out, out_root, _cost) = extract(&eg, root_class, &CostModel::default());
         assert!(
@@ -232,6 +233,7 @@ mod tests {
 mod piecewise_tests {
     use super::super::CostModel;
     use super::super::extract::extract;
+    use super::super::saturate::SaturationConfig;
     use super::*;
     use crate::arena_pat;
     use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
@@ -245,7 +247,7 @@ mod piecewise_tests {
         let root = a.push_binary(OpKind::Dwrt, differentiand, v);
         let mut eg = EGraph::with_rules(derivative_rules());
         let root_class = eg.add_arena(&a, root);
-        eg.saturate_with_limit(60);
+        SaturationConfig::compatibility(60).run(&mut eg);
         let (out, out_root, _cost) = extract(&eg, root_class, &CostModel::default());
         assert!(
             !(0..out.len()).any(|i| matches!(

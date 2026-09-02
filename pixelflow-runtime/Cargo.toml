@@ -70,6 +70,12 @@ display_x11 = [
 ]
 display_web = []
 
+# Forwards to `pixelflow-core/saturation-telemetry` — see
+# `pixelflow-search/src/telemetry.rs`. `cargo run -p core-term --features
+# saturation-telemetry` is the intended entry point; this exists so
+# `pixelflow-runtime` alone can also opt in.
+saturation-telemetry = ["pixelflow-core/saturation-telemetry"]
+
 # No default - let the consuming crate pick based on platform
 default = []
 

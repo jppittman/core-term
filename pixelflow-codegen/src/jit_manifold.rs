@@ -5,6 +5,7 @@
 
 use crate::JIT_VECTOR_BYTES;
 use crate::emit::executable::{ExecutableCode, Extent2D, Point4, TileSlice};
+use pixelflow_ir::LatticeShape;
 
 const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
@@ -12,14 +13,35 @@ const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 /// combination. No cache — caller decides lifetime.
 pub struct JitManifold {
     code: ExecutableCode,
+    shape: LatticeShape,
+}
+
+/// Whether `tile` lies within the lattice a kernel was compiled for: no more
+/// rows than the Y extent, and no more batches per row than the X extent
+/// fills (`ceil(x / LANES)` — the last batch may be a partial one).
+fn fits(shape: LatticeShape, tile: &TileSlice) -> bool {
+    let [x, y, _, _] = shape.extent();
+    tile.rows <= y as usize && tile.groups <= (x as usize).div_ceil(LANES)
 }
 
 impl JitManifold {
-    /// Wrap newly compiled executable code into a `JitManifold`.
+    /// Wrap newly compiled executable code into a `JitManifold` for a
+    /// lattice of `shape`.
     ///
+    /// The shape is the promise the code was compiled under: every tile
+    /// handed to [`call_collapse`](Self::call_collapse) must lie within it.
+    /// Today every shape's code accepts every tile, so the promise is checked
+    /// in debug builds only; the loop-aware stages will emit code that keeps
+    /// it by construction.
     #[must_use]
-    pub const fn new(code: ExecutableCode) -> Self {
-        Self { code }
+    pub const fn new(code: ExecutableCode, shape: LatticeShape) -> Self {
+        Self { code, shape }
+    }
+
+    /// The lattice this kernel was compiled for.
+    #[must_use]
+    pub const fn shape(&self) -> LatticeShape {
+        self.shape
     }
 
     /// The emitted machine code, for offline inspection (disassembly,
@@ -91,6 +113,13 @@ impl JitManifold {
         tile: TileSlice,
         origin: Point4<V>,
     ) {
+        debug_assert!(
+            fits(self.shape, &tile),
+            "a tile of {} batches × {} rows lies outside the {:?} this kernel was compiled for",
+            tile.groups,
+            tile.rows,
+            self.shape
+        );
         // SAFETY: Delegated to ExecutableCode which invokes the emitted KernelFn.
         unsafe { self.code.call_collapse(ctx, tile, origin) }
     }

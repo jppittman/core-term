@@ -1,9 +1,15 @@
-//! # NNUE for Instruction Selection
+//! # Learned components of the e-graph optimizer
 //!
-//! An Efficiently Updatable Neural Network for compiler instruction selection,
-//! inspired by Stockfish's NNUE approach to chess position evaluation.
+//! Op embeddings and the typed edge stream (`factored`), the saturation Guide
+//! (`guide`), and the backward expression generator (`BwdGenerator`) that
+//! mints rewrite-pair corpora. The extraction (value) head this module was
+//! named for — an NNUE cost model for e-graph extraction — tied the static
+//! table on schedule-free kernels (docs/paper/2026-08-egraph-nnue-parity.md)
+//! and its shape was deleted on 2026-09-01; the static latency prior is the
+//! extraction policy, and the seam a future schedule-cost residual plugs into
+//! is `egraph::extract::Reranker`
+//! (docs/plans/2026-09-01-schedule-cost-model-denotation.md).
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 #![allow(clippy::only_used_in_recursion)]
@@ -22,51 +28,17 @@ use pixelflow_ir::kind::OpMap;
 /// Re-export canonical IR types as the source of truth.
 pub use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 
-/// Re-export ExprNnue: the shared backbone + extraction (value) head.
-pub use factored::ExprNnue;
-
 /// Re-export key types from factored module.
-pub use factored::{CostEdge, EdgeAccumulator, EdgeTrace, OpEmbeddings, PeSlot};
+pub use factored::{CostEdge, EdgeTrace, OpEmbeddings, PeSlot};
 
 /// Re-export shared embedding-space constants and rule-template types.
 ///
 /// `RuleTemplates`/`ArenaRuleTemplates` feed `BwdGenerator`'s corpus
-/// junkification below — unrelated to `nnue::guide` despite the similarly
-/// named (and now-deleted) `RuleFeatures`, whose hand-crafted 8-dim feature
-/// vector `encode_rule_from_arena` superseded.
+/// junkification below — unrelated to `nnue::guide`'s rule encoding.
 pub use factored::{ArenaRuleTemplates, EMBED_DIM, MLP_HIDDEN, RuleTemplates};
 
 // Note: ExprGenConfig, ExprGenerator, BwdGenConfig, and BwdGenerator are already
 // public structs defined in this module - no re-export needed.
-
-// ============================================================================
-// HalfEP Features (Legacy - being phased out in favor of Factored)
-// ============================================================================
-
-/// Maximum depth we encode in features.
-pub const MAX_DEPTH: usize = 8;
-
-// ============================================================================
-// Dense Features
-// ============================================================================
-
-// ============================================================================
-// NNUE Network Architecture
-// ============================================================================
-
-// ============================================================================
-// Training Data Generation
-// ============================================================================
-
-// ============================================================================
-// Binpack I/O (requires std)
-// ============================================================================
-
-/// Magic number for depth-limited binpack files.
-pub const DEPTH_LIMITED_MAGIC: u32 = 0x444C4E55; // "DLNU" in ASCII
-
-/// Version number for depth-limited binpack format.
-pub const DEPTH_LIMITED_VERSION: u32 = 1;
 
 /// Configuration for random expression generation.
 #[derive(Clone, Debug)]

@@ -20,15 +20,11 @@
 //! Kept, not deleted: the 2026-08-17 disposition inventory confirmed zero
 //! non-test callers for this whole surface but a live roadmap role
 //! (ROADMAP-ADMITTED, `docs/plans/2026-08-17-cost-model-domain.md` §0 row J10).
-//! Encapsulating it here — rather than continuing to expose it as `pub` API
-//! on [`crate::nnue::factored::ExprNnue`] — is also what closes a real bug:
-//! before this change, `apply_unified_sgd` weight-decayed these
-//! randomly-initialized, never-trained parameters toward zero on every
-//! training run, and the shared "TRIE" checkpoint format serialized them as
-//! if they were live (roughly half the file's bytes). Neither is possible
-//! now: this module's weights are outside the trainer's gradient surface
-//! (`pixelflow-pipeline`'s `unified_backward` no longer imports anything from
-//! here) and outside the extraction head's checkpoint format entirely.
+//! The extraction head this module used to share a backbone with is gone
+//! (its shape was deleted 2026-09-01; the denotation is kept, see
+//! docs/plans/2026-09-01-schedule-cost-model-denotation.md); what it shares now is only
+//! [`OpEmbeddings`], and the trunk that used to be "shared" is this head's
+//! own (`scoring.rs`).
 
 mod accumulator;
 mod scoring;
@@ -40,7 +36,7 @@ use alloc::vec::Vec;
 use accumulator::GraphAccumulator;
 use scoring::SaturationHead;
 
-use crate::nnue::factored::{EMBED_DIM, ExprNnue, K};
+use crate::nnue::factored::{EMBED_DIM, K, OpEmbeddings};
 
 /// Cyclic rotation by `amount % K` positions (generalised VSA permutation).
 ///
@@ -73,9 +69,8 @@ pub struct GraphSummary {
 
 /// One candidate rewrite-rule application, as
 /// [`SaturationGuide::score_candidates`] scores it. Wraps a pre-encoded rule
-/// embedding (see `scoring::SaturationHead::encode_rule_from_arena`, the
-/// arena-template encoder that replaced the legacy hand-crafted
-/// `RuleFeatures` path).
+/// embedding (see `scoring::SaturationHead::encode_rule`, the
+/// `[LHS ‖ RHS ‖ LHS−RHS ‖ LHS⊙RHS]` rule-pair encoder).
 pub struct RuleCandidate {
     pub(crate) rule_embed: [f32; EMBED_DIM],
 }
@@ -90,29 +85,34 @@ pub trait SaturationGuide {
     fn score_candidates(&self, graph: &GraphSummary, candidates: &[RuleCandidate]) -> Vec<f32>;
 }
 
-/// The (untrained, Phase-3-gated) saturation guide: a snapshot of the shared
-/// extraction backbone plus this head's own mask/graph/rule-projection
-/// weights.
+/// The (untrained, Phase-3-gated) saturation guide: the op embeddings a
+/// [`GraphSummary`] is built with, plus this head's own trunk and
+/// mask/graph/rule-projection weights.
 ///
-/// Owns its backbone by value rather than borrowing
-/// [`crate::nnue::factored::ExprNnue`] because nothing today keeps a `Guide`
-/// alive across backbone updates — Phase 3 training will need to decide how
-/// the two stay in sync (the domain model doc's `EmbeddingsEpoch` seam,
-/// `Extraction`, is the shape that answer will likely take; out of scope for
-/// this round).
+/// Owns its embeddings by value because nothing today keeps a `Guide` alive
+/// across embedding updates — Phase 3 training will need to decide how the
+/// two stay in sync (the domain model doc's `EmbeddingsEpoch` seam is the
+/// shape that answer will likely take; out of scope for this round).
 pub struct Guide {
-    backbone: ExprNnue,
+    embeddings: OpEmbeddings,
     head: SaturationHead,
 }
 
 impl Guide {
     /// Build a guide with a randomly-initialized saturation head over the
-    /// given (already-trained-or-not) backbone.
+    /// given (already-trained-or-not) op embeddings.
     #[must_use]
-    pub fn new_random(backbone: ExprNnue, seed: u64) -> Self {
+    pub fn new_random(embeddings: OpEmbeddings, seed: u64) -> Self {
         let mut head = SaturationHead::new();
         head.randomize(seed);
-        Self { backbone, head }
+        Self { embeddings, head }
+    }
+
+    /// The op embeddings every [`GraphSummary`] scored by this guide must be
+    /// built with.
+    #[must_use]
+    pub fn embeddings(&self) -> &OpEmbeddings {
+        &self.embeddings
     }
 }
 
@@ -120,13 +120,14 @@ impl SaturationGuide for Guide {
     fn score_candidates(&self, graph: &GraphSummary, candidates: &[RuleCandidate]) -> Vec<f32> {
         let rule_embeds: Vec<[f32; EMBED_DIM]> = candidates.iter().map(|c| c.rule_embed).collect();
         self.head
-            .mask_score_all_rules_graph(&self.backbone, &graph.gacc, &rule_embeds)
+            .mask_score_all_rules_graph(&graph.gacc, &rule_embeds)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nnue::factored::OpKind;
 
     // ========================================================================
     // shift_by / shift1
@@ -211,11 +212,11 @@ mod tests {
 
     #[test]
     fn guide_score_candidates_should_return_one_finite_score_per_candidate() {
-        let backbone = ExprNnue::new_random(1);
-        let guide = Guide::new_random(backbone, 2);
+        let guide = Guide::new_random(OpEmbeddings::new_random(1), 2);
 
         let mut gacc = GraphAccumulator::new();
-        gacc.node_count = 1;
+        gacc.add_edge(guide.embeddings(), OpKind::Add, OpKind::Mul);
+        gacc.node_count = 2;
         let graph = GraphSummary { gacc };
 
         let candidates = alloc::vec![
@@ -234,8 +235,7 @@ mod tests {
 
     #[test]
     fn guide_score_candidates_should_return_empty_for_empty_candidates() {
-        let backbone = ExprNnue::new_random(1);
-        let guide = Guide::new_random(backbone, 2);
+        let guide = Guide::new_random(OpEmbeddings::new_random(1), 2);
         let graph = GraphSummary {
             gacc: GraphAccumulator::new(),
         };

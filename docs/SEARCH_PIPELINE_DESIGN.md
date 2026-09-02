@@ -12,13 +12,10 @@ policy did not provide a valid policy-gradient estimator. The current plan uses 
 provenance labels for greedy guidance, with shallow rollback/beam search only as a
 conditional later phase.
 
-`pixelflow-pipeline/src/training/unified_backward.rs` remains, despite its old name, only as
-the hand-derived backward pass for the NNUE **value/extraction head** used by the current
-`bootstrap_extraction_head` binary. It computes MSE gradients against measured JIT costs.
-Its policy-gradient backward path was deleted; policy/mask gradient fields remain zero during
-value-only training so that the shared `ExprNnue` parameter/update layout stays intact. It is
-therefore support code for supervised extraction-cost bootstrapping, not evidence that the
-superseded unified REINFORCE loop still exists.
+The extraction-head trainer this document later refers to (its hand-derived value-head
+backward pass and bootstrap binary) was deleted on 2026-09-01 with the rest of that head's
+shape; see `plans/2026-09-01-schedule-cost-model-denotation.md` for what was kept and why.
+Neither the unified REINFORCE loop nor the extraction-head trainer exists in the tree.
 
 ## Overview
 
@@ -429,9 +426,9 @@ let hybrid = SearchPipeline {
 ## Migration Path
 
 > **Historical plan:** these binaries were proposed but do not exist in the current tree.
-> The current training executable is `bootstrap_extraction_head`, which trains only the
-> extraction/value head. Guided-saturation work is tracked by the redesign plan rather than
-> by an MCTS or REINFORCE binary.
+> The extraction-head trainer that once stood in for them was deleted on 2026-09-01.
+> Guided-saturation work is tracked by the redesign plan rather than by an MCTS or REINFORCE
+> binary.
 
 ### Phase 1: Extract Traits
 1. Define trait files in `pixelflow-search/src/search/`

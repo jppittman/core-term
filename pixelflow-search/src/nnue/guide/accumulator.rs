@@ -41,8 +41,7 @@ pub(crate) const GRAPH_ACC_DIM: usize = 4 * K; // 128
 /// rewrite rules match on. This turns the accumulator from a 0-round GNN into
 /// a 1-round GNN.
 ///
-/// Shares `OpEmbeddings` with the extraction head — same learned op embeddings,
-/// different downstream pathway.
+/// Built over [`OpEmbeddings`] — the one learned op table in the crate.
 #[derive(Clone)]
 pub(crate) struct GraphAccumulator {
     /// `[0..K]`:    marginal parent sum     `Σ E[parent]`

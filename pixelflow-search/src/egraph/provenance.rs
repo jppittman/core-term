@@ -97,16 +97,53 @@ pub enum Origin {
 /// `saturate_with_limits` loop iteration — coarser than per-rule-application
 /// but cheap (a single counter) and sufficient to order firings into
 /// generations for the derivation trace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApplicationRecord {
-    /// Index into `EGraph`'s rule list.
+    /// Which rule fired, by stable identity.
+    ///
+    /// This is the field a consumer should key a table on. `rule_idx` names
+    /// a *position* in one particular rule vector, and both a reordering and
+    /// an insertion move every position in it — silently, for a
+    /// same-length reorder. `None` only for a graph built without ids.
+    pub rule: Option<super::rules::RuleId>,
+    /// Index into `EGraph`'s rule list. In-memory only: correct for the run
+    /// that produced it, meaningless across rule-set changes.
     pub rule_idx: usize,
-    /// Saturation-iteration counter at the time of firing.
+    /// Saturation-iteration counter at the time of firing — the round.
     pub step: usize,
     /// The e-class the rule matched against (the match root). Recorded
     /// because it's already in hand at the call site — cheap to keep,
     /// useful for the derivation trace.
     pub match_root: EClassId,
+    /// The [`ENodeId`]s this application minted, as a half-open range.
+    ///
+    /// A range rather than a vector because `add()` mints ids from one
+    /// monotonic counter, so "what did this application create" is exactly
+    /// the counter's movement across it — no allocation, and no second
+    /// structure that could disagree with the first.
+    pub minted: core::ops::Range<u64>,
+    /// Class merges this application actually performed. Zero is the common
+    /// case: a rule can fire on a pair already known equal.
+    pub unions: usize,
+}
+
+impl ApplicationRecord {
+    /// Whether this application changed the graph's partition.
+    ///
+    /// A rule that fires and merges nothing did no work an extraction can
+    /// see. Every credit definition needs to tell the two apart, and none of
+    /// them belong in this crate — which is why this is a predicate over the
+    /// record rather than a labeling policy inside the library.
+    #[must_use]
+    pub fn changed(&self) -> bool {
+        self.unions > 0
+    }
+
+    /// How many e-nodes this application minted.
+    #[must_use]
+    pub fn minted_count(&self) -> u64 {
+        self.minted.end.saturating_sub(self.minted.start)
+    }
 }
 
 /// A class-level merge event, recorded for every `union()` call that
@@ -160,6 +197,22 @@ impl Provenance {
         let id = ApplicationId(self.applications.len() as u64);
         self.applications.push(record);
         id
+    }
+
+    /// Close a record opened by [`Self::record_application`], now that the
+    /// action has run and what it minted and merged is known.
+    pub(crate) fn complete_application(
+        &mut self,
+        id: ApplicationId,
+        minted: core::ops::Range<u64>,
+        unions: usize,
+    ) {
+        let record = self.applications.get_mut(id.0 as usize).expect(
+            "complete_application: no such application — the id must come from \
+                     this store's own record_application",
+        );
+        record.minted = minted;
+        record.unions = unions;
     }
 
     /// Record a class-level merge.
@@ -405,9 +458,12 @@ mod tests {
 
     fn app(rule_idx: usize, step: usize, match_root: EClassId) -> ApplicationRecord {
         ApplicationRecord {
+            rule: None,
             rule_idx,
             step,
             match_root,
+            minted: 0..0,
+            unions: 0,
         }
     }
 
