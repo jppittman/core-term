@@ -1320,16 +1320,61 @@ mod congruence_gap_probe {
         would_avoid_cap: bool,
     }
 
-    /// Run the production regime — `config_for_node_count` + `saturate_with_full_budget`,
-    /// exactly as `optimize_runtime_arena_uncached` calls them — under rule
-    /// order `order`, then measure the offline upward-closure gap on a clone.
-    fn measure_one(
+    /// The `.arena` dumps of the real-kernel corpus, sorted, from
+    /// `PIXELFLOW_CONGRUENCE_ARENA_DIR`. Every probe in this module reads
+    /// the same corpus the same way; three transcriptions of this would be
+    /// three chances for two probes to silently measure different kernels.
+    fn arena_corpus_paths() -> Vec<PathBuf> {
+        let dir = PathBuf::from(
+            std::env::var("PIXELFLOW_CONGRUENCE_ARENA_DIR")
+                .expect("PIXELFLOW_CONGRUENCE_ARENA_DIR must be set"),
+        );
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+            .map(|e| e.expect("dir entry").path())
+            .filter(|p| p.extension().map(|e| e == "arena").unwrap_or(false))
+            .collect();
+        paths.sort();
+        assert!(
+            !paths.is_empty(),
+            "no .arena files found in {}",
+            dir.display()
+        );
+        paths
+    }
+
+    /// One kernel's post-saturation e-graph, plus the numbers every probe
+    /// over this corpus needs from it. Owning the graph (rather than the
+    /// `SaturationResult`) is what lets a caller clone it and experiment.
+    struct ProductionRun {
+        egraph: EGraph,
+        root_class: EClassId,
+        node_count: usize,
+        max_classes: usize,
+        stop: SaturationStop,
+        /// `arena_static_cost` of the extraction production would actually
+        /// emit for this kernel.
+        cost: usize,
+        /// Nodes reachable from the extracted arena's root — the emitted
+        /// kernel's size, as a second observable alongside its price. Two
+        /// runs agreeing on `cost` but not on this would mean the cost
+        /// model happened to tie, not that the same kernel came out.
+        extracted_nodes: usize,
+    }
+
+    /// Run the production regime — `config_for_node_count` +
+    /// `saturate_with_full_budget`, exactly as
+    /// `optimize_runtime_arena_uncached` calls them — under rule order
+    /// `order`, and extract. Every probe in this module goes through here:
+    /// a second transcription of the production call sequence is a future
+    /// divergence, and the whole point of these measurements is that they
+    /// measure production.
+    fn run_production(
         name: &str,
-        category: &'static str,
         order: RuleOrder,
         arena: &ExprArena,
         root: ExprId,
-    ) -> CongruenceRow {
+    ) -> ProductionRun {
         // Same two lowering passes `optimize_runtime_arena_uncached` runs
         // before the e-graph ever sees the arena (Dwrt resolved first so
         // ConstantFold can cascade over the constants it manufactures, then
@@ -1359,13 +1404,44 @@ mod congruence_gap_probe {
 
         let optimized = optimizer.run(&mut egraph, root_class, node_count);
         let max_classes = optimized.stats.limits.classes;
-        let hit_class_cap = optimized.stats.stop == SaturationStop::ClassCap;
-
-        let live_before = live_class_count(&egraph);
 
         let model = CostModel::latency_prior();
-        let (extracted_before, extracted_before_root) = optimized.to_arena(&egraph, root_class);
-        let cost_before = arena_static_cost(&model, &extracted_before, extracted_before_root);
+        let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
+        let cost = arena_static_cost(&model, &extracted, extracted_root);
+        let extracted_nodes = reachable_count(&extracted, extracted_root);
+
+        ProductionRun {
+            egraph,
+            root_class,
+            node_count,
+            max_classes,
+            stop: optimized.stats.stop,
+            cost,
+            extracted_nodes,
+        }
+    }
+
+    /// Run the production regime under rule order `order`, then measure the
+    /// offline upward-closure gap on a clone.
+    fn measure_one(
+        name: &str,
+        category: &'static str,
+        order: RuleOrder,
+        arena: &ExprArena,
+        root: ExprId,
+    ) -> CongruenceRow {
+        let ProductionRun {
+            egraph,
+            root_class,
+            node_count,
+            max_classes,
+            stop,
+            cost: cost_before,
+            ..
+        } = run_production(name, order, arena, root);
+        let hit_class_cap = stop == SaturationStop::ClassCap;
+        let live_before = live_class_count(&egraph);
+        let model = CostModel::latency_prior();
 
         // The offline upward-closure pass runs on a CLONE — production's own
         // e-graph (and `optimized.stats` above) is untouched.
@@ -1406,7 +1482,7 @@ mod congruence_gap_probe {
             rule_order: order.to_string(),
             node_count,
             max_classes,
-            stop: format!("{:?}", optimized.stats.stop),
+            stop: format!("{stop:?}"),
             hit_class_cap,
             live_before,
             closure_unions,
@@ -1433,21 +1509,7 @@ mod congruence_gap_probe {
     #[test]
     #[ignore = "offline measurement: PIXELFLOW_CONGRUENCE_ARENA_DIR=<dir of .arena dumps> cargo test -p pixelflow-search --release --lib -- --ignored missing_congruence_measurement"]
     fn missing_congruence_measurement() {
-        let dir = PathBuf::from(
-            std::env::var("PIXELFLOW_CONGRUENCE_ARENA_DIR")
-                .expect("PIXELFLOW_CONGRUENCE_ARENA_DIR must be set"),
-        );
-        let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
-            .map(|e| e.expect("dir entry").path())
-            .filter(|p| p.extension().map(|e| e == "arena").unwrap_or(false))
-            .collect();
-        paths.sort();
-        assert!(
-            !paths.is_empty(),
-            "no .arena files found in {}",
-            dir.display()
-        );
+        let paths = arena_corpus_paths();
         eprintln!("congruence probe: {} real-kernel arena dumps", paths.len());
 
         let mut rows: Vec<CongruenceRow> = Vec::new();
@@ -1644,6 +1706,169 @@ mod congruence_gap_probe {
             "wrote docs/results/2026-09-02-missing-congruence.{{md,csv,json}} ({} real + {} synthetic rows)",
             real_kernel_count, synthetic_count
         );
+    }
+
+    /// One kernel's production-regime numbers under one build of
+    /// `rebuild_budgeted` — the unit the write-back A/B diffs.
+    #[derive(Clone, Debug)]
+    struct RepairRow {
+        name: String,
+        category: &'static str,
+        node_count: usize,
+        stop: String,
+        /// Raw `classes.len()` — allocations, which `union` never reclaims.
+        classes_raw: usize,
+        /// Canonical classes only (`find(i) == i`).
+        live_classes: usize,
+        /// E-nodes reachable through `find`, i.e. summed over canonical
+        /// classes only. THIS is what orphaning subtracts from: a node
+        /// written back to a merged-away slot still occupies memory but is
+        /// invisible to `nodes()`, to matching, and to extraction.
+        reachable_nodes: usize,
+        /// E-nodes stranded in non-canonical slots. Zero is the invariant
+        /// the write-back fix restores; every one of these is an extraction
+        /// alternative the graph proved and then lost.
+        orphaned_nodes: usize,
+        /// `arena_static_cost` under `CostModel::latency_prior()` of the
+        /// extraction production would emit.
+        cost: usize,
+        /// Node count of that same extraction — the emitted kernel's size.
+        extracted_nodes: usize,
+    }
+
+    /// Count e-nodes sitting in slots `find` no longer routes to.
+    ///
+    /// `union` empties a merged-away class with `mem::take`, so in a healthy
+    /// graph every non-canonical slot is empty and this is 0. A non-zero
+    /// count means something wrote to a class after it stopped being
+    /// canonical — which is exactly the `rebuild_budgeted` write-back bug.
+    fn orphaned_node_count(egraph: &EGraph) -> usize {
+        (0..egraph.classes.len())
+            .filter(|&i| egraph.find(EClassId(i as u32)) != EClassId(i as u32))
+            .map(|i| egraph.classes[i].nodes.len())
+            .sum()
+    }
+
+    /// Sum of e-nodes over canonical classes — everything still reachable
+    /// through the public `nodes()`/`tags()` API.
+    fn reachable_node_count(egraph: &EGraph) -> usize {
+        (0..egraph.classes.len())
+            .filter(|&i| egraph.find(EClassId(i as u32)) == EClassId(i as u32))
+            .map(|i| egraph.classes[i].nodes.len())
+            .sum()
+    }
+
+    /// Blast radius of the `rebuild_budgeted` write-back fix: for every
+    /// kernel in the real-kernel corpus, the production regime's extracted
+    /// cost under `CostModel::latency_prior()` plus the graph-shape numbers
+    /// that explain any change.
+    ///
+    /// **The measurement is a diff of two runs of this same test** — one on
+    /// a tree whose write-back targets `self.find(id)` (fixed) and one on a
+    /// tree whose write-back targets `id` (the orphaning bug). The two
+    /// behaviours deliberately cannot coexist in one binary: a runtime
+    /// switch would mean keeping the bug alive in production code to
+    /// measure it. Procedure and result:
+    /// `docs/results/2026-09-02-rebuild-writeback-orphan.md`.
+    ///
+    /// `orphaned_nodes` is the direct observable and needs no diff at all —
+    /// it is 0 for every kernel iff the write-back is correct.
+    #[test]
+    #[ignore = "offline measurement: PIXELFLOW_CONGRUENCE_ARENA_DIR=<dir of .arena dumps> PIXELFLOW_REPAIR_WRITEBACK_OUT=<csv> cargo test -p pixelflow-search --release --lib -- --ignored repair_writeback_blast_radius --nocapture"]
+    fn repair_writeback_blast_radius() {
+        let out = PathBuf::from(
+            std::env::var("PIXELFLOW_REPAIR_WRITEBACK_OUT")
+                .expect("PIXELFLOW_REPAIR_WRITEBACK_OUT must be set"),
+        );
+        let paths = arena_corpus_paths();
+
+        let mut rows: Vec<RepairRow> = Vec::new();
+        for path in &paths {
+            let (name, arena, root) = load_arena_dump(path);
+            let category = category_of(&path.file_name().unwrap().to_string_lossy());
+            let run = run_production(&name, RuleOrder::Production, &arena, root);
+            rows.push(RepairRow {
+                name,
+                category,
+                node_count: run.node_count,
+                stop: format!("{:?}", run.stop),
+                classes_raw: run.egraph.classes.len(),
+                live_classes: live_class_count(&run.egraph),
+                reachable_nodes: reachable_node_count(&run.egraph),
+                orphaned_nodes: orphaned_node_count(&run.egraph),
+                cost: run.cost,
+                extracted_nodes: run.extracted_nodes,
+            });
+        }
+
+        let total_orphaned: usize = rows.iter().map(|r| r.orphaned_nodes).sum();
+        let kernels_with_orphans = rows.iter().filter(|r| r.orphaned_nodes > 0).count();
+        let total_reachable: usize = rows.iter().map(|r| r.reachable_nodes).sum();
+        let total_cost: usize = rows.iter().map(|r| r.cost).sum();
+        eprintln!(
+            "repair write-back probe: {} kernels, {total_orphaned} orphaned e-nodes \
+             across {kernels_with_orphans} kernels ({:.4}% of {total_reachable} reachable), \
+             pooled extracted cost {total_cost}",
+            rows.len(),
+            if total_reachable > 0 {
+                total_orphaned as f64 / total_reachable as f64 * 100.0
+            } else {
+                0.0
+            },
+        );
+
+        use std::fmt::Write as _;
+        let mut csv = String::new();
+        writeln!(
+            csv,
+            "name,category,node_count,stop,classes_raw,live_classes,\
+             reachable_nodes,orphaned_nodes,cost,extracted_nodes"
+        )
+        .unwrap();
+        for r in &rows {
+            writeln!(
+                csv,
+                "{},{},{},{},{},{},{},{},{},{}",
+                csv_escape(&r.name),
+                r.category,
+                r.node_count,
+                r.stop,
+                r.classes_raw,
+                r.live_classes,
+                r.reachable_nodes,
+                r.orphaned_nodes,
+                r.cost,
+                r.extracted_nodes,
+            )
+            .unwrap();
+        }
+        std::fs::write(&out, csv).unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
+        eprintln!("wrote {}", out.display());
+    }
+
+    /// The invariant the write-back fix restores, asserted on the real
+    /// corpus rather than on a hand-built graph: after production
+    /// saturation, no e-node may sit in a class `find` no longer routes to.
+    /// `union` empties a merged-away class with `mem::take`, so the only way
+    /// to strand one is to write to a slot after it stopped being canonical.
+    ///
+    /// This is the corpus-scale complement to
+    /// `rebuild_budgeted_does_not_orphan_nodes_when_current_class_is_merged_away`:
+    /// that test proves the mechanism, this one proves it does not happen
+    /// anywhere in the kernels production actually compiles.
+    #[test]
+    #[ignore = "corpus invariant, needs the arena dumps: PIXELFLOW_CONGRUENCE_ARENA_DIR=<dir of .arena dumps> cargo test -p pixelflow-search --release --lib -- --ignored saturation_strands_no_enodes"]
+    fn saturation_strands_no_enodes() {
+        for path in &arena_corpus_paths() {
+            let (name, arena, root) = load_arena_dump(path);
+            let run = run_production(&name, RuleOrder::Production, &arena, root);
+            assert_eq!(
+                orphaned_node_count(&run.egraph),
+                0,
+                "{name}: production saturation stranded e-nodes in merged-away \
+                 classes — rebuild_budgeted wrote back to `id` instead of `find(id)`"
+            );
+        }
     }
 
     fn write_csv(path: &Path, rows: &[CongruenceRow], hb_rows: &[CongruenceRow]) {

@@ -620,14 +620,20 @@ impl EGraph {
                 if let Some(&existing) = self.memo.get(&node) {
                     let existing = self.find(existing);
                     if existing != id {
-                        // `union` may pick either `id` or `existing` as the
-                        // surviving parent. If `id` survives, `union`'s
-                        // extend() appends `existing`'s nodes (and tags)
-                        // directly onto `self.classes[id.index()]` — which we
-                        // just emptied via mem::take above. We MUST extend
-                        // (not overwrite) below, or those appended
-                        // nodes/tags are silently dropped when we write
-                        // `new_nodes`/`new_tags` back. This is a rebuild-time
+                        // `union` keeps `min(id, existing)`, so this call
+                        // can go either way, and the write-back at the
+                        // bottom of the loop has to survive both:
+                        //   - `id` survives: `union`'s extend() appends
+                        //     `existing`'s nodes (and tags) directly onto
+                        //     `self.classes[id.index()]`, which mem::take
+                        //     just emptied — so the write-back must EXTEND,
+                        //     not overwrite, or those are dropped.
+                        //   - `existing` survives: `id` is merged away and
+                        //     `classes[id.index()]` stops being reachable
+                        //     through `find` — so the write-back must target
+                        //     `self.find(id)`, or everything still in
+                        //     `new_nodes` is orphaned.
+                        // This is a rebuild-time
                         // congruence-closure union, not a rule firing, so it
                         // carries no rule_idx in the provenance journal
                         // (`active_application` is whatever the caller left
@@ -656,11 +662,25 @@ impl EGraph {
                 new_nodes.push(node);
                 new_tags.push(tag);
             }
-            // Extend, not assign: a mid-loop union() above may have already
-            // pushed nodes/tags onto classes[id.index()] (see comment above).
-            // Overwriting here would silently discard them.
-            self.classes[id.index()].nodes.extend(new_nodes);
-            self.classes[id.index()].tags.extend(new_tags);
+            // Write back to the class `id` CANONICALIZES TO, not to `id`.
+            // A mid-loop union() above picks `min(id, existing)` as the
+            // surviving parent, so when `existing.0 < id.0` it is `id` that
+            // was merged away — and `classes[id.index()]` is then a slot
+            // `find` no longer routes to. Every node written there is
+            // orphaned: `nodes()`/`tags()` canonicalize first, so nothing
+            // can read them again. That is lost extraction alternatives
+            // (under-merging: sound, since the surviving class still holds
+            // only provably-equal terms) but lost *silently*, which this
+            // project forbids.
+            //
+            // And extend, never assign: in the mirror case, where `id`
+            // survives, union()'s extend() has already appended `existing`'s
+            // nodes and tags onto this very vector (which mem::take emptied
+            // above), and an assignment would clobber them. `find(id) == id`
+            // there, so one write-back handles both directions.
+            let dest = self.find(id);
+            self.classes[dest.index()].nodes.extend(new_nodes);
+            self.classes[dest.index()].tags.extend(new_tags);
         }
         self.worklist.len()
     }
@@ -2458,6 +2478,109 @@ mod tests {
             "expected Var(9) (nb's unique marker, merged in via union()'s extend) \
              to still be present; rebuild_budgeted's overwrite bug drops nodes appended \
              by a mid-loop union() when the current worklist item survives as parent"
+        );
+    }
+
+    /// The mirror of the test above, and the case its fix left open: when
+    /// canonicalizing the worklist item `id`'s nodes triggers a union whose
+    /// surviving parent is the OTHER class, `id` itself becomes
+    /// non-canonical — and the write-back at the bottom of the loop targets
+    /// `classes[id.index()]`, a slot `find` no longer routes to. Every node
+    /// `id` still held is orphaned: `EGraph::nodes(id)` canonicalizes first,
+    /// so nothing can ever read them again.
+    ///
+    /// Lost e-nodes are lost extraction alternatives (under-merging, not
+    /// unsoundness — every remaining class still holds only provably-equal
+    /// terms), but they are lost *silently*, which this project forbids.
+    /// The fix writes back to `self.find(id)`, extending rather than
+    /// assigning because `union` may already have moved nodes there.
+    ///
+    /// Trigger recipe — the same shape as the test above with the two `Neg`
+    /// classes created in the opposite order, which is all it takes to flip
+    /// which side `union`'s `min(a, b)` keeps:
+    /// - `nb = Neg(b)` (class 3) is created BEFORE `nc = Neg(c)` (class 4),
+    ///   so `memo[Neg([1])] -> 3` and `3 < 4`.
+    /// - `union(nc, marker)` gives class 4 a structurally unique `Var(9)`
+    ///   and enqueues it for rebuild.
+    /// - `union(b, c)` merges class 2 into class 1, so canonicalizing
+    ///   `Neg([2])` during class 4's rebuild rewrites it to `Neg([1])`.
+    /// - `memo` maps `Neg([1])` to class 3, and `existing (3) < id (4)`, so
+    ///   `union(4, 3)` keeps **3** — `id` is merged away mid-loop.
+    /// - The write-back then appends `Var(9)` to class 4, which `find` now
+    ///   routes past. `nodes(find(nc))` never sees it again.
+    #[test]
+    fn rebuild_budgeted_does_not_orphan_nodes_when_current_class_is_merged_away() {
+        let mut eg = EGraph::new();
+
+        let _a = eg.add(ENode::Var(0)); // class 0 (unused, keeps ids spaced out)
+        let b = eg.add(ENode::Var(1)); // class 1
+        let c = eg.add(ENode::Var(2)); // class 2
+        let nb = eg.add(ENode::Op {
+            op: &ops::Neg,
+            children: vec![b],
+        }); // class 3: memo Neg([1]) -> 3
+        let nc = eg.add(ENode::Op {
+            op: &ops::Neg,
+            children: vec![c],
+        }); // class 4: memo Neg([2]) -> 4
+        let marker = eg.add(ENode::Var(9)); // class 5: a node unique to nc's class
+
+        assert_eq!(nb.index(), 3, "test assumes nb is class 3");
+        assert_eq!(nc.index(), 4, "test assumes nc is class 4");
+
+        // Give nc's class a node with no structural twin anywhere else
+        // (`Var(9)`), so its loss is directly observable, and enqueue nc for
+        // rebuild. nc (4) < marker (5), so nc survives as parent here.
+        eg.union(nc, marker);
+        assert_eq!(eg.pending_rebuilds(), 1);
+
+        // Merge c into b. b (1) < c (2), so b survives. This is what makes
+        // `Neg([2])` canonicalize to `Neg([1])` during nc's rebuild.
+        eg.union(b, c);
+
+        eg.rebuild();
+
+        // nb (3) is the surviving parent: `union(4, 3)` keeps the lower id.
+        let surviving = eg.find(nc);
+        assert_eq!(
+            surviving,
+            eg.find(nb),
+            "nc and nb should have been unioned via the canonicalization collision"
+        );
+        assert_eq!(
+            surviving, nb,
+            "test assumes `existing` (nb, class 3) is the surviving parent, \
+             i.e. the `existing.0 < id.0` branch"
+        );
+
+        // The critical assertion: `Var(9)` lived in nc's class when nc was
+        // merged away mid-loop, so it must still be reachable through the
+        // surviving class. The orphaning bug writes it back to class 4,
+        // which `find` routes past — `nodes()` canonicalizes, so it is
+        // unreachable from every public entry point from then on.
+        let nodes = eg.nodes(surviving);
+        assert!(
+            nodes.iter().any(|n| matches!(n, ENode::Var(9))),
+            "expected Var(9) (nc's unique marker) to still be reachable via \
+             nodes(find(nc)); the write-back targeted the merged-away slot \
+             classes[{}] instead of classes[{}]. Got: {nodes:?}",
+            nc.index(),
+            surviving.index()
+        );
+
+        // Tags must stay zipped with nodes through the redirected write-back.
+        assert_eq!(
+            eg.nodes(surviving).len(),
+            eg.tags(surviving).len(),
+            "EClass.nodes and EClass.tags must never desync"
+        );
+
+        // And the orphaned slot must be left empty, not holding a shadow
+        // copy: two vectors both claiming to be class 3's nodes is the same
+        // silent divergence in a different disguise.
+        assert!(
+            eg.classes[nc.index()].nodes.is_empty(),
+            "the merged-away slot must not accumulate nodes behind `find`'s back"
         );
     }
 
