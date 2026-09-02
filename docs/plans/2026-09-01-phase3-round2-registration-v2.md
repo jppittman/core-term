@@ -60,8 +60,9 @@ belongs in a later document, not here (see the "Parked" note at the end of §2).
   `math::inflate::tests::v2_grid_fingerprints_are_pinned` (the exact fingerprint of every realized
   v2 grid point, both orders, hardcoded — §2's table below is read from this test, not invented).
 - **`pixelflow-pipeline/src/bin/phase3_round2_unguided_curves.rs`**: every curve row now also
-  carries `sweeps_actual` (cumulative completed sweeps at the checkpoint — already computed by the
-  anytime runner, just not written before), `evals_actual` (cumulative rule-match ATTEMPTS at the
+  carries `sweeps_actual` (cumulative sweeps STARTED through the checkpoint, summed over checkpoint
+  segments — the anytime runner's own counter, just not written before; §0.1 says what it does
+  and does not measure), `evals_actual` (cumulative rule-match ATTEMPTS at the
   checkpoint — new: `EGraph::total_evals()`, accumulated at the one site every rule-application
   path funnels through, `apply_rule_at_index_timed`), and `apps_per_sweep` (applications recorded
   by exactly one full sweep of this expression's rule set, measured by a separate one-sweep probe
@@ -77,6 +78,30 @@ B only in applications hid this. `apps_per_sweep` (per expression, per rule set)
 reported `app_actual` be re-expressed as `app_actual / apps_per_sweep` sweeps, so a reader can see
 directly whether a given (mode, |R|, B) point is sub-sweep, one sweep, or several — the aggregate
 table in the filled §4 reports both axes side by side at every grid point, not just applications.
+
+**What `sweeps_actual` measures — corrected after reading the Register run's data (§11 Entry 2),
+before the first version of this paragraph could mislead anyone.** The anytime runner takes each
+checkpoint as its own segment: `EGraph::saturate_until_applications` starts a fresh pass at rule
+index 0 for every segment, cuts that pass between rules when the cumulative application count
+reaches the target, and counts the pass as one `iteration` whether or not it completed.
+`sweeps_actual` is the running sum of those counts — **passes started, not sweeps completed** — and
+is therefore ≥ the checkpoint ordinal by construction. In the Register run it equals the ordinal
+almost everywhere (median 1/2/3/4/5 at targets 25/50/100/200/400 for every rule set, including
+`dup:248`, where one full pass is ~995 applications and three completed passes by B = 100 are
+impossible). It is NOT the sweep-denominated budget. The registered sweep denomination is
+`B / apps_per_sweep` from the one-sweep probe (§4.1); `sweeps_actual` stays in the CSV as the raw
+runner counter only. Two consequences a reader needs:
+
+- (a) At every point where `B / apps_per_sweep < 1`, B = 100 is spent as three partial passes
+  (segments 25, 50, 100) that each begin at the FRONT of the rule vector, so the rules the seed
+  placed early in the interleaved vector receive most of the budget (including their idempotent
+  re-fires, which count as applications — §1) and rules near the tail may never be visited at that
+  B. Under `Interleave` the front is a seeded random mixture of base and inflated rules — exactly
+  why inflated rules are now reachable (§4) — but WHICH rules sit there is a property of the one
+  seed `0x2026_0901`. A seed-sensitivity check is not part of this registration; its absence is a
+  stated limitation, not something to be fixed quietly later.
+- (b) At |R| = 62, `B / apps_per_sweep ≈ 1.0`: Round 1's B = 100 point and this document's `base`
+  point are each roughly one front-to-back pass over `all_rules()` in production order.
 
 ### 0.2 The §7.1 overhead precondition, measured for the unguided arm
 
@@ -220,6 +245,49 @@ expressions differ from `base` at B=100 for every one of the 7 completed inflate
 is 188/188 — literally every classical expression), versus v1's committed 0/188 for any set. This
 is the direct before/after evidence §6 draws on.
 
+### 4.1 B in sweeps at every point (the sweep-denominated statement)
+
+`apps_per_sweep` = applications recorded by one full pass of the rule vector on a throwaway e-graph
+of the expression (§0), median over the 188 classical expressions; `B in sweeps` = B / that
+median. The `sweeps_actual` runner counter is deliberately not used here (§0.1). Source: the
+results doc's "Sweeps and match-enumeration overhead" table, which is computed from the raw CSV.
+
+| rule set | \|R\| | apps_per_sweep (med) | B=100 in sweeps | B=200 in sweeps | app_actual@100 (med) | reading |
+|---|---:|---:|---:|---:|---:|---|
+| `base` | 62 | 99.5 | 1.01 | 2.01 | 113 | B=100 ≈ one full pass of `all_rules()` in production order |
+| `dup:93` | 93 | 142.0 | 0.70 | 1.41 | 102 | below one sweep at B=100 |
+| `dup:124` | 124 | 300.0 | 0.33 | 0.67 | 106 | below one sweep at both B |
+| `dup:186` | 186 | 502.0 | 0.20 | 0.40 | 104 | below one sweep at both B |
+| `dup:248` | 248 | 995.5 | 0.10 | 0.20 | 108 | below one sweep at both B |
+| `comp:93` | 93 | 87.0 | 1.15 | 2.30 | 104 | ≈ one sweep at B=100 |
+| `comp:124` | 124 | 89.5 | 1.12 | 2.23 | 109 | ≈ one sweep at B=100 |
+| `comp:186` / `comp:248` | 186 / 248 | — | — | — | — | not realized (§4) |
+| `new:95` | 95 | 291.5 | 0.34 | 0.69 | 108 | below one sweep at both B |
+
+Two things the table makes visible. First, "B in sweeps" is not a function of |R| alone: a `dup`
+sweep costs 1.4× / 3.0× / 5.0× / 10× base at 1.5× / 2× / 3× / 4× the rules (superlinear — each
+duplicate's re-fires also grow the graph the next rule scans), while a `comp` sweep costs LESS than
+base (87–89.5 vs 99.5; compositions match rarely), so the column must be read per mode. Second,
+every completed inflated point except `comp:*` is sub-sweep at B = 100, several by a wide margin;
+§6's H1 movement is therefore a statement about what the first partial pass(es) of an interleaved
+vector find, not about saturation across the whole rule set.
+
+**Round 1 note (as this document's brief requires):** the `base` row is why Round 1's B = 100
+guided-vs-unguided win is largely rule-list order within the first sweep — B = 100 is 1.01 sweeps
+of `all_rules()`, so which of the 62 rules come first decides which fire at all; Round 1's
+discussion already says this, and the table above is the quantified version.
+
+**Append-only provision for `comp:186` / `comp:248` (v1 §2.2's form, carried forward):** their rule
+sets are fully specified (pool seed `0x5EED2`, inflation prefix lengths 124 / 186, interleave seed
+`0x2026_0901`, fingerprints in §2) and their unguided curves may be appended under §11 as data,
+under this registration's constants, provided that no guided run at |R| ∈ {186, 248} of mode (ii)
+precedes them. If appended, the only registered numbers that change are mode (ii)'s rows in §5.2
+(Y at 186 / 248), §5.4 (Δ2, whose |R|max becomes 248), §5.6, and §6 (ρ, U(max) − U(62), verdict
+recomputed over five points); Δ1, B, the sample, the reference convention, and every mode (i) /
+(iii) number stay fixed. Realizing them within §1's |R|-scaled safety ceiling failed on two
+attempts (§4); raising that ceiling is a change to §1 and is a superseding change for those two
+points, stated here so that it cannot be made quietly.
+
 ## 5. Registered constants — from the interleaved-order Register run (§11 Entry 1)
 
 Per the binding rule inherited from v1 (§6 of the design, carried forward), these are fixed ONLY
@@ -303,26 +371,50 @@ only (§0.2) — a Guide's SCORED-candidate overhead is a separate, still-unmeas
 mechanism eventually runs at these |R| values inherits a raw enumeration cost per application that
 is already 2–3× the |R|=62 baseline before any scoring is added.
 
+**Registered threshold, as numbers:** flat ⇔ median `evals_actual / app_actual` at B is ≤ 2× its
+|R| = 62 value, i.e. **≤ 62.40 at B = 100 and ≤ 79.08 at B = 200**. Measured:
+
+| rule set | \|R\| | evals/app @100 | × base | flat @100? | evals/app @200 | × base | flat @200? |
+|---|---:|---:|---:|---|---:|---:|---|
+| `base` | 62 | 31.20 | 1.00 | — | 39.54 | 1.00 | — |
+| `dup:93` | 93 | 75.37 | 2.42 | no | 79.54 | 2.01 | no (by 0.46) |
+| `dup:124` | 124 | 78.07 | 2.50 | no | 76.37 | 1.93 | yes |
+| `dup:186` | 186 | 91.81 | 2.94 | no | 92.67 | 2.34 | no |
+| `dup:248` | 248 | 78.85 | 2.53 | no | 74.75 | 1.89 | yes |
+| `comp:93` | 93 | 85.77 | 2.75 | no | 92.42 | 2.34 | no |
+| `comp:124` | 124 | 100.60 | 3.22 | no | 102.79 | 2.60 | no |
+| `comp:186` / `comp:248` | 186 / 248 | — | — | not realized | — | — | not realized |
+| `new:95` | 95 | 69.33 | 2.22 | no | 61.98 | 1.57 | yes |
+
+Verdict: the unguided half of the §7.1 precondition **fails at B = 100 at every completed inflated
+point** and at B = 200 at all but `dup:124`, `dup:248`, `new:95`. Whichever guided mechanism
+consumes this registration must report its scored-candidate count against these same rows.
+
 ## 6. H1 verdict on this grid
 
 Per design §1.2 and v1's own discipline, H1 is entirely an unguided measurement, computed here
 under the interleaved order, before any guided run at |R| > 62 exists under this registration.
 
-| Mode | grid \|R\| | B | U(\|R\|) (%) | Spearman ρ | U(max) − U(62) | Δ1 | direction | effect | **verdict** |
-|---|---|---:|---|---:|---:|---:|---|---|---|
-| (i) | 62,93,124,186,248 | 100 | 96.59, 43.76, 41.12, 15.44, 38.67 | −0.900 | −57.92 pts | 28.23 | FAILS | FAILS | **H1 FAILS (opposite direction)** |
-| (i) | 62,93,124,186,248 | 200 | 40.49, 6.69, 25.44, 9.47, 27.02 | −0.100 | −13.46 pts | 12.34 | FAILS | FAILS | **H1 FAILS** |
-| (ii) | 62,93,124 (incomplete, §4) | 100 | 96.59, 60.55, 41.69 | −1.000 | −54.89 pts | 28.23 | FAILS | FAILS | **H1 FAILS**, grid incomplete |
-| (ii) | 62,93,124 (incomplete, §4) | 200 | 40.49, 25.60, 21.22 | −1.000 | −19.27 pts | 12.34 | FAILS | FAILS | **H1 FAILS**, grid incomplete |
-| (iii) | 62,95 | 100 | 96.59, 33.11 | −1.000 | −63.47 pts | 28.23 | FAILS | FAILS | **H1 FAILS** |
-| (iii) | 62,95 | 200 | 40.49, 52.06 | +1.000 (2-pt) | +11.57 pts | 12.34 | holds (2-pt) | FAILS | **H1 FAILS** (effect test still fails; a 2-point ρ is not evidence of a trend) |
+| Mode | grid \|R\| | B | U(\|R\|) (%) | differing from `base` at B=100 / B=200 (of 188), per inflated point | Spearman ρ | U(max) − U(62) | Δ1 | U(max) − U(62) ≥ +Δ1? | direction | effect | **verdict** |
+|---|---|---:|---|---|---:|---:|---:|---|---|---|---|
+| (i) | 62,93,124,186,248 | 100 | 96.59, 43.76, 41.12, 15.44, 38.67 | 171/147, 186/157, 179/178, 186/160 | −0.900 | −57.92 pts | 28.23 | no (−2.05·Δ1) | FAILS | FAILS | **H1 FAILS (opposite direction)** |
+| (i) | 62,93,124,186,248 | 200 | 40.49, 6.69, 25.44, 9.47, 27.02 | (same points as above) | −0.100 | −13.46 pts | 12.34 | no (−1.09·Δ1) | FAILS | FAILS | **H1 FAILS** |
+| (ii) | 62,93,124 (incomplete, §4) | 100 | 96.59, 60.55, 41.69 | 159/151, 184/148 | −1.000 | −54.89 pts | 28.23 | no (−1.94·Δ1) | FAILS | FAILS | **H1 FAILS**, grid incomplete |
+| (ii) | 62,93,124 (incomplete, §4) | 200 | 40.49, 25.60, 21.22 | (same points as above) | −1.000 | −19.27 pts | 12.34 | no (−1.56·Δ1) | FAILS | FAILS | **H1 FAILS**, grid incomplete |
+| (iii) | 62,95 | 100 | 96.59, 33.11 | 188/186 | −1.000 | −63.47 pts | 28.23 | no (−2.25·Δ1) | FAILS | FAILS | **H1 FAILS** |
+| (iii) | 62,95 | 200 | 40.49, 52.06 | (same point as above) | +1.000 (2-pt) | +11.57 pts | 12.34 | **no (+0.94·Δ1 — inside the noise floor)** | holds (2-pt) | FAILS | **H1 FAILS** (effect below Δ1; a 2-point ρ is not evidence of a trend) |
 
 **H1 fails on this grid, decisively, in every mode measured — but not by being unobservable (v1's
 outcome).** U(|R|) falls sharply and monotonically-in-the-large as |R| grows in modes (i) and (ii)
 (ρ ≤ −0.90 wherever more than 2 points exist); mode (iii)'s single step also moves in the
-"wrong" direction at B=100. Every |U(max) − U(62)| clears Δ1 by 2–5×, so this is not a
-noise-floor call — it is a real, large effect, opposite in sign to H1's prediction that unguided
-regret at fixed B should RISE with |R|. **Reading:** more rules, swept in an order where they can
+"wrong" direction at B=100. At B = 100 every |U(max) − U(62)| clears Δ1 (by 1.9–2.3×: −57.9,
+−54.9, −63.5 pts against Δ1 = 28.2); at B = 200 modes (i)/(ii) clear it more narrowly (1.1× and
+1.6×) and mode (iii)'s lone positive step (+11.6 pts) sits BELOW Δ1 = 12.3, i.e. inside the noise
+floor. (An earlier draft of this paragraph and the §11 Entry 1 commit message said "2–5×"; that
+was an arithmetic overstatement and is corrected here, not silently.) So at the primary budget
+this is not a noise-floor call — it is a real, large effect, opposite in sign to H1's prediction
+that unguided regret at fixed B should RISE with |R|; at the secondary budget the same sign holds
+in modes (i)/(ii) at a smaller margin, and mode (iii) is uninformative. **Reading:** more rules, swept in an order where they can
 actually be reached inside the budget, let unguided saturation find a cheaper form FASTER on
 these classical expressions than the base 62-rule set does at the same B — the added search
 surface is net productive within B=100–200 applications on this sample, not merely more haystack
@@ -336,8 +428,16 @@ deliverable... exactly as v1's fallback fired"), now realized with an observable
 instead of v1's null-by-construction one. The capacity finding is: unguided saturation absorbs
 rule-count growth well within a 100–200 application budget on this sample, at least through
 |R|=248 (modes i) and |R|=95 (mode iii); mode (ii)'s ceiling is unmeasured past |R|=124 (§4).
+**This is a finding about capacity, not a reason to touch the grid again:** the budget is not
+binding at these rule counts on this corpus under an order that can reach the added rules. A third
+grid, a third budget, or a third sweep order would be a third registration, and nothing in this
+document's data motivates one.
 
 ## 7. What remains testable for H2 under this Register
+
+**H2 status: UNTESTED.** No guided run exists at any |R| > 62 (§10), so nothing in this document
+evaluates H2; its statistics, thresholds, and the reading rule under an H1 failure (v1 §7, design
+§1.3) stand unchanged and are neither weakened nor pre-judged by §6.
 
 Structure carried verbatim from v1 §7 (H2 part 1/part 3 fully testable at every point; part 2
 requires the Guide's advantage to grow, live in modes (ii)/(iii) and impossible-by-construction in
@@ -377,8 +477,9 @@ unguided-only (§9), so H2 part 3 (a guided-arm statistic) has no data here to f
 kill gate is a question for whichever future guided run consumes this registration.
 
 **Honest fallback: FIRES.** H1 fails on this grid (§6), so §6 is the deliverable — a large,
-decisive capacity finding (unguided regret falls, not rises, with |R|, well past Δ1 in every
-mode), rather than v1's null-by-construction non-finding. This is the SAME fallback shape v1
+decisive capacity finding (unguided regret falls, not rises, with |R| — past Δ1 in every mode at
+B = 100, past it more narrowly in modes (i)/(ii) at B = 200, and inside the noise floor only for
+mode (iii)'s single B = 200 step — §6), rather than v1's null-by-construction non-finding. This is the SAME fallback shape v1
 predicted for itself, realized for the first time with actual signal to read.
 
 ## 9. Protocol prerequisites for step 3 (must exist before any guided run at |R| > 62) — unchanged from v1 §9
@@ -421,6 +522,53 @@ no GUIDED artifact carries them.
   document's earlier commits; the Register run's diff to that binary was the sweeps/evals columns
   and the probe function only — nothing guided-path-shaped was added to realize §4).
 
+**Fresh proof, run at the commit that finalizes this registration (§11 Entry 2), on
+`claude/phase3-round2`, verbatim:**
+
+```text
+$ for fp in 83e610e33e782a68 b207aa331bb625ab 3a00c565900b48e6 43c43d764ef7f76b \
+           904ceec9b110e89e a7600e5942f0baa5 9e9bf3a4458a3045 b89d841eada63c13 113cca49c99cc850; do
+    printf '%s: ' $fp; git grep -l "$fp" -- . ':!docs/plans/2026-09-01-phase3-round2-registration-v2.md' | tr '\n' ' '; echo; done
+83e610e33e782a68: docs/results/2026-09-01-phase3-round2-registration-v2.json docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.csv docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.json docs/results/2026-09-01-round2-unguided-vs-rulecount-v2.md
+b207aa331bb625ab: (same four unguided files)
+3a00c565900b48e6: (same four unguided files)
+43c43d764ef7f76b: (same four unguided files)
+904ceec9b110e89e: (same four unguided files)
+a7600e5942f0baa5: (same four unguided files)
+9e9bf3a4458a3045:                                   <- comp:186 interleaved: no file anywhere (never realized)
+b89d841eada63c13:                                   <- comp:248 interleaved: no file anywhere (never realized)
+113cca49c99cc850: (same four unguided files)
+
+$ git grep -l -E 'RuleOrder::Interleave|DEFAULT_INTERLEAVE_SEED'
+docs/plans/2026-09-01-phase3-round2-registration-v2.md
+docs/results/journal.jsonl                          <- the unguided run's own journal record
+pixelflow-search/src/math/inflate.rs
+
+$ grep -c 'nnue::guide\|GuidedSaturation' pixelflow-pipeline/src/bin/phase3_round2_unguided_curves.rs
+0
+
+$ grep -rl 'math::inflate\|inflate::' pixelflow-pipeline/src/bin/
+pixelflow-pipeline/src/bin/phase3_round2_new_rules.rs
+pixelflow-pipeline/src/bin/phase3_round2_unguided_curves.rs   <- the only two binaries that can build an inflated set; neither links a Guide
+
+$ sed -n 618,626p pixelflow-pipeline/src/bin/phase3_at_budget_eval.rs   # the guided harness
+    let mut stepper = GuidedSaturation::new(guide, embeds);
+    let out = run_anytime_curve_with(
+        input.arena,
+        input.root,
+        all_rules(),                                <- hard-wired to |R| = 62; no rule-set argument exists
+```
+
+Why `inflate.rs` is absent from the plain-hex hits above even though it pins every fingerprint:
+`v2_grid_fingerprints_are_pinned` stores them as underscored `u64` literals
+(`0x83e6_10e3_3e78_2a68`, `0x9e9b_f3a4_458a_3045`, `0xb89d_841e_ada6_3c13`, …), which a
+16-hex-character grep does not match. So the proof reads: the seven realized interleaved
+fingerprints occur, as data, in exactly the four unguided output files of this run and nowhere
+else; the two never-realized ones (`comp:186`, `comp:248`) occur as data nowhere at all — their
+only occurrence on the branch is the test's pin, which is how §2 knows their values without a
+curve ever having been run. No file under `docs/results/` that names a Guide, a checkpoint, a
+label set, or `phase3_at_budget_eval` contains any of the nine.
+
 ## 11. Results appended against the gates
 
 (Append-only, as in v1.)
@@ -435,6 +583,18 @@ in the direction opposite H1's prediction: unguided regret at B=100/200 FALLS as
 sample, for every completed inflated set. The honest fallback (§8) fires: §6's capacity finding is
 the deliverable. `comp:186`/`comp:248` remain open grid points (mode (ii) incomplete past |R|=124),
 documented, not padded or extrapolated.
+
+**Entry 2 (2026-09-01, the commit that finalizes this registration).** No new data. Fills the
+registration items Entry 1 left in the results doc only or left implicit: §4.1 (B in sweeps at
+every point, the Round 1 rule-order note, the append-only provision for `comp:186`/`comp:248` in
+v1 §2.2's form), §5.6 (the §7.1 threshold as numbers, per-point pass/fail), §6 (per-point count of
+classical expressions differing from `base` at B = 100 / 200, an explicit `≥ +Δ1?` column, and a
+correction: the earlier "clears Δ1 by 2–5×" was an overstatement — the true margins are 1.9–2.3×
+at B = 100, 1.1–1.6× at B = 200 for modes (i)/(ii), and mode (iii)'s B = 200 step is below Δ1),
+§7 (H2 explicitly UNTESTED, rule stands), §10 (the grep proof run fresh, verbatim). Also corrects
+§0's description of `sweeps_actual` (§0.1): it counts passes STARTED per checkpoint segment, not
+completed sweeps, and equals the checkpoint ordinal almost everywhere in the data; the registered
+sweep denomination is `B / apps_per_sweep` (§4.1). Registered constants (§5.2–§5.5) are unchanged.
 
 **Note on the stats script (resolved by this commit):** `round2_register_stats.py`'s `HEADER` now
 includes the three new columns (`sweeps_actual`, `evals_actual`, `apps_per_sweep`) and computes

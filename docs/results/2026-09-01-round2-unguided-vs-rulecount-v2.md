@@ -86,7 +86,7 @@ on this sample within the registered, |R|-scaled safety budget, under either swe
 | `comp:124` | 124 | 41.69 | 16.32 | 67.77 | 99.34 | 21.22 | 0.17 | 56.25 | 84.07 | 14.371 | 6.28 | 2.684 | 1.31 | 0.000 / 0.000 / 9 / 23 (173) |
 | `new:95` | 95 | 33.11 | 3.63 | 183.70 | 145181.76 | 52.06 | 5.24 | 54121.74 | 148669.72 | -0.000 | -0.00 | 0.000 | 0.00 | 0.474 / 2.403 / 97 / 70 (173) |
 
-**Sweeps and match-enumeration overhead (classical, v2 §0.2/§7.1).** `apps_per_sweep` is one throwaway one-sweep probe per expression, median over the band; `B in sweeps` = B / that median (how much of one full rule-order pass a budget spends); `evals/app@B` = cumulative `EGraph::total_evals` / cumulative applications through checkpoint B — matches enumerated per application actually taken, the §7.1 flatness check.
+**Sweeps and match-enumeration overhead (classical, v2 §0.2/§7.1).** `apps_per_sweep` is one throwaway one-sweep probe per expression, median over the band; `B in sweeps` = B / that median (how much of one full rule-order pass a budget spends); `evals/app@B` = cumulative `EGraph::total_evals` / cumulative applications through checkpoint B — matches enumerated per application actually taken, the §7.1 flatness check. **`sweeps_actual` counts passes STARTED (each checkpoint segment restarts the rule vector at index 0 and counts a cut-off pass as one), not completed sweeps — which is why it reads 3.00/4.00 at B=100/200 for every set, including ones where one full pass costs ~1000 applications; use `B in sweeps`, not this column, for the sweep-denominated budget (plan doc §0.1).**
 
 | rule set | \|R\| | apps_per_sweep med | B=100 in sweeps | B=200 in sweeps | sweeps_actual@100 med | sweeps_actual@200 med | evals/app@100 med | evals/app@200 med |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -144,9 +144,10 @@ points (unchanged code, no re-run of the rest needed) would complete it.
 ## H1 verdict on this grid
 
 **H1 direction FAILS at B=100 in every mode measured** (ρ = −0.90 to −1.00: regret U falls, not
-rises, as |R| grows) and **H1 effect FAILS everywhere** (the observed |U(max) − U(62)| exceeds Δ1
-in magnitude but in the WRONG direction for the effect test as designed — a large negative change,
-not the hypothesized positive one). At B=200, mode (iii)'s single point technically satisfies the
+rises, as |R| grows) and **H1 effect FAILS everywhere** (at B=100 the observed |U(max) − U(62)| exceeds Δ1 in
+magnitude — by 1.9–2.3× — but in the WRONG direction for the effect test as designed, a large
+negative change rather than the hypothesized positive one; at B=200 modes (i)/(ii) exceed it by
+1.1×/1.6× in the same wrong direction, and mode (iii)'s +11.57 pts is below Δ1 = 12.34). At B=200, mode (iii)'s single point technically satisfies the
 direction test (ρ = +1.00 on two points, which is guaranteed by having only two points and U rising
 between them) but still fails the effect test's sign convention, and modes (i)/(ii) fail direction
 outright (ρ = −0.10 to −1.00). **Unlike v1, this is not "unobservable" — every mode now shows a
