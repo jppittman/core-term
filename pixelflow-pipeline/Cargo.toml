@@ -100,3 +100,31 @@ path = "src/bin/guide_scope_saturation_delta.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "tightened_labeler_rank"
+path = "src/bin/tightened_labeler_rank.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "phase3_unguided_baseline"
+path = "src/bin/phase3_unguided_baseline.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "gen_strict_labels"
+path = "src/bin/gen_strict_labels.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "eval_control_guides"
+path = "src/bin/eval_control_guides.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false

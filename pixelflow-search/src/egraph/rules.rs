@@ -121,6 +121,20 @@ impl Fingerprint {
         self.0
     }
 
+    /// Reconstruct a fingerprint from a digest read back off disk.
+    ///
+    /// The inverse of [`Self::get`], and the only way a checkpoint loader
+    /// living outside this crate (JSON parsing belongs in
+    /// `pixelflow-pipeline`) can say "these weights were trained against
+    /// vocabulary X" without inventing a second identity type. It asserts
+    /// nothing: a digest that names no rule set this build has is exactly
+    /// what [`LinearCandidateGuide::new`](crate::nnue::guide::linear::LinearCandidateGuide::new)
+    /// refuses, and refusing it there is what keeps the check in one place.
+    #[must_use]
+    pub fn from_raw(digest: u64) -> Self {
+        Self(digest)
+    }
+
     /// Little-endian bytes, for mixing into a cache key.
     #[must_use]
     pub fn to_bytes(self) -> [u8; 8] {
