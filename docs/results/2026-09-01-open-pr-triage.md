@@ -1,264 +1,195 @@
-# Open-PR triage — 2026-09-01
+# Open-PR triage — 2026-09-01, refreshed 2026-09-02
 
-Sweep of all 13 open pull requests against three conditions: up to date with
-`main`, no unresolved review threads, no CI failures. Plus the requested
-judgement call on which branches are superseded, obsolete, non-salvageable, or
-worth closing.
+Two passes over the open pull requests against three conditions: up to date
+with `main`, no unresolved review threads, no CI failures. Plus the requested
+judgement on which branches are superseded, obsolete, non-salvageable, or worth
+closing.
 
-`main` at time of sweep: `cc4f0a7` (#1082).
+The first pass ran 2026-09-01 ~21:00–22:00 UTC against `main` at `cc4f0a7`.
+This document has been rewritten for the state at **2026-09-02 10:10 UTC**,
+`main` at `44c9fa3f` — seventeen commits later. A parallel session's follow-up
+(#1089, merged as `2e82cdc2`) covers the intervening window and is not repeated
+here.
 
-## What this pass changed
+## The headline: the collision landed, and it took the rest of the board with it
 
-Ten branches were behind `main` and have been brought up to date via GitHub's
-merge-from-base ("Update branch"), which also re-triggers Presubmit Tests
-against the current base:
+The first pass flagged that #1083, #1084 and #1085 all rewrote
+`pixelflow-search/src/egraph/saturate.rs` and the `SaturationStopReason` /
+`SaturationStats` / `SaturationResult` triple from three directions, that they
+merged cleanly only because none had landed, and that whichever went first
+would force real rework on the others.
 
-| PR | branch | was behind |
+That is now what happened, at a larger scale than predicted. `#1083`
+(`82961fe3`), `#1085` (`c1afd4b9`), `#1107` and the `#1108` optimizer-entry-point
+refactor all landed overnight. **Ten of the fifteen open PRs now conflict with
+`main`; yesterday all thirteen merged cleanly.**
+
+Nine of the ten share one epicentre — every conflict is in some subset of:
+
+```
+pixelflow-search/src/egraph/graph.rs
+pixelflow-search/src/egraph/saturate.rs
+pixelflow-search/src/egraph/mod.rs
+pixelflow-search/src/runtime.rs
+```
+
+The tenth, #1072, is a different and worse shape (below).
+
+This is the cost of landing four PRs that touch one seam without first rebasing
+the branches queued behind them. It was foreseeable — it was, in fact,
+foreseen — and the cheap mitigation was to rebase the queue after the first of
+the four landed rather than after all four.
+
+## Board at 2026-09-02 10:10 UTC
+
+| PR | Branch | Ahead | Behind | Merges? |
+|---|---|---|---|---|
+| #1114 | `claude/class-cap-live` | 1 | 0 | clean |
+| #1113 | `claude/upward-congruence` | 3 | 0 | clean |
+| #1109 | `claude/cap-break-ab` | 1 | 3 | **conflict** — `runtime.rs` |
+| #1103 | `claude/all-rules-numeric-first` | 10 | 9 | **conflict** — `graph.rs` + 5 |
+| #1101 | `claude/rule-order-numeric-first` | 9 | 6 | **conflict** |
+| #1096 | `claude/phase3-r2g` | 38 | 9 | **conflict** |
+| #1095 | `claude/phase3-label-constfold` | 32 | 9 | **conflict** |
+| #1091 | `claude/phase3-domain-shift` | 32 | 5 | **conflict** |
+| #1088 | `claude/phase3-round2` | 38 | 9 | **conflict** |
+| #1087 | `claude/saturation-telemetry` | 6 | 10 | **conflict** — + `cell_grid.rs` |
+| #1086 | `claude/brave-faraday-tw3054` | — | 0 | clean (this doc) |
+| #1084 | `claude/phase3-guide` | 26 | 9 | **conflict** — `graph.rs` + 4 |
+| #1072 | `claude/workshop-writeup` | 12 | 17 | **conflict** — modify/delete |
+| #1054 | `claude/zen-babbage-wjmnit` | 9 | 17 | clean, but **CI red** |
+| #994 | `claude/macos-release-signing-pipeline` | 3 | 17 | clean |
+
+## What the first pass recommended, and what happened
+
+Every recommendation was acted on within the following hours, mostly by other
+sessions. Recording the outcome rather than the advice:
+
+| PR | Recommendation | Outcome |
 |---|---|---|
-| #1083 | `claude/saturation-telemetry-flag` | 1 |
-| #1079 | `claude/integration-audit` | 3 |
-| #1044 | `claude/round2b-contrastive` | 5 |
-| #1053 | `fix/no-std-extraction-from-bytes` | 6 |
-| #1072 | `claude/workshop-writeup` | 9 |
-| #1054 | `claude/zen-babbage-wjmnit` | 9 |
-| #1051 | `claude/zen-babbage-ccjkhv` | 9 |
-| #1050 | `claude/zen-babbage-0rq98y` | 9 |
-| #1049 | `claude/zen-babbage-6a9p2k` | 9 |
-| #994 | `claude/macos-release-signing-pipeline` | 9 |
+| #1053 | merge first — it unblocks #1083/#1084 | **merged** (`436d3af8`) |
+| #1081 | ready now, zero threads | **merged** (`c7e65096`) |
+| #1051 | land after a duplication check vs #1027 | **merged** (`83015dcd`) |
+| #1049 | land or close; near-empty | **merged** (`38ea6eaa`) |
+| #1079 | correct 6 findings, land before it goes stale | **merged** (`aa27cf1c`) |
+| #1083 | declare `saturation-telemetry = ["std"]`, fix the P1 | **merged** (`82961fe3`) |
+| #1085 | resolve 3 threads; land first of the saturation three | **merged** (`c1afd4b9`) |
+| #1050 | close — superseded by #1055/#1068 | **closed** unmerged |
+| #1044 | merge as a record or close | **closed** unmerged |
+| #1054 | land after a mutants rerun | **still open, now red** |
+| #1072 | last, after the P1 re-analyses | **still open, now conflicted** |
+| #994 | merge dormant or close | **still open, untouched** |
 
-`#1085`, `#1084` and `#1081` were already current. **All 13 open PRs now merge
-cleanly against `main` with no conflicts** — verified with `git merge-tree
---write-tree` per branch before the updates, and re-verified after.
+Nine of twelve resolved. The three that did not are the three this pass still
+recommends closing or holding.
 
-Nothing else was pushed. Code fixes belonging to other people's branches are
-listed below as recommendations rather than applied, since this session is
-scoped to its own development branch.
+### Two corrections to the first pass
 
-## Status board
+**Thread count is not a quality signal.** The first pass ranked #1044 as
+merge-ready partly on "zero unresolved threads." That was an artifact: the
+review bot hit its usage limit on 2026-08-28 and never reviewed it, so an
+unreviewed 3,060-line diff scored as the cleanest thing on the board. Zero
+threads means either "clean" or "never looked at," and the board could not tell
+them apart. Any future sweep should read thread count alongside whether a
+review actually ran.
 
-CI column is the last *completed* Presubmit Tests run at the head that was
-current when the sweep started; every updated branch has a fresh run in flight.
-
-| PR | Title (short) | Draft | CI | Unresolved threads | Merge-ready? |
-|---|---|---|---|---|---|
-| #1081 | codegen `CompileError` type | yes | in progress (prior head green) | **0** | closest to ready |
-| #1051 | cost.rs mutation gaps | yes | green | 0 | ready |
-| #1049 | graph.rs test renames | yes | green | 0 | ready (near-empty) |
-| #1044 | VariantSet contrastive machinery | no | green | 0 | ready, but see below |
-| #994 | macOS signed DMG release | yes | green | 0 | ready, but untestable |
-| #1054 | x86_64.rs mutation gaps | no | green | 0 (2 resolved) | one open caveat |
-| #1050 | regalloc.rs mutation gaps | no | green | **2** (P2) | mostly superseded |
-| #1053 | gate NNUE opt-in behind `std` | no | green | **2** (P2) | **merge first** |
-| #1079 | integration-audit doc | no | green | **6** (P2) | going stale |
-| #1085 | one optimizer policy for Dwrt tier | no | queued (prior head **red**) | **3** (2×P1) | active |
-| #1083 | saturation telemetry flag | no | **red** | **5** (2×P1) | own CI break |
-| #1084 | Phase 3 at-budget evaluation | no | in progress | **17** (5×P1) | active, large |
-| #1072 | workshop paper draft | no | green | **15** (4×P1) | biggest blocker |
-
-Totals: **60 unresolved review threads across 8 PRs**, 13 of them P1. Every one
-was filed by `chatgpt-codex-connector`; there are no unaddressed human reviews.
+**The saturation collision had five participants, not three.** #1044's
+`variants.rs:229,262` called `eg.saturate_with_limit(64)`, which #1085 deletes —
+disjoint files, so `git` merged clean and the *build* would have broken on
+whichever landed second. Moot now that #1044 is closed, but the three-way
+framing was too narrow, and the general lesson is the one the conflict table
+above makes concrete: **a clean `git merge-tree` is not evidence that a branch
+still builds.**
 
 ## Complications
 
-### 1. Three PRs are colliding on the same saturation code
+### 1. #1054 — red, and now twice-superseded. Recommend closing.
 
-This is the structural problem in the set. `#1083`, `#1084` and `#1085` all
-rewrite `pixelflow-search/src/egraph/saturate.rs` and the
-`SaturationStopReason` / `SaturationStats` / `SaturationResult` triple, from
-three directions:
+Green at `136cc63`, red the moment it was brought up to date. Nine compile
+errors in `pixelflow-codegen/src/emit/x86_64.rs`: `X86Backend::epilogue` no
+longer exists (#1082 removed `prologue`/`epilogue`, methods moved into a
+`driver` module) plus `E0308` mismatches from #1081's `&'static str` →
+`CompileError` change. Failed on ubuntu, macOS, Clippy, and all three ISA
+levels. **Git merged it cleanly and it does not compile** — the clearest
+instance on this board of a semantic conflict that no merge check catches.
 
-- `#1083` says it *completes a non-compiling partial commit* that introduced
-  `SaturationStopReason` (two struct literals were missing the new field), and
-  builds telemetry on top of it.
-- `#1084` makes `SaturationStats` / `SaturationResult::stop` read from the
-  saturation loop instead of being inferred, and adds `GuidedSaturation`
-  candidate dedup in the same file.
-- `#1085` deletes `EGraph::saturate()` / `saturate_with_limit()` outright and
-  routes all three tiers through one `saturate_for_extraction`.
+This is the second encoder refactor to invalidate the branch; the first
+(#1055–#1062's Vex-builder rewrite) is already in its own history at
+`4435869f`, which discarded and rewrote the original tests. Its tests keep
+being deleted out from under it by the file it targets. Funding a third
+re-close pass against a file still in motion is not a good trade — close it,
+and re-run the mutation audit once `x86_64.rs` settles.
 
-They merge cleanly against `main` today only because none of them has landed.
-Whichever goes first forces real rework on the other two — this is not a
-textual conflict that `git` will resolve. **Recommendation: pick a landing
-order deliberately (#1085 → #1083 → #1084 reads best: policy unification
-first, then the instrument, then the experiment that consumes it) and tell the
-other two branches to rebase onto it rather than racing.**
+### 2. #1072 — the harness it documents has been deleted. Recommend closing.
 
-### 2. #1083 has a CI failure that is genuinely its own
+Its conflict is not a content conflict but **modify/delete**:
+`pixelflow-pipeline/src/bin/bootstrap_extraction_head.rs` was deleted from
+`main` by #1093 ("delete the extraction head's shape, keep its denotation"),
+and #1072 modifies it. The paper documents a training program whose harness has
+since been deliberately removed.
 
-`Feature matrix` fails on three `pixelflow-search` std-off combinations. Two
-(`--no-default-features`, `--features extraction-profile`) are the pre-existing
-`ExprNnue::from_bytes` defect and are listed in `KNOWN_BROKEN`. The third,
-`--no-default-features --features saturation-telemetry`, is new and is this
-PR's: adding a std-only feature to `pixelflow-search` adds a std-off
-combination that fails identically. `scripts/check-feature-matrix.sh` predicts
-exactly this in its own header comment.
+That compounds problems the first pass already recorded and the author already
+conceded: four unresolved P1s at the headline intervals (unsubtracted 4.272 ns
+call overhead in every reported ratio — #1089 verified this at
+`bench_extraction_3way.rs:2607` and noted the true regression is therefore
+*larger* than the reported 1.0153; confounded search initialization between the
+learned and static arms; an untested Round-3-vs-Round-2a comparison; a
+bootstrap that resamples kernels where the corpus defines `(band, seed)`
+families as the split unit), plus per-kernel artifacts and checkpoints that
+cannot be recovered because the run machine's worktree is gone.
 
-Fix, one line, and the *subtractive* one rather than another exception row:
-declare the feature's real dependency in `pixelflow-search/Cargo.toml` —
+The measurements retain historical value. The branch does not: it cannot be
+rebased without reinstating a binary `main` deliberately deleted. Recommend
+extracting the paper and `NUMBERS.md` onto a fresh branch off current `main`,
+with the intervals marked provisional and the four P1s either re-analysed or
+disclosed, and closing this one.
 
-```toml
-saturation-telemetry = ["std"]
-```
+### 3. #994 — still blocked on credentials that do not exist.
 
-The telemetry module writes JSONL to a file or stderr, so it genuinely requires
-`std`; with the dependency declared, `--no-default-features --features
-saturation-telemetry` turns `std` back on and compiles. Adding a third
-`KNOWN_BROKEN` row would also make CI green and would be wrong — it suppresses
-a combination instead of describing it.
+Open since 11 Aug, green, zero threads, still untested end to end. Needs five
+repository secrets that have never been created, and the
+codesign/notarytool/stapler path has never run. Tag-triggered, so it is inert
+until someone pushes `v*.*.*`. Three weeks of drift on something CI cannot
+validate. Merge it as dormant infrastructure or close it — but decide, because
+leaving it open costs a rebase every time `main` moves.
 
-### 3. #1053 is the unblocker and should merge first
+### 4. The nine saturation-family conflicts
 
-`#1053` gates `load_opt_in_weights` / `env_extraction_policy` behind `std` and
-empties `KNOWN_BROKEN`. Both `#1083` and `#1084` name it in their own test
-plans as the fix for the failure they are carrying. It is green with two P2
-threads outstanding, one of which is trivial:
+#1084, #1087, #1088, #1091, #1095, #1096, #1101, #1103, #1109 all need a merge
+from `main` and real reconciliation against the landed
+`SaturationStopReason` / optimizer-entry-point work. Several are large (#1088
+and #1096 are 38 commits ahead) and several have active sessions. This is
+rework that has to happen branch by branch by whoever owns each; it is not
+mechanical, because the conflicts are in the type that four separate PRs each
+redefined.
 
-- **Trivial:** the header comment at `scripts/check-feature-matrix.sh:11–18`
-  still points at the `std-off-status` job that the same commit deletes.
-  Delete or rewrite those lines.
-- **Substantive but out of scope:** the reviewer notes the new blocking
-  `no-std` job does not prove no-std — `pixelflow-search/src/lib.rs` never
-  applies `#![no_std]`, `egraph/graph.rs` still uses `std` unconditionally, and
-  the manifest forces `pixelflow-ir/std`. So the job proves "builds with the
-  feature off on a std host," not "builds without libstd." That is a fair
-  objection to the *claim* in the job's description, not to the change. Narrow
-  the job's wording and land it.
+The one piece of good news: #1083's landed version deliberately converged its
+stop-reason type onto the names #1084 independently chose
+(`SaturationStop { Quiesced, ClassCap, IterationCeiling, Timeout }`, field
+`stop`), so for #1084 at least the reconciliation should be closer to a
+duplicate-delete than a rename.
 
-### 4. #1072's headline numbers are contested at P1
+## Recommended order
 
-Four unresolved P1s go at the paper's central results, not its prose:
+1. **Close #1054 and #1072**; decide #994. These three have not moved in
+   ~13 hours and each is blocked on something no rebase fixes.
+2. **#1114, #1113** — both already current and clean; land or review them
+   before they join the conflicted set.
+3. **#1109** (3 behind, one conflicted file) — cheapest of the nine to
+   reconcile.
+4. The remaining saturation family, owner by owner, smallest first: #1101,
+   #1103, #1087, #1091, #1095, #1084, #1088, #1096.
 
-- Reported ratios never subtract the measured 4.272 ns call overhead
-  (`bench_extraction_3way.rs:2589` aggregates `bench.ns * normalization`;
-  `adjusted_ns` is only serialized). Adding a constant to both arms pulls
-  `(nnue+c)/(static+c)` toward 1 — toward the paper's parity finding.
-- The learned arm and the static arm differ in *search initialization* as well
-  as scoring (`IncrementalExtractor` starts from `Extraction::from_backfill`,
-  static DP runs independently), which confounds attributing the result to the
-  cost model.
-- Round 3 vs Round 2a is never tested directly; the two CIs overlap
-  substantially and were timed in separate sessions.
-- The bootstrap resamples individual kernels, but the corpus defines
-  `(band, seed)` families as the split unit (56 families × 14). Treating ~716
-  kernels as independent understates the interval that the "confirmed
-  regression" verdict rests on.
+## Method note
 
-Two further findings the author already conceded cannot be fixed from this
-tree: the per-kernel `D2a`/`D3` JSONL artifacts were written to a gitignored
-path on a machine whose worktree is gone, and the Round-3 checkpoints
-`inspect_flip` requires are not in the repository. Both were handled by
-qualifying the text rather than restoring the data.
+Branch state is from `git merge-tree --write-tree` and `git rev-list --count`
+per branch against `origin/main` at `44c9fa3f`; conflicting paths from
+`git merge-tree --name-only`. CI conclusions are from the check-run API at each
+branch's current head, read directly rather than relayed. The #1072 file
+deletion was confirmed with `git ls-tree -r origin/main` and the deleting commit
+identified with `git log -- <path>`.
 
-**This is not a rebase-and-merge PR.** Either the four P1s get answered with
-re-analysis (the overhead subtraction and the family-clustered bootstrap are
-both re-aggregations of data that exists, so they are cheap), or the paper
-lands explicitly marked as a draft whose intervals are provisional.
-
-### 5. #1079's audit doc is going stale while it sits
-
-Six P2 threads, all "the document says X, the code does Y" — the `oracle`
-feature is harness code not test-only, `CellGridProgram` is library-only not
-dead, production *does* already count rule applications, the timeout ratio
-range is wrong, the recompile-per-resize count is wrong in both directions.
-Worse, the audit is the document that *spawned* `#1083` and `#1085`, and both
-have since changed the code it describes — `#1085` unifies the Dwrt tier the
-audit flags, and `#1083` adds the stop-reason instrumentation that thread 2
-says is missing. Land it with the six corrections now, or it will need a
-rewrite against post-`#1083`/`#1085` `main`.
-
-## Superseded / obsolete / recommended for closure
-
-### Recommend closing: #1050 — regalloc mutation tests
-
-Its own merge commit is the case for closure: "#1055 and #1068 rewrote
-`regalloc.rs` end to end and deleted the graph-coloring allocator outright —
-`InterferenceGraph`, `build_interference_graph`, `color_graph` and
-`simplicial_elimination_order` are gone from the workspace. Two thirds of this
-branch's tests, and **both of the bugs it found**, were about those functions."
-
-What survives is four `LinearScan` eviction tests — and both open threads argue
-those four are themselves wrong: they assert *which* `ValueId` wins an
-arbitrary last-use tie (killing equivalent mutants and pinning allocator policy
-that is free to change), and their names violate `docs/STYLE.md`'s "it should"
-rule. A PR whose findings are deleted code and whose residue is contested is
-better closed with the two bug write-ups moved to `docs/bugs/` than merged.
-
-### Recommend closing or folding: #1049 — graph.rs test renames
-
-The PR's own description records that its substantive work (cost.rs mutation
-gaps) was already closed by `#1027`, fifteen commits ahead of this branch's
-base, and that those additions were dropped rather than merged as a worse
-duplicate. What is left is **two test renames and one stale backlog-note
-correction**, open since 28 Aug. Land it in the next passing PR that touches
-`pixelflow-search`, or close it.
-
-### Check for duplication: #1051 — cost.rs mutation gaps
-
-`#1051` is the 2026-08-30 cost.rs audit; `#1049` states that `#1027`
-(2026-08-22 audit) already closed the cost.rs backlog item and specifically
-avoided an unsafe-env-var-under-parallel-tests flaw that a re-attempt
-reproduced. `#1051` is green and thread-free, so it is cheap to land, but
-someone should confirm it is not re-adding what `#1027` already covers before
-it goes in.
-
-### Superseded by the Phase-3 program: #1044 — Round 2b contrastive
-
-The experiment this PR ran **failed**, and the PR says so honestly: geomean
-1.0153 with CI [1.0097, 1.0213], entirely above 1.0, a confirmed regression
-against both the static prior and Round 2a. It has also been ported twice
-against `main` (`#1063`'s `EdgeTrace` rework invalidated the original). The
-research direction has since moved to guided saturation (`#1084`), which does
-not use this machinery. Merge it as the durable record of a negative result —
-`#1072` cites Round 2b and currently calls it the paper's weakest-traced
-number, which merging would partly fix — or close it and keep the finding in
-the journal. Do not leave it open indefinitely; it will need a third port.
-
-### Salvageable with one caveat: #1054 — x86_64 mutation tests
-
-Invalidated mid-flight by `#1055`–`#1062`'s Vex-builder refactor, then rewritten
-against the new API; both review threads are resolved and CI is green. One
-honesty gap remains in the author's own reply: the audit's "0 real gaps"
-conclusion was not re-verified for `emit_vpextrd_to_gpr` and
-`emit_vmovss_load_scaled` after the refactor. Either rerun
-`cargo mutants -p pixelflow-codegen --file .../x86_64.rs -- --lib --test collapse_loop`
-or soften the claim in the doc, then merge.
-
-### Stalled on external dependency: #994 — macOS signed DMG
-
-Open since 11 Aug, green, no review threads, and **untested end to end** — it
-needs five repository secrets (`MACOS_CERTIFICATE_P12_BASE64`,
-`MACOS_CERTIFICATE_PASSWORD`, `AC_API_KEY_P8_BASE64`, `AC_API_KEY_ID`,
-`AC_API_ISSUER_ID`) that do not exist, and the codesign/notarytool/stapler path
-has never run. The workflow is tag-triggered, so it is inert until someone
-pushes a `v*.*.*` tag. It is not obsolete and not wrong; it is blocked on an
-Apple Developer account. Merge it as dormant infrastructure, or close it until
-the credentials exist — but three weeks of drift on a branch that only CI can't
-validate is a poor use of an open slot.
-
-## Suggested landing order
-
-1. **#1053** — unblocks the std-off feature-matrix noise that `#1083` and
-   `#1084` are both carrying. Fix the stale header comment, narrow the no-std
-   job's claim, merge.
-2. **#1081** — zero threads, mechanical type change, green on its prior head.
-3. **#1051**, **#1049**, **#1054** — small, green, thread-free (modulo the
-   `#1054` mutants rerun and the `#1051` duplication check).
-4. **#1079** — six factual corrections, then merge before it goes stale.
-5. **#1085** — resolve its 3 threads; it is the policy change the other two
-   saturation PRs should rebase onto.
-6. **#1083** — declare `saturation-telemetry = ["std"]`, then the two P1
-   threads (the `Converged`-on-budget-exit misreport is the one that matters:
-   the PR exists to measure stop reasons and would record the wrong one).
-7. **#1084** — 17 threads, 5 P1, 27k additions. Its P1s are about experiment
-   validity, not style; budget real time.
-8. **#1044**, **#994** — decide merge-or-close; both are records rather than
-   work in progress.
-9. **#1072** — last, and only after the four P1 re-analyses or an explicit
-   provisional framing.
-
-## Residual gap against the stated goal
-
-"Rebased" is met for all 13. "No CI failures" and "no unresolved comments" are
-not, and cannot be closed from this session without pushing commits to eight
-other people's branches, which is outside this session's branch scope. The
-per-PR fixes above are written to be actionable by whoever owns each branch.
+Two limits worth stating. Thread counts below are as of the first pass and were
+not re-derived for this refresh, so treat them as indicative. And this session
+is scoped to its own branch, so nothing here was pushed to another PR — the
+recommendations are for the branch owners.
