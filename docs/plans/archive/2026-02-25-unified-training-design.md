@@ -1,5 +1,7 @@
 # Unified Training Flow: Temporal Credit Assignment via Sequence Transformer
 
+> **ARCHIVED.** The self-play/critic/REINFORCE loop this describes was removed in July 2026; the binaries it names (`train_online`, `collect_guide_data`, `train_mask*`) no longer exist. Post-mortem and replacement: [`../2026-07-07-guided-saturation-redesign.md`](../2026-07-07-guided-saturation-redesign.md). Kept for the credit-assignment framing only.
+
 ## Problem
 
 The current training pipeline has two separate loops that don't share representations:

@@ -122,17 +122,17 @@ cyclic choice sets and two non-terminating cycle breakers).
 
 Recorded so nobody re-derives or re-fears these.
 
-1. **HalfEP NNUE** (`pixelflow-ml/src/nnue.rs`, see `docs/GNN_REWRITE_GUIDANCE_VISION.md`):
+1. **HalfEP NNUE** (`pixelflow-ml/src/nnue.rs`, see `docs/archive/GNN_REWRITE_GUIDANCE_VISION.md`):
    O(ops²) one-hot (perspective_op, descendant_op, depth, path) features, 401k inputs.
    Superseded by the factored O(ops) embedding scheme in
    `pixelflow-search/src/nnue/factored.rs` — same move chess NNUE made going from
    HalfKP to factored feature sets.
-2. **GNN vision** (`docs/GNN_REWRITE_GUIDANCE_VISION.md`): message passing over
+2. **GNN vision** (`docs/archive/GNN_REWRITE_GUIDANCE_VISION.md`): message passing over
    e-classes, teacher = full saturation, student = GNN predicting productive
    rewrites. Never built in Rust; the constraint (no-alloc, CPU, incremental,
    proc-macro time) is why. The idea survives in a different position — see §5
    (teacher-student distillation).
-3. **Unified RL loop** (`docs/plans/2026-02-25-unified-training-*`,
+3. **Unified RL loop** (`docs/plans/archive/2026-02-25-unified-training-*`,
    `docs/NNUE_TRAINING_RECIPE.md`): Rust actor + Python **Causal Sequence
    Transformer critic** (`critic_server.py`, `graph_teacher.py`, PyTorch) doing
    temporal credit assignment for REINFORCE. Removed 2026-07 after the four-agent
@@ -231,7 +231,7 @@ win, and any paper should state the delta measurement rather than the analogy.
 | Work | What it is | Relevance |
 |------|-----------|-----------|
 | **Ithemal** (2018) / **BHive** | LSTM basic-block throughput model + measurement harness/benchmark | Methodology for noisy-label benchmarking; corpus design. |
-| **GRANITE** (2022) | GNN over instruction dependency graphs; ~6.9% error, beats Ithemal | Validates graph-structured representation. Our 2-hop binding is a "1-round GNN" — the literature says 1 round is short. Constraint says we can't ship a GNN → use it **offline as a teacher** and distill into the NNUE. This resurrects `GNN_REWRITE_GUIDANCE_VISION.md` in a sound position (supervised, offline, Python allowed — unlike the removed RL critic). |
+| **GRANITE** (2022) | GNN over instruction dependency graphs; ~6.9% error, beats Ithemal | Validates graph-structured representation. Our 2-hop binding is a "1-round GNN" — the literature says 1 round is short. Constraint says we can't ship a GNN → use it **offline as a teacher** and distill into the NNUE. This resurrects `docs/archive/GNN_REWRITE_GUIDANCE_VISION.md` in a sound position (supervised, offline, Python allowed — unlike the removed RL critic). |
 | **llvm-mca / uiCA** | Analytical/simulated x86 throughput predictors | **Two-tier labels:** pretrain on millions of free analytical labels, fine-tune on measured ns from `jit_bench`. Multiplies effective corpus by orders of magnitude; biggest bang for zero architecture change. |
 | Halide autoscheduler (Adams 2019); TenSet/MetaSchedule | Learned cost models beating hand-tuned schedules in narrow SIMD/tensor domains | The existence proof for "our niche": closed op set + cheap ground truth ⇒ learned model beats hand tuning. The goal is beating LLVM *here*, not in general. |
 
