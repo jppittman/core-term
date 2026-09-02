@@ -916,9 +916,9 @@ fn torus_slice() -> (ExprArena, ExprId) {
 }
 
 /// Names this module's kernels are registered under in
-/// `corpus_split.toml`'s `[final].kernels`, `gen_bench_corpus`'s
-/// `named_kernel()`, and `bench_extraction_3way`'s `NAMED_KERNELS` — the
-/// same three touch points the five original named kernels use.
+/// `corpus_split.toml`'s `[final].kernels` and `gen_bench_corpus`'s
+/// `named_kernel()` — the same touch points the five original named kernels
+/// use.
 pub const SHADERTOY_KERNEL_NAMES: [&str; 12] = [
     "cosine_palette",
     "smooth_min_scene",

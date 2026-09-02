@@ -1841,9 +1841,8 @@ impl EGraph {
 
     /// Extract the best expression and its cost.
     ///
-    /// The cost function can be any `CostFunction` implementor:
-    /// - `CostModel` for hardcoded costs
-    /// - `ExprNnue` via [`IncrementalExtractor`] for learned neural costs
+    /// The cost function can be any `CostFunction` implementor —
+    /// `CostModel` is the hardcoded latency prior.
     pub fn extract_best<C: CostFunction>(
         &self,
         root: EClassId,

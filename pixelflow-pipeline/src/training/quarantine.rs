@@ -1,8 +1,8 @@
-//! The numeric quarantine: one same-form JIT-vs-oracle gate, two callers.
+//! The numeric quarantine: one same-form JIT-vs-oracle gate for every label
+//! source.
 //!
 //! Every expression that is about to become a *label* — a corpus tier entry in
-//! `gen_bench_corpus`, or a live `--synthetic` draw in
-//! `bootstrap_extraction_head` — is first cross-checked against the
+//! `gen_bench_corpus`, or a live draw in a trainer — is first cross-checked against the
 //! independent scalar oracle on a seeded 64-point magnitude sweep. This is a
 //! SAME-ARENA check: both tiers evaluate the identical expression, so a
 //! disagreement is never an algebraic-rewrite judgment call. It is a

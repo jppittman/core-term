@@ -97,8 +97,8 @@ pub fn optimize(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
     optimize_with_model(analyzed)
 }
 
-/// Optimize an analyzed kernel using cost-guided extraction (static
-/// latency prior by default; learned NNUE via `PIXELFLOW_NNUE_WEIGHTS`).
+/// Optimize an analyzed kernel using cost-guided extraction (the static
+/// latency prior, selected through `env_extraction_policy`).
 pub fn optimize_with_model(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
     let extraction = env_extraction_policy();
     analyzed.def.body = optimize_expr_with_model(analyzed.def.body, &extraction);
@@ -106,7 +106,7 @@ pub fn optimize_with_model(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
 }
 
 /// Optimize a single expression using e-graph saturation and cost-guided extraction.
-fn optimize_expr_with_model(expr: Expr, extraction: &ExtractionPolicy<'_>) -> Expr {
+fn optimize_expr_with_model(expr: Expr, extraction: &ExtractionPolicy) -> Expr {
     // Blocks: pass directly to optimize_via_model. The e-graph's expr_to_egraph
     // already handles Block by adding each let-binding to var_to_eclass, so
     // references share e-classes. Let-bindings are CSE hints. The e-graph sees
@@ -127,8 +127,8 @@ fn optimize_expr_with_model(expr: Expr, extraction: &ExtractionPolicy<'_>) -> Ex
 
 /// Optimize an expression via e-graph with cost-guided extraction + DAG CSE.
 ///
-/// Uses the extraction policy (static latency prior by default, NNUE
-/// opt-in) to pick the cheapest equivalent form, then emits let-bindings
+/// Uses the extraction policy (the static latency prior) to pick the
+/// cheapest equivalent form, then emits let-bindings
 /// for shared subexpressions. This avoids tree-bloating where shared
 /// e-classes get duplicated, and produces code with CSE.
 ///
@@ -136,7 +136,7 @@ fn optimize_expr_with_model(expr: Expr, extraction: &ExtractionPolicy<'_>) -> Ex
 /// expressions correctly (returns the expression without a block wrapper),
 /// so the old "no sharing — simple tree" fallback is unnecessary and
 /// removed. CSE is always preserved.
-fn optimize_via_model(expr: &Expr, extraction: &ExtractionPolicy<'_>) -> Expr {
+fn optimize_via_model(expr: &Expr, extraction: &ExtractionPolicy) -> Expr {
     let mut ctx = EGraphContext::new();
     let root = ctx.expr_to_egraph(expr);
 
@@ -436,7 +436,7 @@ fn is_coordinate_intrinsic(name: &str) -> bool {
 /// Each let binding and the final expression are optimized independently.
 fn optimize_block_preserving_structure(
     mut block: BlockExpr,
-    extraction: &ExtractionPolicy<'_>,
+    extraction: &ExtractionPolicy,
 ) -> Expr {
     for stmt in &mut block.stmts {
         if let Stmt::Let(let_stmt) = stmt {
@@ -969,11 +969,10 @@ impl EGraphContext {
             });
         }
 
-        // Get the best node for this e-class. `dag.choices` comes from
-        // `IncrementalExtractor::extract_choices_only`, which transitively
-        // backfills every e-class reachable from root (including children
-        // introduced by saturation merges or NNUE-guided swaps) via
-        // `backfill_reachable_defaults` — see pixelflow-search's
+        // Get the best node for this e-class. `dag.choices` comes from a
+        // sealed `Extraction`, whose constructors repair/backfill every
+        // e-class reachable from root (including children introduced by
+        // saturation merges) into a well-founded set — see pixelflow-search's
         // egraph/extract.rs. A missing choice here means that invariant was
         // violated upstream; silently defaulting to node 0 would risk
         // emitting a node that isn't even the reachable/consistent variant
@@ -981,8 +980,8 @@ impl EGraphContext {
         let node_idx = dag.best_node_idx(canonical).unwrap_or_else(|| {
             panic!(
                 "eclass_to_expr: e-class {} reachable from root {} has no recorded \
-                 extraction choice — IncrementalExtractor::extract_choices_only must \
-                 guarantee every reachable e-class has Some(idx)",
+                 extraction choice — a sealed Extraction must guarantee every \
+                 reachable e-class has Some(idx)",
                 canonical.index(),
                 dag.root.index()
             )
@@ -1417,9 +1416,9 @@ mod tests {
     // DAG Extraction Tests
     // ========================================================================
     //
-    // These go through the public `optimize()` entry point (the default,
-    // no-`PIXELFLOW_NNUE_WEIGHTS` static-latency-prior path) rather than
-    // constructing an explicit `ExtractionPolicy`: DAG/CSE let-binding
+    // These go through the public `optimize()` entry point (the
+    // static-latency-prior path) rather than constructing an explicit
+    // `ExtractionPolicy`: DAG/CSE let-binding
     // placement is driven by ref-counting in `compute_ref_counts`, which is
     // independent of which cost model picked the extraction — the public
     // entry point exercises the same sharing logic these tests care about.
@@ -1521,20 +1520,18 @@ mod tests {
         );
     }
 
-    /// The default production path (no `PIXELFLOW_NNUE_WEIGHTS` set) must use
-    /// static latency-prior extraction.
+    /// The default production path must use static latency-prior
+    /// extraction.
     ///
     /// We verify the default `optimize()` entry point is byte-identical to
-    /// explicitly running `ExtractionPolicy::Static(CostModel::latency_prior())` —
-    /// proving the default neither silently picks up learned weights nor
+    /// explicitly running `ExtractionPolicy::with_costs(CostModel::latency_prior())`
+    /// — proving the default neither silently picks up some other table nor
     /// silently degrades to a zero-cost (no-op) model.
     ///
     /// This intentionally calls the private `optimize_expr`/
     /// `optimize_expr_with_model` directly (STYLE.md "Test Public API"
     /// exception): the whole point is comparing the default's *implicit*
-    /// policy selection against an *explicit* one, and the only public path
-    /// to policy selection is the process-global `PIXELFLOW_NNUE_WEIGHTS` env
-    /// var, which would race across the parallel test harness.
+    /// policy selection (`env_extraction_policy`) against an *explicit* one.
     #[test]
     fn default_path_extraction_is_static_latency_prior() {
         use crate::codegen;
@@ -1545,8 +1542,8 @@ mod tests {
             (a + b).sqrt()
         }};
 
-        // `optimize()` is the real kernel! macro entry point; with no
-        // PIXELFLOW_NNUE_WEIGHTS set it must resolve to the static prior.
+        // `optimize()` is the real kernel! macro entry point; it must
+        // resolve to the static prior.
         let kernel = parse(input.clone()).unwrap();
         let analyzed = analyze(kernel).unwrap();
         let via_default_entry_point = optimize(analyzed);
@@ -1556,7 +1553,7 @@ mod tests {
         // expression through the optimizer must match exactly.
         let kernel = parse(input).unwrap();
         let mut analyzed_for_static_path = analyze(kernel).unwrap();
-        let static_extraction = ExtractionPolicy::Static(Box::new(CostModel::latency_prior()));
+        let static_extraction = ExtractionPolicy::with_costs(CostModel::latency_prior());
         analyzed_for_static_path.def.body = optimize_expr(analyzed_for_static_path.def.body);
         analyzed_for_static_path.def.body =
             optimize_expr_with_model(analyzed_for_static_path.def.body, &static_extraction);
@@ -1565,8 +1562,8 @@ mod tests {
         assert_eq!(
             default_output, explicit_static_output,
             "default optimize() path must be byte-identical to explicitly \
-             using ExtractionPolicy::Static(CostModel::latency_prior()) — the \
-             default must not silently pick up learned weights or degrade \
+             using ExtractionPolicy::with_costs(CostModel::latency_prior()) — the \
+             default must not silently pick up another table or degrade \
              to a zero-cost model"
         );
     }

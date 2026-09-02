@@ -821,7 +821,7 @@ mod expansion_derivative_tests {
     /// always legitimate and asserts nothing; a `Some` must be honest:
     /// `Dwrt`-free, params round-tripped, and mathematically equivalent.
     /// Whether the output is also *cheaper* is a cost-model concern for the
-    /// bench harness (`bench_extraction_3way` precedent), not a unit test.
+    /// bench harness (the `pixelflow-pipeline` bench bins), not a unit test.
     ///
     /// These tests build arenas by hand and call the private
     /// `differentiate_in_optimizer` directly (STYLE.md "Test Public API"

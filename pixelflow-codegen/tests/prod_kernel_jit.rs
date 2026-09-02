@@ -10,20 +10,18 @@
 //!
 //! Pipeline exercised:
 //!   ExprArena  ->  e-graph equality saturation (algebra + trig + FMA fusion)
-//!              ->  NNUE-guided extraction (the learned "ML filter")
+//!              ->  latency-prior extraction (the production policy)
 //!              ->  transcendental lowering + register allocation + codegen
 //!              ->  native machine code, executed on real coordinates.
 //!
-//! Note: there are no validated trained NNUE weights shipped with the compiler
-//! (see `pixelflow-compiler/src/optimize.rs`), so this drives the extractor
-//! with the no-op zero-weight cost model — extraction keeps the original
-//! form; peephole/CSE still run. The point is the *pipeline*, end to end.
+//! Extraction goes through `env_extraction_policy`, the same seam the
+//! `kernel!` macros and runtime kernels use, so this exercises the shipped
+//! policy rather than a test-only one. The point is the *pipeline*, end to end.
 
 use pixelflow_codegen::emit::compile;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
-use pixelflow_search::egraph::{EGraph, IncrementalExtractor, choices_to_arena};
+use pixelflow_search::egraph::{EGraph, choices_to_arena, env_extraction_policy};
 use pixelflow_search::math::all_rules;
-use pixelflow_search::nnue::ExprNnue;
 
 /// Build `sin(sqrt(x*x + y*y) * freq) * amp + bias` as an arena.
 fn build_swirl(freq: f32, amp: f32, bias: f32) -> (ExprArena, ExprId) {
@@ -48,8 +46,9 @@ fn reference(x: f32, y: f32, freq: f32, amp: f32, bias: f32) -> f32 {
     (((x * x + y * y).sqrt()) * freq).sin() * amp + bias
 }
 
-/// Optimize `(arena, root)` through the e-graph and the NNUE extractor,
-/// returning the extracted DAG. Prints a few diagnostics so the run is visible.
+/// Optimize `(arena, root)` through the e-graph and the production
+/// extraction policy, returning the extracted DAG. Prints a few diagnostics
+/// so the run is visible.
 fn optimize(arena: &ExprArena, root: ExprId, tag: &str) -> (ExprArena, ExprId) {
     let mut eg = EGraph::with_rules(all_rules());
     let root_class = eg.add_arena(arena, root);
@@ -58,15 +57,13 @@ fn optimize(arena: &ExprArena, root: ExprId, tag: &str) -> (ExprArena, ExprId) {
     eg.saturate_with_limit(40);
     let classes_after = eg.num_classes();
 
-    // The learned "ML filter": NNUE-guided extraction of the cheapest DAG.
-    let nnue = ExprNnue::new_with_latency_prior(0xC0FFEE);
-    let extractor = IncrementalExtractor::new(&nnue, 8);
-    let (cost, extraction) = extractor.extract_choices_only(&eg, root_class);
+    // Latency-prior extraction of the cheapest DAG.
+    let extraction = env_extraction_policy().extraction(&eg, root_class);
     let (out_arena, out_root) = choices_to_arena(&extraction);
 
     eprintln!(
         "[{tag}] egraph {classes_before} -> {classes_after} classes, \
-         extracted DAG = {} nodes, nnue cost = {cost:.3}",
+         extracted DAG = {} nodes",
         out_arena.len(),
     );
     (out_arena, out_root)
@@ -82,13 +79,13 @@ use pixelflow_codegen::emit::executable::{Point4, TileSlice};
 const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
 #[test]
-fn prod_swirl_kernel_through_nnue_and_jit() {
+fn prod_swirl_kernel_through_egraph_and_jit() {
     let (freq, amp, bias) = (3.0_f32, 0.5, 0.5);
 
     let (orig, orig_root) = build_swirl(freq, amp, bias);
     let (opt, opt_root) = optimize(&orig, orig_root, "swirl");
 
-    // JIT both the original and the NNUE-optimized DAG. Both paths run the
+    // JIT both the original and the e-graph-optimized DAG. Both paths run the
     // shared transcendental-lowering + regalloc + codegen pipeline.
     let orig_jit = compile(&orig, orig_root).expect("JIT original");
     let opt_jit = compile(&opt, opt_root).expect("JIT optimized");
@@ -112,7 +109,7 @@ fn prod_swirl_kernel_through_nnue_and_jit() {
     // Sin is lowered to a Chebyshev polynomial, so JIT output is an
     // approximation; the analytic reference is matched within the polynomial's
     // accuracy. The cross-check between the two JIT paths is much tighter — it
-    // certifies that NNUE extraction preserved semantics.
+    // certifies that e-graph extraction preserved semantics.
     let mut max_ref_err = 0.0_f32;
     let mut max_cross_err = 0.0_f32;
     for chunk in coords.chunks(LANES) {
@@ -156,7 +153,7 @@ fn prod_swirl_kernel_through_nnue_and_jit() {
             );
             assert!(
                 (got_orig - got_opt).abs() <= 1e-1,
-                "NNUE extraction changed semantics at ({x},{y}): \
+                "e-graph extraction changed semantics at ({x},{y}): \
                  original {got_orig} vs optimized {got_opt}"
             );
         }
