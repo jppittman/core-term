@@ -81,10 +81,43 @@ pub struct EGraph {
     /// [`EGraph::saturate_until_applications_observed`], so every existing
     /// caller is unaffected.
     replay_mask: Option<ApplicationMask>,
+    /// How many applications the most recent replay mask actually skipped.
+    /// Reset at the start of every
+    /// [`EGraph::saturate_until_applications_observed`] call and read back
+    /// by [`EGraph::last_replay_mask_skips`] — a caller reporting a
+    /// confluence-aware Δ must be able to distinguish "the mask matched
+    /// once" from "the mask matched eleven times", and must never have to
+    /// infer that a mask fired at all.
+    replay_mask_skips: usize,
 }
 
-/// Names exactly one application to skip in a counterfactual replay of the
-/// unguided sweep — see [`EGraph::saturate_until_applications_observed`] and
+/// How far a counterfactual replay's mask reaches: one application, or
+/// every application that would re-derive the same thing.
+///
+/// Leave-one-out ([`MaskScope::Single`]) answers "what did THIS firing
+/// contribute", but an e-graph is confluent enough that a masked node is
+/// often re-derived a few applications later by the same rule matching the
+/// same class content again — so a `Δ = 0` under `Single` can mean either
+/// "this application did not matter" or "this application mattered and
+/// something else silently restored it". [`MaskScope::AllMatchingCandidate`]
+/// separates those two: it masks the seed AND every later application
+/// sharing its `(rule_idx, canonical matched-class content)` — the same
+/// `CandidateKey` the guided loop dedups on — so no re-derivation by that
+/// route can put the node back. The gap between the two Δs is this
+/// program's measurement of leave-one-out's confluence blindness
+/// (docs/plans/2026-09-01-guide-return-to-go.md §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaskScope {
+    /// Skip only the application that would be assigned `skip_ordinal`.
+    Single,
+    /// Skip that application and every later one with the same
+    /// [`super::candidate::CandidateKey`], for the rest of the run.
+    AllMatchingCandidate,
+}
+
+/// Names the application to skip in a counterfactual replay of the unguided
+/// sweep, and how far the skip reaches — see
+/// [`EGraph::saturate_until_applications_observed`] and
 /// docs/plans/2026-09-01-guide-return-to-go.md §4.1.
 ///
 /// `skip_ordinal` is the [`super::provenance::ApplicationId`] (as `u64`) the
@@ -93,9 +126,59 @@ pub struct EGraph {
 /// replaying the same expression through the same ordering policy and
 /// masking the ordinal that was `a` in the original trajectory reproduces
 /// `τ \ a` exactly (§4.1's `Δ_a = R(τ\a,B) − R(τ,B)`).
-#[derive(Clone, Copy, Debug)]
+///
+/// Under [`MaskScope::AllMatchingCandidate`] the key to keep masking is not
+/// supplied by the caller — it is READ off the live graph at the moment the
+/// seed ordinal comes up, which is the only moment it is exactly the key the
+/// original trajectory's application `a` matched. A caller-supplied key
+/// would be a second computation of the same thing against a different graph
+/// state, i.e. the drift this codebase's one-constructor rule exists to
+/// prevent.
+#[derive(Clone, Debug)]
 pub struct ApplicationMask {
+    /// Ordinal of the seed application to skip.
     pub skip_ordinal: u64,
+    /// How far the skip reaches.
+    pub scope: MaskScope,
+    /// The seed's `(rule_idx, class content)`, captured when `skip_ordinal`
+    /// came up. `None` until then, and always `None` under
+    /// [`MaskScope::Single`], which never needs it.
+    captured: Option<super::candidate::CandidateKey>,
+}
+
+impl ApplicationMask {
+    /// §4.1's leave-one-out mask: skip exactly this ordinal.
+    #[must_use]
+    pub fn leave_one_out(skip_ordinal: u64) -> Self {
+        Self {
+            skip_ordinal,
+            scope: MaskScope::Single,
+            captured: None,
+        }
+    }
+
+    /// The confluence-aware mask: skip this ordinal and every later
+    /// application sharing its `CandidateKey`.
+    #[must_use]
+    pub fn all_matching_candidate(skip_ordinal: u64) -> Self {
+        Self {
+            skip_ordinal,
+            scope: MaskScope::AllMatchingCandidate,
+            captured: None,
+        }
+    }
+}
+
+/// What [`EGraph::mask_decision`] concluded about the application about to
+/// be recorded. Three distinct skips, not one boolean: the leave-one-out
+/// mask must be consumed after it fires, the confluence-aware seed must
+/// capture its key as it fires, and a later re-derivation must do neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaskDecision {
+    Proceed,
+    Skip,
+    SkipAndCapture,
+    SkipAndConsume,
 }
 
 impl Default for EGraph {
@@ -119,7 +202,8 @@ impl Clone for EGraph {
             active_application: self.active_application,
             const_fact: self.const_fact.clone(),
             refused_const_unions: self.refused_const_unions.clone(),
-            replay_mask: self.replay_mask,
+            replay_mask: self.replay_mask.clone(),
+            replay_mask_skips: self.replay_mask_skips,
         }
     }
 }
@@ -215,6 +299,7 @@ impl EGraph {
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
             replay_mask: None,
+            replay_mask_skips: 0,
         }
     }
 
@@ -236,6 +321,7 @@ impl EGraph {
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
             replay_mask: None,
+            replay_mask_skips: 0,
         }
     }
 
@@ -1071,6 +1157,7 @@ impl EGraph {
         mask: Option<ApplicationMask>,
     ) -> AppBudgetSaturationStats {
         self.replay_mask = mask;
+        self.replay_mask_skips = 0;
         let start = std::time::Instant::now();
         let deadline = start + timeout;
         let mut iterations = 0;
@@ -1254,6 +1341,62 @@ impl EGraph {
         }
     }
 
+    /// How many applications the most recent
+    /// [`Self::saturate_until_applications_observed`] call's mask skipped.
+    /// `0` when no mask was installed, or when the mask's ordinal was never
+    /// reached — a caller reporting Δ reads this rather than assuming.
+    #[must_use]
+    pub const fn last_replay_mask_skips(&self) -> usize {
+        self.replay_mask_skips
+    }
+
+    /// Decide what the installed replay mask (if any) says about the
+    /// application about to be recorded. Split out of
+    /// `apply_action_from_rule` because the `AllMatchingCandidate` arm needs
+    /// to READ the graph (`ClassContentKey::of`) while the mask is borrowed,
+    /// and then WRITE the mask — two borrows that cannot overlap.
+    fn mask_decision(&self, rule_idx: usize, class_id: EClassId) -> MaskDecision {
+        let Some(mask) = &self.replay_mask else {
+            return MaskDecision::Proceed;
+        };
+        // ApplicationIds are assigned as `provenance.application_count()` at
+        // record time, so the count right now IS the ordinal about to be
+        // minted.
+        let at_seed = mask.skip_ordinal == self.provenance.application_count() as u64;
+        match (mask.scope, &mask.captured) {
+            // Leave-one-out: fire exactly once, then consume the mask.
+            (MaskScope::Single, _) => {
+                if at_seed {
+                    MaskDecision::SkipAndConsume
+                } else {
+                    MaskDecision::Proceed
+                }
+            }
+            // Confluence-aware, before the seed: nothing to compare against
+            // yet, so only the seed ordinal itself is masked — and masking
+            // it is what captures the key.
+            (MaskScope::AllMatchingCandidate, None) => {
+                if at_seed {
+                    MaskDecision::SkipAndCapture
+                } else {
+                    MaskDecision::Proceed
+                }
+            }
+            // Confluence-aware, after the seed: mask every re-derivation by
+            // the same (rule, canonical matched-class content).
+            (MaskScope::AllMatchingCandidate, Some(key)) => {
+                if key.rule_idx == rule_idx
+                    && key.content
+                        == super::candidate::ClassContentKey::of(self, self.find(class_id))
+                {
+                    MaskDecision::Skip
+                } else {
+                    MaskDecision::Proceed
+                }
+            }
+        }
+    }
+
     /// Apply a rewrite action on behalf of a specific rule, attributing
     /// every e-node created and every union performed while executing it to
     /// one [`super::provenance::ApplicationId`].
@@ -1277,19 +1420,35 @@ impl EGraph {
         class_id: EClassId,
         action: RewriteAction,
     ) -> usize {
-        // Counterfactual replay: the application that would be recorded next
-        // is the one named by `replay_mask.skip_ordinal` (ApplicationIds are
-        // assigned as `provenance.application_count()` at record time, so
-        // the count right now IS the ordinal about to be minted). Skip it —
-        // don't record, don't apply — and consume the mask so it fires
-        // exactly once. Everything downstream (the scan already collected
-        // in `apply_rule_at_index_timed`, the rest of this sweep, later
-        // sweeps) proceeds exactly as it would against a live graph that
-        // simply never received this application, per
-        // docs/plans/2026-09-01-guide-return-to-go.md §4.1.
-        if let Some(mask) = self.replay_mask {
-            if mask.skip_ordinal == self.provenance.application_count() as u64 {
+        // Counterfactual replay (docs/plans/2026-09-01-guide-return-to-go.md
+        // §4.1): a masked application is not recorded and not applied, so
+        // everything downstream — the scan already collected in
+        // `apply_rule_at_index_timed`, the rest of this sweep, later sweeps
+        // — proceeds exactly as it would against a live graph that simply
+        // never received it. Which applications are masked is
+        // `mask_decision`'s call; see [`MaskScope`].
+        match self.mask_decision(rule_idx, class_id) {
+            MaskDecision::Proceed => {}
+            MaskDecision::Skip => {
+                self.replay_mask_skips += 1;
+                return 0;
+            }
+            MaskDecision::SkipAndCapture => {
+                let key = super::candidate::CandidateKey {
+                    rule_idx,
+                    content: super::candidate::ClassContentKey::of(self, self.find(class_id)),
+                };
+                let mask = self
+                    .replay_mask
+                    .as_mut()
+                    .expect("mask_decision returned SkipAndCapture with no mask installed");
+                mask.captured = Some(key);
+                self.replay_mask_skips += 1;
+                return 0;
+            }
+            MaskDecision::SkipAndConsume => {
                 self.replay_mask = None;
+                self.replay_mask_skips += 1;
                 return 0;
             }
         }
@@ -2157,6 +2316,125 @@ mod tests {
     use super::*;
     use crate::egraph::ops;
     use crate::egraph::provenance::ApplicationId;
+
+    /// The mask fixture: the same `(x*x + y*y).sqrt()`-shaped arena
+    /// `unguided_replay_without_mask_matches_original_bit_for_bit` uses, under
+    /// the full rule set — a real sweep where idempotent re-fires
+    /// (`commutative`/`associative`) dominate, which is exactly the regime
+    /// [`MaskScope::AllMatchingCandidate`] exists to see through.
+    fn mask_fixture() -> (EGraph, EClassId) {
+        let mut arena = pixelflow_ir::ExprArena::new();
+        let x = arena.push_var(0);
+        let y = arena.push_var(1);
+        let xx = arena.push_binary(pixelflow_ir::OpKind::Mul, x, x);
+        let yy = arena.push_binary(pixelflow_ir::OpKind::Mul, y, y);
+        let sum = arena.push_binary(pixelflow_ir::OpKind::Add, xx, yy);
+        let dist = arena.push_unary(pixelflow_ir::OpKind::Sqrt, sum);
+        let doubled = arena.push_binary(pixelflow_ir::OpKind::Add, dist, dist);
+        let root = arena.push_binary(pixelflow_ir::OpKind::Sub, doubled, doubled);
+        let mut eg = EGraph::with_rules(crate::egraph::all_rules());
+        let root_class = eg.add_arena(&arena, root);
+        (eg, root_class)
+    }
+
+    const MASK_BUDGET: usize = 60;
+    const MASK_MAX_ITERS: usize = 100;
+    const MASK_MAX_CLASSES: usize = 2_000;
+
+    /// The leave-one-out mask is consumed after it fires: exactly one skip,
+    /// no matter how many later applications look like it.
+    #[test]
+    fn leave_one_out_mask_skips_exactly_one_application() {
+        let (mut eg, _root) = mask_fixture();
+        eg.saturate_until_applications_observed(
+            MASK_BUDGET,
+            MASK_MAX_ITERS,
+            MASK_MAX_CLASSES,
+            std::time::Duration::from_secs(30),
+            Some(ApplicationMask::leave_one_out(0)),
+        );
+        assert_eq!(
+            eg.last_replay_mask_skips(),
+            1,
+            "MaskScope::Single must fire exactly once"
+        );
+    }
+
+    /// The confluence-aware mask keeps firing: it skips the seed and every
+    /// later application of the same (rule, canonical matched-class
+    /// content). On a graph whose only rule is an idempotent re-fire, that
+    /// is strictly more than one.
+    #[test]
+    fn all_matching_candidate_mask_skips_every_re_derivation() {
+        let (mut eg, _root) = mask_fixture();
+        eg.saturate_until_applications_observed(
+            MASK_BUDGET,
+            MASK_MAX_ITERS,
+            MASK_MAX_CLASSES,
+            std::time::Duration::from_secs(30),
+            Some(ApplicationMask::all_matching_candidate(0)),
+        );
+        assert!(
+            eg.last_replay_mask_skips() > 1,
+            "MaskScope::AllMatchingCandidate must keep masking re-derivations of the seed \
+             candidate, got {} skip(s)",
+            eg.last_replay_mask_skips()
+        );
+    }
+
+    /// A mask whose ordinal is never reached leaves no trace: zero skips,
+    /// and (because nothing was withheld) the same application count an
+    /// unmasked run produces.
+    #[test]
+    fn a_mask_whose_ordinal_never_fires_changes_nothing() {
+        let (mut eg, _root) = mask_fixture();
+        let plain = eg.saturate_until_applications_observed(
+            MASK_BUDGET,
+            MASK_MAX_ITERS,
+            MASK_MAX_CLASSES,
+            std::time::Duration::from_secs(30),
+            None,
+        );
+        let (mut eg2, _root2) = mask_fixture();
+        let masked = eg2.saturate_until_applications_observed(
+            MASK_BUDGET,
+            MASK_MAX_ITERS,
+            MASK_MAX_CLASSES,
+            std::time::Duration::from_secs(30),
+            Some(ApplicationMask::leave_one_out(u64::MAX)),
+        );
+        assert_eq!(eg2.last_replay_mask_skips(), 0);
+        assert_eq!(plain.applications, masked.applications);
+        assert_eq!(plain.total_unions, masked.total_unions);
+    }
+
+    /// Both scopes agree on the seed itself: masking ordinal 0 under either
+    /// scope withholds the same first application, so the two runs cannot
+    /// diverge before the second matching candidate comes up.
+    #[test]
+    fn both_scopes_withhold_the_same_seed_application() {
+        let (mut eg_single, _r1) = mask_fixture();
+        eg_single.saturate_until_applications_observed(
+            1,
+            MASK_MAX_ITERS,
+            MASK_MAX_CLASSES,
+            std::time::Duration::from_secs(30),
+            Some(ApplicationMask::leave_one_out(0)),
+        );
+        let (mut eg_multi, _r2) = mask_fixture();
+        eg_multi.saturate_until_applications_observed(
+            1,
+            MASK_MAX_ITERS,
+            MASK_MAX_CLASSES,
+            std::time::Duration::from_secs(30),
+            Some(ApplicationMask::all_matching_candidate(0)),
+        );
+        assert_eq!(eg_single.num_classes(), eg_multi.num_classes());
+        assert_eq!(
+            eg_single.provenance().application_count(),
+            eg_multi.provenance().application_count()
+        );
+    }
     use crate::math::algebra::{
         AddNeg, Annihilator, Cancellation, Canonicalize, Commutative, Distributive, Identity,
         InverseAnnihilation, Involution, MulRecip,

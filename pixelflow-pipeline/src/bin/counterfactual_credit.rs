@@ -106,8 +106,8 @@ use pixelflow_ir::ExprArena;
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_search::egraph::provenance::{ApplicationId, ENodeId, Origin};
 use pixelflow_search::egraph::{
-    CandidateFeatures, CostModel, EClassId, EGraph, EpisodeLabels, Firing, Label,
-    REGISTERED_PRIMARY_BUDGET_APPLICATIONS, config_for_node_count, extract_dag,
+    ApplicationMask, CandidateFeatures, CostModel, EClassId, EGraph, EpisodeLabels, Firing, Label,
+    MaskScope, REGISTERED_PRIMARY_BUDGET_APPLICATIONS, config_for_node_count, extract_dag,
 };
 use pixelflow_search::math::all_rules;
 use pixelflow_search::nnue::factored::EMBED_DIM;
@@ -141,6 +141,19 @@ struct Args {
     /// Minimum DEV classical expressions to sample (`corpus_dev.bin`).
     #[arg(long, default_value_t = 30)]
     n_expr_dev: usize,
+
+    /// Lower bound (inclusive) on an expression's arena node count; `0` =
+    /// unbounded. Round 3's registered regime
+    /// (docs/plans/2026-09-01-guide-return-to-go.md §2b.3) is the band
+    /// 101-1000 where guided orderings measurably disagree — the credit
+    /// question is only meaningful where the orderings differ at all.
+    #[arg(long, default_value_t = 0)]
+    min_expr_nodes: usize,
+
+    /// Upper bound (inclusive) on an expression's arena node count; `0` =
+    /// unbounded. See `--min-expr-nodes`.
+    #[arg(long, default_value_t = 0)]
+    max_expr_nodes: usize,
 
     /// Target sampled (state-changing) applications per expression.
     #[arg(long, default_value_t = 20)]
@@ -583,15 +596,36 @@ fn strict_by_output_class(ctx: &ExprContext, app_id: ApplicationId) -> bool {
     false
 }
 
-/// Re-run the identical trajectory with `app_id` masked and return its
-/// extraction cost at `budget` — `cost(τ\a, B)`.
+/// One masked replay's outcome: the extraction cost at `budget`, and how
+/// many applications the mask actually skipped.
+///
+/// The skip count is returned rather than assumed because it is the whole
+/// point of the second mask mode: under [`MaskScope::AllMatchingCandidate`]
+/// a skip count of 1 means "nothing re-derived this candidate" and the two
+/// modes must agree, while a count > 1 names exactly how many
+/// re-derivations leave-one-out was silently allowing.
+struct MaskedReplay {
+    cost: usize,
+    skips: usize,
+}
+
+/// Re-run the identical trajectory with `app_id` masked under `scope` and
+/// return its extraction cost at `budget` — `cost(τ\a, B)` under
+/// [`MaskScope::Single`], `cost(τ\[a], B)` (every re-derivation of `a`'s
+/// candidate masked too) under [`MaskScope::AllMatchingCandidate`].
 ///
 /// # Panics
 ///
 /// Same per-run safety-ceiling contract as [`build_expr_context`].
-fn masked_replay_cost(ctx: &ExprContext, app_id: ApplicationId, budget: usize) -> usize {
-    let mask = pixelflow_search::egraph::ApplicationMask {
-        skip_ordinal: app_id.as_u64(),
+fn masked_replay(
+    ctx: &ExprContext,
+    app_id: ApplicationId,
+    budget: usize,
+    scope: MaskScope,
+) -> MaskedReplay {
+    let mask = match scope {
+        MaskScope::Single => ApplicationMask::leave_one_out(app_id.as_u64()),
+        MaskScope::AllMatchingCandidate => ApplicationMask::all_matching_candidate(app_id.as_u64()),
     };
     let mut egraph = EGraph::with_rules(all_rules());
     let root_class = egraph.add_arena(&ctx.arena, ctx.root);
@@ -604,14 +638,26 @@ fn masked_replay_cost(ctx: &ExprContext, app_id: ApplicationId, budget: usize) -
     );
     assert!(
         stats.stop != pixelflow_search::egraph::SaturationStop::Timeout,
-        "counterfactual_credit: masked replay of '{}' (skip ordinal {}) hit the \
+        "counterfactual_credit: masked replay of '{}' (skip ordinal {}, scope {scope:?}) hit the \
          {SATURATE_TIMEOUT:?} per-run safety ceiling — fail loud rather than score a \
          truncated replay",
         ctx.name,
         app_id.as_u64()
     );
+    let skips = egraph.last_replay_mask_skips();
+    assert!(
+        skips >= 1,
+        "counterfactual_credit: mask for '{}' ordinal {} (scope {scope:?}) never fired — the \
+         replay diverged from the original trajectory before the seed ordinal, so its Δ would \
+         be meaningless",
+        ctx.name,
+        app_id.as_u64()
+    );
     let costs = CostModel::latency_prior();
-    extract_dag(&egraph, root_class, &costs).total_cost
+    MaskedReplay {
+        cost: extract_dag(&egraph, root_class, &costs).total_cost,
+        skips,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +673,14 @@ struct Row {
     cost_original: usize,
     cost_masked: usize,
     delta: f64,
+    /// `cost(τ\[a], B)` under [`MaskScope::AllMatchingCandidate`]: the seed
+    /// AND every re-derivation of its `(rule, canonical match)` masked.
+    cost_masked_multi: usize,
+    /// `ln(cost_masked_multi) − ln(cost_original)` — the confluence-aware Δ.
+    delta_multi: f64,
+    /// How many applications the multi-mask actually skipped (`1` means
+    /// nothing re-derived this candidate, so the two Δs must agree).
+    multi_mask_skips: usize,
     bit_loose: bool,
     bit_tight: bool,
     bit_strict: bool,
@@ -735,27 +789,50 @@ struct BoundStats {
 /// A proxy's value per row, or `None` where it is undefined for that row.
 type ProxyOf<'a> = &'a dyn Fn(&Row) -> Option<f64>;
 
-/// Spearman of `proxy` vs Δ over the rows (in `idx`) where the proxy is
-/// defined.
-fn spearman_over(rows: &[&Row], idx: &[usize], proxy: ProxyOf<'_>) -> f64 {
+/// The same thing as a plain function pointer, for the hindsight-bound
+/// proxies — which are field reads, not closures over anything.
+type BoundProxy = fn(&Row) -> Option<f64>;
+
+/// WHICH counterfactual is the ground truth for a correlation: the
+/// leave-one-out Δ, or the confluence-aware multi-mask Δ. Passed explicitly
+/// rather than defaulted, so no table can silently report one truth's
+/// numbers under the other's heading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Truth {
+    LeaveOneOut,
+    MultiMask,
+}
+
+impl Truth {
+    fn of(self, row: &Row) -> f64 {
+        match self {
+            Truth::LeaveOneOut => row.delta,
+            Truth::MultiMask => row.delta_multi,
+        }
+    }
+}
+
+/// Spearman of `proxy` vs `truth`'s Δ over the rows (in `idx`) where the
+/// proxy is defined.
+fn spearman_over(rows: &[&Row], idx: &[usize], proxy: ProxyOf<'_>, truth: Truth) -> f64 {
     let mut xs = Vec::with_capacity(idx.len());
     let mut ys = Vec::with_capacity(idx.len());
     for &i in idx {
         if let Some(x) = proxy(rows[i]) {
             xs.push(x);
-            ys.push(rows[i].delta);
+            ys.push(truth.of(rows[i]));
         }
     }
     spearman(&xs, &ys)
 }
 
-fn pearson_over(rows: &[&Row], idx: &[usize], proxy: ProxyOf<'_>) -> f64 {
+fn pearson_over(rows: &[&Row], idx: &[usize], proxy: ProxyOf<'_>, truth: Truth) -> f64 {
     let mut xs = Vec::with_capacity(idx.len());
     let mut ys = Vec::with_capacity(idx.len());
     for &i in idx {
         if let Some(x) = proxy(rows[i]) {
             xs.push(x);
-            ys.push(rows[i].delta);
+            ys.push(truth.of(rows[i]));
         }
     }
     pearson(&xs, &ys)
@@ -784,6 +861,7 @@ fn score_proxy(
     proxy: ProxyOf<'_>,
     resamples: &[Vec<usize>],
     r2g_boot: Option<&[f64]>,
+    truth: Truth,
 ) -> BoundStats {
     let all: Vec<usize> = (0..rows.len()).collect();
     let sh_idx: Vec<usize> = all
@@ -800,7 +878,7 @@ fn score_proxy(
 
     let boot: Vec<f64> = resamples
         .iter()
-        .map(|idx| spearman_over(rows, idx, proxy))
+        .map(|idx| spearman_over(rows, idx, proxy, truth))
         .collect();
     let diff_ci = match r2g_boot {
         Some(r) => {
@@ -811,14 +889,14 @@ fn score_proxy(
     };
 
     BoundStats {
-        pearson_pooled: pearson_over(rows, &all, proxy),
-        spearman_pooled: spearman_over(rows, &all, proxy),
+        pearson_pooled: pearson_over(rows, &all, proxy, truth),
+        spearman_pooled: spearman_over(rows, &all, proxy, truth),
         spearman_pooled_ci: ci95(boot),
         spearman_diff_vs_r2g_ci: diff_ci,
-        pearson_sh: pearson_over(rows, &sh_idx, proxy),
-        spearman_sh: spearman_over(rows, &sh_idx, proxy),
-        pearson_dev: pearson_over(rows, &dev_idx, proxy),
-        spearman_dev: spearman_over(rows, &dev_idx, proxy),
+        pearson_sh: pearson_over(rows, &sh_idx, proxy, truth),
+        spearman_sh: spearman_over(rows, &sh_idx, proxy, truth),
+        pearson_dev: pearson_over(rows, &dev_idx, proxy, truth),
+        spearman_dev: spearman_over(rows, &dev_idx, proxy, truth),
         n_pooled: defined(&all),
         n_sh: defined(&sh_idx),
         n_dev: defined(&dev_idx),
@@ -957,13 +1035,31 @@ fn main() {
         }),
     };
 
+    let in_band = |a: &ExprArena| {
+        let n = a.nodes_raw().len();
+        (args.min_expr_nodes == 0 || n >= args.min_expr_nodes)
+            && (args.max_expr_nodes == 0 || n <= args.max_expr_nodes)
+    };
+    let dev_in_band: Vec<_> = dev_entries
+        .into_iter()
+        .filter(|(_, a, _)| in_band(a))
+        .collect();
+    let sh_in_band: Vec<_> = sh_entries
+        .into_iter()
+        .filter(|(_, a, _)| in_band(a))
+        .collect();
+    let dev_available = dev_in_band.len();
+    let sh_available = sh_in_band.len();
+
     let mut select_rng = SeededRng::new(args.seed);
-    let dev_sample = seeded_select(dev_entries, args.n_expr_dev, &mut select_rng);
-    let sh_sample = seeded_select(sh_entries, args.n_expr_sh, &mut select_rng);
+    let dev_sample = seeded_select(dev_in_band, args.n_expr_dev, &mut select_rng);
+    let sh_sample = seeded_select(sh_in_band, args.n_expr_sh, &mut select_rng);
 
     assert!(
-        dev_sample.len() >= args.n_expr_dev.min(334),
-        "counterfactual_credit: corpus_dev.bin has fewer classical entries than requested"
+        dev_sample.len() >= args.n_expr_dev.min(dev_available),
+        "counterfactual_credit: corpus_dev.bin has {dev_available} entries in the requested \
+         node band, fewer than the {} requested",
+        args.n_expr_dev
     );
     assert!(
         !sh_sample.is_empty(),
@@ -971,8 +1067,11 @@ fn main() {
     );
 
     eprintln!(
-        "counterfactual_credit: sampling {} sh + {} DEV classical expressions, \
+        "counterfactual_credit: node band [{}, {}] leaves {sh_available} sh / {dev_available} \
+         DEV entries; sampling {} sh + {} DEV classical expressions, \
          target {} applications each, budget B={}, wall-clock ceiling {:?}",
+        args.min_expr_nodes,
+        args.max_expr_nodes,
         sh_sample.len(),
         dev_sample.len(),
         args.n_apps,
@@ -1053,20 +1152,40 @@ fn main() {
                     break 'expressions;
                 }
 
-                let cost_masked = masked_replay_cost(&ctx, app_id, args.budget);
-                let delta = if ctx.cost_original == 0 || cost_masked == 0 {
-                    eprintln!(
-                        "counterfactual_credit: WARNING zero extraction cost for '{name}' \
-                         (original={}, masked={}) at ordinal {} — recording delta=0.0 rather \
-                         than an undefined ln(0)",
-                        ctx.cost_original,
-                        cost_masked,
-                        app_id.as_u64()
-                    );
-                    0.0
-                } else {
-                    (cost_masked as f64).ln() - (ctx.cost_original as f64).ln()
+                let single = masked_replay(&ctx, app_id, args.budget, MaskScope::Single);
+                let multi =
+                    masked_replay(&ctx, app_id, args.budget, MaskScope::AllMatchingCandidate);
+                let cost_masked = single.cost;
+                let cost_masked_multi = multi.cost;
+                let log_delta = |masked: usize, label: &str| -> f64 {
+                    if ctx.cost_original == 0 || masked == 0 {
+                        eprintln!(
+                            "counterfactual_credit: WARNING zero extraction cost for '{name}' \
+                             (original={}, {label}={masked}) at ordinal {} — recording delta=0.0 \
+                             rather than an undefined ln(0)",
+                            ctx.cost_original,
+                            app_id.as_u64()
+                        );
+                        0.0
+                    } else {
+                        (masked as f64).ln() - (ctx.cost_original as f64).ln()
+                    }
                 };
+                let delta = log_delta(cost_masked, "masked");
+                let delta_multi = log_delta(cost_masked_multi, "masked_multi");
+                // A multi-mask that skipped exactly the seed masked exactly
+                // what leave-one-out masked, so the two replays are the same
+                // run and must agree bit-for-bit. Disagreement there would
+                // mean the two mask paths diverge for reasons unrelated to
+                // confluence — a bug, not a finding.
+                assert!(
+                    multi.skips > 1 || cost_masked_multi == cost_masked,
+                    "counterfactual_credit: '{name}' ordinal {} — the multi-mask skipped only \
+                     the seed ({} skips) yet produced cost {cost_masked_multi} against \
+                     leave-one-out's {cost_masked}; identical masks must give identical replays",
+                    app_id.as_u64(),
+                    multi.skips
+                );
 
                 let bit_loose = ctx.loose.labels.get(&app_id) == Some(&Label::LoadBearing);
                 let bit_tight = ctx.tight.labels.get(&app_id) == Some(&Label::LoadBearing);
@@ -1118,6 +1237,9 @@ fn main() {
                     cost_original: ctx.cost_original,
                     cost_masked,
                     delta,
+                    cost_masked_multi,
+                    delta_multi,
+                    multi_mask_skips: multi.skips,
                     bit_loose,
                     bit_tight,
                     bit_strict,
@@ -1133,7 +1255,8 @@ fn main() {
                     out,
                     "{{\"expr_name\":{:?},\"set\":{:?},\"application_ordinal\":{},\
                      \"rule_idx\":{},\"rule_name\":{:?},\"cost_original\":{},\
-                     \"cost_masked\":{},\"delta\":{:.6},\"bit_loose\":{},\"bit_tight\":{},\
+                     \"cost_masked\":{},\"delta\":{:.6},\"cost_masked_multi\":{},\
+                     \"delta_multi\":{:.6},\"multi_mask_skips\":{},\"bit_loose\":{},\"bit_tight\":{},\
                      \"bit_strict\":{},\"bit_strict_by_output_class\":{},\
                      \"n_alternatives\":{},\"f_r2g\":{},\"adv_r2g\":{},\"adv_strict_v1\":{},\
                      \"adv_per_rule\":{}}}",
@@ -1145,6 +1268,9 @@ fn main() {
                     row.cost_original,
                     row.cost_masked,
                     row.delta,
+                    row.cost_masked_multi,
+                    row.delta_multi,
+                    row.multi_mask_skips,
                     row.bit_loose,
                     row.bit_tight,
                     row.bit_strict,
@@ -1206,77 +1332,86 @@ fn main() {
         })
         .collect();
     let r2g_proxy: ProxyOf<'_> = &|r: &Row| r.adv_r2g;
-    let r2g_boot: Option<Vec<f64>> = proxies.r2g.as_ref().map(|_| {
-        resamples
+    // One table per ground truth (§4: leave-one-out, and the
+    // confluence-aware multi-mask). Built by the same closure so the two
+    // tables cannot drift into different proxy sets or different bootstrap
+    // draws — only `truth` differs.
+    let build_table = |truth: Truth| -> Vec<(&'static str, BoundStats)> {
+        let r2g_boot: Option<Vec<f64>> = proxies.r2g.as_ref().map(|_| {
+            resamples
+                .iter()
+                .map(|idx| spearman_over(&row_refs, idx, r2g_proxy, truth))
+                .collect()
+        });
+        let boot = r2g_boot.as_deref();
+        let mut table: Vec<(&'static str, BoundStats)> = Vec::new();
+        if proxies.r2g.is_some() {
+            table.push((
+                "r2g_linear",
+                score_proxy(&row_refs, r2g_proxy, &resamples, boot, truth),
+            ));
+        }
+        if proxies.strict_v1.is_some() {
+            table.push((
+                "strict_v1_linear",
+                score_proxy(
+                    &row_refs,
+                    &|r: &Row| r.adv_strict_v1,
+                    &resamples,
+                    boot,
+                    truth,
+                ),
+            ));
+        }
+        if proxies.per_rule.is_some() {
+            table.push((
+                "per_rule_rate",
+                score_proxy(
+                    &row_refs,
+                    &|r: &Row| r.adv_per_rule,
+                    &resamples,
+                    boot,
+                    truth,
+                ),
+            ));
+        }
+        let bounds: [(&'static str, BoundProxy); 4] = [
+            ("loose", |r| bit(r.bit_loose)),
+            ("tight", |r| bit(r.bit_tight)),
+            ("strict", |r| bit(r.bit_strict)),
+            ("strict_by_output_class", |r| bit(r.bit_strict_class)),
+        ];
+        for (name, f) in bounds {
+            table.push((name, score_proxy(&row_refs, &f, &resamples, boot, truth)));
+        }
+        table
+    };
+    let proxy_table = build_table(Truth::LeaveOneOut);
+    let proxy_table_multi = build_table(Truth::MultiMask);
+
+    // ---- confluence blindness: what the multi-mask sees that LOO does not ----
+    let n_zero_multi = rows.iter().filter(|r| r.delta_multi == 0.0).count();
+    let n_positive_multi = rows.iter().filter(|r| r.delta_multi > 0.0).count();
+    let n_negative_multi = rows.iter().filter(|r| r.delta_multi < 0.0).count();
+    // THE number: applications leave-one-out called irrelevant that the
+    // confluence-aware mask shows were load-bearing all along.
+    let n_zero_to_positive = rows
+        .iter()
+        .filter(|r| r.delta == 0.0 && r.delta_multi > 0.0)
+        .count();
+    let n_zero_to_negative = rows
+        .iter()
+        .filter(|r| r.delta == 0.0 && r.delta_multi < 0.0)
+        .count();
+    let n_multi_skips_gt1 = rows.iter().filter(|r| r.multi_mask_skips > 1).count();
+    let mean_multi_skips = mean(
+        &rows
             .iter()
-            .map(|idx| spearman_over(&row_refs, idx, r2g_proxy))
-            .collect()
-    });
-    let mut proxy_table: Vec<(&str, BoundStats)> = Vec::new();
-    if proxies.r2g.is_some() {
-        proxy_table.push((
-            "r2g_linear",
-            score_proxy(&row_refs, r2g_proxy, &resamples, r2g_boot.as_deref()),
-        ));
-    }
-    if proxies.strict_v1.is_some() {
-        proxy_table.push((
-            "strict_v1_linear",
-            score_proxy(
-                &row_refs,
-                &|r: &Row| r.adv_strict_v1,
-                &resamples,
-                r2g_boot.as_deref(),
-            ),
-        ));
-    }
-    if proxies.per_rule.is_some() {
-        proxy_table.push((
-            "per_rule_rate",
-            score_proxy(
-                &row_refs,
-                &|r: &Row| r.adv_per_rule,
-                &resamples,
-                r2g_boot.as_deref(),
-            ),
-        ));
-    }
-    proxy_table.push((
-        "loose",
-        score_proxy(
-            &row_refs,
-            &|r: &Row| bit(r.bit_loose),
-            &resamples,
-            r2g_boot.as_deref(),
-        ),
-    ));
-    proxy_table.push((
-        "tight",
-        score_proxy(
-            &row_refs,
-            &|r: &Row| bit(r.bit_tight),
-            &resamples,
-            r2g_boot.as_deref(),
-        ),
-    ));
-    proxy_table.push((
-        "strict",
-        score_proxy(
-            &row_refs,
-            &|r: &Row| bit(r.bit_strict),
-            &resamples,
-            r2g_boot.as_deref(),
-        ),
-    ));
-    proxy_table.push((
-        "strict_by_output_class",
-        score_proxy(
-            &row_refs,
-            &|r: &Row| bit(r.bit_strict_class),
-            &resamples,
-            r2g_boot.as_deref(),
-        ),
-    ));
+            .map(|r| r.multi_mask_skips as f64)
+            .collect::<Vec<_>>(),
+    );
+    let max_multi_skips = rows.iter().map(|r| r.multi_mask_skips).max().unwrap_or(0);
+
     let rule_deltas = per_rule_delta(&rows);
 
     println!(
@@ -1307,6 +1442,36 @@ fn main() {
             s.n_excluded
         );
     }
+    println!(
+        "  MULTI-MASK delta distribution: zero {n_zero_multi}/{n} ({:.1}%), positive \
+         {n_positive_multi}/{n} ({:.1}%), negative {n_negative_multi}/{n} ({:.1}%)",
+        100.0 * n_zero_multi as f64 / n as f64,
+        100.0 * n_positive_multi as f64 / n as f64,
+        100.0 * n_negative_multi as f64 / n as f64,
+    );
+    println!(
+        "  confluence blindness: {n_zero_to_positive}/{n_zero} of leave-one-out's zero-delta \
+         applications become delta>0 under the multi-mask ({n_zero_to_negative} become \
+         delta<0); {n_multi_skips_gt1}/{n} multi-masks skipped >1 application (mean \
+         {mean_multi_skips:.2}, max {max_multi_skips})"
+    );
+    println!(
+        "  {:<24} {:>10} {:>10} {:>18} {:>8} {:>8} {:>8} {:>6}   [vs MULTI-MASK delta]",
+        "proxy", "pearson", "spearman", "spearman ci95", "n_pool", "n_sh", "n_dev", "excl"
+    );
+    for (name, s) in &proxy_table_multi {
+        println!(
+            "  {name:<24} {:>10.4} {:>10.4} [{:>7.4}, {:>7.4}] {:>8} {:>8} {:>8} {:>6}",
+            s.pearson_pooled,
+            s.spearman_pooled,
+            s.spearman_pooled_ci.0,
+            s.spearman_pooled_ci.1,
+            s.n_pooled,
+            s.n_sh,
+            s.n_dev,
+            s.n_excluded
+        );
+    }
     if !insufficient_candidates.is_empty() {
         println!(
             "  {} expressions had fewer than {} state-changing applications (used all available):",
@@ -1324,6 +1489,10 @@ fn main() {
     json.push_str(&format!("  \"seed\": {},\n", args.seed));
     json.push_str(&format!("  \"budget\": {},\n", args.budget));
     json.push_str(&format!("  \"n_apps_target\": {},\n", args.n_apps));
+    json.push_str(&format!("  \"min_expr_nodes\": {},\n", args.min_expr_nodes));
+    json.push_str(&format!("  \"max_expr_nodes\": {},\n", args.max_expr_nodes));
+    json.push_str(&format!("  \"sh_entries_in_band\": {sh_available},\n"));
+    json.push_str(&format!("  \"dev_entries_in_band\": {dev_available},\n"));
     json.push_str(&format!("  \"n_expr_sh\": {},\n", sh_sample.len()));
     json.push_str(&format!("  \"n_expr_dev\": {},\n", dev_sample.len()));
     json.push_str(&format!(
@@ -1367,6 +1536,44 @@ fn main() {
         n_negative as f64 / n as f64,
     ));
     json.push_str("  },\n");
+    json.push_str("  \"delta_multi_distribution\": {\n");
+    json.push_str(&format!("    \"n\": {n},\n"));
+    json.push_str(&format!(
+        "    \"zero\": {n_zero_multi}, \"positive\": {n_positive_multi}, \"negative\": {n_negative_multi},\n"
+    ));
+    json.push_str(&format!(
+        "    \"share_zero\": {:.6}, \"share_positive\": {:.6}, \"share_negative\": {:.6}\n",
+        n_zero_multi as f64 / n as f64,
+        n_positive_multi as f64 / n as f64,
+        n_negative_multi as f64 / n as f64,
+    ));
+    json.push_str("  },\n");
+    json.push_str("  \"confluence_blindness\": {\n");
+    json.push_str(&format!("    \"n_leave_one_out_zero\": {n_zero},\n"));
+    json.push_str(&format!(
+        "    \"n_zero_to_positive\": {n_zero_to_positive},\n"
+    ));
+    json.push_str(&format!(
+        "    \"n_zero_to_negative\": {n_zero_to_negative},\n"
+    ));
+    json.push_str(&format!(
+        "    \"share_of_zero_that_becomes_positive\": {:.6},\n",
+        if n_zero == 0 {
+            0.0
+        } else {
+            n_zero_to_positive as f64 / n_zero as f64
+        }
+    ));
+    json.push_str(&format!(
+        "    \"n_multi_mask_skips_gt_1\": {n_multi_skips_gt1},\n"
+    ));
+    json.push_str(&format!(
+        "    \"mean_multi_mask_skips\": {mean_multi_skips:.4},\n"
+    ));
+    json.push_str(&format!(
+        "    \"max_multi_mask_skips\": {max_multi_skips}\n"
+    ));
+    json.push_str("  },\n");
     json.push_str(&format!(
         "  \"proxies_loaded\": {{\"r2g_checkpoint\": {}, \"strict_checkpoint\": {}, \"train_guide_report\": {}}},\n",
         opt_str_json(&args.r2g_checkpoint),
@@ -1380,6 +1587,11 @@ fn main() {
     json.push_str("  \"bounds\": {\n");
     for (i, (name, s)) in proxy_table.iter().enumerate() {
         write_bound_json(&mut json, name, s, i + 1 < proxy_table.len());
+    }
+    json.push_str("  },\n");
+    json.push_str("  \"bounds_vs_multi_mask\": {\n");
+    for (i, (name, s)) in proxy_table_multi.iter().enumerate() {
+        write_bound_json(&mut json, name, s, i + 1 < proxy_table_multi.len());
     }
     json.push_str("  },\n");
     json.push_str("  \"per_rule_delta\": [\n");
@@ -1411,7 +1623,7 @@ fn main() {
 
     // ---- Markdown summary ----
     let mut md = String::new();
-    md.push_str("# Counterfactual credit: hindsight bounds vs measured leave-one-out Δ\n\n");
+    md.push_str("# Counterfactual credit: hindsight bounds vs measured Δ (leave-one-out and confluence-aware)\n\n");
     md.push_str(&format!(
         "Sample: {} `sh` + {} DEV classical expressions, {} applications sampled \
          ({} at ordinal < B={}, seed {:#x}). wall_clock_ceiling_hit = {ceiling_hit}. \
@@ -1441,6 +1653,44 @@ fn main() {
     md.push_str("| proxy | Spearman (pooled) [95% CI] | Δρ vs r2g [95% CI] | Spearman (sh) | Spearman (dev) | Pearson (pooled) | n (excluded) |\n");
     md.push_str("|---|---:|---:|---:|---:|---:|---:|\n");
     for (name, s) in &proxy_table {
+        md.push_str(&format!(
+            "| {name} | {} [{}, {}] | [{}, {}] | {} | {} | {} | {} ({}) |\n",
+            json_num(s.spearman_pooled),
+            json_num(s.spearman_pooled_ci.0),
+            json_num(s.spearman_pooled_ci.1),
+            json_num(s.spearman_diff_vs_r2g_ci.0),
+            json_num(s.spearman_diff_vs_r2g_ci.1),
+            json_num(s.spearman_sh),
+            json_num(s.spearman_dev),
+            json_num(s.pearson_pooled),
+            s.n_pooled,
+            s.n_excluded,
+        ));
+    }
+    md.push_str("\n## Confluence-aware credit (multi-mask)\n\n");
+    md.push_str(&format!(
+        "Second mask mode: the seed application AND every later application sharing its \
+         `(rule_idx, canonical matched-class content)` are skipped, so an alternative \
+         re-derivation cannot silently restore the node leave-one-out removed.\n\n\
+         Multi-mask Δ distribution: zero {n_zero_multi}/{n} ({:.1}%), positive \
+         {n_positive_multi}/{n} ({:.1}%), negative {n_negative_multi}/{n} ({:.1}%).\n\n\
+         **Confluence blindness of leave-one-out: {n_zero_to_positive} of the {n_zero} \
+         applications leave-one-out scored Δ = 0 become Δ > 0 under the multi-mask ({:.1}% of \
+         them)**; {n_zero_to_negative} become Δ < 0. Multi-masks that skipped more than the \
+         seed: {n_multi_skips_gt1}/{n} (mean skips {mean_multi_skips:.2}, max \
+         {max_multi_skips}).\n\n",
+        100.0 * n_zero_multi as f64 / n as f64,
+        100.0 * n_positive_multi as f64 / n as f64,
+        100.0 * n_negative_multi as f64 / n as f64,
+        if n_zero == 0 {
+            0.0
+        } else {
+            100.0 * n_zero_to_positive as f64 / n_zero as f64
+        },
+    ));
+    md.push_str("| proxy | Spearman vs multi-mask Δ (pooled) [95% CI] | Δρ vs r2g [95% CI] | Spearman (sh) | Spearman (dev) | Pearson (pooled) | n (excluded) |\n");
+    md.push_str("|---|---:|---:|---:|---:|---:|---:|\n");
+    for (name, s) in &proxy_table_multi {
         md.push_str(&format!(
             "| {name} | {} [{}, {}] | [{}, {}] | {} | {} | {} | {} ({}) |\n",
             json_num(s.spearman_pooled),

@@ -151,7 +151,7 @@ impl ClassContentKey {
         self.0.len()
     }
 
-    fn of(egraph: &EGraph, canonical: EClassId) -> Self {
+    pub(crate) fn of(egraph: &EGraph, canonical: EClassId) -> Self {
         let mut shapes: Vec<NodeShape> = egraph
             .nodes(canonical)
             .iter()

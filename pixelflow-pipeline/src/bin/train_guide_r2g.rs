@@ -151,6 +151,30 @@ struct Args {
     )]
     out_checkpoint: String,
 
+    /// Lower bound (inclusive) on the source expression's arena node count.
+    /// `0` = unbounded. Round 3's registered training regime
+    /// (docs/plans/2026-09-01-guide-return-to-go.md §2b.3) is node band
+    /// 101-1000, i.e. `--min-expr-nodes 101 --max-expr-nodes 1000`: the
+    /// cells where guided orderings measurably disagree.
+    #[arg(long, default_value_t = 0)]
+    min_expr_nodes: usize,
+
+    /// Upper bound (inclusive) on the source expression's arena node count.
+    /// `0` = unbounded. See `--min-expr-nodes`.
+    #[arg(long, default_value_t = 0)]
+    max_expr_nodes: usize,
+
+    /// Drop records whose `application_ordinal` is `>= --label-b`, per the
+    /// registration's §1.3: "an application with `t > B` carries no label
+    /// for that `B`" — its firing cannot have influenced the return read at
+    /// `B`, so training on it attaches the label to a decision that came
+    /// after the measurement. The minter attaches the trajectory's return to
+    /// EVERY application it records, so this filter (not the mint) is what
+    /// enforces §1.3; it is off by default so a pre-round-3 run reproduces
+    /// bit-for-bit, and the count it drops is reported, never silent.
+    #[arg(long, default_value_t = false)]
+    enforce_label_ordinal: bool,
+
     /// Optional JSON report.
     #[arg(long)]
     report_json: Option<String>,
@@ -161,6 +185,50 @@ struct Args {
 }
 
 // ── Loading ──────────────────────────────────────────────────────────────
+
+/// The record-level selection that defines a training regime
+/// (docs/plans/2026-09-01-guide-return-to-go.md §2b.3). One struct rather
+/// than four loose arguments so a caller cannot pass the bounds in the wrong
+/// order, and so the report can print the regime that actually ran instead
+/// of the flags someone believes they passed.
+#[derive(Clone, Copy, Debug)]
+struct Regime {
+    min_expr_nodes: usize,
+    max_expr_nodes: usize,
+    /// `Some(b)` drops records with `application_ordinal >= b` (§1.3).
+    max_label_ordinal: Option<u64>,
+}
+
+impl Regime {
+    fn admits(&self, r: &R2gRecord) -> bool {
+        let n = r.base.expr_node_count;
+        if self.min_expr_nodes > 0 && n < self.min_expr_nodes {
+            return false;
+        }
+        if self.max_expr_nodes > 0 && n > self.max_expr_nodes {
+            return false;
+        }
+        !matches!(self.max_label_ordinal, Some(b) if r.application_ordinal >= b)
+    }
+
+    fn describe(&self) -> String {
+        let lo = if self.min_expr_nodes == 0 {
+            "0".to_string()
+        } else {
+            self.min_expr_nodes.to_string()
+        };
+        let hi = if self.max_expr_nodes == 0 {
+            "inf".to_string()
+        } else {
+            self.max_expr_nodes.to_string()
+        };
+        let ord = match self.max_label_ordinal {
+            Some(b) => format!("application_ordinal < {b}"),
+            None => "application_ordinal unrestricted".to_string(),
+        };
+        format!("expr_node_count in [{lo}, {hi}], {ord}")
+    }
+}
 
 struct LoadedSplit {
     records: Vec<R2gRecord>,
@@ -180,6 +248,10 @@ struct LoadedSplit {
     /// and it has the same property an MD5 would (any byte change anywhere
     /// in the input changes it).
     source_fnv64: String,
+    /// Records read from the file before the regime filter.
+    read_total: usize,
+    /// Records the regime filter rejected — reported, never silent.
+    dropped_by_regime: usize,
 }
 
 fn load_jsonl(
@@ -187,17 +259,28 @@ fn load_jsonl(
     op_index: &HashMap<String, usize>,
     label_b: LabelBudget,
     target: RegressionTarget,
+    regime: Regime,
 ) -> LoadedSplit {
-    let bytes =
-        std::fs::read(path).unwrap_or_else(|e| panic!("train_guide_r2g: cannot read {path}: {e}"));
-    let source_fnv64 = fnv1a64_hex(&bytes);
-
-    let reader = BufReader::new(bytes.as_slice());
+    // Streamed, not slurped: round 3's TRAIN mint is ~10 GB of JSONL and the
+    // regime filter keeps a small fraction of it, so reading the whole file
+    // into a `Vec<u8>` first would cost gigabytes of resident memory to
+    // discard most of it. The file's content hash is still over its whole
+    // bytes — accumulated chunk by chunk, the same FNV-1a the one-shot
+    // helper computes (pinned by `streamed_fnv_matches_the_one_shot_helper`).
+    let file = std::fs::File::open(path)
+        .unwrap_or_else(|e| panic!("train_guide_r2g: cannot read {path}: {e}"));
+    let mut hasher = StreamingFnv1a64::new();
+    let reader = BufReader::new(HashingRead {
+        inner: file,
+        hasher: &mut hasher,
+    });
     let mut records = Vec::new();
     let mut samples = Vec::new();
     let mut targets = Vec::new();
     let mut rule_names = HashMap::new();
     let mut policies: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut read_total = 0usize;
+    let mut dropped_by_regime = 0usize;
 
     for (line_no, line) in reader.lines().enumerate() {
         let line = line.unwrap_or_else(|e| {
@@ -215,6 +298,11 @@ fn load_jsonl(
                 line_no + 1
             )
         });
+        read_total += 1;
+        if !regime.admits(&record) {
+            dropped_by_regime += 1;
+            continue;
+        }
         rule_names
             .entry(record.base.rule_idx)
             .or_insert_with(|| record.base.rule_name.clone());
@@ -226,8 +314,10 @@ fn load_jsonl(
 
     assert!(
         !records.is_empty(),
-        "train_guide_r2g: {path} contained zero usable records — refusing to train/evaluate \
-         on an empty split"
+        "train_guide_r2g: {path} contained zero usable records after the regime filter \
+         ({}) — {read_total} records read, all {dropped_by_regime} rejected. Refusing to \
+         train/evaluate on an empty split",
+        regime.describe()
     );
     let labelled = targets.iter().filter(|t| t.is_some()).count();
     assert!(
@@ -244,7 +334,52 @@ fn load_jsonl(
         targets,
         rule_names,
         policies: policies.into_iter().collect(),
-        source_fnv64,
+        source_fnv64: hasher.hex(),
+        read_total,
+        dropped_by_regime,
+    }
+}
+
+// ── Streaming content hash ──────────────────────────────────────────────
+
+/// FNV-1a 64, fed incrementally. `schema::fnv1a64_hex` is the one-shot form
+/// over a slice already in memory; this is the same automaton over a stream,
+/// so a 10 GB corpus can be identified without being resident. The two agree
+/// by construction and are pinned to agree by a test.
+struct StreamingFnv1a64(u64);
+
+impl StreamingFnv1a64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    const fn new() -> Self {
+        Self(Self::OFFSET)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 ^= b as u64;
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+        }
+    }
+
+    fn hex(&self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
+/// A `Read` that hashes everything it hands on — so the file is traversed
+/// exactly once for both parsing and identity.
+struct HashingRead<'a, R> {
+    inner: R,
+    hasher: &'a mut StreamingFnv1a64,
+}
+
+impl<R: std::io::Read> std::io::Read for HashingRead<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.write(&buf[..n]);
+        Ok(n)
     }
 }
 
@@ -522,6 +657,19 @@ struct Report {
     objective: String,
     regression_target: String,
     label_b: u32,
+    /// The registered training regime this run's records were selected by
+    /// (`Regime::describe`) — printed so a report can never be read as
+    /// covering a population it never saw.
+    regime: String,
+    train_read_total: usize,
+    train_dropped_by_regime: usize,
+    dev_read_total: usize,
+    dev_dropped_by_regime: usize,
+    /// MSE of the constant predictor `f ≡ 0` on the same held-out labelled
+    /// DEV samples — the floor `dev_mse` must beat to have learned anything.
+    /// For a centered target this is the labels' own second moment, so a
+    /// model that ties it has learned exactly nothing.
+    dev_mse_zero_predictor: f64,
     train_records: usize,
     train_labelled_samples: usize,
     dev_records: usize,
@@ -550,16 +698,32 @@ fn write_md_report(path: &str, report: &Report) {
         report.objective, report.regression_target, report.label_b
     ));
     md.push_str(&format!(
-        "TRAIN: {} records, {} labelled samples.\n\n",
-        report.train_records, report.train_labelled_samples
+        "Training regime (docs/plans/2026-09-01-guide-return-to-go.md §2b.3): **{}**.\n\n",
+        report.regime
     ));
     md.push_str(&format!(
-        "DEV (held out, never trained on): {} records, {} labelled samples.\n\n",
-        report.dev_records, report.dev_labelled_samples
+        "TRAIN: {} records read, {} dropped by the regime, {} kept, {} labelled samples.\n\n",
+        report.train_read_total,
+        report.train_dropped_by_regime,
+        report.train_records,
+        report.train_labelled_samples
+    ));
+    md.push_str(&format!(
+        "DEV (held out, never trained on): {} records read, {} dropped by the regime, {} kept, \
+         {} labelled samples.\n\n",
+        report.dev_read_total,
+        report.dev_dropped_by_regime,
+        report.dev_records,
+        report.dev_labelled_samples
     ));
     md.push_str(&format!(
         "**TRAIN final-epoch mean loss**: {:.6}.\n\n",
         report.train_final_loss
+    ));
+    md.push_str(&format!(
+        "**Zero-predictor floor** (constant `f ≡ 0` on the same DEV samples): MSE = {:.6}. \
+         A model at or above this floor has learned nothing.\n\n",
+        report.dev_mse_zero_predictor
     ));
     md.push_str(&format!(
         "**Held-out (DEV) regression quality**: MSE = {:.6}, Spearman(predicted return, \
@@ -641,10 +805,30 @@ fn main() {
     let (op_names, op_index) = op_index_table();
     let num_ops = op_names.len();
 
+    let regime = Regime {
+        min_expr_nodes: args.min_expr_nodes,
+        max_expr_nodes: args.max_expr_nodes,
+        max_label_ordinal: args
+            .enforce_label_ordinal
+            .then(|| u64::from(label_b.as_u32())),
+    };
+    eprintln!("train_guide_r2g: training regime — {}", regime.describe());
     eprintln!("train_guide_r2g: loading TRAIN from {}", args.train);
-    let train = load_jsonl(&args.train, &op_index, label_b, target);
+    let train = load_jsonl(&args.train, &op_index, label_b, target, regime);
+    eprintln!(
+        "train_guide_r2g: TRAIN {} records read, {} dropped by the regime, {} kept",
+        train.read_total,
+        train.dropped_by_regime,
+        train.records.len()
+    );
     eprintln!("train_guide_r2g: loading DEV from {}", args.dev);
-    let dev = load_jsonl(&args.dev, &op_index, label_b, target);
+    let dev = load_jsonl(&args.dev, &op_index, label_b, target, regime);
+    eprintln!(
+        "train_guide_r2g: DEV {} records read, {} dropped by the regime, {} kept",
+        dev.read_total,
+        dev.dropped_by_regime,
+        dev.records.len()
+    );
 
     let max_rule_idx = train
         .rule_names
@@ -850,10 +1034,29 @@ fn main() {
             .unwrap_or_else(|| "undefined".to_string())
     );
 
+    let dev_mse_zero_predictor = {
+        let ys: Vec<f64> = dev
+            .targets
+            .iter()
+            .filter_map(|t| t.map(f64::from))
+            .collect();
+        assert!(
+            !ys.is_empty(),
+            "train_guide_r2g: DEV has zero labelled samples — the zero-predictor floor is \
+             undefined and the reported dev_mse would be meaningless"
+        );
+        ys.iter().map(|y| y * y).sum::<f64>() / ys.len() as f64
+    };
     let report = Report {
         objective: objective.to_string(),
         regression_target: args.target.clone(),
         label_b: label_b.as_u32(),
+        regime: regime.describe(),
+        train_read_total: train.read_total,
+        train_dropped_by_regime: train.dropped_by_regime,
+        dev_read_total: dev.read_total,
+        dev_dropped_by_regime: dev.dropped_by_regime,
+        dev_mse_zero_predictor,
         train_records: train.records.len(),
         train_labelled_samples: train_labelled.len(),
         dev_records: dev.records.len(),
@@ -900,9 +1103,70 @@ fn eval_dev(model: &Model, dev: &LoadedSplit) -> (Option<f64>, Option<f64>) {
 
 #[cfg(test)]
 mod tests {
+    /// The identity regime: every record admitted. Round 3's filters are
+    /// exercised by their own tests below; every pre-existing test asserts
+    /// the unfiltered behavior it always asserted.
+    const UNFILTERED: super::Regime = super::Regime {
+        min_expr_nodes: 0,
+        max_expr_nodes: 0,
+        max_label_ordinal: None,
+    };
+
     use super::*;
     use std::fs::File;
     use std::io::Write as _;
+
+    /// The streaming hash and the one-shot `schema::fnv1a64_hex` are the
+    /// same automaton — pinned here because the trainer stopped slurping
+    /// its (10 GB) input and the provenance hash must not have silently
+    /// changed meaning when it did.
+    #[test]
+    fn streamed_fnv_matches_the_one_shot_helper() {
+        for bytes in [
+            b"".as_slice(),
+            b"a".as_slice(),
+            b"{\"expr_name\":\"e0\"}\n{\"expr_name\":\"e1\"}\n".as_slice(),
+        ] {
+            let mut h = StreamingFnv1a64::new();
+            // Fed in awkward chunks: a streaming hash that only agrees when
+            // handed the whole slice at once is not a streaming hash.
+            for chunk in bytes.chunks(3) {
+                h.write(chunk);
+            }
+            assert_eq!(h.hex(), fnv1a64_hex(bytes));
+        }
+    }
+
+    /// The regime is a filter on records, and it is the ONLY thing that
+    /// enforces §1.3 — the minter attaches a trajectory's return to every
+    /// application it records, including ones that fired after `B`.
+    #[test]
+    fn regime_rejects_out_of_band_sizes_and_post_budget_ordinals() {
+        let regime = Regime {
+            min_expr_nodes: 101,
+            max_expr_nodes: 1000,
+            max_label_ordinal: Some(100),
+        };
+        let json = fixture_row("e0", 0, "unguided", 0, 0.5, 0.25, 0.1);
+        let mut r: R2gRecord = serde_json::from_value(json).unwrap();
+        r.base.expr_node_count = 150;
+        r.application_ordinal = 40;
+        assert!(regime.admits(&r), "in band, before B");
+
+        r.base.expr_node_count = 100;
+        assert!(!regime.admits(&r), "below the band");
+        r.base.expr_node_count = 1001;
+        assert!(!regime.admits(&r), "above the band");
+
+        r.base.expr_node_count = 150;
+        r.application_ordinal = 100;
+        assert!(!regime.admits(&r), "t >= B carries no label for B (§1.3)");
+
+        assert!(
+            UNFILTERED.admits(&r),
+            "the identity regime admits what the round-3 regime rejects"
+        );
+    }
 
     fn write_fixture(dir: &std::path::Path, name: &str, rows: &[serde_json::Value]) -> String {
         let path = dir.join(name);
@@ -995,6 +1259,7 @@ mod tests {
             &op_index,
             LabelBudget::B100,
             RegressionTarget::Centered,
+            UNFILTERED,
         );
 
         assert_eq!(split.records.len(), 2);
@@ -1023,6 +1288,7 @@ mod tests {
             &op_index,
             LabelBudget::B100,
             RegressionTarget::Centered,
+            UNFILTERED,
         );
     }
 
@@ -1058,12 +1324,14 @@ mod tests {
             &op_index,
             LabelBudget::B100,
             RegressionTarget::Centered,
+            UNFILTERED,
         );
         let dev = load_jsonl(
             &dev_path,
             &op_index,
             LabelBudget::B100,
             RegressionTarget::Centered,
+            UNFILTERED,
         );
 
         let labelled: Vec<usize> = (0..train.records.len()).collect();

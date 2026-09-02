@@ -58,8 +58,8 @@ pub use extract::{
 };
 pub use extraction::{ExtractionPolicy, env_extraction_policy};
 pub use graph::{
-    AppBudgetSaturationStats, ApplicationMask, ApplyResult, EGraph, EGraphBatch, RewriteTarget,
-    SaturationStats, SaturationStop,
+    AppBudgetSaturationStats, ApplicationMask, ApplyResult, EGraph, EGraphBatch, MaskScope,
+    RewriteTarget, SaturationStats, SaturationStop,
 };
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode};

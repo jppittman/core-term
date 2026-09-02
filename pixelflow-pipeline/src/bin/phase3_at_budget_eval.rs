@@ -168,6 +168,20 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     classical_samples: usize,
 
+    /// Lower bound (inclusive) on an expression's arena node count; `0` =
+    /// unbounded. Applied to BOTH the selection and the aggregation, so a
+    /// run and a `--aggregate-only` re-read of its rows report the same
+    /// population. Round 3's registered training regime
+    /// (docs/plans/2026-09-01-guide-return-to-go.md §2b.3) is node band
+    /// 101-1000: `--min-expr-nodes 101 --max-expr-nodes 1000`.
+    #[arg(long, default_value_t = 0)]
+    min_expr_nodes: usize,
+
+    /// Upper bound (inclusive) on an expression's arena node count; `0` =
+    /// unbounded. See `--min-expr-nodes`.
+    #[arg(long, default_value_t = 0)]
+    max_expr_nodes: usize,
+
     /// DEV blitz and rapid expressions per band, reported for completeness
     /// only (no claim is registered on them). 0 = none.
     #[arg(long, default_value_t = 30)]
@@ -2459,16 +2473,42 @@ fn main() {
             });
         }
 
+        let in_node_band = |n: usize| {
+            (args.min_expr_nodes == 0 || n >= args.min_expr_nodes)
+                && (args.max_expr_nodes == 0 || n <= args.max_expr_nodes)
+        };
         let mut selected: Vec<(String, ExprArena, ExprId)> = Vec::new();
         selected.extend(stride_sample(
-            by_band.remove("classical").unwrap_or_default(),
+            by_band
+                .remove("classical")
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(_, a, _)| in_node_band(a.nodes_raw().len()))
+                .collect(),
             (args.classical_samples > 0).then_some(args.classical_samples),
         ));
         for band in ["rapid", "blitz"] {
             selected.extend(stride_sample(
-                by_band.remove(band).unwrap_or_default(),
+                by_band
+                    .remove(band)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|(_, a, _)| in_node_band(a.nodes_raw().len()))
+                    .collect(),
                 Some(args.other_samples),
             ));
+        }
+        if args.min_expr_nodes > 0 || args.max_expr_nodes > 0 {
+            eprintln!(
+                "phase3_at_budget_eval: node-count band filter [{}, {}] leaves {} expressions",
+                args.min_expr_nodes,
+                if args.max_expr_nodes == 0 {
+                    "inf".to_string()
+                } else {
+                    args.max_expr_nodes.to_string()
+                },
+                selected.len()
+            );
         }
 
         let existing: HashSet<String> =
@@ -2542,6 +2582,30 @@ fn main() {
         "no rows in {} — nothing to aggregate",
         jsonl_path.display()
     );
+    if args.min_expr_nodes > 0 || args.max_expr_nodes > 0 {
+        let before = rows.len();
+        rows.retain(|r| {
+            (args.min_expr_nodes == 0 || r.node_count >= args.min_expr_nodes)
+                && (args.max_expr_nodes == 0 || r.node_count <= args.max_expr_nodes)
+        });
+        eprintln!(
+            "phase3_at_budget_eval: aggregating {} of {before} rows inside node band [{}, {}]",
+            rows.len(),
+            args.min_expr_nodes,
+            if args.max_expr_nodes == 0 {
+                "inf".to_string()
+            } else {
+                args.max_expr_nodes.to_string()
+            }
+        );
+        assert!(
+            !rows.is_empty(),
+            "no rows in {} fall inside the requested node band [{}, {}] — nothing to aggregate",
+            jsonl_path.display(),
+            args.min_expr_nodes,
+            args.max_expr_nodes
+        );
+    }
     if let Some(map) = &stratum_by_name {
         for r in rows.iter_mut().filter(|r| r.tier == "classical") {
             let from_corpus = map.get(&r.name).unwrap_or_else(|| {

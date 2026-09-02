@@ -604,3 +604,35 @@ measured tail (p90/max ~24k/86k applications) regardless of node-count filtering
 gap, not a training-target gap. Selection rule registered in §2b.3: training regime restricted to
 the five agreeing cells. Data: `docs/results/2026-09-01-r2g-spread-vs-budget.{md,csv,json}`,
 `docs/results/2026-09-01-r2g-trajectory-mint-full.{json,md}`.
+
+**Round 4 (2026-09-01), "train inside the selected regime, and fix the credit instrument":** the
+first training run against §2b.3's regime, plus the confluence-aware second mask mode §4.1 was
+missing. Full numbers: `docs/results/2026-09-01-guide-r2g-spread-first.{md,json,csv}`.
+
+- **§1.3 was never enforced by the mint.** `gen_r2g_trajectories` attaches a trajectory's return to
+  every application it records, including ones firing thousands of applications after the checkpoint
+  the return was read at. Round 1/2's ladder topped out at B = 200 so the damage was bounded; round
+  3's ladder reaches 3,200, so the great majority of records carried a label for a measurement they
+  came after. `train_guide_r2g --enforce-label-ordinal` (new, default off so pre-round-3 runs
+  reproduce bit-for-bit) is what enforces the registration. Of 18,565,784 TRAIN records read,
+  17,283,072 are rejected by the band + ordinal filters; 1,282,712 train.
+- **Result: trainable, still nearly flat.** DEV Spearman(predicted, realized) 0.2375 (round 2:
+  0.0990), but DEV MSE 1.132686 against a zero-predictor floor of 1.133602 — **0.081% of the label
+  variance**. A linear model on these features does not read this credit signal.
+- **Ladder (B = 100/200; DEV classical restricted to the band, `sh`/`bezier` whole):** the
+  regime-trained R2G no longer ties the strict bit. Per-expression head-to-head at B = 100 — DEV band
+  101-1000 **70 / 119 / 19** (R2G better / strict better / tie), `sh` **43 / 45 / 7**, `bezier`
+  **60 / 0 / 20** (median cost ratio 0.942). It loses in distribution, ties on `sh`, wins on
+  `bezier`.
+- **Credit instrument, the round's most load-bearing finding.** `MaskScope::AllMatchingCandidate`
+  masks the seed and every later application sharing its `(rule_idx, canonical matched-class
+  content)`, so an alternative re-derivation cannot silently restore what leave-one-out removed.
+  On the round-3 sample (n = 1,095): **77 of 1,012 (7.6%) leave-one-out Δ = 0 applications become
+  Δ > 0**; 435/1,095 multi-masks skipped more than the seed (mean 1.57, max 6). Every proxy ranks
+  better against the confluence-aware truth — `strict` 0.389 → 0.725, `strict_v1_linear`
+  0.170 → 0.345, `per_rule_rate` 0.182 → 0.267, R2G(regime) 0.103 → 0.249. Inside the band
+  (n = 3,000) the same pattern holds at lower magnitude (90/2,525 = 3.6% flip; `strict`
+  0.510 → 0.565). **Round 3's ρ table — including its R2G ρ = −0.004 — was computed against a
+  truth biased toward zero.** The strict bit remains the best predictor under both masks.
+- Kill-gate accounting: unchanged (this round trains a new checkpoint against a registered regime
+  and reports it; no clause is claimed or waived).

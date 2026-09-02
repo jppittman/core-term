@@ -1,0 +1,145 @@
+table,set,B,n,metric,value
+ladder,"DEV classical, band 101-1000",100,208,ung_regret_med,104.344657
+ladder,"DEV classical, band 101-1000",100,208,ctl_q1,0.002971
+ladder,"DEV classical, band 101-1000",100,208,ctl_med,0.551913
+ladder,"DEV classical, band 101-1000",100,208,ctl_q3,0.691286
+ladder,"DEV classical, band 101-1000",100,208,ctl_regret,2.339499
+ladder,"DEV classical, band 101-1000",100,208,strict_q1,0.002744
+ladder,"DEV classical, band 101-1000",100,208,strict_med,0.512437
+ladder,"DEV classical, band 101-1000",100,208,strict_q3,0.659462
+ladder,"DEV classical, band 101-1000",100,208,strict_regret,1.118129
+ladder,"DEV classical, band 101-1000",100,208,r2g_q1,0.002921
+ladder,"DEV classical, band 101-1000",100,208,r2g_med,0.520710
+ladder,"DEV classical, band 101-1000",100,208,r2g_q3,0.669714
+ladder,"DEV classical, band 101-1000",100,208,r2g_regret,1.425235
+ladder,"DEV classical, band 101-1000",200,208,ung_regret_med,80.394268
+ladder,"DEV classical, band 101-1000",200,208,ctl_q1,0.014641
+ladder,"DEV classical, band 101-1000",200,208,ctl_med,0.602698
+ladder,"DEV classical, band 101-1000",200,208,ctl_q3,0.709065
+ladder,"DEV classical, band 101-1000",200,208,ctl_regret,0.600904
+ladder,"DEV classical, band 101-1000",200,208,strict_q1,0.006215
+ladder,"DEV classical, band 101-1000",200,208,strict_med,0.589296
+ladder,"DEV classical, band 101-1000",200,208,strict_q3,0.705629
+ladder,"DEV classical, band 101-1000",200,208,strict_regret,0.155555
+ladder,"DEV classical, band 101-1000",200,208,r2g_q1,0.098253
+ladder,"DEV classical, band 101-1000",200,208,r2g_med,0.600434
+ladder,"DEV classical, band 101-1000",200,208,r2g_q3,0.718970
+ladder,"DEV classical, band 101-1000",200,208,r2g_regret,0.400275
+ladder,"sh (OOD, all 95)",100,95,ung_regret_med,20.484754
+ladder,"sh (OOD, all 95)",100,95,ctl_q1,0.891745
+ladder,"sh (OOD, all 95)",100,95,ctl_med,0.902790
+ladder,"sh (OOD, all 95)",100,95,ctl_q3,0.921240
+ladder,"sh (OOD, all 95)",100,95,ctl_regret,7.923628
+ladder,"sh (OOD, all 95)",100,95,strict_q1,0.891745
+ladder,"sh (OOD, all 95)",100,95,strict_med,0.903897
+ladder,"sh (OOD, all 95)",100,95,strict_q3,0.918143
+ladder,"sh (OOD, all 95)",100,95,strict_regret,7.971360
+ladder,"sh (OOD, all 95)",100,95,r2g_q1,0.890462
+ladder,"sh (OOD, all 95)",100,95,r2g_med,0.900486
+ladder,"sh (OOD, all 95)",100,95,r2g_q3,0.920214
+ladder,"sh (OOD, all 95)",100,95,r2g_regret,8.043118
+ladder,"sh (OOD, all 95)",200,95,ung_regret_med,20.328382
+ladder,"sh (OOD, all 95)",200,95,ctl_q1,0.879487
+ladder,"sh (OOD, all 95)",200,95,ctl_med,0.893988
+ladder,"sh (OOD, all 95)",200,95,ctl_q3,0.914372
+ladder,"sh (OOD, all 95)",200,95,ctl_regret,6.702057
+ladder,"sh (OOD, all 95)",200,95,strict_q1,0.882027
+ladder,"sh (OOD, all 95)",200,95,strict_med,0.895916
+ladder,"sh (OOD, all 95)",200,95,strict_q3,0.916110
+ladder,"sh (OOD, all 95)",200,95,strict_regret,6.796556
+ladder,"sh (OOD, all 95)",200,95,r2g_q1,0.882716
+ladder,"sh (OOD, all 95)",200,95,r2g_med,0.896509
+ladder,"sh (OOD, all 95)",200,95,r2g_q3,0.917611
+ladder,"sh (OOD, all 95)",200,95,r2g_regret,6.702057
+ladder,"bezier (OOD, all 80)",100,80,ung_regret_med,29.553265
+ladder,"bezier (OOD, all 80)",100,80,ctl_q1,0.909814
+ladder,"bezier (OOD, all 80)",100,80,ctl_med,0.909814
+ladder,"bezier (OOD, all 80)",100,80,ctl_q3,0.948588
+ladder,"bezier (OOD, all 80)",100,80,ctl_regret,17.869416
+ladder,"bezier (OOD, all 80)",100,80,strict_q1,0.909814
+ladder,"bezier (OOD, all 80)",100,80,strict_med,0.909814
+ladder,"bezier (OOD, all 80)",100,80,strict_q3,0.948588
+ladder,"bezier (OOD, all 80)",100,80,strict_regret,17.869416
+ladder,"bezier (OOD, all 80)",100,80,r2g_q1,0.843049
+ladder,"bezier (OOD, all 80)",100,80,r2g_med,0.856764
+ladder,"bezier (OOD, all 80)",100,80,r2g_q3,0.891610
+ladder,"bezier (OOD, all 80)",100,80,r2g_regret,10.996564
+ladder,"bezier (OOD, all 80)",200,80,ung_regret_med,29.553265
+ladder,"bezier (OOD, all 80)",200,80,ctl_q1,0.909814
+ladder,"bezier (OOD, all 80)",200,80,ctl_med,0.909814
+ladder,"bezier (OOD, all 80)",200,80,ctl_q3,0.980176
+ladder,"bezier (OOD, all 80)",200,80,ctl_regret,17.869416
+ladder,"bezier (OOD, all 80)",200,80,strict_q1,0.856764
+ladder,"bezier (OOD, all 80)",200,80,strict_med,0.885463
+ladder,"bezier (OOD, all 80)",200,80,strict_q3,0.926009
+ladder,"bezier (OOD, all 80)",200,80,strict_regret,10.996564
+ladder,"bezier (OOD, all 80)",200,80,r2g_q1,0.856764
+ladder,"bezier (OOD, all 80)",200,80,r2g_med,0.856764
+ladder,"bezier (OOD, all 80)",200,80,r2g_q3,0.914097
+ladder,"bezier (OOD, all 80)",200,80,r2g_regret,10.996564
+head_to_head,"DEV classical, band 101-1000",100,208,r2g_better,70
+head_to_head,"DEV classical, band 101-1000",100,208,strict_better,119
+head_to_head,"DEV classical, band 101-1000",100,208,tie,19
+head_to_head,"DEV classical, band 101-1000",100,208,median_cost_ratio_r2g_over_strict,1.0015475818162622
+head_to_head,"DEV classical, band 101-1000",200,208,r2g_better,24
+head_to_head,"DEV classical, band 101-1000",200,208,strict_better,93
+head_to_head,"DEV classical, band 101-1000",200,208,tie,91
+head_to_head,"DEV classical, band 101-1000",200,208,median_cost_ratio_r2g_over_strict,1.0
+head_to_head,"sh (OOD, all 95)",100,95,r2g_better,43
+head_to_head,"sh (OOD, all 95)",100,95,strict_better,45
+head_to_head,"sh (OOD, all 95)",100,95,tie,7
+head_to_head,"sh (OOD, all 95)",100,95,median_cost_ratio_r2g_over_strict,1.0
+head_to_head,"sh (OOD, all 95)",200,95,r2g_better,18
+head_to_head,"sh (OOD, all 95)",200,95,strict_better,38
+head_to_head,"sh (OOD, all 95)",200,95,tie,39
+head_to_head,"sh (OOD, all 95)",200,95,median_cost_ratio_r2g_over_strict,1.0
+head_to_head,"bezier (OOD, all 80)",100,80,r2g_better,60
+head_to_head,"bezier (OOD, all 80)",100,80,strict_better,0
+head_to_head,"bezier (OOD, all 80)",100,80,tie,20
+head_to_head,"bezier (OOD, all 80)",100,80,median_cost_ratio_r2g_over_strict,0.9416909620991254
+head_to_head,"bezier (OOD, all 80)",200,80,r2g_better,19
+head_to_head,"bezier (OOD, all 80)",200,80,strict_better,0
+head_to_head,"bezier (OOD, all 80)",200,80,tie,61
+head_to_head,"bezier (OOD, all 80)",200,80,median_cost_ratio_r2g_over_strict,1.0
+credit_unbanded,pooled,100,1095,rho_leave_one_out.r2g_linear,0.102655
+credit_unbanded,pooled,100,1095,rho_leave_one_out.strict_v1_linear,0.170344
+credit_unbanded,pooled,100,1095,rho_leave_one_out.per_rule_rate,0.181789
+credit_unbanded,pooled,100,1095,rho_leave_one_out.loose,NaN
+credit_unbanded,pooled,100,1095,rho_leave_one_out.tight,NaN
+credit_unbanded,pooled,100,1095,rho_leave_one_out.strict,0.389273
+credit_unbanded,pooled,100,1095,rho_leave_one_out.strict_by_output_class,0.004593
+credit_unbanded,pooled,100,1095,rho_multi_mask.r2g_linear,0.248762
+credit_unbanded,pooled,100,1095,rho_multi_mask.strict_v1_linear,0.344455
+credit_unbanded,pooled,100,1095,rho_multi_mask.per_rule_rate,0.267140
+credit_unbanded,pooled,100,1095,rho_multi_mask.loose,NaN
+credit_unbanded,pooled,100,1095,rho_multi_mask.tight,NaN
+credit_unbanded,pooled,100,1095,rho_multi_mask.strict,0.725376
+credit_unbanded,pooled,100,1095,rho_multi_mask.strict_by_output_class,0.056235
+credit_unbanded,pooled,100,1095,confluence.n_leave_one_out_zero,1012
+credit_unbanded,pooled,100,1095,confluence.n_zero_to_positive,77
+credit_unbanded,pooled,100,1095,confluence.n_zero_to_negative,8
+credit_unbanded,pooled,100,1095,confluence.share_of_zero_that_becomes_positive,0.076087
+credit_unbanded,pooled,100,1095,confluence.n_multi_mask_skips_gt_1,435
+credit_unbanded,pooled,100,1095,confluence.mean_multi_mask_skips,1.5717
+credit_unbanded,pooled,100,1095,confluence.max_multi_mask_skips,6
+credit_band101-1000,pooled,100,3000,rho_leave_one_out.r2g_linear,0.198709
+credit_band101-1000,pooled,100,3000,rho_leave_one_out.strict_v1_linear,0.246271
+credit_band101-1000,pooled,100,3000,rho_leave_one_out.per_rule_rate,0.288063
+credit_band101-1000,pooled,100,3000,rho_leave_one_out.loose,NaN
+credit_band101-1000,pooled,100,3000,rho_leave_one_out.tight,NaN
+credit_band101-1000,pooled,100,3000,rho_leave_one_out.strict,0.509634
+credit_band101-1000,pooled,100,3000,rho_leave_one_out.strict_by_output_class,0.010912
+credit_band101-1000,pooled,100,3000,rho_multi_mask.r2g_linear,0.145032
+credit_band101-1000,pooled,100,3000,rho_multi_mask.strict_v1_linear,0.209399
+credit_band101-1000,pooled,100,3000,rho_multi_mask.per_rule_rate,0.201996
+credit_band101-1000,pooled,100,3000,rho_multi_mask.loose,NaN
+credit_band101-1000,pooled,100,3000,rho_multi_mask.tight,NaN
+credit_band101-1000,pooled,100,3000,rho_multi_mask.strict,0.564514
+credit_band101-1000,pooled,100,3000,rho_multi_mask.strict_by_output_class,0.031032
+credit_band101-1000,pooled,100,3000,confluence.n_leave_one_out_zero,2525
+credit_band101-1000,pooled,100,3000,confluence.n_zero_to_positive,90
+credit_band101-1000,pooled,100,3000,confluence.n_zero_to_negative,20
+credit_band101-1000,pooled,100,3000,confluence.share_of_zero_that_becomes_positive,0.035644
+credit_band101-1000,pooled,100,3000,confluence.n_multi_mask_skips_gt_1,425
+credit_band101-1000,pooled,100,3000,confluence.mean_multi_mask_skips,1.1643
+credit_band101-1000,pooled,100,3000,confluence.max_multi_mask_skips,6
