@@ -1274,7 +1274,10 @@ mod congruence_gap_probe {
     /// — the "materialized extracted arena's real cost" the rule-order
     /// harness this probe borrows its corpus from also uses (`arena_cost` in
     /// `docs/results/2026-09-01-rule-order-real-kernels.md`), not
-    /// `ExtractedDAG::total_cost`'s cycle-penalty-inflated DP total.
+    /// `ExtractedDAG::total_cost`, which is a TREE cost and prices a shared
+    /// subterm once per use. Since #1111 `ExtractedDAG::dag_cost` is the same
+    /// quantity this computes; the arena walk is kept as the independent
+    /// check that they agree.
     fn arena_static_cost(model: &CostModel, arena: &ExprArena, root: ExprId) -> usize {
         let len = arena.nodes_raw().len();
         let mut seen = vec![false; len];
@@ -1934,9 +1937,7 @@ mod congruence_gap_probe {
 #[cfg(test)]
 mod production_telemetry {
     use super::*;
-    use crate::egraph::{
-        Budget, CostModel, Optimizer, SaturationConfig, SaturationStop, extract_dag,
-    };
+    use crate::egraph::{Budget, CostModel, Optimizer, SaturationConfig, SaturationStop};
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
     use std::fmt::Write as _;
     use std::path::{Path, PathBuf};
@@ -2051,9 +2052,10 @@ mod production_telemetry {
     /// Latency-prior cost of the arena the JIT would actually execute: the
     /// per-op table summed over every reachable operation once (DAG cost;
     /// leaves are free, as in `CostModel::node_op_cost`). This is the
-    /// quality metric — NOT `ExtractedDAG::total_cost`, which adds a
-    /// 1,000,000 `CYCLE_COST` penalty per cycle-breaking pick and so does
-    /// not describe the emitted code.
+    /// quality metric — NOT `ExtractedDAG::total_cost`, which is a TREE cost
+    /// and pays a shared subterm once per use. `ExtractedDAG::dag_cost`
+    /// (#1111) is this same number read off the choices instead of the
+    /// materialized arena; this walk stays as the independent check.
     fn arena_cost(arena: &ExprArena, root: ExprId, costs: &CostModel) -> usize {
         let len = arena.nodes_raw().len();
         let mut seen = vec![false; len];
@@ -2150,10 +2152,14 @@ mod production_telemetry {
         let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
 
         let costs = CostModel::latency_prior();
-        // The Static arm's own DP (extraction.rs:59) re-run to read the
-        // total it computes and discards; same inputs, same answer. Kept as
-        // a raw column only — see `arena_cost` for why it is not the metric.
-        let dp_cost = extract_dag(&egraph, root_class, &costs).total_cost;
+        // The DP's own objective value for the term it returned: a TREE cost,
+        // so sharing is not priced and the number is not comparable with
+        // `arena_cost` below (which is the DAG cost the kernel pays). Since
+        // #1111 the optimizer reports it directly from the settled choices,
+        // so this column no longer needs a second extraction to recover it —
+        // and no longer carries the pre-repair/`CYCLE_COST` inflation that
+        // made it describe a term other than the one extracted.
+        let dp_cost = optimized.cost.tree;
 
         Run {
             stop: optimized.stats.stop,

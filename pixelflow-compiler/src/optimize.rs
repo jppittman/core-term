@@ -147,8 +147,8 @@ fn optimize_via_model(
     let node_count = count_ast_nodes(expr);
     #[cfg(feature = "saturation-telemetry")]
     let telemetry_start = std::time::Instant::now();
-    let _optimized = optimizer.run(&mut ctx.egraph, root, node_count);
-    let choices = _optimized.choices.clone();
+    let optimized = optimizer.run(&mut ctx.egraph, root, node_count);
+    let choices = optimized.choices.clone();
 
     // Stop the clock here: `wall_clock` is documented (see
     // `telemetry::SaturationInvocation::wall_clock`) as saturate+extract,
@@ -169,12 +169,12 @@ fn optimize_via_model(
         // choices `extraction.choices()` just made; it is not consulted for
         // the actual compiled output, and (per the `wall_clock` capture
         // above) not counted in the reported timing either.
-        let (telemetry_arena, telemetry_root) = _optimized.to_arena(&ctx.egraph, root);
+        let (telemetry_arena, telemetry_root) = optimized.to_arena(&ctx.egraph, root);
         let kernel_label = _kernel_label.map(|ident| ident.to_string());
         pixelflow_search::telemetry::record(pixelflow_search::telemetry::SaturationInvocation {
             tier: pixelflow_search::telemetry::Tier::Macro,
             node_count,
-            stats: &_optimized.stats,
+            stats: &optimized.stats,
             union_count: ctx.egraph.provenance().union_count(),
             extracted_arena: &telemetry_arena,
             extracted_root: telemetry_root,
@@ -187,7 +187,8 @@ fn optimize_via_model(
     // dag_to_expr emits let-bindings for shared subexpressions and returns
     // a plain expression when there is no sharing — no separate tree path needed.
     let ref_counts = compute_ref_counts(&ctx.egraph, root, &choices);
-    let dag = build_extracted_dag_from_choices(&ctx.egraph, root, &choices, &ref_counts);
+    let dag =
+        build_extracted_dag_from_choices(&ctx.egraph, root, &choices, &ref_counts, optimized.cost);
     ctx.dag_to_expr(&dag)
 }
 

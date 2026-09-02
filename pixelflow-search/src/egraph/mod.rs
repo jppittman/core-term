@@ -45,8 +45,8 @@ pub use cost::{CostFunction, CostModel};
 pub use deps::{Deps, DepsAnalysis};
 pub use derivative::{ChainRule, derivative_rules};
 pub use extract::{
-    ExtractedDAG, Extraction, build_extracted_dag_from_choices, choices_to_arena,
-    compute_ref_counts, extract, extract_dag,
+    ChoiceCost, ExtractedDAG, Extraction, build_extracted_dag_from_choices, choices_to_arena,
+    compute_ref_counts, cost_of_choices, extract, extract_dag,
 };
 pub use graph::{
     ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, RewriteTarget, SaturationStats,

@@ -50,7 +50,7 @@ use alloc::vec::Vec;
 use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
 use super::cost::CostModel;
-use super::extract::{Extraction, IncrementalExtractor, Reranker, choices_to_arena};
+use super::extract::{ChoiceCost, Extraction, IncrementalExtractor, Reranker, choices_to_arena};
 use super::graph::{EGraph, SaturationStop};
 use super::node::EClassId;
 use super::provenance::ApplicationRecord;
@@ -190,6 +190,13 @@ pub struct OptimizerStats {
 pub struct Optimized {
     /// One node index per canonical e-class, well-founded from the root.
     pub choices: Vec<Option<usize>>,
+    /// What [`Self::choices`] costs, in both the shape the extraction DP
+    /// minimizes ([`ChoiceCost::tree`]) and the shape the emitted kernel pays
+    /// ([`ChoiceCost::dag`]). Read from the settled choices, so it describes
+    /// the term [`Self::to_arena`] materializes — including under a
+    /// [`Reranker`], whose search has its own scale and never produced this
+    /// number before.
+    pub cost: ChoiceCost,
     /// What the run did.
     pub stats: OptimizerStats,
 }
@@ -389,18 +396,30 @@ impl Optimizer {
             }
         }
 
-        let choices = match self.rerank.as_ref() {
-            Some(reranker) => IncrementalExtractor::new(reranker.as_ref(), RERANK_TOP_K)
-                .extract_choices_only(egraph, root)
-                .1
-                .into_choices(),
+        // Both arms report the cost of the choices they RETURN — the DP's
+        // own table is read before `repair_choices_well_founded` rewrites
+        // picks and so can name a different term (#1111), and the reranker's
+        // search score is on its own scale entirely.
+        let (choices, cost) = match self.rerank.as_ref() {
+            Some(reranker) => {
+                let choices = IncrementalExtractor::new(reranker.as_ref(), RERANK_TOP_K)
+                    .extract_choices_only(egraph, root)
+                    .1
+                    .into_choices();
+                let cost =
+                    super::extract::cost_of_choices(egraph, root, &choices, &self.cost, self.shape);
+                (choices, cost)
+            }
             None => {
-                super::extract::extract_dag_scoped(egraph, root, &self.cost, self.shape).choices
+                let dag = super::extract::extract_dag_scoped(egraph, root, &self.cost, self.shape);
+                let cost = dag.cost();
+                (dag.choices, cost)
             }
         };
 
         Optimized {
             choices,
+            cost,
             stats: OptimizerStats {
                 stop: saturation.stop,
                 iterations: saturation.iterations,
