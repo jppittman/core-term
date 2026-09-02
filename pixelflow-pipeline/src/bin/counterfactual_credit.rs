@@ -44,6 +44,30 @@
 //! chosen node it unioned into was never *created* by `a`, but the class it
 //! touched is exactly the one the extraction walks.
 //!
+//! # The model proxies (plan §4.3, Claim B)
+//!
+//! With `--r2g-checkpoint` / `--strict-checkpoint` / `--train-guide-report`
+//! given, every recorded application `b` with ordinal `< B` on the original
+//! trajectory is featurized ONCE against the e-graph at B
+//! (`CandidateFeatures::observe` — the same constructor every Guide is fed,
+//! the same post-hoc observation the R2G mint used; see
+//! `gen_r2g_trajectories`' module doc for why that approximation is stated
+//! rather than hidden) and scored by each loaded Guide. For a sampled `a`
+//! with `A_t` = the OTHER applications recorded in the same sweep
+//! (`ApplicationRecord::step`), the advantage is
+//!
+//! - R2G: `adv_a = mean_{b ∈ A_t} f(x_b) − f(x_a)`, `f` = predicted return
+//!   (`LinearReturnGuide::predicted_return`; positive = `a` predicted
+//!   better than its sweep-mates, since a return is a regret);
+//! - strict-v1 / per-rule: `adv_a = s(x_a) − mean_{b ∈ A_t} s(x_b)`, `s` =
+//!   `score_candidates` (bigger-is-better orientation).
+//!
+//! An `a` alone in its sweep has no alternatives; its advantage is `None`,
+//! it is excluded from the model-proxy correlations, and the exclusion
+//! count is reported (never a silent 0). Spearman ρ against Δ is reported
+//! pooled and per set with a seeded paired bootstrap CI, plus the CI of
+//! each proxy's difference from the R2G model — evidence, not the gate.
+//!
 //! # Sampling and the wall-clock ceiling
 //!
 //! Applications are sampled uniformly (seeded, without replacement) from
@@ -73,7 +97,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -82,9 +106,15 @@ use pixelflow_ir::ExprArena;
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_search::egraph::provenance::{ApplicationId, ENodeId, Origin};
 use pixelflow_search::egraph::{
-    CostModel, EClassId, EGraph, EpisodeLabels, Label, config_for_node_count, extract_dag,
+    CandidateFeatures, CostModel, EClassId, EGraph, EpisodeLabels, Firing, Label,
+    REGISTERED_PRIMARY_BUDGET_APPLICATIONS, config_for_node_count, extract_dag,
 };
 use pixelflow_search::math::all_rules;
+use pixelflow_search::nnue::factored::EMBED_DIM;
+use pixelflow_search::nnue::guide::linear::{
+    LinearCandidateGuide, LinearReturnGuide, PerRuleRateGuide,
+};
+use pixelflow_search::nnue::guide::{CandidateSummary, SaturationGuide};
 
 /// Per-run safety ceiling for ONE `saturate_until_applications[_observed]`
 /// call. This is a correctness guard (offline measurement must fail loud
@@ -131,6 +161,26 @@ struct Args {
     /// correctness ceiling.
     #[arg(long, default_value_t = 1_200)]
     wall_clock_ceiling_secs: u64,
+
+    /// `train_guide_r2g` checkpoint — adds the R2G model-advantage proxy
+    /// (plan §4.3, the claim column).
+    #[arg(long)]
+    r2g_checkpoint: Option<String>,
+
+    /// Round-1 strict-bit `train_guide` checkpoint — adds the strict-v1
+    /// linear Guide's advantage proxy.
+    #[arg(long)]
+    strict_checkpoint: Option<String>,
+
+    /// `train_guide` report JSON — adds the `PerRuleRateGuide` advantage
+    /// proxy (the Round-1 control).
+    #[arg(long)]
+    train_guide_report: Option<String>,
+
+    /// Paired-bootstrap resamples for the Spearman CIs (seeded from
+    /// `--seed`).
+    #[arg(long, default_value_t = 1000)]
+    bootstrap_resamples: usize,
 
     #[arg(
         long,
@@ -217,6 +267,82 @@ fn git_rev() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// The model proxies (module doc): whichever Guides the caller loaded.
+// ---------------------------------------------------------------------------
+
+struct Proxies {
+    r2g: Option<LinearReturnGuide>,
+    strict_v1: Option<LinearCandidateGuide>,
+    per_rule: Option<PerRuleRateGuide>,
+}
+
+/// One proxy's per-sweep sums, so `mean over the OTHER applications in the
+/// sweep` is `(sum − own) / (count − 1)` without a per-`a` rescan.
+struct SweepScores {
+    /// `ApplicationId -> this proxy's raw score for that application`.
+    own: HashMap<ApplicationId, f64>,
+    /// `step -> (sum of scores, count)` over the recorded applications with
+    /// ordinal `< B` in that sweep.
+    per_step: HashMap<usize, (f64, usize)>,
+}
+
+impl SweepScores {
+    /// `Some((own score, mean of the other same-sweep scores))`, `None` when
+    /// `a` has no same-sweep alternative (the exclusion the module doc
+    /// reports).
+    fn own_and_others(&self, app_id: ApplicationId, step: usize) -> Option<(f64, f64)> {
+        let own = *self.own.get(&app_id).unwrap_or_else(|| {
+            panic!(
+                "counterfactual_credit: application {} was sampled but never scored",
+                app_id.as_u64()
+            )
+        });
+        let &(sum, count) = self.per_step.get(&step).unwrap_or_else(|| {
+            panic!("counterfactual_credit: sweep {step} has no score aggregate")
+        });
+        assert!(
+            count >= 1,
+            "counterfactual_credit: sweep {step} aggregate is empty"
+        );
+        if count == 1 {
+            return None;
+        }
+        Some((own, (sum - own) / (count - 1) as f64))
+    }
+}
+
+/// Score every recorded application with ordinal `< bound` by `guide`,
+/// batched once (the same one-batch-per-round discipline the live loop has),
+/// and aggregate per sweep.
+fn sweep_scores<G: SaturationGuide>(
+    guide: &G,
+    keys: &[(ApplicationId, usize)],
+    summaries: &[CandidateSummary],
+) -> SweepScores {
+    assert_eq!(keys.len(), summaries.len());
+    let scores = guide.score_candidates(summaries);
+    assert_eq!(
+        scores.len(),
+        summaries.len(),
+        "counterfactual_credit: guide returned a ragged score batch"
+    );
+    let mut own = HashMap::with_capacity(summaries.len());
+    let mut per_step: HashMap<usize, (f64, usize)> = HashMap::new();
+    for ((app_id, step), score) in keys.iter().zip(scores) {
+        assert!(
+            score.is_finite(),
+            "counterfactual_credit: non-finite guide score for application {}",
+            app_id.as_u64()
+        );
+        own.insert(*app_id, score as f64);
+        let e = per_step.entry(*step).or_insert((0.0, 0));
+        e.0 += score as f64;
+        e.1 += 1;
+    }
+    SweepScores { own, per_step }
+}
+
+// ---------------------------------------------------------------------------
 // Per-expression replay context: everything computed ONCE against the
 // original (unmasked) trajectory, reused across every sampled application.
 // ---------------------------------------------------------------------------
@@ -244,6 +370,14 @@ struct ExprContext {
     /// Recorded, state-changing application ids with ordinal `< budget`, in
     /// ordinal order — the pool `--n-apps` samples from.
     candidates: Vec<(ApplicationId, usize)>, // (id, rule_idx)
+    /// `ApplicationId -> ApplicationRecord::step` (the sweep), for every
+    /// recorded application with ordinal `< budget`.
+    step_of: HashMap<ApplicationId, usize>,
+    /// Per-proxy scores over the same applications (module doc); `None` for
+    /// a proxy the caller did not load.
+    scores_r2g: Option<SweepScores>,
+    scores_strict_v1: Option<SweepScores>,
+    scores_per_rule: Option<SweepScores>,
 }
 
 /// Walk the chosen extraction from `root`, collecting every canonical class
@@ -297,6 +431,7 @@ fn build_expr_context(
     arena: ExprArena,
     root: pixelflow_ir::ExprId,
     budget: usize,
+    proxies: &Proxies,
 ) -> ExprContext {
     let max_classes = config_for_node_count(arena.nodes_raw().len()).max_classes;
     let mut egraph = EGraph::with_rules(all_rules());
@@ -352,6 +487,10 @@ fn build_expr_context(
     // module doc.
     let mut candidates: Vec<(ApplicationId, usize)> = Vec::new();
     let bound = budget.min(stats.applications) as u64;
+    let expr_node_count = arena.nodes_raw().len();
+    let mut step_of: HashMap<ApplicationId, usize> = HashMap::new();
+    let mut keys: Vec<(ApplicationId, usize)> = Vec::new();
+    let mut summaries: Vec<CandidateSummary> = Vec::new();
     for (app_id, record) in egraph.provenance().applications() {
         if app_id.as_u64() >= bound {
             continue;
@@ -359,7 +498,40 @@ fn build_expr_context(
         if unions_by.contains_key(&app_id) {
             candidates.push((app_id, record.rule_idx));
         }
+        step_of.insert(app_id, record.step);
+        let firing = Firing {
+            rule_idx: record.rule_idx,
+            match_root: record.match_root,
+            application_ordinal: app_id.as_u64(),
+            registered_budget: REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
+        };
+        let features = CandidateFeatures::observe(&egraph, &firing);
+        keys.push((app_id, record.step));
+        summaries.push(CandidateSummary::new(
+            &features,
+            [0.0f32; EMBED_DIM],
+            expr_node_count,
+        ));
     }
+    let scores_r2g = proxies.r2g.as_ref().map(|g| {
+        // `score_candidates` is `-predicted_return`; the proxy wants `f`
+        // itself (module doc), so score with the un-negated forward pass.
+        struct Predicted<'a>(&'a LinearReturnGuide);
+        impl SaturationGuide for Predicted<'_> {
+            fn score_candidates(&self, c: &[CandidateSummary]) -> Vec<f32> {
+                c.iter().map(|x| self.0.predicted_return(x)).collect()
+            }
+        }
+        sweep_scores(&Predicted(g), &keys, &summaries)
+    });
+    let scores_strict_v1 = proxies
+        .strict_v1
+        .as_ref()
+        .map(|g| sweep_scores(g, &keys, &summaries));
+    let scores_per_rule = proxies
+        .per_rule
+        .as_ref()
+        .map(|g| sweep_scores(g, &keys, &summaries));
 
     ExprContext {
         name,
@@ -376,6 +548,10 @@ fn build_expr_context(
         node_to_class,
         reachable,
         candidates,
+        step_of,
+        scores_r2g,
+        scores_strict_v1,
+        scores_per_rule,
     }
 }
 
@@ -455,6 +631,17 @@ struct Row {
     bit_tight: bool,
     bit_strict: bool,
     bit_strict_class: bool,
+    /// Same-sweep alternatives `|A_t|` (module doc); `0` means every model
+    /// proxy below is `None` for this row.
+    n_alternatives: usize,
+    /// R2G predicted return `f(x_a)` (raw, for the per-rule table).
+    f_r2g: Option<f64>,
+    /// `mean_{b ∈ A_t} f(x_b) − f(x_a)`.
+    adv_r2g: Option<f64>,
+    /// `logit(x_a) − mean_{b ∈ A_t} logit(x_b)`.
+    adv_strict_v1: Option<f64>,
+    /// `rate(rule_a) − mean_{b ∈ A_t} rate(rule_b)`.
+    adv_per_rule: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +685,11 @@ fn pearson(xs: &[f64], ys: &[f64]) -> f64 {
 fn average_ranks(xs: &[f64]) -> Vec<f64> {
     let n = xs.len();
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| xs[a].partial_cmp(&xs[b]).expect("counterfactual_credit: NaN in rank"));
+    order.sort_by(|&a, &b| {
+        xs[a]
+            .partial_cmp(&xs[b])
+            .expect("counterfactual_credit: NaN in rank")
+    });
     let mut ranks = vec![0.0; n];
     let mut i = 0;
     while i < n {
@@ -524,6 +715,11 @@ fn spearman(xs: &[f64], ys: &[f64]) -> f64 {
 struct BoundStats {
     pearson_pooled: f64,
     spearman_pooled: f64,
+    /// Seeded bootstrap 95% CI of `spearman_pooled` (module doc).
+    spearman_pooled_ci: (f64, f64),
+    /// Paired-bootstrap 95% CI of `spearman_pooled(this) −
+    /// spearman_pooled(r2g)`; `NaN`s when no R2G proxy was loaded.
+    spearman_diff_vs_r2g_ci: (f64, f64),
     pearson_sh: f64,
     spearman_sh: f64,
     pearson_dev: f64,
@@ -531,41 +727,144 @@ struct BoundStats {
     n_pooled: usize,
     n_sh: usize,
     n_dev: usize,
+    /// Rows this proxy could not score (`None`: no same-sweep alternative)
+    /// — excluded from every statistic above, reported here.
+    n_excluded: usize,
 }
 
-fn score_bound(rows: &[&Row], bit_of: impl Fn(&Row) -> bool) -> BoundStats {
-    let bits: Vec<f64> = rows.iter().map(|r| if bit_of(r) { 1.0 } else { 0.0 }).collect();
-    let deltas: Vec<f64> = rows.iter().map(|r| r.delta).collect();
-    let sh_idx: Vec<usize> = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.set == "sh")
-        .map(|(i, _)| i)
-        .collect();
-    let dev_idx: Vec<usize> = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.set == "dev")
-        .map(|(i, _)| i)
-        .collect();
-    let subset = |idx: &[usize], v: &[f64]| -> Vec<f64> { idx.iter().map(|&i| v[i]).collect() };
+/// A proxy's value per row, or `None` where it is undefined for that row.
+type ProxyOf<'a> = &'a dyn Fn(&Row) -> Option<f64>;
 
-    let bits_sh = subset(&sh_idx, &bits);
-    let deltas_sh = subset(&sh_idx, &deltas);
-    let bits_dev = subset(&dev_idx, &bits);
-    let deltas_dev = subset(&dev_idx, &deltas);
+/// Spearman of `proxy` vs Δ over the rows (in `idx`) where the proxy is
+/// defined.
+fn spearman_over(rows: &[&Row], idx: &[usize], proxy: ProxyOf<'_>) -> f64 {
+    let mut xs = Vec::with_capacity(idx.len());
+    let mut ys = Vec::with_capacity(idx.len());
+    for &i in idx {
+        if let Some(x) = proxy(rows[i]) {
+            xs.push(x);
+            ys.push(rows[i].delta);
+        }
+    }
+    spearman(&xs, &ys)
+}
+
+fn pearson_over(rows: &[&Row], idx: &[usize], proxy: ProxyOf<'_>) -> f64 {
+    let mut xs = Vec::with_capacity(idx.len());
+    let mut ys = Vec::with_capacity(idx.len());
+    for &i in idx {
+        if let Some(x) = proxy(rows[i]) {
+            xs.push(x);
+            ys.push(rows[i].delta);
+        }
+    }
+    pearson(&xs, &ys)
+}
+
+/// 2.5 / 97.5 percentiles of a bootstrap sample, `NaN`s ignored (a resample
+/// with zero proxy variance yields `NaN`; if every resample does, the CI
+/// is `(NaN, NaN)` — reported as `null`, never coerced).
+fn ci95(mut xs: Vec<f64>) -> (f64, f64) {
+    xs.retain(|x| !x.is_nan());
+    if xs.is_empty() {
+        return (f64::NAN, f64::NAN);
+    }
+    xs.sort_by(|a, b| a.partial_cmp(b).expect("ci95: NaN survived retain"));
+    let at = |p: f64| xs[((xs.len() - 1) as f64 * p).round() as usize];
+    (at(0.025), at(0.975))
+}
+
+/// Score one proxy against Δ: pooled / per-set correlations, plus the
+/// paired-bootstrap CIs. `resamples` is the shared list of bootstrap index
+/// draws (the SAME draws for every proxy — that is what makes the
+/// difference CI paired); `r2g_boot` is the R2G proxy's Spearman on each
+/// draw, `None` when no R2G proxy was loaded.
+fn score_proxy(
+    rows: &[&Row],
+    proxy: ProxyOf<'_>,
+    resamples: &[Vec<usize>],
+    r2g_boot: Option<&[f64]>,
+) -> BoundStats {
+    let all: Vec<usize> = (0..rows.len()).collect();
+    let sh_idx: Vec<usize> = all
+        .iter()
+        .copied()
+        .filter(|&i| rows[i].set == "sh")
+        .collect();
+    let dev_idx: Vec<usize> = all
+        .iter()
+        .copied()
+        .filter(|&i| rows[i].set == "dev")
+        .collect();
+    let defined = |idx: &[usize]| idx.iter().filter(|&&i| proxy(rows[i]).is_some()).count();
+
+    let boot: Vec<f64> = resamples
+        .iter()
+        .map(|idx| spearman_over(rows, idx, proxy))
+        .collect();
+    let diff_ci = match r2g_boot {
+        Some(r) => {
+            assert_eq!(r.len(), boot.len());
+            ci95(boot.iter().zip(r).map(|(b, r)| b - r).collect())
+        }
+        None => (f64::NAN, f64::NAN),
+    };
 
     BoundStats {
-        pearson_pooled: pearson(&bits, &deltas),
-        spearman_pooled: spearman(&bits, &deltas),
-        pearson_sh: pearson(&bits_sh, &deltas_sh),
-        spearman_sh: spearman(&bits_sh, &deltas_sh),
-        pearson_dev: pearson(&bits_dev, &deltas_dev),
-        spearman_dev: spearman(&bits_dev, &deltas_dev),
-        n_pooled: rows.len(),
-        n_sh: sh_idx.len(),
-        n_dev: dev_idx.len(),
+        pearson_pooled: pearson_over(rows, &all, proxy),
+        spearman_pooled: spearman_over(rows, &all, proxy),
+        spearman_pooled_ci: ci95(boot),
+        spearman_diff_vs_r2g_ci: diff_ci,
+        pearson_sh: pearson_over(rows, &sh_idx, proxy),
+        spearman_sh: spearman_over(rows, &sh_idx, proxy),
+        pearson_dev: pearson_over(rows, &dev_idx, proxy),
+        spearman_dev: spearman_over(rows, &dev_idx, proxy),
+        n_pooled: defined(&all),
+        n_sh: defined(&sh_idx),
+        n_dev: defined(&dev_idx),
+        n_excluded: rows.len() - defined(&all),
     }
+}
+
+fn bit(b: bool) -> Option<f64> {
+    Some(if b { 1.0 } else { 0.0 })
+}
+
+/// Per-rule view of the sampled applications: does the rule pay by Δ, and
+/// what does the R2G model think of it? (The `pythagorean` question.)
+struct RuleDelta {
+    rule_idx: usize,
+    rule_name: String,
+    n: usize,
+    n_sh: usize,
+    delta_mean: f64,
+    n_delta_positive: usize,
+    n_delta_negative: usize,
+    f_r2g_mean: f64,
+    adv_r2g_mean: f64,
+}
+
+fn per_rule_delta(rows: &[Row]) -> Vec<RuleDelta> {
+    let mut by_rule: std::collections::BTreeMap<usize, Vec<&Row>> =
+        std::collections::BTreeMap::new();
+    for r in rows {
+        by_rule.entry(r.rule_idx).or_default().push(r);
+    }
+    let mean_opt = |xs: Vec<f64>| if xs.is_empty() { f64::NAN } else { mean(&xs) };
+    by_rule
+        .into_iter()
+        .map(|(rule_idx, rs)| RuleDelta {
+            rule_idx,
+            rule_name: rs[0].rule_name.clone(),
+            n: rs.len(),
+            n_sh: rs.iter().filter(|r| r.set == "sh").count(),
+            delta_mean: mean(&rs.iter().map(|r| r.delta).collect::<Vec<_>>()),
+            n_delta_positive: rs.iter().filter(|r| r.delta > 0.0).count(),
+            n_delta_negative: rs.iter().filter(|r| r.delta < 0.0).count(),
+            f_r2g_mean: mean_opt(rs.iter().filter_map(|r| r.f_r2g).collect()),
+            adv_r2g_mean: mean_opt(rs.iter().filter_map(|r| r.adv_r2g).collect()),
+        })
+        .collect()
 }
 
 fn json_num(x: f64) -> String {
@@ -579,10 +878,15 @@ fn json_num(x: f64) -> String {
 fn write_bound_json(out: &mut String, name: &str, s: &BoundStats, trailing_comma: bool) {
     out.push_str(&format!(
         "    {name:?}: {{\"pearson_pooled\": {}, \"spearman_pooled\": {}, \
+         \"spearman_pooled_ci95\": [{}, {}], \"spearman_diff_vs_r2g_ci95\": [{}, {}], \
          \"pearson_sh\": {}, \"spearman_sh\": {}, \"pearson_dev\": {}, \"spearman_dev\": {}, \
-         \"n_pooled\": {}, \"n_sh\": {}, \"n_dev\": {}}}{}\n",
+         \"n_pooled\": {}, \"n_sh\": {}, \"n_dev\": {}, \"n_excluded\": {}}}{}\n",
         json_num(s.pearson_pooled),
         json_num(s.spearman_pooled),
+        json_num(s.spearman_pooled_ci.0),
+        json_num(s.spearman_pooled_ci.1),
+        json_num(s.spearman_diff_vs_r2g_ci.0),
+        json_num(s.spearman_diff_vs_r2g_ci.1),
         json_num(s.pearson_sh),
         json_num(s.spearman_sh),
         json_num(s.pearson_dev),
@@ -590,8 +894,25 @@ fn write_bound_json(out: &mut String, name: &str, s: &BoundStats, trailing_comma
         s.n_pooled,
         s.n_sh,
         s.n_dev,
+        s.n_excluded,
         if trailing_comma { "," } else { "" },
     ));
+}
+
+/// A JSON string or `null` — `{:?}` on an `Option<String>` would print
+/// `Some("…")`, which is not JSON.
+fn opt_str_json(x: &Option<String>) -> String {
+    match x {
+        Some(v) => format!("{v:?}"),
+        None => "null".to_string(),
+    }
+}
+
+fn opt_json(x: Option<f64>) -> String {
+    match x {
+        Some(v) => format!("{v:.6}"),
+        None => "null".to_string(),
+    }
 }
 
 fn main() {
@@ -604,14 +925,37 @@ fn main() {
     let dev_path = corpus_dir.join("corpus_dev.bin");
     let ood_path = corpus_dir.join("corpus_dev_ood.bin");
 
-    let dev_entries = read_corpus(&dev_path)
-        .unwrap_or_else(|e| panic!("counterfactual_credit: failed to read {}: {e}", dev_path.display()));
-    let ood_entries = read_corpus(&ood_path)
-        .unwrap_or_else(|e| panic!("counterfactual_credit: failed to read {}: {e}", ood_path.display()));
+    let dev_entries = read_corpus(&dev_path).unwrap_or_else(|e| {
+        panic!(
+            "counterfactual_credit: failed to read {}: {e}",
+            dev_path.display()
+        )
+    });
+    let ood_entries = read_corpus(&ood_path).unwrap_or_else(|e| {
+        panic!(
+            "counterfactual_credit: failed to read {}: {e}",
+            ood_path.display()
+        )
+    });
     let sh_entries: Vec<(String, ExprArena, pixelflow_ir::ExprId)> = ood_entries
         .into_iter()
         .filter(|(name, _, _)| name.starts_with("dev_sh_"))
         .collect();
+
+    let proxies = Proxies {
+        r2g: args.r2g_checkpoint.as_ref().map(|p| {
+            LinearReturnGuide::load(Path::new(p))
+                .unwrap_or_else(|e| panic!("counterfactual_credit: --r2g-checkpoint: {e}"))
+        }),
+        strict_v1: args.strict_checkpoint.as_ref().map(|p| {
+            LinearCandidateGuide::load(Path::new(p))
+                .unwrap_or_else(|e| panic!("counterfactual_credit: --strict-checkpoint: {e}"))
+        }),
+        per_rule: args.train_guide_report.as_ref().map(|p| {
+            PerRuleRateGuide::from_train_guide_report(Path::new(p))
+                .unwrap_or_else(|e| panic!("counterfactual_credit: --train-guide-report: {e}"))
+        }),
+    };
 
     let mut select_rng = SeededRng::new(args.seed);
     let dev_sample = seeded_select(dev_entries, args.n_expr_dev, &mut select_rng);
@@ -640,10 +984,13 @@ fn main() {
     if let Some(parent) = out_jsonl_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let mut out = std::io::BufWriter::new(
-        std::fs::File::create(&out_jsonl_path)
-            .unwrap_or_else(|e| panic!("counterfactual_credit: cannot create {}: {e}", out_jsonl_path.display())),
-    );
+    let mut out =
+        std::io::BufWriter::new(std::fs::File::create(&out_jsonl_path).unwrap_or_else(|e| {
+            panic!(
+                "counterfactual_credit: cannot create {}: {e}",
+                out_jsonl_path.display()
+            )
+        }));
 
     let mut apply_rng = SeededRng::new(args.seed ^ 0xA5A5_A5A5_A5A5_A5A5);
     let mut rows: Vec<Row> = Vec::new();
@@ -665,7 +1012,7 @@ fn main() {
                 break 'expressions;
             }
 
-            let ctx = build_expr_context(name.clone(), arena.clone(), *root, args.budget);
+            let ctx = build_expr_context(name.clone(), arena.clone(), *root, args.budget, &proxies);
             expressions_processed += 1;
 
             if ctx.candidates.len() < args.n_apps {
@@ -726,6 +1073,39 @@ fn main() {
                 let bit_strict = ctx.strict.labels.get(&app_id) == Some(&Label::LoadBearing);
                 let bit_strict_class = strict_by_output_class(&ctx, app_id);
 
+                let step = *ctx.step_of.get(&app_id).unwrap_or_else(|| {
+                    panic!(
+                        "counterfactual_credit: sampled application {} has no recorded sweep",
+                        app_id.as_u64()
+                    )
+                });
+                // Every proxy shares the same alternative set, so
+                // `n_alternatives` is one number per row (taken from
+                // whichever proxy is loaded; all agree by construction).
+                let n_alternatives = ctx
+                    .scores_r2g
+                    .as_ref()
+                    .or(ctx.scores_strict_v1.as_ref())
+                    .or(ctx.scores_per_rule.as_ref())
+                    .map_or(0, |s| s.per_step[&step].1 - 1);
+                let (f_r2g, adv_r2g) = match ctx.scores_r2g.as_ref() {
+                    Some(s) => match s.own_and_others(app_id, step) {
+                        Some((own, others)) => (Some(own), Some(others - own)),
+                        None => (Some(s.own[&app_id]), None),
+                    },
+                    None => (None, None),
+                };
+                let adv_strict_v1 = ctx
+                    .scores_strict_v1
+                    .as_ref()
+                    .and_then(|s| s.own_and_others(app_id, step))
+                    .map(|(own, others)| own - others);
+                let adv_per_rule = ctx
+                    .scores_per_rule
+                    .as_ref()
+                    .and_then(|s| s.own_and_others(app_id, step))
+                    .map(|(own, others)| own - others);
+
                 let row = Row {
                     expr_name: name.clone(),
                     set,
@@ -742,6 +1122,11 @@ fn main() {
                     bit_tight,
                     bit_strict,
                     bit_strict_class,
+                    n_alternatives,
+                    f_r2g,
+                    adv_r2g,
+                    adv_strict_v1,
+                    adv_per_rule,
                 };
 
                 writeln!(
@@ -749,7 +1134,9 @@ fn main() {
                     "{{\"expr_name\":{:?},\"set\":{:?},\"application_ordinal\":{},\
                      \"rule_idx\":{},\"rule_name\":{:?},\"cost_original\":{},\
                      \"cost_masked\":{},\"delta\":{:.6},\"bit_loose\":{},\"bit_tight\":{},\
-                     \"bit_strict\":{},\"bit_strict_by_output_class\":{}}}",
+                     \"bit_strict\":{},\"bit_strict_by_output_class\":{},\
+                     \"n_alternatives\":{},\"f_r2g\":{},\"adv_r2g\":{},\"adv_strict_v1\":{},\
+                     \"adv_per_rule\":{}}}",
                     row.expr_name,
                     row.set,
                     row.application_ordinal,
@@ -762,8 +1149,18 @@ fn main() {
                     row.bit_tight,
                     row.bit_strict,
                     row.bit_strict_class,
+                    row.n_alternatives,
+                    opt_json(row.f_r2g),
+                    opt_json(row.adv_r2g),
+                    opt_json(row.adv_strict_v1),
+                    opt_json(row.adv_per_rule),
                 )
-                .unwrap_or_else(|e| panic!("counterfactual_credit: write to {}: {e}", out_jsonl_path.display()));
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "counterfactual_credit: write to {}: {e}",
+                        out_jsonl_path.display()
+                    )
+                });
 
                 rows.push(row);
             }
@@ -778,8 +1175,12 @@ fn main() {
             }
         }
     }
-    out.flush()
-        .unwrap_or_else(|e| panic!("counterfactual_credit: flushing {}: {e}", out_jsonl_path.display()));
+    out.flush().unwrap_or_else(|e| {
+        panic!(
+            "counterfactual_credit: flushing {}: {e}",
+            out_jsonl_path.display()
+        )
+    });
 
     assert!(
         !rows.is_empty(),
@@ -794,12 +1195,89 @@ fn main() {
     let n_negative = rows.iter().filter(|r| r.delta < 0.0).count();
     let n = rows.len();
 
-    // ---- per-bound correlations ----
+    // ---- per-proxy correlations (paired bootstrap: one shared set of draws) ----
     let row_refs: Vec<&Row> = rows.iter().collect();
-    let loose_stats = score_bound(&row_refs, |r| r.bit_loose);
-    let tight_stats = score_bound(&row_refs, |r| r.bit_tight);
-    let strict_stats = score_bound(&row_refs, |r| r.bit_strict);
-    let strict_class_stats = score_bound(&row_refs, |r| r.bit_strict_class);
+    let mut boot_rng = SeededRng::new(args.seed ^ 0xB007_B007_B007_B007);
+    let resamples: Vec<Vec<usize>> = (0..args.bootstrap_resamples)
+        .map(|_| {
+            (0..n)
+                .map(|_| (boot_rng.next_u64() % n as u64) as usize)
+                .collect()
+        })
+        .collect();
+    let r2g_proxy: ProxyOf<'_> = &|r: &Row| r.adv_r2g;
+    let r2g_boot: Option<Vec<f64>> = proxies.r2g.as_ref().map(|_| {
+        resamples
+            .iter()
+            .map(|idx| spearman_over(&row_refs, idx, r2g_proxy))
+            .collect()
+    });
+    let mut proxy_table: Vec<(&str, BoundStats)> = Vec::new();
+    if proxies.r2g.is_some() {
+        proxy_table.push((
+            "r2g_linear",
+            score_proxy(&row_refs, r2g_proxy, &resamples, r2g_boot.as_deref()),
+        ));
+    }
+    if proxies.strict_v1.is_some() {
+        proxy_table.push((
+            "strict_v1_linear",
+            score_proxy(
+                &row_refs,
+                &|r: &Row| r.adv_strict_v1,
+                &resamples,
+                r2g_boot.as_deref(),
+            ),
+        ));
+    }
+    if proxies.per_rule.is_some() {
+        proxy_table.push((
+            "per_rule_rate",
+            score_proxy(
+                &row_refs,
+                &|r: &Row| r.adv_per_rule,
+                &resamples,
+                r2g_boot.as_deref(),
+            ),
+        ));
+    }
+    proxy_table.push((
+        "loose",
+        score_proxy(
+            &row_refs,
+            &|r: &Row| bit(r.bit_loose),
+            &resamples,
+            r2g_boot.as_deref(),
+        ),
+    ));
+    proxy_table.push((
+        "tight",
+        score_proxy(
+            &row_refs,
+            &|r: &Row| bit(r.bit_tight),
+            &resamples,
+            r2g_boot.as_deref(),
+        ),
+    ));
+    proxy_table.push((
+        "strict",
+        score_proxy(
+            &row_refs,
+            &|r: &Row| bit(r.bit_strict),
+            &resamples,
+            r2g_boot.as_deref(),
+        ),
+    ));
+    proxy_table.push((
+        "strict_by_output_class",
+        score_proxy(
+            &row_refs,
+            &|r: &Row| bit(r.bit_strict_class),
+            &resamples,
+            r2g_boot.as_deref(),
+        ),
+    ));
+    let rule_deltas = per_rule_delta(&rows);
 
     println!(
         "=== counterfactual_credit: {n} applications sampled ({expressions_processed} \
@@ -813,18 +1291,20 @@ fn main() {
         100.0 * n_negative as f64 / n as f64,
     );
     println!(
-        "  {:<24} {:>10} {:>10} {:>8} {:>8} {:>8}",
-        "bound", "pearson", "spearman", "n_pool", "n_sh", "n_dev"
+        "  {:<24} {:>10} {:>10} {:>18} {:>8} {:>8} {:>8} {:>6}",
+        "proxy", "pearson", "spearman", "spearman ci95", "n_pool", "n_sh", "n_dev", "excl"
     );
-    for (name, s) in [
-        ("loose", &loose_stats),
-        ("tight", &tight_stats),
-        ("strict", &strict_stats),
-        ("strict_by_output_class", &strict_class_stats),
-    ] {
+    for (name, s) in &proxy_table {
         println!(
-            "  {name:<24} {:>10.4} {:>10.4} {:>8} {:>8} {:>8}",
-            s.pearson_pooled, s.spearman_pooled, s.n_pooled, s.n_sh, s.n_dev
+            "  {name:<24} {:>10.4} {:>10.4} [{:>7.4}, {:>7.4}] {:>8} {:>8} {:>8} {:>6}",
+            s.pearson_pooled,
+            s.spearman_pooled,
+            s.spearman_pooled_ci.0,
+            s.spearman_pooled_ci.1,
+            s.n_pooled,
+            s.n_sh,
+            s.n_dev,
+            s.n_excluded
         );
     }
     if !insufficient_candidates.is_empty() {
@@ -849,9 +1329,7 @@ fn main() {
     json.push_str(&format!(
         "  \"expressions_processed\": {expressions_processed},\n"
     ));
-    json.push_str(&format!(
-        "  \"applications_sampled\": {n},\n"
-    ));
+    json.push_str(&format!("  \"applications_sampled\": {n},\n"));
     json.push_str(&format!(
         "  \"wall_clock_ceiling_secs\": {},\n",
         args.wall_clock_ceiling_secs
@@ -869,7 +1347,11 @@ fn main() {
     for (i, line) in insufficient_candidates.iter().enumerate() {
         json.push_str(&format!(
             "    {line:?}{}\n",
-            if i + 1 < insufficient_candidates.len() { "," } else { "" }
+            if i + 1 < insufficient_candidates.len() {
+                ","
+            } else {
+                ""
+            }
         ));
     }
     json.push_str("  ],\n");
@@ -885,12 +1367,31 @@ fn main() {
         n_negative as f64 / n as f64,
     ));
     json.push_str("  },\n");
+    json.push_str(&format!(
+        "  \"proxies_loaded\": {{\"r2g_checkpoint\": {}, \"strict_checkpoint\": {}, \"train_guide_report\": {}}},\n",
+        opt_str_json(&args.r2g_checkpoint),
+        opt_str_json(&args.strict_checkpoint),
+        opt_str_json(&args.train_guide_report)
+    ));
+    json.push_str(&format!(
+        "  \"bootstrap_resamples\": {},\n",
+        args.bootstrap_resamples
+    ));
     json.push_str("  \"bounds\": {\n");
-    write_bound_json(&mut json, "loose", &loose_stats, true);
-    write_bound_json(&mut json, "tight", &tight_stats, true);
-    write_bound_json(&mut json, "strict", &strict_stats, true);
-    write_bound_json(&mut json, "strict_by_output_class", &strict_class_stats, false);
+    for (i, (name, s)) in proxy_table.iter().enumerate() {
+        write_bound_json(&mut json, name, s, i + 1 < proxy_table.len());
+    }
     json.push_str("  },\n");
+    json.push_str("  \"per_rule_delta\": [\n");
+    for (i, rd) in rule_deltas.iter().enumerate() {
+        json.push_str(&format!(
+            "    {{\"rule_idx\": {}, \"rule_name\": {:?}, \"n\": {}, \"n_sh\": {}, \"delta_mean\": {}, \"n_delta_positive\": {}, \"n_delta_negative\": {}, \"f_r2g_mean\": {}, \"adv_r2g_mean\": {}}}{}\n",
+            rd.rule_idx, rd.rule_name, rd.n, rd.n_sh, json_num(rd.delta_mean), rd.n_delta_positive,
+            rd.n_delta_negative, json_num(rd.f_r2g_mean), json_num(rd.adv_r2g_mean),
+            if i + 1 < rule_deltas.len() { "," } else { "" }
+        ));
+    }
+    json.push_str("  ],\n");
     json.push_str(&format!("  \"git_rev\": {:?},\n", git_rev()));
     json.push_str(&format!("  \"load_at_start\": {:?},\n", load_start));
     json.push_str(&format!("  \"load_at_end\": {:?}\n", uptime()));
@@ -900,8 +1401,12 @@ fn main() {
     if let Some(parent) = out_json_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(&out_json_path, &json)
-        .unwrap_or_else(|e| panic!("counterfactual_credit: cannot write {}: {e}", out_json_path.display()));
+    std::fs::write(&out_json_path, &json).unwrap_or_else(|e| {
+        panic!(
+            "counterfactual_credit: cannot write {}: {e}",
+            out_json_path.display()
+        )
+    });
     eprintln!("counterfactual_credit: wrote {}", out_json_path.display());
 
     // ---- Markdown summary ----
@@ -926,23 +1431,44 @@ fn main() {
         100.0 * n_positive as f64 / n as f64,
         100.0 * n_negative as f64 / n as f64,
     ));
-    md.push_str("| bound | Pearson (pooled) | Spearman (pooled) | Pearson (sh) | Spearman (sh) | Pearson (dev) | Spearman (dev) | n |\n");
-    md.push_str("|---|---:|---:|---:|---:|---:|---:|---:|\n");
-    for (name, s) in [
-        ("loose", &loose_stats),
-        ("tight", &tight_stats),
-        ("strict", &strict_stats),
-        ("strict_by_output_class", &strict_class_stats),
-    ] {
+    md.push_str(&format!(
+        "Proxies loaded: r2g = {}, strict-v1 = {}, per-rule = {}. Bootstrap: {} paired resamples (seeded).\n\n",
+        opt_str_json(&args.r2g_checkpoint),
+        opt_str_json(&args.strict_checkpoint),
+        opt_str_json(&args.train_guide_report),
+        args.bootstrap_resamples
+    ));
+    md.push_str("| proxy | Spearman (pooled) [95% CI] | Δρ vs r2g [95% CI] | Spearman (sh) | Spearman (dev) | Pearson (pooled) | n (excluded) |\n");
+    md.push_str("|---|---:|---:|---:|---:|---:|---:|\n");
+    for (name, s) in &proxy_table {
         md.push_str(&format!(
-            "| {name} | {} | {} | {} | {} | {} | {} | {} |\n",
-            json_num(s.pearson_pooled),
+            "| {name} | {} [{}, {}] | [{}, {}] | {} | {} | {} | {} ({}) |\n",
             json_num(s.spearman_pooled),
-            json_num(s.pearson_sh),
+            json_num(s.spearman_pooled_ci.0),
+            json_num(s.spearman_pooled_ci.1),
+            json_num(s.spearman_diff_vs_r2g_ci.0),
+            json_num(s.spearman_diff_vs_r2g_ci.1),
             json_num(s.spearman_sh),
-            json_num(s.pearson_dev),
             json_num(s.spearman_dev),
+            json_num(s.pearson_pooled),
             s.n_pooled,
+            s.n_excluded,
+        ));
+    }
+    md.push_str("\n## Per-rule Δ over the sampled applications\n\n");
+    md.push_str("| idx | rule | n (sh) | mean Δ | Δ>0 | Δ<0 | mean f_r2g | mean adv_r2g |\n|---:|---|---:|---:|---:|---:|---:|---:|\n");
+    for rd in &rule_deltas {
+        md.push_str(&format!(
+            "| {} | {} | {} ({}) | {} | {} | {} | {} | {} |\n",
+            rd.rule_idx,
+            rd.rule_name,
+            rd.n,
+            rd.n_sh,
+            json_num(rd.delta_mean),
+            rd.n_delta_positive,
+            rd.n_delta_negative,
+            json_num(rd.f_r2g_mean),
+            json_num(rd.adv_r2g_mean)
         ));
     }
     if !insufficient_candidates.is_empty() {
@@ -961,8 +1487,12 @@ fn main() {
     if let Some(parent) = out_md_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(&out_md_path, &md)
-        .unwrap_or_else(|e| panic!("counterfactual_credit: cannot write {}: {e}", out_md_path.display()));
+    std::fs::write(&out_md_path, &md).unwrap_or_else(|e| {
+        panic!(
+            "counterfactual_credit: cannot write {}: {e}",
+            out_md_path.display()
+        )
+    });
     eprintln!("counterfactual_credit: wrote {}", out_md_path.display());
     eprintln!("counterfactual_credit: wrote {}", out_jsonl_path.display());
 }

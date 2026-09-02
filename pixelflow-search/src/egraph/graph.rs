@@ -2869,8 +2869,13 @@ mod tests {
 
         let mut replayed = EGraph::with_rules(crate::egraph::all_rules());
         let replayed_root = replayed.add_arena(&arena, root);
-        let replayed_stats = replayed
-            .saturate_until_applications_observed(BUDGET, MAX_ITERS, MAX_CLASSES, timeout, None);
+        let replayed_stats = replayed.saturate_until_applications_observed(
+            BUDGET,
+            MAX_ITERS,
+            MAX_CLASSES,
+            timeout,
+            None,
+        );
 
         assert_eq!(original_stats.stop, replayed_stats.stop);
         assert_eq!(original_stats.iterations, replayed_stats.iterations);
@@ -2899,10 +2904,8 @@ mod tests {
         );
 
         let costs = CostModel::latency_prior();
-        let original_cost =
-            crate::egraph::extract_dag(&original, original_root, &costs).total_cost;
-        let replayed_cost =
-            crate::egraph::extract_dag(&replayed, replayed_root, &costs).total_cost;
+        let original_cost = crate::egraph::extract_dag(&original, original_root, &costs).total_cost;
+        let replayed_cost = crate::egraph::extract_dag(&replayed, replayed_root, &costs).total_cost;
         assert_eq!(
             original_cost, replayed_cost,
             "an unmasked observed replay must extract to the same cost as the original run"

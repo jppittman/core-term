@@ -118,8 +118,10 @@ const SATURATE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
 #[command(name = "gen_r2g_trajectories")]
-#[command(about = "Mint the R2G trajectory dataset: K ordering policies per expression, \
-                    hindsight return labels at B=100/B=200")]
+#[command(
+    about = "Mint the R2G trajectory dataset: K ordering policies per expression, \
+                    hindsight return labels at B=100/B=200"
+)]
 struct Args {
     /// Directory holding `corpus_{train,dev}.bin` and `corpus_dev_ood.bin`.
     #[arg(long, default_value = "pixelflow-pipeline/data")]
@@ -294,13 +296,15 @@ impl SaturationGuide for BuiltGuide<'_> {
                 // same thing regardless of the base guide's score scale.
                 let mut order: Vec<usize> = (0..n).collect();
                 order.sort_by(|&a, &b| {
-                    base_scores[b].partial_cmp(&base_scores[a]).unwrap_or_else(|| {
-                        panic!(
-                            "BuiltGuide::Mix: base guide produced a non-finite score \
+                    base_scores[b]
+                        .partial_cmp(&base_scores[a])
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "BuiltGuide::Mix: base guide produced a non-finite score \
                              ({} or {})",
-                            base_scores[a], base_scores[b]
-                        )
-                    })
+                                base_scores[a], base_scores[b]
+                            )
+                        })
                 });
                 let mut rank_norm = vec![0.0f32; n];
                 for (rank, &idx) in order.iter().enumerate() {
@@ -414,9 +418,9 @@ fn parse_mix_ratios(s: &str) -> Vec<(u16, u16)> {
             let num: u16 = num
                 .parse()
                 .unwrap_or_else(|e| panic!("gen_r2g_trajectories: --mix numerator {num:?}: {e}"));
-            let den: u16 = den.parse().unwrap_or_else(|e| {
-                panic!("gen_r2g_trajectories: --mix denominator {den:?}: {e}")
-            });
+            let den: u16 = den
+                .parse()
+                .unwrap_or_else(|e| panic!("gen_r2g_trajectories: --mix denominator {den:?}: {e}"));
             (num, den)
         })
         .collect()
@@ -473,8 +477,12 @@ fn run_trajectory(
         // `unguided_trajectory_reproduces_run_anytime_curve_cost_at_b` test
         // for the equivalence this guarantees against
         // `egraph::run_anytime_curve`.
-        stats_b100 =
-            egraph.saturate_until_applications(B_PRIMARY, SATURATE_MAX_ITERS, max_classes, SATURATE_TIMEOUT);
+        stats_b100 = egraph.saturate_until_applications(
+            B_PRIMARY,
+            SATURATE_MAX_ITERS,
+            max_classes,
+            SATURATE_TIMEOUT,
+        );
         cost_b100 = extract_dag(&egraph, root_class, costs).total_cost;
         stats_b200 = egraph.saturate_until_applications(
             B_SECONDARY,
@@ -483,8 +491,12 @@ fn run_trajectory(
             SATURATE_TIMEOUT,
         );
         cost_b200 = extract_dag(&egraph, root_class, costs).total_cost;
-        stats_ceiling =
-            egraph.saturate_until_applications(CEILING, SATURATE_MAX_ITERS, max_classes, SATURATE_TIMEOUT);
+        stats_ceiling = egraph.saturate_until_applications(
+            CEILING,
+            SATURATE_MAX_ITERS,
+            max_classes,
+            SATURATE_TIMEOUT,
+        );
         ext_ceiling = extract_dag(&egraph, root_class, costs);
     } else {
         let rule_embeds = vec![[0.0f32; EMBED_DIM]; all_rules().len()];
@@ -631,8 +643,10 @@ fn mint_expression(
         };
     }
 
-    let returns_b100: Vec<Option<f32>> = raw.iter().map(|t| log_regret(t.cost_b100, best)).collect();
-    let returns_b200: Vec<Option<f32>> = raw.iter().map(|t| log_regret(t.cost_b200, best)).collect();
+    let returns_b100: Vec<Option<f32>> =
+        raw.iter().map(|t| log_regret(t.cost_b100, best)).collect();
+    let returns_b200: Vec<Option<f32>> =
+        raw.iter().map(|t| log_regret(t.cost_b200, best)).collect();
     let mean_b100 = mean_of_some(&returns_b100);
     let mean_b200 = mean_of_some(&returns_b200);
 
@@ -818,8 +832,12 @@ fn assert_family_fence(
 /// cannot be fence-checked by [`assert_family_fence`].
 fn train_fence_keys(corpus_dir: &Path) -> HashSet<FenceKey> {
     let path = corpus_dir.join("corpus_train.bin");
-    let entries = read_corpus(&path)
-        .unwrap_or_else(|e| panic!("gen_r2g_trajectories: failed to read {}: {e}", path.display()));
+    let entries = read_corpus(&path).unwrap_or_else(|e| {
+        panic!(
+            "gen_r2g_trajectories: failed to read {}: {e}",
+            path.display()
+        )
+    });
     entries
         .iter()
         .map(|(_, arena, root)| FenceKey::of(arena, *root))
@@ -846,7 +864,11 @@ fn assert_train_fence(
         collisions.len(),
         entries.len(),
         &collisions[..collisions.len().min(10)],
-        if collisions.len() > 10 { ", ... (truncated)" } else { "" },
+        if collisions.len() > 10 {
+            ", ... (truncated)"
+        } else {
+            ""
+        },
     );
 }
 
@@ -1071,7 +1093,11 @@ fn write_report(
                 100.0 * spread.zero_spread_b100 as f64 / spread.expressions as f64
             },
             100.0 * spread.zero_spread_b100_record_share as f64,
-            if spread.dataset_gate_fired { "FIRED" } else { "not fired" },
+            if spread.dataset_gate_fired {
+                "FIRED"
+            } else {
+                "not fired"
+            },
             policy_medians
                 .iter()
                 .map(|(policy, median, n)| format!("| {policy} | {median:.4} | {n} |"))
@@ -1146,7 +1172,10 @@ fn main() {
     eprintln!(
         "gen_r2g_trajectories: {} ordering policies per expression: {:?}",
         policies.len(),
-        policies.iter().map(OrderingPolicy::label).collect::<Vec<_>>()
+        policies
+            .iter()
+            .map(OrderingPolicy::label)
+            .collect::<Vec<_>>()
     );
 
     let rule_names: Vec<String> = {
@@ -1174,7 +1203,10 @@ fn main() {
         });
         let entries = stride_sample(entries, args.train_limit);
         assert_family_fence(&entries, &manifest, Tier::Train);
-        eprintln!("gen_r2g_trajectories: minting TRAIN ({} expressions)", entries.len());
+        eprintln!(
+            "gen_r2g_trajectories: minting TRAIN ({} expressions)",
+            entries.len()
+        );
         outcomes.push(mint_split(
             "train",
             &entries,
@@ -1202,7 +1234,10 @@ fn main() {
         });
         let entries = stride_sample(entries, args.dev_limit);
         assert_family_fence(&entries, &manifest, Tier::Dev);
-        eprintln!("gen_r2g_trajectories: minting DEV ({} expressions)", entries.len());
+        eprintln!(
+            "gen_r2g_trajectories: minting DEV ({} expressions)",
+            entries.len()
+        );
         outcomes.push(mint_split(
             "dev",
             &entries,
@@ -1236,9 +1271,16 @@ fn main() {
                 .filter(|(name, _, _)| name.starts_with("dev_sh_"))
                 .cloned()
                 .collect();
-            assert!(!entries.is_empty(), "gen_r2g_trajectories: no dev_sh_* entries in {}", ood_path.display());
+            assert!(
+                !entries.is_empty(),
+                "gen_r2g_trajectories: no dev_sh_* entries in {}",
+                ood_path.display()
+            );
             assert_train_fence(&entries, &train_keys, "corpus_dev_ood.bin (dev_sh_*)");
-            eprintln!("gen_r2g_trajectories: minting sh ({} expressions)", entries.len());
+            eprintln!(
+                "gen_r2g_trajectories: minting sh ({} expressions)",
+                entries.len()
+            );
             outcomes.push(mint_split(
                 "sh",
                 &entries,

@@ -100,8 +100,10 @@ use pixelflow_search::egraph::{
     config_for_node_count, run_anytime_curve, run_anytime_curve_with,
 };
 use pixelflow_search::nnue::factored::EMBED_DIM;
-use pixelflow_search::nnue::guide::SaturationGuide;
-use pixelflow_search::nnue::guide::linear::{LinearCandidateGuide, PerRuleRateGuide};
+use pixelflow_search::nnue::guide::linear::{
+    LinearCandidateGuide, LinearReturnGuide, PerRuleRateGuide,
+};
+use pixelflow_search::nnue::guide::{CandidateSummary, SaturationGuide};
 use pixelflow_search::runtime::production_saturation_probe;
 
 #[derive(Parser)]
@@ -142,6 +144,16 @@ struct Args {
         default_value = "pixelflow-pipeline/data/guide_checkpoint_strict_v1.json"
     )]
     checkpoint: String,
+
+    /// `train_guide_r2g` checkpoint (`docs/plans/2026-09-01-guide-return-to-go.md`
+    /// §3.3). When set, the claim arm is [`LinearReturnGuide`] loaded from
+    /// this path and `--checkpoint` is not opened. The arm keeps the `linear`
+    /// key in every row and aggregate (schema stability for `read_rows` /
+    /// `--aggregate-only`); `context.claim_guide` in the report JSON and the
+    /// markdown labels say which Guide actually ran, so a row file is never
+    /// silently ambiguous — combine runs by that field, never by filename.
+    #[arg(long)]
+    r2g_checkpoint: Option<String>,
 
     /// `train_guide` report JSON — supplies the per-rule TRAIN rates the
     /// control arm is built from.
@@ -920,9 +932,36 @@ fn enabler_diag(
     d
 }
 
+/// The claim arm's scorer: the Round-1 strict-bit head, or the R2G return
+/// regressor (`--r2g-checkpoint`). An enum rather than `Box<dyn
+/// SaturationGuide>` so the report can name which one ran without a second
+/// out-of-band flag.
+enum ClaimGuide {
+    StrictBit(LinearCandidateGuide),
+    Return(LinearReturnGuide),
+}
+
+impl ClaimGuide {
+    fn label(&self) -> String {
+        match self {
+            ClaimGuide::StrictBit(_) => "LinearCandidateGuide".to_string(),
+            ClaimGuide::Return(g) => format!("LinearReturnGuide[{}]", g.objective()),
+        }
+    }
+}
+
+impl SaturationGuide for ClaimGuide {
+    fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
+        match self {
+            ClaimGuide::StrictBit(g) => g.score_candidates(candidates),
+            ClaimGuide::Return(g) => g.score_candidates(candidates),
+        }
+    }
+}
+
 struct Guides {
     control: PerRuleRateGuide,
-    linear: LinearCandidateGuide,
+    linear: ClaimGuide,
     embeds: Vec<[f32; EMBED_DIM]>,
 }
 
@@ -2003,10 +2042,11 @@ Strict-oracle arm: not run (see the harness module doc — no cheap provenance r
             "| (b) unguided @4B | — | — | 0 | {} | 1 | — | — | — |\n",
             fmt_pct(&t.unguided_regret_at_4b_pct)
         ));
+        let claim_label = format!("(d) {} @B [claim]", report.context["claim_guide"]);
         for a in &t.arms {
             let label = match a.arm.as_str() {
                 "control" => "(c) PerRuleRateGuide @B [control]",
-                "linear" => "(d) LinearCandidateGuide @B [claim]",
+                "linear" => claim_label.as_str(),
                 other => other,
             };
             md.push_str(&format!(
@@ -2048,8 +2088,9 @@ Strict-oracle arm: not run (see the harness module doc — no cheap provenance r
             let lin = &t.arms[1];
             let ctl = &t.arms[0];
             md.push_str(&format!(
-                "**Verdict (B={}):** (d) LinearCandidateGuide median ratio vs unguided-at-B = **{:.3}** against the registered threshold ≤ {:.3} (Y = {:.1}%) — the Y-clause **{}**; median gap vs unguided-at-4B = {:.2}% against ≤ {:.1}% — the 4B-approach clause **{}**; (d) {} unguided-at-B at all (median ratio {} 1.0, kill-gate view). Ladder: (c) control median ratio {:.3}, regret {:.2}% vs (d) regret {:.2}% — (d) **{}** (c).\n\n",
+                "**Verdict (B={}):** (d) {} median ratio vs unguided-at-B = **{:.3}** against the registered threshold ≤ {:.3} (Y = {:.1}%) — the Y-clause **{}**; median gap vs unguided-at-4B = {:.2}% against ≤ {:.1}% — the 4B-approach clause **{}**; (d) {} unguided-at-B at all (median ratio {} 1.0, kill-gate view). Ladder: (c) control median ratio {:.3}, regret {:.2}% vs (d) regret {:.2}% — (d) **{}** (c).\n\n",
                 t.b,
+                report.context["claim_guide"],
                 lin.ratio_vs_unguided_at_b.median,
                 t.ratio_threshold,
                 t.y_registered * 100.0,
@@ -2442,8 +2483,16 @@ fn main() {
         let guides = Guides {
             control: PerRuleRateGuide::from_train_guide_report(Path::new(&args.train_guide_report))
                 .unwrap_or_else(|e| panic!("control guide: {e}")),
-            linear: LinearCandidateGuide::load(Path::new(&args.checkpoint))
-                .unwrap_or_else(|e| panic!("linear guide: {e}")),
+            linear: match &args.r2g_checkpoint {
+                Some(path) => ClaimGuide::Return(
+                    LinearReturnGuide::load(Path::new(path))
+                        .unwrap_or_else(|e| panic!("r2g claim guide: {e}")),
+                ),
+                None => ClaimGuide::StrictBit(
+                    LinearCandidateGuide::load(Path::new(&args.checkpoint))
+                        .unwrap_or_else(|e| panic!("linear guide: {e}")),
+                ),
+            },
             embeds: vec![[0.0f32; EMBED_DIM]; all_rules().len()],
         };
 
@@ -2597,7 +2646,17 @@ fn main() {
     context.insert("corpus".to_string(), dev_path.display().to_string());
     context.insert("load_at_start".to_string(), load_start);
     context.insert("load_at_end".to_string(), uptime());
-    context.insert("checkpoint".to_string(), args.checkpoint.clone());
+    let (claim_checkpoint, claim_guide) = match &args.r2g_checkpoint {
+        Some(path) => (
+            path.clone(),
+            LinearReturnGuide::load(Path::new(path))
+                .map(|g| ClaimGuide::Return(g).label())
+                .unwrap_or_else(|e| panic!("r2g claim guide: {e}")),
+        ),
+        None => (args.checkpoint.clone(), "LinearCandidateGuide".to_string()),
+    };
+    context.insert("checkpoint".to_string(), claim_checkpoint.clone());
+    context.insert("claim_guide".to_string(), claim_guide.clone());
     context.insert(
         "train_guide_report".to_string(),
         args.train_guide_report.clone(),
@@ -2711,7 +2770,8 @@ fn main() {
             "source_rev": report.context["source_rev"],
             "corpus": format!("{} (FINAL untouched)", dev_path.display()),
             "protocol": format!("arms=unguided,control,linear;guided_grid={GUIDED_GRID:?};cost=latency_prior;class_cap=production_tier;registered_tiers={REGISTERED_TIERS:?}"),
-            "checkpoint": args.checkpoint,
+            "checkpoint": claim_checkpoint,
+            "claim_guide": claim_guide,
         },
         "n_by_band": report.n_by_band,
         "classical": report.tiers.iter().filter(|t| t.band == "classical").map(|t| serde_json::json!({

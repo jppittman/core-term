@@ -445,3 +445,31 @@ signature; `pub(crate)` stays `pub(crate)`.
 - **2026-09-01, first commit:** denotation (§1), diversity as dataset (§2), linear R2G model (§3),
   counterfactual validation (§4), build list (§5), parked rungs (§6), pre-registered comparison (§7),
   entry points (§8).
+
+Appended 2026-09-01 after the run; §0–§7 above are unrevised. Full report:
+`docs/results/2026-09-01-guide-return-to-go.md` (+ `.json`, `.csv`).
+
+- **Dataset gate (§2): FIRED** — 67.2 % of TRAIN classical expressions have `spread_e(100) = 0`
+  (DEV 68.0 %, `sh` 0 %, `bezier` 25 %). The registered action was "do not train"; training and
+  evaluation proceeded on the orchestrator's explicit direction as the exploratory completion of the
+  round, scored against every gate as written.
+- **Model (§3):** `LinearReturnGuide`, `--target centered --label-b 100 --loss mse`, lr 1e-4 / clip 1
+  (the defaults diverged: TRAIN loss 0.871 vs a zero-predictor floor of 0.705; the sweep was
+  selected on TRAIN loss only). TRAIN final MSE 0.7047 vs floor 0.7054; DEV MSE 0.4946 vs 0.4945,
+  DEV Spearman 0.099. Skew test PASS, 0/5000, max diff 0.000e0. Checkpoint
+  `guide_checkpoint_r2g_v1.json` MD5 `73b7db7bf75d13c94824f7826830a021`.
+- **Claim B (credit): FAILS.** S = 1,095 applications (600 `sh`, 495 DEV), Δ 92.4 % zero / 5.6 % > 0 /
+  2.0 % < 0. Spearman vs Δ, pooled: **R2G −0.004** [−0.062, +0.051]; strict-v1 linear 0.170; per-rule
+  0.182; loose/tight undefined (all true); **strict 0.389** [0.304, 0.477]; strict-by-output-class 0.005.
+  Paired-bootstrap Δρ vs R2G excludes zero for strict, per-rule and strict-v1 on the pooled sample.
+- **Claim A (ordering): FAILS on `sh`** (`m_r2g` 0.9084 vs < 0.8439 at B = 100; 0.9017 vs < 0.8259 at
+  B = 200), **holds on DEV** (0.5493 ≤ 0.5966; 0.7137 ≤ 0.7659). `|m_r2g − m_linear| ≤ M_B` on all six
+  cells (+0.013, +0.018, +0.005, +0.006, −0.053, −0.029). Head-to-head r2g < / = / > strict-bit: DEV
+  25/102/207 and 10/183/141; `sh` 21/1/73 and 5/15/75; `bezier` 60/20/0 and 19/61/0.
+- **Pre-committed row that fires: "R2G ties the strict bit everywhere" → the target was not the
+  bottleneck.** `pythagorean`: 0 firings under R2G and under the strict bit at every checkpoint on
+  `sh`; absent from S (unguided reaches it only past B = 200), so its Δ at B = 100 is unmeasurable.
+- **Next (per the row):** context features (`claude/phase3-context`), gated by
+  `counterfactual_credit --r2g-checkpoint/--strict-checkpoint` (Spearman vs Δ) before any ladder
+  run. §6's transformer pull-forward condition is not met (the linear model beat no bound).
+- Kill-gate accounting: one clean round consumed (Round 1, Round 1b, this round).
