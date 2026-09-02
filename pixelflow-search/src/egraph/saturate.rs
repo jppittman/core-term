@@ -34,7 +34,11 @@ pub struct SaturationResult {
     /// Total unions performed across all iterations.
     pub total_unions: usize,
 
-    /// Whether saturation completed (no more changes) before budget exhausted.
+    /// Whether saturation completed (no more changes) before budget
+    /// exhausted. Exactly `stop == SaturationStop::Quiesced` — the same
+    /// decision the loop made, never a second opinion derived from the
+    /// counters (`iterations < max_iterations` is true of a class-cap and a
+    /// timeout break too).
     pub saturated: bool,
 
     /// Number of e-classes before saturation.
@@ -132,7 +136,7 @@ pub fn saturate_with_full_budget(
     // the duplicate-loop drift the domain model doc calls out by name.
     let stats = egraph.saturate_with_limits(max_iterations, max_classes, timeout);
 
-    let saturated = stats.iterations < max_iterations || stats.total_unions == 0;
+    let saturated = stats.stop == SaturationStop::Quiesced;
     let classes_after = egraph.classes.len();
     let rule_matches = egraph.match_counts.clone();
 
