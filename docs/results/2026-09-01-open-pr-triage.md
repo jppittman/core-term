@@ -104,6 +104,38 @@ framing was too narrow, and the general lesson is the one the conflict table
 above makes concrete: **a clean `git merge-tree` is not evidence that a branch
 still builds.**
 
+## Review threads: the headline number was wrong
+
+Both earlier passes carried "~60 unresolved threads across 8 PRs, 13 of them
+P1." That figure was minted on 2026-09-01 and never re-derived. Re-derived now,
+across all fifteen open PRs:
+
+**There is exactly one unresolved review thread.**
+
+| PR | threads | resolved | unresolved |
+|---|---|---|---|
+| #1084 | 28 | 28 | 0 |
+| #1072 | 24 | 23 | **1** (P2) |
+| #1091 | 9 | 9 | 0 |
+| #1054 | 2 | 2 | 0 |
+| #994, #1086, #1087, #1088, #1095, #1096, #1101, #1103, #1109, #1113, #1114 | 0 | — | 0 |
+
+Two things caused the drift. Seven of the PRs carrying threads merged overnight
+(#1049, #1051, #1053, #1079, #1081, #1083, #1085) and took their threads with
+them. And the branch owners worked through the rest: #1084 closed all 28,
+#1091 all 9, each with a substantive reply rather than a dismissal — the #1091
+responses in particular confirm the finding against source, name the fix, and
+disclose which committed numbers the fix invalidates.
+
+The remaining one is on #1072 (`Recompute baselines on the Round-3 DEV corpus`,
+P2) — a branch this document already recommends closing, so it will most likely
+be resolved by that decision rather than by a fix.
+
+The lesson is the same one the #1044 correction taught, pointing the other way:
+a thread count is a snapshot of a moving target, and quoting a stale one
+overstates the work as badly as misreading a zero understates it. Any future
+sweep should re-derive it rather than carry it forward.
+
 ## Complications
 
 ### 1. #1054 — was red, now fixed. Recommend a mutants rerun, then merge.
