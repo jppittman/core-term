@@ -70,6 +70,19 @@ use crate::egraph::rules::{Fingerprint, RuleId, RuleSet};
 #[derive(Debug)]
 pub struct GuideError(String);
 
+impl GuideError {
+    /// Build a refusal from an already-formatted explanation.
+    ///
+    /// `pub(crate)` and constructor-only: every deployed-guide module in
+    /// this crate refuses through the same type (see
+    /// [`super::bilinear::BilinearCandidateGuide::new`]), but nothing
+    /// outside the crate should be able to mint one — an error value a
+    /// caller can fabricate is an error value a caller can fake past.
+    pub(crate) fn new(message: String) -> Self {
+        Self(message)
+    }
+}
+
 impl core::fmt::Display for GuideError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)
