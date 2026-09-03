@@ -137,6 +137,13 @@ required-features = ["training"]
 bench = false
 
 [[bin]]
+name = "train_guide_bilinear"
+path = "src/bin/train_guide_bilinear.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
 name = "gen_sh_corpus"
 path = "src/bin/gen_sh_corpus.rs"
 required-features = ["training"]
@@ -202,6 +209,13 @@ bench = false
 [[bin]]
 name = "skew_test_linear_guide"
 path = "src/bin/skew_test_linear_guide.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "skew_test_bilinear_guide"
+path = "src/bin/skew_test_bilinear_guide.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false

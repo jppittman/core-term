@@ -1,0 +1,14 @@
+{
+  "model": "bilinear",
+  "checkpoint": "pixelflow-pipeline/data/guide_checkpoint_bilinear_v1.json",
+  "checkpoint_weights_fnv64": "e738000c52be4af4",
+  "dev_path": "pixelflow-pipeline/data/strict_labels_dev_v2.jsonl",
+  "records_checked": 5000,
+  "tol": 0.000001,
+  "max_abs_diff": 0.0,
+  "mean_abs_diff": 0.0,
+  "exceeding_tol": 0,
+  "not_bit_identical": 0,
+  "rule_embed_mismatches": [],
+  "passed": true
+}

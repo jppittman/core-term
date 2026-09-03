@@ -1,0 +1,801 @@
+{
+  "label_source": "strict-v1",
+  "dev_path": "pixelflow-pipeline/data/strict_labels_dev_v2.jsonl",
+  "dev_fnv64": "1c4d32940a8ff286",
+  "denominator_note": "Budget denominator: REGISTERED_PRIMARY_BUDGET_APPLICATIONS = 100 (docs/plans/2026-09-01-phase3-registration.md §4, classical-band primary tier), imported by both gen_strict_labels and saturate_guided_until_applications so budget_fraction means the same thing at mint time and at deploy time. The first mint/train pass of this round (2026-09-01) used a 195-application placeholder (this round's measured median application count, before B was registered) — a train/deploy denominator skew, caught and fixed before this checkpoint (see git history for the placeholder-era numbers).",
+  "pos_weight": 7.0600142,
+  "pos_weight_rationale": "inverse class frequency (negatives/positives = 19881/2816 measured on this TRAIN split) — the simplest defensible cold-start choice: unweighted BCE lets a trainer collapse to predicting the majority class and still score >99% raw accuracy (flagged by gen_strict_labels's own report), and there is no prior Guide run to tune a fancier (focal-loss-style) weighting against yet",
+  "train_samples": 22697,
+  "train_families": 217,
+  "train_positive_rate": 0.12406926025465921,
+  "dev_samples": 6838,
+  "dev_families": 54,
+  "dev_positive_rate": 0.11830944720678561,
+  "dev_auc": 0.9450714213809193,
+  "dev_pr_auc": 0.6837363422392313,
+  "dev_auc_within_expression": 0.9341551954669286,
+  "dev_within_expression_groups": 116,
+  "train_dedup_repeats_excluded": 268649,
+  "dev_dedup_repeats_excluded": 85751,
+  "training_curve": [
+    {
+      "epoch": 0,
+      "lr": 0.01,
+      "train_mean_weighted_loss": 0.663645560655487,
+      "dev_auc": 0.9333513891756388,
+      "dev_pr_auc": 0.6149824946086736
+    },
+    {
+      "epoch": 1,
+      "lr": 0.00952381,
+      "train_mean_weighted_loss": 0.5528457238284011,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 2,
+      "lr": 0.009090909,
+      "train_mean_weighted_loss": 0.5400533776293873,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 3,
+      "lr": 0.008695652,
+      "train_mean_weighted_loss": 0.5351197301875369,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 4,
+      "lr": 0.008333333,
+      "train_mean_weighted_loss": 0.5219152867777521,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 5,
+      "lr": 0.007999999,
+      "train_mean_weighted_loss": 0.5224684195046093,
+      "dev_auc": 0.9398295547622011,
+      "dev_pr_auc": 0.663635676450975
+    },
+    {
+      "epoch": 6,
+      "lr": 0.0076923077,
+      "train_mean_weighted_loss": 0.5180135852862505,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 7,
+      "lr": 0.0074074073,
+      "train_mean_weighted_loss": 0.5093846630531081,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 8,
+      "lr": 0.007142857,
+      "train_mean_weighted_loss": 0.5073480211274158,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 9,
+      "lr": 0.006896551,
+      "train_mean_weighted_loss": 0.4994871778895461,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 10,
+      "lr": 0.0066666664,
+      "train_mean_weighted_loss": 0.5041321152523695,
+      "dev_auc": 0.9436659770319025,
+      "dev_pr_auc": 0.671560516396658
+    },
+    {
+      "epoch": 11,
+      "lr": 0.006451613,
+      "train_mean_weighted_loss": 0.4957870754164689,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 12,
+      "lr": 0.0062499996,
+      "train_mean_weighted_loss": 0.49340257944251387,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 13,
+      "lr": 0.006060606,
+      "train_mean_weighted_loss": 0.4957500496163115,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 14,
+      "lr": 0.0058823526,
+      "train_mean_weighted_loss": 0.49039504140503526,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 15,
+      "lr": 0.0057142857,
+      "train_mean_weighted_loss": 0.49163315646214895,
+      "dev_auc": 0.9411894836268296,
+      "dev_pr_auc": 0.6648254880008234
+    },
+    {
+      "epoch": 16,
+      "lr": 0.0055555557,
+      "train_mean_weighted_loss": 0.4887664558383339,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 17,
+      "lr": 0.005405405,
+      "train_mean_weighted_loss": 0.49110045746491493,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 18,
+      "lr": 0.0052631577,
+      "train_mean_weighted_loss": 0.4869107662776807,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 19,
+      "lr": 0.005128205,
+      "train_mean_weighted_loss": 0.48415871399594324,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 20,
+      "lr": 0.005,
+      "train_mean_weighted_loss": 0.48019244991190035,
+      "dev_auc": 0.9426939549080966,
+      "dev_pr_auc": 0.6766005040593478
+    },
+    {
+      "epoch": 21,
+      "lr": 0.004878049,
+      "train_mean_weighted_loss": 0.4831890087954192,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 22,
+      "lr": 0.004761905,
+      "train_mean_weighted_loss": 0.4850762593517452,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 23,
+      "lr": 0.0046511623,
+      "train_mean_weighted_loss": 0.4796280201655432,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 24,
+      "lr": 0.0045454544,
+      "train_mean_weighted_loss": 0.4786959344662482,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 25,
+      "lr": 0.0044444446,
+      "train_mean_weighted_loss": 0.4771742462906221,
+      "dev_auc": 0.9425869320123729,
+      "dev_pr_auc": 0.6766554330466521
+    },
+    {
+      "epoch": 26,
+      "lr": 0.004347826,
+      "train_mean_weighted_loss": 0.4805183896608052,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 27,
+      "lr": 0.004255319,
+      "train_mean_weighted_loss": 0.47643797787040293,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 28,
+      "lr": 0.0041666664,
+      "train_mean_weighted_loss": 0.47474966050003503,
+      "dev_auc": null,
+      "dev_pr_auc": null
+    },
+    {
+      "epoch": 29,
+      "lr": 0.0040816325,
+      "train_mean_weighted_loss": 0.4738178439836362,
+      "dev_auc": 0.9450714213809193,
+      "dev_pr_auc": 0.6837363422392313
+    }
+  ],
+  "calibration": [
+    {
+      "quantile_lo": 0.0,
+      "quantile_hi": 0.5,
+      "count": 3419,
+      "mean_predicted": 0.0024369545916366636,
+      "actual_positive_rate": 0.0,
+      "min_predicted": 5.865663510462582e-11,
+      "max_predicted": 0.008130489848554134
+    },
+    {
+      "quantile_lo": 0.5,
+      "quantile_hi": 0.75,
+      "count": 1710,
+      "mean_predicted": 0.12640646254066487,
+      "actual_positive_rate": 0.029239766081871343,
+      "min_predicted": 0.008132170885801315,
+      "max_predicted": 0.48280346393585205
+    },
+    {
+      "quantile_lo": 0.75,
+      "quantile_hi": 0.9,
+      "count": 1025,
+      "mean_predicted": 0.7626770817070473,
+      "actual_positive_rate": 0.3404878048780488,
+      "min_predicted": 0.48334968090057373,
+      "max_predicted": 0.8688303828239441
+    },
+    {
+      "quantile_lo": 0.9,
+      "quantile_hi": 0.95,
+      "count": 342,
+      "mean_predicted": 0.8923820138674731,
+      "actual_positive_rate": 0.43567251461988304,
+      "min_predicted": 0.8688588738441467,
+      "max_predicted": 0.9315603971481323
+    },
+    {
+      "quantile_lo": 0.95,
+      "quantile_hi": 0.98,
+      "count": 205,
+      "mean_predicted": 0.9579028071426764,
+      "actual_positive_rate": 0.6341463414634146,
+      "min_predicted": 0.932072639465332,
+      "max_predicted": 0.9757644534111023
+    },
+    {
+      "quantile_lo": 0.98,
+      "quantile_hi": 0.99,
+      "count": 69,
+      "mean_predicted": 0.9766219716141189,
+      "actual_positive_rate": 0.9565217391304348,
+      "min_predicted": 0.9757891893386841,
+      "max_predicted": 0.9786010384559631
+    },
+    {
+      "quantile_lo": 0.99,
+      "quantile_hi": 0.995,
+      "count": 34,
+      "mean_predicted": 0.980546376284431,
+      "actual_positive_rate": 0.9411764705882353,
+      "min_predicted": 0.9788551926612854,
+      "max_predicted": 0.9825107455253601
+    },
+    {
+      "quantile_lo": 0.995,
+      "quantile_hi": 0.998,
+      "count": 20,
+      "mean_predicted": 0.9833064377307892,
+      "actual_positive_rate": 0.95,
+      "min_predicted": 0.98263019323349,
+      "max_predicted": 0.9839533567428589
+    },
+    {
+      "quantile_lo": 0.998,
+      "quantile_hi": 0.999,
+      "count": 7,
+      "mean_predicted": 0.9874274560383388,
+      "actual_positive_rate": 1.0,
+      "min_predicted": 0.9857058525085449,
+      "max_predicted": 0.9895115494728088
+    },
+    {
+      "quantile_lo": 0.999,
+      "quantile_hi": 1.0,
+      "count": 7,
+      "mean_predicted": 0.9908521175384521,
+      "actual_positive_rate": 1.0,
+      "min_predicted": 0.9899479150772095,
+      "max_predicted": 0.9914092421531677
+    }
+  ],
+  "per_rule": [
+    {
+      "rule_id": 16367090282694250219,
+      "rule_name": "power-rsqrt",
+      "train_fired": 131,
+      "train_positive": 121,
+      "train_positive_rate": 0.9236641221374046,
+      "dev_fired": 36,
+      "dev_positive": 35,
+      "dev_positive_rate": 0.9722222222222222,
+      "dev_mean_predicted": 0.9787663833962547
+    },
+    {
+      "rule_id": 1561757049291461841,
+      "rule_name": "recip-sqrt",
+      "train_fired": 120,
+      "train_positive": 106,
+      "train_positive_rate": 0.8833333333333333,
+      "dev_fired": 35,
+      "dev_positive": 30,
+      "dev_positive_rate": 0.8571428571428571,
+      "dev_mean_predicted": 0.9723362411771502
+    },
+    {
+      "rule_id": 10584363448737357004,
+      "rule_name": "power-recip",
+      "train_fired": 442,
+      "train_positive": 361,
+      "train_positive_rate": 0.8167420814479638,
+      "dev_fired": 136,
+      "dev_positive": 109,
+      "dev_positive_rate": 0.8014705882352942,
+      "dev_mean_predicted": 0.9691558734459036
+    },
+    {
+      "rule_id": 3169489256651757955,
+      "rule_name": "power-sqrt",
+      "train_fired": 542,
+      "train_positive": 409,
+      "train_positive_rate": 0.7546125461254612,
+      "dev_fired": 163,
+      "dev_positive": 117,
+      "dev_positive_rate": 0.7177914110429447,
+      "dev_mean_predicted": 0.9430195480767934
+    },
+    {
+      "rule_id": 1620048031554472083,
+      "rule_name": "even-negation(Cos)",
+      "train_fired": 277,
+      "train_positive": 118,
+      "train_positive_rate": 0.4259927797833935,
+      "dev_fired": 79,
+      "dev_positive": 38,
+      "dev_positive_rate": 0.4810126582278481,
+      "dev_mean_predicted": 0.8500809744943546
+    },
+    {
+      "rule_id": 11660250478232512434,
+      "rule_name": "even-negation(Abs)",
+      "train_fired": 1986,
+      "train_positive": 852,
+      "train_positive_rate": 0.42900302114803623,
+      "dev_fired": 599,
+      "dev_positive": 233,
+      "dev_positive_rate": 0.38898163606010017,
+      "dev_mean_predicted": 0.8363209569792517
+    },
+    {
+      "rule_id": 15645532938392187463,
+      "rule_name": "constant-fold",
+      "train_fired": 997,
+      "train_positive": 400,
+      "train_positive_rate": 0.4012036108324975,
+      "dev_fired": 289,
+      "dev_positive": 106,
+      "dev_positive_rate": 0.36678200692041524,
+      "dev_mean_predicted": 0.8311952103483635
+    },
+    {
+      "rule_id": 9087721006288384974,
+      "rule_name": "power-combine",
+      "train_fired": 117,
+      "train_positive": 39,
+      "train_positive_rate": 0.3333333333333333,
+      "dev_fired": 36,
+      "dev_positive": 14,
+      "dev_positive_rate": 0.3888888888888889,
+      "dev_mean_predicted": 0.6932960105025106
+    },
+    {
+      "rule_id": 10666531238831768208,
+      "rule_name": "log2-exp2-cancel",
+      "train_fired": 7,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 2,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.5541993677616119
+    },
+    {
+      "rule_id": 11965030783390192686,
+      "rule_name": "canonicalize(Sub)",
+      "train_fired": 49,
+      "train_positive": 5,
+      "train_positive_rate": 0.10204081632653061,
+      "dev_fired": 13,
+      "dev_positive": 2,
+      "dev_positive_rate": 0.15384615384615385,
+      "dev_mean_predicted": 0.4827945392865401
+    },
+    {
+      "rule_id": 7695873604794726890,
+      "rule_name": "fma-fusion",
+      "train_fired": 2016,
+      "train_positive": 285,
+      "train_positive_rate": 0.14136904761904762,
+      "dev_fired": 535,
+      "dev_positive": 71,
+      "dev_positive_rate": 0.13271028037383178,
+      "dev_mean_predicted": 0.4646677990486091
+    },
+    {
+      "rule_id": 17432301383423568174,
+      "rule_name": "ln-exp-cancel",
+      "train_fired": 7,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 1,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.4140922725200653
+    },
+    {
+      "rule_id": 10414290575415289922,
+      "rule_name": "exp2-log2-cancel",
+      "train_fired": 7,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 2,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.29855822026729584
+    },
+    {
+      "rule_id": 4991654806971935910,
+      "rule_name": "factor",
+      "train_fired": 677,
+      "train_positive": 40,
+      "train_positive_rate": 0.059084194977843424,
+      "dev_fired": 223,
+      "dev_positive": 19,
+      "dev_positive_rate": 0.08520179372197309,
+      "dev_mean_predicted": 0.26078259397350734
+    },
+    {
+      "rule_id": 14116097844207269347,
+      "rule_name": "doubling",
+      "train_fired": 342,
+      "train_positive": 19,
+      "train_positive_rate": 0.05555555555555555,
+      "dev_fired": 74,
+      "dev_positive": 4,
+      "dev_positive_rate": 0.05405405405405406,
+      "dev_mean_predicted": 0.24564976239911093
+    },
+    {
+      "rule_id": 18418881791446259853,
+      "rule_name": "associative(Max)",
+      "train_fired": 30,
+      "train_positive": 2,
+      "train_positive_rate": 0.06666666666666667,
+      "dev_fired": 26,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.23802489787340164
+    },
+    {
+      "rule_id": 14322593262065665131,
+      "rule_name": "odd-negation(Sin)",
+      "train_fired": 86,
+      "train_positive": 4,
+      "train_positive_rate": 0.046511627906976744,
+      "dev_fired": 26,
+      "dev_positive": 1,
+      "dev_positive_rate": 0.038461538461538464,
+      "dev_mean_predicted": 0.22984387510671064
+    },
+    {
+      "rule_id": 13457224982266802733,
+      "rule_name": "idempotent(Min)",
+      "train_fired": 13,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 3,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.22253724932670593
+    },
+    {
+      "rule_id": 15291067188184569433,
+      "rule_name": "canonicalize(Div)",
+      "train_fired": 20,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 8,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.21364255249500275
+    },
+    {
+      "rule_id": 18391239432093262743,
+      "rule_name": "idempotent(Max)",
+      "train_fired": 12,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 5,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.20710662454366685
+    },
+    {
+      "rule_id": 18259373339848190913,
+      "rule_name": "cos-angle-addition",
+      "train_fired": 27,
+      "train_positive": 1,
+      "train_positive_rate": 0.037037037037037035,
+      "dev_fired": 5,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.17999463975429536
+    },
+    {
+      "rule_id": 11483254124718110202,
+      "rule_name": "reverse-angle-addition",
+      "train_fired": 15,
+      "train_positive": 1,
+      "train_positive_rate": 0.06666666666666667,
+      "dev_fired": 3,
+      "dev_positive": 1,
+      "dev_positive_rate": 0.3333333333333333,
+      "dev_mean_predicted": 0.17806203166643778
+    },
+    {
+      "rule_id": 12826202095654425476,
+      "rule_name": "odd-negation(Tan)",
+      "train_fired": 47,
+      "train_positive": 1,
+      "train_positive_rate": 0.02127659574468085,
+      "dev_fired": 11,
+      "dev_positive": 1,
+      "dev_positive_rate": 0.09090909090909091,
+      "dev_mean_predicted": 0.17080930078571493
+    },
+    {
+      "rule_id": 13488623273341011719,
+      "rule_name": "associative(Min)",
+      "train_fired": 32,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 5,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.14914361238479615
+    },
+    {
+      "rule_id": 15719582989360438146,
+      "rule_name": "reverse-associative(Min)",
+      "train_fired": 32,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 5,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.14579447507858276
+    },
+    {
+      "rule_id": 4818303432960082640,
+      "rule_name": "reverse-associative(Mul)",
+      "train_fired": 598,
+      "train_positive": 18,
+      "train_positive_rate": 0.030100334448160536,
+      "dev_fired": 251,
+      "dev_positive": 18,
+      "dev_positive_rate": 0.07171314741035857,
+      "dev_mean_predicted": 0.1338249071278548
+    },
+    {
+      "rule_id": 10785515762975824008,
+      "rule_name": "reverse-associative(Max)",
+      "train_fired": 30,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 26,
+      "dev_positive": 2,
+      "dev_positive_rate": 0.07692307692307693,
+      "dev_mean_predicted": 0.0916922025095958
+    },
+    {
+      "rule_id": 6231727844513535026,
+      "rule_name": "sin-angle-addition",
+      "train_fired": 15,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 3,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.08130802648762862
+    },
+    {
+      "rule_id": 7504210183416943517,
+      "rule_name": "associative(Mul)",
+      "train_fired": 598,
+      "train_positive": 10,
+      "train_positive_rate": 0.016722408026755852,
+      "dev_fired": 251,
+      "dev_positive": 4,
+      "dev_positive_rate": 0.01593625498007968,
+      "dev_mean_predicted": 0.07816746264473808
+    },
+    {
+      "rule_id": 12813060213512687971,
+      "rule_name": "exp-homomorphism",
+      "train_fired": 12,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 4,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.06993844988755882
+    },
+    {
+      "rule_id": 5158686153848502143,
+      "rule_name": "power-identity",
+      "train_fired": 31,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 10,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.06210945174098015
+    },
+    {
+      "rule_id": 15486949709074177426,
+      "rule_name": "exp-ln-cancel",
+      "train_fired": 7,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 1,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.0585462786257267
+    },
+    {
+      "rule_id": 6376253222456613926,
+      "rule_name": "associative(Add)",
+      "train_fired": 1058,
+      "train_positive": 9,
+      "train_positive_rate": 0.008506616257088847,
+      "dev_fired": 258,
+      "dev_positive": 1,
+      "dev_positive_rate": 0.003875968992248062,
+      "dev_mean_predicted": 0.05456650237232612
+    },
+    {
+      "rule_id": 1365502003559188255,
+      "rule_name": "reverse-associative(Add)",
+      "train_fired": 1058,
+      "train_positive": 7,
+      "train_positive_rate": 0.006616257088846881,
+      "dev_fired": 258,
+      "dev_positive": 3,
+      "dev_positive_rate": 0.011627906976744186,
+      "dev_mean_predicted": 0.04328661374542341
+    },
+    {
+      "rule_id": 6729478514841727396,
+      "rule_name": "commutative(Min)",
+      "train_fired": 236,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 77,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.0378667076190861
+    },
+    {
+      "rule_id": 11931386773805558134,
+      "rule_name": "commutative(Max)",
+      "train_fired": 238,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 88,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.032179807635574514
+    },
+    {
+      "rule_id": 6309885504670876420,
+      "rule_name": "halving",
+      "train_fired": 342,
+      "train_positive": 1,
+      "train_positive_rate": 0.0029239766081871343,
+      "dev_fired": 74,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.03080461278064883
+    },
+    {
+      "rule_id": 14221078514271555358,
+      "rule_name": "distribute",
+      "train_fired": 678,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 223,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.006007241620385309
+    },
+    {
+      "rule_id": 4406984501242208990,
+      "rule_name": "commutative(Mul)",
+      "train_fired": 2337,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 809,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.003815059986819473
+    },
+    {
+      "rule_id": 6284358758113476525,
+      "rule_name": "involution(Sub)",
+      "train_fired": 3094,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 1000,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.0033712160303693965
+    },
+    {
+      "rule_id": 14849563865819788141,
+      "rule_name": "commutative(Add)",
+      "train_fired": 4325,
+      "train_positive": 0,
+      "train_positive_rate": 0.0,
+      "dev_fired": 1185,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.0020300330741299566
+    },
+    {
+      "rule_id": 13714817942368121715,
+      "rule_name": "inverse-annihilation(Sub)",
+      "train_fired": 8,
+      "train_positive": 6,
+      "train_positive_rate": 0.75,
+      "dev_fired": 0,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.0
+    },
+    {
+      "rule_id": 11991831251576109983,
+      "rule_name": "power-zero",
+      "train_fired": 1,
+      "train_positive": 1,
+      "train_positive_rate": 1.0,
+      "dev_fired": 0,
+      "dev_positive": 0,
+      "dev_positive_rate": 0.0,
+      "dev_mean_predicted": 0.0
+    }
+  ],
+  "rule_priority_spearman_learned_vs_dev_measured": 0.9407053861098251,
+  "checkpoint_path": "pixelflow-pipeline/data/guide_checkpoint_strict_remint.json"
+}
