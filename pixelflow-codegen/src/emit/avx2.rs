@@ -364,18 +364,23 @@ pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Re
 }
 
 /// `dst = op(src)`.
-pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) {
+///
+/// `temp` is the allocator's temp for this instruction; only `Neg` and `Abs`
+/// use it, to hold the sign mask they XOR or AND with.
+pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, temp: Option<Reg>) {
     match op {
         OpKind::Sqrt => vsqrtps(code, dst.0, src.0),
         OpKind::Rsqrt => vrsqrtps(code, dst.0, src.0),
         OpKind::Recip => vrcpps(code, dst.0, src.0),
         OpKind::Neg => {
-            emit_const(code, UNARY_SCRATCH, f32::from_bits(0x8000_0000));
-            vxorps(code, dst.0, src.0, UNARY_SCRATCH.0);
+            let mask = super::declared_temp(temp);
+            emit_const(code, mask, f32::from_bits(0x8000_0000));
+            vxorps(code, dst.0, src.0, mask.0);
         }
         OpKind::Abs => {
-            emit_const(code, UNARY_SCRATCH, f32::from_bits(0x7FFF_FFFF));
-            vandps(code, dst.0, src.0, UNARY_SCRATCH.0);
+            let mask = super::declared_temp(temp);
+            emit_const(code, mask, f32::from_bits(0x7FFF_FFFF));
+            vandps(code, dst.0, src.0, mask.0);
         }
         // imm8: bits[3:0] = rounding mode (0=nearest, 1=floor, 2=ceil).
         OpKind::Floor => vroundps(code, dst.0, src.0, 0x01),
@@ -387,10 +392,18 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) {
     }
 }
 
-/// Scratch register for unary mask materialization (neg/abs) and the select
-/// blend temp. ymm15 is outside the allocatable range (4-9), reload regs
-/// (11-12), and inputs (0-3).
-const UNARY_SCRATCH: Reg = Reg(15);
+/// How many registers this backend's encodings need beyond their operands.
+///
+/// `Neg`/`Abs` build a sign mask, and the select blends through a temporary;
+/// every other encoding here is a single non-destructive VEX instruction.
+pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
+    use super::ScheduledOp;
+    match op {
+        ScheduledOp::Unary(OpKind::Neg | OpKind::Abs, _) => 1,
+        ScheduledOp::Ternary(OpKind::Select, ..) => 1,
+        _ => 0,
+    }
+}
 
 /// Emit a shift of i32 lanes by a compile-time immediate.
 pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount: u8) {
@@ -402,9 +415,13 @@ pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount
 }
 
 /// `dst = mask ? if_true : if_false` (bit-select; mask already in `dst`, same
-/// convention as SSE2/AVX-512). `tmp` differs from all of `dst`/`if_true`/`if_false`.
-pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
-    let tmp = UNARY_SCRATCH;
+/// convention as SSE2/AVX-512).
+///
+/// `tmp` is the allocator's temp for this instruction, which it picks disjoint
+/// from every operand — the `debug_assert` restates that here, where the
+/// instruction would silently blend garbage if it ever failed.
+pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg, tmp: Option<Reg>) {
+    let tmp = super::declared_temp(tmp);
     debug_assert!(tmp.0 != dst.0 && tmp.0 != if_true.0 && tmp.0 != if_false.0);
     vandps(code, tmp.0, dst.0, if_true.0); // tmp = mask & if_true
     vandnps(code, dst.0, dst.0, if_false.0); // dst = ~mask & if_false
@@ -571,6 +588,9 @@ mod tests {
         const X: Reg = Reg(0);
         const Y: Reg = Reg(1);
         const Z: Reg = Reg(2);
+        /// Standing in for the allocator's instruction temp: any register
+        /// disjoint from the operands each case uses.
+        const TEMP: Reg = Reg(15);
 
         #[test]
         fn binary_ops() {
@@ -606,15 +626,15 @@ mod tests {
         fn sqrt_and_neg_abs() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Sqrt, X, Y);
+            emit_unary(&mut c, OpKind::Sqrt, X, Y, None);
             check(run(&c, xs, ys, zs), |i| ys[i].sqrt(), "sqrt");
 
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Neg, X, X);
+            emit_unary(&mut c, OpKind::Neg, X, X, Some(TEMP));
             check(run(&c, xs, ys, zs), |i| -xs[i], "neg");
 
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Abs, X, X);
+            emit_unary(&mut c, OpKind::Abs, X, X, Some(TEMP));
             check(run(&c, xs, ys, zs), |i| xs[i].abs(), "abs");
         }
 
@@ -624,7 +644,7 @@ mod tests {
             let mut c = Vec::new();
             emit_binary(&mut c, OpKind::Lt, Reg(5), X, Y); // mask
             emit_mov(&mut c, Reg(6), Reg(5));
-            emit_select(&mut c, Reg(6), X, Y); // dst = mask ? x : y
+            emit_select(&mut c, Reg(6), X, Y, Some(TEMP)); // dst = mask ? x : y
             emit_mov(&mut c, X, Reg(6));
             check(
                 run(&c, xs, ys, zs),
@@ -807,7 +827,7 @@ pub(crate) mod driver {
     /// to `super::emit_gather_scalar` and is the better long-term fix.
     const AVX2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         // ymm4-7 and ymm10. ymm8/ymm9 carry the gather's high half and
-        // ymm14/ymm15 its low half and the unary temp.
+        // ymm14/ymm15 its low half.
         //
         // ymm10 is this backend's share of what step 1's accounting turned up:
         // it is `x86_64::X86_SCRATCH`, the SSE2 backend's two-operand and
@@ -822,14 +842,16 @@ pub(crate) mod driver {
         // ymm13: outside the allocatable range and the reload pair; the AVX2
         // select is a VEX blend with no internal temp.
         select_reload: Reg(13),
-        // ymm15: `emit_unary`'s sign-mask temp.
-        fixed: &[
-            super::UNARY_SCRATCH,
-            x86_64::GATHER_VALUE,
-            x86_64::GATHER_IDX,
-            Reg(8),
-            Reg(9),
-        ],
+        fixed: &[x86_64::GATHER_VALUE, x86_64::GATHER_IDX, Reg(8), Reg(9)],
+        // This backend's pool does not grow: `UNARY_SCRATCH` was ymm15, which
+        // is also `GATHER_IDX`, so it appeared in `fixed` twice and freeing one
+        // spelling frees no register. What it removes is the *sharing* — the
+        // sign mask and the select blend were borrowing the gather's index
+        // register, safe only because no one instruction is both, which is
+        // exactly the kind of convention a comment cannot keep true. The temp
+        // now comes from the pool for the length of one instruction, and ymm15
+        // has one owner.
+        temps_for: super::temps_for,
         vector_bytes: 32,
         ..SSE2_FILE
     }
@@ -886,7 +908,7 @@ pub(crate) mod driver {
                     super::emit_const(code, *dst, f32::from_bits(*val_bits));
                 }
                 ResolvedOp::Unary { op, dst, src } => {
-                    super::emit_unary(code, *op, *dst, *src);
+                    super::emit_unary(code, *op, *dst, *src, plan.temp);
                 }
                 ResolvedOp::ShiftImm {
                     op,
@@ -960,7 +982,7 @@ pub(crate) mod driver {
                     if_false,
                 } => {
                     // setup_mov already placed the vector mask in dst.
-                    super::emit_select(code, *dst, *if_true, *if_false);
+                    super::emit_select(code, *dst, *if_true, *if_false, plan.temp);
                 }
             }
             if let Some(store) = &plan.store {

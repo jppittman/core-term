@@ -140,7 +140,7 @@ impl RegSet {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug)]
 pub struct RegisterFile {
     /// Registers holding the coordinate inputs, in order: X, Y, Z, W.
     ///
@@ -179,6 +179,22 @@ pub struct RegisterFile {
     /// Must be untouched by the backend's own `Select` emission.
     pub select_reload: Reg,
 
+    /// How many registers this backend's encoding of `op` needs beyond the
+    /// operands and destination — the instruction temps.
+    ///
+    /// A two-operand ISA needs one to break a destructive hazard; a sign-flip
+    /// needs one to hold the mask. Those used to be `const`s outside the pool,
+    /// reserved for the whole kernel because one instruction in it might want
+    /// one. Declaring the demand here instead makes the temp an *allocated*
+    /// value with a live range of exactly one instruction, so the register is
+    /// the allocator's everywhere else.
+    ///
+    /// It lives on the register file because the file is already "the whole of
+    /// what allocation needs to know about the target" — a backend that needs
+    /// a temp is stating a fact about its register requirements, which is what
+    /// this type is for.
+    pub temps_for: fn(&ScheduledOp) -> u8,
+
     /// Bytes one register occupies when spilled — the backend's vector width.
     ///
     /// 16 for SSE2 and NEON, 32 for AVX2, 64 for AVX-512. This is the stride
@@ -199,8 +215,9 @@ impl RegisterFile {
     #[must_use]
     pub const fn checked(self) -> Self {
         assert!(
-            !self.scratch.is_empty(),
-            "register file has no scratch pool"
+            self.scratch.len() >= Self::MIN_SCRATCH,
+            "the allocatable pool is too small to hold a ternary's three \
+             operands plus an instruction temp"
         );
 
         let mut i = 0;
@@ -281,18 +298,38 @@ impl RegisterFile {
         self
     }
 
+    /// The smallest pool any schedule can be allocated against.
+    ///
+    /// Every *value* survives a small pool by spilling, so the pool has no
+    /// lower bound from values alone — that is why one register used to be an
+    /// acceptable budget. An instruction temp has no such escape: it is
+    /// scratch the encoder destroys mid-instruction, so it must be a register,
+    /// and a register that is neither the destination nor any operand. The
+    /// widest instruction is a ternary, so the pool has to hold three operands
+    /// plus that one temp.
+    ///
+    /// Below this, shrinking the pool stops producing more spilling and starts
+    /// producing an instruction with nowhere to put its temp.
+    pub const MIN_SCRATCH: u8 = 4;
+
     /// Cap the scratch pool at a smaller budget, leaving every other region
     /// where it is.
     ///
     /// This is how [`EmitCtx::max_regs`](super::EmitCtx) forces spilling for
     /// pressure testing. It only ever *shrinks* the pool: a budget above the
     /// target's own count would hand the allocator registers this file has
-    /// reserved for reloads or builtins.
+    /// reserved for reloads or builtins. It does not shrink past
+    /// [`MIN_SCRATCH`](Self::MIN_SCRATCH), which is not a budget question but
+    /// an encoding one.
     #[must_use]
     pub const fn capped(self, max_scratch: Option<u8>) -> Self {
         match max_scratch {
             Some(n) => Self {
-                scratch: self.scratch.take(n),
+                scratch: self.scratch.take(if n < Self::MIN_SCRATCH {
+                    Self::MIN_SCRATCH
+                } else {
+                    n
+                }),
                 ..self
             },
             None => self,
@@ -339,9 +376,24 @@ pub struct Allocation {
     /// Dense by `ValueId.0`. Total over `schedule`; `None` only for values
     /// that are not in this schedule at all.
     placements: Vec<Option<Placement>>,
+    /// The instruction temp for each position in `schedule`, for the ops whose
+    /// encoding asked for one ([`RegisterFile::temps_for`]).
+    ///
+    /// Indexed by schedule position rather than by value because a temp is not
+    /// a value: it holds nothing before the instruction and nothing after, so
+    /// it has no `ValueId` and no place in `placements`. It is a register the
+    /// encoder may destroy for the length of one instruction.
+    temps: Vec<Option<Reg>>,
 }
 
 impl Allocation {
+    /// The temp the instruction at schedule position `i` may destroy, if its
+    /// encoding asked for one ([`RegisterFile::temps_for`]).
+    #[must_use]
+    pub fn temp(&self, i: usize) -> Option<Reg> {
+        self.temps.get(i).copied().flatten()
+    }
+
     /// Where `v` lives.
     ///
     /// Total over [`Allocation::schedule`] — every value the emitter walks has
@@ -541,10 +593,13 @@ impl RegisterAllocator for LinearScan {
             .unwrap_or(0);
         let mut placements: Vec<Option<Placement>> = vec![None; vec_len];
 
+        let mut temps: Vec<Option<Reg>> = vec![None; dag.len()];
+
         if dag.is_empty() {
             return Allocation {
                 schedule: dag,
                 placements,
+                temps,
             };
         }
 
@@ -589,9 +644,6 @@ impl RegisterAllocator for LinearScan {
         // Pass two: forward over the program in evaluation order.
         for (i, def) in dag.iter().enumerate() {
             let vid = &def.value;
-            if placements[vid.0 as usize].is_some() {
-                continue; // Pre-colored.
-            }
 
             for slot in reg_owner.iter_mut() {
                 if let Some(owner) = *slot
@@ -601,7 +653,38 @@ impl RegisterAllocator for LinearScan {
                 }
             }
 
-            if let Some(free) = reg_owner.iter().position(Option::is_none) {
+            // The instruction temp, reserved before the destination is placed:
+            // the encoder writes the temp while every operand is still live and
+            // before the destination is written, so it may share a register
+            // with neither.
+            let temp_slot = if (file.temps_for)(&def.op) > 0 {
+                let slot = reserve_temp(def, &reg_owner, &last_use, &const_bits);
+                temps[i] = Some(scratch[slot]);
+                // Whatever was there loses its register for good: `placements`
+                // is one answer per value, so an evicted value is spilled over
+                // its whole life, exactly as destination eviction below does.
+                if let Some(evicted) = reg_owner[slot].take() {
+                    placements[evicted.0 as usize] = Some(match const_bits[evicted.0 as usize] {
+                        Some(bits) => Placement::Remat(bits),
+                        None => Placement::Spilled,
+                    });
+                }
+                Some(slot)
+            } else {
+                None
+            };
+
+            if placements[vid.0 as usize].is_some() {
+                // Pre-colored. The temp's slot stays free for the next
+                // instruction: nothing owns it after this one.
+                continue;
+            }
+
+            if let Some(free) = reg_owner
+                .iter()
+                .enumerate()
+                .position(|(idx, slot)| slot.is_none() && Some(idx) != temp_slot)
+            {
                 placements[vid.0 as usize] = Some(Placement::Reg(scratch[free]));
                 reg_owner[free] = Some(*vid);
                 continue;
@@ -614,6 +697,9 @@ impl RegisterAllocator for LinearScan {
             let mut best_any: (usize, usize) = (0, 0);
 
             for (slot_idx, slot) in reg_owner.iter().enumerate() {
+                if Some(slot_idx) == temp_slot {
+                    continue; // Reserved for this instruction's own temp.
+                }
                 let Some(owner) = *slot else { continue };
                 let lu = last_use[owner.0 as usize];
                 if const_bits[owner.0 as usize].is_some()
@@ -627,6 +713,11 @@ impl RegisterAllocator for LinearScan {
             }
 
             let evict_slot = best_const.map_or(best_any.0, |(slot, _)| slot);
+            debug_assert_ne!(
+                Some(evict_slot),
+                temp_slot,
+                "the destination must not evict this instruction's own temp"
+            );
             let occupant = reg_owner[evict_slot].expect("all slots occupied but none found");
 
             // Which of the two goes to memory: a constant always loses, and
@@ -654,6 +745,7 @@ impl RegisterAllocator for LinearScan {
         Allocation {
             schedule: dag,
             placements,
+            temps,
         }
     }
 }
@@ -684,6 +776,65 @@ fn input_register(file: &RegisterFile, i: u8) -> Reg {
 }
 
 /// The values an operation reads.
+/// A backend whose encodings never need a register beyond their operands.
+///
+/// The default for [`RegisterFile::temps_for`]; naming it keeps the field
+/// total, so a new backend states its answer rather than inheriting one.
+#[must_use]
+pub fn no_temps(_op: &ScheduledOp) -> u8 {
+    0
+}
+
+/// Pick the scratch slot the instruction at `i` may destroy as its temp.
+///
+/// A free slot if there is one; otherwise the same eviction rule the
+/// destination uses — a constant first, since rematerializing it costs no
+/// memory traffic, and Belady among the rest.
+///
+/// Operands are excluded outright: the encoder writes the temp *before* it
+/// reads the operands (that is what the temp is for), so sharing a register
+/// with one would feed the instruction its own scratch. A non-operand slot
+/// always exists: at most three operands can be pool-resident and
+/// [`RegisterFile::MIN_SCRATCH`] is four, which is what that constant is for.
+fn reserve_temp(
+    def: &Def,
+    reg_owner: &[Option<ValueId>],
+    last_use: &[usize],
+    const_bits: &[Option<u32>],
+) -> usize {
+    let is_operand = |v: ValueId| operands(&def.op).any(|o| o == v);
+
+    let mut best_const: Option<(usize, usize)> = None;
+    let mut best_any: Option<(usize, usize)> = None;
+    for (slot_idx, slot) in reg_owner.iter().enumerate() {
+        let Some(owner) = *slot else {
+            return slot_idx; // Free: nothing to evict.
+        };
+        if is_operand(owner) {
+            continue;
+        }
+        let lu = last_use[owner.0 as usize];
+        if const_bits[owner.0 as usize].is_some() && best_const.is_none_or(|(_, best)| lu > best) {
+            best_const = Some((slot_idx, lu));
+        }
+        if best_any.is_none_or(|(_, best)| lu > best) {
+            best_any = Some((slot_idx, lu));
+        }
+    }
+
+    best_const
+        .or(best_any)
+        .map(|(slot, _)| slot)
+        .unwrap_or_else(|| {
+            unreachable!(
+                "every scratch register holds an operand of one instruction, \
+                 so the pool is at most three registers — `RegisterFile::checked` \
+                 and `capped` both hold it at {}",
+                RegisterFile::MIN_SCRATCH
+            )
+        })
+}
+
 fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
     let (a, b, c) = match sop {
         ScheduledOp::Var(_) | ScheduledOp::Const(_) => (None, None, None),
@@ -709,9 +860,21 @@ mod tests {
         scratch: RegSet::range(4, 4),
         reload: [Reg(11), Reg(12)],
         select_reload: Reg(13),
+        temps_for: no_temps,
         vector_bytes: 16,
     }
     .checked();
+
+    /// `TEST_FILE`, but every `Neg` asks for a temp — the AVX2 sign-mask case.
+    const TEMP_FILE: RegisterFile = RegisterFile {
+        temps_for: neg_wants_a_temp,
+        ..TEST_FILE
+    }
+    .checked();
+
+    fn neg_wants_a_temp(op: &ScheduledOp) -> u8 {
+        u8::from(matches!(op, ScheduledOp::Unary(OpKind::Neg, _)))
+    }
 
     fn def(value: u32, op: ScheduledOp) -> Def {
         Def {
@@ -788,6 +951,88 @@ mod tests {
         assert_eq!(a.spilled().count(), 0);
         // v2's last use is v3, so v4 may reuse v2's register.
         assert_eq!(a.placement(ValueId(2)), a.placement(ValueId(4)));
+    }
+
+    // -------------------------------------------------------------------------
+    // Instruction temps
+    // -------------------------------------------------------------------------
+
+    /// The temp is a real register from the pool, and it is nobody's operand
+    /// and not the destination — the encoder writes it while the operands are
+    /// still live and before it writes `dst`.
+    #[test]
+    fn a_temp_collides_with_neither_the_operand_nor_the_destination() {
+        let schedule = vec![
+            def(0, ScheduledOp::Var(0)),
+            def(1, ScheduledOp::Unary(OpKind::Neg, ValueId(0))),
+        ];
+        let a = LinearScan.allocate(schedule, &TEMP_FILE);
+
+        let temp = a.temp(1).expect("`Neg` asked for a temp");
+        assert!(
+            TEMP_FILE.scratch.contains(temp),
+            "{temp:?} is not the pool's"
+        );
+        assert_ne!(Placement::Reg(temp), a.placement(ValueId(0)));
+        assert_ne!(Placement::Reg(temp), a.placement(ValueId(1)));
+    }
+
+    /// A pool shrunk below what an encoding needs is not a smaller budget, it
+    /// is an instruction with nowhere to put its temp — so `capped` holds the
+    /// floor rather than letting `max_regs` reach through it.
+    #[test]
+    fn capping_the_pool_stops_at_the_floor() {
+        let tiny = TEMP_FILE.capped(Some(1));
+        assert_eq!(tiny.scratch.len(), RegisterFile::MIN_SCRATCH);
+
+        // The shape that used to fall through: a `Neg` whose operand is a
+        // computed value, so the operand is pool-resident rather than
+        // pre-colored into an input register.
+        let a = LinearScan.allocate(
+            vec![
+                def(0, ScheduledOp::Var(0)),
+                def(1, ScheduledOp::Var(1)),
+                def(2, ScheduledOp::Binary(OpKind::Add, ValueId(0), ValueId(1))),
+                def(3, ScheduledOp::Unary(OpKind::Neg, ValueId(2))),
+            ],
+            &tiny,
+        );
+        let temp = a.temp(3).expect("`Neg` asked for a temp");
+        assert_ne!(Placement::Reg(temp), a.placement(ValueId(2)));
+    }
+
+    /// Only the ops that asked get one — the register is the allocator's
+    /// everywhere else, which is the whole reason for asking per-op.
+    #[test]
+    fn an_op_that_asks_for_no_temp_gets_none() {
+        let a = LinearScan.allocate(add_xy(), &TEMP_FILE);
+        assert_eq!(a.temp(2), None, "`Add` asked for no temp");
+    }
+
+    /// The temp's live range is one instruction: the next one may take the
+    /// same register for its result.
+    #[test]
+    fn a_temp_is_free_again_at_the_next_instruction() {
+        let schedule = vec![
+            def(0, ScheduledOp::Var(0)),
+            def(1, ScheduledOp::Unary(OpKind::Neg, ValueId(0))),
+            def(2, ScheduledOp::Unary(OpKind::Sqrt, ValueId(1))),
+            def(3, ScheduledOp::Unary(OpKind::Sqrt, ValueId(2))),
+            def(4, ScheduledOp::Unary(OpKind::Sqrt, ValueId(3))),
+        ];
+        let a = LinearScan.allocate(schedule, &TEMP_FILE);
+        assert_eq!(
+            a.spilled().count(),
+            0,
+            "four values fit a four-register pool"
+        );
+
+        let temp = a.temp(1).expect("`Neg` asked for a temp");
+        let reused = a
+            .schedule
+            .iter()
+            .any(|d| a.placement(d.value) == Placement::Reg(temp));
+        assert!(reused, "{temp:?} went back to the pool after the `Neg`");
     }
 
     /// Six values live at once cannot fit a four-register pool.

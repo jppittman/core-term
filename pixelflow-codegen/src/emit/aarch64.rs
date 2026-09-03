@@ -653,15 +653,33 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 // Compound Operations (emit full instruction sequences)
 // =============================================================================
 
+/// How many registers this backend's encodings need beyond their operands.
+///
+/// Only the reciprocal estimates: `FRECPE`/`FRSQRTE` are estimates, and the
+/// Newton-Raphson step that refines them needs somewhere to hold the
+/// correction. `Neg` and `Abs` are single instructions here (`FNEG`, `FABS`),
+/// unlike the x86 backends where they materialize a sign mask, and `BSL`
+/// blends a select from its three operands.
+pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
+    use super::ScheduledOp;
+    match op {
+        ScheduledOp::Unary(OpKind::Rsqrt | OpKind::Recip, _) => 1,
+        _ => 0,
+    }
+}
+
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
-/// Emit unary operation - dispatches to appropriate instruction(s)
-pub(crate) fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: Reg) {
+/// `dst = op(src)`.
+///
+/// `temp` is the allocator's temp for this instruction; only the reciprocal
+/// estimates use it, to hold the Newton-Raphson correction.
+pub(crate) fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, temp: Option<Reg>) {
     match op {
         OpKind::Neg => emit_fneg(code, dst, src),
         OpKind::Abs => emit_fabs(code, dst, src),
         OpKind::Sqrt => emit_fsqrt(code, dst, src),
-        OpKind::Rsqrt => emit_frsqrt(code, dst, src, scratch),
-        OpKind::Recip => emit_frecip(code, dst, src, scratch),
+        OpKind::Rsqrt => emit_frsqrt(code, dst, src, super::declared_temp(temp)),
+        OpKind::Recip => emit_frecip(code, dst, src, super::declared_temp(temp)),
         OpKind::Floor => emit_frintm(code, dst, src),
         OpKind::Ceil => emit_frintp(code, dst, src),
         OpKind::Round => emit_round_builtin(code, dst, src),
@@ -1738,13 +1756,6 @@ pub(crate) mod driver {
         Hs(super::Cond19),
     }
 
-    /// The one vector register `emit_unary` may clobber.
-    ///
-    /// Outside the allocatable pool, the reload pair and `select_reload`, so
-    /// `RegisterFile::checked` can prove the disjointness rather than a comment
-    /// asserting it.
-    const UNARY_SCRATCH: Reg = Reg(29);
-
     /// aarch64 implementation of the shared driver's leaf operations.
     ///
     /// Mechanically wraps the existing aarch64 encoders + constant pool, so the
@@ -1761,21 +1772,28 @@ pub(crate) mod driver {
     ///   v8-v15:  callee-saved, never allocatable
     ///   v16-v25: allocatable scratch
     ///   v26-v27: reload
-    ///   v28-v31: fixed-purpose scratch (select guard reduction, imm construction)
+    ///   v28, v30: fixed-purpose scratch (select guard reduction, gather index)
     const AARCH64_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
-        // v16-v25 plus v4-v7 and v31. AAPCS64 callee-saves the low 64 bits of
-        // v8-v15 and these are leaf kernels with no prologue that preserves
-        // them, so v8-v15 stay out; v4-v7 are unused argument registers.
+        // v16-v25 plus v4-v7, v29 and v31. AAPCS64 callee-saves the low 64
+        // bits of v8-v15 and these are leaf kernels with no prologue that
+        // preserves them, so v8-v15 stay out; v4-v7 are unused argument
+        // registers.
         scratch: regalloc::RegSet::range(16, 10)
             .union(regalloc::RegSet::range(4, 4))
-            .union(regalloc::RegSet::of(&[Reg(31)])),
+            .union(regalloc::RegSet::of(&[Reg(29), Reg(31)])),
         reload: [Reg(26), Reg(27)],
         // v28: fixed-purpose scratch outside the allocatable range; BSL reads its
         // three operands directly and never touches it.
         select_reload: Reg(28),
-        // v29: `emit_unary`'s temp. v30: the gather's truncated-index register.
-        fixed: &[UNARY_SCRATCH, Reg(30)],
+        // v30: the gather's truncated-index register. v29 used to sit here as
+        // `UNARY_SCRATCH`, reserved for the whole kernel so a reciprocal
+        // estimate could borrow it; the estimates now ask the allocator for a
+        // temp, so v29 has joined the pool above. The select needs none — `BSL`
+        // reads its three operands directly, and `FNEG`/`FABS` are single
+        // instructions here.
+        fixed: &[Reg(30)],
+        temps_for: super::temps_for,
         vector_bytes: 16,
     }
     .checked();
@@ -2068,7 +2086,7 @@ pub(crate) mod driver {
                 emit_const_load(code, *dst, *val_bits, pool);
             }
             ResolvedOp::Unary { op, dst, src } => {
-                emit_unary(code, *op, *dst, *src, UNARY_SCRATCH);
+                emit_unary(code, *op, *dst, *src, plan.temp);
             }
             ResolvedOp::ShiftImm {
                 op,

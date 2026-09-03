@@ -557,8 +557,16 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 }
 
 /// Fixed scratch outside the allocatable range / reload regs: used for the
-/// binary two-operand hazard and as the select blend temp. The AVX2 and
-/// AVX-512 backends spell the same role `UNARY_SCRATCH`.
+/// binary two-operand hazard, the decomposed `MulAdd`, the unary sign mask and
+/// the select blend temp.
+///
+/// The VEX/EVEX/NEON backends have no equivalent left: their encodings ask the
+/// allocator for a temp ([`regalloc::RegisterFile::temps_for`]) and get one
+/// live for a single instruction. This backend cannot yet, because the
+/// two-operand hazard's demand is a function of the *registers* allocation
+/// picks (`dst == right`) rather than of the op — so the register stays
+/// reserved for the whole kernel, and drawing a second one from the pool for
+/// the unary mask meanwhile would cost pressure and free nothing.
 const X86_SCRATCH: Reg = Reg(10);
 
 /// The gather's truncated-index lanes and loaded-value register.
@@ -891,6 +899,14 @@ pub(crate) mod driver {
         select_reload: Reg(13),
         // xmm10: the two-operand form's temp and the Select blend's temp.
         fixed: &[super::X86_SCRATCH, super::GATHER_VALUE, super::GATHER_IDX],
+        // No allocated temps yet. Unlike the VEX/EVEX/NEON backends, this one
+        // still needs `X86_SCRATCH` for the two-operand destructive hazard
+        // (`emit_binary_safe`) and the decomposed `MulAdd`, whose demand is a
+        // function of the *registers* the allocator picks rather than of the
+        // op — so the register cannot leave `fixed` until those two are
+        // dissolved as well, and drawing a pool register for the unary mask
+        // meanwhile would cost pressure and free nothing.
+        temps_for: regalloc::no_temps,
         vector_bytes: 16,
     }
     .checked();
