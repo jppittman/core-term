@@ -236,6 +236,32 @@ successor program, the saturation Guide (docs/plans/2026-08-31-guide-design-revi
 
 ## Development Workflow
 
+### CI is the gate
+
+**Green CI is permission to submit.** Not one signal to weigh against your own
+judgement — the gate itself. A change that passes goes in; do not hold it back
+for a second opinion, and do not attach caveats about what the suite might not
+have covered. An advisory reviewer is advisory *because* it does not block: if
+a signal is worth blocking on, it belongs in CI, where it blocks.
+
+The corollary is where doubt goes instead. **A gap in CI is a check to write,
+not a caveat to attach.** Noticing that no job can catch some class of bug is a
+finding about CI's design, and the deliverable for that finding is a test, a
+lint, or a job — something that fails next time, for everyone. Prose in a PR
+description warns one reader, once, and then is never read again.
+
+And the corollary to that: **when a bug ships green, the retrospective is about
+the gate, not the author.** "Should have looked harder" is not a finding.
+"This class of bug is invisible to every job we run" is one, and it has a fix.
+
+Shift left where it is cheap, and *measure* the cheapness rather than assuming
+it. A check that costs an hour presubmit belongs in postsubmit — but a fast
+fraction of it usually belongs presubmit, and finding that fraction is the
+work. `xtask isa-matrix --smoke` is the worked example: per ISA level, running
+only the crates whose output *is* per-level machine code costs ~50s against
+~344s for the whole workspace, because the build those tests need has already
+happened for the lint.
+
 ### Build Commands
 
 ```bash

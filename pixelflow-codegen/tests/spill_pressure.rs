@@ -38,13 +38,31 @@ fn pool_size() -> usize {
     compile(&a, root).expect("trivial compile").max_regs as usize
 }
 
-/// Compile and compare against the interpreter over a coordinate grid.
-/// Returns the spill count so scenarios can assert they really exercised
-/// the spill paths (a pressure test that doesn't spill proves nothing).
-fn assert_jit_matches_interp(arena: &ExprArena, root: ExprId, label: &str) -> u32 {
+/// Compile, assert the scenario actually spilled, and compare against the
+/// interpreter over a coordinate grid.
+///
+/// The spill assertion lives **here**, not in each scenario. Every test in
+/// this file is a claim about what happens past the pool, so one that no
+/// longer reaches the pool has stopped testing its subject while still
+/// reporting green — and that is not hypothetical: `muladd_and_clamp_spilled`
+/// spent an unknown stretch asserting nothing after the pool grew past the
+/// literal 6 written into it. A scenario cannot opt out of the check by
+/// forgetting to write it, which is the difference between a convention and
+/// an invariant.
+///
+/// It returns nothing on purpose. Handing back a count that callers were
+/// trusted to test was the shape that let the omission happen.
+fn assert_spills_and_matches_interp(arena: &ExprArena, root: ExprId, label: &str) {
     let result =
         compile(arena, root).unwrap_or_else(|e| panic!("{label}: JIT compile failed: {e}"));
     let spills = result.spill_count;
+    assert!(
+        spills > 0,
+        "{label}: compiled without spilling (pool is {} registers), so this \
+         scenario no longer exercises the spill paths it exists to test — \
+         size its pressure from `pool_size()` rather than a literal",
+        result.max_regs
+    );
     let jit = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT);
     let coords = [-2.5f32, -1.0, -0.3, 0.0, 0.4, 1.0, 1.7, 3.0];
     for &x in &coords {
@@ -57,7 +75,6 @@ fn assert_jit_matches_interp(arena: &ExprArena, root: ExprId, label: &str) -> u3
             );
         }
     }
-    spills
 }
 
 /// Bit-exact under every build this file was originally tested with (no
@@ -140,8 +157,7 @@ fn select_operands_spilled_across_pressure() {
     all.extend(fillers);
     let root = fold_add(&mut a, &all);
 
-    let spills = assert_jit_matches_interp(&a, root, "select_operands_spilled");
-    assert!(spills > 0, "scenario failed to create register pressure");
+    assert_spills_and_matches_interp(&a, root, "select_operands_spilled");
 }
 
 /// A sum of glyph-shaped terms: each term is `select(lt, contrib, 0)` with wide
@@ -167,8 +183,7 @@ fn glyph_shaped_sum_of_selects() {
     let one = a.push_const(1.0);
     let root = a.push_binary(OpKind::Min, abs, one);
 
-    let spills = assert_jit_matches_interp(&a, root, "glyph_shaped_sum");
-    assert!(spills > 0, "scenario failed to create register pressure");
+    assert_spills_and_matches_interp(&a, root, "glyph_shaped_sum");
 }
 
 /// Nested selects under pressure: a select whose branches are themselves
@@ -201,8 +216,7 @@ fn nested_selects_spilled() {
     all.extend(fillers);
     let root = fold_add(&mut a, &all);
 
-    let spills = assert_jit_matches_interp(&a, root, "nested_selects");
-    assert!(spills > 0, "scenario failed to create register pressure");
+    assert_spills_and_matches_interp(&a, root, "nested_selects");
 }
 
 /// Decomposed `MulAdd` plus a min/max clamp chain, with spilled operands.
@@ -238,8 +252,7 @@ fn muladd_and_clamp_spilled() {
     all.extend(fillers);
     let root = fold_add(&mut a, &all);
 
-    let spills = assert_jit_matches_interp(&a, root, "muladd_clamp");
-    assert!(spills > 0, "scenario failed to create register pressure");
+    assert_spills_and_matches_interp(&a, root, "muladd_clamp");
 }
 
 /// Enough simultaneously-live values to overflow the 128-byte red zone

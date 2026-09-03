@@ -1777,37 +1777,32 @@ pub(crate) mod driver {
     ///   v28, v30: fixed-purpose scratch (select guard reduction, gather index)
     const AARCH64_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
-        // v16-v25 plus v4-v7, v29 and v31. AAPCS64 callee-saves the low 64
+        // v16-v25 plus v4-v7 and v28-v31. AAPCS64 callee-saves the low 64
         // bits of v8-v15 and these are leaf kernels with no prologue that
         // preserves them, so v8-v15 stay out; v4-v7 are unused argument
         // registers.
+        //
+        // v28 was the last of these to join. It held the `UMAXV`/`UMINV` the
+        // Select short-circuit guards reduce a mask into — one register out of
+        // every kernel's pool for two instructions in the kernels that have a
+        // guarded Select at all. A guard is emitted *between* instructions,
+        // where both reload registers are dead by construction, so it borrows
+        // `reload[0]` instead (`emit::guard_scratch`).
         scratch: regalloc::RegSet::range(16, 10)
             .union(regalloc::RegSet::range(4, 4))
-            .union(regalloc::RegSet::of(&[Reg(29), Reg(30), Reg(31)])),
+            .union(regalloc::RegSet::of(&[Reg(28), Reg(29), Reg(30), Reg(31)])),
         reload: [Reg(26), Reg(27)],
-        // v28: the reduction scratch `emit_skip_if_all_false`/`_true` write
-        // their `UMAXV`/`UMINV` into. It used to be `select_reload` and was
-        // never declared here, so one register wore two roles and only one of
-        // them was checkable — the pool could not take v28 back without
-        // clobbering a live value inside a Select's short-circuit guard.
-        // v30: the gather's truncated-index register. v29 used to sit here as
-        // `UNARY_SCRATCH`, reserved for the whole kernel so a reciprocal
-        // estimate could borrow it; the estimates now ask the allocator for a
-        // temp, so v29 has joined the pool above. The select needs none — `BSL`
-        // reads its three operands directly, and `FNEG`/`FABS` are single
-        // instructions here.
-        fixed: &[GUARD_SCRATCH],
+        // Nothing. v30 is the gather's truncated-index register, a `temps_for`
+        // answer since the gathers landed; v29 used to be `UNARY_SCRATCH`,
+        // reserved whole-kernel so a reciprocal estimate could borrow it. With
+        // v28 gone this backend — and so the workspace — holds no register for
+        // its own encodings. The select needs none either: `BSL` reads its
+        // three operands directly, and `FNEG`/`FABS` are single instructions.
+        fixed: &[],
         temps_for: super::temps_for,
         vector_bytes: 16,
     }
     .checked();
-
-    /// The vector register the Select short-circuit guards reduce a mask into.
-    ///
-    /// `UMAXV`/`UMINV` write a scalar into a vector register before it moves to
-    /// a GP register; the x86 tiers need no equivalent, because their guards go
-    /// through `movmskps`/`kortest` and the flags.
-    const GUARD_SCRATCH: Reg = Reg(28);
 
     pub(crate) struct Aarch64Backend {
         pool: ConstPool,
@@ -1936,15 +1931,28 @@ pub(crate) mod driver {
             }
         }
 
-        fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> Aarch64Branch {
-            let scratch = GUARD_SCRATCH;
+        /// `scratch` is the caller's, live for these two instructions only —
+        /// see `emit::guard_scratch` for why a register that is dead between
+        /// instructions is all this needs.
+        fn emit_skip_if_all_false(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            scratch: Reg,
+        ) -> Aarch64Branch {
+            debug_assert_ne!(scratch, mask_reg, "the reduce would destroy its own input");
             super::emit_umaxv(code, scratch, mask_reg); // max lane; 0 => all-false
             super::emit_fmov_to_gp(code, scratch);
             Aarch64Branch::Cbz(super::emit_cbz_w16(code))
         }
 
-        fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> Aarch64Branch {
-            let scratch = GUARD_SCRATCH;
+        fn emit_skip_if_all_true(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            scratch: Reg,
+        ) -> Aarch64Branch {
+            debug_assert_ne!(scratch, mask_reg, "the reduce would destroy its own input");
             super::emit_uminv(code, scratch, mask_reg); // min lane; 0xFFFFFFFF => all-true
             super::emit_fmov_to_gp(code, scratch);
             // MVN W16, W16 -> 0 iff all-true, which the cbz below tests.

@@ -435,9 +435,25 @@ trait IsaBackend {
     ) -> Reg;
 
     /// Branch taken when `mask_reg` is all-false (skip the true arm).
-    fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> Self::Branch;
-    /// Branch taken when `mask_reg` is all-true (skip the false arm).
-    fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> Self::Branch;
+    ///
+    /// `scratch` is a vector register the backend may destroy. Only aarch64
+    /// needs one — reducing a mask with `UMAXV`/`UMINV` writes a scalar into a
+    /// vector register before it can reach a GP register — so the x86 tiers,
+    /// whose guards go through `movmskps`/`kortest` and the flags, ignore it.
+    fn emit_skip_if_all_false(
+        &mut self,
+        code: &mut Vec<u8>,
+        mask_reg: Reg,
+        scratch: Reg,
+    ) -> Self::Branch;
+    /// Branch taken when `mask_reg` is all-true (skip the false arm). See
+    /// [`IsaBackend::emit_skip_if_all_false`] for `scratch`.
+    fn emit_skip_if_all_true(
+        &mut self,
+        code: &mut Vec<u8>,
+        mask_reg: Reg,
+        scratch: Reg,
+    ) -> Self::Branch;
     /// Unconditional jump.
     fn emit_jump(&mut self, code: &mut Vec<u8>) -> Self::Branch;
     /// Patch a previously emitted branch to land at `target`.
@@ -781,8 +797,8 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
             let guard = &select_guards[guard_idx];
             let mask_reg = backend.emit_resolve(&mut code, guard.mask_vid, file.reload[1], locs);
             let branch = match arm {
-                0 => backend.emit_skip_if_all_false(&mut code, mask_reg),
-                _ => backend.emit_skip_if_all_true(&mut code, mask_reg),
+                0 => backend.emit_skip_if_all_false(&mut code, mask_reg, guard_scratch(&file)),
+                _ => backend.emit_skip_if_all_true(&mut code, mask_reg, guard_scratch(&file)),
             };
             pending_patches.insert((guard_idx, arm), branch);
         }
@@ -835,8 +851,12 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
                 let true_reg = in_reg(*true_vid);
                 let false_reg = in_reg(*false_vid);
 
-                let all_false = backend.emit_skip_if_all_false(&mut code, mask_reg);
-                let all_true = backend.emit_skip_if_all_true(&mut code, mask_reg);
+                // Both guards read `mask_reg`, so the scratch must not be
+                // `reload[1]` — where a spilled mask was just resolved to.
+                let all_false =
+                    backend.emit_skip_if_all_false(&mut code, mask_reg, guard_scratch(&file));
+                let all_true =
+                    backend.emit_skip_if_all_true(&mut code, mask_reg, guard_scratch(&file));
 
                 // Mixed lanes: the real select.
                 backend.emit_plan(&mut code, &plan)?;
@@ -1419,6 +1439,28 @@ fn transitive_deps(
         }
     }
     deps
+}
+
+/// The register a Select short-circuit guard may destroy while reducing its
+/// mask, for the one backend that needs one (see
+/// [`IsaBackend::emit_skip_if_all_false`]).
+///
+/// It is `reload[0]`, and that is a reuse rather than a new reservation.
+/// Both reload registers are *per-instruction* — `reload[0]` is the
+/// destination when a def is spilled, `reload[1]` the operand temp — so
+/// between two instructions neither holds anything live. A guard is emitted
+/// exactly there: before the first instruction of an arm, or before the
+/// `Select`'s own plan. `reload[1]` is excluded because the mask may have
+/// just been resolved into it and both guards read the mask; `reload[0]` at
+/// that point is dead in every case, including a spilled `Select` whose
+/// destination *is* `reload[0]` — that destination is written by the plan the
+/// guards branch around, after them, never before.
+///
+/// aarch64 held a whole register (`GUARD_SCRATCH`, v28) out of every kernel's
+/// pool for this, for an instant of use in the kernels that have a guarded
+/// `Select` at all.
+fn guard_scratch(file: &regalloc::RegisterFile) -> Reg {
+    file.reload[0]
 }
 
 /// Analyze the schedule for Select nodes and compute short-circuit guard ranges.
@@ -2902,6 +2944,184 @@ mod tests {
         // Σᵢ (3+i)·(4+i) = 20+30+42+56+72+90+110+132+156+182 = 890, every
         // term and partial sum exact in f32.
         assert_eq!(eval_point(&result.code, 3.0, 4.0, 0.0, 0.0), 890.0);
+    }
+
+    // =========================================================================
+    // The shared driver's Select short-circuit guard, on every backend that
+    // has a JIT.
+    //
+    // `sched_select_guards` below covers this path, but only on SSE2 — its
+    // module is gated `not(avx2), not(avx512f)` — and `avx512_select_guards`
+    // covers AVX-512. aarch64 had no guard test at all, which mattered because
+    // that is the one backend whose guard needs a scratch register: reducing a
+    // mask with `UMAXV`/`UMINV` writes a scalar into a vector register, where
+    // the x86 tiers use `movmskps`/`kortest` and the flags. So the register
+    // that reduction destroys was, on aarch64 alone, an untested choice.
+    //
+    // These run wherever a backend exists, against the same expected values,
+    // so no backend's guard can drift from another's.
+    // =========================================================================
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    mod select_guard_driver {
+        use super::*;
+        use pixelflow_ir::arena::{ExprArena, ExprId};
+
+        /// `(X > 0) ? B³ : 3B` over a shared `B = X·Y` — arms that are
+        /// exclusive *and* contiguous in the schedule.
+        ///
+        /// Both properties are needed and the second is easy to lose: a guard
+        /// skips a whole index range, so every index in it must belong to that
+        /// arm. Giving each arm its own `Var` looks exclusive but is not
+        /// contiguous — the `Var` is scheduled with the other leaves, far
+        /// below the arm's body, and the range from there to the arm swallows
+        /// the mask. Deriving both arms from one shared value keeps every leaf
+        /// out of both arms, which is what leaves the arms' own nodes adjacent.
+        fn guarded_select(a: &mut ExprArena) -> ExprId {
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let zero = a.push_const(0.0);
+            let base = a.push_binary(OpKind::Mul, x, y);
+            let cond = a.push_binary(OpKind::Gt, x, zero);
+            let bb = a.push_binary(OpKind::Mul, base, base);
+            let bbb = a.push_binary(OpKind::Mul, bb, base);
+            let b2 = a.push_binary(OpKind::Add, base, base);
+            let b3 = a.push_binary(OpKind::Add, b2, base);
+            let sel = a.push_ternary(OpKind::Select, cond, bbb, b3);
+            // Live ACROSS the select and read after it. Without something in
+            // this role the select is the root, nothing downstream reads a
+            // register, and a guard that clobbered a live one would still
+            // produce the right answer — the test would be blind to exactly
+            // the mistake it exists to catch.
+            let carried = a.push_binary(OpKind::Sub, x, y);
+            a.push_binary(OpKind::Add, sel, carried)
+        }
+
+        /// Assert a guard region actually formed for `root`.
+        ///
+        /// Without this the tests below still pass when the guard stops
+        /// forming — they would just be testing an ordinary `Select`, which is
+        /// the silent-decay shape this file has been bitten by before.
+        fn assert_guard_forms(a: &ExprArena, root: ExprId) {
+            let schedule = arena_to_schedule(a, root);
+            let guards = analyze_select_guards(&schedule);
+            let guarded = guards
+                .iter()
+                .any(|g| g.true_range.0 != g.true_range.1 || g.false_range.0 != g.false_range.1);
+            assert!(
+                guarded,
+                "no Select in this schedule has an arm-exclusive range, so the \
+                 short-circuit guard this test exists for is never emitted"
+            );
+        }
+
+        /// Uniform masks take the all-true and all-false branches; a mixed
+        /// mask falls through to the blend. All three must agree with the
+        /// arithmetic.
+        #[test]
+        fn a_guarded_select_takes_every_branch() {
+            let mut a = ExprArena::new();
+            let root = guarded_select(&mut a);
+            assert_guard_forms(&a, root);
+
+            let result = compile(&a, root).expect("guarded select compile");
+            for &(x, y) in &[
+                (3.0f32, 4.0f32), // all-true  -> B³
+                (-2.0, 0.5),      // all-false -> 3B
+                (0.5, -1.0),
+                (-0.25, 2.0),
+            ] {
+                let b = x * y;
+                let want = if x > 0.0 { b * b * b } else { 3.0 * b } + (x - y);
+                let got = eval_point(&result.code, x, y, 0.0, 0.0);
+                assert!(
+                    (got - want).abs() <= 1e-3,
+                    "guarded select at ({x}, {y}): got {got}, want {want}"
+                );
+            }
+        }
+
+        /// The same, with the mask itself spilled.
+        ///
+        /// This is the case the guard's scratch register has to be right for:
+        /// a spilled mask is resolved into `reload[1]`, *both* guards then read
+        /// it, and the reduction needs to land somewhere else. On aarch64 that
+        /// used to be a register held out of every kernel's pool; it is
+        /// `reload[0]` now, which is dead between instructions.
+        ///
+        /// Getting the mask to be the value that spills takes care, and the
+        /// test asserts it rather than assuming: eviction is Belady, so the
+        /// victim is whatever is used farthest out. The mask is computed first
+        /// and read last, and everything between it and the `Select` is
+        /// consumed before the `Select` — so the mask is the farthest-out live
+        /// value when the filler fills the pool, and it is the one to go. A
+        /// plain `spill_count > 0` would pass with the mask still resident and
+        /// this path never taken.
+        #[test]
+        fn a_guarded_select_survives_a_spilled_mask() {
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let zero = a.push_const(0.0);
+
+            // Read only at the very end: the farthest-out live value.
+            let cond = a.push_binary(OpKind::Gt, x, zero);
+
+            // Filler that is all live at once and all consumed *before* the
+            // select, so the mask outlives every one of them.
+            let terms: alloc::vec::Vec<ExprId> = (1..=8u32)
+                .map(|i| {
+                    let c = a.push_const(i as f32);
+                    a.push_binary(OpKind::Add, x, c)
+                })
+                .collect();
+            let mid = terms[1..]
+                .iter()
+                .fold(terms[0], |acc, &t| a.push_binary(OpKind::Add, acc, t));
+
+            // Shared-base arms, as in `guarded_select`.
+            let base = a.push_binary(OpKind::Mul, mid, y);
+            let bb = a.push_binary(OpKind::Mul, base, base);
+            let bbb = a.push_binary(OpKind::Mul, bb, base);
+            let b2 = a.push_binary(OpKind::Add, base, base);
+            let b3 = a.push_binary(OpKind::Add, b2, base);
+            let sel = a.push_ternary(OpKind::Select, cond, bbb, b3);
+            let carried = a.push_binary(OpKind::Sub, x, y);
+            let root = a.push_binary(OpKind::Add, sel, carried);
+            assert_guard_forms(&a, root);
+
+            // The mask must actually be the value that spills.
+            let file = Native::new(EmitCtx::with_max_regs(regalloc::RegisterFile::MIN_SCRATCH))
+                .register_file();
+            let allocation = {
+                use regalloc::RegisterAllocator;
+                regalloc::LinearScan.allocate(arena_to_schedule(&a, root), &file)
+            };
+            let mask_vid = analyze_select_guards(&allocation.schedule)
+                .first()
+                .expect("a guard formed above")
+                .mask_vid;
+            assert_eq!(
+                allocation.placement(mask_vid),
+                regalloc::Placement::Spilled,
+                "the mask stayed in a register, so the spilled-mask path this \
+                 test exists for is never reached"
+            );
+
+            let result = EmitCtx::with_max_regs(regalloc::RegisterFile::MIN_SCRATCH)
+                .compile(&a, root)
+                .expect("spilled guarded select compile");
+
+            for &(px, py) in &[(3.0f32, 2.0f32), (-2.0, 0.5), (0.5, -1.0)] {
+                let m: f32 = (1..=8).map(|i| px + i as f32).sum();
+                let b = m * py;
+                let want = if px > 0.0 { b * b * b } else { 3.0 * b } + (px - py);
+                let got = eval_point(&result.code, px, py, 0.0, 0.0);
+                assert!(
+                    (got - want).abs() <= 1e-2 * want.abs().max(1.0),
+                    "spilled guarded select at ({px}, {py}): got {got}, want {want}"
+                );
+            }
+        }
     }
 
     /// Run an arena kernel at `x` (Y/Z/W = 0) and return lane 0. The
