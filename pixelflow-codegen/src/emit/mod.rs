@@ -288,14 +288,6 @@ pub struct InstructionPlan {
     pub temp: Option<Reg>,
 }
 
-impl InstructionPlan {
-    /// The same plan, with the allocator's temp for this instruction attached.
-    #[must_use]
-    pub fn with_temp(self, temp: Option<Reg>) -> Self {
-        Self { temp, ..self }
-    }
-}
-
 /// The temp an encoding declared in [`regalloc::RegisterFile::temps_for`].
 ///
 /// A backend's `temps_for` and its encodings are two halves of one statement
@@ -815,8 +807,13 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         }
 
         let dst_loc = layout.of(*vid);
-        let plan =
-            resolve_operands(sched_op, dst_loc, locs, &file)?.with_temp(allocation.temp(sched_idx));
+        let plan = resolve_operands(
+            sched_op,
+            dst_loc,
+            locs,
+            &file,
+            allocation.scratch(sched_idx),
+        )?;
 
         // Select with a guard region: emit a uniform-mask short-circuit wrapper.
         if let ScheduledOp::Ternary(OpKind::Select, mask_vid, true_vid, false_vid) = sched_op
@@ -1635,6 +1632,7 @@ pub fn resolve_operands(
     dst_loc: Loc,
     locs: &[Option<Loc>],
     file: &regalloc::RegisterFile,
+    scratch: regalloc::Scratch,
 ) -> Result<InstructionPlan, CompileError> {
     let tmp_op = file.reload[1]; // always safe for operand reload
 
@@ -1797,20 +1795,18 @@ pub fn resolve_operands(
                     let b_reg = resolve(*b, tmp_op, &mut reloads);
                     let c_reg = if b_spilled && c_spilled {
                         // Both branches spilled → two DISTINCT reload targets.
-                        // tmp_op (reload[1]) holds if_true; if_false takes
-                        // reload[0] — free whenever `dst` is a real register
-                        // (`RegisterFile::checked` keeps the reload registers
-                        // out of the allocator pool). A spilled *result*
-                        // (dst == reload[0], holding the mask) needs a fourth
-                        // register: `select_reload`, a fixed scratch this
-                        // backend's own Select emission never touches.
-                        // Optimized glyph arenas reach this under real
-                        // register pressure.
-                        if dst.0 == file.reload[0].0 {
-                            resolve(*c, file.select_reload, &mut reloads)
-                        } else {
-                            resolve(*c, file.reload[0], &mut reloads)
-                        }
+                        // tmp_op (reload[1]) holds if_true; if_false takes the
+                        // allocator's `arm_reload`, which it picked disjoint
+                        // from this instruction's operands, its destination and
+                        // its temp.
+                        //
+                        // This used to read `reload[0]`, or `select_reload`
+                        // when the result was itself spilled and had taken
+                        // `reload[0]` for the mask — a three-way case analysis
+                        // over two fixed registers, one of which every kernel
+                        // paid for so that the rare kernel reaching here had
+                        // somewhere to put its second arm.
+                        resolve(*c, declared_temp(scratch.arm_reload), &mut reloads)
                     } else {
                         // At most one branch spilled → tmp_op suffices for it.
                         resolve(*c, tmp_op, &mut reloads)
@@ -1838,7 +1834,7 @@ pub fn resolve_operands(
         op: resolved_op,
         setup_mov,
         store,
-        temp: None,
+        temp: scratch.temp,
     })
 }
 
@@ -2409,11 +2405,21 @@ mod tests {
         inputs: INPUT_REGS,
         scratch: regalloc::RegSet::range(4, 6),
         reload: [Reg(11), Reg(12)],
-        select_reload: Reg(13),
         temps_for: regalloc::no_temps,
         vector_bytes: 16,
     }
     .checked();
+
+    /// The scratch these `resolve_operands` tests are written against.
+    ///
+    /// `arm_reload` is `Reg(13)` — the register that used to be
+    /// `RegisterFile::select_reload`, so the all-spilled `Select` case below
+    /// still names the register it always did, now as a per-instruction
+    /// reservation rather than a field of the file.
+    const TEST_SCRATCH: regalloc::Scratch = regalloc::Scratch {
+        temp: None,
+        arm_reload: Some(Reg(13)),
+    };
 
     /// Dense `ValueId -> Loc`, as the emit loop builds it.
     fn make_locs(assigned: &[(u32, u8)], spilled: &[(u32, u32)]) -> alloc::vec::Vec<Option<Loc>> {
@@ -2438,7 +2444,14 @@ mod tests {
         // left=v4, right=v5, dst=v6 — all in registers
         let locs = make_locs(&[(0, 4), (1, 5), (2, 6)], &[]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), &TEST_FILE).unwrap();
+        let plan = resolve_operands(
+            &op,
+            Loc::Reg(Reg(6)),
+            locs.as_slice(),
+            &TEST_FILE,
+            TEST_SCRATCH,
+        )
+        .unwrap();
 
         assert!(plan.reloads.is_empty());
         assert!(plan.store.is_none());
@@ -2458,7 +2471,14 @@ mod tests {
         // left spilled at offset 0, right in v5
         let locs = make_locs(&[(1, 5), (2, 6)], &[(0, 0)]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), &TEST_FILE).unwrap();
+        let plan = resolve_operands(
+            &op,
+            Loc::Reg(Reg(6)),
+            locs.as_slice(),
+            &TEST_FILE,
+            TEST_SCRATCH,
+        )
+        .unwrap();
 
         assert_eq!(plan.reloads.len(), 1);
         assert_eq!(
@@ -2484,7 +2504,14 @@ mod tests {
         // Both spilled: left → dst (temp trick), right → tmp_op
         let locs = make_locs(&[(2, 6)], &[(0, 0), (1, 16)]);
         let op = ScheduledOp::Binary(OpKind::Mul, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), &TEST_FILE).unwrap();
+        let plan = resolve_operands(
+            &op,
+            Loc::Reg(Reg(6)),
+            locs.as_slice(),
+            &TEST_FILE,
+            TEST_SCRATCH,
+        )
+        .unwrap();
 
         assert_eq!(plan.reloads.len(), 2);
         // left → dst (v6), right → tmp_op (v27)
@@ -2518,7 +2545,14 @@ mod tests {
         // dst is spilled → compute into TEST_FILE.reload[0], then store
         let locs = make_locs(&[(0, 4), (1, 5)], &[(2, 32)]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Spill(32), locs.as_slice(), &TEST_FILE).unwrap();
+        let plan = resolve_operands(
+            &op,
+            Loc::Spill(32),
+            locs.as_slice(),
+            &TEST_FILE,
+            TEST_SCRATCH,
+        )
+        .unwrap();
 
         // dst should be TEST_FILE.reload[0] since result is spilled
         assert_eq!(
@@ -2549,7 +2583,14 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), locs.as_slice(), &TEST_FILE).unwrap();
+        let plan = resolve_operands(
+            &op,
+            Loc::Reg(Reg(8)),
+            locs.as_slice(),
+            &TEST_FILE,
+            TEST_SCRATCH,
+        )
+        .unwrap();
 
         assert!(plan.reloads.is_empty());
         // c=v7 ≠ dst=v8, so setup_mov should copy c → dst
@@ -2575,7 +2616,14 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), locs.as_slice(), &TEST_FILE).unwrap();
+        let plan = resolve_operands(
+            &op,
+            Loc::Reg(Reg(8)),
+            locs.as_slice(),
+            &TEST_FILE,
+            TEST_SCRATCH,
+        )
+        .unwrap();
 
         // a → dst, b → tmp_op loaded upfront
         assert_eq!(plan.reloads.len(), 2);
@@ -2622,7 +2670,14 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), locs.as_slice(), &TEST_FILE).unwrap();
+        let plan = resolve_operands(
+            &op,
+            Loc::Reg(Reg(8)),
+            locs.as_slice(),
+            &TEST_FILE,
+            TEST_SCRATCH,
+        )
+        .unwrap();
 
         // Only a and b reloads upfront — c is deferred
         assert_eq!(plan.reloads.len(), 2);
@@ -2639,7 +2694,14 @@ mod tests {
     fn resolve_var_is_nop() {
         let locs = make_locs(&[(0, 0)], &[]);
         let op = ScheduledOp::Var(0);
-        let plan = resolve_operands(&op, Loc::Reg(Reg(0)), locs.as_slice(), &TEST_FILE).unwrap();
+        let plan = resolve_operands(
+            &op,
+            Loc::Reg(Reg(0)),
+            locs.as_slice(),
+            &TEST_FILE,
+            TEST_SCRATCH,
+        )
+        .unwrap();
         assert_eq!(plan.op, ResolvedOp::Nop);
         assert!(plan.reloads.is_empty());
         assert!(plan.store.is_none());
@@ -2649,7 +2711,14 @@ mod tests {
     fn resolve_const() {
         let locs = make_locs(&[(0, 6)], &[]);
         let op = ScheduledOp::Const(core::f32::consts::PI);
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), &TEST_FILE).unwrap();
+        let plan = resolve_operands(
+            &op,
+            Loc::Reg(Reg(6)),
+            locs.as_slice(),
+            &TEST_FILE,
+            TEST_SCRATCH,
+        )
+        .unwrap();
         assert_eq!(
             plan.op,
             ResolvedOp::LoadConst {

@@ -4,7 +4,7 @@
 //! the AVX-512 EVEX encoders (`avx512.rs`, 512-bit). Register numbering is
 //! identical to SSE2 (ymm0-15, no extended file — AVX2 has no REX2/EVEX), so
 //! this backend reuses the register *roles* `X86Backend` established (inputs
-//! 0-3, reload 11-12, select_reload 13) and only the instruction *encoding*
+//! 0-3, reload 11-12) and only the instruction *encoding*
 //! changes. The pool itself differs: see `AVX2_FILE` for why the gather's
 //! half-temporaries cost it ymm8/ymm9, and why ymm10 — SSE2's own fixed
 //! scratch — is allocatable here.
@@ -837,11 +837,8 @@ pub(crate) mod driver {
         // this backend the register was reserved by inheritance rather than by
         // use — the case `fixed` exists to make checkable, since every other
         // ymm here is now named by `inputs`, `scratch`, `reload`,
-        // `select_reload` or `fixed`.
-        scratch: regalloc::RegSet::range(4, 4).union(regalloc::RegSet::of(&[Reg(10)])),
-        // ymm13: outside the allocatable range and the reload pair; the AVX2
-        // select is a VEX blend with no internal temp.
-        select_reload: Reg(13),
+        // or `fixed`.
+        scratch: regalloc::RegSet::range(4, 4).union(regalloc::RegSet::of(&[Reg(10), Reg(13)])),
         fixed: &[x86_64::GATHER_VALUE, x86_64::GATHER_IDX, Reg(8), Reg(9)],
         // This backend's pool does not grow: `UNARY_SCRATCH` was ymm15, which
         // is also `GATHER_IDX`, so it appeared in `fixed` twice and freeing one
