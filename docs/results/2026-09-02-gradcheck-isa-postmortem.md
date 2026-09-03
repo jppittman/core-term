@@ -161,3 +161,64 @@ Option 2 remains worth doing on its own merits, independently of this bug — it
 - **#1126 (reverting 09fd8758 / #1124) would make CI green**, because #1124 introduced the file and the test. But it would do so by deleting the six gradient checks that pin the bilinear head's backward pass — five of which are correct, load-bearing, and pass everywhere. Per JP's instruction the fix goes forward: correct `H` and the tolerance derivation in place, keep all six checks.
 
 The forward fix touches only `pixelflow-search/src/nnue/guide/scoring/backward.rs`'s test module — no public API, no product code.
+
+## 8. What landed, and where §3 was wrong
+
+The forward fix is in `pixelflow-search/src/nnue/guide/scoring/backward.rs`'s
+test module only. No product code, no public API, all six gradient checks kept.
+
+**§3's recommended `H = 1e-1` is wrong, and the guard is what proved it.** The
+h-sweep above probed only `candidate_w1[5][7]` and `[0][0]`; it inferred
+"truncation ≤ 7.1e-4 at h = 1e-1, so no kink is crossed" from two entries and
+generalized. The first run with the per-probe activation-pattern assertion in
+place failed immediately on a third:
+
+```
+candidate_w1[scalar row 35][63]: the ±H probe crossed a ReLU kink
+  (open-unit masks h1/h2/g = [fffc000001ffffff, 3fffffff80000, 7fff] at w,
+                             [fffc000001ffffff, 1fffffff80000, 7fff] at w+H)
+```
+
+Scalar row 35 is `ln(1 + expr_node_count) ≈ 3.18`, the fixture's largest input,
+so it moves the tower furthest per unit of weight; a trunk unit closes at
+`h ≈ 0.1`. Measured, the fixture's narrowest activation cell is **8.2e-2**. At
+`H = 1e-1` the check would have shipped estimating a chord across two affine
+pieces — a *different* wrong answer than the one it replaced, and one the
+h-sweep's own methodology could not see, because a sweep reports error at the
+entries it samples and this fixture's binding entry was not among them.
+
+`H` is therefore squeezed between two bounds, both asserted in the test rather
+than argued in a comment:
+
+| bound | from | value |
+|---|---|---|
+| lower | roundoff: `FLOOR_MARGIN · ε·|score| / TOL` | `2.2e-2` |
+| upper | narrowest activation cell (measured) | `8.2e-2` |
+| **landed** | `H` | **`4e-2`** — 1.8× above, 2.1× below |
+
+- `the_step_size_must_keep_the_roundoff_floor_under_the_tolerance` recomputes
+  the lower bound from the fixture's own score, so a fixture that grows fails
+  at the model.
+- `check_gradient` asserts on **every** probe that the ReLU pattern is identical
+  at `w`, `w+H` and `w−H`, so the upper bound cannot be violated silently by an
+  entry nobody sampled. This is the guard §6 recommended, in its strong form.
+
+**A second instance of the same defect, found by the verification sweep.**
+`activations_score_should_equal_score_candidate` asserted
+`|acts.score() − direct| < 1e-5` absolute against a score of 234.8, where one
+f32 ulp is **1.37e-5** — a tolerance *below one ulp* demands bit identity from
+two separately written summations. It survived only because CI builds tests at
+`opt-level = 0`; at `opt-level = 3` on aarch64 the two paths land one ulp apart
+and it fails. Replaced with the derived bound `HIDDEN_DIM · ε · |score|`, the
+accumulated rounding of the chain's longest reduction.
+
+**Verified green** on every configuration that can execute: aarch64 at
+opt-level 0 and 3 and at `-fp-contract=off`; `x86_64-apple-darwin` at the SSE2
+baseline and at `+avx2,+fma`, each at opt-level 0 and 3. `+avx512f,+avx512dq`
+builds and lints but SIGILLs under Rosetta — the same gap §5 records for
+`ubuntu-latest`, unchanged by this fix.
+
+**No training result is invalidated.** The backward pass was never wrong: §4(b)
+holds, the analytic gradient is what the numeric estimate converges to from
+every configuration once the step is inside its budget, and the five non-tower
+checks passed throughout. #1124's numbers stand as reported.
