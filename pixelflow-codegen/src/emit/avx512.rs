@@ -209,10 +209,17 @@ fn vxorps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
 /// `#UD` / SIGILL).
 const UNUSED_VVVV: u8 = 0;
 
-/// Scratch register for unary mask materialization (neg/abs). zmm15 is outside
-/// the backend's allocatable range (zmm4-9), reload regs (zmm11-12), and inputs
-/// (zmm0-3), so it is always free here. Lets neg/abs handle `dst == src`.
-const UNARY_SCRATCH: Reg = Reg(15);
+/// How many registers this backend's encodings need beyond their operands.
+///
+/// Only the `Neg`/`Abs` sign mask: EVEX is non-destructive and `vpternlogd`
+/// blends a select with no temporary.
+pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
+    use super::ScheduledOp;
+    match op {
+        ScheduledOp::Unary(OpKind::Neg | OpKind::Abs, _) => 1,
+        _ => 0,
+    }
+}
 
 // --- unary (one source; no second source -> UNUSED_VVVV) ---
 /// vsqrtps zmmD, zmmS — EVEX.512.0F.W0 51 /r ; vvvv unused.
@@ -451,20 +458,26 @@ pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount
     }
 }
 
-pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) {
+/// `dst = op(src)`.
+///
+/// `temp` is the allocator's temp for this instruction; only `Neg` and `Abs`
+/// use it, to hold the sign mask.
+pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, temp: Option<Reg>) {
     match op {
         OpKind::Sqrt => vsqrtps(code, dst.0, src.0),
         OpKind::Neg => {
-            // dst = src XOR (-0.0 broadcast). Build the mask in a scratch reg,
-            // not dst: dst may alias src, and writing the mask into dst first
-            // would clobber the source before the xor reads it.
-            emit_const(code, UNARY_SCRATCH, f32::from_bits(0x8000_0000));
-            vxorps(code, dst.0, src.0, UNARY_SCRATCH.0);
+            // dst = src XOR (-0.0 broadcast). Build the mask in the temp, not
+            // dst: dst may alias src, and writing the mask into dst first would
+            // clobber the source before the xor reads it.
+            let mask = super::declared_temp(temp);
+            emit_const(code, mask, f32::from_bits(0x8000_0000));
+            vxorps(code, dst.0, src.0, mask.0);
         }
         OpKind::Abs => {
             // dst = src AND (0x7FFFFFFF broadcast). Same aliasing concern.
-            emit_const(code, UNARY_SCRATCH, f32::from_bits(0x7FFF_FFFF));
-            vandps(code, dst.0, src.0, UNARY_SCRATCH.0);
+            let mask = super::declared_temp(temp);
+            emit_const(code, mask, f32::from_bits(0x7FFF_FFFF));
+            vandps(code, dst.0, src.0, mask.0);
         }
         // Rounding: a single EVEX instruction (vrndscaleps), no polynomial.
         // imm8 bit layout: bits[7:4] = scale (0 = integer), bits[3:0] = rounding
@@ -645,6 +658,9 @@ mod tests {
 
         const X: Reg = Reg(0);
         const Y: Reg = Reg(1);
+        /// Standing in for the allocator's instruction temp: any register
+        /// disjoint from the operands each case uses.
+        const TEMP: Reg = Reg(15);
         const Z: Reg = Reg(2);
 
         /// One row of the binary-op table: the op and its scalar reference.
@@ -681,7 +697,7 @@ mod tests {
         fn sqrt_op() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Sqrt, X, Y); // Y > 0
+            emit_unary(&mut c, OpKind::Sqrt, X, Y, None); // Y > 0
             check(run(&c, xs, ys, zs), |i| ys[i].sqrt(), "sqrt");
         }
 
@@ -689,10 +705,10 @@ mod tests {
         fn neg_abs() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Neg, X, X);
+            emit_unary(&mut c, OpKind::Neg, X, X, Some(TEMP));
             check(run(&c, xs, ys, zs), |i| -xs[i], "neg");
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Abs, X, X);
+            emit_unary(&mut c, OpKind::Abs, X, X, Some(TEMP));
             check(run(&c, xs, ys, zs), |i| xs[i].abs(), "abs");
         }
 
@@ -848,14 +864,20 @@ pub(crate) mod driver {
     const AVX512_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         // zmm13: outside the allocatable range and the reload pair; `vpternlogd`
         // consumes its three operands with no temp.
-        // zmm4-10 plus zmm17-31: AVX-512 has thirty-two registers and the
-        // pool was six of them, because a contiguous range could not reach
+        // zmm4-10, zmm15 and zmm17-31: AVX-512 has thirty-two registers and
+        // the pool was six of them, because a contiguous range could not reach
         // past the reload pair and the gather's scratch.
-        scratch: regalloc::RegSet::range(4, 7).union(regalloc::RegSet::range(17, 15)),
+        scratch: regalloc::RegSet::range(4, 7)
+            .union(regalloc::RegSet::range(17, 15))
+            .union(regalloc::RegSet::of(&[Reg(15)])),
         select_reload: Reg(13),
-        // zmm15: `emit_unary`'s sign-mask temp. zmm14/zmm16: the gather's
-        // destination and truncated-index registers.
-        fixed: &[super::UNARY_SCRATCH, Reg(14), Reg(16)],
+        // zmm14/zmm16: the gather's destination and truncated-index registers.
+        // zmm15 used to sit here as `UNARY_SCRATCH`, reserved for the whole
+        // kernel so a sign-flip could borrow it; the sign-flip now asks the
+        // allocator for a temp, so zmm15 has joined the pool above. The select
+        // needs none — `vpternlogd` consumes its three operands.
+        fixed: &[Reg(14), Reg(16)],
+        temps_for: super::temps_for,
         vector_bytes: 64,
         ..SSE2_FILE
     }
@@ -913,7 +935,7 @@ pub(crate) mod driver {
                     super::emit_const(code, *dst, f32::from_bits(*val_bits));
                 }
                 ResolvedOp::Unary { op, dst, src } => {
-                    super::emit_unary(code, *op, *dst, *src);
+                    super::emit_unary(code, *op, *dst, *src, plan.temp);
                 }
                 ResolvedOp::ShiftImm {
                     op,

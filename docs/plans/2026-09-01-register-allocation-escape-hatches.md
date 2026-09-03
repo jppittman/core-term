@@ -194,6 +194,49 @@ disjoint live ranges onto one slot, which it cannot do today.
 Register pressure *falls* even though more values are allocated: most ops need
 no temp, so the pool roughly doubles on x86 and quintuples on AVX-512.
 
+> **Landed 2026-09-03 — the temps half.** `RegisterFile::temps_for(&ScheduledOp)
+> -> u8` declares the demand; the allocator reserves a slot before it places
+> the destination, excluding every operand, and `Allocation::temp(i)` hands it
+> to the encoder through `InstructionPlan::temp`. `UNARY_SCRATCH` is gone from
+> all three of AVX2, AVX-512 and aarch64.
+>
+> The pool effect is smaller than the paragraph above predicts, and worth
+> recording rather than rounding up:
+>
+> | backend | pool before | pool after | why |
+> |---|---|---|---|
+> | SSE2 | 6 | 6 | still `no_temps` — see below |
+> | AVX2 | 5 | 5 | its `UNARY_SCRATCH` *was* `GATHER_IDX` |
+> | AVX-512 | 22 | 23 | zmm15 joins `scratch` |
+> | aarch64 | 15 | 16 | v29 joins `scratch` |
+>
+> AVX2 gains no register because ymm15 wore two names: it appeared in `fixed`
+> twice, once as the gather's index and once as the unary mask, so the sign
+> mask and the select blend had been *borrowing the gather's register* — safe
+> only because no single instruction is both, exactly the convention step 1
+> exists to make checkable. What landed there is one owner per register, not a
+> larger pool.
+>
+> SSE2 keeps `X86_SCRATCH` in `fixed` deliberately. Its two-operand hazard
+> (`emit_binary_safe`) and decomposed `MulAdd` demand a scratch as a function
+> of *which registers allocation picked* (`dst == right`), not of the op — so
+> the demand cannot be stated as `temps_for` yet, and drawing a second pool
+> register for the unary mask meanwhile would cost pressure and free nothing.
+> That backend closes when the hazard does.
+>
+> One thing the design forced out into the open: a temp cannot spill. Every
+> value survives a small pool by going to memory, which is why a one-register
+> budget was previously legal; scratch the encoder destroys mid-instruction has
+> no such escape, so the pool must hold a ternary's three operands plus the
+> temp. That floor is `RegisterFile::MIN_SCRATCH = 4`, asserted in `checked()`
+> and clamped in `capped()` — `EmitCtx::max_regs` can no longer reach through
+> it. Found by probe, not by reasoning: `with_max_regs(1)` on a `Neg` of a
+> computed value hit the "unreachable" arm on AVX2 and AVX-512.
+>
+> **Reload defs (class C) are not done** — `Placement::Spilled` and
+> `reload`/`select_reload` are still there. That is where the paragraph above's
+> "roughly doubles" actually lives.
+
 > **Methodology note.** Byte identity carried #1059–#1062 because those were
 > pure refactors: the emitted code was supposed to be unchanged, so an empty
 > diff was the whole proof. From here on the emitted code is *supposed* to

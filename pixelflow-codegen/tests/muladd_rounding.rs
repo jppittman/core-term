@@ -134,6 +134,18 @@ fn an_unspilled_muladd_rounds_the_way_this_target_does() {
 /// into an input register and never spills, so `MulAdd(X, Y, Z)` cannot
 /// decompose no matter how small the pool is. Doubling is the cheapest
 /// computation that is also exact, which is why the inputs are `A`/`B` halved.
+///
+/// The `MulAdd` also has to come *last*. The allocator evicts by Belady — the
+/// value needed furthest in the future — so what decides the multiplicands'
+/// fate is not how small the pool is but where their last use falls relative
+/// to everything competing for a register. With the `MulAdd` in the middle and
+/// the wall summed after it, the wall outlives the multiplicands and the wall
+/// is what spills, however tight the budget; the scenario only ever reached
+/// the decomposed arm because a one-register pool spills whatever it is
+/// holding. That is no longer a budget a caller can ask for
+/// (`RegisterFile::MIN_SCRATCH` — a temp cannot spill), so the pressure has to
+/// come from the live ranges rather than from the pool being a single
+/// register.
 #[test]
 fn a_spilled_muladd_rounds_twice_on_every_target() {
     let mut a = ExprArena::new();
@@ -141,7 +153,8 @@ fn a_spilled_muladd_rounds_twice_on_every_target() {
     let y = a.push_var(1);
     let z = a.push_var(2);
     // The multiplicands, defined first and consumed last, so they hold the
-    // longest live ranges in the schedule.
+    // longest live ranges in the schedule — which is what makes them Belady's
+    // first two eviction choices once the wall fills the pool.
     let ma = a.push_binary(OpKind::Add, x, x);
     let mb = a.push_binary(OpKind::Add, y, y);
 
@@ -158,10 +171,15 @@ fn a_spilled_muladd_rounds_twice_on_every_target() {
         })
         .collect();
 
-    let fma = a.push_ternary(OpKind::MulAdd, ma, mb, z);
-    let root = wall
+    // Sum the wall first, then feed it to the `MulAdd` as part of the addend.
+    // Each term is exactly +0.0, so the addend is bit-for-bit `z` and the
+    // rounding under test is the `MulAdd`'s alone.
+    let wall_sum = wall
         .iter()
-        .fold(fma, |acc, &w| a.push_binary(OpKind::Add, acc, w));
+        .skip(1)
+        .fold(wall[0], |acc, &w| a.push_binary(OpKind::Add, acc, w));
+    let addend = a.push_binary(OpKind::Add, z, wall_sum);
+    let root = a.push_ternary(OpKind::MulAdd, ma, mb, addend);
 
     let result = EmitCtx::with_max_regs(1)
         .compile(&a, root)

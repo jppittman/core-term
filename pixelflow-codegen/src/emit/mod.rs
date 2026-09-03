@@ -278,6 +278,35 @@ pub struct InstructionPlan {
     pub setup_mov: Option<(Reg, Reg)>,
     /// Store to emit after the main op (if dst is spilled).
     pub store: Option<Store>,
+    /// A register the encoding may destroy for the length of this instruction.
+    ///
+    /// Present exactly when the backend asked for one
+    /// ([`regalloc::RegisterFile::temps_for`]); the allocator picked it, so it
+    /// holds no live value and is nobody's operand, and it is free again at the
+    /// next instruction. An encoding that needs a temp must read this rather
+    /// than a `const`, because there is no register reserved for it.
+    pub temp: Option<Reg>,
+}
+
+impl InstructionPlan {
+    /// The same plan, with the allocator's temp for this instruction attached.
+    #[must_use]
+    pub fn with_temp(self, temp: Option<Reg>) -> Self {
+        Self { temp, ..self }
+    }
+}
+
+/// The temp an encoding declared in [`regalloc::RegisterFile::temps_for`].
+///
+/// A backend's `temps_for` and its encodings are two halves of one statement
+/// about each instruction, and nothing in the types holds them together — this
+/// is where they are checked against each other.
+///
+/// # Panics
+/// If the encoding wants a temp its `temps_for` did not ask for.
+#[track_caller]
+pub(crate) fn declared_temp(temp: Option<Reg>) -> Reg {
+    temp.expect("this encoding needs a temp that `RegisterFile::temps_for` did not ask for")
 }
 
 /// Emission context with register budget for ML training.
@@ -786,7 +815,8 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         }
 
         let dst_loc = layout.of(*vid);
-        let plan = resolve_operands(sched_op, dst_loc, locs, &file)?;
+        let plan =
+            resolve_operands(sched_op, dst_loc, locs, &file)?.with_temp(allocation.temp(sched_idx));
 
         // Select with a guard region: emit a uniform-mask short-circuit wrapper.
         if let ScheduledOp::Ternary(OpKind::Select, mask_vid, true_vid, false_vid) = sched_op
@@ -1808,6 +1838,7 @@ pub fn resolve_operands(
         op: resolved_op,
         setup_mov,
         store,
+        temp: None,
     })
 }
 
@@ -2379,6 +2410,7 @@ mod tests {
         scratch: regalloc::RegSet::range(4, 6),
         reload: [Reg(11), Reg(12)],
         select_reload: Reg(13),
+        temps_for: regalloc::no_temps,
         vector_bytes: 16,
     }
     .checked();
@@ -4035,6 +4067,11 @@ mod tests {
                 op,
                 setup_mov: None,
                 store: None,
+                // Every shape below uses registers 4-7, so this stands in for
+                // whatever temp the allocator would hand an encoding that asks
+                // for one. A backend that wants a temp and finds none panics,
+                // which `try_emit` would report as a missing op.
+                temp: Some(Reg(15)),
             };
             let mut code = alloc::vec::Vec::new();
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4224,6 +4261,9 @@ mod tests {
                 op,
                 setup_mov: None,
                 store: None,
+                // No `MulAdd` spelling on any backend asks for a temp; `None`
+                // is the assertion that none of them starts to unnoticed.
+                temp: None,
             }
         }
 
