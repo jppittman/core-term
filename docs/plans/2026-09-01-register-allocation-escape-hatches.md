@@ -412,14 +412,39 @@ the rest:
 
 1. **The remainder of 2 has to land with 4, or it buys nothing** — three of
    `reload`'s use-sites are outside the DAG (see the correction under class C).
-2. **It needs a fixed point that today's allocator does not have.** Eviction
-   writes `Placement::Spilled` for a value's *whole life*, so an operand that
-   is resident when its reader is allocated can be spilled retroactively by a
-   later instruction. Every reservation that landed so far dodged this because
-   its demand is a function of the *op* — `temps_for` can state it, and
-   `Select`'s third target is reserved unconditionally for exactly this reason.
+2. **It needs live-range splitting, and this was measured, not argued.**
+   Eviction writes `Placement::Spilled` for a value's *whole life*, so an
+   operand resident when its reader is allocated can be spilled retroactively
+   by a later instruction. Every reservation that landed so far dodged this
+   because its demand is a function of the *op* — `temps_for` can state it.
    A reload target's demand is a function of *which operands are in registers
-   at that point*, which is not final when the reservation is made. Closing it
-   means allocation becomes a fixed point over the values forced to memory, or
-   live ranges get split — the "output schedule rather than an annotation"
-   this plan already names, now with the specific reason it cannot be avoided.
+   at that point*, which is not final when the reservation is made.
+
+   Restricting eviction to values nothing has read yet does make an operand's
+   residency final, and it is cheap: +1 spill across every size measured. The
+   whole change was built on that and it still failed, for a reason worth
+   writing down rather than rediscovering.
+
+   **Reserving a register that is needed for one instruction costs a value its
+   register for the whole program.** Under pressure no pool slot is free, so
+   the reservation evicts an occupant — and eviction is permanent. Every
+   spilled operand therefore causes another spill, and constants are operands:
+
+   | wide kernel | pool 9, `reload` fixed | pool 11, targets reserved |
+   |---|---|---|
+   | 4 terms | **0** | 4 |
+   | 8 terms | **0** | 8 |
+
+   Two more registers do not come close to paying for that. The two fixed
+   registers are cheaper than the pool ones precisely *because* they are
+   outside the pool: taking one costs nothing.
+
+   And the destination cannot be reserved for at all. `evictable` makes an
+   operand's residency final from its first *read*, but a value's own
+   definition is a write — so a destination allocated a register can still lose
+   it later, which is exactly what `reload[0]` exists to catch.
+
+   So the remainder is not a reservation problem. A reload has to become a
+   *value with a short live range* — the "output schedule rather than an
+   annotation" this plan already names — because only then does materialising
+   one cost a register for an instruction instead of for a program.
