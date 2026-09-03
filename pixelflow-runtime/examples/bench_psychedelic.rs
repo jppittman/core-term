@@ -39,7 +39,9 @@ fn nanos_now() -> u64 {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        std::time::Instant::now().elapsed().as_nanos() as u64
+        static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let epoch = EPOCH.get_or_init(std::time::Instant::now);
+        epoch.elapsed().as_nanos() as u64
     }
 }
 
