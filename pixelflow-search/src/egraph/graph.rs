@@ -55,6 +55,9 @@ pub struct EGraph {
     step: usize,
     /// Rule provenance: origins, application log, union journal.
     provenance: Provenance,
+    /// L3 (#1118): when set, a rule scan stops committing actions once
+    /// the provenance application count reaches this cap.
+    application_cap: Option<usize>,
     /// Which rewrite application (if any) is currently executing — read by
     /// `add()`/`union()` to attribute newly created nodes/unions.
     active_application: Option<ActiveApplication>,
@@ -91,6 +94,7 @@ impl Clone for EGraph {
             next_enode_id: self.next_enode_id,
             step: self.step,
             provenance: self.provenance.clone(),
+            application_cap: self.application_cap,
             active_application: self.active_application,
             const_fact: self.const_fact.clone(),
             refused_const_unions: self.refused_const_unions.clone(),
@@ -185,6 +189,7 @@ impl EGraph {
             next_enode_id: 0,
             step: 0,
             provenance: Provenance::new(),
+            application_cap: None,
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
@@ -205,6 +210,7 @@ impl EGraph {
             next_enode_id: 0,
             step: 0,
             provenance: Provenance::new(),
+            application_cap: None,
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
@@ -1033,6 +1039,7 @@ impl EGraph {
         let deadline = start + timeout;
         let mut iterations = 0;
         let mut total_unions = 0;
+        let previous_cap = self.application_cap.replace(max_total_applications);
 
         let stop = 'outer: loop {
             if self.provenance.application_count() >= max_total_applications {
@@ -1095,6 +1102,7 @@ impl EGraph {
             }
         };
 
+        self.application_cap = previous_cap;
         AppBudgetSaturationStats {
             iterations,
             total_unions,
@@ -1198,6 +1206,12 @@ impl EGraph {
         // Do NOT rebuild here — caller is responsible for calling rebuild()
         // after all rules for the epoch are applied (lazy/batched rebuild).
         for (class_id, action) in updates {
+            if self
+                .application_cap
+                .is_some_and(|cap| self.provenance.application_count() >= cap)
+            {
+                break;
+            }
             unions += self.apply_action_from_rule(rule_idx, class_id, action);
         }
 
