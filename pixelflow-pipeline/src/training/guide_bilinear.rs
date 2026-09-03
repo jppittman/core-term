@@ -258,6 +258,34 @@ impl BilinearGuideCheckpoint {
     }
 }
 
+/// Load a trained bilinear checkpoint from `path` and deploy it against
+/// `rules`.
+///
+/// The counterpart of [`crate::training::guide_linear::load_linear_guide`]
+/// for the bilinear arm, and the only path any evaluation harness uses: the
+/// refusals live in [`BilinearCandidateGuide::new`] and in
+/// [`BilinearGuideCheckpoint::to_weights`], so a second hand-rolled reader
+/// in a binary would be a second place for one of them to be skipped.
+///
+/// # Errors
+///
+/// Returns the reason, naming `path`, when the file is unreadable, is not a
+/// checkpoint, or carries weights this build refuses to deploy (vocabulary
+/// fingerprint, parameter count, or op-embedding count).
+pub fn load_bilinear_guide(
+    path: &std::path::Path,
+    rules: &RuleSet,
+) -> Result<pixelflow_search::nnue::guide::bilinear::BilinearCandidateGuide, String> {
+    let p = path.display().to_string();
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("bilinear checkpoint {p}: {e}"))?;
+    let checkpoint: BilinearGuideCheckpoint =
+        serde_json::from_str(&text).map_err(|e| format!("bilinear checkpoint {p}: {e}"))?;
+    let weights = checkpoint.to_weights(rules);
+    pixelflow_search::nnue::guide::bilinear::BilinearCandidateGuide::new(&weights, rules)
+        .map_err(|e| format!("bilinear checkpoint {p}: {e}"))
+}
+
 /// Read a `RuleSet::fingerprint()` back from its hex spelling, by finding
 /// the live vocabulary whose fingerprint prints the same way.
 ///

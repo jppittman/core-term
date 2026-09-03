@@ -109,6 +109,13 @@ required-features = ["training"]
 bench = false
 
 [[bin]]
+name = "phase3_bilinear_eval"
+path = "src/bin/phase3_bilinear_eval.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
 name = "phase3_unguided_baseline"
 path = "src/bin/phase3_unguided_baseline.rs"
 required-features = ["training"]
