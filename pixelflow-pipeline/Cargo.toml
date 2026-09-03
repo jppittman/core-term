@@ -240,3 +240,9 @@ path = "src/bin/guide_coverage_table.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "phase3_bisect_eval"
+path = "src/bin/phase3_bisect_eval.rs"
+required-features = ["training"]
+bench = false
