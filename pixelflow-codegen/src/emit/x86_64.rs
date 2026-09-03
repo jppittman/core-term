@@ -571,10 +571,11 @@ const X86_SCRATCH: Reg = Reg(10);
 
 /// The gather's truncated-index lanes and loaded-value register.
 ///
-/// `GATHER_IDX` was `xmm13` — the same register as `select_reload`, safe only
-/// because a gather and a `Select`'s operand reload never occur in one
-/// instruction. Declared in `SSE2_FILE.fixed` now, so `RegisterFile::checked`
-/// proves the separation instead of a comment asserting it.
+/// `GATHER_IDX` was `xmm13` — the same register the file then called
+/// `select_reload`, safe only because a gather and a `Select`'s operand reload
+/// never occur in one instruction. Declared in `SSE2_FILE.fixed` now, so
+/// `RegisterFile::checked` proves the separation instead of a comment
+/// asserting it.
 pub(crate) const GATHER_IDX: Reg = Reg(15);
 pub(crate) const GATHER_VALUE: Reg = Reg(14);
 
@@ -888,15 +889,19 @@ pub(crate) mod driver {
     pub(crate) const SSE2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
         // xmm4-9. Every other xmm is spoken for: inputs 0-3, X86_SCRATCH,
-        // the reload pair, select_reload, and the gather's two registers.
+        // the reload pair and the gather's two registers.
         // A sixteen-register file with no slack — which the accounting below
         // now states rather than leaves implicit.
-        scratch: regalloc::RegSet::range(4, 6),
+        // xmm4-9 plus xmm13. xmm13 used to be `select_reload`, held out of
+        // every kernel's pool so that a `Select` with a spilled result and two
+        // spilled arms had a third reload target; that target is now a
+        // per-instruction reservation (`Scratch::arm_reload`), so the register
+        // is the allocator's the rest of the time.
+        scratch: regalloc::RegSet::range(4, 6).union(regalloc::RegSet::of(&[Reg(13)])),
         reload: [Reg(11), Reg(12)],
         // xmm13: builtin scratch, unused by `emit_select` (whose internal temp is
         // X86_SCRATCH/xmm10) and by the reload path (movups / RIP-relative consts
         // touch no scratch).
-        select_reload: Reg(13),
         // xmm10: the two-operand form's temp and the Select blend's temp.
         fixed: &[super::X86_SCRATCH, super::GATHER_VALUE, super::GATHER_IDX],
         // No allocated temps yet. Unlike the VEX/EVEX/NEON backends, this one

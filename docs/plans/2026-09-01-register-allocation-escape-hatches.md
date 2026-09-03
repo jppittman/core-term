@@ -237,6 +237,57 @@ no temp, so the pool roughly doubles on x86 and quintuples on AVX-512.
 > `reload`/`select_reload` are still there. That is where the paragraph above's
 > "roughly doubles" actually lives.
 
+> **Landed 2026-09-03 — `select_reload`, the first of class C.** The scratch a
+> backend declares became two named roles rather than one
+> (`regalloc::Scratch { temp, arm_reload }`), and `select_reload` left
+> `RegisterFile`. It was the clearest case in the class: one register held out
+> of *every* kernel's pool so that the rare kernel with a `Select` whose result
+> and both arms were all spilled had a third reload target, chosen at emit time
+> by a three-way case analysis over two fixed registers. It is now a
+> per-instruction reservation the allocator makes, disjoint by construction
+> from that instruction's operands, destination and temp.
+>
+> | backend | pool before | pool after |
+> |---|---|---|
+> | SSE2 | 6 | **7** |
+> | AVX2 | 5 | **6** |
+> | AVX-512 | 23 | **24** |
+> | aarch64 | 16 | 16 — see below |
+>
+> `arm_reload` is reserved for *every* `Select`, not only the ones that turn out
+> to need it, and that is forced rather than lazy. A value resident when its
+> reader is allocated can still be evicted by a later instruction — `Placement`
+> is one answer per value for its whole life — so residency read at the point of
+> reservation is not final. **This is the constraint that shapes the rest of
+> class C**: the fixed point between "which values spill" and "how many reload
+> registers each instruction needs" is why the remaining work is a redesign of
+> the allocator's output contract rather than another field, and why it is not
+> attempted here.
+>
+> Over-reserving could have cost more spilling than the extra pool register
+> buys, so it was measured on the shape that maximizes the risk — *w*
+> independent `Select` chains all live at once:
+>
+> | live selects | before (pool 6) | after (pool 7) |
+> |---|---|---|
+> | 8 | 4 | 4 |
+> | 12 | 9 | **8** |
+> | 16 | 15 | **14** |
+> | 24 | 27 | **26** |
+>
+> Unchanged or slightly better throughout: the register the pool gains pays for
+> the register a `Select` transiently borrows.
+>
+> aarch64 gains nothing, and finding out why is the point of step 1's
+> accounting. v28 was `select_reload` *and* the register
+> `emit_skip_if_all_false`/`_true` reduce a mask into with `UMAXV`/`UMINV` —
+> two roles, one register, and only one of them declared. Returning v28 to the
+> pool would have let the allocator hand it to a live value that a `Select`'s
+> own short-circuit guard then clobbered. It is now `GUARD_SCRATCH` in
+> `fixed`, where `RegisterFile::checked` can see it. The x86 tiers have no
+> equivalent: their guards go through `movmskps`/`kortest` and the flags, so
+> they need no vector register at all.
+
 > **Methodology note.** Byte identity carried #1059–#1062 because those were
 > pure refactors: the emitted code was supposed to be unchanged, so an empty
 > diff was the whole proof. From here on the emitted code is *supposed* to

@@ -862,15 +862,12 @@ pub(crate) mod driver {
     /// Identical register *roles* to SSE2 — the shared driver depends on that —
     /// at four times the width, so only `vector_bytes` differs.
     const AVX512_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
-        // zmm13: outside the allocatable range and the reload pair; `vpternlogd`
-        // consumes its three operands with no temp.
         // zmm4-10, zmm15 and zmm17-31: AVX-512 has thirty-two registers and
         // the pool was six of them, because a contiguous range could not reach
         // past the reload pair and the gather's scratch.
         scratch: regalloc::RegSet::range(4, 7)
             .union(regalloc::RegSet::range(17, 15))
-            .union(regalloc::RegSet::of(&[Reg(15)])),
-        select_reload: Reg(13),
+            .union(regalloc::RegSet::of(&[Reg(13), Reg(15)])),
         // zmm14/zmm16: the gather's destination and truncated-index registers.
         // zmm15 used to sit here as `UNARY_SCRATCH`, reserved for the whole
         // kernel so a sign-flip could borrow it; the sign-flip now asks the
@@ -951,7 +948,7 @@ pub(crate) mod driver {
                     // never touches rdi, so it survives to here. Both are
                     // declared in AVX512_FILE.fixed, so `RegisterFile::checked`
                     // proves they miss the pool, the reload pair and
-                    // `select_reload`.
+                    // the allocator's `arm_reload`.
                     const IDX_INT: Reg = Reg(16);
                     const GATHER_DST: Reg = Reg(14);
                     const RAX: u8 = 0;

@@ -1783,20 +1783,29 @@ pub(crate) mod driver {
             .union(regalloc::RegSet::range(4, 4))
             .union(regalloc::RegSet::of(&[Reg(29), Reg(31)])),
         reload: [Reg(26), Reg(27)],
-        // v28: fixed-purpose scratch outside the allocatable range; BSL reads its
-        // three operands directly and never touches it.
-        select_reload: Reg(28),
+        // v28: the reduction scratch `emit_skip_if_all_false`/`_true` write
+        // their `UMAXV`/`UMINV` into. It used to be `select_reload` and was
+        // never declared here, so one register wore two roles and only one of
+        // them was checkable — the pool could not take v28 back without
+        // clobbering a live value inside a Select's short-circuit guard.
         // v30: the gather's truncated-index register. v29 used to sit here as
         // `UNARY_SCRATCH`, reserved for the whole kernel so a reciprocal
         // estimate could borrow it; the estimates now ask the allocator for a
         // temp, so v29 has joined the pool above. The select needs none — `BSL`
         // reads its three operands directly, and `FNEG`/`FABS` are single
         // instructions here.
-        fixed: &[Reg(30)],
+        fixed: &[GUARD_SCRATCH, Reg(30)],
         temps_for: super::temps_for,
         vector_bytes: 16,
     }
     .checked();
+
+    /// The vector register the Select short-circuit guards reduce a mask into.
+    ///
+    /// `UMAXV`/`UMINV` write a scalar into a vector register before it moves to
+    /// a GP register; the x86 tiers need no equivalent, because their guards go
+    /// through `movmskps`/`kortest` and the flags.
+    const GUARD_SCRATCH: Reg = Reg(28);
 
     pub(crate) struct Aarch64Backend {
         pool: ConstPool,
@@ -1926,14 +1935,14 @@ pub(crate) mod driver {
         }
 
         fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> Aarch64Branch {
-            let scratch = Reg(28);
+            let scratch = GUARD_SCRATCH;
             super::emit_umaxv(code, scratch, mask_reg); // max lane; 0 => all-false
             super::emit_fmov_to_gp(code, scratch);
             Aarch64Branch::Cbz(super::emit_cbz_w16(code))
         }
 
         fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> Aarch64Branch {
-            let scratch = Reg(28);
+            let scratch = GUARD_SCRATCH;
             super::emit_uminv(code, scratch, mask_reg); // min lane; 0xFFFFFFFF => all-true
             super::emit_fmov_to_gp(code, scratch);
             // MVN W16, W16 -> 0 iff all-true, which the cbz below tests.
@@ -2104,7 +2113,7 @@ pub(crate) mod driver {
                 // arithmetic/const emit, so it survives to here.
                 // v30 is declared in `AARCH64_FILE.fixed`, so
                 // `RegisterFile::checked` proves it misses the pool, the reload
-                // pair and `select_reload` (v28) rather than a comment claiming
+                // pair and the guard scratch (v28) rather than a comment claiming
                 // it; x9-x11 are caller-saved GPR scratch clear of the branch
                 // guard (w16) and the const-pool anchor (x17).
                 const IDX_INT: Reg = Reg(30);
