@@ -11,7 +11,7 @@
 //!
 //! Unlike legacy SSE2, VEX is 3-operand and non-destructive — same property
 //! AVX-512's EVEX has — so there is no two-operand hazard to route around
-//! (contrast `emit_binary_safe` in `mod.rs`, needed only by the SSE2 path).
+//! (the SSE2 tier's two-operand form has no such freedom).
 //! Comparisons are simpler here than on AVX-512: `vcmpps` writes an ordinary
 //! all-ones/all-zeros `ymm` directly (no k-register, no mask-to-vector
 //! conversion) — the same representation NEON and SSE2 already use.
@@ -833,15 +833,12 @@ pub(crate) mod driver {
         // ymm4-7 and ymm10. ymm8/ymm9 carry the gather's high half and
         // ymm14/ymm15 its low half.
         //
-        // ymm10 is this backend's share of what step 1's accounting turned up:
-        // it is `x86_64::X86_SCRATCH`, the SSE2 backend's two-operand and
-        // select temp, and AVX2 reaches neither of those. Its select is a VEX
-        // blend with no temp (`avx2::emit_select`), and the one shared helper
-        // it does call, `x86_64::emit_gather_scalar`, never touches it. So on
-        // this backend the register was reserved by inheritance rather than by
-        // use — the case `fixed` exists to make checkable, since every other
-        // ymm here is now named by `inputs`, `scratch`, `reload`,
-        // or `fixed`.
+        // ymm10 is this backend's share of what step 1's accounting turned
+        // up: it was the SSE2 tier's whole-kernel scratch, reserved here by
+        // inheritance rather than by use — the one shared helper this backend
+        // calls, `x86_64::emit_gather_scalar`, never touches it, and every
+        // temp AVX2's own encodings need is a `temps_for` answer. That is the
+        // case `fixed` exists to make checkable.
         scratch: regalloc::RegSet::range(4, 4)
             .union(regalloc::RegSet::of(&[Reg(8), Reg(9), Reg(10), Reg(13)]))
             .union(regalloc::RegSet::of(&[Reg(14), Reg(15)])),

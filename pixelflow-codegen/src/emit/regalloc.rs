@@ -854,9 +854,14 @@ pub fn no_temps(_op: &ScheduledOp) -> u8 {
 ///
 /// Operands are excluded outright: the encoder writes the temp *before* it
 /// reads the operands (that is what the temp is for), so sharing a register
-/// with one would feed the instruction its own scratch. A non-operand slot
-/// always exists: at most three operands can be pool-resident and
-/// [`RegisterFile::MIN_SCRATCH`] is four, which is what that constant is for.
+/// with one would feed the instruction its own scratch. So are the roles this
+/// instruction has already reserved, which is what `taken` carries.
+///
+/// A slot always survives both exclusions, and
+/// [`RegisterFile::MIN_SCRATCH`] is what makes that true: the instructions
+/// wanting several temps are the gathers, which read one operand, and the
+/// ones reading three operands want at most one temp plus an arm reload — so
+/// four exclusions is the worst case against a floor of `MAX_TEMPS + 2`.
 fn reserve_scratch(
     def: &Def,
     reg_owner: &[Option<ValueId>],
@@ -1283,6 +1288,76 @@ mod tests {
             def(3, sel),
         ]);
         assert_eq!(a.spilled().count(), 0);
+    }
+
+    /// A destination never lands in a register one of its own operands is
+    /// still living in — the invariant `resolve_operands` reads back off the
+    /// allocation, and the reason SSE2 can write its two-operand form
+    /// directly.
+    ///
+    /// `dst op= right` corrupts `right` when `dst == right` and `dst != left`.
+    /// That assignment is unrepresentable here: a destination takes a slot
+    /// with no live owner, or evicts one — and an evicted value's placement
+    /// becomes `Spilled` for its whole life, so it is read back from memory
+    /// rather than from the register the destination took. The backend needs
+    /// no stashing temp to route around a case that cannot arise, which is
+    /// what `emit_binary_safe` used to be and what held xmm10 out of every
+    /// kernel's pool.
+    #[test]
+    fn a_destination_never_lands_on_a_resident_operand() {
+        // Wide enough to evict: `width` values all live at once over a pool of
+        // `MIN_SCRATCH`, then folded pairwise so every fold reads two of them.
+        let width = u32::from(RegisterFile::MIN_SCRATCH) * 3;
+        let mut schedule = vec![def(0, ScheduledOp::Var(0))];
+        for i in 1..=width {
+            schedule.push(def(i, ScheduledOp::Unary(OpKind::Neg, ValueId(0))));
+        }
+        let mut acc = ValueId(1);
+        for i in 2..=width {
+            schedule.push(def(
+                width + i,
+                ScheduledOp::Binary(OpKind::Sub, acc, ValueId(i)),
+            ));
+            acc = ValueId(width + i);
+        }
+
+        // Both files: `TEMP_FILE` also reserves a temp before placing the
+        // destination, which is the other way a destination could be pushed
+        // onto an operand.
+        for file in [&TEST_FILE, &TEMP_FILE] {
+            let a = LinearScan.allocate(schedule.clone(), file);
+            assert!(
+                a.spilled().count() > 0,
+                "the schedule has to reach eviction for this to test anything"
+            );
+            // Pairs where both ends are the pool's — the case the two-operand
+            // form would corrupt. An input register can never collide with a
+            // destination (the pool excludes them), so counting those would
+            // let the test pass vacuously.
+            let mut contested = 0;
+            for d in &a.schedule {
+                let Placement::Reg(dst) = a.placement(d.value) else {
+                    continue; // Spilled: the destination is `reload[0]`, not the pool's.
+                };
+                for operand in operands(&d.op) {
+                    let at = a.placement(operand);
+                    assert_ne!(
+                        at,
+                        Placement::Reg(dst),
+                        "{:?}: destination {dst:?} is where its operand {operand:?} lives",
+                        d.value
+                    );
+                    if matches!(at, Placement::Reg(r) if file.scratch.contains(r)) {
+                        contested += 1;
+                    }
+                }
+            }
+            assert!(
+                contested > 0,
+                "no instruction read a pool-resident operand, so nothing above \
+                 could have collided"
+            );
+        }
     }
 
     /// `checked()` is the isolation's teeth: a file whose reload register sits

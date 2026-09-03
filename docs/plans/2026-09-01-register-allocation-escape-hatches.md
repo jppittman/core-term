@@ -359,6 +359,67 @@ no temp, so the pool roughly doubles on x86 and quintuples on AVX-512.
 > `(X + i) · W`, worth exactly zero at W = 0 and not foldable, because a
 > variable is the one thing the folder cannot see through.
 
+> **Landed 2026-09-03 — SSE2's last fixed register, and the hazard it was held
+> for was not real.** `fixed` is now **empty on all three x86 tiers**; aarch64's
+> `GUARD_SCRATCH` is the only one left in the workspace. The temps block
+> predicted "that backend closes when the hazard does" — and the hazard turned
+> out not to exist.
+>
+> `emit_binary_safe` stashed the right operand whenever the allocator chose
+> `dst == right` for a non-commutative binary, because SSE2's `dst op= right`
+> would corrupt it. **The allocator never makes that choice.** A destination
+> takes a pool slot with no live owner, or evicts one — and an evicted value's
+> placement becomes `Spilled` for its whole life, so `resolve_operands` reads
+> it back from memory rather than from the register the destination took. The
+> right operand is therefore a pool register no destination can alias, an
+> input register (outside the pool), or `reload[1]` (outside the pool), or —
+> when both operands are spilled — `dst` itself, in which case `left` is `dst`
+> too. So the case was not a demand for scratch. It was a fallback for
+> something unrepresentable, and one xmm was held out of every kernel's pool
+> to serve it.
+>
+> The register moved rather than the argument: the invariant is now stated
+> where the registers are *chosen* (a `debug_assert` in `resolve_operands`,
+> which fails loudly in every debug build if the allocator stops guaranteeing
+> it) and tested where they are *allocated*
+> (`a_destination_never_lands_on_a_resident_operand`, which asserts a
+> destination never lands on a pool-resident operand and counts the contested
+> pairs so it cannot pass vacuously). The three real demands on that
+> register — `Neg`/`Abs`'s sign mask, the select blend, and the `movaps`/
+> `mulps`/`addps` stand-in's product, this tier having no FMA — are
+> `temps_for` answers like every other backend's.
+>
+> | backend | pool before | pool after | of |
+> |---|---|---|---|
+> | SSE2 | 9 | **10** | 16 |
+>
+> Worth measuring rather than assuming, because the ops now reserving a temp
+> are `Neg`, `Abs`, `Select` and `MulAdd` — not the gathers most kernels lack —
+> and a reservation under pressure evicts an occupant permanently, which is
+> exactly what sank the reload-target attempt below. It does not repeat here:
+>
+> | kernel | before (pool 9) | after (pool 10) |
+> |---|---|---|
+> | wide 16 | 8 spills / 1340 B | **7** / **1302 B** |
+> | wide 32 | 24 / 2876 B | **23** / **2832 B** |
+> | abs 8 | 0 / 835 B | 0 / **812 B** |
+> | abs 16 | 8 / 1715 B | 8 / **1452 B** (−15.3%) |
+> | muladd 8 | 0 / 711 B | 0 / **680 B** |
+> | muladd 16 | 8 / 1471 B | 8 / **1192 B** (−19.0%) |
+> | select 8 / 12 / 16 | 2 / 6 / 10 spills | unchanged, same bytes |
+>
+> Same or fewer spills everywhere and never more code. The gain is largest on
+> the unary and `MulAdd` shapes, where the temp is now whichever pool register
+> is free instead of always xmm10 — a low register needs no REX prefix, so the
+> encoding shrinks. `Select` keeps its size because its temp lands on a high
+> register either way; the bytes differ, the count does not.
+>
+> Verified by execution, not identity, per the note below: the whole workspace
+> on the SSE2 baseline, and `pixelflow-codegen` plus `pixelflow-ir` on
+> `+avx2,+fma` and `+avx512f,+avx512dq` — the JIT-vs-interpreter suites
+> (`spill_pressure`, `prod_kernel_jit`, `transcendental_jit`,
+> `oracle_reference`) are the differential half.
+
 > **Methodology note.** Byte identity carried #1059–#1062 because those were
 > pure refactors: the emitted code was supposed to be unchanged, so an empty
 > diff was the whole proof. From here on the emitted code is *supposed* to
