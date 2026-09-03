@@ -735,13 +735,65 @@ mod tests {
     use alloc::vec;
     use pixelflow_ir::OpKind;
 
-    /// Central-difference step. `1e-3` in `f32`: small enough that the
-    /// truncation error of a central difference (O(h²)) is below the
-    /// tolerance, large enough that the subtraction does not lose the
-    /// difference to rounding (O(eps/h)).
-    const H: f32 = 1e-3;
+    /// Central-difference step, and the two-sided derivation that fixes it.
+    ///
+    /// The error of `(f(w+h) − f(w−h)) / 2h` evaluated in `f32` has two terms
+    /// that trade against each other:
+    ///
+    /// ```text
+    /// err(h)  ≈  C·ε·|f| / h       roundoff:   each evaluation is accurate to
+    ///                                          ~C·ε·|f|; the subtraction cancels
+    ///                                          the signal and the /2h amplifies
+    ///                                          whatever survives
+    ///         +  (h²/6)·|f‴|       truncation: the Taylor remainder
+    /// ```
+    ///
+    /// with `ε = f32::EPSILON`. For a *general* `f` the two balance at
+    /// `h* ≈ (3·C·ε·|f| / |f‴|)^(1/3)` and nothing does better than the error
+    /// there. This network is not general: it is a ReLU MLP followed by a
+    /// bilinear form, so as a function of any **single** weight, and inside one
+    /// activation pattern, the score is **affine**. `f‴ ≡ 0` — the truncation
+    /// term is absent, and it is replaced by a hard wall instead of a curve.
+    /// So `H` is squeezed between two bounds rather than balanced at an
+    /// optimum, and both are asserted rather than asserted-in-a-comment:
+    ///
+    /// * **Below**, by roundoff. `ε·|score| / H` is an absolute error on the
+    ///   estimate, against a budget of `TOL · max(1, |numeric|)` — i.e. `TOL`
+    ///   at worst. Requiring [`FLOOR_MARGIN`] of headroom gives
+    ///   `H > 16 × 1.1921e-7 × 234.8 / 2e-2 = 2.2e-2`.
+    ///   [`the_step_size_must_keep_the_roundoff_floor_under_the_tolerance`]
+    ///   re-derives this from the fixture's own measured score.
+    /// * **Above**, by the activation cell. A step that opens or closes a ReLU
+    ///   differences across two affine pieces and estimates neither slope. The
+    ///   fixture's narrowest cell is `≈ 8.2e-2` (at `candidate_w1[35][*]` —
+    ///   scalar row 35 is `ln(1 + expr_node_count) ≈ 3.18`, the largest input,
+    ///   so it moves the tower furthest per unit of weight). [`check_gradient`]
+    ///   asserts on **every** probe that the pattern is unchanged at `w ± H`.
+    ///
+    /// `4e-2` sits inside `(2.2e-2, 8.2e-2)` with roughly balanced margin:
+    /// 1.8× above the roundoff bound (a 29× floor-to-`TOL` ratio) and 2.1×
+    /// below the kink bound. Measured error at that step is ~1e-3, twenty times
+    /// under `TOL`, on every build.
+    ///
+    /// This constant originally held `1e-3`, chosen as if the truncation term
+    /// existed. The roundoff floor there is `1.1921e-7 × 234.8 / 1e-3 = 2.8e-2`
+    /// — **1.4× above [`TOL`]**. The check demanded more precision than an
+    /// `f32` central difference can deliver on any target, so whether it passed
+    /// was decided by which way the rounding fell: green at the baseline ISA,
+    /// red at avx2+fma on `candidate_w1[5][7]` (postsubmit on #1124 and #1128),
+    /// red again at SSE2 on other hardware. It was never an ISA divergence; it
+    /// was a check with no error budget.
+    const H: f32 = 4e-2;
     /// Relative tolerance for `|analytic − numeric| / max(1, |numeric|)`.
     const TOL: f32 = 2e-2;
+    /// How far under [`TOL`] the central difference's roundoff floor
+    /// `eps·|score|/H` must sit for the comparison to be measuring the gradient
+    /// rather than the noise. It absorbs the accumulation factor `C` the floor
+    /// formula writes as 1: six chained dot products put `C` near 2.5 in the
+    /// failures this replaces, so 16 leaves 6x over the worst `C` observed —
+    /// and the fixture's actual margin is 71x, so this is a bound, not a fit.
+    /// Held by [`the_step_size_must_keep_the_roundoff_floor_under_the_tolerance`].
+    const FLOOR_MARGIN: f32 = 16.0;
 
     /// A head whose every tensor is filled from an index-dependent,
     /// **asymmetric** formula: `w[i][j]` depends on `i` and `j` differently,
@@ -854,22 +906,6 @@ mod tests {
         }
     }
 
-    /// Forward score, recomputing the rule embedding from `head` so a
-    /// perturbation of `rule_proj_*` is visible.
-    fn score_of(head: &SaturationHead, emb: &OpEmbeddings, c: &CandidateSummary) -> f32 {
-        let (l, r) = sides();
-        let mut c = CandidateSummary {
-            rule_embed: head.encode_rule(&l, &r),
-            neighborhood_ops: c.neighborhood_ops.clone(),
-            budget_fraction: c.budget_fraction,
-            rule: c.rule,
-            match_class_node_count: c.match_class_node_count,
-            expr_node_count: c.expr_node_count,
-        };
-        c.rule_embed = head.encode_rule(&l, &r);
-        head.score_candidate(emb, &c)
-    }
-
     /// Analytic gradients of the score (i.e. `d_score = 1`) w.r.t. every
     /// trained tensor, including the rule projection.
     fn analytic() -> (SaturationHead, alloc::boxed::Box<HeadGradients>) {
@@ -884,18 +920,78 @@ mod tests {
         (head, grads)
     }
 
-    /// `(f(w+h) − f(w−h)) / 2h` for the weight `set` names.
-    fn numeric(head: &SaturationHead, set: impl Fn(&mut SaturationHead, f32)) -> f32 {
+    /// The fixture's ReLU pattern — which hidden units are open — one bit per
+    /// unit, for `h1`, `h2` and `g`.
+    ///
+    /// Inside a single pattern the score is affine in any single weight, which
+    /// is the entire justification for [`H`]'s size. A probe that changes the
+    /// pattern has crossed a kink.
+    fn relu_pattern(head: &SaturationHead, emb: &OpEmbeddings, c: &CandidateSummary) -> [u64; 3] {
+        let acts = Activations::forward(head, emb, &rescored(head, c));
+        let bits = |units: &[f32]| {
+            units
+                .iter()
+                .enumerate()
+                .fold(0u64, |m, (i, &v)| if v > 0.0 { m | (1 << i) } else { m })
+        };
+        [bits(&acts.h1), bits(&acts.h2), bits(&acts.g)]
+    }
+
+    /// `c` with its rule embedding recomputed from `head`, so a perturbation of
+    /// `rule_proj_*` is visible to whatever consumes the result.
+    fn rescored(head: &SaturationHead, c: &CandidateSummary) -> CandidateSummary {
+        let (l, r) = sides();
+        CandidateSummary {
+            rule_embed: head.encode_rule(&l, &r),
+            neighborhood_ops: c.neighborhood_ops.clone(),
+            budget_fraction: c.budget_fraction,
+            rule: c.rule,
+            match_class_node_count: c.match_class_node_count,
+            expr_node_count: c.expr_node_count,
+        }
+    }
+
+    /// Forward score, recomputing the rule embedding from `head` so a
+    /// perturbation of `rule_proj_*` is visible.
+    fn score_of(head: &SaturationHead, emb: &OpEmbeddings, c: &CandidateSummary) -> f32 {
+        head.score_candidate(emb, &rescored(head, c))
+    }
+
+    /// Check one weight's analytic gradient against the central difference
+    /// `(f(w+H) − f(w−H)) / 2H`.
+    ///
+    /// The kink assertion is not decoration. [`H`] is large precisely because
+    /// the score is affine in a single weight *within one activation pattern*;
+    /// a probe that opens or closes a ReLU differences across two affine
+    /// pieces, and its estimate is a chord between two slopes rather than
+    /// either of them. That must fail loudly, naming the cause, instead of
+    /// arriving later as an unexplained gradient disagreement.
+    fn check_gradient(
+        head: &SaturationHead,
+        name: &str,
+        analytic: f32,
+        set: impl Fn(&mut SaturationHead, f32),
+    ) {
         let emb = embeddings();
         let c = candidate(head);
         let mut plus = head.clone();
         set(&mut plus, H);
         let mut minus = head.clone();
         set(&mut minus, -H);
-        (score_of(&plus, &emb, &c) - score_of(&minus, &emb, &c)) / (2.0 * H)
-    }
 
-    fn assert_close(name: &str, analytic: f32, numeric: f32) {
+        let at = relu_pattern(head, &emb, &c);
+        let up = relu_pattern(&plus, &emb, &c);
+        let down = relu_pattern(&minus, &emb, &c);
+        assert!(
+            up == at && down == at,
+            "{name}: the ±H probe crossed a ReLU kink (open-unit masks h1/h2/g \
+             = {at:x?} at w, {up:x?} at w+H, {down:x?} at w−H). The central \
+             difference then straddles two affine pieces and estimates neither \
+             slope, so H = {H} is too large for this fixture — it is not a \
+             gradient disagreement."
+        );
+
+        let numeric = (score_of(&plus, &emb, &c) - score_of(&minus, &emb, &c)) / (2.0 * H);
         let denom = numeric.abs().max(1.0);
         assert!(
             (analytic - numeric).abs() / denom < TOL,
@@ -904,16 +1000,63 @@ mod tests {
     }
 
     #[test]
+    fn the_step_size_must_keep_the_roundoff_floor_under_the_tolerance() {
+        // The shift-left, and the guard that would have made #1124's postsubmit
+        // failure impossible to write. Every check in this module compares an
+        // analytic gradient against an `f32` central difference whose roundoff
+        // floor is `C·eps·|score| / H` — an absolute error on the *estimate*,
+        // against a budget of `TOL · max(1, |numeric|)`, i.e. `TOL` at worst.
+        // When the floor is not comfortably under that budget, the comparison
+        // measures rounding rather than the gradient and its verdict is decided
+        // per target: at H = 1e-3 the floor was 1.4x *over* TOL and
+        // `candidate_w1[5][7]` went red at avx2+fma while passing at the
+        // baseline ISA.
+        //
+        // Deriving the floor here from the fixture's own score is what makes
+        // the next out-of-budget check fail at authoring time instead of
+        // intermittently on one ISA in postsubmit: grow the fixture's
+        // magnitude, or shrink H, and this fails first, with the number.
+        let head = asymmetric_head();
+        let emb = embeddings();
+        let c = candidate(&head);
+        let score = head.score_candidate(&emb, &c).abs();
+        let floor = f32::EPSILON * score / H;
+        assert!(
+            floor * FLOOR_MARGIN < TOL,
+            "the central difference's roundoff floor eps*|score|/H = {floor:e} \
+             (|score| = {score}, H = {H}) is not {FLOOR_MARGIN}x under TOL = \
+             {TOL:e}, so the gradient checks in this module would be measuring \
+             rounding, not the gradient. Raise H — the score is piecewise \
+             affine in a single weight, so a larger step costs no truncation, \
+             only a wider activation cell to stay inside — or shrink the \
+             fixture's magnitude."
+        );
+    }
+
+    #[test]
     fn activations_score_should_equal_score_candidate() {
+        // The two paths compute the same score by separately written code, so
+        // they agree up to summation order — not bit-for-bit. The bound is
+        // therefore relative and derived: the chain's longest single reduction
+        // is `HIDDEN_DIM` terms, whose accumulated rounding is at worst
+        // `HIDDEN_DIM · eps · |score|`.
+        //
+        // This assertion previously read `< 1e-5` absolute, which at
+        // |score| = 234.8 is *below one ulp* (1.37e-5) — it demanded bit
+        // identity from two different summation orders. It held only because
+        // CI builds tests at opt-level 0; at opt-level 3 on aarch64 the two
+        // paths land one ulp apart and it fails. Same defect as `H`'s, in the
+        // same file: a tolerance with no error model behind it.
         let head = asymmetric_head();
         let emb = embeddings();
         let c = candidate(&head);
         let acts = Activations::forward(&head, &emb, &c);
         let direct = head.score_candidate(&emb, &c);
+        let bound = HIDDEN_DIM as f32 * f32::EPSILON * direct.abs().max(1.0);
         assert!(
-            (acts.score() - direct).abs() < 1e-5,
+            (acts.score() - direct).abs() <= bound,
             "the backward pass must be differentiating the function \
-             `score_candidate` computes: {} vs {direct}",
+             `score_candidate` computes: {} vs {direct} (bound {bound:e})",
             acts.score()
         );
     }
@@ -923,7 +1066,7 @@ mod tests {
         // The guard on every other check in this module: a fixture whose
         // ReLUs are all closed makes `analytic()` return all-zero gradients,
         // and a central difference of a locally-constant function is also
-        // zero, so every `assert_close` would pass against a dead network.
+        // zero, so every `check_gradient` would pass against a dead network.
         let head = asymmetric_head();
         let emb = embeddings();
         let c = candidate(&head);
@@ -960,11 +1103,11 @@ mod tests {
         // and asymmetric (both (i,j) and (j,i) are checked).
         let (head, grads) = analytic();
         for &(i, j) in &[(0usize, 5usize), (5, 0), (3, 17), (17, 3), (31, 2)] {
-            let n = numeric(&head, |h, d| h.interaction[i][j] += d);
-            assert_close(
+            check_gradient(
+                &head,
                 &alloc::format!("interaction[{i}][{j}]"),
                 grads.interaction[i][j],
-                n,
+                |h, d| h.interaction[i][j] += d,
             );
         }
     }
@@ -973,11 +1116,11 @@ mod tests {
     fn numerical_gradient_check_mask_bias_proj() {
         let (head, grads) = analytic();
         for &k in &[0usize, 7, 31] {
-            let n = numeric(&head, |h, d| h.mask_bias_proj[k] += d);
-            assert_close(
+            check_gradient(
+                &head,
                 &alloc::format!("mask_bias_proj[{k}]"),
                 grads.mask_bias_proj[k],
-                n,
+                |h, d| h.mask_bias_proj[k] += d,
             );
         }
     }
@@ -989,16 +1132,20 @@ mod tests {
         // curve distinguishes from a hard problem.
         let (head, grads) = analytic();
         for &(i, k) in &[(0usize, 0usize), (3, 11), (40, 5), (70, 29), (127, 31)] {
-            let n = numeric(&head, |h, d| h.rule_proj_w[i][k] += d);
-            assert_close(
+            check_gradient(
+                &head,
                 &alloc::format!("rule_proj_w[{i}][{k}]"),
                 grads.rule_proj_w[i][k],
-                n,
+                |h, d| h.rule_proj_w[i][k] += d,
             );
         }
         for &k in &[0usize, 13, 31] {
-            let n = numeric(&head, |h, d| h.rule_proj_b[k] += d);
-            assert_close(&alloc::format!("rule_proj_b[{k}]"), grads.rule_proj_b[k], n);
+            check_gradient(
+                &head,
+                &alloc::format!("rule_proj_b[{k}]"),
+                grads.rule_proj_b[k],
+                |h, d| h.rule_proj_b[k] += d,
+            );
         }
     }
 
@@ -1006,28 +1153,36 @@ mod tests {
     fn numerical_gradient_check_mask_mlp() {
         let (head, grads) = analytic();
         for &(i, j) in &[(0usize, 0usize), (4, 9), (31, 2)] {
-            let n = numeric(&head, |h, d| h.mask_mlp_w1[i][j] += d);
-            assert_close(
+            check_gradient(
+                &head,
                 &alloc::format!("mask_mlp_w1[{i}][{j}]"),
                 grads.mask_mlp_w1[i][j],
-                n,
+                |h, d| h.mask_mlp_w1[i][j] += d,
             );
         }
         for &(j, k) in &[(0usize, 0usize), (7, 21), (15, 31)] {
-            let n = numeric(&head, |h, d| h.mask_mlp_w2[j][k] += d);
-            assert_close(
+            check_gradient(
+                &head,
                 &alloc::format!("mask_mlp_w2[{j}][{k}]"),
                 grads.mask_mlp_w2[j][k],
-                n,
+                |h, d| h.mask_mlp_w2[j][k] += d,
             );
         }
         for &j in &[0usize, 9, 15] {
-            let n = numeric(&head, |h, d| h.mask_mlp_b1[j] += d);
-            assert_close(&alloc::format!("mask_mlp_b1[{j}]"), grads.mask_mlp_b1[j], n);
+            check_gradient(
+                &head,
+                &alloc::format!("mask_mlp_b1[{j}]"),
+                grads.mask_mlp_b1[j],
+                |h, d| h.mask_mlp_b1[j] += d,
+            );
         }
         for &k in &[0usize, 20, 31] {
-            let n = numeric(&head, |h, d| h.mask_mlp_b2[k] += d);
-            assert_close(&alloc::format!("mask_mlp_b2[{k}]"), grads.mask_mlp_b2[k], n);
+            check_gradient(
+                &head,
+                &alloc::format!("mask_mlp_b2[{k}]"),
+                grads.mask_mlp_b2[k],
+                |h, d| h.mask_mlp_b2[k] += d,
+            );
         }
     }
 
@@ -1035,29 +1190,37 @@ mod tests {
     fn numerical_gradient_check_candidate_projection_and_trunk() {
         let (head, grads) = analytic();
         for &(j, k) in &[(0usize, 0usize), (13, 6), (63, 31)] {
-            let n = numeric(&head, |h, d| h.candidate_proj_w[j][k] += d);
-            assert_close(
+            check_gradient(
+                &head,
                 &alloc::format!("candidate_proj_w[{j}][{k}]"),
                 grads.candidate_proj_w[j][k],
-                n,
+                |h, d| h.candidate_proj_w[j][k] += d,
             );
         }
         for &k in &[0usize, 17, 31] {
-            let n = numeric(&head, |h, d| h.candidate_proj_b[k] += d);
-            assert_close(
+            check_gradient(
+                &head,
                 &alloc::format!("candidate_proj_b[{k}]"),
                 grads.candidate_proj_b[k],
-                n,
+                |h, d| h.candidate_proj_b[k] += d,
             );
         }
         // trunk_w is square too — same transpose trap as `interaction`.
         for &(i, j) in &[(0usize, 11usize), (11, 0), (40, 63), (63, 40)] {
-            let n = numeric(&head, |h, d| h.trunk_w[i][j] += d);
-            assert_close(&alloc::format!("trunk_w[{i}][{j}]"), grads.trunk_w[i][j], n);
+            check_gradient(
+                &head,
+                &alloc::format!("trunk_w[{i}][{j}]"),
+                grads.trunk_w[i][j],
+                |h, d| h.trunk_w[i][j] += d,
+            );
         }
         for &j in &[0usize, 33, 63] {
-            let n = numeric(&head, |h, d| h.trunk_b[j] += d);
-            assert_close(&alloc::format!("trunk_b[{j}]"), grads.trunk_b[j], n);
+            check_gradient(
+                &head,
+                &alloc::format!("trunk_b[{j}]"),
+                grads.trunk_b[j],
+                |h, d| h.trunk_b[j] += d,
+            );
         }
     }
 
@@ -1066,11 +1229,11 @@ mod tests {
         let (head, grads) = analytic();
         // Pooled-op rows...
         for &(i, j) in &[(0usize, 0usize), (5, 7), (31, 63)] {
-            let n = numeric(&head, |h, d| h.candidate_w1[i][j] += d);
-            assert_close(
+            check_gradient(
+                &head,
                 &alloc::format!("candidate_w1[{i}][{j}]"),
                 grads.candidate_w1[i][j],
-                n,
+                |h, d| h.candidate_w1[i][j] += d,
             );
         }
         // ...and each of the four scalar rows, named individually so a
@@ -1089,20 +1252,20 @@ mod tests {
                 "scalar row {i} must be live in the fixture, or this check is vacuous"
             );
             for &j in &[0usize, 29, 63] {
-                let n = numeric(&head, |h, d| h.candidate_w1[i][j] += d);
-                assert_close(
+                check_gradient(
+                    &head,
                     &alloc::format!("candidate_w1[scalar row {i}][{j}]"),
                     grads.candidate_w1[i][j],
-                    n,
+                    |h, d| h.candidate_w1[i][j] += d,
                 );
             }
         }
         for &j in &[0usize, 40, 63] {
-            let n = numeric(&head, |h, d| h.candidate_b1[j] += d);
-            assert_close(
+            check_gradient(
+                &head,
                 &alloc::format!("candidate_b1[{j}]"),
                 grads.candidate_b1[j],
-                n,
+                |h, d| h.candidate_b1[j] += d,
             );
         }
     }
