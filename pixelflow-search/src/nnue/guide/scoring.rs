@@ -13,10 +13,9 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use libm::{log2f, logf, sqrtf};
+use libm::{log2f, sqrtf};
 use pixelflow_ir::OpKind;
 
-use super::CandidateSummary;
 use super::accumulator::{GRAPH_ACC_DIM, GraphAccumulator};
 
 /// The representational contrast between this head's bilinear scorer and
@@ -27,8 +26,6 @@ use super::accumulator::{GRAPH_ACC_DIM, GraphAccumulator};
 /// section.
 #[cfg(test)]
 mod representation;
-
-pub(crate) mod backward;
 use crate::nnue::factored::{
     EMBED_DIM, HIDDEN_DIM, K, MLP_HIDDEN, OpEmbeddings, SCALAR_FEATURE_COUNT,
 };
@@ -50,109 +47,7 @@ pub(crate) const GRAPH_INPUT_DIM: usize = GRAPH_ACC_DIM + SCALAR_FEATURE_COUNT;
 /// Deliberately much smaller than [`GRAPH_INPUT_DIM`]: the candidate tower
 /// scores one match's own local structure, not the whole graph's aggregate
 /// shape (§4's locality argument).
-pub(crate) const CANDIDATE_INPUT_DIM: usize = K + CANDIDATE_SCALAR_COUNT;
-
-/// The candidate tower's scalar rows, past the `K` pooled-op-embedding rows.
-///
-/// These are exactly [`super::linear::LinearWeights::logit`]'s four
-/// non-rule, non-op terms — `budget_fraction`, `ln(1 + match_class_node_count)`,
-/// `ln(1 + |neighborhood_ops|)`, `ln(1 + expr_node_count)` — spelled the same
-/// way (`(x as f32 + 1.0).ln()`, not a different log base or a raw count).
-///
-/// # Why the tower reads all four rather than just the budget
-///
-/// The registered comparison
-/// (`docs/plans/2026-09-02-bilinear-guide-registration.md` §4) licenses
-/// *exactly one* difference between the additive and bilinear arms: the
-/// functional form. A tower that saw only `budget_fraction` would differ from
-/// the additive model in the feature set as well, and a loss could then be
-/// blamed on the two missing scalars instead of on the interaction. Both arms
-/// now read the same five context quantities off the same
-/// [`super::CandidateSummary`] — the multiset of neighborhood ops (pooled here,
-/// counted there) plus these four scalars — so model class is the only thing
-/// varying.
-pub(crate) const CANDIDATE_SCALAR_COUNT: usize = 4;
-
-/// Row index of `budget_fraction` within [`CANDIDATE_INPUT_DIM`].
-pub(crate) const ROW_BUDGET_FRACTION: usize = K;
-/// Row index of `ln(1 + match_class_node_count)`.
-pub(crate) const ROW_LOG_MATCH_CLASS: usize = K + 1;
-/// Row index of `ln(1 + |neighborhood_ops|)`.
-pub(crate) const ROW_LOG_NEIGHBORHOOD: usize = K + 2;
-/// Row index of `ln(1 + expr_node_count)`.
-pub(crate) const ROW_LOG_EXPR_SIZE: usize = K + 3;
-
-/// The candidate tower's input vector: the match's one-hop neighborhood ops
-/// bag-of-embeddings pooled into the first `K` rows (`1/sqrt(n)` scaled, the
-/// same way [`GraphAccumulator`]'s marginal child section pools — see
-/// [`SaturationHead::forward_graph`]'s doc for the variance rationale),
-/// followed by [`CANDIDATE_SCALAR_COUNT`] scalar rows.
-///
-/// One definition, called by both [`SaturationHead::forward_candidate`] and
-/// the backward pass (`scoring::backward`): a second copy is a second thing
-/// to forget to update, and a forward/backward feature mismatch is exactly
-/// the bug a finite-difference check would then fail to catch, because it
-/// would be checking the gradient of a different function.
-#[inline]
-pub(crate) fn candidate_input(
-    embeddings: &OpEmbeddings,
-    candidate: &CandidateSummary,
-) -> [f32; CANDIDATE_INPUT_DIM] {
-    let ops = &candidate.neighborhood_ops;
-    let mut input = [0.0f32; CANDIDATE_INPUT_DIM];
-
-    // An empty neighborhood must not divide by `sqrtf(0)` (= inf, then NaN).
-    let scale = if ops.is_empty() {
-        1.0
-    } else {
-        1.0 / sqrtf(ops.len() as f32)
-    };
-    for &op in ops {
-        let emb = embeddings.get(op);
-        for i in 0..K {
-            input[i] += emb[i] * scale;
-        }
-    }
-
-    input[ROW_BUDGET_FRACTION] = candidate.budget_fraction;
-    input[ROW_LOG_MATCH_CLASS] = ln_1p_count(candidate.match_class_node_count);
-    input[ROW_LOG_NEIGHBORHOOD] = ln_1p_count(ops.len());
-    input[ROW_LOG_EXPR_SIZE] = ln_1p_count(candidate.expr_node_count);
-    input
-}
-
-/// The rule encoder's 4-way concatenation
-/// `[z_LHS | z_RHS | z_LHS − z_RHS | z_LHS ⊙ z_RHS]`: what the rule MATCHES,
-/// what it PRODUCES, what CHANGED, what is SHARED
-/// (`docs/plans/2026-09-02-bilinear-guide-registration.md` §4).
-#[must_use]
-pub(crate) fn rule_concat(
-    z_lhs: &[f32; EMBED_DIM],
-    z_rhs: &[f32; EMBED_DIM],
-) -> [f32; RULE_CONCAT_DIM] {
-    let mut concat = [0.0f32; RULE_CONCAT_DIM];
-    for i in 0..EMBED_DIM {
-        concat[i] = z_lhs[i];
-        concat[EMBED_DIM + i] = z_rhs[i];
-        concat[2 * EMBED_DIM + i] = z_lhs[i] - z_rhs[i];
-        concat[3 * EMBED_DIM + i] = z_lhs[i] * z_rhs[i];
-    }
-    concat
-}
-
-/// `ln(1 + n)` — the same formula
-/// [`super::linear::LinearWeights::logit`] applies to the same three counts,
-/// so the two arms' shared scalar features are the same quantities and not
-/// merely the same idea. (`libm::logf` rather than `f32::ln` because this
-/// module computes every transcendental through `libm`; the two agree to
-/// well inside the tolerance any comparison here is stated at, and nothing
-/// cross-crate compares these two spellings against each other — the skew
-/// test compares this crate's forward pass against itself through a
-/// checkpoint.)
-#[inline]
-fn ln_1p_count(n: usize) -> f32 {
-    logf(n as f32 + 1.0)
-}
+pub(crate) const CANDIDATE_INPUT_DIM: usize = K + 1;
 
 /// Concatenated rule features: `[z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS]` (4 × `EMBED_DIM`).
 pub(crate) const RULE_CONCAT_DIM: usize = 4 * EMBED_DIM;
@@ -442,7 +337,7 @@ impl SaturationHead {
     ///
     /// MLP: `MASK_INPUT_DIM` → `MLP_HIDDEN` (ReLU) → `EMBED_DIM`.
     #[inline]
-    pub(crate) fn compute_mask_features(&self, embed: &[f32; EMBED_DIM]) -> [f32; EMBED_DIM] {
+    fn compute_mask_features(&self, embed: &[f32; EMBED_DIM]) -> [f32; EMBED_DIM] {
         let mut h = self.mask_mlp_b1;
         for i in 0..EMBED_DIM {
             for j in 0..MLP_HIDDEN {
@@ -494,18 +389,38 @@ impl SaturationHead {
     pub(crate) fn forward_candidate(
         &self,
         embeddings: &OpEmbeddings,
-        candidate: &CandidateSummary,
+        neighborhood_ops: &[OpKind],
+        budget_fraction: f32,
     ) -> [f32; HIDDEN_DIM] {
-        let input = candidate_input(embeddings, candidate);
         let mut hidden = self.candidate_b1;
-        for (i, &v) in input.iter().enumerate() {
-            for (j, h) in hidden.iter_mut().enumerate() {
-                *h += v * self.candidate_w1[i][j];
+
+        let scale = if neighborhood_ops.is_empty() {
+            1.0
+        } else {
+            1.0 / sqrtf(neighborhood_ops.len() as f32)
+        };
+
+        for &op in neighborhood_ops {
+            let emb = embeddings.get(op);
+            for i in 0..K {
+                let v = emb[i] * scale;
+                for (j, h) in hidden.iter_mut().enumerate() {
+                    *h += v * self.candidate_w1[i][j];
+                }
             }
         }
+
+        // budget_fraction lives in the one scalar row past the K
+        // neighborhood-op rows.
+        let base = K;
+        for (j, h) in hidden.iter_mut().enumerate() {
+            *h += budget_fraction * self.candidate_w1[base][j];
+        }
+
         for h in &mut hidden {
             *h = h.max(0.0);
         }
+
         self.apply_trunk(&hidden)
     }
 
@@ -531,12 +446,14 @@ impl SaturationHead {
     pub(crate) fn score_candidate(
         &self,
         embeddings: &OpEmbeddings,
-        candidate: &CandidateSummary,
+        neighborhood_ops: &[OpKind],
+        budget_fraction: f32,
+        rule_embed: &[f32; EMBED_DIM],
     ) -> f32 {
-        let hidden = self.forward_candidate(embeddings, candidate);
+        let hidden = self.forward_candidate(embeddings, neighborhood_ops, budget_fraction);
         let embed = self.compute_candidate_embed(&hidden);
         let mask_features = self.compute_mask_features(&embed);
-        self.bilinear_score(&mask_features, &candidate.rule_embed)
+        self.bilinear_score(&mask_features, rule_embed)
     }
 
     /// Encode a rule from the embeddings of its two sides.
@@ -553,19 +470,14 @@ impl SaturationHead {
         z_lhs: &[f32; EMBED_DIM],
         z_rhs: &[f32; EMBED_DIM],
     ) -> [f32; EMBED_DIM] {
-        self.project_rule(&rule_concat(z_lhs, z_rhs))
-    }
+        let mut concat = [0.0f32; RULE_CONCAT_DIM];
+        for i in 0..EMBED_DIM {
+            concat[i] = z_lhs[i];
+            concat[EMBED_DIM + i] = z_rhs[i];
+            concat[2 * EMBED_DIM + i] = z_lhs[i] - z_rhs[i];
+            concat[3 * EMBED_DIM + i] = z_lhs[i] * z_rhs[i];
+        }
 
-    /// Project an already-built rule concatenation (see [`rule_concat`]) to
-    /// an `EMBED_DIM` rule embedding.
-    ///
-    /// Split out of [`Self::encode_rule`] because training needs the
-    /// concatenation itself — it is the input the `rule_proj` gradient is
-    /// taken against — and recomputing it in the backward pass from the two
-    /// side embeddings would be a second definition of the layout, i.e. a
-    /// place for the forward's lane order and the backward's to drift apart.
-    #[must_use]
-    pub(crate) fn project_rule(&self, concat: &[f32; RULE_CONCAT_DIM]) -> [f32; EMBED_DIM] {
         let mut out = self.rule_proj_b;
         for i in 0..RULE_CONCAT_DIM {
             for k in 0..EMBED_DIM {
@@ -601,26 +513,7 @@ impl SaturationHead {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egraph::rules::RuleId;
     use crate::nnue::factored::{OpEmbeddings, OpKind};
-
-    /// A [`CandidateSummary`] for the tower tests: the three fields the
-    /// candidate tower reads past the neighborhood/budget pair are pinned to
-    /// zero here so a test that means to vary one varies exactly one.
-    fn summary(
-        neighborhood_ops: &[OpKind],
-        budget_fraction: f32,
-        rule_embed: [f32; EMBED_DIM],
-    ) -> CandidateSummary {
-        CandidateSummary {
-            rule_embed,
-            neighborhood_ops: neighborhood_ops.to_vec(),
-            budget_fraction,
-            rule: RuleId::from_label("tower-test"),
-            match_class_node_count: 0,
-            expr_node_count: 0,
-        }
-    }
 
     #[test]
     fn bilinear_score_should_match_manual_computation_for_all_ones_vectors() {
@@ -1434,7 +1327,7 @@ mod tests {
         let mut head = SaturationHead::new();
         head.randomize(1);
 
-        let hidden = head.forward_candidate(&emb, &summary(&[], 0.0, [0.0; EMBED_DIM]));
+        let hidden = head.forward_candidate(&emb, &[], 0.0);
         assert!(hidden.iter().all(|v| v.is_finite()));
     }
 
@@ -1446,9 +1339,9 @@ mod tests {
         let emb = OpEmbeddings::new();
         let mut head = identity_trunk_head();
         head.candidate_b1 = [5.0; HIDDEN_DIM];
-        head.candidate_w1[ROW_BUDGET_FRACTION] = [2.0; HIDDEN_DIM];
+        head.candidate_w1[K] = [2.0; HIDDEN_DIM]; // the budget_fraction row
 
-        let hidden = head.forward_candidate(&emb, &summary(&[], 3.0, [0.0; EMBED_DIM]));
+        let hidden = head.forward_candidate(&emb, &[], 3.0);
 
         let expected = 5.0 + 3.0 * 2.0;
         for (j, &h) in hidden.iter().enumerate() {
@@ -1479,7 +1372,7 @@ mod tests {
         op_embed[LANE] = LANE_VAL;
         emb.e[OpKind::Add] = op_embed;
 
-        let hidden = head.forward_candidate(&emb, &summary(&[OpKind::Add], 0.0, [0.0; EMBED_DIM]));
+        let hidden = head.forward_candidate(&emb, &[OpKind::Add], 0.0);
 
         for (j, &h) in hidden.iter().enumerate() {
             let want = if j == COLUMN { LANE_VAL * 3.0 } else { 0.0 };
@@ -1510,7 +1403,7 @@ mod tests {
             head.candidate_w1[i] = [1.0; HIDDEN_DIM];
         }
 
-        let hidden = head.forward_candidate(&emb, &summary(&ops, 0.0, [0.0; EMBED_DIM]));
+        let hidden = head.forward_candidate(&emb, &ops, 0.0);
 
         let scale = 1.0 / sqrtf(ops.len() as f32);
         // Each op's embedding sums to K (all-ones, K dims); candidate_w1 rows
@@ -1559,10 +1452,9 @@ mod tests {
         let neighborhood = [OpKind::Sqrt, OpKind::Neg];
         let rule_embed = [0.3f32; EMBED_DIM];
 
-        let candidate = summary(&neighborhood, 0.4, rule_embed);
-        let got = head.score_candidate(&emb, &candidate);
+        let got = head.score_candidate(&emb, &neighborhood, 0.4, &rule_embed);
 
-        let hidden = head.forward_candidate(&emb, &candidate);
+        let hidden = head.forward_candidate(&emb, &neighborhood, 0.4);
         let embed = head.compute_candidate_embed(&hidden);
         let mask_features = head.compute_mask_features(&embed);
         let want = head.bilinear_score(&mask_features, &rule_embed);
@@ -1582,8 +1474,8 @@ mod tests {
         let neighborhood = [OpKind::Add];
         let rule_embed = [0.5f32; EMBED_DIM];
 
-        let low = head.score_candidate(&emb, &summary(&neighborhood, 0.0, rule_embed));
-        let high = head.score_candidate(&emb, &summary(&neighborhood, 1.0, rule_embed));
+        let low = head.score_candidate(&emb, &neighborhood, 0.0, &rule_embed);
+        let high = head.score_candidate(&emb, &neighborhood, 1.0, &rule_embed);
         assert!(
             (low - high).abs() > 1e-6,
             "distinct budget fractions should score differently: low={low}, high={high}"

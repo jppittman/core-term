@@ -61,7 +61,6 @@
 //! own (`scoring.rs`).
 
 mod accumulator;
-pub mod bilinear;
 pub mod diversity;
 pub mod linear;
 mod scoring;
@@ -286,7 +285,14 @@ impl SaturationGuide for Guide {
     fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
         candidates
             .iter()
-            .map(|c| self.head.score_candidate(&self.embeddings, c))
+            .map(|c| {
+                self.head.score_candidate(
+                    &self.embeddings,
+                    &c.neighborhood_ops,
+                    c.budget_fraction,
+                    &c.rule_embed,
+                )
+            })
             .collect()
     }
 
@@ -474,14 +480,11 @@ mod tests {
         assert_eq!(summary.expr_node_count, 42);
 
         // And the round-tripped summary scores identically to scoring the
-        // same fields directly through the head — i.e. `new` doesn't silently
-        // drop or reorder a field before it reaches the scorer. `rule` is the
-        // one field varied here, because it is the only one the tower does
-        // not read: it keys the per-rule linear guides
-        // (`linear::LinearCandidateGuide`), while this head sees a rule only
-        // through `rule_embed`. Every other field is held equal, since the
-        // candidate tower now reads all four scalars (see
-        // `scoring::CANDIDATE_SCALAR_COUNT` for why).
+        // same neighborhood/budget/rule_embed directly through the head —
+        // i.e. `new` doesn't silently drop or reorder a field before it
+        // reaches the scorer. (The tower reads only rule_embed/neighborhood/
+        // budget, so the new rule_idx/match_class/expr_node_count fields are
+        // free to differ here without affecting this equality.)
         let guide = Guide::new_random(OpEmbeddings::new_random(3), 4);
         let via_summary = guide.score_candidates(&[summary])[0];
         let direct = guide.score_candidates(&[CandidateSummary {
@@ -489,8 +492,8 @@ mod tests {
             neighborhood_ops: features.neighborhood_ops.clone(),
             budget_fraction: features.budget_fraction(),
             rule: RuleId::from_label("a-different-rule"),
-            match_class_node_count: features.key.content.node_count(),
-            expr_node_count: 42,
+            match_class_node_count: 0,
+            expr_node_count: 0,
         }])[0];
         assert!((via_summary - direct).abs() < 1e-6);
     }
