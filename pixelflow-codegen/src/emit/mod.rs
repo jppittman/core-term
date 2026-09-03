@@ -1729,6 +1729,30 @@ pub fn resolve_operands(
                     (l, r)
                 }
             };
+            // The two-operand invariant, stated where the registers are
+            // chosen rather than defended in the one backend that has no
+            // three-operand form. SSE2's `mulps dst, src` computes
+            // `dst <- left; dst op= right`, which corrupts `right` when
+            // `dst == right` and `dst != left`.
+            //
+            // That assignment cannot arise. `dst` is a pool register or
+            // `reload[0]`; `right` is a pool register, an input register,
+            // `reload[1]`, or — when both operands are spilled — `dst`, in
+            // which case `left` is `dst` too. The pool excludes the inputs and
+            // both reload targets, and the allocator never gives a destination
+            // a pool slot a value live at this instruction still owns: it
+            // takes an unowned slot, or evicts one, and an evicted value reads
+            // back as `Spilled` here and reloads elsewhere.
+            //
+            // So `left` may alias `dst` and the backends may write the
+            // destructive form directly — but if the allocator ever stops
+            // guaranteeing this, the failure is a silently corrupted operand,
+            // which is what this restates in every debug build.
+            debug_assert!(
+                dst != r_reg || dst == l_reg,
+                "{op_kind:?}: dst {dst:?} aliases the right operand without \
+                 aliasing the left — the two-operand form would corrupt it"
+            );
             ResolvedOp::Binary {
                 op: *op_kind,
                 dst,
@@ -4345,24 +4369,48 @@ mod tests {
         const SRC_B: Reg = Reg(6);
         const ADDEND: Reg = Reg(7);
 
+        /// The temp the SSE2 fused stand-in multiplies into. Any pool
+        /// register disjoint from the operands would do — the allocator picks
+        /// it per instruction — so this names one to pin the bytes.
+        const TEMP: Reg = Reg(10);
+
         /// A bare plan: no reloads, no setup mov, no store — just the op, so
         /// the bytes below are the op's encoding and nothing else.
-        fn plan(op: ResolvedOp) -> InstructionPlan {
+        ///
+        /// `temps` is empty for every spelling but SSE2's `FusedMulAdd`, which
+        /// has no FMA to fuse into and needs somewhere to put the product; the
+        /// empty set elsewhere is the assertion that no other backend starts
+        /// asking for scratch unnoticed.
+        fn plan(
+            op: ResolvedOp,
+            temps: Option<[Reg; regalloc::Scratch::MAX_TEMPS]>,
+        ) -> InstructionPlan {
             InstructionPlan {
                 reloads: alloc::vec::Vec::new(),
                 op,
                 setup_mov: None,
                 store: None,
-                // No `MulAdd` spelling on any backend asks for scratch; the
-                // empty set is the assertion that none of them starts to
-                // unnoticed.
-                scratch: regalloc::Scratch::for_test(None, None),
+                scratch: regalloc::Scratch::for_test(temps, None),
             }
         }
 
         fn encode<B: IsaBackend>(backend: &mut B, op: ResolvedOp) -> Vec<u8> {
             let mut code = Vec::new();
-            backend.emit_plan(&mut code, &plan(op)).expect("emit_plan");
+            backend
+                .emit_plan(&mut code, &plan(op, None))
+                .expect("emit_plan");
+            code
+        }
+
+        /// `encode` for the one spelling that asks the allocator for a temp.
+        fn encode_with_temp<B: IsaBackend>(backend: &mut B, op: ResolvedOp) -> Vec<u8> {
+            let mut code = Vec::new();
+            backend
+                .emit_plan(
+                    &mut code,
+                    &plan(op, Some([TEMP; regalloc::Scratch::MAX_TEMPS])),
+                )
+                .expect("emit_plan");
             code
         }
 
@@ -4418,11 +4466,11 @@ mod tests {
                 "   0: 4e26cca4  fmla v4.4s, v5.4s, v6.4s",
                 "aarch64 fused MulAdd"
             );
-            // No FMA at the SSE2 baseline: movaps/mulps into the fixed scratch
-            // (xmm10), then addps into dst. Two roundings, and the only reason
-            // CLAUDE.md's `MulAdd` row still has a second column.
+            // No FMA at the SSE2 baseline: movaps/mulps into this
+            // instruction's temp, then addps into dst. Two roundings, and the
+            // only reason CLAUDE.md's `MulAdd` row still has a second column.
             assert_eq!(
-                encode(
+                encode_with_temp(
                     &mut x86_64::driver::X86Backend::new(EmitCtx::default()),
                     fused()
                 ),
