@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-02  
 **Question:** PR #1124's bilinear eval measured every guided arm at ~1.10 of unguided on `sh` (B=100, dag cost) where Round 1b measured ~0.90 (tree cost), and DEV linear went 0.537 → 0.653. Four candidate levers landed in between — (L1) `dag_cost` #1117, (L2) the forward-port #1121, (L3) mid-scan application budget #1118, (L4) `rebuild_budgeted` orphan fix #1120. Which one moved the number?  
-**Answer:** **L1, alone.** On Round 1b's exact source, corpus and checkpoint — reproducing its tree numbers to four decimals — the same rows priced as a DAG are already 1.098 (control) / 1.114 (linear). No behavioral lever crosses 1.0 anywhere; the tree ratio is ~0.90 in every era and the dag ratio is ~1.10 in every era. DEV's 0.537 → 0.653 is the same metric change (0.5366 tree → 0.6528 dag on the Round 1b source itself); the only behavioral movement on DEV is at B=200 and is L3.  
+**Answer:** **L1, alone — verdict (1) INSTRUMENT, §Verdict.** On Round 1b's exact source, corpus and checkpoint — reproducing its tree numbers to four decimals — the same rows priced as a DAG are already 1.098 (control) / 1.114 (linear). No behavioral lever crosses 1.0 anywhere; the tree ratio is ~0.90 in every era and the dag ratio is ~1.10 in every era. DEV's 0.537 → 0.653 is the same metric change (0.5366 tree → 0.6528 dag on the Round 1b source itself); the only behavioral movement on DEV is at B=200 and is L3.  
 **Rows:** per-expression checkpoints in `2026-09-02-guided-regression-bisect-rows.csv`; aggregate table in `.csv`/`.json`. No wall clock in any number. FINAL untouched.
 
 ## Method
@@ -211,6 +211,16 @@ On `sh`, a guided arm given **four times** the budget is still 1.11–1.13 of un
 5. **The corpus regeneration and the post-Round-1b review fix are not it either.** `sh` on the bilinear corpus vs the Round 1b corpus: control dag 1.0968 vs 1.0994. A0 → A (sibling targets attempted, not the first): `sh` dag 1.0980 → 1.0994.
 
 So: same row (L1) for `sh` and for DEV at B=100; DEV at B=200 additionally moves at L3. The guided path was never dag-better on `sh` — the Guides (and the strict labels they were trained on) were minted and evaluated against the tree objective, and on trig-dominant kernels with 4–6× tree/dag sharing they steer the tree-DP toward **unshared** forms: median tree/dag ratio of the extracted term is 4.25 unguided vs 3.29 guided on `sh` (Round 1b corpus), 6.05 vs 4.2–4.5 on the bilinear corpus. The bilinear eval's precondition (a) — "guidance of any kind is a net cost on `sh`" — is correct under the unit that matters and was equally true on 2026-09-01; Round 1b's 0.90 was the same behavior measured in the unit the DP optimizes.
+
+## Verdict: (1) INSTRUMENT
+
+**Evidence row: A0, sh (Round 1b corpus, n=95), B=100** — Round 1b's exact source `14125f10`, corpus MD5 `0c7cbe71…`, checkpoint `strict_v1`, reproducing Round 1b's tree ratios to four decimals (control 0.9028, linear 0.9039; 0 mismatches over 429 expressions × 3 arms × 6 points). Those same rows, priced once per distinct e-class, are control dag **1.0980** [4/0/91] and linear dag **1.1138** [0/0/95]. The crossing from 0.90 to 1.10 happens inside a single run, between two ways of pricing the same choice map — it is L1 (#1117, `total_cost` → `dag_cost`) and nothing else. The control arm's `sh` median is bit-identical from A through E; no behavioral lever (A0→A sibling-target fix, L3, L4, the L2 forward-port bracketed A+L3→D) moves `sh` dag by more than 0.002 at B=100, and none crosses 1.0 in either direction.
+
+So the sh ~0.90 was a tree-cost artifact, and guidance never helped trig kernels on the real metric. Round 1b's H_null and the bilinear eval's H_form-null are both measuring arms that lose to nothing on `sh`: the honest statement is that **no Guide — control, additive, or bilinear — has yet beaten unguided on trig kernels at B ≤ 200, and a guided arm at 4B is still 1.11–1.13 of unguided at B, in every era.** The bilinear eval's precondition (a) attributed the crossing to #1117 + #1118 + #1120 jointly; it is #1117 alone.
+
+**Round 1's DEV linear 0.537 is not recoverable on current main, and there is nothing to recover.** It is the tree-unit reading of a run whose dag-unit reading is 0.6528 (A0, same rows); main's 0.6530 is that same number. The tree number did drift (0.5366 → 0.6084, split across the sibling-target fix, L3, and the forward-port + re-mint), but tree cost is not the objective anyone should be reading, and under dag cost DEV linear at B=100 is flat across every era (0.6528 / 0.6496 / 0.6515 / 0.6530). The one dag-visible behavioral change is L3 on DEV at B=200 (0.74 → 0.82) and it is the unguided denominator becoming honest, not the guided arm getting worse.
+
+**Sequencing consequence:** before any guided number is quoted again, the label the Guide was trained on and the ratio it is scored by must be minted in the same unit — `dag_cost` — on the same rows, with the control arm mapped by `rule_idx` (#1127), so that a guided/unguided ratio can only move because the guided path did something different.
 
 ## Bug found (filed, not fixed here)
 
