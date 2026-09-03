@@ -374,13 +374,19 @@ jobs:
   isa-matrix:
     name: ISA matrix (SSE2/AVX2/AVX-512)
     runs-on: ubuntu-latest
-    # Build+lint only -- three `cargo test --workspace --no-run` + `cargo
-    # clippy` passes (one per supported ISA level), no test execution. This
-    # catches cfg mistakes, missing ops, and lints per level fast; actually
-    # *running* the tests for each level happens in postsubmit (see
-    # postsubmit-flake-detection.yaml), which is what a merged, reverted-on-
-    # failure change can afford to wait on.
-    timeout-minutes: 20
+    # Build+lint every supported ISA level, then RUN the two crates whose
+    # output is per-level machine code (`--smoke`). Building the test binaries
+    # already happens for `--no-run` and clippy, so executing that subset is
+    # marginal cost only -- ~50s per level against ~344s for the whole
+    # workspace -- which is what makes a real per-level *execution* signal
+    # affordable presubmit rather than postsubmit-only.
+    #
+    # It is a fraction, deliberately: the rest of the workspace consumes the
+    # same kernels through the same interface at every level, so running it
+    # three times re-runs identical work. Postsubmit still runs the full
+    # workspace per level (see postsubmit-flake-detection.yaml) -- this catches
+    # the level-specific miscompiles early, not all of them.
+    timeout-minutes: 25
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -409,13 +415,14 @@ jobs:
       # .cargo/config.toml sets no target-cpu/target-feature, so the jobs
       # above only ever exercise whichever ISA level SSE2-baseline codegen
       # happens to be. This builds + lints again under +avx2,+fma and
-      # +avx512f -- `--build-only` skips test execution unconditionally
-      # (deferred to postsubmit) rather than skipping cleanly (not silently)
-      # whichever of those ubuntu-latest's actual hardware doesn't support;
-      # see `xtask isa-matrix`'s own doc comment for the per-level detection.
-      - name: Run ISA matrix (build + clippy per level)
+      # +avx512f, and runs the codegen/IR suites for whichever of those the
+      # runner's CPU can actually execute. A level the hardware can't run is
+      # still built and linted, and the summary says so per level -- a skip
+      # that is stated, never silent. See `xtask isa-matrix`'s own doc comment
+      # for the per-level detection and for what `--smoke` covers.
+      - name: Run ISA matrix (build + clippy + smoke tests per level)
         shell: bash
-        run: cargo run -p xtask -- isa-matrix --clippy --build-only
+        run: cargo run -p xtask -- isa-matrix --clippy --smoke
 
   # The `test` job above runs `cargo test` on macos-latest, but that never
   # exercises a real LaunchServices bundle launch -- `cargo run`/`cargo test`
