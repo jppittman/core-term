@@ -17,6 +17,15 @@ use libm::{log2f, sqrtf};
 use pixelflow_ir::OpKind;
 
 use super::accumulator::{GRAPH_ACC_DIM, GraphAccumulator};
+
+/// The representational contrast between this head's bilinear scorer and
+/// [`super::linear::LinearCandidateGuide`]'s additively separable one,
+/// stated and pinned. Lives in a child module so it can reach this head's
+/// private weights (a hand-set matrix is what makes the claim readable) —
+/// and in its own file so a 1,400-line module does not grow a sixth test
+/// section.
+#[cfg(test)]
+mod representation;
 use crate::nnue::factored::{
     EMBED_DIM, HIDDEN_DIM, K, MLP_HIDDEN, OpEmbeddings, SCALAR_FEATURE_COUNT,
 };
