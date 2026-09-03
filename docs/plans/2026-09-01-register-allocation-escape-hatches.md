@@ -72,6 +72,39 @@ Which makes the real statement: **a reload result and an instruction temp are
 the same thing** — a value the input DAG did not contain. Classes A and C are
 one missing concept, not two.
 
+> **Correction, 2026-09-03 — half of class C is class D.** The paragraph above
+> is right about `select_reload`, which is why that one came out (see the
+> landed note under step 2). It is wrong about `reload`, and tracing every
+> *read* rather than trusting this section is what shows it. `reload[1]` has
+> four use-sites and `reload[0]` two:
+>
+> | site | where | class |
+> |---|---|---|
+> | `resolve_operands`' `tmp_op` | inside an instruction | **C** |
+> | `resolve_operands`' spilled `dst` | inside an instruction | **C** |
+> | the Select guard's mask reload (two call sites) | *between* instructions, in the guard scaffold | **D** |
+> | the guarded Select's spilled `dst` | same | **D** |
+> | parking a hoist root in its slot | after a def, prologue mode | **D** |
+> | the root's return reload | after the whole schedule | **D** |
+>
+> Only the first two are "class A in disguise" — a need of one instruction,
+> which an instruction can declare. The rest happen at points the schedule does
+> not contain, so there is no instruction to hang a reservation on, and
+> `RegisterFile` has to keep a register for them.
+>
+> The consequence is the ordering one, and it is sharp: **closing the rest of
+> class C on its own frees zero registers.** `reload` stays in the file for the
+> scaffold sites either way, so the two registers come back only when class D
+> lands with it. That is a second reason to do step 4, independent of
+> reclaiming LICM's trip to memory — and it is why the remaining work is one
+> piece rather than two.
+>
+> None of those scaffold sites needs a *dedicated* register, which is what makes
+> the combined step tractable: each happens where a free-register set is
+> perfectly well defined (the root's reload runs after every value is dead), and
+> what they lack is not a register but an allocator that can see the point they
+> run at.
+
 ### D. Outside the DAG
 
 `SCAFFOLD_ACC = Reg(0)`, `SCAFFOLD_SCRATCH = Reg(1)` — the collapse loop's own
@@ -372,3 +405,21 @@ once.
 Then 3 when k-predication is actually wanted, and 4 when LICM's trip to memory
 is worth reclaiming. Neither is a prerequisite for the other; both need 2
 first.
+
+**Revised 2026-09-03.** Step 2's class-A half is done and `select_reload` with
+it; what is left of 2 is `reload` and `Placement::Spilled`. Two findings move
+the rest:
+
+1. **The remainder of 2 has to land with 4, or it buys nothing** — three of
+   `reload`'s use-sites are outside the DAG (see the correction under class C).
+2. **It needs a fixed point that today's allocator does not have.** Eviction
+   writes `Placement::Spilled` for a value's *whole life*, so an operand that
+   is resident when its reader is allocated can be spilled retroactively by a
+   later instruction. Every reservation that landed so far dodged this because
+   its demand is a function of the *op* — `temps_for` can state it, and
+   `Select`'s third target is reserved unconditionally for exactly this reason.
+   A reload target's demand is a function of *which operands are in registers
+   at that point*, which is not final when the reservation is made. Closing it
+   means allocation becomes a fixed point over the values forced to memory, or
+   live ranges get split — the "output schedule rather than an annotation"
+   this plan already names, now with the specific reason it cannot be avoided.
