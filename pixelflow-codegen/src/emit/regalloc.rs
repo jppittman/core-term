@@ -208,8 +208,8 @@ impl RegisterFile {
     pub const fn checked(self) -> Self {
         assert!(
             self.scratch.len() >= Self::MIN_SCRATCH,
-            "the allocatable pool is too small to hold a ternary's three \
-             operands plus an instruction temp"
+            "the allocatable pool is too small for the widest instruction's \
+             operands, scratch and destination at once"
         );
 
         let mut i = 0;
@@ -277,15 +277,18 @@ impl RegisterFile {
     ///
     /// Every *value* survives a small pool by spilling, so the pool has no
     /// lower bound from values alone — that is why one register used to be an
-    /// acceptable budget. An instruction temp has no such escape: it is
-    /// scratch the encoder destroys mid-instruction, so it must be a register,
-    /// and a register that is neither the destination nor any operand. The
-    /// widest instruction is a ternary, so the pool has to hold three operands
-    /// plus that one temp.
+    /// acceptable budget. Instruction scratch has no such escape: it is
+    /// registers the encoder destroys mid-instruction, each of which must be a
+    /// register, and one that is neither the destination nor any operand.
+    ///
+    /// Six, set by the widest single demand rather than by the widest op. A
+    /// ternary is three operands plus one temp; AVX2's gather is one operand
+    /// plus [`Scratch::MAX_TEMPS`] — four, since it assembles two 128-bit
+    /// halves — and both leave room for the destination.
     ///
     /// Below this, shrinking the pool stops producing more spilling and starts
-    /// producing an instruction with nowhere to put its temp.
-    pub const MIN_SCRATCH: u8 = 4;
+    /// producing an instruction with nowhere to put its scratch.
+    pub const MIN_SCRATCH: u8 = Scratch::MAX_TEMPS as u8 + 2;
 
     /// Cap the scratch pool at a smaller budget, leaving every other region
     /// where it is.
@@ -367,9 +370,16 @@ pub struct Allocation {
 /// convention this replaced.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Scratch {
-    /// The encoding's own temp: a sign mask, a Newton-Raphson correction —
-    /// whatever [`RegisterFile::temps_for`] asked for.
-    pub temp: Option<Reg>,
+    /// The encoding's own scratch: a sign mask, a Newton-Raphson correction,
+    /// the halves a gather assembles its result from — as many registers as
+    /// [`RegisterFile::temps_for`] asked for, and no more.
+    ///
+    /// Private, and read through [`Scratch::temp`], because the *order* here is
+    /// a contract between one backend's `temps_for` and that same backend's
+    /// encoder. That is a local agreement inside one ISA file; letting anything
+    /// else index it would make it a convention spanning the codebase, which is
+    /// what the roles below exist to avoid.
+    temps: [Option<Reg>; Scratch::MAX_TEMPS],
 
     /// A third register to reload an operand into.
     ///
@@ -387,6 +397,39 @@ pub struct Scratch {
     /// Over-reserving costs one register at a `Select`; the register it
     /// replaces cost one everywhere.
     pub arm_reload: Option<Reg>,
+}
+
+impl Scratch {
+    /// The most scratch registers any one encoding asks for.
+    ///
+    /// Four: AVX2 assembles a 256-bit gather from two 128-bit halves, which
+    /// costs the half-sequence's own index and value registers plus one of
+    /// each to carry the high half while the low one is built.
+    pub const MAX_TEMPS: usize = 4;
+
+    /// A `Scratch` with the registers a test wants to hand an encoder.
+    ///
+    /// The allocator is what fills these in production; a test that exercises
+    /// one encoding in isolation has no allocator, so it says outright which
+    /// registers the encoder may destroy.
+    #[cfg(test)]
+    #[must_use]
+    pub const fn for_test(temps: Option<[Reg; Self::MAX_TEMPS]>, arm_reload: Option<Reg>) -> Self {
+        let temps = match temps {
+            Some([a, b, c, d]) => [Some(a), Some(b), Some(c), Some(d)],
+            None => [None; Self::MAX_TEMPS],
+        };
+        Self { temps, arm_reload }
+    }
+
+    /// The `i`'th register this instruction's encoding asked for.
+    ///
+    /// `i` is the backend's own numbering, matching the count its
+    /// [`RegisterFile::temps_for`] returned.
+    #[must_use]
+    pub fn temp(&self, i: usize) -> Option<Reg> {
+        self.temps.get(i).copied().flatten()
+    }
 }
 
 impl Allocation {
@@ -658,7 +701,7 @@ impl RegisterAllocator for LinearScan {
             // Scratch, reserved before the destination is placed: the encoder
             // writes it while every operand is still live and before the
             // destination is written, so it may share a register with neither.
-            let mut taken: [Option<usize>; 2] = [None; 2];
+            let mut taken: [Option<usize>; Scratch::MAX_TEMPS + 1] = [None; Scratch::MAX_TEMPS + 1];
             let mut reserve = |role: usize,
                                reg_owner: &mut Vec<Option<ValueId>>,
                                placements: &mut Vec<Option<Placement>>|
@@ -677,11 +720,19 @@ impl RegisterAllocator for LinearScan {
                 scratch[slot]
             };
 
-            if (file.temps_for)(&def.op) > 0 {
-                scratch_for[i].temp = Some(reserve(0, &mut reg_owner, &mut placements));
+            let wanted = (file.temps_for)(&def.op) as usize;
+            assert!(
+                wanted <= Scratch::MAX_TEMPS,
+                "a backend asked for {wanted} scratch registers for one \
+                 instruction; `Scratch::MAX_TEMPS` is {}",
+                Scratch::MAX_TEMPS
+            );
+            for role in 0..wanted {
+                scratch_for[i].temps[role] = Some(reserve(role, &mut reg_owner, &mut placements));
             }
             if matches!(def.op, ScheduledOp::Ternary(OpKind::Select, ..)) {
-                scratch_for[i].arm_reload = Some(reserve(1, &mut reg_owner, &mut placements));
+                scratch_for[i].arm_reload =
+                    Some(reserve(Scratch::MAX_TEMPS, &mut reg_owner, &mut placements));
             }
             let reserved = taken;
 
@@ -866,12 +917,12 @@ mod tests {
     use super::*;
     use pixelflow_ir::kind::OpKind;
 
-    /// A four-register pool at base 4, mirroring the tightest real backend
-    /// (AVX2's ymm4-7) so pressure tests need only a handful of values.
+    /// The smallest pool a register file may declare, so pressure tests need
+    /// only a handful of values to reach spilling.
     const TEST_FILE: RegisterFile = RegisterFile {
         fixed: &[],
         inputs: [Reg(0), Reg(1), Reg(2), Reg(3)],
-        scratch: RegSet::range(4, 4),
+        scratch: RegSet::range(4, RegisterFile::MIN_SCRATCH),
         reload: [Reg(11), Reg(12)],
         temps_for: no_temps,
         vector_bytes: 16,
@@ -981,7 +1032,7 @@ mod tests {
         ];
         let a = LinearScan.allocate(schedule, &TEMP_FILE);
 
-        let temp = a.scratch(1).temp.expect("`Neg` asked for a temp");
+        let temp = a.scratch(1).temp(0).expect("`Neg` asked for a temp");
         assert!(
             TEMP_FILE.scratch.contains(temp),
             "{temp:?} is not the pool's"
@@ -1018,7 +1069,7 @@ mod tests {
                 "{arm:?} is still holding {v:?} when the Select reloads into it"
             );
         }
-        assert_ne!(Some(arm), s.temp, "the two roles must be two registers");
+        assert_ne!(Some(arm), s.temp(0), "the two roles must be two registers");
     }
 
     /// Only a `Select` asks: every other shape leaves the register alone.
@@ -1048,7 +1099,7 @@ mod tests {
             ],
             &tiny,
         );
-        let temp = a.scratch(3).temp.expect("`Neg` asked for a temp");
+        let temp = a.scratch(3).temp(0).expect("`Neg` asked for a temp");
         assert_ne!(Placement::Reg(temp), a.placement(ValueId(2)));
     }
 
@@ -1057,7 +1108,7 @@ mod tests {
     #[test]
     fn an_op_that_asks_for_no_temp_gets_none() {
         let a = LinearScan.allocate(add_xy(), &TEMP_FILE);
-        assert_eq!(a.scratch(2).temp, None, "`Add` asked for no temp");
+        assert_eq!(a.scratch(2).temp(0), None, "`Add` asked for no temp");
     }
 
     /// The temp's live range is one instruction: the next one may take the
@@ -1078,7 +1129,7 @@ mod tests {
             "four values fit a four-register pool"
         );
 
-        let temp = a.scratch(1).temp.expect("`Neg` asked for a temp");
+        let temp = a.scratch(1).temp(0).expect("`Neg` asked for a temp");
         let reused = a
             .schedule
             .iter()
@@ -1159,13 +1210,16 @@ mod tests {
     /// LRU both evict v1. Only a rule that looks forward evicts v4.
     #[test]
     fn belady_evicts_the_value_used_farthest_out() {
+        // One more independent value than the pool holds, so exactly one must
+        // go to memory and the test is about *which*.
+        let live = u32::from(RegisterFile::MIN_SCRATCH) + 1;
         let mut schedule = vec![def(0, ScheduledOp::Var(0))];
-        for i in 1..=5u32 {
+        for i in 1..=live {
             schedule.push(def(i, ScheduledOp::Unary(OpKind::Neg, ValueId(0))));
         }
-        // Consume v1 first, then v2, v3, and v4 last.
-        let mut acc = ValueId(5);
-        for i in 1..=4u32 {
+        // Consume v1 first, then v2, v3, … and v`live-1` last.
+        let mut acc = ValueId(live);
+        for i in 1..live {
             schedule.push(def(
                 100 + i,
                 ScheduledOp::Binary(OpKind::Add, acc, ValueId(i)),
@@ -1175,9 +1229,10 @@ mod tests {
         let a = alloc(schedule);
 
         assert_eq!(
-            a.placement(ValueId(4)),
+            a.placement(ValueId(live - 1)),
             Placement::Spilled,
-            "v4 is needed last, so it is the one to evict"
+            "v{live_minus_1} is needed last, so it is the one to evict",
+            live_minus_1 = live - 1
         );
         assert!(
             matches!(a.placement(ValueId(1)), Placement::Reg(_)),
@@ -1259,13 +1314,16 @@ mod tests {
     #[test]
     fn the_pool_may_straddle_a_reserved_register() {
         let straddling = RegisterFile {
-            scratch: RegSet::of(&[Reg(4), Reg(5), Reg(14), Reg(15)]),
+            scratch: RegSet::of(&[Reg(4), Reg(5), Reg(6), Reg(7), Reg(14), Reg(15)]),
             ..TEST_FILE
         }
         .checked();
-        assert_eq!(straddling.scratch.len(), 4);
+        assert_eq!(straddling.scratch.len(), 6);
         let regs: alloc::vec::Vec<Reg> = straddling.scratch.iter().collect();
-        assert_eq!(regs, alloc::vec![Reg(4), Reg(5), Reg(14), Reg(15)]);
+        assert_eq!(
+            regs,
+            alloc::vec![Reg(4), Reg(5), Reg(6), Reg(7), Reg(14), Reg(15)]
+        );
     }
 
     /// `capped` shrinks a non-contiguous pool to its lowest members.

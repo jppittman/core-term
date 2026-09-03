@@ -664,6 +664,8 @@ pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
     use super::ScheduledOp;
     match op {
         ScheduledOp::Unary(OpKind::Rsqrt | OpKind::Recip, _) => 1,
+        // The gather's truncated-index lanes.
+        ScheduledOp::Gather(..) => 1,
         _ => 0,
     }
 }
@@ -1781,7 +1783,7 @@ pub(crate) mod driver {
         // registers.
         scratch: regalloc::RegSet::range(16, 10)
             .union(regalloc::RegSet::range(4, 4))
-            .union(regalloc::RegSet::of(&[Reg(29), Reg(31)])),
+            .union(regalloc::RegSet::of(&[Reg(29), Reg(30), Reg(31)])),
         reload: [Reg(26), Reg(27)],
         // v28: the reduction scratch `emit_skip_if_all_false`/`_true` write
         // their `UMAXV`/`UMINV` into. It used to be `select_reload` and was
@@ -1794,7 +1796,7 @@ pub(crate) mod driver {
         // temp, so v29 has joined the pool above. The select needs none — `BSL`
         // reads its three operands directly, and `FNEG`/`FABS` are single
         // instructions here.
-        fixed: &[GUARD_SCRATCH, Reg(30)],
+        fixed: &[GUARD_SCRATCH],
         temps_for: super::temps_for,
         vector_bytes: 16,
     }
@@ -2095,7 +2097,7 @@ pub(crate) mod driver {
                 emit_const_load(code, *dst, *val_bits, pool);
             }
             ResolvedOp::Unary { op, dst, src } => {
-                emit_unary(code, *op, *dst, *src, plan.temp);
+                emit_unary(code, *op, *dst, *src, plan.scratch.temp(0));
             }
             ResolvedOp::ShiftImm {
                 op,
@@ -2116,13 +2118,13 @@ pub(crate) mod driver {
                 // pair and the guard scratch (v28) rather than a comment claiming
                 // it; x9-x11 are caller-saved GPR scratch clear of the branch
                 // guard (w16) and the const-pool anchor (x17).
-                const IDX_INT: Reg = Reg(30);
+                let idx_int = crate::emit::declared_temp(plan.scratch.temp(0));
                 const BASE_GPR: Xr = Xr(9);
                 const IDX_GPR: Xr = Xr(10);
                 const VAL_GPR: Xr = Xr(11);
                 /// Bytes per pointer in the context array.
                 const PTR_BYTES: u32 = 8;
-                emit_fcvtzs(code, IDX_INT, *idx); // float idx -> int32 lanes
+                emit_fcvtzs(code, idx_int, *idx); // float idx -> int32 lanes
                 emit_ldr_x(
                     code,
                     BASE_GPR,
@@ -2134,7 +2136,7 @@ pub(crate) mod driver {
                 emit_gather(
                     code,
                     *dst,
-                    IDX_INT,
+                    idx_int,
                     super::GatherGprs {
                         base: BASE_GPR,
                         idx: IDX_GPR,

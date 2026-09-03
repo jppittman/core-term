@@ -160,14 +160,23 @@ fn a_spilled_muladd_rounds_twice_on_every_target() {
 
     // The wall. One spilled multiplicand is not enough — `resolve_operands`
     // only decomposes when *both* are out of registers — so something has to
-    // occupy the pool across the `MulAdd`. Every one of these is a distinct
-    // node worth exactly +0.0 for finite inputs, so it pins registers without
-    // perturbing a bit of the sum it lands in.
-    let wall: Vec<ExprId> = [(x, y), (y, z), (z, x), (x, z), (y, x), (z, y)]
-        .iter()
-        .map(|&(l, r)| {
-            let d = a.push_binary(OpKind::Sub, l, r);
-            a.push_binary(OpKind::Sub, d, d)
+    // hold the pool across the whole schedule.
+    //
+    // Every term is `(X + i) · W`, which is exactly +0.0 at W = 0 and so
+    // perturbs no bit of the sum it lands in. It has to be built from a
+    // *variable* to survive: the wall here was `(l − r) − (l − r)`, also worth
+    // zero, and `legalize` folded all six of those to one constant — the
+    // scenario had no wall at all, and only ever reached the decomposed arm
+    // because the pool was smaller than three. `W` is not a constant, so
+    // nothing folds this away, and multiplying by it keeps the term worth zero
+    // without saying so in a form the folder can see. Each term still depends
+    // on X, so none is loop-invariant and hoistable out of a collapse body.
+    let w = a.push_var(3);
+    let wall: Vec<ExprId> = (1..=10u32)
+        .map(|i| {
+            let c = a.push_const(i as f32);
+            let xi = a.push_binary(OpKind::Add, x, c);
+            a.push_binary(OpKind::Mul, xi, w)
         })
         .collect();
 
