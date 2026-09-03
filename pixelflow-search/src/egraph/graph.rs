@@ -489,8 +489,11 @@ impl EGraph {
             // Extend, not assign: a mid-loop union() above may have already
             // pushed nodes/tags onto classes[id.index()] (see comment above).
             // Overwriting here would silently discard them.
-            self.classes[id.index()].nodes.extend(new_nodes);
-            self.classes[id.index()].tags.extend(new_tags);
+            // L4 (#1120): write back to the class `find` routes to, not the
+            // slot that may have lost the merge.
+            let dest = self.find(id);
+            self.classes[dest.index()].nodes.extend(new_nodes);
+            self.classes[dest.index()].tags.extend(new_tags);
         }
         self.worklist.len()
     }
