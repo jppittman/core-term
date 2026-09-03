@@ -2759,10 +2759,19 @@ mod tests {
         assert_eq!(eval_point(&result.code, 3.0, 4.0, 0.0, 0.0), 10.0);
     }
 
-    /// `(X+Y)·(X−Y) + (X·Y)·(X+1)`: whichever product is computed second
-    /// has three values live, so a two-register pool must spill. Every leaf
-    /// depends on X or Y — a Z/W subtree would be loop-invariant, hoisted out
-    /// of the collapse body, and leave nothing to spill.
+    /// `Σᵢ (X+i)·(Y+i)` for i in 1..=10, summed as a balanced tree: ten
+    /// products are live at once, so any pool must spill. Every leaf depends on
+    /// X or Y — a Z/W subtree would be loop-invariant, hoisted out of the
+    /// collapse body, and leave nothing to spill.
+    ///
+    /// The pressure comes from the live ranges rather than from the budget.
+    /// This used to be `(X+Y)·(X−Y) + (X·Y)·(X+1)` under `max_regs(2)`, which
+    /// keeps at most three values live: it spilled only because two registers
+    /// is fewer than three, and a two-register pool is no longer a budget a
+    /// caller can ask for (`RegisterFile::MIN_SCRATCH` — an instruction temp
+    /// cannot spill). Ten live values outrun every backend's floor, so the
+    /// subject here — what spilling *does* — no longer depends on how small
+    /// the pool can be made.
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn arena_compile_with_spills() {
@@ -2771,24 +2780,37 @@ mod tests {
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
         let y = arena.push_var(1);
-        let one = arena.push_const(1.0);
-        let sum = arena.push_binary(OpKind::Add, x, y);
-        let diff = arena.push_binary(OpKind::Sub, x, y);
-        let left = arena.push_binary(OpKind::Mul, sum, diff);
-        let prod = arena.push_binary(OpKind::Mul, x, y);
-        let succ = arena.push_binary(OpKind::Add, x, one);
-        let right = arena.push_binary(OpKind::Mul, prod, succ);
-        let root = arena.push_binary(OpKind::Add, left, right);
+        let mut terms: alloc::vec::Vec<_> = (1..=10u32)
+            .map(|i| {
+                let c = arena.push_const(i as f32);
+                let ax = arena.push_binary(OpKind::Add, x, c);
+                let by = arena.push_binary(OpKind::Add, y, c);
+                arena.push_binary(OpKind::Mul, ax, by)
+            })
+            .collect();
+        while terms.len() > 1 {
+            terms = terms
+                .chunks(2)
+                .map(|pair| match pair {
+                    [l, r] => arena.push_binary(OpKind::Add, *l, *r),
+                    _ => pair[0],
+                })
+                .collect();
+        }
+        let root = terms[0];
 
-        let ctx = EmitCtx::with_max_regs(2);
-        let result = ctx
+        let result = EmitCtx::with_max_regs(4)
             .compile(&arena, root)
             .expect("arena DAG compile with spills failed");
 
-        assert!(result.spill_count > 0, "expected spills with max_regs=2");
+        assert!(
+            result.spill_count > 0,
+            "expected spills under ten live terms"
+        );
 
-        // (3+4)·(3−4) + (3·4)·(3+1) = −7 + 48 = 41
-        assert_eq!(eval_point(&result.code, 3.0, 4.0, 0.0, 0.0), 41.0);
+        // Σᵢ (3+i)·(4+i) = 20+30+42+56+72+90+110+132+156+182 = 890, every
+        // term and partial sum exact in f32.
+        assert_eq!(eval_point(&result.code, 3.0, 4.0, 0.0, 0.0), 890.0);
     }
 
     /// Run an arena kernel at `x` (Y/Z/W = 0) and return lane 0. The
