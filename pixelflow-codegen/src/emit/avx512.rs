@@ -1052,11 +1052,25 @@ pub(crate) mod driver {
         // Select short-circuit guards: reduce the vector mask to flags (vptestmd +
         // kortestw) and branch. jz = all-false (skip true arm); jc = all-true (skip
         // false arm). Mirrors the SSE2 MOVMSKPS guards, k-register-based.
-        fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        /// `_scratch` is unused: this tier's guard reduces the mask with
+        /// `movmskps`/`kortest` into the flags, needing no vector register.
+        fn emit_skip_if_all_false(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            _scratch: Reg,
+        ) -> usize {
             super::emit_mask_flags(code, mask_reg);
             x86_64::je(code).field() // ZF set when k1 == 0 (all false)
         }
-        fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        /// `_scratch` is unused: this tier's guard reduces the mask with
+        /// `movmskps`/`kortest` into the flags, needing no vector register.
+        fn emit_skip_if_all_true(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            _scratch: Reg,
+        ) -> usize {
             super::emit_mask_flags(code, mask_reg);
             x86_64::jc(code).field() // CF set when k1 == 0xFFFF (all true)
         }

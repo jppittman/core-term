@@ -1032,13 +1032,27 @@ pub(crate) mod driver {
         // X86Backend's MOVMSKPS guards but 8 lanes wide (al == 0xFF for
         // all-true, not 0x0F — see `super::emit_cmp_al_imm8`'s doc for why the
         // sign-extending `cmp eax, imm8` X86Backend uses doesn't work here).
-        fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        /// `_scratch` is unused: this tier's guard reduces the mask with
+        /// `movmskps`/`kortest` into the flags, needing no vector register.
+        fn emit_skip_if_all_false(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            _scratch: Reg,
+        ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             x86_64::emit_test_eax(code);
             x86_64::je(code).field() // ZF set when eax == 0 (all lanes false)
         }
 
-        fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        /// `_scratch` is unused: this tier's guard reduces the mask with
+        /// `movmskps`/`kortest` into the flags, needing no vector register.
+        fn emit_skip_if_all_true(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            _scratch: Reg,
+        ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_cmp_al_imm8(code, 0xFF);
             x86_64::je(code).field() // ZF set when al == 0xFF (all lanes true)
