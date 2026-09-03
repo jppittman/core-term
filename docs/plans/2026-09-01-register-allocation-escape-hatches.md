@@ -448,3 +448,57 @@ the rest:
    *value with a short live range* — the "output schedule rather than an
    annotation" this plan already names — because only then does materialising
    one cost a register for an instruction instead of for a program.
+
+### The splitting version, built and measured
+
+Built next, since that is what the paragraph above asks for. Eviction stops
+writing `Placement::Spilled` over a whole life and instead **splits**: the value
+keeps its register up to the eviction, a store hands the register on there, and
+later reads name a memory-resident half the input never contained. On top of
+that, every reload target and the destination scratch become per-instruction
+reservations, `reload` leaves `RegisterFile`, and each pool grows by two.
+
+Splitting is what makes the reservations sound, and it is worth writing down
+why: a value evicted later keeps the register it held *earlier*, so residency
+read when an instruction is allocated is final, and a destination holds a
+register at its own definition or never. Both were exactly what the previous
+attempt could not guarantee.
+
+Measured, same kernels as above, on the SSE2 tier:
+
+| kernel | before (pool 9) | after (pool 11) | code size |
+|---|---|---|---|
+| wide 16 | 8 spills / 2127 B | 8 / 1903 B | **−10.5%** |
+| wide 32 | 32 / 4480 B | 32 / 3834 B | **−14.4%** |
+| anchored 12×40 | 5 / 1329 B | 4 / 1132 B | **−14.8%** |
+| anchored 16×64 | 9 / 2047 B | 8 / 1640 B | **−19.9%** |
+
+Same or fewer spills everywhere and 0.7–20% less code, the gap widening with
+pressure. The whole codegen suite passes on all three x86 tiers, and the
+workspace passes apart from the case below.
+
+**It is not merged, because of one hole in guarded regions.** A `Select`'s
+short-circuit arms are instructions a branch can skip, which constrains where a
+split's store may go:
+
+- A value defined *before* an arm can store before the arm's branch — that path
+  always runs.
+- A value defined *inside* an arm has no such point. Storing at its definition
+  is right only if no *nested* guard sits between there and the eviction;
+  ignoring that nesting miscompiles glyph bakes, which
+  `kernel_glyph_golden.rs` catches.
+- A `Select`'s own operands cannot be split at all: the guard reads its mask
+  under the name the pre-redirect analysis recorded, and the arms are read at
+  the `Select`, outside both ranges.
+
+Those three leave a residue of registers that can be neither split nor spilled
+whole — the latter needs the value to be unread so far — and an instruction
+inside a guarded region can find every register in that state and have nowhere
+to put its scratch. It is reachable: a warm glyph cache reaches it.
+
+Closing it means the store point has to be chosen against the *nesting* of
+guard ranges rather than a flat "is this index guarded", and the `Select`
+operands need the guard analysis to name values by their post-split identity.
+Neither is deep, but both are the kind of thing that miscompiles quietly, and
+the measurement above is the reason it is worth doing properly rather than
+quickly.
