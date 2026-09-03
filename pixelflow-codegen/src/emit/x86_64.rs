@@ -569,16 +569,6 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 /// the unary mask meanwhile would cost pressure and free nothing.
 const X86_SCRATCH: Reg = Reg(10);
 
-/// The gather's truncated-index lanes and loaded-value register.
-///
-/// `GATHER_IDX` was `xmm13` — the same register the file then called
-/// `select_reload`, safe only because a gather and a `Select`'s operand reload
-/// never occur in one instruction. Declared in `SSE2_FILE.fixed` now, so
-/// `RegisterFile::checked` proves the separation instead of a comment
-/// asserting it.
-pub(crate) const GATHER_IDX: Reg = Reg(15);
-pub(crate) const GATHER_VALUE: Reg = Reg(14);
-
 /// `dst = mask ? if_true : if_false` (bit-select; mask already in `dst`, same
 /// convention as AVX2/AVX-512). The blend temp is this backend's fixed
 /// scratch, which the register file keeps outside the allocatable range —
@@ -595,6 +585,21 @@ pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
 // =============================================================================
 // High-level dispatch
 // =============================================================================
+
+/// How many registers this backend's encodings need beyond their operands.
+///
+/// Only the gather, which truncates the float indices into one vector register
+/// and loads each element through another. The unary sign mask, the
+/// two-operand destructive hazard and the decomposed `MulAdd` all still share
+/// `X86_SCRATCH`: their demand is a function of the *registers* the allocator
+/// picks rather than of the op, so it cannot be stated here yet.
+pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
+    use super::ScheduledOp;
+    match op {
+        ScheduledOp::Gather(..) => 2,
+        _ => 0,
+    }
+}
 
 /// Emit unary operation
 pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: Reg) {
@@ -892,26 +897,31 @@ pub(crate) mod driver {
         // the reload pair and the gather's two registers.
         // A sixteen-register file with no slack — which the accounting below
         // now states rather than leaves implicit.
-        // xmm4-9 plus xmm13. xmm13 used to be `select_reload`, held out of
-        // every kernel's pool so that a `Select` with a spilled result and two
-        // spilled arms had a third reload target; that target is now a
-        // per-instruction reservation (`Scratch::arm_reload`), so the register
-        // is the allocator's the rest of the time.
-        scratch: regalloc::RegSet::range(4, 6).union(regalloc::RegSet::of(&[Reg(13)])),
+        // xmm4-9 plus xmm13, xmm14 and xmm15 — every register this file does
+        // not name for something else. xmm13 used to be `select_reload` and
+        // xmm14/15 the gather's value and truncated-index registers, all three
+        // held out of every kernel's pool for instructions most kernels never
+        // contain. Each is a per-instruction reservation now
+        // (`Scratch::arm_reload` and `temps_for`), so they are the allocator's
+        // the rest of the time.
+        scratch: regalloc::RegSet::range(4, 6).union(regalloc::RegSet::of(&[
+            Reg(13),
+            Reg(14),
+            Reg(15),
+        ])),
         reload: [Reg(11), Reg(12)],
         // xmm13: builtin scratch, unused by `emit_select` (whose internal temp is
         // X86_SCRATCH/xmm10) and by the reload path (movups / RIP-relative consts
         // touch no scratch).
         // xmm10: the two-operand form's temp and the Select blend's temp.
-        fixed: &[super::X86_SCRATCH, super::GATHER_VALUE, super::GATHER_IDX],
-        // No allocated temps yet. Unlike the VEX/EVEX/NEON backends, this one
-        // still needs `X86_SCRATCH` for the two-operand destructive hazard
+        // Only `X86_SCRATCH` now. Unlike the VEX/EVEX/NEON backends this one
+        // still needs it for the two-operand destructive hazard
         // (`emit_binary_safe`) and the decomposed `MulAdd`, whose demand is a
         // function of the *registers* the allocator picks rather than of the
-        // op — so the register cannot leave `fixed` until those two are
-        // dissolved as well, and drawing a pool register for the unary mask
-        // meanwhile would cost pressure and free nothing.
-        temps_for: regalloc::no_temps,
+        // op — so it cannot become a `temps_for` answer until those two are
+        // dissolved as well.
+        fixed: &[super::X86_SCRATCH],
+        temps_for: super::temps_for,
         vector_bytes: 16,
     }
     .checked();
@@ -1084,8 +1094,8 @@ pub(crate) mod driver {
                             base_gpr: 0,  // rax
                             index_gpr: 1, // rcx
                             ctx_gpr: 7,   // rdi
-                            idx_lanes: super::GATHER_IDX,
-                            value: super::GATHER_VALUE,
+                            idx_lanes: crate::emit::declared_temp(plan.scratch.temp(0)),
+                            value: crate::emit::declared_temp(plan.scratch.temp(1)),
                         },
                     );
                 }

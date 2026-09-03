@@ -401,6 +401,10 @@ pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
     match op {
         ScheduledOp::Unary(OpKind::Neg | OpKind::Abs, _) => 1,
         ScheduledOp::Ternary(OpKind::Select, ..) => 1,
+        // A 256-bit gather is two 128-bit halves: the half-sequence's own
+        // index and value registers, plus one of each to carry the high half
+        // while the low one is assembled in `dst`.
+        ScheduledOp::Gather(..) => 4,
         _ => 0,
     }
 }
@@ -838,8 +842,13 @@ pub(crate) mod driver {
         // use — the case `fixed` exists to make checkable, since every other
         // ymm here is now named by `inputs`, `scratch`, `reload`,
         // or `fixed`.
-        scratch: regalloc::RegSet::range(4, 4).union(regalloc::RegSet::of(&[Reg(10), Reg(13)])),
-        fixed: &[x86_64::GATHER_VALUE, x86_64::GATHER_IDX, Reg(8), Reg(9)],
+        scratch: regalloc::RegSet::range(4, 4)
+            .union(regalloc::RegSet::of(&[Reg(8), Reg(9), Reg(10), Reg(13)]))
+            .union(regalloc::RegSet::of(&[Reg(14), Reg(15)])),
+        // Nothing. Every register this backend's encodings destroy is now a
+        // per-instruction reservation, so ymm8/9/14/15 are the allocator's
+        // except across the one gather that borrows them.
+        fixed: &[],
         // This backend's pool does not grow: `UNARY_SCRATCH` was ymm15, which
         // is also `GATHER_IDX`, so it appeared in `fixed` twice and freeing one
         // spelling frees no register. What it removes is the *sharing* — the
@@ -905,7 +914,7 @@ pub(crate) mod driver {
                     super::emit_const(code, *dst, f32::from_bits(*val_bits));
                 }
                 ResolvedOp::Unary { op, dst, src } => {
-                    super::emit_unary(code, *op, *dst, *src, plan.temp);
+                    super::emit_unary(code, *op, *dst, *src, plan.scratch.temp(0));
                 }
                 ResolvedOp::ShiftImm {
                     op,
@@ -934,11 +943,11 @@ pub(crate) mod driver {
                                 base_gpr: 0,  // rax
                                 index_gpr: 1, // rcx
                                 ctx_gpr: 7,   // rdi
-                                idx_lanes: x86_64::GATHER_IDX,
-                                value: x86_64::GATHER_VALUE,
+                                idx_lanes: crate::emit::declared_temp(plan.scratch.temp(0)),
+                                value: crate::emit::declared_temp(plan.scratch.temp(1)),
                             },
-                            idx_hi: Reg(9),
-                            res_hi: Reg(8),
+                            idx_hi: crate::emit::declared_temp(plan.scratch.temp(2)),
+                            res_hi: crate::emit::declared_temp(plan.scratch.temp(3)),
                         },
                     );
                 }
@@ -979,7 +988,7 @@ pub(crate) mod driver {
                     if_false,
                 } => {
                     // setup_mov already placed the vector mask in dst.
-                    super::emit_select(code, *dst, *if_true, *if_false, plan.temp);
+                    super::emit_select(code, *dst, *if_true, *if_false, plan.scratch.temp(0));
                 }
             }
             if let Some(store) = &plan.store {

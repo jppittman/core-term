@@ -24,6 +24,20 @@ use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
 
+/// How many registers this build's backend actually allocates.
+///
+/// The scenarios below are about what happens *past* the pool, so every one of
+/// them has to be sized against it. Writing that size in as a literal is how
+/// this file's pressure quietly evaporated once: `muladd_and_clamp_spilled`
+/// said "Sethi-Ullman number > 6", which stopped being more than the pool the
+/// moment the pool grew, and a scenario that no longer spills asserts nothing.
+fn pool_size() -> usize {
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let root = a.push_binary(OpKind::Add, x, x);
+    compile(&a, root).expect("trivial compile").max_regs as usize
+}
+
 /// Compile and compare against the interpreter over a coordinate grid.
 /// Returns the spill count so scenarios can assert they really exercised
 /// the spill paths (a pressure test that doesn't spill proves nothing).
@@ -193,8 +207,12 @@ fn nested_selects_spilled() {
 
 /// Decomposed `MulAdd` plus a min/max clamp chain, with spilled operands.
 ///
-/// Pressure note: the operands are trees DEEPER than the register budget
-/// (Sethi-Ullman number > 6), so they spill regardless of schedule order.
+/// Pressure note: the fillers are pushed before the `MulAdd` and consumed after
+/// it, so they hold the pool across it and its operands have to go to memory —
+/// which is what makes the `MulAdd` decompose. There are `pool + 2` of them so
+/// that stays true at whatever width this build allocates; the operand trees
+/// are deep as well, but depth alone stopped being enough once the pool grew
+/// past their Sethi-Ullman number.
 #[test]
 fn muladd_and_clamp_spilled() {
     let mut a = ExprArena::new();
@@ -206,7 +224,9 @@ fn muladd_and_clamp_spilled() {
     let cl_lo = tree(&mut a, 2, 103);
     let cl_hi = tree(&mut a, 2, 107);
 
-    let fillers: Vec<ExprId> = (0..4).map(|i| tree(&mut a, 2, 500 + i * 19)).collect();
+    let fillers: Vec<ExprId> = (0..pool_size() as u32 + 2)
+        .map(|i| tree(&mut a, 2, 500 + i * 19))
+        .collect();
 
     let ma = a.push_ternary(OpKind::MulAdd, ma_a, ma_b, ma_c);
     // Order lo <= hi is not guaranteed by the trees; the composition must

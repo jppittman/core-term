@@ -217,6 +217,8 @@ pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
     use super::ScheduledOp;
     match op {
         ScheduledOp::Unary(OpKind::Neg | OpKind::Abs, _) => 1,
+        // The gather's truncated-index lanes and its destination.
+        ScheduledOp::Gather(..) => 2,
         _ => 0,
     }
 }
@@ -867,13 +869,14 @@ pub(crate) mod driver {
         // past the reload pair and the gather's scratch.
         scratch: regalloc::RegSet::range(4, 7)
             .union(regalloc::RegSet::range(17, 15))
-            .union(regalloc::RegSet::of(&[Reg(13), Reg(15)])),
-        // zmm14/zmm16: the gather's destination and truncated-index registers.
-        // zmm15 used to sit here as `UNARY_SCRATCH`, reserved for the whole
-        // kernel so a sign-flip could borrow it; the sign-flip now asks the
-        // allocator for a temp, so zmm15 has joined the pool above. The select
-        // needs none — `vpternlogd` consumes its three operands.
-        fixed: &[Reg(14), Reg(16)],
+            .union(regalloc::RegSet::of(&[Reg(13), Reg(14), Reg(15), Reg(16)])),
+        // Nothing. Every register this backend's encodings destroy is now a
+        // per-instruction reservation: zmm15 for a sign-flip's mask, zmm14 and
+        // zmm16 for the gather's destination and truncated indices. All three
+        // are in the pool above, borrowed only across the one instruction that
+        // needs them. The select needs none — `vpternlogd` consumes its three
+        // operands.
+        fixed: &[],
         temps_for: super::temps_for,
         vector_bytes: 64,
         ..SSE2_FILE
@@ -932,7 +935,7 @@ pub(crate) mod driver {
                     super::emit_const(code, *dst, f32::from_bits(*val_bits));
                 }
                 ResolvedOp::Unary { op, dst, src } => {
-                    super::emit_unary(code, *op, *dst, *src, plan.temp);
+                    super::emit_unary(code, *op, *dst, *src, plan.scratch.temp(0));
                 }
                 ResolvedOp::ShiftImm {
                     op,
@@ -949,15 +952,15 @@ pub(crate) mod driver {
                     // declared in AVX512_FILE.fixed, so `RegisterFile::checked`
                     // proves they miss the pool, the reload pair and
                     // the allocator's `arm_reload`.
-                    const IDX_INT: Reg = Reg(16);
-                    const GATHER_DST: Reg = Reg(14);
+                    let idx_int = crate::emit::declared_temp(plan.scratch.temp(0));
+                    let gather_dst = crate::emit::declared_temp(plan.scratch.temp(1));
                     const RAX: u8 = 0;
                     const RDI: u8 = 7;
-                    super::emit_cvttps2dq(code, IDX_INT, *idx); // float idx -> int32 lanes
+                    super::emit_cvttps2dq(code, idx_int, *idx); // float idx -> int32 lanes
                     super::emit_set_gather_mask(code); // k1 = 0xFFFF (clobbers rax)
                     super::emit_load_ptr_from_ctx(code, RAX, RDI, (*slot as i32) * 8);
-                    super::emit_gather(code, GATHER_DST, RAX, IDX_INT);
-                    super::emit_mov(code, *dst, GATHER_DST);
+                    super::emit_gather(code, gather_dst, RAX, idx_int);
+                    super::emit_mov(code, *dst, gather_dst);
                 }
                 ResolvedOp::Binary {
                     op,

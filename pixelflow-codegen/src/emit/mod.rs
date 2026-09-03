@@ -278,14 +278,15 @@ pub struct InstructionPlan {
     pub setup_mov: Option<(Reg, Reg)>,
     /// Store to emit after the main op (if dst is spilled).
     pub store: Option<Store>,
-    /// A register the encoding may destroy for the length of this instruction.
+    /// The registers the encoding may destroy for the length of this
+    /// instruction.
     ///
-    /// Present exactly when the backend asked for one
-    /// ([`regalloc::RegisterFile::temps_for`]); the allocator picked it, so it
-    /// holds no live value and is nobody's operand, and it is free again at the
-    /// next instruction. An encoding that needs a temp must read this rather
-    /// than a `const`, because there is no register reserved for it.
-    pub temp: Option<Reg>,
+    /// Filled exactly as far as the backend asked
+    /// ([`regalloc::RegisterFile::temps_for`]); the allocator picked them, so
+    /// each holds no live value and is nobody's operand, and all are free again
+    /// at the next instruction. An encoding that needs scratch must read this
+    /// rather than a `const`, because there is no register reserved for it.
+    pub scratch: regalloc::Scratch,
 }
 
 /// The temp an encoding declared in [`regalloc::RegisterFile::temps_for`].
@@ -1834,7 +1835,7 @@ pub fn resolve_operands(
         op: resolved_op,
         setup_mov,
         store,
-        temp: scratch.temp,
+        scratch,
     })
 }
 
@@ -2416,10 +2417,7 @@ mod tests {
     /// `RegisterFile::select_reload`, so the all-spilled `Select` case below
     /// still names the register it always did, now as a per-instruction
     /// reservation rather than a field of the file.
-    const TEST_SCRATCH: regalloc::Scratch = regalloc::Scratch {
-        temp: None,
-        arm_reload: Some(Reg(13)),
-    };
+    const TEST_SCRATCH: regalloc::Scratch = regalloc::Scratch::for_test(None, Some(Reg(13)));
 
     /// Dense `ValueId -> Loc`, as the emit loop builds it.
     fn make_locs(assigned: &[(u32, u8)], spilled: &[(u32, u32)]) -> alloc::vec::Vec<Option<Loc>> {
@@ -4158,11 +4156,14 @@ mod tests {
                 op,
                 setup_mov: None,
                 store: None,
-                // Every shape below uses registers 4-7, so this stands in for
-                // whatever temp the allocator would hand an encoding that asks
-                // for one. A backend that wants a temp and finds none panics,
-                // which `try_emit` would report as a missing op.
-                temp: Some(Reg(15)),
+                // Every shape below uses registers 4-7, so these stand in for
+                // whatever scratch the allocator would hand an encoding that
+                // asks for some. A backend that wants scratch and finds none
+                // panics, which `try_emit` would report as a missing op.
+                scratch: regalloc::Scratch::for_test(
+                    Some([Reg(15), Reg(14), Reg(13), Reg(12)]),
+                    Some(Reg(11)),
+                ),
             };
             let mut code = alloc::vec::Vec::new();
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4352,9 +4353,10 @@ mod tests {
                 op,
                 setup_mov: None,
                 store: None,
-                // No `MulAdd` spelling on any backend asks for a temp; `None`
-                // is the assertion that none of them starts to unnoticed.
-                temp: None,
+                // No `MulAdd` spelling on any backend asks for scratch; the
+                // empty set is the assertion that none of them starts to
+                // unnoticed.
+                scratch: regalloc::Scratch::for_test(None, None),
             }
         }
 

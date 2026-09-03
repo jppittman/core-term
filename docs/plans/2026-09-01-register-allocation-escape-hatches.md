@@ -288,6 +288,44 @@ no temp, so the pool roughly doubles on x86 and quintuples on AVX-512.
 > equivalent: their guards go through `movmskps`/`kortest` and the flags, so
 > they need no vector register at all.
 
+> **Landed 2026-09-03 — the gathers, and class A is closed.** `Scratch` carries
+> up to `MAX_TEMPS` registers instead of one, so an encoding can ask for
+> several, and every gather's scratch became a per-instruction reservation. The
+> gathers were the last of class A: a 256-bit AVX2 gather needs four registers
+> (a 128-bit half's index and value, plus one of each to carry the high half),
+> AVX-512 and SSE2 two, aarch64 one — each held out of the pool for the whole
+> kernel, for an instruction most kernels do not contain at all.
+>
+> | backend | pool at step 1 | now | of |
+> |---|---|---|---|
+> | SSE2 | 6 | **9** | 16 |
+> | AVX2 | 4 | **10** | 16 |
+> | AVX-512 | 6 | **26** | 32 |
+> | aarch64 | 10 | **17** | 32 |
+>
+> Every one is past the "pool could be" column in the table above — that column
+> was drawn before temps were allocatable, so it still charged each backend for
+> the registers its own encodings borrow. `fixed` is now **empty** on AVX2 and
+> AVX-512, and holds exactly one register on SSE2 (`X86_SCRATCH`, whose demand
+> is a function of which registers allocation picked rather than of the op) and
+> one on aarch64 (`GUARD_SCRATCH`).
+>
+> `MIN_SCRATCH` rose from 4 to 6 with it, and the reason moved: it is no longer
+> a ternary's three operands plus a temp but AVX2's gather — one operand plus
+> four temps — with room for the destination either way.
+>
+> Three tests had a pool size written into them as a literal and stopped
+> testing anything when the pool grew past it. `muladd_and_clamp_spilled` said
+> "Sethi-Ullman number > 6" and now sizes its fillers from `pool_size()`;
+> `belady_evicts_the_value_used_farthest_out` and
+> `the_pool_may_straddle_a_reserved_register` are stated in terms of
+> `MIN_SCRATCH`. A fourth, `a_spilled_muladd_rounds_twice_on_every_target`, was
+> worse than stale: its wall was `(l − r) − (l − r)`, which `legalize` folds to
+> a single constant, so there was no wall — it reached the decomposed arm only
+> because the pool was smaller than three live values. Its terms are now
+> `(X + i) · W`, worth exactly zero at W = 0 and not foldable, because a
+> variable is the one thing the folder cannot see through.
+
 > **Methodology note.** Byte identity carried #1059–#1062 because those were
 > pure refactors: the emitted code was supposed to be unchanged, so an empty
 > diff was the whole proof. From here on the emitted code is *supposed* to
