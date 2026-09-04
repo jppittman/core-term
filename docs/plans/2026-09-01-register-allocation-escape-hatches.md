@@ -807,3 +807,66 @@ quickly.
 > while the emitter reads the real value from a slot — a register wasted per
 > parked root that one pool over the nest removes by making the root the
 > value in every scope.
+
+> **Measured 2026-09-04 — one pool over the nest, as a flat pass, is worse
+> than the budget it replaces.** Built in full after #1150 and not merged
+> (kept as `wip` commit `814710c2` on the agent's worktree branch so the
+> implementation and the measurement survive). Regions and body allocated
+> in one forward pass over `Point` order with one `reg_owner`, roots live
+> to the tail, head reconciliation as a slot load, the carry budget and
+> `RegisterFile::inside` deleted. Every suite green at SSE2. Glyph corpus,
+> 259 kernels, SSE2, memory ops counted at the emitter:
+>
+> | | bytes | memory ops | frame slots | head reloads |
+> |---|---:|---:|---:|---:|
+> | #1150 (carry budget) | 2 856 850 | 36 620 | 3 142 | 0 |
+> | one pool, Belady over the flat index | 3 256 120 (+14.0%) | 46 221 (+26.2%) | 12 124 | 1 690 |
+> | one pool, loop-carried lives un-evictable | 3 997 747 (+39.9%) | 137 774 (+276%) | 49 766 | 966 |
+>
+> **The denotation above was wrong where it said the frequency difference
+> "lives between scopes" and a wrapping next-use would price it.** Belady's
+> distance in the concatenated index space counts *static* positions; an
+> eviction costs *dynamic* ones. A body value read five instructions later
+> is read once per iteration; a root read three hundred flat positions later
+> is read on every iteration of every loop in between. The flat pass ranks
+> the root as the cheaper thing to give up, so roots spill (slots ×4 with no
+> other policy in play). Making loop-carried lives un-evictable is the
+> design's own correction and it overcorrects exactly as the frequency
+> weight did (+37%, above): hundreds of invariant roots against a
+> ten-register pool leave the body allocating against the remainder.
+>
+> So both directions have now been measured. Weighting reads by depth
+> over-carries; a flat distance under-carries; pinning loop-carried lives
+> over-carries worse. The carry budget was not only a brake — allocating
+> each region against `file.inside(carried)` also gave the region's own code
+> the whole pool minus a few reserved registers, which a single pool cannot
+> express when region values and body values compete on a metric that is
+> wrong for both.
+>
+> Four pieces of that commit are right independently of the pooling
+> decision and are the reason to keep it reachable: per-definition lives
+> (`next_read` stops at the next definition of the same `ValueId`, since a
+> leaf scheduled in two scopes is two definitions of one name); the
+> partitioner's `Const(0.0)` placeholder treated as neither a definition
+> nor a constant (believing its op made every parked root rematerializable
+> as zero; believing it a definition ended each root's life at its own
+> placeholder — two separate miscompiles the suites caught); scratch
+> exclusion asking where an operand *is* rather than who owns the slot
+> (`expire` frees a register without recording a range, and the two
+> disagree exactly for a value whose last read is the current instruction);
+> and the emitter following a live-in that moves.
+>
+> **What this points at is not another tier.** The question the budget
+> answers by constant — how many registers may roots take from the body —
+> has a measurable answer: the body's own peak demand. Scan the body once
+> with nothing carried, read its peak register demand `P` (residents plus
+> that instruction's scratch), and the carry budget is `pool − P`: no floor
+> constant, zero when the body is saturated, the whole slack when it is
+> not. Choose carries from the roots the body reads most, then scan the
+> *region* with those roots **pre-colored** to their carry registers, so a
+> root is computed straight into the register that carries it and the
+> choice no longer depends on what the region happened to leave free — the
+> shape-sensitivity that gives 202 invariants zero carries today. That is
+> two extra scans per nest, monotone with respect to body spilling by
+> construction, and it replaces the hand constant with a measurement rather
+> than a weight. Next.
