@@ -420,6 +420,61 @@ no temp, so the pool roughly doubles on x86 and quintuples on AVX-512.
 > (`spill_pressure`, `prod_kernel_jit`, `transcendental_jit`,
 > `oracle_reference`) are the differential half.
 
+> **Built and measured 2026-09-03 — frequency-weighted allocation is worse, and
+> the reason names what is actually missing.** The carry policy that landed
+> above picks roots by raw body-read count and caps them at
+> `pool − MIN_SCRATCH`. Both are hand-picked constants, and the symptom was
+> shape-sensitivity: a kernel with 6 invariants got 4 of them resident, one
+> with 202 got zero, because the *choice* of carry register was made from
+> whatever the producing region happened to leave free.
+>
+> The diagnosis was that the allocator has no cost model, only a heuristic.
+> `LinearScan` evicts by Belady — farthest out in **schedule order** — which is
+> optimal for cache replacement under the assumption that every miss costs the
+> same. A loop nest breaks that assumption: a value read once per inner
+> iteration costs one reload *per iteration*, one read in the prologue costs
+> one reload, and `last_use` is a schedule index that cannot tell them apart.
+>
+> So `WeightedScan` prices the reload instead of measuring the distance to it.
+> Every read contributes `10^depth`; eviction takes whichever resident value is
+> cheapest to bring back; a root is live past its region (`Pricing::live_out`)
+> so ordinary eviction keeps it. Carries stop being budgeted and simply fall
+> out of the eviction rule.
+>
+> **It is substantially worse.** Real glyph bakes (257 kernels): carries rise
+> 578 → 1021, and emitted code rises **3.01 MB → 4.12 MB, +37%**. Corroborated
+> on a synthetic invariant kernel, where the mechanism is legible:
+>
+> | invariants | LinearScan | WeightedScan |
+> |---|---|---|
+> | 4 | 0 spills / 498 B | 0 / 492 B |
+> | 16 | 0 / 1422 B | **13 spills** / 1937 B |
+> | 48 | 0 / 3886 B | **77 spills** / 6641 B |
+>
+> The cause is a half-priced trade. Carrying is charged to the body — every
+> inner scope gets its pool as `file.inside(carried)` — so a carried invariant
+> displaces a body value. Both are read at the same depth, so they are worth
+> the *same* per iteration; but the displaced one is spilled, which costs a
+> store as well as a reload. Pricing the benefit of carrying without pricing
+> its cost therefore trades equal-weight reads and pays store traffic on top.
+>
+> Two things worth keeping from it. First, **`MIN_SCRATCH` is load-bearing in a
+> second way**: `LinearScan`'s `pool − MIN_SCRATCH` budget is not only policy,
+> it is what keeps the body above the encoding floor, and removing it as a
+> "constant to be eliminated" made the allocator run out of evictable registers
+> entirely. Second, the floor is *not* a sufficient cap — carrying right up to
+> it leaves the body enough registers to emit and not enough to avoid spilling,
+> which is the whole 37%.
+>
+> What the result actually asks for is not a better weight. It is that the
+> regions and the body be allocated **against one pool at once**, so the
+> invariant's demand and the body's compete directly, instead of the body
+> receiving whatever the regions left. That is a global allocation over the
+> nest rather than a sequential one, and it is a larger change than this was.
+> The code is reverted; the trait sharpening it motivated is not (see the
+> commit that made `allocate_nest` the required method), and it is what a
+> second allocator will plug into when one is worth shipping.
+
 > **Methodology note.** Byte identity carried #1059–#1062 because those were
 > pure refactors: the emitted code was supposed to be unchanged, so an empty
 > diff was the whole proof. From here on the emitted code is *supposed* to
