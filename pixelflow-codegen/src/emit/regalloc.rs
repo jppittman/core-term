@@ -346,15 +346,22 @@ impl RegisterFile {
     }
 }
 
-/// Where the allocator decided a value lives.
+/// A program point: a position in a region's schedule.
+///
+/// Program point *is* index into [`Allocation::schedule`], which is why this
+/// is the coordinate a placement's ranges are stated in.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Point(pub usize);
+
+/// Where the allocator decided a value lives, over one range of its life.
 ///
 /// Deliberately carries no stack address: choosing that a value spills and
 /// choosing *where* it spills are different decisions, and the second belongs
 /// to [`FrameLayout`](super::FrameLayout), which is what knows about frames.
 /// The emitter reads the composition of the two as [`Loc`](super::Loc).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Placement {
-    /// In this register, for the whole of the value's live range.
+pub enum Where {
+    /// In this register.
     Reg(Reg),
     /// Evicted to a stack slot.
     Spilled,
@@ -362,6 +369,84 @@ pub enum Placement {
     /// nowhere and is re-emitted at each use, which beats a store plus a
     /// reload.
     Remat(u32),
+}
+
+/// One range of a value's life: from `from` (inclusive) until the next range's
+/// `from` (exclusive), the value lives at `at`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Span {
+    /// The program point this range starts at.
+    pub from: Point,
+    /// Where the value lives over it.
+    pub at: Where,
+}
+
+/// Where a value lives, at every point in its life.
+///
+/// A **non-empty, strictly increasing sequence** of [`Span`]s. The first
+/// range's `from` is the value's definition index — no query can be earlier
+/// than that — so the one-range case need not store it, which is what
+/// [`Placement::Single`] is.
+///
+/// One location for a whole life was the old shape, and it is the shape that
+/// makes two things unsayable. A value hot in part of a region and cold in the
+/// rest cannot hold a register for the hot part only; and a root computed in
+/// an outer region and read inside the loops within cannot be in that region's
+/// register *and* in a slot for the loops — which is two locations over one
+/// life, and is exactly what a nest-wide placement map has to express.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// One location for the whole life — what every value has today.
+    Single(Where),
+    /// A schedule of locations, strictly increasing in `from`.
+    Ranged(Vec<Span>),
+}
+
+impl Placement {
+    /// Where the value lives at `point`.
+    ///
+    /// Total: the last range whose `from` is at or before `point`.
+    #[must_use]
+    pub fn at(&self, point: Point) -> Where {
+        match self {
+            Self::Single(at) => *at,
+            Self::Ranged(spans) => {
+                let after = spans.partition_point(|s| s.from <= point);
+                // `after == 0` means a query before the value's own
+                // definition, which no caller can make: an operand is read
+                // after it is defined. Answering with the first range keeps
+                // this total rather than adding a panic for it.
+                spans[after.saturating_sub(1)].at
+            }
+        }
+    }
+
+    /// Every location this value occupies, in order.
+    pub fn locations(&self) -> impl Iterator<Item = Where> + use<'_> {
+        let (single, ranged): (Option<Where>, &[Span]) = match self {
+            Self::Single(at) => (Some(*at), &[]),
+            Self::Ranged(spans) => (None, spans.as_slice()),
+        };
+        single.into_iter().chain(ranged.iter().map(|s| s.at))
+    }
+
+    /// Whether any range of this value's life is in a stack slot.
+    ///
+    /// That is what earns it a slot: [`FrameLayout`](super::FrameLayout)
+    /// answers by value, so a value ever in memory is in memory at one
+    /// address.
+    #[must_use]
+    pub fn spills(&self) -> bool {
+        self.locations().any(|at| at == Where::Spilled)
+    }
+
+    /// Every register this value occupies over its life.
+    pub fn registers(&self) -> impl Iterator<Item = Reg> + use<'_> {
+        self.locations().filter_map(|at| match at {
+            Where::Reg(r) => Some(r),
+            Where::Spilled | Where::Remat(_) => None,
+        })
+    }
 }
 
 /// A complete answer for one program: an evaluation order, and a placement for
@@ -465,7 +550,7 @@ impl Allocation {
         self.scratch.get(i).copied().unwrap_or_default()
     }
 
-    /// Where `v` lives.
+    /// Where `v` lives, at every point in its life.
     ///
     /// Total over [`Allocation::schedule`] — every value the emitter walks has
     /// an answer here, which is the invariant that used to be spread across
@@ -475,25 +560,46 @@ impl Allocation {
     /// # Panics
     /// If `v` is not in this schedule.
     #[must_use]
-    pub fn placement(&self, v: ValueId) -> Placement {
+    pub fn placement(&self, v: ValueId) -> &Placement {
         self.placements
             .get(v.0 as usize)
-            .copied()
-            .flatten()
+            .and_then(Option::as_ref)
             .unwrap_or_else(|| panic!("{v:?} is not in this allocation's schedule"))
     }
 
-    /// Override where a value lives.
+    /// Where `v` lives at program point `at`.
+    ///
+    /// The query carries its own point because a placement is a schedule, not
+    /// an annotation: asking where a value is without saying *when* is a
+    /// question with no answer once a live range can be split.
+    ///
+    /// # Panics
+    /// If `v` is not in this schedule.
+    #[must_use]
+    pub fn where_at(&self, v: ValueId, at: Point) -> Where {
+        self.placement(v).at(at)
+    }
+
+    /// Whether any range of `v`'s life is in a stack slot.
+    ///
+    /// # Panics
+    /// If `v` is not in this schedule.
+    #[must_use]
+    pub fn spills(&self, v: ValueId) -> bool {
+        self.placement(v).spills()
+    }
+
+    /// Override where a value lives, for its whole life.
     ///
     /// The collapse-loop LICM pins a hoisted value to the slot its prologue
     /// parked it in, overriding whatever the allocator gave the placeholder
     /// def. One write, so the placement cannot desync from itself.
-    pub fn place(&mut self, v: ValueId, placement: Placement) {
+    pub fn place(&mut self, v: ValueId, at: Where) {
         let idx = v.0 as usize;
         if idx >= self.placements.len() {
             self.placements.resize(idx + 1, None);
         }
-        self.placements[idx] = Some(placement);
+        self.placements[idx] = Some(Placement::Single(at));
     }
 
     /// The values that need a stack slot, in schedule order.
@@ -503,7 +609,7 @@ impl Allocation {
         self.schedule
             .iter()
             .map(|def| def.value)
-            .filter(|v| self.placement(*v) == Placement::Spilled)
+            .filter(|v| self.spills(*v))
     }
 }
 
@@ -709,10 +815,8 @@ impl RegisterAllocator for LinearScan {
             let mut used: Vec<Reg> = allocation
                 .placements
                 .iter()
-                .filter_map(|p| match p {
-                    Some(Placement::Reg(r)) => Some(*r),
-                    _ => None,
-                })
+                .flatten()
+                .flat_map(Placement::registers)
                 .collect();
             for scratch in &allocation.scratch {
                 used.extend(scratch.temps.iter().flatten().copied());
@@ -790,7 +894,8 @@ impl LinearScan {
         // never competes for one.
         for def in &dag {
             if let ScheduledOp::Var(i) = def.op {
-                placements[def.value.0 as usize] = Some(Placement::Reg(input_register(file, i)));
+                placements[def.value.0 as usize] =
+                    Some(Placement::Single(Where::Reg(input_register(file, i))));
             }
         }
 
@@ -825,8 +930,8 @@ impl LinearScan {
                 // its whole life, exactly as destination eviction below does.
                 if let Some(evicted) = reg_owner[slot].take() {
                     placements[evicted.0 as usize] = Some(match const_bits[evicted.0 as usize] {
-                        Some(bits) => Placement::Remat(bits),
-                        None => Placement::Spilled,
+                        Some(bits) => Placement::Single(Where::Remat(bits)),
+                        None => Placement::Single(Where::Spilled),
                     });
                 }
                 scratch[slot]
@@ -859,7 +964,7 @@ impl LinearScan {
                 .enumerate()
                 .position(|(idx, slot)| slot.is_none() && !reserved.contains(&Some(idx)))
             {
-                placements[vid.0 as usize] = Some(Placement::Reg(scratch[free]));
+                placements[vid.0 as usize] = Some(Placement::Single(Where::Reg(scratch[free])));
                 reg_owner[free] = Some(*vid);
                 continue;
             }
@@ -905,12 +1010,13 @@ impl LinearScan {
 
             let loser = if evict_new { *vid } else { occupant };
             placements[loser.0 as usize] = Some(match const_bits[loser.0 as usize] {
-                Some(bits) => Placement::Remat(bits),
-                None => Placement::Spilled,
+                Some(bits) => Placement::Single(Where::Remat(bits)),
+                None => Placement::Single(Where::Spilled),
             });
 
             if !evict_new {
-                placements[vid.0 as usize] = Some(Placement::Reg(scratch[evict_slot]));
+                placements[vid.0 as usize] =
+                    Some(Placement::Single(Where::Reg(scratch[evict_slot])));
                 reg_owner[evict_slot] = Some(*vid);
             }
         }
@@ -1080,6 +1186,22 @@ mod tests {
         LinearScan.allocate(schedule, &TEST_FILE)
     }
 
+    /// Where `v` lives at its own definition — the first range of its
+    /// placement.
+    ///
+    /// A placement is a schedule, so every query needs a point; the point a
+    /// test means when it asks "where did the allocator put this" is the
+    /// definition, and finding it is the schedule's job rather than each
+    /// assertion's.
+    fn at_def(a: &Allocation, v: ValueId) -> Where {
+        let i = a
+            .schedule
+            .iter()
+            .position(|d| d.value == v)
+            .unwrap_or_else(|| panic!("{v:?} is not in this schedule"));
+        a.where_at(v, Point(i))
+    }
+
     /// `v2 = X + Y`.
     fn add_xy() -> Vec<Def> {
         vec![
@@ -1108,10 +1230,10 @@ mod tests {
     #[test]
     fn vars_are_pinned_to_the_input_registers() {
         let a = alloc(add_xy());
-        assert_eq!(a.placement(ValueId(0)), Placement::Reg(Reg(0)), "X");
-        assert_eq!(a.placement(ValueId(1)), Placement::Reg(Reg(1)), "Y");
+        assert_eq!(at_def(&a, ValueId(0)), Where::Reg(Reg(0)), "X");
+        assert_eq!(at_def(&a, ValueId(1)), Where::Reg(Reg(1)), "Y");
         // The sum takes the pool, never an input register.
-        assert_eq!(a.placement(ValueId(2)), Placement::Reg(Reg(4)));
+        assert_eq!(at_def(&a, ValueId(2)), Where::Reg(Reg(4)));
         assert_eq!(a.spilled().count(), 0);
     }
 
@@ -1120,8 +1242,55 @@ mod tests {
     #[test]
     fn placement_is_total_over_the_schedule() {
         let a = alloc(add_xy());
-        let placed: Vec<Placement> = a.schedule.iter().map(|d| a.placement(d.value)).collect();
+        let placed: Vec<Where> = a.schedule.iter().map(|d| at_def(&a, d.value)).collect();
         assert_eq!(placed.len(), a.schedule.len());
+    }
+
+    // -------------------------------------------------------------------------
+    // The placement sequence itself
+    // -------------------------------------------------------------------------
+
+    /// A one-range placement answers the same thing at every point — which is
+    /// what makes today's allocator's output a special case of the sequence
+    /// rather than a different kind of answer.
+    #[test]
+    fn a_single_range_answers_everywhere() {
+        let p = Placement::Single(Where::Reg(Reg(7)));
+        for i in [0usize, 1, 99] {
+            assert_eq!(p.at(Point(i)), Where::Reg(Reg(7)));
+        }
+        assert!(!p.spills());
+        assert_eq!(p.registers().collect::<Vec<_>>(), vec![Reg(7)]);
+    }
+
+    /// The case the whole type exists for: a value in a register up to a
+    /// point and in a slot after it. Nothing emits this yet — the policy that
+    /// will is the work this API unblocks — so it is checked here directly.
+    #[test]
+    fn a_ranged_placement_answers_per_point() {
+        let p = Placement::Ranged(vec![
+            Span {
+                from: Point(3),
+                at: Where::Reg(Reg(5)),
+            },
+            Span {
+                from: Point(9),
+                at: Where::Spilled,
+            },
+        ]);
+
+        assert_eq!(p.at(Point(3)), Where::Reg(Reg(5)), "the first range starts");
+        assert_eq!(p.at(Point(8)), Where::Reg(Reg(5)), "still the first range");
+        assert_eq!(p.at(Point(9)), Where::Spilled, "`from` is inclusive");
+        assert_eq!(p.at(Point(400)), Where::Spilled, "the last range runs on");
+
+        // Total below the definition too: an answer, not a panic.
+        assert_eq!(p.at(Point(0)), Where::Reg(Reg(5)));
+
+        // A value in a slot for *part* of its life still needs a slot, and the
+        // register it held earlier is still a register something wrote.
+        assert!(p.spills());
+        assert_eq!(p.registers().collect::<Vec<_>>(), vec![Reg(5)]);
     }
 
     #[test]
@@ -1143,7 +1312,7 @@ mod tests {
         ]);
         assert_eq!(a.spilled().count(), 0);
         // v2's last use is v3, so v4 may reuse v2's register.
-        assert_eq!(a.placement(ValueId(2)), a.placement(ValueId(4)));
+        assert_eq!(at_def(&a, ValueId(2)), at_def(&a, ValueId(4)));
     }
 
     // -------------------------------------------------------------------------
@@ -1166,8 +1335,8 @@ mod tests {
             TEMP_FILE.scratch.contains(temp),
             "{temp:?} is not the pool's"
         );
-        assert_ne!(Placement::Reg(temp), a.placement(ValueId(0)));
-        assert_ne!(Placement::Reg(temp), a.placement(ValueId(1)));
+        assert_ne!(Where::Reg(temp), at_def(&a, ValueId(0)));
+        assert_ne!(Where::Reg(temp), at_def(&a, ValueId(1)));
     }
 
     /// A `Select` gets its own third reload target, disjoint from its operands,
@@ -1193,8 +1362,8 @@ mod tests {
         assert!(TEMP_FILE.scratch.contains(arm), "{arm:?} is not the pool's");
         for v in [ValueId(2), ValueId(3), ValueId(4), ValueId(5)] {
             assert_ne!(
-                Placement::Reg(arm),
-                a.placement(v),
+                Where::Reg(arm),
+                at_def(&a, v),
                 "{arm:?} is still holding {v:?} when the Select reloads into it"
             );
         }
@@ -1229,7 +1398,7 @@ mod tests {
             &tiny,
         );
         let temp = a.scratch(3).temp(0).expect("`Neg` asked for a temp");
-        assert_ne!(Placement::Reg(temp), a.placement(ValueId(2)));
+        assert_ne!(Where::Reg(temp), at_def(&a, ValueId(2)));
     }
 
     /// Only the ops that asked get one — the register is the allocator's
@@ -1262,7 +1431,7 @@ mod tests {
         let reused = a
             .schedule
             .iter()
-            .any(|d| a.placement(d.value) == Placement::Reg(temp));
+            .any(|d| at_def(&a, d.value) == Where::Reg(temp));
         assert!(reused, "{temp:?} went back to the pool after the `Neg`");
     }
 
@@ -1286,7 +1455,7 @@ mod tests {
         // A placement is one choice, so nothing is both in a register and on
         // the stack — the miscompile the three parallel maps could express.
         for v in a.spilled() {
-            assert_eq!(a.placement(v), Placement::Spilled);
+            assert_eq!(at_def(&a, v), Where::Spilled);
         }
     }
 
@@ -1309,8 +1478,8 @@ mod tests {
         let a = alloc(schedule);
 
         let remat: Vec<(ValueId, u32)> = (1..=6u32)
-            .filter_map(|i| match a.placement(ValueId(i)) {
-                Placement::Remat(bits) => Some((ValueId(i), bits)),
+            .filter_map(|i| match at_def(&a, ValueId(i)) {
+                Where::Remat(bits) => Some((ValueId(i), bits)),
                 _ => None,
             })
             .collect();
@@ -1358,13 +1527,13 @@ mod tests {
         let a = alloc(schedule);
 
         assert_eq!(
-            a.placement(ValueId(live - 1)),
-            Placement::Spilled,
+            at_def(&a, ValueId(live - 1)),
+            Where::Spilled,
             "v{live_minus_1} is needed last, so it is the one to evict",
             live_minus_1 = live - 1
         );
         assert!(
-            matches!(a.placement(ValueId(1)), Placement::Reg(_)),
+            matches!(at_def(&a, ValueId(1)), Where::Reg(_)),
             "v1 is needed next, so it must keep its register — evicting it is \
              what FIFO and LRU would have done"
         );
@@ -1377,7 +1546,7 @@ mod tests {
         let a = alloc(add_xy());
         let b = alloc(add_xy());
         for d in &a.schedule {
-            assert_eq!(a.placement(d.value), b.placement(d.value));
+            assert_eq!(at_def(&a, d.value), at_def(&b, d.value));
         }
         assert_eq!(
             a.spilled().collect::<Vec<_>>(),
@@ -1390,9 +1559,9 @@ mod tests {
     #[test]
     fn a_placement_can_be_overridden() {
         let mut a = alloc(add_xy());
-        assert!(matches!(a.placement(ValueId(2)), Placement::Reg(_)));
-        a.place(ValueId(2), Placement::Spilled);
-        assert_eq!(a.placement(ValueId(2)), Placement::Spilled);
+        assert!(matches!(at_def(&a, ValueId(2)), Where::Reg(_)));
+        a.place(ValueId(2), Where::Spilled);
+        assert_eq!(at_def(&a, ValueId(2)), Where::Spilled);
         assert_eq!(a.spilled().collect::<Vec<_>>(), vec![ValueId(2)]);
     }
 
@@ -1459,19 +1628,22 @@ mod tests {
             // destination (the pool excludes them), so counting those would
             // let the test pass vacuously.
             let mut contested = 0;
-            for d in &a.schedule {
-                let Placement::Reg(dst) = a.placement(d.value) else {
+            for (i, d) in a.schedule.iter().enumerate() {
+                // At the instruction's own point: that is where a destination
+                // and its operands would collide.
+                let point = Point(i);
+                let Where::Reg(dst) = a.where_at(d.value, point) else {
                     continue; // Spilled: the destination is `reload[0]`, not the pool's.
                 };
                 for operand in operands(&d.op) {
-                    let at = a.placement(operand);
+                    let at = a.where_at(operand, point);
                     assert_ne!(
                         at,
-                        Placement::Reg(dst),
+                        Where::Reg(dst),
                         "{:?}: destination {dst:?} is where its operand {operand:?} lives",
                         d.value
                     );
-                    if matches!(at, Placement::Reg(r) if file.scratch.contains(r)) {
+                    if matches!(at, Where::Reg(r) if file.scratch.contains(r)) {
                         contested += 1;
                     }
                 }
@@ -1532,10 +1704,7 @@ mod tests {
             .body
             .schedule
             .iter()
-            .filter_map(|d| match alloc.body.placement(d.value) {
-                Placement::Reg(r) => Some(r),
-                _ => None,
-            })
+            .flat_map(|d| alloc.body.placement(d.value).registers())
             .collect();
         for i in 0..alloc.body.schedule.len() {
             let s = alloc.body.scratch(i);

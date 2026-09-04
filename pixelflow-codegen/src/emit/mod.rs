@@ -130,19 +130,25 @@ impl FrameLayout {
         let mut locs: alloc::vec::Vec<Option<Loc>> = alloc::vec![None; len];
 
         let mut offset = 0u32;
-        for def in &allocation.schedule {
-            let loc = match allocation.placement(def.value) {
-                regalloc::Placement::Reg(r) => Loc::Reg(r),
-                regalloc::Placement::Remat(bits) => Loc::Remat(bits),
-                regalloc::Placement::Spilled => {
-                    if offset > MAX_FRAME - vector_bytes {
-                        return Err(CompileError::BudgetExceeded(
-                            "spill frame overflow: exceeds 2MB stack limit",
-                        ));
-                    }
-                    let at = offset;
-                    offset += vector_bytes;
-                    Loc::Spill(at)
+        for (i, def) in allocation.schedule.iter().enumerate() {
+            // One slot per value with *any* spilled range: this answers by
+            // value, so a value ever in memory is in memory at one address.
+            let loc = if allocation.spills(def.value) {
+                if offset > MAX_FRAME - vector_bytes {
+                    return Err(CompileError::BudgetExceeded(
+                        "spill frame overflow: exceeds 2MB stack limit",
+                    ));
+                }
+                let at = offset;
+                offset += vector_bytes;
+                Loc::Spill(at)
+            } else {
+                match allocation.where_at(def.value, regalloc::Point(i)) {
+                    regalloc::Where::Reg(r) => Loc::Reg(r),
+                    regalloc::Where::Remat(bits) => Loc::Remat(bits),
+                    // `spills` is exactly "some range is `Spilled`", and it
+                    // already answered no.
+                    regalloc::Where::Spilled => unreachable!("no range is spilled"),
                 }
             };
             locs[def.value.0 as usize] = Some(loc);
@@ -2420,7 +2426,7 @@ mod tests {
     // =========================================================================
 
     /// Build an allocation with the given placements, in schedule order.
-    fn allocation_of(placements: &[(u32, regalloc::Placement)]) -> regalloc::Allocation {
+    fn allocation_of(placements: &[(u32, regalloc::Where)]) -> regalloc::Allocation {
         use regalloc::{Def, RegisterAllocator, ValueId};
         // Allocate a trivial all-Var schedule to get a well-formed Allocation,
         // then pin each value where the test wants it.
@@ -2440,7 +2446,7 @@ mod tests {
 
     #[test]
     fn an_allocation_with_no_spills_needs_no_frame() {
-        let a = allocation_of(&[(0, regalloc::Placement::Reg(Reg(4)))]);
+        let a = allocation_of(&[(0, regalloc::Where::Reg(Reg(4)))]);
         let layout = FrameLayout::resolve(&a, 16).unwrap();
         assert_eq!(layout.frame_size, 0);
         assert_eq!(layout.of(regalloc::ValueId(0)), Loc::Reg(Reg(4)));
@@ -2448,7 +2454,7 @@ mod tests {
 
     #[test]
     fn one_spill_takes_one_slot() {
-        let a = allocation_of(&[(5, regalloc::Placement::Spilled)]);
+        let a = allocation_of(&[(5, regalloc::Where::Spilled)]);
         let layout = FrameLayout::resolve(&a, 16).unwrap();
         assert_eq!(layout.frame_size, 16);
         assert_eq!(layout.of(regalloc::ValueId(5)), Loc::Spill(0));
@@ -2460,9 +2466,9 @@ mod tests {
     #[test]
     fn slots_are_laid_out_at_the_backends_vector_stride() {
         let spilled = [
-            (1, regalloc::Placement::Spilled),
-            (2, regalloc::Placement::Spilled),
-            (3, regalloc::Placement::Spilled),
+            (1, regalloc::Where::Spilled),
+            (2, regalloc::Where::Spilled),
+            (3, regalloc::Where::Spilled),
         ];
         for (vector_bytes, expected) in
             [(16u32, [0, 16, 32]), (32, [0, 32, 64]), (64, [0, 64, 128])]
@@ -2484,8 +2490,8 @@ mod tests {
     #[test]
     fn rematerialized_values_take_no_frame_space() {
         let a = allocation_of(&[
-            (0, regalloc::Placement::Remat(1.0f32.to_bits())),
-            (1, regalloc::Placement::Spilled),
+            (0, regalloc::Where::Remat(1.0f32.to_bits())),
+            (1, regalloc::Where::Spilled),
         ]);
         let layout = FrameLayout::resolve(&a, 16).unwrap();
         assert_eq!(layout.frame_size, 16, "only the spill takes a slot");
@@ -2499,7 +2505,7 @@ mod tests {
     /// The collapse LICM pins a hoisted value to the slot its prologue wrote.
     #[test]
     fn a_location_can_be_pinned_over_the_allocators_choice() {
-        let a = allocation_of(&[(0, regalloc::Placement::Reg(Reg(4)))]);
+        let a = allocation_of(&[(0, regalloc::Where::Reg(Reg(4)))]);
         let mut layout = FrameLayout::resolve(&a, 16).unwrap();
         layout.pin(regalloc::ValueId(0), Loc::Spill(256));
         assert_eq!(layout.of(regalloc::ValueId(0)), Loc::Spill(256));
@@ -3145,9 +3151,8 @@ mod tests {
                 .first()
                 .expect("a guard formed above")
                 .mask_vid;
-            assert_eq!(
-                allocation.placement(mask_vid),
-                regalloc::Placement::Spilled,
+            assert!(
+                allocation.spills(mask_vid),
                 "the mask stayed in a register, so the spilled-mask path this \
                  test exists for is never reached"
             );
