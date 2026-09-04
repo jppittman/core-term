@@ -620,26 +620,39 @@ impl IsaExecutionMode {
     /// The `cargo` arguments this mode runs after building and linting a
     /// level, or `None` if it runs nothing.
     ///
-    /// `Smoke` names two crates rather than the workspace, and the choice is
+    /// `Smoke` names three crates rather than the workspace, and the choice is
     /// not "the fast tests" — it is **the crates whose output is per-level
     /// machine code**. `pixelflow-codegen` emits it and `pixelflow-ir` defines
     /// what it must compute; their suites are differential (JIT against the
     /// `eval_scalar` interpreter, on the same inputs), so a level-specific
     /// miscompile shows up as a value mismatch rather than a build error.
+    ///
+    /// `pixelflow-core` is here because it *bakes* kernels — `Lattice::bake`
+    /// runs the whole optimizer-to-JIT path on expressions no synthetic test
+    /// writes, and then checks the pixels. That is a different question from
+    /// "does this op round-trip", and it was the only job that could have
+    /// caught a register allocator whose guard reconciliation was skipped on
+    /// one path: the shape needs a spilled value reloaded exactly at a
+    /// `Select` arm's end, which a 600-node baked kernel produces and a
+    /// hand-written one does not. It ran at SSE2 only, and the bug was
+    /// invisible there because SSE2 reserves one more scratch register per
+    /// `MulAdd` and so allocates a different schedule.
+    ///
     /// Every other crate in the workspace consumes the same kernels through
     /// the same interface at every level, so running it three times re-runs
     /// identical work.
     ///
     /// The economics are why this belongs presubmit at all: building the test
     /// binaries already happened for `--no-run` and clippy, so the marginal
-    /// cost is execution only — ~50s per level against ~344s for the whole
-    /// workspace, measured warm. That is the difference between a check that
-    /// fits in a PR's wait and one that does not.
+    /// cost is execution only — ~70s per level against ~344s for the whole
+    /// workspace, measured warm (`pixelflow-core`'s lib suite is ~20s of
+    /// that). That is the difference between a check that fits in a PR's wait
+    /// and one that does not.
     /// What a `PASS` from this mode covers, for the summary line.
     fn scope(&self) -> &'static str {
         match self {
             Self::BuildOnly => "none",
-            Self::Smoke => "smoke: codegen+ir",
+            Self::Smoke => "smoke: codegen+ir+core",
             Self::BuildAndTest => "workspace",
         }
     }
@@ -653,6 +666,8 @@ impl IsaExecutionMode {
                 "pixelflow-codegen",
                 "-p",
                 "pixelflow-ir",
+                "-p",
+                "pixelflow-core",
                 "--no-fail-fast",
             ]),
             Self::BuildAndTest => Some(&["test", "--workspace", "--no-fail-fast"]),

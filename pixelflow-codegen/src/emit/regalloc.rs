@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 
 use pixelflow_ir::kind::OpKind;
 
+use super::guards::analyze_select_guards;
 use super::{Reg, ScheduledOp};
 
 /// A value in the program (SSA-style).
@@ -375,6 +376,18 @@ pub struct Point {
     pub index: usize,
 }
 
+impl Point {
+    /// The last point of the nest.
+    ///
+    /// Every scope's subtree ends inside the body, so there is exactly one of
+    /// these — which is what makes "live to the tail" a single, comparable
+    /// answer for a value read across any back edge.
+    pub const TAIL: Self = Self {
+        scope: Scope::Body,
+        index: usize::MAX,
+    };
+}
+
 /// Where the allocator decided a value lives, over one range of its life.
 ///
 /// Deliberately carries no stack address: choosing that a value spills and
@@ -473,9 +486,14 @@ impl Placement {
         }
     }
 
+    /// Every range of this value's life, in order.
+    pub fn spans(&self) -> impl Iterator<Item = Span> + use<'_> {
+        core::iter::once(self.first).chain(self.rest.iter().copied())
+    }
+
     /// Every location this value occupies, in order.
     pub fn locations(&self) -> impl Iterator<Item = Where> + use<'_> {
-        core::iter::once(self.first.at).chain(self.rest.iter().map(|s| s.at))
+        self.spans().map(|s| s.at)
     }
 
     /// Whether any range of this value's life is in a stack slot.
@@ -751,6 +769,53 @@ impl<'a> Allocation<'a> {
         self.nest.carried(root)
     }
 
+    /// Where `v` lives at every point in the nest.
+    ///
+    /// # Panics
+    /// If `v` is in no scope of this nest.
+    #[must_use]
+    pub fn placement(&self, v: ValueId) -> &'a Placement {
+        self.nest.placement(v)
+    }
+
+    /// The points inside *this* scope at which `v` changes place, in order.
+    ///
+    /// A placement is nest-wide; emitting one scope needs the part of it that
+    /// happens here. This is what lets the emitter maintain its location table
+    /// incrementally — one pass, O(total spans) — rather than asking where
+    /// every value is at every instruction.
+    ///
+    /// # Panics
+    /// If `v` is in no scope of this nest.
+    pub fn transitions(self, v: ValueId) -> impl Iterator<Item = (usize, Where)> + use<'a> {
+        let scope = self.scope;
+        self.nest
+            .placement(v)
+            .spans()
+            .filter(move |s| s.from.scope == scope)
+            .map(|s| (s.from.index, s.at))
+    }
+
+    /// The first program point *inside* this scope: where the loops it
+    /// encloses begin, and where a root it parks is picked up.
+    ///
+    /// The body encloses nothing, so its own end is the answer there — a point
+    /// no span starts at, which is exactly "there is nothing inside".
+    #[must_use]
+    pub fn inner_head(&self) -> Point {
+        match self.scope {
+            Scope::Region(i) if i + 1 < self.nest.regions.len() => Point {
+                scope: Scope::Region(i + 1),
+                index: 0,
+            },
+            Scope::Region(_) => Point {
+                scope: Scope::Body,
+                index: 0,
+            },
+            Scope::Body => Point::TAIL,
+        }
+    }
+
     /// Whether this scope *reads* `v` from an enclosing region's park rather
     /// than computing it.
     ///
@@ -866,15 +931,21 @@ pub struct ScopeRegion {
     pub schedule: Vec<Def>,
 }
 
-/// Linear scan with Belady eviction and constant rematerialization.
+/// Linear scan with Belady eviction, live-range splitting and constant
+/// rematerialization.
 ///
-/// Two passes. The first walks the program computing each value's last use;
-/// the second walks it forward assigning registers, and at each definition:
-/// 1. Frees registers whose values have expired.
-/// 2. Takes a free scratch register if there is one.
-/// 3. Otherwise evicts — preferring a constant (free to rematerialize, no
-///    memory traffic) and otherwise the live value whose next use is farthest
-///    in the future.
+/// One forward pass per scope. At each instruction it
+/// 1. frees registers whose owner is not read again,
+/// 2. reserves the instruction's scratch,
+/// 3. brings a spilled operand back into a pool register and *keeps* it there
+///    when it is read again soon enough to be worth one,
+/// 4. gives the destination a free register, or evicts.
+///
+/// Eviction **splits**: the loser keeps the register it held up to that point
+/// and its life continues in its slot, or — for a constant — nowhere at all,
+/// since re-emitting the load beats a store plus a reload. A single location
+/// per value made a value's whole life pay for the moment of pressure that
+/// evicted it.
 ///
 /// The evaluation order it returns is the one it was given: the arena's
 /// append-only structure already guarantees a topological order, so there is
@@ -883,14 +954,13 @@ pub struct ScopeRegion {
 /// Coordinate inputs are pinned to `file.inputs` and never enter the scratch
 /// pool, which [`RegisterFile::checked`] keeps disjoint from them.
 ///
-/// O(n × k) for n values and a k-register pool. For the pools here (4–10
+/// O(n × k) for n values and a k-register pool. For the pools here (6–26
 /// registers) that is effectively O(n).
 ///
 /// The DAGs reaching this are in SSA form, which makes their interference
-/// graphs chordal — the shape on which greedy coloring is optimal. A
-/// graph-coloring allocator therefore lived beside this one, unused, for as
-/// long as this file existed: it never learned to rematerialize constants, and
-/// on a pool this small that is the difference that decides the generated code.
+/// graphs chordal — the shape on which greedy coloring is optimal. What
+/// coloring does not decide, and this does, is *spill placement*: where a live
+/// range is cut, and where the value comes back.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct LinearScan;
 
@@ -948,15 +1018,7 @@ impl RegisterAllocator for LinearScan {
             // per-instruction scratch. A temp is a pool register that no
             // placement records, so taking the complement of the locations
             // alone would hand out a register the prologue destroys.
-            let mut used: Vec<Reg> = scan
-                .locations
-                .iter()
-                .flatten()
-                .filter_map(|at| match at {
-                    Where::Reg(r) => Some(*r),
-                    Where::Spilled | Where::Remat(_) => None,
-                })
-                .collect();
+            let mut used: Vec<Reg> = scan.registers().collect();
             for scratch in &scan.scratch {
                 used.extend(scratch.temps.iter().flatten().copied());
                 used.extend(scratch.arm_reload);
@@ -1037,40 +1099,294 @@ fn record(
     scan: &Scan,
     parked: &BTreeSet<ValueId>,
 ) {
-    if placements.len() < scan.locations.len() {
-        placements.resize(scan.locations.len(), None);
+    if placements.len() < scan.ranges.len() {
+        placements.resize(scan.ranges.len(), None);
     }
-    for (index, def) in scan.schedule.iter().enumerate() {
-        if parked.contains(&def.value) {
+    for (key, ranges) in scan.ranges.iter().enumerate() {
+        if parked.contains(&ValueId(key as u32)) {
             continue;
         }
-        let Some(at) = scan.locations[def.value.0 as usize] else {
-            continue;
-        };
-        let from = Point { scope, index };
-        let slot = &mut placements[def.value.0 as usize];
-        *slot = Some(match slot.take() {
-            // A leaf an enclosing scope also computes: another range, since
-            // the two scans chose independently.
-            Some(prior) if prior.at(from) != at => prior.then(Span { from, at }),
-            Some(prior) => prior,
-            None => Placement::new(Span { from, at }),
-        });
+        for &(index, at) in ranges {
+            let from = Point { scope, index };
+            let slot = &mut placements[key];
+            *slot = Some(match slot.take() {
+                // A leaf an enclosing scope also computes: another range, since
+                // the two scans chose independently.
+                Some(prior) if prior.at(from) != at => prior.then(Span { from, at }),
+                Some(prior) => prior,
+                None => Placement::new(Span { from, at }),
+            });
+        }
     }
 }
 
-/// One scope, scanned straight through: a location per value and the scratch
-/// per instruction.
+/// One scope, scanned straight through: the ranges each value's life is cut
+/// into here, and the scratch each instruction may destroy.
 ///
-/// A straight-line scan has no ranges to state — every value it places, it
-/// places for the whole of the scope it is scanning. Turning those into
-/// nest-wide [`Placement`]s is [`LinearScan::allocate_nest`]'s job, because
-/// only the nest knows what happens to a value after this scope ends.
+/// Ranges rather than one location, because eviction **splits**: a value keeps
+/// the register it held up to the point it lost, and may come back into one at
+/// a later read. Turning these into nest-wide [`Placement`]s is
+/// [`LinearScan::allocate_nest`]'s job, because only the nest knows what
+/// happens to a value after this scope ends.
 struct Scan {
     schedule: Vec<Def>,
-    /// Dense by `ValueId.0`, over this scope alone.
-    locations: Vec<Option<Where>>,
+    /// Dense by `ValueId.0`: this scope's ranges for that value, in strictly
+    /// increasing schedule order. Empty for a value this scope does not place.
+    ranges: Vec<Vec<(usize, Where)>>,
     scratch: Vec<Scratch>,
+}
+
+impl Scan {
+    /// Every register any value occupies at any point of this scope.
+    fn registers(&self) -> impl Iterator<Item = Reg> + use<'_> {
+        self.ranges.iter().flatten().filter_map(|(_, at)| match at {
+            Where::Reg(r) => Some(*r),
+            Where::Spilled | Where::Remat(_) => None,
+        })
+    }
+}
+
+/// What giving up a register costs, cheapest first — the order eviction picks
+/// its loser in.
+///
+/// A constant is recomputed and touches no memory at all; a value already in
+/// its slot needs no store; anything else has to be written out. Belady's
+/// distance breaks ties *within* a tier and only within one: the traffic an
+/// eviction causes outweighs how long it waits to cause it.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct EvictionRank {
+    /// Read by the instruction being placed — the one thing that outranks
+    /// cheap traffic, and the reason an operand's register is a last resort
+    /// rather than a forbidden one.
+    ///
+    /// The tiers below price the traffic an eviction *defers*; for a value read
+    /// right here there is nothing to defer, so taking its register buys a
+    /// reload inside this very instruction. Without this, a value already in
+    /// its slot is the standing favourite — and at a read, the standing
+    /// favourite is whichever value the instruction is reading.
+    needed_now: bool,
+    /// 0 = rematerialized, 1 = slot already valid, 2 = needs a store.
+    traffic: u8,
+    /// Nearest next read *last*, so the cheapest loser is the one used
+    /// farthest out.
+    nearest: core::cmp::Reverse<usize>,
+}
+
+/// The forward pass's state: who owns which pool register, where every value
+/// is at the point reached, and what each life has been cut into so far.
+///
+/// One struct rather than nine locals threaded through five helpers — the
+/// eviction rule reads four of them at once.
+struct Pass {
+    /// The pool, low to high. `owner` is indexed the same way.
+    pool: Vec<Reg>,
+    /// The value currently held in each pool register.
+    owner: Vec<Option<ValueId>>,
+    /// Where each value is at the point the pass has reached.
+    at: Vec<Option<Where>>,
+    /// The ranges settled so far, per value, in increasing index order.
+    ranges: Vec<Vec<(usize, Where)>>,
+    /// The `f32` bits of every value that is a constant — the ones that come
+    /// back by being recomputed rather than reloaded.
+    const_bits: Vec<Option<u32>>,
+    /// Whether the value's slot already holds it, so losing a register again
+    /// costs no store. True from the first range that puts it in memory,
+    /// because a value in memory anywhere is stored right after its definition.
+    in_slot: Vec<bool>,
+    /// Where each value is defined, or `usize::MAX` for one this scope reads
+    /// without computing.
+    defined_at: Vec<usize>,
+    /// Read positions per value, ascending, with a cursor that only advances —
+    /// so the pass costs one step per read rather than a search per eviction.
+    reads: Vec<Vec<usize>>,
+    cursor: Vec<usize>,
+}
+
+impl Pass {
+    fn new(dag: &[Def], file: &RegisterFile, vec_len: usize) -> Self {
+        let mut reads: Vec<Vec<usize>> = vec![Vec::new(); vec_len];
+        let mut const_bits: Vec<Option<u32>> = vec![None; vec_len];
+        let mut defined_at: Vec<usize> = vec![usize::MAX; vec_len];
+        for (i, def) in dag.iter().enumerate() {
+            defined_at[def.value.0 as usize] = i;
+            if let ScheduledOp::Const(val) = def.op {
+                const_bits[def.value.0 as usize] = Some(val.to_bits());
+            }
+            for operand in operands(&def.op) {
+                let r = &mut reads[operand.0 as usize];
+                if r.last() != Some(&i) {
+                    r.push(i);
+                }
+            }
+        }
+        Self {
+            pool: file.scratch().collect(),
+            owner: vec![None; file.scratch.len() as usize],
+            at: vec![None; vec_len],
+            ranges: vec![Vec::new(); vec_len],
+            const_bits,
+            in_slot: vec![false; vec_len],
+            defined_at,
+            reads,
+            cursor: vec![0; vec_len],
+        }
+    }
+
+    /// The next read of `v` at or after `from`.
+    fn next_read(&mut self, v: ValueId, from: usize) -> Option<usize> {
+        let k = v.0 as usize;
+        while self.cursor[k] < self.reads[k].len() && self.reads[k][self.cursor[k]] < from {
+            self.cursor[k] += 1;
+        }
+        self.reads[k].get(self.cursor[k]).copied()
+    }
+
+    /// What evicting `v` at `from` would cost. See [`EvictionRank`].
+    fn rank(&mut self, v: ValueId, from: usize) -> EvictionRank {
+        let k = v.0 as usize;
+        let traffic = if self.const_bits[k].is_some() {
+            0
+        } else if self.in_slot[k] {
+            1
+        } else {
+            2
+        };
+        let distance = self.next_read(v, from).map_or(usize::MAX, |r| r - from);
+        EvictionRank {
+            needed_now: distance == 0,
+            traffic,
+            nearest: core::cmp::Reverse(distance),
+        }
+    }
+
+    /// Record that `v` lives at `to` from `index` on.
+    fn place(&mut self, v: ValueId, index: usize, to: Where) {
+        let k = v.0 as usize;
+        match self.ranges[k].last_mut() {
+            Some(last) if last.0 == index => last.1 = to,
+            _ => self.ranges[k].push((index, to)),
+        }
+        self.at[k] = Some(to);
+        if to == Where::Spilled {
+            self.in_slot[k] = true;
+        }
+    }
+
+    /// Where `v` goes when it loses its register: nowhere at all if it is a
+    /// constant, and its slot otherwise.
+    fn out_of_register(&self, v: ValueId) -> Where {
+        match self.const_bits[v.0 as usize] {
+            Some(bits) => Where::Remat(bits),
+            None => Where::Spilled,
+        }
+    }
+
+    /// Hand `slot` to something else at `index`, splitting whatever held it:
+    /// the earlier range stands, and a new one starts here.
+    fn split_out(&mut self, slot: usize, index: usize) {
+        if let Some(loser) = self.owner[slot].take() {
+            let to = self.out_of_register(loser);
+            self.place(loser, index, to);
+        }
+    }
+
+    /// Put `v` in pool slot `slot` from `index` on.
+    fn occupy(&mut self, v: ValueId, slot: usize, index: usize) {
+        self.owner[slot] = Some(v);
+        self.place(v, index, Where::Reg(self.pool[slot]));
+    }
+
+    /// Free every register whose owner is not read again.
+    fn expire(&mut self, index: usize) {
+        for slot in 0..self.owner.len() {
+            if let Some(v) = self.owner[slot]
+                && self.next_read(v, index).is_none()
+            {
+                self.owner[slot] = None;
+            }
+        }
+    }
+
+    /// Pool slots this instruction may still draw on: every one it has not
+    /// already claimed for a scratch role.
+    ///
+    /// An operand's register is in here and does not need excluding. The
+    /// encoder reads every source before it writes the destination, so a
+    /// destination that takes an operand's register only makes that operand
+    /// non-resident *here*, and `resolve_operands` reads it back from the slot
+    /// its definition wrote. [`EvictionRank`] is what keeps that a last resort.
+    fn open(&self, taken: &[Option<usize>]) -> Vec<usize> {
+        (0..self.owner.len())
+            .filter(|k| !taken.contains(&Some(*k)))
+            .collect()
+    }
+
+    /// Pool slots an instruction may destroy *before* reading its operands —
+    /// which is what scratch is, and what a kept reload must not displace,
+    /// both being wanted in a register at this same point. Sharing one with an
+    /// operand would feed the instruction its own temp.
+    fn without_operands(&self, taken: &[Option<usize>], reads: &[ValueId]) -> Vec<usize> {
+        self.open(taken)
+            .into_iter()
+            .filter(|k| self.owner[*k].is_none_or(|v| !reads.contains(&v)))
+            .collect()
+    }
+
+    /// The slot to give up at `index`, among `open` ones that hold something.
+    fn loser(&mut self, open: &[usize], index: usize) -> Option<usize> {
+        let held: Vec<(usize, ValueId)> = open
+            .iter()
+            .filter_map(|k| self.owner[*k].map(|v| (*k, v)))
+            .collect();
+        held.into_iter()
+            .min_by_key(|(_, v)| self.rank(*v, index))
+            .map(|(k, _)| k)
+    }
+
+    /// A pool register for something defined or reloaded at `index`: a free one
+    /// if there is one, and otherwise the one whose occupant is cheapest to
+    /// evict — which splits that occupant's live range here.
+    ///
+    /// Always answers. The floor [`RegisterFile::MIN_SCRATCH`] is what makes
+    /// that true: the widest demand is a gather's one operand plus four temps,
+    /// or a ternary's three operands plus a temp and an arm reload — five
+    /// exclusions either way, against a pool of at least six.
+    fn claim(&mut self, index: usize, open: &[usize]) -> usize {
+        if let Some(free) = open.iter().copied().find(|k| self.owner[*k].is_none()) {
+            return free;
+        }
+        let slot = self.loser(open, index).unwrap_or_else(|| {
+            unreachable!(
+                "every pool register is this instruction's own scratch or one of \
+                 its operands, against a floor of {}",
+                RegisterFile::MIN_SCRATCH
+            )
+        });
+        self.split_out(slot, index);
+        slot
+    }
+}
+
+/// For each schedule index, the narrowest `Select` arm containing it.
+///
+/// The narrowest and not the outermost: ending a kept reload at the inner arm's
+/// end is safe under the outer one too, since every read between the two ends
+/// is inside the outer arm and so is skipped along with the load it would name.
+fn guarded_arms(dag: &[Def]) -> Vec<Option<(usize, usize)>> {
+    let mut arms: Vec<Option<(usize, usize)>> = vec![None; dag.len()];
+    for guard in analyze_select_guards(dag) {
+        for (start, end) in [guard.true_range, guard.false_range] {
+            if start == end {
+                continue;
+            }
+            for arm in &mut arms[start..end] {
+                if arm.is_none_or(|(s, e)| end - start < e - s) {
+                    *arm = Some((start, end));
+                }
+            }
+        }
+    }
+    arms
 }
 
 impl LinearScan {
@@ -1081,90 +1397,49 @@ impl LinearScan {
             .map(|def| def.value.0 as usize + 1)
             .max()
             .unwrap_or(0);
-        let mut placements: Vec<Option<Where>> = vec![None; vec_len];
-
         let mut scratch_for: Vec<Scratch> = vec![Scratch::default(); dag.len()];
 
         if dag.is_empty() {
             return Scan {
                 schedule: dag,
-                locations: placements,
+                ranges: Vec::new(),
                 scratch: scratch_for,
             };
         }
 
-        // Pass one: last use of each value — the latest schedule index of any
-        // operation that reads it. A value nothing reads (the root) is last
-        // used at its own definition.
-        let mut last_use: Vec<usize> = vec![usize::MAX; vec_len];
+        let mut pass = Pass::new(&dag, file, vec_len);
+
+        // The arms a `Select` guard may skip. A register range that begins at a
+        // read inside one, for a value defined outside it, must end there too:
+        // after the arm a read has to name what it named before, because the
+        // skipped path never ran the load. Eviction inside an arm needs no such
+        // rule — the value's slot was written at its definition, which every
+        // path reaching any of its readers ran.
+        let arms = guarded_arms(&dag);
+        let mut reverts: Vec<Vec<(ValueId, Where, usize)>> =
+            (0..dag.len()).map(|_| Vec::new()).collect();
+
         for (i, def) in dag.iter().enumerate() {
-            if last_use[def.value.0 as usize] == usize::MAX {
-                last_use[def.value.0 as usize] = i;
+            for (v, back, slot) in core::mem::take(&mut reverts[i]) {
+                if pass.owner[slot] == Some(v) {
+                    pass.owner[slot] = None;
+                    pass.place(v, i, back);
+                }
             }
-        }
-        for (i, def) in dag.iter().enumerate() {
+            pass.expire(i);
+
+            let mut reads: Vec<ValueId> = Vec::new();
             for operand in operands(&def.op) {
-                let lu = &mut last_use[operand.0 as usize];
-                *lu = (*lu).max(i);
-            }
-        }
-
-        // A constant is never worth a spill slot: bringing it back is one
-        // instruction either way.
-        let mut const_bits: Vec<Option<u32>> = vec![None; vec_len];
-        for def in &dag {
-            if let ScheduledOp::Const(val) = def.op {
-                const_bits[def.value.0 as usize] = Some(val.to_bits());
-            }
-        }
-
-        // Coordinate inputs are pinned to the registers the ABI delivers them
-        // in. The scratch pool excludes those registers, so a pinned value
-        // never competes for one.
-        for def in &dag {
-            if let ScheduledOp::Var(i) = def.op {
-                placements[def.value.0 as usize] = Some(Where::Reg(input_register(file, i)));
-            }
-        }
-
-        // reg_owner[i] = the value currently held in the i'th scratch register.
-        let mut reg_owner: Vec<Option<ValueId>> = vec![None; file.scratch.len() as usize];
-        let scratch: Vec<Reg> = file.scratch().collect();
-
-        // Pass two: forward over the program in evaluation order.
-        for (i, def) in dag.iter().enumerate() {
-            let vid = &def.value;
-
-            for slot in reg_owner.iter_mut() {
-                if let Some(owner) = *slot
-                    && last_use[owner.0 as usize] < i
-                {
-                    *slot = None;
+                if !reads.contains(&operand) {
+                    reads.push(operand);
                 }
             }
 
-            // Scratch, reserved before the destination is placed: the encoder
-            // writes it while every operand is still live and before the
-            // destination is written, so it may share a register with neither.
+            // Scratch, reserved before anything else this instruction wants:
+            // the encoder writes it while every operand is still live and
+            // before the destination is written, so it may share a register
+            // with neither.
             let mut taken: [Option<usize>; Scratch::MAX_TEMPS + 1] = [None; Scratch::MAX_TEMPS + 1];
-            let mut reserve = |role: usize,
-                               reg_owner: &mut Vec<Option<ValueId>>,
-                               placements: &mut Vec<Option<Where>>|
-             -> Reg {
-                let slot = reserve_scratch(def, reg_owner, &last_use, &const_bits, &taken);
-                taken[role] = Some(slot);
-                // Whatever was there loses its register for good: `placements`
-                // is one answer per value, so an evicted value is spilled over
-                // its whole life, exactly as destination eviction below does.
-                if let Some(evicted) = reg_owner[slot].take() {
-                    placements[evicted.0 as usize] = Some(match const_bits[evicted.0 as usize] {
-                        Some(bits) => Where::Remat(bits),
-                        None => Where::Spilled,
-                    });
-                }
-                scratch[slot]
-            };
-
             let wanted = (file.temps_for)(&def.op) as usize;
             assert!(
                 wanted <= Scratch::MAX_TEMPS,
@@ -1173,84 +1448,110 @@ impl LinearScan {
                 Scratch::MAX_TEMPS
             );
             for role in 0..wanted {
-                scratch_for[i].temps[role] = Some(reserve(role, &mut reg_owner, &mut placements));
+                let open = pass.without_operands(&taken, &reads);
+                let slot = pass.claim(i, &open);
+                taken[role] = Some(slot);
+                scratch_for[i].temps[role] = Some(pass.pool[slot]);
             }
             if matches!(def.op, ScheduledOp::Ternary(OpKind::Select, ..)) {
-                scratch_for[i].arm_reload =
-                    Some(reserve(Scratch::MAX_TEMPS, &mut reg_owner, &mut placements));
+                let open = pass.without_operands(&taken, &reads);
+                let slot = pass.claim(i, &open);
+                taken[Scratch::MAX_TEMPS] = Some(slot);
+                scratch_for[i].arm_reload = Some(pass.pool[slot]);
             }
-            let reserved = taken;
 
-            if placements[vid.0 as usize].is_some() {
-                // Pre-colored. The temp's slot stays free for the next
-                // instruction: nothing owns it after this one.
+            // Coordinate inputs are pinned to the registers the ABI delivers
+            // them in. The scratch pool excludes those registers, so a pinned
+            // value never competes for one.
+            if let ScheduledOp::Var(k) = def.op {
+                pass.place(def.value, i, Where::Reg(input_register(file, k)));
                 continue;
             }
 
-            if let Some(free) = reg_owner
-                .iter()
-                .enumerate()
-                .position(|(idx, slot)| slot.is_none() && !reserved.contains(&Some(idx)))
-            {
-                placements[vid.0 as usize] = Some(Where::Reg(scratch[free]));
-                reg_owner[free] = Some(*vid);
-                continue;
-            }
-
-            // Nothing free — evict. A constant goes first whatever its next
-            // use, because rematerializing it costs no memory traffic; among
-            // non-constants, Belady: whoever is used farthest out.
-            let mut best_const: Option<(usize, usize)> = None; // (slot, last use)
-            let mut best_any: (usize, usize) = (0, 0);
-
-            for (slot_idx, slot) in reg_owner.iter().enumerate() {
-                if reserved.contains(&Some(slot_idx)) {
-                    continue; // Reserved for this instruction's own scratch.
+            // A read of a value that is not in a register: bring it back into
+            // one and *keep* it there, when it is read again before the keeping
+            // has to stop. That is what splitting buys — a value spends the
+            // pressured stretch in memory and the rest in a register, instead
+            // of one or the other for the whole of its life.
+            for operand in reads.clone() {
+                // Only a value whose return costs memory traffic is worth a
+                // register. A constant lives nowhere and is rebuilt in one
+                // instruction, which is the same instruction a reload would
+                // be — and eviction ranks constants cheapest to give up, so
+                // keeping one buys a register the very next definition takes
+                // back. The two rules would otherwise fight, and a constant
+                // would spend the kernel bouncing in and out of the pool.
+                if !matches!(pass.at[operand.0 as usize], Some(Where::Spilled)) {
+                    continue;
                 }
-                let Some(owner) = *slot else { continue };
-                let lu = last_use[owner.0 as usize];
-                if const_bits[owner.0 as usize].is_some()
-                    && best_const.is_none_or(|(_, best)| lu > best)
+                let open = pass.without_operands(&taken, &reads);
+                if open.is_empty() {
+                    break;
+                }
+                let stop = arms[i].and_then(|(start, end)| {
+                    (pass.defined_at[operand.0 as usize] < start).then_some(end)
+                });
+                let Some(next) = pass.next_read(operand, i + 1) else {
+                    continue; // Read once more and then done: a scratch will do.
+                };
+                if stop.is_some_and(|end| next >= end) {
+                    continue; // The range would end before the read it is for.
+                }
+                let back = pass.at[operand.0 as usize]
+                    .unwrap_or_else(|| unreachable!("resident values were skipped"));
+                let slot = pass.claim(i, &open);
+                pass.occupy(operand, slot, i);
+                if let Some(end) = stop
+                    && end < dag.len()
                 {
-                    best_const = Some((slot_idx, lu));
-                }
-                if lu > best_any.1 {
-                    best_any = (slot_idx, lu);
+                    reverts[end].push((operand, back, slot));
                 }
             }
 
-            let evict_slot = best_const.map_or(best_any.0, |(slot, _)| slot);
-            debug_assert!(
-                !reserved.contains(&Some(evict_slot)),
-                "the destination must not evict this instruction's own scratch"
-            );
-            let occupant = reg_owner[evict_slot].expect("all slots occupied but none found");
-
-            // Which of the two goes to memory: a constant always loses, and
-            // otherwise Belady decides.
-            let evict_new = if const_bits[vid.0 as usize].is_some() {
-                true
-            } else if const_bits[occupant.0 as usize].is_some() {
-                false
-            } else {
-                last_use[vid.0 as usize] >= last_use[occupant.0 as usize]
-            };
-
-            let loser = if evict_new { *vid } else { occupant };
-            placements[loser.0 as usize] = Some(match const_bits[loser.0 as usize] {
-                Some(bits) => Where::Remat(bits),
-                None => Where::Spilled,
+            // The destination. A free register if there is one, and otherwise
+            // the cheapest eviction — where the value being defined is itself a
+            // candidate, in which case it is computed into a reload register
+            // and stored, exactly as an evicted one is.
+            let open = pass.open(&taken);
+            if let Some(free) = open.iter().copied().find(|k| pass.owner[*k].is_none()) {
+                pass.occupy(def.value, free, i);
+                continue;
+            }
+            let slot = pass.loser(&open, i).unwrap_or_else(|| {
+                unreachable!(
+                    "every pool register is this instruction's own scratch or one of \
+                     its operands, against a floor of {}",
+                    RegisterFile::MIN_SCRATCH
+                )
             });
-
-            if !evict_new {
-                placements[vid.0 as usize] = Some(Where::Reg(scratch[evict_slot]));
-                reg_owner[evict_slot] = Some(*vid);
+            let occupant = pass.owner[slot].unwrap_or_else(|| unreachable!("a loser holds one"));
+            // Which of the two goes to memory, by the rule that chose the slot:
+            // the new value's own rank against the occupant's. A definition has
+            // written nothing yet, so its slot is never the cheap kind.
+            let new_rank = EvictionRank {
+                // A definition is a write; nothing reads it here.
+                needed_now: false,
+                traffic: if pass.const_bits[def.value.0 as usize].is_some() {
+                    0
+                } else {
+                    2
+                },
+                nearest: core::cmp::Reverse(
+                    pass.next_read(def.value, i).map_or(usize::MAX, |r| r - i),
+                ),
+            };
+            if new_rank <= pass.rank(occupant, i) {
+                let to = pass.out_of_register(def.value);
+                pass.place(def.value, i, to);
+            } else {
+                pass.split_out(slot, i);
+                pass.occupy(def.value, slot, i);
             }
         }
 
         Scan {
             schedule: dag,
-            locations: placements,
+            ranges: pass.ranges,
             scratch: scratch_for,
         }
     }
@@ -1281,7 +1582,6 @@ fn input_register(file: &RegisterFile, i: u8) -> Reg {
     }
 }
 
-/// The values an operation reads.
 /// A backend whose encodings never need a register beyond their operands.
 ///
 /// The default for [`RegisterFile::temps_for`]; naming it keeps the field
@@ -1291,65 +1591,7 @@ pub fn no_temps(_op: &ScheduledOp) -> u8 {
     0
 }
 
-/// Pick the scratch slot the instruction at `i` may destroy as its temp.
-///
-/// A free slot if there is one; otherwise the same eviction rule the
-/// destination uses — a constant first, since rematerializing it costs no
-/// memory traffic, and Belady among the rest.
-///
-/// Operands are excluded outright: the encoder writes the temp *before* it
-/// reads the operands (that is what the temp is for), so sharing a register
-/// with one would feed the instruction its own scratch. So are the roles this
-/// instruction has already reserved, which is what `taken` carries.
-///
-/// A slot always survives both exclusions, and
-/// [`RegisterFile::MIN_SCRATCH`] is what makes that true: the instructions
-/// wanting several temps are the gathers, which read one operand, and the
-/// ones reading three operands want at most one temp plus an arm reload — so
-/// four exclusions is the worst case against a floor of `MAX_TEMPS + 2`.
-fn reserve_scratch(
-    def: &Def,
-    reg_owner: &[Option<ValueId>],
-    last_use: &[usize],
-    const_bits: &[Option<u32>],
-    taken: &[Option<usize>],
-) -> usize {
-    let is_operand = |v: ValueId| operands(&def.op).any(|o| o == v);
-
-    let mut best_const: Option<(usize, usize)> = None;
-    let mut best_any: Option<(usize, usize)> = None;
-    for (slot_idx, slot) in reg_owner.iter().enumerate() {
-        if taken.contains(&Some(slot_idx)) {
-            continue; // Already this instruction's, in another role.
-        }
-        let Some(owner) = *slot else {
-            return slot_idx; // Free: nothing to evict.
-        };
-        if is_operand(owner) {
-            continue;
-        }
-        let lu = last_use[owner.0 as usize];
-        if const_bits[owner.0 as usize].is_some() && best_const.is_none_or(|(_, best)| lu > best) {
-            best_const = Some((slot_idx, lu));
-        }
-        if best_any.is_none_or(|(_, best)| lu > best) {
-            best_any = Some((slot_idx, lu));
-        }
-    }
-
-    best_const
-        .or(best_any)
-        .map(|(slot, _)| slot)
-        .unwrap_or_else(|| {
-            unreachable!(
-                "every scratch register holds an operand of one instruction, \
-                 so the pool is at most three registers — `RegisterFile::checked` \
-                 and `capped` both hold it at {}",
-                RegisterFile::MIN_SCRATCH
-            )
-        })
-}
-
+/// The values an operation reads.
 fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
     let (a, b, c) = match sop {
         ScheduledOp::Var(_) | ScheduledOp::Const(_) => (None, None, None),
@@ -1449,6 +1691,15 @@ mod tests {
     /// `at_def` against a loop-free allocation, whose one scope is the body.
     fn at(a: &NestAllocation, v: ValueId) -> Where {
         at_def(&a.body(), v)
+    }
+
+    /// Every place `v` occupies over its whole life.
+    ///
+    /// The question to ask once eviction splits a range rather than condemning
+    /// a life: `at` answers where a value *starts*, which stopped being the
+    /// same as where it spends its time.
+    fn ever(a: &NestAllocation, v: ValueId) -> Vec<Where> {
+        a.placement(v).locations().collect()
     }
 
     /// `v2 = X + Y`.
@@ -1701,13 +1952,26 @@ mod tests {
         }
         let a = alloc(schedule);
         assert!(spill_count(&a) > 0);
-        // A placement is one choice, so nothing is both in a register and on
-        // the stack — the miscompile the three parallel maps could express.
-        for d in a.body().schedule() {
-            if a.placement(d.value).spills() {
-                assert_eq!(at(&a, d.value), Where::Spilled);
-            }
-        }
+        // And it spills by *splitting*: the loser keeps the register it held
+        // up to the point it lost, so a value in memory later is in a register
+        // earlier. Condemning a whole life to memory — which is what one
+        // location per value could say and this cannot — would leave this
+        // empty.
+        let split: Vec<ValueId> = a
+            .body()
+            .schedule()
+            .iter()
+            .map(|d| d.value)
+            .filter(|v| {
+                let places = ever(&a, *v);
+                places.contains(&Where::Spilled)
+                    && places.iter().any(|w| matches!(w, Where::Reg(_)))
+            })
+            .collect();
+        assert!(
+            !split.is_empty(),
+            "every spilled value went to memory for its whole life; nothing was split"
+        );
     }
 
     /// A constant under pressure is rematerialized, never spilled: re-emitting
@@ -1729,9 +1993,13 @@ mod tests {
         let a = alloc(schedule);
 
         let remat: Vec<(ValueId, u32)> = (1..=6u32)
-            .filter_map(|i| match at(&a, ValueId(i)) {
-                Where::Remat(bits) => Some((ValueId(i), bits)),
-                _ => None,
+            .flat_map(|i| {
+                ever(&a, ValueId(i))
+                    .into_iter()
+                    .filter_map(move |w| match w {
+                        Where::Remat(bits) => Some((ValueId(i), bits)),
+                        _ => None,
+                    })
             })
             .collect();
         assert!(!remat.is_empty(), "constants under pressure should remat");
@@ -1773,16 +2041,15 @@ mod tests {
         }
         let a = alloc(schedule);
 
-        assert_eq!(
-            at(&a, ValueId(live - 1)),
-            Where::Spilled,
+        assert!(
+            ever(&a, ValueId(live - 1)).contains(&Where::Spilled),
             "v{live_minus_1} is needed last, so it is the one to evict",
             live_minus_1 = live - 1
         );
         assert!(
-            matches!(at(&a, ValueId(1)), Where::Reg(_)),
-            "v1 is needed next, so it must keep its register — evicting it is \
-             what FIFO and LRU would have done"
+            !ever(&a, ValueId(1)).contains(&Where::Spilled),
+            "v1 is needed next, so it must keep its register for the whole of \
+             its life — evicting it is what FIFO and LRU would have done"
         );
     }
 
