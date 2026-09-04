@@ -51,24 +51,6 @@ fn main() {
             continue;
         };
 
-        // The harness asserts a 0.05ns/op plausibility floor on the RAW
-        // measurement, premised on ~4 SIMD ops/cycle. A large *unoptimized*
-        // arena beats it on a wide machine — an input shape nothing could
-        // produce before `Identity` existed, since every JIT path saturated
-        // first — and the assert is a panic, so those kernels are reported
-        // rather than measured. See the note in the PR: recalibrating that
-        // floor is a measurement-discipline call, not this change's to make.
-        const FLOOR_SAFE_NODES: usize = 70;
-        if arena.len() > FLOOR_SAFE_NODES {
-            println!(
-                "{:<22} {:>5} {:>5}  gated by the harness plausibility floor",
-                name,
-                arena.len(),
-                "-"
-            );
-            continue;
-        }
-
         let (raw_arena, raw_root) = arm(Identity, &arena, root);
         let (opt_arena, opt_root) = arm(
             pipeline![

@@ -77,6 +77,15 @@ const SENTINEL_REGIME_CHANGE_FRAC: f64 = 0.50;
 /// core peaks at ~4 SIMD FP ops/cycle ≈ 0.078ns/op at 3.2GHz, so 0.05ns/op
 /// sits safely below any real execution while still catching a JIT bug that
 /// emits an early `ret`, a mis-scaled timebase, or an unroll miscount.
+///
+/// **This is a per-CALL bound**: "4 SIMD ops/cycle" counts whole vector
+/// instructions, and one `call_collapse` executes each of the expression's
+/// ops once for all [`LANES`] lanes at once. The measurement it is compared
+/// against is per-LANE — both modes divide the timed total by
+/// `INPUT_TUPLES * repeat_batches` while performing
+/// `INPUT_VECTORS * repeat_batches` calls, and `INPUT_TUPLES == INPUT_VECTORS
+/// * LANES`. So the floor must be divided by `LANES` before comparison; see
+/// [`plausibility_floor_ns`].
 const MIN_NS_PER_OP: f64 = 0.05;
 
 /// Maximum plausible single-eval time: 1 second.
@@ -246,8 +255,23 @@ fn sentinel_drift_exceeded(calibration_ns: f64, measured_ns: f64, max_drift_frac
 
 /// Conservative lower bound on plausible per-eval cost for an expression with
 /// `op_count` compute ops (audit M4).
+///
+/// `op_count * MIN_NS_PER_OP` is what executing those ops costs for one
+/// `call_collapse`, which computes all [`LANES`] lanes at once. Reported
+/// measurements are per lane (see [`MIN_NS_PER_OP`]), so the per-call bound
+/// is divided by `LANES` to be compared against one.
+///
+/// Getting this wrong does not make the floor merely conservative — it makes
+/// it *false*, firing on correct measurements. Undivided, it asserted that a
+/// 137-op expression cannot evaluate faster than 6.85ns per lane, i.e. 0.43ns
+/// per lane-op, which is above what a 16-wide unit delivers by construction.
+/// Nothing noticed for as long as it did because the assertion only binds
+/// once `op_count * MIN_NS_PER_OP` exceeds the measured per-lane value, and
+/// every arena reaching this harness had been through the e-graph first —
+/// small enough to stay under it. The first unoptimized arenas (`Identity` as
+/// an `Optimize` arm) were the first inputs big enough to cross it.
 fn plausibility_floor_ns(op_count: usize) -> f64 {
-    op_count as f64 * MIN_NS_PER_OP
+    op_count as f64 * MIN_NS_PER_OP / LANES as f64
 }
 
 /// Panic if a RAW per-eval measurement is below the dependency-chain floor
@@ -1910,6 +1934,59 @@ mod tests {
         throughput
             .check_equivalence(&latency, 0.0)
             .expect("same kernel, same inputs: outputs must match exactly");
+    }
+
+    /// The plausibility floor is a per-LANE bound, because the measurement it
+    /// guards is per-lane. Compared undivided it is not conservative but
+    /// false, and it rejects correct measurements of large expressions.
+    ///
+    /// Asserted against the floor's own premise rather than its formula (a
+    /// formula test would restate the bug): 4 SIMD ops/cycle on a `LANES`-wide
+    /// unit is `4 * LANES` lane-ops per cycle, so a per-lane floor must sit
+    /// below one lane-op per cycle at any plausible clock.
+    #[test]
+    fn plausibility_floor_is_per_lane_not_per_call() {
+        // Fastest clock worth defending against, in ns per cycle.
+        const NS_PER_CYCLE_AT_6GHZ: f64 = 1.0 / 6.0;
+        for ops in [1usize, 32, 137, 512] {
+            let per_lane_floor = plausibility_floor_ns(ops) / ops as f64;
+            assert!(
+                per_lane_floor < NS_PER_CYCLE_AT_6GHZ,
+                "floor demands {per_lane_floor:.4}ns per lane-op for a {ops}-op expression, \
+                 which exceeds one cycle at 6GHz — a {LANES}-wide unit retires \
+                 {} lane-ops per cycle, so this rejects correct measurements",
+                4 * LANES,
+            );
+        }
+    }
+
+    /// A large expression must be *measurable*, not rejected by the floor.
+    ///
+    /// This is the regression the floor's missing `LANES` divisor caused: it
+    /// only binds once `op_count * MIN_NS_PER_OP` exceeds the measured
+    /// per-lane value, so it passed on every arena that had been through the
+    /// e-graph and panicked on the first unoptimized ones. Deterministic: a
+    /// wrong floor rejects this every time, on any machine.
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[test]
+    fn a_large_expression_is_measurable_rather_than_rejected() {
+        // ~150 ops in a chain wide enough that no single op dominates.
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        let y = arena.push_var(1);
+        let mut acc = arena.push_binary(OpKind::Add, x, y);
+        for i in 0..50 {
+            let c = arena.push_const(1.0 + i as f32);
+            let m = arena.push_binary(OpKind::Mul, acc, c);
+            let a = arena.push_binary(OpKind::Add, m, x);
+            acc = arena.push_binary(OpKind::Sub, a, y);
+        }
+        assert!(op_count(&arena, acc) > 100, "test needs a large expression");
+
+        let mut session = BenchSession::new();
+        session
+            .benchmark_arena(&arena, acc, BenchMode::Latency)
+            .expect("a large expression must benchmark, not trip the floor");
     }
 
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
