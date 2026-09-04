@@ -551,7 +551,9 @@ mod tests {
                 .guide(Some(guide))
                 .no_ceiling();
             let mut eg = opt.egraph();
-            let root_class = eg.add_arena(&arena, root);
+            let root_class =
+                crate::egraph::insert(&arena, root, &mut eg, crate::egraph::Vocabulary::Templates)
+                    .expect("insert into e-graph");
             let out = opt.run(&mut eg, root_class, arena.nodes_raw().len());
             let (got_arena, got_root) = out.to_arena(&eg, root_class);
             for (c, expected) in samples.iter().zip(&want) {

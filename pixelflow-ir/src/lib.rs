@@ -34,6 +34,13 @@ pub mod arena;
 pub mod passes;
 pub use arena::{ExprArena, ExprId, ExprNode};
 
+/// The term language the e-graph speaks: destructure a node, rebuild a node.
+/// Naming it is what makes an optimizer expressible as an endomorphism on the
+/// IR rather than as a hand-rolled conversion per tier.
+pub mod term;
+mod term_arena;
+pub use term::{Children, Ir, Shape};
+
 pub mod lower;
 pub use lower::{Lower, LowerEnv};
 

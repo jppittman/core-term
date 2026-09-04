@@ -119,7 +119,9 @@ mod tests {
         // here only invites e-graph explosion on `x²+y²`, which is a saturation
         // budgeting concern orthogonal to autodiff.)
         let mut eg = EGraph::with_rules(derivative_rules());
-        let root_class = eg.add_arena(&a, root);
+        let root_class =
+            crate::egraph::insert(&a, root, &mut eg, crate::egraph::Vocabulary::Templates)
+                .expect("insert into e-graph");
         SaturationConfig::compatibility(60).run(&mut eg);
 
         let (out, out_root, _cost) = extract(&eg, root_class, &CostModel::default());
@@ -246,7 +248,9 @@ mod piecewise_tests {
         let v = a.push_const(var as f32);
         let root = a.push_binary(OpKind::Dwrt, differentiand, v);
         let mut eg = EGraph::with_rules(derivative_rules());
-        let root_class = eg.add_arena(&a, root);
+        let root_class =
+            crate::egraph::insert(&a, root, &mut eg, crate::egraph::Vocabulary::Templates)
+                .expect("insert into e-graph");
         SaturationConfig::compatibility(60).run(&mut eg);
         let (out, out_root, _cost) = extract(&eg, root_class, &CostModel::default());
         assert!(

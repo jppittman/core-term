@@ -466,7 +466,13 @@ fn build_expr_context(
         })
         .hard_ceiling(SATURATE_TIMEOUT);
     let mut egraph = optimizer.egraph();
-    let root_class = egraph.add_arena(&arena, root);
+    let root_class = pixelflow_search::egraph::insert(
+        &arena,
+        root,
+        &mut egraph,
+        pixelflow_search::egraph::Vocabulary::Templates,
+    )
+    .expect("insert into e-graph");
     let _ = optimizer.run(&mut egraph, root_class, arena.nodes_raw().len());
 
     let extraction = extract_dag(&egraph, root_class, &costs);
@@ -654,7 +660,13 @@ fn masked_replay(
         })
         .hard_ceiling(SATURATE_TIMEOUT);
     let mut egraph = optimizer.egraph();
-    let root_class = egraph.add_arena(&ctx.arena, ctx.root);
+    let root_class = pixelflow_search::egraph::insert(
+        &ctx.arena,
+        ctx.root,
+        &mut egraph,
+        pixelflow_search::egraph::Vocabulary::Templates,
+    )
+    .expect("insert into e-graph");
     let _ = optimizer.run(&mut egraph, root_class, ctx.arena.nodes_raw().len());
     let skips = egraph.last_replay_mask_skips();
     assert!(
