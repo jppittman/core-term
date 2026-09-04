@@ -31,9 +31,13 @@
 //! or leave it unset to see records on stderr.
 
 use crate::egraph::{EClassId, EGraph, ENode, Op, Optimizer};
+use crate::saturate_pass::Saturate;
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
+use pixelflow_ir::optimize::Optimize;
+use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
+use pixelflow_ir::pipeline;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -136,87 +140,26 @@ fn optimize_runtime_arena_uncached(
     root: ExprId,
     shape: LatticeShape,
 ) -> Option<(ExprArena, ExprId)> {
-    // Resolve `Dwrt` FIRST, with the same exact symbolic pass the compile
-    // entries run — then the e-graph sees pure arithmetic. Order matters
-    // enormously: differentiation manufactures constants (the winding
-    // kernels' `d = X − f(Y)` gives `DX(d) = 1` and, for straight edges, a
-    // constant `DY(d)` — making the whole gradient magnitude `√(DX²+DY²)` a
-    // compile-time number), and `ConstantFold` can only cascade over
-    // constants that exist by the time saturation runs. Lowering after the
-    // e-graph (the compile entries' own fallback position) leaves those
-    // folds permanently on the table because nothing folds post-extraction.
+    // The tier's pipeline, as a composition rather than three hand-sequenced
+    // calls. The order is load-bearing and is now the expression itself:
     //
-    // A lowering error (a genuinely non-differentiable op) bails to `None`;
-    // the arena then compiles unoptimized and the compile entry's own
-    // `lower_dwrt` reports the same error loudly at the right layer.
-    let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(arena, root).ok()?;
-    // Then unroll every `Reduce`, in `legalize`'s order. The extents are
-    // static, so the binder disappears into N terms sharing their
-    // index-invariant subtrees (`unroll_reduce` factors `⊕_i (f(i)·c)` as
-    // `c·⊕_i f(i)` by declining to duplicate `c`), and the e-graph sees pure
-    // arithmetic it can CSE and fold across the terms.
-    let (arena, root) = pixelflow_ir::passes::expand_reduce_owned(&arena, root);
-
-    // One entry point, shared with the AOT macro tier and the `Dwrt`
-    // expansion tier: the rule set, the budget, the cost model, and the
-    // extractor are decided in `Optimizer`, not re-decided here. Priced
-    // against the lattice this kernel is compiled for — the extents are
-    // known, so extraction minimizes the instruction count of the whole
-    // program rather than of its text.
-    let mut optimizer = Optimizer::production().for_lattice(shape);
-
-    let mut egraph = optimizer.egraph();
-    let root_class = crate::egraph::insert(
-        &arena,
-        root,
-        &mut egraph,
-        crate::egraph::Vocabulary::Runtime,
-    )
-    .ok()?;
-
-    let node_count = crate::egraph::reachable_count(&arena, root);
-    #[cfg(feature = "saturation-telemetry")]
-    let telemetry_start = std::time::Instant::now();
-    let optimized = optimizer.run(&mut egraph, root_class, node_count);
-    let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
-
-    #[cfg(feature = "saturation-telemetry")]
-    crate::telemetry::record(crate::telemetry::SaturationInvocation {
-        tier: crate::telemetry::Tier::Runtime,
-        node_count,
-        stats: &optimized.stats,
-        union_count: optimized.stats.unions,
-        extracted_arena: &extracted,
-        extracted_root,
-        wall_clock: telemetry_start.elapsed(),
-        kernel_label: None,
-    });
-
-    // The extracted arena declares buffers in extraction-traversal order,
-    // which need not match the input's — and slot order is ABI: the JIT
-    // loads slot i's base pointer from the caller's context array at i*8,
-    // and callers bind in the order the arena THEY BUILT declared. A
-    // different extraction (a commuted equivalent under another cost model)
-    // must not silently permute their pointers. Re-splicing onto a table
-    // pre-declared in input order makes the invariant structural: splice
-    // dedups buffers by identity onto the existing slots.
-    if arena.buffers().is_empty() {
-        return Some((extracted, extracted_root));
-    }
-    let mut ordered = ExprArena::new();
-    for decl in arena.buffers() {
-        let _slot = ordered.declare_buffer(*decl);
-    }
-    let root = ordered.splice(&extracted, extracted_root);
-    debug_assert!(
-        ordered
-            .buffers()
-            .iter()
-            .zip(arena.buffers())
-            .all(|(a, b)| a.id == b.id),
-        "buffer slot order must survive optimization"
-    );
-    Some((ordered, root))
+    // `LowerDwrt` first, because differentiation manufactures constants (the
+    // winding kernels' `d = X − f(Y)` gives `DX(d) = 1` and, for a straight
+    // edge, a constant `DY(d)` — making the whole gradient magnitude
+    // `√(DX²+DY²)` a compile-time number) and `ConstantFold` can only cascade
+    // over constants that exist by the time saturation runs. Lowering after
+    // the e-graph leaves those folds permanently on the table, because
+    // nothing folds post-extraction.
+    //
+    // `ExpandReduce` next, in `legalize`'s order, so what saturation sees is
+    // binder-free arithmetic it can CSE and fold across the unrolled terms.
+    //
+    // A declining step short-circuits the rest and yields `None` here, which
+    // means exactly what it always meant: the caller compiles its own arena
+    // unchanged, unoptimized but correct.
+    pipeline![LowerDwrt, ExpandReduce, Saturate::runtime(shape)]
+        .optimize(arena, root)
+        .into_changed()
 }
 
 /// Canonical serialization of the subgraph reachable from `root`: nodes in

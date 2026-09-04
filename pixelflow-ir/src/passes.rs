@@ -2494,3 +2494,77 @@ mod dwrt_tests {
         }
     }
 }
+
+// ─────────────────────────── Passes as optimizers ────────────────────────────
+//
+// The two passes the runtime tier runs before saturation, as
+// [`Optimize`](crate::optimize::Optimize) values so the tier can spell its
+// pipeline as a composition instead of three hand-sequenced calls whose order
+// only a comment enforces.
+//
+// Each reports `Unchanged` where its `_owned` wrapper would have cloned the
+// arena to say "nothing to do" — the clone was pure waste, and the type now
+// has a way to decline it.
+
+use crate::optimize::{Optimize, Rewritten};
+
+/// Resolve `Dwrt` (symbolic differentiation) into ordinary arithmetic.
+///
+/// Runs BEFORE saturation, and the order matters: differentiation manufactures
+/// constants — the winding kernels' `d = X − f(Y)` gives `DX(d) = 1` and, for
+/// a straight edge, a constant `DY(d)`, making the whole gradient magnitude
+/// `√(DX²+DY²)` a compile-time number — and constant folding can only cascade
+/// over constants that exist by the time it runs. Lowering after the e-graph
+/// leaves those folds permanently on the table, because nothing folds
+/// post-extraction.
+///
+/// Declines on a genuinely non-differentiable op, which stops the pipeline:
+/// the term compiles unoptimized and the compile entry's own `lower_dwrt`
+/// reports the same error loudly, at the layer that can name it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LowerDwrt;
+
+impl Optimize for LowerDwrt {
+    fn optimize(&mut self, arena: &ExprArena, root: ExprId) -> Rewritten {
+        if !arena.nodes_raw().iter().any(|n| {
+            matches!(
+                n,
+                ExprNode::Unary(OpKind::Dwrt, _)
+                    | ExprNode::Binary(OpKind::Dwrt, _, _)
+                    | ExprNode::Ternary(OpKind::Dwrt, _, _, _)
+                    | ExprNode::Nary(OpKind::Dwrt, _, _)
+            )
+        }) {
+            return Rewritten::Unchanged;
+        }
+        let mut owned = arena.clone();
+        match lower_dwrt(&mut owned, root) {
+            Ok(new_root) => Rewritten::Changed(owned, new_root),
+            Err(_) => Rewritten::Declined,
+        }
+    }
+}
+
+/// Unroll every `Reduce` into its terms.
+///
+/// The extents are static, so the binder disappears into N terms sharing their
+/// index-invariant subtrees, and what saturation then sees is binder-free
+/// arithmetic it can CSE and fold across those terms — rather than rewriting
+/// under a binder.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExpandReduce;
+
+impl Optimize for ExpandReduce {
+    fn optimize(&mut self, arena: &ExprArena, root: ExprId) -> Rewritten {
+        if !arena
+            .nodes_raw()
+            .iter()
+            .any(|n| matches!(n, ExprNode::Nary(OpKind::Reduce, _, _)))
+        {
+            return Rewritten::Unchanged;
+        }
+        let mut owned = arena.clone();
+        let new_root = expand_reduce(&mut owned, root);
+        Rewritten::Changed(owned, new_root)
+    }
+}

@@ -41,6 +41,11 @@ pub mod term;
 mod term_arena;
 pub use term::{Children, Ir, Shape};
 
+/// Optimization as an endomorphism on the IR — including the identity, which
+/// is what `kernel_raw!` means and what a measurement's control arm needs.
+pub mod optimize;
+pub use optimize::{Identity, Optimize, Rewritten, Then};
+
 pub mod lower;
 pub use lower::{Lower, LowerEnv};
 

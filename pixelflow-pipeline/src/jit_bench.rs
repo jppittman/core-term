@@ -748,6 +748,37 @@ struct RawMeasurement {
 
 const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
 
+/// One [`BenchMode::Latency`] chain step (audit H3): feed the previous
+/// iteration's output into EVERY input lane — x, y, z, AND w, not just x —
+/// and return the freshly computed lanes. Factored out of the timed loop so
+/// the exact production step (not a re-implementation of it) is directly
+/// observable from a test: `latency_mode_feeds_every_lane_for_x_independent_expressions`
+/// calls this same function on an expression that never reads `Var(0)` and
+/// checks a structural, clock-free property instead of a timing.
+///
+/// Feeding all four lanes rather than only x is what keeps the chain intact
+/// for expressions that never read x — see [`BenchMode::Latency`]'s doc for
+/// why a single fed lane silently breaks the chain for such expressions.
+///
+/// `#[inline(always)]` and `&mut` are load-bearing, not style: this runs
+/// inside the timed loop, so the extracted function must compile to what the
+/// inlined body compiled to. Taking and returning `[f32; LANES]` by value
+/// would copy 64 bytes each way per iteration (AVX-512), and an un-inlined
+/// call would add call overhead — either one perturbs the 2-8ns measurement
+/// this loop exists to make. Mutating in place is what the loop did before
+/// the step had a name.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[inline(always)]
+fn latency_chain_step(exec_code: &ExecutableCode, prev: &mut [f32; LANES]) {
+    use pixelflow_codegen::emit::executable::{Point4, TileSlice};
+
+    let p = Point4::new(*prev, *prev, *prev, *prev);
+    std::hint::black_box(&p);
+    unsafe {
+        exec_code.call_collapse(core::ptr::null(), TileSlice::single(prev.as_mut_ptr()), p);
+    }
+}
+
 /// Core timed loop: warmup, output capture over the full input buffer,
 /// tick-floor autoscaling of `repeat_batches` (audit H5), and TIMED_RUNS
 /// samples reduced to median + IQR (audit M5).
@@ -841,15 +872,7 @@ fn measure_exec_code(
                     let start = nanos_now();
                     for _ in 0..repeat_batches {
                         for _ in 0..INPUT_VECTORS {
-                            let p = Point4::new(prev, prev, prev, prev);
-                            std::hint::black_box(&p);
-                            unsafe {
-                                exec_code.call_collapse(
-                                    core::ptr::null(),
-                                    TileSlice::single(prev.as_mut_ptr()),
-                                    p,
-                                );
-                            }
+                            latency_chain_step(exec_code, &mut prev);
                         }
                     }
                     std::hint::black_box(prev);
@@ -1887,5 +1910,60 @@ mod tests {
         throughput
             .check_equivalence(&latency, 0.0)
             .expect("same kernel, same inputs: outputs must match exactly");
+    }
+
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[test]
+    fn latency_mode_feeds_every_lane_for_x_independent_expressions() {
+        // Audit-H3 regression guard, rewritten clock-free. The original
+        // version of this test (deleted in 7d318d4) compared two wall-clock
+        // measurements with no tolerance — on a slow runner the identity-
+        // overhead calibration came out 5x its documented nominal value,
+        // inflating the pass bar past an ordinary measurement, and the test
+        // flaked in CI. The property it was guarding is unchanged: under
+        // `BenchMode::Latency`, the harness must chain-serialize by feeding
+        // the previous iteration's result into EVERY input lane (x, y, z,
+        // AND w) — not only x — because an expression that never reads
+        // `Var(0)` has no data path from a chain that feeds only x. Under
+        // that old x-lane-only feeding, such an expression silently
+        // decoupled from the chain and measured in the throughput regime
+        // instead of latency (see `BenchMode::Latency`'s doc comment).
+        //
+        // This is now checked structurally instead of by timing, via
+        // `latency_chain_step` — the exact per-iteration function
+        // `measure_exec_code`'s timed loop calls, not a re-implementation of
+        // it. For `y + z` (reads neither x nor w), feeding `prev`
+        // identically into every lane gives an exact, clock-free signature:
+        // each step computes `prev' = prev + prev = 2*prev`, so the output
+        // strictly doubles every chain step. Under the audit-H3 bug, y and z
+        // would sit fixed at whatever the initial call put there (only x
+        // would track `prev`), so the root — reading neither the fed lane
+        // nor anything downstream of it — would emit the SAME constant every
+        // step: `next != 2*prev` on the very first iteration this test
+        // performs, so this test would have failed under that bug.
+        let mut arena = ExprArena::new();
+        let y = arena.push_var(1);
+        let z = arena.push_var(2);
+        let root = arena.push_binary(OpKind::Add, y, z);
+        let compiled = compile(&arena, root).expect("y+z must JIT-compile");
+
+        let mut prev = [0.25f32; LANES]; // nonzero seed so doubling is observable.
+        for step in 0..8 {
+            let mut next = prev;
+            latency_chain_step(&compiled.code, &mut next);
+            for lane in 0..LANES {
+                assert!(
+                    (next[lane] - 2.0 * prev[lane]).abs() < 1e-6,
+                    "chain step {step}, lane {lane}: expected 2*prev = {} (every lane fed \
+                     prev={}), got {} — the chain is not feeding every lane (this is exactly \
+                     the audit-H3 x-lane-only bug: y+z never reads Var(0), so a chain that only \
+                     feeds x decouples entirely)",
+                    2.0 * prev[lane],
+                    prev[lane],
+                    next[lane],
+                );
+            }
+            prev = next;
+        }
     }
 }
