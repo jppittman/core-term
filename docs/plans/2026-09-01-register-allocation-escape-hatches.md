@@ -735,3 +735,75 @@ quickly.
 > graph coloring: SSA interference graphs are chordal, so schedule-order greedy
 > coloring is already optimal *as a coloring* — what was missing is spill
 > placement, which is what splitting is.
+
+> **Landed 2026-09-04 — eviction splits a live range, and the remaining half
+> of class C's hole is closed.** (#1150.) The loser of an eviction keeps the
+> register it held up to that point; its life continues in its slot; a later
+> read may take a pool register back and *keep* it. Eviction ranks by
+> traffic before distance — a constant (rematerialized), then a value whose
+> slot is already valid (no store), then one that needs a store — with
+> Belady breaking ties inside a tier and "read by this very instruction"
+> above everything. The store for a spilled value goes at its **definition**,
+> which a guard cannot skip without skipping every read; that is what the
+> earlier attempt got wrong by storing at the eviction, and it is why the
+> guarded-region hole above does not reappear. A kept range inside a
+> `Select` arm, for a value defined outside it, ends where the arm does
+> (`guarded_arms`, from the same `analyze_select_guards` the emitter branches
+> on — now in `emit/guards.rs` so both call one function).
+>
+> **Measured on 259 real glyph bakes, memory operations counted at the
+> emitter:**
+>
+> | | SSE2 `main` | SSE2 after | AVX-512 `main` | AVX-512 after |
+> |---|---:|---:|---:|---:|
+> | code bytes | 3 046 146 | 2 856 850 (**−6.2%**) | 2 115 416 | 1 790 097 (**−15.4%**) |
+> | reloads | 22 011 | 20 199 | 14 922 | 14 283 |
+> | stores | 15 101 | 16 421 | 12 568 | 12 589 |
+> | memory ops | 37 112 | **36 620** | 27 490 | **26 872** |
+> | frame slots (`spill_count`) | 1 822 | 3 142 | 358 | 379 |
+>
+> wide 32 on SSE2: 2832 → 2234 bytes (−21%), same spill count.
+>
+> **Two acceptance bounds the spec set were wrong, and the table is why.**
+> "Spill count never higher" counted `FrameLayout::slots` — values with an
+> address — and splitting is precisely the change that gives a value a
+> register for most of its life and a slot for the rest, so the count rises
+> (+72% on SSE2) while the traffic falls (−492 memory ops). Slots stopped
+> being a traffic metric at this commit; **memory-op count is the number to
+> measure from here on.** "No kernel ever larger" is not a property a
+> traffic-priced heuristic can offer under a full pool: the tier that buys
+> the −21% is the one that costs the worst outlier (+33 bytes, +3.0%, 9 of
+> 222 combinations), and splitting under the old eviction rule is perfectly
+> monotone and buys 0.0%. The bound that means something is the aggregate
+> plus a worst-case cap.
+>
+> **A miscompile shipped to CI and was caught there, and the retrospective
+> is about the gate.** The emitter patched a guard's skip-branch to the
+> point *after* the reconciliation that begins at the arm's end index, so
+> the uniform-mask path jumped over a reload the location table said had
+> happened. Only splitting could put a reload there; only a uniform mask
+> could reach it; and only the VEX tiers and NEON exposed it, because SSE2's
+> `temps_for` reserves a `MulAdd` scratch the others do not and so allocates
+> a different schedule for the same kernel. The failing test was
+> `pixelflow-core`'s `packed_bake_is_bit_exact…`, on the macOS job — and **no
+> presubmit job ran `pixelflow-core` above SSE2.** The smoke set's own rule
+> ("the crates whose output is per-level machine code") already included
+> it; it was simply missing. It is in the set now (`smoke: codegen+ir+core`,
+> ~20s per level), the fix patches the join before the reconciliation, and
+> `guarded_arm_reconciliation.rs` builds the shape on purpose and fails on
+> the parent commit. An allocator-level invariant check cannot see this
+> class: the placement is self-consistent and every operand resolves; only
+> the order of two emissions at one index is wrong, and the guarded path has
+> to actually run.
+>
+> **Not done here: the third piece.** `allocate_nest` still allocates each
+> region against `file.inside(carried)` and picks carries from what the
+> region leaves free under the `pool − MIN_SCRATCH` budget. Two findings from
+> building this feed that piece: one `reg_owner` across scopes needs
+> **per-definition** lives, not per-`ValueId` (a leaf scheduled in two scopes
+> is two definitions of one name); and in the collapse ABI the only values
+> that cross a scope boundary are parked roots, whose body-schedule
+> placeholders (`Const(0.0)`) each hold a body register for their live range
+> while the emitter reads the real value from a slot — a register wasted per
+> parked root that one pool over the nest removes by making the root the
+> value in every scope.
