@@ -375,6 +375,18 @@ pub struct Point {
     pub index: usize,
 }
 
+impl Point {
+    /// The last point of the nest.
+    ///
+    /// Every scope's subtree ends inside the body, so there is exactly one of
+    /// these — which is what makes "live to the tail" a single, comparable
+    /// answer for a value read across any back edge.
+    pub const TAIL: Self = Self {
+        scope: Scope::Body,
+        index: usize::MAX,
+    };
+}
+
 /// Where the allocator decided a value lives, over one range of its life.
 ///
 /// Deliberately carries no stack address: choosing that a value spills and
@@ -473,9 +485,14 @@ impl Placement {
         }
     }
 
+    /// Every range of this value's life, in order.
+    pub fn spans(&self) -> impl Iterator<Item = Span> + use<'_> {
+        core::iter::once(self.first).chain(self.rest.iter().copied())
+    }
+
     /// Every location this value occupies, in order.
     pub fn locations(&self) -> impl Iterator<Item = Where> + use<'_> {
-        core::iter::once(self.first.at).chain(self.rest.iter().map(|s| s.at))
+        self.spans().map(|s| s.at)
     }
 
     /// Whether any range of this value's life is in a stack slot.
@@ -749,6 +766,53 @@ impl<'a> Allocation<'a> {
     #[must_use]
     pub fn carried(&self, root: ValueId) -> Option<Reg> {
         self.nest.carried(root)
+    }
+
+    /// Where `v` lives at every point in the nest.
+    ///
+    /// # Panics
+    /// If `v` is in no scope of this nest.
+    #[must_use]
+    pub fn placement(&self, v: ValueId) -> &'a Placement {
+        self.nest.placement(v)
+    }
+
+    /// The points inside *this* scope at which `v` changes place, in order.
+    ///
+    /// A placement is nest-wide; emitting one scope needs the part of it that
+    /// happens here. This is what lets the emitter maintain its location table
+    /// incrementally — one pass, O(total ranges) — rather than asking where
+    /// every value is at every instruction.
+    ///
+    /// # Panics
+    /// If `v` is in no scope of this nest.
+    pub fn transitions(self, v: ValueId) -> impl Iterator<Item = (usize, Where)> + use<'a> {
+        let scope = self.scope;
+        self.nest
+            .placement(v)
+            .spans()
+            .filter(move |s| s.from.scope == scope)
+            .map(|s| (s.from.index, s.at))
+    }
+
+    /// The first program point *inside* this scope: where the loops it
+    /// encloses begin, and where a root it parks is picked up.
+    ///
+    /// The body encloses nothing, so its own end is the answer there — a point
+    /// no range starts at, which is exactly "there is nothing inside".
+    #[must_use]
+    pub fn inner_head(&self) -> Point {
+        match self.scope {
+            Scope::Region(i) if i + 1 < self.nest.regions.len() => Point {
+                scope: Scope::Region(i + 1),
+                index: 0,
+            },
+            Scope::Region(_) => Point {
+                scope: Scope::Body,
+                index: 0,
+            },
+            Scope::Body => Point::TAIL,
+        }
     }
 
     /// Whether this scope *reads* `v` from an enclosing region's park rather
