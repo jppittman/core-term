@@ -525,109 +525,39 @@ impl Allocation {
 /// produced, and it panics at the point of failure rather than handing a
 /// caller a string it can only propagate.
 pub trait RegisterAllocator {
-    /// Choose an evaluation order for `dag` and a placement for every value.
+    /// Place every value in a loop nest, and choose the evaluation order.
     ///
-    /// Takes the DAG by value because choosing the order is part of the job:
-    /// an implementation is free to permute what it is handed, and returns the
-    /// order it settled on inside the [`Allocation`].
-    fn allocate(&self, dag: Vec<Def>, file: &RegisterFile) -> Allocation;
-
-    /// Allocate a whole loop nest: every region, plus the slot order for the
-    /// values that outlive the region computing them.
+    /// This is the whole job, and it is deliberately the *only* required
+    /// method. The nest — not a flat schedule — is the honest input, because
+    /// where a value is read decides what keeping it in a register is worth:
+    /// a read inside a loop costs its reload once per iteration, a read in the
+    /// prologue costs it once. An allocator handed a flat `Vec<Def>` cannot
+    /// tell those apart, so it cannot price them, and the only policy it can
+    /// implement is one that ignores the difference.
     ///
-    /// The emitter used to call [`allocate`](Self::allocate) once per region
-    /// and work out for itself which values crossed a back edge and where to
-    /// park them. That made loop-carried liveness the *emitter's* concept,
-    /// which is why it could only ever be answered one way — a fixed memory
-    /// slot. Handing the allocator the nest puts the question where the
-    /// answer lives: a value defined in one region and read in a region
-    /// inside it has a live range spanning a back edge, which is an ordinary
-    /// fact about liveness and not a special case.
+    /// Taking the nest by value because choosing the order is part of the job:
+    /// an implementation may permute what it is handed, and returns the order
+    /// it settled on.
+    fn allocate_nest(&self, nest: ScopedSchedule, file: &RegisterFile) -> NestAllocation;
+
+    /// A loop-free schedule, which is the degenerate nest: one body, no
+    /// regions, nothing carried across anything.
     ///
-    /// The policy here is still the old one — every carried value gets a
-    /// slot — so this changes nothing about the code that comes out. It
-    /// changes who is entitled to decide.
-    ///
-    /// Slots are named by index, not by offset: where slot `k` actually sits
-    /// depends on the scaffold's own frame, which is the emitter's business.
-    fn allocate_nest(&self, nest: ScopedSchedule, file: &RegisterFile) -> NestAllocation {
-        // Outermost first, because that is the direction liveness flows: a
-        // value a region computes for the scopes inside it is live across
-        // every iteration of every loop between here and its last use. A
-        // register holding it is therefore unavailable to all of them, which
-        // is what allocating each region against the full pool used to miss.
-        let mut carried = RegSet::EMPTY;
-        let mut carries: BTreeMap<ValueId, Reg> = BTreeMap::new();
-        let mut regions = Vec::with_capacity(nest.regions.len());
-
-        // Uses in the innermost body are what a carry actually saves: one
-        // reload per use, per iteration. Counted once, up front.
-        let mut body_uses: BTreeMap<ValueId, usize> = BTreeMap::new();
-        for def in &nest.body {
-            for operand in operands(&def.op) {
-                *body_uses.entry(operand).or_insert(0) += 1;
-            }
-        }
-
-        for region in nest.regions {
-            let scoped = file.inside(carried);
-            let allocation = self.allocate(region.schedule, &scoped);
-
-            // Carry the roots the body reads most, while the body keeps a
-            // pool it can still allocate in. Every carry costs one register
-            // for the whole loop and saves one reload per use per iteration,
-            // so the ordering is by use count and the cap is the floor.
-            let budget = file
-                .scratch
-                .len()
-                .saturating_sub(carried.len())
-                .saturating_sub(RegisterFile::MIN_SCRATCH);
-            let mut ranked: Vec<(usize, ValueId)> = region
-                .roots
-                .iter()
-                .map(|v| (body_uses.get(v).copied().unwrap_or(0), *v))
-                .filter(|(uses, _)| *uses > 0)
-                .collect();
-            // Descending by use count, then by id so the choice is
-            // deterministic — two roots read the same number of times must
-            // not depend on map iteration order.
-            ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.0.cmp(&b.1.0)));
-
-            // Everything the region's own code touches: placed values AND
-            // per-instruction scratch. A temp is a pool register that no
-            // placement records, so taking the complement of `placements`
-            // alone would hand out a register the prologue destroys.
-            let mut used: Vec<Reg> = allocation
-                .placements
-                .iter()
-                .filter_map(|p| match p {
-                    Some(Placement::Reg(r)) => Some(*r),
-                    _ => None,
-                })
-                .collect();
-            for scratch in &allocation.scratch {
-                used.extend(scratch.temps.iter().flatten().copied());
-                used.extend(scratch.arm_reload);
-            }
-            let free = scoped.scratch.without(RegSet::of(&used));
-            let mut available = free.iter();
-            for (_, vid) in ranked.into_iter().take(budget as usize) {
-                let Some(reg) = available.next() else { break };
-                carried = carried.union(RegSet::of(&[reg]));
-                carries.insert(vid, reg);
-            }
-
-            regions.push(RegionAllocation {
-                allocation,
-                parked: region.roots,
-            });
-        }
-
-        NestAllocation {
-            regions,
-            body: self.allocate(nest.body, &file.inside(carried)),
-            carries,
-        }
+    /// Provided rather than required, and in that direction on purpose. It
+    /// used to be the other way round — `allocate` required, `allocate_nest`
+    /// defaulted to calling it once per region — which put the loop policy in
+    /// this trait's default body, where every implementation inherited it and
+    /// none of them owned it. A trait should say what an allocator answers,
+    /// not how.
+    fn allocate(&self, dag: Vec<Def>, file: &RegisterFile) -> Allocation {
+        self.allocate_nest(
+            ScopedSchedule {
+                regions: Vec::new(),
+                body: dag,
+            },
+            file,
+        )
+        .body
     }
 }
 
@@ -729,7 +659,90 @@ impl NestAllocation {
 pub struct LinearScan;
 
 impl RegisterAllocator for LinearScan {
-    fn allocate(&self, dag: Vec<Def>, file: &RegisterFile) -> Allocation {
+    fn allocate_nest(&self, nest: ScopedSchedule, file: &RegisterFile) -> NestAllocation {
+        // Outermost first, because that is the direction liveness flows: a
+        // value a region computes for the scopes inside it is live across
+        // every iteration of every loop between here and its last use. A
+        // register holding it is therefore unavailable to all of them, which
+        // is what allocating each region against the full pool used to miss.
+        let mut carried = RegSet::EMPTY;
+        let mut carries: BTreeMap<ValueId, Reg> = BTreeMap::new();
+        let mut regions = Vec::with_capacity(nest.regions.len());
+
+        // Uses in the innermost body are what a carry actually saves: one
+        // reload per use, per iteration. Counted once, up front.
+        let mut body_uses: BTreeMap<ValueId, usize> = BTreeMap::new();
+        for def in &nest.body {
+            for operand in operands(&def.op) {
+                *body_uses.entry(operand).or_insert(0) += 1;
+            }
+        }
+
+        for region in nest.regions {
+            let scoped = file.inside(carried);
+            let allocation = self.scan(region.schedule, &scoped);
+
+            // Carry the roots the body reads most, while the body keeps a
+            // pool it can still allocate in. Every carry costs one register
+            // for the whole loop and saves one reload per use per iteration,
+            // so the ordering is by use count and the cap is the floor.
+            let budget = file
+                .scratch
+                .len()
+                .saturating_sub(carried.len())
+                .saturating_sub(RegisterFile::MIN_SCRATCH);
+            let mut ranked: Vec<(usize, ValueId)> = region
+                .roots
+                .iter()
+                .map(|v| (body_uses.get(v).copied().unwrap_or(0), *v))
+                .filter(|(uses, _)| *uses > 0)
+                .collect();
+            // Descending by use count, then by id so the choice is
+            // deterministic — two roots read the same number of times must
+            // not depend on map iteration order.
+            ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.0.cmp(&b.1.0)));
+
+            // Everything the region's own code touches: placed values AND
+            // per-instruction scratch. A temp is a pool register that no
+            // placement records, so taking the complement of `placements`
+            // alone would hand out a register the prologue destroys.
+            let mut used: Vec<Reg> = allocation
+                .placements
+                .iter()
+                .filter_map(|p| match p {
+                    Some(Placement::Reg(r)) => Some(*r),
+                    _ => None,
+                })
+                .collect();
+            for scratch in &allocation.scratch {
+                used.extend(scratch.temps.iter().flatten().copied());
+                used.extend(scratch.arm_reload);
+            }
+            let free = scoped.scratch.without(RegSet::of(&used));
+            let mut available = free.iter();
+            for (_, vid) in ranked.into_iter().take(budget as usize) {
+                let Some(reg) = available.next() else { break };
+                carried = carried.union(RegSet::of(&[reg]));
+                carries.insert(vid, reg);
+            }
+
+            regions.push(RegionAllocation {
+                allocation,
+                parked: region.roots,
+            });
+        }
+
+        NestAllocation {
+            regions,
+            body: self.scan(nest.body, &file.inside(carried)),
+            carries,
+        }
+    }
+}
+
+impl LinearScan {
+    /// One region, scanned straight through.
+    fn scan(&self, dag: Vec<Def>, file: &RegisterFile) -> Allocation {
         let vec_len = dag
             .iter()
             .map(|def| def.value.0 as usize + 1)
