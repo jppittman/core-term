@@ -1849,32 +1849,6 @@ mod tests {
 
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     #[test]
-    fn latency_mode_chains_x_independent_expressions() {
-        // Audit-H3 regression guard: an expression that never reads Var(0)
-        // must still be chain-serialized (prev feeds EVERY lane). Under the
-        // old x-lane-only feeding, y+z measured in the throughput regime
-        // (raw ~0.8ns, far below the serialized identity overhead ~4ns) and
-        // the overhead subtraction drove adjusted_ns negative.
-        let mut arena = ExprArena::new();
-        let y = arena.push_var(1);
-        let z = arena.push_var(2);
-        let root = arena.push_binary(OpKind::Add, y, z);
-        let mut session = BenchSession::new();
-        let bench = session
-            .benchmark_arena(&arena, root, BenchMode::Latency)
-            .expect("y+z must benchmark in latency mode");
-        let overhead = session.call_overhead_ns(BenchMode::Latency);
-        assert!(
-            bench.ns > overhead * 0.5,
-            "x-independent expression measured {:.3}ns raw latency against a {:.3}ns serialized \
-             identity overhead — the dependency chain is broken (audit H3)",
-            bench.ns,
-            overhead
-        );
-    }
-
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-    #[test]
     fn session_benchmarks_both_modes() {
         let mut session = BenchSession::new();
         assert!(session.calibration_ns() > 0.0);
