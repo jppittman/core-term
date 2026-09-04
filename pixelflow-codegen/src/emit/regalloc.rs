@@ -8,7 +8,7 @@
 //! occupies — is a field of that struct and appears nowhere else. Backends
 //! declare one `const` and the allocator is architecture-independent.
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -346,15 +346,44 @@ impl RegisterFile {
     }
 }
 
-/// Where the allocator decided a value lives.
+/// One scope of a loop nest: the enclosing regions, outermost first, and then
+/// the innermost body.
+///
+/// The derived order is execution order on the first pass through the nest —
+/// `Region(0)` runs once per call, the last region once per iteration of the
+/// next-to-innermost binder, `Body` at every sample. That order is all a
+/// [`Point`] needs to compare, and it is deliberately no more than that: it is
+/// **not** a trip-count model and must not be read as one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Scope {
+    /// An enclosing region; `Region(0)` is the outermost.
+    Region(usize),
+    /// The innermost body, inside every back edge.
+    Body,
+}
+
+/// A program point in a loop nest: a scope, and a position in that scope's
+/// schedule. Ordered lexicographically.
+///
+/// Program point *is* (scope, index into that scope's schedule), which is why
+/// this is the coordinate a placement's ranges are stated in.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Point {
+    /// Which scope of the nest.
+    pub scope: Scope,
+    /// Position in that scope's schedule.
+    pub index: usize,
+}
+
+/// Where the allocator decided a value lives, over one range of its life.
 ///
 /// Deliberately carries no stack address: choosing that a value spills and
 /// choosing *where* it spills are different decisions, and the second belongs
 /// to [`FrameLayout`](super::FrameLayout), which is what knows about frames.
 /// The emitter reads the composition of the two as [`Loc`](super::Loc).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Placement {
-    /// In this register, for the whole of the value's live range.
+pub enum Where {
+    /// In this register.
     Reg(Reg),
     /// Evicted to a stack slot.
     Spilled,
@@ -364,28 +393,127 @@ pub enum Placement {
     Remat(u32),
 }
 
-/// A complete answer for one program: an evaluation order, and a placement for
-/// every value in it.
+/// One range of a value's life: from `from` (inclusive) until the next range's
+/// `from` (exclusive), the value lives at `at`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Span {
+    /// The program point this range starts at.
+    pub from: Point,
+    /// Where the value lives over it.
+    pub at: Where,
+}
+
+/// Where a value lives, at every point in the nest.
+///
+/// A **non-empty, strictly increasing sequence** of [`Span`]s. Non-empty by
+/// construction — a value lives somewhere from its definition on — which is
+/// why the first range is a field rather than the head of a `Vec` something
+/// could empty; the rest is usually empty, and an empty `Vec` does not
+/// allocate.
+///
+/// One location for a whole life was the old shape, and it is the shape that
+/// makes two things unsayable. A value hot in part of a region and cold in the
+/// rest cannot hold a register for the hot part only; and a root computed in
+/// an outer region and read inside the loops within cannot be in that region's
+/// register *and* in a slot for the loops — which is two locations over one
+/// life, and is what the nest-wide map here has to express. That second one is
+/// why the `carries` side-channel is gone: it was the half of this answer the
+/// old shape could not hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placement {
+    first: Span,
+    rest: Vec<Span>,
+}
+
+impl Placement {
+    /// A placement that starts at `first` and never changes.
+    #[must_use]
+    pub fn new(first: Span) -> Self {
+        Self {
+            first,
+            rest: Vec::new(),
+        }
+    }
+
+    /// The same placement, changing to `next.at` from `next.from` onward.
+    ///
+    /// # Panics
+    /// In debug builds, if `next` does not start strictly after every range
+    /// already here — the sequence is increasing, and an out-of-order range
+    /// would make [`Placement::at`] answer with a location the value had
+    /// already left.
+    #[must_use]
+    pub fn then(mut self, next: Span) -> Self {
+        debug_assert!(
+            next.from > self.rest.last().unwrap_or(&self.first).from,
+            "placement ranges must strictly increase"
+        );
+        self.rest.push(next);
+        self
+    }
+
+    /// The point this value is defined at — where its first range starts.
+    #[must_use]
+    pub fn defined_at(&self) -> Point {
+        self.first.from
+    }
+
+    /// Where the value lives at `point`.
+    ///
+    /// Total: the last range whose `from` is at or before `point`. A query
+    /// before the definition — which no caller can make, since an operand is
+    /// read after it is defined — answers with the first range rather than
+    /// panicking.
+    #[must_use]
+    pub fn at(&self, point: Point) -> Where {
+        let after = self.rest.partition_point(|s| s.from <= point);
+        match after.checked_sub(1) {
+            Some(i) => self.rest[i].at,
+            None => self.first.at,
+        }
+    }
+
+    /// Every location this value occupies, in order.
+    pub fn locations(&self) -> impl Iterator<Item = Where> + use<'_> {
+        core::iter::once(self.first.at).chain(self.rest.iter().map(|s| s.at))
+    }
+
+    /// Whether any range of this value's life is in a stack slot.
+    #[must_use]
+    pub fn spills(&self) -> bool {
+        self.locations().any(|at| at == Where::Spilled)
+    }
+
+    /// Every register this value occupies over its life.
+    pub fn registers(&self) -> impl Iterator<Item = Reg> + use<'_> {
+        self.locations().filter_map(|at| match at {
+            Where::Reg(r) => Some(r),
+            Where::Spilled | Where::Remat(_) => None,
+        })
+    }
+}
+
+/// One scope's evaluation order and instruction scratch — everything about a
+/// scope that is not a placement.
 ///
 /// The schedule is an *output* because choosing it is part of allocating.
 /// [`LinearScan`] hands back the order it was given; an allocator whose
 /// register assignment falls out of evaluation order — Sethi-Ullman, where the
 /// heavier subtree is emitted first and the register is a function of tree
-/// position — hands back the order it chose. Downstream, program point *is*
-/// index into this schedule, so everything after allocation reads this one.
+/// position — hands back the order it chose.
 #[derive(Debug)]
-pub struct Allocation {
+struct ScopeCode {
     /// Evaluation order: the schedule the emitter walks.
-    pub schedule: Vec<Def>,
-    /// Dense by `ValueId.0`. Total over `schedule`; `None` only for values
-    /// that are not in this schedule at all.
-    placements: Vec<Option<Placement>>,
+    schedule: Vec<Def>,
     /// The scratch each position in `schedule` may destroy.
     ///
     /// Indexed by schedule position rather than by value because scratch is not
     /// a value: it holds nothing before the instruction and nothing after, so
-    /// it has no `ValueId` and no place in `placements`.
+    /// it has no `ValueId` and no place in the placements.
     scratch: Vec<Scratch>,
+    /// Values this scope computes for the scopes inside it, in slot order.
+    /// Empty for the body, which parks nothing.
+    roots: Vec<ValueId>,
 }
 
 /// The registers one instruction may destroy for its own duration.
@@ -458,52 +586,201 @@ impl Scratch {
     }
 }
 
-impl Allocation {
+/// What an allocator makes of a [`ScopedSchedule`]: **one** answer to one
+/// question — where does each value live, at every point in the nest.
+///
+/// The per-region placement maps and the `carries` side-channel were two
+/// encodings of that answer, and one of them existed because the other could
+/// not say it: a root computed in a region and read by the loops inside lives
+/// in that region's register and then in a slot, which is two locations over
+/// one life. A ranged [`Placement`] says that directly, so there is one map
+/// here and nothing beside it.
+///
+/// `ValueId`s are *not* partitioned by the nest — a `Var` or `Const` leaf
+/// feeding both an invariant expression and a varying one appears in both
+/// scopes' schedules, with an independently chosen location in each. That is
+/// another thing a sequence says and a single answer per value cannot.
+#[derive(Debug)]
+pub struct NestAllocation {
+    /// Dense by `ValueId.0`, over the whole nest.
+    placements: Vec<Option<Placement>>,
+    /// One per input region, in the same order — outermost first.
+    regions: Vec<ScopeCode>,
+    /// The innermost body.
+    body: ScopeCode,
+}
+
+impl NestAllocation {
+    /// How many enclosing regions the nest has.
+    #[must_use]
+    pub fn regions(&self) -> usize {
+        self.regions.len()
+    }
+
+    /// The allocation as `scope` reads it.
+    ///
+    /// # Panics
+    /// If `scope` names a region this nest does not have.
+    #[must_use]
+    pub fn scope(&self, scope: Scope) -> Allocation<'_> {
+        assert!(
+            self.code(scope).is_some(),
+            "{scope:?} is not a scope of this nest"
+        );
+        Allocation { nest: self, scope }
+    }
+
+    /// The innermost body — the whole answer for a loop-free schedule.
+    #[must_use]
+    pub fn body(&self) -> Allocation<'_> {
+        self.scope(Scope::Body)
+    }
+
+    fn code(&self, scope: Scope) -> Option<&ScopeCode> {
+        match scope {
+            Scope::Region(i) => self.regions.get(i),
+            Scope::Body => Some(&self.body),
+        }
+    }
+
+    /// Where `v` lives, at every point in the nest.
+    ///
+    /// # Panics
+    /// If `v` is in no scope of this nest.
+    #[must_use]
+    pub fn placement(&self, v: ValueId) -> &Placement {
+        self.placements
+            .get(v.0 as usize)
+            .and_then(Option::as_ref)
+            .unwrap_or_else(|| panic!("{v:?} is not in this allocation"))
+    }
+
+    /// Where `v` lives at program point `at`.
+    ///
+    /// # Panics
+    /// If `v` is in no scope of this nest.
+    #[must_use]
+    pub fn where_at(&self, v: ValueId, at: Point) -> Where {
+        self.placement(v).at(at)
+    }
+
+    /// The register a root is **carried** in across the loops inside the
+    /// region that computes it, if it is carried at all.
+    ///
+    /// A root is carried exactly when its placement inside the loops is a
+    /// register: the body reads it from there on every iteration instead of
+    /// reloading it from a slot at every use. There is no separate map saying
+    /// so — that map was `carries`, and the placement already answers.
+    ///
+    /// # Panics
+    /// If `root` is in no scope of this nest.
+    #[must_use]
+    pub fn carried(&self, root: ValueId) -> Option<Reg> {
+        match self.where_at(
+            root,
+            Point {
+                scope: Scope::Body,
+                index: 0,
+            },
+        ) {
+            Where::Reg(r) => Some(r),
+            Where::Spilled | Where::Remat(_) => None,
+        }
+    }
+
+    /// Override where a value lives, for the whole of its life.
+    ///
+    /// The emitter's own tests pin a value somewhere the allocator did not
+    /// choose. One write, so the placement cannot desync from itself.
+    ///
+    /// # Panics
+    /// If `v` is in no scope of this nest — a placement has to start
+    /// somewhere, and only the allocation knows where `v` is defined.
+    pub fn place(&mut self, v: ValueId, at: Where) {
+        let from = self.placement(v).defined_at();
+        self.placements[v.0 as usize] = Some(Placement::new(Span { from, at }));
+    }
+}
+
+/// The allocation as one scope reads it: that scope's schedule and scratch,
+/// and the nest-wide placements resolved at points inside it.
+///
+/// The scope is baked in, so callers hand over a *local* schedule index and
+/// cannot name a point in some other scope by accident.
+#[derive(Copy, Clone, Debug)]
+pub struct Allocation<'a> {
+    nest: &'a NestAllocation,
+    scope: Scope,
+}
+
+impl<'a> Allocation<'a> {
+    /// Evaluation order: the schedule the emitter walks.
+    #[must_use]
+    pub fn schedule(&self) -> &'a [Def] {
+        &self.code().schedule
+    }
+
+    /// The values this scope computes for the scopes inside it, in slot order.
+    #[must_use]
+    pub fn roots(&self) -> &'a [ValueId] {
+        &self.code().roots
+    }
+
     /// The scratch the instruction at schedule position `i` may destroy.
     #[must_use]
     pub fn scratch(&self, i: usize) -> Scratch {
-        self.scratch.get(i).copied().unwrap_or_default()
+        self.code().scratch.get(i).copied().unwrap_or_default()
     }
 
-    /// Where `v` lives.
+    /// Where `v` lives at position `index` of this scope.
     ///
-    /// Total over [`Allocation::schedule`] — every value the emitter walks has
-    /// an answer here, which is the invariant that used to be spread across
-    /// three parallel maps and defended by a runtime check that they jointly
-    /// covered every value.
+    /// The query carries its own point because a placement is a schedule, not
+    /// an annotation: asking where a value is without saying *when* is a
+    /// question with no answer once a live range can be split.
     ///
     /// # Panics
-    /// If `v` is not in this schedule.
+    /// If `v` is in no scope of this nest.
     #[must_use]
-    pub fn placement(&self, v: ValueId) -> Placement {
-        self.placements
-            .get(v.0 as usize)
-            .copied()
-            .flatten()
-            .unwrap_or_else(|| panic!("{v:?} is not in this allocation's schedule"))
+    pub fn where_at(&self, v: ValueId, index: usize) -> Where {
+        self.nest.where_at(v, self.point(index))
     }
 
-    /// Override where a value lives.
-    ///
-    /// The collapse-loop LICM pins a hoisted value to the slot its prologue
-    /// parked it in, overriding whatever the allocator gave the placeholder
-    /// def. One write, so the placement cannot desync from itself.
-    pub fn place(&mut self, v: ValueId, placement: Placement) {
-        let idx = v.0 as usize;
-        if idx >= self.placements.len() {
-            self.placements.resize(idx + 1, None);
-        }
-        self.placements[idx] = Some(placement);
+    /// The register a root is carried in across the loops inside its region.
+    #[must_use]
+    pub fn carried(&self, root: ValueId) -> Option<Reg> {
+        self.nest.carried(root)
     }
 
-    /// The values that need a stack slot, in schedule order.
+    /// Whether this scope *reads* `v` from an enclosing region's park rather
+    /// than computing it.
     ///
-    /// [`FrameLayout`](super::FrameLayout) consumes exactly this.
-    pub fn spilled(&self) -> impl Iterator<Item = ValueId> + use<'_> {
-        self.schedule
+    /// Such a value's entry in this schedule is a placeholder, and its address
+    /// is a hoist slot that outlives every region's own frame — so it is not
+    /// this frame's to place. Narrower than "defined elsewhere": a `Const`
+    /// leaf shared with an enclosing region is genuinely computed here too,
+    /// and does need a location of its own.
+    #[must_use]
+    pub fn parked_by_an_enclosing_scope(&self, v: ValueId) -> bool {
+        let outside = match self.scope {
+            Scope::Region(i) => i,
+            Scope::Body => self.nest.regions.len(),
+        };
+        self.nest.regions[..outside]
             .iter()
-            .map(|def| def.value)
-            .filter(|v| self.placement(*v) == Placement::Spilled)
+            .any(|r| r.roots.contains(&v))
+    }
+
+    fn point(&self, index: usize) -> Point {
+        Point {
+            scope: self.scope,
+            index,
+        }
+    }
+
+    fn code(&self) -> &'a ScopeCode {
+        self.nest
+            .code(self.scope)
+            .unwrap_or_else(|| unreachable!("`NestAllocation::scope` checked this"))
     }
 }
 
@@ -549,7 +826,7 @@ pub trait RegisterAllocator {
     /// this trait's default body, where every implementation inherited it and
     /// none of them owned it. A trait should say what an allocator answers,
     /// not how.
-    fn allocate(&self, dag: Vec<Def>, file: &RegisterFile) -> Allocation {
+    fn allocate(&self, dag: Vec<Def>, file: &RegisterFile) -> NestAllocation {
         self.allocate_nest(
             ScopedSchedule {
                 regions: Vec::new(),
@@ -557,7 +834,6 @@ pub trait RegisterAllocator {
             },
             file,
         )
-        .body
     }
 }
 
@@ -588,46 +864,6 @@ pub struct ScopeRegion {
     pub roots: Vec<ValueId>,
     /// What it computes, in topological order.
     pub schedule: Vec<Def>,
-}
-
-/// What an allocator makes of a [`ScopedSchedule`].
-pub struct NestAllocation {
-    /// One per input region, in the same order — outermost first.
-    pub regions: Vec<RegionAllocation>,
-    /// The innermost body.
-    pub body: Allocation,
-    /// Values an outer region computes that stay in a register for the whole
-    /// of the loops inside it, rather than going to a slot and being reloaded
-    /// at every use of every iteration.
-    ///
-    /// Empty is always correct — it is what the allocator did before it was
-    /// shown the nest — so a backend that ignores this map still emits
-    /// working code, just the slower kind.
-    pub carries: BTreeMap<ValueId, Reg>,
-}
-
-/// One region's allocation, and what it leaves behind for the regions inside.
-pub struct RegionAllocation {
-    /// Placements and evaluation order for this region alone.
-    pub allocation: Allocation,
-    /// The values this region computes that outlive it, in slot order.
-    pub parked: Vec<ValueId>,
-}
-
-impl NestAllocation {
-    /// Every carried value, outermost region first — the order that defines
-    /// slot indices.
-    pub fn carried(&self) -> impl Iterator<Item = ValueId> + '_ {
-        self.regions.iter().flat_map(|r| r.parked.iter().copied())
-    }
-
-    /// Allocations for every region and then the body, in emission order.
-    pub fn allocations(&self) -> impl Iterator<Item = &Allocation> + '_ {
-        self.regions
-            .iter()
-            .map(|r| &r.allocation)
-            .chain(core::iter::once(&self.body))
-    }
 }
 
 /// Linear scan with Belady eviction and constant rematerialization.
@@ -666,8 +902,13 @@ impl RegisterAllocator for LinearScan {
         // register holding it is therefore unavailable to all of them, which
         // is what allocating each region against the full pool used to miss.
         let mut carried = RegSet::EMPTY;
-        let mut carries: BTreeMap<ValueId, Reg> = BTreeMap::new();
-        let mut regions = Vec::with_capacity(nest.regions.len());
+        let mut placements: Vec<Option<Placement>> = Vec::new();
+        // Roots of the regions already handled: values an inner scope reads
+        // from a park rather than computing, so its scan's answer for them is
+        // a placeholder's and must not overwrite the park.
+        let mut parked: BTreeSet<ValueId> = BTreeSet::new();
+        let mut regions: Vec<ScopeCode> = Vec::with_capacity(nest.regions.len());
+        let region_count = nest.regions.len();
 
         // Uses in the innermost body are what a carry actually saves: one
         // reload per use, per iteration. Counted once, up front.
@@ -678,9 +919,10 @@ impl RegisterAllocator for LinearScan {
             }
         }
 
-        for region in nest.regions {
+        for (index, region) in nest.regions.into_iter().enumerate() {
+            let scope = Scope::Region(index);
             let scoped = file.inside(carried);
-            let allocation = self.scan(region.schedule, &scoped);
+            let scan = self.scan(region.schedule, &scoped);
 
             // Carry the roots the body reads most, while the body keeps a
             // pool it can still allocate in. Every carry costs one register
@@ -704,58 +946,149 @@ impl RegisterAllocator for LinearScan {
 
             // Everything the region's own code touches: placed values AND
             // per-instruction scratch. A temp is a pool register that no
-            // placement records, so taking the complement of `placements`
+            // placement records, so taking the complement of the locations
             // alone would hand out a register the prologue destroys.
-            let mut used: Vec<Reg> = allocation
-                .placements
+            let mut used: Vec<Reg> = scan
+                .locations
                 .iter()
-                .filter_map(|p| match p {
-                    Some(Placement::Reg(r)) => Some(*r),
-                    _ => None,
+                .flatten()
+                .filter_map(|at| match at {
+                    Where::Reg(r) => Some(*r),
+                    Where::Spilled | Where::Remat(_) => None,
                 })
                 .collect();
-            for scratch in &allocation.scratch {
+            for scratch in &scan.scratch {
                 used.extend(scratch.temps.iter().flatten().copied());
                 used.extend(scratch.arm_reload);
             }
             let free = scoped.scratch.without(RegSet::of(&used));
             let mut available = free.iter();
+            let mut carries: BTreeMap<ValueId, Reg> = BTreeMap::new();
             for (_, vid) in ranked.into_iter().take(budget as usize) {
                 let Some(reg) = available.next() else { break };
                 carried = carried.union(RegSet::of(&[reg]));
                 carries.insert(vid, reg);
             }
 
-            regions.push(RegionAllocation {
-                allocation,
-                parked: region.roots,
+            record(&mut placements, scope, &scan, &parked);
+
+            // A root outlives the region computing it, so its placement has a
+            // second range: from the first point of the scope inside, it is
+            // either the register carrying it across the loops or the slot it
+            // was parked in. Two ranges over one life — the thing a single
+            // location per value could not say, and the reason the emitter
+            // needed a `carries` map beside it.
+            let inside = if index + 1 < region_count {
+                Scope::Region(index + 1)
+            } else {
+                Scope::Body
+            };
+            for root in &region.roots {
+                let park = Span {
+                    from: Point {
+                        scope: inside,
+                        index: 0,
+                    },
+                    at: match carries.get(root) {
+                        Some(reg) => Where::Reg(*reg),
+                        None => Where::Spilled,
+                    },
+                };
+                let in_region = placements[root.0 as usize]
+                    .take()
+                    .unwrap_or_else(|| unreachable!("a region computes its own roots"));
+                placements[root.0 as usize] = Some(in_region.then(park));
+            }
+
+            parked.extend(region.roots.iter().copied());
+            regions.push(ScopeCode {
+                schedule: scan.schedule,
+                scratch: scan.scratch,
+                roots: region.roots,
             });
         }
 
+        let body = self.scan(nest.body, &file.inside(carried));
+        record(&mut placements, Scope::Body, &body, &parked);
+
         NestAllocation {
+            placements,
             regions,
-            body: self.scan(nest.body, &file.inside(carried)),
-            carries,
+            body: ScopeCode {
+                schedule: body.schedule,
+                scratch: body.scratch,
+                roots: Vec::new(),
+            },
         }
     }
 }
 
+/// Fold one scope's scan into the nest-wide map.
+///
+/// A `parked` value is skipped: its entry in this schedule is a placeholder
+/// the emitter never emits, and the region that computes it has already said
+/// where it lives from here on. Everything else this scope schedules gets a
+/// range at its own definition — including a `Var`/`Const` leaf an enclosing
+/// scope also computes, which is genuinely rebuilt here and genuinely may land
+/// somewhere else.
+fn record(
+    placements: &mut Vec<Option<Placement>>,
+    scope: Scope,
+    scan: &Scan,
+    parked: &BTreeSet<ValueId>,
+) {
+    if placements.len() < scan.locations.len() {
+        placements.resize(scan.locations.len(), None);
+    }
+    for (index, def) in scan.schedule.iter().enumerate() {
+        if parked.contains(&def.value) {
+            continue;
+        }
+        let Some(at) = scan.locations[def.value.0 as usize] else {
+            continue;
+        };
+        let from = Point { scope, index };
+        let slot = &mut placements[def.value.0 as usize];
+        *slot = Some(match slot.take() {
+            // A leaf an enclosing scope also computes: another range, since
+            // the two scans chose independently.
+            Some(prior) if prior.at(from) != at => prior.then(Span { from, at }),
+            Some(prior) => prior,
+            None => Placement::new(Span { from, at }),
+        });
+    }
+}
+
+/// One scope, scanned straight through: a location per value and the scratch
+/// per instruction.
+///
+/// A straight-line scan has no ranges to state — every value it places, it
+/// places for the whole of the scope it is scanning. Turning those into
+/// nest-wide [`Placement`]s is [`LinearScan::allocate_nest`]'s job, because
+/// only the nest knows what happens to a value after this scope ends.
+struct Scan {
+    schedule: Vec<Def>,
+    /// Dense by `ValueId.0`, over this scope alone.
+    locations: Vec<Option<Where>>,
+    scratch: Vec<Scratch>,
+}
+
 impl LinearScan {
     /// One region, scanned straight through.
-    fn scan(&self, dag: Vec<Def>, file: &RegisterFile) -> Allocation {
+    fn scan(&self, dag: Vec<Def>, file: &RegisterFile) -> Scan {
         let vec_len = dag
             .iter()
             .map(|def| def.value.0 as usize + 1)
             .max()
             .unwrap_or(0);
-        let mut placements: Vec<Option<Placement>> = vec![None; vec_len];
+        let mut placements: Vec<Option<Where>> = vec![None; vec_len];
 
         let mut scratch_for: Vec<Scratch> = vec![Scratch::default(); dag.len()];
 
         if dag.is_empty() {
-            return Allocation {
+            return Scan {
                 schedule: dag,
-                placements,
+                locations: placements,
                 scratch: scratch_for,
             };
         }
@@ -790,7 +1123,7 @@ impl LinearScan {
         // never competes for one.
         for def in &dag {
             if let ScheduledOp::Var(i) = def.op {
-                placements[def.value.0 as usize] = Some(Placement::Reg(input_register(file, i)));
+                placements[def.value.0 as usize] = Some(Where::Reg(input_register(file, i)));
             }
         }
 
@@ -816,7 +1149,7 @@ impl LinearScan {
             let mut taken: [Option<usize>; Scratch::MAX_TEMPS + 1] = [None; Scratch::MAX_TEMPS + 1];
             let mut reserve = |role: usize,
                                reg_owner: &mut Vec<Option<ValueId>>,
-                               placements: &mut Vec<Option<Placement>>|
+                               placements: &mut Vec<Option<Where>>|
              -> Reg {
                 let slot = reserve_scratch(def, reg_owner, &last_use, &const_bits, &taken);
                 taken[role] = Some(slot);
@@ -825,8 +1158,8 @@ impl LinearScan {
                 // its whole life, exactly as destination eviction below does.
                 if let Some(evicted) = reg_owner[slot].take() {
                     placements[evicted.0 as usize] = Some(match const_bits[evicted.0 as usize] {
-                        Some(bits) => Placement::Remat(bits),
-                        None => Placement::Spilled,
+                        Some(bits) => Where::Remat(bits),
+                        None => Where::Spilled,
                     });
                 }
                 scratch[slot]
@@ -859,7 +1192,7 @@ impl LinearScan {
                 .enumerate()
                 .position(|(idx, slot)| slot.is_none() && !reserved.contains(&Some(idx)))
             {
-                placements[vid.0 as usize] = Some(Placement::Reg(scratch[free]));
+                placements[vid.0 as usize] = Some(Where::Reg(scratch[free]));
                 reg_owner[free] = Some(*vid);
                 continue;
             }
@@ -905,19 +1238,19 @@ impl LinearScan {
 
             let loser = if evict_new { *vid } else { occupant };
             placements[loser.0 as usize] = Some(match const_bits[loser.0 as usize] {
-                Some(bits) => Placement::Remat(bits),
-                None => Placement::Spilled,
+                Some(bits) => Where::Remat(bits),
+                None => Where::Spilled,
             });
 
             if !evict_new {
-                placements[vid.0 as usize] = Some(Placement::Reg(scratch[evict_slot]));
+                placements[vid.0 as usize] = Some(Where::Reg(scratch[evict_slot]));
                 reg_owner[evict_slot] = Some(*vid);
             }
         }
 
-        Allocation {
+        Scan {
             schedule: dag,
-            placements,
+            locations: placements,
             scratch: scratch_for,
         }
     }
@@ -1069,6 +1402,15 @@ mod tests {
         u8::from(matches!(op, ScheduledOp::Unary(OpKind::Neg, _)))
     }
 
+    /// A point in the innermost body — the only scope a loop-free
+    /// allocation has.
+    fn body(index: usize) -> Point {
+        Point {
+            scope: Scope::Body,
+            index,
+        }
+    }
+
     fn def(value: u32, op: ScheduledOp) -> Def {
         Def {
             value: ValueId(value),
@@ -1076,8 +1418,37 @@ mod tests {
         }
     }
 
-    fn alloc(schedule: Vec<Def>) -> Allocation {
+    fn alloc(schedule: Vec<Def>) -> NestAllocation {
         LinearScan.allocate(schedule, &TEST_FILE)
+    }
+
+    /// How many of a loop-free allocation's values are in a stack slot.
+    fn spill_count(a: &NestAllocation) -> usize {
+        a.body()
+            .schedule()
+            .iter()
+            .filter(|d| a.placement(d.value).spills())
+            .count()
+    }
+
+    /// Where `v` lives at its own definition, in `scope`.
+    ///
+    /// A placement is a schedule, so every query needs a point; the point a
+    /// test means when it asks "where did the allocator put this" is the
+    /// definition, and finding it is the schedule's job rather than each
+    /// assertion's.
+    fn at_def(a: &Allocation<'_>, v: ValueId) -> Where {
+        let i = a
+            .schedule()
+            .iter()
+            .position(|d| d.value == v)
+            .unwrap_or_else(|| panic!("{v:?} is not in this schedule"));
+        a.where_at(v, i)
+    }
+
+    /// `at_def` against a loop-free allocation, whose one scope is the body.
+    fn at(a: &NestAllocation, v: ValueId) -> Where {
+        at_def(&a.body(), v)
     }
 
     /// `v2 = X + Y`.
@@ -1092,8 +1463,8 @@ mod tests {
     #[test]
     fn an_empty_schedule_allocates_nothing() {
         let a = alloc(vec![]);
-        assert!(a.schedule.is_empty());
-        assert_eq!(a.spilled().count(), 0);
+        assert!(a.body().schedule().is_empty());
+        assert_eq!(spill_count(&a), 0);
     }
 
     /// The schedule is an output, and for linear scan it is the input order:
@@ -1101,18 +1472,18 @@ mod tests {
     #[test]
     fn linear_scan_returns_the_order_it_was_given() {
         let a = alloc(add_xy());
-        let order: Vec<ValueId> = a.schedule.iter().map(|d| d.value).collect();
+        let order: Vec<ValueId> = a.body().schedule().iter().map(|d| d.value).collect();
         assert_eq!(order, vec![ValueId(0), ValueId(1), ValueId(2)]);
     }
 
     #[test]
     fn vars_are_pinned_to_the_input_registers() {
         let a = alloc(add_xy());
-        assert_eq!(a.placement(ValueId(0)), Placement::Reg(Reg(0)), "X");
-        assert_eq!(a.placement(ValueId(1)), Placement::Reg(Reg(1)), "Y");
+        assert_eq!(at(&a, ValueId(0)), Where::Reg(Reg(0)), "X");
+        assert_eq!(at(&a, ValueId(1)), Where::Reg(Reg(1)), "Y");
         // The sum takes the pool, never an input register.
-        assert_eq!(a.placement(ValueId(2)), Placement::Reg(Reg(4)));
-        assert_eq!(a.spilled().count(), 0);
+        assert_eq!(at(&a, ValueId(2)), Where::Reg(Reg(4)));
+        assert_eq!(spill_count(&a), 0);
     }
 
     /// Every value the emitter walks has a placement — the invariant that used
@@ -1120,8 +1491,58 @@ mod tests {
     #[test]
     fn placement_is_total_over_the_schedule() {
         let a = alloc(add_xy());
-        let placed: Vec<Placement> = a.schedule.iter().map(|d| a.placement(d.value)).collect();
-        assert_eq!(placed.len(), a.schedule.len());
+        let body = a.body();
+        let placed: Vec<Where> = body.schedule().iter().map(|d| at(&a, d.value)).collect();
+        assert_eq!(placed.len(), body.schedule().len());
+    }
+
+    // -------------------------------------------------------------------------
+    // The placement sequence itself
+    // -------------------------------------------------------------------------
+
+    /// A one-range placement answers the same thing at every point — which is
+    /// what makes today's allocator's output a special case of the sequence
+    /// rather than a different kind of answer.
+    #[test]
+    fn a_single_range_answers_everywhere() {
+        let p = Placement::new(Span {
+            from: body(0),
+            at: Where::Reg(Reg(7)),
+        });
+        for i in [0usize, 1, 99] {
+            assert_eq!(p.at(body(i)), Where::Reg(Reg(7)));
+        }
+        assert!(!p.spills());
+        assert_eq!(p.registers().collect::<Vec<_>>(), vec![Reg(7)]);
+    }
+
+    /// The case the whole type exists for: a value in a register up to a
+    /// point and in a slot after it. Nothing emits this yet — the policy that
+    /// will is the work this API unblocks — so it is checked here directly.
+    #[test]
+    fn a_ranged_placement_answers_per_point() {
+        let p = Placement::new(Span {
+            from: body(3),
+            at: Where::Reg(Reg(5)),
+        })
+        .then(Span {
+            from: body(9),
+            at: Where::Spilled,
+        });
+
+        assert_eq!(p.at(body(3)), Where::Reg(Reg(5)), "the first range starts");
+        assert_eq!(p.at(body(8)), Where::Reg(Reg(5)), "still the first range");
+        assert_eq!(p.at(body(9)), Where::Spilled, "`from` is inclusive");
+        assert_eq!(p.at(body(400)), Where::Spilled, "the last range runs on");
+
+        // Total below the definition too: an answer, not a panic.
+        assert_eq!(p.at(body(0)), Where::Reg(Reg(5)));
+        assert_eq!(p.defined_at(), body(3));
+
+        // A value in a slot for *part* of its life still needs a slot, and the
+        // register it held earlier is still a register something wrote.
+        assert!(p.spills());
+        assert_eq!(p.registers().collect::<Vec<_>>(), vec![Reg(5)]);
     }
 
     #[test]
@@ -1141,9 +1562,9 @@ mod tests {
             def(3, ScheduledOp::Unary(OpKind::Neg, ValueId(2))),
             def(4, ScheduledOp::Unary(OpKind::Abs, ValueId(3))),
         ]);
-        assert_eq!(a.spilled().count(), 0);
+        assert_eq!(spill_count(&a), 0);
         // v2's last use is v3, so v4 may reuse v2's register.
-        assert_eq!(a.placement(ValueId(2)), a.placement(ValueId(4)));
+        assert_eq!(at(&a, ValueId(2)), at(&a, ValueId(4)));
     }
 
     // -------------------------------------------------------------------------
@@ -1161,13 +1582,13 @@ mod tests {
         ];
         let a = LinearScan.allocate(schedule, &TEMP_FILE);
 
-        let temp = a.scratch(1).temp(0).expect("`Neg` asked for a temp");
+        let temp = a.body().scratch(1).temp(0).expect("`Neg` asked for a temp");
         assert!(
             TEMP_FILE.scratch.contains(temp),
             "{temp:?} is not the pool's"
         );
-        assert_ne!(Placement::Reg(temp), a.placement(ValueId(0)));
-        assert_ne!(Placement::Reg(temp), a.placement(ValueId(1)));
+        assert_ne!(Where::Reg(temp), at(&a, ValueId(0)));
+        assert_ne!(Where::Reg(temp), at(&a, ValueId(1)));
     }
 
     /// A `Select` gets its own third reload target, disjoint from its operands,
@@ -1187,14 +1608,14 @@ mod tests {
             ),
         ];
         let a = LinearScan.allocate(schedule, &TEMP_FILE);
-        let s = a.scratch(5);
+        let s = a.body().scratch(5);
 
         let arm = s.arm_reload.expect("a `Select` always reserves one");
         assert!(TEMP_FILE.scratch.contains(arm), "{arm:?} is not the pool's");
         for v in [ValueId(2), ValueId(3), ValueId(4), ValueId(5)] {
             assert_ne!(
-                Placement::Reg(arm),
-                a.placement(v),
+                Where::Reg(arm),
+                at(&a, v),
                 "{arm:?} is still holding {v:?} when the Select reloads into it"
             );
         }
@@ -1205,7 +1626,7 @@ mod tests {
     #[test]
     fn nothing_but_a_select_reserves_an_arm_reload() {
         let a = LinearScan.allocate(add_xy(), &TEMP_FILE);
-        assert_eq!(a.scratch(2).arm_reload, None);
+        assert_eq!(a.body().scratch(2).arm_reload, None);
     }
 
     /// A pool shrunk below what an encoding needs is not a smaller budget, it
@@ -1228,8 +1649,8 @@ mod tests {
             ],
             &tiny,
         );
-        let temp = a.scratch(3).temp(0).expect("`Neg` asked for a temp");
-        assert_ne!(Placement::Reg(temp), a.placement(ValueId(2)));
+        let temp = a.body().scratch(3).temp(0).expect("`Neg` asked for a temp");
+        assert_ne!(Where::Reg(temp), at(&a, ValueId(2)));
     }
 
     /// Only the ops that asked get one — the register is the allocator's
@@ -1237,7 +1658,7 @@ mod tests {
     #[test]
     fn an_op_that_asks_for_no_temp_gets_none() {
         let a = LinearScan.allocate(add_xy(), &TEMP_FILE);
-        assert_eq!(a.scratch(2).temp(0), None, "`Add` asked for no temp");
+        assert_eq!(a.body().scratch(2).temp(0), None, "`Add` asked for no temp");
     }
 
     /// The temp's live range is one instruction: the next one may take the
@@ -1252,17 +1673,14 @@ mod tests {
             def(4, ScheduledOp::Unary(OpKind::Sqrt, ValueId(3))),
         ];
         let a = LinearScan.allocate(schedule, &TEMP_FILE);
-        assert_eq!(
-            a.spilled().count(),
-            0,
-            "four values fit a four-register pool"
-        );
+        assert_eq!(spill_count(&a), 0, "four values fit a four-register pool");
 
-        let temp = a.scratch(1).temp(0).expect("`Neg` asked for a temp");
+        let temp = a.body().scratch(1).temp(0).expect("`Neg` asked for a temp");
         let reused = a
-            .schedule
+            .body()
+            .schedule()
             .iter()
-            .any(|d| a.placement(d.value) == Placement::Reg(temp));
+            .any(|d| at(&a, d.value) == Where::Reg(temp));
         assert!(reused, "{temp:?} went back to the pool after the `Neg`");
     }
 
@@ -1282,11 +1700,13 @@ mod tests {
             acc = ValueId(6 + i);
         }
         let a = alloc(schedule);
-        assert!(a.spilled().count() > 0);
+        assert!(spill_count(&a) > 0);
         // A placement is one choice, so nothing is both in a register and on
         // the stack — the miscompile the three parallel maps could express.
-        for v in a.spilled() {
-            assert_eq!(a.placement(v), Placement::Spilled);
+        for d in a.body().schedule() {
+            if a.placement(d.value).spills() {
+                assert_eq!(at(&a, d.value), Where::Spilled);
+            }
         }
     }
 
@@ -1309,17 +1729,13 @@ mod tests {
         let a = alloc(schedule);
 
         let remat: Vec<(ValueId, u32)> = (1..=6u32)
-            .filter_map(|i| match a.placement(ValueId(i)) {
-                Placement::Remat(bits) => Some((ValueId(i), bits)),
+            .filter_map(|i| match at(&a, ValueId(i)) {
+                Where::Remat(bits) => Some((ValueId(i), bits)),
                 _ => None,
             })
             .collect();
         assert!(!remat.is_empty(), "constants under pressure should remat");
-        assert_eq!(
-            a.spilled().count(),
-            0,
-            "no constant belongs in a spill slot"
-        );
+        assert_eq!(spill_count(&a), 0, "no constant belongs in a spill slot");
         for (vid, bits) in remat {
             assert_eq!(
                 bits,
@@ -1358,13 +1774,13 @@ mod tests {
         let a = alloc(schedule);
 
         assert_eq!(
-            a.placement(ValueId(live - 1)),
-            Placement::Spilled,
+            at(&a, ValueId(live - 1)),
+            Where::Spilled,
             "v{live_minus_1} is needed last, so it is the one to evict",
             live_minus_1 = live - 1
         );
         assert!(
-            matches!(a.placement(ValueId(1)), Placement::Reg(_)),
+            matches!(at(&a, ValueId(1)), Where::Reg(_)),
             "v1 is needed next, so it must keep its register — evicting it is \
              what FIFO and LRU would have done"
         );
@@ -1376,13 +1792,10 @@ mod tests {
     fn allocation_is_deterministic() {
         let a = alloc(add_xy());
         let b = alloc(add_xy());
-        for d in &a.schedule {
-            assert_eq!(a.placement(d.value), b.placement(d.value));
+        for d in a.body().schedule() {
+            assert_eq!(at(&a, d.value), at(&b, d.value));
         }
-        assert_eq!(
-            a.spilled().collect::<Vec<_>>(),
-            b.spilled().collect::<Vec<_>>()
-        );
+        assert_eq!(spill_count(&a), spill_count(&b));
     }
 
     /// A hoisted value is pinned to the slot its prologue parked it in,
@@ -1390,10 +1803,10 @@ mod tests {
     #[test]
     fn a_placement_can_be_overridden() {
         let mut a = alloc(add_xy());
-        assert!(matches!(a.placement(ValueId(2)), Placement::Reg(_)));
-        a.place(ValueId(2), Placement::Spilled);
-        assert_eq!(a.placement(ValueId(2)), Placement::Spilled);
-        assert_eq!(a.spilled().collect::<Vec<_>>(), vec![ValueId(2)]);
+        assert!(matches!(at(&a, ValueId(2)), Where::Reg(_)));
+        a.place(ValueId(2), Where::Spilled);
+        assert_eq!(at(&a, ValueId(2)), Where::Spilled);
+        assert_eq!(spill_count(&a), 1);
     }
 
     /// All three `Ternary` operands count toward liveness. Missing one frees a
@@ -1411,7 +1824,7 @@ mod tests {
             def(2, ScheduledOp::Var(2)),
             def(3, sel),
         ]);
-        assert_eq!(a.spilled().count(), 0);
+        assert_eq!(spill_count(&a), 0);
     }
 
     /// A destination never lands in a register one of its own operands is
@@ -1451,7 +1864,7 @@ mod tests {
         for file in [&TEST_FILE, &TEMP_FILE] {
             let a = LinearScan.allocate(schedule.clone(), file);
             assert!(
-                a.spilled().count() > 0,
+                spill_count(&a) > 0,
                 "the schedule has to reach eviction for this to test anything"
             );
             // Pairs where both ends are the pool's — the case the two-operand
@@ -1459,19 +1872,22 @@ mod tests {
             // destination (the pool excludes them), so counting those would
             // let the test pass vacuously.
             let mut contested = 0;
-            for d in &a.schedule {
-                let Placement::Reg(dst) = a.placement(d.value) else {
+            let body = a.body();
+            for (i, d) in body.schedule().iter().enumerate() {
+                // At the instruction's own point: that is where a destination
+                // and its operands would collide.
+                let Where::Reg(dst) = body.where_at(d.value, i) else {
                     continue; // Spilled: the destination is `reload[0]`, not the pool's.
                 };
                 for operand in operands(&d.op) {
-                    let at = a.placement(operand);
+                    let at = body.where_at(operand, i);
                     assert_ne!(
                         at,
-                        Placement::Reg(dst),
+                        Where::Reg(dst),
                         "{:?}: destination {dst:?} is where its operand {operand:?} lives",
                         d.value
                     );
-                    if matches!(at, Placement::Reg(r) if file.scratch.contains(r)) {
+                    if matches!(at, Where::Reg(r) if file.scratch.contains(r)) {
                         contested += 1;
                     }
                 }
@@ -1522,33 +1938,114 @@ mod tests {
         };
         let alloc = LinearScan.allocate_nest(nest, &NEST_FILE);
 
+        let carries: Vec<(ValueId, Reg)> = roots
+            .iter()
+            .filter_map(|v| alloc.carried(*v).map(|r| (*v, r)))
+            .collect();
         assert!(
-            !alloc.carries.is_empty(),
+            !carries.is_empty(),
             "nothing was carried, so this test asserts nothing about carrying"
         );
 
-        // Every register any scope inside the loop can write.
-        let mut inside: Vec<Reg> = alloc
-            .body
-            .schedule
+        // Every register any scope inside the loop can write. A carried root
+        // is *not* one of them: its placement inside the loop is the carry,
+        // and the register it held in the producing region belongs to that
+        // region — so the roots are excluded rather than counted.
+        let body = alloc.body();
+        let mut inside: Vec<Reg> = body
+            .schedule()
             .iter()
-            .filter_map(|d| match alloc.body.placement(d.value) {
-                Placement::Reg(r) => Some(r),
-                _ => None,
-            })
+            .filter(|d| !roots.contains(&d.value))
+            .flat_map(|d| alloc.placement(d.value).registers())
             .collect();
-        for i in 0..alloc.body.schedule.len() {
-            let s = alloc.body.scratch(i);
+        for i in 0..body.schedule().len() {
+            let s = body.scratch(i);
             inside.extend((0..Scratch::MAX_TEMPS).filter_map(|k| s.temp(k)));
             inside.extend(s.arm_reload);
         }
 
-        for (vid, carry) in &alloc.carries {
+        for (vid, carry) in &carries {
             assert!(
                 !inside.contains(carry),
                 "{vid:?} is carried in {carry:?}, which the body also writes"
             );
         }
+    }
+
+    /// A root's placement is the whole of what used to need a `carries` map
+    /// beside it: its register inside the region that computes it, and then —
+    /// from the first point of the loops within — either the carry or a slot.
+    #[test]
+    fn a_root_is_placed_twice_and_says_for_itself_whether_it_is_carried() {
+        let mut outer = vec![def(0, ScheduledOp::Var(1))];
+        let width = 6u32;
+        for i in 1..=width {
+            outer.push(def(i, ScheduledOp::Unary(OpKind::Neg, ValueId(0))));
+        }
+        let roots: Vec<ValueId> = (1..=width).map(ValueId).collect();
+
+        let mut body = vec![def(100, ScheduledOp::Var(0))];
+        let mut acc = ValueId(100);
+        for (i, root) in roots.iter().enumerate() {
+            body.push(def(
+                200 + i as u32,
+                ScheduledOp::Binary(OpKind::Add, acc, *root),
+            ));
+            acc = ValueId(200 + i as u32);
+        }
+
+        let alloc = LinearScan.allocate_nest(
+            ScopedSchedule {
+                regions: vec![ScopeRegion {
+                    roots: roots.clone(),
+                    schedule: outer,
+                }],
+                body,
+            },
+            &NEST_FILE,
+        );
+
+        let (mut carried, mut parked) = (0, 0);
+        for root in &roots {
+            let p = alloc.placement(*root);
+            assert_eq!(
+                p.defined_at().scope,
+                Scope::Region(0),
+                "{root:?} is computed by the outer region"
+            );
+            // Inside the region: whatever the scan chose, and a pool register
+            // there — never the carry, which is picked from what the region
+            // leaves free.
+            let inside_region = p.at(Point {
+                scope: Scope::Region(0),
+                index: usize::MAX,
+            });
+            let in_the_loop = p.at(Point {
+                scope: Scope::Body,
+                index: 0,
+            });
+            assert_ne!(
+                inside_region, in_the_loop,
+                "{root:?} would need only one range, but a root always changes \
+                 place at the loop it is read inside"
+            );
+            match alloc.carried(*root) {
+                Some(reg) => {
+                    assert_eq!(in_the_loop, Where::Reg(reg));
+                    carried += 1;
+                }
+                None => {
+                    assert_eq!(in_the_loop, Where::Spilled);
+                    assert!(p.spills(), "a parked root is in a slot");
+                    parked += 1;
+                }
+            }
+        }
+        assert!(carried > 0, "the file has budget, so something is carried");
+        assert!(
+            parked > 0,
+            "the budget is smaller than the root count, so something is parked"
+        );
     }
 
     /// `checked()` is the isolation's teeth: a file whose reload register sits
