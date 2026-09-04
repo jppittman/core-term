@@ -3166,6 +3166,166 @@ mod tests {
                 );
             }
         }
+
+        /// A value spilled before a guarded arm, brought back into a register
+        /// *inside* it, and read again after it.
+        ///
+        /// This is the shape live-range splitting has to get right and the
+        /// previous attempt did not: the arm is code a uniform mask skips, so
+        /// a register range that begins at a read inside it names a register
+        /// the skipped path never loaded. The rule is that such a range ends
+        /// where the arm does — and the value's slot is valid throughout,
+        /// because a value in memory anywhere is stored right after its
+        /// definition, which is outside the arm.
+        ///
+        /// Returns the arena, the root, the value that gets split, and the
+        /// select's true-arm range, so the two tests below can assert on the
+        /// same shape rather than each rebuilding it.
+        fn split_across_a_guarded_arm() -> (
+            ExprArena,
+            ExprId,
+            regalloc::ValueId,
+            (usize, usize),
+            regalloc::NestAllocation,
+        ) {
+            use regalloc::RegisterAllocator;
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let zero = a.push_const(0.0);
+
+            // Computed first, read last: the farthest-out live values, so
+            // these are what eviction takes when the filler fills the pool.
+            let cond = a.push_binary(OpKind::Gt, x, zero);
+            let split = a.push_binary(OpKind::Mul, x, y);
+
+            let terms: alloc::vec::Vec<ExprId> = (1..=8u32)
+                .map(|i| {
+                    let c = a.push_const(i as f32);
+                    a.push_binary(OpKind::Add, x, c)
+                })
+                .collect();
+            let mid = terms[1..]
+                .iter()
+                .fold(terms[0], |acc, &t| a.push_binary(OpKind::Add, acc, t));
+
+            // Shared-base arms, so neither arm's leaves land outside it and
+            // the arms' own nodes stay adjacent (see `guarded_select`).
+            let base = a.push_binary(OpKind::Mul, mid, y);
+            // The true arm reads `split` twice: one read would be reloaded
+            // into a scratch and kept nowhere, which is not the case under
+            // test.
+            let t1 = a.push_binary(OpKind::Mul, base, split);
+            let t2 = a.push_binary(OpKind::Add, t1, split);
+            let t3 = a.push_binary(OpKind::Mul, t2, base);
+            let f1 = a.push_binary(OpKind::Add, base, base);
+            let f2 = a.push_binary(OpKind::Add, f1, base);
+            let sel = a.push_ternary(OpKind::Select, cond, t3, f2);
+            // Read after the arm, which is what makes the confinement rule
+            // load-bearing: on the skipped path this must not name the
+            // register the arm would have loaded.
+            let after = a.push_binary(OpKind::Add, sel, split);
+            let carried = a.push_binary(OpKind::Sub, x, y);
+            let root = a.push_binary(OpKind::Add, after, carried);
+
+            let file = Native::new(EmitCtx::with_max_regs(regalloc::RegisterFile::MIN_SCRATCH))
+                .register_file();
+            let schedule = arena_to_schedule(&a, root);
+            let allocation = regalloc::LinearScan.allocate(schedule, &file);
+            let guard = analyze_select_guards(allocation.body().schedule())
+                .into_iter()
+                .find(|g| g.true_range.0 != g.true_range.1)
+                .expect("the true arm is exclusive and contiguous, so it is guarded");
+
+            // Which `ValueId` the arena's `split` became. `X·Y` is the only
+            // product of two `Var`s in this kernel.
+            let body = allocation.body().schedule();
+            let is_var = |v: regalloc::ValueId| {
+                body.iter()
+                    .any(|d| d.value == v && matches!(d.op, ScheduledOp::Var(_)))
+            };
+            let split_vid = body
+                .iter()
+                .find(|d| {
+                    matches!(d.op, ScheduledOp::Binary(OpKind::Mul, l, r) if is_var(l) && is_var(r))
+                })
+                .map(|d| d.value)
+                .expect("X·Y is in the schedule");
+            (a, root, split_vid, guard.true_range, allocation)
+        }
+
+        /// The value is right after the arm, on the path that skips it.
+        #[test]
+        fn a_split_range_inside_a_guarded_arm_is_correct_when_the_arm_is_skipped() {
+            let (a, root, split_vid, arm, allocation) = split_across_a_guarded_arm();
+            assert!(
+                allocation.placement(split_vid).spills(),
+                "the value under test stayed in a register, so nothing is split"
+            );
+            let kept = allocation
+                .placement(split_vid)
+                .spans()
+                .any(|s| matches!(s.at, regalloc::Where::Reg(_)) && s.from.index >= arm.0);
+            assert!(
+                kept,
+                "the value was never brought back into a register inside the \
+                 arm, so the confinement rule this test exists for is not exercised"
+            );
+
+            let result = EmitCtx::with_max_regs(regalloc::RegisterFile::MIN_SCRATCH)
+                .compile(&a, root)
+                .expect("split-across-a-guard compile");
+            // x < 0 is the all-false mask: the true arm — and the reload
+            // inside it — never runs, and the read after it must still be the
+            // value.
+            for &(px, py) in &[(-2.0f32, 3.0f32), (-0.5, -4.0), (3.0, 2.0), (0.25, 1.5)] {
+                let m: f32 = (1..=8).map(|i| px + i as f32).sum();
+                let b = m * py;
+                let v = px * py;
+                let arm_value = if px > 0.0 {
+                    (b * v + v) * b
+                } else {
+                    (b + b) + b
+                };
+                let want = arm_value + v + (px - py);
+                let got = eval_point(&result.code, px, py, 0.0, 0.0);
+                assert!(
+                    (got - want).abs() <= 1e-2 * want.abs().max(1.0),
+                    "split across a guarded arm at ({px}, {py}): got {got}, want {want}"
+                );
+            }
+        }
+
+        /// And the range ends exactly where the arm does.
+        ///
+        /// One index later would be a register the skipped path never wrote;
+        /// earlier is merely wasteful. The allocator gets the arm ranges from
+        /// the same `analyze_select_guards` the emitter branches on, which is
+        /// what makes "exactly" a statement about one answer rather than two.
+        #[test]
+        fn a_kept_reload_inside_a_guarded_arm_ends_at_the_arm() {
+            let (_, _, split_vid, arm, allocation) = split_across_a_guarded_arm();
+            let spans: alloc::vec::Vec<regalloc::Span> =
+                allocation.placement(split_vid).spans().collect();
+            let kept = spans
+                .iter()
+                .position(|s| matches!(s.at, regalloc::Where::Reg(_)) && s.from.index >= arm.0)
+                .expect("a register range begins inside the arm");
+            assert!(
+                spans[kept].from.index < arm.1,
+                "the range begins outside the arm it was confined to"
+            );
+            let ends_at = spans
+                .get(kept + 1)
+                .map(|s| s.from.index)
+                .expect("a confined range is followed by the range it reverts to");
+            assert_eq!(
+                ends_at, arm.1,
+                "a register range that begins inside a guarded arm must end \
+                 where the arm does: a read after it would name a register the \
+                 skipped path never loaded"
+            );
+        }
     }
 
     /// Run an arena kernel at `x` (Y/Z/W = 0) and return lane 0. The
