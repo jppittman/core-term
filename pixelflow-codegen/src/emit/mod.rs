@@ -88,12 +88,12 @@ impl Loc {
     }
 }
 
-/// Stack addresses for an allocation.
+/// Stack addresses for one scope of an allocation.
 ///
-/// [`regalloc::Placement`] says *that* a value spills; this says *where*. The
+/// [`regalloc::Where`] says *that* a value spills; this says *where*. The
 /// two are separate decisions, and this is the arrow between them: it consumes
-/// an [`Allocation`](regalloc::Allocation) and produces the [`Loc`] the
-/// emitter encodes for every value.
+/// one scope's [`Allocation`](regalloc::Allocation) and produces the [`Loc`]
+/// the emitter encodes for every value in it.
 ///
 /// Slots are laid out at the backend's own vector stride, so every offset
 /// downstream is a real displacement. The stride was once a universal 16 that
@@ -101,28 +101,36 @@ impl Loc {
 /// a convention that held only so long as nothing handed this a non-multiple
 /// of 16, and would have aliased two live values onto one slot the moment
 /// something did.
+///
+/// Per scope, not per nest. A value parked by an enclosing region lives in a
+/// **hoist slot**, which outlives every region's frame and is addressed by the
+/// collapse driver rather than laid out here — so this skips those, and the
+/// driver pins them afterwards. Unifying the two is the next piece of work; it
+/// is not this one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameLayout {
-    /// Dense by `ValueId.0`. Total over the allocation's schedule.
+    /// Dense by `ValueId.0`. Total over the scope's schedule.
     locs: alloc::vec::Vec<Option<Loc>>,
     /// Total frame size in bytes, a whole number of slots.
     pub frame_size: u32,
+    /// How many values this frame gives a slot to.
+    pub slots: u32,
 }
 
 impl FrameLayout {
-    /// Give every spilled value a stack address.
+    /// Give every spilled value in this scope a stack address.
     ///
-    /// Pure: (allocation, slot stride) → layout. The collapse driver runs this
-    /// twice for one region and relies on both runs agreeing.
+    /// Pure: (scope allocation, slot stride) → layout. The collapse driver
+    /// runs this twice for one region and relies on both runs agreeing.
     pub fn resolve(
-        allocation: &regalloc::Allocation,
+        allocation: regalloc::Allocation<'_>,
         vector_bytes: u32,
     ) -> Result<Self, CompileError> {
         // 2MB max frame — generous but prevents runaway allocations.
         const MAX_FRAME: u32 = 2 * 1024 * 1024;
 
-        let len = allocation
-            .schedule
+        let schedule = allocation.schedule();
+        let len = schedule
             .iter()
             .map(|def| def.value.0 as usize + 1)
             .max()
@@ -130,25 +138,27 @@ impl FrameLayout {
         let mut locs: alloc::vec::Vec<Option<Loc>> = alloc::vec![None; len];
 
         let mut offset = 0u32;
-        for (i, def) in allocation.schedule.iter().enumerate() {
-            // One slot per value with *any* spilled range: this answers by
-            // value, so a value ever in memory is in memory at one address.
-            let loc = if allocation.spills(def.value) {
-                if offset > MAX_FRAME - vector_bytes {
-                    return Err(CompileError::BudgetExceeded(
-                        "spill frame overflow: exceeds 2MB stack limit",
-                    ));
-                }
-                let at = offset;
-                offset += vector_bytes;
-                Loc::Spill(at)
-            } else {
-                match allocation.where_at(def.value, regalloc::Point(i)) {
-                    regalloc::Where::Reg(r) => Loc::Reg(r),
-                    regalloc::Where::Remat(bits) => Loc::Remat(bits),
-                    // `spills` is exactly "some range is `Spilled`", and it
-                    // already answered no.
-                    regalloc::Where::Spilled => unreachable!("no range is spilled"),
+        let mut slots = 0u32;
+        for (i, def) in schedule.iter().enumerate() {
+            // A value an enclosing region parked is read here from its hoist
+            // slot, which is not this frame's to place. Its entry in this
+            // schedule is a placeholder that emits nothing.
+            if allocation.parked_by_an_enclosing_scope(def.value) {
+                continue;
+            }
+            let loc = match allocation.where_at(def.value, i) {
+                regalloc::Where::Reg(r) => Loc::Reg(r),
+                regalloc::Where::Remat(bits) => Loc::Remat(bits),
+                regalloc::Where::Spilled => {
+                    if offset > MAX_FRAME - vector_bytes {
+                        return Err(CompileError::BudgetExceeded(
+                            "spill frame overflow: exceeds 2MB stack limit",
+                        ));
+                    }
+                    let at = offset;
+                    offset += vector_bytes;
+                    slots += 1;
+                    Loc::Spill(at)
                 }
             };
             locs[def.value.0 as usize] = Some(loc);
@@ -159,6 +169,7 @@ impl FrameLayout {
             // Already a whole number of slots, and a slot is at least the
             // 16 bytes both ABIs align SP to.
             frame_size: offset,
+            slots,
         })
     }
 
@@ -702,8 +713,8 @@ fn emit_dag_body<B: IsaBackend>(
     backend: &mut B,
 ) -> Result<(Vec<u8>, Reg, u32, u32), CompileError> {
     use regalloc::RegisterAllocator;
-    let allocation = regalloc::LinearScan.allocate(schedule, &backend.register_file());
-    emit_dag_body_hoisted(allocation, backend, HoistCtx::None, None)
+    let nest = regalloc::LinearScan.allocate(schedule, &backend.register_file());
+    emit_dag_body_hoisted(nest.body(), backend, HoistCtx::None, None)
 }
 
 /// Emit one region's body from a finished allocation, with collapse-loop
@@ -714,7 +725,7 @@ fn emit_dag_body<B: IsaBackend>(
 /// frames so both address the shared hoist slots consistently (and, on x86,
 /// so both latch the same allocated-frame mode).
 fn emit_dag_body_hoisted<B: IsaBackend>(
-    allocation: regalloc::Allocation,
+    allocation: regalloc::Allocation<'_>,
     backend: &mut B,
     hoist: HoistCtx<'_>,
     frame_override: Option<u32>,
@@ -726,19 +737,19 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
     // nest. The allocator chooses the evaluation order, so everything here —
     // guard ranges, program points, the emit loop itself — reads the schedule
     // it handed back rather than the one it was given.
-    let schedule = &allocation.schedule;
-    let mut layout = FrameLayout::resolve(&allocation, file.vector_bytes)?;
-    let real_spill_count = allocation.spilled().count() as u32;
+    let schedule = allocation.schedule();
+    let mut layout = FrameLayout::resolve(allocation, file.vector_bytes)?;
+    let real_spill_count = layout.slots;
 
-    // Hoisted values in the body are pre-spilled at their hoist slots: pin
-    // them over whatever location the allocator gave their placeholder defs,
-    // so consumers reload from the slot the prologue stored to.
+    // A value an enclosing region parked has no address in this frame — it
+    // lives in a hoist slot, or in the register carrying it across the loops.
+    // The allocation says which; `FrameLayout` skipped it either way.
     if let Some(hoisted) = hoist.preloaded() {
         for (vid, &offset) in hoisted {
             // The whole point of the nest allocation: a value the enclosing
             // loop kept in a register is read from that register here, not
             // reloaded from its slot at every use of every iteration.
-            match hoist.carried(*vid) {
+            match allocation.carried(*vid) {
                 Some(reg) => layout.pin(*vid, Loc::Reg(reg)),
                 None => layout.pin(*vid, Loc::Spill(offset)),
             }
@@ -918,7 +929,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
             // the slot, so the store would be dead. The register is one the
             // allocator held out of this region's own pool, so nothing
             // between here and the loop can clobber it.
-            if let Some(carry) = hoist.carried(*vid) {
+            if let Some(carry) = allocation.carried(*vid) {
                 if carry != r {
                     backend.emit_mov(&mut code, carry, r);
                 }
@@ -1373,11 +1384,6 @@ enum HoistCtx<'a> {
         preloaded: Option<&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>>,
         /// Values this prologue computes and parks for its inner loop.
         parked: &'a alloc::collections::BTreeMap<regalloc::ValueId, u32>,
-        /// Of everything above, the values the allocator kept in a register
-        /// for the whole of the loops inside. A carried value's slot is never
-        /// read, so this prologue hands it to its register instead of storing
-        /// it.
-        carried: &'a alloc::collections::BTreeMap<regalloc::ValueId, Reg>,
     },
     /// Emitting the loop body: mapped values are never emitted; their
     /// locations are overridden — to a carried register where the allocator
@@ -1385,7 +1391,6 @@ enum HoistCtx<'a> {
     /// reloads through the ordinary spill machinery.
     Body {
         slots: &'a alloc::collections::BTreeMap<regalloc::ValueId, u32>,
-        carried: &'a alloc::collections::BTreeMap<regalloc::ValueId, Reg>,
     },
 }
 
@@ -1402,16 +1407,6 @@ impl<'a> HoistCtx<'a> {
         match self {
             Self::Prologue { parked, .. } => Some(parked),
             Self::None | Self::Body { .. } => None,
-        }
-    }
-
-    /// Where a carried value lives, if the allocator gave it a register.
-    fn carried(&self, vid: regalloc::ValueId) -> Option<Reg> {
-        match self {
-            Self::None => None,
-            Self::Prologue { carried, .. } | Self::Body { carried, .. } => {
-                carried.get(&vid).copied()
-            }
         }
     }
 
@@ -2043,12 +2038,15 @@ fn compile_via_backend<B: IsaBackend>(
     // function of its own allocation, so the shared frame below is read off
     // these rather than computed by allocating everything a second time.
     let nest = regalloc::LinearScan.allocate_nest(scoped, &file);
-    let [frame_region, row_region] = <[regalloc::RegionAllocation; 2]>::try_from(nest.regions)
-        .unwrap_or_else(|_| unreachable!("one region per collapse binder"));
-    let body_alloc = nest.body;
-    let carries = nest.carries;
-    let (frame_roots, frame_alloc) = (frame_region.parked, frame_region.allocation);
-    let (row_roots, row_alloc) = (row_region.parked, row_region.allocation);
+    assert_eq!(
+        nest.regions(),
+        COLLAPSE_BINDERS.len(),
+        "one region per collapse binder"
+    );
+    let frame_alloc = nest.scope(regalloc::Scope::Region(0));
+    let row_alloc = nest.scope(regalloc::Scope::Region(1));
+    let body_alloc = nest.body();
+    let (frame_roots, row_roots) = (frame_alloc.roots(), row_alloc.roots());
 
     if frame_roots.is_empty() && row_roots.is_empty() {
         // Nothing loop-invariant worth hoisting: the plain loop nest.
@@ -2088,8 +2086,8 @@ fn compile_via_backend<B: IsaBackend>(
     // Rounded to a whole slot so the scaffold's coordinate and hoist slots,
     // which sit at `m + k·vector_bytes`, stay naturally aligned.
     let mut m = RED_ZONE_FLOOR;
-    for allocation in [&frame_alloc, &row_alloc, &body_alloc] {
-        if allocation.schedule.is_empty() {
+    for allocation in [frame_alloc, row_alloc, body_alloc] {
+        if allocation.schedule().is_empty() {
             continue;
         }
         m = m.max(FrameLayout::resolve(allocation, vector_bytes)?.frame_size);
@@ -2113,7 +2111,7 @@ fn compile_via_backend<B: IsaBackend>(
         .map(|(vid, offset)| (*vid, *offset))
         .collect();
 
-    let (frame_code, frame_spills) = if frame_alloc.schedule.is_empty() {
+    let (frame_code, frame_spills) = if frame_alloc.schedule().is_empty() {
         (Vec::new(), 0)
     } else {
         let (code, _, _, spills) = emit_dag_body_hoisted(
@@ -2122,13 +2120,12 @@ fn compile_via_backend<B: IsaBackend>(
             HoistCtx::Prologue {
                 preloaded: None,
                 parked: &frame_map,
-                carried: &carries,
             },
             Some(m),
         )?;
         (code, spills)
     };
-    let (row_code, row_spills) = if row_alloc.schedule.is_empty() {
+    let (row_code, row_spills) = if row_alloc.schedule().is_empty() {
         (Vec::new(), 0)
     } else {
         let (code, _, _, spills) = emit_dag_body_hoisted(
@@ -2141,7 +2138,6 @@ fn compile_via_backend<B: IsaBackend>(
                     Some(&frame_map)
                 },
                 parked: &row_map,
-                carried: &carries,
             },
             Some(m),
         )?;
@@ -2150,10 +2146,7 @@ fn compile_via_backend<B: IsaBackend>(
     let (body, result_reg, _, body_spills) = emit_dag_body_hoisted(
         body_alloc,
         backend,
-        HoistCtx::Body {
-            slots: &hoist_map,
-            carried: &carries,
-        },
+        HoistCtx::Body { slots: &hoist_map },
         Some(m),
     )?;
 
@@ -2422,11 +2415,105 @@ mod tests {
     }
 
     // =========================================================================
+    // What the nest does and does not partition
+    // =========================================================================
+
+    /// A leaf shared between an invariant expression and a varying one lands
+    /// in **both** scopes' schedules, with a location chosen independently in
+    /// each.
+    ///
+    /// It is tempting to assume `partition_by_scope` partitions `ValueId`s —
+    /// `arena_to_schedule` numbers them sequentially, and every non-leaf is
+    /// either lifted or left behind. Leaves are the exception: `plan_collapse_hoist`
+    /// refuses to make one a hoist root (there is nothing to save by parking a
+    /// value one instruction rebuilds), so a `Const` feeding both sides is
+    /// simply computed twice. A nest-wide placement map that assumed one
+    /// answer per value would have to pick one of the two, and the emitter
+    /// would then read a register the other scope never wrote.
+    #[test]
+    fn a_leaf_feeding_both_scopes_is_scheduled_in_both() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        // One constant, read by an X-invariant term and an X-varying one.
+        let k = a.push_const(3.5);
+        let invariant = a.push_binary(OpKind::Mul, y, k);
+        let varying = a.push_binary(OpKind::Mul, x, k);
+        let root = a.push_binary(OpKind::Add, invariant, varying);
+
+        let (arena, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
+        let schedule = arena_to_schedule(&arena, root);
+        let variance = schedule_variance(&schedule);
+        let scoped = partition_by_scope(schedule, &variance, &[0u8, 1]);
+
+        let in_body: alloc::vec::Vec<regalloc::ValueId> =
+            scoped.body.iter().map(|d| d.value).collect();
+        let shared: alloc::vec::Vec<regalloc::ValueId> = scoped
+            .regions
+            .iter()
+            .flat_map(|r| r.schedule.iter().map(|d| d.value))
+            .filter(|v| in_body.contains(v) && !scoped.regions.iter().any(|r| r.roots.contains(v)))
+            .collect();
+
+        assert!(
+            !shared.is_empty(),
+            "no value is scheduled in two scopes, so nothing here is testing \
+             what a nest-wide placement map has to survive"
+        );
+    }
+
+    /// The consequence for the allocator: a value in two scopes gets a range
+    /// per scope, and each range is that scope's own answer.
+    #[test]
+    fn a_shared_leaf_is_placed_once_per_scope() {
+        use regalloc::{RegisterAllocator, Scope};
+
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let k = a.push_const(3.5);
+        let invariant = a.push_binary(OpKind::Mul, y, k);
+        let varying = a.push_binary(OpKind::Mul, x, k);
+        let root = a.push_binary(OpKind::Add, invariant, varying);
+
+        let (arena, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
+        let schedule = arena_to_schedule(&arena, root);
+        let variance = schedule_variance(&schedule);
+        let scoped = partition_by_scope(schedule, &variance, &[0u8, 1]);
+
+        let file = Native::new(EmitCtx::default()).register_file();
+        let nest = regalloc::LinearScan.allocate_nest(scoped, &file);
+
+        // Every value the body schedules has an answer at a body point, and
+        // every value a region schedules has one at a point in that region —
+        // which is exactly what a single answer per value could not give.
+        let mut answered = 0;
+        let mut scheduled = 0;
+        for scope in [Scope::Region(0), Scope::Region(1), Scope::Body] {
+            let view = nest.scope(scope);
+            for (i, def) in view.schedule().iter().enumerate() {
+                scheduled += 1;
+                if matches!(
+                    view.where_at(def.value, i),
+                    regalloc::Where::Reg(_) | regalloc::Where::Spilled | regalloc::Where::Remat(_)
+                ) {
+                    answered += 1;
+                }
+            }
+        }
+        assert!(scheduled > 0);
+        assert_eq!(
+            answered, scheduled,
+            "the nest-wide map is total over every scope's schedule"
+        );
+    }
+
+    // =========================================================================
     // FrameLayout unit tests — the Placement -> address arrow
     // =========================================================================
 
     /// Build an allocation with the given placements, in schedule order.
-    fn allocation_of(placements: &[(u32, regalloc::Where)]) -> regalloc::Allocation {
+    fn allocation_of(placements: &[(u32, regalloc::Where)]) -> regalloc::NestAllocation {
         use regalloc::{Def, RegisterAllocator, ValueId};
         // Allocate a trivial all-Var schedule to get a well-formed Allocation,
         // then pin each value where the test wants it.
@@ -2447,7 +2534,7 @@ mod tests {
     #[test]
     fn an_allocation_with_no_spills_needs_no_frame() {
         let a = allocation_of(&[(0, regalloc::Where::Reg(Reg(4)))]);
-        let layout = FrameLayout::resolve(&a, 16).unwrap();
+        let layout = FrameLayout::resolve(a.body(), 16).unwrap();
         assert_eq!(layout.frame_size, 0);
         assert_eq!(layout.of(regalloc::ValueId(0)), Loc::Reg(Reg(4)));
     }
@@ -2455,7 +2542,7 @@ mod tests {
     #[test]
     fn one_spill_takes_one_slot() {
         let a = allocation_of(&[(5, regalloc::Where::Spilled)]);
-        let layout = FrameLayout::resolve(&a, 16).unwrap();
+        let layout = FrameLayout::resolve(a.body(), 16).unwrap();
         assert_eq!(layout.frame_size, 16);
         assert_eq!(layout.of(regalloc::ValueId(5)), Loc::Spill(0));
     }
@@ -2474,7 +2561,7 @@ mod tests {
             [(16u32, [0, 16, 32]), (32, [0, 32, 64]), (64, [0, 64, 128])]
         {
             let a = allocation_of(&spilled);
-            let layout = FrameLayout::resolve(&a, vector_bytes).unwrap();
+            let layout = FrameLayout::resolve(a.body(), vector_bytes).unwrap();
             assert_eq!(layout.frame_size, 3 * vector_bytes);
             for (i, off) in expected.iter().enumerate() {
                 assert_eq!(
@@ -2493,7 +2580,7 @@ mod tests {
             (0, regalloc::Where::Remat(1.0f32.to_bits())),
             (1, regalloc::Where::Spilled),
         ]);
-        let layout = FrameLayout::resolve(&a, 16).unwrap();
+        let layout = FrameLayout::resolve(a.body(), 16).unwrap();
         assert_eq!(layout.frame_size, 16, "only the spill takes a slot");
         assert_eq!(
             layout.of(regalloc::ValueId(0)),
@@ -2506,7 +2593,7 @@ mod tests {
     #[test]
     fn a_location_can_be_pinned_over_the_allocators_choice() {
         let a = allocation_of(&[(0, regalloc::Where::Reg(Reg(4)))]);
-        let mut layout = FrameLayout::resolve(&a, 16).unwrap();
+        let mut layout = FrameLayout::resolve(a.body(), 16).unwrap();
         layout.pin(regalloc::ValueId(0), Loc::Spill(256));
         assert_eq!(layout.of(regalloc::ValueId(0)), Loc::Spill(256));
     }
@@ -3147,12 +3234,12 @@ mod tests {
                 use regalloc::RegisterAllocator;
                 regalloc::LinearScan.allocate(arena_to_schedule(&a, root), &file)
             };
-            let mask_vid = analyze_select_guards(&allocation.schedule)
+            let mask_vid = analyze_select_guards(allocation.body().schedule())
                 .first()
                 .expect("a guard formed above")
                 .mask_vid;
             assert!(
-                allocation.spills(mask_vid),
+                allocation.placement(mask_vid).spills(),
                 "the mask stayed in a register, so the spilled-mask path this \
                  test exists for is never reached"
             );
