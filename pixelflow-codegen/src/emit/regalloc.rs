@@ -8,6 +8,7 @@
 //! occupies — is a field of that struct and appears nowhere else. Backends
 //! declare one `const` and the allocator is architecture-independent.
 
+use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -97,6 +98,15 @@ impl RegSet {
     #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    /// This set minus every member of `other`.
+    ///
+    /// How a scope inside a loop sees the pool: a register carrying a value
+    /// across that loop is not available to anything the loop contains.
+    #[must_use]
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
     }
 
     #[must_use]
@@ -314,6 +324,22 @@ impl RegisterFile {
         }
     }
 
+    /// This file as a scope *inside* a loop sees it: the pool minus every
+    /// register carrying a value across that loop.
+    ///
+    /// Carried registers are not `fixed` — `fixed` is what a backend holds for
+    /// its own encodings, and nothing does any more. These are ordinary
+    /// allocations of an outer scope whose live range spans the scopes within,
+    /// which is exactly what the nest's liveness says and what allocating each
+    /// region against the full pool used to ignore.
+    #[must_use]
+    pub const fn inside(self, carried: RegSet) -> Self {
+        Self {
+            scratch: self.scratch.without(carried),
+            ..self
+        }
+    }
+
     /// The allocatable scratch registers, low to high.
     fn scratch(&self) -> impl Iterator<Item = Reg> + use<> {
         self.scratch.iter()
@@ -525,17 +551,82 @@ pub trait RegisterAllocator {
     /// Slots are named by index, not by offset: where slot `k` actually sits
     /// depends on the scaffold's own frame, which is the emitter's business.
     fn allocate_nest(&self, nest: ScopedSchedule, file: &RegisterFile) -> NestAllocation {
-        let regions = nest
-            .regions
-            .into_iter()
-            .map(|region| RegionAllocation {
-                allocation: self.allocate(region.schedule, file),
+        // Outermost first, because that is the direction liveness flows: a
+        // value a region computes for the scopes inside it is live across
+        // every iteration of every loop between here and its last use. A
+        // register holding it is therefore unavailable to all of them, which
+        // is what allocating each region against the full pool used to miss.
+        let mut carried = RegSet::EMPTY;
+        let mut carries: BTreeMap<ValueId, Reg> = BTreeMap::new();
+        let mut regions = Vec::with_capacity(nest.regions.len());
+
+        // Uses in the innermost body are what a carry actually saves: one
+        // reload per use, per iteration. Counted once, up front.
+        let mut body_uses: BTreeMap<ValueId, usize> = BTreeMap::new();
+        for def in &nest.body {
+            for operand in operands(&def.op) {
+                *body_uses.entry(operand).or_insert(0) += 1;
+            }
+        }
+
+        for region in nest.regions {
+            let scoped = file.inside(carried);
+            let allocation = self.allocate(region.schedule, &scoped);
+
+            // Carry the roots the body reads most, while the body keeps a
+            // pool it can still allocate in. Every carry costs one register
+            // for the whole loop and saves one reload per use per iteration,
+            // so the ordering is by use count and the cap is the floor.
+            let budget = file
+                .scratch
+                .len()
+                .saturating_sub(carried.len())
+                .saturating_sub(RegisterFile::MIN_SCRATCH);
+            let mut ranked: Vec<(usize, ValueId)> = region
+                .roots
+                .iter()
+                .map(|v| (body_uses.get(v).copied().unwrap_or(0), *v))
+                .filter(|(uses, _)| *uses > 0)
+                .collect();
+            // Descending by use count, then by id so the choice is
+            // deterministic — two roots read the same number of times must
+            // not depend on map iteration order.
+            ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.0.cmp(&b.1.0)));
+
+            // Everything the region's own code touches: placed values AND
+            // per-instruction scratch. A temp is a pool register that no
+            // placement records, so taking the complement of `placements`
+            // alone would hand out a register the prologue destroys.
+            let mut used: Vec<Reg> = allocation
+                .placements
+                .iter()
+                .filter_map(|p| match p {
+                    Some(Placement::Reg(r)) => Some(*r),
+                    _ => None,
+                })
+                .collect();
+            for scratch in &allocation.scratch {
+                used.extend(scratch.temps.iter().flatten().copied());
+                used.extend(scratch.arm_reload);
+            }
+            let free = scoped.scratch.without(RegSet::of(&used));
+            let mut available = free.iter();
+            for (_, vid) in ranked.into_iter().take(budget as usize) {
+                let Some(reg) = available.next() else { break };
+                carried = carried.union(RegSet::of(&[reg]));
+                carries.insert(vid, reg);
+            }
+
+            regions.push(RegionAllocation {
+                allocation,
                 parked: region.roots,
-            })
-            .collect();
+            });
+        }
+
         NestAllocation {
             regions,
-            body: self.allocate(nest.body, file),
+            body: self.allocate(nest.body, &file.inside(carried)),
+            carries,
         }
     }
 }
@@ -575,6 +666,14 @@ pub struct NestAllocation {
     pub regions: Vec<RegionAllocation>,
     /// The innermost body.
     pub body: Allocation,
+    /// Values an outer region computes that stay in a register for the whole
+    /// of the loops inside it, rather than going to a slot and being reloaded
+    /// at every use of every iteration.
+    ///
+    /// Empty is always correct — it is what the allocator did before it was
+    /// shown the nest — so a backend that ignores this map still emits
+    /// working code, just the slower kind.
+    pub carries: BTreeMap<ValueId, Reg>,
 }
 
 /// One region's allocation, and what it leaves behind for the regions inside.
@@ -938,6 +1037,18 @@ mod tests {
     const TEMP_FILE: RegisterFile = RegisterFile {
         temps_for: neg_wants_a_temp,
         ..TEST_FILE
+    }
+    .checked();
+
+    /// `TEMP_FILE` with headroom above [`RegisterFile::MIN_SCRATCH`].
+    ///
+    /// The nest tests need a pool that can spare a register to carry, and the
+    /// minimum-sized file by construction cannot: the carry budget is
+    /// `pool - MIN_SCRATCH`, which is zero there. Ten registers mirrors the
+    /// SSE2 tier, whose budget is four.
+    const NEST_FILE: RegisterFile = RegisterFile {
+        scratch: RegSet::range(4, 7).union(RegSet::of(&[Reg(13), Reg(14), Reg(15)])),
+        ..TEMP_FILE
     }
     .checked();
 
@@ -1356,6 +1467,73 @@ mod tests {
                 contested > 0,
                 "no instruction read a pool-resident operand, so nothing above \
                  could have collided"
+            );
+        }
+    }
+
+    /// A carried register is untouched by every scope inside the loop.
+    ///
+    /// This is the whole safety property of showing the allocator the nest. A
+    /// value the outer region leaves in a register is read by the body on
+    /// every iteration, so anything the body writes there is a miscompile that
+    /// only shows up as wrong pixels. The body's pool excludes carries by
+    /// construction (`RegisterFile::inside`) — this is what says so out loud,
+    /// and it checks the *temps* too, which are pool registers no `Placement`
+    /// records.
+    #[test]
+    fn a_carried_register_is_untouched_by_everything_inside_the_loop() {
+        // An outer region computing invariants, and a body that reads them.
+        let mut outer = vec![def(0, ScheduledOp::Var(1))];
+        let width = 6u32;
+        for i in 1..=width {
+            outer.push(def(i, ScheduledOp::Unary(OpKind::Neg, ValueId(0))));
+        }
+        let roots: Vec<ValueId> = (1..=width).map(ValueId).collect();
+
+        let mut body = vec![def(100, ScheduledOp::Var(0))];
+        let mut acc = ValueId(100);
+        for (i, root) in roots.iter().enumerate() {
+            body.push(def(
+                200 + i as u32,
+                ScheduledOp::Binary(OpKind::Add, acc, *root),
+            ));
+            acc = ValueId(200 + i as u32);
+        }
+
+        let nest = ScopedSchedule {
+            regions: vec![ScopeRegion {
+                roots: roots.clone(),
+                schedule: outer,
+            }],
+            body,
+        };
+        let alloc = LinearScan.allocate_nest(nest, &NEST_FILE);
+
+        assert!(
+            !alloc.carries.is_empty(),
+            "nothing was carried, so this test asserts nothing about carrying"
+        );
+
+        // Every register any scope inside the loop can write.
+        let mut inside: Vec<Reg> = alloc
+            .body
+            .schedule
+            .iter()
+            .filter_map(|d| match alloc.body.placement(d.value) {
+                Placement::Reg(r) => Some(r),
+                _ => None,
+            })
+            .collect();
+        for i in 0..alloc.body.schedule.len() {
+            let s = alloc.body.scratch(i);
+            inside.extend((0..Scratch::MAX_TEMPS).filter_map(|k| s.temp(k)));
+            inside.extend(s.arm_reload);
+        }
+
+        for (vid, carry) in &alloc.carries {
+            assert!(
+                !inside.contains(carry),
+                "{vid:?} is carried in {carry:?}, which the body also writes"
             );
         }
     }

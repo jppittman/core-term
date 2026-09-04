@@ -454,6 +454,76 @@ merit, which is what LICM was supposed to buy.
 Until then, class D should at least be *declared* under step 1, so "nothing is
 live here" is written where `checked()` can see it.
 
+> **Landed 2026-09-03 — the allocator can see the loop, and LICM stops going to
+> memory.** `allocate_nest` was three independent straight-line allocations
+> against the same pool; it is one problem now. Regions are allocated
+> outermost-first, and a root the innermost body reads can be **carried** — kept
+> in a register for the whole of the loops inside, instead of parked in a slot.
+> `RegSet::without` and `RegisterFile::inside(carried)` are the vocabulary: the
+> pool a scope inside a loop sees is the file's pool minus whatever is carried
+> across it, which is what allocating every region against the full pool used to
+> ignore.
+>
+> **What the old shape actually cost, measured before changing anything.**
+> `HoistCtx::Body` pinned every hoisted value to `Loc::Spill`, so every *use*
+> became a `Reload::FromStack` — on every iteration of the inner loop, for a
+> value that provably does not change within it. Uses tracked hoist count almost
+> exactly across the suite, and the worst kernel measured hoists **48** values:
+> 48 stack loads per batch iteration, for 48 constants.
+>
+> | kernel | hoisted | uses in body |
+> |---|---|---|
+> | small | 1–2 | 1–2 |
+> | mid | 5, 10 | 5, 10 |
+> | prod | **48** | **48** |
+>
+> Also measured, and worth recording because it is *not* where the cost is: the
+> scaffold itself is a constant **268 bytes** on every kernel checked (twelve of
+> them, 268 or 269 every time). The loop's overhead is not its size, it is the
+> traffic inside it.
+>
+> **Result, inner-loop bytes, `n` loop-invariant terms each read once:**
+>
+> | n | SSE2 (pool 10) | AVX2 (pool 10) | AVX-512 (pool 26) |
+> |---|---|---|---|
+> | 4 | 589 → 498 | 560 → 460 | 634 → **526** |
+> | 8 | 897 → 806 | 820 → 720 | 938 → **722** (−23%) |
+> | 16 | 1513 → 1422 | 1340 → 1240 | 1546 → **1114 (−28%)** |
+> | 48 | 3977 → 3886 | 3420 → 3320 | 3978 → **3438** |
+>
+> **Zero added spills at every size on every tier.** Code size understates the
+> win: each byte removed is a load that was executing every iteration.
+>
+> The shape of that table is the point. The carry budget is
+> `pool − MIN_SCRATCH`, so the 128-bit tiers saturate at four carries while
+> AVX-512 gets twenty — **the backend with the most registers gains the most,
+> having previously gained nothing from having them.** That is the same
+> observation step 1's accounting opened with, arriving from the other end.
+>
+> **The safety property, and the test that states it.** A carried register is
+> read by the body on every iteration, so anything inside the loop writing it is
+> a miscompile that surfaces only as wrong pixels. It holds by construction —
+> the body's pool is `file.inside(carried)` — but the carry is chosen from what
+> the *producing* region leaves free, and that had a trap worth recording: the
+> first version took the complement of `placements`, which does not include
+> instruction **temps**. A temp is a pool register no `Placement` records, so
+> that version could hand out a register the prologue destroys.
+> `a_carried_register_is_untouched_by_everything_inside_the_loop` checks
+> placements *and* temps *and* `arm_reload`, and asserts something was carried
+> at all — which immediately caught its own first draft, written against a file
+> whose pool is exactly `MIN_SCRATCH` and whose budget is therefore zero.
+>
+> **What did not land: `SCAFFOLD_ACC`/`SCAFFOLD_SCRATCH`.** They are still
+> hand-chosen, and they are still safe, for a reason this work makes precise
+> rather than removes: they are `Reg(0)`/`Reg(1)`, *input* registers, which
+> `checked()` already holds outside the pool — so a carried pool register
+> survives the scaffold untouched, and the two of them survive the body. What
+> makes them safe is that every coordinate round-trips to a slot and is reloaded
+> at the top of each iteration. Keeping the **coordinates** in registers is the
+> other half of class D — induction variables, not invariants — and it is what
+> would finally make those two an allocation rather than an argument. Separable,
+> and not attempted here.
+
 ## Order of attack
 
 1 first, alone: it is small, it is a strict improvement, and it tells us

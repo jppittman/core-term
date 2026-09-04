@@ -729,7 +729,13 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
     // so consumers reload from the slot the prologue stored to.
     if let Some(hoisted) = hoist.preloaded() {
         for (vid, &offset) in hoisted {
-            layout.pin(*vid, Loc::Spill(offset));
+            // The whole point of the nest allocation: a value the enclosing
+            // loop kept in a register is read from that register here, not
+            // reloaded from its slot at every use of every iteration.
+            match hoist.carried(*vid) {
+                Some(reg) => layout.pin(*vid, Loc::Reg(reg)),
+                None => layout.pin(*vid, Loc::Spill(offset)),
+            }
         }
     }
 
@@ -902,6 +908,16 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
             && let Some(&offset) = hoisted.get(vid)
         {
             let r = backend.emit_resolve(&mut code, *vid, file.reload[1], locs);
+            // Carried: the loops inside read the register, and nothing reads
+            // the slot, so the store would be dead. The register is one the
+            // allocator held out of this region's own pool, so nothing
+            // between here and the loop can clobber it.
+            if let Some(carry) = hoist.carried(*vid) {
+                if carry != r {
+                    backend.emit_mov(&mut code, carry, r);
+                }
+                continue;
+            }
             backend.emit_store(&mut code, r, offset)?;
         }
     }
@@ -1351,11 +1367,20 @@ enum HoistCtx<'a> {
         preloaded: Option<&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>>,
         /// Values this prologue computes and parks for its inner loop.
         parked: &'a alloc::collections::BTreeMap<regalloc::ValueId, u32>,
+        /// Of everything above, the values the allocator kept in a register
+        /// for the whole of the loops inside. A carried value's slot is never
+        /// read, so this prologue hands it to its register instead of storing
+        /// it.
+        carried: &'a alloc::collections::BTreeMap<regalloc::ValueId, Reg>,
     },
     /// Emitting the loop body: mapped values are never emitted; their
-    /// locations are overridden to their hoist slots so every consumer
+    /// locations are overridden — to a carried register where the allocator
+    /// found one, and otherwise to the hoist slot, where every consumer
     /// reloads through the ordinary spill machinery.
-    Body(&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>),
+    Body {
+        slots: &'a alloc::collections::BTreeMap<regalloc::ValueId, u32>,
+        carried: &'a alloc::collections::BTreeMap<regalloc::ValueId, Reg>,
+    },
 }
 
 impl<'a> HoistCtx<'a> {
@@ -1363,14 +1388,24 @@ impl<'a> HoistCtx<'a> {
         match self {
             Self::None => None,
             Self::Prologue { preloaded, .. } => *preloaded,
-            Self::Body(values) => Some(values),
+            Self::Body { slots, .. } => Some(slots),
         }
     }
 
     fn parked(&self) -> Option<&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>> {
         match self {
             Self::Prologue { parked, .. } => Some(parked),
-            Self::None | Self::Body(_) => None,
+            Self::None | Self::Body { .. } => None,
+        }
+    }
+
+    /// Where a carried value lives, if the allocator gave it a register.
+    fn carried(&self, vid: regalloc::ValueId) -> Option<Reg> {
+        match self {
+            Self::None => None,
+            Self::Prologue { carried, .. } | Self::Body { carried, .. } => {
+                carried.get(&vid).copied()
+            }
         }
     }
 
@@ -2005,6 +2040,7 @@ fn compile_via_backend<B: IsaBackend>(
     let [frame_region, row_region] = <[regalloc::RegionAllocation; 2]>::try_from(nest.regions)
         .unwrap_or_else(|_| unreachable!("one region per collapse binder"));
     let body_alloc = nest.body;
+    let carries = nest.carries;
     let (frame_roots, frame_alloc) = (frame_region.parked, frame_region.allocation);
     let (row_roots, row_alloc) = (row_region.parked, row_region.allocation);
 
@@ -2080,6 +2116,7 @@ fn compile_via_backend<B: IsaBackend>(
             HoistCtx::Prologue {
                 preloaded: None,
                 parked: &frame_map,
+                carried: &carries,
             },
             Some(m),
         )?;
@@ -2098,13 +2135,21 @@ fn compile_via_backend<B: IsaBackend>(
                     Some(&frame_map)
                 },
                 parked: &row_map,
+                carried: &carries,
             },
             Some(m),
         )?;
         (code, spills)
     };
-    let (body, result_reg, _, body_spills) =
-        emit_dag_body_hoisted(body_alloc, backend, HoistCtx::Body(&hoist_map), Some(m))?;
+    let (body, result_reg, _, body_spills) = emit_dag_body_hoisted(
+        body_alloc,
+        backend,
+        HoistCtx::Body {
+            slots: &hoist_map,
+            carried: &carries,
+        },
+        Some(m),
+    )?;
 
     let hoisted_values = (frame_roots.len() + row_roots.len()) as u32;
     let code = backend.emit_collapse_loop(&CollapseBody {
