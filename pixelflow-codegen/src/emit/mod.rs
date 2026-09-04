@@ -938,6 +938,27 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
     for (sched_idx, def) in schedule.iter().enumerate() {
         let (vid, sched_op) = (&def.value, &def.op);
 
+        // Guard branches that end at this instruction, patched to the point
+        // *before* this instruction's reconciliation — because that is the
+        // join, and the reconciliation belongs to both paths.
+        //
+        // A skipped arm is still a path through the program, and the location
+        // table is what every path after the join agrees on. A reload placed
+        // at an arm's end brings a value back for the code that follows the
+        // arm, not for the arm; patching the branch after it would let the
+        // skipping path arrive with the register unloaded and the table
+        // claiming otherwise. Ordering it first costs nothing when there is
+        // nothing to reconcile — which is every kernel that reaches this
+        // without a split live range.
+        for &gi in &branch_ends[sched_idx] {
+            let target = code.len();
+            for arm in 0..2 {
+                if let Some(branch) = pending_patches.remove(&(gi, arm)) {
+                    backend.patch_branch(&mut code, branch, target);
+                }
+            }
+        }
+
         // Ranges that begin here. A register range starting away from the
         // value's definition is a reload the allocator chose to keep: the
         // value comes back into a pool register and stays there, instead of
@@ -962,18 +983,6 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
                 _ => backend.emit_skip_if_all_true(&mut code, mask_reg, guard_scratch(&file)),
             };
             pending_patches.insert((guard_idx, arm), branch);
-        }
-
-        // Guard branches that end at this instruction (patch their targets).
-        for &gi in &branch_ends[sched_idx] {
-            if let Some(branch) = pending_patches.remove(&(gi, 0)) {
-                let target = code.len();
-                backend.patch_branch(&mut code, branch, target);
-            }
-            if let Some(branch) = pending_patches.remove(&(gi, 1)) {
-                let target = code.len();
-                backend.patch_branch(&mut code, branch, target);
-            }
         }
 
         // A hoisted value's placeholder def emits nothing — the prologue
