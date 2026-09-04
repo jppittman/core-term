@@ -870,3 +870,80 @@ quickly.
 > two extra scans per nest, monotone with respect to body spilling by
 > construction, and it replaces the hand constant with a measurement rather
 > than a weight. Next.
+
+> **Measured 2026-09-04 — replacing the carry budget: two more designs,
+> both worse on AVX-512 wall clock; the constant stands.** Two further
+> attempts after the flat pass above, both preserved on branches rather
+> than merged (`measured-budget-be33ec66`, and `355f1ff1` on the agent's
+> worktree branch).
+>
+> **3′ — budget from the body's measured peak, carries pre-colored.**
+> Budget `pool − max(peak of every scope inside, encoding floor of the
+> region)`; carried roots computed straight into their carry register; a
+> parked root pinned to its slot in inner scopes rather than a placeholder
+> holding a body register. Static memory ops fell everywhere (glyph corpus
+> SSE2 −14.6%, AVX-512 −7.4%; frame slots 3 142 → 580) but **bytes rose
+> +19% on AVX-512** and on every invariant kernel: the body's gain is paid
+> out of the once-per-row prologue's pool, and on a 26-register tier the
+> budget hands out many carries whose body saving is small.
+>
+> **3″ — the same, with carries priced by trip count.** The units problem
+> in 3′ is real and the trip counts are *already available*: `Lattice::bake`
+> passes `LatticeShape` to `jit_cache::compile`, which keys on it and gives
+> it to the optimizer but never to the emitter. 3″ plumbs it through
+> (`EmitCtx::with_shape`, a per-region `trips`) and accepts a carry only when
+> the measured **dynamic memory ops per call** — Σ scopes (memory ops in
+> scope × executions per call) — fall. Glyph corpus at real bake shapes:
+>
+> | | SSE2 #1150 | SSE2 3″ | AVX-512 #1150 | AVX-512 3″ |
+> |---|---:|---:|---:|---:|
+> | dynamic memory ops / call | 1 722 997 | 1 563 949 (**−9.2%**) | 550 293 | 513 948 (−6.6%) |
+> | code bytes | 2 849 452 | 2 739 826 (−3.9%) | 1 780 782 | 2 121 876 (**+19.2%**) |
+> | carries | 577 | 132 | 1 630 | 2 328 |
+> | kernels worse than #1150 (dyn ops) | — | 36 / 257 | — | 14 / 256 |
+> | kernels worse than own zero-carry baseline | — | **0** | — | **0** |
+>
+> Wall clock, `font_rendering` bench (glyph at [40,45], JIT cached, release,
+> medians): SSE2 −1.6% to −6.5%, inside the spread; **AVX-512 +13% to
+> +18%, outside it.** Dynamic memory ops went down and time went up.
+>
+> **What the verification found, and why this line stops here.**
+>
+> 1. **The measurement never refuses anything.** Of 11 558 carry candidates
+>    on SSE2, 11 426 were clipped by the budget before the trip-count
+>    pricing ran, 132 accepted, **0 refused on cost** (4 of 11 537 on
+>    AVX-512). "Monotone by construction" holds against the design's own
+>    zero-carry baseline and is a property of the budget, not of the
+>    pricing. The 36 SSE2 regressions against #1150 are all kernels whose
+>    body peak saturates the 10-register pool, so the budget is 0 with
+>    candidates waiting — carries #1150's `pool − 4` took, and was right to.
+> 2. **The invariant kernels show no shape sensitivity at all**: identical
+>    dynamic memory ops main vs 3″ at every n, and identical carries at
+>    x = 256 and x = 16, because the budget is 0 in both cases and the trip
+>    count only enters a test the budget prevents from running. 3″'s carry
+>    count at 84/202 is 0 where #1150's is 4 (SSE2) / 20 (AVX-512) — the
+>    reverse of what 3′ measured on a different expression.
+> 3. **Static memory ops do not predict wall clock on AVX-512.** −6.6% dyn
+>    ops, +19% bytes, +13–18% time. The structural changes alone (zero
+>    carries) are **+12% dyn ops worse** than #1150 there while −9% better on
+>    SSE2; carrying is the whole AVX-512 win on that metric and the whole
+>    byte cost. Whatever the time is going to — a 42 KB kernel does not fit
+>    L1i; a 64-byte spill is not the same cost as a 16-byte one — the cost
+>    model that decided these trades cannot see it, and tuning further
+>    against it is not justified.
+>
+> So: the flat pass under-carries, the peak budget over-carries on the wide
+> tier and under-carries on the narrow one, and pricing by trip count never
+> gets to decide. `pool − MIN_SCRATCH` with roots ranked by body reads
+> (#1147/#1150) remains the best-measured policy on every tier by wall clock,
+> and it stays. The constant is a fitted number, and the honest statement is
+> that three principled replacements each lost to it because the quantity
+> they optimized is not time. The trip-count plumbing is the right
+> denotation and is kept on the branch, not landed: unused plumbing is
+> machinery, and the rule is subtract first.
+>
+> What would change this: a cost model whose prediction tracks the
+> `font_rendering` wall clock across tiers — code size and vector width in
+> the cost of a spill, at minimum — measured before any policy is built on
+> it. That is a cost-model program, not an allocator change, and it is what
+> `docs/plans/2026-09-01-schedule-cost-model-denotation.md` is for.
