@@ -688,3 +688,50 @@ operands need the guard analysis to name values by their post-split identity.
 Neither is deep, but both are the kind of thing that miscompiles quietly, and
 the measurement above is the reason it is worth doing properly rather than
 quickly.
+
+> **Landed 2026-09-04 — the output is a schedule.** Two pure refactors of the
+> allocator's output types, with no change to which values get registers
+> (#1148). A `Placement` is now a non-empty, strictly increasing sequence of
+> `Span { from: Point, at: Where }` — from that program point until the next
+> span's, the value lives at `at` — and `Point` is nest-wide: `(Scope, index)`
+> ordered `Region(0) < … < Body`, execution order on the first pass and
+> deliberately not a trip-count model. `NestAllocation` holds **one** placement
+> map for the whole nest; `carries`, the per-region maps, `RegionAllocation`,
+> `HoistCtx::{Body,Prologue}::carried` and `Allocation::spilled()` are deleted.
+> A root is carried iff its placement at the body's first point is `Reg(_)`.
+> The answer lives in the type, not beside it.
+>
+> Proved rather than asserted: a harness compiled 61 kernels × 3 pool sizes and
+> recorded `(len, digest, spills, frame, hoisted)`; the diff against `main` is
+> **empty on SSE2, AVX2+FMA and AVX-512 for both commits** — the second more
+> strongly than its spec required, which asked only for the no-hoist subset.
+>
+> **Two places the spec was wrong, both now pinned by tests.** `ValueId`s are
+> *not* partitioned by the nest: `plan_collapse_hoist` refuses to hoist a leaf
+> (nothing is saved parking a value one instruction rebuilds), so a `Const` or
+> `Var` feeding both an invariant and a varying term is scheduled in *both*
+> scopes and placed independently in each — one span per scope, which a single
+> answer per value could not hold (`a_leaf_feeding_both_scopes_is_scheduled_in_both`,
+> `a_shared_leaf_is_placed_once_per_scope`). And a carried root needs *two*
+> spans, not one: the carry register is chosen from what the producing region
+> leaves free — that is what makes it safe — so it is never where that region
+> put the value (`a_root_is_placed_twice_and_says_for_itself_whether_it_is_carried`).
+>
+> `FrameLayout` stays per scope; hoist slots stay the collapse driver's.
+> Unifying them means the layout owns the scaffold's coordinate slots too — a
+> frame-ABI change, recorded rather than half-done.
+>
+> **Why this is the step before the policy, not the policy.** The two
+> measured negatives above — frequency weighting (+37%: pricing one side of the
+> carry trade) and whole-life splitting (−10 to −20% but a hole where the
+> store went) — want the same thing: the region's roots and the body's values
+> competing for **one pool in one pass**, with eviction as a *split* rather
+> than a whole-life sentence, the store at the definition (which a guard cannot
+> skip without skipping every read), reloads that *keep* their register, and
+> reconciliation at each scope's head for whatever the back edge left elsewhere.
+> That is Traub's second-chance binpacking over the nest, and it needs exactly
+> this output shape. Same trait, same types; the change is `LinearScan`'s
+> policy and the emitter honoring transitions it already receives typed. Not
+> graph coloring: SSA interference graphs are chordal, so schedule-order greedy
+> coloring is already optimal *as a coloring* — what was missing is spill
+> placement, which is what splitting is.
