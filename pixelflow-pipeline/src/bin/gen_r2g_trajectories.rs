@@ -566,13 +566,7 @@ fn run_trajectory(
         .observe(Some(Box::new(KeepJournal)))
         .hard_ceiling(SATURATE_TIMEOUT);
     let mut egraph = optimizer.egraph();
-    let root_class = pixelflow_search::egraph::insert(
-        arena,
-        root,
-        &mut egraph,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    let root_class = egraph.add_arena(arena, root);
     let node_count = arena.nodes_raw().len();
     let mut checkpoints = Vec::with_capacity(budgets.len());
     let mut last_stop = SaturationStop::ApplicationBudget;

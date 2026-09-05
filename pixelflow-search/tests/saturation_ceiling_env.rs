@@ -41,13 +41,7 @@ fn arena_shape(arena: &ExprArena, root: ExprId) -> String {
 fn optimize(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
     let mut optimizer = Optimizer::production();
     let mut eg = optimizer.egraph();
-    let root_class = pixelflow_search::egraph::insert(
-        arena,
-        root,
-        &mut eg,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    let root_class = eg.add_arena(arena, root);
     let optimized = optimizer.run(&mut eg, root_class, arena.len());
     optimized.to_arena(&eg, root_class)
 }

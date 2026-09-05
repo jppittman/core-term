@@ -440,13 +440,7 @@ mod tests {
         let root = arena.push_binary(pixelflow_ir::OpKind::Mul, sum, sum);
 
         let mut egraph = EGraph::with_rules(crate::egraph::all_rules());
-        let root_class = crate::egraph::insert(
-            &arena,
-            root,
-            &mut egraph,
-            crate::egraph::Vocabulary::Templates,
-        )
-        .expect("insert into e-graph");
+        let root_class = egraph.add_arena(&arena, root);
         egraph.saturate_budgeted(30, 5_000, None);
 
         // The denominator is the run's own application count, read off the

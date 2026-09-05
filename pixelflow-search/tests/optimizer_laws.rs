@@ -112,13 +112,7 @@ fn policy(name: &str) -> RuleSet {
 fn optimize_with(mut optimizer: Optimizer) -> (ExprArena, ExprId) {
     let (arena, root) = fixture();
     let mut eg = optimizer.egraph();
-    let root_class = pixelflow_search::egraph::insert(
-        &arena,
-        root,
-        &mut eg,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    let root_class = eg.add_arena(&arena, root);
     let node_count = arena.len();
     let optimized = optimizer.run(&mut eg, root_class, node_count);
     optimized.to_arena(&eg, root_class)
@@ -187,27 +181,13 @@ fn partition(budget: Budget) -> Vec<Merged> {
     let (arena, root) = fixture();
     let mut optimizer = Optimizer::production().budget(budget);
     let mut eg = optimizer.egraph();
-    let root_class = pixelflow_search::egraph::insert(
-        &arena,
-        root,
-        &mut eg,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    let root_class = eg.add_arena(&arena, root);
 
     // Re-add every node of the input to recover its class. `add` is
     // idempotent on an already-present node, so this reads the graph rather
     // than growing it.
     let ids: Vec<EClassId> = (0..arena.len())
-        .map(|i| {
-            pixelflow_search::egraph::insert(
-                &arena,
-                ExprId(i as u32),
-                &mut eg,
-                pixelflow_search::egraph::Vocabulary::Templates,
-            )
-            .expect("insert into e-graph")
-        })
+        .map(|i| eg.add_arena(&arena, ExprId(i as u32)))
         .collect();
     let _ = optimizer.run(&mut eg, root_class, arena.len());
 
@@ -285,24 +265,12 @@ fn an_extracted_term_re_adds_into_its_own_class() {
     let (arena, root) = fixture();
     let mut optimizer = Optimizer::production();
     let mut eg = optimizer.egraph();
-    let root_class = pixelflow_search::egraph::insert(
-        &arena,
-        root,
-        &mut eg,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    let root_class = eg.add_arena(&arena, root);
     let optimized = optimizer.run(&mut eg, root_class, arena.len());
     let (out, out_root) = optimized.to_arena(&eg, root_class);
 
     let mut probe = eg.clone();
-    let re_added = pixelflow_search::egraph::insert(
-        &out,
-        out_root,
-        &mut probe,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    let re_added = probe.add_arena(&out, out_root);
     assert_eq!(
         probe.find(re_added),
         probe.find(root_class),
@@ -344,13 +312,7 @@ fn the_stop_reason_names_which_limit_bound() {
     let (arena, root) = fixture();
     let mut starved = Optimizer::production().budget(Budget::Applications(3));
     let mut eg = starved.egraph();
-    let root_class = pixelflow_search::egraph::insert(
-        &arena,
-        root,
-        &mut eg,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    let root_class = eg.add_arena(&arena, root);
     let out = starved.run(&mut eg, root_class, arena.len());
     assert_eq!(
         out.stats.stop,
@@ -411,13 +373,7 @@ fn observation_is_optional_and_does_not_move_the_budget() {
 
     let mut silent = Optimizer::production();
     let mut eg = silent.egraph();
-    let root_class = pixelflow_search::egraph::insert(
-        &arena,
-        root,
-        &mut eg,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    let root_class = eg.add_arena(&arena, root);
     let quiet = silent.run(&mut eg, root_class, arena.len());
     assert_eq!(
         eg.provenance().recorded_count(),
@@ -432,13 +388,7 @@ fn observation_is_optional_and_does_not_move_the_budget() {
     let recorder = Recorder::default();
     let mut watched = Optimizer::production().observe(Some(Box::new(recorder.clone())));
     let mut eg2 = watched.egraph();
-    let root_class2 = pixelflow_search::egraph::insert(
-        &arena,
-        root,
-        &mut eg2,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    let root_class2 = eg2.add_arena(&arena, root);
     let loud = watched.run(&mut eg2, root_class2, arena.len());
 
     let seen = recorder.0.lock().expect("recorder lock").len();

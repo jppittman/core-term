@@ -68,7 +68,7 @@ use crate::egraph::extract::extract_dag_scoped;
 use crate::egraph::{
     Budget, CostModel, EClassId, EGraph, ENode, Extraction, Optimizer, SaturationStop,
 };
-use crate::egraph::{Vocabulary, insert, reachable_count};
+use crate::runtime::{arena_to_egraph, reachable_count};
 
 // ---------------------------------------------------------------------------
 // The instance: one saturated e-graph, reduced to what a chooser must decide
@@ -1027,8 +1027,7 @@ fn measure(
     let mut optimizer = Optimizer::production().budget(budget);
     let mut egraph = optimizer.egraph();
     let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
-    let root_class = insert(&arena, root, &mut egraph, Vocabulary::Runtime)
-        .ok()
+    let root_class = arena_to_egraph(&arena, root, &mut egraph, &mut memo)
         .unwrap_or_else(|| panic!("{name}: arena_to_egraph returned None (unsupported node)"));
     let optimized = optimizer.run(&mut egraph, root_class, node_count);
 
@@ -2094,13 +2093,8 @@ mod self_check {
             let pair = generator.generate_arena();
             let mut egraph = Optimizer::production().egraph();
             let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
-            let Some(root) = insert(
-                &pair.arena,
-                pair.unoptimized,
-                &mut egraph,
-                Vocabulary::Runtime,
-            )
-            .ok() else {
+            let Some(root) = arena_to_egraph(&pair.arena, pair.unoptimized, &mut egraph, &mut memo)
+            else {
                 continue;
             };
             // Deliberately tiny budget: the point is an instance small

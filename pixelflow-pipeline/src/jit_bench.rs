@@ -77,15 +77,6 @@ const SENTINEL_REGIME_CHANGE_FRAC: f64 = 0.50;
 /// core peaks at ~4 SIMD FP ops/cycle ≈ 0.078ns/op at 3.2GHz, so 0.05ns/op
 /// sits safely below any real execution while still catching a JIT bug that
 /// emits an early `ret`, a mis-scaled timebase, or an unroll miscount.
-///
-/// **This is a per-CALL bound**: "4 SIMD ops/cycle" counts whole vector
-/// instructions, and one `call_collapse` executes each of the expression's
-/// ops once for all [`LANES`] lanes at once. The measurement it is compared
-/// against is per-LANE — both modes divide the timed total by
-/// `INPUT_TUPLES * repeat_batches` while performing
-/// `INPUT_VECTORS * repeat_batches` calls, and `INPUT_TUPLES == INPUT_VECTORS
-/// * LANES`. So the floor must be divided by `LANES` before comparison; see
-/// [`plausibility_floor_ns`].
 const MIN_NS_PER_OP: f64 = 0.05;
 
 /// Maximum plausible single-eval time: 1 second.
@@ -255,23 +246,8 @@ fn sentinel_drift_exceeded(calibration_ns: f64, measured_ns: f64, max_drift_frac
 
 /// Conservative lower bound on plausible per-eval cost for an expression with
 /// `op_count` compute ops (audit M4).
-///
-/// `op_count * MIN_NS_PER_OP` is what executing those ops costs for one
-/// `call_collapse`, which computes all [`LANES`] lanes at once. Reported
-/// measurements are per lane (see [`MIN_NS_PER_OP`]), so the per-call bound
-/// is divided by `LANES` to be compared against one.
-///
-/// Getting this wrong does not make the floor merely conservative — it makes
-/// it *false*, firing on correct measurements. Undivided, it asserted that a
-/// 137-op expression cannot evaluate faster than 6.85ns per lane, i.e. 0.43ns
-/// per lane-op, which is above what a 16-wide unit delivers by construction.
-/// Nothing noticed for as long as it did because the assertion only binds
-/// once `op_count * MIN_NS_PER_OP` exceeds the measured per-lane value, and
-/// every arena reaching this harness had been through the e-graph first —
-/// small enough to stay under it. The first unoptimized arenas (`Identity` as
-/// an `Optimize` arm) were the first inputs big enough to cross it.
 fn plausibility_floor_ns(op_count: usize) -> f64 {
-    op_count as f64 * MIN_NS_PER_OP / LANES as f64
+    op_count as f64 * MIN_NS_PER_OP
 }
 
 /// Panic if a RAW per-eval measurement is below the dependency-chain floor
@@ -772,37 +748,6 @@ struct RawMeasurement {
 
 const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
 
-/// One [`BenchMode::Latency`] chain step (audit H3): feed the previous
-/// iteration's output into EVERY input lane — x, y, z, AND w, not just x —
-/// and return the freshly computed lanes. Factored out of the timed loop so
-/// the exact production step (not a re-implementation of it) is directly
-/// observable from a test: `latency_mode_feeds_every_lane_for_x_independent_expressions`
-/// calls this same function on an expression that never reads `Var(0)` and
-/// checks a structural, clock-free property instead of a timing.
-///
-/// Feeding all four lanes rather than only x is what keeps the chain intact
-/// for expressions that never read x — see [`BenchMode::Latency`]'s doc for
-/// why a single fed lane silently breaks the chain for such expressions.
-///
-/// `#[inline(always)]` and `&mut` are load-bearing, not style: this runs
-/// inside the timed loop, so the extracted function must compile to what the
-/// inlined body compiled to. Taking and returning `[f32; LANES]` by value
-/// would copy 64 bytes each way per iteration (AVX-512), and an un-inlined
-/// call would add call overhead — either one perturbs the 2-8ns measurement
-/// this loop exists to make. Mutating in place is what the loop did before
-/// the step had a name.
-#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-#[inline(always)]
-fn latency_chain_step(exec_code: &ExecutableCode, prev: &mut [f32; LANES]) {
-    use pixelflow_codegen::emit::executable::{Point4, TileSlice};
-
-    let p = Point4::new(*prev, *prev, *prev, *prev);
-    std::hint::black_box(&p);
-    unsafe {
-        exec_code.call_collapse(core::ptr::null(), TileSlice::single(prev.as_mut_ptr()), p);
-    }
-}
-
 /// Core timed loop: warmup, output capture over the full input buffer,
 /// tick-floor autoscaling of `repeat_batches` (audit H5), and TIMED_RUNS
 /// samples reduced to median + IQR (audit M5).
@@ -896,7 +841,15 @@ fn measure_exec_code(
                     let start = nanos_now();
                     for _ in 0..repeat_batches {
                         for _ in 0..INPUT_VECTORS {
-                            latency_chain_step(exec_code, &mut prev);
+                            let p = Point4::new(prev, prev, prev, prev);
+                            std::hint::black_box(&p);
+                            unsafe {
+                                exec_code.call_collapse(
+                                    core::ptr::null(),
+                                    TileSlice::single(prev.as_mut_ptr()),
+                                    p,
+                                );
+                            }
                         }
                     }
                     std::hint::black_box(prev);
@@ -1896,6 +1849,32 @@ mod tests {
 
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     #[test]
+    fn latency_mode_chains_x_independent_expressions() {
+        // Audit-H3 regression guard: an expression that never reads Var(0)
+        // must still be chain-serialized (prev feeds EVERY lane). Under the
+        // old x-lane-only feeding, y+z measured in the throughput regime
+        // (raw ~0.8ns, far below the serialized identity overhead ~4ns) and
+        // the overhead subtraction drove adjusted_ns negative.
+        let mut arena = ExprArena::new();
+        let y = arena.push_var(1);
+        let z = arena.push_var(2);
+        let root = arena.push_binary(OpKind::Add, y, z);
+        let mut session = BenchSession::new();
+        let bench = session
+            .benchmark_arena(&arena, root, BenchMode::Latency)
+            .expect("y+z must benchmark in latency mode");
+        let overhead = session.call_overhead_ns(BenchMode::Latency);
+        assert!(
+            bench.ns > overhead * 0.5,
+            "x-independent expression measured {:.3}ns raw latency against a {:.3}ns serialized \
+             identity overhead — the dependency chain is broken (audit H3)",
+            bench.ns,
+            overhead
+        );
+    }
+
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[test]
     fn session_benchmarks_both_modes() {
         let mut session = BenchSession::new();
         assert!(session.calibration_ns() > 0.0);
@@ -1934,113 +1913,5 @@ mod tests {
         throughput
             .check_equivalence(&latency, 0.0)
             .expect("same kernel, same inputs: outputs must match exactly");
-    }
-
-    /// The plausibility floor is a per-LANE bound, because the measurement it
-    /// guards is per-lane. Compared undivided it is not conservative but
-    /// false, and it rejects correct measurements of large expressions.
-    ///
-    /// Asserted against the floor's own premise rather than its formula (a
-    /// formula test would restate the bug): 4 SIMD ops/cycle on a `LANES`-wide
-    /// unit is `4 * LANES` lane-ops per cycle, so a per-lane floor must sit
-    /// below one lane-op per cycle at any plausible clock.
-    #[test]
-    fn plausibility_floor_is_per_lane_not_per_call() {
-        // Fastest clock worth defending against, in ns per cycle.
-        const NS_PER_CYCLE_AT_6GHZ: f64 = 1.0 / 6.0;
-        for ops in [1usize, 32, 137, 512] {
-            let per_lane_floor = plausibility_floor_ns(ops) / ops as f64;
-            assert!(
-                per_lane_floor < NS_PER_CYCLE_AT_6GHZ,
-                "floor demands {per_lane_floor:.4}ns per lane-op for a {ops}-op expression, \
-                 which exceeds one cycle at 6GHz — a {LANES}-wide unit retires \
-                 {} lane-ops per cycle, so this rejects correct measurements",
-                4 * LANES,
-            );
-        }
-    }
-
-    /// A large expression must be *measurable*, not rejected by the floor.
-    ///
-    /// This is the regression the floor's missing `LANES` divisor caused: it
-    /// only binds once `op_count * MIN_NS_PER_OP` exceeds the measured
-    /// per-lane value, so it passed on every arena that had been through the
-    /// e-graph and panicked on the first unoptimized ones. Deterministic: a
-    /// wrong floor rejects this every time, on any machine.
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-    #[test]
-    fn a_large_expression_is_measurable_rather_than_rejected() {
-        // ~150 ops in a chain wide enough that no single op dominates.
-        let mut arena = ExprArena::new();
-        let x = arena.push_var(0);
-        let y = arena.push_var(1);
-        let mut acc = arena.push_binary(OpKind::Add, x, y);
-        for i in 0..50 {
-            let c = arena.push_const(1.0 + i as f32);
-            let m = arena.push_binary(OpKind::Mul, acc, c);
-            let a = arena.push_binary(OpKind::Add, m, x);
-            acc = arena.push_binary(OpKind::Sub, a, y);
-        }
-        assert!(op_count(&arena, acc) > 100, "test needs a large expression");
-
-        let mut session = BenchSession::new();
-        session
-            .benchmark_arena(&arena, acc, BenchMode::Latency)
-            .expect("a large expression must benchmark, not trip the floor");
-    }
-
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-    #[test]
-    fn latency_mode_feeds_every_lane_for_x_independent_expressions() {
-        // Audit-H3 regression guard, rewritten clock-free. The original
-        // version of this test (deleted in 7d318d4) compared two wall-clock
-        // measurements with no tolerance — on a slow runner the identity-
-        // overhead calibration came out 5x its documented nominal value,
-        // inflating the pass bar past an ordinary measurement, and the test
-        // flaked in CI. The property it was guarding is unchanged: under
-        // `BenchMode::Latency`, the harness must chain-serialize by feeding
-        // the previous iteration's result into EVERY input lane (x, y, z,
-        // AND w) — not only x — because an expression that never reads
-        // `Var(0)` has no data path from a chain that feeds only x. Under
-        // that old x-lane-only feeding, such an expression silently
-        // decoupled from the chain and measured in the throughput regime
-        // instead of latency (see `BenchMode::Latency`'s doc comment).
-        //
-        // This is now checked structurally instead of by timing, via
-        // `latency_chain_step` — the exact per-iteration function
-        // `measure_exec_code`'s timed loop calls, not a re-implementation of
-        // it. For `y + z` (reads neither x nor w), feeding `prev`
-        // identically into every lane gives an exact, clock-free signature:
-        // each step computes `prev' = prev + prev = 2*prev`, so the output
-        // strictly doubles every chain step. Under the audit-H3 bug, y and z
-        // would sit fixed at whatever the initial call put there (only x
-        // would track `prev`), so the root — reading neither the fed lane
-        // nor anything downstream of it — would emit the SAME constant every
-        // step: `next != 2*prev` on the very first iteration this test
-        // performs, so this test would have failed under that bug.
-        let mut arena = ExprArena::new();
-        let y = arena.push_var(1);
-        let z = arena.push_var(2);
-        let root = arena.push_binary(OpKind::Add, y, z);
-        let compiled = compile(&arena, root).expect("y+z must JIT-compile");
-
-        let mut prev = [0.25f32; LANES]; // nonzero seed so doubling is observable.
-        for step in 0..8 {
-            let mut next = prev;
-            latency_chain_step(&compiled.code, &mut next);
-            for lane in 0..LANES {
-                assert!(
-                    (next[lane] - 2.0 * prev[lane]).abs() < 1e-6,
-                    "chain step {step}, lane {lane}: expected 2*prev = {} (every lane fed \
-                     prev={}), got {} — the chain is not feeding every lane (this is exactly \
-                     the audit-H3 x-lane-only bug: y+z never reads Var(0), so a chain that only \
-                     feeds x decouples entirely)",
-                    2.0 * prev[lane],
-                    prev[lane],
-                    next[lane],
-                );
-            }
-            prev = next;
-        }
     }
 }

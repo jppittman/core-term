@@ -360,13 +360,7 @@ fn main() {
 
     for (i, (name, arena, root)) in entries.iter().enumerate() {
         let mut egraph = EGraph::with_rules(all_rules());
-        let root_class = pixelflow_search::egraph::insert(
-            arena,
-            *root,
-            &mut egraph,
-            pixelflow_search::egraph::Vocabulary::Templates,
-        )
-        .expect("insert into e-graph");
+        let root_class = egraph.add_arena(arena, *root);
         let saturate_started = std::time::Instant::now();
         let sat_stats =
             egraph.saturate_with_limits(SATURATE_MAX_ITERS, SATURATE_MAX_CLASSES, SATURATE_TIMEOUT);

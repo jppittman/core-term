@@ -66,13 +66,7 @@ fn main() {
         // `Budget::Applications` against what the presets currently allow.
         let mut optimizer = Optimizer::production();
         let mut eg = optimizer.egraph();
-        let root_class = pixelflow_search::egraph::insert(
-            &arena,
-            root,
-            &mut eg,
-            pixelflow_search::egraph::Vocabulary::Templates,
-        )
-        .expect("insert into e-graph");
+        let root_class = eg.add_arena(&arena, root);
         let stats = optimizer.run(&mut eg, root_class, arena.len()).stats;
 
         println!(

@@ -31,13 +31,9 @@
 //! or leave it unset to see records on stderr.
 
 use crate::egraph::{EClassId, EGraph, ENode, Op, Optimizer};
-use crate::saturate_pass::Saturate;
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
-use pixelflow_ir::optimize::Optimize;
-use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
-use pixelflow_ir::pipeline;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -140,26 +136,82 @@ fn optimize_runtime_arena_uncached(
     root: ExprId,
     shape: LatticeShape,
 ) -> Option<(ExprArena, ExprId)> {
-    // The tier's pipeline, as a composition rather than three hand-sequenced
-    // calls. The order is load-bearing and is now the expression itself:
+    // Resolve `Dwrt` FIRST, with the same exact symbolic pass the compile
+    // entries run — then the e-graph sees pure arithmetic. Order matters
+    // enormously: differentiation manufactures constants (the winding
+    // kernels' `d = X − f(Y)` gives `DX(d) = 1` and, for straight edges, a
+    // constant `DY(d)` — making the whole gradient magnitude `√(DX²+DY²)` a
+    // compile-time number), and `ConstantFold` can only cascade over
+    // constants that exist by the time saturation runs. Lowering after the
+    // e-graph (the compile entries' own fallback position) leaves those
+    // folds permanently on the table because nothing folds post-extraction.
     //
-    // `LowerDwrt` first, because differentiation manufactures constants (the
-    // winding kernels' `d = X − f(Y)` gives `DX(d) = 1` and, for a straight
-    // edge, a constant `DY(d)` — making the whole gradient magnitude
-    // `√(DX²+DY²)` a compile-time number) and `ConstantFold` can only cascade
-    // over constants that exist by the time saturation runs. Lowering after
-    // the e-graph leaves those folds permanently on the table, because
-    // nothing folds post-extraction.
-    //
-    // `ExpandReduce` next, in `legalize`'s order, so what saturation sees is
-    // binder-free arithmetic it can CSE and fold across the unrolled terms.
-    //
-    // A declining step short-circuits the rest and yields `None` here, which
-    // means exactly what it always meant: the caller compiles its own arena
-    // unchanged, unoptimized but correct.
-    pipeline![LowerDwrt, ExpandReduce, Saturate::runtime(shape)]
-        .optimize(arena, root)
-        .into_changed()
+    // A lowering error (a genuinely non-differentiable op) bails to `None`;
+    // the arena then compiles unoptimized and the compile entry's own
+    // `lower_dwrt` reports the same error loudly at the right layer.
+    let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(arena, root).ok()?;
+    // Then unroll every `Reduce`, in `legalize`'s order. The extents are
+    // static, so the binder disappears into N terms sharing their
+    // index-invariant subtrees (`unroll_reduce` factors `⊕_i (f(i)·c)` as
+    // `c·⊕_i f(i)` by declining to duplicate `c`), and the e-graph sees pure
+    // arithmetic it can CSE and fold across the terms.
+    let (arena, root) = pixelflow_ir::passes::expand_reduce_owned(&arena, root);
+
+    // One entry point, shared with the AOT macro tier and the `Dwrt`
+    // expansion tier: the rule set, the budget, the cost model, and the
+    // extractor are decided in `Optimizer`, not re-decided here. Priced
+    // against the lattice this kernel is compiled for — the extents are
+    // known, so extraction minimizes the instruction count of the whole
+    // program rather than of its text.
+    let mut optimizer = Optimizer::production().for_lattice(shape);
+
+    let mut egraph = optimizer.egraph();
+    let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
+    let root_class = arena_to_egraph(&arena, root, &mut egraph, &mut memo)?;
+
+    let node_count = reachable_count(&arena, root);
+    #[cfg(feature = "saturation-telemetry")]
+    let telemetry_start = std::time::Instant::now();
+    let optimized = optimizer.run(&mut egraph, root_class, node_count);
+    let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
+
+    #[cfg(feature = "saturation-telemetry")]
+    crate::telemetry::record(crate::telemetry::SaturationInvocation {
+        tier: crate::telemetry::Tier::Runtime,
+        node_count,
+        stats: &optimized.stats,
+        union_count: optimized.stats.unions,
+        extracted_arena: &extracted,
+        extracted_root,
+        wall_clock: telemetry_start.elapsed(),
+        kernel_label: None,
+    });
+
+    // The extracted arena declares buffers in extraction-traversal order,
+    // which need not match the input's — and slot order is ABI: the JIT
+    // loads slot i's base pointer from the caller's context array at i*8,
+    // and callers bind in the order the arena THEY BUILT declared. A
+    // different extraction (a commuted equivalent under another cost model)
+    // must not silently permute their pointers. Re-splicing onto a table
+    // pre-declared in input order makes the invariant structural: splice
+    // dedups buffers by identity onto the existing slots.
+    if arena.buffers().is_empty() {
+        return Some((extracted, extracted_root));
+    }
+    let mut ordered = ExprArena::new();
+    for decl in arena.buffers() {
+        let _slot = ordered.declare_buffer(*decl);
+    }
+    let root = ordered.splice(&extracted, extracted_root);
+    debug_assert!(
+        ordered
+            .buffers()
+            .iter()
+            .zip(arena.buffers())
+            .all(|(a, b)| a.id == b.id),
+        "buffer slot order must survive optimization"
+    );
+    Some((ordered, root))
 }
 
 /// Canonical serialization of the subgraph reachable from `root`: nodes in
@@ -259,13 +311,226 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
     key
 }
 
+// ─────────────────────────── Runtime-only mask ops ───────────────────────────
+//
+// `&`/`|` on comparison masks are surface-language ops (every glyph winding
+// kernel's Y-range gate is `(Y >= lo) & (Y < hi)`), so runtime-built arenas
+// must be representable with them present. They are deliberately NOT in
+// `egraph::ops::op_from_kind`: registering them globally hands them to the
+// AOT macro tier too, whose e-graph runs at macro-expansion time — BEFORE
+// composition — where resolving the `Dwrt` nodes the masks travel with is
+// unsound (a leaf's `DX` is 1 only until an enclosing `.at()` warp scales
+// it; the fonts' density-dependent AA ramp broke exactly this way when
+// these ops were briefly global). The runtime tier optimizes the final
+// composed arena at bake time, where the calculus has its full context, so
+// mask ops are safe — and only meaningful — here.
+//
+// No rewrite rule targets them; they participate as opaque structure plus
+// `ConstantFold`, whose bitwise-domain exemption already models their
+// all-ones/zero masks.
+struct MaskAnd;
+impl Op for MaskAnd {
+    fn kind(&self) -> OpKind {
+        OpKind::BitAnd
+    }
+}
+struct MaskOr;
+impl Op for MaskOr {
+    fn kind(&self) -> OpKind {
+        OpKind::BitOr
+    }
+}
+
+// ─────────────────────── Runtime-only integer-domain ops ─────────────────────
+//
+// The packed cell-grid kernel's spine: clamp → `TruncToInt` → `Shl` →
+// or-fold builds a `u32` pixel per lane, so the production frame kernel is
+// unrepresentable — and therefore compiles with NO CSE across its four
+// channels — unless these enter the e-graph. Runtime-tier only, for the
+// same reason as the mask ops above. Opaque to TEMPLATES: no rewrite rule can
+// name them (nothing here or in `op_from_kind` hands them to a template), and
+// their results are bit patterns the float rule set has no semantics for.
+//
+// Template-opacity is NOT fold-opacity, and the distinction is load-bearing:
+// `ConstantFold::apply` destructures any `ENode::Op` and reads `op.kind()`
+// (`math::algebra`) — it never consults `op_from_kind`. So every op registered
+// here folds, and each one needs its own answer to "does this fold agree with
+// what the backends emit?" `OpKind::fold_is_platform_specific` is where that
+// answer lives; being unnameable by a template guards nothing.
+//
+// `Shl`/`Shr` do keep `Const` shift operands, because extraction emits `Const`
+// leaves verbatim — so the emitter's immediate-only contract holds. The count's
+// RANGE is a separate matter, enforced where the `Const` narrows to an
+// immediate (`emit::shift_immediate`) rather than assumed here.
+struct IntTrunc;
+impl Op for IntTrunc {
+    fn kind(&self) -> OpKind {
+        OpKind::TruncToInt
+    }
+}
+struct IntFromInt;
+impl Op for IntFromInt {
+    fn kind(&self) -> OpKind {
+        OpKind::IntToFloat
+    }
+}
+struct IntAdd;
+impl Op for IntAdd {
+    fn kind(&self) -> OpKind {
+        OpKind::IAdd
+    }
+}
+struct IntShl;
+impl Op for IntShl {
+    fn kind(&self) -> OpKind {
+        OpKind::Shl
+    }
+}
+struct IntShr;
+impl Op for IntShr {
+    fn kind(&self) -> OpKind {
+        OpKind::Shr
+    }
+}
+
 /// Whether the runtime tier can represent `kind` in its e-graph — i.e.,
 /// whether an arena containing it still optimizes rather than bailing.
 /// Test hook for the representability guards; the semantics live in
-/// [`Vocabulary::Runtime`](crate::egraph::Vocabulary).
+/// [`runtime_op_from_kind`].
 #[must_use]
 pub fn is_egraph_representable(kind: OpKind) -> bool {
-    crate::egraph::Vocabulary::Runtime.resolve(kind).is_some()
+    runtime_op_from_kind(kind).is_some()
+}
+
+/// [`crate::egraph::ops::op_from_kind`] extended with the runtime-only mask
+/// ops above and the opaque `Gather` op (absent from the global lookup so no
+/// rewrite template can name it — its participation is hash-consing CSE
+/// only). Every conversion in this module resolves ops through this.
+fn runtime_op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
+    match kind {
+        OpKind::BitAnd => Some(&MaskAnd),
+        OpKind::BitOr => Some(&MaskOr),
+        OpKind::TruncToInt => Some(&IntTrunc),
+        OpKind::IntToFloat => Some(&IntFromInt),
+        OpKind::IAdd => Some(&IntAdd),
+        OpKind::Shl => Some(&IntShl),
+        OpKind::Shr => Some(&IntShr),
+        OpKind::Gather => Some(&crate::egraph::ops::Gather),
+        other => crate::egraph::ops::op_from_kind(other),
+    }
+}
+
+/// Insert the subgraph reachable from `id` into `egraph`, memoized by
+/// `ExprId` (on top of the e-graph's own hash-consing by node shape) so a
+/// DAG-shared arena is walked once per node, not once per reference.
+///
+/// Returns `None` — aborting the whole conversion — the moment it meets an
+/// op [`crate::egraph::ops::op_from_kind`] doesn't model, or a `Param`.
+/// Iterative (explicit stack), matching [`choices_to_arena`]'s style in the
+/// same crate: arena depths are unbounded in principle (Dwrt chain-rule
+/// expansion, deep composition), so this must not blow the Rust stack.
+pub(crate) fn arena_to_egraph(
+    arena: &ExprArena,
+    root: ExprId,
+    egraph: &mut EGraph,
+    memo: &mut HashMap<ExprId, EClassId>,
+) -> Option<EClassId> {
+    enum Task {
+        Visit(ExprId),
+        Complete(ExprId),
+    }
+
+    let mut task_stack = vec![Task::Visit(root)];
+    let mut result_stack: Vec<EClassId> = Vec::new();
+
+    while let Some(task) = task_stack.pop() {
+        match task {
+            Task::Visit(id) => {
+                if let Some(&class) = memo.get(&id) {
+                    result_stack.push(class);
+                    continue;
+                }
+                match arena.node(id) {
+                    &ExprNode::Var(idx) => {
+                        let class = egraph.add(ENode::Var(idx));
+                        memo.insert(id, class);
+                        result_stack.push(class);
+                    }
+                    &ExprNode::Const(val) => {
+                        let class = egraph.add(ENode::constant(val));
+                        memo.insert(id, class);
+                        result_stack.push(class);
+                    }
+                    ExprNode::Param(_) => return None,
+                    &ExprNode::Buffer(b) => {
+                        let class = egraph.add(ENode::Buffer(*arena.buffer_decl(b)));
+                        memo.insert(id, class);
+                        result_stack.push(class);
+                    }
+                    &ExprNode::Unary(kind, a) => {
+                        runtime_op_from_kind(kind)?;
+                        task_stack.push(Task::Complete(id));
+                        task_stack.push(Task::Visit(a));
+                    }
+                    &ExprNode::Binary(kind, a, b) => {
+                        runtime_op_from_kind(kind)?;
+                        task_stack.push(Task::Complete(id));
+                        task_stack.push(Task::Visit(b));
+                        task_stack.push(Task::Visit(a));
+                    }
+                    &ExprNode::Ternary(kind, a, b, c) => {
+                        runtime_op_from_kind(kind)?;
+                        task_stack.push(Task::Complete(id));
+                        task_stack.push(Task::Visit(c));
+                        task_stack.push(Task::Visit(b));
+                        task_stack.push(Task::Visit(a));
+                    }
+                    // `Reduce` was unrolled and `Dwrt` lowered before this
+                    // walk; what remains (`Tuple`) is not modelled. Bail out.
+                    ExprNode::Nary(..) => return None,
+                }
+            }
+            Task::Complete(id) => {
+                if let Some(&class) = memo.get(&id) {
+                    result_stack.push(class);
+                    continue;
+                }
+                let (kind, arity) = match arena.node(id) {
+                    &ExprNode::Unary(kind, _) => (kind, 1),
+                    &ExprNode::Binary(kind, _, _) => (kind, 2),
+                    &ExprNode::Ternary(kind, _, _, _) => (kind, 3),
+                    _ => unreachable!("Complete scheduled only for Unary/Binary/Ternary"),
+                };
+                let op = runtime_op_from_kind(kind)
+                    .expect("runtime_op_from_kind already checked in Visit");
+                let start = result_stack.len() - arity;
+                let children: Vec<EClassId> = result_stack.drain(start..).collect();
+                let class = egraph.add(ENode::Op { op, children });
+                memo.insert(id, class);
+                result_stack.push(class);
+            }
+        }
+    }
+
+    result_stack.pop()
+}
+
+/// Count nodes reachable from `root` — a rough size measure for
+/// [`config_for_node_count`], mirroring what `pixelflow_codegen::jit_cache`'s
+/// canonical-key reachability walk already does for the same arena.
+pub(crate) fn reachable_count(arena: &ExprArena, root: ExprId) -> usize {
+    let len = arena.nodes_raw().len();
+    let mut seen = vec![false; len];
+    let mut stack = vec![root];
+    let mut count = 0usize;
+    while let Some(id) = stack.pop() {
+        if core::mem::replace(&mut seen[id.0 as usize], true) {
+            continue;
+        }
+        count += 1;
+        stack.extend(arena.children(id));
+    }
+    count
 }
 
 #[cfg(test)]
@@ -583,7 +848,7 @@ mod tests {
         // muddy the count assertions.
         let root = a.push_binary(OpKind::Mul, g1, g2);
 
-        let before = crate::egraph::reachable_count(&a, root);
+        let before = reachable_count(&a, root);
         assert_eq!(
             count_gathers(&a, root),
             2,
@@ -593,7 +858,7 @@ mod tests {
         let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
-        let after = crate::egraph::reachable_count(&opt_arena, opt_root);
+        let after = reachable_count(&opt_arena, opt_root);
 
         assert!(
             after < before,
@@ -755,13 +1020,13 @@ mod tests {
         }
         let root = acc;
 
-        let before = crate::egraph::reachable_count(&a, root);
+        let before = reachable_count(&a, root);
         assert_eq!(count_gathers(&a, root), 9);
 
         let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
-        let after = crate::egraph::reachable_count(&opt_arena, opt_root);
+        let after = reachable_count(&opt_arena, opt_root);
 
         // Report shape for the record: 9 duplicated ~13-node coordinate
         // subtrees must collapse to (at most) one shared copy, and the 5+4
@@ -1119,7 +1384,7 @@ mod congruence_gap_probe {
         let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(arena, root)
             .unwrap_or_else(|e| panic!("{name}: lower_dwrt failed: {e:?}"));
         let (arena, root) = pixelflow_ir::passes::expand_reduce_owned(&arena, root);
-        let node_count = crate::egraph::reachable_count(&arena, root);
+        let node_count = reachable_count(&arena, root);
 
         // THE production regime, through the one entry point
         // `optimize_runtime_arena_uncached` itself now calls
@@ -1133,13 +1398,9 @@ mod congruence_gap_probe {
             other => Optimizer::production().rules(RuleSet::new(build_rule_set(other))),
         };
         let mut egraph = optimizer.egraph();
-        let root_class = crate::egraph::insert(
-            &arena,
-            root,
-            &mut egraph,
-            crate::egraph::Vocabulary::Runtime,
-        )
-        .unwrap_or_else(|e| panic!("{name}: insert declined ({e:?})"));
+        let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
+        let root_class = arena_to_egraph(&arena, root, &mut egraph, &mut memo)
+            .unwrap_or_else(|| panic!("{name}: arena_to_egraph returned None (unsupported node)"));
 
         let optimized = optimizer.run(&mut egraph, root_class, node_count);
         let max_classes = optimized.stats.limits.classes;
@@ -1147,7 +1408,7 @@ mod congruence_gap_probe {
         let model = CostModel::latency_prior();
         let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
         let cost = arena_static_cost(&model, &extracted, extracted_root);
-        let extracted_nodes = crate::egraph::reachable_count(&extracted, extracted_root);
+        let extracted_nodes = reachable_count(&extracted, extracted_root);
 
         ProductionRun {
             egraph,
@@ -2105,16 +2366,12 @@ pub(crate) mod production_telemetry {
             .hard_ceiling(timeout);
 
         let mut egraph = optimizer.egraph();
-        let root_class =
-            crate::egraph::insert(arena, root, &mut egraph, crate::egraph::Vocabulary::Runtime)
-                .expect("production arena must be e-graph representable (no Param/Nary)");
+        let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
+        let root_class = arena_to_egraph(arena, root, &mut egraph, &mut memo)
+            .expect("production arena must be e-graph representable (no Param/Nary)");
 
         let started = Instant::now();
-        let optimized = optimizer.run(
-            &mut egraph,
-            root_class,
-            crate::egraph::reachable_count(arena, root),
-        );
+        let optimized = optimizer.run(&mut egraph, root_class, reachable_count(arena, root));
         let elapsed = started.elapsed();
 
         let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
@@ -2139,7 +2396,7 @@ pub(crate) mod production_telemetry {
             elapsed,
             cost: arena_cost(&extracted, extracted_root, &costs),
             dp_cost,
-            extracted_nodes: crate::egraph::reachable_count(&extracted, extracted_root),
+            extracted_nodes: reachable_count(&extracted, extracted_root),
         }
     }
 
@@ -2267,7 +2524,7 @@ pub(crate) mod production_telemetry {
             let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(&raw_arena, raw_root)
                 .unwrap_or_else(|e| panic!("{name}: lower_dwrt failed: {e:?}"));
             // runtime.rs:126-127
-            let node_count = crate::egraph::reachable_count(&arena, root);
+            let node_count = reachable_count(&arena, root);
             let config = crate::egraph::saturate::config_for_node_count(node_count);
 
             let prod = run(

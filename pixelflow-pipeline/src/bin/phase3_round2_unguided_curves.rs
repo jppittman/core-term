@@ -45,13 +45,7 @@ fn apps_per_sweep_probe(
     max_classes: usize,
 ) -> usize {
     let mut egraph = EGraph::with_rules(rules);
-    pixelflow_search::egraph::insert(
-        arena,
-        root,
-        &mut egraph,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    egraph.add_arena(arena, root);
     let _ = egraph.saturate_budgeted(1, max_classes, None);
     egraph.application_count() as usize
 }

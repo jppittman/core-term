@@ -1018,6 +1018,146 @@ impl EGraph {
         out
     }
 
+    /// Add an arena-based DAG expression to the e-graph, preserving sharing.
+    ///
+    /// Each `ExprId` in the arena maps to exactly one `EClassId`. Because the
+    /// arena is topologically ordered (children always precede parents), a single
+    /// linear scan suffices — no recursion, no stack overflow.
+    ///
+    /// Returns the `EClassId` of the root node.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `root` is not a valid index in `arena`, or if any child
+    /// `ExprId` referenced by an interior node has not been processed yet
+    /// (which would indicate a malformed arena that violates topological order).
+    /// Also panics if an `ExprNode::Param` node is encountered, since Param
+    /// nodes are not valid after kernel compilation.
+    pub fn add_arena(
+        &mut self,
+        arena: &pixelflow_ir::ExprArena,
+        root: pixelflow_ir::ExprId,
+    ) -> EClassId {
+        use pixelflow_ir::arena::ExprNode;
+
+        let n = arena.len();
+        assert!(
+            (root.0 as usize) < n,
+            "add_arena: root {:?} out of bounds (arena has {} nodes)",
+            root,
+            n,
+        );
+
+        // Map from arena ExprId index → EClassId. None = not yet processed.
+        let mut id_map: Vec<Option<EClassId>> = vec![None; n];
+
+        for idx in 0..n {
+            let eid = pixelflow_ir::ExprId(idx as u32);
+            let eclass = match arena.node(eid) {
+                ExprNode::Var(v) => self.add(ENode::Var(*v)),
+                ExprNode::Const(v) => self.add(ENode::constant(*v)),
+                ExprNode::Param(i) => {
+                    panic!("add_arena: ExprNode::Param({i}) not valid after kernel compilation")
+                }
+                // The leaf carries the full decl (identity + extents), so
+                // hash-consing merges buffer references across arenas iff they
+                // name the same memory — see `ENode::Buffer`.
+                ExprNode::Buffer(b) => self.add(ENode::Buffer(*arena.buffer_decl(*b))),
+                ExprNode::Unary(op, child) => {
+                    let child_id = id_map[child.0 as usize].unwrap_or_else(|| {
+                        panic!(
+                            "add_arena: Unary node at idx={idx} references child {:?} which has not been processed (arena not topologically ordered)",
+                            child
+                        )
+                    });
+                    let static_op = ops::op_from_kind(*op)
+                        .unwrap_or_else(|| panic!("add_arena: no static Op for OpKind {:?}", op));
+                    self.add(ENode::Op {
+                        op: static_op,
+                        children: vec![child_id],
+                    })
+                }
+                ExprNode::Binary(op, left, right) => {
+                    let left_id = id_map[left.0 as usize].unwrap_or_else(|| {
+                        panic!(
+                            "add_arena: Binary node at idx={idx} references left child {:?} which has not been processed",
+                            left
+                        )
+                    });
+                    let right_id = id_map[right.0 as usize].unwrap_or_else(|| {
+                        panic!(
+                            "add_arena: Binary node at idx={idx} references right child {:?} which has not been processed",
+                            right
+                        )
+                    });
+                    let static_op = ops::op_from_kind(*op)
+                        .unwrap_or_else(|| panic!("add_arena: no static Op for OpKind {:?}", op));
+                    self.add(ENode::Op {
+                        op: static_op,
+                        children: vec![left_id, right_id],
+                    })
+                }
+                ExprNode::Ternary(op, a, b, c) => {
+                    let a_id = id_map[a.0 as usize].unwrap_or_else(|| {
+                        panic!(
+                            "add_arena: Ternary node at idx={idx} references child a={:?} which has not been processed",
+                            a
+                        )
+                    });
+                    let b_id = id_map[b.0 as usize].unwrap_or_else(|| {
+                        panic!(
+                            "add_arena: Ternary node at idx={idx} references child b={:?} which has not been processed",
+                            b
+                        )
+                    });
+                    let c_id = id_map[c.0 as usize].unwrap_or_else(|| {
+                        panic!(
+                            "add_arena: Ternary node at idx={idx} references child c={:?} which has not been processed",
+                            c
+                        )
+                    });
+                    // Gather is deliberately absent from `op_from_kind` (no
+                    // rewrite rule may name it) but representable as opaque
+                    // structure — resolve it directly.
+                    let static_op: &'static dyn crate::egraph::ops::Op = match *op {
+                        pixelflow_ir::OpKind::Gather => &ops::Gather,
+                        other => ops::op_from_kind(other).unwrap_or_else(|| {
+                            panic!("add_arena: no static Op for OpKind {other:?}")
+                        }),
+                    };
+                    self.add(ENode::Op {
+                        op: static_op,
+                        children: vec![a_id, b_id, c_id],
+                    })
+                }
+                ExprNode::Nary(op, start, len) => {
+                    let children_slice = arena.nary_children_slice(*start, *len);
+                    let child_ids: Vec<EClassId> = children_slice
+                        .iter()
+                        .enumerate()
+                        .map(|(ci, c)| {
+                            id_map[c.0 as usize].unwrap_or_else(|| {
+                                panic!(
+                                    "add_arena: Nary node at idx={idx} references child[{ci}]={:?} which has not been processed",
+                                    c
+                                )
+                            })
+                        })
+                        .collect();
+                    let static_op = ops::op_from_kind(*op)
+                        .unwrap_or_else(|| panic!("add_arena: no static Op for OpKind {:?}", op));
+                    self.add(ENode::Op {
+                        op: static_op,
+                        children: child_ids,
+                    })
+                }
+            };
+            id_map[idx] = Some(eclass);
+        }
+
+        id_map[root.0 as usize].expect("add_arena: root EClassId missing after full traversal")
+    }
+
     /// Get a rule by index.
     pub fn rule(&self, idx: usize) -> Option<&dyn Rewrite> {
         self.rules.get(idx).map(|r| r.as_ref())
@@ -3748,9 +3888,7 @@ mod mask_tests {
             .budget(Budget::Applications(MASK_BUDGET))
             .no_ceiling();
         let mut eg = opt.egraph();
-        let root_class =
-            crate::egraph::insert(&arena, root, &mut eg, crate::egraph::Vocabulary::Templates)
-                .expect("insert into e-graph");
+        let root_class = eg.add_arena(&arena, root);
         (opt, eg, root_class)
     }
 

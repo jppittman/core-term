@@ -703,6 +703,22 @@ fn differentiate_in_optimizer(arena: &ExprArena, root: ExprId) -> Option<(ExprAr
         return None;
     }
 
+    // Every op must be representable in the e-graph (`add_arena` panics on
+    // ops with no rewrite-rule `Op`, e.g. the bit-manip primitives). The
+    // kernel surface cannot produce those today, but fall back rather than
+    // panic if that ever changes.
+    let representable = arena.nodes_raw().iter().all(|n| match n {
+        ExprNode::Unary(op, _)
+        | ExprNode::Binary(op, _, _)
+        | ExprNode::Ternary(op, _, _, _)
+        | ExprNode::Nary(op, _, _) => pixelflow_search::egraph::ops::op_from_kind(*op).is_some(),
+        ExprNode::Buffer(_) => false,
+        ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) => true,
+    });
+    if !representable {
+        return None;
+    }
+
     let encoded = encode_params_as_vars(arena);
 
     // One saturation, full rule set: differentiation and algebra rewrite
@@ -717,16 +733,7 @@ fn differentiate_in_optimizer(arena: &ExprArena, root: ExprId) -> Option<(ExprAr
     // of being silently skipped. One entry point, no second copy.
     let mut optimizer = Optimizer::production();
     let mut eg = optimizer.egraph();
-    // Declining is this tier's fallback, not an error: the runtime `lower_dwrt`
-    // tier takes over. It replaces a hand-rolled pre-scan of every node that
-    // existed only because `add_arena` panicked instead of declining.
-    let root_class = pixelflow_search::egraph::insert(
-        &encoded,
-        root,
-        &mut eg,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .ok()?;
+    let root_class = eg.add_arena(&encoded, root);
     let node_count = reachable_node_count(&encoded, root);
     let optimized = optimizer.run(&mut eg, root_class, node_count);
 
@@ -1147,13 +1154,7 @@ mod expansion_derivative_tests {
 
         let mut optimizer = Optimizer::production();
         let mut eg = optimizer.egraph();
-        let root_class = pixelflow_search::egraph::insert(
-            &encoded,
-            root,
-            &mut eg,
-            pixelflow_search::egraph::Vocabulary::Templates,
-        )
-        .expect("insert into e-graph");
+        let root_class = eg.add_arena(&encoded, root);
         let classes_before = eg.num_classes();
         let started = std::time::Instant::now();
         let optimized = optimizer.run(&mut eg, root_class, node_count);
@@ -1496,13 +1497,7 @@ mod production_telemetry {
         // pixelflow-search#1108; the rule set is the same one.
         let optimizer = Optimizer::production();
         let mut eg = optimizer.egraph();
-        let root_class = pixelflow_search::egraph::insert(
-            &encoded,
-            root,
-            &mut eg,
-            pixelflow_search::egraph::Vocabulary::Templates,
-        )
-        .expect("insert into e-graph");
+        let root_class = eg.add_arena(&encoded, root);
         let started = Instant::now();
         let stats: SaturationStats = eg.saturate_with_limits(max_iterations, max_classes, timeout);
         let elapsed = started.elapsed();

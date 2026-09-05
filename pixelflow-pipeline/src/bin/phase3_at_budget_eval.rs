@@ -1216,13 +1216,7 @@ fn production_probe(arena: &ExprArena, root: ExprId, costs: &CostModel) -> Produ
     let mut optimizer = Optimizer::production().cost(costs.clone());
     let limits = optimizer.limits_for(node_count);
     let mut egraph = optimizer.egraph();
-    let root_class = pixelflow_search::egraph::insert(
-        arena,
-        root,
-        &mut egraph,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    let root_class = egraph.add_arena(arena, root);
     let out = optimizer.run(&mut egraph, root_class, node_count);
     ProductionRow {
         node_count_reachable: node_count,

@@ -1222,7 +1222,7 @@ fn pin_shift_counts(
 pub fn choices_to_arena(
     extraction: &Extraction<'_>,
 ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
-    use pixelflow_ir::{Children, ExprArena, ExprId, Ir, Shape};
+    use pixelflow_ir::{ExprArena, ExprId};
 
     let egraph = extraction.egraph();
     let root = extraction.root();
@@ -1253,6 +1253,16 @@ pub fn choices_to_arena(
     // SIGKILLed at 2.7GB inside this loop). A cyclic choice set is an
     // extractor bug and must be reported as one, loudly, with the class id.
     let mut color: Vec<u8> = alloc::vec![0; num_classes];
+    // Buffer identity → declared slot in the output arena. Distinct e-classes
+    // can carry the same identity only if their decls differ, which is a
+    // corrupt graph (one memory, two extents) — assert, never alias silently.
+    let mut buffer_slots: alloc::collections::BTreeMap<
+        pixelflow_ir::arena::BufferIdentity,
+        (
+            pixelflow_ir::arena::BufferId,
+            pixelflow_ir::arena::BufferDecl,
+        ),
+    > = alloc::collections::BTreeMap::new();
     let mut result_stack: Vec<ExprId> = Vec::new();
     let mut task_stack: Vec<Task> = alloc::vec![Task::Visit(root)];
 
@@ -1297,26 +1307,39 @@ pub fn choices_to_arena(
 
                 match node {
                     ENode::Var(var_idx) => {
-                        let expr_id = arena.embed(Shape::Var(*var_idx));
+                        let expr_id = arena.push_var(*var_idx);
                         if idx < id_map.len() {
                             id_map[idx] = Some(expr_id);
                         }
                         result_stack.push(expr_id);
                     }
                     ENode::Const(bits) => {
-                        let expr_id = arena.embed(Shape::Const(f32::from_bits(*bits)));
+                        let expr_id = arena.push_const(f32::from_bits(*bits));
                         if idx < id_map.len() {
                             id_map[idx] = Some(expr_id);
                         }
                         result_stack.push(expr_id);
                     }
                     ENode::Buffer(decl) => {
-                        // One slot per distinct identity, and the assertion
-                        // that a repeat identity agrees on extents, both live
-                        // in `ExprArena`'s `embed`: declaring a buffer is what
-                        // the destination representation does, not what the
-                        // walk over the e-graph does.
-                        let expr_id = arena.embed(Shape::Buffer(*decl));
+                        // One slot per distinct identity: e-classes already
+                        // dedupe equal decls, so a repeat identity here means
+                        // two decls disagreeing on extents.
+                        let buf_id = match buffer_slots.get(&decl.id) {
+                            Some(&(buf_id, prior)) => {
+                                assert!(
+                                    prior == *decl,
+                                    "choices_to_arena: BufferIdentity declared twice with \
+                                     different extents ({prior:?} vs {decl:?})"
+                                );
+                                buf_id
+                            }
+                            None => {
+                                let buf_id = arena.declare_buffer(*decl);
+                                buffer_slots.insert(decl.id, (buf_id, *decl));
+                                buf_id
+                            }
+                        };
+                        let expr_id = arena.push_buffer(buf_id);
                         if idx < id_map.len() {
                             id_map[idx] = Some(expr_id);
                         }
@@ -1383,12 +1406,15 @@ pub fn choices_to_arena(
                 });
                 let child_ids: Vec<pixelflow_ir::ExprId> = result_stack.drain(start..).collect();
 
-                // Arity dispatch is the destination's business: `embed` picks
-                // the unary/binary/ternary/n-ary node. A zero-arity `Op` is
-                // malformed and `embed` says so — where this used to
-                // materialise it as the constant 0, which is a wrong answer
-                // wearing a right answer's clothes.
-                let expr_id = arena.embed(Shape::Op(op.kind(), Children::Many(&child_ids)));
+                let op_kind = op.kind();
+
+                let expr_id = match arity {
+                    0 => arena.push_const(0.0), // Degenerate zero-arity Op — treat as 0.
+                    1 => arena.push_unary(op_kind, child_ids[0]),
+                    2 => arena.push_binary(op_kind, child_ids[0], child_ids[1]),
+                    3 => arena.push_ternary(op_kind, child_ids[0], child_ids[1], child_ids[2]),
+                    _ => arena.push_nary(op_kind, &child_ids),
+                };
 
                 if idx < id_map.len() {
                     id_map[idx] = Some(expr_id);

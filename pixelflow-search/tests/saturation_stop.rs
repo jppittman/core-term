@@ -36,13 +36,7 @@ fn busy_expression() -> (ExprArena, ExprId) {
 
 fn egraph_of(arena: &ExprArena, root: ExprId) -> EGraph {
     let mut eg = EGraph::with_rules(all_rules());
-    pixelflow_search::egraph::insert(
-        arena,
-        root,
-        &mut eg,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    eg.add_arena(arena, root);
     eg
 }
 
@@ -150,13 +144,7 @@ fn deadline_elapsing_inside_a_rule_apply_is_timeout() {
     let mut a = ExprArena::new();
     let root = a.push_var(0);
     let mut eg = EGraph::with_rules(vec![Box::new(SleepyRule)]);
-    pixelflow_search::egraph::insert(
-        &a,
-        root,
-        &mut eg,
-        pixelflow_search::egraph::Vocabulary::Templates,
-    )
-    .expect("insert into e-graph");
+    eg.add_arena(&a, root);
     assert_eq!(eg.num_classes(), 1, "repro wants a single e-class");
 
     let result = saturate_with_full_budget(&mut eg, 100, 10_000, Duration::from_millis(1));
