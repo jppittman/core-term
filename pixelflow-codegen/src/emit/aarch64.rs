@@ -1772,50 +1772,37 @@ pub(crate) mod driver {
     ///
     ///   v0-v3:   inputs (X, Y, Z, W)
     ///   v8-v15:  callee-saved, never allocatable
-    ///   v4-v7, v16-v31: allocatable scratch — everything else
+    ///   v16-v25: allocatable scratch
+    ///   v26-v27: reload
+    ///   v28, v30: fixed-purpose scratch (select guard reduction, gather index)
     const AARCH64_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
-        // v4-v7 and v16-v31: twenty of thirty-two. AAPCS64 callee-saves the
-        // low 64 bits of v8-v15 and these are leaf kernels with no prologue
-        // that preserves them, so v8-v15 stay out; v4-v7 are unused argument
+        // v16-v25 plus v4-v7 and v28-v31. AAPCS64 callee-saves the low 64
+        // bits of v8-v15 and these are leaf kernels with no prologue that
+        // preserves them, so v8-v15 stay out; v4-v7 are unused argument
         // registers.
         //
-        // v26/v27 are the last two to join: they were `reload`, held out of
-        // every kernel's pool for a spilled operand and a spilled destination.
-        // v28 came before them, holding the `UMAXV`/`UMINV` the Select
-        // short-circuit guards reduce a mask into. Both needs arise at points
-        // the schedule contains, so both are reservations the allocator makes
-        // on an instruction (`Scratch::reload`, `guard_temps`).
-        scratch: regalloc::RegSet::range(16, 16).union(regalloc::RegSet::range(4, 4)),
+        // v28 was the last of these to join. It held the `UMAXV`/`UMINV` the
+        // Select short-circuit guards reduce a mask into — one register out of
+        // every kernel's pool for two instructions in the kernels that have a
+        // guarded Select at all. A guard is emitted *between* instructions,
+        // where both reload registers are dead by construction, so it borrows
+        // `reload[0]` instead (`emit::guard_scratch`).
+        scratch: regalloc::RegSet::range(16, 10)
+            .union(regalloc::RegSet::range(4, 4))
+            .union(regalloc::RegSet::of(&[Reg(28), Reg(29), Reg(30), Reg(31)])),
+        reload: [Reg(26), Reg(27)],
         // Nothing. v30 is the gather's truncated-index register, a `temps_for`
         // answer since the gathers landed; v29 used to be `UNARY_SCRATCH`,
-        // reserved whole-kernel so a reciprocal estimate could borrow it. The
-        // select needs none either: `BSL` reads its three operands directly,
-        // and `FNEG`/`FABS` are single instructions.
+        // reserved whole-kernel so a reciprocal estimate could borrow it. With
+        // v28 gone this backend — and so the workspace — holds no register for
+        // its own encodings. The select needs none either: `BSL` reads its
+        // three operands directly, and `FNEG`/`FABS` are single instructions.
         fixed: &[],
         temps_for: super::temps_for,
-        // `UMAXV`/`UMINV` reduce the mask into a vector register before
-        // `FMOV` can move it to a general one. It used to be v28, held out of
-        // every kernel's pool; it is now a reservation on the instruction the
-        // guard is emitted before.
-        guard_temps: 1,
         vector_bytes: 16,
     }
     .checked();
-
-    /// The register a guard reduces its mask into.
-    ///
-    /// `UMAXV`/`UMINV` write a scalar into a vector register, so this tier's
-    /// guard needs one that is neither the mask nor anything live — which is
-    /// what `RegisterFile::guard_temps` asks the allocator for, and what makes
-    /// the two assertions here statements about the allocator rather than
-    /// about a hand-picked constant.
-    fn guard_scratch(scratch: Option<Reg>, mask_reg: Reg) -> Reg {
-        let scratch = scratch
-            .expect("aarch64's guard declares `guard_temps: 1`; the allocator owes it a register");
-        debug_assert_ne!(scratch, mask_reg, "the reduce would destroy its own input");
-        scratch
-    }
 
     pub(crate) struct Aarch64Backend {
         pool: ConstPool,
@@ -1944,16 +1931,16 @@ pub(crate) mod driver {
             }
         }
 
-        /// `scratch` is this instruction's own reservation, live for these two
-        /// instructions only — the allocator makes it because this backend's
-        /// `guard_temps` asks for one.
+        /// `scratch` is the caller's, live for these two instructions only —
+        /// see `emit::guard_scratch` for why a register that is dead between
+        /// instructions is all this needs.
         fn emit_skip_if_all_false(
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            scratch: Option<Reg>,
+            scratch: Reg,
         ) -> Aarch64Branch {
-            let scratch = guard_scratch(scratch, mask_reg);
+            debug_assert_ne!(scratch, mask_reg, "the reduce would destroy its own input");
             super::emit_umaxv(code, scratch, mask_reg); // max lane; 0 => all-false
             super::emit_fmov_to_gp(code, scratch);
             Aarch64Branch::Cbz(super::emit_cbz_w16(code))
@@ -1963,9 +1950,9 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            scratch: Option<Reg>,
+            scratch: Reg,
         ) -> Aarch64Branch {
-            let scratch = guard_scratch(scratch, mask_reg);
+            debug_assert_ne!(scratch, mask_reg, "the reduce would destroy its own input");
             super::emit_uminv(code, scratch, mask_reg); // min lane; 0xFFFFFFFF => all-true
             super::emit_fmov_to_gp(code, scratch);
             // MVN W16, W16 -> 0 iff all-true, which the cbz below tests.
@@ -2202,6 +2189,11 @@ pub(crate) mod driver {
                 // setup_mov already placed mask into dst
                 emit_bsl(code, *dst, *if_true, *if_false);
             }
+        }
+
+        // 4. Emit store
+        if let Some(store) = &plan.store {
+            emit_str_q(code, store.src, frame_slot(store.offset));
         }
 
         Ok(())

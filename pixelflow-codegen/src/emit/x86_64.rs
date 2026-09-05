@@ -889,18 +889,24 @@ pub(crate) mod driver {
     /// The SSE2 register file (xmm, 128-bit).
     ///
     /// SysV has no callee-saved XMM registers, so every register past the
-    /// inputs is fair game — and every one of them is now the allocator's.
+    /// inputs is fair game, and every one of them is now either an input, a
+    /// reload target, or the allocator's.
     pub(crate) const SSE2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
-        // xmm4-15: twelve of sixteen, which is every register the ABI does
-        // not use for an argument. xmm11 and xmm12 are the last two to join —
-        // they were `reload`, held out of every kernel's pool so that a
-        // spilled operand had somewhere to land and a spilled destination had
-        // somewhere to be computed. Both are per-instruction reservations now
-        // (`Scratch::reload`), as xmm13 (`select_reload`), xmm14/15 (the
-        // gather's) and xmm10 (the sign mask, the select blend, the `MulAdd`
-        // stand-in's product) became before them.
-        scratch: regalloc::RegSet::range(4, 12),
+        // xmm4-10 and xmm13-15 — every xmm this file does not name for
+        // something else. Each of them was once held out of every kernel's
+        // pool for an instruction most kernels never contain: xmm13 was
+        // `select_reload`, xmm14/15 the gather's value and truncated-index
+        // registers, and xmm10 the sign mask, the select blend and the
+        // `MulAdd` stand-in's product. All four are per-instruction
+        // reservations now (`Scratch::arm_reload` and `temps_for`), so they
+        // are the allocator's the rest of the time.
+        scratch: regalloc::RegSet::range(4, 7).union(regalloc::RegSet::of(&[
+            Reg(13),
+            Reg(14),
+            Reg(15),
+        ])),
+        reload: [Reg(11), Reg(12)],
         // Nothing. This was the last backend holding a register for its own
         // encodings, and the one that held it for a *register* rather than an
         // op: `emit_binary_safe` stashed `right` whenever the allocator chose
@@ -910,9 +916,6 @@ pub(crate) mod driver {
         // the three real demands are `temps_for` answers.
         fixed: &[],
         temps_for: super::temps_for,
-        // A guard reduces its mask with `movmskps` into the flags, which costs
-        // no vector register at all.
-        guard_temps: 0,
         vector_bytes: 16,
     }
     .checked();
@@ -1114,6 +1117,9 @@ pub(crate) mod driver {
                     emit_binary(code, OpKind::Add, *dst, *dst, *c);
                 }
             }
+            if let Some(store) = &plan.store {
+                self.spill_store(code, store.src, store.offset);
+            }
             Ok(())
         }
 
@@ -1157,7 +1163,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Option<Reg>,
+            _scratch: Reg,
         ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_test_eax(code);
@@ -1170,7 +1176,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Option<Reg>,
+            _scratch: Reg,
         ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_cmp_eax_imm8(code, 0x0F);

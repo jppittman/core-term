@@ -864,12 +864,12 @@ pub(crate) mod driver {
     /// Identical register *roles* to SSE2 — the shared driver depends on that —
     /// at four times the width, so only `vector_bytes` differs.
     const AVX512_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
-        // zmm4-31: twenty-eight of thirty-two, which is every register the ABI
-        // does not use for an argument. The pool was *six* when this work
-        // started, because a contiguous range could not reach past the reload
-        // pair and the gather's scratch — sixteen registers were untouched by
-        // anything at all.
-        scratch: regalloc::RegSet::range(4, 28),
+        // zmm4-10, zmm15 and zmm17-31: AVX-512 has thirty-two registers and
+        // the pool was six of them, because a contiguous range could not reach
+        // past the reload pair and the gather's scratch.
+        scratch: regalloc::RegSet::range(4, 7)
+            .union(regalloc::RegSet::range(17, 15))
+            .union(regalloc::RegSet::of(&[Reg(13), Reg(14), Reg(15), Reg(16)])),
         // Nothing. Every register this backend's encodings destroy is now a
         // per-instruction reservation: zmm15 for a sign-flip's mask, zmm14 and
         // zmm16 for the gather's destination and truncated indices. All three
@@ -1009,6 +1009,9 @@ pub(crate) mod driver {
                     super::emit_select(code, *dst, *if_true, *if_false);
                 }
             }
+            if let Some(store) = &plan.store {
+                super::emit_store(code, frame_slot(store.offset), store.src);
+            }
             Ok(())
         }
 
@@ -1055,7 +1058,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Option<Reg>,
+            _scratch: Reg,
         ) -> usize {
             super::emit_mask_flags(code, mask_reg);
             x86_64::je(code).field() // ZF set when k1 == 0 (all false)
@@ -1066,7 +1069,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Option<Reg>,
+            _scratch: Reg,
         ) -> usize {
             super::emit_mask_flags(code, mask_reg);
             x86_64::jc(code).field() // CF set when k1 == 0xFFFF (all true)
