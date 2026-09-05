@@ -988,9 +988,6 @@ pub(crate) mod driver {
                     super::emit_select(code, *dst, *if_true, *if_false, plan.scratch.temp(0));
                 }
             }
-            if let Some(store) = &plan.store {
-                super::emit_store(code, frame_slot(store.offset), store.src);
-            }
             Ok(())
         }
 
@@ -1038,7 +1035,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Reg,
+            _scratch: Option<Reg>,
         ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             x86_64::emit_test_eax(code);
@@ -1051,7 +1048,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Reg,
+            _scratch: Option<Reg>,
         ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_cmp_al_imm8(code, 0xFF);

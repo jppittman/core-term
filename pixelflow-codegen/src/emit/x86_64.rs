@@ -916,6 +916,9 @@ pub(crate) mod driver {
         // the three real demands are `temps_for` answers.
         fixed: &[],
         temps_for: super::temps_for,
+        // A guard reduces its mask with `movmskps` into the flags, which costs
+        // no vector register at all.
+        guard_temps: 0,
         vector_bytes: 16,
     }
     .checked();
@@ -1117,9 +1120,6 @@ pub(crate) mod driver {
                     emit_binary(code, OpKind::Add, *dst, *dst, *c);
                 }
             }
-            if let Some(store) = &plan.store {
-                self.spill_store(code, store.src, store.offset);
-            }
             Ok(())
         }
 
@@ -1163,7 +1163,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Reg,
+            _scratch: Option<Reg>,
         ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_test_eax(code);
@@ -1176,7 +1176,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Reg,
+            _scratch: Option<Reg>,
         ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_cmp_eax_imm8(code, 0x0F);

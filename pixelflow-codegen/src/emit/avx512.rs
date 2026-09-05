@@ -1009,9 +1009,6 @@ pub(crate) mod driver {
                     super::emit_select(code, *dst, *if_true, *if_false);
                 }
             }
-            if let Some(store) = &plan.store {
-                super::emit_store(code, frame_slot(store.offset), store.src);
-            }
             Ok(())
         }
 
@@ -1058,7 +1055,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Reg,
+            _scratch: Option<Reg>,
         ) -> usize {
             super::emit_mask_flags(code, mask_reg);
             x86_64::je(code).field() // ZF set when k1 == 0 (all false)
@@ -1069,7 +1066,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Reg,
+            _scratch: Option<Reg>,
         ) -> usize {
             super::emit_mask_flags(code, mask_reg);
             x86_64::jc(code).field() // CF set when k1 == 0xFFFF (all true)
