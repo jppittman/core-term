@@ -1,0 +1,97 @@
+//! Equality saturation as an [`Optimize`] value.
+//!
+//! [`Optimizer`] decides *how* saturation runs — rule set, budget, cost model,
+//! extractor. [`Saturate`] is the endomorphism that runs it: insert the term,
+//! saturate, extract, materialise. Those are different things, and until
+//! [`Optimize`] existed only the first had a name, so every tier wrote the
+//! second out by hand.
+
+use pixelflow_ir::LatticeShape;
+use pixelflow_ir::arena::{ExprArena, ExprId};
+use pixelflow_ir::optimize::{Optimize, Rewritten};
+
+use crate::egraph::{Optimizer, Vocabulary, insert, reachable_count};
+
+/// Rewrite a term by equality saturation under `optimizer`.
+///
+/// Declines a term the [`Vocabulary`] cannot hold — a `Param` slot that
+/// should have been specialized, an op this tier may not model. Declining is
+/// ordinary: the caller compiles the term unoptimized.
+pub struct Saturate {
+    optimizer: Optimizer,
+    vocab: Vocabulary,
+}
+
+impl Saturate {
+    /// The runtime tier's configuration: production policy priced against the
+    /// lattice this kernel is compiled for — the extents are known, so
+    /// extraction minimizes the instruction count of the whole program rather
+    /// than of its text — over the runtime vocabulary.
+    #[must_use]
+    pub fn runtime(shape: LatticeShape) -> Self {
+        Self {
+            optimizer: Optimizer::production().for_lattice(shape),
+            vocab: Vocabulary::Runtime,
+        }
+    }
+
+    /// Saturation under an explicitly chosen policy and vocabulary, for
+    /// harnesses that vary one and hold the rest.
+    #[must_use]
+    pub fn with(optimizer: Optimizer, vocab: Vocabulary) -> Self {
+        Self { optimizer, vocab }
+    }
+}
+
+impl Optimize for Saturate {
+    fn optimize(&mut self, arena: &ExprArena, root: ExprId) -> Rewritten {
+        let mut egraph = self.optimizer.egraph();
+        let Ok(root_class) = insert(arena, root, &mut egraph, self.vocab) else {
+            return Rewritten::Declined;
+        };
+
+        let node_count = reachable_count(arena, root);
+        #[cfg(feature = "saturation-telemetry")]
+        let telemetry_start = std::time::Instant::now();
+        let optimized = self.optimizer.run(&mut egraph, root_class, node_count);
+        let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
+
+        #[cfg(feature = "saturation-telemetry")]
+        crate::telemetry::record(crate::telemetry::SaturationInvocation {
+            tier: crate::telemetry::Tier::Runtime,
+            node_count,
+            stats: &optimized.stats,
+            union_count: optimized.stats.unions,
+            extracted_arena: &extracted,
+            extracted_root,
+            wall_clock: telemetry_start.elapsed(),
+            kernel_label: None,
+        });
+
+        // The extracted arena declares buffers in extraction-traversal order,
+        // which need not match the input's — and slot order is ABI: the JIT
+        // loads slot i's base pointer from the caller's context array at i*8,
+        // and callers bind in the order the arena THEY BUILT declared. A
+        // different extraction (a commuted equivalent under another cost
+        // model) must not silently permute their pointers. Re-splicing onto a
+        // table pre-declared in input order makes the invariant structural:
+        // splice dedups buffers by identity onto the existing slots.
+        if arena.buffers().is_empty() {
+            return Rewritten::Changed(extracted, extracted_root);
+        }
+        let mut ordered = ExprArena::new();
+        for decl in arena.buffers() {
+            let _slot = ordered.declare_buffer(*decl);
+        }
+        let new_root = ordered.splice(&extracted, extracted_root);
+        debug_assert!(
+            ordered
+                .buffers()
+                .iter()
+                .zip(arena.buffers())
+                .all(|(a, b)| a.id == b.id),
+            "buffer slot order must survive optimization"
+        );
+        Rewritten::Changed(ordered, new_root)
+    }
+}

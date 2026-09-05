@@ -383,7 +383,13 @@ pub fn run_episode(
     rules: Vec<Box<dyn Rewrite>>,
 ) -> EpisodeResult {
     let mut egraph = EGraph::with_rules(rules);
-    let root_class = egraph.add_arena(arena, root);
+    let root_class = crate::egraph::insert(
+        arena,
+        root,
+        &mut egraph,
+        crate::egraph::Vocabulary::Templates,
+    )
+    .expect("insert into e-graph");
     SaturationConfig::compatibility(100).run(&mut egraph);
 
     let costs = CostModel::latency_prior();
@@ -686,7 +692,13 @@ mod tests {
         let root = arena.push_binary(pixelflow_ir::OpKind::Sub, doubled, doubled);
 
         let mut egraph = EGraph::with_rules(crate::egraph::all_rules());
-        let root_class = egraph.add_arena(&arena, root);
+        let root_class = crate::egraph::insert(
+            &arena,
+            root,
+            &mut egraph,
+            crate::egraph::Vocabulary::Templates,
+        )
+        .expect("insert into e-graph");
         egraph.saturate_budgeted(30, 2_000, None);
 
         let costs = CostModel::latency_prior();
