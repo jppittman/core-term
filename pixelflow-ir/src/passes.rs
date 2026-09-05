@@ -1320,27 +1320,39 @@ fn expand_sin_phase(arena: &mut ExprArena, x: ExprId, phase: f32) -> ExprId {
     arena.push_ternary(OpKind::Select, in_domain, s, nan)
 }
 
-/// `acc·x + add` as `Add(Mul(acc, x), add)` — two nodes, not one `MulAdd`.
+/// `acc·x + add` as one `MulAdd` node.
 ///
-/// Two tempting justifications for it are simply untrue, and worth stating so
-/// they are not assumed: the jet path *does* have a `MulAdd` rule (`diff_node`,
-/// `ExprNode::Ternary`), and nothing re-fuses these afterwards — [`legalize`] is
-/// the last thing to touch the arena, and the only thing that becomes an FMA
-/// instruction is an `OpKind::MulAdd` node already in it. So the Horner chains
-/// here reach the emitter unfused: 5 mul + 5 add for `sin`, where 5 `MulAdd`s
-/// would do.
+/// Nothing downstream would fuse this for us: [`legalize`] is the last thing to
+/// touch the arena, and the only thing that becomes an FMA instruction is an
+/// `OpKind::MulAdd` node already in it. So a Horner chain emitted as
+/// `Add(Mul(..))` reaches the emitter unfused — 5 mul + 5 add for `sin`, where
+/// 5 `MulAdd`s do — and the e-graph cannot recover it either, since it runs
+/// *before* this lowering and has no multiplies to fuse yet.
 ///
-/// The real reason to keep it is parity. Unfused mul+add rounds twice on every
-/// target, so the `eval_scalar` oracle and every backend agree exactly. `MulAdd`
-/// rounds *once* where FMA exists and twice where it does not (CLAUDE.md,
-/// "Floating point at the edges"), which would reintroduce a tier divergence —
-/// small, but this expansion is precisely where a shared-definition disagreement
-/// between oracle and JIT went unnoticed for so long. Fusing is a real ~5-op win
-/// per `sin` available for the taking; it should be taken deliberately, with the
-/// parity tests updated to expect a 1-ulp tier difference, not as a side effect.
+/// Fusing here rather than anywhere later is what keeps the trig identities
+/// intact. Saturating after expansion would fuse these multiplies, but by then
+/// there is no `Sin` node left for `AngleAddition` or `Parity` to match, and
+/// the general rewriter turned loose on an expanded polynomial can reassociate
+/// Horner form — which is chosen for accuracy, not just for op count.
+///
+/// # The cost, taken deliberately
+///
+/// This is the tier divergence the previous form existed to avoid, so it is
+/// stated rather than discovered. Unfused mul+add rounds twice everywhere, so
+/// the `eval_scalar` oracle and every backend agreed bit-for-bit. `MulAdd`
+/// rounds **once** where an FMA instruction exists (x86 with `+fma`, aarch64
+/// `FMLA`) and **twice** where it does not (SSE2 baseline: `mulps` + `addps`)
+/// — CLAUDE.md, "Floating point at the edges". So the SSE2 tier now differs
+/// from the FMA tiers by up to a rounding per Horner step.
+///
+/// That is a *precision* difference, which the codebase's own rule puts on the
+/// table; it is not a range difference, which is not. One rounding is never
+/// less accurate than two, so the FMA tiers move toward the true value, not
+/// away from it, and the polynomial's range guarantees (`|sin| ≤ 1`, the
+/// `TRIG_DOMAIN` NaN edge) are unaffected — they come from the reduction and
+/// the `Select`, neither of which is a Horner step.
 fn horner_step(arena: &mut ExprArena, acc: ExprId, x: ExprId, add: ExprId) -> ExprId {
-    let prod = arena.push_binary(OpKind::Mul, acc, x);
-    arena.push_binary(OpKind::Add, prod, add)
+    arena.push_ternary(OpKind::MulAdd, acc, x, add)
 }
 
 #[cfg(test)]
