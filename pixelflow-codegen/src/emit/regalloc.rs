@@ -40,16 +40,18 @@ pub struct Def {
 /// register inside the allocatable window, say — into a build error rather
 /// than a miscompile that shows up as wrong pixels.
 ///
-/// The register file is described once and consulted everywhere: the emitter
-/// reads `reload` for its spill choreography and `vector_bytes` for its frame
-/// arithmetic, so there is no second copy of any of it to drift.
+/// The register file is described once and consulted everywhere, and it now
+/// says only what a target *is*: which registers carry the inputs, which the
+/// allocator may hand out, how many an encoding or a guard destroys, and how
+/// wide a spilled register is. Nothing in it is a register held back for a
+/// need some other file knows about.
 /// A set of registers from one file, as a bitmask over register numbers.
 ///
 /// The allocatable pool used to be a base plus a count — a contiguous run. On
-/// every real target the free registers are *not* contiguous: on SSE2 `xmm14`
-/// and `xmm15` sit above the reload pair, and on AVX-512 fifteen free
-/// registers sit above it with the gather's scratch in between. A range can only ever name whichever free registers happen to be
-/// adjacent, so it silently rounded the pool down to a fraction of the machine.
+/// every real target the free registers were *not* contiguous: registers held
+/// back by hand sat in the middle of the range. A range can only ever name
+/// whichever free registers happen to be adjacent, so it silently rounded the
+/// pool down to a fraction of the machine.
 ///
 /// A set says the true thing: these registers, whichever they are.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -159,20 +161,10 @@ pub struct RegisterFile {
 
     /// Every register the allocator may hand out.
     ///
-    /// Everything outside it — inputs, callee-saved registers, the reload
-    /// registers, the backend's own `fixed` scratch — is off limits by
-    /// construction, and [`RegisterFile::checked`] proves the separation.
+    /// Everything outside it — inputs, callee-saved registers, the backend's
+    /// own `fixed` scratch — is off limits by construction, and
+    /// [`RegisterFile::checked`] proves the separation.
     pub scratch: RegSet,
-
-    /// Fixed registers, outside the pool, that spilled operands reload into.
-    ///
-    /// Nothing reads these any more — every reload target and every guard
-    /// scratch is a per-instruction reservation the allocator makes
-    /// ([`Scratch`]) — and they leave this struct in the commit that hands the
-    /// two registers to each backend's pool. They are still declared, and
-    /// still held out of the pool, so that commit is a pool change and nothing
-    /// else.
-    pub reload: [Reg; 2],
 
     /// How many registers a `Select` short-circuit guard destroys while
     /// reducing its mask to a branch condition.
@@ -249,20 +241,6 @@ impl RegisterFile {
             i += 1;
         }
 
-        let mut i = 0;
-        while i < self.reload.len() {
-            assert!(
-                !self.scratch.contains(self.reload[i]),
-                "a reload register is inside the allocatable pool: reloading \
-                 a spilled operand would clobber another live value"
-            );
-            i += 1;
-        }
-        assert!(
-            self.reload[0].0 != self.reload[1].0,
-            "the two reload registers are the same register"
-        );
-
         assert!(
             self.guard_temps as usize <= 1,
             "a backend's Select guard asked for more scratch than `Scratch` \
@@ -284,14 +262,6 @@ impl RegisterFile {
                 "a fixed backend scratch register is inside the allocatable \
                  pool: emitting an instruction would clobber a live value"
             );
-            let mut k = 0;
-            while k < self.reload.len() {
-                assert!(
-                    self.fixed[i].0 != self.reload[k].0,
-                    "a fixed backend scratch register aliases a reload register"
-                );
-                k += 1;
-            }
             let mut k = 0;
             while k < self.inputs.len() {
                 assert!(
@@ -614,8 +584,8 @@ pub struct Scratch {
     ///
     /// This is where `arm_reload` went. A `Select`'s second spilled arm is not
     /// a role of its own — it is operand 2 with nowhere to be — and the same
-    /// is true of `reload[1]`, which served every other operand of every other
-    /// instruction from outside the pool.
+    /// was true of `RegisterFile::reload[1]`, which served every other operand
+    /// of every other instruction from outside the pool.
     reloads: [Option<Reg>; Scratch::MAX_RELOADS],
 
     /// A register to reload a short-circuit guard's mask into, when the mask
@@ -1916,7 +1886,6 @@ mod tests {
         fixed: &[],
         inputs: [Reg(0), Reg(1), Reg(2), Reg(3)],
         scratch: RegSet::range(4, RegisterFile::MIN_SCRATCH),
-        reload: [Reg(11), Reg(12)],
         temps_for: no_temps,
         guard_temps: 0,
         vector_bytes: 16,
@@ -2668,18 +2637,6 @@ mod tests {
             parked > 0,
             "the budget is smaller than the root count, so something is parked"
         );
-    }
-
-    /// `checked()` is the isolation's teeth: a file whose reload register sits
-    /// inside the allocatable pool would let a reload clobber a live value.
-    #[test]
-    #[should_panic(expected = "reload register is inside the allocatable pool")]
-    fn a_reload_register_inside_the_pool_is_refused() {
-        let _refused = RegisterFile {
-            scratch: RegSet::range(4, 8), // swallows Reg(11)
-            ..TEST_FILE
-        }
-        .checked();
     }
 
     /// The same teeth for a backend's own scratch: `fixed` is declared so this

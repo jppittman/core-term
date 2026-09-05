@@ -830,30 +830,17 @@ pub(crate) mod driver {
     /// zone instead would restore those two as well; that is a contained change
     /// to `super::emit_gather_scalar` and is the better long-term fix.
     const AVX2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
-        // ymm4-7 and ymm10. ymm8/ymm9 carry the gather's high half and
-        // ymm14/ymm15 its low half.
-        //
-        // ymm10 is this backend's share of what step 1's accounting turned
-        // up: it was the SSE2 tier's whole-kernel scratch, reserved here by
-        // inheritance rather than by use — the one shared helper this backend
-        // calls, `x86_64::emit_gather_scalar`, never touches it, and every
-        // temp AVX2's own encodings need is a `temps_for` answer. That is the
-        // case `fixed` exists to make checkable.
-        scratch: regalloc::RegSet::range(4, 4)
-            .union(regalloc::RegSet::of(&[Reg(8), Reg(9), Reg(10), Reg(13)]))
-            .union(regalloc::RegSet::of(&[Reg(14), Reg(15)])),
+        // ymm4-15: every register the ABI does not use for an argument. The
+        // gather borrows four of them across its own sequence (ymm8/9 for the
+        // high half, ymm14/15 for the low), the sign mask and the select blend
+        // borrow one, and ymm11/12 were the reload pair — all reservations the
+        // allocator makes for one instruction, so all of them are its the rest
+        // of the time.
+        scratch: regalloc::RegSet::range(4, 12),
         // Nothing. Every register this backend's encodings destroy is now a
         // per-instruction reservation, so ymm8/9/14/15 are the allocator's
         // except across the one gather that borrows them.
         fixed: &[],
-        // This backend's pool does not grow: `UNARY_SCRATCH` was ymm15, which
-        // is also `GATHER_IDX`, so it appeared in `fixed` twice and freeing one
-        // spelling frees no register. What it removes is the *sharing* — the
-        // sign mask and the select blend were borrowing the gather's index
-        // register, safe only because no one instruction is both, which is
-        // exactly the kind of convention a comment cannot keep true. The temp
-        // now comes from the pool for the length of one instruction, and ymm15
-        // has one owner.
         temps_for: super::temps_for,
         vector_bytes: 32,
         ..SSE2_FILE

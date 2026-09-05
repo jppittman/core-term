@@ -2622,7 +2622,6 @@ mod tests {
         fixed: &[],
         inputs: INPUT_REGS,
         scratch: regalloc::RegSet::range(4, regalloc::RegisterFile::MIN_SCRATCH),
-        reload: [Reg(11), Reg(12)],
         temps_for: regalloc::no_temps,
         guard_temps: 0,
         vector_bytes: 16,

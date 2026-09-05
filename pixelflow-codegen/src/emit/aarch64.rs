@@ -1772,32 +1772,26 @@ pub(crate) mod driver {
     ///
     ///   v0-v3:   inputs (X, Y, Z, W)
     ///   v8-v15:  callee-saved, never allocatable
-    ///   v16-v25: allocatable scratch
-    ///   v26-v27: reload
-    ///   v28, v30: fixed-purpose scratch (select guard reduction, gather index)
+    ///   v4-v7, v16-v31: allocatable scratch — everything else
     const AARCH64_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
-        // v16-v25 plus v4-v7 and v28-v31. AAPCS64 callee-saves the low 64
-        // bits of v8-v15 and these are leaf kernels with no prologue that
-        // preserves them, so v8-v15 stay out; v4-v7 are unused argument
+        // v4-v7 and v16-v31: twenty of thirty-two. AAPCS64 callee-saves the
+        // low 64 bits of v8-v15 and these are leaf kernels with no prologue
+        // that preserves them, so v8-v15 stay out; v4-v7 are unused argument
         // registers.
         //
-        // v28 was the last of these to join. It held the `UMAXV`/`UMINV` the
-        // Select short-circuit guards reduce a mask into — one register out of
-        // every kernel's pool for two instructions in the kernels that have a
-        // guarded Select at all. A guard is emitted *between* instructions, at
-        // a point the schedule contains, so the register it destroys is a
-        // reservation on that instruction (`guard_temps`, below).
-        scratch: regalloc::RegSet::range(16, 10)
-            .union(regalloc::RegSet::range(4, 4))
-            .union(regalloc::RegSet::of(&[Reg(28), Reg(29), Reg(30), Reg(31)])),
-        reload: [Reg(26), Reg(27)],
+        // v26/v27 are the last two to join: they were `reload`, held out of
+        // every kernel's pool for a spilled operand and a spilled destination.
+        // v28 came before them, holding the `UMAXV`/`UMINV` the Select
+        // short-circuit guards reduce a mask into. Both needs arise at points
+        // the schedule contains, so both are reservations the allocator makes
+        // on an instruction (`Scratch::reload`, `guard_temps`).
+        scratch: regalloc::RegSet::range(16, 16).union(regalloc::RegSet::range(4, 4)),
         // Nothing. v30 is the gather's truncated-index register, a `temps_for`
         // answer since the gathers landed; v29 used to be `UNARY_SCRATCH`,
-        // reserved whole-kernel so a reciprocal estimate could borrow it. With
-        // v28 gone this backend — and so the workspace — holds no register for
-        // its own encodings. The select needs none either: `BSL` reads its
-        // three operands directly, and `FNEG`/`FABS` are single instructions.
+        // reserved whole-kernel so a reciprocal estimate could borrow it. The
+        // select needs none either: `BSL` reads its three operands directly,
+        // and `FNEG`/`FABS` are single instructions.
         fixed: &[],
         temps_for: super::temps_for,
         // `UMAXV`/`UMINV` reduce the mask into a vector register before
