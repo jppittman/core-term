@@ -53,10 +53,6 @@ name = "font_rendering"
 harness = false
 
 [[bench]]
-name = "kernel_bench"
-harness = false
-
-[[bench]]
 name = "frame_bake"
 harness = false
 

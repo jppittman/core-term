@@ -8,7 +8,7 @@
 mod common;
 
 use common::{assert_golden, write_ppm};
-use pixelflow_core::{Field, Kernel, ManifoldCompat};
+use pixelflow_core::Kernel;
 use pixelflow_graphics::render::color::{Color, NamedColor, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::scene::{compile_packed_for, constant_scene_for, Scene};
@@ -166,26 +166,6 @@ fn e2e_solid_color_renders_correctly() {
 
     save("e2e_cyan", &frame);
     assert_golden("e2e_solid_color_renders_correctly", &frame, 2, 0.0);
-}
-
-/// The `shapes` module is the ZST combinator tier, which S4b retires. Until
-/// then this is a smoke test that it still composes; nothing renders through
-/// it.
-#[test]
-fn e2e_render_using_builtin_shapes() {
-    use pixelflow_graphics::shapes::{circle, EMPTY, SOLID};
-
-    let unit_circle = circle(SOLID, EMPTY);
-    let at = |x: f32| {
-        unit_circle.eval_raw(
-            Field::from(x),
-            Field::from(0.0),
-            Field::from(0.0),
-            Field::from(0.0),
-        )
-    };
-    let _at_origin = at(0.0);
-    let _outside = at(2.0); // x² = 4 > 1
 }
 
 /// A `Frame` starts empty and ends as whatever was rendered into it.

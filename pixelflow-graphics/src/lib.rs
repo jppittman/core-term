@@ -62,11 +62,8 @@
 //! which byte order every packed kernel here packs for.
 
 pub mod fonts;
-pub mod mesh;
 pub mod render;
 pub mod scene3d;
-pub mod shapes;
-pub mod subdiv;
 
 // Re-export fonts (user-facing types only)
 pub use fonts::{CachedGlyph, CachedText, Font, GlyphCache};
