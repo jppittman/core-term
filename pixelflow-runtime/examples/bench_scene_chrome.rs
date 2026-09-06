@@ -16,8 +16,8 @@
 //!
 //! ## Reading the agreement rows
 //!
-//! The two lanes draw the same geometry, the same reflection and the same
-//! colours. They differ in exactly one thing, antialiasing, in two places:
+//! The two lanes draw the same geometry and the same colours, and disagree
+//! about three things — two of them antialiasing:
 //!
 //! - The jet tier seeded its derivatives **after** the pixel-to-screen remap,
 //!   so its filter width is one *normalized screen* unit — half the frame
@@ -27,17 +27,23 @@
 //!   scaled the normal's derivatives by a hand-tuned `2/|cos θ|`;
 //!   `Kernel::dx()` differentiates the reflection exactly and needs no such
 //!   factor, and no scale reproduces it.
+//! - And one that is not antialiasing at all: the jet tier's **normal is not
+//!   a unit vector**. It normalizes the tangent frame's cross product with
+//!   `n_len_sq.sqrt().rsqrt()`, which is `|n|^-½` rather than `|n|^-1`, so
+//!   `D − 2(D·N)N` is a reflection only where the screen-to-surface map has
+//!   unit area scale. The two lanes therefore reflect differently over the
+//!   whole sphere, and the packed one is the reflection
+//!   (`scene3d::tests::a_reflection_off_a_sphere_is_a_unit_ray`).
 //!
-//! So three rows are printed. **matte (no checker)** is the geometry
-//! contract — sphere, floor and sky in flat grey, where no filter width
-//! enters at all, so silhouette, horizon, sky and pack are compared with
-//! nothing else in the way. **chrome, matched filter** puts the checker back
-//! with the packed lane's filter scaled to the jet tier's convention, and
-//! what is left is the reflection's (whose sphere coverage is printed beside
-//! it) plus what the two filters do where a footprint exceeds a cell — the
-//! jet tier flips to the neighbour's colour there, this one washes out to
-//! grey. **chrome, as shipped** is the one-pixel filter over the whole floor,
-//! and is meant to be large.
+//! No scaling reconciles any of that, so the row that checks the *rest* of
+//! the scene takes the checker out of the picture: **matte (no checker)** is
+//! sphere, floor and sky in flat grey — silhouette, horizon, sky and pack,
+//! with no filter width anywhere — and it is the one that should agree to
+//! the goldens' own 2/255 on essentially every pixel. **mirror over sky**
+//! isolates the reflection (no checker either), so its disagreement is the
+//! non-unit normal above, bounded by the sphere's screen coverage, which is
+//! printed beside it. **chrome, as shipped** is the whole scene, whose
+//! disagreement is the antialiasing and is meant to be large.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -168,6 +174,17 @@ where
     }))
 }
 
+/// The sphere reflecting the sky and nothing else: the reflection, alone.
+fn surface_mirror() -> Scene {
+    on_screen(ColorSurface {
+        geometry: surface_sphere(),
+        material: ColorReflect {
+            inner: ColorSky::<RgbaColorCube>::default(),
+        },
+        background: ColorSky::<RgbaColorCube>::default(),
+    })
+}
+
 fn surface_chrome() -> Scene {
     let world = surface_world();
     on_screen(ColorSurface {
@@ -207,12 +224,6 @@ fn per_pixel(hit: &Hit) -> Kernel {
     hit.footprint()
 }
 
-/// The jet tier's convention: one *normalized screen* unit, which is half the
-/// frame height in pixels.
-fn jet_tier(hit: &Hit) -> Kernel {
-    hit.footprint().mul(&k(HEIGHT as f32 * 0.5))
-}
-
 fn ray() -> Ray {
     Ray::through_screen(WIDTH as f32, HEIGHT as f32)
 }
@@ -247,6 +258,13 @@ fn packed_matte() -> [Kernel; 4] {
     sphere(&ray)
         .select(&Rgba::opaque_gray(MATTE), &floor)
         .into_channels()
+}
+
+fn packed_mirror() -> [Kernel; 4] {
+    let ray = ray();
+    let sphere = sphere(&ray);
+    let mirrored = ray.reflected(sphere.normal());
+    sphere.select(&sky(&mirrored), &sky(&ray)).into_channels()
 }
 
 fn packed_scene(channels: &[Kernel; 4]) -> Scene {
@@ -353,9 +371,9 @@ fn main() {
             packed_scene(&packed_matte()),
         ),
         (
-            "chrome, matched filter",
-            surface_chrome(),
-            packed_scene(&packed_chrome(&jet_tier)),
+            "mirror over sky",
+            surface_mirror(),
+            packed_scene(&packed_mirror()),
         ),
         ("chrome, as shipped", surface_chrome(), packed.clone()),
     ] {

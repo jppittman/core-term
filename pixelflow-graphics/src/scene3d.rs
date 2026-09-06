@@ -418,6 +418,38 @@ mod tests {
         assert!((z + 1.0).abs() < 1e-6, "got {z}");
     }
 
+    /// A reflection off a *sphere* is still a reflection: the reflected ray
+    /// is unit length wherever the sphere is hit.
+    ///
+    /// This is the property the jet tier lost. Its normal came from the
+    /// tangent frame's cross product and was scaled by
+    /// `n_len_sq.sqrt().rsqrt()` — which is `|n|^-½`, not `|n|^-1` — so its
+    /// "unit normal" had length `√|n|` and `D − 2(D·N)N` was a reflection
+    /// only where the screen-to-surface map happened to have unit area
+    /// scale. That is very likely why the reflected ray's derivatives needed
+    /// a hand-tuned curvature factor to look right.
+    #[test]
+    fn a_reflection_off_a_sphere_is_a_unit_ray() {
+        let ray = Ray::through_screen(64.0, 64.0);
+        let hit = Sphere::new([k(0.0), k(0.0), k(4.0)], k(1.0)).hit(&ray);
+        let mirrored = ray.reflected(hit.normal());
+        let len_sq = dot(mirrored.direction(), mirrored.direction());
+        // Off the sphere the normal is meaningless, so ask only where it is
+        // not: a miss reports 1 so the sweep below is uniform.
+        let guarded = hit.mask().select(&len_sq, &k(1.0));
+        // The bound is loose (2.5%) and the reason is the silhouette: `t = b
+        // − √(b² − c)` loses its leading digits where `b ≈ √(b² − c)`, which
+        // is exactly the grazing rim, and the hit point's error carries into
+        // the normal. Away from the rim it is the `rsqrt` estimates' ~1e-3.
+        // What it forbids is the other kind of error — a normal of length
+        // `√|n|`, which is off by whole factors and would fail this
+        // everywhere at once.
+        let worst = bake(&guarded, 64, 64)
+            .into_iter()
+            .fold(0.0f32, |w, v| w.max((v - 1.0).abs()));
+        assert!(worst < 2.5e-2, "the reflected ray has |R|² off by {worst}");
+    }
+
     /// The checker's two limits, which are what its filter *is*: resolved
     /// finer than a cell it is the cell's own colour, and coarser than one it
     /// is the average of the two — never the neighbour's colour, which is
