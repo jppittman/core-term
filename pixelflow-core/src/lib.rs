@@ -97,6 +97,8 @@ pub use lattice::cell_grid::{
 pub use lattice::manifold::{
     BoundManifold, MAX_BOUND_BUFFERS, Manifold, PlaneRegion, UniformBlock, UnknownUniform,
 };
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub use lattice::union::{CompiledUnion, IndexRange, Union};
 pub use lattice::{DiscreteManifold, Lattice};
 
 // Macro plumbing, serde-`__private`-style: a `kernel!` expansion runs in the
