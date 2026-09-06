@@ -63,7 +63,6 @@
 
 pub mod fonts;
 pub mod mesh;
-pub mod patch;
 pub mod render;
 pub mod scene3d;
 pub mod shapes;
