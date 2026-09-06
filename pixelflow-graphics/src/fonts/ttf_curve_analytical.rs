@@ -22,7 +22,7 @@
 //! The glyph applies `abs().min(1.0)` to convert summed winding contributions
 //! to inside/outside coverage (see `ttf::glyph`'s coverage composition).
 
-use pixelflow_compiler::kernel_value;
+use pixelflow_compiler::kernel;
 use pixelflow_core::Kernel;
 
 /// Gradient floor for the crossing ramp. Guards division by zero at
@@ -103,14 +103,13 @@ impl AnalyticalLine {
     /// a glyph via [`Kernel::sum`] and baked once at the root.
     #[must_use]
     pub fn kernel(&self) -> Kernel {
-        kernel_value!(|x0: f32,
-                       y0: f32,
-                       dx_over_dy: f32,
-                       dir: f32,
-                       y_min: f32,
-                       y_max: f32,
-                       min_grad: f32|
-         -> Field {
+        kernel!(|x0: f32,
+                 y0: f32,
+                 dx_over_dy: f32,
+                 dir: f32,
+                 y_min: f32,
+                 y_max: f32,
+                 min_grad: f32| {
             // Early rejection: only contributes when Y is in the segment's
             // vertical range. Masks carry no derivatives.
             let in_y = (Y >= y_min) & (Y < y_max);
@@ -211,23 +210,19 @@ impl AnalyticalQuad {
     #[must_use]
     pub fn kernel(&self) -> Kernel {
         if self.is_linear {
-            kernel_value!(|ax: f32,
-                           bx: f32,
-                           cx: f32,
-                           by: f32,
-                           cy: f32,
-                           dir: f32,
-                           min_grad: f32|
-             -> Field {
-                let t = (Y - cy) / by;
-                let in_t = t.clone().ge(0.0) & t.clone().le(1.0);
-                let d = X - (t.clone() * t.clone() * ax + t * bx + cx);
-                let grad = (DX(d.clone()) * DX(d.clone()) + DY(d.clone()) * DY(d.clone())).sqrt();
-                let coverage = (V(d) / (grad + V(min_grad)) + V(0.5))
-                    .max(V(0.0))
-                    .min(V(1.0));
-                in_t.select(coverage * V(dir), V(0.0))
-            })(
+            kernel!(
+                |ax: f32, bx: f32, cx: f32, by: f32, cy: f32, dir: f32, min_grad: f32| {
+                    let t = (Y - cy) / by;
+                    let in_t = t.clone().ge(0.0) & t.clone().le(1.0);
+                    let d = X - (t.clone() * t.clone() * ax + t * bx + cx);
+                    let grad =
+                        (DX(d.clone()) * DX(d.clone()) + DY(d.clone()) * DY(d.clone())).sqrt();
+                    let coverage = (V(d) / (grad + V(min_grad)) + V(0.5))
+                        .max(V(0.0))
+                        .min(V(1.0));
+                    in_t.select(coverage * V(dir), V(0.0))
+                }
+            )(
                 self.ax,
                 self.bx,
                 self.cx,
@@ -237,18 +232,17 @@ impl AnalyticalQuad {
                 MIN_GRADIENT,
             )
         } else {
-            kernel_value!(|ax: f32,
-                           bx: f32,
-                           cx: f32,
-                           ay: f32,
-                           by: f32,
-                           inv_2a: f32,
-                           neg_b_2a: f32,
-                           disc_const: f32,
-                           disc_slope: f32,
-                           min_grad: f32,
-                           min_disc: f32|
-             -> Field {
+            kernel!(|ax: f32,
+                     bx: f32,
+                     cx: f32,
+                     ay: f32,
+                     by: f32,
+                     inv_2a: f32,
+                     neg_b_2a: f32,
+                     disc_const: f32,
+                     disc_slope: f32,
+                     min_grad: f32,
+                     min_disc: f32| {
                 let disc = Y * disc_slope + disc_const;
                 // max(min_disc) keeps sqrt finite (value AND derivative) at the
                 // tangent point; disc >= 0 below still gates validity.

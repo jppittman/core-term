@@ -21,7 +21,7 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 # SIMD library for optimized rendering
 pixelflow-core = { path = "../pixelflow-core" }
 pixelflow-compiler = { path = "../pixelflow-compiler" }
-# `kernel_value!` in `fonts/` expands into code that constructs IR values, so
+# `kernel!` in `fonts/` expands into code that constructs IR values, so
 # this is a real dependency, not just a dev one.
 pixelflow-ir = { path = "../pixelflow-ir" }
 pixelflow-codegen = { path = "../pixelflow-codegen" }
@@ -50,10 +50,6 @@ pixelflow-search = { path = "../pixelflow-search" }
 
 [[bench]]
 name = "font_rendering"
-harness = false
-
-[[bench]]
-name = "kernel_bench"
 harness = false
 
 [[bench]]

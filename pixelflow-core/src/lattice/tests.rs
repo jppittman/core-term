@@ -1,6 +1,17 @@
 use super::*;
 use crate::PARALLELISM;
+use crate::lattice::manifold::Manifold;
 use pixelflow_ir::Kernel;
+
+/// Read one sample of a bound-memory kernel: compile it at a one-sample
+/// lattice, bind the buffer it declares, collapse. A test owns its loop; this
+/// is the same three steps every consumer takes, at the degenerate shape.
+fn sample_bound(kernel: &Kernel, buffer: &DiscreteManifold, x: f32, y: f32) -> f32 {
+    let bound = Manifold::compile(kernel, [1, 1, 1, 1]).bind(&[buffer.binding()]);
+    Lattice::point(x, y, 0.0, 0.0)
+        .collapse(&bound)
+        .into_buffer()[0]
+}
 
 // The kernels the tabulation tests bake. Written as `Kernel` arithmetic —
 // the arena the compiler consumes — because `Lattice::bake` is the only
@@ -123,17 +134,11 @@ fn discrete_manifold_round_trip() {
         }
     }
 
-    // Now eval the DiscreteManifold at known coordinates.
-    // Querying at (2.0, 1.0) should return buffer[1*8 + 2] = 3.0.
-    let result = discrete.eval((
-        Field::from(2.0),
-        Field::from(1.0),
-        Field::from(0.0),
-        Field::from(0.0),
-    ));
-    let mut out = [0.0f32; PARALLELISM];
-    result.store(&mut out);
-    assert!((out[0] - 3.0).abs() < 1e-5, "expected 3.0, got {}", out[0],);
+    // Now read the DiscreteManifold back by coordinate — the other half of
+    // `index(collapse(f)) = f`. Querying at (2.0, 1.0) returns
+    // buffer[1*8 + 2] = 3.0.
+    let got = sample_bound(&discrete.kernel(), &discrete, 2.0, 1.0);
+    assert!((got - 3.0).abs() < 1e-5, "expected 3.0, got {got}");
 }
 
 // ---- Tail handling (non-multiple-of-PARALLELISM width) ----
@@ -172,33 +177,20 @@ fn discrete_manifold_clamp_oob_coords() {
     let dm = DiscreteManifold::new(buffer, 2, 2);
     // Layout: (0,0)=10, (1,0)=20, (0,1)=30, (1,1)=40
 
+    let read = dm.kernel();
+
     // Negative coords should clamp to 0.
-    let result = dm.eval((
-        Field::from(-5.0),
-        Field::from(-5.0),
-        Field::from(0.0),
-        Field::from(0.0),
-    ));
-    let mut out = [0.0f32; PARALLELISM];
-    result.store(&mut out);
+    let got = sample_bound(&read, &dm, -5.0, -5.0);
     assert!(
-        (out[0] - 10.0).abs() < 1e-5,
-        "expected 10.0 (clamped to 0,0), got {}",
-        out[0],
+        (got - 10.0).abs() < 1e-5,
+        "expected 10.0 (clamped to 0,0), got {got}"
     );
 
     // Coords beyond max should clamp.
-    let result = dm.eval((
-        Field::from(100.0),
-        Field::from(100.0),
-        Field::from(0.0),
-        Field::from(0.0),
-    ));
-    result.store(&mut out);
+    let got = sample_bound(&read, &dm, 100.0, 100.0);
     assert!(
-        (out[0] - 40.0).abs() < 1e-5,
-        "expected 40.0 (clamped to 1,1), got {}",
-        out[0],
+        (got - 40.0).abs() < 1e-5,
+        "expected 40.0 (clamped to 1,1), got {got}"
     );
 }
 
@@ -365,17 +357,12 @@ mod bilinear_sampler {
     use super::*;
     use crate::BilinearSampler;
 
-    /// One point of the sampler, evaluated the way its production caller
-    /// does — `CachedGlyph::eval` reads it a batch at a time — with lane 0
-    /// read back here. A test owning its batch, not an evaluation API:
-    /// `Lattice::bake` cannot tabulate this, because the sampler's texture
-    /// is bound memory and `bake` binds none.
+    /// One point of the sampler, read the way its production caller composes
+    /// it: the blend as a `Kernel`, compiled at a shape and collapsed with
+    /// the texture bound. `Lattice::bake` cannot do this, because the
+    /// texture is bound memory and `bake` binds none.
     fn sample(s: &BilinearSampler, x: f32, y: f32) -> f32 {
-        let zero = Field::from(0.0);
-        let batch = s.eval((Field::from(x), Field::from(y), zero, zero));
-        let mut lanes = [0.0f32; PARALLELISM];
-        batch.store(&mut lanes);
-        lanes[0]
+        sample_bound(&s.kernel(), s.texture(), x, y)
     }
 
     #[test]
@@ -457,7 +444,7 @@ mod bilinear_sampler {
     #[test]
     fn out_of_range_taps_clamp_to_edge() {
         // Queries outside the grid clamp to the edge texel, matching
-        // DiscreteManifold::eval's convention.
+        // `DiscreteManifold::kernel`'s gather convention.
         let s = DiscreteManifold::new(vec![1.0, 2.0, 3.0, 4.0], 2, 2).bilinear();
 
         assert!((sample(&s, -5.0, -5.0) - 1.0).abs() < 1e-6);

@@ -1,161 +1,112 @@
 # pixelflow-core Engineer
 
-You are the engineer for **pixelflow-core**, the algebraic foundation of PixelFlow.
+You are the engineer for **pixelflow-core**: lattices, the compiled manifold, and the one
+verb between a kernel and a buffer.
 
 ## Crate Purpose
 
-Pure algebra. `no_std`. Zero IO, no colors, no platform code. This is the lambda calculus of the system.
+`no_std`. Zero IO, no colours, no platform code. It owns the *evaluation boundary* — the
+place where a description of a computation becomes stored samples — and nothing else.
+
+```text
+Kernel ──Manifold::compile(extent)──▶ Manifold ──bind(&[(id, buf)])──▶ BoundManifold
+       ──Lattice::collapse──▶ DiscreteManifold
+```
 
 ## What Lives Here
 
-- `Manifold<I>` trait — Polymorphic functions from 4D coords to values (I = Field, Jet2, Jet3)
-- `Field` — SIMD batch of f32 (IR, not user-facing)
-- `Discrete` — SIMD batch of packed RGBA u32 (IR, for color manifolds)
-- Automatic differentiation types:
-  - `Jet2` — value + 2D gradient (∂f/∂x, ∂f/∂y)
-  - `Jet2H` — value + 2D gradient + Hessian (∂²f/∂x², ∂²f/∂x∂y, ∂²f/∂y²)
-  - `Jet3` — value + 3D gradient (for surface normals)
-  - `PathJet` — origin + direction (ray space coordinates)
-- Coordinate variables: `X`, `Y`, `Z`, `W`
-- Operators: `Add`, `Mul`, `Sqrt`, `Sin`, `Cos`, `Rsqrt`, `MulAdd`, `Max`, `Min`
-- Logic operators: `And`, `Or`, `BNot` (bitwise operations)
-- Comparison operators: `Lt`, `Gt`, `Le`, `Ge` (hard), `SoftLt`, `SoftGt`, `SoftSelect` (for Jet2 gradients)
-- Combinators: `Select`, `Fix`, `Map`, `At`, `Shift`, `Pack`, `Project`, `Texture`
-- Spherical harmonics: `SphericalHarmonic<L, M>`, `ShProject`, `ShReconstruct`
-- SIMD backends: AVX-512, AVX2, SSE2, NEON, scalar
-- Traits: `Computational`, `Numeric`, `Selectable`, `Differentiable`, `Vector`
-- `Axis` enum — Dimension constants (X, Y, Z, W) for vector indexing
-- `BoxedManifold` — Type-erased manifold via `Arc<dyn Manifold>`
+- `Lattice` — a finite box over the four axes: `extent: [u32; 4]` and `origin: [f32; 4]`.
+  The shape is data, not a type; a frame, a scanline, a point and an index range are one
+  `Lattice` with different extents.
+- `Manifold` — a `Kernel` compiled at a lattice's shape, behind the global compile cache.
+  It knows its extents, its buffer declarations and its code bytes. It has **no `eval`** and
+  is **not batch-shaped**.
+- `BoundManifold` — a manifold with a buffer bound to every slot it declared. `bind`
+  panics *naming the slot* it cannot fill; nothing silently reads a null context.
+- `Lattice::collapse(&BoundManifold) -> DiscreteManifold` — the one verb. One call per
+  `(z, w)` plane; the X/Y loop nest is inside the emitted code.
+- `Lattice::bake(&Kernel)` — `collapse(compile(k, extent).bind(&[]))`, one line, for the
+  buffer-free case that is most callers.
+- `DiscreteManifold` — the buffer that IS a manifold (`index(collapse(f)) = f`). It reads
+  back into the language as a gather (`kernel()`) or, through `BilinearSampler`, a 4-tap
+  blend.
+- `CellGridProgram` — the terminal's scene geometry as channel kernels over a cell buffer
+  and a coverage atlas.
+- `backend/` — the SIMD abstraction (AVX-512, AVX2, SSE2, NEON) the emitted code's ABI is
+  denominated in, plus `FastMathGuard`.
+- `Field` — one SIMD batch of `f32`, **`pub(crate)`**. It is the collapse ABI's vector and
+  nothing more: `Field::from(f32)`, `Field::sequential(f32)`, `size_of::<Field>()`.
+
+`Kernel`, `Bits` and `Monoid` are re-exported from `pixelflow-ir`; the language itself lives
+there.
 
 ## Key Patterns
 
-### Polymorphic Manifold Design
+### A kernel is compiled at a shape, not evaluated at a point
 
-The `Manifold` trait is polymorphic over the computational substrate:
+There is no `eval`, no per-batch entry, and no interpreter. If you find yourself wanting to
+"just evaluate this manifold here", the answer is `Lattice::point(x, y, z, w).bake(&k)` —
+compile at the degenerate shape and collapse. A test may own that loop; a library may not.
 
-```rust
-pub trait Manifold<I: Computational> {
-    type Output;
-    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output;
-}
-```
+### Rank is a property of the shape, not of the store
 
-The same expression tree evaluates with different `I`:
-- `Field` — Concrete SIMD values (AVX-512/SSE2/NEON)
-- `Jet2` — Automatic differentiation (value + gradients)
-- `Jet3` — 3D gradients for surface normals
+A manifold compiles at a `[u32; 4]` — a lattice's whole extent. The collapse ABI stays
+two-dimensional: one call fills batches across X and rows down Y, so a band lies in one
+`(z, w)` plane and `collapse` calls it once per plane.
 
-This enables gradient-based antialiasing without code duplication.
+### The origin is not part of compilation
 
-### Types ARE the AST
+It says where a collapse *starts*, not what the code *is* — `LatticeShape` erases it, which
+is what lets the cache key on shape alone.
 
-```rust
-let expr = (X * X + Y * Y).sqrt();
-// Type: Sqrt<Add<Mul<X, X>, Mul<Y, Y>>>
-```
+### Memory binds by identity
 
-The compiler monomorphizes this into a fused SIMD kernel.
-
-### Operator Overloading Returns New Types
-
-```rust
-impl<M: Manifold> Add<M> for X {
-    type Output = ops::Add<X, M>;
-    fn add(self, rhs: M) -> Self::Output { ops::Add(X, rhs) }
-}
-```
-
-Every operation builds an AST node, not a value.
-
-### chained.rs: The Impl Explosion
-
-When you add a new AST node type, you MUST add it to `ops/chained.rs`:
-
-```rust
-impl_chained_ops!(YourNewNode<A, B>);
-```
-
-Otherwise operators won't chain: `(YourNewNode(...) + X)` won't compile.
-
-### Fusion Patterns
-
-- `Mul<A,B> + C` → `MulAdd<A,B,C>` (FMA instruction)
-- `L / Sqrt<R>` → `MulRsqrt<L, R>` (rsqrt instead of sqrt+div)
-
-These have special impls that override the generic pattern.
+A kernel over a buffer names its memory by `BufferIdentity` and nothing else, so the kernel
+and the buffer must travel together to reach a collapse. `DiscreteManifold::binding()` is
+the other half. `MAX_BOUND_BUFFERS` is 4.
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | Field/Discrete definitions, SIMD backend selection, public API |
-| `manifold.rs` | Manifold trait, Thunk, Scale |
-| `ext.rs` | ManifoldExt fluent API |
-| `numeric.rs` | Computational/Numeric internal traits |
-| `variables.rs` | X, Y, Z, W coordinate variables |
-| `ops/mod.rs` | Operator type definitions |
-| `ops/chained.rs` | Operator chaining impls (the explosion) |
-| `ops/binary.rs` | Binary op Manifold impls |
-| `ops/unary.rs` | Unary op Manifold impls |
-| `ops/logic.rs` | Bitwise And, Or, BNot operators |
-| `ops/compare.rs` | Hard (Lt, Gt) and Soft (SoftLt, SoftSelect) comparisons |
-| `ops/trig.rs` | Chebyshev sin/cos approximations |
-| `combinators/` | Select, Fix, Map, At, etc. |
-| `combinators/shift.rs` | Shift (inverse of At) for translations |
-| `combinators/pack.rs` | Pack - fold vector to scalar |
-| `combinators/project.rs` | Project - extract one axis from vector |
-| `combinators/texture.rs` | Texture - sample from backing memory |
-| `jet/jet2.rs` | 2D automatic differentiation |
-| `jet/jet2h.rs` | 2D with Hessian |
-| `jet/jet3.rs` | 3D automatic differentiation |
+| `lib.rs` | `Field` (crate-private), SIMD backend selection, the prelude |
+| `lattice/mod.rs` | `Lattice`, `DiscreteManifold`, `BilinearSampler`, `bake` |
+| `lattice/manifold.rs` | `Manifold`, `BoundManifold`, `PlaneRegion`, the collapse driver |
+| `lattice/cell_grid.rs` | The terminal's cell-grid geometry and channel kernels |
 | `backend/` | SIMD implementations per architecture |
-| `backend/fastmath.rs` | Fast approximations with FastMathGuard |
-
-## Materialization Functions
-
-| Function | Purpose |
-|----------|---------|
-| `materialize<M, V>()` | Evaluate vector manifold, SoA→AoS transpose |
-| `materialize_discrete<M>()` | Evaluate color manifold to u32 pixels |
-| `materialize_discrete_fields<M>()` | Optimized with precomputed Fields |
-| `PARALLELISM` | Constant for SIMD lane count |
+| `backend/fastmath.rs` | FTZ/DAZ via `FastMathGuard` |
 
 ## Invariants You Must Maintain
 
-1. **`no_std`** — No std dependency, only `alloc`
-2. **No colors** — Colors live in pixelflow-graphics
-3. **No platform code** — Platform lives in pixelflow-runtime
-4. **`#[inline(always)]`** — On all `eval_raw` implementations
-5. **Operator chaining** — New types need chained.rs entries
-6. **Polymorphic eval** — Manifolds work with Field AND Jet2
+1. **`no_std`** — no std dependency, only `alloc`.
+2. **No colours** — colour is four channel kernels and a byte order, in pixelflow-graphics.
+3. **No platform code** — platform lives in pixelflow-runtime.
+4. **`Field` stays `pub(crate)`** — SIMD is an implementation detail; nothing outside this
+   crate may name a lane, a vector, or a width. Do not widen it.
+5. **No second evaluation entry** — the only function that takes a manifold and produces
+   numbers is `Lattice::collapse`, and its argument is compiled IR.
+6. **No dependency on pixelflow-compiler** — this crate does not use the macros. The one
+   edge it has upward is `pixelflow-codegen`, for compilation.
+7. **Fail loud** — a degenerate extent, an unbound slot, a width mismatch with the JIT: all
+   panic with the reason, none fall back.
 
 ## Common Tasks
 
-### Adding a New Unary Operator
+### Adding a language operation
 
-1. Define type in `ops/unary.rs`:
-   ```rust
-   pub struct YourOp<M>(pub M);
-   ```
+It does not go here. Ops live in `pixelflow-ir` (`OpKind`, `Kernel`'s methods), their
+lowering in `pixelflow-ir/passes`, and their emission in `pixelflow-codegen/emit`.
 
-2. Impl Manifold for it (for both Field and Jet2)
+### Adding a way to read a buffer back
 
-3. Add to `ops/mod.rs` re-exports
-
-4. Add to `impl_chained_ops!` in `chained.rs`
-
-5. Add method to `ManifoldExt` in `ext.rs`
-
-### Adding a New Combinator
-
-1. Create file in `combinators/`
-2. Impl Manifold trait
-3. Re-export from `combinators/mod.rs`
-4. Add to chained.rs if it should support operators
+Extend the arena fragment (`DiscreteManifold::kernel_for`, `BilinearSampler::kernel_for`) so
+the read is *in the language* and composes into a larger kernel with `.at()`. Do not add a
+Rust-side sampler.
 
 ## Anti-Patterns to Avoid
 
-- **Don't call Field methods directly** — Compose manifolds instead
-- **Don't allocate in eval_raw** — Zero allocations per frame
-- **Don't use dynamic dispatch** — Everything monomorphizes
-- **Don't add platform-specific code** — This crate is pure math
+- **Don't add a per-batch `eval`** — that is the tier this crate spent four stages deleting.
+- **Don't expose `Field`, a lane count, or a vector type** — `PARALLELISM` is the one number
+  that escapes, and only because a caller sizing a scratch buffer needs it.
+- **Don't allocate per frame** — a band collapse allocates nothing; keep it that way.
+- **Don't add platform-specific code** — this crate is the evaluation boundary, not a driver.

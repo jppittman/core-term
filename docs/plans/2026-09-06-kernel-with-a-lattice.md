@@ -865,3 +865,249 @@ So S4b-2 is: delete `pixelflow_core::combinator`, the ZST combinator library,
 `Lower`, and `kernel!`'s LLVM tier; consolidate `kernel!`/`kernel_raw!`/
 `kernel_value!`/`kernel_jit!` into one `kernel!` returning a `Kernel`; and
 move the ~24 files that invoke the macros for their combinator value onto it.
+
+### S4b-2 landed — 2026-09-06. The inventory is empty.
+
+**One `Manifold`, and it is the compiled object.** The per-batch trait, the
+ZST combinator library that implemented it, `kernel!`'s LLVM backend that
+computed with it, and `Lower` — which existed to bridge them to IR — are
+deleted. `pixelflow_core::combinator` is gone, and with it the last thing in
+the tree that turned an expression into numbers without going through a
+lattice.
+
+| surface | landed |
+|---|---|
+| `kernel_jit!` → `__JitWrapper: Manifold` | S1 (#1172) |
+| `JitManifold::eval_row` / `eval_at` / `eval_grid` | S1 (#1172) |
+| `Lattice::collapse_with` / `collapse_scalar` / `collapse_axis` / `ReduceOp` | S1 (#1172) |
+| `Scene::Surface`, `rasterize`, `render_parallel`, `execute_stripe`, `Discrete::pack` | S2 (#1175), S3 (#1176), S3b (#1177), retired S4a (#1178) |
+| `Lattice::collapse(&impl Manifold)` — retargeted onto the compiled type | S4b-1 (#1179) |
+| the `Manifold` **trait**, the ZST combinators, `kernel!`'s LLVM tier, `Lower` | **S4b-2, this change** |
+
+**The macros, as they now are.** Two, and the only difference between them is
+whether the e-graph runs:
+
+- **`kernel!`** — parse → sema → e-graph saturation and latency-prior
+  extraction → arena. Zero params gives a `Kernel`; N params a builder closure
+  `move |p0: f32, …| -> Kernel` that folds its arguments in as constants.
+- **`kernel_raw!`** — the same, minus the e-graph, so the emitted arena has the
+  shape that was written. For benchmarking an exact expression form, for corpus
+  generation, and for seeing what the front end built before anything rewrote it.
+
+`kernel_value!` and `kernel_jit!` were the same thing under other names and are
+gone. Three pieces of syntax went with the backend that needed them:
+**manifold-typed parameters** (`|sdf: kernel|` — a kernel composes `Kernel`
+values, which is what `kernel_value!`'s own doc already said), **domain/return
+annotations** (`|| Field -> Jet3` — there is one domain), and **named kernel
+structs** (`kernel!(struct Circle = …)`). `Var(u8)`'s third magic range — the
+manifold-param slot CLAUDE.md's "denote before you build" section names — is
+gone with the first of those; two meanings remain.
+
+**What `Field` is now.** One SIMD batch of `f32`, `pub(crate)`, with
+`from(f32)`, `sequential(f32)` and a width. It is what the **collapse ABI is
+denominated in** — the emitted code takes a batch of X coordinates and a
+broadcast of each of Y, Z and W — and nothing else. Its arithmetic, its
+comparisons, its selection and its transcendental approximations are the
+compiler's now, so `algebra.rs`, `numeric.rs`, `mask.rs`, `storage.rs`,
+`dual.rs` and `ops/trig.rs` went with them: those existed to make `Field`
+polymorphic over `Jet2`/`Jet3`, and there are no jets. Nothing outside
+pixelflow-core can name a lane, a vector or a width; `PARALLELISM` is the one
+number that escapes, for a caller sizing a scratch buffer. That is CLAUDE.md's
+"SIMD is an implementation detail" finished rather than asserted.
+
+**Core no longer depends on pixelflow-compiler.** The edge existed for
+`generate_binary_types!` (Peano indices for nested `Let` bindings, used by one
+deleted file) and for the `kernel!` invocations in `ops/derivative.rs`,
+`combinators/computed.rs` and `ext.rs`. Both dependency tables lose it, and the
+`saturation-telemetry` feature now forwards only to pixelflow-codegen, which is
+the crate that actually saturates on core's behalf.
+
+**Two `Manifold` impls outside the combinator library, and both already had a
+kernel form beside them.** `DiscreteManifold::eval` (a nearest-neighbour gather
+with clamp) and `BilinearSampler::eval` (the 4-tap blend) sat next to
+`DiscreteManifold::kernel_for` and `BilinearSampler::kernel_for`, which say the
+same thing in the language. The impls go; every caller composes the kernel,
+binds the buffer and collapses. **That made `bilinear()` free**: it used to
+JIT-compile the blend at a point shape *for that `eval`*, and since S4b-1
+nothing called it — a compile per baked glyph, for a call that no longer
+existed.
+
+**The identity gate. Nothing that should not have moved, moved.** The *before*
+column is what S4a recorded and S4b-1 re-measured; this is the third
+measurement of the same numbers on the same host, and the fixture and column
+hashes are S4b-1's with its recipe:
+
+| artifact | SSE2 before → after | AVX-512 before → after |
+|---|---|---|
+| `bench_scene_psychedelic`'s packed program | 5,584 B `fnv1a=00f3a5ed124990bf` → **identical** | 4,352 B `fnv1a=2d6e37c15a633a65` → **identical** |
+| `bench_scene_chrome`'s packed program | 9,760 B `fnv1a=ca0e1d4413e140c7` → **identical** | 7,645 B `fnv1a=5c099aea39b99996` → **identical** |
+| `collapse_cost` corpus fixture (208 kernels: 15 synthetic, 193 glyph bakes) | `md5=379282c4dc021f56…` → **identical** | (the same fixture) |
+| `collapse_cost` deterministic columns — every field but `measured` | `md5=3f61ec4d383f83e4…` → **identical** | `md5=2a3d5c164a49679f…` — see below |
+
+**The AVX-512 column hash S4b-1 recorded does not reproduce from the commit
+that recorded it.** This build gives `md5=2a3d5c164a49679f…` where S4b-1's
+block says `470a3c27…`, so rather than accept a mismatch or a match on faith,
+the *before* side was measured directly: `origin/main` (be020d0c — S4b-1's own
+merge) built and benched here, same recipe, back to back, gives
+**`2a3d5c164a49679f…`, identical to this branch's**, and the same fixture hash.
+So the columns did not move; what moved is confidence in the recorded number.
+
+That is the second time this has happened — S4b-1 could not reproduce S4a's
+`55aadbd0…` either — and the pattern now says something: a hash over the whole
+JSONL is only a gate if its recipe is exact *and* the tier is one whose
+capture is host-independent, and the AVX-512 tier's is evidently not (SSE2's
+reproduced to the digit, three stages running). **The before/after that was
+actually run here is stronger than the hash would have been**: two builds, one
+host, one recipe, minutes apart, byte-identical columns. A cheaper and more
+honest gate would compare the *rows* of two builds directly rather than a hash
+of one against a number in prose, and that is worth building the next time this
+is needed.
+
+The fixture row carries more than it looks: the corpus is captured by *this*
+build, through the same `Font`/`GlyphAtlas` production uses, so an identical
+hash says the 193 glyph bakes this build compiles are the ones S4a compiled —
+after the macro every one of them expands through changed its name and lost a
+backend. `ttf_curve_analytical.rs`'s three `kernel_value!` bodies became
+`kernel!` bodies and dropped their `-> Field` annotations, and the arenas are
+byte-identical, which is the check that the two macros really were one thing.
+
+**No golden moved**, and none was regenerated: all four `kernel_glyph_golden`
+contracts pass against the pictures already in the tree.
+
+**Net −28,548 lines** in this stage (129 files, 1,542 insertions, 30,090
+deletions), counting `subdiv/coeffs.rs`'s 359,636 lines of generated
+eigenstructure data separately — with it the raw figure is −388,184 over 130
+files.
+
+**The programme, S1 through S4b-2**, against `e6bc17b3` (the commit before S1):
+224 files changed, 10,577 insertions, **41,816 deletions** — net **−31,239
+lines** excluding that one generated table, or −390,875 with it. Four stages,
+and every one of them a deletion with a migration rather than a new path beside
+an old one.
+
+**Where the brief was wrong**, in the tree:
+
+1. **The macro consolidation and the core deletion cannot be separate commits.**
+   The brief lists them as separate rows and they are not separable:
+   `kernel!`'s emitter emits pixelflow-core's combinator types, and
+   pixelflow-core's `combinators/binding.rs` invokes pixelflow-compiler's
+   `generate_binary_types!`. The two crates hold each other up; either alone
+   does not compile. Everything that *could* be split was, and landed first —
+   search, pipeline, graphics, runtime, ml.
+2. **`patch.rs` was already gone**, deleted in S4b-1 rather than left for this
+   stage, and `mesh.rs` was not on the brief's list at all: an OBJ parser whose
+   stated purpose is "the control cage for subdivision surfaces", with no caller
+   left since S4a deleted `subdivision.rs`. It goes with `subdiv/`.
+3. **`pixelflow-ml`'s SH module was portable, and the port found two empty
+   tests.** `elu_feature_positive` bound its result to `_` and asserted nothing;
+   `sh_feature_map_projects_direction` asserted only that nine of something came
+   back. Both now check values against scalar truth. `ShCoeffs`, `SH_NORM` and
+   `Sh2` moved to pixelflow-ml with them — scalar data, and that crate was their
+   only consumer.
+4. **`pixelflow-pipeline/benches/macro_bench.rs` was a byte-for-byte copy of
+   `pixelflow-compiler/benches/macro_bench.rs`.** Both are deleted (what they
+   timed was combinator construction and `eval_raw`, not the arena), so the
+   duplication is moot — but a copy that had already drifted into two crates is
+   worth recording.
+5. **`pixelflow-runtime/tests/jit_render.rs` and
+   `pixelflow-compiler/tests/kernel_routing_parity.rs` were the same test.**
+   Both compared a combinator plane against a baked plane; with one tier both
+   reduce to bake-against-truth, so `jit_render` is deleted rather than ported
+   and the five renamed contracts are the surviving statement.
+
+**The contracts, renamed for what they now assert.** `kernel_routing_parity`
+becomes `bake_vs_scalar_truth`; the `template` column is gone and the five
+properties are unchanged:
+
+| was | is |
+|---|---|
+| `arithmetic_matches_truth_on_both_tiers` | `arithmetic_matches_scalar_truth` |
+| `params_match_truth_on_both_tiers` | `params_match_scalar_truth` |
+| `piecewise_matches_truth_on_both_tiers` | `piecewise_matches_scalar_truth` |
+| `abs_recip_matches_truth_on_both_tiers` | `abs_recip_matches_scalar_truth` |
+| `projections_differ_by_tier_and_that_is_the_contract` | `projections_are_the_symbolic_derivative` |
+
+The fifth is the one that changed meaning rather than name: it used to assert
+that the two tiers disagreed *on purpose* (over a `Field` domain the combinator
+backend's `DX` was 0, which the fonts' "hard step" case relied on). With one
+tier there is one answer and it is the calculus, so the test now checks
+`DX(X*X) = 2x` and `DY(X*Y*Y) = 2xy` against the closed forms. Two CI job names
+changed in the same commit — "Check kernel tier parity" → "Check baked kernels
+against scalar truth", and the aarch64 cross-target job's "Type-check both
+kernel tiers on aarch64" → "Type-check the kernel macro on aarch64" — because
+each named a tier count that is now wrong.
+
+**Gates run** on this 4-core host, every one green: `cargo fmt --all -- --check`;
+`cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`
+(119 binaries, 2,362 tests); each CI-named contract by exact name, run
+individually as CI runs it — "Check baked kernels against scalar truth" (5),
+"Check JIT/interpreter glyph parity" (4, no golden moved), "Check scene color,
+reflection, and antialiasing contracts" (3), "Check ray/surface composition
+contracts" (3); `pixelflow-core`, `-compiler`, `-graphics` and `-runtime` tested
+at `+avx2,+fma` (41 binaries, 541 tests) and at `+avx512f,+avx512dq` (41
+binaries, 579 tests); `cargo run -p xtask -- isa-matrix --clippy --smoke`
+**PASS at all three levels** (sse2, avx2+fma, avx512f+dq); `cargo test -p
+core-term`; `cargo build --examples --benches --workspace`;
+`scripts/check-feature-matrix.sh` ("every crate's every feature builds in
+isolation"); `scripts/check-provenance-journal-scope.sh`; and
+`scripts/check-cl-metadata.sh`. The `Cross-target ABI (aarch64)` job's check —
+now `cargo check -p pixelflow-compiler --test bake_vs_scalar_truth --target
+aarch64-unknown-linux-gnu` — passes against the renamed target.
+`CARGO_PROFILE_DEV_DEBUG=0` was set throughout, as S4a and S4b-1 noted for the
+same container: it changes artifact size, not what is compiled or executed.
+
+**Two findings about the aarch64 setup, neither about this change.**
+Cross-built for `aarch64-unknown-linux-gnu` and run under
+`qemu-aarch64-static`:
+
+1. `pixelflow-core` passes (7 binaries, 48 tests) — which is the ABI signal
+   that matters, since `lattice` *is* the collapse ABI. `pixelflow-codegen`
+   **SIGSEGVs under the test harness's default thread pool** and passes
+   completely, 12 binaries and 190 tests, with `--test-threads=1`. That is
+   qemu-user's handling of concurrent `mmap`/`mprotect` on executable pages,
+   not a defect in the emitted code: `pixelflow-codegen`'s diff against
+   `origin/main` in this change is *empty*. Any aarch64 job that runs it should
+   pass the serial flag.
+2. **`pixelflow-graphics` did not finish under qemu here, in either mode.** It
+   stalls for tens of minutes inside `fonts::cache`'s point-sampling tests,
+   and the reason is structural rather than a hang: those helpers sample a
+   glyph by compiling a *fresh* kernel per point (a bound-memory arena is
+   uncacheable, so `Manifold::compile` really does emit code each time), which
+   is ~360 JIT compiles for one assertion. Native that is seconds; emulated it
+   is not. The helpers date from S4b-1 and are unchanged here, so this is a
+   property of the gate, not of the change — but it is the reason S4b-1's
+   "17 binaries, 194 tests" did not reproduce, and a test that wants many
+   samples should collapse **one** lattice rather than N points.
+
+## What this plan leaves open
+
+The inventory is empty and the plan is closed. Four things it named and did not
+do, each a separate question rather than unfinished work here:
+
+1. **Guard grouping by mask** (S3b). The emitter guards one select's
+   arm-exclusive range; a kernel that selects the same condition several times
+   *without* packing — a masked field, say — gets one guard per select where it
+   could have one for the group. Not needed for a colour, which is one select
+   since S3b, and measured to be not this stage's lever.
+2. **The derivative cost.** Symbolic `dx()`/`dy()` of a hit point costs ~4× a
+   forward-mode jet on this host, because the rules re-enter every division and
+   square root through the quotient and `0.5·rsqrt(u)·u'` forms. S3b did not
+   need to touch it and neither did this stage — but the jet tier that was the
+   comparison is now deleted, so a future measurement has to state the cost in
+   absolute terms (`collapse_cost`) rather than against a second implementation.
+3. **Mask coherence as a cost-model term.** Whether a mask is uniform per batch
+   often enough for a branch to fire and to predict is *data*, and the guard
+   decision is made statically today by bounding the downside
+   (`MISPREDICT_PENALTY_CYCLES`). That is sound and leaves the upside
+   unclaimed; it is named in
+   [the schedule cost model](2026-09-01-schedule-cost-model-denotation.md) as
+   the first concrete profile-dependent term the learned residual is for.
+4. **`.claude/DOCS_TOC.md` drift wants a CI check.** Every stage of this plan
+   deleted files that prose elsewhere still described, and every stage found
+   them by grepping rather than by a job failing. This stage rewrote
+   `pixelflow-core/README.md`, the root and graphics READMEs, CLAUDE.md and two
+   agent briefs for exactly that reason — `.claude/agents/pixelflow-core.md`
+   listed `Jet2H`, `PathJet`, `Discrete`, `chained.rs`'s "impl explosion" and
+   `materialize_discrete`, none of which had existed for some time. A gap in CI
+   is a check to write: a job that fails when a doc names a path or a type the
+   tree does not have would have caught all of it, cheaply, every time.

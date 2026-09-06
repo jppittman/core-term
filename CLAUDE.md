@@ -14,14 +14,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **NO TERMINAL LOGIC GOES IN PIXELFLOW.** PixelFlow is a general-purpose graphics library being extracted to its own crate/repo. Keep it terminal-agnostic.
 - Exporting direct manipulation of fields from pixelflow-core is strictly forbidden. Construct compute kernels at load time and render them.
-- **NO PUBLIC raw_mul, raw_select, raw_add ETC USAGE** NONE. ZERO. Do not perform raw operations on fields/jets without explicit direction. ALWAYS construct the AST, then use the nested contramap pattern to evaluate it.
-- **SIMD is an implementation detail.** `Batch::splat` and `Field::splat` are `pub(crate)`. Do NOT expose them. Do not expose `SimdVec`s. Do not expose anything that hints at lanes. pixelflow-core is an algebra; writing it should look like Halide, not assembly.
-- **Minimal public API** - Do NOT change visibility of internal APIs without explicit permission. Keep `pub(crate)` and private items encapsulated. Use Manifold composition instead of exposing internals.
+- **NO RAW LANE ARITHMETIC.** Do not perform raw operations on SIMD values without explicit direction. ALWAYS build the arena — `Kernel` values and the `kernel!` macro — and let the compiler emit the instructions.
+- **SIMD is an implementation detail.** `Field` — one SIMD batch, the collapse ABI's vector — is `pub(crate)` in pixelflow-core, and nothing outside that crate can name it, a lane, or a width. Do not change that. pixelflow-core is an algebra; writing it should look like Halide, not assembly.
+- **Minimal public API** - Do NOT change visibility of internal APIs without explicit permission. Keep `pub(crate)` and private items encapsulated. Compose `Kernel` values instead of exposing internals.
 - **Subtract before you add.** The good version of a primitive is reached by removing machinery, not stacking it. If a type's signature already refuses the wrong shape, you don't need a macro, a lint, or a doc to forbid it — the opinion lives in the types. Reach for a new dependency or a new abstraction only after subtraction has failed.
 
 - **Denote before you build.** Say what a thing *means* — as a mathematical object, in the type system — before writing the code that manipulates it. Design is choosing the denotation; the implementation is then obliged to it. Where this codebase is good, it already works this way: `Lattice`/`DiscreteManifold` are a representable functor whose law is written down (`index(collapse(f)) = f`), and that law is *why* a buffer can BE a manifold rather than merely back one.
 
-  Where it is bad, the meaning lives in a comment instead of a type, and every such place has cost us a bug. One `f32` lane carries continuous values, integers, and bit patterns at once — `OpKind::is_bitwise_domain()` exists to recover at runtime what a type would have given for free, and a mask (all-ones, i.e. NaN read as a number) is one careless fold away from corruption. `Var(u8)` means a coordinate axis, a reduce binder, or a manifold-param slot depending on magic ranges. `push_reduce` encodes an `OpKind` as a `Const(f32)`. Each convention held right up until the optimizer grew strong enough to violate it — **a convention written in a comment is an invariant something else will eventually break.**
+  Where it is bad, the meaning lives in a comment instead of a type, and every such place has cost us a bug. One `f32` lane carries continuous values, integers, and bit patterns at once — `OpKind::is_bitwise_domain()` exists to recover at runtime what a type would have given for free, and a mask (all-ones, i.e. NaN read as a number) is one careless fold away from corruption. `Var(u8)` means a coordinate axis or a reduce binder depending on magic ranges — it used to mean a manifold-param slot as well, and that third meaning went out with the macro parameter that needed it. `push_reduce` encodes an `OpKind` as a `Const(f32)`. Each convention held right up until the optimizer grew strong enough to violate it — **a convention written in a comment is an invariant something else will eventually break.**
 
   So: **when you extend a type's meaning, extend its type.** The escape hatch — "reinterpret is free", "this operand must be a literal", "these coordinates are in the caller's space" — is the moment to pay. Afterwards it is a bug hunt rather than a refactor, and the fix arrives as a runtime guard defending what a type should have made unrepresentable. Prioritize by whether a wrong value would be *silently* representable: a domain confusion produces plausible pixels and deserves a type; an out-of-range index that panics on the next line does not.
 
@@ -41,7 +41,7 @@ instructions do, not a list of defects, and nothing here should be "fixed" by
 spending hot-path instructions to match scalar Rust.
 
 Behavior every target agrees on, pinned by
-`pixelflow-ir/tests/transcendental_jit.rs`:
+`pixelflow-codegen/tests/transcendental_jit.rs`:
 
 | Op | Behavior |
 |---|---|
@@ -62,17 +62,21 @@ off while looking like a safety check.
 
 Behavior that differs by target, because the instructions do:
 
-| Op | x86 | aarch64 | combinator tier |
-|---|---|---|---|
-| `Min`, `Max` (NaN operand) | `(a OP b) ? a : b` → the **second** operand | `FMIN`/`FMAX` **propagate** NaN | — |
-| `Min`, `Max` (opposite-signed zeros) | operand order → the **second** zero | `FMIN` picks `-0.0`, `FMAX` picks `+0.0` | — |
-| `Gt`, `Ge` (NaN operand) | unordered (imm8 6/5) — **true** | `FCMGT`/`FCMGE` ordered — **false** | ordered — **false** |
-| `Round` (exact tie) | nearest-**even** (imm 0x00) → `round(2.5) == 2` | `FRINTA` ties-**away** → `3` | `(x+0.5).floor()` → `3` |
-| `Round` (`-0.5 ≤ x ≤ -0.0`) | `-0.0` (sign preserved) | `-0.0` | `+0.0` |
-| `Recip`, `Rsqrt` | `rcpps` ~12 bits; `vrcp14ps` ~14 | `FRECPE` + one `FRECPS` step | estimate + NR |
-| `MulAdd` | **one** rounding with `+fma`, **two** without (`mulps`+`addps`) | one (`FMLA`) | one |
-| `TruncToInt` (NaN, or `x >= 2^31`) | `cvttps2dq` → **`i32::MIN`** (integer indefinite) | `FCVTZS` **saturates**; NaN → 0 | — (no combinator form) |
-| `Shl`, `Shr` (count outside `0..32`) | count > 31 zeroes the **whole** destination | immediate carries into `immh` → decodes as **`.2D`**, crossing lanes | — |
+| Op | x86 | aarch64 |
+|---|---|---|
+| `Min`, `Max` (NaN operand) | `(a OP b) ? a : b` → the **second** operand | `FMIN`/`FMAX` **propagate** NaN |
+| `Min`, `Max` (opposite-signed zeros) | operand order → the **second** zero | `FMIN` picks `-0.0`, `FMAX` picks `+0.0` |
+| `Gt`, `Ge` (NaN operand) | unordered (imm8 6/5) — **true** | `FCMGT`/`FCMGE` ordered — **false** |
+| `Round` (exact tie) | nearest-**even** (imm 0x00) → `round(2.5) == 2` | `FRINTA` ties-**away** → `3` |
+| `Round` (`-0.5 ≤ x ≤ -0.0`) | `-0.0` (sign preserved) | `-0.0` |
+| `Recip`, `Rsqrt` | `rcpps` ~12 bits; `vrcp14ps` ~14 | `FRECPE` + one `FRECPS` step |
+| `MulAdd` | **one** rounding with `+fma`, **two** without (`mulps`+`addps`) | one (`FMLA`) |
+| `TruncToInt` (NaN, or `x >= 2^31`) | `cvttps2dq` → **`i32::MIN`** (integer indefinite) | `FCVTZS` **saturates**; NaN → 0 |
+| `Shl`, `Shr` (count outside `0..32`) | count > 31 zeroes the **whole** destination | immediate carries into `immh` → decodes as **`.2D`**, crossing lanes |
+
+(This table had a third column, for a combinator tier that evaluated the same ops in Rust one
+SIMD batch at a time. That tier is retired — see
+`docs/plans/2026-09-06-kernel-with-a-lattice.md` — so there is one answer per target.)
 
 The `Recip` and `MulAdd` rows are the reminder that "target" is finer than
 "architecture": they differ between *ISA levels of the same machine*, which is
@@ -103,12 +107,11 @@ on NaN (`min(1.0, NaN)` vs `min(NaN, 1.0)` differ on x86), yet the e-graph
 installs commutativity for them. That is sound precisely because no value was
 promised; it would be a miscompile the moment anything promised one.
 
-The combinator tier's `Round` is a genuine bug rather than an instance of this
-trade: `(x + 0.5).floor()` is two instructions where `roundps` is one, and it is
-not any IEEE rounding mode (`round(-1.5)` is -1 there, -2 everywhere else). It
-is slower *and* wrong, so it should be replaced with the target's rounding
-instruction — the trade only ever justifies taking what the hardware gives, never
-hand-rolling something worse.
+The rule that follows from all of it: **take what the hardware gives, and never
+hand-roll something worse.** The retired combinator tier's `Round` was the
+worked counter-example — `(x + 0.5).floor()`, two instructions where `roundps`
+is one, and not any IEEE rounding mode (`round(-1.5)` was -1 there, -2
+everywhere else). Slower *and* wrong is never the trade.
 
 ### Precision is on the table; range is not
 
@@ -139,28 +142,25 @@ cannot panic but a NaN does propagate.
 Two consequences of that domain, both pinned by tests rather than left to drift:
 `sin(-0.0)` is `+0.0` (the reduction's last step is `Sub(-0.0, -0.0)`; the
 all-positive split that would preserve the sign costs 15× the drift across the
-whole domain), and `asin`/`acos` must guard `|x| ≤ 1` explicitly, because
-`Field::sqrt` is `sqrt_fast` — it *has* to select 0 for a non-positive radicand,
-since `rsqrt(0)` is `inf` and `0·inf` is NaN, which also silently turns an
-out-of-domain argument into `atan2(x, 0) = ±π/2` unless you stop it.
+whole domain), and `asin`/`acos` must guard `|x| ≤ 1` explicitly, because the
+expansion's `sqrt` is the fast one — it *has* to select 0 for a non-positive
+radicand, since `rsqrt(0)` is `inf` and `0·inf` is NaN, which also silently
+turns an out-of-domain argument into `atan2(x, 0) = ±π/2` unless you stop it.
 
 Corollary for the two-tier structure: **one definition, imported, not restated.**
 `sin` had four copies, each with its own range reduction — the two reachable
 ones had the same bug and had drifted to different polynomials besides. The
-expansion in `pixelflow-ir`'s `passes` is the definition; `pixelflow-core`'s
-`Field` tier imports its constants. A copy is a future divergence.
+expansion in `pixelflow-ir`'s `passes` is now the only definition; the copies
+went with the tiers that held them. A copy is a future divergence.
 
 ### Philosophy
 
-- **Pull-based rendering**: Pixels are sampled, not pushed. Nothing computes until coordinates arrive.
-- **SIMD as algebra**: `Field` wraps SIMD vectors (AVX-512/NEON/SSE2) transparently. Users write equations, compiler emits assembly.
+- **Pull-based rendering**: Pixels are sampled, not pushed. Nothing computes until a lattice demands it.
+- **A kernel with a lattice is the evaluation API**: `Kernel` describes, `Manifold::compile` specializes it at a shape, `Lattice::collapse` tabulates it. There is no per-batch entry and no interpreter.
+- **SIMD as algebra**: users write equations; the compiler owns the loop nest, the hoisting, the pack and the register allocation, and emits the assembly. Lane width is never in the vocabulary.
 - **The Fixed Observer**: Camera is at origin. Movement is achieved by warping coordinate space.
-- **Types are shaders**: Combinator trees monomorphize into fused kernels with no runtime dispatch.
-    - Types are the AST
-    - Fields/Jets are the IR
-    - `variables.rs` is the symbol table
+- **The language is a DAG**: no iteration binder. A fixed-count iteration is unrolled at construction; a trip count that must change is a recompile through the shape-keyed cache.
 - **Zero allocations** - No per-frame heap allocation (ping-pong buffer strategy).
-- **No copies of unknown sized types** - pixelflow language types are Copy iff they are provably zero sized.
 - **Platform on main thread** - Especially macOS Cocoa (Apple requirement).
 
 ## Workspace Structure
@@ -169,10 +169,10 @@ Cargo workspace with 12 member crates:
 
 | Crate | Purpose |
 |-------|---------|
-| `pixelflow-core` | SIMD algebra. `Field`, `Manifold`, coordinate variables, ops. Backends: x86-64 (SSE2 baseline, AVX2/AVX-512 opt-in via `target-feature`) and aarch64 (NEON) only — no portable/scalar fallback for other architectures. Edition 2024. |
-| `pixelflow-compiler` | Proc-macro compiler: `kernel!` macro, lexer, parser, sema, AST optimization, codegen. Edition 2024. |
+| `pixelflow-core` | Lattices, the compiled `Manifold`, `collapse`, and the cell grid. Backends: x86-64 (SSE2 baseline, AVX2/AVX-512 opt-in via `target-feature`) and aarch64 (NEON) only — no portable/scalar fallback for other architectures. Edition 2024. |
+| `pixelflow-compiler` | Proc-macro front end: `kernel!` and `kernel_raw!`, parser, sema, e-graph optimization, arena lowering. Edition 2024. |
 | `pixelflow-ir` | Shared IR. `ExprArena` (sole IR), OpKind enum, backend execution traits, JIT manifold. |
-| `pixelflow-graphics` | Font loading (TTF, SDF), colors (`Rgba8`, `Color`), rasterization, antialiasing, shapes. |
+| `pixelflow-graphics` | Font loading (TTF, SDF), colors (`Rgba8`, `Color`), the packed frame program, analytic 3-D scenes. |
 | `pixelflow-ml` | Graphics ML experiments (harmonic attention, SH feature maps). Not part of the compiler cost model. |
 | `pixelflow-search` | E-graph optimization. Rewrite rules, saturation, static latency-prior extraction, rule provenance + hindsight labeling, the saturation Guide. |
 | `pixelflow-pipeline` | Measurement harness. JIT bench session, corpus generation (quarantine/split/mint), Guide-program research bins. |
@@ -188,9 +188,18 @@ Agent context files for domain-specific knowledge live in `.claude/agents/`.
 
 ### The Manifold Abstraction
 
-Everything is a `kernel` - the pixelflow-compiler uses this to generate profunctors from coordinates to values or a morphism on manifolds:
-dimap is broken up into covariant `map` and contramap `at`
-conditionals are performed using Select or postfix (ManifoldExt) `.select`
+Three objects and one verb:
+
+```text
+Kernel ──Manifold::compile(extent)──▶ Manifold ──bind(&[(id, buf)])──▶ BoundManifold
+       ──Lattice::collapse──▶ DiscreteManifold
+```
+
+A **kernel** is the description (an arena fragment with a root), a **manifold** is that
+kernel compiled at a lattice's shape, a **lattice** is the domain, and **collapse** is the
+one verb that produces numbers. Kernels compose as values: `Kernel::at` contramaps
+coordinates, `Kernel::select` is the conditional, `Kernel::dx`/`dy` differentiate
+symbolically, `Kernel::sum_over` and friends are bounded reductions.
 
 ### Actor Model
 
@@ -204,10 +213,14 @@ Control creates backpressure by timing out senders who are too aggressive. If th
 ### Compiler Pipeline
 
 ```
-Source → Lexer → Parser → Sema → Optimize → Codegen → Rust TokenStream
-                   ↓           ↓
-               Symbol Table  E-graph + latency prior
+Source → Parser → Sema → Optimize → Arena lowering → Rust TokenStream
+            ↓         ↓
+       Symbol Table  E-graph + latency prior
 ```
+
+`kernel!` runs all of it; `kernel_raw!` skips `Optimize` and is otherwise identical. Both
+emit code that rebuilds an `ExprArena` at load time as a `Kernel` — zero params gives a
+`Kernel`, N params a builder closure that folds them in as constants.
 
 The compiler uses e-graphs (equality graphs) to find optimal instruction sequences:
 1. **Build e-graph** from expression AST
@@ -328,7 +341,7 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
 
 ```rust
 use pixelflow_compiler::kernel;
-use pixelflow_core::{X, Y, Manifold, ManifoldExt};
+use pixelflow_core::{Kernel, Lattice};
 
 let circle = kernel!(|cx: f32, cy: f32, r: f32| {
     let dx = X - cx;
@@ -336,17 +349,18 @@ let circle = kernel!(|cx: f32, cy: f32, r: f32| {
     (dx * dx + dy * dy).sqrt() - r
 });
 
-let unit_circle = circle(0.0, 0.0, 1.0);
+let unit_circle: Kernel = circle(0.0, 0.0, 1.0);
+let plane = Lattice::frame(64, 64, 0.0).bake(&unit_circle);
 ```
 
 Use `kernel_raw!` to skip optimization (for benchmarking exact expression forms).
 
-### Composing Manifolds
+### Composing Kernels
 
 ```rust
-let warped = manifold.warp(|x, y, z, w| (x * 2.0, y * 2.0, z, w));
-let selected = mask.select(if_true, if_false);
-let circle = (X * X + Y * Y + Z * Z).sqrt();
+let warped = k.at(&Kernel::x().mul(&Kernel::constant(2.0)), &y, &z, &w);
+let selected = mask.select(&if_true, &if_false);
+let radius = Kernel::x().mul(&x).add(&y.mul(&y)).add(&z.mul(&z)).sqrt();
 ```
 
 ### Actor Message Sending
@@ -374,18 +388,17 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 - **SIMD mismatch between machines**: Check `build.rs` output, verify target features. `RUSTFLAGS="-C target-cpu=native"` to match CPU.
 - **Unexpectedly slow**: May be building against a lower ISA level than the CPU supports (e.g. SSE2 baseline on an AVX2/AVX-512-capable host). Check build output and `RUSTFLAGS`/`target-cpu`; there is no separate portable-scalar tier to "fall back" to — see `xtask isa-matrix`.
 - **Cocoa main thread panic**: Ensure `pixelflow_runtime::run()` called from `fn main()`, not a spawned thread.
-- **Complex Manifold trait bounds**: Add explicit type annotations, break into named intermediates.
-- **"method not found" on Manifold**: Import `use pixelflow_core::Manifold;` and extension traits.
+- **"cannot find `Field`"**: intended. `Field` is `pub(crate)` in pixelflow-core. Compose `Kernel` values and collapse them; there is no per-batch value to hold.
 - **Why did the e-graph pick that?**: Build with `--features saturation-telemetry` (e.g. `cargo run -p core-term --features saturation-telemetry`) and every production saturation run — macro-tier `kernel!` expansions and runtime-tier `Lattice::bake`/glyph bakes alike — appends a JSONL record (budget, stop reason, cost, wall clock) to `$PIXELFLOW_SATURATION_TELEMETRY` if set, else stderr; see `pixelflow-search/src/telemetry.rs`.
 - **A kernel built differently on two machines?** It cannot, by construction, and if it ever does that is the bug: production saturation budgets are denominated in **rule applications** (`SaturationConfig::max_applications`, 20,000/80,000/200,000 blitz/rapid/classical), plus the e-class and iteration caps — all three deterministic functions of the input. Wall clock is **not** a budget dimension; it is `SaturationConfig::safety_ceiling` (30s/120s/300s), a fail-loud assertion that **panics the build** rather than silently truncating saturation and emitting a worse kernel. A panic there means the budget is wrong for that input or the host is pathologically slow — investigate it, don't raise it. `PIXELFLOW_SATURATION_CEILING_MS` (ms; `0`/`off` disables) overrides the ceiling *for diagnosis only*: it can change whether the build panics, never which kernel is emitted. See `docs/plans/2026-09-01-production-budget-determinism.md`.
 - **Need rule provenance (origins, union journal, derivation ancestry, the hindsight labeler)?**: build `pixelflow-search` with `--features provenance-journal` (default OFF; `pixelflow-pipeline` and `pixelflow-search`'s own tests enable it already) — without it, `Provenance::origins`/`applications`/`unions` and friends don't exist as types, they don't just return empty; `EGraph::application_count()` (the saturation budget's denominator) stays available either way.
 
 ## Execution Notes
 
-- **Hot paths:** `#[inline(always)]` on eval methods in Manifold implementations
-- **Glyph caching:** Categorical morphisms ensure glyphs computed once (`fonts/combinators.rs`)
-- **Antialiasing:** Automatic differentiation via `Jet2` dual numbers
-- **Monomorphization:** Entire scene compiles to fused SIMD kernels
+- **Hot paths:** the loop nest is inside the emitted code — one collapse call per stripe, not one per row or per SIMD batch
+- **Glyph caching:** a glyph bakes once and reads back as a gather over its bound buffer (`fonts/cache.rs`)
+- **Antialiasing:** symbolic derivatives — `Kernel::dx()`/`dy()`, resolved before emission
+- **One kernel per scene:** four channel kernels compile together, so shared geometry is emitted once
 
 ## Cost Model and the Guide (offline, supervised)
 

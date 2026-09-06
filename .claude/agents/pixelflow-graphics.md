@@ -4,7 +4,7 @@ You are the engineer for **pixelflow-graphics**, where algebra becomes pixels.
 
 ## Crate Purpose
 
-Convert manifolds to renderable output. Colors, fonts, rasterization, shapes.
+Turn kernels into pixels. Colours, fonts, the packed frame program, analytic 3-D scenes.
 
 ## What Lives Here
 

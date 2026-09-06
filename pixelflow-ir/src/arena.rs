@@ -287,8 +287,8 @@ impl ExprArena {
 
     /// Push a `Gather(buffer, x, y)` read of a declared buffer.
     ///
-    /// Semantics match `DiscreteManifold::eval`: floor the indices, clamp to
-    /// the declared extents, gather row-major.
+    /// Semantics: floor the indices, clamp to the declared extents, gather
+    /// row-major. `DiscreteManifold::kernel` is exactly one of these.
     pub fn push_gather(&mut self, buffer: BufferId, x: ExprId, y: ExprId) -> ExprId {
         let buf = self.push_buffer(buffer);
         self.push_ternary(OpKind::Gather, buf, x, y)
@@ -871,9 +871,8 @@ impl ExprArena {
 
     /// Rebuild the subgraph at `root`, replacing every `Var(i)` for which
     /// `subs` has an entry with the given (already existing) node — the
-    /// generic contramap. Manifold-param composition substitutes the reserved
-    /// slot variables with spliced kernel fragments; a coordinate warp
-    /// substitutes `Var(0..4)` with coordinate expressions.
+    /// generic contramap: a coordinate warp substitutes `Var(0..4)` with
+    /// coordinate expressions, which is what `Kernel::at` is built from.
     ///
     /// Entries must reference nodes already in this arena (e.g. from
     /// [`ExprArena::splice`]). Unlisted variables are preserved. Returns the

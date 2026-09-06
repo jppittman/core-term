@@ -5,7 +5,8 @@
 //! is the `tabulate`/`index` pair from representable functors:
 //!
 //! - **[`Lattice::collapse`]** = `tabulate`: `(Rep -> a) -> F a` -- the manifold at every point
-//! - **`DiscreteManifold::eval`** = `index`: `F a -> Rep -> a` -- read back by coordinate
+//! - **[`DiscreteManifold::kernel`]** = `index`: `F a -> Rep -> a` -- a gather
+//!   that reads the buffer back by coordinate, composable into any kernel
 //! - **Isomorphism**: `index(collapse(m), i) = m(coord(i))` (up to discretization)
 //!
 //! Nothing computes until a Lattice demands it. A single-point evaluation is
@@ -32,9 +33,6 @@
 //! [`Kernel`]: pixelflow_ir::Kernel
 //! [`Manifold`]: crate::Manifold
 
-use crate::Field;
-use crate::combinator::Manifold;
-use crate::numeric::Numeric;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -108,46 +106,6 @@ impl DiscreteManifold {
     #[must_use]
     pub fn into_buffer(self) -> Vec<f32> {
         self.buffer
-    }
-}
-
-// Mark as a ManifoldExpr so ManifoldExt methods (`.at()`, etc.) work on it.
-impl crate::ext::ManifoldExpr for DiscreteManifold {}
-
-/// `index`: read by coordinate. This IS the representable functor's index.
-///
-/// Given Field coordinates (x, y, z, w), converts x and y to integer indices
-/// via nearest-neighbor (floor + clamp), looks up the buffer value, and
-/// returns it as a Field.
-impl Manifold<(Field, Field, Field, Field)> for DiscreteManifold {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, p: (Field, Field, Field, Field)) -> Field {
-        let (x, y, _, _) = p;
-
-        // If the buffer is empty, there's nothing to look up.
-        // Fail loud: this is a programming error, not a recoverable condition.
-        assert!(
-            !self.buffer.is_empty(),
-            "DiscreteManifold::eval called on empty buffer ({}x{})",
-            self.width,
-            self.height,
-        );
-
-        let zero = Field::from(0.0);
-        let max_x = Field::from((self.width.saturating_sub(1)) as f32);
-        let max_y = Field::from((self.height.saturating_sub(1)) as f32);
-
-        // Nearest-neighbor: floor then clamp to valid range.
-        let xi = x.floor().max(zero).min(max_x);
-        let yi = y.floor().max(zero).min(max_y);
-
-        // Linear index = floor(y) * width + floor(x)
-        let w_field = Field::from(self.width as f32);
-        let indices = yi.raw_mul(w_field).raw_add(xi);
-
-        Field::gather(&self.buffer, indices)
     }
 }
 
@@ -325,7 +283,7 @@ impl Lattice {
     /// Compilation goes through the global cache, and the compile entry runs
     /// the optimizer itself, so a runtime-composed kernel
     /// (`Kernel::over`/`.at()`/arithmetic) — which never sees the
-    /// `kernel!`/`kernel_jit!` macros' e-graph saturation — still reaches the
+    /// `kernel!` macro's e-graph saturation — still reaches the
     /// backend optimized, with no caller having to remember to ask. `Dwrt`
     /// derivatives are resolved during codegen.
     ///
@@ -365,15 +323,14 @@ mod tests;
 // ============================================================================
 
 /// Bilinear read-back of a [`DiscreteManifold`]: the smooth companion to its
-/// nearest-neighbor `eval`.
+/// nearest-neighbour [`DiscreteManifold::kernel`].
 ///
-/// Where the discrete manifold snaps a continuous coordinate to the containing
-/// lattice cell, the sampler reads the four surrounding integer-grid texels
-/// and blends them with the fractional coordinate weights. The blend is a
-/// bound-memory kernel — four `Gather`s plus the weight arithmetic in one
-/// arena — JIT-compiled once at construction and bound to the buffer at each
-/// call, so the read-back goes through the same backend as everything else
-/// rather than through a combinator tree.
+/// Where the discrete manifold's gather snaps a continuous coordinate to the
+/// containing lattice cell, the sampler reads the four surrounding
+/// integer-grid texels and blends them with the fractional coordinate
+/// weights. The blend is a bound-memory kernel — four `Gather`s plus the
+/// weight arithmetic in one arena — that a caller composes into a larger
+/// kernel ([`Self::kernel`]) and compiles at the shape it will collapse over.
 ///
 /// # Coordinate convention
 ///
@@ -395,7 +352,6 @@ mod tests;
 #[derive(Clone)]
 pub struct BilinearSampler {
     tex: DiscreteManifold,
-    jit: alloc::sync::Arc<pixelflow_codegen::CompiledKernel>,
 }
 
 /// The 4-tap bilinear blend over one declared buffer, as an arena fragment:
@@ -561,13 +517,19 @@ impl DiscreteManifold {
         )
     }
 
-    /// Wrap this buffer in a [`BilinearSampler`], JIT-compiling the 4-tap
-    /// blend kernel bound to it.
+    /// Wrap this buffer in a [`BilinearSampler`].
+    ///
+    /// Nothing is compiled here. The sampler carries the buffer and the shape
+    /// of its 4-tap blend; a consumer composes [`BilinearSampler::kernel`]
+    /// into the kernel it is building and compiles that once, at the shape it
+    /// will collapse over. (This used to JIT the blend at a point shape,
+    /// because the sampler was read one SIMD batch at a time through a
+    /// per-batch `eval` — a compile per glyph for a call that no longer
+    /// exists.)
     ///
     /// # Panics
     ///
-    /// Panics on an empty buffer, when an extent exceeds `u32`, or when this
-    /// build's `Field` width does not match the JIT's emitted width.
+    /// Panics on an empty buffer, or when an extent exceeds `u32`.
     #[must_use]
     pub fn bilinear(self) -> BilinearSampler {
         assert!(
@@ -576,41 +538,8 @@ impl DiscreteManifold {
             self.width,
             self.height,
         );
-        assert_eq!(
-            core::mem::size_of::<Field>(),
-            pixelflow_codegen::JIT_VECTOR_BYTES,
-            "DiscreteManifold::bilinear: Field width does not match the JIT's emitted width"
-        );
-        let width = u32::try_from(self.width).expect("buffer width exceeds u32");
-        let height = u32::try_from(self.height).expect("buffer height exceeds u32");
-        let (arena, root) = bilinear_arena(self.id, width, height);
-        // Bound-memory arenas are uncacheable (the code bakes buffer slot
-        // metadata); compile recognizes that and compiles fresh.
-        // Sampled one batch at a time through `Manifold::eval`: a point shape.
-        let jit =
-            pixelflow_codegen::jit_cache::compile(&arena, root, pixelflow_ir::LatticeShape::POINT)
-                .expect("bilinear sampler failed to compile");
-        BilinearSampler { tex: self, jit }
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-impl crate::ext::ManifoldExpr for BilinearSampler {}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-impl Manifold<(Field, Field, Field, Field)> for BilinearSampler {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, (x, y, z, w): (Field, Field, Field, Field)) -> Field {
-        let ctx = [self.tex.buffer.as_ptr()];
-        // SAFETY: `bilinear` checked size_of::<Field>() == JIT_VECTOR_BYTES;
-        // the kernel was compiled from an arena declaring exactly one buffer
-        // whose decl matches `tex`'s extents, and `ctx` binds that buffer's
-        // live base pointer for the duration of the call.
-        unsafe {
-            self.jit
-                .call_bound(ctx.as_ptr(), pixelflow_codegen::Point4::new(x, y, z, w))
-        }
+        let _ = u32::try_from(self.width).expect("buffer width exceeds u32");
+        let _ = u32::try_from(self.height).expect("buffer height exceeds u32");
+        BilinearSampler { tex: self }
     }
 }

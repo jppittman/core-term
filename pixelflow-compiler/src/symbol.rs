@@ -6,24 +6,24 @@
 //!
 //! PixelFlow has a two-layer symbol table that mirrors the contramap pattern:
 //!
-//! | Class      | Binding Time        | Runtime Representation | Example |
-//! |------------|---------------------|------------------------|---------|
-//! | Intrinsic  | Evaluation time     | `X`, `Y`, `Z`, `W`     | X, Y    |
-//! | Parameter  | Construction time   | `self.name`            | cx, r   |
-//! | Local      | Expression scope    | Local variable         | dx, dy  |
+//! | Class      | Binding Time        | Arena Representation | Example |
+//! |------------|---------------------|----------------------|---------|
+//! | Intrinsic  | Collapse time       | `Var(0..4)`          | X, Y    |
+//! | Parameter  | Construction time   | `Param(i)`           | cx, r   |
+//! | Local      | Expression scope    | A shared `ExprId`    | dx, dy  |
 //!
 //! ## Intrinsic Coordinates
 //!
 //! The intrinsic coordinates (X, Y, Z, W) are special:
-//! - They're zero-sized types in `pixelflow_core::variables`
-//! - They implement `Manifold` and return their respective coordinate
-//! - They're always in scope (global namespace)
+//! - They become `Var(0..4)` arena nodes
+//! - They are always in scope (global namespace)
 //!
 //! ## Parameter Symbols
 //!
-//! Parameters declared in the closure syntax become struct fields:
-//! - `|cx: f32, cy: f32|` → `struct __Kernel { cx: f32, cy: f32 }`
-//! - References in the body become `self.cx`, `self.cy`
+//! Parameters declared in the closure syntax become the builder closure's
+//! arguments: `|cx: f32, cy: f32|` produces `move |cx: f32, cy: f32| -> Kernel`,
+//! and each reference in the body is a `Param(i)` arena node the builder
+//! substitutes with the argument.
 
 use proc_macro2::Span;
 use std::collections::HashMap;
@@ -39,11 +39,6 @@ pub enum SymbolKind {
     /// Captured scalar parameter from closure syntax (e.g., `r: f32`).
     /// Bound at construction time, accessed via `self.name`.
     Parameter,
-
-    /// Manifold parameter from closure syntax (e.g., `inner: kernel`).
-    /// Becomes a generic type parameter `M{n}` with trait bounds.
-    /// Evaluated at `__p` first, then bound via Let.
-    ManifoldParam,
 
     /// Local variable introduced by `let`.
     /// Scoped to the containing block.
@@ -118,24 +113,6 @@ impl SymbolTable {
         }
     }
 
-    /// Register a manifold parameter symbol (e.g., `inner: kernel`).
-    pub fn register_manifold_param(&mut self, name: Ident) {
-        let key = name.to_string();
-        self.symbols.insert(
-            key.clone(),
-            Symbol {
-                name,
-                kind: SymbolKind::ManifoldParam,
-                ty: None, // Type is generic (M0, M1, etc.)
-                span: Span::call_site(),
-            },
-        );
-        // Add to current scope
-        if let Some(scope) = self.scope_stack.last_mut() {
-            scope.push(key);
-        }
-    }
-
     /// Register a local variable.
     pub fn register_local(&mut self, name: Ident, ty: Option<Type>) {
         let key = name.to_string();
@@ -173,7 +150,8 @@ impl SymbolTable {
             .is_some_and(|s| s.kind == SymbolKind::Parameter)
     }
 
-    /// Get all symbol names (for typo suggestions in error messages).
+    /// Get all symbol names.
+    #[cfg(test)]
     pub fn all_names(&self) -> impl Iterator<Item = String> + '_ {
         self.symbols.keys().cloned()
     }

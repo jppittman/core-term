@@ -46,9 +46,6 @@ pub use term::{Children, Ir, Shape};
 pub mod optimize;
 pub use optimize::{Identity, Optimize, Rewritten, Then};
 
-pub mod lower;
-pub use lower::{Lower, LowerEnv};
-
 pub mod binding;
 pub use binding::{BindError, BindingTable};
 

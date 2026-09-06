@@ -1,8 +1,10 @@
-//! Integration tests for the kernel_jit! macro.
+//! Integration tests for the `kernel!` macro.
 //!
-//! These tests verify the full pipeline from macro input to executable JIT code.
+//! These verify the full pipeline from macro input to numbers: parse, sema,
+//! e-graph, arena, and then the one evaluation entry there is — compiled at a
+//! lattice's shape and collapsed.
 
-use pixelflow_compiler::kernel_jit;
+use pixelflow_compiler::kernel;
 use pixelflow_core::{Kernel, Lattice};
 
 // ============================================================================
@@ -34,39 +36,39 @@ fn eval3(k: &Kernel, x: f32, y: f32, z: f32) -> f32 {
 // ============================================================================
 
 #[test]
-fn jit_macro_return_x() {
-    let m = kernel_jit!(|| X);
+fn macro_return_x() {
+    let m = kernel!(|| X);
     assert_eq!(eval1(&m, 42.0), 42.0);
 }
 
 #[test]
-fn jit_macro_add_xy() {
-    let m = kernel_jit!(|| X + Y);
+fn macro_add_xy() {
+    let m = kernel!(|| X + Y);
     assert_eq!(eval2(&m, 10.0, 32.0), 42.0);
 }
 
 #[test]
-fn jit_macro_complex_expr() {
+fn macro_complex_expr() {
     // (X + Y) * Z
-    let m = kernel_jit!(|| (X + Y) * Z);
+    let m = kernel!(|| (X + Y) * Z);
     assert_eq!(eval3(&m, 2.0, 5.0, 6.0), 42.0); // (2+5)*6 = 42
 }
 
 #[test]
-fn jit_macro_subtraction() {
-    let m = kernel_jit!(|| X - Y);
+fn macro_subtraction() {
+    let m = kernel!(|| X - Y);
     assert_eq!(eval2(&m, 100.0, 58.0), 42.0);
 }
 
 #[test]
-fn jit_macro_division() {
-    let m = kernel_jit!(|| X / Y);
+fn macro_division() {
+    let m = kernel!(|| X / Y);
     assert_eq!(eval2(&m, 84.0, 2.0), 42.0);
 }
 
 #[test]
-fn jit_macro_negation() {
-    let m = kernel_jit!(|| -X);
+fn macro_negation() {
+    let m = kernel!(|| -X);
     assert_eq!(eval1(&m, -42.0), 42.0);
 }
 
@@ -76,48 +78,48 @@ fn jit_macro_negation() {
 
 #[test]
 #[cfg(not(target_feature = "avx512f"))] // transcendentals: not in AVX-512 Stage-1 op set
-fn jit_macro_sin() {
+fn macro_sin() {
     // sin(0) = 0
-    let m = kernel_jit!(|| X.sin());
+    let m = kernel!(|| X.sin());
     let val = eval1(&m, 0.0);
     assert!((val - 0.0).abs() < 0.001, "sin(0) = {val}, expected ~0");
 }
 
 #[test]
 #[cfg(not(target_feature = "avx512f"))] // transcendentals: not in AVX-512 Stage-1 op set
-fn jit_macro_sin_pi_half() {
+fn macro_sin_pi_half() {
     // sin(π/2) ≈ 1
-    let m = kernel_jit!(|| X.sin());
+    let m = kernel!(|| X.sin());
     let val = eval1(&m, core::f32::consts::FRAC_PI_2);
     assert!((val - 1.0).abs() < 0.01, "sin(π/2) = {val}, expected ~1");
 }
 
 #[test]
 #[cfg(not(target_feature = "avx512f"))] // transcendentals: not in AVX-512 Stage-1 op set
-fn jit_macro_cos() {
+fn macro_cos() {
     // cos(0) = 1
-    let m = kernel_jit!(|| X.cos());
+    let m = kernel!(|| X.cos());
     let val = eval1(&m, 0.0);
     assert!((val - 1.0).abs() < 0.01, "cos(0) = {val}, expected ~1");
 }
 
 #[test]
-fn jit_macro_sqrt() {
+fn macro_sqrt() {
     // sqrt(1764) = 42
-    let m = kernel_jit!(|| X.sqrt());
+    let m = kernel!(|| X.sqrt());
     assert_eq!(eval1(&m, 1764.0), 42.0);
 }
 
 #[test]
-fn jit_macro_abs() {
-    let m = kernel_jit!(|| X.abs());
+fn macro_abs() {
+    let m = kernel!(|| X.abs());
     assert_eq!(eval1(&m, -42.0), 42.0);
 }
 
 #[test]
-fn jit_macro_min_returns_smaller_and_max_returns_larger() {
-    let m_min = kernel_jit!(|| X.min(Y));
-    let m_max = kernel_jit!(|| X.max(Y));
+fn macro_min_returns_smaller_and_max_returns_larger() {
+    let m_min = kernel!(|| X.min(Y));
+    let m_max = kernel!(|| X.max(Y));
     assert_eq!(eval2(&m_min, 10.0, 42.0), 10.0);
     assert_eq!(eval2(&m_max, 10.0, 42.0), 42.0);
 }
@@ -127,52 +129,26 @@ fn jit_macro_min_returns_smaller_and_max_returns_larger() {
 // ============================================================================
 
 #[test]
-fn kernel_jit_no_params_is_a_kernel() {
+fn no_params_is_a_kernel() {
     // Zero-param case: the macro evaluates to a `Kernel` value directly.
-    let k = kernel_jit!(|| X + Y);
+    let k = kernel!(|| X + Y);
     assert!((eval2(&k, 10.0, 32.0) - 42.0).abs() < 1e-5);
 }
 
 #[test]
-fn kernel_jit_one_param_builder() {
+fn one_param_is_a_builder() {
     // A single scalar param returns a builder closure |offset: f32| -> Kernel.
-    let builder = kernel_jit!(|offset: f32| X + offset);
+    let builder = kernel!(|offset: f32| X + offset);
     let k = builder(32.0_f32);
     assert!((eval1(&k, 10.0) - 42.0).abs() < 1e-5);
 }
 
 #[test]
-fn kernel_jit_two_params_builder() {
-    let builder = kernel_jit!(|cx: f32, r: f32| (X - cx) * r);
+fn two_params_is_a_builder() {
+    let builder = kernel!(|cx: f32, r: f32| (X - cx) * r);
     let k = builder(1.0_f32, 2.0_f32);
     // X=5.0: (5.0 - 1.0) * 2.0 = 8.0
     assert!((eval1(&k, 5.0) - 8.0).abs() < 1e-5);
-}
-
-/// The two tiers agree on the same body: the arena tier is baked over a
-/// lattice, the LLVM tier is evaluated by this test's own loop (a test owns
-/// its loop; that is not an API).
-#[test]
-fn kernel_jit_same_semantics_as_kernel() {
-    use pixelflow_compiler::kernel;
-    use pixelflow_core::Field;
-    use pixelflow_core::combinator::Manifold;
-
-    let jit_k = kernel_jit!(|cx: f32| X - cx)(3.0_f32);
-    let ct_m = kernel!(|cx: f32| X - cx)(3.0_f32);
-
-    for x_val in [0.0_f32, 1.0, 5.0, -2.0, 100.0] {
-        let jit_result = eval1(&jit_k, x_val);
-        let zero = Field::from(0.0_f32);
-        let ct_field = ct_m.eval((Field::from(x_val), zero, zero, zero));
-        // `Field` is repr(transparent) over the platform SIMD type; lane 0 is
-        // the lowest-address element.
-        let ct_result: f32 = unsafe { core::mem::transmute_copy(&ct_field) };
-        assert!(
-            (jit_result - ct_result).abs() < 1e-5,
-            "mismatch at x={x_val}: jit={jit_result} ct={ct_result}"
-        );
-    }
 }
 
 // ============================================================================
@@ -181,8 +157,8 @@ fn kernel_jit_same_semantics_as_kernel() {
 
 #[test]
 #[cfg(not(target_feature = "avx512f"))] // transcendentals: not in AVX-512 Stage-1 op set
-fn jit_macro_atan2_matches_reference_at_boundary_and_interior_points() {
-    let m = kernel_jit!(|| Y.atan2(X));
+fn macro_atan2_matches_reference_at_boundary_and_interior_points() {
+    let m = kernel!(|| Y.atan2(X));
     // atan2(1, 1) = π/4 — polynomial has ~0.06 error at t=1 boundary
     let val = eval2(&m, 1.0, 1.0);
     assert!(
@@ -202,8 +178,8 @@ fn jit_macro_atan2_matches_reference_at_boundary_and_interior_points() {
 
 #[test]
 #[cfg(not(target_feature = "avx512f"))] // transcendentals: not in AVX-512 Stage-1 op set
-fn jit_macro_atan2_quadrants() {
-    let m = kernel_jit!(|| Y.atan2(X));
+fn macro_atan2_quadrants() {
+    let m = kernel!(|| Y.atan2(X));
 
     // Use ratio = 0.5 (well inside polynomial range) for quadrant tests
     // atan2(1, 2): Q1 — atan(0.5) ≈ 0.4636
@@ -241,8 +217,8 @@ fn jit_macro_atan2_quadrants() {
 
 #[test]
 #[cfg(not(target_feature = "avx512f"))] // transcendentals: not in AVX-512 Stage-1 op set
-fn jit_macro_atan() {
-    let m = kernel_jit!(|| X.atan());
+fn macro_atan() {
+    let m = kernel!(|| X.atan());
     // atan(0.5) ≈ 0.4636 — well within polynomial range
     let val = eval1(&m, 0.5);
     let expected = 0.5_f32.atan();
@@ -257,8 +233,8 @@ fn jit_macro_atan() {
 
 #[test]
 #[cfg(not(target_feature = "avx512f"))] // transcendentals: not in AVX-512 Stage-1 op set
-fn jit_macro_asin() {
-    let m = kernel_jit!(|| X.asin());
+fn macro_asin() {
+    let m = kernel!(|| X.asin());
     // asin(0) = 0
     let val0 = eval1(&m, 0.0);
     assert!(val0.abs() < 0.01, "asin(0) = {val0}, expected ~0");
@@ -273,8 +249,8 @@ fn jit_macro_asin() {
 
 #[test]
 #[cfg(not(target_feature = "avx512f"))] // transcendentals: not in AVX-512 Stage-1 op set
-fn jit_macro_acos() {
-    let m = kernel_jit!(|| X.acos());
+fn macro_acos() {
+    let m = kernel!(|| X.acos());
     // acos(0.5) = π/3 ≈ 1.047 — exercises large-ratio path (ratio ≈ 1.73)
     let val_half = eval1(&m, 0.5);
     let expected = 0.5_f32.acos();

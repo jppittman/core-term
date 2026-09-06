@@ -849,7 +849,6 @@ dependencies = [
 name = "pixelflow-compiler"
 version = "0.1.0"
 dependencies = [
- "criterion",
  "pixelflow-codegen",
  "pixelflow-core",
  "pixelflow-ir",
@@ -863,9 +862,7 @@ dependencies = [
 name = "pixelflow-core"
 version = "0.1.0"
 dependencies = [
- "criterion",
  "pixelflow-codegen",
- "pixelflow-compiler",
  "pixelflow-ir",
 ]
 
@@ -904,7 +901,6 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "libm",
- "pixelflow-compiler",
  "pixelflow-core",
 ]
 
@@ -917,7 +913,6 @@ dependencies = [
  "libc",
  "libm",
  "pixelflow-codegen",
- "pixelflow-compiler",
  "pixelflow-core",
  "pixelflow-graphics",
  "pixelflow-ir",
@@ -939,10 +934,8 @@ dependencies = [
  "js-sys",
  "log",
  "pixelflow-codegen",
- "pixelflow-compiler",
  "pixelflow-core",
  "pixelflow-graphics",
- "pixelflow-ir",
  "pkg-config",
  "serde",
  "serde-wasm-bindgen",

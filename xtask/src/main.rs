@@ -931,12 +931,11 @@ fn run_with_rustflags(
         .args(&args[split..])
         .env("RUSTFLAGS", rustflags)
         .env("CARGO_TARGET_DIR", target_dir)
-        // Deep-Manifold tests recurse near the stack limit by design (see
-        // CLAUDE.md's dev-profile note), and 8-/16-lane builds have
-        // proportionally larger frames. This raises the floor for libtest's
-        // own threads; worker threads that set `stack_size` explicitly are
-        // NOT covered by it and must size themselves (see
-        // `rasterizer::parallel::STACK_SIZE`).
+        // Deeply nested kernel construction recurses near the stack limit,
+        // and 8-/16-lane builds have proportionally larger frames. This
+        // raises the floor for libtest's own threads; worker threads that set
+        // `stack_size` explicitly are NOT covered by it and must size
+        // themselves.
         .env("RUST_MIN_STACK", "16777216")
         .status()
         .map(|s| s.success())
