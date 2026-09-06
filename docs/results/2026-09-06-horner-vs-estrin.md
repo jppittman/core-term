@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-06
 **Question:** `passes::horner_step` emits every transcendental polynomial as a serial chain of `MulAdd`s — `a₀ + x(a₁ + x(a₂ + …))`. Horner minimizes operations but maximizes dependency depth. Estrin's scheme evaluates the same polynomial as a `log₂ n`-deep tree over explicit powers `x², x⁴, x⁸, …`, trading `log₂ n` extra multiplies for `O(log n)` depth. Is that trade worth taking for `sin`/`cos`/`exp2`/`log2`/`atan`?
-**Answer:** **No, at the degrees PixelFlow uses.** Estrin is 1.2–2.0× faster when a single evaluation is serialized, and that advantage is completely erased by the collapse loop, which already overlaps consecutive evaluations. In production's regime (one call per tile, the kernel's own loop supplying the independent work) Estrin is a **tie to 11% slower** at every ISA level for every production polynomial. It only wins once the chain outgrows what cross-iteration ILP can hide: degree ≥ 12 on SSE2, ≥ 24 on AVX2, and never within degree ≤ 32 on AVX-512. Production's polynomials are degree 4–9. Two further findings fall out: Estrin introduces an **underflow hazard Horner does not have** (up to 30× slower, fixed entirely by `FastMathGuard`, which nothing in the render path currently holds), and the extraction cost model prefers Horner **for the wrong reason** — it cannot see schedule at all, and is therefore wrong by up to 1.9× on the cases where Estrin does win.
+**Answer:** **No, at the degrees PixelFlow uses.** Estrin is 1.2–2.0× faster when a single evaluation is serialized, and that advantage is completely erased by the collapse loop, which already overlaps consecutive evaluations. In production's regime (one call per contiguous row, the kernel's own loop supplying the independent work) Estrin is a **tie to 11% slower** at every ISA level for every production polynomial. It only wins once the chain outgrows what cross-iteration ILP can hide: degree ≥ 12 on SSE2, ≥ 24 on AVX2, and never within degree ≤ 32 on AVX-512. Production's polynomials are degree 4–9. Two further findings fall out: Estrin introduces an **underflow hazard Horner does not have** (up to 30× slower, fixed entirely by `FastMathGuard`, which nothing in the render path currently holds), and the extraction cost model prefers Horner **for the wrong reason** — it cannot see schedule at all, and is therefore wrong by up to 1.9× on the cases where Estrin does win.
 **Reproduction:** `cargo run --release -p pixelflow-pipeline --example horner_vs_estrin`, at each ISA level per `xtask isa-matrix`'s flags. Host: 4-vCPU Intel Xeon @ 2.80GHz (avx512f/dq/vl, fma), Linux, shared VM. Numbers below are medians of 4–5 clean runs × 5 in-session repetitions × the harness's own median-of-20 samples. Runs that tripped `BenchSession`'s sentinel regime-change abort were discarded, not averaged in — roughly a third of runs on this host.
 
 ## 1. What was measured
@@ -15,18 +15,18 @@ Three regimes, because the answer differs in each:
 |---|---|---|
 | `Latency` | each evaluation's output feeds the next | the critical path, with nothing to overlap |
 | `Throughput` | independent evaluations, one call each | ILP across a call boundary production does not pay |
-| `Tile` (new) | one call per 64-group tile; the emitted loop supplies the independent evaluations | **production** — what `Lattice::bake` and the render pool run |
+| `Scanline` (new) | one call per 64-group row; the emitted loop supplies the independent evaluations over one contiguous, ascending address stream | **production** — the shape `Lattice`'s collapse runs |
 
-`BenchMode::Tile` was added to `jit_bench` for this. The other two modes bracket reality from opposite sides; neither is the thing itself, and the gap between them turned out to be the entire answer.
+`BenchMode::Scanline` was added to `jit_bench` for this. It passes `rows = 1`: a single contiguous run of 64 SIMD groups, X advancing lane-sequentially into one ascending address stream — a CPU rasterizer's straight line, not GPU-style tiling. (`TileSlice`'s `rows`/`row_skip_bytes` exist so a caller can land such rows inside a strided destination; `Lattice::collapse_into` passes `full_groups` per row and the scalar tail as the skip. The extra row does not belong in an arithmetic comparison: a row advance costs the same in both arms and only dilutes the ratio.) The other two modes bracket reality from opposite sides; neither is the thing itself, and the gap between them turned out to be the entire answer.
 
 ## 2. Results
 
-Every cell is **Horner ÷ Estrin**: above 1.00 means Estrin is faster. Latency/throughput/tile columns are overhead-adjusted (audit M1); `tile (raw)` is end-to-end, which is what a shipping decision is made on.
+Every cell is **Horner ÷ Estrin**: above 1.00 means Estrin is faster. Latency/throughput/scanline columns are overhead-adjusted (audit M1); `scanline (raw)` is end-to-end, which is what a shipping decision is made on.
 
 
 ### SSE2 baseline (4 lanes, 16 regs, no FMA — `MulAdd` is `mulps`+`addps`) — 5 clean runs
 
-| poly | n | spills H/E | latency | throughput | tile (adj) | tile (raw) | tile (raw) range |
+| poly | n | spills H/E | latency | throughput | scanline (adj) | scanline (raw) | scanline (raw) range |
 |---|---|---|---|---|---|---|---|
 | *degree sweep* | | | | | | | |
 | sweep | 4 | 0/0 | 1.33 | 0.91 | 0.99 | 0.99 | 0.99–1.00 |
@@ -53,7 +53,7 @@ Every cell is **Horner ÷ Estrin**: above 1.00 means Estrin is faster. Latency/t
 
 ### AVX2+FMA (8 lanes, 16 regs) — 5 clean runs
 
-| poly | n | spills H/E | latency | throughput | tile (adj) | tile (raw) | tile (raw) range |
+| poly | n | spills H/E | latency | throughput | scanline (adj) | scanline (raw) | scanline (raw) range |
 |---|---|---|---|---|---|---|---|
 | *degree sweep* | | | | | | | |
 | sweep | 4 | 0/0 | 1.15 | 0.36 | 0.98 | 1.00 | 0.99–1.00 |
@@ -80,7 +80,7 @@ Every cell is **Horner ÷ Estrin**: above 1.00 means Estrin is faster. Latency/t
 
 ### AVX-512F/DQ (16 lanes, 32 regs) — 4 clean runs
 
-| poly | n | spills H/E | latency | throughput | tile (adj) | tile (raw) | tile (raw) range |
+| poly | n | spills H/E | latency | throughput | scanline (adj) | scanline (raw) | scanline (raw) range |
 |---|---|---|---|---|---|---|---|
 | *degree sweep* | | | | | | | |
 | sweep | 4 | 0/0 | 1.22 | 1.04 | 1.02 | 1.01 | 0.91–1.02 |
@@ -109,21 +109,21 @@ Every cell is **Horner ÷ Estrin**: above 1.00 means Estrin is faster. Latency/t
 
 The critical path is real and behaves exactly as theory says: at SSE2 a degree-32 Horner chain takes 4.0× longer than the Estrin tree when evaluations are serialized, and the advantage grows monotonically with degree. That column is not wrong — it is answering a question production does not ask.
 
-The collapse kernel evaluates a **tile**: `groups × LANES` independent points, produced by the emitted loop with X advancing lane-sequentially. Consecutive iterations have no data dependence, so the out-of-order engine has a second, third, and fourth evaluation available to fill exactly the stalls Estrin restructures the polynomial to remove. The chain does not have to be short; it only has to be shorter than the reorder window can cover with the next iteration's work. At degree ≤ 9 it always is.
+The collapse kernel evaluates a **row**: `groups × LANES` independent points, produced by the emitted loop with X advancing lane-sequentially into contiguous memory. Consecutive iterations have no data dependence, so the out-of-order engine has a second, third, and fourth evaluation available to fill exactly the stalls Estrin restructures the polynomial to remove. The chain does not have to be short; it only has to be shorter than the reorder window can cover with the next iteration's work. At degree ≤ 9 it always is.
 
 What breaks that is not degree as such but **degree relative to the machine**:
 
 - **SSE2** (16 registers, no FMA — every `MulAdd` is two instructions with two roundings) has the longest chains and the least register room, and crosses over first: Estrin wins from degree 12 (1.24×) to degree 32 (1.88×).
 - **AVX2+FMA** halves the chain in instructions and crosses over at degree 24 (1.17×).
-- **AVX-512** (32 registers) never crosses over inside degree ≤ 32: every tile ratio sits in 0.89–1.02, and the `latency` column itself flattens toward 1.0 — with 32 zmm registers and no spills at any degree measured, there is enough architectural state to keep several iterations in flight and the chain simply stops being the constraint.
+- **AVX-512** (32 registers) never crosses over inside degree ≤ 32: every scanline ratio sits in 0.89–1.02, and the `latency` column itself flattens toward 1.0 — with 32 zmm registers and no spills at any degree measured, there is enough architectural state to keep several iterations in flight and the chain simply stops being the constraint.
 
-The register story is visible in the `spills` column: Estrin spills 4 slots at degree 24 and 8 at degree 32 on both 16-register targets, and never on AVX-512. Those spilling configurations are also the only ones whose timings are unstable — the AVX2 degree-24 tile ratio ranges 0.53–1.18 across runs, against 0.93–0.96 for the non-spilling degree-6 row. **Once Estrin spills it is both slower and erratic**, which is the shape of a schedule that has run out of the resource it was trading for.
+The register story is visible in the `spills` column: Estrin spills 4 slots at degree 24 and 8 at degree 32 on both 16-register targets, and never on AVX-512. Those spilling configurations are also the only ones whose timings are unstable — the AVX2 degree-24 scanline ratio ranges 0.53–1.18 across runs, against 0.93–0.96 for the non-spilling degree-6 row. **Once Estrin spills it is both slower and erratic**, which is the shape of a schedule that has run out of the resource it was trading for.
 
 ## 4. The underflow hazard is new, and belongs to Estrin alone
 
 Horner never forms a power of `x`. Its accumulator stays within a small factor of `a₀` for any argument, because every step folds a coefficient back in. Estrin computes `x²`, `x⁴`, `x⁸`, `x¹⁶` explicitly, and for a small argument those underflow: at `arg ≈ 1e-9`, `x⁸ ≈ 1e-72` is not representable. An underflowing multiply on x86 is a microcode assist, not an instruction.
 
-The cost, tile mode, same kernels, one constant changed:
+The cost, scanline mode, same kernels, one constant changed:
 
 | level | degree 8 | degree 16 | degree 32 |
 |---|---|---|---|
@@ -160,7 +160,7 @@ Keep Horner. It is the right schedule for degree 4–9 in a loop that already ha
 Revisit if any of these change:
 
 - a polynomial reaches degree ≥ 12 **and** targets a 16-register x86 level (SSE2 or AVX2);
-- a polynomial lands somewhere genuinely serialized, where the tile loop cannot supply neighbouring work — a reduction body, or a dependent chain of transcendentals;
+- a polynomial lands somewhere genuinely serialized, where the scanline loop cannot supply neighbouring work — a reduction body, or a dependent chain of transcendentals;
 - codegen starts giving the e-graph schedules to choose between, at which point this pair is a ready-made regression fixture for the schedule-cost residual.
 
 Independently of all of that: **something in the render path should hold a `FastMathGuard`**, or the guard should be deleted as dead code. It currently is neither held nor removed.

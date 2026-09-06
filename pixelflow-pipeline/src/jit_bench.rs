@@ -29,16 +29,16 @@ const WARMUP_PASSES: usize = 8;
 /// `with_all_inputs!`.
 pub const INPUT_TUPLES: usize = 64;
 
-/// SIMD groups filled by a single call in [`BenchMode::Tile`].
+/// SIMD groups filled by a single call in [`BenchMode::Scanline`].
 ///
 /// The emitted collapse kernel loops over `groups` internally, advancing X
-/// lane-sequentially — so one call is `TILE_GROUPS * LANES` independent
-/// evaluations run by the kernel's OWN loop, which is the shape production
-/// runs (a scanline of a tile), not a shape the harness invents. 64 groups is
-/// 4KiB of output at AVX-512 width: comfortably L1-resident, so the number
-/// measures the arithmetic and not the memory system, and long enough that
-/// the loop's prologue amortizes to nothing.
-pub const TILE_GROUPS: usize = 64;
+/// lane-sequentially and storing contiguously — so one call is
+/// `SCANLINE_GROUPS * LANES` independent evaluations run by the kernel's OWN
+/// loop, over one ascending address stream. 64 groups is 4KiB of output at
+/// AVX-512 width: comfortably L1-resident, so the number measures the
+/// arithmetic and not the memory system, and long enough that the loop's
+/// prologue amortizes to nothing.
+pub const SCANLINE_GROUPS: usize = 64;
 
 /// The timed loop must accumulate at least this many nanoseconds per sample
 /// (audit H5): one `mach_absolute_time` tick is 41.67ns on Apple Silicon
@@ -424,18 +424,29 @@ pub enum BenchMode {
     /// inputs to output, so no chaining scheme can serialize it: its chained
     /// latency legitimately equals its throughput.
     Latency,
-    /// One call per [`TILE_GROUPS`]-group tile: the kernel's own emitted loop
-    /// supplies the independent evaluations, and call/ret is amortized over
-    /// all of them.
+    /// One call per [`SCANLINE_GROUPS`]-group row: the kernel's own emitted
+    /// loop supplies the independent evaluations, and call/ret is amortized
+    /// over all of them.
+    ///
+    /// A **row**, not a 2D block. `TileSlice`'s `rows`/`row_skip_bytes` exist
+    /// so a caller can land scanlines inside a strided destination —
+    /// `Lattice::collapse_into` passes `full_groups` per row and the scalar
+    /// tail as the skip — and this mode passes `rows = 1`, so what it measures
+    /// is a single contiguous run: X advancing lane-sequentially into one
+    /// ascending address stream, which is what a CPU rasterizer does and what
+    /// the prefetcher wants. Nothing here is GPU-style tiling, and the extra
+    /// row does not belong in an arithmetic comparison anyway: a row advance
+    /// costs the same in every kernel being compared and only dilutes the
+    /// ratio.
     ///
     /// The other two modes bracket reality from opposite sides — `Latency`
     /// serializes evaluations that production never serializes, `Throughput`
     /// overlaps them across a call boundary production does not pay. This one
-    /// is neither bracket but the thing itself: the loop `compile` emits,
-    /// running the way `Lattice::bake` and the render pool run it. Use it
-    /// whenever the question is "which kernel should ship", and the other two
-    /// when the question is "why".
-    Tile,
+    /// is neither bracket but the thing itself: the loop `compile` emits, run
+    /// the way `Lattice`'s collapse runs it. Use it whenever the question is
+    /// "which kernel should ship", and the other two when the question is
+    /// "why".
+    Scanline,
 }
 
 /// Result of benchmarking: timing, dispersion, and outputs for correctness checks.
@@ -889,11 +900,11 @@ fn measure_exec_code(
     }
     let output = outputs[0];
 
-    // One tile-sized destination, allocated outside the timed loop.
-    // `BenchMode::Tile` is the only mode that writes past the first group,
+    // One row-sized destination, allocated outside the timed loop.
+    // `BenchMode::Scanline` is the only mode that writes past the first group,
     // but the allocation is 4KiB and once per measurement, so it is not worth
     // a branch to skip.
-    let mut tile_buf = vec![0.0f32; TILE_GROUPS * LANES];
+    let mut row_buf = vec![0.0f32; SCANLINE_GROUPS * LANES];
 
     let mut repeat_batches = start_batches.max(1);
     loop {
@@ -915,14 +926,14 @@ fn measure_exec_code(
                     }
                     *t = nanos_now() - start;
                 }
-                BenchMode::Tile => {
+                BenchMode::Scanline => {
                     let start = nanos_now();
                     for _ in 0..repeat_batches {
                         for &p in &input_points {
                             unsafe {
                                 exec_code.call_collapse(
                                     core::ptr::null(),
-                                    TileSlice::contiguous(tile_buf.as_mut_ptr(), TILE_GROUPS, 1),
+                                    TileSlice::contiguous(row_buf.as_mut_ptr(), SCANLINE_GROUPS, 1),
                                     p,
                                 );
                             }
@@ -968,11 +979,11 @@ fn measure_exec_code(
             continue;
         }
 
-        // Every mode performs `INPUT_VECTORS` calls per batch; `Tile` is the
-        // one where a call is more than one vector of work.
+        // Every mode performs `INPUT_VECTORS` calls per batch; `Scanline` is
+        // the one where a call is more than one vector of work.
         let evals_per_batch = match mode {
             BenchMode::Throughput | BenchMode::Latency => INPUT_TUPLES,
-            BenchMode::Tile => INPUT_TUPLES * TILE_GROUPS,
+            BenchMode::Scanline => INPUT_TUPLES * SCANLINE_GROUPS,
         };
         let evals = (evals_per_batch * repeat_batches) as f64;
         // totals is sorted and the per-eval transform is monotone, so the
@@ -1124,7 +1135,7 @@ pub struct BenchSession {
     sentinel_samples: Vec<SentinelSample>,
     overhead_throughput_ns: f64,
     overhead_latency_ns: f64,
-    overhead_tile_ns: f64,
+    overhead_scanline_ns: f64,
     exprs_benchmarked: usize,
     exprs_at_last_sentinel: usize,
 }
@@ -1173,9 +1184,9 @@ impl BenchSession {
                 panic!("BenchSession: identity overhead (latency) measurement failed: {e}")
             })
             .ns;
-        let overhead_tile_ns = measure_exec_code(&identity_code, 1, BenchMode::Tile)
+        let overhead_scanline_ns = measure_exec_code(&identity_code, 1, BenchMode::Scanline)
             .unwrap_or_else(|e| {
-                panic!("BenchSession: identity overhead (tile) measurement failed: {e}")
+                panic!("BenchSession: identity overhead (scanline) measurement failed: {e}")
             })
             .ns;
 
@@ -1193,7 +1204,7 @@ impl BenchSession {
             }],
             overhead_throughput_ns,
             overhead_latency_ns,
-            overhead_tile_ns,
+            overhead_scanline_ns,
             exprs_benchmarked: 0,
             exprs_at_last_sentinel: 0,
         }
@@ -1205,7 +1216,7 @@ impl BenchSession {
         match mode {
             BenchMode::Throughput => self.overhead_throughput_ns,
             BenchMode::Latency => self.overhead_latency_ns,
-            BenchMode::Tile => self.overhead_tile_ns,
+            BenchMode::Scanline => self.overhead_scanline_ns,
         }
     }
 
@@ -2000,55 +2011,58 @@ mod tests {
             .expect("same kernel, same inputs: outputs must match exactly");
     }
 
-    /// [`BenchMode::Tile`] must divide the timed total by the evaluations the
-    /// tile actually performed, not by the evaluations a single-group call
+    /// [`BenchMode::Scanline`] must divide the timed total by the evaluations
+    /// the row actually performed, not by the evaluations a single-group call
     /// would have.
     ///
     /// This is the one thing the mode can get silently wrong: one call fills
-    /// [`TILE_GROUPS`] groups, so a divisor that forgot the tile width reports
-    /// a per-eval time 64× too large — a plausible-looking number, in the
-    /// right units, that would price every kernel measured in this mode off
-    /// the same constant factor.
+    /// [`SCANLINE_GROUPS`] groups, so a divisor that forgot the row width
+    /// reports a per-eval time 64× too large — a plausible-looking number, in
+    /// the right units, that would price every kernel measured in this mode
+    /// off the same constant factor.
     ///
     /// Pinned by the mode's own premise rather than by restating the formula:
-    /// a tile call amortizes call/ret across its groups, so per-eval tile time
-    /// can never exceed per-eval throughput time for the same kernel. The
+    /// a row call amortizes call/ret across its groups, so per-eval scanline
+    /// time can never exceed per-eval throughput time for the same kernel. The
     /// bound is deliberately loose (2×) — it is a divisor check, not a
     /// benchmark, and 2× is nowhere near the 64× a miscount produces while
     /// leaving room for any amount of clock noise.
     #[test]
-    fn tile_mode_divides_by_the_whole_tile() {
+    fn scanline_mode_divides_by_the_whole_row() {
         let mut session = BenchSession::new();
-        assert!(session.call_overhead_ns(BenchMode::Tile) > 0.0);
+        assert!(session.call_overhead_ns(BenchMode::Scanline) > 0.0);
 
         let (arena, root) = sentinel_arena();
         let throughput = session
             .benchmark_arena(&arena, root, BenchMode::Throughput)
             .expect("sentinel-shaped kernel benchmarks in throughput mode");
-        let tile = session
-            .benchmark_arena(&arena, root, BenchMode::Tile)
-            .expect("sentinel-shaped kernel benchmarks in tile mode");
+        let scanline = session
+            .benchmark_arena(&arena, root, BenchMode::Scanline)
+            .expect("sentinel-shaped kernel benchmarks in scanline mode");
 
-        assert_eq!(tile.mode, BenchMode::Tile);
+        assert_eq!(scanline.mode, BenchMode::Scanline);
         assert_eq!(
-            tile.call_overhead_ns,
-            session.call_overhead_ns(BenchMode::Tile)
+            scanline.call_overhead_ns,
+            session.call_overhead_ns(BenchMode::Scanline)
         );
-        assert_eq!(tile.adjusted_ns, tile.ns - tile.call_overhead_ns);
+        assert_eq!(
+            scanline.adjusted_ns,
+            scanline.ns - scanline.call_overhead_ns
+        );
         assert!(
-            tile.ns < throughput.ns * 2.0,
-            "tile per-eval {:.4}ns against throughput {:.4}ns: a tile call does \
-             TILE_GROUPS={TILE_GROUPS}× the work of a single-group call, so this \
-             ratio is the eval-count divisor, not the machine",
-            tile.ns,
+            scanline.ns < throughput.ns * 2.0,
+            "scanline per-eval {:.4}ns against throughput {:.4}ns: a row call does \
+             SCANLINE_GROUPS={SCANLINE_GROUPS}× the work of a single-group call, so \
+             this ratio is the eval-count divisor, not the machine",
+            scanline.ns,
             throughput.ns,
         );
 
         // Outputs are captured with independent single-group calls in every
-        // mode, so the tile path must not have disturbed them.
-        assert_eq!(tile.outputs.len(), INPUT_TUPLES);
+        // mode, so the scanline path must not have disturbed them.
+        assert_eq!(scanline.outputs.len(), INPUT_TUPLES);
         throughput
-            .check_equivalence(&tile, 0.0)
+            .check_equivalence(&scanline, 0.0)
             .expect("same kernel, same inputs: outputs must match exactly");
     }
 
