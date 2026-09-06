@@ -1,5 +1,9 @@
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub mod cell_grid;
 pub mod color;
 pub mod frame;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub mod packed;
 pub mod pixel;
 pub mod rasterizer;
 pub mod scene;

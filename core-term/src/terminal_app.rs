@@ -11,7 +11,8 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::{At, CellGridGeometry, CellGridPackedProgram};
+use pixelflow_core::{At, CellGridGeometry};
+use pixelflow_graphics::render::cell_grid::CellGridPackedProgram;
 use pixelflow_graphics::render::scene::Scene;
 
 /// Adapter to send PTY commands to TerminalApp actor.

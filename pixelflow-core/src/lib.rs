@@ -264,9 +264,10 @@ pub use manifold::Differentiable;
 pub use lattice::BilinearSampler;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub use lattice::cell_grid::{
-    CELL_STRIDE, CellGridFrame, CellGridGeometry, CellGridPackedFrame, CellGridPackedProgram,
-    CellGridProgram, PlaneRegion,
+    CELL_STRIDE, CellGridBuffers, CellGridFrame, CellGridGeometry, CellGridKernels, CellGridProgram,
 };
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub use lattice::plane::{MAX_BOUND_BUFFERS, PlaneFrame, PlaneProgram, PlaneRegion};
 pub use lattice::{DiscreteManifold, Lattice};
 
 // ============================================================================

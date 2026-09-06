@@ -439,6 +439,9 @@ impl Lattice {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub mod cell_grid;
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub mod plane;
+
 #[cfg(test)]
 mod tests;
 
