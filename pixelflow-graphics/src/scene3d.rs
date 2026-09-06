@@ -338,12 +338,18 @@ pub fn checker(x: &Kernel, z: &Kernel, footprint: &Kernel) -> Rgba {
     let half = cell_x.add(&cell_z).mul(&k(0.5));
     let light = half.sub(&half.floor()).abs().lt(&k(0.25));
 
-    // Distance to the nearest cell edge, in cells.
+    // How much of the pixel's footprint lands in the cell its centre is in:
+    // a box filter of width `f` centred `d` from the nearest edge covers
+    // `½ + d/f` of this cell, up to all of it. The two limits are the reason
+    // for the `½`: a footprint much smaller than a cell gives 1 (a hard
+    // edge), and one much larger gives ½ — the average of the two colours,
+    // which is what a checkerboard washes out to when you cannot resolve it.
+    // Without the `½` the same expression sends a pixel *on* an edge to the
+    // neighbour's colour outright, so cells swap across every boundary and a
+    // surface seen at a grazing angle flickers between whole cells.
     let edge = |f: &Kernel| k(0.5).sub(&f.sub(&k(0.5)).abs());
     let to_edge = edge(&cx.sub(&cell_x)).min(&edge(&cz.sub(&cell_z)));
-    let coverage = to_edge
-        .div(&width.add(&k(MIN_FOOTPRINT)))
-        .clamp(&k(0.0), &k(1.0));
+    let coverage = k(0.5).add(&to_edge.div(&width.add(&k(MIN_FOOTPRINT))).min(&k(0.5)));
 
     let blend = |c: usize| {
         let here = light.select(&k(CHECKER_LIGHT[c]), &k(CHECKER_DARK[c]));

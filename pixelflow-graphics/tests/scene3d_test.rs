@@ -104,20 +104,36 @@ fn floor_only() {
     common::write_ppm(&path, &frame).unwrap();
     common::assert_golden("floor_only", &frame, 2, 0.01);
 
-    // Below the horizon is floor, above it is sky, and the two do not look
-    // alike: the floor's cells are far from the sky's blue.
-    let floor = &frame.data[(3 * H / 4) * W + (W / 2)];
+    // Below the horizon is a checkerboard and above it is a smooth sky, which
+    // a single pixel cannot tell you — a floor pixel may legitimately be any
+    // blend of two cells. A row can: the floor's swings from cell to cell, the
+    // sky's barely moves.
+    let spread = |row: usize| {
+        let r = |x: usize| frame.data[row * W + x].r();
+        let (lo, hi) = (0..W)
+            .map(r)
+            .fold((255u8, 0u8), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        hi - lo
+    };
+    assert!(
+        spread(3 * H / 4) > 100,
+        "the floor is a checkerboard: its row spans {} of 255",
+        spread(3 * H / 4)
+    );
+    // The sky is not flat across a row either — normalizing the direction
+    // tilts a row's rays down towards its ends — but it moves by a tenth of
+    // what a cell boundary does.
+    assert!(
+        spread(H / 4) < 20,
+        "the sky is smooth across the frame: its row spans {} of 255",
+        spread(H / 4)
+    );
     let sky = &frame.data[(H / 4) * W + (W / 2)];
     assert!(
         sky.b() > sky.r(),
         "above the horizon is sky: r={} b={}",
         sky.r(),
         sky.b()
-    );
-    assert!(
-        floor.r() < 80 || floor.r() > 180,
-        "the floor is a checker cell, light or dark: r={}",
-        floor.r()
     );
 }
 
