@@ -25,7 +25,8 @@
 //! costs an extra instruction per Horner step on every target that has an FMA.
 
 use crate::Field;
-use crate::{Manifold, ManifoldExt};
+use crate::ManifoldExt;
+use crate::combinator::Manifold;
 // The reduction split, polynomials, and domain limit are defined once, in the
 // IR expansion every backend lowers through, and used from here so the
 // combinator tier and the JIT cannot disagree about what `sin` is.

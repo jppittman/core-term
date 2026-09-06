@@ -1,7 +1,7 @@
 //! # Jet2: 2D Automatic Differentiation (first derivatives)
 
 use crate::Field;
-use crate::Manifold;
+use crate::combinator::Manifold;
 use crate::ext;
 use crate::numeric::{Computational, Numeric, Selectable};
 

@@ -240,7 +240,8 @@ pub fn generate_dag_benchmark_file(variants: &[(String, EGraph, EClassId)]) -> S
 //! DO NOT EDIT MANUALLY - regenerate with the command above.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use pixelflow_core::{Field, Manifold, ManifoldExt};
+use pixelflow_core::combinator::Manifold;
+use pixelflow_core::{Field, ManifoldExt};
 use pixelflow_compiler::kernel_raw;
 
 fn bench_dag_kernels(c: &mut Criterion) {

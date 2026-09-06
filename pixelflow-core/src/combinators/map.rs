@@ -3,7 +3,8 @@
 //! Transforms the output of a manifold using another manifold.
 //! This is the algebraic version of fmap.
 
-use crate::{Field, Manifold};
+use crate::Field;
+use crate::combinator::Manifold;
 
 /// Maps a manifold transformation over a manifold's output.
 ///

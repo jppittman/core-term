@@ -18,8 +18,9 @@
 //! macro and evaluate identically to the unoptimized `kernel_raw!` form.
 
 use pixelflow_compiler::{kernel, kernel_raw};
+use pixelflow_core::combinator::Manifold;
 use pixelflow_core::jet::Jet2;
-use pixelflow_core::{DiscreteManifold, Field, Manifold};
+use pixelflow_core::{DiscreteManifold, Field};
 
 /// Extract the first lane from a Field as f32.
 fn field_extract(f: Field) -> f32 {

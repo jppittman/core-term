@@ -2,7 +2,8 @@
 //!
 //! Extracts a component from a projectable type.
 
-use crate::{Field, Manifold, variables::Dimension};
+use crate::combinator::Manifold;
+use crate::{Field, variables::Dimension};
 use core::marker::PhantomData;
 
 type Field4 = (Field, Field, Field, Field);

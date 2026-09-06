@@ -5,8 +5,9 @@
 //! - [`Fix`]: Dynamic iteration until convergence (runtime `loop`).
 //! - [`RecFix`]: Static recursion with compile-time unrolling (Peano numbers).
 
+use crate::Field;
+use crate::combinator::Manifold;
 use crate::combinators::binding::{Pred, UTerm}; // Use existing Peano infrastructure
-use crate::{Field, Manifold};
 use core::marker::PhantomData;
 
 type Field4 = (Field, Field, Field, Field);

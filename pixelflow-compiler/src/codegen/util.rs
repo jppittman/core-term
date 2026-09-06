@@ -8,9 +8,10 @@ use quote::quote;
 /// This avoids duplicating the import list in every code path.
 pub fn standard_imports() -> TokenStream {
     quote! {
+        use ::pixelflow_core::combinator::Manifold;
         use ::pixelflow_core::{
             X, Y, Z, W,
-            ManifoldExt, ManifoldCompat, Manifold,
+            ManifoldExt, ManifoldCompat,
             Let, Var, WithContext, CtxVar, ContextFree, Computed, ManifoldBind,
             A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15,
             GradientMag2D, GradientMag3D,

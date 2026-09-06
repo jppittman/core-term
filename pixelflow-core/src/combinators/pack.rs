@@ -4,7 +4,8 @@
 //! This is the algebraic dual of `Project` - where Project extracts one axis,
 //! Pack combines all axes.
 
-use crate::{Field, Manifold, ops::Vector, variables::Axis};
+use crate::combinator::Manifold;
+use crate::{Field, ops::Vector, variables::Axis};
 
 type Field4 = (Field, Field, Field, Field);
 

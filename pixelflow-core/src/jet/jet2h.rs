@@ -1,7 +1,7 @@
 //! # Jet2H: 2D Automatic Differentiation with Hessian (second derivatives)
 
 use crate::Field;
-use crate::Manifold;
+use crate::combinator::Manifold;
 use crate::ext;
 use crate::numeric::{Computational, Numeric, Selectable};
 

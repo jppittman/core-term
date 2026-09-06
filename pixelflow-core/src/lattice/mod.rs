@@ -25,8 +25,9 @@
 //!
 //! [`Kernel`]: pixelflow_ir::Kernel
 
+use crate::combinator::Manifold;
 use crate::numeric::Numeric;
-use crate::{Field, Manifold, PARALLELISM};
+use crate::{Field, PARALLELISM};
 use alloc::vec;
 use alloc::vec::Vec;
 

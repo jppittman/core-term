@@ -16,7 +16,8 @@
 //! in the to-be-retired backend, tracked until that backend dies.
 
 use pixelflow_compiler::{kernel, kernel_jit};
-use pixelflow_core::{Field, Kernel, Lattice, Manifold};
+use pixelflow_core::combinator::Manifold;
+use pixelflow_core::{Field, Kernel, Lattice};
 
 type F4 = (Field, Field, Field, Field);
 

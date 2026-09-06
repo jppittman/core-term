@@ -55,9 +55,9 @@
 //! let uncached = font.glyph_scaled('A', 17.3);
 //! ```
 
+use pixelflow_core::combinator::Manifold;
 use pixelflow_core::{
-    At, BilinearSampler, DiscreteManifold, Field, Kernel, Lattice, Manifold, ManifoldExt, Select,
-    W, X, Y, Z,
+    At, BilinearSampler, DiscreteManifold, Field, Kernel, Lattice, ManifoldExt, Select, W, X, Y, Z,
 };
 use std::collections::HashMap;
 use std::sync::Arc;

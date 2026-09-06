@@ -223,7 +223,7 @@ impl StructEmitter {
             } => {
                 if generics.is_empty() {
                     quote! {
-                        impl ::pixelflow_core::Manifold<#domain_type> for #name {
+                        impl ::pixelflow_core::combinator::Manifold<#domain_type> for #name {
                             type Output = #output_type;
 
                             #[inline(always)]
@@ -238,7 +238,7 @@ impl StructEmitter {
                     }
                 } else {
                     quote! {
-                        impl<#(#generics),*> ::pixelflow_core::Manifold<#domain_type> for #name<#(#generics),*>
+                        impl<#(#generics),*> ::pixelflow_core::combinator::Manifold<#domain_type> for #name<#(#generics),*>
                         where
                             #(#trait_bounds),*
                         {
@@ -260,7 +260,7 @@ impl StructEmitter {
             DomainConfig::Generic { output_type } => {
                 if generics.is_empty() {
                     quote! {
-                        impl<__P> ::pixelflow_core::Manifold<__P> for #name
+                        impl<__P> ::pixelflow_core::combinator::Manifold<__P> for #name
                         where
                             __P: Copy + Send + Sync + ::pixelflow_core::Spatial,
                         {
@@ -278,10 +278,10 @@ impl StructEmitter {
                     }
                 } else {
                     quote! {
-                        impl<#(#generics),*, __P> ::pixelflow_core::Manifold<__P> for #name<#(#generics),*>
+                        impl<#(#generics),*, __P> ::pixelflow_core::combinator::Manifold<__P> for #name<#(#generics),*>
                         where
                             __P: Copy + Send + Sync + ::pixelflow_core::Spatial,
-                            #(#generics: ::pixelflow_core::Manifold<__P, Output = #output_type>),*,
+                            #(#generics: ::pixelflow_core::combinator::Manifold<__P, Output = #output_type>),*,
                         {
                             type Output = #output_type;
 

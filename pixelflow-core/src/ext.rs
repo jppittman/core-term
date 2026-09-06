@@ -57,7 +57,7 @@
 //! 7. **Type Erasure** (Field4 only): `boxed`
 //! 8. **Functor Operations**: `map`, `lift`
 
-use crate::Manifold;
+use crate::combinator::Manifold;
 use crate::combinators::{At, ClosureMap, Map, Select};
 use crate::ops::{
     Abs, Acos, Add, Asin, Atan, Atan2, Ceil, Clamp, Cos, Div, Eq, Exp, Exp2, Floor, Fract, Ge, Gt,

@@ -9,7 +9,8 @@
 //! fully unrolled into a "line program" of evaluations and additions.
 //! If the inner manifold is a ZST, the entire reduction is also a ZST.
 
-use crate::{Field, Manifold, variables::Dimension};
+use crate::combinator::Manifold;
+use crate::{Field, variables::Dimension};
 use crate::combinators::binding::{UTerm, UInt, Pred, ToInt};
 use core::marker::PhantomData;
 use pixelflow_compiler::Element;

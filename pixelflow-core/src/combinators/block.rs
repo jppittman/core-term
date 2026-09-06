@@ -37,7 +37,7 @@
 //! - May improve overall performance if it prevents excessive spilling
 //! - Profile before and after to verify benefit
 
-use crate::Manifold;
+use crate::combinator::Manifold;
 
 /// Scheduling barrier that prevents inlining.
 ///

@@ -1,6 +1,7 @@
 //! Testing kernel composition patterns
 use pixelflow_compiler::kernel;
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::combinator::Manifold;
+use pixelflow_core::Field;
 
 type Field4 = (Field, Field, Field, Field);
 

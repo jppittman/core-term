@@ -9,7 +9,8 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use pixelflow_compiler::kernel_raw;
-use pixelflow_core::{Field, Manifold, ManifoldExt, W, X, Y, Z};
+use pixelflow_core::combinator::Manifold;
+use pixelflow_core::{Field, ManifoldExt, W, X, Y, Z};
 
 // ============================================================================
 // Benchmark Categories

@@ -31,7 +31,8 @@
 //! ## Example: Building a Circle
 //!
 //! ```ignore
-//! use pixelflow_core::{X, Y, Manifold};
+//! use pixelflow_core::combinator::Manifold;
+//! use pixelflow_core::{X, Y};
 //!
 //! // Type: Sqrt<Add<Mul<X, X>, Mul<Y, Y>>>
 //! let distance_from_origin = (X * X + Y * Y).sqrt();

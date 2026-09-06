@@ -5,7 +5,8 @@
 //! The kernel remains a pure mathematical function, while the host orchestrates
 //! memory loading, SIMD chunking, and multithreading.
 
-use crate::{Field, Manifold, PARALLELISM};
+use crate::combinator::Manifold;
+use crate::{Field, PARALLELISM};
 
 #[cfg(feature = "std")]
 use std::sync::atomic::{AtomicUsize, Ordering};

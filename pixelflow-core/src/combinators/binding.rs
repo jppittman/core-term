@@ -42,7 +42,7 @@
 //! (`UInt<UInt<UTerm, B1>, B0>` for 0b10) uses structural recursion with
 //! logarithmic depth instead of linear depth.
 
-use crate::Manifold;
+use crate::combinator::Manifold;
 use crate::domain::{Head, LetExtended, Tail};
 use core::marker::PhantomData;
 use pixelflow_compiler::Element;

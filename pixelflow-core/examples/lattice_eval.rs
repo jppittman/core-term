@@ -1,5 +1,6 @@
+use pixelflow_core::combinator::Manifold;
 use pixelflow_core::lattice::{DiscreteManifold, Lattice};
-use pixelflow_core::{Field, Kernel, Manifold};
+use pixelflow_core::{Field, Kernel};
 
 fn main() {
     // 2x2 grid built from a DiscreteManifold

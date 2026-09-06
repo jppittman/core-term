@@ -2,7 +2,7 @@
 //!
 //! AST nodes for bitwise logic: And, Or, Not.
 
-use crate::Manifold;
+use crate::combinator::Manifold;
 use pixelflow_compiler::Element;
 
 /// Bitwise AND.

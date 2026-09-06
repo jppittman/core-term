@@ -13,7 +13,8 @@
 //! cargo run --release -p pixelflow-runtime --example bench_psychedelic
 
 use pixelflow_compiler::{kernel, kernel_jit, kernel_raw};
-use pixelflow_core::{FastMathGuard, Field, Kernel, Lattice, Manifold, PARALLELISM};
+use pixelflow_core::combinator::Manifold;
+use pixelflow_core::{FastMathGuard, Field, Kernel, Lattice, PARALLELISM};
 
 #[cfg(target_os = "macos")]
 #[repr(C)]

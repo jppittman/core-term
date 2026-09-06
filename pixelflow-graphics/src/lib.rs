@@ -81,4 +81,5 @@ pub use render::frame::Frame;
 
 // Re-export core types for convenience
 // Field/Discrete are doc(hidden) - use manifolds instead of direct field manipulation
-pub use pixelflow_core::{Manifold, ManifoldExt, Map, W, X, Y, Z};
+pub use pixelflow_core::combinator::Manifold;
+pub use pixelflow_core::{ManifoldExt, Map, W, X, Y, Z};

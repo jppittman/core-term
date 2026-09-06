@@ -29,7 +29,7 @@
 //! ```
 
 use crate::Field;
-use crate::Manifold;
+use crate::combinator::Manifold;
 
 type Field4 = (Field, Field, Field, Field);
 

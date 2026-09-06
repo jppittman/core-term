@@ -10,7 +10,8 @@
 //! don't compute fields directly. Shapes use coordinate variables (X, Y)
 //! and comparison operators to build conditional evaluation trees.
 
-use pixelflow_core::{And, Field, Ge, Le, Manifold, ManifoldExt, Select, X, Y};
+use pixelflow_core::combinator::Manifold;
+use pixelflow_core::{And, Field, Ge, Le, ManifoldExt, Select, X, Y};
 
 // ============================================================================
 // Type Aliases

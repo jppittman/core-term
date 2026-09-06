@@ -22,7 +22,8 @@
 //!
 //! For constant translations, Shift avoids creating manifold expressions.
 
-use crate::{Computational, Manifold};
+use crate::combinator::Manifold;
+use crate::{Computational};
 
 /// Translates a manifold by subtracting constant offsets from coordinates.
 ///

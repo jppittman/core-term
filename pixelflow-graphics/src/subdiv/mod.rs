@@ -57,9 +57,10 @@ mod coeffs;
 
 pub use coeffs::{get_eigen, EigenCoeffs, MAX_VALENCE};
 
+use pixelflow_core::combinator::Manifold;
 use pixelflow_core::combinators::{At, Select};
 use pixelflow_core::ops::compare::Lt;
-use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
+use pixelflow_core::{Field, ManifoldExt, X, Y};
 
 // ============================================================================
 // Regular Patch (Valence 4) - Standard B-Spline
