@@ -735,18 +735,63 @@ the bench are within ("Hello", "HELLO"). Production text does not go through
 this path — the atlas is one buffer for every glyph, which is why the cell
 grid scales — and the ceiling is the compiled manifold's, not the cache's.
 
-**The identity gate. Nothing that should not have moved, moved** — recorded
-before the first change and again after the last, on this host:
+**The identity gate. Nothing that should not have moved, moved.** The *before*
+column is not this stage reading itself — the emitted-byte figures are the ones
+S4a's landing block recorded, re-measured here on the same host:
 
 | artifact | SSE2 before → after | AVX-512 before → after |
 |---|---|---|
 | `bench_scene_psychedelic`'s packed program | 5,584 B `fnv1a=00f3a5ed124990bf` → **identical** | 4,352 B `fnv1a=2d6e37c15a633a65` → **identical** |
 | `bench_scene_chrome`'s packed program | 9,760 B `fnv1a=ca0e1d4413e140c7` → **identical** | 7,645 B `fnv1a=5c099aea39b99996` → **identical** |
-| `collapse_cost` corpus fixture (208 kernels) | `md5=cc486de8…` (captured once, replayed) | (the same fixture) |
-| `collapse_cost` deterministic columns — every field but `measured` | `md5=7fbeabd9…` → **identical** | `md5=b7ce9994…` → **identical** |
+| `collapse_cost` corpus fixture (208 kernels: 15 synthetic, 193 glyph bakes) | `md5=379282c4…` → **identical** | (the same fixture) |
+| `collapse_cost` deterministic columns — every field but `measured` | `md5=3f61ec4d…` — **new baseline** | `md5=470a3c27…` — **new baseline** |
 
-The before column is not merely self-consistent: all four byte counts and
-hashes are the ones S4a's landing block recorded.
+The emitted-bytes instrument is the two examples' own scene constructors plus
+an fnv1a over `Manifold::code_bytes()`, run once per ISA level. It is
+deliberately **not** in the tree: there it would be a third copy of two scenes
+that already exist as examples, and what it prints is a per-host,
+per-ISA-level measurement for a landing block, not a contract a test could
+assert.
+
+The fixture row carries more than it looks: the corpus is captured by *this*
+build, so an identical hash says the glyph bakes and the synthetic families
+this stage compiles are the ones S4a compiled. The **columns**, though, could
+not be compared — S4a's `md5=55aadbd0…` records a number without the recipe
+that produced it, and none of six plausible reconstructions reproduces it. A
+hash whose derivation is not written down is not a gate, so these two are a
+new baseline **with the recipe beside them**:
+
+```text
+collapse_cost capture --out corpus/                        # the fixture
+find corpus/ -type f | sort | xargs cat | md5sum
+collapse_cost bench --corpus corpus/ --out rows.jsonl \
+    --git-ref <ref> --passes 2                             # the columns
+jq -c 'del(.measured, .git_ref, .git_sha, .profile)' rows.jsonl | md5sum
+```
+
+What stands in for the missing comparison is stronger than the hash would have
+been: **every input to those columns is byte-identical to `origin/main`.** The
+diff against it is empty over `pixelflow-ir/`, `pixelflow-codegen/src/emit/`,
+`pixelflow-pipeline/src/`, and the two files `capture` bakes through
+(`fonts/ttf.rs`, `fonts/atlas.rs`); `pixelflow-codegen`'s only change in this
+stage is `JitManifold`'s rename, and `collapse_bench` never goes through it —
+it calls `emit::compile` directly. Identical inputs through identical code
+cannot produce different columns.
+
+**Two things this stage owed and had not paid**, found when its own commits
+were re-read against the brief:
+
+- `bake`'s refusal of a buffer-declaring kernel moved into `Manifold::bind`,
+  and **nothing pinned it** — the old assert's message (`"bake binds none"`)
+  appears in no test at `origin/main` either, so the rule was one edit away
+  from becoming a null base-pointer read through an entirely safe API.
+  `baking_a_kernel_over_bound_memory_names_the_slot_it_cannot_fill`
+  (`pixelflow-core/src/lattice/tests.rs`) is now the check.
+- `pixelflow-graphics`'s crate root still re-exported the per-batch **trait**
+  as `pixelflow_graphics::Manifold`, so the one name meant two different
+  things in two crates — the exact ambiguity this stage exists to remove.
+  Nothing imported it from there (`shapes.rs` and `subdiv/mod.rs` name the
+  trait through `pixelflow_core::combinator`), so it is gone.
 
 **Where the brief was wrong**, in the tree:
 
@@ -767,27 +812,54 @@ hashes are the ones S4a's landing block recorded.
 
 | crate | `impl … Manifold … for` | `kernel!` | `kernel_raw!` | `kernel_value!` | `kernel_jit!` | `ManifoldExpr` |
 |---|---:|---:|---:|---:|---:|---:|
-| `pixelflow-core` | 147 | 11 | — | 1 | 2 | 31 |
-| `pixelflow-compiler` | 4 (emitted by `struct_emitter`) | 6 | 1 | 1 | 4 | 3 |
+| `pixelflow-core` | 113 in `src/`, 4 in `tests/` | 3 + 2 | — | — | — | 5 |
+| `pixelflow-compiler` | 4 (emitted by `struct_emitter.rs`) | 10 | 2 | 3 | 5 | 6 |
 | `pixelflow-graphics` | 0 | 5 | — | 1 | — | — |
-| `pixelflow-runtime` | 0 | 3 | 1 | — | 2 | — |
-| `pixelflow-search` | 0 | 6 | 1 | — | 1 | — |
-| `pixelflow-pipeline` | 0 | 3 | 1 | — | — | — |
-| `pixelflow-ir` | 0 | 1 | 2 | — | — | — |
+| `pixelflow-runtime` | 0 | 2 | 1 | — | 2 | — |
+| `pixelflow-search` | 0 | 1 | 1 | — | — | — |
+| `pixelflow-pipeline` | 0 | 1 | 1 | — | — | — |
+| `pixelflow-ir` | 0 | — | — | — | — | — |
 | `core-term` | 0 | — | — | — | — | — |
 
-Impl counts are trait impls; macro columns are *files that invoke*. The core
-count is 147 rather than S4a's 121 because it counts `ext.rs`'s
-`BoxedManifold`, `lib.rs`'s `Field` operator impls and `lattice`'s
-`DiscreteManifold`/`BilinearSampler` alongside `ops/`, `combinators/`,
-`variables` and the jets — the whole combinator library, which is what S4b-2
-deletes together. **Outside core and the compiler the count is zero**:
-`pixelflow-graphics`'s `patch.rs` (`BezierPatch`, S4a's last non-core impl)
-had no consumer at all and is deleted here rather than left for S4b-2 to
-find. Return-position `impl Manifold<Output = Field>` survives in
-`graphics/shapes.rs` (4) and `graphics/subdiv/mod.rs` (14), both `Field`-tier
-and both going with the library. `Lower` is still implemented for exactly two
-types.
+**These counts are grep-reproducible, and the previous two were not** — S4a's
+and this block's first draft disagreed by a factor of two on the same tree,
+because one counted a looser pattern and the other counted prose. Impls are
+`^\s*impl(<…>)?\s+.*\bManifold\b.*\bfor\b` less `ManifoldExpr` /
+`ManifoldCompat` / `ManifoldExt`. The macro columns are *files containing an
+invocation*, `(^|[^_a-zA-Z])<macro>!\s*[({[]` — which is why `pixelflow-ir`'s
+row is empty (it cannot depend on the compiler; those were mentions in prose)
+and core's reads `3 + 2` (three files in `src/`, two in `tests/`). The
+`ManifoldExpr` column is files that name the trait at all.
+
+The core impl count is 113 because it is the whole combinator library at once
+— `ops/`, `combinators/`, `variables`, the jets, `combinator.rs`'s constant
+and smart-pointer impls, `ext.rs`'s `BoxedManifold`, `lib.rs`'s `Field`
+operator impls, and `lattice`'s `DiscreteManifold`/`BilinearSampler` — which
+is what S4b-2 deletes in one move; the four in `tests/` are core's own
+hand-written implementors of it. **Outside core and the compiler the count is
+zero**: `pixelflow-graphics`'s `patch.rs` (`BezierPatch`, S4a's last non-core
+impl) had no consumer at all and is deleted here rather than left for S4b-2
+to find. Return-position `impl Manifold<Output = Field>` survives in
+`graphics/shapes.rs` (4) and `graphics/subdiv/mod.rs` (14 occurrences, 8 of
+them after a `->`), both `Field`-tier and both going with the library.
+`Lower` is still implemented for exactly two types (`pixelflow-ir`'s `Kernel`
+and `f32`).
+
+**Gates run** on this 4-core host, every one green: `cargo fmt --all -- --check`;
+`cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`
+(133 binaries, 2,634 tests); each CI-named contract by exact name — "Check
+kernel tier parity" (5), "Check JIT/interpreter glyph parity" (4, no golden
+moved), "Check scene color, reflection, and antialiasing contracts" (3), "Check
+ray/surface composition contracts" (3); `pixelflow-core`, `-graphics` and
+`-runtime` tested at `+avx2,+fma` and at `+avx512f,+avx512dq` (47 binaries
+each); `cargo run -p xtask -- isa-matrix --clippy --smoke` **PASS at all three
+levels** (sse2, avx2+fma, avx512f+dq);
+`pixelflow-graphics` cross-built for `aarch64-unknown-linux-gnu` and run under
+`qemu-aarch64-static` (17 binaries, 194 tests); `cargo test -p core-term`;
+`cargo build --examples` for graphics and runtime; and
+`scripts/check-cl-metadata.sh`. `CARGO_PROFILE_DEV_DEBUG=0` was set throughout,
+as S4a noted for the same container: it changes artifact size, not what is
+compiled or executed.
 
 So S4b-2 is: delete `pixelflow_core::combinator`, the ZST combinator library,
 `Lower`, and `kernel!`'s LLVM tier; consolidate `kernel!`/`kernel_raw!`/
