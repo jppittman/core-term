@@ -164,6 +164,7 @@ mod tests {
             ExprNode::Const(val) => egraph.add(ENode::Const(val.to_bits())),
             ExprNode::Param(i) => panic!("Param({i}) reached math tests"),
             ExprNode::Buffer(b) => panic!("Buffer({}) reached math tests", b.0),
+            ExprNode::Uniform(u) => panic!("Uniform({}) reached math tests", u.0),
             ExprNode::Unary(kind, a) => {
                 let ca = expr_to_egraph(arena, a, egraph);
                 let op = crate::egraph::ops::op_from_kind(kind)
@@ -207,6 +208,7 @@ mod tests {
             ENode::Var(idx) => arena.push_var(idx),
             ENode::Const(bits) => arena.push_const(f32::from_bits(bits)),
             ENode::Buffer(decl) => panic!("Buffer({decl:?}) reached math tests"),
+            ENode::Uniform(decl) => panic!("Uniform({decl:?}) reached math tests"),
             ENode::Op { op, children } => {
                 let kind = op.kind();
                 let child_ids: Vec<ExprId> = children

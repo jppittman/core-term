@@ -40,6 +40,10 @@ pub enum Declined {
 /// chain-rule expansion, deep composition), so this must not blow the Rust
 /// stack.
 ///
+/// `Buffer` and `Uniform` leaves insert as themselves, carrying their
+/// declarations; only `Param` declines, since it has no value until a builder
+/// substitutes it.
+///
 /// **Reachable-only.** A term representation may hold nodes no longer reached
 /// from `root` — an arena accumulates construction garbage — and inserting
 /// those would spend `max_classes`, a budget dimension, on nodes the budget's
@@ -73,6 +77,7 @@ pub fn insert<I: Ir>(
                     Shape::Const(v) => egraph.add(ENode::constant(v)),
                     Shape::Param(i) => return Err(Declined::Param(i)),
                     Shape::Buffer(decl) => egraph.add(ENode::Buffer(decl)),
+                    Shape::Uniform(decl) => egraph.add(ENode::Uniform(decl)),
                     Shape::Op(kind, children) => {
                         // Resolve before descending so an unrepresentable op
                         // is reported at the node that carries it.
