@@ -820,6 +820,7 @@ impl ChoicesCostDag<'_> {
             ENode::Var(_) => OpKind::Var,
             ENode::Const(_) => OpKind::Const,
             ENode::Buffer(_) => OpKind::Buffer,
+            ENode::Uniform(_) => OpKind::Uniform,
             ENode::Op { op, .. } => op.kind(),
         }
     }

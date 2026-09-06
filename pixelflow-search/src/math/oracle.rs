@@ -142,7 +142,7 @@ fn collect_metavars(arena: &ExprArena, id: pixelflow_ir::ExprId, out: &mut BTree
         ExprNode::Var(mv) => {
             out.insert(*mv);
         }
-        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => {}
+        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Uniform(_) => {}
         _ => {
             for c in arena.children(id) {
                 collect_metavars(arena, c, out);

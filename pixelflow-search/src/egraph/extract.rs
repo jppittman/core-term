@@ -906,7 +906,7 @@ pub fn extract<C: CostFunction>(
 
             for (idx, node) in nodes.iter().enumerate() {
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
+                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => {
                         costs.node_cost(node, None)
                     }
                     ENode::Op { children, .. } => {
@@ -1322,6 +1322,16 @@ pub fn choices_to_arena(
                         }
                         result_stack.push(expr_id);
                     }
+                    ENode::Uniform(decl) => {
+                        // Same rule: the decl (identity and default) is
+                        // redeclared by the destination arena, one slot per
+                        // identity.
+                        let expr_id = arena.embed(Shape::Uniform(*decl));
+                        if idx < id_map.len() {
+                            id_map[idx] = Some(expr_id);
+                        }
+                        result_stack.push(expr_id);
+                    }
                     ENode::Op { children, .. } => {
                         assert!(
                             color[idx] != 1,
@@ -1524,7 +1534,7 @@ fn node_variance(
         ENode::Var(v) => var_variance(*v),
         // A buffer's contents are fixed for the kernel's lifetime; a read of
         // one varies with its index, which is the `Gather`'s other child.
-        ENode::Const(_) | ENode::Buffer(_) => Variance::CONST,
+        ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => Variance::CONST,
         ENode::Op { children, .. } => children.iter().fold(Variance::CONST, |acc, &child| {
             let c = egraph.find(child);
             if c == canonical {
@@ -1658,7 +1668,7 @@ pub fn cost_of_choices<C: CostFunction>(
                     tree[c].expect("post-order visits every child before its parent")
                 })
                 .fold(0usize, usize::saturating_add),
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => 0,
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => 0,
         };
         tree[idx] = Some(own.saturating_add(children_cost));
         var[idx] = node_var;
@@ -1760,7 +1770,7 @@ pub fn extract_dag_scoped<C: CostFunction>(
                     usize::try_from((op_cost as u64).saturating_mul(weight)).unwrap_or(usize::MAX)
                 };
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
+                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => {
                         scaled(costs.node_cost(node, None))
                     }
                     ENode::Op { children, .. } => {
@@ -2834,7 +2844,10 @@ mod tests {
                 continue;
             }
             let kind = match arena.node(id) {
-                ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Buffer(_) => None,
+                ExprNode::Var(_)
+                | ExprNode::Const(_)
+                | ExprNode::Buffer(_)
+                | ExprNode::Uniform(_) => None,
                 ExprNode::Unary(k, _)
                 | ExprNode::Binary(k, _, _)
                 | ExprNode::Ternary(k, _, _, _) => Some(*k),
@@ -2932,7 +2945,7 @@ mod tests {
             match node {
                 ENode::Op { op, .. } if op.kind() == pixelflow_ir::OpKind::Sin => usize::MAX / 2,
                 ENode::Op { .. } => 1,
-                ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => 0,
+                ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => 0,
             }
         }
     }

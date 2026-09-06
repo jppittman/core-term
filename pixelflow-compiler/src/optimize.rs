@@ -1047,6 +1047,13 @@ impl EGraphContext {
                 "eclass_to_expr: ENode::Buffer({decl:?}) in the macro tier — \
                  buffer-bearing kernels are runtime-JIT only"
             ),
+            // Likewise: a uniform is chosen at the builder call, after the
+            // macro has expanded; the macro's own e-graph carries scalar
+            // params as opaque `Var`s and never sees one.
+            ENode::Uniform(decl) => panic!(
+                "eclass_to_expr: ENode::Uniform({decl:?}) in the macro tier — \
+                 uniforms are chosen at the builder call site"
+            ),
 
             ENode::Op { op, children } => {
                 let name = op.name();

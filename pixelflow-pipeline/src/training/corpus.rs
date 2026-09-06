@@ -251,6 +251,11 @@ pub fn reachable_subtree(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId)
                          that cannot be read back correctly",
                         b.0
                     ),
+                    ExprNode::Uniform(u) => panic!(
+                        "reachable_subtree: expression references Uniform({}), whose declaration \
+                         the corpus format does not serialize",
+                        u.0
+                    ),
                     ExprNode::Unary(op, a) => ExprNode::Unary(*op, map(*a)),
                     ExprNode::Binary(op, a, b) => ExprNode::Binary(*op, map(*a), map(*b)),
                     ExprNode::Ternary(op, a, b, c) => {
@@ -375,6 +380,15 @@ fn write_node(w: &mut impl Write, node: &ExprNode) -> io::Result<()> {
         ExprNode::Buffer(b) => {
             w.write_all(&[TAG_BUFFER])?;
             w.write_all(&b.0.to_le_bytes())?;
+        }
+        ExprNode::Uniform(u) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Uniform({}) has no corpus encoding: its declaration is not serialized",
+                    u.0
+                ),
+            ));
         }
     }
     Ok(())

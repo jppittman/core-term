@@ -167,8 +167,9 @@ fn copy_node(arena: &mut ExprArena, node: &ExprNode, m: &dyn Fn(ExprId) -> ExprI
         ExprNode::Var(i) => arena.push_var(*i),
         ExprNode::Const(v) => arena.push_const(*v),
         ExprNode::Param(i) => arena.push_param(*i),
-        // Same arena, so the buffer table (and ids) stay valid.
+        // Same arena, so the buffer and uniform tables (and ids) stay valid.
         ExprNode::Buffer(b) => arena.push_buffer(*b),
+        ExprNode::Uniform(u) => arena.push_uniform(*u),
         ExprNode::Unary(op, a) => arena.push_unary(*op, m(*a)),
         ExprNode::Binary(op, a, b) => arena.push_binary(*op, m(*a), m(*b)),
         ExprNode::Ternary(op, a, b, c) => arena.push_ternary(*op, m(*a), m(*b), m(*c)),
@@ -431,6 +432,7 @@ impl<'a> Substitution<'a> {
             ExprNode::Const(v) => arena.push_const(v),
             ExprNode::Param(i) => arena.push_param(i),
             ExprNode::Buffer(b) => arena.push_buffer(b),
+            ExprNode::Uniform(u) => arena.push_uniform(u),
             ExprNode::Unary(op, a) => {
                 let a = self.apply(arena, a);
                 arena.push_unary(op, a)
@@ -565,7 +567,11 @@ fn differentiate(arena: &mut ExprArena, expr: ExprId, var: u8) -> Result<ExprId,
 /// rule push nothing — [`diff_node`] raises the error for the node itself.
 fn push_deriv_children(node: &ExprNode, stack: &mut Vec<ExprId>) {
     match *node {
-        ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => {}
+        ExprNode::Var(_)
+        | ExprNode::Const(_)
+        | ExprNode::Param(_)
+        | ExprNode::Buffer(_)
+        | ExprNode::Uniform(_) => {}
         ExprNode::Unary(op, a) => match op {
             // d = 0 without touching the operand.
             OpKind::Floor | OpKind::Ceil | OpKind::Round => {}
@@ -614,9 +620,9 @@ fn diff_node(
 ) -> Result<ExprId, &'static str> {
     match arena.node(id).clone() {
         ExprNode::Var(i) => Ok(arena.push_const(if i == var { 1.0 } else { 0.0 })),
-        // Constants and scalar params (baked before evaluation) are
-        // coordinate-independent.
-        ExprNode::Const(_) | ExprNode::Param(_) => Ok(arena.push_const(0.0)),
+        // Constants, scalar params (baked before evaluation) and uniforms
+        // (invariant across the lattice) are coordinate-independent.
+        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Uniform(_) => Ok(arena.push_const(0.0)),
         ExprNode::Buffer(_) => Err("lower_dwrt: cannot differentiate a bound-memory read"),
 
         ExprNode::Unary(op, a) => {
@@ -1722,6 +1728,70 @@ mod dwrt_tests {
         let v0 = a.push_const(0.0);
         let root = a.push_binary(OpKind::Dwrt, red, v0);
         assert!(lower_dwrt_owned(&a, root).is_err());
+    }
+
+    /// A uniform is a value, never an extent. `Kernel::over` takes a `u32`
+    /// so this cannot be built through the API; the arena can still be
+    /// hand-built (or rewritten) into it, and then the unroll must refuse
+    /// rather than read a slot index as a trip count.
+    #[test]
+    #[should_panic(expected = "reduce extent must be a Const")]
+    fn a_uniform_in_the_extent_slot_is_refused() {
+        use crate::arena::{UniformDecl, UniformIdentity};
+        let mut a = ExprArena::new();
+        let u = a.declare_uniform(UniformDecl {
+            id: UniformIdentity::mint(),
+            default: 4.0,
+        });
+        let combiner = a.push_const(OpKind::Add.index() as f32);
+        let rvar = a.push_const(4.0);
+        let extent = a.push_uniform(u);
+        let body = a.push_var(4);
+        let red = a.push_nary(OpKind::Reduce, &[combiner, rvar, extent, body]);
+        let _ = expand_reduce(&mut a, red);
+    }
+
+    /// The other side of the same rule: a uniform is a perfectly good *value*
+    /// under the binder — invariant in the index, so shared by every term.
+    #[test]
+    fn a_uniform_under_a_binder_is_shared_by_every_unrolled_term() {
+        use crate::arena::{UniformDecl, UniformIdentity};
+        let mut a = ExprArena::new();
+        let u = a.declare_uniform(UniformDecl {
+            id: UniformIdentity::mint(),
+            default: 10.0,
+        });
+        let uval = a.push_uniform(u);
+        let i = a.push_var(4);
+        let body = a.push_binary(OpKind::Add, i, uval);
+        let red = a.push_reduce(OpKind::Add, 4, 3, body);
+        let root = expand_reduce(&mut a, red);
+        // Σ_{i<3} (i + u) = 3 + 3u.
+        assert_eq!(eval(&a, root, &[0.0; 4]), 33.0);
+        let bound = BindingTable::empty()
+            .bind_uniforms(&a, &[(a.uniforms()[0].id, 1.0)])
+            .expect("declared");
+        assert_eq!(eval_scalar(&a, root, &[0.0; 4], &bound), 6.0);
+        // Over the reachable subgraph: the rebuild leaves the pre-unroll
+        // original behind as garbage, which is not what is being counted.
+        let mut reachable = alloc::vec![false; a.len()];
+        let mut stack = alloc::vec![root];
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut reachable[id.0 as usize], true) {
+                continue;
+            }
+            stack.extend(a.children(id));
+        }
+        let uniform_leaves = a
+            .nodes_raw()
+            .iter()
+            .zip(&reachable)
+            .filter(|(n, live)| **live && matches!(n, ExprNode::Uniform(_)))
+            .count();
+        assert_eq!(
+            uniform_leaves, 1,
+            "the invariant leaf is shared, not copied per term"
+        );
     }
 
     #[test]

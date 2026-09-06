@@ -265,3 +265,38 @@ fn macro_acos() {
         "acos(0) = {val0}, expected ~π/2"
     );
 }
+
+// ============================================================================
+// Builders choose fold or uniform by the argument's type
+// ============================================================================
+
+/// `f32` folds, exactly as it always has: the built kernel declares no
+/// argument.
+#[test]
+fn an_f32_argument_still_folds() {
+    let k = kernel!(|cx: f32, r: f32| (X - cx) * r)(1.0, 2.0);
+    assert!(k.parts().0.uniforms().is_empty());
+    assert!((eval1(&k, 5.0) - 8.0).abs() < 1e-5);
+}
+
+/// A `Uniform` handle makes the same parameter an argument of the compiled
+/// kernel: the bake reads its default, a block moves it, and one handle
+/// passed twice is one argument.
+#[test]
+fn a_uniform_argument_is_bound_per_call() {
+    use pixelflow_core::{Manifold, Uniform};
+    let cx = Uniform::new(1.0);
+    let k = kernel!(|cx: f32, r: f32| (X - cx) * r)(cx, 2.0);
+    assert_eq!(k.parts().0.uniforms(), &[cx.decl()]);
+    assert!((eval1(&k, 5.0) - 8.0).abs() < 1e-5, "default cx = 1");
+
+    let lattice = Lattice::point(5.0, 0.0, 0.0, 0.0);
+    let program = Manifold::compile(&k, lattice.extent);
+    let mut block = program.block();
+    block.set(cx, 3.0).expect("cx is the argument");
+    let moved = lattice.collapse(&program.bind(&[]).with_uniforms(&block));
+    assert!((moved.into_buffer()[0] - 4.0).abs() < 1e-5, "(5 − 3)·2");
+
+    let twice = kernel!(|a: f32, b: f32| a * b)(cx, cx);
+    assert_eq!(twice.parts().0.uniforms().len(), 1);
+}

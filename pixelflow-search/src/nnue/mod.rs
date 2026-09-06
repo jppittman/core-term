@@ -236,6 +236,11 @@ pub fn pattern_match_arena(
                 ExprNode::Buffer(c) if b == c => {}
                 _ => return None,
             },
+            // Uniform likewise.
+            ExprNode::Uniform(u) => match arena.node(e_id) {
+                ExprNode::Uniform(w) if u == w => {}
+                _ => return None,
+            },
             // Structural match: op must match, push children onto the stack.
             ExprNode::Unary(t_op, t_a) => match arena.node(e_id) {
                 ExprNode::Unary(e_op, e_a) if e_op == t_op => {
@@ -330,6 +335,10 @@ pub fn substitute_template_arena(
             ExprNode::Buffer(b) => panic!(
                 "ExprNode::Buffer({}) in a rewrite template — memory ops are not rewritable yet",
                 b.0
+            ),
+            ExprNode::Uniform(u) => panic!(
+                "ExprNode::Uniform({}) in a rewrite template — uniforms are not rewritable",
+                u.0
             ),
             ExprNode::Unary(op, t_a) => {
                 let a = ExprId(remap[t_a.0 as usize]);
@@ -1076,6 +1085,7 @@ impl BwdGenerator {
             ExprNode::Const(c) => ExprNode::Const(*c),
             ExprNode::Param(p) => ExprNode::Param(*p),
             ExprNode::Buffer(b) => ExprNode::Buffer(*b),
+            ExprNode::Uniform(u) => ExprNode::Uniform(*u),
             ExprNode::Unary(op, a) => ExprNode::Unary(*op, remap[a.0 as usize]),
             ExprNode::Binary(op, a, b) => {
                 ExprNode::Binary(*op, remap[a.0 as usize], remap[b.0 as usize])
@@ -1119,6 +1129,7 @@ impl BwdGenerator {
             ExprNode::Const(c) => arena.push_const(*c),
             ExprNode::Param(p) => arena.push_param(*p),
             ExprNode::Buffer(b) => arena.push_buffer(*b),
+            ExprNode::Uniform(u) => arena.push_uniform(*u),
             ExprNode::Unary(op, a) => arena.push_unary(*op, *a),
             ExprNode::Binary(op, a, b) => arena.push_binary(*op, *a, *b),
             ExprNode::Ternary(op, a, b, c) => arena.push_ternary(*op, *a, *b, *c),

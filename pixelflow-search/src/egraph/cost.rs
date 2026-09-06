@@ -136,6 +136,9 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
         OpKind::Gather => 10,    // memory read
         OpKind::RawGather => 10, // primitive memory read
         OpKind::Reduce => 0,     // lowered (unrolled) before costing
+        // A leaf like Buffer: its one broadcast load lands in the per-call
+        // prologue, which the per-sample cost model does not see.
+        OpKind::Uniform => 0,
     })
 }
 
@@ -294,8 +297,9 @@ impl CostModel {
     pub fn node_op_cost(&self, node: &ENode) -> usize {
         match node {
             // Buffer is a leaf like Var/Const: the cost of the read lives on
-            // the Gather that consumes it.
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => 0,
+            // the Gather that consumes it. A uniform's load is per call, not
+            // per sample.
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => 0,
             // `Dwrt` is the internal autodiff marker. It is rewritten away by
             // the chain rule; a surviving one is the (not-yet-wired) jet
             // fallback. Either way extraction must never choose it, so it is

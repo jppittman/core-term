@@ -407,6 +407,7 @@ pub fn screen_for_oracle(arena: &ExprArena, root: ExprId) -> Result<(), String> 
         match arena.node(id) {
             ExprNode::Param(i) => return Err(format!("Param({i}) — substitute params first")),
             ExprNode::Buffer(b) => return Err(format!("Buffer({}) — no binding table here", b.0)),
+            ExprNode::Uniform(u) => return Err(format!("Uniform({}) — no block here", u.0)),
             ExprNode::Nary(op, _, _) => {
                 return Err(format!(
                     "Nary({op:?}) — a reduction rebinds its body per iteration; expand_reduce first"

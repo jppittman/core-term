@@ -532,8 +532,11 @@ pub type KernelFn = extern "C" fn(
 /// per group; Y starts at `y0` and advances by 1.0 per row; Z/W are invariant.
 ///
 /// SysV argument registers: `rdi` = context (array of buffer base pointers,
-/// one per declared buffer — pass a dangling-free null-less array or anything
-/// when the arena declares none; a buffer-free kernel never reads it),
+/// one per declared buffer in slot order, followed by the uniform block's
+/// base pointer when the arena declares a uniform — `f32` values in
+/// uniform-slot order, read once per call — pass a dangling-free null-less
+/// array or anything when the arena declares neither; such a kernel never
+/// reads it),
 /// `rsi` = `out` (output, written 64 bytes at a time; must hold at least
 /// `groups * 16` f32s per row), `rdx` = `groups`, `rcx` = `rows`, `r8` =
 /// bytes to skip after each row's final full group, `zmm0..3` = x0/y0/z/w.

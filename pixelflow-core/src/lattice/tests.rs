@@ -453,3 +453,275 @@ mod bilinear_sampler {
         assert!((sample(&s, 10.0, 10.0) - 4.0).abs() < 1e-6);
     }
 }
+
+// ============================================================================
+// Uniforms: a kernel's arguments, bound per call
+// ============================================================================
+
+mod uniforms {
+    use super::*;
+    use crate::lattice::manifold::{Manifold, PlaneRegion};
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use pixelflow_ir::Uniform;
+    use pixelflow_ir::arena::BufferIdentity;
+
+    /// `√((x − cx)² + (y − cy)²) − r` over three handles.
+    fn circle() -> (Kernel, [Uniform; 3]) {
+        let (cx, cy, r) = (Uniform::new(1.5), Uniform::new(-0.5), Uniform::new(2.0));
+        let dx = Kernel::x().sub(&cx.kernel());
+        let dy = Kernel::y().sub(&cy.kernel());
+        let k = dx.mul(&dx).add(&dy.mul(&dy)).sqrt().sub(&r.kernel());
+        (k, [cx, cy, r])
+    }
+
+    fn circle_at(x: f32, y: f32, [cx, cy, r]: [f32; 3]) -> f32 {
+        ((x - cx) * (x - cx) + (y - cy) * (y - cy)).sqrt() - r
+    }
+
+    /// `Lattice::bake` (every argument at its default) and a block holding
+    /// those defaults are the same bake, bit for bit.
+    #[test]
+    fn a_bake_with_defaults_is_bit_for_bit_a_block_of_defaults() {
+        let (k, _) = circle();
+        let lattice = Lattice::frame(37, 5, 0.0);
+        let baked = lattice.bake(&k);
+        let program = Manifold::compile(&k, lattice.extent);
+        assert_eq!(program.uniforms().len(), 3);
+        let blocked = lattice.collapse(&program.bind(&[]).with_uniforms(&program.block()));
+        let (a, b) = (baked.buffer(), blocked.buffer());
+        assert_eq!(a.len(), b.len());
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "sample {i}: {x} vs {y}");
+        }
+    }
+
+    /// Two circles are one compile; the block is what makes them two, and a
+    /// set is a write, not a recompile: the JIT agrees with the closed form
+    /// across several bindings of one program.
+    #[test]
+    fn a_block_rebinds_without_recompiling() {
+        let (k1, [cx, cy, r]) = circle();
+        let (k2, _) = circle();
+        let extent = [16, 4, 1, 1];
+        let p1 = Manifold::compile(&k1, extent);
+        let p2 = Manifold::compile(&k2, extent);
+        assert_eq!(
+            p1.code_bytes().as_ptr(),
+            p2.code_bytes().as_ptr(),
+            "two instances of one shape share one compiled region"
+        );
+        let lattice = Lattice::frame(16, 4, 0.0);
+        let mut block = p1.block();
+        for values in [[1.5f32, -0.5, 2.0], [3.0, 1.0, 0.5], [-4.25, 2.5, 7.0]] {
+            block.set(cx, values[0]).expect("cx is an argument");
+            block.set(cy, values[1]).expect("cy is an argument");
+            block.set(r, values[2]).expect("r is an argument");
+            assert_eq!(block.get(r), Ok(values[2]));
+            let plane = lattice.collapse(&p1.bind(&[]).with_uniforms(&block));
+            for (i, got) in plane.buffer().iter().enumerate() {
+                let (x, y) = ((i % 16) as f32, (i / 16) as f32);
+                let want = circle_at(x, y, values);
+                assert!(
+                    (got - want).abs() <= 1e-4 * want.abs().max(1.0),
+                    "at ({x},{y}) under {values:?}: {got} vs {want}"
+                );
+            }
+        }
+    }
+
+    /// A handle from another composition is a composition mistake, and the
+    /// answer is an error — the pixels would be plausible otherwise.
+    #[test]
+    fn a_handle_that_is_not_an_argument_is_an_error() {
+        let (k, [cx, ..]) = circle();
+        let program = Manifold::compile(&k, [4, 4, 1, 1]);
+        let mut block = program.block();
+        let stranger = Uniform::new(0.0);
+        assert_eq!(
+            block.set(stranger, 1.0),
+            Err(crate::UnknownUniform(stranger.identity()))
+        );
+        assert!(block.get(stranger).is_err());
+        assert_eq!(block.set(cx, 1.0), Ok(()));
+    }
+
+    /// A block laid out for one program cannot be handed to another.
+    #[test]
+    #[should_panic(expected = "different program")]
+    fn a_block_from_another_program_is_refused() {
+        let (k1, _) = circle();
+        let (k2, _) = circle();
+        let p1 = Manifold::compile(&k1, [4, 4, 1, 1]);
+        let p2 = Manifold::compile(&k2, [4, 4, 1, 1]);
+        let _refused = p1.bind(&[]).with_uniforms(&p2.block());
+    }
+
+    /// A cursor: a column lit where `|x − cx| < ½`, over a background that
+    /// reads nothing but the coordinates. Moving the cursor changes the
+    /// columns it left and arrived at, and no other pixel.
+    #[test]
+    fn moving_a_uniform_moves_only_the_pixels_that_read_it() {
+        let cx = Uniform::new(2.0);
+        let under = Kernel::x()
+            .sub(&cx.kernel())
+            .abs()
+            .lt(&Kernel::constant(0.5));
+        let background = Kernel::y().mul(&Kernel::constant(0.25)).add(&Kernel::x());
+        let k = under.select(&Kernel::constant(-1.0), &background);
+        let (w, h) = (9usize, 3usize);
+        let lattice = Lattice::frame(w, h, 0.0);
+        let program = Manifold::compile(&k, lattice.extent);
+
+        let frame_at = |col: f32| {
+            let mut block = program.block();
+            block.set(cx, col).expect("cx is the argument");
+            lattice.collapse(&program.bind(&[]).with_uniforms(&block))
+        };
+        let (here, there) = (frame_at(2.0), frame_at(5.0));
+        for row in 0..h {
+            for col in 0..w {
+                let (a, b) = (here.buffer()[row * w + col], there.buffer()[row * w + col]);
+                let want_a = if col == 2 {
+                    -1.0
+                } else {
+                    col as f32 + 0.25 * row as f32
+                };
+                let want_b = if col == 5 {
+                    -1.0
+                } else {
+                    col as f32 + 0.25 * row as f32
+                };
+                assert_eq!(a, want_a, "cursor at 2, ({col},{row})");
+                assert_eq!(b, want_b, "cursor at 5, ({col},{row})");
+                assert_eq!(a != b, col == 2 || col == 5, "({col},{row}) moved");
+            }
+        }
+    }
+
+    /// The context is filled in the order the code was compiled against —
+    /// the link's first-occurrence order — not the arena's declaration
+    /// order, and the block pointer follows the buffer slots.
+    #[test]
+    fn binding_follows_the_link_and_the_block_follows_the_buffers() {
+        let (a, b) = (BufferIdentity::mint(), BufferIdentity::mint());
+        let read = |id| {
+            DiscreteManifold::kernel_for(id, 4, 1).at(
+                &Kernel::x(),
+                &Kernel::constant(0.0),
+                &Kernel::z(),
+                &Kernel::w(),
+            )
+        };
+        let scale = Uniform::new(10.0);
+        // `b` is declared first (the receiver's arena) and read second.
+        let k = read(b).add(&read(a).mul(&scale.kernel()));
+        let program = Manifold::compile(&k, [4, 1, 1, 1]);
+        assert_eq!(program.buffers()[0].id, b, "slot 0 is the first read");
+        assert_eq!(program.buffers()[1].id, a);
+        let bound = program.bind(&[(a, Arc::new(vec![1.0; 4])), (b, Arc::new(vec![2.0; 4]))]);
+        let mut out = vec![0.0f32; 4];
+        bound.collapse_rows(PlaneRegion::rows(4, 0, 1), &mut out, 4);
+        assert_eq!(out, [12.0; 4], "b + 10·a at the default");
+        let mut block = program.block();
+        block.set(scale, 100.0).expect("scale is the argument");
+        bound
+            .with_uniforms(&block)
+            .collapse_rows(PlaneRegion::rows(4, 0, 1), &mut out, 4);
+        assert_eq!(out, [102.0; 4], "b + 100·a under the block");
+    }
+}
+
+mod uniforms_link_and_oracle {
+    use super::*;
+    use crate::lattice::manifold::Manifold;
+    use pixelflow_ir::Uniform;
+    use pixelflow_ir::binding::BindingTable;
+    use pixelflow_ir::eval_scalar;
+
+    /// `Kernel::at` splices every coordinate fragment whether or not the
+    /// receiver reads that axis, so a kernel routinely *declares* an
+    /// instance it never reads. It must compile, its link must omit the
+    /// phantom, and the phantom's handle must be refused as an argument.
+    #[test]
+    fn a_uniform_spliced_on_an_unread_axis_is_not_an_argument() {
+        let (cx, phase) = (Uniform::new(1.0), Uniform::new(0.0));
+        // Reads X and cx only; Z is warped by `phase` and never read.
+        let circle = Kernel::x().sub(&cx.kernel()).abs();
+        let moving = circle.at(&Kernel::x(), &Kernel::y(), &phase.kernel(), &Kernel::w());
+        assert_eq!(
+            moving.parts().0.uniforms().len(),
+            2,
+            "the table names the phantom — that is the shape being tested"
+        );
+        let program = Manifold::compile(&moving, [4, 1, 1, 1]);
+        assert_eq!(
+            program.uniforms(),
+            &[cx.decl()],
+            "the link holds only what is read"
+        );
+        let mut block = program.block();
+        assert_eq!(
+            block.set(phase, 3.0),
+            Err(crate::UnknownUniform(phase.identity()))
+        );
+        block.set(cx, 2.0).expect("cx is read");
+        let plane = Lattice::frame(4, 1, 0.0).collapse(&program.bind(&[]).with_uniforms(&block));
+        assert_eq!(plane.buffer(), &[2.0, 1.0, 0.0, 1.0]);
+    }
+
+    /// The plan's §5.2: JIT versus oracle under one bound block, across
+    /// several values, without recompiling between them. The block reaches
+    /// the oracle **by identity** (`entries`), never as a positional slice —
+    /// the link's order and the arena's differ, and the type says so.
+    #[test]
+    fn jit_and_oracle_read_one_block_by_identity() {
+        let (cx, cy, r) = (Uniform::new(1.5), Uniform::new(-0.5), Uniform::new(2.0));
+        let dx = Kernel::x().sub(&cx.kernel());
+        let dy = Kernel::y().sub(&cy.kernel());
+        // `√((x − cx)² + (y − cy)² + Z)` with `r` warped onto Z: `at` splices
+        // the coordinate fragment before rebuilding the receiver, so `r` is
+        // read first but declared last, and the link's order and the arena's
+        // differ.
+        let k = dx.mul(&dx).add(&dy.mul(&dy)).add(&Kernel::z()).sqrt().at(
+            &Kernel::x(),
+            &Kernel::y(),
+            &r.kernel(),
+            &Kernel::w(),
+        );
+        let (arena, root) = k.parts();
+        let lattice = Lattice::frame(8, 3, 0.0);
+        let program = Manifold::compile(&k, lattice.extent);
+        assert_ne!(
+            program.uniforms().iter().map(|d| d.id).collect::<Vec<_>>(),
+            arena.uniforms().iter().map(|d| d.id).collect::<Vec<_>>(),
+            "the link's order and the arena's differ here, which is the point"
+        );
+        let code = program.code_bytes().as_ptr();
+        let mut block = program.block();
+        for values in [[1.5f32, -0.5, 2.0], [-3.0, 4.0, 0.25], [0.0, 0.0, 10.0]] {
+            block.set(cx, values[0]).expect("cx");
+            block.set(cy, values[1]).expect("cy");
+            block.set(r, values[2]).expect("r");
+            let entries: Vec<_> = block.entries().collect();
+            let bindings = BindingTable::bind(arena, &[])
+                .expect("no buffers")
+                .bind_uniforms(arena, &entries)
+                .expect("every entry is declared");
+            let plane = lattice.collapse(&program.bind(&[]).with_uniforms(&block));
+            for (i, got) in plane.buffer().iter().enumerate() {
+                let (x, y) = ((i % 8) as f32, (i / 8) as f32);
+                let want = eval_scalar(arena, root, &[x, y, 0.0, 0.0], &bindings);
+                assert!(
+                    (got - want).abs() <= 1e-5 * want.abs().max(1.0),
+                    "at ({x},{y}) under {values:?}: jit {got} vs oracle {want}"
+                );
+            }
+        }
+        assert_eq!(
+            program.code_bytes().as_ptr(),
+            code,
+            "three blocks, one compiled region"
+        );
+    }
+}

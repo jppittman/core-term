@@ -74,7 +74,7 @@ fn transitive_deps(
         // O(1) lookup via dense Vec indexed by ValueId.0
         if let Some(Some(sop)) = schedule_ops.get(v.0 as usize) {
             match sop {
-                ScheduledOp::Var(_) | ScheduledOp::Const(_) => {}
+                ScheduledOp::Var(_) | ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => {}
                 ScheduledOp::Unary(_, c)
                 | ScheduledOp::ShiftImm(_, c, _)
                 | ScheduledOp::Gather(c, _) => {
@@ -257,7 +257,7 @@ fn select_arms(schedule: &[Def]) -> Vec<SelectArms> {
             }
         };
         match &def.op {
-            ScheduledOp::Var(_) | ScheduledOp::Const(_) => {}
+            ScheduledOp::Var(_) | ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => {}
             ScheduledOp::Unary(_, c)
             | ScheduledOp::ShiftImm(_, c, _)
             | ScheduledOp::Gather(c, _) => add(*c),
@@ -360,6 +360,9 @@ fn select_arms(schedule: &[Def]) -> Vec<SelectArms> {
                     .iter()
                     .map(|&idx| match &schedule[idx].op {
                         ScheduledOp::Var(_) | ScheduledOp::Const(_) => 0,
+                        // One broadcast load; priced as the leaf it is
+                        // in the prologue, where it lands.
+                        ScheduledOp::Uniform(_) => cycles.cost(OpKind::Uniform),
                         ScheduledOp::Unary(op, _) | ScheduledOp::Binary(op, _, _) => {
                             cycles.cost(*op)
                         }
@@ -585,7 +588,7 @@ fn is_topological(schedule: &[Def]) -> bool {
     for def in schedule {
         let ready = |c: &ValueId| seen.contains(c) || !defined.contains(c);
         let ok = match &def.op {
-            ScheduledOp::Var(_) | ScheduledOp::Const(_) => true,
+            ScheduledOp::Var(_) | ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => true,
             ScheduledOp::Unary(_, c)
             | ScheduledOp::ShiftImm(_, c, _)
             | ScheduledOp::Gather(c, _) => ready(c),

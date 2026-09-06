@@ -156,6 +156,61 @@ pub fn emit_ldr_x(code: &mut Vec<u8>, dst: Xr, addr: Mem) {
     );
 }
 
+/// Bytes moved by an `s` (32-bit scalar SIMD&FP) access.
+const S_BYTES: u32 = 4;
+
+/// `ldr s<dst>, [addr]` — load one `f32` into lane 0 of a vector register,
+/// zeroing the other lanes. The offset scales by 4; past the 12-bit
+/// immediate it goes through IP0 like a deep spill slot.
+pub fn emit_ldr_s(code: &mut Vec<u8>, dst: Reg, addr: Mem) {
+    assert!(
+        addr.offset.is_multiple_of(S_BYTES),
+        "32-bit access offset {} is not 4-byte aligned",
+        addr.offset
+    );
+    let addr = if addr.offset / S_BYTES > MAX_IMM12 {
+        address_in_ip0(code, addr)
+    } else {
+        addr
+    };
+    emit32(
+        code,
+        0xBD40_0000
+            | ((addr.offset / S_BYTES) << 10)
+            | ((addr.base.0 as u32) << 5)
+            | (dst.0 as u32),
+    );
+}
+
+/// `dup v<dst>.4s, v<src>.s[0]` — broadcast lane 0 to every lane.
+pub fn emit_dup_lane0(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, 0x4E04_0400 | ((src.0 as u32) << 5) | (dst.0 as u32));
+}
+
+/// `dst = splat(block[offset])`: `ldr x9, [x0, #ctx_slot*8]` fetches the
+/// block's base out of the context, `ldr s<dst>, [x9, #offset*4]` the value,
+/// and `dup` spreads it. `x9` is the base scratch the gather already claims.
+pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad) {
+    const BASE_GPR: Xr = Xr(9);
+    emit_ldr_x(
+        code,
+        BASE_GPR,
+        Mem {
+            base: xr::X0,
+            offset: u32::from(load.ctx_slot) * X_BYTES,
+        },
+    );
+    emit_ldr_s(
+        code,
+        dst,
+        Mem {
+            base: BASE_GPR,
+            offset: u32::from(load.offset) * S_BYTES,
+        },
+    );
+    emit_dup_lane0(code, dst, dst);
+}
+
 /// `ldr w<dst>, [base, w<index>, uxtw #2]` — load one 32-bit element at
 /// `base + index * 4` into the 32-bit view of a general register.
 ///
@@ -2164,6 +2219,9 @@ pub(crate) mod driver {
                         val: VAL_GPR,
                     },
                 );
+            }
+            ResolvedOp::Uniform { dst, load } => {
+                super::emit_uniform_load(code, *dst, *load);
             }
             ResolvedOp::Binary {
                 op,
