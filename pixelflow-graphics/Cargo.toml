@@ -60,6 +60,10 @@ harness = false
 name = "work_stealing"
 harness = false
 
+[[bench]]
+name = "frame_bake"
+harness = false
+
 [features]
 default = []
 freetype = ["dep:freetype-rs"]
