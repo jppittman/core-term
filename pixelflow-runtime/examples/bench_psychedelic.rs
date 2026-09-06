@@ -1,9 +1,19 @@
-//! Head-to-head: LLVM vs NNUE+LLVM vs JIT on the psychedelic shader.
+//! Head-to-head on the psychedelic shader: the monomorphized `kernel_raw!`
+//! and `kernel!` expression templates against the JIT, over ONE frame.
+//!
+//! Both sides are denominated over the same 1920x1080 lattice so the numbers
+//! subtract: the templates through this benchmark's own loop (a benchmark
+//! owns its loop — that is not an API), the JIT through `Lattice::bake`,
+//! which is the only way it is reachable.
+//!
+//! Each pair is measured twice, the second time under FTZ/DAZ. This shader
+//! produces no denormals, so the guard should change nothing; printing it is
+//! what makes that a measurement rather than an assumption.
 //!
 //! cargo run --release -p pixelflow-runtime --example bench_psychedelic
 
 use pixelflow_compiler::{kernel, kernel_jit, kernel_raw};
-use pixelflow_core::{Field, Lattice, Manifold, PARALLELISM};
+use pixelflow_core::{FastMathGuard, Field, Kernel, Lattice, Manifold, PARALLELISM};
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
@@ -107,67 +117,98 @@ kernel!(struct PsychOpt = || Field -> Field {
 const WIDTH: usize = 1920;
 const HEIGHT: usize = 1080;
 
+/// Timed repetitions of a whole frame. Odd, so the median is a sample.
+const SAMPLES: usize = 5;
+
+/// Median sample, in nanoseconds per pixel of one frame.
+fn ns_per_pixel(times: &mut [u64]) -> f64 {
+    times.sort_unstable();
+    times[times.len() / 2] as f64 / (WIDTH * HEIGHT) as f64
+}
+
 /// The JIT path, measured the only way it is reachable: one `Lattice::bake`
-/// per frame, timed over whole frames.
+/// per frame.
 ///
 /// There is no per-batch entry to time instead — a `Kernel` plus a `Lattice`
 /// IS the evaluation API, and the loop nest, the invariant hoisting and the
 /// register allocation across all of it belong to the compiler.
 #[inline(never)]
-fn bench_collapse(shader: &pixelflow_core::Kernel) -> f64 {
+fn bench_bake(shader: &Kernel) -> f64 {
     let lattice = Lattice::frame(WIDTH, HEIGHT, 0.0);
-    let pixels = WIDTH * HEIGHT;
 
     // Warmup: pays the one-time JIT compile (cached thereafter).
     std::hint::black_box(lattice.bake(shader));
 
-    let samples = 5;
-    let mut times = vec![0u64; samples];
+    let mut times = [0u64; SAMPLES];
     for t in &mut times {
         let start = nanos_now();
         std::hint::black_box(lattice.bake(shader));
         *t = nanos_now() - start;
     }
-    times.sort_unstable();
-    times[samples / 2] as f64 / pixels as f64
+    ns_per_pixel(&mut times)
 }
 
+/// The expression templates over the same frame: this benchmark's own loop,
+/// one `Manifold::eval` per SIMD batch, every row of the lattice the JIT
+/// bakes. Same pixels, same coordinates, so the two numbers subtract.
 #[inline(never)]
-fn bench_scanline<M: Manifold<Output = Field>>(shader: &M) -> f64 {
-    let width = WIDTH;
-    let height = HEIGHT;
-    let steps_x = width / PARALLELISM;
+fn bench_templates<M: Manifold<Output = Field>>(shader: &M) -> f64 {
+    let steps_x = WIDTH / PARALLELISM;
     let z = Field::from(0.0f32);
     let w = Field::from(0.0f32);
 
-    // Warmup: full frame
-    for py in (0..height).step_by(108) {
-        let y = Field::from(py as f32);
-        for step in 0..steps_x {
-            let x = Field::sequential((step * PARALLELISM) as f32);
-            std::hint::black_box(shader.eval((x, y, z, w)));
-        }
-    }
-
-    // Benchmark: 10 scanlines at different Y positions
-    // This prevents LLVM from hoisting Y-dependent computations
-    let scanlines = 10usize;
-    let total_pixels = width * scanlines;
-    let samples = 50;
-    let mut times = vec![0u64; samples];
-    for t in &mut times {
-        let start = nanos_now();
-        for sy in 0..scanlines {
-            let y = Field::from((sy * 108) as f32);
+    let frame = || {
+        for py in 0..HEIGHT {
+            let y = Field::from(py as f32);
             for step in 0..steps_x {
                 let x = Field::sequential((step * PARALLELISM) as f32);
                 std::hint::black_box(shader.eval((x, y, z, w)));
             }
         }
+    };
+
+    frame(); // warmup
+
+    let mut times = [0u64; SAMPLES];
+    for t in &mut times {
+        let start = nanos_now();
+        frame();
         *t = nanos_now() - start;
     }
-    times.sort();
-    times[samples / 2] as f64 / total_pixels as f64
+    ns_per_pixel(&mut times)
+}
+
+/// One pass over all three variants, so the FTZ/DAZ comparison is the same
+/// measurement twice rather than two different ones.
+struct Pass {
+    raw: f64,
+    opt: f64,
+    bake: f64,
+}
+
+fn measure(raw: &PsychRaw, opt: &PsychOpt, jit: &Kernel) -> Pass {
+    Pass {
+        raw: bench_templates(raw),
+        opt: bench_templates(opt),
+        bake: bench_bake(jit),
+    }
+}
+
+fn report(label: &str, p: &Pass) {
+    println!("  {label}");
+    println!(
+        "    templates, frame loop (kernel_raw!): {:.3} ns/pixel",
+        p.raw
+    );
+    println!(
+        "    templates, frame loop (kernel!):     {:.3} ns/pixel",
+        p.opt
+    );
+    println!(
+        "    JIT, whole frame (Lattice::bake):    {:.3} ns/pixel",
+        p.bake
+    );
+    println!("    bake vs kernel!: {:.2}x", p.opt / p.bake);
 }
 
 fn main() {
@@ -207,16 +248,15 @@ fn main() {
         PARALLELISM
     );
 
-    let raw_ns = bench_scanline(&raw);
-    let opt_ns = bench_scanline(&opt);
-    let collapse_ns = bench_collapse(&jit);
+    let plain = measure(&raw, &opt, &jit);
+    let fast = {
+        // SAFETY: single-threaded benchmark; the guard restores the FP
+        // control state when it drops at the end of this block.
+        let _guard = unsafe { FastMathGuard::new() };
+        measure(&raw, &opt, &jit)
+    };
 
-    println!("  templates, scanline loop (kernel_raw!): {raw_ns:.3}ns/pixel");
-    println!("  templates, scanline loop (kernel!):     {opt_ns:.3}ns/pixel");
-    println!("  collapse, whole frame (Lattice::bake):  {collapse_ns:.3}ns/pixel");
+    report("default FP mode", &plain);
     println!();
-    println!(
-        "  kernel! vs kernel_raw!: {:.1}%",
-        (opt_ns / raw_ns - 1.0) * 100.0
-    );
+    report("FTZ/DAZ (FastMathGuard)", &fast);
 }
