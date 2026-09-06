@@ -467,11 +467,22 @@ need and did not touch. And mask coherence as a cost-model term: the
 clustering decision is made statically today by bounding the downside,
 which is sound and leaves the upside unclaimed.
 
-**S4 — the legacy tier retires.** `Scene::Surface`, `execute_stripe`,
-`rasterize`, `render_parallel`, `render_work_stealing`,
-`materialize_discrete*`, `Discrete::pack`, the `Manifold<Output = Discrete>`
-bound on rendering, the Jet3 `Manifold` impls, then the `Manifold` trait
-itself, the ZST combinator library, `kernel!`'s LLVM backend and `Lower`.
+**S4 — the legacy tier retires**, in two halves, because the rendering lane
+and the language tier have different blast radii and different gates.
+
+**S4a — the rendering lane.** `Scene::Surface`, `rasterize`,
+`render_parallel`, `render_work_stealing`, `execute_stripe`,
+`materialize_discrete*`, `Discrete::pack` and `Discrete` itself, the
+`Manifold<Output = Discrete>` bound on rendering, and the jet-tier scene
+modules (`scene3d_surface`, `subdivision`, `spatial_bsp`). Every consumer —
+graphics, runtime, core-term, the gate examples, the goldens — moves to the
+packed lane in the same change. Gate: **identity.** There is no performance
+claim in a deletion, so what is checked is that nothing moved that should not
+have: the two scene gates' emitted bytes and the 208-kernel `collapse_cost`
+corpus's deterministic columns, on both tiers, before and after.
+
+**S4b — the language tier.** The `Manifold` trait itself, the ZST combinator
+library that implements it, `kernel!`'s LLVM backend and `Lower`.
 `JitManifold` takes the name `Manifold`. `Lattice::collapse` takes the
 compiled type and `bake` folds into it. The inventory is empty.
 
@@ -484,3 +495,152 @@ compiled type and `bake` folds into it. The inventory is empty.
   argument is compiled IR.
 - **The pack is IR.** No Rust-side `from_f32_scaled` on a render path.
 - **One measurement per stage**, on the same shader, before and after.
+
+### S4a landed — 2026-09-06
+
+**Net −7,050 lines** (854 insertions, 7,904 deletions across 52 files), and
+**nothing that should not have moved, moved.** A deletion has no performance
+claim, so the gate is identity, recorded before the first deletion and again
+after the last, on this host:
+
+| artifact | SSE2 before → after | AVX-512 before → after |
+|---|---|---|
+| `bench_scene_psychedelic`'s packed program | 5,584 B `fnv1a=00f3a5ed124990bf` → **identical** | 4,352 B `fnv1a=2d6e37c15a633a65` → **identical** |
+| `bench_scene_chrome`'s packed program | 9,760 B `fnv1a=ca0e1d4413e140c7` → **identical** | 7,645 B `fnv1a=5c099aea39b99996` → **identical** |
+| its matte row | 1,837 B `fnv1a=c7c3b3c97a76c8ec` → **identical** | 1,507 B `fnv1a=4b3f45d2d7399d35` → **identical** |
+| its mirror row | 2,728 B `fnv1a=dfe9e841cb476d7e` → **identical** | 1,765 B `fnv1a=e0413c637fcb5aa6` → **identical** |
+| `collapse_cost` corpus fixture (208 kernels) | `md5=379282c4…` → **identical** | (the same fixture) |
+| `collapse_cost` deterministic columns — bytes, static loads/stores/remats, trip-weighted mem ops, dynamic instructions, spill slots; every field but `measured` | `md5=55aadbd0…` → **identical** | `md5=bf7892a6…` → **identical** |
+
+The chrome and psychedelic figures match the S3b landing block's 9,760 and
+4,352 to the byte, which is the other half of the check: the *before* column
+is not merely self-consistent, it is the number that stage recorded.
+
+Also: **no golden was regenerated.** `e2e_render_gradient`,
+`e2e_render_radial_gradient` and `e2e_render_circle` were rewritten as packed
+scenes and pass against the pictures the per-batch rasterizer drew, at their
+existing 2/255 and 1%-of-pixels tolerances, so the `.ppm` files are untouched
+in the diff. Workspace `cargo test` wall clock: **227 s** from a cold target
+on this 4-core host (133 test binaries, all green).
+
+**Deleted.**
+
+| what | lines | why it had no consumer |
+|---|---:|---|
+| `graphics/spatial_bsp.rs` | 2,132 | one `Manifold<Field4>` impl; nothing but `lib.rs` referenced it |
+| `graphics/scene3d_surface.rs` | 1,160 | the jet tier S3 parked here; both consumers moved or went |
+| `graphics/subdivision.rs` + `examples/subdivision_autodiff.rs` | 656 | `SubdivisionGeometry` is a Catmull-Clark limit surface in `Jet3` with no kernel form; the example was its only caller |
+| `graphics/render/rasterizer/{mod,parallel}.rs` | 671 | `execute`, `execute_stripe`, `render_parallel`, `render_work_stealing`, `rasterize`, `Rasterize`, `Stripe`, `RenderOptions` |
+| `graphics/transform.rs` | 284 | `Scale`/`Translate` via `At`; one e2e test, now precomposition in the language |
+| `graphics/baked.rs` | 229 | the `Baked` combinator — a colour manifold cached to memory. Its successor is `PlaneProgram::bind`; **the brief's claim that `fonts/atlas.rs`, `fonts/cache.rs` and `subdiv/` consume it is wrong**, they only use the word "baked" in prose |
+| `graphics/animation.rs` | 120 | `TimeShift`/`Oscillate`; superseded by S3's "time is a coordinate", and no consumer |
+| `graphics/render/discrete.rs` | 117 | **`render/mod.rs` never declared it** — dead source, not compiled |
+| `graphics/image.rs` | 95 | a `Vec<u8>` and a `render_mask(&impl Manifold)` whose body was a comment saying it needed a public evaluation API |
+| `graphics/benches/work_stealing.rs`, `tests/raster_parallel.rs`, `tests/rasterizer_parallel_test.rs` | 421 | tested the deleted rasterizer; S2's `how_the_stripes_are_shared_out_does_not_change_pixels` is the surviving statement of "threads must not change pixels" |
+| `runtime/tests/surface_scene_hidpi_warp.rs` | 101 | tested `bind`'s point→device contramap, which only ever applied to `Scene::Surface` |
+| `runtime/src/render_pool.rs` | 5 | a one-line `pub use … rasterize` with no consumer |
+| `core/examples/asm_check.rs` | 62 | called `Discrete::pack`, then wrote `0` into every pixel; printed "Rendered 0 non-zero pixels" and disassembled nothing |
+| `Scene::Surface` and `From<Arc<dyn Manifold>>` | — | the variant and its conversion, in `graphics/render/scene.rs` |
+| the `Manifold` impls in `graphics/render/color.rs` | 275 | `NamedColor`, `Color`, `ColorCube` and its `Rgba`/`Bgra`/`Platform` aliases, `Grayscale`, `color_manifold`. `Pixel`, `Rgba8`/`Bgra8`/`PlatformPixel`, and `Color`/`NamedColor` as **data** stay |
+| `Discrete` in `core/src/lib.rs` | 266 | the alias, the `Field<u32>` inherent impl (`store`/`pack`/`select`), its `BitAnd`/`BitOr`/`Not`/`Computational`/`Selectable`, the `NativeU32Simd` aliases, and `materialize_discrete`/`_fields` |
+
+**Migrated, and why.**
+
+- **core-term** had one `Scene::Surface` left, the "nothing has ever been
+  presented" background fill. It is now a **constant packed scene at the
+  device-pixel frame size** the app already tracks from `Resized`, compiled
+  once per size and cached in a `background` field, and `Skipped` when no
+  window has been sized yet. `Skipped` because that is the only honest answer
+  — there is no buffer to present into before the first window event, and the
+  coordinator already takes `Skipped` on the synchronized-output path, so no
+  contract had to change and no `Scene` variant was added. The device-pixel
+  conversion the cell-grid path was doing inline became `device_frame()`,
+  shared by both callers.
+- **`render::rasterizer::{actor, messages}` were never the rasterizer.** The
+  actor owns pause/resume, the thread count and the bootstrap handshake, and
+  calls `Scene::render` — which since S2 is one collapse call per stripe. It
+  is production (the runtime's whole render edge is built on it), so it moved
+  to `render::renderer` and `Raster*` became `Render*`/`Renderer*`, down
+  through the runtime's own wiring, which called its handle `rasterizer` for
+  the same historical reason.
+- **`Pixel::packed_shifts` is now the single home of byte order.**
+  `RgbaColorCube::PACKED_SHIFTS` stated the same fact a second time, and
+  `compile_platform_cell_grid`'s `debug_assert` existed only to hold the two
+  statements together.
+- **`bind` no longer contramaps for HiDPI.** That wrapper was for point-space
+  surfaces; a packed scene is device-pixel space by construction, and
+  wrapping one would mean recompiling its program every frame.
+- **`psychedelic_shader` was rebuilding its scene every frame** with the
+  timestamp baked in as a constant — S3's finding 5 for `animated_sphere`,
+  unfixed here. It now puts time on `W` and collapses on a later plane.
+- **`runtime/src/traits.rs`'s `Application<P>`** (one `render` method
+  returning `Option<Box<dyn Manifold<Output = Discrete>>>`) had **no
+  implementor** and was shadowed by `api::public::Application`, which is what
+  the engine actually calls.
+- **Tests keep their claims, on the packed lane.** `rendering_contract` and
+  the render half of `pict_color_tests` still cross-check "what pixel is this
+  colour", now the scalar `u32::from(Color)` against the **JIT** pack rather
+  than against `materialize_discrete`. `jit_render` compares the two tiers as
+  planes over one lattice instead of a rendered frame against a bake.
+  `font_rendering`'s cached row times `Lattice::collapse` of the `CachedText`
+  it always did, minus the colour pack. `bench_scene_chrome` and
+  `bench_scene_psychedelic` lose their surface halves; their agreement rows
+  established, once, that the two lanes draw the same picture, which is a
+  landing block and not a per-run measurement.
+
+**What the brief did not list, found in the tree.**
+
+1. `Pack` in `core/src/combinators/pack.rs` is **not** `Discrete::pack` — it
+   is a vector→scalar fold over a `Vector<Component = Field>`, part of the ZST
+   combinator library. It stays for S4b.
+2. `render/discrete.rs` was never in the module tree (above).
+3. `animation.rs` and `image.rs` have **no consumers at all**; the brief
+   expected `animation` to be used by core-term and the runtime API.
+4. `shapes.rs` is **not** the terminal cursor's shape library and is not the
+   rendering lane: it is `Field`-output ZST combinators with one test caller.
+   The cursor is drawn by the cell grid. It stays for S4b.
+5. The three `Lattice::collapse` callers in `fonts/cache.rs` **did not move**,
+   and neither did a fourth found in `benches/font_rendering.rs`. Retargeting
+   `collapse` onto a compiled manifold is S4b by the brief's own split, and
+   `CachedGlyph`/`CachedText` are `Manifold` impls until then; moving the
+   callers first would have meant writing the retarget here.
+
+**The S4b inventory, as it now stands.**
+
+| crate | `impl … Manifold … for` blocks | what they are |
+|---|---:|---|
+| `pixelflow-core` | 121 | the ZST combinator library — `ops/{unary,binary,compare,logic,ternary,derivative,reduce}`, `combinators/{at,select,map,fix,binding,computed,context,reduce,shift,spherical,texture,project,pack,block}`, `variables`, the jets, and `manifold.rs`'s constant and smart-pointer impls |
+| `pixelflow-graphics` | 3 | `fonts/cache.rs`'s `CachedGlyph` and `CachedText` (a `Gather` over bound coverage — S1's finding, moves when `collapse` takes a compiled manifold), and `patch.rs`'s `BezierPatch` (no consumer) |
+| `pixelflow-compiler` | 3 | what `kernel!` **emits** (`codegen/struct_emitter.rs`, `manifold_expr.rs`) — the LLVM tier itself |
+| `pixelflow-runtime` | 0 | one mention, in a comment recording what S4a deleted |
+| `core-term` | 0 | — |
+
+Return-position `impl Manifold<Output = Field>` (not trait impls) survives in
+`graphics/shapes.rs` (4) and `graphics/subdiv/mod.rs` (14); both are
+`Field`-tier and go with the combinator library. `Lower` is still implemented
+for exactly two types (S1's finding 1). Outside core there is still no way to
+turn a `Manifold` into numbers except `Lattice::collapse` (S1's finding 3),
+whose four callers are listed above.
+
+**Gates run** on this 4-core host: `cargo fmt --all -- --check`;
+`cargo clippy --workspace --all-targets -- -D warnings`;
+`cargo test --workspace` (133 binaries, 227 s); every CI-named contract by
+exact name, each run individually as CI runs it — "Check kernel tier parity"
+(5 tests), "Check JIT/interpreter glyph parity" (4), "Check scene color,
+reflection, and antialiasing contracts" (3), "Check ray/surface composition
+contracts" (3); core, graphics and runtime tested at `+avx2,+fma` and
+`+avx512f,+avx512dq` (47 binaries each); `cargo run -p xtask -- isa-matrix
+--clippy --smoke` **PASS at all three levels**; `cargo test -p core-term`;
+`cargo build --examples` for graphics and runtime; per-feature checks for
+both crates; and `pixelflow-graphics` cross-built for
+`aarch64-unknown-linux-gnu` and its whole suite run under
+`qemu-aarch64-static` (17 binaries, 193 tests, all green — including the
+goldens, whose tolerance budget exists for exactly this divergence).
+**No CI job name changed**: every one of them already described what it
+checks, and all six named contracts had been on the packed lane since S3.
+
+One note on running that matrix here rather than in CI: a single ISA level's
+`cargo test --workspace --no-run` plus `clippy --all-targets` at
+`debuginfo = 2` did not fit this container's free disk, and `isa-matrix`
+already wipes its target dir per level. `CARGO_PROFILE_DEV_DEBUG=0` was set
+for that run — it changes artifact size, not what is compiled or executed.
