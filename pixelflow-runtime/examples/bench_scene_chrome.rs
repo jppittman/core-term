@@ -28,13 +28,16 @@
 //!   `Kernel::dx()` differentiates the reflection exactly and needs no such
 //!   factor, and no scale reproduces it.
 //!
-//! So three rows are printed. **matte, matched filter** is the geometry
-//! contract — a flat-grey sphere over the checker floor, with the packed
-//! lane's filter scaled to the jet tier's convention, so everything but the
-//! reflection is compared like for like. **chrome, matched filter** adds the
-//! reflection, and its disagreement is confined to the sphere (whose screen
-//! coverage is printed beside it). **chrome, as shipped** is the antialiasing
-//! fix over the whole floor, and is meant to be large.
+//! So three rows are printed. **matte (no checker)** is the geometry
+//! contract — sphere, floor and sky in flat grey, where no filter width
+//! enters at all, so silhouette, horizon, sky and pack are compared with
+//! nothing else in the way. **chrome, matched filter** puts the checker back
+//! with the packed lane's filter scaled to the jet tier's convention, and
+//! what is left is the reflection's (whose sphere coverage is printed beside
+//! it) plus what the two filters do where a footprint exceeds a cell — the
+//! jet tier flips to the neighbour's colour there, this one washes out to
+//! grey. **chrome, as shipped** is the one-pixel filter over the whole floor,
+//! and is meant to be large.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -174,11 +177,17 @@ fn surface_chrome() -> Scene {
     })
 }
 
+/// The same geometry in flat grey — sphere, floor and sky, no checker, so no
+/// filter width enters the comparison at all.
 fn surface_matte() -> Scene {
     on_screen(ColorSurface {
         geometry: surface_sphere(),
         material: SolidGray,
-        background: surface_world(),
+        background: ColorSurface {
+            geometry: plane(FLOOR),
+            material: SolidGray,
+            background: ColorSky::<RgbaColorCube>::default(),
+        },
     })
 }
 
@@ -230,10 +239,13 @@ fn packed_chrome(filter: &Filter) -> [Kernel; 4] {
         .into_channels()
 }
 
-fn packed_matte(filter: &Filter) -> [Kernel; 4] {
+fn packed_matte() -> [Kernel; 4] {
     let ray = ray();
+    let floor = Plane::at_height(k(FLOOR))
+        .hit(&ray)
+        .select(&Rgba::opaque_gray(MATTE), &sky(&ray));
     sphere(&ray)
-        .select(&Rgba::opaque_gray(MATTE), &world(&ray, filter))
+        .select(&Rgba::opaque_gray(MATTE), &floor)
         .into_channels()
 }
 
@@ -336,9 +348,9 @@ fn main() {
 
     for (what, lhs, rhs) in [
         (
-            "matte, matched filter",
+            "matte (no checker)",
             surface_matte(),
-            packed_scene(&packed_matte(&jet_tier)),
+            packed_scene(&packed_matte()),
         ),
         (
             "chrome, matched filter",
