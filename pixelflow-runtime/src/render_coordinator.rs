@@ -274,10 +274,13 @@ fn bind(scene: Scene, window: Window) -> RenderRequest<PlatformPixel, WindowMeta
                 }))
             }
         }
-        // A cell-grid scene is device-pixel space by contract: its geometry
-        // (cell extents, atlas density) already carries any DPI scale, so
-        // the collapse kernels sample the buffer's own pixel grid directly.
-        Scene::CellGrid(grid) => Scene::CellGrid(grid),
+        // A packed scene is device-pixel space by construction: its kernel
+        // was compiled against this frame's own lattice, so an author working
+        // in points said so in the language — `Kernel::at` precomposition on
+        // the channel kernels — before compiling. There is nothing left to
+        // wrap here, and wrapping would mean recompiling the program every
+        // frame.
+        Scene::Packed(packed) => Scene::Packed(packed),
     };
 
     RenderRequest { scene, frame, meta }

@@ -291,10 +291,11 @@ pub enum AppData {
     ///
     /// # Contract
     ///
-    /// **Sender** (Application): Provides the scene — either
-    /// `Scene::Surface` (an `Arc<dyn Manifold<Output = Discrete>>`; `.into()`
-    /// converts one directly) or `Scene::CellGrid` (a JIT cell-grid frame,
-    /// rendered by the collapse-baked fast lane).
+    /// **Sender** (Application): Provides the scene — normally
+    /// `Scene::Packed` (four channel kernels compiled into one program over
+    /// the frame's lattice, baked one collapse call per stripe), or the
+    /// leftover `Scene::Surface` lane (an `Arc<dyn Manifold<Output =
+    /// Discrete>>`; `.into()` converts one directly).
     ///
     /// **Receiver** (Engine): Renders the scene into the frame buffer and
     /// presents it. The scene is rendered fresh for each submission, so it
@@ -304,9 +305,10 @@ pub enum AppData {
     ///
     /// `Surface` scenes are authored in point space: on HiDPI displays the
     /// engine contramaps them by points/pixels so the author stays
-    /// scale-agnostic. `CellGrid` scenes are DEVICE-PIXEL space by
-    /// contract — their geometry carries any display scale (see
-    /// `CellGridGeometry`'s docs), and the engine applies no transform.
+    /// scale-agnostic. `Packed` scenes are DEVICE-PIXEL space by
+    /// construction — their kernels were compiled against the frame's own
+    /// lattice, so an author working in points precomposed the embedding with
+    /// `Kernel::at` before compiling, and the engine applies no transform.
     ///
     /// # Example
     ///
@@ -319,8 +321,8 @@ pub enum AppData {
     /// let manifold = Arc::new(red) as Arc<dyn Manifold<Output = Discrete> + Send + Sync>;
     /// tx.send(Message::Data(AppData::RenderSurface(manifold.into())))?;
     ///
-    /// // A cell-grid frame takes the fast lane.
-    /// tx.send(Message::Data(AppData::RenderSurface(Scene::CellGrid(frame))))?;
+    /// // A packed program over the frame lattice: the production path.
+    /// tx.send(Message::Data(AppData::RenderSurface(Scene::Packed(frame))))?;
     /// ```
     ///
     /// # Performance Notes
@@ -328,8 +330,8 @@ pub enum AppData {
     /// - `Surface`: evaluated per batch through the `Manifold` trait, every
     ///   frame, every pixel — keep expressions closed-form; expensive
     ///   evaluation causes frame drops.
-    /// - `CellGrid`: one internal-loop JIT call per channel per stripe plus
-    ///   a pack — the production path for grid-shaped content.
+    /// - `Packed`: one internal-loop JIT call per stripe, pack included —
+    ///   the production path.
     RenderSurface(pixelflow_graphics::render::scene::Scene),
 
     /// Skip this frame (no rendering needed).
