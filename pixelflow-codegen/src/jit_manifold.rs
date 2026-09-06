@@ -1,10 +1,17 @@
 //! JitManifold: a JIT-compiled function held as executable memory.
 //!
-//! This type owns an [`ExecutableCode`] and exposes it through safe evaluation
-//! and low-level collapse execution methods.
+//! This type owns an [`ExecutableCode`] and exposes it through
+//! [`call_collapse`](JitManifold::call_collapse) — the entry a collapse driver
+//! uses to fill a whole tile with one call — plus the single-batch forms
+//! [`call`](JitManifold::call) and [`call_bound`](JitManifold::call_bound) that
+//! it is built from.
+//!
+//! There are no row/grid/point evaluators here. Tabulating a kernel over a
+//! domain is `Lattice::bake`'s job in pixelflow-core, which owns the loop nest;
+//! a second loop nest here would be a per-batch API competing with it.
 
 use crate::JIT_VECTOR_BYTES;
-use crate::emit::executable::{ExecutableCode, Extent2D, Point4, TileSlice};
+use crate::emit::executable::{ExecutableCode, Point4, TileSlice};
 use pixelflow_ir::LatticeShape;
 
 const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
@@ -122,113 +129,6 @@ impl JitManifold {
         );
         // SAFETY: Delegated to ExecutableCode which invokes the emitted KernelFn.
         unsafe { self.code.call_collapse(ctx, tile, origin) }
-    }
-
-    /// Safe evaluator for a row of pixels.
-    ///
-    /// Writes `out.len()` consecutive pixels starting at `origin`.
-    pub fn eval_row(&self, out: &mut [f32], origin: Point4<f32>) {
-        let full_groups = out.len() / LANES;
-        let mut x0_vec = [0.0f32; LANES];
-        for (i, lane) in x0_vec.iter_mut().enumerate() {
-            *lane = origin.x + i as f32;
-        }
-        let coords = Point4::new(
-            x0_vec,
-            [origin.y; LANES],
-            [origin.z; LANES],
-            [origin.w; LANES],
-        );
-
-        if full_groups > 0 {
-            // SAFETY: out has space for full_groups * LANES floats.
-            unsafe {
-                self.call_collapse(
-                    core::ptr::null(),
-                    TileSlice::contiguous(out.as_mut_ptr(), full_groups, 1),
-                    coords,
-                );
-            }
-        }
-
-        let tail = out.len() % LANES;
-        if tail > 0 {
-            let offset = full_groups * LANES;
-            for (i, lane) in x0_vec.iter_mut().enumerate() {
-                *lane = origin.x + (offset + i) as f32;
-            }
-            let tail_coords = Point4::new(
-                x0_vec,
-                [origin.y; LANES],
-                [origin.z; LANES],
-                [origin.w; LANES],
-            );
-            let mut scratch = [0.0f32; LANES];
-            // SAFETY: scratch buffer has space for 1 whole batch.
-            unsafe {
-                self.call_collapse(
-                    core::ptr::null(),
-                    TileSlice::single(scratch.as_mut_ptr()),
-                    tail_coords,
-                );
-            }
-            out[offset..].copy_from_slice(&scratch[..tail]);
-        }
-    }
-
-    /// Evaluate the kernel at a single point.
-    ///
-    /// The safe counterpart to the hand-written `extern "C"` signature every
-    /// caller used to spell for itself: no intrinsics, no transmute, and no
-    /// per-ISA `cfg` — the batch width is the kernel's business, not the
-    /// caller's.
-    #[must_use]
-    pub fn eval_at(&self, origin: Point4<f32>) -> f32 {
-        let mut out = [0.0f32; 1];
-        self.eval_row(&mut out, origin);
-        out[0]
-    }
-
-    /// Safe evaluator for a 2D rectangular grid of pixels.
-    ///
-    /// Evaluates `extent.width * extent.height` pixels starting at `origin`.
-    pub fn eval_grid(&self, out: &mut [f32], extent: Extent2D, origin: Point4<f32>) {
-        assert!(
-            out.len() >= extent.len(),
-            "output buffer too small for grid"
-        );
-        let full_groups = extent.width / LANES;
-        let tail = extent.width % LANES;
-
-        let mut x0_vec = [0.0f32; LANES];
-        for (i, lane) in x0_vec.iter_mut().enumerate() {
-            *lane = origin.x + i as f32;
-        }
-        let coords = Point4::new(
-            x0_vec,
-            [origin.y; LANES],
-            [origin.z; LANES],
-            [origin.w; LANES],
-        );
-
-        if tail == 0 && full_groups > 0 {
-            // Whole rows can be evaluated in a single 2D collapse call across all rows!
-            // SAFETY: out has space for width * height floats without padding.
-            unsafe {
-                self.call_collapse(
-                    core::ptr::null(),
-                    TileSlice::contiguous(out.as_mut_ptr(), full_groups, extent.height),
-                    coords,
-                );
-            }
-        } else {
-            // Rows with scalar tail: evaluate row by row
-            for row in 0..extent.height {
-                let row_y = origin.y + row as f32;
-                let row_slice = &mut out[row * extent.width..(row + 1) * extent.width];
-                self.eval_row(row_slice, Point4::new(origin.x, row_y, origin.z, origin.w));
-            }
-        }
     }
 }
 

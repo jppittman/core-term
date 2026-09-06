@@ -27,8 +27,9 @@ direct Kernel construction ── arena splicing ── ExprArena
 
 This migration is not finished. `kernel_value!` builds arena-backed `Kernel` values today,
 and the font pipeline composes and bakes them end to end. The older `kernel!` surface still
-defaults to its type-level combinator emitter while arena-backend parity and remaining
-consumers are completed. The plan of record is
+emits type-level combinators; it is the legacy tier that
+[A Kernel with a Lattice](docs/plans/2026-09-06-kernel-with-a-lattice.md) retires. The
+earlier plan of record is
 [One Kernel Language](docs/plans/2026-07-20-kernel-unification.md); the current language
 axiom and intended cost boundary are described in
 [Totality and the Cost Model](docs/designs/2026-07-24-totality-and-the-cost-model.md).

@@ -1,9 +1,19 @@
-//! Head-to-head: LLVM vs NNUE+LLVM vs JIT on the psychedelic shader.
+//! Head-to-head on the psychedelic shader: the monomorphized `kernel_raw!`
+//! and `kernel!` expression templates against the JIT, over ONE frame.
+//!
+//! Both sides are denominated over the same 1920x1080 lattice so the numbers
+//! subtract: the templates through this benchmark's own loop (a benchmark
+//! owns its loop — that is not an API), the JIT through `Lattice::bake`,
+//! which is the only way it is reachable.
+//!
+//! Each pair is measured twice, the second time under FTZ/DAZ. This shader
+//! produces no denormals, so the guard should change nothing; printing it is
+//! what makes that a measurement rather than an assumption.
 //!
 //! cargo run --release -p pixelflow-runtime --example bench_psychedelic
 
 use pixelflow_compiler::{kernel, kernel_jit, kernel_raw};
-use pixelflow_core::{Field, Manifold, PARALLELISM};
+use pixelflow_core::{FastMathGuard, Field, Kernel, Lattice, Manifold, PARALLELISM};
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
@@ -103,81 +113,102 @@ kernel!(struct PsychOpt = || Field -> Field {
     red + green + blue
 });
 
+/// The frame every measurement in this file is denominated over.
+const WIDTH: usize = 1920;
+const HEIGHT: usize = 1080;
+
+/// Timed repetitions of a whole frame. Odd, so the median is a sample.
+const SAMPLES: usize = 5;
+
+/// Median sample, in nanoseconds per pixel of one frame.
+fn ns_per_pixel(times: &mut [u64]) -> f64 {
+    times.sort_unstable();
+    times[times.len() / 2] as f64 / (WIDTH * HEIGHT) as f64
+}
+
+/// The JIT path, measured the only way it is reachable: one `Lattice::bake`
+/// per frame.
+///
+/// There is no per-batch entry to time instead — a `Kernel` plus a `Lattice`
+/// IS the evaluation API, and the loop nest, the invariant hoisting and the
+/// register allocation across all of it belong to the compiler.
 #[inline(never)]
-fn bench_scanline<M: Manifold<Output = Field>>(shader: &M) -> f64 {
-    let width = 1920usize;
-    let height = 1080usize;
-    let steps_x = width / PARALLELISM;
+fn bench_bake(shader: &Kernel) -> f64 {
+    let lattice = Lattice::frame(WIDTH, HEIGHT, 0.0);
+
+    // Warmup: pays the one-time JIT compile (cached thereafter).
+    std::hint::black_box(lattice.bake(shader));
+
+    let mut times = [0u64; SAMPLES];
+    for t in &mut times {
+        let start = nanos_now();
+        std::hint::black_box(lattice.bake(shader));
+        *t = nanos_now() - start;
+    }
+    ns_per_pixel(&mut times)
+}
+
+/// The expression templates over the same frame: this benchmark's own loop,
+/// one `Manifold::eval` per SIMD batch, every row of the lattice the JIT
+/// bakes. Same pixels, same coordinates, so the two numbers subtract.
+#[inline(never)]
+fn bench_templates<M: Manifold<Output = Field>>(shader: &M) -> f64 {
+    let steps_x = WIDTH / PARALLELISM;
     let z = Field::from(0.0f32);
     let w = Field::from(0.0f32);
 
-    // Warmup: full frame
-    for py in (0..height).step_by(108) {
-        let y = Field::from(py as f32);
-        for step in 0..steps_x {
-            let x = Field::sequential((step * PARALLELISM) as f32);
-            std::hint::black_box(shader.eval((x, y, z, w)));
-        }
-    }
-
-    // Benchmark: 10 scanlines at different Y positions
-    // This prevents LLVM from hoisting Y-dependent computations
-    let scanlines = 10usize;
-    let total_pixels = width * scanlines;
-    let samples = 50;
-    let mut times = vec![0u64; samples];
-    for t in &mut times {
-        let start = nanos_now();
-        for sy in 0..scanlines {
-            let y = Field::from((sy * 108) as f32);
+    let frame = || {
+        for py in 0..HEIGHT {
+            let y = Field::from(py as f32);
             for step in 0..steps_x {
                 let x = Field::sequential((step * PARALLELISM) as f32);
                 std::hint::black_box(shader.eval((x, y, z, w)));
             }
         }
-        *t = nanos_now() - start;
-    }
-    times.sort();
-    times[samples / 2] as f64 / total_pixels as f64
-}
+    };
 
-/// The JIT through its ROW entry point rather than one call per SIMD vector.
-///
-/// `bench_scanline` drives every tier through `Manifold::eval`, which for the
-/// JIT means crossing the `extern "C"` boundary once per [`PARALLELISM`]
-/// pixels — 120 calls per 1920px scanline — while the combinator tiers it is
-/// compared against are inlined Rust with no call at all. That is not a
-/// codegen difference, it is an entry-point difference, and `eval_row` is the
-/// entry point that removes it: the loop lives inside the emitted kernel, so
-/// the boundary is crossed once per row and the spill frame is set up once
-/// instead of 120 times.
-#[inline(never)]
-fn bench_scanline_rows(jit: &pixelflow_core::__macro::codegen::JitManifold) -> f64 {
-    use pixelflow_core::__macro::codegen::Point4;
+    frame(); // warmup
 
-    let width = 1920usize;
-    let height = 1080usize;
-    let mut row = vec![0.0f32; width];
-
-    for py in (0..height).step_by(108) {
-        jit.eval_row(&mut row, Point4::new(0.0, py as f32, 0.0, 0.0));
-        std::hint::black_box(&row);
-    }
-
-    let scanlines = 10usize;
-    let total_pixels = width * scanlines;
-    let samples = 50;
-    let mut times = vec![0u64; samples];
+    let mut times = [0u64; SAMPLES];
     for t in &mut times {
         let start = nanos_now();
-        for sy in 0..scanlines {
-            jit.eval_row(&mut row, Point4::new(0.0, (sy * 108) as f32, 0.0, 0.0));
-            std::hint::black_box(&row);
-        }
+        frame();
         *t = nanos_now() - start;
     }
-    times.sort();
-    times[samples / 2] as f64 / total_pixels as f64
+    ns_per_pixel(&mut times)
+}
+
+/// One pass over all three variants, so the FTZ/DAZ comparison is the same
+/// measurement twice rather than two different ones.
+struct Pass {
+    raw: f64,
+    opt: f64,
+    bake: f64,
+}
+
+fn measure(raw: &PsychRaw, opt: &PsychOpt, jit: &Kernel) -> Pass {
+    Pass {
+        raw: bench_templates(raw),
+        opt: bench_templates(opt),
+        bake: bench_bake(jit),
+    }
+}
+
+fn report(label: &str, p: &Pass) {
+    println!("  {label}");
+    println!(
+        "    templates, frame loop (kernel_raw!): {:.3} ns/pixel",
+        p.raw
+    );
+    println!(
+        "    templates, frame loop (kernel!):     {:.3} ns/pixel",
+        p.opt
+    );
+    println!(
+        "    JIT, whole frame (Lattice::bake):    {:.3} ns/pixel",
+        p.bake
+    );
+    println!("    bake vs kernel!: {:.2}x", p.opt / p.bake);
 }
 
 fn main() {
@@ -213,65 +244,19 @@ fn main() {
     });
 
     println!(
-        "=== Psychedelic Shader (3ch, 1920px scanline, {} SIMD lanes) ===\n",
+        "=== Psychedelic Shader (3ch, {WIDTH}x{HEIGHT}, {} SIMD lanes) ===\n",
         PARALLELISM
     );
 
-    let raw_ns = bench_scanline(&raw);
-    let opt_ns = bench_scanline(&opt);
-    let jit_ns = bench_scanline(&jit);
-    // A 2x speedup is the shape a bug makes too (a row that is never written
-    // is very fast), so check eval_row computes the same pixels before
-    // believing its timings. `eval_at` is the independent-enough witness
-    // available here: same emitted kernel, but a one-group tile instead of a
-    // 120-group one, so it exercises the loop bounds and the X induction
-    // rather than sharing them.
-    {
-        use pixelflow_core::__macro::codegen::Point4;
-        let width = 1920usize;
-        let mut row = vec![0.0f32; width];
-        let y_probe = 324.0f32;
-        let jitm = jit.__compiled();
-        jitm.eval_row(&mut row, Point4::new(0.0, y_probe, 0.0, 0.0));
+    let plain = measure(&raw, &opt, &jit);
+    let fast = {
+        // SAFETY: single-threaded benchmark; the guard restores the FP
+        // control state when it drops at the end of this block.
+        let _guard = unsafe { FastMathGuard::new() };
+        measure(&raw, &opt, &jit)
+    };
 
-        let mut mismatches = 0usize;
-        for (i, &got) in row.iter().enumerate() {
-            let want = jitm.eval_at(Point4::new(i as f32, y_probe, 0.0, 0.0));
-            if got.to_bits() != want.to_bits() {
-                mismatches += 1;
-            }
-        }
-        assert_eq!(
-            mismatches, 0,
-            "eval_row disagrees with eval_at on {mismatches}/{width} pixels — \
-             the row timing below would be measuring the wrong thing"
-        );
-        let lo = row.iter().cloned().fold(f32::INFINITY, f32::min);
-        let hi = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        assert!(
-            hi > lo,
-            "eval_row produced a constant row ({lo}); it is not evaluating per-pixel"
-        );
-        println!("  (eval_row verified: {width} pixels match eval_at, range {lo:.3}..{hi:.3})\n");
-    }
-
-    let jit_row_ns = bench_scanline_rows(jit.__compiled());
-
-    println!("  LLVM only (kernel_raw!):  {:.3}ns/pixel", raw_ns);
-    println!("  NNUE + LLVM (kernel!):    {:.3}ns/pixel", opt_ns);
-    println!("  JIT (kernel_jit!):        {:.3}ns/pixel", jit_ns);
-    println!("  JIT, eval_row:            {:.3}ns/pixel", jit_row_ns);
+    report("default FP mode", &plain);
     println!();
-    println!(
-        "  NNUE+LLVM vs LLVM: {:.1}%",
-        (opt_ns / raw_ns - 1.0) * 100.0
-    );
-    println!(
-        "  JIT vs LLVM:       {:.1}%",
-        (jit_ns / raw_ns - 1.0) * 100.0
-    );
-    println!(
-        "  JIT rows vs NNUE:  {:.1}%",
-        (jit_row_ns / opt_ns - 1.0) * 100.0
-    );
+    report("FTZ/DAZ (FastMathGuard)", &fast);
 }

@@ -16,13 +16,38 @@
 
 #![cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 
-use pixelflow_codegen::JitManifold;
 use pixelflow_codegen::emit::compile;
-use pixelflow_codegen::emit::executable::Point4;
+use pixelflow_codegen::emit::executable::{Point4, TileSlice};
+use pixelflow_codegen::{JIT_VECTOR_BYTES, JitManifold};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
+
+/// Lanes in one emitted batch.
+const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
+
+/// One point of a compiled kernel: a single-batch collapse call, lane 0 read
+/// back.
+///
+/// This test owns its loop. `call_collapse` is the collapse driver's entry and
+/// the only one there is; pixelflow-codegen cannot reach `Lattice::bake` (core
+/// depends on this crate, not the other way round), so a test that wants one
+/// number spells the batch itself rather than the crate growing a point API for
+/// it.
+fn eval_point(jit: &JitManifold, x: f32, y: f32, z: f32, w: f32) -> f32 {
+    let mut out = [0.0f32; LANES];
+    // SAFETY: `out` holds exactly one whole batch, and every arena in this file
+    // declares no buffers, so the null context is never read.
+    unsafe {
+        jit.call_collapse(
+            core::ptr::null(),
+            TileSlice::single(out.as_mut_ptr()),
+            Point4::new([x; LANES], [y; LANES], [z; LANES], [w; LANES]),
+        );
+    }
+    out[0]
+}
 
 /// How many registers this build's backend actually allocates.
 ///
@@ -68,7 +93,7 @@ fn assert_spills_and_matches_interp(arena: &ExprArena, root: ExprId, label: &str
     for &x in &coords {
         for &y in &coords {
             let want = eval_scalar(arena, root, &[x, y, 0.1, 0.9], &BindingTable::empty());
-            let got = jit.eval_at(Point4::new(x, y, 0.1, 0.9));
+            let got = eval_point(&jit, x, y, 0.1, 0.9);
             assert!(
                 (want.is_nan() && got.is_nan()) || floats_agree(want, got),
                 "{label}: JIT {got} != interp {want} at ({x}, {y}) [spills={spills}]"
@@ -274,7 +299,7 @@ fn frame_mode_beyond_red_zone() {
     let jit = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT);
     for &(x, y) in &[(0.3f32, -1.2f32), (2.0, 0.7), (-0.9, 3.1)] {
         let want = eval_scalar(&a, root, &[x, y, 0.1, 0.9], &BindingTable::empty());
-        let got = jit.eval_at(Point4::new(x, y, 0.1, 0.9));
+        let got = eval_point(&jit, x, y, 0.1, 0.9);
         assert!(
             want == got,
             "frame_mode: JIT {got} != interp {want} at ({x}, {y})"

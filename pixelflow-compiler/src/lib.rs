@@ -112,36 +112,15 @@ pub fn kernel(input: TokenStream) -> TokenStream {
     // Phase 4: Optimization
     let optimized = optimize::optimize(analyzed);
 
-    // Phase 5: Code generation.
+    // Phase 5: Code generation (the monomorphizing combinator backend).
     //
-    // NOTE: `kernel!` defaults to the combinator backend. We cannot yet
-    // transparently route the "scalar `Field`" subset to the JIT, because
-    // combinator kernels are polymorphic over the *evaluation domain*: a
-    // kernel declared `-> Field` is still routinely evaluated over
-    // `Jet2`/`Jet3` domains for antialiasing and 3D surfaces (see
-    // `pixelflow-core/tests/test_sphere_debug.rs`). The JIT wrapper is
-    // monomorphic to `Manifold<(Field, Field, Field, Field)>`, so swapping it
-    // in drops that polymorphism, and it is `Clone` where combinator kernels
-    // are `Copy` ZSTs.
-    //
-    // P3 transition scaffolding (docs/plans/2026-07-20-kernel-unification.md):
-    // under `feature = "arena-backend"`, eligible bodies route to the arena
-    // backend so the parity suite (and a full workspace build) can measure
-    // exactly what still depends on the combinator emitter. Consumers that
-    // fail to build under the feature are the P4/P5 work list. Routing
-    // excludes derivative projections (see `is_transparent_routing_safe`) —
-    // their `Field`-domain semantics intentionally differ between backends.
-    // The default flips when the parity suite + font goldens say so.
-    #[cfg(feature = "arena-backend")]
-    {
-        // A body the bridge cannot lower (Err) falls back to the combinator
-        // backend, same as ineligible signatures.
-        if jit_backend::is_transparent_routing_safe(&optimized)
-            && let Ok(tokens) = jit_backend::emit_jit(&optimized, jit_backend::ZeroParam::Closure)
-        {
-            return tokens.into();
-        }
-    }
+    // `kernel!` is the LLVM tier: it emits combinator ZSTs that are
+    // polymorphic over the *evaluation domain* — a kernel declared `-> Field`
+    // is still routinely evaluated over `Jet2`/`Jet3` domains for
+    // antialiasing and 3D surfaces. The arena tier (`kernel_jit!` /
+    // `kernel_value!`) produces a `Kernel` instead, which is not a manifold at
+    // all and so cannot be routed to transparently; a consumer picks a tier by
+    // picking a macro.
     codegen::emit(optimized).into()
 }
 
@@ -242,28 +221,31 @@ pub fn kernel_value(input: TokenStream) -> TokenStream {
     }
 }
 
-/// The `kernel_jit!` macro: JIT-compiled kernels that bypass LLVM.
+/// The `kernel_jit!` macro: a [`Kernel`](pixelflow_core::Kernel) over the
+/// arena backend, with macro-time e-graph optimization.
 ///
-/// Has identical semantics to `kernel!`:
-/// - With parameters: returns a builder closure that JITs on each call
-/// - Without parameters: returns a `JitManifold` directly
+/// - Without parameters: a `Kernel` value.
+/// - With parameters: a builder closure returning a `Kernel`. Scalar params
+///   are folded in as constants; manifold-typed params (`name: kernel`) are
+///   spliced through `Lower`, so the builder composes ONE fused arena.
 ///
-/// Parameters are constant-folded into the JIT'd kernel. Different parameter
-/// values produce different kernels — no cache, caller owns the result.
+/// The difference from [`kernel_value!`](macro@kernel_value) is composition:
+/// `kernel_value!` has no manifold params, because `Kernel` values compose
+/// through `Kernel::at`/`sum`/`select` directly.
+///
+/// Nothing is compiled at construction. A `Kernel` becomes machine code when a
+/// consumer bakes it over a lattice (`Lattice::bake(&kernel)`), which is the
+/// only way a kernel turns into numbers.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use pixelflow_compiler::kernel_jit;
+/// use pixelflow_core::Lattice;
 ///
-/// // With parameters — builder pattern
 /// let builder = kernel_jit!(|cx: f32, r: f32| (X - cx) * r);
-/// let manifold = builder(1.0, 2.0);  // JITs immediately
-/// manifold.eval((x, y, z, w));
-///
-/// // Without parameters — direct JitManifold
-/// let manifold = kernel_jit!(|| X + Y);
-/// manifold.eval((x, y, z, w));
+/// let kernel = builder(1.0, 2.0);
+/// let plane = Lattice::frame(64, 64, 0.0).bake(&kernel);
 /// ```
 #[proc_macro]
 pub fn kernel_jit(input: TokenStream) -> TokenStream {
@@ -280,18 +262,17 @@ pub fn kernel_jit(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    // Phase 3: Optimization (e-graph saturation + NNUE extraction at compile time)
-    // Same optimization pipeline as kernel! — the only difference between
-    // kernel! and kernel_jit! is the backend (LLVM vs JIT), not the
-    // optimization. This gives us FMA fusion, algebraic simplification,
-    // CSE, rsqrt, etc. before the IR is emitted for runtime JIT compilation.
+    // Phase 3: Optimization (e-graph saturation + latency-prior extraction at
+    // macro-expansion time). Same pipeline as `kernel!` — the only difference
+    // between the two is the backend that consumes the optimized AST, not the
+    // optimization. FMA fusion, algebraic simplification, CSE and rsqrt all
+    // happen here, before the arena is emitted.
     let analyzed = optimize::optimize(analyzed);
 
-    // Phase 4: JIT backend (shared with the eligible subset of `kernel!`).
-    // `kernel_jit!` returns the zero-param manifold value directly, and unlike
-    // `kernel!` it does not fall back — a lowering failure is a hard error,
-    // since the caller explicitly asked for the JIT.
-    match jit_backend::emit_jit(&analyzed, jit_backend::ZeroParam::Value) {
+    // Phase 4: arena backend. Unlike `kernel!` there is no fallback — a
+    // lowering failure is a hard error, since the caller explicitly asked for
+    // the arena tier.
+    match jit_backend::emit_jit(&analyzed) {
         Ok(tokens) => tokens.into(),
         Err(e) => syn::Error::new(proc_macro2::Span::call_site(), e)
             .to_compile_error()

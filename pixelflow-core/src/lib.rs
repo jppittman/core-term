@@ -191,9 +191,10 @@ pub mod lattice;
 // `kernel_jit!` expansions run in the *consumer's* crate, whose extern
 // prelude is only guaranteed to contain the documented two-crate surface
 // (pixelflow-core + pixelflow-compiler). Generated code therefore reaches
-// pixelflow-ir and pixelflow-codegen through this module — a bare
-// `::pixelflow_ir`/`::pixelflow_codegen` path would fail to resolve for any
-// consumer that does not also declare those crates as direct dependencies.
+// pixelflow-ir through this module — a bare `::pixelflow_ir` path would fail
+// to resolve for any consumer that does not also declare that crate as a
+// direct dependency. Nothing reaches pixelflow-codegen: an expansion builds an
+// arena, and only `Lattice::bake` compiles one.
 //
 // This does NOT relax the "pixelflow-core shouldn't re-export the IR" ruling:
 // that ruling is about the public API surface, and this module exists solely
@@ -201,7 +202,6 @@ pub mod lattice;
 // not public API — do not use it directly.
 #[doc(hidden)]
 pub mod __macro {
-    pub use pixelflow_codegen as codegen;
     pub use pixelflow_ir as ir;
 }
 
@@ -267,7 +267,7 @@ pub use lattice::cell_grid::{
     CELL_STRIDE, CellGridFrame, CellGridGeometry, CellGridPackedFrame, CellGridPackedProgram,
     CellGridProgram, PlaneRegion,
 };
-pub use lattice::{DiscreteManifold, Lattice, ReduceOp};
+pub use lattice::{DiscreteManifold, Lattice};
 
 // ============================================================================
 // Field: The ONLY User-Facing SIMD Type

@@ -19,11 +19,31 @@
 //! all four backends from any host by `emit::tests::muladd_encoding`.
 #![cfg(target_arch = "x86_64")]
 
-use pixelflow_codegen::JitManifold;
-use pixelflow_codegen::emit::executable::Point4;
+use pixelflow_codegen::emit::executable::{Point4, TileSlice};
 use pixelflow_codegen::emit::{EmitCtx, compile};
+use pixelflow_codegen::{JIT_VECTOR_BYTES, JitManifold};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
+
+/// Lanes in one emitted batch.
+const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
+
+/// One point of a compiled kernel: a single-batch collapse call, lane 0 read
+/// back. `call_collapse` is the collapse driver's entry; a test that wants one
+/// number owns this loop rather than the crate growing a point API for it.
+fn eval_point(jit: &JitManifold, x: f32, y: f32, z: f32) -> f32 {
+    let mut out = [0.0f32; LANES];
+    // SAFETY: `out` holds exactly one whole batch; these arenas declare no
+    // buffers, so the null context is never read.
+    unsafe {
+        jit.call_collapse(
+            core::ptr::null(),
+            TileSlice::single(out.as_mut_ptr()),
+            Point4::new([x; LANES], [y; LANES], [z; LANES], [0.0; LANES]),
+        );
+    }
+    out[0]
+}
 
 // ── The two rounding forms, as scalar references ─────────────────────────────
 
@@ -105,8 +125,8 @@ fn an_unspilled_muladd_rounds_the_way_this_target_does() {
 
     let result = compile(&a, root).expect("compile MulAdd(X, Y, Z)");
     assert_eq!(result.spill_count, 0, "this scenario must not spill");
-    let got = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT)
-        .eval_at(Point4::new(A, B, C, 0.0));
+    let jit = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT);
+    let got = eval_point(&jit, A, B, C);
 
     #[cfg(target_feature = "fma")]
     assert_bits("fused MulAdd on an FMA target", got, fused(A, B, C));
@@ -197,7 +217,7 @@ fn a_spilled_muladd_rounds_twice_on_every_target() {
         result.spill_count > 0,
         "scenario failed to create register pressure"
     );
-    let got = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT)
-        .eval_at(Point4::new(HALF_A, HALF_B, C, 0.0));
+    let jit = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT);
+    let got = eval_point(&jit, HALF_A, HALF_B, C);
     assert_bits("decomposed MulAdd", got, decomposed(A, B, C));
 }

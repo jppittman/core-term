@@ -1,45 +1,28 @@
 use super::*;
-use crate::variables::{X, Y};
+use pixelflow_ir::Kernel;
 
-// A trivial manifold for testing: returns X + Y.
-// This is a struct (not a closure) so it can implement Manifold.
-#[derive(Copy, Clone)]
-struct XPlusY;
+// The kernels the tabulation tests bake. Written as `Kernel` arithmetic —
+// the arena the compiler consumes — because `Lattice::bake` is the only
+// evaluation entry: there is nothing here for a hand-written `Manifold` to
+// be handed to.
 
-impl Manifold<(Field, Field, Field, Field)> for XPlusY {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, p: (Field, Field, Field, Field)) -> Field {
-        let (x, y, _, _) = p;
-        (x + y).eval(p)
-    }
+/// `X + Y`.
+fn x_plus_y() -> Kernel {
+    Kernel::x().add(&Kernel::y())
 }
 
-// Constant manifold: returns a fixed value regardless of coordinates.
-#[derive(Copy, Clone)]
-struct Constant(f32);
-
-impl Manifold<(Field, Field, Field, Field)> for Constant {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, _p: (Field, Field, Field, Field)) -> Field {
-        Field::from(self.0)
-    }
+/// `X`, for the 1D shapes.
+fn x_only() -> Kernel {
+    Kernel::x()
 }
 
-// Returns X only (for simple 1D tests).
-#[derive(Copy, Clone)]
-struct XOnly;
-
-impl Manifold<(Field, Field, Field, Field)> for XOnly {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, p: (Field, Field, Field, Field)) -> Field {
-        p.0
-    }
+/// `100·Z + 10·Y + X` — every axis readable in one digit of the result, so a
+/// transposed or dropped axis in the 4D layout is visible in the value.
+fn z_times_100() -> Kernel {
+    Kernel::z()
+        .mul(&Kernel::constant(100.0))
+        .add(&Kernel::y().mul(&Kernel::constant(10.0)))
+        .add(&Kernel::x())
 }
 
 // ---- Frame coord generation ----
@@ -85,16 +68,16 @@ fn scanline_coord_generation() {
     assert_eq!(lattice.loop_mask(), 0b0001);
 }
 
-// ---- Point collapse = single eval ----
+// ---- Point bake = a single value ----
 
 #[test]
-fn point_collapse_single_eval() {
+fn point_bake_is_a_single_value() {
     let lattice = Lattice::point(3.0, 4.0, 0.0, 0.0);
     assert_eq!(lattice.len(), 1);
     assert_eq!(lattice.loop_mask(), 0);
     assert_eq!(lattice.coord(0), (3.0, 4.0, 0.0, 0.0));
 
-    let discrete = lattice.collapse(&XPlusY);
+    let discrete = lattice.bake(&x_plus_y());
     assert_eq!(discrete.width(), 1);
     assert_eq!(discrete.height(), 1);
 
@@ -115,9 +98,9 @@ fn point_coord_oob() {
 
 #[test]
 fn discrete_manifold_round_trip() {
-    // Collapse a simple manifold (XPlusY) over a small grid, then read back.
+    // Bake X + Y over a small grid, then read the buffer back as a manifold.
     let lattice = Lattice::frame(8, 4, 0.0);
-    let discrete = lattice.collapse(&XPlusY);
+    let discrete = lattice.bake(&x_plus_y());
 
     assert_eq!(discrete.width(), 8);
     assert_eq!(discrete.height(), 4);
@@ -152,71 +135,14 @@ fn discrete_manifold_round_trip() {
     assert!((out[0] - 3.0).abs() < 1e-5, "expected 3.0, got {}", out[0],);
 }
 
-// ---- collapse_with Add on constant = value * count (per-lane fold) ----
-
-#[test]
-fn collapse_with_add_constant() {
-    let value = 2.5f32;
-    // Width must be a whole number of batches for every lane to see the same
-    // number of contributions: a partial batch is masked to the monoid identity
-    // in its out-of-range lanes, so lanes would disagree and the single
-    // `expected_per_lane` below would not exist. Deriving the width from
-    // `PARALLELISM` keeps that true at every SIMD width — hard-coding 8 held
-    // only while a batch was 4 wide, and silently computed `4 * (8 / 16) == 0`
-    // on a 16-lane build. Tail behaviour has its own test below.
-    const BATCHES_PER_ROW: usize = 2;
-    const HEIGHT: usize = 4;
-    let width = PARALLELISM * BATCHES_PER_ROW;
-    let lattice = Lattice::frame(width, HEIGHT, 0.0);
-    let result = lattice.collapse_with(ReduceOp::Add, &Constant(value));
-
-    // One eval per batch per row, each adding `value` to every lane.
-    let evals_per_lane = HEIGHT * BATCHES_PER_ROW;
-    let expected_per_lane = evals_per_lane as f32 * value;
-
-    let mut out = [0.0f32; PARALLELISM];
-    result.store(&mut out);
-    for (i, &v) in out.iter().enumerate() {
-        assert!(
-            (v - expected_per_lane).abs() < 1e-3,
-            "lane {}: expected {}, got {}",
-            i,
-            expected_per_lane,
-            v,
-        );
-    }
-}
-
-// ---- collapse_with on a non-trivial manifold ----
-
-#[test]
-fn collapse_with_mul_constant() {
-    // Mul identity is 1.0. For a constant manifold returning 2.0,
-    // folding N batches: 2.0^N per lane.
-    let lattice = Lattice::scanline(PARALLELISM, 0.0, 0.0, 0.0);
-    let result = lattice.collapse_with(ReduceOp::Mul, &Constant(2.0));
-
-    // width = PARALLELISM, so exactly 1 batch. Result = 1.0 * 2.0 = 2.0 per lane.
-    let mut out = [0.0f32; PARALLELISM];
-    result.store(&mut out);
-    for (i, &v) in out.iter().enumerate() {
-        assert!(
-            (v - 2.0).abs() < 1e-5,
-            "lane {}: expected 2.0, got {}",
-            i,
-            v,
-        );
-    }
-}
-
 // ---- Tail handling (non-multiple-of-PARALLELISM width) ----
 
 #[test]
-fn frame_collapse_non_aligned_width() {
+fn frame_bake_non_aligned_width() {
     // Width that's not a multiple of PARALLELISM.
     let width = PARALLELISM + 1;
     let lattice = Lattice::frame(width, 2, 0.0);
-    let discrete = lattice.collapse(&XOnly);
+    let discrete = lattice.bake(&x_only());
 
     assert_eq!(discrete.buffer().len(), width * 2);
 
@@ -281,25 +207,6 @@ fn discrete_manifold_size_mismatch() {
     let _manifold = DiscreteManifold::new(alloc::vec![1.0, 2.0, 3.0], 2, 2);
 }
 
-// ---- ReduceOp identity elements ----
-
-#[test]
-fn reduce_op_identities() {
-    let mut out = [0.0f32; PARALLELISM];
-
-    ReduceOp::Add.identity().store(&mut out);
-    assert_eq!(out[0], 0.0);
-
-    ReduceOp::Mul.identity().store(&mut out);
-    assert_eq!(out[0], 1.0);
-
-    ReduceOp::Min.identity().store(&mut out);
-    assert_eq!(out[0], f32::INFINITY);
-
-    ReduceOp::Max.identity().store(&mut out);
-    assert_eq!(out[0], f32::NEG_INFINITY);
-}
-
 // ---- Constructor shapes ----
 
 #[test]
@@ -317,12 +224,12 @@ fn constructor_shapes() {
     assert_eq!(m.loop_mask(), 0b0011);
 }
 
-// ---- Scanline collapse round-trip ----
+// ---- Scanline bake round-trip ----
 
 #[test]
-fn scanline_collapse_round_trip() {
+fn scanline_bake_round_trip() {
     let lattice = Lattice::scanline(16, 3.0, 0.0, 0.0);
-    let discrete = lattice.collapse(&XPlusY);
+    let discrete = lattice.bake(&x_plus_y());
 
     // Each pixel x should have value x + 3.0.
     for x in 0..16 {
@@ -346,8 +253,8 @@ fn frame_zero_dimensions() {
     assert!(lattice.is_empty());
     assert_eq!(lattice.len(), 0);
 
-    // Collapsing an empty lattice produces an empty discrete manifold.
-    let discrete = lattice.collapse(&Constant(42.0));
+    // Baking over an empty lattice produces an empty discrete manifold.
+    let discrete = lattice.bake(&Kernel::constant(42.0));
     assert_eq!(discrete.buffer().len(), 0);
     assert_eq!(discrete.width(), 0);
     assert_eq!(discrete.height(), 0);
@@ -356,9 +263,9 @@ fn frame_zero_dimensions() {
 // ---- Index-space lattices (feature/tensor indexing) ----
 
 #[test]
-fn index_collapse_identity() {
+fn index_bake_identity() {
     let lattice = Lattice::index(4);
-    let result = lattice.collapse(&X);
+    let result = lattice.bake(&x_only());
     assert_eq!(result.width(), 4);
     assert_eq!(result.height(), 1);
     let buf = result.buffer();
@@ -369,19 +276,20 @@ fn index_collapse_identity() {
 }
 
 #[test]
-fn index_collapse_scalar_sum() {
-    // Sum of [0,1,2,3] across the whole lattice = 6.
-    let lattice = Lattice::index(4);
-    let result = lattice.collapse_scalar(ReduceOp::Add, &X);
-    assert!((result - 6.0).abs() < 1e-5, "expected 6.0, got {}", result);
+fn sum_over_an_index_domain() {
+    // Sum of [0,1,2,3] = 6. The reduction is a binder inside the kernel, so
+    // the lattice that tabulates it is a single point.
+    let k = Kernel::sum_over(4, |i| i.clone());
+    let result = Lattice::point(0.0, 0.0, 0.0, 0.0).bake(&k).into_buffer()[0];
+    assert!((result - 6.0).abs() < 1e-5, "expected 6.0, got {result}");
 }
 
 #[test]
-fn index2_collapse_xy_sum() {
+fn index2_bake_xy_sum() {
     // 3x2 lattice (width=3, height=2). Values = X + Y.
     // Row 0 (Y=0): [0,1,2]. Row 1 (Y=1): [1,2,3].
     let lattice = Lattice::index2(3, 2);
-    let result = lattice.collapse(&(X + Y));
+    let result = lattice.bake(&x_plus_y());
     assert_eq!(result.width(), 3);
     assert_eq!(result.height(), 2);
     let buf = result.buffer();
@@ -395,72 +303,21 @@ fn index2_collapse_xy_sum() {
 }
 
 #[test]
-fn index2_collapse_scalar_sum() {
-    // 3x2 lattice. Values = X + Y.
-    // Sum = (0+0) + (1+0) + (2+0) + (0+1) + (1+1) + (2+1) = 0+1+2+1+2+3 = 9.
-    let lattice = Lattice::index2(3, 2);
-    let result = lattice.collapse_scalar(ReduceOp::Add, &(X + Y));
-    assert!((result - 9.0).abs() < 1e-5, "expected 9.0, got {}", result);
+fn nested_sums_over_two_index_domains() {
+    // Sum over a 3x2 domain of (i + j) = 0+1+2 + 1+2+3 = 9. Two binders, so
+    // the inner index is contracted before the outer fold sees it.
+    let k = Kernel::sum_over(2, |j| {
+        let j = j.clone();
+        Kernel::sum_over(3, move |i| i.add(&j))
+    });
+    let result = Lattice::point(0.0, 0.0, 0.0, 0.0).bake(&k).into_buffer()[0];
+    assert!((result - 9.0).abs() < 1e-5, "expected 9.0, got {result}");
 }
 
-#[test]
-fn collapse_axis0_dot_product() {
-    // W = column-major layout for matmul:
-    // W(input_i=X, output_j=Y): W(0,0)=1, W(1,0)=3, W(0,1)=2, W(1,1)=4
-    // Row-major buffer (Y outer, X inner): [W(0,0), W(1,0), W(0,1), W(1,1)] = [1, 3, 2, 4]
-    let w_buf = alloc::vec![1.0f32, 3.0, 2.0, 4.0];
-    let w = DiscreteManifold::new(w_buf, 2, 2);
-    let x_buf = alloc::vec![1.0f32, 2.0];
-    let x_vec = DiscreteManifold::new(x_buf, 2, 1);
-
-    struct Product {
-        w: DiscreteManifold,
-        x: DiscreteManifold,
-    }
-    impl Manifold<(Field, Field, Field, Field)> for Product {
-        type Output = Field;
-        fn eval(&self, (xi, yj, _, _): (Field, Field, Field, Field)) -> Field {
-            let zero = Field::from(0.0);
-            let w_val = self.w.eval((xi, yj, zero, zero));
-            let x_val = self.x.eval((xi, zero, zero, zero));
-            (w_val * x_val).eval((xi, yj, zero, zero))
-        }
-    }
-
-    let lattice = Lattice::index2(2, 2); // width=INPUT=2, height=OUTPUT=2
-    let result = lattice.collapse_axis(0, ReduceOp::Add, &Product { w, x: x_vec });
-    // result: width=2 (= extent[1]), height=1
-    // result[0] = W(0,0)*x(0) + W(1,0)*x(1) = 1*1 + 3*2 = 7
-    // result[1] = W(0,1)*x(0) + W(1,1)*x(1) = 2*1 + 4*2 = 10
-    assert_eq!(result.width(), 2);
-    assert_eq!(result.height(), 1);
-    let buf = result.buffer();
-    assert!((buf[0] - 7.0).abs() < 1e-4, "expected 7.0, got {}", buf[0]);
-    assert!(
-        (buf[1] - 10.0).abs() < 1e-4,
-        "expected 10.0, got {}",
-        buf[1]
-    );
-}
+// ---- 4D box bake (Z/W extents > 1) ----
 
 #[test]
-fn collapse_axis1_row_sum() {
-    // 2x3 lattice (width=2, height=3). Values = Y.
-    // collapse_axis(1, Add): for each X=i, sum Y over [0,3) = 0+1+2 = 3
-    // result: width=2, height=1. result[0]=3, result[1]=3.
-    let lattice = Lattice::index2(2, 3);
-    let result = lattice.collapse_axis(1, ReduceOp::Add, &Y);
-    assert_eq!(result.width(), 2);
-    assert_eq!(result.height(), 1);
-    let buf = result.buffer();
-    assert!((buf[0] - 3.0).abs() < 1e-5, "expected 3.0, got {}", buf[0]);
-    assert!((buf[1] - 3.0).abs() < 1e-5, "expected 3.0, got {}", buf[1]);
-}
-
-// ---- 4D box collapse (Z/W extents > 1) ----
-
-#[test]
-fn box_collapse_4d_layout() {
+fn box_bake_4d_layout() {
     // 2 wide, 2 tall, 2 deep: buffer rows are (w, z, y) outer-to-inner.
     let lattice = Lattice {
         extent: [2, 2, 2, 1],
@@ -469,15 +326,7 @@ fn box_collapse_4d_layout() {
     assert_eq!(lattice.len(), 8);
     assert_eq!(lattice.loop_mask(), 0b0111);
 
-    struct ZTimes100;
-    impl Manifold<(Field, Field, Field, Field)> for ZTimes100 {
-        type Output = Field;
-        fn eval(&self, p @ (x, y, z, _): (Field, Field, Field, Field)) -> Field {
-            (z * Field::from(100.0) + y * Field::from(10.0) + x).eval(p)
-        }
-    }
-
-    let discrete = lattice.collapse(&ZTimes100);
+    let discrete = lattice.bake(&z_times_100());
     assert_eq!(discrete.width(), 2);
     assert_eq!(discrete.height(), 4);
     let buf = discrete.buffer();
@@ -503,9 +352,17 @@ mod bilinear_sampler {
     use super::*;
     use crate::BilinearSampler;
 
-    /// Evaluate the sampler at a single point through the public lattice API.
+    /// One point of the sampler, evaluated the way its production caller
+    /// does — `CachedGlyph::eval` reads it a batch at a time — with lane 0
+    /// read back here. A test owning its batch, not an evaluation API:
+    /// `Lattice::bake` cannot tabulate this, because the sampler's texture
+    /// is bound memory and `bake` binds none.
     fn sample(s: &BilinearSampler, x: f32, y: f32) -> f32 {
-        Lattice::point(x, y, 0.0, 0.0).collapse(s).into_buffer()[0]
+        let zero = Field::from(0.0);
+        let batch = s.eval((Field::from(x), Field::from(y), zero, zero));
+        let mut lanes = [0.0f32; PARALLELISM];
+        batch.store(&mut lanes);
+        lanes[0]
     }
 
     #[test]

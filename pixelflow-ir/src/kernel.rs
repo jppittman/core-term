@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::arena::{ExprArena, ExprId, ExprNode};
 use crate::kind::OpKind;
+use crate::lower::{Lower, LowerEnv};
 
 /// One bit per placeholder index, set while that index is claimed by a binder
 /// under construction. Claims are taken and released in any order, so this is a
@@ -619,6 +620,18 @@ impl Kernel {
     #[must_use]
     pub fn parts(&self) -> (&ExprArena, ExprId) {
         (&self.inner.arena, self.inner.root)
+    }
+}
+
+/// A `Kernel` lowers by splicing its fragment into the host arena — the
+/// identity of the functor, since a `Kernel` already *is* an arena fragment.
+///
+/// This is what lets a fused root absorb a kernel handed to it as a
+/// manifold-typed macro parameter, beside the named `kernel!` structs that
+/// implement `Lower` compositionally.
+impl Lower for Kernel {
+    fn lower(&self, arena: &mut ExprArena, _env: &mut LowerEnv) -> Option<ExprId> {
+        Some(arena.splice(&self.inner.arena, self.inner.root))
     }
 }
 

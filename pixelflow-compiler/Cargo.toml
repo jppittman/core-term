@@ -12,11 +12,6 @@ proc-macro = true
 bench = false
 
 [features]
-# P3 transition scaffolding (docs/plans/2026-07-20-kernel-unification.md):
-# route eligible `kernel!` bodies through the arena/JIT backend instead of the
-# combinator emitter. Not the default until the parity suite and font goldens
-# say so — see the routing note in `kernel`.
-arena-backend = []
 # Forwards to `pixelflow-search/saturation-telemetry`: the macro-tier
 # `optimize()` entry (`src/optimize.rs`) emits one JSONL saturation record
 # per e-graph pass when this is on. See `pixelflow-search/src/telemetry.rs`

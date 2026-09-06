@@ -133,13 +133,12 @@ fn method_chaining() {
 }
 
 /// Test that kernels are Clone. (Combinator kernels happen to also be Copy
-/// ZSTs, but the portable contract — and what the arena backend provides,
-/// since a JIT kernel owns executable memory — is Clone; rely only on that.)
+/// ZSTs, but the portable contract — and what the arena tier's `Kernel`
+/// provides, since it shares an arena behind an `Arc` — is Clone; rely only
+/// on that.)
 #[test]
-// The explicit `.clone()` is the point: under the default combinator backend
-// the kernel is Copy (hence this lint), but under
-// `pixelflow-compiler/arena-backend` it is Clone-only, and this test must
-// compile under both.
+// The explicit `.clone()` is the point: a combinator kernel is Copy (hence
+// this lint), and the contract this test pins is the weaker one.
 #[allow(clippy::clone_on_copy)]
 fn kernel_is_clone() {
     let scale = kernel!(|factor: f32| X * factor);

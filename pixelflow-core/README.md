@@ -142,10 +142,11 @@ The related macros currently have different output boundaries:
 
 - `kernel_value!` returns an uncompiled arena-backed `Kernel` and is the preferred JIT-first
   composition surface.
-- `kernel_jit!` returns a JIT-compiled manifold.
-- `kernel!` still defaults to the type-level combinator emitter; eligible bodies can be routed
-  through the arena backend behind the compiler's `arena-backend` feature while parity work
-  continues.
+- `kernel_jit!` returns a `Kernel` too, optimized through the e-graph; it is evaluated the
+  same way, by baking it over a lattice.
+- `kernel!` still emits type-level combinators. It is the legacy tier; the parity suite
+  (`pixelflow-compiler/tests/kernel_routing_parity.rs`) checks both tiers against scalar
+  ground truth until it is retired.
 
 The plan is to converge these paths on one arena language and retire the combinator emitter
 after remaining parity and consumer migrations are complete. Progress and known gaps are
