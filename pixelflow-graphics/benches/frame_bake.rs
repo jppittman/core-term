@@ -1,4 +1,4 @@
-//! Packed cell-grid frame baking: the retired four-plane-then-pack shape
+//! Collapsing a cell-grid frame: the retired four-plane-then-pack shape
 //! against the packed kernel, plus a sustained hot-loop target for external
 //! sampling profilers (samply/xctrace).
 //!
@@ -10,19 +10,16 @@
 //! dropped — see `work_stealing.rs` for the same move applied to
 //! `tests/scene3d_test.rs::work_stealing_benchmark`.
 //!
-//! `bake_packed_chunked` and `STAGING_SCRATCH_BYTES` below mirror private
-//! helpers of the same name in `pixelflow-graphics::render::scene` — a bench
-//! target compiles as an external crate and can only see `pub` items, and
-//! those two are deliberately not public (minimal API). Both are thin: a
-//! staging-buffer chunking loop over `pixelflow_core`'s public
-//! `CellGridPackedFrame::bake_packed_rows`, so reproducing them here measures
-//! the same kernel work without widening the crate's surface.
+//! Nothing private is mirrored here any more. The packed lane collapses
+//! straight into the destination through the public
+//! `PackedFrame::collapse_rows`, which is exactly what `render::scene`'s
+//! stripe loop calls — one collapse call per band, no staging plane and no
+//! row copy — so the bench measures the shipped path rather than a
+//! reconstruction of it.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use pixelflow_core::{
-    CellGridFrame, CellGridGeometry, CellGridPackedFrame, CellGridPackedProgram, CellGridProgram,
-    PlaneRegion,
-};
+use pixelflow_core::{CellGridGeometry, CellGridProgram, PlaneRegion};
+use pixelflow_graphics::render::cell_grid::CellGridPackedProgram;
 use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::Pixel;
 use std::sync::Arc;
@@ -53,75 +50,36 @@ fn realistic() -> (CellGridGeometry, Vec<f32>, Vec<f32>) {
     (geom, cells, atlas)
 }
 
-/// Staging budget per chunk, mirroring `render::scene`'s private
-/// `STAGING_SCRATCH_BYTES`.
-const STAGING_SCRATCH_BYTES: usize = 1 << 20;
-
-/// Mirrors `render::scene`'s private `bake_packed_chunked`: stage
-/// `chunk_rows` at a time into one reused buffer via the public
-/// `bake_packed_rows`, then copy each row out.
-fn bake_packed_chunked(
-    grid: &CellGridPackedFrame,
-    width: usize,
-    y0: usize,
-    band: &mut [Rgba8],
-    chunk_rows: usize,
-) {
-    let rows = band.len() / width;
-    let stride = CellGridFrame::padded_width(width);
-    let chunk_rows = chunk_rows.clamp(1, rows.max(1));
-    let mut staging = vec![0u32; chunk_rows * stride];
-
-    let mut done = 0usize;
-    while done < rows {
-        let n = chunk_rows.min(rows - done);
-        grid.bake_packed_rows(
-            PlaneRegion {
-                width,
-                y0: y0 + done,
-                rows: n,
-            },
-            &mut staging,
-        );
-        for row in 0..n {
-            let src = &staging[row * stride..row * stride + width];
-            let dst = &mut band[(done + row) * width..(done + row + 1) * width];
-            for (d, s) in dst.iter_mut().zip(src) {
-                *d = Rgba8::from_u32(*s);
-            }
-        }
-        done += n;
-    }
-}
-
 /// Hot-loop-only target for external sampling profilers: nothing but the
 /// packed path, long enough to sample.
 fn bench_packed_hot_loop(c: &mut Criterion) {
     let (geom, cells, atlas) = realistic();
     let (w, h) = (2560usize, 1584usize);
-    let stride = CellGridFrame::padded_width(w);
     let packed =
         CellGridPackedProgram::compile(geom, [0.1, 0.1, 0.1, 1.0], RgbaColorCube::PACKED_SHIFTS)
             .frame(Arc::new(cells), Arc::new(atlas));
-    let chunk_rows = STAGING_SCRATCH_BYTES / (stride * core::mem::size_of::<u32>());
-    let mut band = vec![Rgba8::from_u32(0); w * h];
+    let region = PlaneRegion {
+        width: w,
+        y0: 0,
+        rows: h,
+    };
+    let mut band = vec![0u32; w * h];
 
     c.bench_function("packed_kernel_hot_loop", |b| {
         b.iter(|| {
-            bake_packed_chunked(&packed, w, 0, &mut band, chunk_rows);
+            packed.collapse_rows(region, &mut band, w);
             black_box(&band);
         });
     });
 }
 
-/// Steady-state frame-bake comparison: the retired four-plane-then-pack
+/// Steady-state whole-frame comparison: the retired four-plane-then-pack
 /// shape against the packed kernel. The four-channel program still exists in
 /// pixelflow-core as the parity oracle, which is what lets the retired shape
 /// be reconstructed here without keeping dead render code.
 fn bench_packed_vs_four_plane(c: &mut Criterion) {
     let (geom, cells, atlas) = realistic();
     let (w, h) = (2560usize, 1584usize);
-    let stride = CellGridFrame::padded_width(w);
     let cells = Arc::new(cells);
     let atlas = Arc::new(atlas);
 
@@ -131,36 +89,38 @@ fn bench_packed_vs_four_plane(c: &mut Criterion) {
         CellGridPackedProgram::compile(geom, [0.1, 0.1, 0.1, 1.0], RgbaColorCube::PACKED_SHIFTS)
             .frame(cells, atlas);
 
-    let chunk_rows = STAGING_SCRATCH_BYTES / (stride * core::mem::size_of::<u32>());
-    let mut band = vec![Rgba8::from_u32(0); w * h];
+    // The retired shape staged a megabyte of scratch per plane; keep that
+    // band height so what is being priced is the shape, not a new tuning.
+    let chunk_rows = (1 << 20) / (w * core::mem::size_of::<f32>());
+    let mut band = vec![0u32; w * h];
 
     let mut group = c.benchmark_group("packed_vs_four_plane_2560x1584");
-    // One full-frame bake per sample is already substantial work.
+    // One full frame per sample is already substantial work.
     group.sample_size(10);
 
     group.bench_function("four_plane_per_pixel_pack", |b| {
         b.iter(|| {
-            let mut planes = vec![0.0f32; 4 * chunk_rows * stride];
+            let mut planes = vec![0.0f32; 4 * chunk_rows * w];
             let mut done = 0usize;
             while done < h {
                 let n = chunk_rows.min(h - done);
                 {
-                    let (r, rest) = planes.split_at_mut(chunk_rows * stride);
-                    let (g, rest) = rest.split_at_mut(chunk_rows * stride);
-                    let (blue, a) = rest.split_at_mut(chunk_rows * stride);
+                    let (r, rest) = planes.split_at_mut(chunk_rows * w);
+                    let (g, rest) = rest.split_at_mut(chunk_rows * w);
+                    let (blue, a) = rest.split_at_mut(chunk_rows * w);
                     let region = PlaneRegion {
                         width: w,
                         y0: done,
                         rows: n,
                     };
-                    four.bake_channel_rows(0, region, r);
-                    four.bake_channel_rows(1, region, g);
-                    four.bake_channel_rows(2, region, blue);
-                    four.bake_channel_rows(3, region, a);
+                    four.collapse_channel_rows(0, region, r, w);
+                    four.collapse_channel_rows(1, region, g, w);
+                    four.collapse_channel_rows(2, region, blue, w);
+                    four.collapse_channel_rows(3, region, a, w);
                 }
-                let plane = |c: usize| &planes[c * chunk_rows * stride..];
+                let plane = |c: usize| &planes[c * chunk_rows * w..];
                 for row in 0..n {
-                    let p = row * stride;
+                    let p = row * w;
                     let o = (done + row) * w;
                     for i in 0..w {
                         band[o + i] = Rgba8::from_rgba(
@@ -168,7 +128,8 @@ fn bench_packed_vs_four_plane(c: &mut Criterion) {
                             plane(1)[p + i],
                             plane(2)[p + i],
                             plane(3)[p + i],
-                        );
+                        )
+                        .to_u32();
                     }
                 }
                 done += n;
@@ -177,9 +138,14 @@ fn bench_packed_vs_four_plane(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("packed_kernel_row_copy", |b| {
+    group.bench_function("packed_kernel_direct_write", |b| {
+        let region = PlaneRegion {
+            width: w,
+            y0: 0,
+            rows: h,
+        };
         b.iter(|| {
-            bake_packed_chunked(&packed, w, 0, &mut band, chunk_rows);
+            packed.collapse_rows(region, &mut band, w);
             black_box(&band);
         });
     });

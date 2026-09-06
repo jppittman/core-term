@@ -655,7 +655,6 @@ mod tests {
     use crate::api::public::{AppData, WindowId};
     use crate::coordinator_node::CoordinatorData;
     use crate::display::messages::{DisplayEvent, Surface};
-    use crate::platform::ColorCube;
     use actor_scheduler::spsc::{spsc_channel, SpscReceiver};
     use actor_scheduler::ActorScheduler;
     use std::time::Instant;
@@ -664,11 +663,14 @@ mod tests {
     const LANE_BURST: usize = 16;
     const LANE_BUFFER: usize = 16;
 
+    /// The lattice the fixture scene is compiled for. These tests never bake
+    /// it — they assert which port fired, not what reached a buffer — so it
+    /// only has to be a legal frame; the windows they grant are this size.
+    const FIXTURE_FRAME: [u32; 2] = [100, 100];
+
     /// A constant black scene — these tests care about which port fires, not what is drawn.
     fn manifold() -> pixelflow_graphics::render::scene::Scene {
-        pixelflow_graphics::render::scene::Scene::Surface(Arc::new(
-            ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32),
-        ))
+        crate::testing::black_scene(FIXTURE_FRAME)
     }
 
     /// `EngineHandler` wired to a real driver scheduler (so `driver_control`/`driver_mgmt`

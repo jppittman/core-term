@@ -270,12 +270,14 @@ mod tests {
     use crate::api::public::WindowId;
     use crate::display::messages::Surface;
     use crate::display::window_keeper::WindowKeeper;
-    use crate::platform::ColorCube;
+
+    /// The lattice the fixture scene is compiled for. These tests never bake
+    /// it — they assert which port fired, not what reached a buffer — so it
+    /// only has to be a legal frame; the windows they grant are this size.
+    const FIXTURE_FRAME: [u32; 2] = [100, 100];
 
     fn manifold() -> Scene {
-        Scene::Surface(std::sync::Arc::new(
-            ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32),
-        ))
+        crate::testing::black_scene(FIXTURE_FRAME)
     }
 
     fn one_to_one_window() -> Window {
@@ -407,7 +409,6 @@ mod node_tests {
     use crate::api::public::WindowId;
     use crate::display::messages::Surface;
     use crate::display::window_keeper::{Presented, WindowKeeper};
-    use crate::platform::ColorCube;
     use actor_scheduler::mealy::{Lanes, NoLane, Node, Step as NodeStep};
     use actor_scheduler::spsc::{spsc_channel, SpscReceiver, SpscSender};
     use actor_scheduler::{
@@ -685,12 +686,15 @@ mod node_tests {
         }
     }
 
+    /// The lattice the fixture scene is compiled for. These tests never bake
+    /// it — they assert which port fired, not what reached a buffer — so it
+    /// only has to be a legal frame; the windows they grant are this size.
+    const FIXTURE_FRAME: [u32; 2] = [100, 100];
+
     /// A constant black scene — these tests care about which buffer a render is aimed at, not
     /// what is in it.
     fn manifold() -> Scene {
-        Scene::Surface(std::sync::Arc::new(
-            ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32),
-        ))
+        crate::testing::black_scene(FIXTURE_FRAME)
     }
 
     /// The steady state: the coordinator asks for the buffer only when it has something to

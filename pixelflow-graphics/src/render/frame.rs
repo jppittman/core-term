@@ -80,27 +80,43 @@ impl<P: Pixel> Frame<P> {
         }
     }
 
-    /// Get pixels as u32 slice (for rasterizer).
+    /// This frame's pixels as the packed `u32` words they are.
     ///
-    /// # Safety
-    /// This function is safe only if `P` has the same memory layout as `u32`.
-    /// For example, `Rgba` and `Bgra` are typically `u32` aliases.
+    /// # Panics
+    ///
+    /// Panics unless `P` has `u32`'s layout — `Rgba8` and `Bgra8` are
+    /// `#[repr(transparent)]` wrappers of one. Both size and alignment are
+    /// checked: a `P` of four `u8`s would be the right size and the wrong
+    /// alignment, and the cast below assumes both.
     #[must_use]
     pub fn as_u32_slice(&self) -> &[u32] {
-        assert_eq!(std::mem::size_of::<P>(), std::mem::size_of::<u32>());
+        Self::assert_u32_layout();
         unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const u32, self.data.len()) }
     }
 
-    /// Get mutable pixels as u32 slice (for rasterizer).
+    /// [`Frame::as_u32_slice`], mutably — how a renderer that produces packed
+    /// words writes them straight into the frame.
     ///
-    /// # Safety
-    /// This function is safe only if `P` has the same memory layout as `u32`.
-    /// For example, `Rgba` and `Bgra` are typically `u32` aliases.
+    /// # Panics
+    ///
+    /// Panics unless `P` has `u32`'s layout.
     pub fn as_u32_slice_mut(&mut self) -> &mut [u32] {
-        assert_eq!(std::mem::size_of::<P>(), std::mem::size_of::<u32>());
+        Self::assert_u32_layout();
         unsafe {
             std::slice::from_raw_parts_mut(self.data.as_mut_ptr() as *mut u32, self.data.len())
         }
+    }
+
+    /// # Panics
+    ///
+    /// Panics unless `P` has `u32`'s size and alignment.
+    fn assert_u32_layout() {
+        assert_eq!(
+            (std::mem::size_of::<P>(), std::mem::align_of::<P>(),),
+            (std::mem::size_of::<u32>(), std::mem::align_of::<u32>()),
+            "{} is not laid out as a packed u32 word",
+            std::any::type_name::<P>()
+        );
     }
 
     /// Get mutable pixel slice (for execute).

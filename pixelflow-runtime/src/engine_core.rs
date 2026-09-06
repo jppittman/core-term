@@ -332,14 +332,16 @@ mod tests {
 
     use super::*;
     use crate::display::messages::{Generation, Surface, Window, WindowMeta};
-    use crate::platform::ColorCube;
     use std::time::{Duration, Instant};
+
+    /// The lattice the fixture scene is compiled for. These tests never bake
+    /// it — they assert which port fired, not what reached a buffer — so it
+    /// only has to be a legal frame; the windows they grant are this size.
+    const FIXTURE_FRAME: [u32; 2] = [100, 100];
 
     /// A constant black scene — these tests care about which port fires, not what is drawn.
     fn manifold() -> pixelflow_graphics::render::scene::Scene {
-        pixelflow_graphics::render::scene::Scene::Surface(std::sync::Arc::new(
-            ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32),
-        ))
+        crate::testing::black_scene(FIXTURE_FRAME)
     }
 
     fn surface(width_px: u32, height_px: u32) -> Surface {

@@ -11,7 +11,8 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::{At, CellGridGeometry, CellGridPackedProgram};
+use pixelflow_core::{At, CellGridGeometry};
+use pixelflow_graphics::render::cell_grid::CellGridPackedProgram;
 use pixelflow_graphics::render::scene::Scene;
 
 /// Adapter to send PTY commands to TerminalApp actor.
@@ -362,7 +363,7 @@ impl TerminalApp {
         // (Re)compile the scene program when the geometry moved: resize,
         // density change, atlas growth. Compile cost is independent of the
         // grid size, so this is the entire cost of a dynamic resize.
-        // Scene::CellGrid renders in DEVICE-PIXEL space (the runtime does
+        // A packed scene renders in DEVICE-PIXEL space (the runtime does
         // not contramap it): cell extents scale by the display density, and
         // the atlas — baked at `density` texels per point — is exactly one
         // texel per device pixel.
@@ -419,7 +420,7 @@ impl TerminalApp {
             );
         }
         let program = self.program.as_ref().expect("program compiled above");
-        Some(Scene::CellGrid(
+        Some(Scene::Packed(
             program.frame(Arc::new(cells), self.atlas.buffer()),
         ))
     }
