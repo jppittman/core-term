@@ -167,8 +167,8 @@ differentiates screen → direction → hit → reflection → hit symbolically.
 A march, if a scene ever wants one, is `n` steps of an ordinary Rust `for`
 at construction and still a DAG when it reaches the compiler.
 
-Three findings, all about what the jet tier's derivatives were actually
-doing:
+Five findings, most of them about what the jet tier's derivatives were
+actually doing:
 
 1. **The hit mask was the discriminant, laundered through a derivative
    test.** `Surface` accepted a hit on `t > 0` plus `|∇t|² < 10⁸`; for a
@@ -185,7 +185,28 @@ doing:
    neighbour's colour outright) while its near floor smeared checker edges
    over a hundred pixels. `Hit::footprint` is one pixel, which is what a
    footprint means, and the difference is 52% of the pixels in two goldens.
-3. **Time is a coordinate, not a rebuild.** `animated_sphere` rebuilt its
+3. **The jet tier's reflection is off a non-unit normal.** It normalizes
+   the tangent frame's cross product with `n_len_sq.sqrt().rsqrt()` — which
+   is `|n|^-½`, not `|n|^-1` — so its "unit normal" has length `√|n|` and
+   `D − 2(D·N)N` is a reflection only where the screen-to-surface map has
+   unit area scale. That is very likely what the hand-tuned `2/|cos θ|`
+   curvature factor was compensating for, and it is why the gate's mirror
+   row disagrees over the whole sphere rather than at its edges. The packed
+   lane reflects off the sphere's analytic normal;
+   `a_reflection_off_a_sphere_is_a_unit_ray` pins `|R| = 1` wherever the
+   sphere is hit, to 2.5% — loose only because `t = b − √(b² − c)` loses its
+   leading digits at the grazing rim, which is worth a stable quadratic form
+   some day.
+4. **A checker filter must wash out to grey, not to its neighbour.**
+   `coverage = clamp(d/f, 0, 1)` sends a pixel *on* an edge to the
+   neighbour's colour and a surface whose footprint exceeds a cell to
+   whichever cell its centre lands in, so cells swap across every boundary
+   and a grazing floor flickers between whole cells. A box filter covers `½
+   + d/f` of the cell it is in, and with that the two reflective goldens
+   pass at every ISA level; with the old form they failed AVX2 by 1.10% of
+   pixels and AVX-512 by 1.61%, over the golden helper's 1% platform-noise
+   budget, at whole-cell flips.
+5. **Time is a coordinate, not a rebuild.** `animated_sphere` rebuilt its
    scene per frame with `t` baked in as a constant, which under kernels is
    a ~200 ms JIT compile per frame. The sphere's centre is now
    `sin(W)·amplitude` and the frame binds its timestamp with
@@ -202,27 +223,29 @@ idle 4-core host (load ≈ 1.0 from the session itself):
 
 | tier | threads | surface (ns/px) | packed (ns/px) | packed/surface |
 |---|---:|---:|---:|---|
-| SSE2 | 1 | 14.04 | 43.53 | 0.32× |
-| SSE2 | 4 | 3.93 | 11.28 | 0.35× |
-| SSE2 | 12 | 3.99 | 11.21 | 0.36× |
-| AVX-512 | 1 | 6.01 | 15.93 | 0.38× |
-| AVX-512 | 4 | 2.21 | 4.35 | 0.51× |
-| AVX-512 | 12 | 2.32 | 4.18 | 0.56× |
+| SSE2 | 1 | 13.89 | 43.30 | 0.32× |
+| SSE2 | 4 | 4.27 | 11.86 | 0.36× |
+| SSE2 | 12 | 4.27 | 11.43 | 0.37× |
+| AVX-512 | 1 | 6.08 | 15.61 | 0.39× |
+| AVX-512 | 4 | 2.14 | 4.05 | 0.53× |
+| AVX-512 | 12 | 2.40 | 4.08 | 0.59× |
 
 Compile cost: 429,395 arena nodes over the four channels, built in 27 ms
-and compiled in 210 ms (SSE2; 244 ms at AVX-512) to 8,847 bytes of code
+and compiled in 211 ms (SSE2; 229 ms at AVX-512) to 8,881 bytes of code
 (6,131 at AVX-512). One compile, not one per frame. No saturation
 safety-ceiling panic.
 
-Agreement, before either lane is timed: a matte sphere over the checker
-floor with the filter widths matched agrees within 2/255 on **99.37%** of
-pixels — geometry, silhouette, floor, sky and pack are the same picture.
-Adding the reflection takes that to 96.90%, and the sphere covers 2.93% of
-the frame: the disagreement is the reflected checker's edges, where the jet
-tier multiplied the normal's derivatives by a hand-tuned `2/|cos θ|`
-because it did not trust dual numbers through a reflection, and no constant
-reproduces that. As shipped (one-pixel filter) the lanes differ on 50.7% of
-pixels, which is finding 2 and is the point.
+Agreement, before either lane is timed. The checker has to come out of any
+row that is meant to check something else, because the filter width is one
+of the things that changed; so the geometry row is a **matte** sphere over
+a matte floor under the sky, and it agrees within 2/255 on **99.48%** of
+pixels (max channel delta 102, at the silhouette) — silhouette, horizon,
+sky and pack are the same picture. The reflection gets its own checker-free
+row, a sphere mirroring the sky alone, which differs on 2.83% of pixels
+against a sphere covering 2.93% of the frame: the whole sphere, by up to
+63/255, which is finding 4 below and not an antialiasing difference at all.
+As shipped, the two lanes differ on 51.2% of pixels, which is finding 2 and
+is the point.
 
 **The acceptance criterion "packed never slower than surface" is not met,
 and the reason is structural rather than a compiler defect.** Decomposed on
