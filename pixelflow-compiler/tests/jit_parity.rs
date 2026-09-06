@@ -17,23 +17,12 @@
 //! So we hold the JIT to f32 ground truth directly, not to the combinator.
 
 use pixelflow_compiler::kernel_jit;
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Kernel, Lattice};
 
-type F4 = (Field, Field, Field, Field);
-
-/// First lane of a `Field` as `f32` (`Field` is `repr(transparent)` over the
-/// platform SIMD type; the first lane is the lowest-address element).
-fn lane0(f: Field) -> f32 {
-    unsafe { core::mem::transmute_copy(&f) }
-}
-
-fn eval(m: &impl Manifold<F4, Output = Field>, p: (f32, f32, f32, f32)) -> f32 {
-    lane0(m.eval((
-        Field::from(p.0),
-        Field::from(p.1),
-        Field::from(p.2),
-        Field::from(p.3),
-    )))
+/// Tabulate a kernel over a one-point lattice and read the value back — the
+/// only way a kernel becomes a number.
+fn eval(k: &Kernel, p: (f32, f32, f32, f32)) -> f32 {
+    Lattice::point(p.0, p.1, p.2, p.3).bake(k).into_buffer()[0]
 }
 
 /// Sample points spanning magnitudes/signs across all four coords.

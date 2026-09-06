@@ -8,21 +8,11 @@
 //! resolves after splicing, in the runtime `lower_dwrt` tier.
 
 use pixelflow_compiler::kernel_jit;
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Kernel, Lattice};
 
-type F4 = (Field, Field, Field, Field);
-
-fn lane0(f: Field) -> f32 {
-    unsafe { core::mem::transmute_copy(&f) }
-}
-
-fn eval(m: &impl Manifold<F4, Output = Field>, x: f32, y: f32) -> f32 {
-    lane0(m.eval((
-        Field::from(x),
-        Field::from(y),
-        Field::from(0.0),
-        Field::from(0.0),
-    )))
+/// Tabulate a kernel over a one-point lattice and read the value back.
+fn eval(k: &Kernel, x: f32, y: f32) -> f32 {
+    Lattice::point(x, y, 0.0, 0.0).bake(k).into_buffer()[0]
 }
 
 fn check(name: &str, got: f32, want: f32) {

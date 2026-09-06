@@ -3,49 +3,30 @@
 //! These tests verify the full pipeline from macro input to executable JIT code.
 
 use pixelflow_compiler::kernel_jit;
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Kernel, Lattice};
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-/// Extract the first lane from a Field as f32.
-/// Field is repr(transparent) over the platform SIMD type; the first lane
-/// is always the lowest-address element.
-fn field_extract(f: Field) -> f32 {
-    unsafe { core::mem::transmute_copy(&f) }
+/// Tabulate a kernel over a one-point lattice and read the value back.
+///
+/// This is the whole evaluation surface: a kernel plus a lattice, baked. There
+/// is no per-batch entry to call instead.
+fn bake1(k: &Kernel, x: f32, y: f32, z: f32) -> f32 {
+    Lattice::point(x, y, z, 0.0).bake(k).into_buffer()[0]
 }
 
-fn eval1(m: &impl Manifold<(Field, Field, Field, Field), Output = Field>, x: f32) -> f32 {
-    field_extract(m.eval((
-        Field::from(x),
-        Field::from(0.0_f32),
-        Field::from(0.0_f32),
-        Field::from(0.0_f32),
-    )))
+fn eval1(k: &Kernel, x: f32) -> f32 {
+    bake1(k, x, 0.0, 0.0)
 }
 
-fn eval2(m: &impl Manifold<(Field, Field, Field, Field), Output = Field>, x: f32, y: f32) -> f32 {
-    field_extract(m.eval((
-        Field::from(x),
-        Field::from(y),
-        Field::from(0.0_f32),
-        Field::from(0.0_f32),
-    )))
+fn eval2(k: &Kernel, x: f32, y: f32) -> f32 {
+    bake1(k, x, y, 0.0)
 }
 
-fn eval3(
-    m: &impl Manifold<(Field, Field, Field, Field), Output = Field>,
-    x: f32,
-    y: f32,
-    z: f32,
-) -> f32 {
-    field_extract(m.eval((
-        Field::from(x),
-        Field::from(y),
-        Field::from(z),
-        Field::from(0.0_f32),
-    )))
+fn eval3(k: &Kernel, x: f32, y: f32, z: f32) -> f32 {
+    bake1(k, x, y, z)
 }
 
 // ============================================================================
@@ -146,65 +127,46 @@ fn jit_macro_min_returns_smaller_and_max_returns_larger() {
 // ============================================================================
 
 #[test]
-fn kernel_jit_no_params_is_manifold() {
-    // Zero-param case: returns JitManifold implementing Manifold
-    let m = kernel_jit!(|| X + Y);
-    let result = m.eval((
-        Field::from(10.0_f32),
-        Field::from(32.0_f32),
-        Field::from(0.0_f32),
-        Field::from(0.0_f32),
-    ));
-    assert!((field_extract(result) - 42.0).abs() < 1e-5);
+fn kernel_jit_no_params_is_a_kernel() {
+    // Zero-param case: the macro evaluates to a `Kernel` value directly.
+    let k = kernel_jit!(|| X + Y);
+    assert!((eval2(&k, 10.0, 32.0) - 42.0).abs() < 1e-5);
 }
 
 #[test]
 fn kernel_jit_one_param_builder() {
-    // Single param returns builder closure |offset: f32| -> JitManifold
+    // A single scalar param returns a builder closure |offset: f32| -> Kernel.
     let builder = kernel_jit!(|offset: f32| X + offset);
-    let m = builder(32.0_f32);
-    let result = m.eval((
-        Field::from(10.0_f32),
-        Field::from(0.0_f32),
-        Field::from(0.0_f32),
-        Field::from(0.0_f32),
-    ));
-    assert!((field_extract(result) - 42.0).abs() < 1e-5);
+    let k = builder(32.0_f32);
+    assert!((eval1(&k, 10.0) - 42.0).abs() < 1e-5);
 }
 
 #[test]
 fn kernel_jit_two_params_builder() {
     let builder = kernel_jit!(|cx: f32, r: f32| (X - cx) * r);
-    let m = builder(1.0_f32, 2.0_f32);
+    let k = builder(1.0_f32, 2.0_f32);
     // X=5.0: (5.0 - 1.0) * 2.0 = 8.0
-    let result = m.eval((
-        Field::from(5.0_f32),
-        Field::from(0.0_f32),
-        Field::from(0.0_f32),
-        Field::from(0.0_f32),
-    ));
-    assert!((field_extract(result) - 8.0).abs() < 1e-5);
+    assert!((eval1(&k, 5.0) - 8.0).abs() < 1e-5);
 }
 
+/// The two tiers agree on the same body: the arena tier is baked over a
+/// lattice, the LLVM tier is evaluated by this test's own loop (a test owns
+/// its loop; that is not an API).
 #[test]
 fn kernel_jit_same_semantics_as_kernel() {
     use pixelflow_compiler::kernel;
+    use pixelflow_core::{Field, Manifold};
 
-    let jit_builder = kernel_jit!(|cx: f32| X - cx);
-    let ct_builder = kernel!(|cx: f32| X - cx);
-
-    let jit_m = jit_builder(3.0_f32);
-    let ct_m = ct_builder(3.0_f32);
+    let jit_k = kernel_jit!(|cx: f32| X - cx)(3.0_f32);
+    let ct_m = kernel!(|cx: f32| X - cx)(3.0_f32);
 
     for x_val in [0.0_f32, 1.0, 5.0, -2.0, 100.0] {
-        let p = (
-            Field::from(x_val),
-            Field::from(0.0_f32),
-            Field::from(0.0_f32),
-            Field::from(0.0_f32),
-        );
-        let jit_result = field_extract(jit_m.eval(p));
-        let ct_result = field_extract(ct_m.eval(p));
+        let jit_result = eval1(&jit_k, x_val);
+        let zero = Field::from(0.0_f32);
+        let ct_field = ct_m.eval((Field::from(x_val), zero, zero, zero));
+        // `Field` is repr(transparent) over the platform SIMD type; lane 0 is
+        // the lowest-address element.
+        let ct_result: f32 = unsafe { core::mem::transmute_copy(&ct_field) };
         assert!(
             (jit_result - ct_result).abs() < 1e-5,
             "mismatch at x={x_val}: jit={jit_result} ct={ct_result}"
