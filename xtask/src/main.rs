@@ -638,9 +638,19 @@ impl IsaExecutionMode {
     /// invisible there because SSE2 reserves one more scratch register per
     /// `MulAdd` and so allocates a different schedule.
     ///
+    /// `pixelflow-pipeline` is here for a narrower reason: it does not emit
+    /// machine code, but it *reads the vector width as a constant*. `LANES`
+    /// is `JIT_VECTOR_BYTES / 4`, so its measurement harness computes
+    /// different numbers at 4, 8 and 16 lanes, and its plausibility floor is
+    /// an assertion over one of them. That made it per-level in behavior
+    /// while looking per-level in nothing else, and a floor test that
+    /// restated the formula as a literal passed at SSE2 and failed at both
+    /// FMA levels for eight days of postsubmit before anything presubmit
+    /// could see it.
+    ///
     /// Every other crate in the workspace consumes the same kernels through
-    /// the same interface at every level, so running it three times re-runs
-    /// identical work.
+    /// the same interface at every level, and reads no per-level constant, so
+    /// running it three times re-runs identical work.
     ///
     /// The economics are why this belongs presubmit at all: building the test
     /// binaries already happened for `--no-run` and clippy, so the marginal
@@ -652,7 +662,7 @@ impl IsaExecutionMode {
     fn scope(&self) -> &'static str {
         match self {
             Self::BuildOnly => "none",
-            Self::Smoke => "smoke: codegen+ir+core",
+            Self::Smoke => "smoke: codegen+ir+core+pipeline",
             Self::BuildAndTest => "workspace",
         }
     }
@@ -668,6 +678,8 @@ impl IsaExecutionMode {
                 "pixelflow-ir",
                 "-p",
                 "pixelflow-core",
+                "-p",
+                "pixelflow-pipeline",
                 "--no-fail-fast",
             ]),
             Self::BuildAndTest => Some(&["test", "--workspace", "--no-fail-fast"]),
