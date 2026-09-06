@@ -106,10 +106,12 @@ impl PackedProgram {
         self.program.buffers()
     }
 
-    /// The compiled kernel's emitted bytes, for the profiling harness in
-    /// `cell_grid`'s tests. `PlaneProgram::code_bytes` is the public way in.
-    #[cfg(test)]
-    pub(crate) fn code_bytes(&self) -> &[u8] {
+    /// The compiled kernel's emitted bytes — what the scene will actually
+    /// run, for a harness that measures or disassembles it
+    /// ([`pixelflow_core::PlaneProgram::code_bytes`] is the same hook one
+    /// layer down). Inspection only: nothing about rendering goes through it.
+    #[must_use]
+    pub fn code_bytes(&self) -> &[u8] {
         self.program.code_bytes()
     }
 
@@ -126,16 +128,21 @@ impl PackedProgram {
         PackedFrame {
             shifts: self.shifts,
             frame: self.program.bind(buffers),
+            slice: [0.0, 0.0],
         }
     }
 }
 
-/// One frame of a packed program: the compiled manifold plus the memory it
-/// reads. Cheap to clone.
+/// One frame of a packed program: the compiled manifold, the memory it reads,
+/// and the plane of the kernel's four-coordinate domain this frame samples.
+/// Cheap to clone.
 #[derive(Clone)]
 pub struct PackedFrame {
     shifts: [u32; 4],
     frame: PlaneFrame,
+    /// The `Z` and `W` every pixel of this frame carries — see
+    /// [`PackedFrame::on_slice`].
+    slice: [f32; 2],
 }
 
 impl PackedFrame {
@@ -143,6 +150,25 @@ impl PackedFrame {
     #[must_use]
     pub fn shifts(&self) -> [u32; 4] {
         self.shifts
+    }
+
+    /// The same compiled program sampled on the plane at `(z, w)` instead of
+    /// the origin plane.
+    ///
+    /// This is how an animated scene stays compiled: the channel kernels read
+    /// time as `Kernel::w()`, the program is compiled once, and each frame
+    /// binds its timestamp here. Baking the time into the kernel as a
+    /// constant would recompile the scene every frame instead.
+    #[must_use]
+    pub fn on_slice(mut self, z: f32, w: f32) -> Self {
+        self.slice = [z, w];
+        self
+    }
+
+    /// The plane this frame samples: `(z, w)`.
+    #[must_use]
+    pub fn slice(&self) -> (f32, f32) {
+        (self.slice[0], self.slice[1])
     }
 
     /// Collapse the pixel rows `y0 .. y0 + rows` at pixel-center coordinates,
@@ -158,6 +184,7 @@ impl PackedFrame {
     /// Panics if the region's width is zero, `stride` is less than it, or
     /// `out` cannot hold the band.
     pub fn collapse_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
-        self.frame.collapse_int_rows(region, out, stride);
+        self.frame
+            .collapse_int_rows(region.on_slice(self.slice[0], self.slice[1]), out, stride);
     }
 }

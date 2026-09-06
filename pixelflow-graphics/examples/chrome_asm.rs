@@ -1,109 +1,84 @@
-//! ASM inspection - mirrors the exact benchmark pattern
+//! What the chrome sphere actually compiles to.
 //!
-//! Run: cargo-asm -p pixelflow-graphics --example chrome_asm eval_one_pixel --release
+//! `cargo run --release -p pixelflow-graphics --example chrome_asm`
+//!
+//! The scene is four channel kernels compiled by the JIT, so there is no
+//! Rust symbol for `cargo-asm` to look at any more: the code is emitted at
+//! run time. This dumps it — size, and the raw bytes to a file — so it can be
+//! disassembled directly:
+//!
+//! ```text
+//! objdump -D -b binary -m i386:x86-64 -M intel /tmp/chrome_sphere.bin
+//! ```
+//!
+//! The sizes it prints are also the cheapest look at what the compiler shares:
+//! four channels over one geometry emit barely more code than one channel
+//! does (the contract `scene3d_test::four_channels_share_one_geometry` pins).
 
-use pixelflow_compiler::ManifoldExpr;
-use pixelflow_core::combinators::At;
-use pixelflow_core::jet::Jet3;
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
-use pixelflow_graphics::render::color::RgbaColorCube;
-use pixelflow_graphics::scene3d::{
-    plane, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
-};
+use std::io::Write;
 
-type Field4 = (Field, Field, Field, Field);
-type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
-use std::hint::black_box;
+use pixelflow_core::Kernel;
+use pixelflow_graphics::render::color::Rgba8;
+use pixelflow_graphics::render::scene::compile_packed_for;
+use pixelflow_graphics::scene3d::{checker, sky, Plane, Ray, Rgba, Sphere};
 
-/// Sphere at given center with radius (local to this example).
-#[derive(Clone, Copy, ManifoldExpr)]
-struct SphereAt {
-    center: (f32, f32, f32),
-    radius: f32,
+const W: u32 = 1920;
+const H: u32 = 1080;
+
+fn k(v: f32) -> Kernel {
+    Kernel::constant(v)
 }
 
-impl Manifold<Jet3_4> for SphereAt {
-    type Output = Jet3;
-
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Jet3 {
-        let (rx, ry, rz, _w) = p;
-        let cx = Jet3::constant(Field::from(self.center.0));
-        let cy = Jet3::constant(Field::from(self.center.1));
-        let cz = Jet3::constant(Field::from(self.center.2));
-
-        let d_dot_c = rx * cx + ry * cy + rz * cz;
-        let c_sq = cx * cx + cy * cy + cz * cz;
-        let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
-        let discriminant = d_dot_c * d_dot_c - (c_sq - r_sq);
-
-        let epsilon_sq = Jet3::constant(Field::from(0.0001));
-        d_dot_c - (discriminant + epsilon_sq).sqrt()
-    }
+fn world(ray: &Ray) -> Rgba {
+    let floor = Plane::at_height(k(-1.0)).hit(ray);
+    floor.select(
+        &checker(&floor.point()[0], &floor.point()[2], &floor.footprint()),
+        &sky(ray),
+    )
 }
 
-// This is the EXACT pattern from the benchmark
-#[derive(Copy, Clone)]
-struct ColorScreenRemap<M> {
-    inner: M,
-    width: f32,
-    height: f32,
-}
-
-impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
-    type Output = Discrete;
-
-    #[inline(always)]
-    fn eval(&self, p: Field4) -> Discrete {
-        let (x, y, z, w) = p;
-        let width = Field::from(self.width);
-        let height = Field::from(self.height);
-        let scale = Field::from(2.0) / height;
-        let sx = (x - width * Field::from(0.5)) * scale.clone();
-        let sy = (height * Field::from(0.5) - y) * scale;
-        // Use At combinator to evaluate at transformed coordinates
-        At {
-            inner: &self.inner,
-            x: sx,
-            y: sy,
-            z,
-            w,
-        }
-        .collapse()
-    }
-}
-
-/// Evaluate one pixel - this is what we want ASM for
-#[inline(never)]
-#[must_use]
-pub fn eval_one_pixel(x: Field, y: Field) -> Discrete {
-    let world = ColorSurface {
-        geometry: plane(-1.0),
-        material: ColorChecker::<RgbaColorCube>::default(),
-        background: ColorSky::<RgbaColorCube>::default(),
-    };
-
-    let scene = ColorSurface {
-        geometry: SphereAt {
-            center: (0.0, 0.0, 4.0),
-            radius: 1.0,
-        },
-        material: ColorReflect { inner: world },
-        background: world,
-    };
-
-    let renderable = ColorScreenRemap {
-        inner: ColorScreenToDir { inner: scene },
-        width: 1920.0,
-        height: 1080.0,
-    };
-
-    renderable.eval((x, y, Field::from(0.0), Field::from(0.0)))
+fn chrome() -> [Kernel; 4] {
+    let ray = Ray::through_screen(W as f32, H as f32);
+    let sphere = Sphere::new([k(0.0), k(0.0), k(4.0)], k(1.0)).hit(&ray);
+    let mirrored = ray.reflected(sphere.normal());
+    sphere
+        .select(&world(&mirrored), &world(&ray))
+        .into_channels()
 }
 
 fn main() {
-    let x = Field::sequential(960.0);
-    let y = Field::from(540.0);
-    let result = eval_one_pixel(black_box(x), black_box(y));
-    black_box(result);
+    let channels = chrome();
+    let nodes: usize = channels
+        .iter()
+        .map(|c| {
+            let (arena, root) = c.parts();
+            arena.node_count_subtree(root)
+        })
+        .sum();
+
+    let start = std::time::Instant::now();
+    let program = compile_packed_for::<Rgba8>(&channels, [W, H]);
+    let compile = start.elapsed();
+    let code = program.code_bytes();
+
+    let one = compile_packed_for::<Rgba8>(&[channels[0].clone(), k(0.0), k(0.0), k(1.0)], [W, H]);
+
+    println!("chrome sphere at {W}x{H}");
+    println!("  {nodes} arena nodes over four channels, before optimization");
+    println!("  compiled in {compile:?}");
+    println!("  {} bytes of code for four channels", code.len());
+    println!(
+        "  {} bytes for one channel ({:.2}x)",
+        one.code_bytes().len(),
+        code.len() as f64 / one.code_bytes().len() as f64
+    );
+
+    let path = std::env::temp_dir().join("chrome_sphere.bin");
+    let mut file = std::fs::File::create(&path).expect("cannot write the code dump");
+    file.write_all(code).expect("cannot write the code dump");
+    println!("  wrote {}", path.display());
+    println!(
+        "  objdump -D -b binary -m i386:x86-64 -M intel {}",
+        path.display()
+    );
 }

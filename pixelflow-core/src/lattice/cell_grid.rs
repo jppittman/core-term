@@ -492,16 +492,7 @@ mod tests {
     /// Bake one channel over pixel centers and unpad to a dense w×h plane.
     fn plane(frame: &CellGridFrame, channel: usize, w: usize, h: usize) -> alloc::vec::Vec<f32> {
         let mut dense = vec![0.0f32; h * w];
-        frame.collapse_channel_rows(
-            channel,
-            PlaneRegion {
-                width: w,
-                y0: 0,
-                rows: h,
-            },
-            &mut dense,
-            w,
-        );
+        frame.collapse_channel_rows(channel, PlaneRegion::rows(w, 0, h), &mut dense, w);
         dense
     }
 
@@ -838,16 +829,7 @@ mod tests {
         let frame = program.frame(Arc::new(cells), Arc::new(atlas));
 
         let mut dense = vec![0.0f32; 4 * 4];
-        frame.collapse_channel_rows(
-            0,
-            PlaneRegion {
-                width: 4,
-                y0: 4,
-                rows: 4,
-            },
-            &mut dense,
-            4,
-        );
+        frame.collapse_channel_rows(0, PlaneRegion::rows(4, 4, 4), &mut dense, 4);
         // y0 = 4 → the first baked row samples absolute y = 4.5, inside row
         // 1's cell (coverage 0.5, R: bg 1.0 -> fg 0.0 blends to 0.5). An
         // off-by-one-pixel-center bug would instead sample y = 3.5, still

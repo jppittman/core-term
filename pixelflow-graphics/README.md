@@ -39,7 +39,8 @@ The principal modules are:
 |---|---|
 | `fonts` | TTF parsing, glyph coverage kernels, text layout, and baked glyph caches |
 | `render` | Semantic colors, pixel formats, frames, and rasterization |
-| `scene3d` | Ray/surface/material experiments over derivative-carrying manifolds |
+| `scene3d` | Ray/surface/material constructors: a 3-D scene as four channel kernels |
+| `scene3d_surface` | The same scenes over `Jet3` manifolds — the legacy tier, on its way out |
 | `shapes`, `transform`, `image`, `mesh` | Additional graphics primitives and composition utilities |
 
 ## Fonts: TTF outlines as kernels
@@ -110,26 +111,34 @@ rasterize(&color_manifold, &mut frame, 4);
 The exact SIMD width and platform pixel alias are backend details. Consumers should use the
 pixel types rather than assume a byte order or lane count.
 
-## Ray tracing and the “mullet”
+## Ray tracing: a scene is four channel kernels
 
-`scene3d` is an application of the polymorphic `Manifold` layer rather than the complete
-architecture of this crate. Its useful three-stage pattern is:
+`scene3d` builds a 3-D scene as `Kernel` values of the screen coordinate, in
+three stages:
 
-1. Evaluate geometry over `Jet3` ray coordinates to obtain hit distance and derivatives.
-2. Warp the ray coordinate to the hit point (`P = ray × t`).
-3. Evaluate the material at the hit point and the background at the ray direction, selecting
-   according to hit validity.
+1. `Ray::through_screen` turns the pixel coordinate into a unit direction. The
+   observer is fixed at the origin, so a ray *is* a direction and a reflected
+   ray is another direction from the same origin.
+2. `Sphere::hit` / `Plane::hit` solve for `t` in closed form — a quadratic and
+   a division; there is no march — and return the hit point, the outward
+   normal, and the mask saying whether the ray met the surface at all.
+3. A material (`checker`, `sky`, `Rgba::opaque_gray`) is four channel kernels
+   in `[0, 1]`; `Hit::select` chooses material or background per channel, and
+   nesting those selects is occlusion.
 
-The geometry is the expensive front; color is the discrete back—hence the internal “mullet”
-name.
+Antialiasing is `Kernel::dx()`/`dy()`: `Hit::footprint` is the screen-space
+size of a pixel on the surface, differentiated symbolically through the screen
+mapping, the intersection and the reflection. There is no jet domain and no
+curvature heuristic.
 
-`Reflect` and `ColorReflect` reconstruct a normal from the tangent frame carried by the warped
-coordinate derivatives. The cross product of the two screen-space tangent directions produces
-the surface normal used for Householder reflection. This remains a compact demonstration of
-automatic differentiation carrying geometric information through composition.
+The four channels are compiled together (`render::scene::compile_packed_for`),
+so the geometry they share is emitted once — the "mullet" saving the jet tier
+got from carrying colour as an opaque `Discrete` is now the compiler's, and is
+pinned by `scene3d_test::four_channels_share_one_geometry`.
 
-This path still uses jets and combinator manifolds. It should not be read as evidence that all
-graphics consumers have moved to arena-backed `Kernel` values.
+`scene3d_surface` is the jet-manifold version of the same scenes, kept while
+`subdivision_autodiff` (whose geometry has no kernel form) and the S3 gate's
+"before" side still need it. No new consumer.
 
 ## Materialization boundaries
 

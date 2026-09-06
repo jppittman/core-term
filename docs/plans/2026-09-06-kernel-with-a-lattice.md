@@ -143,12 +143,176 @@ when oversubscribed, which is the staging copy and the fixed stripes, not
 the compiler. Acceptance: packed never slower than surface at any thread
 count; ≥ 3× on 4 cores on both tiers; no loss at 12 threads on 4 cores.
 
-**S3 — scene3d as unrolled kernels.** Ray direction from the screen
-coordinate, sphere tracing as `n` unrolled SDF steps, normals via `Dwrt`,
-reflection and sky as field arithmetic, each producing four channel kernels;
-the examples switch over. Gate: the chrome sphere at the examples' frame
-size through `Scene::render` before and after, both tiers, and the compile
-cost of the unrolled march at the examples' step count, recorded.
+**S3 — scene3d as kernel constructors. Landed 2026-09-06.**
+`pixelflow_graphics::scene3d` is plain functions over small structs —
+`Ray::through_screen`, `Sphere::hit`, `Plane::hit`, `Hit::select`,
+`checker`, `sky` — each producing `Kernel`s and a scene producing four of
+them, compiled through S2's `PackedProgram` into `Scene::Packed`. No
+`Manifold` impls, no `kernel!`, no jet domain, no `Discrete`. The jet tier
+moves to `scene3d_surface` for S4 to delete, with two consumers left on it:
+the S3 gate's "before" side and `subdivision_autodiff`, whose
+`SubdivisionGeometry` evaluates a Catmull-Clark limit surface in `Jet3` and
+has no kernel form. The six CI-named contracts render through the packed
+lane; `mullet_vs_3channel_comparison` is replaced by
+`four_channels_share_one_geometry`.
+
+**The paragraph above this one was wrong about the code: scene3d is
+analytic and there is no ray march.** Nothing in the module iterates ("No
+iteration. Nesting is occlusion."): the sphere's `t` is the quadratic's
+near root with an epsilon under the radical for grazing rays, the plane's
+is a division, and reflection is a Householder step. So S3 needed no
+unrolled march and no language feature; every geometry is a closed-form
+kernel, and every derivative comes from `Kernel::dx()/dy()`, which
+differentiates screen → direction → hit → reflection → hit symbolically.
+A march, if a scene ever wants one, is `n` steps of an ordinary Rust `for`
+at construction and still a DAG when it reaches the compiler.
+
+Five findings, most of them about what the jet tier's derivatives were
+actually doing:
+
+1. **The hit mask was the discriminant, laundered through a derivative
+   test.** `Surface` accepted a hit on `t > 0` plus `|∇t|² < 10⁸`; for a
+   miss the sphere's `Field::sqrt` (`sqrt_fast`) selects 0, whose
+   derivative rule `1/(2√u)` is then infinite, and that is what rejected
+   the miss. Stated directly as `disc > 0` here, which also keeps the
+   silhouette off `NaN > 0` — unordered and therefore *true* on x86, false
+   on aarch64 (CLAUDE.md's `Gt` row). A mask read off `t` would have lit
+   the whole frame on one target and nothing on the other.
+2. **The jet tier's antialiasing filter was ~540 pixels wide.** Its jets
+   were seeded *after* the pixel-to-screen remap, so `|∂P/∂screen|` was per
+   *normalized* screen unit — half the frame height. That is why its
+   distant floor showed whole flipped cells (coverage → 0 selects the
+   neighbour's colour outright) while its near floor smeared checker edges
+   over a hundred pixels. `Hit::footprint` is one pixel, which is what a
+   footprint means, and the difference is 52% of the pixels in two goldens.
+3. **The jet tier's reflection is off a non-unit normal.** It normalizes
+   the tangent frame's cross product with `n_len_sq.sqrt().rsqrt()` — which
+   is `|n|^-½`, not `|n|^-1` — so its "unit normal" has length `√|n|` and
+   `D − 2(D·N)N` is a reflection only where the screen-to-surface map has
+   unit area scale. That is very likely what the hand-tuned `2/|cos θ|`
+   curvature factor was compensating for, and it is why the gate's mirror
+   row disagrees over the whole sphere rather than at its edges. The packed
+   lane reflects off the sphere's analytic normal;
+   `a_reflection_off_a_sphere_is_a_unit_ray` pins `|R| = 1` wherever the
+   sphere is hit, to 2.5% — loose only because `t = b − √(b² − c)` loses its
+   leading digits at the grazing rim, which is worth a stable quadratic form
+   some day.
+4. **A checker filter must wash out to grey, not to its neighbour.**
+   `coverage = clamp(d/f, 0, 1)` sends a pixel *on* an edge to the
+   neighbour's colour and a surface whose footprint exceeds a cell to
+   whichever cell its centre lands in, so cells swap across every boundary
+   and a grazing floor flickers between whole cells. A box filter covers `½
+   + d/f` of the cell it is in, and with that the two reflective goldens
+   pass at every ISA level; with the old form they failed AVX2 by 1.10% of
+   pixels and AVX-512 by 1.61%, over the golden helper's 1% platform-noise
+   budget, at whole-cell flips.
+5. **Time is a coordinate, not a rebuild.** `animated_sphere` rebuilt its
+   scene per frame with `t` baked in as a constant, which under kernels is
+   a ~200 ms JIT compile per frame. The sphere's centre is now
+   `sin(W)·amplitude` and the frame binds its timestamp with
+   `PackedFrame::on_slice` (`PlaneRegion` gained the `(z, w)` plane its
+   band lies in, private and set by constructor). This is the
+   uniform-shaped need of
+   [2026-09-06-uniform-slot-identity.md](2026-09-06-uniform-slot-identity.md)
+   met by a coordinate: it costs nothing because the scene already had a
+   free axis, and it does not generalize to a second uniform.
+
+**The gate** (`pixelflow-runtime/examples/bench_scene_chrome.rs`), chrome
+sphere at 1920×1080, median of 9 frames after 3 warm-ups, on an otherwise
+idle 4-core host (load ≈ 1.0 from the session itself):
+
+| tier | threads | surface (ns/px) | packed (ns/px) | packed/surface |
+|---|---:|---:|---:|---|
+| SSE2 | 1 | 13.89 | 43.30 | 0.32× |
+| SSE2 | 4 | 4.27 | 11.86 | 0.36× |
+| SSE2 | 12 | 4.27 | 11.43 | 0.37× |
+| AVX-512 | 1 | 6.08 | 15.61 | 0.39× |
+| AVX-512 | 4 | 2.14 | 4.05 | 0.53× |
+| AVX-512 | 12 | 2.40 | 4.08 | 0.59× |
+
+Compile cost: 429,395 arena nodes over the four channels, built in 27 ms
+and compiled in 211 ms (SSE2; 229 ms at AVX-512) to 8,881 bytes of code
+(6,131 at AVX-512). One compile, not one per frame. No saturation
+safety-ceiling panic.
+
+Agreement, before either lane is timed. The checker has to come out of any
+row that is meant to check something else, because the filter width is one
+of the things that changed; so the geometry row is a **matte** sphere over
+a matte floor under the sky, and it agrees within 2/255 on **99.48%** of
+pixels (max channel delta 102, at the silhouette) — silhouette, horizon,
+sky and pack are the same picture. The reflection gets its own checker-free
+row, a sphere mirroring the sky alone, which differs on 2.83% of pixels
+against a sphere covering 2.93% of the frame: the whole sphere, by up to
+63/255, which is finding 4 below and not an antialiasing difference at all.
+As shipped, the two lanes differ on 51.2% of pixels, which is finding 2 and
+is the point.
+
+**The acceptance criterion "packed never slower than surface" is not met,
+and the reason is structural rather than a compiler defect.** Decomposed on
+this host, SSE2, single thread:
+
+- Floor and sky alone: surface 9.7, packed 18.6 ns/px. With a *constant*
+  filter width the packed kernel is 10.3 — so everything except the
+  derivatives is at parity, and exact symbolic AA costs ~8 ns/px where the
+  jet tier's forward-mode jets cost ~2. Symbolic `dx()`/`dy()` of a hit
+  point re-enters every division and square root through the quotient and
+  `0.5·rsqrt(u)·u'` rules, where a jet carries `(val, dx, dy)` through each
+  op once.
+- The chrome scene doubles that: `select(hit, world(R), world(D))` computes
+  both worlds in every lane, while the combinator tier's `Select` evaluates
+  a branch **only when some lane in the batch needs it** — the sphere
+  covers 2.9% of the frame, so the surface lane skips the reflected world
+  in ~97% of batches. The packed kernel *has* the equivalent — the emitter
+  guards a `Select`'s arm-exclusive schedule range with a branch on the
+  mask's uniformity (`pixelflow-codegen/src/emit/guards.rs`) — and it does
+  not fire here, for a reason that is in the schedule analysis and not in
+  the language: a value is guardable only if **every consumer lies inside
+  that one select's arm**, and a colour is four selects sharing one mask.
+  The reflected world's geometry (its `t`, hit point, checker cell,
+  footprint) feeds all four channels' arms, so from any single select's
+  view it is shared, and only the few per-channel scalar ops at the leaves
+  are ever skipped. The old tier never had this problem because its colours
+  flowed as one packed word through one `Select`.
+
+Two things that look like levers and are not, both measured: raising the
+runtime saturation class cap (telemetry says the chrome kernel hits
+`class_cap` after 2 iterations at 4,913 of 5,000 classes — hash-consing
+alone folds 193k nodes into ~4.9k) from 5,000 to 60,000 costs 30× the
+compile time and makes the kernel **15% slower** (43 → 51 ns/px); and
+rewriting the scene as `world(select(m, R, D))` — identical per lane, since
+a world is a function of its ray — buys 10% while taking the arena from
+429k to 4.6M nodes and the compile from 0.2 s to 2.0 s, because the
+derivative of a select is a select of both branches' derivatives.
+
+Two things that are levers, neither measured yet, and a stage for them:
+
+**S3b — a choice between colours is one select.** Two fixes, general and
+local, and both should land:
+
+1. *Language, typed:* `Bits::select(mask, a, b)`. `Select` is already a
+   bitwise blend on every backend, so a select over packed words is the
+   same instruction with an honest type. A colour in graphics becomes a
+   tree — four channel kernels at the leaves, a choice between colours at
+   the nodes — that `packed_kernel` lowers by packing each leaf and
+   selecting on the words. `Hit::select` then produces **one** select whose
+   arms are whole packed colours, geometry included, and the existing
+   per-select guard skips the reflected world exactly as the old tier did.
+   The pack stays in graphics; core still knows no colour.
+2. *Codegen, general:* guard analysis over a **group** of selects with the
+   same mask — exclusivity against the union of the group's arms, the
+   group's arm-exclusive ops clustered contiguously in the schedule ahead
+   of the first select — so any kernel that selects the same condition
+   several times (every multi-channel scene, every masked field) skips
+   what it can without being restructured for it.
+
+The derivative cost is the other half and is measured separately: symbolic
+`dx()`/`dy()` of a hit point costs ~4× a forward-mode jet on this host, and
+whether that is the derivative rules re-entering `Recip`/`Rsqrt` estimate
+chains, or the class cap starving CSE of the expanded derivative, is a
+question for `collapse_cost` (docs/plans/2026-09-01-schedule-cost-model-denotation.md §9),
+not for a guess. Gate for S3b: the chrome scene, packed ≥ surface at every
+thread count on both tiers — the acceptance S3 did not meet — and S4 does
+not begin until it is.
 
 **S4 — the legacy tier retires.** `Scene::Surface`, `execute_stripe`,
 `rasterize`, `render_parallel`, `render_work_stealing`,

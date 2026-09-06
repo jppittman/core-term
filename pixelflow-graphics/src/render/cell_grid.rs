@@ -146,16 +146,7 @@ mod tests {
     /// the four-channel oracle the pack is checked against.
     fn plane(frame: &CellGridFrame, channel: usize, w: usize, h: usize) -> Vec<f32> {
         let mut dense = vec![0.0f32; h * w];
-        frame.collapse_channel_rows(
-            channel,
-            PlaneRegion {
-                width: w,
-                y0: 0,
-                rows: h,
-            },
-            &mut dense,
-            w,
-        );
+        frame.collapse_channel_rows(channel, PlaneRegion::rows(w, 0, h), &mut dense, w);
         dense
     }
 
@@ -215,15 +206,7 @@ mod tests {
         let (w, h) = (2560usize, 1584usize);
         let mut out = vec![0u32; w * h];
         for _ in 0..150 {
-            frame.collapse_rows(
-                PlaneRegion {
-                    width: w,
-                    y0: 0,
-                    rows: h,
-                },
-                &mut out,
-                w,
-            );
+            frame.collapse_rows(PlaneRegion::rows(w, 0, h), &mut out, w);
             std::hint::black_box(&out);
         }
     }
@@ -246,15 +229,7 @@ mod tests {
     /// Collapse packed pixels over pixel centers into a dense w×h plane.
     fn packed_plane(frame: &PackedFrame, w: usize, h: usize) -> Vec<u32> {
         let mut dense = vec![0u32; h * w];
-        frame.collapse_rows(
-            PlaneRegion {
-                width: w,
-                y0: 0,
-                rows: h,
-            },
-            &mut dense,
-            w,
-        );
+        frame.collapse_rows(PlaneRegion::rows(w, 0, h), &mut dense, w);
         dense
     }
 
@@ -438,15 +413,7 @@ mod tests {
         let full = packed_plane(&frame, 4, 8);
 
         let mut offset = vec![0u32; 4 * 4];
-        frame.collapse_rows(
-            PlaneRegion {
-                width: 4,
-                y0: 4,
-                rows: 4,
-            },
-            &mut offset,
-            4,
-        );
+        frame.collapse_rows(PlaneRegion::rows(4, 4, 4), &mut offset, 4);
         assert_eq!(
             offset,
             full[4 * 4..],

@@ -47,7 +47,15 @@ use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
 pub const MAX_BOUND_BUFFERS: usize = 4;
 
 /// A horizontal band of the lattice to collapse: `width` samples across, rows
-/// `y0 .. y0 + rows`.
+/// `y0 .. y0 + rows`, of the plane at some fixed `Z` and `W`.
+///
+/// A kernel is a function of four coordinates and a plane fixes two of them,
+/// so which plane is part of naming the band, not a detail of the caller's:
+/// [`PlaneRegion::rows`] names the origin plane (`z = w = 0`) and
+/// [`PlaneRegion::on_slice`] any other. That is where a frame's timestamp
+/// enters a compiled kernel — a shader animated in `W` (`Kernel::w()`) is
+/// compiled once and collapsed on a different slice each frame, instead of
+/// being recompiled with the time baked in as a constant.
 #[derive(Clone, Copy, Debug)]
 pub struct PlaneRegion {
     /// Samples per row.
@@ -56,6 +64,45 @@ pub struct PlaneRegion {
     pub y0: usize,
     /// Number of rows.
     pub rows: usize,
+    /// The plane this band lies in: the `Z` and `W` every sample carries.
+    /// Private so the two coordinates cannot be set one at a time or left
+    /// undefined — a band is always on some plane, and `rows` says which.
+    slice: [f32; 2],
+}
+
+impl PlaneRegion {
+    /// A band of the origin plane: `width` samples across, rows
+    /// `y0 .. y0 + rows`, at `z = w = 0`.
+    #[must_use]
+    pub fn rows(width: usize, y0: usize, rows: usize) -> Self {
+        Self {
+            width,
+            y0,
+            rows,
+            slice: [0.0, 0.0],
+        }
+    }
+
+    /// The same band of the plane at `(z, w)`.
+    #[must_use]
+    pub fn on_slice(self, z: f32, w: f32) -> Self {
+        Self {
+            slice: [z, w],
+            ..self
+        }
+    }
+
+    /// The `Z` this band's samples carry.
+    #[must_use]
+    pub fn z(&self) -> f32 {
+        self.slice[0]
+    }
+
+    /// The `W` this band's samples carry.
+    #[must_use]
+    pub fn w(&self) -> f32 {
+        self.slice[1]
+    }
 }
 
 /// One kernel compiled at one 2D lattice shape: a compiled manifold, before
@@ -281,7 +328,7 @@ impl PlaneFrame {
     /// Panics if the region's width is zero, `stride` is less than it, the
     /// region leaves the compiled extents, or `out_len` cannot hold the band.
     fn plan(&self, what: &str, region: PlaneRegion, stride: usize, out_len: usize) -> BandPlan {
-        let PlaneRegion { width, y0, rows } = region;
+        let (width, y0, rows) = (region.width, region.y0, region.rows);
         assert!(width > 0, "{what}: zero width");
         assert!(
             stride >= width,
@@ -335,7 +382,8 @@ impl PlaneFrame {
                 *dst = data.as_ptr();
             }
         }
-        let zero = Field::from(0.0);
+        let z = Field::from(region.z());
+        let w = Field::from(region.w());
         // Sample centers: the rasterizer convention (x + ½, y + ½).
         if band.groups > 0 {
             // SAFETY: `compile` checked size_of::<Field>() == JIT_VECTOR_BYTES
@@ -356,8 +404,8 @@ impl PlaneFrame {
                     pixelflow_codegen::Point4::new(
                         Field::sequential(0.5),
                         Field::from(region.y0 as f32 + 0.5),
-                        zero,
-                        zero,
+                        z,
+                        w,
                     ),
                 );
             }
@@ -378,8 +426,8 @@ impl PlaneFrame {
                     pixelflow_codegen::Point4::new(
                         Field::sequential(band.whole_lanes() as f32 + 0.5),
                         Field::from((region.y0 + row) as f32 + 0.5),
-                        zero,
-                        zero,
+                        z,
+                        w,
                     ),
                 );
             }
@@ -492,7 +540,7 @@ mod tests {
         let frame = program.bind(&[]);
         let (width, y0, rows) = (5, 4, 3);
         let mut out = vec![0.0f32; rows * width];
-        frame.collapse_rows(PlaneRegion { width, y0, rows }, &mut out, width);
+        frame.collapse_rows(PlaneRegion::rows(width, y0, rows), &mut out, width);
         for row in 0..rows {
             for col in 0..width {
                 let want = expected(col, y0 + row);
@@ -522,7 +570,7 @@ mod tests {
         let (width, stride, rows) = (9, BATCH_LANES * 4 + 1, 4);
         const UNTOUCHED: f32 = -1.0;
         let mut out = vec![UNTOUCHED; (rows + 1) * stride];
-        frame.collapse_rows(PlaneRegion { width, y0: 0, rows }, &mut out, stride);
+        frame.collapse_rows(PlaneRegion::rows(width, 0, rows), &mut out, stride);
         for row in 0..rows {
             for col in 0..width {
                 let want = expected(col, row);
@@ -550,7 +598,7 @@ mod tests {
         let padded = BATCH_LANES * 2;
         let mut packed = vec![0.0f32; rows * width];
         let mut spread = vec![0.0f32; rows * padded];
-        let region = PlaneRegion { width, y0: 1, rows };
+        let region = PlaneRegion::rows(width, 1, rows);
         frame.collapse_rows(region, &mut packed, width);
         frame.collapse_rows(region, &mut spread, padded);
         for row in 0..rows {
@@ -574,15 +622,7 @@ mod tests {
         let program = PlaneProgram::compile(&kernel, [width as u32, 4]);
         let frame = program.bind(&[]);
         let mut out = vec![0u32; 2 * width];
-        frame.collapse_int_rows(
-            PlaneRegion {
-                width,
-                y0: 0,
-                rows: 2,
-            },
-            &mut out,
-            width,
-        );
+        frame.collapse_int_rows(PlaneRegion::rows(width, 0, 2), &mut out, width);
         for row in 0..2u32 {
             for col in 0..width as u32 {
                 assert_eq!(
@@ -600,15 +640,7 @@ mod tests {
         let program = PlaneProgram::compile(&coordinate_kernel(), [8, 8]);
         let frame = program.bind(&[]);
         let mut out = vec![0.0f32; 32];
-        frame.collapse_rows(
-            PlaneRegion {
-                width: 5,
-                y0: 0,
-                rows: 2,
-            },
-            &mut out,
-            4,
-        );
+        frame.collapse_rows(PlaneRegion::rows(5, 0, 2), &mut out, 4);
     }
 
     /// The same object with one channel and no pack: a kernel whose root is a
@@ -637,7 +669,7 @@ mod tests {
         let frame = program.bind(&[(buffer, Arc::new(data.clone()))]);
         let (width, rows) = (bw as usize, bh as usize);
         let mut out = vec![0.0f32; rows * width];
-        frame.collapse_rows(PlaneRegion { width, y0: 0, rows }, &mut out, width);
+        frame.collapse_rows(PlaneRegion::rows(width, 0, rows), &mut out, width);
         assert_eq!(out, data, "the collapse did not read the bound buffer");
     }
 
