@@ -19,8 +19,8 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use pixelflow_core::{CellGridGeometry, CellGridProgram, PlaneRegion};
-use pixelflow_graphics::render::cell_grid::CellGridPackedProgram;
-use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
+use pixelflow_graphics::render::color::Rgba8;
+use pixelflow_graphics::render::scene::compile_cell_grid_for;
 use pixelflow_graphics::render::Pixel;
 use std::sync::Arc;
 
@@ -55,9 +55,8 @@ fn realistic() -> (CellGridGeometry, Vec<f32>, Vec<f32>) {
 fn bench_packed_hot_loop(c: &mut Criterion) {
     let (geom, cells, atlas) = realistic();
     let (w, h) = (2560usize, 1584usize);
-    let packed =
-        CellGridPackedProgram::compile(geom, [0.1, 0.1, 0.1, 1.0], RgbaColorCube::PACKED_SHIFTS)
-            .frame(Arc::new(cells), Arc::new(atlas));
+    let packed = compile_cell_grid_for::<Rgba8>(geom, [0.1, 0.1, 0.1, 1.0])
+        .frame(Arc::new(cells), Arc::new(atlas));
     let region = PlaneRegion::rows(w, 0, h);
     let mut band = vec![0u32; w * h];
 
@@ -81,9 +80,7 @@ fn bench_packed_vs_four_plane(c: &mut Criterion) {
 
     let four =
         CellGridProgram::compile(geom, [0.1, 0.1, 0.1, 1.0]).frame(cells.clone(), atlas.clone());
-    let packed =
-        CellGridPackedProgram::compile(geom, [0.1, 0.1, 0.1, 1.0], RgbaColorCube::PACKED_SHIFTS)
-            .frame(cells, atlas);
+    let packed = compile_cell_grid_for::<Rgba8>(geom, [0.1, 0.1, 0.1, 1.0]).frame(cells, atlas);
 
     // The retired shape staged a megabyte of scratch per plane; keep that
     // band height so what is being priced is the shape, not a new tuning.

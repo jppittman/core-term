@@ -24,7 +24,7 @@ use actor_scheduler::{
     GreenSender, HandlerError, HandlerResult, Message, SchedulerParams, SendError, SystemStatus,
     TroupeActor,
 };
-use pixelflow_graphics::render::rasterizer::{RasterizerActor, RasterizerHandle, RenderResponse};
+use pixelflow_graphics::render::renderer::{RenderResponse, RendererActor, RendererHandle};
 use std::convert::Infallible;
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -46,11 +46,11 @@ pub struct EngineHandler {
     coordinator: Option<GreenSender<CoordinatorData>>,
     /// Handle to self (for shutdown).
     self_handle: Option<ActorHandle<EngineData, EngineControl, AppManagement>>,
-    /// Handle to the rasterizer response-forwarding actor (spawned in `with_config`, before the
-    /// green host, via the free `spawn_rasterizer` function; kept only for the shutdown
-    /// cascade — the rasterizer's own live handle belongs to the coordinator's wiring now, see
+    /// Handle to the renderer response-forwarding actor (spawned in `with_config`, before the
+    /// green host, via the free `spawn_renderer` function; kept only for the shutdown
+    /// cascade — the renderer's own live handle belongs to the coordinator's wiring now, see
     /// `GreenReadyBundle`'s doc).
-    rasterizer_forwarder: Option<ActorHandle<Infallible, Infallible, Infallible>>,
+    renderer_forwarder: Option<ActorHandle<Infallible, Infallible, Infallible>>,
     /// Handle to the application (for event forwarding).
     app_handle: Option<Arc<dyn Application + Send + Sync>>,
     /// The pure mediator: decides what to do with each message and returns it as an
@@ -72,7 +72,7 @@ impl ActorTypes for DriverActor<ActivePlatform> {
 }
 
 // Generate troupe structures using macro
-// Note: Rasterizer is NOT in the troupe - it uses a bootstrap handshake pattern
+// Note: Renderer is NOT in the troupe - it uses a bootstrap handshake pattern
 // that enforces type-level guarantees about initialization order.
 //
 // `driver` is `[expose]` as well as `[main]` now: the render coordinator's own green node
@@ -105,7 +105,7 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                 self.vsync_control = Some(vsync_control);
                 self.coordinator = Some(coordinator);
                 self.vsync_host = Some(host);
-                self.rasterizer_forwarder = Some(forwarder);
+                self.renderer_forwarder = Some(forwarder);
                 return Ok(());
             }
             other => other,
@@ -120,13 +120,13 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
         // the same reason as `EngineControl::GreenReady` above.
         let mgmt = match mgmt {
             AppManagement::Configure(config) => {
-                // The rasterizer is spawned by `with_config` itself now, before the green host —
+                // The renderer is spawned by `with_config` itself now, before the green host —
                 // it needs the coordinator's management-lane sender as its forwarder's target,
-                // which does not exist until bootstrap builds it (`spawn_rasterizer`). Nothing
+                // which does not exist until bootstrap builds it (`spawn_renderer`). Nothing
                 // engine-side to do with this any more but log; kept as a message rather than
                 // deleted outright in case a future engine-side setting wants to ride it.
                 log::info!(
-                    "Engine configured: {} render threads (rasterizer already spawned at bootstrap)",
+                    "Engine configured: {} render threads (renderer already spawned at bootstrap)",
                     config.performance.render_threads
                 );
                 return Ok(());
@@ -149,10 +149,10 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
     }
 }
 
-/// Bridges the rasterizer's response channel straight into the render coordinator's own green
+/// Bridges the renderer's response channel straight into the render coordinator's own green
 /// node — no engine round-trip (step 5c of the mesh migration doc).
 ///
-/// [`RasterizerActor`] hands completed frames back over a bare `mpsc::Sender` so
+/// [`RendererActor`] hands completed frames back over a bare `mpsc::Sender` so
 /// pixelflow-graphics stays decoupled from any particular consumer's message enum. This actor
 /// is the one place that channel meets the coordinator's management lane — `handle_os` blocking
 /// on `response_rx.recv()` *is* the actor, the same way `PtyReader::handle_os` blocking on
@@ -165,13 +165,13 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
 ///
 /// The scheduler only calls `handle_os` after the doorbell has woken at least once, so — same
 /// as `PtyReader` waiting for its first `Bind` — this actor needs one doorbell ring to start its
-/// loop; `spawn_rasterizer` rings it right after spawning the thread. Once `handle_os` returns
+/// loop; `spawn_renderer` rings it right after spawning the thread. Once `handle_os` returns
 /// `Busy` the scheduler keeps re-entering it without waiting on the doorbell again, so from then
 /// on the loop is self-sustaining.
 struct RasterizerForwarder {
     response_rx: std::sync::mpsc::Receiver<RenderResponse<PlatformPixel, WindowMeta>>,
     coordinator: GreenSender<RenderResponse<PlatformPixel, WindowMeta>>,
-    /// Sends itself `Shutdown` once the rasterizer drops its sender, so the scheduler loop
+    /// Sends itself `Shutdown` once the renderer drops its sender, so the scheduler loop
     /// (and the OS thread underneath it) actually exits instead of parking on an empty
     /// doorbell forever. `Quit`/`AppManagement::Quit`/`CloseRequested` also send `Shutdown`
     /// here directly; this is the fallback for whichever signal arrives second.
@@ -202,7 +202,7 @@ impl Actor<Infallible, Infallible, Infallible> for RasterizerForwarder {
             Ok(response) => match self.coordinator.send(response) {
                 Ok(()) => Ok(ActorStatus::Busy),
                 Err(SendError::Disconnected) => {
-                    log::warn!("Coordinator gone; rasterizer forwarder shutting down");
+                    log::warn!("Coordinator gone; renderer forwarder shutting down");
                     self.shut_down();
                     Ok(ActorStatus::Idle)
                 }
@@ -214,7 +214,7 @@ impl Actor<Infallible, Infallible, Infallible> for RasterizerForwarder {
                 }
             },
             Err(_) => {
-                // The rasterizer shut down and dropped its sender; there is nothing left to
+                // The renderer shut down and dropped its sender; there is nothing left to
                 // forward, so this actor's work is done too.
                 self.shut_down();
                 Ok(ActorStatus::Idle)
@@ -227,7 +227,7 @@ impl RasterizerForwarder {
     fn shut_down(&mut self) {
         if let Some(handle) = self.self_handle.take() {
             if let Err(e) = handle.send(Message::Shutdown) {
-                log::debug!("Rasterizer forwarder self-shutdown send failed: {}", e);
+                log::debug!("Renderer forwarder self-shutdown send failed: {}", e);
             }
         }
     }
@@ -322,14 +322,14 @@ impl EngineHandler {
 
     /// The shutdown cascade all three quit paths (`EngineControl::Quit`,
     /// `AppManagement::Quit`, `DisplayEvent::CloseRequested`) share: the green host, the
-    /// rasterizer forwarder, drop the app handle, driver, then self. Any app notification for a
+    /// renderer forwarder, drop the app handle, driver, then self. Any app notification for a
     /// `CloseRequested` has already gone out via the `app` port earlier in [`Self::flush`].
     ///
-    /// The rasterizer itself is *not* sent an explicit `Shutdown` here — it cannot be: its one
+    /// The renderer itself is *not* sent an explicit `Shutdown` here — it cannot be: its one
     /// live handle belongs to the coordinator's wiring (see `GreenReadyBundle`'s doc), which
     /// this cascade already reaches indirectly. Shutting down the green host drops `Host`, which
     /// drops the coordinator `Node` and its `CoordinatorWiring` along with it — including that
-    /// sole rasterizer handle. The rasterizer's own scheduler sees every one of its lanes
+    /// sole renderer handle. The renderer's own scheduler sees every one of its lanes
     /// disconnect and halts gracefully (the same "all disconnected ⇒ normal shutdown" path the
     /// forwarder below already relies on one hop downstream), so the cascade still reaches it,
     /// just by the handle dropping rather than a message arriving.
@@ -342,10 +342,10 @@ impl EngineHandler {
         // downstream mistakes a dead node for one still configured.
         self.vsync_control = None;
         self.coordinator = None;
-        if let Some(forwarder) = &self.rasterizer_forwarder {
+        if let Some(forwarder) = &self.renderer_forwarder {
             forwarder
                 .send(Message::Shutdown)
-                .expect("Failed to shutdown rasterizer forwarder on Quit");
+                .expect("Failed to shutdown renderer forwarder on Quit");
         }
         self.app_handle = None;
         self.driver
@@ -359,7 +359,7 @@ impl EngineHandler {
     }
 }
 
-/// Spawn the rasterizer actor with its bootstrap handshake, and the forwarder that turns its
+/// Spawn the renderer actor with its bootstrap handshake, and the forwarder that turns its
 /// bare `mpsc` responses into direct sends on the coordinator's management lane.
 ///
 /// A free function, not a method on `EngineHandler`: nothing here needs the engine any more once
@@ -367,26 +367,26 @@ impl EngineHandler {
 /// Called once from `Troupe::with_config`, before the green-host thread spawns — it needs only
 /// `render_threads` from config and the coordinator's already-built management-lane sender.
 ///
-/// Returns the rasterizer's own handle (which goes straight into `CoordinatorWiring`, never to
+/// Returns the renderer's own handle (which goes straight into `CoordinatorWiring`, never to
 /// the engine — see `GreenReadyBundle`'s doc for why it can't be shared) and the forwarder's
 /// handle (which the engine keeps for its shutdown cascade).
-fn spawn_rasterizer(
+fn spawn_renderer(
     render_threads: usize,
     coordinator: GreenSender<RenderResponse<PlatformPixel, WindowMeta>>,
 ) -> (
-    RasterizerHandle<PlatformPixel, WindowMeta>,
+    RendererHandle<PlatformPixel, WindowMeta>,
     ActorHandle<Infallible, Infallible, Infallible>,
 ) {
-    // Step 1: Spawn rasterizer with setup handle
+    // Step 1: Spawn renderer with setup handle
     let (setup_handle, _rasterizer_thread) =
-        RasterizerActor::<PlatformPixel, WindowMeta>::spawn_with_setup(render_threads);
+        RendererActor::<PlatformPixel, WindowMeta>::spawn_with_setup(render_threads);
 
     // Step 2: Create response channel (the forwarder receives render results here)
     let (response_tx, response_rx) =
         std::sync::mpsc::channel::<RenderResponse<PlatformPixel, WindowMeta>>();
 
     // Step 3: Run the forwarder as a real actor rather than a bare thread — it is addressable (a
-    // real Shutdown on the Quit paths, not an implicit exit whenever the rasterizer happens to
+    // real Shutdown on the Quit paths, not an implicit exit whenever the renderer happens to
     // drop its sender), managed the same way the rest of the troupe is. Its lanes are
     // `Infallible`: nothing but `Shutdown` and the doorbell ever reaches it, so
     // `data_buffer_size` of 1 is a formality.
@@ -401,11 +401,11 @@ fn spawn_rasterizer(
         self_handle: Some(self_handle),
     };
     std::thread::Builder::new()
-        .name("rasterizer-forwarder".into())
+        .name("renderer-forwarder".into())
         .spawn(move || {
             forwarder_scheduler.run(&mut forwarder);
         })
-        .expect("failed to spawn rasterizer forwarder thread");
+        .expect("failed to spawn renderer forwarder thread");
     // The scheduler blocks on its doorbell until woken; with `Infallible` lanes there is no
     // message to send, so ring the doorbell directly to start the loop.
     forwarder_handle.waker().wake();
@@ -413,7 +413,7 @@ fn spawn_rasterizer(
     // Step 4: Complete bootstrap - register response channel and get full handle
     let rasterizer_handle = setup_handle.register(response_tx);
 
-    log::info!("Rasterizer actor initialized via bootstrap");
+    log::info!("Renderer actor initialized via bootstrap");
     (rasterizer_handle, forwarder_handle)
 }
 
@@ -426,7 +426,7 @@ impl TroupeActor<Directory> for EngineHandler {
             vsync_host: None,
             coordinator: None, // Set via EngineControl::GreenReady once the green host is up
             self_handle: Some(dir.engine),
-            rasterizer_forwarder: None, // Set via EngineControl::GreenReady
+            renderer_forwarder: None, // Set via EngineControl::GreenReady
             app_handle: None,
             core: EngineCore::new(),
         }
@@ -522,19 +522,19 @@ impl Troupe {
         // The coordinator's two lanes (§5c): data, fed by the engine shell
         // (Submit/Granted/Advance) — 256 covers every vsync-token-bounded frame request plus
         // every buffer grant that could be outstanding; management, fed directly by the
-        // rasterizer forwarder (`RenderResponse`) — bounded by the render credit (<=1 in
+        // renderer forwarder (`RenderResponse`) — bounded by the render credit (<=1 in
         // flight), so its capacity is a formality, same as the forwarder's own ring.
         let (coordinator_data_tx, coordinator_data_rx) =
             green_channel::<CoordinatorData>(256, waker.clone());
         let (coordinator_mgmt_tx, coordinator_mgmt_rx) =
             green_channel::<RenderResponse<PlatformPixel, WindowMeta>>(8, waker);
 
-        // The rasterizer is spawned here now, not by the engine (§8 of the mesh migration doc):
+        // The renderer is spawned here now, not by the engine (§8 of the mesh migration doc):
         // it needs only `render_threads` from config and the coordinator's management-lane
         // sender as the forwarder's target, so the `SetRasterizerForwardHandle` round trip that
         // used to gate `Configure` is gone entirely.
-        let (rasterizer, forwarder) =
-            spawn_rasterizer(config.performance.render_threads, coordinator_mgmt_tx);
+        let (renderer, forwarder) =
+            spawn_renderer(config.performance.render_threads, coordinator_mgmt_tx);
 
         init.engine
             .send(Message::Control(EngineControl::GreenReady(Box::new(
@@ -594,7 +594,7 @@ impl Troupe {
                 // run in that same sweep.
                 let coordinator_core = CoordinatorCore::new();
                 let coordinator_wiring = CoordinatorWiring {
-                    rasterizer,
+                    renderer,
                     driver: coordinator_driver,
                     vsync: vsync_data_tx,
                 };
@@ -615,7 +615,7 @@ impl Troupe {
             })
             .expect("failed to spawn green host thread");
         // The scheduler blocks on its doorbell until woken; ring it once to start the sweep
-        // loop, the same kick `spawn_rasterizer`'s `RasterizerForwarder` gives itself.
+        // loop, the same kick `spawn_renderer`'s `RasterizerForwarder` gives itself.
         host_kick.waker().wake();
 
         Ok(troupe)
@@ -675,7 +675,7 @@ mod tests {
 
     /// `EngineHandler` wired to a real driver scheduler (so `driver_control`/`driver_mgmt`
     /// relays are observable) and a held `coordinator` receiver (so `CoordinatorData` arrivals
-    /// are observable), with no green host, thread, or rasterizer in the loop.
+    /// are observable), with no green host, thread, or renderer in the loop.
     struct Rig {
         engine: EngineHandler,
         coordinator_rx: SpscReceiver<CoordinatorData>,
@@ -711,7 +711,7 @@ mod tests {
                 vsync_host: None,
                 coordinator: Some(coordinator),
                 self_handle: None,
-                rasterizer_forwarder: None,
+                renderer_forwarder: None,
                 app_handle: None,
                 core: EngineCore::new(),
             };
@@ -912,7 +912,7 @@ mod tests {
         ));
     }
 
-    /// The forwarder's whole reason to exist: turn the rasterizer's bare `mpsc` responses into
+    /// The forwarder's whole reason to exist: turn the renderer's bare `mpsc` responses into
     /// direct sends on the coordinator's management lane, rather than a bare thread nobody could
     /// signal. Exercises the actual `RasterizerForwarder`, not a stand-in — simpler now than the
     /// engine-routed version, since a `GreenSender`'s receiving end is a plain `SpscReceiver`
@@ -959,7 +959,7 @@ mod tests {
             })
             .expect("forwarder thread should still be listening");
 
-        // Dropping the sender is exactly what the real bootstrap path does when the rasterizer
+        // Dropping the sender is exactly what the real bootstrap path does when the renderer
         // shuts down; the forwarder must notice and exit rather than parking on an empty
         // doorbell forever. Joining also proves the queued response was relayed before we read
         // the coordinator channel: `mpsc` reports disconnection only after queued messages are
@@ -967,15 +967,15 @@ mod tests {
         drop(response_tx);
         thread
             .join()
-            .expect("forwarder must exit once the rasterizer disconnects");
+            .expect("forwarder must exit once the renderer disconnects");
 
         let response = coordinator_rx
             .try_recv()
-            .expect("the forwarder must relay the rasterizer response");
+            .expect("the forwarder must relay the renderer response");
         assert_eq!(
             (response.meta.width_px, response.meta.height_px),
             (4, 4),
-            "the forwarder must translate the rasterizer's response into a direct coordinator send"
+            "the forwarder must translate the renderer's response into a direct coordinator send"
         );
     }
 
@@ -995,7 +995,7 @@ mod tests {
             vsync_host: None,
             coordinator: None,
             self_handle: None,
-            rasterizer_forwarder: None,
+            renderer_forwarder: None,
             app_handle: None,
             core: EngineCore::new(),
         };
@@ -1090,7 +1090,7 @@ mod tests {
             vsync_host: Some(vsync_host),
             coordinator: None,
             self_handle: Some(self_handle),
-            rasterizer_forwarder: Some(forwarder),
+            renderer_forwarder: Some(forwarder),
             app_handle: None,
             core: EngineCore::new(),
         };
@@ -1109,7 +1109,7 @@ mod tests {
         );
         assert!(
             eventually_shuts_down(&mut forwarder_sched, &mut Never),
-            "the rasterizer forwarder must receive Shutdown on Quit when configured"
+            "the renderer forwarder must receive Shutdown on Quit when configured"
         );
         assert!(
             eventually_shuts_down(&mut self_sched, &mut NoopEngine),

@@ -31,7 +31,7 @@ pub struct Window {
 impl Window {
     /// Take the buffer out to be drawn into, keeping what is needed to put it back.
     ///
-    /// Rendering has to split this apart — the rasterizer wants a `Frame` and knows nothing
+    /// Rendering has to split this apart — the renderer wants a `Frame` and knows nothing
     /// about windows — and the two halves have to meet again afterwards. Naming both directions
     /// is what stops the metadata from being stashed in the coordinator in between, which is the
     /// field `pending_render` used to be (§7.1 of the migration doc).
@@ -97,7 +97,7 @@ pub struct Surface {
 /// Which buffer a [`Window`] is, among the ones the driver has handed over.
 ///
 /// A resize does not modify a window in place — the driver allocates a whole new correctly-sized
-/// one and sends it while the previous buffer is still circulating through the rasterizer or the
+/// one and sends it while the previous buffer is still circulating through the renderer or the
 /// compositor. So more than one can be in flight, and "is this one still current?" is not
 /// answerable from the buffer itself: dimensions repeat (resize out and back), and "is a render
 /// outstanding?" only says *some* buffer is busy, not which. It is a generation, so it is

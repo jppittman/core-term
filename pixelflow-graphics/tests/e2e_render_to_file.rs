@@ -1,40 +1,40 @@
-//! End-to-end test: render a scene and write it to a file.
+//! End-to-end: compose a scene, render it into a frame, write it to a file.
 //!
-//! This test verifies the full pipeline from manifold composition
-//! through rasterization to file output.
+//! Every scene here is what a scene now is — four channel kernels in `[0, 1]`
+//! compiled at the frame's lattice shape, packed to the frame's own byte order
+//! inside the kernel — so the pipeline this exercises is the one production
+//! takes. The goldens are the same pictures the per-batch rasterizer drew.
 
 mod common;
 
-use pixelflow_compiler::kernel;
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt, X, Y};
-use pixelflow_graphics::render::color::{Grayscale, NamedColor, Rgba8};
-
-type Field4 = (Field, Field, Field, Field);
 use common::{assert_golden, write_ppm};
+use pixelflow_core::{Field, Kernel, ManifoldCompat};
+use pixelflow_graphics::render::color::{Color, NamedColor, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::rasterize;
-use pixelflow_graphics::transform::{Scale, Translate};
+use pixelflow_graphics::render::scene::{compile_packed_for, constant_scene_for, Scene};
+use pixelflow_graphics::scene3d::Rgba;
 
-/// A colorful gradient manifold that outputs Discrete pixels.
-/// Creates a smooth color transition based on x and y coordinates.
-#[derive(Clone, Copy)]
-struct Gradient {
-    width: f32,
-    height: f32,
+fn k(v: f32) -> Kernel {
+    Kernel::constant(v)
 }
 
-impl Manifold<Field4> for Gradient {
-    type Output = Discrete;
+/// R = G = B = `value`, opaque — the grayscale lift, as four channels.
+fn grayscale(value: &Kernel) -> Rgba {
+    Rgba::from([value.clone(), value.clone(), value.clone(), k(1.0)])
+}
 
-    fn eval(&self, p: Field4) -> Discrete {
-        let (x, y, _z, _w) = p;
-        // Normalize coordinates to [0, 1]
-        let r = (x / Field::from(self.width)).constant();
-        let g = (y / Field::from(self.height)).constant();
-        let b = ((Field::from(1.0) - r + Field::from(1.0) - g) / Field::from(2.0)).constant();
+/// Compile `color` at `[w, h]` and render it single-threaded.
+fn render(color: &Rgba, w: u32, h: u32) -> Frame<Rgba8> {
+    let mut frame = Frame::<Rgba8>::new(w, h);
+    Scene::Packed(compile_packed_for::<Rgba8>(color, [w, h]).bind(&[])).render(&mut frame, 1);
+    frame
+}
 
-        Discrete::pack(r, g, b, Field::from(1.0))
-    }
+/// Write the frame somewhere a human can look at it after a failure.
+fn save(name: &str, frame: &Frame<Rgba8>) {
+    let path = std::env::temp_dir().join(format!("pixelflow_{name}.ppm"));
+    write_ppm(&path, frame).expect("Failed to write PPM file");
+    println!("{name} saved to: {}", path.display());
 }
 
 #[test]
@@ -42,17 +42,13 @@ fn e2e_render_gradient() {
     const WIDTH: u32 = 400;
     const HEIGHT: u32 = 300;
 
-    let scene = Gradient {
-        width: WIDTH as f32,
-        height: HEIGHT as f32,
-    };
+    // Red ramps across, green down, blue is what the other two leave.
+    let r = Kernel::x().div(&k(WIDTH as f32));
+    let g = Kernel::y().div(&k(HEIGHT as f32));
+    let b = k(1.0).sub(&r).add(&k(1.0).sub(&g)).div(&k(2.0));
+    let frame = render(&Rgba::from([r, g, b, k(1.0)]), WIDTH, HEIGHT);
 
-    let mut frame = Frame::<Rgba8>::new(WIDTH, HEIGHT);
-
-    rasterize(&scene, &mut frame, 1);
-
-    // Verify some pixels
-    // Top-left should be dark (low R, low G, high B due to gradient formula)
+    // Top-left is dark in red and green, bright in blue.
     let top_left = &frame.data[0];
     assert!(
         top_left.r() < 50,
@@ -60,70 +56,47 @@ fn e2e_render_gradient() {
         top_left.r()
     );
     assert!(
-        top_left.g() < 50,
-        "Top-left green should be low, got {}",
-        top_left.g()
+        top_left.b() > 200,
+        "Top-left blue should be high, got {}",
+        top_left.b()
     );
 
-    // Bottom-right should have high R and G
-    let bottom_right = &frame.data[(HEIGHT - 1) as usize * WIDTH as usize + (WIDTH - 1) as usize];
+    // Bottom-right is the opposite.
+    let bottom_right = &frame.data[frame.data.len() - 1];
     assert!(
         bottom_right.r() > 200,
         "Bottom-right red should be high, got {}",
         bottom_right.r()
     );
     assert!(
-        bottom_right.g() > 200,
-        "Bottom-right green should be high, got {}",
-        bottom_right.g()
+        bottom_right.b() < 50,
+        "Bottom-right blue should be low, got {}",
+        bottom_right.b()
     );
 
-    // Write to file for visual inspection
-    let output_path = std::env::temp_dir().join("pixelflow_e2e_gradient.ppm");
-    write_ppm(&output_path, &frame).expect("Failed to write PPM file");
-    assert_golden("e2e_render_gradient", &frame, 2, 0.0);
-
-    println!("Gradient image saved to: {}", output_path.display());
-
-    // Verify file was written
-    assert!(output_path.exists(), "Output file should exist");
+    save("e2e_gradient", &frame);
+    assert_golden("e2e_render_gradient", &frame, 2, 0.01);
 }
 
-/// A radial gradient from center (1.0) to edge (0.0).
-/// Uses parabolic falloff (simpler than true radial).
-///
-/// Clean kernel! version - no manual tuple destructuring, no Field::from(),
-/// no .constant(), uses X/Y coordinate variables directly.
-fn radial_gradient(
-    cx: f32,
-    cy: f32,
-    radius_sq: f32,
-) -> impl Manifold<Field4, Output = Field> + Clone {
-    kernel!(|cx: f32, cy: f32, radius_sq: f32| {
-        let dx = X - cx;
-        let dy = Y - cy;
-        let dist_sq = dx * dx + dy * dy;
-        // 1.0 at center, 0.0 at edge (parabolic falloff)
-        1.0 - dist_sq / radius_sq
-    })(cx, cy, radius_sq)
+/// A radial gradient: 1.0 at the centre, 0.0 at `radius`, parabolic between.
+fn radial_gradient(cx: f32, cy: f32, radius_sq: f32) -> Kernel {
+    let dx = Kernel::x().sub(&k(cx));
+    let dy = Kernel::y().sub(&k(cy));
+    let dist_sq = dx.mul(&dx).add(&dy.mul(&dy));
+    k(1.0).sub(&dist_sq.div(&k(radius_sq)))
 }
 
 #[test]
 fn e2e_render_radial_gradient() {
     const SIZE: u32 = 200;
+    let half = SIZE as f32 / 2.0;
 
-    // Use Grayscale to convert a scalar field to grayscale
-    let radial = Grayscale(radial_gradient(
-        SIZE as f32 / 2.0,
-        SIZE as f32 / 2.0,
-        (SIZE as f32 / 2.0) * (SIZE as f32 / 2.0),
-    ));
+    let frame = render(
+        &grayscale(&radial_gradient(half, half, half * half)),
+        SIZE,
+        SIZE,
+    );
 
-    let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
-
-    rasterize(&radial, &mut frame, 1);
-
-    // Center should be bright (close to white)
     let center_idx = (SIZE / 2) as usize * SIZE as usize + (SIZE / 2) as usize;
     let center = &frame.data[center_idx];
     assert!(
@@ -134,176 +107,109 @@ fn e2e_render_radial_gradient() {
     assert_eq!(center.r(), center.g(), "Grayscale: R should equal G");
     assert_eq!(center.g(), center.b(), "Grayscale: G should equal B");
 
-    // Corner should be dark (outside the radius, negative values clamped to 0)
+    // Outside the radius the value is negative, and the pack clamps it.
     let corner = &frame.data[0];
-    assert!(
-        corner.r() == 0,
+    assert_eq!(
+        corner.r(),
+        0,
         "Corner should be black (clamped), got r={}",
         corner.r()
     );
 
-    let output_path = std::env::temp_dir().join("pixelflow_e2e_radial.ppm");
-    write_ppm(&output_path, &frame).expect("Failed to write PPM file");
+    save("e2e_radial", &frame);
     assert_golden("e2e_render_radial_gradient", &frame, 2, 0.01);
-    println!("Radial gradient saved to: {}", output_path.display());
-}
-
-/// A unit circle manifold (returns 1.0 inside, 0.0 outside).
-/// Uses proper manifold composition with ManifoldExt.
-#[derive(Clone, Copy)]
-struct UnitCircle;
-
-impl Manifold<Field4> for UnitCircle {
-    type Output = Field;
-
-    fn eval(&self, p: Field4) -> Field {
-        // Build the manifold expression: x² + y² < 1 ? 1.0 : 0.0
-        // Using ManifoldExt's lt() and select()
-        let dist_sq = X * X + Y * Y;
-        let mask = dist_sq.lt(1.0f32);
-        let result = mask.select(1.0f32, 0.0f32);
-
-        // Evaluate the composed manifold at the given coordinates
-        result.eval(p)
-    }
 }
 
 #[test]
 fn e2e_render_circle() {
     const SIZE: u32 = 100;
 
-    // Unit circle at origin, scaled and translated to center of image
+    // The unit circle, scaled to `radius` and moved to the frame's centre —
+    // which is precomposition on the coordinates, in the language.
     let radius = SIZE as f32 / 2.0 - 5.0;
-    let scaled = Scale {
-        manifold: UnitCircle,
-        factor: radius,
-    };
-    let centered = Translate {
-        manifold: scaled,
-        offset: [SIZE as f32 / 2.0, SIZE as f32 / 2.0],
-    };
+    let center = SIZE as f32 / 2.0;
+    let u = Kernel::x().sub(&k(center)).div(&k(radius));
+    let v = Kernel::y().sub(&k(center)).div(&k(radius));
+    let inside = u.mul(&u).add(&v.mul(&v)).lt(&k(1.0));
+    let frame = render(&grayscale(&inside.select(&k(1.0), &k(0.0))), SIZE, SIZE);
 
-    // Grayscale conversion
-    let scene = Grayscale(centered);
-
-    let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
-
-    rasterize(&scene, &mut frame, 1);
-
-    // Center should be white (inside circle = 1.0)
     let center_idx = (SIZE / 2) as usize * SIZE as usize + (SIZE / 2) as usize;
-    let center = &frame.data[center_idx];
     assert_eq!(
-        center.r(),
+        frame.data[center_idx].r(),
         255,
-        "Center should be white (inside circle), got {}",
-        center.r()
+        "Center should be white (inside circle)"
     );
-
-    // Corner should be black (outside circle = 0.0)
-    let corner = &frame.data[0];
     assert_eq!(
-        corner.r(),
+        frame.data[0].r(),
         0,
-        "Corner should be black (outside circle), got {}",
-        corner.r()
+        "Corner should be black (outside circle)"
     );
 
-    let output_path = std::env::temp_dir().join("pixelflow_e2e_circle.ppm");
-    write_ppm(&output_path, &frame).expect("Failed to write PPM file");
+    save("e2e_circle", &frame);
     assert_golden("e2e_render_circle", &frame, 2, 0.01);
-    println!("Circle image saved to: {}", output_path.display());
 }
 
 #[test]
 fn e2e_solid_color_renders_correctly() {
-    // Simplest possible test: render a solid color
     const SIZE: u32 = 50;
 
-    let cyan = NamedColor::BrightCyan;
-
+    let (r, g, b, a) = Color::Named(NamedColor::BrightCyan).to_f32_rgba();
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
+    constant_scene_for::<Rgba8>([r, g, b, a], [SIZE, SIZE]).render(&mut frame, 1);
 
-    rasterize(&cyan, &mut frame, 1);
-
-    // Every pixel should be bright cyan (0, 255, 255)
     for (i, pixel) in frame.data.iter().enumerate() {
-        assert_eq!(pixel.r(), 0, "Pixel {} red should be 0", i);
-        assert_eq!(pixel.g(), 255, "Pixel {} green should be 255", i);
-        assert_eq!(pixel.b(), 255, "Pixel {} blue should be 255", i);
-        assert_eq!(pixel.a(), 255, "Pixel {} alpha should be 255", i);
+        assert_eq!(pixel.r(), 0, "Pixel {i} red should be 0");
+        assert_eq!(pixel.g(), 255, "Pixel {i} green should be 255");
+        assert_eq!(pixel.b(), 255, "Pixel {i} blue should be 255");
+        assert_eq!(pixel.a(), 255, "Pixel {i} alpha should be 255");
     }
 
-    let output_path = std::env::temp_dir().join("pixelflow_e2e_cyan.ppm");
-    write_ppm(&output_path, &frame).expect("Failed to write PPM file");
+    save("e2e_cyan", &frame);
     assert_golden("e2e_solid_color_renders_correctly", &frame, 2, 0.0);
-    println!("Solid cyan image saved to: {}", output_path.display());
 }
 
-/// Test using the built-in shapes module
+/// The `shapes` module is the ZST combinator tier, which S4b retires. Until
+/// then this is a smoke test that it still composes; nothing renders through
+/// it.
 #[test]
 fn e2e_render_using_builtin_shapes() {
     use pixelflow_graphics::shapes::{circle, EMPTY, SOLID};
 
-    // Create a circle using the shapes module
-    // The shapes::circle returns impl Manifold<Output=Field>
     let unit_circle = circle(SOLID, EMPTY);
-
-    // Evaluate the circle at the origin - should return SOLID (1.0)
-    let _at_origin = unit_circle.eval_raw(
-        Field::from(0.0),
-        Field::from(0.0),
-        Field::from(0.0),
-        Field::from(0.0),
-    );
-
-    // Evaluate outside the circle - should return EMPTY (0.0)
-    let _outside = unit_circle.eval_raw(
-        Field::from(2.0), // outside unit circle (x² = 4 > 1)
-        Field::from(0.0),
-        Field::from(0.0),
-        Field::from(0.0),
-    );
-
-    // This is a smoke test that shapes compile and the API works
-    // The actual pixel rendering is tested in e2e_render_circle
-    println!("Built-in shapes module works! Circle evaluates at origin and outside.");
+    let at = |x: f32| {
+        unit_circle.eval_raw(
+            Field::from(x),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        )
+    };
+    let _at_origin = at(0.0);
+    let _outside = at(2.0); // x² = 4 > 1
 }
 
-/// Test that Frame operations work correctly
+/// A `Frame` starts empty and ends as whatever was rendered into it.
 #[test]
 fn e2e_frame_operations() {
     const SIZE: u32 = 10;
 
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
-
-    // Check initial state
     assert_eq!(frame.width, SIZE as usize);
     assert_eq!(frame.height, SIZE as usize);
     assert_eq!(frame.data.len(), (SIZE * SIZE) as usize);
-
-    // All pixels should be default (black/transparent)
     for pixel in &frame.data {
-        assert_eq!(pixel.r(), 0);
-        assert_eq!(pixel.g(), 0);
-        assert_eq!(pixel.b(), 0);
-        assert_eq!(pixel.a(), 0);
+        assert_eq!((pixel.r(), pixel.g(), pixel.b(), pixel.a()), (0, 0, 0, 0));
     }
 
-    // Render something
-    rasterize(&NamedColor::Red, &mut frame, 1);
-
-    // Now all should be red
+    let (r, g, b, a) = Color::Named(NamedColor::Red).to_f32_rgba();
+    constant_scene_for::<Rgba8>([r, g, b, a], [SIZE, SIZE]).render(&mut frame, 1);
     for pixel in &frame.data {
-        assert_eq!(pixel.r(), 205); // ANSI Red
-        assert_eq!(pixel.g(), 0);
-        assert_eq!(pixel.b(), 0);
-        assert_eq!(pixel.a(), 255);
+        assert_eq!(
+            (pixel.r(), pixel.g(), pixel.b(), pixel.a()),
+            (205, 0, 0, 255)
+        );
     }
 
-    // Test as_bytes
-    let bytes = frame.as_bytes();
-    assert_eq!(bytes.len(), (SIZE * SIZE * 4) as usize); // 4 bytes per pixel
-
-    println!("Frame operations work correctly!");
+    // 4 bytes per pixel.
+    assert_eq!(frame.as_bytes().len(), (SIZE * SIZE * 4) as usize);
 }

@@ -15,12 +15,10 @@
 use crate::display::messages::{Window, WindowMeta};
 use crate::platform::PlatformPixel;
 use actor_scheduler::mealy::Credit;
-use pixelflow_core::{At, W, X, Y, Z};
-use pixelflow_graphics::render::rasterizer::{RenderRequest, RenderResponse};
-use std::sync::Arc;
+use pixelflow_graphics::render::renderer::{RenderRequest, RenderResponse};
 use std::time::Duration;
 
-/// A scene as it travels between the app and the rasterizer.
+/// A scene as it travels between the app and the renderer.
 use pixelflow_graphics::render::scene::Scene;
 
 /// What the coordinator wants delivered, having decided everything it can on its own.
@@ -34,7 +32,7 @@ pub enum Step {
     Idle,
     /// Ask the driver for the buffer (Management lane; carries nothing).
     RequestWindow,
-    /// Send this to the rasterizer. Carries the buffer, so losing it strands the display.
+    /// Send this to the renderer. Carries the buffer, so losing it strands the display.
     Render(RenderRequest<PlatformPixel, WindowMeta>),
 }
 
@@ -42,7 +40,7 @@ pub enum Step {
 pub struct Completed {
     /// The drawn buffer and how long it took, to be handed to the driver to show.
     ///
-    /// `None` when the rasterizer was paused and returned the buffer undrawn — presenting it
+    /// `None` when the renderer was paused and returned the buffer undrawn — presenting it
     /// would blit stale pixels, so it is retained in the coordinator instead. Pairing the two
     /// keeps "was it drawn?" a single question: the buffer and its render time are either both
     /// here or neither is.
@@ -72,7 +70,7 @@ pub struct RenderCoordinator {
     /// Ownership bounds how many *buffers* exist and says nothing about how many *requests* do,
     /// which is why this flag is not redundant with holding the buffer.
     awaiting_grant: bool,
-    /// The one-outstanding-render bound on the coordinator → rasterizer edge.
+    /// The one-outstanding-render bound on the coordinator → renderer edge.
     render_credit: Credit,
     /// Latest kernel from the app — keep-latest, so a newer one replaces any frame that has not
     /// started rendering.
@@ -124,9 +122,9 @@ impl RenderCoordinator {
         self.advance()
     }
 
-    /// The rasterizer finished with the buffer.
+    /// The renderer finished with the buffer.
     ///
-    /// `render_time` is `None` when the rasterizer was paused and handed the buffer back
+    /// `render_time` is `None` when the renderer was paused and handed the buffer back
     /// undrawn; the buffer's return is unconditional, its having been drawn into is not.
     pub fn completed(&mut self, response: RenderResponse<PlatformPixel, WindowMeta>) -> Completed {
         // The render is over, so the edge's one credit is free again.
@@ -234,55 +232,23 @@ impl RenderCoordinator {
     }
 }
 
-/// Bind a kernel to the buffer it will be drawn into.
+/// Pair a scene with the buffer it will be drawn into.
 ///
-/// The scene is authored in point space; the frame is the platform's sample lattice and may be
-/// denser (device pixels on HiDPI displays). The lattice embedding is the measured ratio
-/// points/pixels per axis — identity when the platform samples 1:1 (X11, non-Retina macOS).
-/// Contramapping here keeps the app scale-agnostic: platform = dimap.
-///
-/// Everything comes from the buffer itself, so the result is correct for the frame it was handed
-/// by construction — there is no separate scale to keep in step, and nothing to re-derive later.
+/// A scene is device-pixel space by construction: its kernels were compiled
+/// against a frame's own lattice, so an author working in points said so in
+/// the language — `Kernel::at` precomposition on the channel kernels — before
+/// compiling. There is nothing to contramap here, and wrapping the scene would
+/// mean recompiling its program every frame. (The HiDPI wrapper this function
+/// used to apply belonged to the per-batch `Scene::Surface` lane, which S4a
+/// deleted; `surface_scene_hidpi_warp.rs` went with it.)
 fn bind(scene: Scene, window: Window) -> RenderRequest<PlatformPixel, WindowMeta> {
     let (frame, meta) = window.tear();
-    let WindowMeta {
-        width_px,
-        height_px,
-        ..
-    } = meta;
-
     assert!(
         frame.width > 0 && frame.height > 0,
         "cannot render into an empty frame ({}x{})",
         frame.width,
         frame.height
     );
-    let point_per_px_x = width_px as f32 / frame.width as f32;
-    let point_per_px_y = height_px as f32 / frame.height as f32;
-    let scene: Scene = match scene {
-        // Point-space surfaces are contramapped into the denser device grid.
-        Scene::Surface(manifold) => {
-            if point_per_px_x == 1.0 && point_per_px_y == 1.0 {
-                Scene::Surface(manifold)
-            } else {
-                Scene::Surface(Arc::new(At {
-                    inner: manifold,
-                    x: X * point_per_px_x,
-                    y: Y * point_per_px_y,
-                    z: Z,
-                    w: W,
-                }))
-            }
-        }
-        // A packed scene is device-pixel space by construction: its kernel
-        // was compiled against this frame's own lattice, so an author working
-        // in points said so in the language — `Kernel::at` precomposition on
-        // the channel kernels — before compiling. There is nothing left to
-        // wrap here, and wrapping would mean recompiling the program every
-        // frame.
-        Scene::Packed(packed) => Scene::Packed(packed),
-    };
-
     RenderRequest { scene, frame, meta }
 }
 
@@ -300,7 +266,7 @@ mod tests {
     use crate::display::messages::Surface;
     use crate::display::window_keeper::WindowKeeper;
     use pixelflow_core::Kernel;
-    use pixelflow_graphics::render::rasterizer::RenderResponse;
+    use pixelflow_graphics::render::renderer::RenderResponse;
     use pixelflow_graphics::render::scene::compile_platform_packed;
     use pixelflow_graphics::render::Frame;
 
@@ -313,7 +279,7 @@ mod tests {
     }
 
     /// A scene whose pixels depend on where they are sampled, so a coordinate
-    /// transform applied on the way to the rasterizer would show up in them.
+    /// transform applied on the way to the renderer would show up in them.
     fn ramp_scene(frame: [u32; 2]) -> Scene {
         let k = Kernel::constant;
         let axis = |v: Kernel, extent: u32| v.mul(&k(1.0 / extent as f32));
@@ -362,7 +328,7 @@ mod tests {
         }
     }
 
-    /// A render the rasterizer skipped because it was paused.
+    /// A render the renderer skipped because it was paused.
     fn skipped(
         request: RenderRequest<PlatformPixel, WindowMeta>,
     ) -> RenderResponse<PlatformPixel, WindowMeta> {
@@ -481,7 +447,7 @@ mod tests {
         );
     }
 
-    /// A paused rasterizer hands the buffer back undrawn. Presenting it would blit stale pixels,
+    /// A paused renderer hands the buffer back undrawn. Presenting it would blit stale pixels,
     /// so it is kept — and it is still in hand for the next render.
     #[test]
     fn a_skipped_render_retains_the_buffer_unpresented() {

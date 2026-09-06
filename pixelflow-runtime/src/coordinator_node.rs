@@ -4,15 +4,15 @@
 //! Step 5c of `docs/designs/pixelflow-runtime-engine-mesh-migration.md` §8: [`RenderCoordinator`]
 //! (`render_coordinator.rs`) leaves `EngineCore` and runs here as a `Transducer`
 //! ([`CoordinatorCore`]) with its own `Wiring` ([`CoordinatorWiring`]) sending directly to the
-//! rasterizer, the driver, and vsync's telemetry lane. Render completions arrive straight from
-//! the rasterizer forwarder — no engine round-trip — while window grants, scene submissions, and
+//! renderer, the driver, and vsync's telemetry lane. Render completions arrive straight from
+//! the renderer forwarder — no engine round-trip — while window grants, scene submissions, and
 //! the "try rendering again" nudge still arrive from the engine shell, which is the one relay
 //! this step leaves in place (`engine_core.rs`'s `coordinator` port).
 //!
 //! # Why two producers, two lanes
 //!
 //! [`CoordinatorData`] (engine shell → coordinator: submit/grant/advance) and
-//! [`RenderResponse`] (rasterizer forwarder → coordinator: completions) are different producers,
+//! [`RenderResponse`] (renderer forwarder → coordinator: completions) are different producers,
 //! so SPSC purity puts them on different lanes even before priority is considered. Management
 //! outranking Data is not incidental, though: a completion frees the render credit and the
 //! buffer the driver is waiting on, so finishing in-flight work before accepting a new
@@ -28,7 +28,7 @@
 //! learn about a transient failure. [`CoordinatorCore::route`] therefore calls
 //! [`RenderCoordinator::request_sent`] the moment it decides to ask — delivery is now
 //! guaranteed-or-parked, so "an ask is in flight" is already true at the moment of emission.
-//! `render_send_failed` has no counterpart here: a rasterizer that is truly *gone* surfaces as
+//! `render_send_failed` has no counterpart here: a renderer that is truly *gone* surfaces as
 //! [`Flush::Disconnected`], which panics — there is no supervisor to escalate to, and a
 //! recoverable outcome was never on offer once every build profile sets `panic = "abort"`. That
 //! is still strictly better than the old warn-and-release-credit path right up to the panic: the
@@ -41,10 +41,10 @@ use crate::render_coordinator::{Completed, RenderCoordinator, Step};
 use crate::vsync_actor::RenderedResponse;
 use actor_scheduler::mealy::{all, send_port, Flush, Transducer, Wiring};
 use actor_scheduler::{ActorHandle, GreenSender, HandlerError, Message};
-use pixelflow_graphics::render::rasterizer::{RasterizerHandle, RenderRequest, RenderResponse};
+use pixelflow_graphics::render::renderer::{RenderRequest, RenderResponse, RendererHandle};
 use std::time::{Duration, Instant};
 
-/// A manifold as it travels between the app and the rasterizer.
+/// A manifold as it travels between the app and the renderer.
 ///
 /// Duplicates `render_coordinator`'s own private alias of the same name rather than exporting
 /// it: that module's `Scene` is deliberately not part of even this crate's wider surface, and
@@ -86,7 +86,7 @@ impl std::fmt::Debug for CoordinatorData {
 /// most inputs move state without telling any peer, exactly as `EngineOut`/`VsyncCoreOut`.
 #[derive(Default)]
 pub(crate) struct CoordinatorOut {
-    /// → the rasterizer. Credit(1) bounds this edge below the reply ring's capacity, so it
+    /// → the renderer. Credit(1) bounds this edge below the reply ring's capacity, so it
     /// never actually parks; see [`CoordinatorWiring`].
     pub(crate) render: Option<RenderRequest<PlatformPixel, WindowMeta>>,
     /// → the driver's management lane (`DisplayMgmt::RequestWindow`). A flag, not an
@@ -190,7 +190,7 @@ impl Transducer for CoordinatorCore {
         let Completed { present, next } = self.render.completed(response);
         match present {
             Some((window, render_time)) => self.present_cooked_frame(render_time, window, &mut out),
-            // The rasterizer was paused, so it handed the buffer back unrendered. Presenting it
+            // The renderer was paused, so it handed the buffer back unrendered. Presenting it
             // would blit whatever stale pixels it still holds; keeping it is the whole point of
             // the frame coming back at all. The coordinator has retained it.
             None => {
@@ -202,10 +202,10 @@ impl Transducer for CoordinatorCore {
     }
 }
 
-/// Where a coordinator step's output goes: the rasterizer, the driver (present + window
+/// Where a coordinator step's output goes: the renderer, the driver (present + window
 /// requests), and vsync's telemetry lane. Template: `VsyncWiring` (`vsync_actor.rs`).
 pub(crate) struct CoordinatorWiring {
-    pub(crate) rasterizer: RasterizerHandle<PlatformPixel, WindowMeta>,
+    pub(crate) renderer: RendererHandle<PlatformPixel, WindowMeta>,
     pub(crate) driver: ActorHandle<DisplayData, DisplayControl, DisplayMgmt>,
     pub(crate) vsync: GreenSender<RenderedResponse>,
 }
@@ -218,7 +218,7 @@ impl Wiring for CoordinatorWiring {
         // but park, don't panic: the payload is the driver's only buffer (§9.2 of the mealy
         // design doc).
         let mut render_msg = out.render.take().map(Message::Data);
-        let render_flush = send_port(&mut render_msg, &self.rasterizer);
+        let render_flush = send_port(&mut render_msg, &self.renderer);
         if let Some(Message::Data(request)) = render_msg {
             out.render = Some(request);
         }
@@ -397,7 +397,7 @@ mod tests {
 #[cfg(test)]
 mod node_tests {
     //! The coordinator as a real `Node`: a real driver scheduler + spy (owning a real
-    //! `WindowKeeper`, exactly as `engine_troupe.rs`'s old `Rig` did) and a real rasterizer
+    //! `WindowKeeper`, exactly as `engine_troupe.rs`'s old `Rig` did) and a real renderer
     //! scheduler + spy on the other side, with `node.poll()` standing in for a `Host`'s sweep.
     //!
     //! These are the render-protocol interaction tests that used to live in `engine_troupe.rs`'s
@@ -414,7 +414,7 @@ mod node_tests {
     use actor_scheduler::{
         Actor, ActorScheduler, ActorStatus, HandlerResult, SchedulerParams, SystemStatus,
     };
-    use pixelflow_graphics::render::rasterizer::{RasterControl, RasterManagement};
+    use pixelflow_graphics::render::renderer::{RenderControl, RenderManagement};
     use pixelflow_graphics::render::Frame;
     use std::collections::VecDeque;
     use std::convert::Infallible;
@@ -428,21 +428,21 @@ mod node_tests {
     type Size = (u32, u32);
 
     #[derive(Default)]
-    struct RasterizerSpy {
+    struct RendererSpy {
         requests: Vec<WindowMeta>,
     }
 
-    impl Actor<RenderRequest<PlatformPixel, WindowMeta>, RasterControl, RasterManagement>
-        for RasterizerSpy
+    impl Actor<RenderRequest<PlatformPixel, WindowMeta>, RenderControl, RenderManagement>
+        for RendererSpy
     {
         fn handle_data(&mut self, req: RenderRequest<PlatformPixel, WindowMeta>) -> HandlerResult {
             self.requests.push(req.meta);
             Ok(())
         }
-        fn handle_control(&mut self, _msg: RasterControl) -> HandlerResult {
+        fn handle_control(&mut self, _msg: RenderControl) -> HandlerResult {
             Ok(())
         }
-        fn handle_management(&mut self, _msg: RasterManagement) -> HandlerResult {
+        fn handle_management(&mut self, _msg: RenderManagement) -> HandlerResult {
             Ok(())
         }
         fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
@@ -512,18 +512,18 @@ mod node_tests {
         node: CoordinatorNode,
         data_tx: SpscSender<CoordinatorData>,
         mgmt_tx: SpscSender<RenderResponse<PlatformPixel, WindowMeta>>,
-        raster_sched: ActorScheduler<
+        render_sched: ActorScheduler<
             RenderRequest<PlatformPixel, WindowMeta>,
-            RasterControl,
-            RasterManagement,
+            RenderControl,
+            RenderManagement,
         >,
-        raster_spy: RasterizerSpy,
+        render_spy: RendererSpy,
         driver_sched: ActorScheduler<DisplayData, DisplayControl, DisplayMgmt>,
         driver_spy: DriverSpy,
         /// Never asserted on: these tests are not about FPS telemetry. Held only so the
         /// coordinator's sends have somewhere to land.
         _vsync_rx: SpscReceiver<RenderedResponse>,
-        /// Renders the rasterizer has been asked for and not yet answered, oldest first.
+        /// Renders the renderer has been asked for and not yet answered, oldest first.
         in_flight: VecDeque<WindowMeta>,
         request_log: Vec<Size>,
     }
@@ -531,7 +531,7 @@ mod node_tests {
     impl Rig {
         fn new() -> Self {
             let (driver, driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
-            let (rasterizer, raster_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+            let (renderer, render_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
 
             // A `Waker` with nobody listening is harmless, so a throwaway scheduler dropped
             // immediately after minting one is enough — the plain channel below never needs a
@@ -555,7 +555,7 @@ mod node_tests {
                     data: data_rx,
                 },
                 CoordinatorWiring {
-                    rasterizer,
+                    renderer,
                     driver,
                     vsync,
                 },
@@ -566,8 +566,8 @@ mod node_tests {
                 node,
                 data_tx,
                 mgmt_tx,
-                raster_sched,
-                raster_spy: RasterizerSpy::default(),
+                render_sched,
+                render_spy: RendererSpy::default(),
                 driver_sched,
                 driver_spy: DriverSpy::default(),
                 _vsync_rx: vsync_rx,
@@ -594,8 +594,8 @@ mod node_tests {
         /// leave the system mid-conversation and the assertions would read a partial state.
         fn pump(&mut self) {
             loop {
-                let _ = self.raster_sched.poll_once(&mut self.raster_spy);
-                for meta in self.raster_spy.requests.drain(..) {
+                let _ = self.render_sched.poll_once(&mut self.render_spy);
+                for meta in self.render_spy.requests.drain(..) {
                     self.request_log.push((meta.width_px, meta.height_px));
                     self.in_flight.push_back(meta);
                 }
@@ -633,7 +633,7 @@ mod node_tests {
         }
 
         /// Answer the oldest outstanding render, returning its `meta` untouched — which is the
-        /// rasterizer's actual contract.
+        /// renderer's actual contract.
         fn complete_render(&mut self) {
             self.pump();
             let meta = self

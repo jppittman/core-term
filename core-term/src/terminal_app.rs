@@ -11,9 +11,9 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::{At, CellGridGeometry};
+use pixelflow_core::CellGridGeometry;
 use pixelflow_graphics::render::cell_grid::CellGridPackedProgram;
-use pixelflow_graphics::render::scene::Scene;
+use pixelflow_graphics::render::scene::{constant_platform_scene, Scene};
 
 /// Adapter to send PTY commands to TerminalApp actor.
 pub struct TerminalAppSender {
@@ -47,7 +47,6 @@ use pixelflow_graphics::fonts::GlyphAtlas;
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::AppData;
 use pixelflow_runtime::api::public::EngineHandle;
-use pixelflow_runtime::platform::ColorCube;
 use pixelflow_runtime::{EngineEventControl, EngineEventData, EngineEventManagement};
 use std::sync::Arc;
 
@@ -118,6 +117,12 @@ pub struct TerminalApp {
     /// dynamic resize: the program's size and compile time are independent
     /// of the grid's.
     program: Option<CellGridPackedProgram>,
+    /// The solid-background scene and the device-pixel frame it was compiled
+    /// for. Only ever drawn before anything has been presented (see
+    /// [`TerminalApp::build_scene`]); cached because a `Scene` is a compiled
+    /// kernel and compiling one per frame request would be absurd for four
+    /// constants.
+    background: Option<([u32; 2], Scene)>,
     /// Whether any scene has been submitted yet. Synchronized output holds
     /// the last frame, which only exists once this is true; before that, the
     /// solid background is the only honest thing to show.
@@ -219,6 +224,7 @@ impl TerminalApp {
             loaded_font,
             atlas,
             program: None,
+            background: None,
             has_presented: false,
             frame_px: [0, 0],
             pressed_mouse_button: None,
@@ -252,6 +258,34 @@ impl TerminalApp {
         self.atlas.warm(&self.loaded_font.font(), ' '..='~');
     }
 
+    /// The device-pixel lattice the scene kernels bake over: the window's
+    /// logical points scaled by the display density.
+    ///
+    /// Window events carry LOGICAL POINTS (`Surface::width_px`) while the
+    /// frame buffer the renderer hands us is device pixels, so the conversion
+    /// is not optional. `None` before the first window event, when there is
+    /// no window to measure and nothing to present into.
+    fn device_frame(&self) -> Option<[u32; 2]> {
+        let scaled = [
+            (self.frame_px[0] as f32 * self.density).round() as u32,
+            (self.frame_px[1] as f32 * self.density).round() as u32,
+        ];
+        (scaled[0] != 0 && scaled[1] != 0).then_some(scaled)
+    }
+
+    /// A solid `rgba` over the whole frame, compiled once per frame size.
+    ///
+    /// `None` when no window has been sized yet: there is nothing to present
+    /// into, so the engine is answered with [`AppData::Skipped`].
+    fn background_scene(&mut self, rgba: [f32; 4]) -> Option<Scene> {
+        let frame = self.device_frame()?;
+        let hit = self.background.as_ref().filter(|(at, _)| *at == frame);
+        if hit.is_none() {
+            self.background = Some((frame, constant_platform_scene(rgba, frame)));
+        }
+        self.background.as_ref().map(|(_, scene)| scene.clone())
+    }
+
     /// Build the frame scene: the JIT cell-grid program over the glyph
     /// atlas and this snapshot's per-cell data.
     ///
@@ -280,14 +314,12 @@ impl TerminalApp {
                 if self.has_presented {
                     return None;
                 }
-                // Nothing was ever presented: there is no frame to hold.
-                return Some(Scene::Surface(Arc::new(At {
-                    inner: ColorCube::default(),
-                    x: dbg_r,
-                    y: dbg_g,
-                    z: dbg_b,
-                    w: dbg_a,
-                })));
+                // Nothing was ever presented: there is no frame to hold, so
+                // paint the default background over the whole frame. Four
+                // constant channel kernels compiled at the frame's own shape
+                // — a packed scene like every other, cached because its
+                // extents are what it was compiled for.
+                return self.background_scene([dbg_r, dbg_g, dbg_b, dbg_a]);
             }
         };
 
@@ -367,28 +399,14 @@ impl TerminalApp {
         // not contramap it): cell extents scale by the display density, and
         // the atlas — baked at `density` texels per point — is exactly one
         // texel per device pixel.
-        // The lattice the compiled kernels bake over, in the same device-pixel
-        // space as every other field here. The window events carry LOGICAL
-        // POINTS (`Surface::width_px`), while the frame buffer the renderer
-        // hands us is `Surface::frame_width` device pixels — points × scale —
-        // so the conversion is not optional. Before the first window event
-        // there is no window to measure: fall back to the grid's own extent,
-        // which is what the kernels would bake if the surface were tight to
-        // the grid.
-        let frame_px = {
-            let scaled = [
-                (self.frame_px[0] as f32 * self.density).round() as u32,
-                (self.frame_px[1] as f32 * self.density).round() as u32,
-            ];
-            if scaled[0] == 0 || scaled[1] == 0 {
-                [
-                    (cols as f32 * cell_width * self.density).round() as u32,
-                    (rows as f32 * cell_height * self.density).round() as u32,
-                ]
-            } else {
-                scaled
-            }
-        };
+        // The lattice the compiled kernels bake over. Before the first window
+        // event there is no window to measure: fall back to the grid's own
+        // extent, which is what the kernels would bake if the surface were
+        // tight to the grid.
+        let frame_px = self.device_frame().unwrap_or([
+            (cols as f32 * cell_width * self.density).round() as u32,
+            (rows as f32 * cell_height * self.density).round() as u32,
+        ]);
         let geom = CellGridGeometry {
             cols: cols as u32,
             rows: rows as u32,
