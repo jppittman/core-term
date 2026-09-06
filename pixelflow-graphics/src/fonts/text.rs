@@ -79,6 +79,11 @@ pub fn text_union(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> U
 /// One cell of [`text_cells`]' decomposition: the columns it owns, and the
 /// placed glyph kernels that can be nonzero anywhere in them, in the order
 /// [`text`] sums them.
+///
+/// Hidden for the same reason [`text_cells`] is: it is the decomposition's
+/// own shape, exposed so a test outside this crate can see a cell's arity,
+/// not a type a consumer builds against.
+#[doc(hidden)]
 pub struct TextCell {
     /// The columns this cell answers for, over the whole height of the frame.
     pub range: IndexRange,
@@ -89,16 +94,19 @@ pub struct TextCell {
 /// The decomposition [`text_union`] places, before it is folded into a
 /// [`Union`] — one cell per character, minus the ones no glyph reaches.
 ///
-/// Exposed because a cell's **arity** is the difference between a rewrite and
-/// an approximation, and a caller that cannot see it cannot tell them apart. A
-/// cell holding one glyph carries that glyph's arena unchanged, so it bakes
-/// what the glyph alone bakes, bit for bit. A cell holding two or more is a
-/// different arena from anything standalone, and the compiler is free to
-/// schedule it differently — see the [module documentation](self).
+/// **Not public API** (`#[doc(hidden)]`): this exists so
+/// `tests/text_union_identity.rs`, which lives outside this crate, can see a
+/// cell's **arity**. That is the difference between a rewrite and an
+/// approximation — a cell holding one glyph carries that glyph's arena
+/// unchanged, while a cell holding two or more is a different arena from
+/// anything standalone and the compiler may schedule it differently (see the
+/// [module documentation](self)) — and a test that cannot see it cannot tell
+/// the two apart. Use [`text_union`].
 ///
 /// # Panics
 ///
 /// Panics if `lattice` is not a plane — see [`Union::over`].
+#[doc(hidden)]
 #[must_use]
 pub fn text_cells(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> Vec<TextCell> {
     let columns = lattice.extent[0] as usize;

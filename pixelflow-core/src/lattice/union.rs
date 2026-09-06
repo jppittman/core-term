@@ -152,8 +152,11 @@ impl IndexRange {
     }
 
     /// Whether two ranges share an index. Empty ranges meet nothing.
-    #[must_use]
-    pub fn meets(&self, other: &Self) -> bool {
+    ///
+    /// Internal because it exists for [`Union::place`]'s disjointness check;
+    /// a caller composing a union learns the answer by placing and being
+    /// refused, which is the only answer that matters.
+    pub(crate) fn meets(&self, other: &Self) -> bool {
         !self.is_empty()
             && !other.is_empty()
             && self.x0 < other.x0 + other.width
@@ -196,12 +199,6 @@ impl Union {
         }
     }
 
-    /// The ambient lattice this union decomposes.
-    #[must_use]
-    pub fn lattice(&self) -> Lattice {
-        self.lattice
-    }
-
     /// Summands placed so far.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -217,13 +214,19 @@ impl Union {
     /// Add the summand `(range, kernel)`: `kernel` answers for exactly the
     /// indices in `range` and is never asked about any other.
     ///
+    /// An **empty** range places nothing and is checked for nothing — it
+    /// claims no index, so it can neither leave the extent nor meet another
+    /// summand, and where a caller's layout put the empty rectangle it did
+    /// not draw is not this type's business.
+    ///
     /// # Panics
     ///
-    /// Panics if `range` leaves the ambient extent, or if it **meets a summand
-    /// already placed**. Overlap is not a blend and not a painter's order: two
-    /// kernels claiming one index is a question this type refuses to arbitrate,
-    /// and a scene that really wants a pixel to choose wants
-    /// [`Kernel::select`](pixelflow_ir::Kernel::select) inside one summand.
+    /// Panics if a non-empty `range` leaves the ambient extent, or if it
+    /// **meets a summand already placed**. Overlap is not a blend and not a
+    /// painter's order: two kernels claiming one index is a question this type
+    /// refuses to arbitrate, and a scene that really wants a pixel to choose
+    /// wants [`Kernel::select`](pixelflow_ir::Kernel::select) inside one
+    /// summand.
     pub fn place(&mut self, range: IndexRange, kernel: &Kernel) {
         if range.is_empty() {
             return;
@@ -300,10 +303,9 @@ impl CompiledUnion {
     /// fills its own range, and every index no summand claims stays 0.
     ///
     /// Like [`Lattice::collapse`], this owns the buffer it fills, so it
-    /// allocates it — plus one staging plane, reused across every summand,
-    /// for the ones narrower than a frame row. The *band* collapses inside it
-    /// allocate nothing, which is the invariant
-    /// `pixelflow-core/tests/bind_allocates_nothing.rs` guards.
+    /// allocates that one buffer and nothing else: the summands write into it
+    /// in place, and the band collapses themselves allocate nothing — the
+    /// invariant `pixelflow-core/tests/bind_allocates_nothing.rs` guards.
     #[must_use]
     pub fn collapse(&self) -> DiscreteManifold {
         let (ex, ey) = (
@@ -311,7 +313,6 @@ impl CompiledUnion {
             self.lattice.extent[1] as usize,
         );
         let mut buffer = vec![0.0f32; ex * ey];
-        let mut scratch = Vec::new();
         for (range, program) in &self.pieces {
             let origin = [
                 self.lattice.origin[0] + range.x0 as f32,
@@ -321,7 +322,7 @@ impl CompiledUnion {
             ];
             let band = PlaneRegion::from_origin(range.width, range.rows, origin);
             let start = range.y0 * ex + range.x0;
-            program.collapse_subrect(band, &mut buffer[start..], ex, &mut scratch);
+            program.collapse_subrect(band, &mut buffer[start..], ex);
         }
         DiscreteManifold::new(buffer, ex, ey)
     }

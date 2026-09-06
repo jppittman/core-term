@@ -85,8 +85,9 @@ impl Support {
     pub const EMPTY: Self = Self([0.0, 0.0, 0.0, 0.0]);
 
     /// The unit square `[0,1]²` — the mask every outline is cut to before it
-    /// is warped back to font units.
-    pub const UNIT: Self = Self([0.0, 0.0, 1.0, 1.0]);
+    /// is warped back to font units. Internal: it is where a support comes
+    /// from, not something a consumer of one constructs.
+    pub(crate) const UNIT: Self = Self([0.0, 0.0, 1.0, 1.0]);
 
     /// `[x0, y0, x1, y1]`.
     #[must_use]
@@ -102,9 +103,10 @@ impl Support {
 
     /// The box carried through the forward affine map
     /// `x' = a·x + b·y + tx, y' = c·x + d·y + ty` — the same map
-    /// [`affine_kernel`] warps a kernel by, so a support stays a support.
-    #[must_use]
-    pub fn through(self, [a, b, c, d, tx, ty]: [f32; 6]) -> Self {
+    /// `affine_kernel` warps a kernel by, so a support stays a support.
+    /// Internal, for the same reason as [`Support::UNIT`]: it is half of how
+    /// `Font::compile` derives a support, not an operation on a finished one.
+    pub(crate) fn through(self, [a, b, c, d, tx, ty]: [f32; 6]) -> Self {
         if self.is_empty() {
             return Self::EMPTY;
         }
@@ -126,9 +128,9 @@ impl Support {
         Self(out)
     }
 
-    /// The smallest box containing both.
-    #[must_use]
-    pub fn join(self, other: Self) -> Self {
+    /// The smallest box containing both — how a compound glyph's support is
+    /// assembled from its children's. Internal, as above.
+    pub(crate) fn join(self, other: Self) -> Self {
         if self.is_empty() {
             return other;
         }
@@ -153,8 +155,17 @@ impl Support {
     }
 
     /// The columns of a pixel grid this box can reach: every integer `c` with
-    /// a sample center `c + center` inside `[x0, x1]`, as `[first, last]`.
-    /// `None` when the box reaches no sample center.
+    /// a sample center `c + center` inside `[x0, x1]`, widened by one column
+    /// on each side, as `[first, last]`. `None` when the box reaches no sample
+    /// center at all.
+    ///
+    /// The margin is not slack, it is the boundary itself. This box is built
+    /// by pushing corners through the **forward** affine maps; the mask the
+    /// kernel evaluates is the same maps **inverted**, through a reciprocal
+    /// determinant. The two agree to within an ulp, and a sample center inside
+    /// that sliver would be dropped by a box that stopped exactly at `x1` —
+    /// silently, as a single wrong edge pixel. One column costs a glyph in the
+    /// occasional cell and makes the question moot.
     #[must_use]
     pub fn columns(self, center: f32) -> Option<[i64; 2]> {
         if self.is_empty() {
@@ -166,9 +177,16 @@ impl Support {
         if last < first {
             return None;
         }
-        Some([first as i64, last as i64])
+        Some([
+            first as i64 - BOUNDARY_MARGIN,
+            last as i64 + BOUNDARY_MARGIN,
+        ])
     }
 }
+
+/// Columns of margin [`Support::columns`] adds on each side, for the ulp the
+/// forward map and the kernel's inverted one can differ by at the boundary.
+const BOUNDARY_MARGIN: i64 = 1;
 
 /// A glyph as this module composes it: the coverage kernel and the box
 /// outside which that kernel is exactly zero. They travel together because

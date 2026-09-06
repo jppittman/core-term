@@ -502,7 +502,11 @@ impl BoundManifold {
     /// Panics if the region's width is zero, `stride` is less than it, or
     /// `out` cannot hold the band.
     pub fn collapse_rows(&self, region: PlaneRegion, out: &mut [f32], stride: usize) {
-        let band = self.plan("collapse_rows", region, stride, out.len());
+        let band = self.plan(
+            "collapse_rows",
+            region,
+            Destination::absorbing(stride, out.len()),
+        );
         // SAFETY: see `collapse`. `out` is an `f32` plane, which is what the
         // collapse ABI writes, and `plan` proved it holds the band.
         unsafe { self.collapse(region, out.as_mut_ptr(), band) }
@@ -518,7 +522,11 @@ impl BoundManifold {
     /// Panics if the region's width is zero, `stride` is less than it, or
     /// `out` cannot hold the band.
     pub fn collapse_int_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
-        let band = self.plan("collapse_int_rows", region, stride, out.len());
+        let band = self.plan(
+            "collapse_int_rows",
+            region,
+            Destination::absorbing(stride, out.len()),
+        );
         // SAFETY: see `collapse`. `u32` and `f32` share size and alignment,
         // and the store moves the root's bit pattern without interpreting it.
         unsafe { self.collapse(region, out.as_mut_ptr().cast::<f32>(), band) }
@@ -534,42 +542,26 @@ impl BoundManifold {
     /// frame those columns are padding nobody reads. For a summand of a
     /// [`Union`](crate::Union) they are the *neighbour's* columns, filled by a
     /// different program, so an overhang there is not scratch — it is wrong
-    /// samples. When the row has spare columns this stages the band in a plane
-    /// padded to whole batches (one collapse call, as before) and copies each
-    /// row's own samples out; `scratch` is the caller's, so a scene of many
-    /// summands allocates once rather than once per summand.
+    /// samples. That is the whole of the difference: same plan, same loop,
+    /// same one-batch scratch for a row's tail, with [`RowTail::Exact`] where
+    /// a frame passes [`RowTail::Absorbs`]. No staging plane, and so nothing
+    /// to allocate.
     ///
     /// # Panics
     ///
     /// Panics if the region's width is zero, `stride` is less than it, or
     /// `out` cannot hold the sub-rectangle.
-    pub(crate) fn collapse_subrect(
-        &self,
-        region: PlaneRegion,
-        out: &mut [f32],
-        stride: usize,
-        scratch: &mut Vec<f32>,
-    ) {
-        let (width, rows) = (region.width, region.rows);
-        assert!(width > 0, "collapse_subrect: zero width");
-        assert!(
-            stride >= width,
-            "collapse_subrect: stride {stride} is narrower than the {width} samples a row holds"
+    pub(crate) fn collapse_subrect(&self, region: PlaneRegion, out: &mut [f32], stride: usize) {
+        let band = self.plan(
+            "collapse_subrect",
+            region,
+            Destination::exact(stride, out.len()),
         );
-        if stride == width {
-            // No spare columns to overhang into: the packed path already
-            // stores only what the row owns.
-            self.collapse_rows(region, out, stride);
-            return;
-        }
-        let padded = width.div_ceil(BATCH_LANES) * BATCH_LANES;
-        scratch.clear();
-        scratch.resize(rows * padded, 0.0);
-        self.collapse_rows(region, scratch, padded);
-        for row in 0..rows {
-            out[row * stride..row * stride + width]
-                .copy_from_slice(&scratch[row * padded..row * padded + width]);
-        }
+        // SAFETY: see `collapse`. `out` is an `f32` plane, which is what the
+        // collapse ABI writes, and `plan` proved it holds the sub-rectangle —
+        // which under `RowTail::Exact` reaches no further than `width` in any
+        // row.
+        unsafe { self.collapse(region, out.as_mut_ptr(), band) }
     }
 
     /// How a band lands in a destination of a given stride, and the guard that
@@ -579,7 +571,12 @@ impl BoundManifold {
     ///
     /// Panics if the region's width is zero, `stride` is less than it, the
     /// region leaves the compiled extents, or `out_len` cannot hold the band.
-    fn plan(&self, what: &str, region: PlaneRegion, stride: usize, out_len: usize) -> BandPlan {
+    fn plan(&self, what: &str, region: PlaneRegion, dest: Destination) -> BandPlan {
+        let Destination {
+            stride,
+            len: out_len,
+            tail,
+        } = dest;
         let (width, rows) = (region.width, region.rows);
         assert!(width > 0, "{what}: zero width");
         assert!(
@@ -602,7 +599,7 @@ impl BoundManifold {
             "{what}: a band of {width}×{rows} lies outside the {fw}×{fh} \
              lattice this manifold was compiled for"
         );
-        let plan = BandPlan::new(width, rows, stride);
+        let plan = BandPlan::new(width, rows, stride, tail);
         // Checked: the span wraps in release for a caller-supplied region
         // large enough, and a wrapped product would let an undersized `out`
         // pass this guard while the collapse call below still received the
@@ -705,6 +702,58 @@ impl BoundManifold {
 /// batch needs somewhere to land that is not the next row.
 const BATCH_LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
+/// The plane a band lands in: how far apart its rows are, how much of it
+/// there is, and whether the columns past the band are the caller's.
+///
+/// One value because the three are one question — *where does this go* — and
+/// answering it in three parameters is how a signature stops refusing the
+/// wrong combination.
+#[derive(Clone, Copy, Debug)]
+struct Destination {
+    /// Elements between the starts of two rows.
+    stride: usize,
+    /// Elements the destination holds.
+    len: usize,
+    /// Whose the columns past the band's width are.
+    tail: RowTail,
+}
+
+impl Destination {
+    /// A plane the caller owns: a final partial batch may overhang.
+    fn absorbing(stride: usize, len: usize) -> Self {
+        Self {
+            stride,
+            len,
+            tail: RowTail::Absorbs,
+        }
+    }
+
+    /// A sub-rectangle of somebody else's plane: exactly `width` per row.
+    fn exact(stride: usize, len: usize) -> Self {
+        Self {
+            stride,
+            len,
+            tail: RowTail::Exact,
+        }
+    }
+}
+
+/// Who owns a destination row's columns past `width`.
+///
+/// The only thing separating a frame's collapse from a summand's, and so the
+/// only reason there are two entry points at all.
+#[derive(Clone, Copy, Debug)]
+enum RowTail {
+    /// A plane the caller owns outright: the columns past `width` are padding
+    /// nobody reads back, so a final partial batch may overhang into them and
+    /// a whole band is one call.
+    Absorbs,
+    /// A sub-rectangle of somebody else's plane: exactly `width` samples per
+    /// row are written, and a final partial batch goes through the one-batch
+    /// scratch rather than into a neighbour's columns.
+    Exact,
+}
+
 /// How one band of rows is written into a destination plane: whole SIMD
 /// batches stored straight through the collapse loop, and whatever partial
 /// batch the stride left no room for.
@@ -721,16 +770,16 @@ struct BandPlan {
 
 impl BandPlan {
     /// A final partial batch overhangs `width`, which is harmless exactly when
-    /// the destination row is wide enough to absorb it — the padding lanes hold
-    /// whatever the kernel computed past the right edge and are not read back.
-    /// Otherwise it is left to the scratch batch, and the loop stores only the
-    /// batches that fit.
-    fn new(width: usize, rows: usize, stride: usize) -> Self {
+    /// the destination row both is wide enough to absorb it and is the
+    /// caller's to clobber — the padding lanes then hold whatever the kernel
+    /// computed past the right edge and are not read back. Otherwise it is
+    /// left to the scratch batch, and the loop stores only the batches that
+    /// fit.
+    fn new(width: usize, rows: usize, stride: usize, tail: RowTail) -> Self {
         let batches = width.div_ceil(BATCH_LANES);
-        let groups = if stride >= batches * BATCH_LANES {
-            batches
-        } else {
-            width / BATCH_LANES
+        let groups = match tail {
+            RowTail::Absorbs if stride >= batches * BATCH_LANES => batches,
+            _ => width / BATCH_LANES,
         };
         Self {
             width,
