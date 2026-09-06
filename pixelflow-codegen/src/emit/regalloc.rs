@@ -12,7 +12,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::guards::{SelectGuard, analyze_select_guards};
+use super::guards::{Exclusivity, SelectGuard, analyze_select_guards};
 use super::{Reg, ScheduledOp, operand_sources, reloads_wanted};
 
 /// A value in the program (SSA-style).
@@ -692,6 +692,9 @@ pub struct NestAllocation {
     regions: Vec<ScopeCode>,
     /// The innermost body.
     body: ScopeCode,
+    /// Which values each `Select`'s arms own, over the whole nest — what the
+    /// guards were placed against, so the emitter reads the same answer.
+    exclusivity: Exclusivity,
 }
 
 impl NestAllocation {
@@ -808,6 +811,12 @@ impl<'a> Allocation<'a> {
     #[must_use]
     pub fn roots(&self) -> &'a [ValueId] {
         &self.code().roots
+    }
+
+    /// Which values each `Select`'s arms own, over the whole nest.
+    #[must_use]
+    pub(crate) fn exclusivity(&self) -> &'a Exclusivity {
+        &self.nest.exclusivity
     }
 
     /// The scratch the instruction at schedule position `i` may destroy.
@@ -958,10 +967,12 @@ pub trait RegisterAllocator {
     /// none of them owned it. A trait should say what an allocator answers,
     /// not how.
     fn allocate(&self, dag: Vec<Def>, file: &RegisterFile) -> NestAllocation {
+        let exclusivity = Exclusivity::of(&dag);
         self.allocate_nest(
             ScopedSchedule {
                 regions: Vec::new(),
                 body: dag,
+                exclusivity,
             },
             file,
         )
@@ -987,6 +998,12 @@ pub struct ScopedSchedule {
     pub regions: Vec<ScopeRegion>,
     /// The innermost region: evaluated at every sample.
     pub body: Vec<Def>,
+    /// Which values each `Select`'s arms own, computed over the schedule
+    /// *before* it was split into these scopes. A scope's guard analysis
+    /// reads it rather than rediscovering a smaller version: the select an
+    /// arm belongs to may be scheduled in a scope further in than the arm's
+    /// hoisted half.
+    pub(crate) exclusivity: Exclusivity,
 }
 
 /// One scope of a [`ScopedSchedule`].
@@ -1060,10 +1077,15 @@ impl RegisterAllocator for LinearScan {
             }
         }
 
-        for (index, region) in nest.regions.into_iter().enumerate() {
+        let ScopedSchedule {
+            regions: nest_regions,
+            body: nest_body,
+            exclusivity,
+        } = nest;
+        for (index, region) in nest_regions.into_iter().enumerate() {
             let scope = Scope::Region(index);
             let scoped = file.inside(carried);
-            let scan = self.scan(region.schedule, &scoped, &parked);
+            let scan = self.scan(region.schedule, &scoped, &parked, &exclusivity);
 
             // Carry the roots the body reads most, while the body keeps a
             // pool it can still allocate in. Every carry costs one register
@@ -1145,7 +1167,7 @@ impl RegisterAllocator for LinearScan {
             });
         }
 
-        let body = self.scan(nest.body, &file.inside(carried), &parked);
+        let body = self.scan(nest_body, &file.inside(carried), &parked, &exclusivity);
         record(&mut placements, Scope::Body, &body, &parked);
 
         NestAllocation {
@@ -1156,6 +1178,7 @@ impl RegisterAllocator for LinearScan {
                 scratch: body.scratch,
                 roots: Vec::new(),
             },
+            exclusivity,
         }
     }
 }
@@ -1317,11 +1340,18 @@ struct Pass {
 }
 
 impl Pass {
+    /// `sites[i]` are the masks a short-circuit guard reads just before
+    /// instruction `i` ([`guard_sites`]). They are reads like any operand's,
+    /// and liveness has to say so: a mask whose select is in a scope further
+    /// in has no operand read of its own in this one after its definition,
+    /// and a pass that counted only operands would free its register before
+    /// the branch that tests it.
     fn new(
         dag: &[Def],
         file: &RegisterFile,
         vec_len: usize,
         live_in: &BTreeMap<ValueId, Where>,
+        sites: &[Vec<ValueId>],
     ) -> Self {
         let mut reads: Vec<Vec<usize>> = vec![Vec::new(); vec_len];
         let mut const_bits: Vec<Option<u32>> = vec![None; vec_len];
@@ -1331,8 +1361,9 @@ impl Pass {
             if let ScheduledOp::Const(val) = def.op {
                 const_bits[def.value.0 as usize] = Some(val.to_bits());
             }
-            for operand in operands(&def.op) {
-                let r = &mut reads[operand.0 as usize];
+            let read_here = sites.get(i).into_iter().flatten().copied();
+            for read in read_here.chain(operands(&def.op)) {
+                let r = &mut reads[read.0 as usize];
                 if r.last() != Some(&i) {
                     r.push(i);
                 }
@@ -1567,8 +1598,8 @@ fn guard_sites(guards: &[SelectGuard], len: usize) -> Vec<Vec<ValueId>> {
             guarded = true;
             at(start);
         }
-        if guarded {
-            at(guard.select_idx);
+        if guarded && let Some(select_idx) = guard.select_idx {
+            at(select_idx);
         }
     }
     sites
@@ -1580,7 +1611,13 @@ impl LinearScan {
     /// `live_in` is where each value an enclosing scope parked lives for the
     /// whole of this one — the answer this scan must read rather than choose,
     /// because that scope already chose it.
-    fn scan(&self, dag: Vec<Def>, file: &RegisterFile, live_in: &BTreeMap<ValueId, Where>) -> Scan {
+    fn scan(
+        &self,
+        dag: Vec<Def>,
+        file: &RegisterFile,
+        live_in: &BTreeMap<ValueId, Where>,
+        exclusivity: &Exclusivity,
+    ) -> Scan {
         let vec_len = dag
             .iter()
             .map(|def| def.value.0 as usize + 1)
@@ -1596,17 +1633,17 @@ impl LinearScan {
             };
         }
 
-        let mut pass = Pass::new(&dag, file, vec_len, live_in);
-
         // The arms a `Select` guard may skip. A register range that begins at a
         // read inside one, for a value defined outside it, must end there too:
         // after the arm a read has to name what it named before, because the
         // skipped path never ran the load. Eviction inside an arm needs no such
         // rule — the value's slot was written at its definition, which every
         // path reaching any of its readers ran.
-        let guards = analyze_select_guards(&dag);
+        let guards = analyze_select_guards(&dag, exclusivity);
         let arms = guarded_arms(&guards, dag.len());
         let sites = guard_sites(&guards, dag.len());
+
+        let mut pass = Pass::new(&dag, file, vec_len, live_in, &sites);
         let mut reverts: Vec<Vec<(ValueId, Where, usize)>> =
             (0..dag.len()).map(|_| Vec::new()).collect();
         // Pool slots a definition held for its own instruction and no longer:
@@ -2523,6 +2560,7 @@ mod tests {
                 schedule: outer,
             }],
             body,
+            exclusivity: Exclusivity::default(),
         };
         let alloc = LinearScan.allocate_nest(nest, &NEST_FILE);
 
@@ -2592,6 +2630,7 @@ mod tests {
                     schedule: outer,
                 }],
                 body,
+                exclusivity: Exclusivity::default(),
             },
             &NEST_FILE,
         );

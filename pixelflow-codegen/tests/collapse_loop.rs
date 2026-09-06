@@ -366,14 +366,15 @@ fn fully_invariant_kernel_degenerates_to_a_store_loop() {
 #[test]
 fn hoisted_guarded_select_still_fills_its_slot() {
     // select(y < 4, sqrt(y+9), y*2) * x + select(x < 4, x, y): the first
-    // select is X-invariant — it hoists, and the prologue must emit it
-    // UNGUARDED: a uniform-mask short-circuit in the prologue would skip an
-    // arm's defs (and on the root-hoisted path, the parking store itself),
-    // leaving the slot garbage for every loop iteration. The second select
-    // stays in the loop with its guards, proving guard machinery still works
-    // beside hoisting. Rows are chosen so the invariant select's mask is
-    // uniform-true, uniform-false, and (per-batch) mixed across the suite's
-    // three (x0, y) rows.
+    // select is X-invariant — it hoists whole, select included, and is parked
+    // for the loop. Its arms are too cheap to guard, so the prologue emits it
+    // straight; were they guarded, a skipped arm's parked roots would be
+    // written ahead of the branch and the select's own park would still run
+    // (see `hoisted_arm_guarded_in_the_row_prologue_matches_the_interpreter`).
+    // The second select stays in the loop with its guards, proving guard
+    // machinery still works beside hoisting. Rows are chosen so the invariant
+    // select's mask is uniform-true, uniform-false, and (per-batch) mixed
+    // across the suite's three (x0, y) rows.
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
@@ -487,4 +488,74 @@ fn spill_frame_coexists_with_coordinate_slots() {
         res.spill_count > 0,
         "pressure kernel did not spill (budget grew?) — the scenario proves nothing"
     );
+}
+
+/// A Y-only select whose true arm is an expensive Y-only chain, read by the
+/// X-dependent body: the chain hoists to the row prologue, and the guard the
+/// select would have given it hoists alongside.
+///
+/// Both arms read `base`, so it is shared and stays between the mask and the
+/// arm when the arm is clustered. That is the trap the fixture is built
+/// around: the mask's only operand read is the select, which is in the body,
+/// so in the row prologue nothing reads the mask after its definition except
+/// the guard's branch — and an allocator that counted operand reads alone
+/// would hand its register to `base` before the branch tested it.
+///
+/// Rows are chosen so the mask is uniformly true on some rows and uniformly
+/// false on others; the value after the select reads hoisted values from
+/// outside the arm.
+#[test]
+fn hoisted_arm_guarded_in_the_row_prologue_matches_the_interpreter() {
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let four = a.push_const(4.0);
+    let nine = a.push_const(9.0);
+    let one = a.push_const(1.0);
+
+    let ymask = a.push_binary(OpKind::Lt, y, four);
+    // Shared by both arms: computed between the mask and the arm.
+    let y9 = a.push_binary(OpKind::Add, y, nine);
+    let base = a.push_unary(OpKind::Sqrt, y9);
+    // Y-only, exclusive to the true arm, and well past the guard's bound.
+    let mut chain = a.push_binary(OpKind::Add, base, one);
+    for _ in 0..6 {
+        chain = a.push_unary(OpKind::Sqrt, chain);
+        chain = a.push_binary(OpKind::Add, chain, one);
+    }
+    // X-dependent readers of the hoisted chain, still inside the arm.
+    let cx = a.push_binary(OpKind::Mul, chain, x);
+    let arm = a.push_binary(OpKind::Add, cx, chain);
+    // The false arm, and a Y-only value shared with the world outside.
+    let b4 = a.push_binary(OpKind::Mul, base, four);
+    let sel = a.push_ternary(OpKind::Select, ymask, arm, b4);
+    let outside = a.push_binary(OpKind::Sub, x, b4);
+    let root = a.push_binary(OpKind::Add, sel, outside);
+
+    let compiled = compile(&a, root).expect("hoisted guarded arm compile");
+    assert!(compiled.hoisted_values >= 1, "nothing hoisted");
+
+    const GROUPS: usize = 2;
+    const ROWS: usize = 8;
+    let mut out = vec![0.0f32; ROWS * GROUPS * LANES];
+    let (x0, y0) = (0.5f32, 0.5f32);
+    run_collapse_grid(
+        &compiled,
+        &[],
+        TileSlice::new(out.as_mut_ptr(), GROUPS, ROWS, 0),
+        Point4::new(x0, y0, 0.0, 0.0),
+    );
+    for row in 0..ROWS {
+        for col in 0..GROUPS * LANES {
+            let got = out[row * GROUPS * LANES + col];
+            let vars = [x0 + col as f32, y0 + row as f32, 0.0, 0.0];
+            let want = eval_scalar(&a, root, &vars, &BindingTable::empty());
+            let point = DifferentialCheck::new(&a, root).at(&vars, &BindingTable::empty());
+            assert_eq!(
+                point.verdict(got),
+                PointVerdict::Accept,
+                "hoisted guarded arm at ({col},{row}): got {got}, want {want}"
+            );
+        }
+    }
 }

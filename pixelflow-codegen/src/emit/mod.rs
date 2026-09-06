@@ -62,7 +62,7 @@ pub mod x86_64;
 
 use pixelflow_ir::kind::OpKind;
 
-use guards::analyze_select_guards;
+use guards::{Exclusivity, analyze_select_guards};
 use traffic::{Counting, EmitTraffic, ScopeTraffic};
 
 use alloc::vec::Vec;
@@ -900,11 +900,11 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
     }
     backend.frame_ready(frame_size);
 
-    // Select short-circuit guards (disabled in the prologue — see HoistCtx).
-    let select_guards = if hoist.parks_values() {
-        Vec::new()
+    // Select short-circuit guards, where a branch can pay — see HoistCtx.
+    let select_guards = if hoist.guards_selects() {
+        analyze_select_guards(schedule, allocation.exclusivity())
     } else {
-        analyze_select_guards(schedule)
+        Vec::new()
     };
     let sched_len = schedule.len();
 
@@ -1022,6 +1022,29 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
 
     let mut pending_patches: BTreeMap<(usize, u8), B::Branch> = BTreeMap::new();
 
+    // Where a root this scope parks is handed to the scopes inside: its hoist
+    // slot, unless it holds one register at every point of every scope
+    // within, and the register carrying it, if one does. Read off the
+    // placement, not off a flag beside it. Consulted twice — at the root's
+    // definition, and ahead of any guard that could skip that definition.
+    let park_of = |vid: regalloc::ValueId| -> Option<Park> {
+        let offset = *hoist.parked()?.get(&vid)?;
+        let inside = allocation.inner_head();
+        let head = allocation.placement(vid).at(inside);
+        let resident_throughout = matches!(head, regalloc::Where::Reg(_))
+            && allocation
+                .placement(vid)
+                .spans()
+                .all(|s| s.from <= inside || s.at == head);
+        Some(Park {
+            slot: (!resident_throughout).then_some(offset),
+            carry: match head {
+                regalloc::Where::Reg(r) => Some(r),
+                regalloc::Where::Spilled | regalloc::Where::Remat(_) => None,
+            },
+        })
+    };
+
     for (sched_idx, def) in schedule.iter().enumerate() {
         let (vid, sched_op) = (&def.value, &def.op);
 
@@ -1074,6 +1097,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         let guard_temp = scratch.guard_temp;
 
         // Guard branches that begin before this instruction.
+        let mut filled: alloc::vec::Vec<regalloc::ValueId> = alloc::vec::Vec::new();
         for pb in &branch_starts[sched_idx] {
             let (guard_idx, arm) = (pb.guard_idx, pb.arm);
             let guard = &select_guards[guard_idx];
@@ -1081,6 +1105,33 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
                 Loc::Reg(r) => r,
                 _ => backend.emit_resolve(&mut code, guard.mask_vid, guard_mask(), &locs),
             };
+            // A root this arm parks must be defined on the path that skips
+            // it: the scopes inside read the park on every row, and a park
+            // nothing wrote is stack residue — a denormal away from an
+            // assist, and not a function of the inputs. So each such park is
+            // written here, on both paths, with the one value the branch
+            // already holds: the mask. Nothing that reads it survives the
+            // blend (that is what exclusive means), and on the path that
+            // runs, the arm's own definition overwrites it.
+            let (start, end) = match arm {
+                0 => guard.true_range,
+                _ => guard.false_range,
+            };
+            for parked in schedule[start..end].iter().map(|d| d.value) {
+                if filled.contains(&parked) {
+                    continue;
+                }
+                let Some(park) = park_of(parked) else {
+                    continue;
+                };
+                filled.push(parked);
+                if let Some(offset) = park.slot {
+                    backend.emit_store(&mut code, mask_reg, offset)?;
+                }
+                if let Some(carry) = park.carry {
+                    backend.emit_mov(&mut code, carry, mask_reg);
+                }
+            }
             let branch = match arm {
                 0 => backend.emit_skip_if_all_false(&mut code, mask_reg, guard_temp),
                 _ => backend.emit_skip_if_all_true(&mut code, mask_reg, guard_temp),
@@ -1100,23 +1151,27 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         let plan = resolve_operands(sched_op, dst_loc, &locs, scratch)?;
 
         // Select with a guard region: emit a uniform-mask short-circuit wrapper.
-        if let ScheduledOp::Ternary(OpKind::Select, mask_vid, true_vid, false_vid) = sched_op
-            && let Some(guard) = select_guards.iter().find(|g| g.select_idx == sched_idx)
-        {
-            let has_true = guard.true_range.0 != guard.true_range.1;
-            let has_false = guard.false_range.0 != guard.false_range.1;
-            if has_true || has_false {
-                let mask_reg = match location_of(&locs, *mask_vid) {
+        let wrapped = match sched_op {
+            ScheduledOp::Ternary(OpKind::Select, mask_vid, true_vid, false_vid) => select_guards
+                .iter()
+                .find(|g| g.select_idx == Some(sched_idx))
+                .filter(|g| g.true_range.0 != g.true_range.1 || g.false_range.0 != g.false_range.1)
+                .map(|_| (*mask_vid, *true_vid, *false_vid)),
+            _ => None,
+        };
+        match wrapped {
+            Some((mask_vid, true_vid, false_vid)) => {
+                let mask_reg = match location_of(&locs, mask_vid) {
                     Loc::Reg(r) => r,
-                    _ => backend.emit_resolve(&mut code, *mask_vid, guard_mask(), &locs),
+                    _ => backend.emit_resolve(&mut code, mask_vid, guard_mask(), &locs),
                 };
                 let dst = dst_loc.reg();
                 let in_reg = |v: regalloc::ValueId| match location_of(&locs, v) {
                     Loc::Reg(r) => Some(r),
                     _ => None,
                 };
-                let true_reg = in_reg(*true_vid);
-                let false_reg = in_reg(*false_vid);
+                let true_reg = in_reg(true_vid);
+                let false_reg = in_reg(false_vid);
 
                 // Both guards read `mask_reg`, which is why the reduction
                 // scratch is a reservation of its own rather than whichever
@@ -1133,7 +1188,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
                 if let Some(freg) = false_reg {
                     backend.emit_mov(&mut code, dst, freg);
                 } else {
-                    backend.emit_resolve(&mut code, *false_vid, dst, &locs);
+                    backend.emit_resolve(&mut code, false_vid, dst, &locs);
                 }
                 let skip_end2 = backend.emit_jump(&mut code);
 
@@ -1142,7 +1197,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
                 if let Some(treg) = true_reg {
                     backend.emit_mov(&mut code, dst, treg);
                 } else {
-                    backend.emit_resolve(&mut code, *true_vid, dst, &locs);
+                    backend.emit_resolve(&mut code, true_vid, dst, &locs);
                 }
 
                 let end_target = code.len();
@@ -1150,54 +1205,50 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
                 backend.patch_branch(&mut code, all_true, all_true_target);
                 backend.patch_branch(&mut code, skip_end, end_target);
                 backend.patch_branch(&mut code, skip_end2, end_target);
-
-                if let Some(offset) = store_after_def[sched_idx] {
-                    backend.emit_store(&mut code, dst, offset)?;
-                }
-                continue;
             }
+            None => backend.emit_plan(&mut code, &plan)?,
         }
-
-        backend.emit_plan(&mut code, &plan)?;
 
         if let Some(offset) = store_after_def[sched_idx] {
             backend.emit_store(&mut code, dst_loc.reg(), offset)?;
         }
 
         // Prologue mode: hand each hoist root over to the scopes inside, right
-        // after its def, while the value is guaranteed live. (Guards are
-        // disabled in this mode, so every def reaches this point — the
-        // guarded-Select early-continue above cannot fire.)
-        if let Some(hoisted) = hoist.parked()
-            && let Some(&offset) = hoisted.get(vid)
-        {
+        // after its def, while the value is guaranteed live. A guard never
+        // skips this point for a root it did not skip the definition of — and
+        // the roots whose definitions it does skip were parked ahead of its
+        // branch (see the guard starts above).
+        if let Some(park) = park_of(*vid) {
             // Resident by construction: a hoist root is a computed value, not
             // a leaf (`plan_collapse_hoist` refuses to hoist one), so its own
             // definition — the instruction just emitted — wrote it into a
             // register. There is nothing to resolve.
             let r = dst_loc.reg();
-            // The slot is written unless nothing inside will ever read it —
-            // which is exactly the case where the value holds one register at
-            // every point of every scope within. Read off the placement, not
-            // off a flag beside it.
-            let inside = allocation.inner_head();
-            let head = allocation.placement(*vid).at(inside);
-            let resident_throughout = matches!(head, regalloc::Where::Reg(_))
-                && allocation
-                    .placement(*vid)
-                    .spans()
-                    .all(|s| s.from <= inside || s.at == head);
-            if !resident_throughout {
+            if let Some(offset) = park.slot {
                 backend.emit_store(&mut code, r, offset)?;
             }
-            if let regalloc::Where::Reg(head_reg) = head
-                && head_reg != r
+            if let Some(carry) = park.carry
+                && carry != r
             {
-                backend.emit_mov(&mut code, head_reg, r);
+                backend.emit_mov(&mut code, carry, r);
             }
         }
     }
 
+    // An arm that runs to the scope's end — possible only where the select
+    // that owns it is in a scope further in, so nothing of this scope's
+    // follows it — joins here, after the last instruction.
+    let at_end = code.len();
+    for (gi, guard) in select_guards.iter().enumerate() {
+        for (arm, range) in [(0u8, guard.true_range), (1u8, guard.false_range)] {
+            if range.0 != range.1
+                && range.1 == sched_len
+                && let Some(branch) = pending_patches.remove(&(gi, arm))
+            {
+                backend.patch_branch(&mut code, branch, at_end);
+            }
+        }
+    }
     assert!(
         pending_patches.is_empty(),
         "BUG: {} Select short-circuit branches were never patched",
@@ -1615,6 +1666,11 @@ fn partition_by_scope(
     variance: &[pixelflow_ir::variance::Variance],
     binders: &[u8],
 ) -> regalloc::ScopedSchedule {
+    // Who reads what is a fact about the whole DAG, and this is the last
+    // moment the whole DAG is one schedule: every scope's guard analysis
+    // inherits this rather than rediscovering it on its own slice, where an
+    // arm's select may no longer be.
+    let exclusivity = Exclusivity::of(&schedule);
     let mut remaining = schedule;
     let mut regions = Vec::with_capacity(binders.len());
     // Outermost first: the scope outside binder `j` cannot depend on `j` or
@@ -1638,6 +1694,7 @@ fn partition_by_scope(
     regalloc::ScopedSchedule {
         regions,
         body: remaining,
+        exclusivity,
     }
 }
 
@@ -1646,16 +1703,20 @@ enum HoistCtx<'a> {
     /// No hoisting (per-batch kernels, and collapse kernels with nothing to
     /// hoist).
     None,
-    /// Emitting the once-per-call prologue: after each mapped value's def,
-    /// store it to its hoist slot. Select short-circuit guards are disabled —
-    /// a guard could skip a hoist root's def on a uniform mask, leaving its
-    /// slot garbage for the loop to read (and the prologue runs once, so the
-    /// guard buys nothing).
+    /// Emitting a prologue: after each mapped value's def, store it to its
+    /// hoist slot. Whether its selects are guarded is [`Trips`]' call: a
+    /// branch in a prologue that runs once per call buys nothing, while one
+    /// that runs once per row of the loop inside it is a branch in a loop.
+    /// A guard that skips a parked root's definition parks the mask in its
+    /// place ahead of the branch, so the scopes inside never read a park
+    /// nothing wrote (see `emit_dag_body_hoisted`).
     Prologue {
         /// Values parked by an enclosing loop and reloaded as leaves here.
         preloaded: Option<&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>>,
         /// Values this prologue computes and parks for its inner loop.
         parked: &'a alloc::collections::BTreeMap<regalloc::ValueId, u32>,
+        /// How often this prologue runs.
+        trips: Trips,
     },
     /// Emitting the loop body: mapped values are never emitted; their
     /// locations are overridden — to a carried register where the allocator
@@ -1664,6 +1725,26 @@ enum HoistCtx<'a> {
     Body {
         slots: &'a alloc::collections::BTreeMap<regalloc::ValueId, u32>,
     },
+}
+
+/// How often a prologue's code runs per call of the kernel — which decides
+/// whether a select short-circuit branch in it can pay for itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Trips {
+    /// Once per call: the frame prologue.
+    Once,
+    /// Once per iteration of the loop outside it: the row prologue, whose
+    /// Y-only work runs again for every row.
+    PerIteration,
+}
+
+/// Where a root this scope parks is handed to the scopes inside.
+#[derive(Clone, Copy, Debug)]
+struct Park {
+    /// The hoist slot, when anything inside reads it from memory.
+    slot: Option<u32>,
+    /// The register carrying it across the loops inside, if one does.
+    carry: Option<Reg>,
 }
 
 impl<'a> HoistCtx<'a> {
@@ -1682,8 +1763,13 @@ impl<'a> HoistCtx<'a> {
         }
     }
 
-    fn parks_values(&self) -> bool {
-        matches!(self, Self::Prologue { .. })
+    /// Whether select short-circuit guards are emitted in this scope: wherever
+    /// the scope's code runs more than once per call.
+    fn guards_selects(&self) -> bool {
+        match self {
+            Self::None | Self::Body { .. } => true,
+            Self::Prologue { trips, .. } => *trips == Trips::PerIteration,
+        }
     }
 }
 
@@ -2043,11 +2129,18 @@ fn compile_via_backend<B: IsaBackend>(
     // returns are the per-call and per-row prologues the scaffold frames.
     const COLLAPSE_BINDERS: [u8; 2] = [0, 1];
     let mut scoped = partition_by_scope(schedule, &variance, &COLLAPSE_BINDERS);
-    // The body is the only scope whose selects are guarded (the prologues run
-    // once, so a branch buys nothing there), and it is the schedule the guard
-    // analysis will read — so this is where an arm's entries are worth
-    // gathering into one run. A no-op unless it buys a branch.
-    scoped.body = guards::cluster_select_arms(scoped.body);
+    // Selects are guarded in every scope that runs more than once per call:
+    // the body, and the row prologue, whose hoisted Y-only work runs again
+    // for every row — an arm's root-finding that the hoist moved out from
+    // under its `in_y` select is still that select's to skip. The frame
+    // prologue runs once, so a branch buys nothing there and its order is
+    // left alone. Clustering gathers each arm's entries into one run where
+    // that is what stands between the arm and a branch; a no-op otherwise.
+    for region in scoped.regions.iter_mut().skip(1) {
+        region.schedule =
+            guards::cluster_select_arms(core::mem::take(&mut region.schedule), &scoped.exclusivity);
+    }
+    scoped.body = guards::cluster_select_arms(scoped.body, &scoped.exclusivity);
 
     // One allocation pass over the whole nest. Each region's frame is a
     // function of its own allocation, so the shared frame below is read off
@@ -2150,6 +2243,7 @@ fn compile_via_backend<B: IsaBackend>(
             HoistCtx::Prologue {
                 preloaded: None,
                 parked: &frame_map,
+                trips: Trips::Once,
             },
             Some(m),
         )?;
@@ -2169,6 +2263,7 @@ fn compile_via_backend<B: IsaBackend>(
                     Some(&frame_map)
                 },
                 parked: &row_map,
+                trips: Trips::PerIteration,
             },
             Some(m),
         )?;
@@ -3180,7 +3275,7 @@ mod tests {
         /// the silent-decay shape this file has been bitten by before.
         fn assert_guard_forms(a: &ExprArena, root: ExprId) {
             let schedule = arena_to_schedule(a, root);
-            let guards = analyze_select_guards(&schedule);
+            let guards = analyze_select_guards(&schedule, &Exclusivity::of(&schedule));
             let guarded = guards
                 .iter()
                 .any(|g| g.true_range.0 != g.true_range.1 || g.false_range.0 != g.false_range.1);
@@ -3272,12 +3367,13 @@ mod tests {
         /// position, for a schedule built the way `compile` builds it.
         fn guarded_entries(a: &ExprArena, root: ExprId, cluster: bool) -> alloc::vec::Vec<usize> {
             let schedule = arena_to_schedule(a, root);
+            let exclusivity = Exclusivity::of(&schedule);
             let schedule = if cluster {
-                guards::cluster_select_arms(schedule)
+                guards::cluster_select_arms(schedule, &exclusivity)
             } else {
                 schedule
             };
-            analyze_select_guards(&schedule)
+            analyze_select_guards(&schedule, &exclusivity)
                 .iter()
                 .map(|g| (g.true_range.1 - g.true_range.0) + (g.false_range.1 - g.false_range.0))
                 .collect()
@@ -3305,6 +3401,65 @@ mod tests {
             assert!(
                 after.iter().all(|&entries| entries > 0),
                 "a guard with an empty range is not a guard: {after:?}"
+            );
+        }
+
+        /// The Y-only half of an arm keeps its guard when the collapse
+        /// partition hoists it out of the select's scope: the row prologue
+        /// guards it with the select's own mask, while the select itself
+        /// stays in the body. Same shape as the collapse-loop integration
+        /// test that checks the values; this one checks the analysis, so a
+        /// guard that silently stops forming fails here rather than merely
+        /// running slower.
+        #[test]
+        fn a_hoisted_arm_is_guarded_in_the_row_prologue() {
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let four = a.push_const(4.0);
+            let nine = a.push_const(9.0);
+            let one = a.push_const(1.0);
+            let ymask = a.push_binary(OpKind::Lt, y, four);
+            // Shared by both arms, between the mask and the arm.
+            let y9 = a.push_binary(OpKind::Add, y, nine);
+            let base = a.push_unary(OpKind::Sqrt, y9);
+            // Y-only, exclusive to the true arm, past the guard's bound.
+            let mut chain = a.push_binary(OpKind::Add, base, one);
+            for _ in 0..6 {
+                chain = a.push_unary(OpKind::Sqrt, chain);
+                chain = a.push_binary(OpKind::Add, chain, one);
+            }
+            let cx = a.push_binary(OpKind::Mul, chain, x);
+            let arm = a.push_binary(OpKind::Add, cx, chain);
+            let b4 = a.push_binary(OpKind::Mul, base, four);
+            let sel = a.push_ternary(OpKind::Select, ymask, arm, b4);
+            let outside = a.push_binary(OpKind::Sub, x, b4);
+            let root = a.push_binary(OpKind::Add, sel, outside);
+
+            let schedule = arena_to_schedule(&a, root);
+            let variance = schedule_variance(&schedule);
+            let mut scoped = partition_by_scope(schedule, &variance, &[0u8, 1]);
+            let row = core::mem::take(&mut scoped.regions[1].schedule);
+            let row = guards::cluster_select_arms(row, &scoped.exclusivity);
+            let guards = analyze_select_guards(&row, &scoped.exclusivity);
+            let guard = guards
+                .iter()
+                .find(|g| g.true_range.0 != g.true_range.1)
+                .expect("the hoisted arm is guarded in the row prologue");
+            assert_eq!(
+                guard.select_idx, None,
+                "the select stays in the body; the row prologue guards its arm without it"
+            );
+            let under_guard = guard.true_range.1 - guard.true_range.0;
+            assert!(
+                under_guard >= 12,
+                "the whole chain is the arm, got {under_guard} entries under the guard"
+            );
+            assert!(
+                row[guard.true_range.0..guard.true_range.1]
+                    .iter()
+                    .all(|def| !matches!(def.op, ScheduledOp::Ternary(OpKind::Select, ..))),
+                "no select lands inside the guarded range"
             );
         }
 
@@ -3432,7 +3587,8 @@ mod tests {
                 use regalloc::RegisterAllocator;
                 regalloc::LinearScan.allocate(arena_to_schedule(&a, root), &file)
             };
-            let mask_vid = analyze_select_guards(allocation.body().schedule())
+            let body = allocation.body();
+            let mask_vid = analyze_select_guards(body.schedule(), body.exclusivity())
                 .first()
                 .expect("a guard formed above")
                 .mask_vid;
@@ -3525,10 +3681,13 @@ mod tests {
                 .register_file();
             let schedule = arena_to_schedule(&a, root);
             let allocation = regalloc::LinearScan.allocate(schedule, &file);
-            let guard = analyze_select_guards(allocation.body().schedule())
-                .into_iter()
-                .find(|g| g.true_range.0 != g.true_range.1)
-                .expect("the true arm is exclusive and contiguous, so it is guarded");
+            let guard = analyze_select_guards(
+                allocation.body().schedule(),
+                allocation.body().exclusivity(),
+            )
+            .into_iter()
+            .find(|g| g.true_range.0 != g.true_range.1)
+            .expect("the true arm is exclusive and contiguous, so it is guarded");
 
             // Which `ValueId` the arena's `split` became. `X·Y` is the only
             // product of two `Var`s in this kernel.
