@@ -112,8 +112,9 @@ impl CompiledKernel {
     ///
     /// - `tile.out` must point to writable memory with space for `tile.rows` stripes of
     ///   `tile.groups * LANES` floats plus `tile.row_skip_bytes` padding between rows.
-    /// - `ctx` must hold valid base pointers for every buffer declared by the arena
-    ///   (pass null/empty if the kernel has no buffers).
+    /// - `ctx` must hold valid base pointers for every buffer declared by the arena,
+    ///   in slot order, followed by the uniform block's base pointer when the
+    ///   arena declares a uniform (pass null/empty if the kernel has neither).
     /// - `size_of::<V>() == JIT_VECTOR_BYTES`.
     #[inline(always)]
     pub unsafe fn call_collapse<V: Copy>(

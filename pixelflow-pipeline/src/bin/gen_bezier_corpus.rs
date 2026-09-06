@@ -428,6 +428,7 @@ impl ExactKey {
                         ExprNode::Const(v) => (1u8, v.to_bits()),
                         ExprNode::Param(i) => (2u8, u32::from(*i)),
                         ExprNode::Buffer(b) => (3u8, u32::from(b.0)),
+                        ExprNode::Uniform(u) => (5u8, u32::from(u.0)),
                         _ => (4u8, arena.kind(id) as u32),
                     };
                     let key_id = nodes.len() as u32;
@@ -460,7 +461,11 @@ const ALLOWED_NON_LEAF_OPS: [OpKind; 5] = [
 fn assert_polynomial_only(name: &str, arena: &ExprArena) {
     for node in arena.nodes_raw() {
         let op = match node {
-            ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => {
+            ExprNode::Var(_)
+            | ExprNode::Const(_)
+            | ExprNode::Param(_)
+            | ExprNode::Buffer(_)
+            | ExprNode::Uniform(_) => {
                 continue;
             }
             ExprNode::Unary(op, _)
@@ -606,7 +611,8 @@ fn main() {
                 ExprNode::Var(_)
                 | ExprNode::Const(_)
                 | ExprNode::Param(_)
-                | ExprNode::Buffer(_) => {
+                | ExprNode::Buffer(_)
+                | ExprNode::Uniform(_) => {
                     continue;
                 }
                 ExprNode::Unary(op, _)

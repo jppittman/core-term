@@ -1865,7 +1865,7 @@ pub fn no_temps(_op: &ScheduledOp) -> u8 {
 /// The values an operation reads, in operand order.
 pub(crate) fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
     let (a, b, c) = match sop {
-        ScheduledOp::Var(_) | ScheduledOp::Const(_) => (None, None, None),
+        ScheduledOp::Var(_) | ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => (None, None, None),
         ScheduledOp::Unary(_, a) | ScheduledOp::ShiftImm(_, a, _) | ScheduledOp::Gather(a, _) => {
             (Some(*a), None, None)
         }

@@ -34,6 +34,8 @@ enum Pp {
 enum Map {
     /// `0F`
     M0F = 1,
+    /// `0F38`
+    M0F38 = 2,
     /// `0F3A`
     M0F3A = 3,
 }
@@ -88,11 +90,24 @@ impl Vex {
     const fn m0f3a_66(opcode: u8) -> Self {
         Self::new(Map::M0F3A, Pp::P66, opcode)
     }
+    /// Map `0F38`, `66` — the broadcast family.
+    const fn m0f38_66(opcode: u8) -> Self {
+        Self::new(Map::M0F38, Pp::P66, opcode)
+    }
 
     /// Attach an imm8 (rounding mode, shift count, lane index); the returned
     /// value emits it after the instruction.
     const fn imm(self, imm: u8) -> VexImm {
         VexImm { vex: self, imm }
+    }
+
+    /// `op reg, [addr]` — the memory-operand form, for any base and any
+    /// displacement mode. The prefix is VEX's (L=0); the ModRM/SIB/
+    /// displacement tail is the architecture's, so it comes from
+    /// [`mem_operand`]. VEX.B extends the *base* here, not an r/m register.
+    fn rm<D: Disp>(self, code: &mut Vec<u8>, reg: Reg, addr: Mem<D>) {
+        self.head(code, reg.0, UNUSED_VVVV, addr.base.0);
+        mem_operand(code, reg.0, addr);
     }
 
     /// Register-register-register form: `op reg, vvvv, rm`.
@@ -479,6 +494,33 @@ pub struct GatherScratch {
     pub idx_lanes: Reg,
     /// Vector register for one loaded element.
     pub value: Reg,
+}
+
+/// Bytes per pointer in the context array.
+const PTR_BYTES: i32 = 8;
+/// Bytes per value in the uniform block.
+const UNIFORM_BYTES: i32 = 4;
+
+/// `dst = splat(block[offset])` — one uniform, broadcast to every lane:
+/// `mov rax, [rdi + ctx_slot*8]` to fetch the block's base out of the
+/// context, then `vbroadcastss xmm<dst>, [rax + 4*offset]`
+/// (VEX.128.66.0F38.W0 18 /r). `rax` is the scratch the gather already
+/// claims; `rdi` is the context, read-only for the whole kernel.
+pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad) {
+    emit_load_ptr_from_ctx(
+        code,
+        gpr::RAX.0,
+        gpr::RDI.0,
+        i32::from(load.ctx_slot) * PTR_BYTES,
+    );
+    Vex::m0f38_66(0x18).rm(
+        code,
+        dst,
+        Mem {
+            base: gpr::RAX,
+            disp: Imm32(i32::from(load.offset) * UNIFORM_BYTES),
+        },
+    );
 }
 
 /// `dst = base[idx_lane]` for each lane — the whole gather sequence.
@@ -1064,6 +1106,9 @@ pub(crate) mod driver {
                         },
                     );
                 }
+                ResolvedOp::Uniform { dst, load } => {
+                    super::emit_uniform_load(code, *dst, *load);
+                }
                 ResolvedOp::Binary {
                     op,
                     dst,
@@ -1360,6 +1405,10 @@ pub mod gpr {
     pub const RDX: Gpr = Gpr(2);
     /// 2nd integer argument: the output pointer, advanced per batch.
     pub const RSI: Gpr = Gpr(6);
+    /// 1st integer argument: the context pointer — the array of bound buffer
+    /// bases and the uniform block a gather or a uniform load reads its
+    /// slot from. Read-only for the whole kernel.
+    pub const RDI: Gpr = Gpr(7);
     /// The stack pointer.
     pub const RSP: Gpr = Gpr(4);
     /// 5th integer argument: row-skip in bytes.
