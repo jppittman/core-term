@@ -6,6 +6,19 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # sccache caches compiled objects by (source, compiler flags) rather than
+  # by job name, so jobs that build overlapping parts of the dependency
+  # graph (clippy, the test matrix, behavior-contracts, isa-matrix's
+  # per-target-feature builds, ...) share compilation work through the
+  # GitHub Actions cache backend instead of each paying for it in its own
+  # `actions/cache`-keyed `target/` — see docs/POSTSUBMIT.md's sibling note
+  # in CLAUDE.md's Build Commands section for the rationale. Incremental
+  # compilation's on-disk artifacts aren't sccache cache entries, so leaving
+  # it on here would burn wall-clock recompiling per-crate incremental state
+  # that never gets reused across jobs anyway.
+  RUSTC_WRAPPER: sccache
+  CARGO_INCREMENTAL: "0"
+  SCCACHE_GHA_ENABLED: "true"
 
 # Cancel superseded runs on the same ref so a hung job doesn't linger.
 concurrency:
@@ -105,16 +118,19 @@ jobs:
         with:
           tool: cargo-hack
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-feature-matrix-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-feature-matrix-
+            cargo-registry-
 
       # Checks every crate against each of its own features in isolation
       # (cargo-hack --each-feature), not just workspace --all-features.
@@ -157,16 +173,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
+            cargo-registry-
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -183,16 +202,19 @@ jobs:
         with:
           targets: aarch64-unknown-linux-gnu
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-aarch64-
+            cargo-registry-
 
       # This integration target expands the public `kernel!` macro in a
       # consumer crate. A host-only proc-macro check would miss generated code
@@ -239,17 +261,19 @@ jobs:
         with:
           tool: nextest
 
-      # Caching dependencies speeds up subsequent runs.
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-registry-
 
       # Compile tests first so the run step below is (mostly) pure execution.
       - name: Build tests
@@ -283,16 +307,19 @@ jobs:
         with:
           tool: nextest
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-behavior-contracts-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-behavior-contracts-
+            cargo-registry-
 
       # These are named public-behavior contracts, not an incidental subset of
       # the workspace suite. nextest's explicit `--no-tests fail` makes deleting
@@ -401,16 +428,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-isa-matrix-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-isa-matrix-
+            cargo-registry-
 
       # .cargo/config.toml sets no target-cpu/target-feature, so the jobs
       # above only ever exercise whichever ISA level SSE2-baseline codegen
@@ -457,16 +487,19 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-launch-stability-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-launch-stability-
+            cargo-registry-
 
       - name: Launch the bundled app repeatedly and check for crash reports
         run: cargo run -p xtask --release -- launch-stability-check
@@ -517,16 +550,19 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-wasm32-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-wasm32-
+            cargo-registry-
 
       # Reported separately (not one `cargo check --workspace`) so the log
       # says exactly which crates build for wasm32 today and which don't,
@@ -586,16 +622,19 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-nostd-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-nostd-
+            cargo-registry-
 
       # `-D warnings` because an unused `alloc` import is exactly the shape of
       # the regression this job exists to catch.
