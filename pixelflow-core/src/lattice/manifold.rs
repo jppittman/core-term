@@ -74,9 +74,16 @@ const CONTEXT_ENTRIES: usize = MAX_BOUND_BUFFERS + 1;
 /// [`BoundManifold::with_uniforms`] — stripes on separate threads all read
 /// one block immutably, and nothing is ambient. Setting a value touches no
 /// arena, runs no saturation, and compiles nothing.
+///
+/// The values are shared with every bound manifold that took them, so
+/// handing a block to a frame is a refcount and never an allocation.
+/// [`UniformBlock::set`] writes in place while the block is the sole
+/// holder, and copies the values first when a frame still holds the
+/// previous ones — so a consumer that drops last frame's bound manifold
+/// before setting next frame's values allocates nothing per frame.
 #[derive(Clone, Debug)]
 pub struct UniformBlock {
-    values: Vec<f32>,
+    values: Arc<Vec<f32>>,
     /// The link this block is laid out against, shared with the manifold
     /// that made it; a bound manifold checks it is the very same table.
     link: Arc<[UniformDecl]>,
@@ -99,14 +106,6 @@ impl core::fmt::Display for UnknownUniform {
 impl core::error::Error for UnknownUniform {}
 
 impl UniformBlock {
-    /// Every argument at its declared default, in link order.
-    fn defaults(link: &Arc<[UniformDecl]>) -> Self {
-        Self {
-            values: link.iter().map(|d| d.default).collect(),
-            link: Arc::clone(link),
-        }
-    }
-
     fn offset(&self, u: Uniform) -> Result<usize, UnknownUniform> {
         self.link
             .iter()
@@ -122,7 +121,7 @@ impl UniformBlock {
     /// a composition mistake, never ignored.
     pub fn set(&mut self, u: Uniform, v: f32) -> Result<(), UnknownUniform> {
         let i = self.offset(u)?;
-        self.values[i] = v;
+        Arc::make_mut(&mut self.values)[i] = v;
         Ok(())
     }
 
@@ -135,10 +134,21 @@ impl UniformBlock {
         self.offset(u).map(|i| self.values[i])
     }
 
-    /// The values in link order — what the kernel reads.
+    /// The values in link order — what the kernel reads. An `&[f32]` in
+    /// *this* order is not what the oracle takes; see [`Self::entries`].
     #[must_use]
     pub fn values(&self) -> &[f32] {
         &self.values
+    }
+
+    /// Every argument with its value, by identity — the order-free form,
+    /// and the one to hand `BindingTable::bind_uniforms` so the oracle and
+    /// the kernel read the same block.
+    pub fn entries(&self) -> impl Iterator<Item = (UniformIdentity, f32)> + '_ {
+        self.link
+            .iter()
+            .map(|d| d.id)
+            .zip(self.values.iter().copied())
     }
 }
 
@@ -259,6 +269,10 @@ pub struct Manifold {
     /// the link. Shared with every block and bound manifold made from here,
     /// so "the same link" is pointer equality.
     link: Arc<[UniformDecl]>,
+    /// Every argument at its default, built once here so that `bind` — a
+    /// per-frame call, four times a frame on the terminal path — is a
+    /// refcount and never an allocation, uniforms or none.
+    defaults: Arc<Vec<f32>>,
 }
 
 impl Manifold {
@@ -314,11 +328,13 @@ impl Manifold {
              {MAX_BOUND_BUFFERS} a frame can bind without allocating",
             linked.buffers.len()
         );
+        let defaults: Vec<f32> = linked.uniforms.iter().map(|d| d.default).collect();
         Self {
             jit: linked.kernel,
             extent,
             slots: linked.buffers.into(),
             link: linked.uniforms.into(),
+            defaults: Arc::new(defaults),
         }
     }
 
@@ -347,7 +363,10 @@ impl Manifold {
     /// through the handles; hand it to [`BoundManifold::with_uniforms`].
     #[must_use]
     pub fn block(&self) -> UniformBlock {
-        UniformBlock::defaults(&self.link)
+        UniformBlock {
+            values: Arc::clone(&self.defaults),
+            link: Arc::clone(&self.link),
+        }
     }
 
     /// The compiled kernel's emitted bytes (research/profiling harness).
@@ -393,7 +412,9 @@ impl Manifold {
             bound,
             buffer_slots: self.slots.len(),
             link: Arc::clone(&self.link),
-            uniforms: self.block().values.into(),
+            // A refcount, not an allocation: `bind` is per frame, and the
+            // invariant is pinned by `tests/bind_allocates_nothing.rs`.
+            uniforms: Arc::clone(&self.defaults),
         }
     }
 }
@@ -434,9 +455,10 @@ pub struct BoundManifold {
     buffer_slots: usize,
     /// The link the block below is laid out against.
     link: Arc<[UniformDecl]>,
-    /// The argument values the kernel reads, in link order; empty when it
-    /// has none, and then no block pointer is passed at all.
-    uniforms: Arc<[f32]>,
+    /// The argument values the kernel reads, in link order — the manifold's
+    /// defaults or a block's values, shared rather than copied; empty when
+    /// it has none, and then no block pointer is passed at all.
+    uniforms: Arc<Vec<f32>>,
 }
 
 impl BoundManifold {
@@ -446,8 +468,9 @@ impl BoundManifold {
         self.extent
     }
 
-    /// The same bound memory with the kernel's arguments taken from `block`
-    /// — the per-frame step for whatever moved. Cheap: one `Arc` of values.
+    /// This bound memory with the kernel's arguments taken from `block` —
+    /// the per-frame step for whatever moved. A refcount on the block's
+    /// values, no copy and no allocation.
     ///
     /// # Panics
     ///
@@ -455,15 +478,13 @@ impl BoundManifold {
     /// be another kernel's, and the values would land in the wrong arguments
     /// with entirely plausible pixels.
     #[must_use]
-    pub fn with_uniforms(&self, block: &UniformBlock) -> Self {
+    pub fn with_uniforms(mut self, block: &UniformBlock) -> Self {
         assert!(
             Arc::ptr_eq(&block.link, &self.link),
             "BoundManifold::with_uniforms: the block was laid out for a different program"
         );
-        Self {
-            uniforms: block.values.as_slice().into(),
-            ..self.clone()
-        }
+        self.uniforms = Arc::clone(&block.values);
+        self
     }
 
     /// Collapse the region into `out`, whose rows are `stride` elements apart
