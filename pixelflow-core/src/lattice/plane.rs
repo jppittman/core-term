@@ -14,10 +14,16 @@
 //!
 //! ## Output planes
 //!
-//! A band is written as `rows` rows at [`PlaneFrame::padded_width`] stride —
-//! the sampled width rounded up to whole SIMD batches. The padding lanes hold
-//! whatever the kernel computed past the right edge and are simply not read
-//! back. The store is a raw vector store, type-blind bit movement, so a kernel
+//! A band is written straight into the caller's plane, whose rows are however
+//! many elements apart the caller says: the collapse ABI stores whole SIMD
+//! batches and steps the output pointer by the leftover bytes between rows,
+//! so a destination at any stride is filled in place — no staging plane, no
+//! per-row copy. The one thing a batch store cannot do is a row's final
+//! *partial* batch when the stride has no room for its overhang; that batch
+//! alone goes through a one-batch scratch, and it is the only place in this
+//! module where the SIMD width is visible at all.
+//!
+//! The store is a raw vector store, type-blind bit movement, so a kernel
 //! whose root is int-domain (a packed pixel, a mask) bakes through
 //! [`PlaneFrame::bake_int_rows`] into a `u32` plane exactly: no float
 //! operation touches the value between the root and memory.
@@ -202,36 +208,30 @@ pub struct PlaneFrame {
 }
 
 impl PlaneFrame {
-    /// The padded row stride (in samples) a bake writes: `width` rounded up to
-    /// whole SIMD batches. Planes are laid out at this stride; the padding
-    /// lanes hold whatever the kernel computed past the right edge and are
-    /// simply not read back.
-    #[must_use]
-    pub fn padded_width(width: usize) -> usize {
-        let lanes = pixelflow_codegen::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
-        width.div_ceil(lanes).max(1) * lanes
-    }
-
     /// The lattice extents the kernel was compiled for.
     #[must_use]
     pub fn extent(&self) -> [u32; 2] {
         self.extent
     }
 
-    /// Bake the region at sample-center coordinates (`x + ½`, `y + ½`) into a
-    /// plane of [`PlaneFrame::padded_width`]`(width)`-stride rows.
+    /// Bake the region at sample-center coordinates (`x + ½`, `y + ½`) into
+    /// `out`, whose rows are `stride` elements apart and whose first
+    /// `region.width` elements each row are the samples.
     ///
-    /// ONE call into the collapse kernel per invocation.
+    /// The destination is written in place — the collapse loop's own stores
+    /// land in it — so `stride` is whatever the caller's plane already is: a
+    /// frame's packed row width, a padded scratch, a sub-rectangle of
+    /// something larger.
     ///
     /// # Panics
     ///
-    /// Panics if the region's width is zero or `out` is shorter than
-    /// `rows * padded_width(width)`.
-    pub fn bake_rows(&self, region: PlaneRegion, out: &mut [f32]) {
-        let rows = self.check_region("bake_rows", region, out.len());
+    /// Panics if the region's width is zero, `stride` is less than it, or
+    /// `out` cannot hold the band.
+    pub fn bake_rows(&self, region: PlaneRegion, out: &mut [f32], stride: usize) {
+        let band = self.plan("bake_rows", region, stride, out.len());
         // SAFETY: see `bake`. `out` is an `f32` plane, which is what the
-        // collapse ABI writes.
-        unsafe { self.bake(region, out.as_mut_ptr(), rows) }
+        // collapse ABI writes, and `plan` proved it holds the band.
+        unsafe { self.bake(region, out.as_mut_ptr(), band) }
     }
 
     /// [`PlaneFrame::bake_rows`] for a kernel whose root is int-domain: each
@@ -241,25 +241,29 @@ impl PlaneFrame {
     ///
     /// # Panics
     ///
-    /// Panics if the region's width is zero or `out` is shorter than
-    /// `rows * padded_width(width)`.
-    pub fn bake_int_rows(&self, region: PlaneRegion, out: &mut [u32]) {
-        let rows = self.check_region("bake_int_rows", region, out.len());
+    /// Panics if the region's width is zero, `stride` is less than it, or
+    /// `out` cannot hold the band.
+    pub fn bake_int_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
+        let band = self.plan("bake_int_rows", region, stride, out.len());
         // SAFETY: see `bake`. `u32` and `f32` share size and alignment, and
         // the store moves the root's bit pattern without interpreting it.
-        unsafe { self.bake(region, out.as_mut_ptr().cast::<f32>(), rows) }
+        unsafe { self.bake(region, out.as_mut_ptr().cast::<f32>(), band) }
     }
 
-    /// Shared guard: returns the number of rows to bake, or zero for an empty
-    /// band.
+    /// How a band lands in a destination of a given stride, and the guard that
+    /// the destination can hold it.
     ///
     /// # Panics
     ///
-    /// Panics if the region's width is zero, the region leaves the compiled
-    /// extents, or `out_len` cannot hold the band.
-    fn check_region(&self, what: &str, region: PlaneRegion, out_len: usize) -> usize {
+    /// Panics if the region's width is zero, `stride` is less than it, the
+    /// region leaves the compiled extents, or `out_len` cannot hold the band.
+    fn plan(&self, what: &str, region: PlaneRegion, stride: usize, out_len: usize) -> BandPlan {
         let PlaneRegion { width, y0, rows } = region;
         assert!(width > 0, "{what}: zero width");
+        assert!(
+            stride >= width,
+            "{what}: stride {stride} is narrower than the {width} samples a row holds"
+        );
         // The kernel was compiled for `extent`; a region outside it would run
         // the collapse loop past the lattice it was specialized to.
         //
@@ -276,33 +280,28 @@ impl PlaneFrame {
             "{what}: region {width}×{rows} at row {y0} lies outside the \
              {fw}×{fh} lattice this program was compiled for"
         );
-        let stride = Self::padded_width(width);
-        // Checked: `rows * stride` wraps in release for a caller-supplied
-        // region large enough, and a wrapped product would let an undersized
-        // `out` pass this guard while the collapse call below still received
-        // the real (enormous) row count and wrote past the slice. The
-        // documented panic must fire before any unsafe call, not after.
-        let needed = rows
-            .checked_mul(stride)
-            .expect("bake: rows * stride overflows usize");
+        let plan = BandPlan::new(width, rows, stride);
+        // Checked: the span wraps in release for a caller-supplied region
+        // large enough, and a wrapped product would let an undersized `out`
+        // pass this guard while the collapse call below still received the
+        // real (enormous) row count and wrote past the slice. The documented
+        // panic must fire before any unsafe call, not after.
+        let needed = plan.span().expect("bake: band span overflows usize");
         assert!(
             out_len >= needed,
             "{what}: plane of {out_len} elements cannot hold {rows} rows at stride {stride}"
         );
-        rows
+        plan
     }
 
     /// # Safety
     ///
-    /// `out` must be writable for `rows * padded_width(region.width)` 4-byte
-    /// elements — which [`PlaneFrame::check_region`] asserted for the slice it
-    /// came from.
-    unsafe fn bake(&self, region: PlaneRegion, out: *mut f32, rows: usize) {
-        if rows == 0 {
+    /// `out` must be writable for `band.span()` 4-byte elements — which
+    /// [`PlaneFrame::plan`] asserted for the slice it came from.
+    unsafe fn bake(&self, region: PlaneRegion, out: *mut f32, band: BandPlan) {
+        if band.rows == 0 {
             return;
         }
-        let stride = Self::padded_width(region.width);
-        let groups = stride / (pixelflow_codegen::JIT_VECTOR_BYTES / core::mem::size_of::<f32>());
         // One base pointer per declared slot, in slot order. Stack-allocated
         // against the MAX_BOUND_BUFFERS bound `compile` checked, so baking a
         // band allocates nothing; trailing entries stay null and are never
@@ -313,23 +312,135 @@ impl PlaneFrame {
                 *dst = data.as_ptr();
             }
         }
-        // Sample centers: the rasterizer convention (x + ½, y + ½).
-        let x0 = Field::sequential(0.5);
-        let y = Field::from(region.y0 as f32 + 0.5);
         let zero = Field::from(0.0);
-        // SAFETY: `compile` checked size_of::<Field>() == JIT_VECTOR_BYTES and
-        // that every declared slot fits `ctx`; `bind` bound a buffer of the
-        // declared length to each of them and this frame holds those `Arc`s
-        // alive for the duration of the call; the caller's guard proved `out`
-        // holds `rows` full rows of `groups` batches with no scalar tail
-        // (row_skip = 0 — the stride IS whole batches).
-        unsafe {
-            self.jit.call_collapse(
-                ctx.as_ptr(),
-                pixelflow_codegen::TileSlice::contiguous(out, groups, rows),
-                pixelflow_codegen::Point4::new(x0, y, zero, zero),
-            );
+        // Sample centers: the rasterizer convention (x + ½, y + ½).
+        if band.groups > 0 {
+            // SAFETY: `compile` checked size_of::<Field>() == JIT_VECTOR_BYTES
+            // and that every declared slot fits `ctx`; `bind` bound a buffer of
+            // the declared length to each of them and this frame holds those
+            // `Arc`s alive for the duration of the call; the caller's guard
+            // proved `out` holds `rows` rows of `groups` whole batches at
+            // `stride`, which is what `row_skip_bytes` steps between.
+            unsafe {
+                self.jit.call_collapse(
+                    ctx.as_ptr(),
+                    pixelflow_codegen::TileSlice::new(
+                        out,
+                        band.groups,
+                        band.rows,
+                        band.row_skip_bytes(),
+                    ),
+                    pixelflow_codegen::Point4::new(
+                        Field::sequential(0.5),
+                        Field::from(region.y0 as f32 + 0.5),
+                        zero,
+                        zero,
+                    ),
+                );
+            }
         }
+        let Some(tail) = band.tail() else { return };
+        // The row's last, partial batch. A whole-batch store there would run
+        // past the row into the next one, so it lands in a scratch batch and
+        // only the samples that belong to the row are copied back — one extra
+        // call per row, and only when the stride left no room for the overhang.
+        let mut scratch = [0.0f32; BATCH_LANES];
+        for row in 0..band.rows {
+            // SAFETY: as above; `scratch` is exactly the one batch
+            // `TileSlice::single` writes.
+            unsafe {
+                self.jit.call_collapse(
+                    ctx.as_ptr(),
+                    pixelflow_codegen::TileSlice::single(scratch.as_mut_ptr()),
+                    pixelflow_codegen::Point4::new(
+                        Field::sequential(band.whole_lanes() as f32 + 0.5),
+                        Field::from((region.y0 + row) as f32 + 0.5),
+                        zero,
+                        zero,
+                    ),
+                );
+            }
+            // SAFETY: `plan` proved `out` holds `row * stride + width`
+            // elements, and this writes the last `tail` of them.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    scratch.as_ptr(),
+                    out.add(row * band.stride + band.whole_lanes()),
+                    tail,
+                );
+            }
+        }
+    }
+}
+
+/// Lanes in one SIMD batch of the emitted code. The only place in this module
+/// the width is visible, and it is here for one reason: a row's final partial
+/// batch needs somewhere to land that is not the next row.
+const BATCH_LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
+
+/// How one band of rows is written into a destination plane: whole SIMD
+/// batches stored straight through the collapse loop, and whatever partial
+/// batch the stride left no room for.
+#[derive(Clone, Copy, Debug)]
+struct BandPlan {
+    /// Samples per row the caller asked for.
+    width: usize,
+    rows: usize,
+    /// Elements between the starts of two destination rows.
+    stride: usize,
+    /// Whole batches the collapse loop stores per row.
+    groups: usize,
+}
+
+impl BandPlan {
+    /// A final partial batch overhangs `width`, which is harmless exactly when
+    /// the destination row is wide enough to absorb it — the padding lanes hold
+    /// whatever the kernel computed past the right edge and are not read back.
+    /// Otherwise it is left to the scratch batch, and the loop stores only the
+    /// batches that fit.
+    fn new(width: usize, rows: usize, stride: usize) -> Self {
+        let batches = width.div_ceil(BATCH_LANES);
+        let groups = if stride >= batches * BATCH_LANES {
+            batches
+        } else {
+            width / BATCH_LANES
+        };
+        Self {
+            width,
+            rows,
+            stride,
+            groups,
+        }
+    }
+
+    /// Samples of each row the collapse loop's whole batches cover.
+    fn whole_lanes(self) -> usize {
+        self.groups * BATCH_LANES
+    }
+
+    /// Bytes the collapse loop steps the output pointer by between rows.
+    fn row_skip_bytes(self) -> usize {
+        (self.stride - self.whole_lanes()) * core::mem::size_of::<f32>()
+    }
+
+    /// Samples per row left for the scratch batch, or `None` when the whole
+    /// batches already covered the row.
+    fn tail(self) -> Option<usize> {
+        self.width
+            .checked_sub(self.whole_lanes())
+            .filter(|t| *t > 0)
+    }
+
+    /// Elements the destination must hold: every row but the last at full
+    /// stride, then whichever of the batch overhang and the sampled width
+    /// reaches further.
+    fn span(self) -> Option<usize> {
+        let Some(before_last) = self.rows.checked_sub(1) else {
+            return Some(0);
+        };
+        before_last
+            .checked_mul(self.stride)?
+            .checked_add(self.whole_lanes().max(self.width))
     }
 }
 
@@ -338,38 +449,97 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    /// `x * 100 + y` — every sample names the coordinate it was taken at, so a
+    /// misplaced row or column is visible in the value rather than only in a
+    /// difference.
+    fn coordinate_kernel() -> Kernel {
+        Kernel::x().mul(&Kernel::constant(100.0)).add(&Kernel::y())
+    }
+
+    fn expected(col: usize, row: usize) -> f32 {
+        (col as f32 + 0.5) * 100.0 + row as f32 + 0.5
+    }
+
     /// Bake a kernel of the coordinates themselves and read the plane back:
-    /// the region's absolute rows, the sample-center convention, and the
-    /// padded stride, in one.
+    /// the region's absolute rows, the sample-center convention, and a
+    /// destination whose rows are exactly as wide as the samples, in one.
     #[test]
     fn a_band_bakes_its_absolute_rows_at_sample_centers() {
-        let kernel = Kernel::x().mul(&Kernel::constant(100.0)).add(&Kernel::y());
-        let program = PlaneProgram::compile(&kernel, [8, 8]);
+        let program = PlaneProgram::compile(&coordinate_kernel(), [8, 8]);
         let frame = program.bind(&[]);
-        let stride = PlaneFrame::padded_width(5);
-        let mut out = vec![0.0f32; 3 * stride];
-        frame.bake_rows(
-            PlaneRegion {
-                width: 5,
-                y0: 4,
-                rows: 3,
-            },
-            &mut out,
-        );
-        for row in 0..3 {
-            for col in 0..5 {
-                let expected = (col as f32 + 0.5) * 100.0 + (4 + row) as f32 + 0.5;
+        let (width, y0, rows) = (5, 4, 3);
+        let mut out = vec![0.0f32; rows * width];
+        frame.bake_rows(PlaneRegion { width, y0, rows }, &mut out, width);
+        for row in 0..rows {
+            for col in 0..width {
+                let want = expected(col, y0 + row);
                 assert!(
-                    (out[row * stride + col] - expected).abs() < 1e-3,
-                    "row {row} col {col}: {} != {expected}",
-                    out[row * stride + col]
+                    (out[row * width + col] - want).abs() < 1e-3,
+                    "row {row} col {col}: {} != {want}",
+                    out[row * width + col]
                 );
             }
         }
     }
 
+    /// The destination's rows are `stride` apart because the caller said so,
+    /// not because the batch width worked out that way: every row's samples
+    /// name their own coordinates, so a band placed at the wrong pitch reads
+    /// back the wrong values. This is the case the collapse ABI's
+    /// `row_skip_bytes` exists for, and the packed frame path is built on it.
+    ///
+    /// A spare row past the band stays pristine: the bake fills the rows it
+    /// was given and no more. (Within a row, everything past `width` is
+    /// scratch — a final partial batch's lanes land there — which is why only
+    /// the samples themselves are read back.)
+    #[test]
+    fn a_band_lands_at_the_stride_the_caller_asked_for() {
+        let program = PlaneProgram::compile(&coordinate_kernel(), [16, 8]);
+        let frame = program.bind(&[]);
+        let (width, stride, rows) = (9, BATCH_LANES * 4 + 1, 4);
+        const UNTOUCHED: f32 = -1.0;
+        let mut out = vec![UNTOUCHED; (rows + 1) * stride];
+        frame.bake_rows(PlaneRegion { width, y0: 0, rows }, &mut out, stride);
+        for row in 0..rows {
+            for col in 0..width {
+                let want = expected(col, row);
+                assert!(
+                    (out[row * stride + col] - want).abs() < 1e-3,
+                    "row {row} col {col}: {} != {want}",
+                    out[row * stride + col]
+                );
+            }
+        }
+        assert!(
+            out[rows * stride..].iter().all(|&x| x == UNTOUCHED),
+            "the bake wrote past the {rows} rows it was given"
+        );
+    }
+
+    /// Whatever the stride, the samples are the same: a row's final partial
+    /// batch reaches memory through the scratch batch with the values it would
+    /// have had from a whole-batch store into a padded row.
+    #[test]
+    fn a_partial_last_batch_bakes_the_same_samples_at_any_stride() {
+        let program = PlaneProgram::compile(&coordinate_kernel(), [32, 8]);
+        let frame = program.bind(&[]);
+        let (width, rows) = (BATCH_LANES * 2 - 1, 3);
+        let padded = BATCH_LANES * 2;
+        let mut packed = vec![0.0f32; rows * width];
+        let mut spread = vec![0.0f32; rows * padded];
+        let region = PlaneRegion { width, y0: 1, rows };
+        frame.bake_rows(region, &mut packed, width);
+        frame.bake_rows(region, &mut spread, padded);
+        for row in 0..rows {
+            let a = &packed[row * width..(row + 1) * width];
+            let b = &spread[row * padded..row * padded + width];
+            assert_eq!(a, b, "row {row}: the stride changed the samples");
+        }
+    }
+
     /// An int-domain root reaches memory as the bit pattern the kernel built,
-    /// with no float operation in between.
+    /// with no float operation in between — including through the scratch
+    /// batch, which is why the width here is not a whole batch.
     #[test]
     fn an_int_domain_root_bakes_into_a_u32_plane_bit_exactly() {
         let kernel = Kernel::x()
@@ -377,22 +547,23 @@ mod tests {
             .shl(8)
             .or(&Kernel::y().trunc_to_int())
             .into_kernel();
-        let program = PlaneProgram::compile(&kernel, [4, 4]);
+        let width = BATCH_LANES + 1;
+        let program = PlaneProgram::compile(&kernel, [width as u32, 4]);
         let frame = program.bind(&[]);
-        let stride = PlaneFrame::padded_width(4);
-        let mut out = vec![0u32; 2 * stride];
+        let mut out = vec![0u32; 2 * width];
         frame.bake_int_rows(
             PlaneRegion {
-                width: 4,
+                width,
                 y0: 0,
                 rows: 2,
             },
             &mut out,
+            width,
         );
         for row in 0..2u32 {
-            for col in 0..4u32 {
+            for col in 0..width as u32 {
                 assert_eq!(
-                    out[row as usize * stride + col as usize],
+                    out[row as usize * width + col as usize],
                     (col << 8) | row,
                     "row {row} col {col}"
                 );
@@ -401,11 +572,20 @@ mod tests {
     }
 
     #[test]
-    fn padded_width_rounds_up_to_whole_simd_batches() {
-        let lanes = pixelflow_codegen::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
-        assert_eq!(PlaneFrame::padded_width(1), lanes);
-        assert_eq!(PlaneFrame::padded_width(lanes), lanes);
-        assert_eq!(PlaneFrame::padded_width(lanes + 1), lanes * 2);
+    #[should_panic(expected = "narrower than")]
+    fn a_stride_below_the_sampled_width_is_refused() {
+        let program = PlaneProgram::compile(&coordinate_kernel(), [8, 8]);
+        let frame = program.bind(&[]);
+        let mut out = vec![0.0f32; 32];
+        frame.bake_rows(
+            PlaneRegion {
+                width: 5,
+                y0: 0,
+                rows: 2,
+            },
+            &mut out,
+            4,
+        );
     }
 
     #[test]

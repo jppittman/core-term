@@ -145,8 +145,7 @@ mod tests {
     /// Bake one channel over pixel centers and unpad to a dense w×h plane —
     /// the four-channel oracle the pack is checked against.
     fn plane(frame: &CellGridFrame, channel: usize, w: usize, h: usize) -> Vec<f32> {
-        let stride = PackedFrame::padded_width(w);
-        let mut padded = vec![0.0f32; h * stride];
+        let mut dense = vec![0.0f32; h * w];
         frame.bake_channel_rows(
             channel,
             PlaneRegion {
@@ -154,12 +153,9 @@ mod tests {
                 y0: 0,
                 rows: h,
             },
-            &mut padded,
+            &mut dense,
+            w,
         );
-        let mut dense = Vec::with_capacity(w * h);
-        for row in 0..h {
-            dense.extend_from_slice(&padded[row * stride..row * stride + w]);
-        }
         dense
     }
 
@@ -217,8 +213,7 @@ mod tests {
         }
         let frame = program.frame(Arc::new(cells), Arc::new(atlas));
         let (w, h) = (2560usize, 1584usize);
-        let stride = PackedFrame::padded_width(w);
-        let mut out = vec![0u32; stride * h];
+        let mut out = vec![0u32; w * h];
         for _ in 0..150 {
             frame.bake_packed_rows(
                 PlaneRegion {
@@ -227,6 +222,7 @@ mod tests {
                     rows: h,
                 },
                 &mut out,
+                w,
             );
             std::hint::black_box(&out);
         }
@@ -249,20 +245,16 @@ mod tests {
 
     /// Bake packed pixels over pixel centers and unpad to a dense w×h plane.
     fn packed_plane(frame: &PackedFrame, w: usize, h: usize) -> Vec<u32> {
-        let stride = PackedFrame::padded_width(w);
-        let mut padded = vec![0u32; h * stride];
+        let mut dense = vec![0u32; h * w];
         frame.bake_packed_rows(
             PlaneRegion {
                 width: w,
                 y0: 0,
                 rows: h,
             },
-            &mut padded,
+            &mut dense,
+            w,
         );
-        let mut dense = Vec::with_capacity(w * h);
-        for row in 0..h {
-            dense.extend_from_slice(&padded[row * stride..row * stride + w]);
-        }
         dense
     }
 
@@ -445,25 +437,21 @@ mod tests {
 
         let full = packed_plane(&frame, 4, 8);
 
-        let stride = PackedFrame::padded_width(4);
-        let mut padded = vec![0u32; 4 * stride];
+        let mut offset = vec![0u32; 4 * 4];
         frame.bake_packed_rows(
             PlaneRegion {
                 width: 4,
                 y0: 4,
                 rows: 4,
             },
-            &mut padded,
+            &mut offset,
+            4,
         );
-        for row in 0..4 {
-            for col in 0..4 {
-                assert_eq!(
-                    padded[row * stride + col],
-                    full[(row + 4) * 4 + col],
-                    "offset bake row {row} col {col} disagrees with the full bake"
-                );
-            }
-        }
+        assert_eq!(
+            offset,
+            full[4 * 4..],
+            "the offset bake disagrees with the full bake"
+        );
     }
 
     #[test]

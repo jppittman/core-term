@@ -360,17 +360,21 @@ pub struct CellGridFrame {
 
 impl CellGridFrame {
     /// Bake one color channel (0 = R, 1 = G, 2 = B, 3 = A) over the pixel
-    /// rows `y0 .. y0 + rows` at pixel-center coordinates, into a plane of
-    /// [`PlaneFrame::padded_width`]`(width)`-stride rows.
-    ///
-    /// ONE call into the channel's 2D collapse kernel per invocation.
+    /// rows `y0 .. y0 + rows` at pixel-center coordinates, into a plane whose
+    /// rows are `stride` samples apart — see [`PlaneFrame::bake_rows`].
     ///
     /// # Panics
     ///
-    /// Panics if `channel >= 4`, the region's width is zero, or `out` is
-    /// shorter than `rows * padded_width(width)`.
-    pub fn bake_channel_rows(&self, channel: usize, region: PlaneRegion, out: &mut [f32]) {
-        self.channels[channel].bake_rows(region, out);
+    /// Panics if `channel >= 4`, the region's width is zero, `stride` is less
+    /// than it, or `out` cannot hold the band.
+    pub fn bake_channel_rows(
+        &self,
+        channel: usize,
+        region: PlaneRegion,
+        out: &mut [f32],
+        stride: usize,
+    ) {
+        self.channels[channel].bake_rows(region, out, stride);
     }
 }
 
@@ -487,8 +491,7 @@ mod tests {
 
     /// Bake one channel over pixel centers and unpad to a dense w×h plane.
     fn plane(frame: &CellGridFrame, channel: usize, w: usize, h: usize) -> alloc::vec::Vec<f32> {
-        let stride = PlaneFrame::padded_width(w);
-        let mut padded = vec![0.0f32; h * stride];
+        let mut dense = vec![0.0f32; h * w];
         frame.bake_channel_rows(
             channel,
             PlaneRegion {
@@ -496,12 +499,9 @@ mod tests {
                 y0: 0,
                 rows: h,
             },
-            &mut padded,
+            &mut dense,
+            w,
         );
-        let mut dense = alloc::vec::Vec::with_capacity(w * h);
-        for row in 0..h {
-            dense.extend_from_slice(&padded[row * stride..row * stride + w]);
-        }
         dense
     }
 
@@ -837,8 +837,7 @@ mod tests {
         ];
         let frame = program.frame(Arc::new(cells), Arc::new(atlas));
 
-        let stride = PlaneFrame::padded_width(4);
-        let mut padded = vec![0.0f32; 4 * stride];
+        let mut dense = vec![0.0f32; 4 * 4];
         frame.bake_channel_rows(
             0,
             PlaneRegion {
@@ -846,16 +845,17 @@ mod tests {
                 y0: 4,
                 rows: 4,
             },
-            &mut padded,
+            &mut dense,
+            4,
         );
         // y0 = 4 → the first baked row samples absolute y = 4.5, inside row
         // 1's cell (coverage 0.5, R: bg 1.0 -> fg 0.0 blends to 0.5). An
         // off-by-one-pixel-center bug would instead sample y = 3.5, still
         // inside row 0's cell (solid fg, R = 1.0).
         assert!(
-            (padded[1] - 0.5).abs() < 1e-5,
+            (dense[1] - 0.5).abs() < 1e-5,
             "row-offset bake read the wrong absolute row: R = {}",
-            padded[1]
+            dense[1]
         );
     }
 }

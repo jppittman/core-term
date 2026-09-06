@@ -2,10 +2,11 @@
 //!
 //! A scene is a [`PackedFrame`] — four channel kernels compiled into ONE
 //! program over the frame's lattice, with the pixel pack inside it — rendered
-//! one collapse call per stripe, stripes across threads. No per-batch FFI
-//! boundary, no virtual dispatch, no per-pixel scalar pack, and the collapse
-//! kernel's two-level LICM prologues (per call, per row) active. Byte order
-//! comes from the pixel format the frame is stored in
+//! one collapse call per stripe, stripes across threads, the kernel's stores
+//! landing **in the frame itself**. No per-batch FFI boundary, no virtual
+//! dispatch, no per-pixel scalar pack, no staging plane and no row copy, and
+//! the collapse kernel's two-level LICM prologues (per call, per row) active.
+//! Byte order comes from the pixel format the frame is stored in
 //! ([`compile_packed_for`], [`compile_platform_packed`]), never from
 //! application code.
 //!
@@ -169,8 +170,8 @@ impl Scene {
     /// Render this scene into `frame` with up to `num_threads` workers.
     ///
     /// Packed scenes bake finished pixels stripe-parallel through their one
-    /// collapse kernel and copy rows into the frame; surfaces go through the
-    /// work-stealing per-batch rasterizer.
+    /// collapse kernel, straight into the frame's memory; surfaces go through
+    /// the work-stealing per-batch rasterizer.
     pub fn render<P: Pixel + Send>(&self, frame: &mut Frame<P>, num_threads: usize) {
         match self {
             Self::Surface(manifold) => {
@@ -184,9 +185,10 @@ impl Scene {
 
 /// Bake a packed frame, stripe-parallel.
 ///
-/// Each worker owns a contiguous run of rows: one collapse call bakes its
-/// stripe's finished pixels (the pixel loop and the pack both live inside
-/// the JIT), and each row is copied `width`-wide into the frame.
+/// Each worker owns a contiguous run of the frame's own rows and bakes them
+/// with ONE collapse call whose stores land there: the collapse ABI steps the
+/// output pointer between rows, so the frame's row stride is simply what it is
+/// handed. Nothing is staged and nothing is copied.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, num_threads: usize) {
     let (width, height) = (frame.width, frame.height);
@@ -205,9 +207,11 @@ fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, nu
     );
     let workers = num_threads.max(1).min(height);
     let rows_per = height.div_ceil(workers);
-    let mut bands: Vec<(usize, &mut [P])> = Vec::with_capacity(workers);
+    let mut bands: Vec<(usize, &mut [u32])> = Vec::with_capacity(workers);
     {
-        let mut rest: &mut [P] = &mut frame.data[..width * height];
+        // A packed pixel IS a `u32` word here — that is what the kernel's
+        // root computed and what `packed_shifts` above just agreed on.
+        let mut rest: &mut [u32] = &mut frame.as_u32_slice_mut()[..width * height];
         let mut y = 0usize;
         while y < height {
             let rows = rows_per.min(height - y);
@@ -220,64 +224,12 @@ fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, nu
 
     std::thread::scope(|scope| {
         for (y0, band) in bands {
-            scope.spawn(move || bake_packed_stripe(packed, width, y0, band));
+            scope.spawn(move || {
+                let rows = band.len() / width;
+                packed.bake_packed_rows(PlaneRegion { width, y0, rows }, band, width);
+            });
         }
     });
-}
-
-/// Staging budget per worker: the kernel writes whole batches on a padded
-/// stride, and frame rows are width-packed, so rows stage here and are
-/// copied `width`-wide. A quarter of the old four-plane scratch would
-/// already hold the same rows; keeping the budget quadruples the rows per
-/// collapse call instead.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-const STAGING_SCRATCH_BYTES: usize = 1 << 20;
-
-/// Bake rows `y0..y0 + band.len()/width` and copy them into `band`, in
-/// bounded-height chunks reusing one staging allocation.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn bake_packed_stripe<P: Pixel>(packed: &PackedFrame, width: usize, y0: usize, band: &mut [P]) {
-    let stride = PackedFrame::padded_width(width);
-    let chunk_rows = STAGING_SCRATCH_BYTES / (stride * core::mem::size_of::<u32>());
-    bake_packed_chunked(packed, width, y0, band, chunk_rows);
-}
-
-/// [`bake_packed_stripe`] with an explicit chunk height — split out so tests
-/// can force chunk boundaries the production budget would only hit on very
-/// large frames.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn bake_packed_chunked<P: Pixel>(
-    packed: &PackedFrame,
-    width: usize,
-    y0: usize,
-    band: &mut [P],
-    chunk_rows: usize,
-) {
-    let rows = band.len() / width;
-    let stride = PackedFrame::padded_width(width);
-    let chunk_rows = chunk_rows.clamp(1, rows.max(1));
-    let mut staging = vec![0u32; chunk_rows * stride];
-
-    let mut done = 0usize;
-    while done < rows {
-        let n = chunk_rows.min(rows - done);
-        packed.bake_packed_rows(
-            PlaneRegion {
-                width,
-                y0: y0 + done,
-                rows: n,
-            },
-            &mut staging,
-        );
-        for row in 0..n {
-            let src = &staging[row * stride..row * stride + width];
-            let dst = &mut band[(done + row) * width..(done + row + 1) * width];
-            for (d, s) in dst.iter_mut().zip(src) {
-                *d = P::from_u32(*s);
-            }
-        }
-        done += n;
-    }
 }
 
 #[cfg(test)]
@@ -351,31 +303,24 @@ mod tests {
         assert!(m.r() >= 62 && m.r() <= 66, "margin r = {}", m.r());
     }
 
+    /// Where the stripe boundaries fall is a scheduling decision, and no
+    /// scheduling decision may be visible in the pixels. The width here is
+    /// deliberately not a whole number of SIMD batches, so each stripe's last
+    /// column is also the partial-batch case.
     #[test]
-    fn chunked_bake_matches_whole_stripe() {
-        // Force chunk boundaries (3-row chunks over an 8-row band) and
-        // require pixel identity with the unchunked bake.
-        //
-        // `bake_packed_chunked` is production logic (`bake_packed_stripe`
-        // calls it on the real render path too), not a test-only seam — but
-        // its `chunk_rows` argument is derived internally from
-        // `STAGING_SCRATCH_BYTES`, which only forces a chunk boundary on
-        // frames far larger than a unit test should render. Calling it
-        // directly with a small `chunk_rows` is the only way to exercise
-        // that boundary deterministically; going through `Scene::render`
-        // could only ever hit the always-one-chunk case. Flexibility-clause
-        // exception to docs/STYLE.md's public-API testing rule, same as the
-        // 2026-07-24 pass's call for actor-scheduler's timing-internal
-        // backoff arithmetic.
-        let Scene::Packed(grid) = scene() else {
-            unreachable!()
-        };
-        let (w, h) = (9usize, 8usize);
-        let mut whole = vec![Rgba8::from_u32(0); w * h];
-        let mut chunked = vec![Rgba8::from_u32(0); w * h];
-        super::bake_packed_chunked(&grid, w, 0, &mut whole, h);
-        super::bake_packed_chunked(&grid, w, 0, &mut chunked, 3);
-        assert_eq!(whole, chunked, "chunk boundaries must not change pixels");
+    fn stripe_boundaries_do_not_change_pixels() {
+        let scene = scene();
+        let (w, h) = (9u32, 8u32);
+        let mut one = Frame::<Rgba8>::new(w, h);
+        scene.render(&mut one, 1);
+        for threads in [2usize, 3, 8, 16] {
+            let mut many = Frame::<Rgba8>::new(w, h);
+            scene.render(&mut many, threads);
+            assert_eq!(
+                one.data, many.data,
+                "{threads} stripes rendered different pixels than one"
+            );
+        }
     }
 
     #[test]
@@ -569,17 +514,20 @@ mod frame_bench {
     fn profile_packed_hot_loop() {
         let (geom, cells, atlas) = realistic();
         let (w, h) = (2560usize, 1584usize);
-        let stride = PackedFrame::padded_width(w);
         let packed = CellGridPackedProgram::compile(
             geom,
             [0.1, 0.1, 0.1, 1.0],
             RgbaColorCube::PACKED_SHIFTS,
         )
         .frame(Arc::new(cells), Arc::new(atlas));
-        let chunk_rows = STAGING_SCRATCH_BYTES / (stride * core::mem::size_of::<u32>());
-        let mut band = vec![Rgba8::from_u32(0); w * h];
+        let mut band = vec![0u32; w * h];
+        let region = PlaneRegion {
+            width: w,
+            y0: 0,
+            rows: h,
+        };
         for _ in 0..150 {
-            bake_packed_chunked(&packed, w, 0, &mut band, chunk_rows);
+            packed.bake_packed_rows(region, &mut band, w);
             std::hint::black_box(&band);
         }
     }
@@ -589,7 +537,6 @@ mod frame_bench {
     fn bench_packed_vs_four_plane() {
         let (geom, cells, atlas) = realistic();
         let (w, h) = (2560usize, 1584usize);
-        let stride = PackedFrame::padded_width(w);
         let cells = Arc::new(cells);
         let atlas = Arc::new(atlas);
 
@@ -602,32 +549,34 @@ mod frame_bench {
         )
         .frame(cells, atlas);
 
-        let mut band = vec![Rgba8::from_u32(0); w * h];
-        let chunk_rows = STAGING_SCRATCH_BYTES / (stride * core::mem::size_of::<u32>());
+        let mut band = vec![0u32; w * h];
+        // Row band the four-plane shape stages, sized as its retired staging
+        // budget was: a megabyte of scratch per plane.
+        let chunk_rows = (1 << 20) / (w * core::mem::size_of::<f32>());
 
         // The retired shape: four plane bakes plus a per-pixel from_rgba.
-        let old_pass = |band: &mut [Rgba8]| {
-            let mut planes = vec![0.0f32; 4 * chunk_rows * stride];
+        let old_pass = |band: &mut [u32]| {
+            let mut planes = vec![0.0f32; 4 * chunk_rows * w];
             let mut done = 0usize;
             while done < h {
                 let n = chunk_rows.min(h - done);
                 {
-                    let (r, rest) = planes.split_at_mut(chunk_rows * stride);
-                    let (g, rest) = rest.split_at_mut(chunk_rows * stride);
-                    let (b, a) = rest.split_at_mut(chunk_rows * stride);
+                    let (r, rest) = planes.split_at_mut(chunk_rows * w);
+                    let (g, rest) = rest.split_at_mut(chunk_rows * w);
+                    let (b, a) = rest.split_at_mut(chunk_rows * w);
                     let region = PlaneRegion {
                         width: w,
                         y0: done,
                         rows: n,
                     };
-                    four.bake_channel_rows(0, region, r);
-                    four.bake_channel_rows(1, region, g);
-                    four.bake_channel_rows(2, region, b);
-                    four.bake_channel_rows(3, region, a);
+                    four.bake_channel_rows(0, region, r, w);
+                    four.bake_channel_rows(1, region, g, w);
+                    four.bake_channel_rows(2, region, b, w);
+                    four.bake_channel_rows(3, region, a, w);
                 }
-                let plane = |c: usize| &planes[c * chunk_rows * stride..];
+                let plane = |c: usize| &planes[c * chunk_rows * w..];
                 for row in 0..n {
-                    let p = row * stride;
+                    let p = row * w;
                     let o = (done + row) * w;
                     for i in 0..w {
                         band[o + i] = Rgba8::from_rgba(
@@ -635,13 +584,24 @@ mod frame_bench {
                             plane(1)[p + i],
                             plane(2)[p + i],
                             plane(3)[p + i],
-                        );
+                        )
+                        .to_u32();
                     }
                 }
                 done += n;
             }
         };
-        let new_pass = |band: &mut [Rgba8]| bake_packed_chunked(&packed, w, 0, band, chunk_rows);
+        let new_pass = |band: &mut [u32]| {
+            packed.bake_packed_rows(
+                PlaneRegion {
+                    width: w,
+                    y0: 0,
+                    rows: h,
+                },
+                band,
+                w,
+            );
+        };
 
         const WARM: usize = 3;
         const RUNS: usize = 15;
@@ -667,7 +627,7 @@ mod frame_bench {
             o as f64 / px as f64
         );
         println!(
-            "  packed kernel + row copy:    {n} ns/frame ({:.3} ns/px)",
+            "  packed kernel, direct write: {n} ns/frame ({:.3} ns/px)",
             n as f64 / px as f64
         );
         println!("  speedup: {:.2}x", o as f64 / n as f64);

@@ -143,16 +143,10 @@ impl PackedFrame {
         self.shifts
     }
 
-    /// The padded row stride (in pixels) a bake writes: `width` rounded up to
-    /// whole SIMD batches.
-    #[must_use]
-    pub fn padded_width(width: usize) -> usize {
-        PlaneFrame::padded_width(width)
-    }
-
     /// Bake packed pixels over the pixel rows `y0 .. y0 + rows` at
-    /// pixel-center coordinates, into a plane of
-    /// [`PackedFrame::padded_width`]`(width)`-stride rows.
+    /// pixel-center coordinates, straight into `out` — a plane of `u32`
+    /// words whose rows are `stride` pixels apart, which for a frame is its
+    /// own row width.
     ///
     /// The kernel's root is int-domain: each lane already holds a packed
     /// pixel's bit pattern, and the collapse store is a raw vector store, so
@@ -160,9 +154,9 @@ impl PackedFrame {
     ///
     /// # Panics
     ///
-    /// Panics if the region's width is zero or `out` is shorter than
-    /// `rows * padded_width(width)`.
-    pub fn bake_packed_rows(&self, region: PlaneRegion, out: &mut [u32]) {
-        self.frame.bake_int_rows(region, out);
+    /// Panics if the region's width is zero, `stride` is less than it, or
+    /// `out` cannot hold the band.
+    pub fn bake_packed_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
+        self.frame.bake_int_rows(region, out, stride);
     }
 }
