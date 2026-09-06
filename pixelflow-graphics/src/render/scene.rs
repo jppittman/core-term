@@ -14,15 +14,13 @@
 //! The cell grid ([`compile_cell_grid_for`]) is one instance of that: a
 //! geometry that denotes four channel kernels over a cell buffer and a
 //! coverage atlas. A procedural shader is another: four kernels and nothing
-//! bound.
-//!
-//! [`Scene::Surface`] is the one lane left over, and it is on its way out —
-//! see its own docs.
+//! bound. There is no second lane: S4a deleted the per-batch `Surface`
+//! variant and the work-stealing rasterizer behind it.
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use crate::render::cell_grid::CellGridPackedProgram;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use crate::render::color::{PlatformColorCube, PlatformPixel};
+use crate::render::color::PlatformPixel;
 use crate::render::frame::Frame;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use crate::render::packed::{PackedFrame, PackedProgram};
@@ -31,35 +29,18 @@ use crate::render::Pixel;
 use crate::scene3d::Rgba;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use pixelflow_core::{CellGridGeometry, FastMathGuard, PlaneRegion};
-use pixelflow_core::{Discrete, Manifold};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
-/// A renderable scene. See the module docs for the two lanes.
+/// A renderable scene: four channel kernels compiled at the frame's lattice
+/// shape, packed to a `u32` pixel inside the kernel. The scene collapses it
+/// one call per stripe, straight into the frame's own memory.
 #[derive(Clone)]
 pub enum Scene {
-    /// Dense per-batch evaluation of an arbitrary color manifold: one
-    /// `Manifold::eval` call per SIMD batch, across a `dyn` boundary.
-    ///
-    /// **The single per-batch remnant, kept for exactly one reason.** The
-    /// plan of record (`docs/plans/2026-09-06-kernel-with-a-lattice.md`)
-    /// deletes per-batch evaluation as an API; what still needs it is
-    /// `scene3d`'s ray marching, which cannot lower while the IR has no
-    /// iteration binder. This variant, `rasterize` and `execute_stripe` stay
-    /// until that decision lands (add the binder, or retire the demos), and
-    /// **no new consumer is permitted** — a scene that can be written as four
-    /// channel kernels is a [`Scene::Packed`].
-    Surface(Arc<dyn Manifold<Output = Discrete> + Send + Sync>),
-    /// Four channel kernels compiled at the frame's lattice shape, packed to
-    /// a `u32` pixel inside the kernel. The scene collapses it one call per
-    /// stripe, straight into the frame's own memory.
+    /// The only variant, and an enum for one reason: `Packed` is
+    /// architecture-gated, and a target with no JIT backend has no scene at
+    /// all rather than a different one.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     Packed(PackedFrame),
-}
-
-impl From<Arc<dyn Manifold<Output = Discrete> + Send + Sync>> for Scene {
-    fn from(manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>) -> Self {
-        Self::Surface(manifold)
-    }
 }
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -141,8 +122,7 @@ pub fn constant_platform_scene(rgba: [f32; 4], frame: [u32; 2]) -> Scene {
 fn packed_shifts_of<P: Pixel>(what: &str) -> [u32; 4] {
     P::packed_shifts().unwrap_or_else(|| {
         panic!(
-            "{what}: {} has no packed RGBA form; render it through the \
-             surface lane instead",
+            "{what}: {} has no byte lanes to pack RGBA into",
             core::any::type_name::<P>()
         )
     })
@@ -160,8 +140,8 @@ fn packed_shifts_of<P: Pixel>(what: &str) -> [u32; 4] {
 /// # Panics
 ///
 /// Panics for a `P` with no packed RGBA form ([`Pixel::packed_shifts`]
-/// returns `None`) — a grayscale or exotic format must render through the
-/// surface lane, and silently packing RGBA into it would be garbage.
+/// returns `None`) — a grayscale or exotic format has no byte lanes to pack
+/// into, and silently packing RGBA into it would be garbage.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[must_use]
 pub fn compile_cell_grid_for<P: Pixel>(
@@ -176,26 +156,19 @@ pub fn compile_cell_grid_for<P: Pixel>(
 }
 
 /// Compile the packed cell-grid program with THIS platform's pixel byte
-/// order — [`PlatformColorCube`] and [`PlatformPixel`] are the same choice,
-/// pinned to each other below.
+/// order, which [`PlatformPixel`] is the single statement of.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[must_use]
 pub fn compile_platform_cell_grid(
     geom: CellGridGeometry,
     default_bg: [f32; 4],
 ) -> CellGridPackedProgram {
-    debug_assert_eq!(
-        PlatformPixel::packed_shifts(),
-        Some(PlatformColorCube::PACKED_SHIFTS),
-        "the platform pixel and platform color cube must agree on byte order"
-    );
     compile_cell_grid_for::<PlatformPixel>(geom, default_bg)
 }
 
 impl core::fmt::Debug for Scene {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Surface(_) => f.debug_tuple("Scene::Surface").finish(),
             #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Packed(_) => f.debug_tuple("Scene::Packed").finish(),
         }
@@ -203,16 +176,11 @@ impl core::fmt::Debug for Scene {
 }
 
 impl Scene {
-    /// Render this scene into `frame` with up to `num_threads` workers.
-    ///
-    /// Packed scenes collapse their compiled manifold stripe-parallel,
-    /// finished pixels landing straight in the frame's memory; surfaces go
-    /// through the work-stealing per-batch rasterizer.
+    /// Render this scene into `frame` with up to `num_threads` workers: one
+    /// collapse call per stripe, stripes pulled by the workers, finished
+    /// pixels landing straight in the frame's memory.
     pub fn render<P: Pixel + Send>(&self, frame: &mut Frame<P>, num_threads: usize) {
         match self {
-            Self::Surface(manifold) => {
-                crate::render::rasterizer::rasterize(manifold, frame, num_threads);
-            }
             #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Packed(packed) => render_packed(packed, frame, num_threads),
         }
@@ -335,10 +303,9 @@ fn claim<'a>(
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod tests {
     use super::*;
-    use crate::render::cell_grid::CellGridPackedProgram;
     use crate::render::color::Rgba8;
-    use crate::render::color::RgbaColorCube;
     use pixelflow_core::Kernel;
+    use std::sync::Arc;
 
     /// A 2×2 grid of solid/half tiles; oracle is the scalar blend math.
     fn scene() -> Scene {
@@ -363,11 +330,7 @@ mod tests {
             frame_w: 10,
             frame_h: 10,
         };
-        let program = CellGridPackedProgram::compile(
-            geom,
-            [0.25, 0.25, 0.25, 1.0],
-            RgbaColorCube::PACKED_SHIFTS,
-        );
+        let program = compile_cell_grid_for::<Rgba8>(geom, [0.25, 0.25, 0.25, 1.0]);
         #[rustfmt::skip]
         let cells = vec![
             // (0,0): solid tile, red on black
@@ -590,6 +553,7 @@ mod tests {
 mod pixel_format_tests {
     use super::*;
     use crate::render::color::{Bgra8, Rgba8};
+    use std::sync::Arc;
 
     /// The kernel packs for one byte order and the frame stores raw words,
     /// so a mismatched frame format would swap R and B in every pixel. The

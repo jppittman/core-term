@@ -260,7 +260,8 @@ pub enum EngineEventData {
     /// # Example Use
     ///
     /// Use `target_timestamp` to animate content that should be time-accurate.
-    /// Render a manifold that interpolates based on the time delta.
+    /// Send the compiled scene on the plane that timestamp names
+    /// (`PackedFrame::on_slice`) rather than recompiling it per frame.
     RequestFrame {
         timestamp: std::time::Instant,
         target_timestamp: std::time::Instant,
@@ -277,61 +278,51 @@ pub enum EngineEventData {
 ///
 /// When the application sends a frame, it establishes a contract:
 /// - **Precondition**: Application received a `RequestFrame` event
-/// - **Action**: Engine buffers the manifold and renders it to the window
+/// - **Action**: Engine buffers the scene and renders it to the window
 /// - **Postcondition**: Pixels are on screen at the next VSync
 /// - **Blocking**: May block if buffer is full, but high-priority (won't be dropped)
 ///
-/// # Generic Type Parameter
-///
-/// The pixel type `P` is kept for API compatibility but is unused in practice.
-/// All rendering is done via manifolds that produce `Discrete` (packed RGBA u32 pixels).
 pub enum AppData {
     /// Render a [`Scene`](pixelflow_graphics::render::scene::Scene) to the
     /// window.
     ///
     /// # Contract
     ///
-    /// **Sender** (Application): Provides the scene — normally
-    /// `Scene::Packed` (four channel kernels compiled into one program over
-    /// the frame's lattice, baked one collapse call per stripe), or the
-    /// leftover `Scene::Surface` lane (an `Arc<dyn Manifold<Output =
-    /// Discrete>>`; `.into()` converts one directly).
+    /// **Sender** (Application): Provides the scene — four channel kernels
+    /// compiled into one program over the frame's lattice, with the pixel
+    /// pack inside the kernel.
     ///
     /// **Receiver** (Engine): Renders the scene into the frame buffer and
     /// presents it. The scene is rendered fresh for each submission, so it
     /// can be animated or interactive.
     ///
-    /// # Coordinate spaces
+    /// # Coordinate space
     ///
-    /// `Surface` scenes are authored in point space: on HiDPI displays the
-    /// engine contramaps them by points/pixels so the author stays
-    /// scale-agnostic. `Packed` scenes are DEVICE-PIXEL space by
-    /// construction — their kernels were compiled against the frame's own
-    /// lattice, so an author working in points precomposed the embedding with
-    /// `Kernel::at` before compiling, and the engine applies no transform.
+    /// A scene is DEVICE-PIXEL space by construction — its kernels were
+    /// compiled against a frame's own lattice, so an author working in points
+    /// precomposed the embedding with `Kernel::at` before compiling, and the
+    /// engine applies no transform of its own.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// use pixelflow_graphics::Color;
-    /// use std::sync::Arc;
+    /// use pixelflow_graphics::render::scene::{constant_platform_scene, Scene};
     ///
-    /// // A solid color as the generic surface lane.
-    /// let red = Color::Named(NamedColor::Red);
-    /// let manifold = Arc::new(red) as Arc<dyn Manifold<Output = Discrete> + Send + Sync>;
-    /// tx.send(Message::Data(AppData::RenderSurface(manifold.into())))?;
+    /// // A solid colour at the frame's size.
+    /// tx.send(Message::Data(AppData::RenderSurface(
+    ///     constant_platform_scene([1.0, 0.0, 0.0, 1.0], [width, height]),
+    /// )))?;
     ///
-    /// // A packed program over the frame lattice: the production path.
+    /// // Any other scene is the same shape: a compiled program, bound.
     /// tx.send(Message::Data(AppData::RenderSurface(Scene::Packed(frame))))?;
     /// ```
     ///
     /// # Performance Notes
     ///
-    /// - `Surface`: evaluated per batch through the `Manifold` trait, every
-    ///   frame, every pixel — keep expressions closed-form; expensive
-    ///   evaluation causes frame drops.
-    /// - `Packed`: one internal-loop JIT call per stripe, pack included —
-    ///   the production path.
+    /// One internal-loop JIT call per stripe, pack included, stripes pulled
+    /// by the render workers. Compiling a scene is what costs — do it on
+    /// resize, not per frame; a value that changes every frame belongs on a
+    /// coordinate (`PackedFrame::on_slice`), not in a constant.
     RenderSurface(pixelflow_graphics::render::scene::Scene),
 
     /// Skip this frame (no rendering needed).

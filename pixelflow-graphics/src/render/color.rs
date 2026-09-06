@@ -4,15 +4,13 @@
 //! This module provides:
 //! - **Semantic colors**: `Color` enum for high-level specification
 //! - **Pixel formats**: `Rgba8`, `Bgra8` for framebuffer storage
-//! - **Color manifolds**: `ColorManifold`, `Grayscale`, `ColorCube` for functional color composition
 //!
-//! For color manifolds, use `pixelflow_core::{Rgba, Red, Green, Blue, Alpha}`.
+//! A colour *output* is not here: it is four channel kernels packed by
+//! [`Pixel::packed_shifts`] inside the compiled scene
+//! (`render::scene::compile_packed_for`). This module is the semantic input
+//! side and the framebuffer storage side, and nothing between them.
 
 use bitflags::bitflags;
-use pixelflow_core::{At, Discrete, Field, Manifold, ManifoldCompat};
-
-/// The standard 4D Field domain type.
-type Field4 = (Field, Field, Field, Field);
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -78,26 +76,6 @@ impl NamedColor {
     }
 }
 
-// Make NamedColor a manifold - an infinite field of that ANSI color
-impl pixelflow_core::Manifold<Field4> for NamedColor {
-    type Output = pixelflow_core::Discrete;
-
-    #[inline(always)]
-    fn eval(&self, p: Field4) -> pixelflow_core::Discrete {
-        let (x, y, z, w) = p;
-        let (r, g, b) = self.to_rgb();
-        // Use RGBA ColorCube terminal object directly
-        RgbaColorCube::default()
-            .at(
-                Field::from(r as f32 / 255.0),
-                Field::from(g as f32 / 255.0),
-                Field::from(b as f32 / 255.0),
-                Field::from(1.0),
-            )
-            .eval_raw(x, y, z, w)
-    }
-}
-
 /// Represents a semantic color value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -139,25 +117,6 @@ impl Color {
             rgba.b() as f32 / 255.0,
             rgba.a() as f32 / 255.0,
         )
-    }
-}
-
-// Make Color a manifold - an infinite field of that color
-impl pixelflow_core::Manifold<Field4> for Color {
-    type Output = pixelflow_core::Discrete;
-
-    #[inline(always)]
-    fn eval(&self, p: Field4) -> pixelflow_core::Discrete {
-        let (x, y, z, w) = p;
-        let (r, g, b, a) = self.to_f32_rgba();
-        RgbaColorCube::default()
-            .at(
-                Field::from(r),
-                Field::from(g),
-                Field::from(b),
-                Field::from(a),
-            )
-            .eval_raw(x, y, z, w)
     }
 }
 
@@ -440,112 +399,8 @@ pub type CocoaPixel = Rgba8;
 /// Pixel format for Web (ImageData).
 pub type WebPixel = Rgba8;
 
-// =============================================================================
-// Color Manifolds
-// =============================================================================
-
-/// The RGBA color cube as a terminal object.
-///
-/// Every color manifold factors through ColorCube via At:
-///
-/// ```text
-///                    At<coords>
-/// YourColorType  ─────────────────→  ColorCube  ───→  Discrete
-/// ```
-///
-/// # Universal Property
-///
-/// For any manifold M that produces a color, there exists a unique
-/// factorization M = At<ColorCube, r, g, b, a> where r,g,b,a are
-/// the channel expressions.
-///
-/// # Generic Parameters
-///
-/// - `RedVar`: Coordinate variable for red channel (X for RGBA, Z for BGRA)
-/// - `GreenVar`: Coordinate variable for green channel (Y for both)
-/// - `BlueVar`: Coordinate variable for blue channel (Z for RGBA, X for BGRA)
-/// - `AlphaVar`: Coordinate variable for alpha channel (W for both)
-#[derive(Clone, Copy, Debug)]
-pub struct ColorCube<RedVar, GreenVar, BlueVar, AlphaVar> {
-    _phantom: core::marker::PhantomData<(RedVar, GreenVar, BlueVar, AlphaVar)>,
-}
-
-impl<R, G, B, A> Default for ColorCube<R, G, B, A> {
-    fn default() -> Self {
-        Self {
-            _phantom: core::marker::PhantomData,
-        }
-    }
-}
-
-impl<R, G, B, A> Manifold<Field4> for ColorCube<R, G, B, A>
-where
-    R: Manifold<Field4, Output = Field> + Default,
-    G: Manifold<Field4, Output = Field> + Default,
-    B: Manifold<Field4, Output = Field> + Default,
-    A: Manifold<Field4, Output = Field> + Default,
-{
-    type Output = Discrete;
-
-    #[inline(always)]
-    fn eval(&self, p: Field4) -> Discrete {
-        let (x, y, z, w) = p;
-        // Evaluate each channel variable to extract the appropriate coordinate
-        let r = R::default().eval_raw(x, y, z, w);
-        let g = G::default().eval_raw(x, y, z, w);
-        let b = B::default().eval_raw(x, y, z, w);
-        let a = A::default().eval_raw(x, y, z, w);
-
-        // pack() always produces RGBA byte order
-        // Channel swapping happens via the variable mapping above
-        Discrete::pack(r, g, b, a)
-    }
-}
-
-/// RGBA byte order color cube (macOS, most platforms).
-///
-/// Maps coordinates to channels: X→Red, Y→Green, Z→Blue, W→Alpha
-pub type RgbaColorCube = ColorCube<
-    pixelflow_core::variables::X,
-    pixelflow_core::variables::Y,
-    pixelflow_core::variables::Z,
-    pixelflow_core::variables::W,
->;
-
-/// BGRA byte order color cube (Linux/X11).
-///
-/// Maps coordinates to channels: Z→Red, Y→Green, X→Blue, W→Alpha
-pub type BgraColorCube = ColorCube<
-    pixelflow_core::variables::Z,
-    pixelflow_core::variables::Y,
-    pixelflow_core::variables::X,
-    pixelflow_core::variables::W,
->;
-
-impl RgbaColorCube {
-    /// Bit position of each `(r, g, b, a)` channel in this cube's packed
-    /// `u32` pixel. Derived from `Rgba8::new`'s `u32::from_le_bytes([r, g,
-    /// b, a])`: r is byte 0. The JIT packed cell-grid kernel takes these, so
-    /// byte order has exactly one home — if the kernel pack and
-    /// `Pixel::from_rgba` ever disagreed, they would have to disagree in
-    /// this file (`packed_shifts_agree_with_pixel_from_rgba` pins it).
-    pub const PACKED_SHIFTS: [u32; 4] = [0, 8, 16, 24];
-}
-
-// The cube constants and the `Pixel` impls above state one fact; this pins
-// them to each other so a future edit cannot move only one.
-const _: () = assert!(RgbaColorCube::PACKED_SHIFTS[0] == 0);
-const _: () = assert!(BgraColorCube::PACKED_SHIFTS[0] == 16);
-
-impl BgraColorCube {
-    /// Bit position of each `(r, g, b, a)` channel — `Bgra8::new` stores
-    /// `[b, g, r, a]`, so r is byte 2. See [`RgbaColorCube::PACKED_SHIFTS`].
-    pub const PACKED_SHIFTS: [u32; 4] = [16, 8, 0, 24];
-}
-
-/// The platform's framebuffer pixel format — the same choice
-/// [`PlatformColorCube`] makes, for code that needs the `Pixel` type rather
-/// than the cube.
+/// The platform's framebuffer pixel format, and with it the byte order every
+/// packed kernel packs for ([`Pixel::packed_shifts`]).
 #[cfg(target_os = "macos")]
 pub type PlatformPixel = Rgba8;
 
@@ -557,90 +412,6 @@ pub type PlatformPixel = Bgra8;
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub type PlatformPixel = Rgba8;
 
-/// Platform-appropriate ColorCube (handles byte order based on target OS).
-///
-/// - macOS: RGBA byte order
-/// - Linux: BGRA byte order (X11)
-/// - Other: RGBA byte order (default)
-#[cfg(target_os = "macos")]
-pub type PlatformColorCube = RgbaColorCube;
-
-#[cfg(target_os = "linux")]
-pub type PlatformColorCube = BgraColorCube;
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub type PlatformColorCube = RgbaColorCube;
-
-impl<RedVar, GreenVar, BlueVar, AlphaVar> ColorCube<RedVar, GreenVar, BlueVar, AlphaVar> {
-    /// Create a color manifold from channel manifolds.
-    ///
-    /// This is a convenience constructor for `At<ColorCube, ...>`.
-    ///
-    /// # Example
-    /// ```ignore
-    /// use pixelflow_graphics::RgbaColorCube;
-    /// use pixelflow_core::X;
-    ///
-    /// let grad = RgbaColorCube::default().at(X, 0.0, 0.0, 1.0);
-    /// ```
-    #[inline(always)]
-    pub fn at<R, G, B, A>(self, r: R, g: G, b: B, a: A) -> At<R, G, B, A, Self> {
-        At {
-            inner: self,
-            x: r,
-            y: g,
-            z: b,
-            w: a,
-        }
-    }
-}
-
-/// Grayscale: lifts a scalar to R=G=B, A=1.
-///
-/// Convenience for the common pattern:
-/// ```ignore
-/// At { inner: RgbaColorCube, x: v, y: v, z: v, w: 1.0 }
-/// ```
-///
-/// Defaults to RGBA byte order. For platform-specific byte order, use the
-/// runtime's PlatformColorCube re-export.
-pub type Grayscale<M> = At<M, M, M, Field, RgbaColorCube>;
-
-/// Create a grayscale manifold (RGBA byte order).
-#[allow(non_snake_case)]
-#[inline(always)]
-pub fn Grayscale<M: Manifold + Clone>(m: M) -> Grayscale<M> {
-    At {
-        inner: RgbaColorCube::default(),
-        x: m.clone(),
-        y: m.clone(),
-        z: m.clone(),
-        w: Field::from(1.0),
-    }
-}
-
-/// Composes 4 Field manifolds into a single RGBA output.
-///
-/// Type alias for `At<R, G, B, A, RgbaColorCube>`.
-///
-/// Defaults to RGBA byte order. For platform-specific byte order, use the
-/// runtime's PlatformColorCube re-export.
-pub type ColorManifold<R, G, B, A> = At<R, G, B, A, RgbaColorCube>;
-
-/// Create a new color manifold from four channel manifolds (RGBA byte order).
-///
-/// This replaces `color_manifold`.
-#[inline(always)]
-pub fn color_manifold<R, G, B, A>(r: R, g: G, b: B, a: A) -> ColorManifold<R, G, B, A> {
-    At {
-        inner: RgbaColorCube::default(),
-        x: r,
-        y: g,
-        z: b,
-        w: a,
-    }
-}
-
 // =============================================================================
 // Tests
 // =============================================================================
@@ -648,9 +419,10 @@ pub fn color_manifold<R, G, B, A>(r: R, g: G, b: B, a: A) -> ColorManifold<R, G,
 #[cfg(test)]
 mod tests {
 
-    /// The cube's shift table and the scalar `Pixel::from_rgba` are the same
-    /// byte-order fact stated twice; this pins them to each other so the JIT
-    /// pack (which consumes the shifts) can never drift from the scalar pack.
+    /// [`Pixel::packed_shifts`] and the scalar [`Pixel::from_rgba`] are the
+    /// same byte-order fact stated twice; this pins them to each other so the
+    /// JIT pack (which consumes the shifts) can never drift from the scalar
+    /// pack.
     #[test]
     fn packed_shifts_agree_with_pixel_from_rgba() {
         fn pack(shifts: [u32; 4], r: f32, g: f32, b: f32, a: f32) -> u32 {
@@ -665,13 +437,25 @@ mod tests {
         for (r, g, b, a) in samples {
             assert_eq!(
                 Rgba8::from_rgba(r, g, b, a).0,
-                pack(RgbaColorCube::PACKED_SHIFTS, r, g, b, a),
-                "Rgba8 disagrees with RgbaColorCube::PACKED_SHIFTS"
+                pack(
+                    Rgba8::packed_shifts().expect("Rgba8 is packed RGBA"),
+                    r,
+                    g,
+                    b,
+                    a
+                ),
+                "Rgba8 disagrees with its own packed_shifts"
             );
             assert_eq!(
                 Bgra8::from_rgba(r, g, b, a).0,
-                pack(BgraColorCube::PACKED_SHIFTS, r, g, b, a),
-                "Bgra8 disagrees with BgraColorCube::PACKED_SHIFTS"
+                pack(
+                    Bgra8::packed_shifts().expect("Bgra8 is packed RGBA"),
+                    r,
+                    g,
+                    b,
+                    a
+                ),
+                "Bgra8 disagrees with its own packed_shifts"
             );
             assert_eq!(
                 <u32 as Pixel>::from_rgba(r, g, b, a),
@@ -716,42 +500,24 @@ mod tests {
         assert_eq!(bgra.a(), 0xFF);
     }
 
+    /// A named colour's `[0, 1]` channels are what a scene's four constant
+    /// channel kernels are built from, so this is the number the pack sees.
+    /// That those channels reach the frame as bytes is
+    /// `tests/rendering_contract.rs`.
     #[test]
-    fn named_color_manifold() {
-        use pixelflow_core::{materialize_discrete, PARALLELISM};
-        let red = NamedColor::Red;
-        let mut out = vec![0u32; PARALLELISM];
-        materialize_discrete(&red, 0.0, 0.0, &mut out);
-
-        let val = out[0];
-        let r = (val & 0xFF) as f32 / 255.0;
-        let g = ((val >> 8) & 0xFF) as f32 / 255.0;
-        let b = ((val >> 16) & 0xFF) as f32 / 255.0;
-        let a = ((val >> 24) & 0xFF) as f32 / 255.0;
-
-        // Red is (205, 0, 0) -> (0.8039, 0, 0)
-        assert!((r - 205.0 / 255.0).abs() < 1e-2);
-        assert!((g - 0.0).abs() < 1e-2);
-        assert!((b - 0.0).abs() < 1e-2);
-        assert!((a - 1.0).abs() < 1e-2);
+    fn named_color_channels_are_its_ansi_rgb() {
+        let (r, g, b, a) = Color::Named(NamedColor::Red).to_f32_rgba();
+        // ANSI red is (205, 0, 0), opaque.
+        assert!((r - 205.0 / 255.0).abs() < 1e-6);
+        assert_eq!((g, b, a), (0.0, 0.0, 1.0));
     }
 
     #[test]
-    fn verify_color_manifold() {
-        use pixelflow_core::{materialize_discrete, PARALLELISM};
-        let c = Color::Rgb(10, 20, 30);
-        let mut out = vec![0u32; PARALLELISM];
-        materialize_discrete(&c, 0.0, 0.0, &mut out);
-
-        let val = out[0];
-        let r = (val & 0xFF) as f32 / 255.0;
-        let g = ((val >> 8) & 0xFF) as f32 / 255.0;
-        let b = ((val >> 16) & 0xFF) as f32 / 255.0;
-        let a = ((val >> 24) & 0xFF) as f32 / 255.0;
-
-        assert!((r - 10.0 / 255.0).abs() < 1e-2);
-        assert!((g - 20.0 / 255.0).abs() < 1e-2);
-        assert!((b - 30.0 / 255.0).abs() < 1e-2);
-        assert!((a - 1.0).abs() < 1e-2);
+    fn true_color_channels_are_its_bytes() {
+        let (r, g, b, a) = Color::Rgb(10, 20, 30).to_f32_rgba();
+        assert!((r - 10.0 / 255.0).abs() < 1e-6);
+        assert!((g - 20.0 / 255.0).abs() < 1e-6);
+        assert!((b - 30.0 / 255.0).abs() < 1e-6);
+        assert_eq!(a, 1.0);
     }
 }

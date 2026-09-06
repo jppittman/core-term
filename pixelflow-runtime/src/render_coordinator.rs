@@ -15,9 +15,7 @@
 use crate::display::messages::{Window, WindowMeta};
 use crate::platform::PlatformPixel;
 use actor_scheduler::mealy::Credit;
-use pixelflow_core::{At, W, X, Y, Z};
 use pixelflow_graphics::render::renderer::{RenderRequest, RenderResponse};
-use std::sync::Arc;
 use std::time::Duration;
 
 /// A scene as it travels between the app and the renderer.
@@ -234,55 +232,23 @@ impl RenderCoordinator {
     }
 }
 
-/// Bind a kernel to the buffer it will be drawn into.
+/// Pair a scene with the buffer it will be drawn into.
 ///
-/// The scene is authored in point space; the frame is the platform's sample lattice and may be
-/// denser (device pixels on HiDPI displays). The lattice embedding is the measured ratio
-/// points/pixels per axis — identity when the platform samples 1:1 (X11, non-Retina macOS).
-/// Contramapping here keeps the app scale-agnostic: platform = dimap.
-///
-/// Everything comes from the buffer itself, so the result is correct for the frame it was handed
-/// by construction — there is no separate scale to keep in step, and nothing to re-derive later.
+/// A scene is device-pixel space by construction: its kernels were compiled
+/// against a frame's own lattice, so an author working in points said so in
+/// the language — `Kernel::at` precomposition on the channel kernels — before
+/// compiling. There is nothing to contramap here, and wrapping the scene would
+/// mean recompiling its program every frame. (The HiDPI wrapper this function
+/// used to apply belonged to the per-batch `Scene::Surface` lane, which S4a
+/// deleted; `surface_scene_hidpi_warp.rs` went with it.)
 fn bind(scene: Scene, window: Window) -> RenderRequest<PlatformPixel, WindowMeta> {
     let (frame, meta) = window.tear();
-    let WindowMeta {
-        width_px,
-        height_px,
-        ..
-    } = meta;
-
     assert!(
         frame.width > 0 && frame.height > 0,
         "cannot render into an empty frame ({}x{})",
         frame.width,
         frame.height
     );
-    let point_per_px_x = width_px as f32 / frame.width as f32;
-    let point_per_px_y = height_px as f32 / frame.height as f32;
-    let scene: Scene = match scene {
-        // Point-space surfaces are contramapped into the denser device grid.
-        Scene::Surface(manifold) => {
-            if point_per_px_x == 1.0 && point_per_px_y == 1.0 {
-                Scene::Surface(manifold)
-            } else {
-                Scene::Surface(Arc::new(At {
-                    inner: manifold,
-                    x: X * point_per_px_x,
-                    y: Y * point_per_px_y,
-                    z: Z,
-                    w: W,
-                }))
-            }
-        }
-        // A packed scene is device-pixel space by construction: its kernel
-        // was compiled against this frame's own lattice, so an author working
-        // in points said so in the language — `Kernel::at` precomposition on
-        // the channel kernels — before compiling. There is nothing left to
-        // wrap here, and wrapping would mean recompiling the program every
-        // frame.
-        Scene::Packed(packed) => Scene::Packed(packed),
-    };
-
     RenderRequest { scene, frame, meta }
 }
 

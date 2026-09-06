@@ -122,28 +122,13 @@ pub fn create_recycle_channel<T: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_core::Discrete;
-    use pixelflow_core::Field;
-    use pixelflow_core::Manifold;
 
-    // A minimal test surface
+    /// A minimal payload. `FramePacket` is generic over anything `Send`, and
+    /// what these tests exercise is the channel protocol — submit, receive,
+    /// recycle — not what is being carried.
     #[derive(Clone, Copy)]
     struct TestSurface {
         color: f32,
-    }
-
-    type Field4 = (Field, Field, Field, Field);
-
-    impl Manifold<Field4> for TestSurface {
-        type Output = Discrete;
-        fn eval(&self, _p: Field4) -> Discrete {
-            Discrete::pack(
-                Field::from(self.color),
-                Field::from(self.color),
-                Field::from(self.color),
-                Field::from(1.0),
-            )
-        }
     }
 
     #[test]

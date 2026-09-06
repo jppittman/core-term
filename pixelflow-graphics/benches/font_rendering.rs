@@ -5,9 +5,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use pixelflow_core::Lattice;
 use pixelflow_graphics::fonts::{text, CachedText, Font, GlyphCache};
-use pixelflow_graphics::render::color::{Grayscale, Rgba8};
-use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::rasterize;
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
@@ -75,17 +72,20 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
         });
     });
 
-    // Cached: CachedText composes baked glyph samplers and rasterizes as an
-    // ordinary manifold.
+    // Cached: `CachedText` composes already-baked glyph samplers, so what is
+    // timed here is the gather, against the uncached row's curve solve over
+    // the same lattice. It is the one caller of `Lattice::collapse` left
+    // outside `CachedGlyph`'s own tests, and it moves with them when S4b
+    // retargets `collapse` onto a compiled manifold.
     group.bench_function("cached_HELLO", |b| {
         let mut cache = GlyphCache::new();
         let cached = CachedText::new(&font, &mut cache, "HELLO", 20.0, 1.0);
-        let colored = Grayscale(cached);
+        let lattice = Lattice {
+            extent: [100, 30, 1, 1],
+            origin: [0.5, 0.5, 0.0, 0.0],
+        };
 
-        b.iter(|| {
-            let mut frame = Frame::<Rgba8>::new(100, 30);
-            rasterize(black_box(&colored), black_box(&mut frame), 1);
-        });
+        b.iter(|| black_box(lattice.collapse(black_box(&cached))));
     });
 
     // Measure cache warm-up overhead (bakes one fused kernel per glyph).
