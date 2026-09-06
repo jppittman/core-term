@@ -14,6 +14,7 @@ pub mod collapse_bench;
 pub mod jit_bench;
 pub mod journal;
 pub mod oracle_lowering;
+pub mod poly;
 pub mod schema;
 pub mod shader_bench;
 
