@@ -253,11 +253,13 @@ this host, SSE2, single thread:
 
 - Floor and sky alone: surface 9.7, packed 18.6 ns/px. With a *constant*
   filter width the packed kernel is 10.3 — so everything except the
-  derivatives is at parity, and exact symbolic AA costs ~8 ns/px where the
-  jet tier's forward-mode jets cost ~2. Symbolic `dx()`/`dy()` of a hit
-  point re-enters every division and square root through the quotient and
-  `0.5·rsqrt(u)·u'` rules, where a jet carries `(val, dx, dy)` through each
-  op once.
+  derivatives is at parity, and two exact partials of the hit pipeline cost
+  ~8 ns/px on a ~10 ns/px value computation. (This block first read that as
+  "4× a forward-mode jet". It is not: the jet figure was inferred by
+  subtraction, never measured, and the jet tier's derivatives were the
+  degenerate ones this stage found — a ~540 px filter and a non-unit normal
+  — which LLVM folds away. 0.8× the value cost for two partials is inside
+  the forward-mode bound; see the S4b-2 block's open items.)
 - The chrome scene doubles that: `select(hit, world(R), world(D))` computes
   both worlds in every lane, while the combinator tier's `Select` evaluates
   a branch **only when some lane in the batch needs it** — the sphere
@@ -308,11 +310,12 @@ local, and both should land:
    several times without packing — a masked field, say — and is not needed
    here.)
 
-The derivative cost is the other half and is measured separately: symbolic
-`dx()`/`dy()` of a hit point costs ~4× a forward-mode jet on this host, and
-whether that is the derivative rules re-entering `Recip`/`Rsqrt` estimate
-chains, or the class cap starving CSE of the expanded derivative, is a
-question for `collapse_cost` (docs/plans/2026-09-01-schedule-cost-model-denotation.md §9),
+The derivative cost is the other half and is measured separately: two
+partials of a hit point cost ~0.8× the value computation on this host —
+inside the forward-mode bound, so not a defect — and whether the remaining
+constant factor is the `Sqrt` rule's fresh `Rsqrt` estimate chain or the
+class cap starving CSE of the expanded derivative is a question for
+`collapse_cost` (docs/plans/2026-09-01-schedule-cost-model-denotation.md §9),
 not for a guess. Gate for S3b: the chrome scene, packed ≥ surface at every
 thread count on both tiers — the acceptance S3 did not meet — and S4 does
 not begin until it is.
@@ -462,8 +465,8 @@ sign test.
 
 **What remains for S4 and after.** Guard grouping by mask, for kernels that
 select one condition several times without packing. The derivative cost —
-symbolic `dx()`/`dy()` at ~4× a forward-mode jet — which this stage did not
-need and did not touch. And mask coherence as a cost-model term: the
+two partials at ~0.8× the value cost, with one known constant factor to
+recover — which this stage did not need and did not touch. And mask coherence as a cost-model term: the
 clustering decision is made statically today by bounding the downside,
 which is sound and leaves the upside unclaimed.
 
@@ -1089,12 +1092,20 @@ do, each a separate question rather than unfinished work here:
    *without* packing — a masked field, say — gets one guard per select where it
    could have one for the group. Not needed for a colour, which is one select
    since S3b, and measured to be not this stage's lever.
-2. **The derivative cost.** Symbolic `dx()`/`dy()` of a hit point costs ~4× a
-   forward-mode jet on this host, because the rules re-enter every division and
-   square root through the quotient and `0.5·rsqrt(u)·u'` forms. S3b did not
-   need to touch it and neither did this stage — but the jet tier that was the
-   comparison is now deleted, so a future measurement has to state the cost in
-   absolute terms (`collapse_cost`) rather than against a second implementation.
+2. **The derivative cost.** Two exact partials of the chrome hit pipeline cost
+   ~0.8× its value computation (S3: 18.6 vs 10.3 ns/px with a constant filter
+   width). That is inside the forward-mode bound — a jet carrying two partials
+   through the same ops does the same multiplies, and symbolic differentiation
+   with hash-consing shares the same intermediates — so it is not a defect,
+   and the "4× a forward-mode jet" earlier blocks recorded was a comparison
+   against a number that was never measured: the jet tier's ~2 ns was
+   inferred by subtraction, and its derivatives were the degenerate ones S3
+   found (a ~540 px filter, a non-unit normal), which LLVM folds away. What
+   is real is a constant factor: `lower_dwrt`'s `Sqrt` rule pushes a fresh
+   `Rsqrt(u)` estimate chain rather than sharing anything with the value's
+   `Sqrt(u)`, and the chrome kernel hits the runtime class cap after two
+   iterations, so the e-graph barely rewrites the expansion. Both are
+   `collapse_cost` measurements before they are changes.
 3. **Mask coherence as a cost-model term.** Whether a mask is uniform per batch
    often enough for a branch to fire and to predict is *data*, and the guard
    decision is made statically today by bounding the downside
