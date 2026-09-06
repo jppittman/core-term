@@ -29,7 +29,6 @@ pixelflow-ir = { path = "../pixelflow-ir" }
 # pixelflow-search without the feature.
 pixelflow-search = { path = "../pixelflow-search", features = ["provenance-journal"] }
 pixelflow-core = { path = "../pixelflow-core" }
-pixelflow-compiler = { path = "../pixelflow-compiler" }
 # The collapse-cost corpus is led by the glyph kernels core-term bakes, and
 # `collapse_cost capture` builds them through the same `Font`/`GlyphAtlas`
 # production does — so the fixture is production's kernels, not a restatement
@@ -45,17 +44,7 @@ pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
-pixelflow-compiler = { path = "../pixelflow-compiler" }
 pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
-
-[[bench]]
-name = "nnue_training_suite"
-harness = false
-
-[[bench]]
-name = "macro_bench"
-harness = false
-
 
 [[bin]]
 name = "collapse_cost"

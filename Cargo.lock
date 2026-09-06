@@ -917,7 +917,6 @@ dependencies = [
  "libc",
  "libm",
  "pixelflow-codegen",
- "pixelflow-compiler",
  "pixelflow-core",
  "pixelflow-graphics",
  "pixelflow-ir",
