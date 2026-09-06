@@ -592,11 +592,17 @@ fn mullet_vs_3channel_comparison() {
     );
 }
 
-/// Benchmark: Compare work-stealing vs single-threaded at 1080p
+/// Work-stealing rasterization must produce the same pixels as
+/// single-threaded, regardless of thread count. The throughput/speedup
+/// comparison this used to also do belongs to a benchmark, not a test — it
+/// now lives in `benches/work_stealing.rs`, which only runs postsubmit
+/// (docs/POSTSUBMIT.md: `cargo bench --workspace --benches`, never invoked
+/// presubmit). Kept small here so the correctness property stays covered on
+/// every PR without paying full-1080p render cost twice per run.
 #[test]
-fn work_stealing_benchmark() {
-    const W: usize = 1920;
-    const H: usize = 1080;
+fn work_stealing_matches_single_threaded() {
+    const W: usize = 64;
+    const H: usize = 64;
 
     // Build scene
     let world = ColorSurface {
@@ -645,27 +651,12 @@ fn work_stealing_benchmark() {
         height: H as f32,
     };
 
-    // Single-threaded baseline
     let mut frame1 = Frame::<Rgba8>::new(W as u32, H as u32);
-    let start1 = std::time::Instant::now();
     rasterize(&renderable, &mut frame1, 1);
-    let single = start1.elapsed();
 
-    // Work-stealing with 12 threads
     let mut frame2 = Frame::<Rgba8>::new(W as u32, H as u32);
-    let start2 = std::time::Instant::now();
     rasterize(&renderable, &mut frame2, 12);
-    let parallel = start2.elapsed();
 
-    let speedup = single.as_secs_f64() / parallel.as_secs_f64();
-    let mpps = (W * H) as f64 / parallel.as_secs_f64() / 1_000_000.0;
-
-    println!("Single-threaded: {:?}", single);
-    println!("Work-stealing (12 threads): {:?}", parallel);
-    println!("Speedup: {:.2}x", speedup);
-    println!("Throughput: {:.2} Mpix/s", mpps);
-
-    // Verify correctness
     assert_eq!(
         frame1.data, frame2.data,
         "Parallel output must match single-threaded"

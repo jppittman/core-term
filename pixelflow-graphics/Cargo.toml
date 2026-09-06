@@ -56,6 +56,10 @@ harness = false
 name = "kernel_bench"
 harness = false
 
+[[bench]]
+name = "work_stealing"
+harness = false
+
 [features]
 default = []
 freetype = ["dep:freetype-rs"]
