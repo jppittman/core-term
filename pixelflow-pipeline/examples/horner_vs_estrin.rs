@@ -16,10 +16,10 @@
 //!   critical path is the whole cost. Estrin's best case.
 //! - `Throughput`: independent evaluations, one per call. The out-of-order
 //!   window overlaps them across a call boundary production does not pay.
-//! - `Tile`: one call per 64-group tile, the kernel's own emitted loop
-//!   supplying the independent evaluations. **This is what `Lattice::bake` and
-//!   the render pool run**, and the only regime whose answer is a shipping
-//!   decision.
+//! - `Scanline`: one call per 64-group row, the kernel's own emitted loop
+//!   supplying the independent evaluations over one contiguous, ascending
+//!   address stream. **This is the shape `Lattice`'s collapse runs**, and the
+//!   only regime whose answer is a shipping decision.
 //!
 //! Also priced: the four polynomials production actually evaluates
 //! (`SIN_CHEB`, `EXP2_POLY`, `LOG2_POLY`, `ATAN_MINIMAX`) at their real degrees
@@ -274,14 +274,18 @@ struct Row {
 }
 
 impl Row {
-    /// Tile-mode ratio on RAW ns: end-to-end cost, the number a shipping
+    /// Scanline-mode ratio on RAW ns: end-to-end cost, the number a shipping
     /// decision is made on.
-    fn tile_ratio(&self) -> f64 {
+    fn scanline_ratio(&self) -> f64 {
         self.ns[2][0] / self.ns[2][1]
     }
 }
 
-const MODES: [BenchMode; 3] = [BenchMode::Latency, BenchMode::Throughput, BenchMode::Tile];
+const MODES: [BenchMode; 3] = [
+    BenchMode::Latency,
+    BenchMode::Throughput,
+    BenchMode::Scanline,
+];
 const FORMS: [PolyForm; 2] = [PolyForm::Horner, PolyForm::Estrin];
 
 fn bench_one(
@@ -338,7 +342,7 @@ fn print_header() {
         "spills",
         "latency ns",
         "throughput ns",
-        "tile ns",
+        "scanline ns",
         "max err"
     );
     println!(
@@ -392,10 +396,10 @@ fn main() {
     let model = CostModel::latency_prior();
     let mut session = BenchSession::new();
     println!(
-        "# session: overhead latency={:.3}ns throughput={:.3}ns tile={:.4}ns sentinel={:.3}ns",
+        "# session: overhead latency={:.3}ns throughput={:.3}ns scanline={:.4}ns sentinel={:.3}ns",
         session.call_overhead_ns(BenchMode::Latency),
         session.call_overhead_ns(BenchMode::Throughput),
-        session.call_overhead_ns(BenchMode::Tile),
+        session.call_overhead_ns(BenchMode::Scanline),
         session.calibration_ns(),
     );
     println!(
@@ -405,7 +409,7 @@ fn main() {
     println!(
         "# table ns are per evaluation per lane, MINUS this session's identity-kernel \
          overhead for the mode;\n# (H÷E) above 1 means Estrin is faster. The verdict \
-         section quotes raw (unadjusted) tile ns."
+         section quotes raw (unadjusted) scanline ns."
     );
 
     println!("\n## degree sweep (synthetic, well-conditioned coefficients)");
@@ -475,9 +479,9 @@ fn main() {
         }
     }
 
-    // The decision line: tile mode is production's regime, so its ratio is the
-    // one that would justify (or refuse) a change to `passes::horner_step`.
-    println!("\n## verdict (tile = the loop `compile` emits, the one production runs)");
+    // The decision line: scanline mode is production's regime, so its ratio is
+    // the one that would justify (or refuse) a change to `passes::horner_step`.
+    println!("\n## verdict (scanline = the contiguous row `compile` emits)");
     for row in sweep.iter().chain(production.iter()) {
         let [h, e] = row.ns[2];
         let verdict = if e < h * 0.98 {
@@ -488,11 +492,11 @@ fn main() {
             "tie"
         };
         println!(
-            "{:<8} n={:<3} tile {h:.3}ns vs {e:.3}ns → {verdict:<6} ({:.2}x)  \
+            "{:<8} n={:<3} scanline {h:.3}ns vs {e:.3}ns → {verdict:<6} ({:.2}x)  \
              [latency {:.2}x adj, {}/{} code bytes, sum-cost prefers {}]",
             row.label,
             row.degree,
-            row.tile_ratio(),
+            row.scanline_ratio(),
             row.adj[0][0] / row.adj[0][1],
             row.bytes[0],
             row.bytes[1],
