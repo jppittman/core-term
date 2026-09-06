@@ -57,13 +57,11 @@ pub(crate) mod coverage;
 pub mod executable;
 mod guards;
 pub mod regalloc;
-pub mod traffic;
 pub mod x86_64;
 
 use pixelflow_ir::kind::OpKind;
 
 use guards::analyze_select_guards;
-use traffic::{Counting, EmitTraffic, ScopeTraffic};
 
 use alloc::vec::Vec;
 
@@ -531,10 +529,6 @@ pub struct CompileResult {
     /// once-per-call prologue (0 for per-batch kernels, and for collapse
     /// kernels with nothing to hoist).
     pub hoisted_values: u32,
-    /// What was emitted, per scope of the collapse nest — the static half of
-    /// a cost model's inputs. Counted, never optimized: see
-    /// [`traffic`](self::traffic).
-    pub traffic: EmitTraffic,
 }
 
 /// The architecture seam for the shared driver.
@@ -2058,16 +2052,11 @@ fn compile_via_backend<B: IsaBackend>(
     let body_alloc = nest.body();
     let (frame_roots, row_roots) = (frame_alloc.roots(), row_alloc.roots());
 
-    // Every byte below is emitted through this decorator, so the counts it
-    // hands back cover the whole function by construction (see `traffic`).
-    let mut counting = Counting::new(backend);
-
     if frame_roots.is_empty() && row_roots.is_empty() {
         // Nothing loop-invariant worth hoisting: the plain loop nest.
         let (body, result_reg, frame_size, spill_count) =
-            emit_dag_body_hoisted(body_alloc, &mut counting, HoistCtx::None, None)?;
-        let body_traffic = counting.take(body.len() as u32);
-        let code = counting.emit_collapse_loop(&CollapseBody {
+            emit_dag_body_hoisted(body_alloc, backend, HoistCtx::None, None)?;
+        let code = backend.emit_collapse_loop(&CollapseBody {
             frame_hoist: &[],
             row_hoist: &[],
             batch: &body,
@@ -2075,23 +2064,13 @@ fn compile_via_backend<B: IsaBackend>(
             frame_size,
             hoist_slots: 0,
         });
-        let scaffold = counting.take(code.len() as u32 - body.len() as u32);
         let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
         return Ok(CompileResult {
             code: exec,
             spill_count,
             spill_bytes: frame_size,
-            max_regs: file.scratch.len(),
+            max_regs: backend.register_file().scratch.len(),
             hoisted_values: 0,
-            traffic: EmitTraffic {
-                frame: ScopeTraffic::default(),
-                row: ScopeTraffic::default(),
-                body: body_traffic,
-                scaffold,
-                vector_bytes: file.vector_bytes,
-                pool: file.scratch.len(),
-                carried: 0,
-            },
         });
     };
 
@@ -2141,7 +2120,7 @@ fn compile_via_backend<B: IsaBackend>(
     } else {
         let (code, _, _, spills) = emit_dag_body_hoisted(
             frame_alloc,
-            &mut counting,
+            backend,
             HoistCtx::Prologue {
                 preloaded: None,
                 parked: &frame_map,
@@ -2150,13 +2129,12 @@ fn compile_via_backend<B: IsaBackend>(
         )?;
         (code, spills)
     };
-    let frame_traffic = counting.take(frame_code.len() as u32);
     let (row_code, row_spills) = if row_alloc.schedule().is_empty() {
         (Vec::new(), 0)
     } else {
         let (code, _, _, spills) = emit_dag_body_hoisted(
             row_alloc,
-            &mut counting,
+            backend,
             HoistCtx::Prologue {
                 preloaded: if frame_map.is_empty() {
                     None
@@ -2169,17 +2147,15 @@ fn compile_via_backend<B: IsaBackend>(
         )?;
         (code, spills)
     };
-    let row_traffic = counting.take(row_code.len() as u32);
     let (body, result_reg, _, body_spills) = emit_dag_body_hoisted(
         body_alloc,
-        &mut counting,
+        backend,
         HoistCtx::Body { slots: &hoist_map },
         Some(m),
     )?;
-    let body_traffic = counting.take(body.len() as u32);
 
     let hoisted_values = (frame_roots.len() + row_roots.len()) as u32;
-    let code = counting.emit_collapse_loop(&CollapseBody {
+    let code = backend.emit_collapse_loop(&CollapseBody {
         frame_hoist: &frame_code,
         row_hoist: &row_code,
         batch: &body,
@@ -2187,19 +2163,6 @@ fn compile_via_backend<B: IsaBackend>(
         frame_size: m,
         hoist_slots: hoisted_values,
     });
-    let emitted = (frame_code.len() + row_code.len() + body.len()) as u32;
-    let scaffold = counting.take(code.len() as u32 - emitted);
-    // A parked root that holds a register at the head of the scopes inside it
-    // is carried rather than reloaded per iteration — read off the placement,
-    // which is where the answer lives.
-    let carried = [(frame_alloc, frame_roots), (row_alloc, row_roots)]
-        .into_iter()
-        .flat_map(|(alloc, roots)| {
-            roots
-                .iter()
-                .filter(move |vid| alloc.carried(**vid).is_some())
-        })
-        .count() as u32;
     let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
     Ok(CompileResult {
         code: exec,
@@ -2207,15 +2170,6 @@ fn compile_via_backend<B: IsaBackend>(
         spill_bytes: m,
         max_regs: file.scratch.len(),
         hoisted_values,
-        traffic: EmitTraffic {
-            frame: frame_traffic,
-            row: row_traffic,
-            body: body_traffic,
-            scaffold,
-            vector_bytes: file.vector_bytes,
-            pool: file.scratch.len(),
-            carried,
-        },
     })
 }
 
