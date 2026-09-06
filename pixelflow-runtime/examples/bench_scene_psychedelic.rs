@@ -26,6 +26,7 @@ use pixelflow_core::{Field, Kernel};
 use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::scene::{compile_packed_for, Scene};
 use pixelflow_graphics::render::Frame;
+use pixelflow_graphics::scene3d::Rgba;
 
 const WIDTH: usize = 1920;
 const HEIGHT: usize = 1080;
@@ -143,7 +144,15 @@ fn packed_scene() -> Scene {
         psych_channel(-2.0),
         Kernel::constant(1.0),
     ];
-    Scene::Packed(compile_packed_for::<Rgba8>(&channels, [WIDTH as u32, HEIGHT as u32]).bind(&[]))
+    let color = Rgba::from(channels);
+    let program = compile_packed_for::<Rgba8>(&color, [WIDTH as u32, HEIGHT as u32]);
+    // The emitted size, printed because it is the exact quantity a codegen
+    // change must not move on a shader whose colour is a leaf.
+    println!(
+        "  packed kernel: {} bytes of code",
+        program.code_bytes().len()
+    );
+    Scene::Packed(program.bind(&[]))
 }
 
 /// Median ns/pixel over `runs` frames, after `warm` warm-up frames.

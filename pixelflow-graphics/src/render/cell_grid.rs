@@ -14,6 +14,7 @@ use std::sync::Arc;
 use pixelflow_core::{CellGridBuffers, CellGridGeometry, CellGridKernels};
 
 use crate::render::packed::{PackedFrame, PackedProgram};
+use crate::scene3d::Rgba;
 
 /// A cell grid compiled for one geometry and one pixel byte order.
 ///
@@ -42,7 +43,8 @@ impl CellGridPackedProgram {
     #[must_use]
     pub fn compile(geom: CellGridGeometry, default_bg: [f32; 4], shifts: [u32; 4]) -> Self {
         let CellGridKernels { channels, buffers } = geom.channel_kernels(default_bg);
-        let packed = PackedProgram::compile(&channels, shifts, [geom.frame_w, geom.frame_h]);
+        let packed =
+            PackedProgram::compile(&Rgba::from(&channels), shifts, [geom.frame_w, geom.frame_h]);
         // Identity-merge across the four channels' splices is load-bearing:
         // all cell reads and atlas taps must land in the same two slots a
         // frame binds. A third slot means splice stopped merging — refuse.
@@ -331,7 +333,7 @@ mod tests {
             frame_h: 4,
         };
         let CellGridKernels { channels, buffers } = geom.channel_kernels([0.0; 4]);
-        let kernel = packed_kernel(&channels, RGBA_SHIFTS);
+        let kernel = packed_kernel(&Rgba::from(&channels), RGBA_SHIFTS);
         let slots = kernel.parts().0.buffers();
         assert_eq!(
             slots.iter().filter(|d| d.id == buffers.cells).count(),
@@ -367,7 +369,10 @@ mod tests {
             frame_w: 8,
             frame_h: 4,
         };
-        let kernel = packed_kernel(&geom.channel_kernels([0.0; 4]).channels, RGBA_SHIFTS);
+        let kernel = packed_kernel(
+            &Rgba::from(&geom.channel_kernels([0.0; 4]).channels),
+            RGBA_SHIFTS,
+        );
         let (arena, root) = kernel.parts();
         assert_eq!(
             reachable_nodes(arena, root),
@@ -498,7 +503,7 @@ mod tests {
                 frame_h: (rows as f32 * cell_h).round() as u32,
             };
             let kernel = packed_kernel(
-                &geom.channel_kernels(DEFAULT_BG_BLACK).channels,
+                &Rgba::from(&geom.channel_kernels(DEFAULT_BG_BLACK).channels),
                 RGBA_SHIFTS,
             );
             let (arena, root) = kernel.parts();

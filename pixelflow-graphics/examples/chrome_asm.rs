@@ -37,31 +37,40 @@ fn world(ray: &Ray) -> Rgba {
     )
 }
 
-fn chrome() -> [Kernel; 4] {
+fn chrome() -> Rgba {
     let ray = Ray::through_screen(W as f32, H as f32);
     let sphere = Sphere::new([k(0.0), k(0.0), k(4.0)], k(1.0)).hit(&ray);
     let mirrored = ray.reflected(sphere.normal());
-    sphere
-        .select(&world(&mirrored), &world(&ray))
-        .into_channels()
+    sphere.select(&world(&mirrored), &world(&ray))
 }
 
 fn main() {
-    let channels = chrome();
-    let nodes: usize = channels
-        .iter()
-        .map(|c| {
-            let (arena, root) = c.parts();
-            arena.node_count_subtree(root)
-        })
-        .sum();
+    let color = chrome();
+    let nodes: usize = color.fold(
+        &|channels: &[Kernel; 4]| {
+            channels
+                .iter()
+                .map(|c| {
+                    let (arena, root) = c.parts();
+                    arena.node_count_subtree(root)
+                })
+                .sum()
+        },
+        &|mask: &Kernel, if_true: usize, if_false: usize| {
+            let (arena, root) = mask.parts();
+            arena.node_count_subtree(root) + if_true + if_false
+        },
+    );
 
     let start = std::time::Instant::now();
-    let program = compile_packed_for::<Rgba8>(&channels, [W, H]);
+    let program = compile_packed_for::<Rgba8>(&color, [W, H]);
     let compile = start.elapsed();
     let code = program.code_bytes();
 
-    let one = compile_packed_for::<Rgba8>(&[channels[0].clone(), k(0.0), k(0.0), k(1.0)], [W, H]);
+    let one = compile_packed_for::<Rgba8>(
+        &color.map_channels(&|ch| [ch[0].clone(), k(0.0), k(0.0), k(1.0)]),
+        [W, H],
+    );
 
     println!("chrome sphere at {W}x{H}");
     println!("  {nodes} arena nodes over four channels, before optimization");

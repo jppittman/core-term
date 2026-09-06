@@ -471,6 +471,40 @@ Three consequences for §2:
    question is answered by the data rather than by the metric that was already
    chosen.
 
+**What the predictor cannot see, and the first term `residual` is for (added
+2026-09-06).** `Σ (loads + stores + remats) × trips` weights every schedule
+entry as if it executes, so it is blind by construction to control flow inside
+the collapse body — and the emitter has some: a `Select` whose arm is exclusive
+to it is skipped, per batch, when the mask is uniform. S3b of
+[the lattice plan](2026-09-06-kernel-with-a-lattice.md) made that fire on a
+scene (642 of 401 body entries under a guard, ranges nested) and the harness
+scored the change at **+40.8% (SSE2) / +32.1% (AVX-512)** trip-weighted memory
+operations while the clock it was validated against moved **−7.2% / −8.3%**.
+Both halves of that are real: a guard forces values live across the branch into
+slots, which the metric counts in full, and it removes a whole range from most
+batches, which the metric cannot count at all.
+
+That is not a defect to patch with a branch-probability guess. It names the
+first concrete **profile-dependent** term the learned residual of §2.2 exists
+for: **mask coherence** — how often a mask is uniform across a batch, and how
+predictable that is. It is a property of the *data* a kernel runs on, invisible
+to any static analysis of the expression, and it is exactly what decides
+whether the same guard is a 3× win (a sphere's silhouette: uniformly false in
+97% of batches) or a 3× loss (a glyph's coverage: varying per lane almost
+everywhere). Codegen ships without it by bounding the downside instead —
+refusing a guard whose arm costs less than a mispredict — which is sound and
+leaves the whole upside unclaimed. Claiming it needs a measured coherence per
+mask, per shape, which is a residual over the analytic table and nothing the
+table can hold.
+
+Two method notes it also settles, cheaply: `analytic` will have to carry a
+`trips`-like weight that a *branch* can reduce, or the two regimes will
+disagree in sign the moment codegen chooses control flow; and the harness's
+per-kernel wall clock is not trustworthy below ~10% on a shared host — two runs
+of byte-identical machine code measured 4× apart on the smallest glyph kernels,
+against an A/A floor inside each run of ~1%, so the corpus's aggregate is the
+number to read and a per-kernel ratio is not.
+
 **The trigger this does not satisfy.** §5.2 opens the reranker work when an
 e-graph over a production kernel admits ≥2 extractions with distinct *level*
 assignments and a measured oracle beats the analytic DP. Nothing here creates

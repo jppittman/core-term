@@ -34,10 +34,8 @@ fn scene() -> Scene {
     let ray = Ray::through_screen(W as f32, H as f32);
     let sphere = Sphere::new([k(0.0), k(0.0), k(4.0)], k(1.0)).hit(&ray);
     let mirrored = ray.reflected(sphere.normal());
-    let channels = sphere
-        .select(&world(&mirrored), &world(&ray))
-        .into_channels();
-    Scene::Packed(compile_platform_packed(&channels, [W, H]).bind(&[]))
+    let color = sphere.select(&world(&mirrored), &world(&ray));
+    Scene::Packed(compile_platform_packed(&color, [W, H]).bind(&[]))
 }
 
 fn main() -> anyhow::Result<()> {

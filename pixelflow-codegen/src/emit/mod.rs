@@ -2042,7 +2042,12 @@ fn compile_via_backend<B: IsaBackend>(
     // `partition_by_scope` asks one question per binder; the two regions it
     // returns are the per-call and per-row prologues the scaffold frames.
     const COLLAPSE_BINDERS: [u8; 2] = [0, 1];
-    let scoped = partition_by_scope(schedule, &variance, &COLLAPSE_BINDERS);
+    let mut scoped = partition_by_scope(schedule, &variance, &COLLAPSE_BINDERS);
+    // The body is the only scope whose selects are guarded (the prologues run
+    // once, so a branch buys nothing there), and it is the schedule the guard
+    // analysis will read — so this is where an arm's entries are worth
+    // gathering into one run. A no-op unless it buys a branch.
+    scoped.body = guards::cluster_select_arms(scoped.body);
 
     // One allocation pass over the whole nest. Each region's frame is a
     // function of its own allocation, so the shared frame below is read off
@@ -3119,8 +3124,25 @@ mod tests {
         use super::*;
         use pixelflow_ir::arena::{ExprArena, ExprId};
 
-        /// `(X > 0) ? B³ : 3B` over a shared `B = X·Y` — arms that are
-        /// exclusive *and* contiguous in the schedule.
+        /// Padding that makes an arm worth a branch, and what it adds.
+        ///
+        /// A guard is refused for an arm whose work costs less than the
+        /// mispredict penalty it risks, which is right and which means a
+        /// fixture's arms have to be arms worth guarding — a two-op arm is
+        /// not one. Three adds of distinct constants are 12 latency-prior
+        /// cycles, and every point below stays exact in `f32`.
+        const PADDING: f32 = 6.0;
+
+        fn worth_a_branch(a: &mut ExprArena, arm: ExprId) -> ExprId {
+            (1..=3u32).fold(arm, |acc, i| {
+                let c = a.push_const(i as f32);
+                a.push_binary(OpKind::Add, acc, c)
+            })
+        }
+
+        /// `(X > 0) ? B³ : 3B` (plus [`PADDING`] on each arm) over a shared
+        /// `B = X·Y` — arms that are exclusive *and* contiguous in the
+        /// schedule.
         ///
         /// Both properties are needed and the second is easy to lose: a guard
         /// skips a whole index range, so every index in it must belong to that
@@ -3137,8 +3159,10 @@ mod tests {
             let cond = a.push_binary(OpKind::Gt, x, zero);
             let bb = a.push_binary(OpKind::Mul, base, base);
             let bbb = a.push_binary(OpKind::Mul, bb, base);
+            let bbb = worth_a_branch(a, bbb);
             let b2 = a.push_binary(OpKind::Add, base, base);
             let b3 = a.push_binary(OpKind::Add, b2, base);
+            let b3 = worth_a_branch(a, b3);
             let sel = a.push_ternary(OpKind::Select, cond, bbb, b3);
             // Live ACROSS the select and read after it. Without something in
             // this role the select is the root, nothing downstream reads a
@@ -3167,6 +3191,163 @@ mod tests {
             );
         }
 
+        /// A select whose true arm contains a select, with entries belonging
+        /// to the root sitting inside both arms — so NEITHER level is
+        /// guardable as scheduled, and both become guardable once
+        /// [`guards::cluster_select_arms`] gathers each arm into one run.
+        ///
+        /// Nesting is the case that can go wrong quietly: an inner select's
+        /// arms lie inside an outer arm, so partitioning the outside moves the
+        /// inside with it. If that broke an inner guard the kernel would still
+        /// be correct and merely slower, which no value test would catch —
+        /// hence the assertion on the analysis as well as on the arithmetic.
+        ///
+        /// The two "intruders" are read by the root, so they are shared with
+        /// the world outside the arms and can never be skipped; they are what
+        /// makes the arms non-contiguous to begin with.
+        fn nested_guarded_selects(a: &mut ExprArena) -> (ExprId, ExprId, ExprId) {
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let zero = a.push_const(0.0);
+            let base = a.push_binary(OpKind::Mul, x, y);
+            let outer_cond = a.push_binary(OpKind::Gt, x, zero);
+            let inner_cond = a.push_binary(OpKind::Gt, y, zero);
+
+            // Inner true arm, split around an entry the root reads.
+            let t1 = a.push_binary(OpKind::Mul, base, base);
+            let across_inner = a.push_binary(OpKind::Add, x, y);
+            let t2 = a.push_binary(OpKind::Mul, t1, base);
+            let one = a.push_const(1.0);
+            let t3 = a.push_binary(OpKind::Add, t2, one);
+
+            // Inner false arm.
+            let f1 = a.push_binary(OpKind::Add, base, base);
+            let two = a.push_const(2.0);
+            let f2 = a.push_binary(OpKind::Add, f1, two);
+
+            let (t3, f2) = (worth_a_branch(a, t3), worth_a_branch(a, f2));
+            let inner = a.push_ternary(OpKind::Select, inner_cond, t3, f2);
+
+            // The rest of the outer true arm, split around a second one.
+            let three = a.push_const(3.0);
+            let o1 = a.push_binary(OpKind::Add, inner, three);
+            let four = a.push_const(4.0);
+            let across_outer = a.push_binary(OpKind::Mul, x, four);
+            let five = a.push_const(5.0);
+            let o2 = a.push_binary(OpKind::Mul, o1, five);
+
+            // Outer false arm.
+            let six = a.push_const(6.0);
+            let p1 = a.push_binary(OpKind::Add, base, six);
+            let seven = a.push_const(7.0);
+            let p2 = a.push_binary(OpKind::Mul, p1, seven);
+
+            let (o2, p2) = (worth_a_branch(a, o2), worth_a_branch(a, p2));
+            let outer = a.push_ternary(OpKind::Select, outer_cond, o2, p2);
+            let carried = a.push_binary(OpKind::Add, across_inner, across_outer);
+            let root = a.push_binary(OpKind::Add, outer, carried);
+            (root, outer, inner)
+        }
+
+        /// What `nested_guarded_selects` computes, in scalar `f32` and with no
+        /// guard anywhere — every operation exact at the points below.
+        fn nested_expected(x: f32, y: f32) -> f32 {
+            let base = x * y;
+            let inner = PADDING
+                + if y > 0.0 {
+                    base * base * base + 1.0
+                } else {
+                    base + base + 2.0
+                };
+            let outer = PADDING
+                + if x > 0.0 {
+                    (inner + 3.0) * 5.0
+                } else {
+                    (base + 6.0) * 7.0
+                };
+            outer + (x + y) + x * 4.0
+        }
+
+        /// How many entries each select has under a guard, by schedule
+        /// position, for a schedule built the way `compile` builds it.
+        fn guarded_entries(a: &ExprArena, root: ExprId, cluster: bool) -> alloc::vec::Vec<usize> {
+            let schedule = arena_to_schedule(a, root);
+            let schedule = if cluster {
+                guards::cluster_select_arms(schedule)
+            } else {
+                schedule
+            };
+            analyze_select_guards(&schedule)
+                .iter()
+                .map(|g| (g.true_range.1 - g.true_range.0) + (g.false_range.1 - g.false_range.0))
+                .collect()
+        }
+
+        /// Both levels of a nested select are guarded once the schedule is
+        /// clustered, and neither was before — the reordering is the whole
+        /// difference.
+        #[test]
+        fn clustering_guards_both_levels_of_a_nested_select() {
+            let mut a = ExprArena::new();
+            let (root, _outer, _inner) = nested_guarded_selects(&mut a);
+
+            let before = guarded_entries(&a, root, false);
+            let after = guarded_entries(&a, root, true);
+            assert!(
+                before.iter().sum::<usize>() < after.iter().sum::<usize>(),
+                "clustering bought nothing: {before:?} -> {after:?}"
+            );
+            assert_eq!(
+                after.len(),
+                2,
+                "both the outer and the inner select must earn a guard, got {after:?}"
+            );
+            assert!(
+                after.iter().all(|&entries| entries > 0),
+                "a guard with an empty range is not a guard: {after:?}"
+            );
+        }
+
+        /// The clustered kernel's answer, against the same expression
+        /// evaluated in scalar `f32` with no guards: uniform masks (which take
+        /// the branches) and mixed lanes (which fall through to the blend),
+        /// exactly equal — every operation here is exact at these points, so
+        /// there is no tolerance to hide a wrong branch in.
+        #[test]
+        fn a_nested_guarded_select_agrees_lane_for_lane() {
+            let mut a = ExprArena::new();
+            let (root, _outer, _inner) = nested_guarded_selects(&mut a);
+            let result = compile(&a, root).expect("nested guarded select compile");
+
+            // One point at a time: all four combinations of the two masks,
+            // each of which takes a pair of branches.
+            for &(x, y) in &[(3.0f32, 4.0f32), (3.0, -4.0), (-3.0, 4.0), (-3.0, -4.0)] {
+                let got = eval_point(&result.code, x, y, 0.0, 0.0);
+                assert_eq!(
+                    got,
+                    nested_expected(x, y),
+                    "nested guarded select at ({x}, {y})"
+                );
+            }
+
+            // Mixed lanes: both masks vary within the batch, so neither guard
+            // fires and the blend has to produce every lane.
+            let xs: [f32; LANES] = core::array::from_fn(|i| if i % 2 == 0 { 3.0 } else { -3.0 });
+            let ys: [f32; LANES] = core::array::from_fn(|i| if i % 3 == 0 { 4.0 } else { -4.0 });
+            let got = eval_batch(
+                &result.code,
+                &[],
+                executable::Point4::new(xs, ys, [0.0; LANES], [0.0; LANES]),
+            );
+            for lane in 0..LANES {
+                assert_eq!(
+                    got[lane],
+                    nested_expected(xs[lane], ys[lane]),
+                    "lane {lane} of a mixed-mask batch"
+                );
+            }
+        }
+
         /// Uniform masks take the all-true and all-false branches; a mixed
         /// mask falls through to the blend. All three must agree with the
         /// arithmetic.
@@ -3184,7 +3365,7 @@ mod tests {
                 (-0.25, 2.0),
             ] {
                 let b = x * y;
-                let want = if x > 0.0 { b * b * b } else { 3.0 * b } + (x - y);
+                let want = if x > 0.0 { b * b * b } else { 3.0 * b } + PADDING + (x - y);
                 let got = eval_point(&result.code, x, y, 0.0, 0.0);
                 assert!(
                     (got - want).abs() <= 1e-3,
@@ -3235,8 +3416,10 @@ mod tests {
             let base = a.push_binary(OpKind::Mul, mid, y);
             let bb = a.push_binary(OpKind::Mul, base, base);
             let bbb = a.push_binary(OpKind::Mul, bb, base);
+            let bbb = worth_a_branch(&mut a, bbb);
             let b2 = a.push_binary(OpKind::Add, base, base);
             let b3 = a.push_binary(OpKind::Add, b2, base);
+            let b3 = worth_a_branch(&mut a, b3);
             let sel = a.push_ternary(OpKind::Select, cond, bbb, b3);
             let carried = a.push_binary(OpKind::Sub, x, y);
             let root = a.push_binary(OpKind::Add, sel, carried);
@@ -3266,7 +3449,7 @@ mod tests {
             for &(px, py) in &[(3.0f32, 2.0f32), (-2.0, 0.5), (0.5, -1.0)] {
                 let m: f32 = (1..=8).map(|i| px + i as f32).sum();
                 let b = m * py;
-                let want = if px > 0.0 { b * b * b } else { 3.0 * b } + (px - py);
+                let want = if px > 0.0 { b * b * b } else { 3.0 * b } + PADDING + (px - py);
                 let got = eval_point(&result.code, px, py, 0.0, 0.0);
                 assert!(
                     (got - want).abs() <= 1e-2 * want.abs().max(1.0),
@@ -3326,8 +3509,10 @@ mod tests {
             let t1 = a.push_binary(OpKind::Mul, base, split);
             let t2 = a.push_binary(OpKind::Add, t1, split);
             let t3 = a.push_binary(OpKind::Mul, t2, base);
+            let t3 = worth_a_branch(&mut a, t3);
             let f1 = a.push_binary(OpKind::Add, base, base);
             let f2 = a.push_binary(OpKind::Add, f1, base);
+            let f2 = worth_a_branch(&mut a, f2);
             let sel = a.push_ternary(OpKind::Select, cond, t3, f2);
             // Read after the arm, which is what makes the confinement rule
             // load-bearing: on the skipped path this must not name the
@@ -3395,7 +3580,7 @@ mod tests {
                 } else {
                     (b + b) + b
                 };
-                let want = arm_value + v + (px - py);
+                let want = arm_value + PADDING + v + (px - py);
                 let got = eval_point(&result.code, px, py, 0.0, 0.0);
                 assert!(
                     (got - want).abs() <= 1e-2 * want.abs().max(1.0),

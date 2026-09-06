@@ -298,12 +298,15 @@ local, and both should land:
    arms are whole packed colours, geometry included, and the existing
    per-select guard skips the reflected world exactly as the old tier did.
    The pack stays in graphics; core still knows no colour.
-2. *Codegen, general:* guard analysis over a **group** of selects with the
-   same mask — exclusivity against the union of the group's arms, the
-   group's arm-exclusive ops clustered contiguously in the schedule ahead
-   of the first select — so any kernel that selects the same condition
-   several times (every multi-channel scene, every masked field) skips
-   what it can without being restructured for it.
+2. *Codegen, general:* the arm-exclusive ops **clustered contiguously** in
+   the schedule, because a branch skips a range and exclusivity alone never
+   earned one. (This was written as guard analysis over a *group* of
+   selects sharing a mask. The instrument says otherwise, and grouping is
+   not this stage's lever: once a colour is one select there is one select
+   per mask, and what still refused the guard was the order. Grouping
+   remains worth having for a kernel that selects the same condition
+   several times without packing — a masked field, say — and is not needed
+   here.)
 
 The derivative cost is the other half and is measured separately: symbolic
 `dx()`/`dy()` of a hit point costs ~4× a forward-mode jet on this host, and
@@ -313,6 +316,156 @@ question for `collapse_cost` (docs/plans/2026-09-01-schedule-cost-model-denotati
 not for a guess. Gate for S3b: the chrome scene, packed ≥ surface at every
 thread count on both tiers — the acceptance S3 did not meet — and S4 does
 not begin until it is.
+
+### S3b landed — 2026-09-06
+
+**The gate is met on both tiers, and the derivative never had to be
+touched.** 1920×1080, median of 9 frames after 3 warm-ups, on the same
+4-core host (load ≈ 0.7–1.5, shared with other sessions — the surface lane
+moved ±7% between runs and is quoted beside the packed lane as the drift
+reference):
+
+| tier | threads | surface (ns/px) | packed before | packed after | packed/surface |
+|---|---:|---:|---:|---:|---|
+| SSE2 | 1 | 16.02 | 43.87 | **12.10** | 1.32× |
+| SSE2 | 4 | 4.36 | 11.03 | **3.09** | 1.41× |
+| SSE2 | 12 | 4.07 | 11.10 | **3.12** | 1.30× |
+| AVX-512 | 1 | 5.99 | 16.03 | **4.91** | 1.22× |
+| AVX-512 | 4 | 1.93 | 4.15 | **1.36** | 1.42× |
+| AVX-512 | 12 | 2.40 | 4.05 | **1.37** | 1.75× |
+
+Agreement is unchanged to the digit — matte 0.519% of pixels over 2/255,
+mirror 2.821%, chrome 51.238% — which is the point: a select on packed
+words is a lanewise blend of what the same lanes packed, so **no golden
+moved**, and `selecting_packed_words_is_selecting_the_channels` pins that
+under both byte orders. Compile: 416,420 arena nodes, 14 ms to build, 181
+ms to compile, 9,760 bytes (SSE2).
+
+**The instrument, which is what settled every question here.**
+`PIXELFLOW_GUARD_TELEMETRY` makes the guard analysis print, per compiled
+scope, the schedule's length and per select: where the mask lands, the
+entries each arm owns exclusively, the entries a guard actually skips, and
+the entries belonging to someone else that lie between an arm's first and
+its last. On the chrome scene's body scope:
+
+| | schedule | selects | arm-exclusive | guarded |
+|---|---:|---:|---:|---:|
+| S3, colour = four selects | 360 | — | ~0 usable | **0** |
+| a colour is one select | 401 | 17 | 694 | 146 (all on the primary world) |
+| + clustering, + closed exclusivity | 401 | 17 | 644 | **642** |
+
+The middle row is the finding the language half alone produced, and it is
+why this stage has two halves: the reflected world *was* 214 arm-exclusive
+entries of 401 — exactly the subtree S3 wanted exclusive — and the guard
+still did not fire, because 41 entries belonging to other expressions sat
+between its first and its last and a branch skips a *range*. Arm order is
+not the lever either: putting the reflected world in the arm the schedule
+emits last (a complemented mask) left it with 108 intruders instead of 41.
+
+**Three things in codegen, and the second two were found by the first.**
+
+1. **Clustering.** `cluster_select_arms` stable-partitions the region
+   between the mask and the select into shared, then true-exclusive, then
+   false-exclusive — always a legal topological order, because a shared
+   value can never depend on an arm-exclusive one — and *sinks* whatever
+   the select does not read past it rather than hoisting it ahead of both
+   arms, which shortens those live ranges instead of stretching them
+   (worth 3 points of corpus clock on its own). It runs only on an arm the
+   order refused, and its result is kept only if strictly more entries end
+   up guarded with no select losing what it had.
+2. **A latent miscompile in the exclusivity rule.** "Exclusive" meant every
+   consumer *reaches* the arm, which admits a value whose consumer is
+   shared with the world outside it; skipping the value leaves that
+   consumer reading a register the branch never wrote. It never bit because
+   contiguity happened to refuse those ranges — reordering made them legal
+   and the cell-grid parity tests failed on the first run. Exclusivity is
+   now a closure ("my consumers are skipped with me", to a fixed point),
+   and `is_topological` asserts in debug builds that no partition puts a
+   value behind its operand. That assert is what caught it.
+3. **A guard must be able to pay for its branch.** Whether a mask is
+   *coherent* — uniform per batch often enough for the branch to fire and
+   to predict — is data, and no static analysis can know it. Its worst case
+   is exact, so an arm whose latency-prior cost is under
+   `MISPREDICT_PENALTY_CYCLES` (~16, an architectural figure from Agner
+   Fog and ARM's optimization guides, not a knob) is never guarded. A bound
+   rather than a threshold: the downside of any guard is capped by the
+   upside it could deliver. It is the difference between a glyph's coverage
+   mask (a handful of ops per arm, varying per lane) and a sphere's
+   silhouette (214 entries, uniformly false in 97% of batches), and with it
+   the psychedelic gate's kernel is **byte-identical** to before at AVX-512
+   (4,352 bytes) — 32 bytes larger at SSE2, where one arm does clear the
+   penalty.
+
+**Pressure across the corpus** (`collapse_cost`, 208 kernels — 15
+synthetic, 193 production glyph bakes — before = the language half alone,
+after = everything):
+
+| tier | bytes | static loads+stores+remats | trip-weighted mem ops | dyn instructions | spill slots | Σ drift-corrected clock |
+|---|---:|---:|---:|---:|---:|---:|
+| SSE2 | +9.99% | +10.15% | +40.80% | +0.00% | −0.22% | **−7.19%** |
+| AVX-512 | +18.63% | +18.73% | +32.09% | +0.00% | −0.35% | **−8.27%** |
+
+**`dyn_memory_ops` cannot see this change, and that is a finding about the
+predictor rather than about the change.** It trip-weights every schedule
+entry as if it executes, so a transformation whose entire purpose is to
+*not execute* a range is invisible to it, while the slot traffic a guard
+forces is counted in full. It reports +40% on a change whose clock is
+−7%. Noted against its role in
+[the schedule cost model](2026-09-01-schedule-cost-model-denotation.md),
+where mask coherence is now named as the first concrete profile-dependent
+term the learned residual is for.
+
+Two caveats on the corpus clock, stated rather than smoothed: the per-kernel
+ratios are not trustworthy below ~10% on this host (byte-identical machine
+code measured 4× apart between two runs of the harness, with an A/A floor
+inside each run of ~1%), and the glyph bakes that dominate the corpus are
+once-per-glyph cached work, where the scene kernel runs every frame.
+
+**The per-kernel tail, which is what the bound was written for.** Before it,
+the tail was real and one-directional: at AVX-512 the worst kernels were the
+sparsest glyphs — `glyph32 '.'` 3.58×, `'\''` 3.35×, `glyph16 '.'` 2.99×,
+`'-'` 2.92×, `'|'` 2.81× — every one of them a shape whose arms are a handful
+of ops, guarded because they were contiguous rather than because they were
+worth skipping. After it, no tail survives re-measurement. Over the whole
+corpus the worst AVX-512 ratio is 1.17× against an A/A spread whose p90 is
+1.12×, and those five sit at 0.99–1.11× (0.78–0.91× at SSE2). Re-measured
+properly — eight samples per build, the two builds alternated so drift
+cancels — they are 0.90–1.01× at AVX-512 and 0.96–1.13× at SSE2. SSE2's
+whole-corpus worst, `glyph32 'w'` at 1.91× and `'M'` at 1.65×, do not
+reproduce either: 0.90× and 1.04× interleaved, both with *fewer* bytes and
+fewer trip-weighted mem ops than before. The control is the number to read
+alongside all of them: `invariant04_hot` is byte-identical across the two
+builds (652 bytes, same trip-weighted traffic) and measures 1.00× at
+AVX-512 and 1.22× at SSE2 — as far from 1.0 as the worst kernel that
+actually changed. That is the caveat above restated as a control rather than
+as an assertion.
+
+It applies to the aggregate too, and the second run says how far. Repeating
+the whole corpus from the rebased branch reproduces every deterministic
+column *exactly* — bytes, static traffic, trip-weighted mem ops, dynamic
+instructions and spill slots, to the digit, on both tiers — while Σ clock
+moves to −20.7% (SSE2) and −2.7% (AVX-512) against the −7.19% and −8.27%
+above. So the sign is the claim and the magnitude is not; a Σ over 208
+kernels is steadier than any one of them and still not steady, and the
+honest reading of the clock column is "it did not get slower".
+
+**The bound refuses arms, not kernels** — worth stating because "the glyph
+regression is fixed" invites the wrong picture. Those glyphs still carry
+guards: `glyph32 '.'` guards 32 of its 38 arm-exclusive entries across three
+selects, `'w'` 102 of 126 across nine. Every refused arm has zero intruders,
+so cost alone refused it, and every refused arm is exactly six entries — the
+coverage-mask select the bound was written for. What survives is 7, 10, 22
+and 74 entries: with `Var` and `Const` free and `Sub`/`Mul`/`MulAdd` at 4–5
+cycles, an arm passes 16 cycles by its fifth arithmetic op, so a surviving
+guard is one that skips a segment distance and a refused one is a guard on a
+sign test.
+
+**What remains for S4 and after.** Guard grouping by mask, for kernels that
+select one condition several times without packing. The derivative cost —
+symbolic `dx()`/`dy()` at ~4× a forward-mode jet — which this stage did not
+need and did not touch. And mask coherence as a cost-model term: the
+clustering decision is made statically today by bounding the downside,
+which is sound and leaves the upside unclaimed.
 
 **S4 — the legacy tier retires.** `Scene::Surface`, `execute_stripe`,
 `rasterize`, `render_parallel`, `render_work_stealing`,

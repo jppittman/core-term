@@ -217,7 +217,7 @@ pub use dual::{Dual, Dual1, Dual2, Dual3};
 pub use ext::*;
 pub use mask::Mask;
 
-pub use pixelflow_ir::{Kernel, Lower, LowerEnv, Monoid};
+pub use pixelflow_ir::{Bits, Kernel, Lower, LowerEnv, Monoid};
 pub use storage::{FieldStorage, NativeMaskStorage};
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;

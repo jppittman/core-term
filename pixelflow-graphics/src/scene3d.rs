@@ -19,8 +19,8 @@
 //!    and the mask saying whether it did at all.
 //! 3. **Material** — [`checker`], [`sky`], [`Rgba::opaque_gray`]: four channel
 //!    kernels in `[0, 1]`, which is all a colour ever is. [`Hit::select`]
-//!    chooses material or background per channel, and nesting those selects is
-//!    occlusion, exactly as before.
+//!    chooses material or background as ONE node over the whole colour, and
+//!    nesting those choices is occlusion, exactly as before.
 //!
 //! ## Antialiasing is the calculus, not a heuristic
 //!
@@ -42,7 +42,8 @@
 //! [`Kernel::at`], which splices each argument exactly once and rewires every
 //! use of it. What survives to the compiler as four *separate* channels is
 //! shared back by the e-graph, which hash-conses the four copies of the
-//! geometry into one.
+//! geometry into one — the four leaves of one [`Rgba`], never four copies of a
+//! choice, which is the distinction the tree exists to keep.
 
 use pixelflow_core::Kernel;
 
@@ -74,50 +75,146 @@ fn scale(v: &[Kernel; 3], s: &Kernel) -> [Kernel; 3] {
     [v[0].mul(s), v[1].mul(s), v[2].mul(s)]
 }
 
-/// A colour: four channel kernels in `[0, 1]` — red, green, blue, alpha.
+/// A colour: four channel kernels in `[0, 1]` — red, green, blue, alpha — or
+/// a **choice** between two colours under a mask.
 ///
-/// This is the same object [`crate::render::scene::compile_packed_for`] takes,
-/// so a scene is finished when it is an `Rgba`: the pack to bytes is the
-/// compiler's, not the scene's.
+/// A tree, not an array, and that is the whole of stage S3b's language half.
+/// A choice between colours is one thing that happens once, so it is one node
+/// here and [`crate::render::scene::compile_packed_for`] lowers it to one
+/// `Select` on the packed words. Distributing it over the channels — four
+/// selects sharing a mask, which is what an array of channels forces — is the
+/// same picture and a different program: the emitter may skip a value under a
+/// select's arm only when *every* consumer of it lies inside that arm, and a
+/// reflected world feeding four arms is, from each one's view, shared. It then
+/// runs in every batch, for the 97% of the frame the sphere does not cover.
+///
+/// This is the same object `compile_packed_for` takes, so a scene is finished
+/// when it is an `Rgba`: the pack to bytes is the compiler's, not the scene's.
 #[derive(Clone)]
-pub struct Rgba([Kernel; 4]);
+pub struct Rgba(Node);
+
+/// The two ways a colour is written. Private: what a colour *is* is the four
+/// channels at its leaves, and the only thing anyone outside may do with the
+/// shape is [`Rgba::fold`] it.
+#[derive(Clone)]
+enum Node {
+    /// Red, green, blue, alpha, each in `[0, 1]`.
+    Channels([Kernel; 4]),
+    /// `mask ? if_true : if_false` — one choice, whole colours.
+    Choice {
+        mask: Kernel,
+        if_true: Box<Rgba>,
+        if_false: Box<Rgba>,
+    },
+}
 
 impl Rgba {
     /// A colour from its four channels.
     #[must_use]
     pub fn new(r: Kernel, g: Kernel, b: Kernel, a: Kernel) -> Self {
-        Self([r, g, b, a])
+        Self(Node::Channels([r, g, b, a]))
     }
 
     /// An opaque flat grey — the matte material.
     #[must_use]
     pub fn opaque_gray(level: f32) -> Self {
-        Self([k(level), k(level), k(level), k(1.0)])
+        Self::new(k(level), k(level), k(level), k(1.0))
     }
 
-    /// The four channels, for a caller that compiles them.
+    /// Lower this colour, leaves first: `pack` turns four channels into one
+    /// value of the caller's choosing, `choose` blends two such values under a
+    /// mask.
+    ///
+    /// The catamorphism is the whole interface to the tree's shape, and the
+    /// only one — which is how "a choice is one select" stays a property of
+    /// the type rather than of every caller's discipline. There is no way to
+    /// reach the arms of a choice and pack them separately, so the packer
+    /// ([`crate::render::scene::compile_packed_for`]) cannot accidentally be
+    /// written as four selects again, and a caller that only wants to count
+    /// nodes or size the code gets the same one traversal.
+    pub fn fold<T>(
+        &self,
+        pack: &dyn Fn(&[Kernel; 4]) -> T,
+        choose: &dyn Fn(&Kernel, T, T) -> T,
+    ) -> T {
+        match &self.0 {
+            Node::Channels(channels) => pack(channels),
+            Node::Choice {
+                mask,
+                if_true,
+                if_false,
+            } => choose(
+                mask,
+                if_true.fold(pack, choose),
+                if_false.fold(pack, choose),
+            ),
+        }
+    }
+
+    /// `mask ? self : other` — one node, whatever the two colours are.
+    ///
+    /// `pub(crate)` because [`Hit::select`] is how a scene introduces a
+    /// choice: a choice between colours *is* a surface being there or not.
+    pub(crate) fn select(&self, mask: &Kernel, other: &Self) -> Self {
+        Self(Node::Choice {
+            mask: mask.clone(),
+            if_true: Box::new(self.clone()),
+            if_false: Box::new(other.clone()),
+        })
+    }
+
+    /// The same colour with `f` applied to every leaf's four channels — a
+    /// tint, or a scene rebuilt with one channel live. The choices and their
+    /// masks are untouched, so the geometry is the same expression it was.
     #[must_use]
-    pub fn channels(&self) -> &[Kernel; 4] {
-        &self.0
+    pub fn map_channels(&self, f: &dyn Fn(&[Kernel; 4]) -> [Kernel; 4]) -> Self {
+        match &self.0 {
+            Node::Channels(channels) => Self(Node::Channels(f(channels))),
+            Node::Choice {
+                mask,
+                if_true,
+                if_false,
+            } => Self(Node::Choice {
+                mask: mask.clone(),
+                if_true: Box::new(if_true.map_channels(f)),
+                if_false: Box::new(if_false.map_channels(f)),
+            }),
+        }
     }
 
-    /// The four channels, consuming the colour.
-    #[must_use]
-    pub fn into_channels(self) -> [Kernel; 4] {
-        self.0
-    }
-
-    /// `mask ? self : other`, per channel.
-    fn select(&self, mask: &Kernel, other: &Self) -> Self {
-        Self(core::array::from_fn(|c| {
-            mask.select(&self.0[c], &other.0[c])
-        }))
-    }
-
-    /// Sample this colour at warped coordinates — [`Kernel::at`] per channel.
+    /// Sample this colour at warped coordinates — [`Kernel::at`] through the
+    /// whole tree, mask included, because sampling a choice somewhere else
+    /// asks the condition there too.
     fn at(&self, x: &Kernel, y: &Kernel, z: &Kernel) -> Self {
         let w = Kernel::w();
-        Self(core::array::from_fn(|c| self.0[c].at(x, y, z, &w)))
+        match &self.0 {
+            Node::Channels(channels) => Self(Node::Channels(core::array::from_fn(|c| {
+                channels[c].at(x, y, z, &w)
+            }))),
+            Node::Choice {
+                mask,
+                if_true,
+                if_false,
+            } => Self(Node::Choice {
+                mask: mask.at(x, y, z, &w),
+                if_true: Box::new(if_true.at(x, y, z)),
+                if_false: Box::new(if_false.at(x, y, z)),
+            }),
+        }
+    }
+}
+
+/// Four channel kernels are a colour with no choice in it — the leaf every
+/// procedural shader already writes.
+impl From<[Kernel; 4]> for Rgba {
+    fn from(channels: [Kernel; 4]) -> Self {
+        Self(Node::Channels(channels))
+    }
+}
+
+impl From<&[Kernel; 4]> for Rgba {
+    fn from(channels: &[Kernel; 4]) -> Self {
+        Self(Node::Channels(channels.clone()))
     }
 }
 
@@ -226,8 +323,10 @@ impl Hit {
             .max(&axis(&self.point[2]))
     }
 
-    /// `material` where this hit happened, `background` where it did not.
-    /// Nesting these is occlusion.
+    /// `material` where this hit happened, `background` where it did not —
+    /// **one** choice over the whole colour, so a material's geometry is
+    /// exclusive to its arm and the emitter can skip it where the mask says
+    /// nothing in the batch needs it. Nesting these is occlusion.
     #[must_use]
     pub fn select(&self, material: &Rgba, background: &Rgba) -> Rgba {
         material.select(&self.mask, background)
@@ -364,6 +463,14 @@ mod tests {
     use super::*;
     use pixelflow_core::Lattice;
 
+    /// The four channels of a colour that has no choice in it. `fold` is the
+    /// only way into the tree, and a leaf's fold is exactly its channels.
+    fn leaf_channels(color: &Rgba) -> [Kernel; 4] {
+        color.fold(&|channels| channels.clone(), &|_, _, _| {
+            panic!("this colour is a choice, not a leaf")
+        })
+    }
+
     /// Tabulate a kernel over a `w × h` integer grid. A mask has to be read
     /// through a `select` — it is a bit pattern, not a number.
     fn bake(kernel: &Kernel, w: usize, h: usize) -> Vec<f32> {
@@ -460,7 +567,8 @@ mod tests {
         let cell_centre = |footprint: f32| {
             let rgba = checker(&Kernel::x(), &Kernel::y(), &k(footprint));
             let at = |c: &Kernel| Lattice::point(0.5, 0.5, 0.0, 0.0).bake(c).buffer()[0];
-            [at(&rgba.0[0]), at(&rgba.0[1]), at(&rgba.0[2])]
+            let channels = leaf_channels(&rgba);
+            [at(&channels[0]), at(&channels[1]), at(&channels[2])]
         };
 
         let sharp = cell_centre(1e-4);

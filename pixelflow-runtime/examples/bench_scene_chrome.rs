@@ -241,34 +241,30 @@ fn world(ray: &Ray, filter: &Filter) -> Rgba {
     )
 }
 
-fn packed_chrome(filter: &Filter) -> [Kernel; 4] {
+fn packed_chrome(filter: &Filter) -> Rgba {
     let ray = ray();
     let sphere = sphere(&ray);
     let mirrored = ray.reflected(sphere.normal());
-    sphere
-        .select(&world(&mirrored, filter), &world(&ray, filter))
-        .into_channels()
+    sphere.select(&world(&mirrored, filter), &world(&ray, filter))
 }
 
-fn packed_matte() -> [Kernel; 4] {
+fn packed_matte() -> Rgba {
     let ray = ray();
     let floor = Plane::at_height(k(FLOOR))
         .hit(&ray)
         .select(&Rgba::opaque_gray(MATTE), &sky(&ray));
-    sphere(&ray)
-        .select(&Rgba::opaque_gray(MATTE), &floor)
-        .into_channels()
+    sphere(&ray).select(&Rgba::opaque_gray(MATTE), &floor)
 }
 
-fn packed_mirror() -> [Kernel; 4] {
+fn packed_mirror() -> Rgba {
     let ray = ray();
     let sphere = sphere(&ray);
     let mirrored = ray.reflected(sphere.normal());
-    sphere.select(&sky(&mirrored), &sky(&ray)).into_channels()
+    sphere.select(&sky(&mirrored), &sky(&ray))
 }
 
-fn packed_scene(channels: &[Kernel; 4]) -> Scene {
-    Scene::Packed(compile_packed_for::<Rgba8>(channels, [WIDTH as u32, HEIGHT as u32]).bind(&[]))
+fn packed_scene(color: &Rgba) -> Scene {
+    Scene::Packed(compile_packed_for::<Rgba8>(color, [WIDTH as u32, HEIGHT as u32]).bind(&[]))
 }
 
 /// What fraction of the frame the sphere covers — the area the reflection's
@@ -276,7 +272,7 @@ fn packed_scene(channels: &[Kernel; 4]) -> Scene {
 fn sphere_coverage() -> f64 {
     let ray = ray();
     let mask = sphere(&ray).mask().select(&k(1.0), &k(0.0));
-    let scene = packed_scene(&[mask.clone(), mask.clone(), mask, k(1.0)]);
+    let scene = packed_scene(&Rgba::from([mask.clone(), mask.clone(), mask, k(1.0)]));
     let mut frame = Frame::<Rgba8>::new(WIDTH as u32, HEIGHT as u32);
     scene.render(&mut frame, 4);
     let hits = frame.data.iter().filter(|p| p.r() > 0).count();
@@ -337,17 +333,25 @@ fn main() {
 
     // Compile cost: building the scene and JIT-compiling it, once.
     let built = Instant::now();
-    let channels = packed_chrome(&per_pixel);
+    let color = packed_chrome(&per_pixel);
     let build_time = built.elapsed();
-    let nodes: usize = channels
-        .iter()
-        .map(|c| {
-            let (arena, root) = c.parts();
-            arena.node_count_subtree(root)
-        })
-        .sum();
+    let nodes: usize = color.fold(
+        &|channels: &[Kernel; 4]| {
+            channels
+                .iter()
+                .map(|c| {
+                    let (arena, root) = c.parts();
+                    arena.node_count_subtree(root)
+                })
+                .sum()
+        },
+        &|mask: &Kernel, if_true: usize, if_false: usize| {
+            let (arena, root) = mask.parts();
+            arena.node_count_subtree(root) + if_true + if_false
+        },
+    );
     let compiled = Instant::now();
-    let program = compile_packed_for::<Rgba8>(&channels, [WIDTH as u32, HEIGHT as u32]);
+    let program = compile_packed_for::<Rgba8>(&color, [WIDTH as u32, HEIGHT as u32]);
     let compile_time = compiled.elapsed();
     let code = program.code_bytes().len();
 

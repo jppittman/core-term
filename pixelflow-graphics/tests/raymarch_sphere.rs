@@ -52,8 +52,8 @@ fn matte_world(ray: &Ray) -> Rgba {
         .select(&Rgba::opaque_gray(0.5), &sky(ray))
 }
 
-fn render(channels: [Kernel; 4]) -> Frame<Rgba8> {
-    let program = compile_packed_for::<Rgba8>(&channels, [W as u32, H as u32]);
+fn render(color: &Rgba) -> Frame<Rgba8> {
+    let program = compile_packed_for::<Rgba8>(color, [W as u32, H as u32]);
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
     Scene::Packed(program.bind(&[])).render(&mut frame, 1);
     frame
@@ -61,18 +61,16 @@ fn render(channels: [Kernel; 4]) -> Frame<Rgba8> {
 
 /// A chrome sphere over a checker floor: the reflected ray sees the same
 /// world the primary one does.
-fn chrome_scene() -> [Kernel; 4] {
+fn chrome_scene() -> Rgba {
     let ray = camera();
     let sphere = sphere(&ray);
     let mirrored = ray.reflected(sphere.normal());
-    sphere
-        .select(&checker_world(&mirrored), &checker_world(&ray))
-        .into_channels()
+    sphere.select(&checker_world(&mirrored), &checker_world(&ray))
 }
 
 #[test]
 fn sphere_on_floor() {
-    let frame = render(chrome_scene());
+    let frame = render(&chrome_scene());
 
     let path = std::env::temp_dir().join("pixelflow_raymarch_sh.ppm");
     common::write_ppm(&path, &frame).unwrap();
@@ -91,11 +89,7 @@ fn sphere_on_floor() {
 #[test]
 fn sphere_on_matte_floor() {
     let ray = camera();
-    let frame = render(
-        sphere(&ray)
-            .select(&Rgba::opaque_gray(0.5), &matte_world(&ray))
-            .into_channels(),
-    );
+    let frame = render(&sphere(&ray).select(&Rgba::opaque_gray(0.5), &matte_world(&ray)));
 
     let path = std::env::temp_dir().join("pixelflow_raymarch_matte.ppm");
     common::write_ppm(&path, &frame).unwrap();
@@ -115,7 +109,7 @@ fn sphere_on_matte_floor() {
 /// both names are public contracts, so both stay.
 #[test]
 fn chrome_sphere_on_checkerboard() {
-    let frame = render(chrome_scene());
+    let frame = render(&chrome_scene());
 
     let path = std::env::temp_dir().join("pixelflow_chrome_checker.ppm");
     common::write_ppm(&path, &frame).unwrap();

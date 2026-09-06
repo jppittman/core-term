@@ -31,17 +31,15 @@ fn unit_sphere(ray: &Ray) -> Hit {
 
 /// A chrome sphere at (0, 0, 4) over a checker floor at `y = -1`, reflecting
 /// the floor and the sky.
-fn chrome_channels(width: usize, height: usize) -> [Kernel; 4] {
+fn chrome_color(width: usize, height: usize) -> Rgba {
     let ray = Ray::through_screen(width as f32, height as f32);
     let sphere = unit_sphere(&ray);
     let mirrored = ray.reflected(sphere.normal());
-    sphere
-        .select(&world(&mirrored, -1.0), &world(&ray, -1.0))
-        .into_channels()
+    sphere.select(&world(&mirrored, -1.0), &world(&ray, -1.0))
 }
 
-fn render(channels: &[Kernel; 4], width: usize, height: usize) -> Frame<Rgba8> {
-    let program = compile_packed_for::<Rgba8>(channels, [width as u32, height as u32]);
+fn render(color: &Rgba, width: usize, height: usize) -> Frame<Rgba8> {
+    let program = compile_packed_for::<Rgba8>(color, [width as u32, height as u32]);
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
     Scene::Packed(program.bind(&[])).render(&mut frame, 1);
     frame
@@ -56,8 +54,8 @@ fn color_chrome_sphere() {
     const W: usize = 1920;
     const H: usize = 1080;
 
-    let channels = chrome_channels(W, H);
-    let program = compile_packed_for::<Rgba8>(&channels, [W as u32, H as u32]);
+    let color = chrome_color(W, H);
+    let program = compile_packed_for::<Rgba8>(&color, [W as u32, H as u32]);
     let scene = Scene::Packed(program.bind(&[]));
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
     let start = std::time::Instant::now();
@@ -98,7 +96,7 @@ fn floor_only() {
     const H: usize = 300;
 
     let ray = Ray::through_screen(W as f32, H as f32);
-    let frame = render(&world(&ray, -1.0).into_channels(), W, H);
+    let frame = render(&world(&ray, -1.0), W, H);
 
     let path = std::env::temp_dir().join("pixelflow_floor_only.ppm");
     common::write_ppm(&path, &frame).unwrap();
@@ -156,8 +154,10 @@ fn four_channels_share_one_geometry() {
     const W: usize = 400;
     const H: usize = 300;
 
-    let four = chrome_channels(W, H);
-    let one = [four[0].clone(), k(0.0), k(0.0), k(1.0)];
+    let four = chrome_color(W, H);
+    // The same scene with one channel live: every leaf keeps its red and
+    // zeroes the rest, so the geometry and the choice are the same expression.
+    let one = four.map_channels(&|ch| [ch[0].clone(), k(0.0), k(0.0), k(1.0)]);
 
     let four = compile_packed_for::<Rgba8>(&four, [W as u32, H as u32]);
     let one = compile_packed_for::<Rgba8>(&one, [W as u32, H as u32]);
@@ -177,7 +177,7 @@ fn chrome_unit_sphere() {
     const W: usize = 400;
     const H: usize = 300;
 
-    let frame = render(&chrome_channels(W, H), W, H);
+    let frame = render(&chrome_color(W, H), W, H);
     let path = std::env::temp_dir().join("pixelflow_chrome_unit_sphere.ppm");
     common::write_ppm(&path, &frame).unwrap();
     common::assert_golden("chrome_unit_sphere", &frame, 2, 0.01);
@@ -195,7 +195,7 @@ fn sky_only() {
     const H: usize = 150;
 
     let ray = Ray::through_screen(W as f32, H as f32);
-    let frame = render(&sky(&ray).into_channels(), W, H);
+    let frame = render(&sky(&ray), W, H);
     let path = std::env::temp_dir().join("pixelflow_sky_only.ppm");
     common::write_ppm(&path, &frame).unwrap();
     common::assert_golden("sky_only", &frame, 2, 0.0);
@@ -219,7 +219,7 @@ fn work_stealing_matches_single_threaded() {
     const W: usize = 64;
     const H: usize = 64;
 
-    let program = compile_packed_for::<Rgba8>(&chrome_channels(W, H), [W as u32, H as u32]);
+    let program = compile_packed_for::<Rgba8>(&chrome_color(W, H), [W as u32, H as u32]);
     let scene = Scene::Packed(program.bind(&[]));
     let mut one = Frame::<Rgba8>::new(W as u32, H as u32);
     let mut many = Frame::<Rgba8>::new(W as u32, H as u32);
