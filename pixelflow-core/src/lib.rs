@@ -267,7 +267,7 @@ pub use lattice::cell_grid::{
     CELL_STRIDE, CellGridFrame, CellGridGeometry, CellGridPackedFrame, CellGridPackedProgram,
     CellGridProgram, PlaneRegion,
 };
-pub use lattice::{DiscreteManifold, Lattice, ReduceOp};
+pub use lattice::{DiscreteManifold, Lattice};
 
 // ============================================================================
 // Field: The ONLY User-Facing SIMD Type

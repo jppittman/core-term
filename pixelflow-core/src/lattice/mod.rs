@@ -1,85 +1,34 @@
-//! # Lattice: Representable Functor for Manifold Evaluation
+//! # Lattice: Representable Functor for Kernel Evaluation
 //!
-//! A Lattice is a finite box domain that collapses a Manifold into a discrete
-//! buffer. This is the `tabulate`/`index` pair from representable functors:
+//! A Lattice is a finite box domain that tabulates a [`Kernel`] into a
+//! discrete buffer. This is the `tabulate`/`index` pair from representable
+//! functors:
 //!
-//! - **`collapse`** = `tabulate`: `(Rep -> a) -> F a` -- evaluate at every point
+//! - **[`Lattice::bake`]** = `tabulate`: `(Rep -> a) -> F a` -- the kernel at every point
 //! - **`DiscreteManifold::eval`** = `index`: `F a -> Rep -> a` -- read back by coordinate
-//! - **Isomorphism**: `index(collapse(f, domain), i) = f(coord(i))` (up to discretization)
+//! - **Isomorphism**: `index(bake(k, domain), i) = k(coord(i))` (up to discretization)
 //!
 //! Nothing computes until a Lattice demands it. A single-point evaluation is
 //! just `Lattice::point` -- the degenerate case with all coordinates fixed.
 //!
 //! There is one `Lattice` type, not one per shape. An axis with extent 1 is
 //! fixed at its origin; an axis with extent > 1 is a loop dimension. The
-//! constructors (`frame`, `scanline`, `point`, `index`, `index2`) are sugar
+//! constructors (`frame`, `scanline`, `point`, `index2`, `index`) are sugar
 //! for common shapes -- the shape is data, not a type. Extents only need to
 //! be static at JIT-compile time, which is when the kernel is specialized.
 //!
-//! The naive implementations here iterate and call `manifold.eval()` per-batch.
-//! The JIT-backed fast path will override `collapse` later, reading the DAG,
-//! computing variance, and emitting nested loops with hoisting.
+//! A kernel with a lattice is the evaluation API: `bake` compiles ONE kernel
+//! for the whole domain and the loop nest lives inside the emitted code, so
+//! the compiler owns the hoisting and the register allocation across all of
+//! it. Reductions are a binder in the kernel (`Kernel::over` and friends),
+//! not a fold the lattice performs over a manifold.
+//!
+//! [`Kernel`]: pixelflow_ir::Kernel
 
 use crate::numeric::Numeric;
 use crate::{Field, Manifold, PARALLELISM};
 use alloc::vec;
 use alloc::vec::Vec;
-
-// ============================================================================
-// ReduceOp: Binary operators for fold/reduction
-// ============================================================================
-
-/// Binary operators for reduction over a lattice domain.
-///
-/// Each variant carries a monoid: an identity element and an associative binary op.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ReduceOp {
-    /// Additive monoid: identity = 0, op = +
-    Add,
-    /// Multiplicative monoid: identity = 1, op = *
-    Mul,
-    /// Min monoid: identity = +inf, op = min
-    Min,
-    /// Max monoid: identity = -inf, op = max
-    Max,
-}
-
-impl ReduceOp {
-    /// The identity element for this monoid, broadcast to all SIMD lanes.
-    #[inline(always)]
-    pub(crate) fn identity(self) -> Field {
-        match self {
-            ReduceOp::Add => Field::from(0.0),
-            ReduceOp::Mul => Field::from(1.0),
-            ReduceOp::Min => Field::from(f32::INFINITY),
-            ReduceOp::Max => Field::from(f32::NEG_INFINITY),
-        }
-    }
-
-    /// Apply the binary operation: `acc = acc op val`.
-    #[inline(always)]
-    pub(crate) fn apply(self, acc: Field, val: Field) -> Field {
-        match self {
-            ReduceOp::Add => acc.raw_add(val),
-            ReduceOp::Mul => acc.raw_mul(val),
-            ReduceOp::Min => acc.min(val),
-            ReduceOp::Max => acc.max(val),
-        }
-    }
-
-    /// Fold all SIMD lanes of `acc` into a single scalar.
-    #[inline]
-    pub(crate) fn horizontal(self, acc: Field) -> f32 {
-        let mut lanes = [0.0f32; PARALLELISM];
-        acc.store(&mut lanes);
-        match self {
-            ReduceOp::Add => lanes.iter().sum(),
-            ReduceOp::Mul => lanes.iter().product(),
-            ReduceOp::Min => lanes.iter().copied().fold(f32::INFINITY, f32::min),
-            ReduceOp::Max => lanes.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-        }
-    }
-}
 
 // ============================================================================
 // DiscreteManifold: The result of collapsing a lattice
@@ -318,13 +267,26 @@ impl Lattice {
         )
     }
 
-    // ───────────────────── collapse (tabulate) ──────────────────────
+    // ──────────────── collapse (the per-batch remnant) ───────────────
 
-    /// Collapse: evaluate the manifold at every point in the domain.
-    /// Returns a discrete manifold (buffer lookup) with `width = extent[0]`
-    /// and `height` = the product of the remaining extents.
+    /// Evaluate a manifold at every point in the domain by calling its
+    /// `eval` once per SIMD batch. Returns a discrete manifold (buffer
+    /// lookup) with `width = extent[0]` and `height` = the product of the
+    /// remaining extents.
     ///
-    /// This is `tabulate`: `(Rep -> a) -> F a`.
+    /// **Not the evaluation API.** [`Lattice::bake`] is: it hands the
+    /// compiler the kernel and the whole loop nest, where this makes one call
+    /// per SIMD batch. Every caller that can bake, bakes.
+    ///
+    /// What keeps this alive is the glyph cache's `CachedGlyph`, whose tests
+    /// tabulate it and which cannot be baked for two independent reasons:
+    /// it has no [`Lower`](pixelflow_ir::Lower) or `Kernel` form (it is in
+    /// the same "does not lower yet" class as `Color`, `spatial_bsp` and
+    /// `scene3d`), and its coverage lives in a buffer while `bake` binds no
+    /// memory and refuses a kernel that declares one. Writing a `Kernel`
+    /// twin of its `eval` would move the tested definition off the one the
+    /// rasterizer actually runs, so it waits for the stage that makes the
+    /// combinators lower. No new caller.
     pub fn collapse<M>(&self, manifold: &M) -> DiscreteManifold
     where
         M: Manifold<(Field, Field, Field, Field), Output = Field>,
@@ -471,194 +433,6 @@ impl Lattice {
         }
 
         DiscreteManifold::new(buffer, ex, ey * ez * ew)
-    }
-
-    /// Fold all points of the lattice into a per-lane SIMD accumulator.
-    ///
-    /// Each SIMD lane folds an independent stripe of X; the lanes are NOT
-    /// combined. Use [`Lattice::collapse_scalar`] when you want one number
-    /// for the whole domain.
-    pub fn collapse_with<M>(&self, op: ReduceOp, manifold: &M) -> Field
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        self.fold_lanes(op, manifold)
-    }
-
-    /// Fold all points of the lattice into a single scalar using `op`.
-    ///
-    /// This is the full horizontal reduction: SIMD lanes are folded together
-    /// at the end. Use this for index-space semantics (dot products, losses).
-    pub fn collapse_scalar<M>(&self, op: ReduceOp, manifold: &M) -> f32
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        op.horizontal(self.fold_lanes(op, manifold))
-    }
-
-    /// Shared lane-wise fold over the whole domain (tail lanes masked to the
-    /// monoid identity so they do not contribute).
-    fn fold_lanes<M>(&self, op: ReduceOp, manifold: &M) -> Field
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
-        let mut acc = op.identity();
-        let step = Field::from(PARALLELISM as f32);
-
-        for w in 0..ew {
-            let w_field = Field::from(self.origin[3] + w as f32);
-            for z in 0..ez {
-                let z_field = Field::from(self.origin[2] + z as f32);
-                for y in 0..ey {
-                    let y_field = Field::from(self.origin[1] + y as f32);
-                    let mut x = 0usize;
-                    let mut x_field = Field::sequential(self.origin[0]);
-
-                    while x + PARALLELISM <= ex {
-                        let result = manifold.eval((x_field, y_field, z_field, w_field));
-                        acc = op.apply(acc, result);
-                        x += PARALLELISM;
-                        x_field = x_field.raw_add(step);
-                    }
-
-                    // Tail: only the valid lanes contribute; out-of-bounds
-                    // lanes get the identity element so the fold is unaffected.
-                    if x < ex {
-                        let result = manifold.eval((x_field, y_field, z_field, w_field));
-                        let tail_len = ex - x;
-                        let lane_indices = Field::sequential(0.0);
-                        let threshold = Field::from(tail_len as f32);
-                        let mask = lane_indices.lt(threshold);
-                        let masked = Field::select_raw(mask, result, op.identity());
-                        acc = op.apply(acc, masked);
-                    }
-                }
-            }
-        }
-
-        acc
-    }
-
-    // ───────────────────── partial reduction (matmul primitive) ─────────────
-
-    /// Reduce one axis of a 2D (X/Y) lattice, returning a 1D `DiscreteManifold`.
-    ///
-    /// The surviving dimension is remapped to X in the output (height = 1).
-    ///
-    /// - `axis = 0`: reduce over X, keep Y. Output `[j]` = fold over `i` of `m(i, j)`.
-    /// - `axis = 1`: reduce over Y, keep X. Output `[i]` = fold over `j` of `m(i, j)`.
-    ///
-    /// This is the matmul primitive: `collapse_axis(0, Add, W * input)` computes
-    /// `output[j] = sum_i W(i,j) * input(i)`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `axis` is not 0 or 1, or if the Z/W axes are not fixed.
-    pub fn collapse_axis<M>(&self, axis: usize, op: ReduceOp, manifold: &M) -> DiscreteManifold
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        assert!(
-            self.extent[2] <= 1 && self.extent[3] <= 1,
-            "Lattice::collapse_axis requires fixed Z and W axes (extents {:?})",
-            self.extent,
-        );
-        match axis {
-            0 => self.collapse_axis0(op, manifold),
-            1 => self.collapse_axis1(op, manifold),
-            _ => panic!(
-                "Lattice::collapse_axis: axis {} out of range (must be 0 or 1)",
-                axis
-            ),
-        }
-    }
-
-    /// Reduce over X, produce one value per Y. Output indexed by X (height=1).
-    fn collapse_axis0<M>(&self, op: ReduceOp, manifold: &M) -> DiscreteManifold
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        let ex = self.extent[0] as usize;
-        let out_len = self.extent[1] as usize;
-        let mut out_buffer = vec![0.0f32; out_len];
-
-        let z_field = Field::from(self.origin[2]);
-        let w_field = Field::from(self.origin[3]);
-        let step = Field::from(PARALLELISM as f32);
-
-        for (j, out) in out_buffer.iter_mut().enumerate() {
-            let y_field = Field::from(self.origin[1] + j as f32);
-            let mut acc = op.identity();
-
-            let mut i = 0usize;
-            let mut x_field = Field::sequential(self.origin[0]);
-
-            while i + PARALLELISM <= ex {
-                let val = manifold.eval((x_field, y_field, z_field, w_field));
-                acc = op.apply(acc, val);
-                i += PARALLELISM;
-                x_field = x_field.raw_add(step);
-            }
-
-            if i < ex {
-                let val = manifold.eval((x_field, y_field, z_field, w_field));
-                let tail_len = ex - i;
-                let lane_indices = Field::sequential(0.0);
-                let threshold = Field::from(tail_len as f32);
-                let mask = lane_indices.lt(threshold);
-                let masked = Field::select_raw(mask, val, op.identity());
-                acc = op.apply(acc, masked);
-            }
-
-            *out = op.horizontal(acc);
-        }
-
-        DiscreteManifold::new(out_buffer, out_len, 1)
-    }
-
-    /// Reduce over Y, produce one value per X. Output indexed by X (height=1).
-    fn collapse_axis1<M>(&self, op: ReduceOp, manifold: &M) -> DiscreteManifold
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        let ey = self.extent[1] as usize;
-        let out_len = self.extent[0] as usize;
-        let mut out_buffer = vec![0.0f32; out_len];
-
-        let z_field = Field::from(self.origin[2]);
-        let w_field = Field::from(self.origin[3]);
-
-        for (i, out) in out_buffer.iter_mut().enumerate() {
-            let x_field = Field::from(self.origin[0] + i as f32);
-            let mut acc = op.identity();
-
-            for j in 0..ey {
-                let y_field = Field::from(self.origin[1] + j as f32);
-                let val = manifold.eval((x_field, y_field, z_field, w_field));
-                acc = op.apply(acc, val);
-            }
-
-            // All SIMD lanes are uniform (scalar broadcast over a fixed X index).
-            // A cross-lane reduction would be wrong here: for Add it would multiply
-            // the result by PARALLELISM, for Mul it would raise to the PARALLELISM-th
-            // power, etc. Lane 0 is always correct when all lanes carry the same value.
-            let mut packed = [0.0f32; PARALLELISM];
-            acc.store(&mut packed);
-            #[cfg(debug_assertions)]
-            for k in 1..PARALLELISM {
-                debug_assert!(
-                    (packed[k] - packed[0]).abs() < 1e-4,
-                    "collapse_axis1: lane {} ({}) differs from lane 0 ({}) — manifold must be lane-uniform",
-                    k,
-                    packed[k],
-                    packed[0],
-                );
-            }
-            *out = packed[0];
-        }
-
-        DiscreteManifold::new(out_buffer, out_len, 1)
     }
 }
 

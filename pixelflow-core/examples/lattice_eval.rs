@@ -1,5 +1,5 @@
 use pixelflow_core::lattice::{DiscreteManifold, Lattice};
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Field, Kernel, Manifold};
 
 fn main() {
     // 2x2 grid built from a DiscreteManifold
@@ -36,11 +36,8 @@ fn main() {
     println!("{:?} {:?}", p00, p10);
     println!("{:?} {:?}", p01, p11);
 
-    // Collapse a constant manifold over a 4x4 frame
+    // Bake a constant kernel over a 4x4 frame
     let lattice = Lattice::frame(4, 4, 0.0);
-    let collapsed = lattice.collapse(&1.5f32);
-    println!(
-        "\nCollapsed 4x4 constant manifold (1.5): {:?}",
-        collapsed.buffer()
-    );
+    let baked = lattice.bake(&Kernel::constant(1.5));
+    println!("\nBaked 4x4 constant kernel (1.5): {:?}", baked.buffer());
 }
