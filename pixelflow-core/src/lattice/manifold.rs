@@ -1,14 +1,26 @@
-//! # A kernel compiled at a 2D lattice shape, collapsed in bands of rows
+//! # A manifold is a kernel compiled at a lattice's shape
 //!
 //! The middle object of `kernel ──compile(shape)──▶ manifold
-//! ──collapse(lattice)──▶ buffer`, for a plane. A [`Kernel`] is the
-//! description; compiling it at an extent gives a **compiled manifold**
-//! ([`PlaneProgram`], plus its bound memory as [`PlaneFrame`]); collapsing
-//! that over a band of rows gives numbers. The loop over batches and rows
-//! lives inside the emitted code, with the two-level LICM prologues (per
-//! call, per row) active, so one collapse call covers a whole band, and
+//! ──bind(buffers)──▶ bound ──collapse(region)──▶ buffer`. A [`Kernel`] is the
+//! description; compiling it at a lattice's extents gives a **manifold**
+//! ([`Manifold`]); binding the memory it declared gives a [`BoundManifold`];
+//! collapsing that over a band of rows gives numbers. The loop over batches
+//! and rows lives inside the emitted code, with the two-level LICM prologues
+//! (per call, per row) active, so one collapse call covers a whole band, and
 //! whatever memory the kernel declared is bound by identity once and stays
 //! bound for every band collapsed from it.
+//!
+//! ## Rank
+//!
+//! A manifold is compiled at a [`Lattice`](crate::Lattice)'s **whole**
+//! `[x, y, z, w]` extent, which is exactly what a
+//! [`LatticeShape`](pixelflow_ir::LatticeShape) is: the extents decide which
+//! axes are binders, and therefore what the emitter may hoist out of what. The
+//! *collapse ABI* is two-dimensional — one call fills batches across X and rows
+//! down Y — so a band always lies in one `(z, w)` plane, and a domain with
+//! Z or W extent above 1 is collapsed one plane per call by whoever owns the
+//! nest ([`Lattice::collapse`](crate::Lattice::collapse)). Rank is a property
+//! of the shape a kernel was compiled for; two is a property of the store.
 //!
 //! This is the shape every frame path in the tree already had — the cell
 //! grid's four channel programs and its packed sibling were two copies of it
@@ -29,118 +41,145 @@
 //!
 //! The store is a raw vector store, type-blind bit movement, so a kernel
 //! whose root is int-domain (a packed pixel, a mask) collapses through
-//! [`PlaneFrame::collapse_int_rows`] into a `u32` plane exactly: no float
+//! [`BoundManifold::collapse_int_rows`] into a `u32` plane exactly: no float
 //! operation touches the value between the root and memory.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::Field;
-use pixelflow_codegen::JitManifold;
+use pixelflow_codegen::CompiledKernel;
 use pixelflow_ir::Kernel;
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
 
-/// Buffer slots a [`PlaneFrame`] can bind without allocating: binding builds
+/// Buffer slots a [`BoundManifold`] can bind without allocating: binding builds
 /// its base-pointer array on the stack, so the bound is what makes that array
 /// a fixed size. A kernel declaring more is refused at compile time rather
 /// than silently overflowing it.
 pub const MAX_BOUND_BUFFERS: usize = 4;
 
-/// A horizontal band of the lattice to collapse: `width` samples across, rows
-/// `y0 .. y0 + rows`, of the plane at some fixed `Z` and `W`.
+/// A horizontal band to collapse: `width` samples across, `rows` rows down,
+/// starting at some coordinate of the kernel's four-dimensional domain.
 ///
-/// A kernel is a function of four coordinates and a plane fixes two of them,
-/// so which plane is part of naming the band, not a detail of the caller's:
-/// [`PlaneRegion::rows`] names the origin plane (`z = w = 0`) and
-/// [`PlaneRegion::on_slice`] any other. That is where a frame's timestamp
-/// enters a compiled kernel — a shader animated in `W` (`Kernel::w()`) is
-/// compiled once and collapsed on a different slice each frame, instead of
-/// being recompiled with the time baked in as a constant.
+/// A kernel is a function of four coordinates and a band fixes two of them, so
+/// which plane it lies in is part of naming it, not a detail of the caller's:
+/// [`PlaneRegion::rows`] names a pixel band of the origin plane and
+/// [`PlaneRegion::on_slice`] moves it to another. That is where a frame's
+/// timestamp enters a compiled kernel — a shader animated in `W`
+/// (`Kernel::w()`) is compiled once and collapsed on a different slice each
+/// frame, instead of being recompiled with the time baked in as a constant.
+///
+/// The band's own **origin** — the coordinate its first sample is taken at —
+/// is what separates the two conventions in the tree. A pixel band samples
+/// *centers* (`x + ½`, `y + ½`), which is what [`PlaneRegion::rows`] builds; a
+/// [`Lattice`](crate::Lattice) samples its own `origin + index`. Both are the
+/// same band with a different starting coordinate, which is why there is one
+/// collapse and not two.
 #[derive(Clone, Copy, Debug)]
 pub struct PlaneRegion {
     /// Samples per row.
     pub width: usize,
-    /// First row.
-    pub y0: usize,
     /// Number of rows.
     pub rows: usize,
-    /// The plane this band lies in: the `Z` and `W` every sample carries.
-    /// Private so the two coordinates cannot be set one at a time or left
-    /// undefined — a band is always on some plane, and `rows` says which.
-    slice: [f32; 2],
+    /// The coordinate the first sample is taken at: lane 0 of the first row,
+    /// and the `Z`/`W` every sample of the band carries. Private so a band is
+    /// always somewhere — no axis can be set alone or left undefined — and
+    /// because which of the two sampling conventions applies is the
+    /// constructor's to decide, not the caller's to patch afterwards.
+    origin: [f32; 4],
 }
 
 impl PlaneRegion {
-    /// A band of the origin plane: `width` samples across, rows
-    /// `y0 .. y0 + rows`, at `z = w = 0`.
+    /// A band of pixel rows `y0 .. y0 + rows` on the origin plane, sampled at
+    /// pixel centers: sample `(i, j)` is taken at `(i + ½, j + ½)`.
     #[must_use]
     pub fn rows(width: usize, y0: usize, rows: usize) -> Self {
         Self {
             width,
-            y0,
             rows,
-            slice: [0.0, 0.0],
+            origin: [SAMPLE_CENTER, y0 as f32 + SAMPLE_CENTER, 0.0, 0.0],
         }
     }
 
-    /// The same band of the plane at `(z, w)`.
-    #[must_use]
-    pub fn on_slice(self, z: f32, w: f32) -> Self {
+    /// A band of `rows` rows whose first sample is taken at `origin`, with
+    /// each subsequent sample one unit further along X and each row one unit
+    /// further along Y. The lattice's own convention.
+    pub(crate) fn from_origin(width: usize, rows: usize, origin: [f32; 4]) -> Self {
         Self {
-            slice: [z, w],
-            ..self
+            width,
+            rows,
+            origin,
         }
+    }
+
+    /// The same band on the plane at `(z, w)`.
+    #[must_use]
+    pub fn on_slice(mut self, z: f32, w: f32) -> Self {
+        self.origin[2] = z;
+        self.origin[3] = w;
+        self
     }
 
     /// The `Z` this band's samples carry.
     #[must_use]
     pub fn z(&self) -> f32 {
-        self.slice[0]
+        self.origin[2]
     }
 
     /// The `W` this band's samples carry.
     #[must_use]
     pub fn w(&self) -> f32 {
-        self.slice[1]
+        self.origin[3]
     }
 }
 
-/// One kernel compiled at one 2D lattice shape: a compiled manifold, before
-/// its memory is bound.
+/// Half a sample: the offset from a pixel's integer index to its center, which
+/// is where a rasterizer samples.
+const SAMPLE_CENTER: f32 = 0.5;
+
+/// **A manifold is a [`Kernel`] compiled at a lattice's shape** — the thing
+/// you can sample over a domain, and the only compiled object a consumer
+/// names.
 ///
-/// Compile once per shape; bind memory per frame ([`PlaneProgram::bind`]).
-/// The program's size and compile time are independent of the lattice's.
+/// Compile once per shape; bind memory per frame ([`Manifold::bind`]). Its
+/// size and compile time are independent of the lattice's.
 ///
-/// **This is the compiled manifold that can bind memory**, and the only one.
-/// A kernel composed over a buffer —
+/// It has no `eval`: the way a manifold becomes numbers is to bind its memory
+/// and collapse it over a region — [`BoundManifold::collapse_rows`] for a band
+/// in place, [`Lattice::collapse`](crate::Lattice::collapse) for a whole
+/// domain into a buffer.
+///
+/// **This is also the only compiled object that can bind memory.** A kernel
+/// composed over a buffer —
 /// [`DiscreteManifold::kernel_for`](crate::DiscreteManifold::kernel_for)'s
 /// gather, [`BilinearSampler::kernel_for`](crate::BilinearSampler::kernel_for)'s
-/// 4-tap blend, or anything built on them — declares buffer slots, and
-/// [`Lattice::bake`](crate::Lattice::bake) refuses those: it binds nothing, so
-/// the gathers would load their base pointers out of a null context. Compile
-/// the same kernel here, bind its buffers by identity, and collapse it into
-/// `f32` rows.
+/// 4-tap blend, or anything built on them — declares buffer slots, and every
+/// slot must be bound before a collapse: the gathers load their base pointers
+/// out of the bound context.
 ///
-/// The three colour-shaped things in the tree are all this object wearing
-/// different numbers of channels: `Lattice::bake` is the one-channel,
-/// buffer-free instance (`collapse(compile(k))` fused, and can stop being a
-/// separate name); a field over bound memory is the one-channel instance with
-/// its slots filled; and `pixelflow-graphics`'s packed program is four channel
-/// kernels compiled through here with an integer pack at the root. Not three
-/// paths — one, sampled three ways.
-pub struct PlaneProgram {
-    jit: Arc<JitManifold>,
-    /// The lattice shape the kernel was specialized to. Every region
-    /// collapsed through it lies within these extents.
-    extent: [u32; 2],
+/// The colour-shaped things in the tree are all this object wearing different
+/// numbers of channels: [`Lattice::bake`](crate::Lattice::bake) is the
+/// one-channel, buffer-free instance; a field over bound memory is the
+/// one-channel instance with its slots filled; and `pixelflow-graphics`'s
+/// packed manifold is four channel kernels compiled through here with an
+/// integer pack at the root. Not three paths — one, sampled three ways.
+pub struct Manifold {
+    jit: Arc<CompiledKernel>,
+    /// The lattice shape the kernel was specialized to, `[x, y, z, w]`. Every
+    /// band collapsed through it lies within these extents.
+    extent: [u32; 4],
     /// The memory the kernel declared, in the slot order its ABI binds.
-    /// Shared so a [`PlaneFrame`] stays cheap to clone.
+    /// Shared so a [`BoundManifold`] stays cheap to clone.
     slots: Arc<[BufferDecl]>,
 }
 
-impl PlaneProgram {
-    /// JIT-compile `kernel` in collapse mode over a `extent[0] × extent[1]`
-    /// lattice.
+impl Manifold {
+    /// JIT-compile `kernel` in collapse mode at a lattice of these extents.
+    ///
+    /// `extent` is a [`Lattice`](crate::Lattice)'s own `[x, y, z, w]`, whatever
+    /// its rank; the lattice's *origin* is not part of it, because the shape is
+    /// what specializes the code and where a collapse starts is a property of
+    /// the collapse. A frame is `[w, h, 1, 1]`.
     ///
     /// # Panics
     ///
@@ -149,28 +188,28 @@ impl PlaneProgram {
     /// than [`MAX_BOUND_BUFFERS`] or one too large to index exactly in `f32`,
     /// or if compilation fails.
     #[must_use]
-    pub fn compile(kernel: &Kernel, extent: [u32; 2]) -> Self {
+    pub fn compile(kernel: &Kernel, extent: [u32; 4]) -> Self {
         assert!(
-            extent[0] > 0 && extent[1] > 0,
-            "PlaneProgram::compile: degenerate extent {extent:?}"
+            extent.iter().all(|&e| e > 0),
+            "Manifold::compile: degenerate extent {extent:?}"
         );
         assert_eq!(
             core::mem::size_of::<Field>(),
             pixelflow_codegen::JIT_VECTOR_BYTES,
-            "PlaneProgram::compile: Field width does not match the JIT's emitted width"
+            "Manifold::compile: Field width does not match the JIT's emitted width"
         );
         let (arena, root) = kernel.parts();
         let slots: Vec<BufferDecl> = arena.buffers().to_vec();
         assert!(
             slots.len() <= MAX_BOUND_BUFFERS,
-            "PlaneProgram::compile: kernel needs {} buffer slots, over the \
+            "Manifold::compile: kernel needs {} buffer slots, over the \
              {MAX_BOUND_BUFFERS} a frame can bind without allocating",
             slots.len()
         );
         for decl in &slots {
             assert!(
                 buffer_len(decl) <= EXACT_F32_INDEX,
-                "PlaneProgram::compile: buffer of {} elements exceeds the \
+                "Manifold::compile: buffer of {} elements exceeds the \
                  exactly f32-indexable range (2^24); gathers would alias \
                  adjacent samples",
                 buffer_len(decl)
@@ -181,9 +220,9 @@ impl PlaneProgram {
         let jit = pixelflow_codegen::jit_cache::compile(
             arena,
             root,
-            pixelflow_ir::LatticeShape::new([extent[0], extent[1], 1, 1]),
+            pixelflow_ir::LatticeShape::new(extent),
         )
-        .expect("PlaneProgram: kernel failed to compile");
+        .expect("Manifold: kernel failed to compile");
         Self {
             jit,
             extent,
@@ -191,13 +230,13 @@ impl PlaneProgram {
         }
     }
 
-    /// The lattice extents this program was compiled for.
+    /// The lattice extents this manifold was compiled for, `[x, y, z, w]`.
     #[must_use]
-    pub fn extent(&self) -> [u32; 2] {
+    pub fn extent(&self) -> [u32; 4] {
         self.extent
     }
 
-    /// The memory this program's kernel declared, in slot order. A caller that
+    /// The memory this manifold's kernel declared, in slot order. A caller that
     /// minted the identities can say which slot is which without inferring it
     /// from extents.
     #[must_use]
@@ -223,23 +262,23 @@ impl PlaneProgram {
     /// gathers address the declared shape, so a shorter buffer would be read
     /// past its end through an entirely safe API.
     #[must_use]
-    pub fn bind(&self, buffers: &[(BufferIdentity, Arc<Vec<f32>>)]) -> PlaneFrame {
+    pub fn bind(&self, buffers: &[(BufferIdentity, Arc<Vec<f32>>)]) -> BoundManifold {
         let mut bound: [Option<Arc<Vec<f32>>>; MAX_BOUND_BUFFERS] = Default::default();
         for (slot, decl) in bound.iter_mut().zip(self.slots.iter()) {
             let data = buffers
                 .iter()
                 .find(|(id, _)| *id == decl.id)
                 .map(|(_, data)| data)
-                .unwrap_or_else(|| panic!("PlaneProgram::bind: nothing bound to slot {decl:?}"));
+                .unwrap_or_else(|| panic!("Manifold::bind: nothing bound to slot {decl:?}"));
             assert_eq!(
                 data.len(),
                 buffer_len(decl),
-                "PlaneProgram::bind: buffer of {} floats bound to slot {decl:?}",
+                "Manifold::bind: buffer of {} floats bound to slot {decl:?}",
                 data.len()
             );
             *slot = Some(Arc::clone(data));
         }
-        PlaneFrame {
+        BoundManifold {
             jit: Arc::clone(&self.jit),
             extent: self.extent,
             bound,
@@ -262,31 +301,35 @@ const EXACT_F32_INDEX: usize = 1 << 24;
 fn buffer_len(decl: &BufferDecl) -> usize {
     (decl.width as usize)
         .checked_mul(decl.height as usize)
-        .expect("PlaneProgram: declared buffer length overflows usize")
+        .expect("Manifold: declared buffer length overflows usize")
 }
 
-/// One frame: the compiled program plus the memory it reads. Cheap to clone
-/// (one `Arc` for the code, one per bound buffer).
+/// A [`Manifold`] with its memory bound: the compiled code plus the buffers it
+/// reads. Cheap to clone (one `Arc` for the code, one per bound buffer).
+///
+/// This is what a collapse takes. A kernel that reads nothing binds the empty
+/// slice and is a bound manifold too — there is no second, buffer-free form.
 #[derive(Clone)]
-pub struct PlaneFrame {
-    jit: Arc<JitManifold>,
-    extent: [u32; 2],
+pub struct BoundManifold {
+    jit: Arc<CompiledKernel>,
+    extent: [u32; 4],
     /// Bound memory in slot order; entries past the declared slots stay
     /// `None` and are never addressed, because the kernel only reads slots it
     /// declared.
     bound: [Option<Arc<Vec<f32>>>; MAX_BOUND_BUFFERS],
 }
 
-impl PlaneFrame {
-    /// The lattice extents the kernel was compiled for.
+impl BoundManifold {
+    /// The lattice extents the kernel was compiled for, `[x, y, z, w]`.
     #[must_use]
-    pub fn extent(&self) -> [u32; 2] {
+    pub fn extent(&self) -> [u32; 4] {
         self.extent
     }
 
-    /// Collapse the region at sample-center coordinates (`x + ½`, `y + ½`)
-    /// into `out`, whose rows are `stride` elements apart and whose first
-    /// `region.width` elements each row are the samples.
+    /// Collapse the region into `out`, whose rows are `stride` elements apart
+    /// and whose first `region.width` elements each row are the samples. Where
+    /// the samples are taken is the region's — pixel centers for
+    /// [`PlaneRegion::rows`].
     ///
     /// The destination is written in place — the collapse loop's own stores
     /// land in it — so `stride` is whatever the caller's plane already is: a
@@ -304,7 +347,7 @@ impl PlaneFrame {
         unsafe { self.collapse(region, out.as_mut_ptr(), band) }
     }
 
-    /// [`PlaneFrame::collapse_rows`] for a kernel whose root is int-domain:
+    /// [`BoundManifold::collapse_rows`] for a kernel whose root is int-domain:
     /// each lane already holds a bit pattern (a packed pixel, a mask), and the
     /// collapse store is a raw vector store — type-blind bit movement — so
     /// writing through the ABI's `*mut f32` into a `u32` plane is exact.
@@ -328,7 +371,7 @@ impl PlaneFrame {
     /// Panics if the region's width is zero, `stride` is less than it, the
     /// region leaves the compiled extents, or `out_len` cannot hold the band.
     fn plan(&self, what: &str, region: PlaneRegion, stride: usize, out_len: usize) -> BandPlan {
-        let (width, y0, rows) = (region.width, region.y0, region.rows);
+        let (width, rows) = (region.width, region.rows);
         assert!(width > 0, "{what}: zero width");
         assert!(
             stride >= width,
@@ -337,7 +380,7 @@ impl PlaneFrame {
         // The kernel was compiled for `extent`; a region outside it would run
         // the collapse loop past the lattice it was specialized to.
         //
-        // `debug_assert`, matching `JitManifold::call_collapse`'s own check of
+        // `debug_assert`, matching `CompiledKernel::call_collapse`'s own check of
         // the same promise: today's emitted code takes its loop bounds from
         // the tile at run time, so a wider region is merely a stale cache key,
         // not wrong samples. It becomes load-bearing when the emitted code
@@ -346,9 +389,9 @@ impl PlaneFrame {
         // on is a new way for a terminal to die.
         let (fw, fh) = (self.extent[0] as usize, self.extent[1] as usize);
         debug_assert!(
-            width <= fw && y0.saturating_add(rows) <= fh,
-            "{what}: region {width}×{rows} at row {y0} lies outside the \
-             {fw}×{fh} lattice this program was compiled for"
+            width <= fw && rows <= fh,
+            "{what}: a band of {width}×{rows} lies outside the {fw}×{fh} \
+             lattice this manifold was compiled for"
         );
         let plan = BandPlan::new(width, rows, stride);
         // Checked: the span wraps in release for a caller-supplied region
@@ -367,7 +410,7 @@ impl PlaneFrame {
     /// # Safety
     ///
     /// `out` must be writable for `band.span()` 4-byte elements — which
-    /// [`PlaneFrame::plan`] asserted for the slice it came from.
+    /// [`BoundManifold::plan`] asserted for the slice it came from.
     unsafe fn collapse(&self, region: PlaneRegion, out: *mut f32, band: BandPlan) {
         if band.rows == 0 {
             return;
@@ -382,9 +425,10 @@ impl PlaneFrame {
                 *dst = data.as_ptr();
             }
         }
-        let z = Field::from(region.z());
-        let w = Field::from(region.w());
-        // Sample centers: the rasterizer convention (x + ½, y + ½).
+        // Where the band's first sample lies; X advances by one per lane, Y by
+        // one per row, which is what the collapse loop does.
+        let [x0, y0, z, w] = region.origin;
+        let (z, w) = (Field::from(z), Field::from(w));
         if band.groups > 0 {
             // SAFETY: `compile` checked size_of::<Field>() == JIT_VECTOR_BYTES
             // and that every declared slot fits `ctx`; `bind` bound a buffer of
@@ -401,12 +445,7 @@ impl PlaneFrame {
                         band.rows,
                         band.row_skip_bytes(),
                     ),
-                    pixelflow_codegen::Point4::new(
-                        Field::sequential(0.5),
-                        Field::from(region.y0 as f32 + 0.5),
-                        z,
-                        w,
-                    ),
+                    pixelflow_codegen::Point4::new(Field::sequential(x0), Field::from(y0), z, w),
                 );
             }
         }
@@ -424,8 +463,8 @@ impl PlaneFrame {
                     ctx.as_ptr(),
                     pixelflow_codegen::TileSlice::single(scratch.as_mut_ptr()),
                     pixelflow_codegen::Point4::new(
-                        Field::sequential(band.whole_lanes() as f32 + 0.5),
-                        Field::from((region.y0 + row) as f32 + 0.5),
+                        Field::sequential(x0 + band.whole_lanes() as f32),
+                        Field::from(y0 + row as f32),
                         z,
                         w,
                     ),
@@ -536,7 +575,7 @@ mod tests {
     /// destination whose rows are exactly as wide as the samples, in one.
     #[test]
     fn a_band_collapses_its_absolute_rows_at_sample_centers() {
-        let program = PlaneProgram::compile(&coordinate_kernel(), [8, 8]);
+        let program = Manifold::compile(&coordinate_kernel(), [8, 8, 1, 1]);
         let frame = program.bind(&[]);
         let (width, y0, rows) = (5, 4, 3);
         let mut out = vec![0.0f32; rows * width];
@@ -565,7 +604,7 @@ mod tests {
     /// the samples themselves are read back.)
     #[test]
     fn a_band_lands_at_the_stride_the_caller_asked_for() {
-        let program = PlaneProgram::compile(&coordinate_kernel(), [16, 8]);
+        let program = Manifold::compile(&coordinate_kernel(), [16, 8, 1, 1]);
         let frame = program.bind(&[]);
         let (width, stride, rows) = (9, BATCH_LANES * 4 + 1, 4);
         const UNTOUCHED: f32 = -1.0;
@@ -592,7 +631,7 @@ mod tests {
     /// have had from a whole-batch store into a padded row.
     #[test]
     fn a_partial_last_batch_collapses_the_same_samples_at_any_stride() {
-        let program = PlaneProgram::compile(&coordinate_kernel(), [32, 8]);
+        let program = Manifold::compile(&coordinate_kernel(), [32, 8, 1, 1]);
         let frame = program.bind(&[]);
         let (width, rows) = (BATCH_LANES * 2 - 1, 3);
         let padded = BATCH_LANES * 2;
@@ -619,7 +658,7 @@ mod tests {
             .or(&Kernel::y().trunc_to_int())
             .into_kernel();
         let width = BATCH_LANES + 1;
-        let program = PlaneProgram::compile(&kernel, [width as u32, 4]);
+        let program = Manifold::compile(&kernel, [width as u32, 4, 1, 1]);
         let frame = program.bind(&[]);
         let mut out = vec![0u32; 2 * width];
         frame.collapse_int_rows(PlaneRegion::rows(width, 0, 2), &mut out, width);
@@ -637,7 +676,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "narrower than")]
     fn a_stride_below_the_sampled_width_is_refused() {
-        let program = PlaneProgram::compile(&coordinate_kernel(), [8, 8]);
+        let program = Manifold::compile(&coordinate_kernel(), [8, 8, 1, 1]);
         let frame = program.bind(&[]);
         let mut out = vec![0.0f32; 32];
         frame.collapse_rows(PlaneRegion::rows(5, 0, 2), &mut out, 4);
@@ -660,7 +699,7 @@ mod tests {
             &Kernel::z(),
             &Kernel::w(),
         );
-        let program = PlaneProgram::compile(&kernel, [bw, bh]);
+        let program = Manifold::compile(&kernel, [bw, bh, 1, 1]);
         assert_eq!(
             program.buffers().len(),
             1,
@@ -683,7 +722,7 @@ mod tests {
             &Kernel::z(),
             &Kernel::w(),
         );
-        let program = PlaneProgram::compile(&kernel, [4, 4]);
+        let program = Manifold::compile(&kernel, [4, 4, 1, 1]);
         let _refused = program.bind(&[]);
     }
 
@@ -697,7 +736,7 @@ mod tests {
             &Kernel::z(),
             &Kernel::w(),
         );
-        let program = PlaneProgram::compile(&kernel, [4, 4]);
+        let program = Manifold::compile(&kernel, [4, 4, 1, 1]);
         let _refused = program.bind(&[(buffer, Arc::new(vec![0.0f32; 15]))]);
     }
 }

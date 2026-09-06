@@ -18,7 +18,7 @@
 
 use pixelflow_codegen::emit::compile;
 use pixelflow_codegen::emit::executable::{Point4, TileSlice};
-use pixelflow_codegen::{JIT_VECTOR_BYTES, JitManifold};
+use pixelflow_codegen::{CompiledKernel, JIT_VECTOR_BYTES};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
@@ -35,7 +35,7 @@ const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 /// depends on this crate, not the other way round), so a test that wants one
 /// number spells the batch itself rather than the crate growing a point API for
 /// it.
-fn eval_point(jit: &JitManifold, x: f32, y: f32, z: f32, w: f32) -> f32 {
+fn eval_point(jit: &CompiledKernel, x: f32, y: f32, z: f32, w: f32) -> f32 {
     let mut out = [0.0f32; LANES];
     // SAFETY: `out` holds exactly one whole batch, and every arena in this file
     // declares no buffers, so the null context is never read.
@@ -88,7 +88,7 @@ fn assert_spills_and_matches_interp(arena: &ExprArena, root: ExprId, label: &str
          size its pressure from `pool_size()` rather than a literal",
         result.max_regs
     );
-    let jit = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT);
+    let jit = CompiledKernel::new(result.code, pixelflow_ir::LatticeShape::POINT);
     let coords = [-2.5f32, -1.0, -0.3, 0.0, 0.4, 1.0, 1.7, 3.0];
     for &x in &coords {
         for &y in &coords {
@@ -296,7 +296,7 @@ fn frame_mode_beyond_red_zone() {
         "scenario stayed inside the red zone (spill_bytes={}), not testing frame mode",
         result.spill_bytes
     );
-    let jit = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT);
+    let jit = CompiledKernel::new(result.code, pixelflow_ir::LatticeShape::POINT);
     for &(x, y) in &[(0.3f32, -1.2f32), (2.0, 0.7), (-0.9, 3.1)] {
         let want = eval_scalar(&a, root, &[x, y, 0.1, 0.9], &BindingTable::empty());
         let got = eval_point(&jit, x, y, 0.1, 0.9);

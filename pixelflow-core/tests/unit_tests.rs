@@ -6,12 +6,12 @@ extern crate std;
 
 use std::prelude::v1::*;
 
+use pixelflow_core::combinator::Manifold;
 use pixelflow_core::jet::Jet2;
 use pixelflow_core::{
     // Operations
     // Core types
     Field,
-    Manifold,
     ManifoldExt,
     Max,
     Min,

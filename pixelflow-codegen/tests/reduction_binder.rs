@@ -286,7 +286,7 @@ fn occlusion_shaped_accumulation_over_samples() {
 mod jit {
     use super::*;
 
-    // JitManifold::call's ABI tracks the build's selected width (SSE2/AVX2;
+    // CompiledKernel::call's ABI tracks the build's selected width (SSE2/AVX2;
     // this module is gated off avx512f above), so the splat/extract pair must
     // match: __m256 under +avx2, else __m128.
     #[cfg(target_feature = "avx2")]

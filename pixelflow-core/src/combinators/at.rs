@@ -14,7 +14,8 @@
 //! # Example: Swizzle Coordinates
 //!
 //! ```ignore
-//! use pixelflow_core::{X, Y, Z, W, Manifold};
+//! use pixelflow_core::combinator::Manifold;
+//! use pixelflow_core::{X, Y, Z, W};
 //!
 //! // Treat time (W) as depth (Z)
 //! let swizzled = At {
@@ -42,7 +43,8 @@
 //! // Caller passes any P, mapped to (3, 4, 0, 0), material evaluates
 //! ```
 
-use crate::{Computational, Manifold};
+use crate::Computational;
+use crate::combinator::Manifold;
 use pixelflow_compiler::Element;
 
 /// The universal contramap combinator (tuple-based).

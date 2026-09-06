@@ -644,3 +644,224 @@ One note on running that matrix here rather than in CI: a single ISA level's
 `debuginfo = 2` did not fit this container's free disk, and `isa-matrix`
 already wipes its target dir per level. `CARGO_PROFILE_DEV_DEBUG=0` was set
 for that run — it changes artifact size, not what is compiled or executed.
+
+### S4b-1 landed — 2026-09-06
+
+**The name `Manifold` is the compiled object, and `collapse` takes it.** The
+denotation, with the names as built:
+
+```
+Kernel ──Manifold::compile(extent)──▶ Manifold ──bind(&[(id, buf)])──▶ BoundManifold
+       ──Lattice::collapse──▶ DiscreteManifold
+```
+
+- **`Kernel`** (pixelflow-ir) — the description. Unchanged.
+- **`pixelflow_core::Manifold`** — a kernel compiled at a lattice's shape.
+  Today's `PlaneProgram`, taking the name; `lattice::manifold` is its module.
+  It knows its extents, its buffer declarations and its code bytes; it has no
+  `eval` and is not batch-shaped.
+- **`BoundManifold`** — `PlaneFrame`, renamed for what binding produces. A
+  kernel that reads nothing binds the empty slice and is a bound manifold
+  too; there is no second, buffer-free form.
+- **`Lattice::collapse(&BoundManifold) -> DiscreteManifold`** — the one
+  tabulate verb. `DiscreteManifold` keeps its name: it is the buffer that IS
+  a manifold by the representable-functor law.
+- **`pixelflow_codegen::CompiledKernel`** — `JitManifold` renamed to what it
+  is, one kernel's emitted bytes at one shape. It was never re-exported from
+  core (the brief expected it to be), and is not now.
+- Graphics follows: `PackedManifold` and `CellGridPackedManifold`.
+  `PackedFrame` keeps its name — in graphics' vocabulary a *frame* is exactly
+  the bound form — and `render_packed` needed no change beyond its argument's
+  type.
+
+The per-batch `Manifold` **trait** could not be deleted here (121 impls in
+core's combinator library, plus what `kernel!` emits), so it moved off the
+crate root to **`pixelflow_core::combinator::Manifold`**, in `combinator.rs`.
+No use site changed its spelling — only where the name is imported from. That
+is what makes the trait's absence from the root a statement rather than an
+accident, and it is what S4b-2 deletes.
+
+**Rank was reconciled upward, and it cost nothing.** `PlaneProgram` compiled
+at a 2D `[u32; 2]` while `Lattice::bake` compiled at the 4D `LatticeShape` of
+the lattice's own extent. A manifold now compiles at `[u32; 4]` — a
+`Lattice`'s whole extent, which is precisely what a `LatticeShape` already is
+and what `bake` already passed, so the cache key and the emitted code are
+unmoved (a frame is `[w, h, 1, 1]`). The **collapse ABI is untouched and
+stays two-dimensional**: one call fills batches across X and rows down Y, a
+band therefore lies in one `(z, w)` plane, and `Lattice::collapse` calls it
+once per plane — which is the Rust loop `bake` already had. Rank is a
+property of the shape a kernel is compiled for; two is a property of the
+store. The lattice's **origin** is deliberately *not* part of compilation: it
+says where a collapse starts, not what the code is (`LatticeShape` erases it
+for the same reason).
+
+What made one collapse loop serve both callers is that `PlaneRegion` now
+carries **the coordinate of its first sample** instead of a row index plus a
+`(z, w)` slice. That was the only difference between them: a pixel band
+samples centers (`x + ½`, `y + ½`), a lattice samples `origin + index`.
+`PlaneRegion::rows` builds the first, a crate-private `from_origin` the
+second, and the loop below is one body. Its debug bound became
+`rows <= extent[1]`, which is exactly what `CompiledKernel::call_collapse`
+promises; the old `y0 + rows <= extent[1]` is not expressible once the origin
+is general, and was never what the ABI checks.
+
+**`bake` is one line and its refusal moved to where the rule already lived.**
+`Lattice::bake(&Kernel)` is `collapse(compile(k, self.extent).bind(&[]))`.
+S1's finding 2 — that `bake` refuses an arena binding memory — is now
+structural: `bind(&[])` leaves any declared slot empty and
+`Manifold::bind` panics **naming the slot** (`nothing bound to slot
+BufferDecl { .. }`), which is the better message and one fewer statement of
+the same rule. Nothing silently reads a null context. An empty domain still
+bakes to an empty buffer without compiling, since a degenerate extent is not
+a lattice for the JIT to specialize to.
+
+**The glyph cache is a kernel producer.** `CachedGlyph::kernel()` is the
+4-tap blend contramapped into texel space (`p·density − ½`) and masked to the
+glyph's point-space extent — the same expression its `eval` built, now in the
+language; `CachedText::kernel()` places each glyph with `Kernel::at` and sums
+with `Kernel::sum`, which is what its `eval` loop was doing by hand. Both
+`Manifold` impls are deleted, `binding()`/`bindings()` hand over the coverage
+buffers by identity, and every test goes through
+`Manifold::compile(..).bind(..)` + `Lattice::collapse`. **core-term consumes
+neither type** — it draws text through `GlyphAtlas` and the cell grid, and
+names `CachedGlyph`, `CachedText` and `GlyphCache` nowhere — so the migration
+is contained to `pixelflow-graphics`. All four `kernel_glyph_golden`
+contracts pass unchanged; no golden moved.
+
+One honest limit this exposes: a `CachedText` run compiles to one kernel over
+one slot **per distinct glyph**, and `MAX_BOUND_BUFFERS` is 4. Four distinct
+characters is the ceiling for a run collapsed this way, which the tests and
+the bench are within ("Hello", "HELLO"). Production text does not go through
+this path — the atlas is one buffer for every glyph, which is why the cell
+grid scales — and the ceiling is the compiled manifold's, not the cache's.
+
+**The identity gate. Nothing that should not have moved, moved.** The *before*
+column is not this stage reading itself — the emitted-byte figures are the ones
+S4a's landing block recorded, re-measured here on the same host:
+
+| artifact | SSE2 before → after | AVX-512 before → after |
+|---|---|---|
+| `bench_scene_psychedelic`'s packed program | 5,584 B `fnv1a=00f3a5ed124990bf` → **identical** | 4,352 B `fnv1a=2d6e37c15a633a65` → **identical** |
+| `bench_scene_chrome`'s packed program | 9,760 B `fnv1a=ca0e1d4413e140c7` → **identical** | 7,645 B `fnv1a=5c099aea39b99996` → **identical** |
+| `collapse_cost` corpus fixture (208 kernels: 15 synthetic, 193 glyph bakes) | `md5=379282c4…` → **identical** | (the same fixture) |
+| `collapse_cost` deterministic columns — every field but `measured` | `md5=3f61ec4d…` — **new baseline** | `md5=470a3c27…` — **new baseline** |
+
+The emitted-bytes instrument is the two examples' own scene constructors plus
+an fnv1a over `Manifold::code_bytes()`, run once per ISA level. It is
+deliberately **not** in the tree: there it would be a third copy of two scenes
+that already exist as examples, and what it prints is a per-host,
+per-ISA-level measurement for a landing block, not a contract a test could
+assert.
+
+The fixture row carries more than it looks: the corpus is captured by *this*
+build, so an identical hash says the glyph bakes and the synthetic families
+this stage compiles are the ones S4a compiled. The **columns**, though, could
+not be compared — S4a's `md5=55aadbd0…` records a number without the recipe
+that produced it, and none of six plausible reconstructions reproduces it. A
+hash whose derivation is not written down is not a gate, so these two are a
+new baseline **with the recipe beside them**:
+
+```text
+collapse_cost capture --out corpus/                        # the fixture
+find corpus/ -type f | sort | xargs cat | md5sum
+collapse_cost bench --corpus corpus/ --out rows.jsonl \
+    --git-ref <ref> --passes 2                             # the columns
+jq -c 'del(.measured, .git_ref, .git_sha, .profile)' rows.jsonl | md5sum
+```
+
+What stands in for the missing comparison is stronger than the hash would have
+been: **every input to those columns is byte-identical to `origin/main`.** The
+diff against it is empty over `pixelflow-ir/`, `pixelflow-codegen/src/emit/`,
+`pixelflow-pipeline/src/`, and the two files `capture` bakes through
+(`fonts/ttf.rs`, `fonts/atlas.rs`); `pixelflow-codegen`'s only change in this
+stage is `JitManifold`'s rename, and `collapse_bench` never goes through it —
+it calls `emit::compile` directly. Identical inputs through identical code
+cannot produce different columns.
+
+**Two things this stage owed and had not paid**, found when its own commits
+were re-read against the brief:
+
+- `bake`'s refusal of a buffer-declaring kernel moved into `Manifold::bind`,
+  and **nothing pinned it** — the old assert's message (`"bake binds none"`)
+  appears in no test at `origin/main` either, so the rule was one edit away
+  from becoming a null base-pointer read through an entirely safe API.
+  `baking_a_kernel_over_bound_memory_names_the_slot_it_cannot_fill`
+  (`pixelflow-core/src/lattice/tests.rs`) is now the check.
+- `pixelflow-graphics`'s crate root still re-exported the per-batch **trait**
+  as `pixelflow_graphics::Manifold`, so the one name meant two different
+  things in two crates — the exact ambiguity this stage exists to remove.
+  Nothing imported it from there (`shapes.rs` and `subdiv/mod.rs` name the
+  trait through `pixelflow_core::combinator`), so it is gone.
+
+**Where the brief was wrong**, in the tree:
+
+1. **There were five `Lattice::collapse` callers, not four.**
+   `pixelflow-runtime/tests/jit_render.rs` tabulates three `kernel!`
+   combinator planes through it. With `collapse` retargeted there is no
+   library entry that tabulates a combinator at all, so that test now owns
+   its loop over `Manifold::eval` — exactly as `kernel_routing_parity`
+   already does, and for the reason stated there: a test owns its loop, and
+   that is not an API.
+2. **`JitManifold` was never re-exported from `pixelflow-core`.** The brief
+   asked for that re-export to stop; there was none to stop. Core holds it in
+   private fields only, and `__macro` re-exports just `pixelflow_ir`.
+3. `PlaneProgram::extent()` and `PackedProgram::extent()` had no callers
+   outside their own crates, so widening the first to rank 4 touched nothing.
+
+**The S4b-2 inventory, as it now stands.**
+
+| crate | `impl … Manifold … for` | `kernel!` | `kernel_raw!` | `kernel_value!` | `kernel_jit!` | `ManifoldExpr` |
+|---|---:|---:|---:|---:|---:|---:|
+| `pixelflow-core` | 113 in `src/`, 4 in `tests/` | 3 + 2 | — | — | — | 5 |
+| `pixelflow-compiler` | 4 (emitted by `struct_emitter.rs`) | 10 | 2 | 3 | 5 | 6 |
+| `pixelflow-graphics` | 0 | 5 | — | 1 | — | — |
+| `pixelflow-runtime` | 0 | 2 | 1 | — | 2 | — |
+| `pixelflow-search` | 0 | 1 | 1 | — | — | — |
+| `pixelflow-pipeline` | 0 | 1 | 1 | — | — | — |
+| `pixelflow-ir` | 0 | — | — | — | — | — |
+| `core-term` | 0 | — | — | — | — | — |
+
+**These counts are grep-reproducible, and the previous two were not** — S4a's
+and this block's first draft disagreed by a factor of two on the same tree,
+because one counted a looser pattern and the other counted prose. Impls are
+`^\s*impl(<…>)?\s+.*\bManifold\b.*\bfor\b` less `ManifoldExpr` /
+`ManifoldCompat` / `ManifoldExt`. The macro columns are *files containing an
+invocation*, `(^|[^_a-zA-Z])<macro>!\s*[({[]` — which is why `pixelflow-ir`'s
+row is empty (it cannot depend on the compiler; those were mentions in prose)
+and core's reads `3 + 2` (three files in `src/`, two in `tests/`). The
+`ManifoldExpr` column is files that name the trait at all.
+
+The core impl count is 113 because it is the whole combinator library at once
+— `ops/`, `combinators/`, `variables`, the jets, `combinator.rs`'s constant
+and smart-pointer impls, `ext.rs`'s `BoxedManifold`, `lib.rs`'s `Field`
+operator impls, and `lattice`'s `DiscreteManifold`/`BilinearSampler` — which
+is what S4b-2 deletes in one move; the four in `tests/` are core's own
+hand-written implementors of it. **Outside core and the compiler the count is
+zero**: `pixelflow-graphics`'s `patch.rs` (`BezierPatch`, S4a's last non-core
+impl) had no consumer at all and is deleted here rather than left for S4b-2
+to find. Return-position `impl Manifold<Output = Field>` survives in
+`graphics/shapes.rs` (4) and `graphics/subdiv/mod.rs` (14 occurrences, 8 of
+them after a `->`), both `Field`-tier and both going with the library.
+`Lower` is still implemented for exactly two types (`pixelflow-ir`'s `Kernel`
+and `f32`).
+
+**Gates run** on this 4-core host, every one green: `cargo fmt --all -- --check`;
+`cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`
+(133 binaries, 2,634 tests); each CI-named contract by exact name — "Check
+kernel tier parity" (5), "Check JIT/interpreter glyph parity" (4, no golden
+moved), "Check scene color, reflection, and antialiasing contracts" (3), "Check
+ray/surface composition contracts" (3); `pixelflow-core`, `-graphics` and
+`-runtime` tested at `+avx2,+fma` and at `+avx512f,+avx512dq` (47 binaries
+each); `cargo run -p xtask -- isa-matrix --clippy --smoke` **PASS at all three
+levels** (sse2, avx2+fma, avx512f+dq);
+`pixelflow-graphics` cross-built for `aarch64-unknown-linux-gnu` and run under
+`qemu-aarch64-static` (17 binaries, 194 tests); `cargo test -p core-term`;
+`cargo build --examples` for graphics and runtime; and
+`scripts/check-cl-metadata.sh`. `CARGO_PROFILE_DEV_DEBUG=0` was set throughout,
+as S4a noted for the same container: it changes artifact size, not what is
+compiled or executed.
+
+So S4b-2 is: delete `pixelflow_core::combinator`, the ZST combinator library,
+`Lower`, and `kernel!`'s LLVM tier; consolidate `kernel!`/`kernel_raw!`/
+`kernel_value!`/`kernel_jit!` into one `kernel!` returning a `Kernel`; and
+move the ~24 files that invoke the macros for their combinator value onto it.

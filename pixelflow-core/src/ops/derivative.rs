@@ -25,7 +25,7 @@
 //! ```
 
 use crate::Field;
-use crate::Manifold;
+use crate::combinator::Manifold;
 use crate::combinators::binding::{Let, N0, N1, N2, Var};
 use crate::ext::ManifoldExt;
 use pixelflow_compiler::Element;

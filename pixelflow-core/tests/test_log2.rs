@@ -1,4 +1,5 @@
-use pixelflow_core::{Field, Manifold, ManifoldExt};
+use pixelflow_core::combinator::Manifold;
+use pixelflow_core::{Field, ManifoldExt};
 
 /// Maximum acceptable relative error for log2 approximation
 /// Polynomial approximation achieves ~1e-4 max error

@@ -54,7 +54,8 @@ fn kernel_8_params_compiles() {
 #[test]
 fn jet_kernel_with_param() {
     use pixelflow_compiler::kernel;
-    use pixelflow_core::{Field, Manifold, jet::Jet3};
+    use pixelflow_core::combinator::Manifold;
+    use pixelflow_core::{Field, jet::Jet3};
 
     type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 

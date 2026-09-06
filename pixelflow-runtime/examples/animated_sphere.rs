@@ -17,7 +17,7 @@
 
 use actor_scheduler::Message;
 use pixelflow_core::Kernel;
-use pixelflow_graphics::render::packed::PackedProgram;
+use pixelflow_graphics::render::packed::PackedManifold;
 use pixelflow_graphics::render::scene::{compile_platform_packed, Scene};
 use pixelflow_graphics::scene3d::{checker, sky, Plane, Ray, Rgba, Sphere};
 use pixelflow_runtime::api::private::EngineData;
@@ -51,7 +51,7 @@ fn world(ray: &Ray) -> Rgba {
 
 /// The scene, with the sphere swinging in `W`. Compiled at the frame's shape;
 /// every frame after that is a different `W`.
-fn compile(width: u32, height: u32) -> PackedProgram {
+fn compile(width: u32, height: u32) -> PackedManifold {
     let ray = Ray::through_screen(width as f32, height as f32);
     let swing = Kernel::w().mul(&k(FREQUENCY)).sin().mul(&k(AMPLITUDE));
     let center = [
@@ -70,7 +70,7 @@ fn compile(width: u32, height: u32) -> PackedProgram {
 struct CompiledScene {
     width: u32,
     height: u32,
-    program: PackedProgram,
+    program: PackedManifold,
 }
 
 impl CompiledScene {

@@ -2,7 +2,7 @@
 //!
 //! AST nodes for three-operand operations like clamp.
 
-use crate::Manifold;
+use crate::combinator::Manifold;
 use crate::numeric::Numeric;
 use pixelflow_compiler::Element;
 

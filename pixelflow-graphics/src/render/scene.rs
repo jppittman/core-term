@@ -18,12 +18,12 @@
 //! variant and the work-stealing rasterizer behind it.
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use crate::render::cell_grid::CellGridPackedProgram;
+use crate::render::cell_grid::CellGridPackedManifold;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use crate::render::color::PlatformPixel;
 use crate::render::frame::Frame;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use crate::render::packed::{PackedFrame, PackedProgram};
+use crate::render::packed::{PackedFrame, PackedManifold};
 use crate::render::Pixel;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use crate::scene3d::Rgba;
@@ -73,14 +73,14 @@ impl From<PackedFrame> for Scene {
 /// into, and silently packing RGBA into it would be garbage.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[must_use]
-pub fn compile_packed_for<P: Pixel>(color: &Rgba, frame: [u32; 2]) -> PackedProgram {
-    PackedProgram::compile(color, packed_shifts_of::<P>("compile_packed_for"), frame)
+pub fn compile_packed_for<P: Pixel>(color: &Rgba, frame: [u32; 2]) -> PackedManifold {
+    PackedManifold::compile(color, packed_shifts_of::<P>("compile_packed_for"), frame)
 }
 
 /// [`compile_packed_for`] with THIS platform's pixel byte order.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[must_use]
-pub fn compile_platform_packed(color: &Rgba, frame: [u32; 2]) -> PackedProgram {
+pub fn compile_platform_packed(color: &Rgba, frame: [u32; 2]) -> PackedManifold {
     compile_packed_for::<PlatformPixel>(color, frame)
 }
 
@@ -147,8 +147,8 @@ fn packed_shifts_of<P: Pixel>(what: &str) -> [u32; 4] {
 pub fn compile_cell_grid_for<P: Pixel>(
     geom: CellGridGeometry,
     default_bg: [f32; 4],
-) -> CellGridPackedProgram {
-    CellGridPackedProgram::compile(
+) -> CellGridPackedManifold {
+    CellGridPackedManifold::compile(
         geom,
         default_bg,
         packed_shifts_of::<P>("compile_cell_grid_for"),
@@ -162,7 +162,7 @@ pub fn compile_cell_grid_for<P: Pixel>(
 pub fn compile_platform_cell_grid(
     geom: CellGridGeometry,
     default_bg: [f32; 4],
-) -> CellGridPackedProgram {
+) -> CellGridPackedManifold {
     compile_cell_grid_for::<PlatformPixel>(geom, default_bg)
 }
 

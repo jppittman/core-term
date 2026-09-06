@@ -26,8 +26,8 @@
 //! as SH coefficients, compute irradiance as dot products.
 
 use crate::Field;
+use crate::combinator::Manifold;
 use crate::ext::ManifoldExt;
-use crate::manifold::Manifold;
 
 // TODO: Refactor to build polymorphic AST from X, Y, Z using Fix combinator
 // for the Legendre recurrence. For now, Field-only implementation.
@@ -76,7 +76,7 @@ pub struct SphericalHarmonic<const L: usize, const M: i32>;
 
 /// Evaluate a manifold graph to Field (coordinates don't matter for Field constants).
 #[inline(always)]
-fn eval_const<M: crate::Manifold<Field4, Output = Field>>(m: M) -> Field {
+fn eval_const<M: crate::combinator::Manifold<Field4, Output = Field>>(m: M) -> Field {
     let zero = Field::from(0.0);
     m.eval((zero, zero, zero, zero))
 }

@@ -290,7 +290,7 @@ mod tests {
         );
         // Should implement Manifold
         assert!(
-            output_str.contains("impl :: pixelflow_core :: Manifold"),
+            output_str.contains("impl :: pixelflow_core :: combinator :: Manifold"),
             "Expected Manifold impl, got: {}",
             output_str
         );

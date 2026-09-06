@@ -21,7 +21,7 @@
 //!
 //! Array position markers: `A0`, `A1`, `A2`, `A3`, etc.
 
-use crate::Manifold;
+use crate::combinator::Manifold;
 use crate::domain::Spatial;
 use core::marker::PhantomData;
 

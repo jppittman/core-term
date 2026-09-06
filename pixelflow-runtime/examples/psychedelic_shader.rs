@@ -20,7 +20,7 @@
 
 use actor_scheduler::Message;
 use pixelflow_core::Kernel;
-use pixelflow_graphics::render::packed::PackedProgram;
+use pixelflow_graphics::render::packed::PackedManifold;
 use pixelflow_graphics::render::scene::{compile_platform_packed, Scene};
 use pixelflow_graphics::scene3d::Rgba;
 use pixelflow_runtime::api::private::EngineData;
@@ -81,7 +81,7 @@ fn channel(width: f32, height: f32, y_weight: f32) -> Kernel {
 
 /// The scene compiled at the window's shape. A resize is the only thing that
 /// invalidates it.
-fn compile(width: u32, height: u32) -> PackedProgram {
+fn compile(width: u32, height: u32) -> PackedManifold {
     let (w, h) = (width as f32, height as f32);
     let color = Rgba::from([
         channel(w, h, 1.0),
@@ -96,7 +96,7 @@ fn compile(width: u32, height: u32) -> PackedProgram {
 struct CompiledScene {
     width: u32,
     height: u32,
-    program: PackedProgram,
+    program: PackedManifold,
 }
 
 impl CompiledScene {

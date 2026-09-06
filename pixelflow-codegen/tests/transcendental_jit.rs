@@ -14,7 +14,7 @@ use pixelflow_ir::Kernel;
 
 const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
 
-fn eval_points_1d(jit: &pixelflow_codegen::JitManifold, inputs: &[f32]) -> Vec<f32> {
+fn eval_points_1d(jit: &pixelflow_codegen::CompiledKernel, inputs: &[f32]) -> Vec<f32> {
     let mut outputs = Vec::with_capacity(inputs.len());
     for chunk in inputs.chunks(LANES) {
         let mut xs = [0.0f32; LANES];
@@ -34,7 +34,7 @@ fn eval_points_1d(jit: &pixelflow_codegen::JitManifold, inputs: &[f32]) -> Vec<f
     outputs
 }
 
-fn eval_points_2d(jit: &pixelflow_codegen::JitManifold, inputs: &[(f32, f32)]) -> Vec<f32> {
+fn eval_points_2d(jit: &pixelflow_codegen::CompiledKernel, inputs: &[(f32, f32)]) -> Vec<f32> {
     let mut outputs = Vec::with_capacity(inputs.len());
     for chunk in inputs.chunks(LANES) {
         let mut xs = [0.0f32; LANES];

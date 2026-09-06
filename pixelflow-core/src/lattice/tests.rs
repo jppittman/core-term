@@ -1,4 +1,5 @@
 use super::*;
+use crate::PARALLELISM;
 use pixelflow_ir::Kernel;
 
 // The kernels the tabulation tests bake. Written as `Kernel` arithmetic —
@@ -258,6 +259,18 @@ fn frame_zero_dimensions() {
     assert_eq!(discrete.buffer().len(), 0);
     assert_eq!(discrete.width(), 0);
     assert_eq!(discrete.height(), 0);
+}
+
+/// `bake` binds nothing, so a kernel that reads memory cannot be baked — and
+/// the refusal has to **name the slot it could not fill**, not read a null
+/// base pointer and hand back plausible numbers. The rule lives in
+/// `Manifold::bind`, which is the only place that can state it once for both
+/// callers; this pins that `bake` still reaches it.
+#[test]
+#[should_panic(expected = "nothing bound to slot")]
+fn baking_a_kernel_over_bound_memory_names_the_slot_it_cannot_fill() {
+    let texture = DiscreteManifold::new(alloc::vec![1.0, 2.0, 3.0, 4.0], 2, 2);
+    let _refused = Lattice::frame(2, 2, 0.0).bake(&texture.kernel());
 }
 
 // ---- Index-space lattices (feature/tensor indexing) ----

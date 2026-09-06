@@ -16,7 +16,8 @@
 //! ## Example
 //!
 //! ```ignore
-//! use pixelflow_core::{X, Y, Manifold, Field};
+//! use pixelflow_core::combinator::Manifold;
+//! use pixelflow_core::{X, Y, Field};
 //!
 //! // X and Y work on any Spatial domain
 //! let circle = (X * X + Y * Y).sqrt();
@@ -26,7 +27,7 @@
 //! // val = 5.0
 //! ```
 
-use crate::Manifold;
+use crate::combinator::Manifold;
 use crate::domain::Spatial;
 
 /// The explicit 4D axes of the manifold topology.

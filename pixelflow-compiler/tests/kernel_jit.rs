@@ -155,7 +155,8 @@ fn kernel_jit_two_params_builder() {
 #[test]
 fn kernel_jit_same_semantics_as_kernel() {
     use pixelflow_compiler::kernel;
-    use pixelflow_core::{Field, Manifold};
+    use pixelflow_core::Field;
+    use pixelflow_core::combinator::Manifold;
 
     let jit_k = kernel_jit!(|cx: f32| X - cx)(3.0_f32);
     let ct_m = kernel!(|cx: f32| X - cx)(3.0_f32);

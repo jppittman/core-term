@@ -75,7 +75,8 @@ pub fn derive_element(input: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// use pixelflow_compiler::kernel;
-/// use pixelflow_core::{X, Y, Manifold, ManifoldExt};
+/// use pixelflow_core::combinator::Manifold;
+/// use pixelflow_core::{X, Y, ManifoldExt};
 ///
 /// let circle = kernel!(|cx: f32, cy: f32, r: f32| {
 ///     let dx = X - cx;

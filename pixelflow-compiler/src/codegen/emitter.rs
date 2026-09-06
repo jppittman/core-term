@@ -709,11 +709,11 @@ impl<'a> CodeEmitter<'a> {
                         if derivative_manifold_params.contains(&name_str) {
                             // Derivative params: used in coordinate expressions (DX, DY, DZ, V)
                             // Output must be scalar_type (e.g., Jet3) for At combinator
-                            Some(quote! { #g: ::pixelflow_core::Manifold<#domain_type, Output = #scalar_type> + ::pixelflow_core::ManifoldExpr + Send + Sync })
+                            Some(quote! { #g: ::pixelflow_core::combinator::Manifold<#domain_type, Output = #scalar_type> + ::pixelflow_core::ManifoldExpr + Send + Sync })
                         } else {
                             // Non-derivative params: used as Select branches, kernel output
                             // Output must be output_type (e.g., Field)
-                            Some(quote! { #g: ::pixelflow_core::Manifold<#domain_type, Output = #output_type> + ::pixelflow_core::ManifoldExpr + Send + Sync })
+                            Some(quote! { #g: ::pixelflow_core::combinator::Manifold<#domain_type, Output = #output_type> + ::pixelflow_core::ManifoldExpr + Send + Sync })
                         }
                     } else {
                         None
@@ -727,11 +727,11 @@ impl<'a> CodeEmitter<'a> {
                 let g = &generic_names[idx];
                 // Derivative extraction support
                 trait_bounds.push(quote! {
-                        <#g as ::pixelflow_core::Manifold<#domain_type>>::Output: ::pixelflow_core::ops::derivative::HasDerivatives + ::pixelflow_core::ops::derivative::HasDz
+                        <#g as ::pixelflow_core::combinator::Manifold<#domain_type>>::Output: ::pixelflow_core::ops::derivative::HasDerivatives + ::pixelflow_core::ops::derivative::HasDz
                     });
                 // Comparison support: output must convert to Field for <, >, etc.
                 trait_bounds.push(quote! {
-                        <#g as ::pixelflow_core::Manifold<#domain_type>>::Output: Into<::pixelflow_core::Field> + Copy
+                        <#g as ::pixelflow_core::combinator::Manifold<#domain_type>>::Output: Into<::pixelflow_core::Field> + Copy
                     });
             }
         }

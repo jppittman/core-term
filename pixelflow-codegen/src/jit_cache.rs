@@ -28,15 +28,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::vec::Vec;
 
-use crate::JitManifold;
+use crate::CompiledKernel;
 use crate::emit;
 use crate::error::CompileError;
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
-static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Arc<JitManifold>>>> = OnceLock::new();
+static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Arc<CompiledKernel>>>> = OnceLock::new();
 
-/// Compile the kernel rooted at `root` to an executable [`JitManifold`] (2D collapse loop)
+/// Compile the kernel rooted at `root` to an executable [`CompiledKernel`] (2D collapse loop)
 /// for a lattice of the given `shape`, sharing previously compiled code for
 /// canonically identical kernels at the same extents.
 ///
@@ -50,7 +50,7 @@ pub fn compile(
     arena: &ExprArena,
     root: ExprId,
     shape: LatticeShape,
-) -> Result<Arc<JitManifold>, CompileError> {
+) -> Result<Arc<CompiledKernel>, CompileError> {
     // Optimize, then emit. This is not a step callers get to sequence: an
     // arena reaching a backend unoptimized is never what anyone wanted, and
     // when the choice was on offer, two of the three production call sites
@@ -73,7 +73,7 @@ pub fn compile(
     let Some(mut key) = canonical_key(arena, root) else {
         // Uncacheable (bound memory): compile fresh.
         let result = emit_fn(arena, root)?;
-        return Ok(Arc::new(JitManifold::new(result.code, shape)));
+        return Ok(Arc::new(CompiledKernel::new(result.code, shape)));
     };
 
     // Keyed on the arena *as handed in*, before optimization, plus the shape.
@@ -89,7 +89,7 @@ pub fn compile(
     // don't serialize. A racing duplicate compile wastes work; the first
     // insertion wins so all callers share one region.
     let result = emit_fn(arena, root)?;
-    let compiled = Arc::new(JitManifold::new(result.code, shape));
+    let compiled = Arc::new(CompiledKernel::new(result.code, shape));
     let mut guard = cache.lock().expect("jit_cache: lock poisoned");
     Ok(guard.entry(key).or_insert(compiled).clone())
 }

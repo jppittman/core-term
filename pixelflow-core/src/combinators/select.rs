@@ -18,8 +18,8 @@
 //! This happens transparently - just use `Select { cond: Lt(...), ... }`.
 
 use crate::Field;
-use crate::Manifold;
 use crate::backend::{MaskOps, SimdOps};
+use crate::combinator::Manifold;
 use crate::ops::compare::{Ge, Gt, Le, Lt};
 use crate::ops::logic::{And, BNot, Or};
 use pixelflow_compiler::Element;

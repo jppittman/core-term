@@ -3,7 +3,8 @@
 //! A manifold that samples from a backing memory slice.
 //! This enables query caching and texture lookups.
 
-use crate::{Field, Manifold, PARALLELISM};
+use crate::combinator::Manifold;
+use crate::{Field, PARALLELISM};
 use alloc::vec::Vec;
 
 type Field4 = (Field, Field, Field, Field);

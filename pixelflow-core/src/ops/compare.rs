@@ -1,6 +1,6 @@
 //! Comparison operations: element-wise lt, le, gt, ge, and soft comparisons.
 
-use crate::Manifold;
+use crate::combinator::Manifold;
 use crate::jet::Jet2;
 use crate::numeric::Computational;
 use pixelflow_compiler::Element;

@@ -24,8 +24,9 @@
 //! lanes satisfy the expected condition.
 
 use pixelflow_compiler::kernel;
+use pixelflow_core::combinator::Manifold;
 use pixelflow_core::jet::Jet3;
-use pixelflow_core::{Field, Manifold, ManifoldExt};
+use pixelflow_core::{Field, ManifoldExt};
 
 type Field4 = (Field, Field, Field, Field);
 

@@ -18,7 +18,7 @@
 //! ```
 
 use crate::Field;
-use crate::Manifold;
+use crate::combinator::Manifold;
 use crate::jet::Jet3;
 use pixelflow_compiler::Element;
 

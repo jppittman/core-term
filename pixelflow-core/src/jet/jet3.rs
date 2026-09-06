@@ -1,8 +1,8 @@
 //! # Jet3: 3D Automatic Differentiation (for surface normals)
 
 use crate::Field;
-use crate::Manifold;
 use crate::ManifoldExt;
+use crate::combinator::Manifold;
 use crate::ext;
 use crate::numeric::{Computational, Numeric, Selectable};
 

@@ -29,7 +29,7 @@
 //! every combination of uniform and mixed masks.
 
 use pixelflow_codegen::emit::EmitCtx;
-use pixelflow_codegen::{JitManifold, Point4};
+use pixelflow_codegen::{CompiledKernel, Point4};
 use pixelflow_ir::{BindingTable, ExprArena, ExprId, LatticeShape, OpKind, eval_scalar};
 
 const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
@@ -105,7 +105,7 @@ fn a_reload_at_a_guarded_arms_end_happens_on_the_skipping_path_too() {
                 let compiled = EmitCtx::with_max_regs(pool)
                     .compile(&arena, root)
                     .expect("compiles");
-                let jit = JitManifold::new(compiled.code, LatticeShape::POINT);
+                let jit = CompiledKernel::new(compiled.code, LatticeShape::POINT);
                 for kind in 0..3 {
                     let zs = lanes_for(kind);
                     let xs: [f32; LANES] = core::array::from_fn(|i| 0.5 + i as f32);
@@ -223,7 +223,7 @@ fn a_reservation_inside_a_nested_guarded_arm_always_has_a_register() {
                 let compiled = EmitCtx::with_max_regs(pool)
                     .compile(&arena, root)
                     .expect("compiles");
-                let jit = JitManifold::new(compiled.code, LatticeShape::POINT);
+                let jit = CompiledKernel::new(compiled.code, LatticeShape::POINT);
                 for outer in 0..3 {
                     for inner in 0..3 {
                         let zs = mask_lanes(outer);

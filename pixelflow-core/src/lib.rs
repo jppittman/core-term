@@ -68,7 +68,7 @@
 //! ## Architecture
 //!
 //! ```text
-//! manifold.rs    -> Manifold trait (function from coords to value)
+//! combinator.rs  -> Manifold trait (function from coords to value)
 //! ext.rs         -> ManifoldExt (fluent API for building expressions)
 //! ops/           -> Operators (Add, Mul, Sqrt, etc.)
 //! combinators/   -> Select, Fix, Map (control flow as types)
@@ -101,7 +101,7 @@
 //!
 //! ## Key Modules
 //!
-//! - **[`manifold`]** — `Manifold` trait and implementations
+//! - **[`combinator`]** — the per-batch `Manifold` trait and its impls
 //! - **[`ext`]** — `ManifoldExt` extension trait (fluent API)
 //! - **[`ops`]** — Binary operators (Add, Mul, Div, etc.)
 //! - **[`combinators`]** — Control flow (Select, Fix)
@@ -112,7 +112,7 @@
 //! ## Further Reading
 //!
 //! For detailed documentation on specific topics:
-//! - **Manifold Philosophy**: See [`manifold`] for the design rationale
+//! - **Manifold Philosophy**: See [`combinator`] for the design rationale
 //! - **Building Expressions**: See [`ext`] for the fluent API
 //! - **Why Fields Are Hidden**: See [`Field`] documentation
 //! - **Automatic Differentiation**: See [`jet`] module
@@ -158,8 +158,17 @@ mod numeric;
 /// Jet types for automatic differentiation.
 pub mod jet;
 
-/// The core Manifold trait.
-pub mod manifold;
+/// The per-batch combinator tier: the `Manifold` trait (`eval(point) ->
+/// value`, one SIMD batch at a time) and the blanket impls the ZST combinator
+/// library is built on.
+///
+/// **This is not the [`Manifold`] a consumer names.** That is the compiled
+/// object — a [`Kernel`] compiled at a lattice's shape — and it is exported at
+/// the crate root. The trait lives behind this module path because it is the
+/// legacy tier on its way out: a compiled kernel is not a good implementor of
+/// a per-batch `eval`, and every consumer of the trait outside this crate's
+/// own combinators and `pixelflow-compiler` has already moved off it.
+pub mod combinator;
 
 /// Domain traits for generic manifold evaluation.
 pub mod domain;
@@ -219,7 +228,11 @@ pub use mask::Mask;
 pub use pixelflow_ir::{Bits, Kernel, Lower, LowerEnv, Monoid};
 pub use storage::{FieldStorage, NativeMaskStorage};
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
-pub use manifold::*;
+//
+// The `Manifold` *trait* is deliberately absent: the crate-root `Manifold` is
+// the compiled object (see [`lattice::manifold`]). The trait is
+// `combinator::Manifold`.
+pub use combinator::{ManifoldCompat, Scale, Thunk, scale};
 pub use numeric::{Computational, Coordinate, Selectable};
 pub use ops::binary::{Add, AddMasked, Div, Mul, MulAdd, MulRecip, MulRsqrt, Sub};
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
@@ -256,7 +269,7 @@ pub use variables::*;
 pub use zst::Zst;
 
 // Differentiable trait for manifolds with analytical gradients
-pub use manifold::Differentiable;
+pub use combinator::Differentiable;
 
 // Lattice types for manifold evaluation over finite domains
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -266,7 +279,7 @@ pub use lattice::cell_grid::{
     CELL_STRIDE, CellGridBuffers, CellGridFrame, CellGridGeometry, CellGridKernels, CellGridProgram,
 };
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub use lattice::plane::{MAX_BOUND_BUFFERS, PlaneFrame, PlaneProgram, PlaneRegion};
+pub use lattice::manifold::{BoundManifold, MAX_BOUND_BUFFERS, Manifold, PlaneRegion};
 pub use lattice::{DiscreteManifold, Lattice};
 
 // ============================================================================
@@ -1577,7 +1590,7 @@ impl From<i32> for Field {
 // All Field ops build AST nodes for composition with other manifolds.
 // FMA fusion: Mul<A,B> + C → MulAdd<A,B,C> (see ops/chained.rs)
 
-impl<M: Manifold> core::ops::Add<M> for Field {
+impl<M: combinator::Manifold> core::ops::Add<M> for Field {
     type Output = ops::Add<Self, M>;
     #[inline(always)]
     fn add(self, rhs: M) -> Self::Output {
@@ -1585,7 +1598,7 @@ impl<M: Manifold> core::ops::Add<M> for Field {
     }
 }
 
-impl<M: Manifold> core::ops::Sub<M> for Field {
+impl<M: combinator::Manifold> core::ops::Sub<M> for Field {
     type Output = ops::Sub<Self, M>;
     #[inline(always)]
     fn sub(self, rhs: M) -> Self::Output {
@@ -1593,7 +1606,7 @@ impl<M: Manifold> core::ops::Sub<M> for Field {
     }
 }
 
-impl<M: Manifold> core::ops::Mul<M> for Field {
+impl<M: combinator::Manifold> core::ops::Mul<M> for Field {
     type Output = ops::Mul<Self, M>;
     #[inline(always)]
     fn mul(self, rhs: M) -> Self::Output {
@@ -1602,7 +1615,7 @@ impl<M: Manifold> core::ops::Mul<M> for Field {
 }
 
 // Rsqrt fusion: Field / Sqrt<R> → MulRsqrt<Field, R>
-impl<R: Manifold> core::ops::Div<ops::Sqrt<R>> for Field {
+impl<R: combinator::Manifold> core::ops::Div<ops::Sqrt<R>> for Field {
     type Output = ops::MulRsqrt<Self, R>;
     #[inline(always)]
     fn div(self, rhs: ops::Sqrt<R>) -> Self::Output {
@@ -1611,183 +1624,195 @@ impl<R: Manifold> core::ops::Div<ops::Sqrt<R>> for Field {
 }
 
 // Enumerate all other divisor types for Field (to avoid conflict with Sqrt)
-impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Add<DL, DR>> for Field {
+impl<DL: combinator::Manifold, DR: combinator::Manifold> core::ops::Div<ops::Add<DL, DR>>
+    for Field
+{
     type Output = ops::Div<Self, ops::Add<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: ops::Add<DL, DR>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Sub<DL, DR>> for Field {
+impl<DL: combinator::Manifold, DR: combinator::Manifold> core::ops::Div<ops::Sub<DL, DR>>
+    for Field
+{
     type Output = ops::Div<Self, ops::Sub<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: ops::Sub<DL, DR>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Mul<DL, DR>> for Field {
+impl<DL: combinator::Manifold, DR: combinator::Manifold> core::ops::Div<ops::Mul<DL, DR>>
+    for Field
+{
     type Output = ops::Div<Self, ops::Mul<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: ops::Mul<DL, DR>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Div<DL, DR>> for Field {
+impl<DL: combinator::Manifold, DR: combinator::Manifold> core::ops::Div<ops::Div<DL, DR>>
+    for Field
+{
     type Output = ops::Div<Self, ops::Div<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: ops::Div<DL, DR>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Max<DL, DR>> for Field {
+impl<DL: combinator::Manifold, DR: combinator::Manifold> core::ops::Div<ops::Max<DL, DR>>
+    for Field
+{
     type Output = ops::Div<Self, ops::Max<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: ops::Max<DL, DR>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::Min<DL, DR>> for Field {
+impl<DL: combinator::Manifold, DR: combinator::Manifold> core::ops::Div<ops::Min<DL, DR>>
+    for Field
+{
     type Output = ops::Div<Self, ops::Min<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: ops::Min<DL, DR>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Abs<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Abs<DM>> for Field {
     type Output = ops::Div<Self, ops::Abs<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Abs<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Floor<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Floor<DM>> for Field {
     type Output = ops::Div<Self, ops::Floor<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Floor<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Rsqrt<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Rsqrt<DM>> for Field {
     type Output = ops::Div<Self, ops::Rsqrt<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Rsqrt<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Sin<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Sin<DM>> for Field {
     type Output = ops::Div<Self, ops::Sin<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Sin<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Cos<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Cos<DM>> for Field {
     type Output = ops::Div<Self, ops::Cos<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Cos<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Tan<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Tan<DM>> for Field {
     type Output = ops::Div<Self, ops::Tan<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Tan<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Asin<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Asin<DM>> for Field {
     type Output = ops::Div<Self, ops::Asin<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Asin<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Acos<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Acos<DM>> for Field {
     type Output = ops::Div<Self, ops::Acos<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Acos<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Atan<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Atan<DM>> for Field {
     type Output = ops::Div<Self, ops::Atan<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Atan<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Ceil<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Ceil<DM>> for Field {
     type Output = ops::Div<Self, ops::Ceil<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Ceil<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Round<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Round<DM>> for Field {
     type Output = ops::Div<Self, ops::Round<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Round<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Fract<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Fract<DM>> for Field {
     type Output = ops::Div<Self, ops::Fract<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Fract<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Log2<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Log2<DM>> for Field {
     type Output = ops::Div<Self, ops::Log2<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Log2<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Exp2<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Exp2<DM>> for Field {
     type Output = ops::Div<Self, ops::Exp2<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Exp2<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Exp<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Exp<DM>> for Field {
     type Output = ops::Div<Self, ops::Exp<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Exp<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Ln<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Ln<DM>> for Field {
     type Output = ops::Div<Self, ops::Ln<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Ln<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Log10<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Log10<DM>> for Field {
     type Output = ops::Div<Self, ops::Log10<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Log10<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Recip<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Recip<DM>> for Field {
     type Output = ops::Div<Self, ops::Recip<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Recip<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::Neg<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::Neg<DM>> for Field {
     type Output = ops::Div<Self, ops::Neg<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Neg<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DC: Manifold, DT: Manifold, DF: Manifold> core::ops::Div<combinators::Select<DC, DT, DF>>
-    for Field
+impl<DC: combinator::Manifold, DT: combinator::Manifold, DF: combinator::Manifold>
+    core::ops::Div<combinators::Select<DC, DT, DF>> for Field
 {
     type Output = ops::Div<Self, combinators::Select<DC, DT, DF>>;
     #[inline(always)]
@@ -1795,28 +1820,32 @@ impl<DC: Manifold, DT: Manifold, DF: Manifold> core::ops::Div<combinators::Selec
         ops::Div(self, rhs)
     }
 }
-impl<DA: Manifold, DB: Manifold, DC: Manifold> core::ops::Div<ops::MulAdd<DA, DB, DC>> for Field {
+impl<DA: combinator::Manifold, DB: combinator::Manifold, DC: combinator::Manifold>
+    core::ops::Div<ops::MulAdd<DA, DB, DC>> for Field
+{
     type Output = ops::Div<Self, ops::MulAdd<DA, DB, DC>>;
     #[inline(always)]
     fn div(self, rhs: ops::MulAdd<DA, DB, DC>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DM: Manifold> core::ops::Div<ops::MulRecip<DM>> for Field {
+impl<DM: combinator::Manifold> core::ops::Div<ops::MulRecip<DM>> for Field {
     type Output = ops::Div<Self, ops::MulRecip<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::MulRecip<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DL: Manifold, DR: Manifold> core::ops::Div<ops::MulRsqrt<DL, DR>> for Field {
+impl<DL: combinator::Manifold, DR: combinator::Manifold> core::ops::Div<ops::MulRsqrt<DL, DR>>
+    for Field
+{
     type Output = ops::Div<Self, ops::MulRsqrt<DL, DR>>;
     #[inline(always)]
     fn div(self, rhs: ops::MulRsqrt<DL, DR>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }
-impl<DAcc: Manifold, DVal: Manifold, DMask: Manifold>
+impl<DAcc: combinator::Manifold, DVal: combinator::Manifold, DMask: combinator::Manifold>
     core::ops::Div<ops::AddMasked<DAcc, DVal, DMask>> for Field
 {
     type Output = ops::Div<Self, ops::AddMasked<DAcc, DVal, DMask>>;
@@ -1959,7 +1988,7 @@ impl core::ops::Neg for Field {
 #[inline(always)]
 pub fn materialize<M, V>(m: &M, x: f32, y: f32, out: &mut [f32])
 where
-    M: Manifold<Output = V> + ?Sized,
+    M: combinator::Manifold<Output = V> + ?Sized,
     V: ops::Vector<Component = Field>,
 {
     let xs = Field::sequential(x);
