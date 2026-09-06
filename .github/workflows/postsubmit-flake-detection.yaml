@@ -15,6 +15,18 @@ jobs:
     name: ${{ matrix.test-suite }} on ${{ matrix.os }} (5 iterations)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    # See rust.yaml's env block for why this is job-level, not workflow-level:
+    # sccache shares compiled objects by content hash across jobs and even
+    # across workflow files (GHA cache backend is repo-scoped), so a commit
+    # already built by presubmit is nearly free to rebuild here — but only
+    # jobs that actually install sccache (below) may set these, or any job
+    # invoking cargo/rustc in an environment without it (e.g. inside another
+    # action's own container) breaks trying to exec a wrapper that isn't
+    # there.
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     strategy:
       # A failure in one suite must not hide results from the others.
       fail-fast: false
@@ -45,16 +57,19 @@ jobs:
         with:
           tool: nextest
 
-      - name: Cache dependencies
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-registry-
 
       # A build failure is a hard postsubmit failure in its own right; keeping
       # it a separate step also means the iteration loop below measures test
@@ -126,6 +141,10 @@ jobs:
     name: ISA matrix (SSE2/AVX2/AVX-512) -- build+lint+test
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -140,16 +159,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
 
-      - name: Cache dependencies
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-isa-matrix-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-isa-matrix-
+            cargo-registry-
 
       - name: Run ISA matrix (test + clippy per supported level)
         shell: bash
