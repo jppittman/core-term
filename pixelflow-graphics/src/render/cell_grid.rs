@@ -76,9 +76,10 @@ impl CellGridPackedProgram {
         self.packed.shifts()
     }
 
-    /// The compiled kernel's emitted bytes (research/profiling harness).
-    #[must_use]
-    pub fn code_bytes(&self) -> &[u8] {
+    /// The compiled kernel's emitted bytes, for the profiling harness in
+    /// `cell_grid`'s tests. `PlaneProgram::code_bytes` is the public way in.
+    #[cfg(test)]
+    pub(crate) fn code_bytes(&self) -> &[u8] {
         self.packed.code_bytes()
     }
 
@@ -491,8 +492,8 @@ mod tests {
     /// geometries it actually compiles it at, so the measurer in
     /// `pixelflow-search/src/runtime.rs` (`production_telemetry`) can replay
     /// `optimize_runtime_arena`'s calls on it and keep the `SaturationResult`
-    /// production discards. Lives here because `packed_kernel` and
-    /// `GridBuffers::mint` are private, and stays private itself.
+    /// production discards. Lives here because `packed_kernel` is private to
+    /// this crate, and stays private itself.
     ///
     /// Geometry is core-term's, not a fixture's:
     /// `core-term/src/terminal_app.rs:362-372` builds `CellGridGeometry` from
@@ -507,7 +508,7 @@ mod tests {
     /// `ColorScheme.background` (black). Density 1.0 is the startup compile,
     /// 2.0 the Retina recompile after `WindowCreated`; 120x40 is one resize.
     #[test]
-    #[ignore = "telemetry dumper: PIXELFLOW_TELEMETRY_DIR=<dir> cargo test -p pixelflow-core --release -- --ignored dump_production_cell_grid_arenas"]
+    #[ignore = "telemetry dumper: PIXELFLOW_TELEMETRY_DIR=<dir> cargo test -p pixelflow-graphics --release -- --ignored dump_production_cell_grid_arenas"]
     fn dump_production_cell_grid_arenas() {
         let dir = std::path::PathBuf::from(
             std::env::var("PIXELFLOW_TELEMETRY_DIR").expect("PIXELFLOW_TELEMETRY_DIR must be set"),
@@ -562,8 +563,8 @@ mod tests {
     /// constants as bit patterns, buffer identities as dense ordinals. The
     /// loader in `pixelflow-search/src/runtime.rs` is the inverse. Duplicated
     /// verbatim in `pixelflow-graphics/tests/production_glyph_arena_dump.rs`
-    /// rather than shared, because the only crate both dumpers can see is
-    /// `pixelflow-ir`, which must not grow a test-only serializer.
+    /// rather than shared, because a unit test and an integration test share no
+    /// code, and `pixelflow-ir` must not grow a test-only serializer.
     fn dump_arena(
         arena: &ExprArena,
         root: pixelflow_ir::ExprId,

@@ -104,9 +104,10 @@ impl PackedProgram {
         self.program.buffers()
     }
 
-    /// The compiled kernel's emitted bytes (research/profiling harness).
-    #[must_use]
-    pub fn code_bytes(&self) -> &[u8] {
+    /// The compiled kernel's emitted bytes, for the profiling harness in
+    /// `cell_grid`'s tests. `PlaneProgram::code_bytes` is the public way in.
+    #[cfg(test)]
+    pub(crate) fn code_bytes(&self) -> &[u8] {
         self.program.code_bytes()
     }
 
