@@ -16,10 +16,14 @@ longer"; it is that the additive latency prior plus swap refinement cannot rank 
 larger space, on exactly the kernel shape — guarded selects, hoisted invariants,
 shared geometry across channels — where cost is non-additive. That is the regime the
 schedule-cost denotation names and the Guide programme was designed for, and this
-kernel is the first production instance of it. What we want from research is an
-extraction (and, second, a guided saturation) that turns headroom into ns/px on this
-kernel without moving its compile time, and that leaves the 193 small glyph kernels
-untouched.
+kernel is the first production instance of it. The 3.6× that was recovered on it came
+from the *schedule* — arm contiguity, whether a guard is emitted — which is not an
+e-node and which no function of the extracted DAG can see. So the cost model's domain
+is the open design decision, and it is the research arm's: §5.1 states the question,
+§7 compares the candidate shapes from the side of someone who just wrote some math
+and wants it fast. What we want from research is an extraction (and, second, a
+guided saturation) that turns headroom into ns/px on this kernel without moving its
+compile time, and that leaves the 193 small glyph kernels untouched.
 
 ## 1. The two production shapes
 
@@ -103,18 +107,42 @@ failure of an additive cost on this kernel.
 
 Each item has a metric, an oracle, and the document that already denotes it.
 
-**5.1 Extraction under a non-additive cost — the first-order ask.**
-The chrome kernel is the candidate for the schedule-cost trigger
-(`2026-09-01-schedule-cost-model-denotation.md` §5.2): (a) does its e-graph admit ≥2
-extractions with distinct level/guard assignments, and (b) does the measured best-of-k
-beat the analytic DP's choice by a geomean clearing ±5%? If (a) and (b) hold, the
-`Reranker` seam (`pixelflow-search/src/egraph/extract.rs`) gets its first
-implementation with a residual over the latency prior. The residual's first named
-term is **mask coherence** — how often a select's mask is uniform per batch — which is
-data: the sphere's silhouette mask is uniform in 97% of batches, a glyph's coverage
-mask in almost none, and the static bound (`MISPREDICT_PENALTY_CYCLES`) refuses guards
-under 16 cycles precisely because it cannot know. Metric: ns/px on `bench_scene_chrome`
-at both tiers, compile time unchanged. Oracle: arm C of §5.3 there, measured best of k.
+**5.1 The cost model's domain is the schedule — the first-order ask.**
+§3 says what the cost of this kernel is a function of: which arm is contiguous,
+whether a guard is emitted, whether its mask is coherent per batch, what is hoisted to
+which level. None of those are e-nodes. Extraction today produces a DAG and scores it
+additively; the schedule is chosen afterwards by static rules in the emitter (the
+linearization, `cluster_select_arms`, `MISPREDICT_PENALTY_CYCLES`, the LICM levels).
+So a model that reranks DAG candidates by *any* function of the DAG cannot see the
+3.6×: every candidate it ranks is the same DAG under a different schedule. The ask is
+therefore not a better score for DAGs. It is a cost model whose domain includes the
+schedule, and an extraction that ranges over it — the regime-2 statement
+`cost : Extraction → cycles` in `2026-09-01-schedule-cost-model-denotation.md`, read
+with "extraction" meaning a scheduled DAG. Two ways to get there:
+
+- (i) **schedule choices as e-graph alternatives**: levels already are, in the
+  denotation; guard emission and arm clustering would join them, so extraction
+  chooses the schedule and the cost model scores what it chose;
+- (ii) **extract a DAG, enumerate its admissible schedules, score the pairs**: the
+  e-graph stays as it is and the search moves to the schedule.
+
+Either way the model is non-additive and the oracle is measurement (arm C of §5.3
+there: the best of k candidates by the clock). The `Reranker` trait in
+`pixelflow-search/src/egraph/extract.rs` is one place such a model could plug in *if
+its candidates carry their schedule*; it is a seam, not the shape, and the shape
+written around it in that document — an additive backbone with a learned residual
+over swap neighbourhoods — is narrower than the ruling it quotes and, by §3, cannot
+express this kernel's win. **Mask coherence** is the first term that is data rather
+than a property of the kernel: the sphere's silhouette mask is uniform in 97% of
+batches, a glyph's coverage mask in almost none, and the static bound refuses guards
+under 16 cycles precisely because it cannot know. It enters either as a profile
+(§7, E) or as a prior learned over mask shapes.
+
+The trigger stays as written there: (a) the chrome e-graph admits ≥2 extractions with
+distinct schedule assignments, and (b) the measured best-of-k beats the static
+choice by a geomean clearing ±5%. Metric: ns/px on `bench_scene_chrome` at both tiers
+with compile time unchanged. The shape is the research arm's to choose; §7 is the
+comparison it should choose against.
 
 **5.2 Guided saturation on a kernel that hits the cap.**
 The Guide programme (`2026-08-31-guide-design-revision.md`) measured a 2.6× oracle
@@ -151,7 +179,49 @@ byte-identical unless the change is meant for them.
   wall clock (`2026-09-01-production-budget-determinism.md`). The 300 s safety
   ceiling panics rather than truncating; a panic is a finding, not a knob.
 
-## 7. Pointers
+## 7. The alternatives, from the consumer's side
+
+The consumer is someone who wrote some math in a `kernel!`, composed a few of them,
+baked it over a lattice, and wants it to be fast. They do not know what a schedule, a
+guard, a lane or an e-class is, and the language promises they never will. Every
+column below is judged from there.
+
+| | A. **current** — additive DP + swap refinement; static schedule rules after | B. **residual reranker** — A, plus a learned score over top-k swap candidates (the denotation doc's shape) | C. **schedule-valued cost** — extraction ranges over scheduled DAGs, non-additive model, measured oracle (§5.1) | D. **measured search** — compile k candidates, time them, keep the best | E. **profile-guided** — count mask coherence per select at runtime, recompile with it | F. **no e-graph** — hash-cons, FMA peephole, static schedule rules |
+|---|---|---|---|---|---|---|
+| my kernel runs fast | yes on every shipped kernel: ahead of the retired templates 1.1–2.9×; but only after a *codegen* fix found the 3.6× that extraction never saw | no better than A on this kernel: the win is not in the candidate set (§3) | the one shape that can find the 3.6× by design rather than by a hand-written rule; unproven | yes, by construction — it measures | recovers exactly the coherence-dependent part (guards) and nothing else | unknown: never measured (see below) |
+| my scene compiles quickly | ~220 ms, once per shape | + a model forward pass per candidate, ×k | + a schedule enumeration per candidate; must be bounded | ×k compiles plus k timings — seconds, and per host | two compiles and a warm frame | fastest possible; no saturation |
+| my glyphs don't slow startup | 95 compiles, small kernels, saturate fully | small kernels have few alternatives; near A | same, if the enumeration is bounded by kernel size | ×k on 95 kernels: the worst case of D | a profile per glyph is pointless (its runtime is a rounding error) | fastest |
+| same code on every machine | yes — budgets are applications/classes/iterations, never a clock | yes, if the model is a fixed artifact | yes, if the model is a fixed artifact | **no** — it chooses by this host's clock; the determinism rule (`2026-09-01-production-budget-determinism.md`) is violated unless the choice is recorded and replayed | no — the profile is this run's data | yes |
+| no cliffs (adding a `select` doesn't make it 3× slower) | **this is A's failure mode**: S3 shipped the chrome scene at 0.32× and it took two codegen changes to fix; the next kernel shape with a cost the prior cannot see will do it again | same cliffs as A; the reranker cannot see them either | cliffs become model error, which is measurable and trainable, not a hand-written rule to discover | no cliffs it can measure; cliffs it cannot enumerate (k is finite) | removes the coherence cliff only | more cliffs: every algebraic rewrite the e-graph makes today is left on the table |
+| what I have to know | nothing | nothing | nothing | nothing, but my build is slow and my binary differs from my colleague's | nothing, but the first frame is slow | nothing |
+| when it is wrong, what happens | silently slower; a bench catches it, if someone runs one | same | same, plus the model's error is a number that can be tracked per kernel | it is not wrong about *this* host | wrong on a scene whose masks change (the animated sphere's silhouette moves) | silently slower |
+| evidence in the tree today | every gate S1–S4b-2; the `dyn_memory_ops` +40% vs −8% inversion; cap 5,000 → 60,000 made code 15% slower | tied the static table on a corpus with no schedule alternatives; the residual was "empty by construction" | none yet; the trigger in §5.1 is the first experiment | `collapse_cost` *is* D over a corpus — it is the oracle harness, not a product | none; `PIXELFLOW_GUARD_TELEMETRY` counts what a profile would count | **none — the raw-versus-optimized delta has never been measured on a shipped kernel** |
+
+Three things the table says that the prose above does not:
+
+1. **A is the right default and its cost is cliffs, not speed.** On every kernel we
+   ship it is deterministic, cheap to compile, and ahead. Its failure is that the
+   next kernel shape whose cost the additive prior cannot see ships slow, and is
+   fixed by someone finding the rule by hand — which is what S3b was. That is the
+   thing research is for, and it is why the target is C and not a faster A.
+2. **B is not a step towards C.** It keeps the DAG as the domain, so its ceiling on
+   this kernel is A's. Building it would spend the research budget proving the
+   parity result again in regime 2.
+3. **D and E are instruments, not products.** D is the oracle every candidate model
+   is measured against and already exists as `collapse_cost`; making it the compiler
+   trades the determinism rule for a per-host binary and a ×k build. E is how mask
+   coherence, the one term that is data, gets measured for training C's prior; as a
+   product it needs a warm frame and breaks on scenes whose masks move.
+
+One gap the table exposes: **F has never been measured.** Every stage measured the
+optimized kernel against a different implementation, never against the same kernel
+with saturation off (`kernel_raw!` exists for this). Before any research spend, the
+raw-versus-optimized delta on `bench_scene_chrome`, `bench_scene_psychedelic` and the
+glyph corpus is the number that says what the e-graph buys today on the kernels that
+exist. If it is small, the research problem is *extraction of schedules* and the
+saturation half can wait; if it is large, both halves matter.
+
+## 8. Pointers
 
 `pixelflow-search/src/egraph/{saturate,extract,cost,provenance,labeler}.rs`;
 `pixelflow-search/src/runtime.rs` (`optimize_runtime_arena`: `LowerDwrt` →
