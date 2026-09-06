@@ -57,6 +57,34 @@
 //! string). Fusing the summands into a single emitted nest is a later
 //! refinement.
 //!
+//! ## Decomposing a kernel is not free of the last bits
+//!
+//! A union collapses each summand's kernel as its own program, and e-graph
+//! **extraction is a function of the arena and of the lattice shape** — not of
+//! the expression alone. The same subexpression compiled alone and compiled
+//! inside a larger sum are different (equally valid) schedules; so are the same
+//! kernel compiled at 160×24 and at 9×24. Both round differently at the edges,
+//! so decomposing one kernel into summands can move samples in the last bits,
+//! and it does.
+//!
+//! That is a property of decomposition, not of this module. The difference is
+//! exactly the one you already pay by baking the pieces separately and adding
+//! them yourself: measured on a two-glyph text kernel, the union and a plain
+//! `bake(A) + bake(B)` disagree with `bake(A + B)` on the *same* 19 of 432
+//! samples, by the *same* worst 2.503e-6.
+//!
+//! What this module owes, and what is pinned bit-exactly, is that **a summand
+//! collapses exactly what its own kernel bakes at its own shape**:
+//! [`tests::one_summand_over_the_whole_extent_is_a_plain_bake`] here, and
+//! `pixelflow-graphics`'s `tests/text_union_identity.rs` for every cell of a
+//! decomposed text run. Whether two summands' kernels *ought* to agree in the
+//! last bits is the compiler's question, not the union's.
+//!
+//! CLAUDE.md already licenses this ("within a target, the optimizer may still
+//! produce a different answer than the unoptimized code"), and it is sound for
+//! the same reason: no value was promised. It would become a miscompile the
+//! moment anything promised one.
+//!
 //! [`Lattice::bake`]: crate::Lattice::bake
 
 use alloc::vec;
@@ -420,9 +448,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be a plane")]
     fn a_union_over_a_stack_of_planes_is_refused() {
-        let _ = Union::over(Lattice {
+        let refused = Union::over(Lattice {
             extent: [8, 8, 4, 1],
             origin: [0.0; 4],
         });
+        assert_eq!(refused.len(), 0, "unreachable: `over` panics above");
     }
 }
