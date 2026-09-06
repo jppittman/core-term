@@ -262,9 +262,17 @@ this host, SSE2, single thread:
   both worlds in every lane, while the combinator tier's `Select` evaluates
   a branch **only when some lane in the batch needs it** — the sphere
   covers 2.9% of the frame, so the surface lane skips the reflected world
-  in ~97% of batches. A branchless kernel has no equivalent, and none can
-  be added without a data-dependent skip inside the collapse loop, which is
-  a language change and not this stage's to make.
+  in ~97% of batches. The packed kernel *has* the equivalent — the emitter
+  guards a `Select`'s arm-exclusive schedule range with a branch on the
+  mask's uniformity (`pixelflow-codegen/src/emit/guards.rs`) — and it does
+  not fire here, for a reason that is in the schedule analysis and not in
+  the language: a value is guardable only if **every consumer lies inside
+  that one select's arm**, and a colour is four selects sharing one mask.
+  The reflected world's geometry (its `t`, hit point, checker cell,
+  footprint) feeds all four channels' arms, so from any single select's
+  view it is shared, and only the few per-channel scalar ops at the leaves
+  are ever skipped. The old tier never had this problem because its colours
+  flowed as one packed word through one `Select`.
 
 Two things that look like levers and are not, both measured: raising the
 runtime saturation class cap (telemetry says the chrome kernel hits
@@ -276,13 +284,35 @@ a world is a function of its ray — buys 10% while taking the arena from
 429k to 4.6M nodes and the compile from 0.2 s to 2.0 s, because the
 derivative of a select is a select of both branches' derivatives.
 
-So S4's premise needs re-stating before it is executed: the collapse path's
-2.3–2.5× win on the psychedelic shader (S2) came from a kernel with no
-data-dependent branches, and a scene whose selects are strongly one-sided
-inverts it. Retiring `Scene::Surface` retires the branch-skipping, and for
-the demo scenes that costs 2–3×. That is a decision about the demos (they
-are demos), or an argument for the language gaining a per-batch skip, but
-it should be made deliberately rather than inherited from this stage.
+Two things that are levers, neither measured yet, and a stage for them:
+
+**S3b — a choice between colours is one select.** Two fixes, general and
+local, and both should land:
+
+1. *Language, typed:* `Bits::select(mask, a, b)`. `Select` is already a
+   bitwise blend on every backend, so a select over packed words is the
+   same instruction with an honest type. A colour in graphics becomes a
+   tree — four channel kernels at the leaves, a choice between colours at
+   the nodes — that `packed_kernel` lowers by packing each leaf and
+   selecting on the words. `Hit::select` then produces **one** select whose
+   arms are whole packed colours, geometry included, and the existing
+   per-select guard skips the reflected world exactly as the old tier did.
+   The pack stays in graphics; core still knows no colour.
+2. *Codegen, general:* guard analysis over a **group** of selects with the
+   same mask — exclusivity against the union of the group's arms, the
+   group's arm-exclusive ops clustered contiguously in the schedule ahead
+   of the first select — so any kernel that selects the same condition
+   several times (every multi-channel scene, every masked field) skips
+   what it can without being restructured for it.
+
+The derivative cost is the other half and is measured separately: symbolic
+`dx()`/`dy()` of a hit point costs ~4× a forward-mode jet on this host, and
+whether that is the derivative rules re-entering `Recip`/`Rsqrt` estimate
+chains, or the class cap starving CSE of the expanded derivative, is a
+question for `collapse_cost` (docs/plans/2026-09-01-schedule-cost-model-denotation.md §9),
+not for a guess. Gate for S3b: the chrome scene, packed ≥ surface at every
+thread count on both tiers — the acceptance S3 did not meet — and S4 does
+not begin until it is.
 
 **S4 — the legacy tier retires.** `Scene::Surface`, `execute_stripe`,
 `rasterize`, `render_parallel`, `render_work_stealing`,
