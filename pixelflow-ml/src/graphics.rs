@@ -230,7 +230,7 @@ impl<const NUM_COEFFS: usize> HarmonicAttention<NUM_COEFFS> {
 }
 
 // ============================================================================
-// SH Feature Projection Manifold
+// SH Feature Projection
 // ============================================================================
 
 /// Projects coordinates into spherical harmonic feature space.

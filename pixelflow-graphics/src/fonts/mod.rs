@@ -65,7 +65,7 @@
 //!
 //! [`text()`](text::text) lays out a string as one fused `Kernel` — a sum
 //! of advance-translated glyph kernels. [`CachedText::new`] composes baked
-//! glyph samplers instead (with kerning), staying an ordinary `Manifold`:
+//! glyph samplers instead (with kerning), and is a `Kernel` just the same:
 //!
 //! ```ignore
 //! use pixelflow_graphics::fonts::{CachedText, Font, GlyphCache};
