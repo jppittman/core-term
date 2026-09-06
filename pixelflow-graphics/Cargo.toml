@@ -57,10 +57,6 @@ name = "kernel_bench"
 harness = false
 
 [[bench]]
-name = "work_stealing"
-harness = false
-
-[[bench]]
 name = "frame_bake"
 harness = false
 
