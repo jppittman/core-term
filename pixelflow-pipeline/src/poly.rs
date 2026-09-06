@@ -107,6 +107,77 @@ fn estrin(arena: &mut ExprArena, coeffs: &[f32], x: ExprId) -> ExprId {
     level[0]
 }
 
+/// Interpolate `f` on `[0, 1]` at `n` Chebyshev nodes, returning `n` monomial
+/// coefficients ascending — the input [`build`] wants.
+///
+/// Near-minimax, which is the point: the question "does another term buy
+/// accuracy" is only meaningful against a fit that is already as good as a fit
+/// of that degree gets. A least-squares fit on equispaced points would answer a
+/// question about Runge's phenomenon instead.
+///
+/// Chebyshev *nodes* with a monomial *basis*: the basis is fixed by what the
+/// arena evaluates, and the nodes are what keeps the Vandermonde system solvable
+/// there. Conditioning still degrades with degree, which is why callers stop
+/// around 14 — well past where `f32` stops rewarding more terms anyway.
+///
+/// # Panics
+///
+/// Panics for `n == 0`: a polynomial with no coefficients is not a fit.
+#[must_use]
+pub fn chebyshev_fit(f: impl Fn(f64) -> f64, n: usize) -> Vec<f32> {
+    assert!(n > 0, "chebyshev_fit: need at least one coefficient");
+    let nodes: Vec<f64> = (0..n)
+        .map(|k| {
+            let t = (core::f64::consts::PI * (k as f64 + 0.5) / n as f64).cos();
+            (t + 1.0) / 2.0
+        })
+        .collect();
+    let vandermonde: Vec<Vec<f64>> = nodes
+        .iter()
+        .map(|&x| (0..n).map(|j| x.powi(j as i32)).collect())
+        .collect();
+    let values: Vec<f64> = nodes.iter().map(|&x| f(x)).collect();
+    solve(vandermonde, values)
+        .into_iter()
+        .map(|c| c as f32)
+        .collect()
+}
+
+/// Gaussian elimination with partial pivoting. Small, dense, and used once per
+/// fit at build time, so the naive algorithm is the right one.
+fn solve(mut a: Vec<Vec<f64>>, mut y: Vec<f64>) -> Vec<f64> {
+    let n = y.len();
+    for col in 0..n {
+        let pivot = (col..n)
+            .max_by(|&i, &j| {
+                a[i][col]
+                    .abs()
+                    .partial_cmp(&a[j][col].abs())
+                    .expect("finite Vandermonde entries")
+            })
+            .expect("non-empty column");
+        a.swap(col, pivot);
+        y.swap(col, pivot);
+        for row in col + 1..n {
+            let factor = a[row][col] / a[col][col];
+            let (upper, lower) = a.split_at_mut(row);
+            for (target, &source) in lower[0][col..n].iter_mut().zip(&upper[col][col..n]) {
+                *target -= factor * source;
+            }
+            y[row] -= factor * y[col];
+        }
+    }
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let mut acc = y[i];
+        for k in i + 1..n {
+            acc -= a[i][k] * x[k];
+        }
+        x[i] = acc / a[i][i];
+    }
+    x
+}
+
 /// Longest path from `root` to a leaf, weighted by `cost` — the DAG's
 /// critical path, which is what the machine's out-of-order engine is bounded
 /// by when consecutive evaluations cannot overlap.
@@ -220,6 +291,44 @@ mod tests {
                 "degree {n}: estrin should cost extra multiplies for its powers"
             );
         }
+    }
+
+    /// The fit must actually converge on the function, in `f64`, before any
+    /// conclusion drawn from "does another term help" means anything. Checked
+    /// against `exp2` — the function `EXP2_POLY` approximates — in the
+    /// arithmetic the fit is computed in, so this pins the fit and not the
+    /// evaluator's rounding.
+    #[test]
+    fn chebyshev_fit_converges_with_degree() {
+        let f = |x: f64| x.exp2();
+        let err = |n: usize| {
+            let cs = chebyshev_fit(f, n);
+            (0..=200)
+                .map(|i| {
+                    let x = f64::from(i) / 200.0;
+                    let mut p = 0.0f64;
+                    for &c in cs.iter().rev() {
+                        p = p * x + f64::from(c);
+                    }
+                    (p - f(x)).abs()
+                })
+                .fold(0.0f64, f64::max)
+        };
+        // Each added term must buy at least 4x, up to where f32 coefficient
+        // storage stops being able to express the improvement.
+        let mut prev = err(2);
+        for n in 3..=6 {
+            let cur = err(n);
+            assert!(
+                cur < prev / 4.0,
+                "degree {n}: error {cur:.3e} did not improve 4x on {prev:.3e}"
+            );
+            prev = cur;
+        }
+        assert!(
+            prev < 1e-6,
+            "degree 6 fit should reach 1e-6, got {prev:.3e}"
+        );
     }
 
     fn op_nodes(arena: &ExprArena, root: ExprId) -> usize {

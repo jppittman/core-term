@@ -2,8 +2,8 @@
 
 **Date:** 2026-09-06
 **Question:** `passes::horner_step` emits every transcendental polynomial as a serial chain of `MulAdd`s — `a₀ + x(a₁ + x(a₂ + …))`. Horner minimizes operations but maximizes dependency depth. Estrin's scheme evaluates the same polynomial as a `log₂ n`-deep tree over explicit powers `x², x⁴, x⁸, …`, trading `log₂ n` extra multiplies for `O(log n)` depth. Is that trade worth taking for `sin`/`cos`/`exp2`/`log2`/`atan`?
-**Answer:** **No, at the degrees PixelFlow uses.** Estrin is 1.2–4.0× faster when a single evaluation is serialized, and the collapse loop erases that advantage by converting a latency problem into a throughput problem: measured as marginal cost per degree, Horner's gets ~2× cheaper inside the loop while Estrin's gets *more expensive*, because in the loop it is charged for ops rather than depth. At AVX-512 the two meet exactly (slope ratio 1.03 — throughput-bound), and once neither schedule is latency-limited the only thing left to compare is op count, where Estrin is strictly worse by its `log₂ n` squarings. In production's regime (one call per contiguous row, the kernel's own loop supplying the independent work) Estrin is a **tie to 11% slower** at every ISA level for every production polynomial. It only wins once the chain outgrows what cross-iteration ILP can hide: degree ≥ 12 on SSE2, ≥ 24 on AVX2, and never within degree ≤ 32 on AVX-512. Production's polynomials are degree 4–9. Two further findings fall out: Estrin introduces an **underflow hazard Horner does not have** (up to 30× slower, fixed entirely by `FastMathGuard`, which nothing in the render path currently holds), and the extraction cost model prefers Horner **for the wrong reason** — it cannot see schedule at all, and is therefore wrong by up to 1.9× on the cases where Estrin does win.
-**Reproduction:** `cargo run --release -p pixelflow-pipeline --example horner_vs_estrin`, at each ISA level per `xtask isa-matrix`'s flags. Host: 4-vCPU Intel Xeon @ 2.80GHz (avx512f/dq/vl, fma), Linux, shared VM. Numbers below are medians of 4–5 clean runs × 5 in-session repetitions × the harness's own median-of-20 samples. Runs that tripped `BenchSession`'s sentinel regime-change abort were discarded, not averaged in — roughly a third of runs on this host.
+**Answer:** **No — and not merely because it is a wash: there is nothing for it to buy.** Estrin is 1.2–4.0× faster when a single evaluation is serialized, and the collapse loop erases that advantage by converting a latency problem into a throughput problem: measured as marginal cost per degree, Horner's gets ~2× cheaper inside the loop while Estrin's gets *more expensive*, because in the loop it is charged for ops rather than depth. At AVX-512 the two meet exactly (slope ratio 1.03 — throughput-bound), and once neither schedule is latency-limited the only thing left to compare is op count, where Estrin is strictly worse by its `log₂ n` squarings. The natural rescue — spend Estrin's cheaper marginal term on extra terms and take the accuracy — fails independently: in `f32` the approximation error hits a rounding floor at degree 7 and goes flat, so past that no schedule can buy accuracy at any price, and Estrin's own floor is 2× worse than Horner's besides. In production's regime (one call per contiguous row, the kernel's own loop supplying the independent work) Estrin is a **tie to 11% slower** at every ISA level for every production polynomial. It only wins once the chain outgrows what cross-iteration ILP can hide: degree ≥ 12 on SSE2, ≥ 24 on AVX2, and never within degree ≤ 32 on AVX-512. Production's polynomials are degree 4–9. Two further findings fall out: Estrin introduces an **underflow hazard Horner does not have** (up to 30× slower, fixed entirely by `FastMathGuard`, which nothing in the render path currently holds), and the extraction cost model prefers Horner **for the wrong reason** — it cannot see schedule at all, and is therefore wrong by up to 1.9× on the cases where Estrin does win.
+**Reproduction:** `cargo run --release -p pixelflow-pipeline --example horner_vs_estrin` and `--example poly_precision`, at each ISA level per `xtask isa-matrix`'s flags. Host: 4-vCPU Intel Xeon @ 2.80GHz (avx512f/dq/vl, fma), Linux, shared VM. Numbers below are medians of 4–5 clean runs × 5 in-session repetitions × the harness's own median-of-20 samples. Runs that tripped `BenchSession`'s sentinel regime-change abort were discarded, not averaged in — roughly a third of runs on this host.
 
 ## 1. What was measured
 
@@ -149,17 +149,31 @@ The cost, scanline mode, same kernels, one constant changed:
 
 Holding a `FastMathGuard` (FTZ/DAZ) removes it completely — every hazard row returns to its nominal value, within noise. That guard exists, is exported from `pixelflow-core`, and **is held by nothing outside `pixelflow-core/benches`**: no `pixelflow-runtime` driver, no `core-term` frame loop, no glyph bake. Today's Horner expansions do not need it, which is why nothing has noticed. Any future schedule that forms explicit powers does, and so does any user kernel that does — this is a live gap independent of the Horner/Estrin question.
 
-## 5. Accuracy
+## 5. Accuracy, and why buying more terms is not an option
 
-Peak-relative error against an `f64` Horner reference over 1024 arguments in `[0, 1)`, measured on the JIT's own arithmetic (so FMA rounding is included, which no scalar oracle reproduces):
+The fixed-degree comparison invites an obvious follow-up: if Estrin's marginal term is cheaper, spend the discount on **accuracy** — add terms until the two cost the same, and take the better fit. §3 says that discount is real on SSE2 (2.51×) and AVX2 (1.75×), so the question is live.
 
-| degree | Horner | Estrin |
-|---|---|---|
-| 4–8 | 4e-8 – 5e-8 | 3e-8 – 6e-8 |
-| 9–16 | 4e-8 – 5e-8 | 8e-8 – 9e-8 |
-| 24–32 | 4e-8 | 1e-7 |
+It fails for a reason that has nothing to do with either schedule. `poly_precision` fits `exp2` on `[0, 1]` — the function `EXP2_POLY` approximates — at rising degree and measures the error the JIT actually delivers:
 
-Estrin costs roughly a factor of two in the worst case and stays inside single-precision noise. This is a *precision* difference, which CLAUDE.md's "Floating point at the edges" puts on the table; the range guarantees are untouched, since they come from the reduction and the `Select`, not from the polynomial's schedule. Accuracy is not what decides this question.
+| n | Horner err | Estrin err | gain over n−1 |
+|---|---|---|---|
+| 3 | 2.65e-3 | 2.65e-3 | 18× |
+| 4 | 1.12e-4 | 1.12e-4 | 24× |
+| 5 | 3.89e-6 | 3.92e-6 | 29× |
+| 6 | 1.77e-7 | 2.37e-7 | ← `EXP2_POLY` ships this degree |
+| 7 | 9.50e-8 | 1.69e-7 | 2× |
+| 8 | 8.28e-8 | 1.61e-7 | **1.1× — flat** |
+| 9–14 | 8.3e-8 – 9.2e-8 | 1.6e-7 – 2.0e-7 | **1.0× — flat** |
+
+Approximation error falls ~25× per added term, hits the `f32` rounding floor at **n = 7**, and then stops dead while cost keeps climbing. Going from the knee to n = 14 costs **+8% time at AVX-512 and +140% at SSE2, and buys nothing at either**. Past the knee, accuracy is bounded by the format, not by the degree — so a cheaper marginal term is a discount on a product that does not exist.
+
+Three things this pins down that were previously assumed:
+
+- **The floor is a rounding floor, and it moves with the ISA exactly as CLAUDE.md's `MulAdd` row says it should.** One rounding (AVX2/AVX-512 FMA) floors at 8.3e-8; two roundings (SSE2 `mulps`+`addps`) floor at 1.17e-7, 1.4× worse. The divergence that table documents is not a curiosity here — it is the thing that decides how many terms are worth fitting.
+- **`EXP2_POLY`'s 6 coefficients sit one below the knee**, taking 1.77e-7 (~1.5 ulp) rather than paying ~15% for 9.5e-8. That is the right call, and it means the shipped tables are already sized to this curve.
+- **Estrin's floor is ~2× Horner's**, at every level and every degree past 5 — 1.6e-7 against 8.3e-8. Reassociating adds an independent rounding to each explicit power, and the tree then sums terms of comparable magnitude with uncorrelated errors, where Horner's single accumulation has each step's error damped by the following multiply. So switching schedules does not merely fail to buy accuracy; it **costs** about a bit of it.
+
+The honest scope of that conclusion: it is a statement about `f32`, not about Estrin. If accuracy beyond this floor were ever wanted — `f64`, compensated or double-`f32` arithmetic, or an argument range wide enough that skipping a reduction step is worth extra terms — then degrees past 7 would start buying something again, and SSE2's 2.51× cheaper marginal term would be a real discount on a real product. None of that is on the table today, which is why the answer is no today.
 
 ## 6. What the cost model sees
 
@@ -175,6 +189,7 @@ Keep Horner. It is the right schedule for degree 4–9 in a loop that already ha
 
 Revisit if any of these change:
 
+- accuracy beyond the `f32` rounding floor is ever wanted — `f64`, compensated arithmetic, or a range wide enough to trade reduction steps for terms — because that is what would make degrees past 7 worth buying, and Estrin's marginal term is 2.51× cheaper on SSE2 and 1.75× on AVX2 (§3, §5);
 - a polynomial reaches degree ≥ 12 **and** targets a 16-register x86 level (SSE2 or AVX2);
 - a polynomial lands somewhere genuinely serialized, where the scanline loop cannot supply neighbouring work — a reduction body, or a dependent chain of transcendentals;
 - codegen starts giving the e-graph schedules to choose between, at which point this pair is a ready-made regression fixture for the schedule-cost residual.
