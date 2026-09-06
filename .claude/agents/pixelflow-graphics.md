@@ -12,7 +12,7 @@ Convert manifolds to renderable output. Colors, fonts, rasterization, shapes.
 - Font rendering: `Font`, `Glyph`, `GlyphCache`, `CachedText`, `GlyphExt` transforms
 - Rasterization: `execute()`, `execute_stripe()`, `TensorShape`, parallel rendering
 - Shapes: `circle`, `square`, `rectangle`, `ellipse`, `annulus`, `half_plane_x/y`
-- 3D: `scene3d` module (ray tracing, geometry, materials)
+- 3D: `scene3d` module (rays, closed-form geometry, materials — four channel kernels)
 - Transforms: `Scale`, coordinate remapping
 - Animation: `TimeShift`, `ScreenRemap`, `Oscillate`
 - Caching: `Baked<M, P>` — cache manifold results to texture
@@ -95,7 +95,8 @@ The rasterizer:
 | `subdivision.rs` | SubdivisionPatch with eigenanalysis |
 | `subdiv/mod.rs` | Catmull-Clark implementation |
 | `subdiv/coeffs.rs` | Precomputed eigenstructure data |
-| `scene3d.rs` | 3D scene graph, ray tracing |
+| `scene3d.rs` | 3D scene constructors: rays, hits, materials, as `Kernel`s |
+| `scene3d_surface.rs` | The same over `Jet3` manifolds — legacy, no new consumers |
 
 ## Invariants You Must Maintain
 
