@@ -1581,8 +1581,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "plausibility failure")]
     fn plausibility_floor_fires_below_floor() {
-        // 10 ops → floor 0.5ns; 0.1ns raw is a harness bug.
-        assert_plausible(0.1, 10);
+        // Derived from the floor, never restated as a literal: the floor
+        // divides by `LANES`, which is `JIT_VECTOR_BYTES / 4` and therefore
+        // 4, 8 or 16 depending on the ISA level the test is built for. A
+        // constant here would encode one level's answer and silently stop
+        // testing anything at the other two.
+        assert_plausible(plausibility_floor_ns(10) / 2.0, 10);
     }
 
     #[test]
@@ -1679,7 +1683,7 @@ mod tests {
 
     #[test]
     fn plausibility_floor_passes_above_floor() {
-        assert_plausible(1.0, 10);
+        assert_plausible(plausibility_floor_ns(10) * 2.0, 10);
     }
 
     #[test]
