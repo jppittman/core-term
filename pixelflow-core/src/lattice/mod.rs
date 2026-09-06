@@ -480,7 +480,7 @@ mod tests;
 #[derive(Clone)]
 pub struct BilinearSampler {
     tex: DiscreteManifold,
-    jit: alloc::sync::Arc<pixelflow_codegen::JitManifold>,
+    jit: alloc::sync::Arc<pixelflow_codegen::CompiledKernel>,
 }
 
 /// The 4-tap bilinear blend over one declared buffer, as an arena fragment:

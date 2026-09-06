@@ -84,7 +84,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// itself cached downstream.
 ///
 /// The cached value is `Arc`-wrapped for the same reason `jit_cache` hands
-/// back `Arc<JitManifold>` rather than owned code: a hit must be an atomic
+/// back `Arc<CompiledKernel>` rather than owned code: a hit must be an atomic
 /// refcount bump, not a deep clone of the (potentially large — real glyph
 /// arenas run to thousands of nodes once construction garbage is counted)
 /// optimized `ExprArena`. Returning an owned tuple here would silently

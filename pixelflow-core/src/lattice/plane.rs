@@ -36,7 +36,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::Field;
-use pixelflow_codegen::JitManifold;
+use pixelflow_codegen::CompiledKernel;
 use pixelflow_ir::Kernel;
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
 
@@ -129,7 +129,7 @@ impl PlaneRegion {
 /// kernels compiled through here with an integer pack at the root. Not three
 /// paths — one, sampled three ways.
 pub struct PlaneProgram {
-    jit: Arc<JitManifold>,
+    jit: Arc<CompiledKernel>,
     /// The lattice shape the kernel was specialized to. Every region
     /// collapsed through it lies within these extents.
     extent: [u32; 2],
@@ -269,7 +269,7 @@ fn buffer_len(decl: &BufferDecl) -> usize {
 /// (one `Arc` for the code, one per bound buffer).
 #[derive(Clone)]
 pub struct PlaneFrame {
-    jit: Arc<JitManifold>,
+    jit: Arc<CompiledKernel>,
     extent: [u32; 2],
     /// Bound memory in slot order; entries past the declared slots stay
     /// `None` and are never addressed, because the kernel only reads slots it
@@ -337,7 +337,7 @@ impl PlaneFrame {
         // The kernel was compiled for `extent`; a region outside it would run
         // the collapse loop past the lattice it was specialized to.
         //
-        // `debug_assert`, matching `JitManifold::call_collapse`'s own check of
+        // `debug_assert`, matching `CompiledKernel::call_collapse`'s own check of
         // the same promise: today's emitted code takes its loop bounds from
         // the tile at run time, so a wider region is merely a stale cache key,
         // not wrong samples. It becomes load-bearing when the emitted code

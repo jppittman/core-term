@@ -1,14 +1,16 @@
-//! JitManifold: a JIT-compiled function held as executable memory.
+//! CompiledKernel: one kernel's emitted code, held as executable memory.
 //!
-//! This type owns an [`ExecutableCode`] and exposes it through
-//! [`call_collapse`](JitManifold::call_collapse) — the entry a collapse driver
-//! uses to fill a whole tile with one call — plus the single-batch forms
-//! [`call`](JitManifold::call) and [`call_bound`](JitManifold::call_bound) that
-//! it is built from.
+//! This is the *code*, not the object a consumer names: `pixelflow-core`'s
+//! `Manifold` is a kernel compiled at a lattice shape, and this is what it
+//! holds inside. It owns an [`ExecutableCode`] and exposes it through
+//! [`call_collapse`](CompiledKernel::call_collapse) — the entry a collapse
+//! driver uses to fill a whole tile with one call — plus the single-batch
+//! forms [`call`](CompiledKernel::call) and
+//! [`call_bound`](CompiledKernel::call_bound) that it is built from.
 //!
 //! There are no row/grid/point evaluators here. Tabulating a kernel over a
-//! domain is `Lattice::bake`'s job in pixelflow-core, which owns the loop nest;
-//! a second loop nest here would be a per-batch API competing with it.
+//! domain is `Lattice::collapse`'s job in pixelflow-core, which owns the loop
+//! nest; a second loop nest here would be a per-batch API competing with it.
 
 use crate::JIT_VECTOR_BYTES;
 use crate::emit::executable::{ExecutableCode, Point4, TileSlice};
@@ -16,9 +18,9 @@ use pixelflow_ir::LatticeShape;
 
 const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
-/// A JIT-compiled kernel. Owns the executable memory for one specific parameter
-/// combination. No cache — caller decides lifetime.
-pub struct JitManifold {
+/// One kernel's emitted code, at one lattice shape. Owns the executable
+/// memory; no cache — the caller decides its lifetime.
+pub struct CompiledKernel {
     code: ExecutableCode,
     shape: LatticeShape,
 }
@@ -31,8 +33,8 @@ fn fits(shape: LatticeShape, tile: &TileSlice) -> bool {
     tile.rows <= y as usize && tile.groups <= (x as usize).div_ceil(LANES)
 }
 
-impl JitManifold {
-    /// Wrap newly compiled executable code into a `JitManifold` for a
+impl CompiledKernel {
+    /// Wrap newly compiled executable code into a `CompiledKernel` for a
     /// lattice of `shape`.
     ///
     /// The shape is the promise the code was compiled under: every tile
@@ -133,5 +135,5 @@ impl JitManifold {
 }
 
 // SAFETY: ExecutableCode is read-only mapped memory with no interior mutability.
-unsafe impl Send for JitManifold {}
-unsafe impl Sync for JitManifold {}
+unsafe impl Send for CompiledKernel {}
+unsafe impl Sync for CompiledKernel {}
