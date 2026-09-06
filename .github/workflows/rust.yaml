@@ -223,18 +223,15 @@ jobs:
           restore-keys: |
             cargo-registry-
 
-      # This integration target expands the public `kernel!` macro in a
-      # consumer crate. A host-only proc-macro check would miss generated code
-      # that disagrees with the second supported architecture's JIT ABI.
-      - name: Type-check default and arena kernel routing on aarch64
+      # This integration target expands the public `kernel!` and `kernel_jit!`
+      # macros in a consumer crate. A host-only proc-macro check would miss
+      # generated code that disagrees with the second supported architecture's
+      # JIT ABI.
+      - name: Type-check both kernel tiers on aarch64
         shell: bash
         run: |
           cargo check -p pixelflow-compiler \
             --test kernel_routing_parity \
-            --target aarch64-unknown-linux-gnu
-          cargo check -p pixelflow-compiler \
-            --test kernel_routing_parity \
-            --features arena-backend \
             --target aarch64-unknown-linux-gnu
 
   test:
@@ -340,25 +337,23 @@ jobs:
       # These are named public-behavior contracts, not an incidental subset of
       # the workspace suite. nextest's explicit `--no-tests fail` makes deleting
       # or renaming them a hard failure instead of a green zero-test run.
-      - name: Check default and arena kernel routing parity
+      # Each test checks both tiers itself (the LLVM tier through
+      # `Manifold::eval`, the arena tier through `Lattice::bake`), so one run
+      # per name covers both; there is no routing feature to flip any more.
+      - name: Check kernel tier parity
         shell: bash
         run: |
           set -euo pipefail
           tests=(
-            projection_kernels_stay_on_field_domain_semantics
-            routed_abs_recip_matches_truth
-            routed_arithmetic_matches_truth
-            routed_params_match_truth
-            routed_piecewise_matches_truth
+            abs_recip_matches_truth_on_both_tiers
+            arithmetic_matches_truth_on_both_tiers
+            params_match_truth_on_both_tiers
+            piecewise_matches_truth_on_both_tiers
+            projections_differ_by_tier_and_that_is_the_contract
           )
           for test_name in "${tests[@]}"; do
             cargo nextest run -p pixelflow-compiler \
               --test kernel_routing_parity \
-              -E "test(=$test_name)" \
-              --no-tests fail
-            cargo nextest run -p pixelflow-compiler \
-              --test kernel_routing_parity \
-              --features arena-backend \
               -E "test(=$test_name)" \
               --no-tests fail
           done
