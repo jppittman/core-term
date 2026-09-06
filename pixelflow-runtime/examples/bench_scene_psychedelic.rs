@@ -9,10 +9,10 @@
 //! It used to time this against `Scene::Surface` — a monomorphized `kernel!`
 //! channel per colour, packed by `ColorCube` and evaluated once per SIMD batch
 //! by the work-stealing rasterizer — and compare the two lanes pixel by pixel
-//! before timing either. S4a deleted that lane; the comparison is in the
-//! plan's landing blocks (`docs/plans/2026-09-06-kernel-with-a-lattice.md`).
-//! `bench_psychedelic.rs` still times the `kernel!` tier against a bake, which
-//! is the remaining cross-tier measurement.
+//! before timing either. S4a deleted that lane and S4b-2 the tier it belonged
+//! to, so there is one lane and this is the whole-frame measurement of it; the
+//! cross-tier comparisons are in the plan's landing blocks
+//! (`docs/plans/2026-09-06-kernel-with-a-lattice.md`).
 
 use std::time::Instant;
 
