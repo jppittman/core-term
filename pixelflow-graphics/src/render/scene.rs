@@ -1,12 +1,13 @@
 //! # Scene: what gets rendered into a frame
 //!
-//! A scene is a [`PackedFrame`] — four channel kernels compiled into ONE
-//! program over the frame's lattice, with the pixel pack inside it — rendered
-//! one collapse call per stripe, stripes across threads, the kernel's stores
-//! landing **in the frame itself**. No per-batch FFI boundary, no virtual
-//! dispatch, no per-pixel scalar pack, no staging plane and no row copy, and
-//! the collapse kernel's two-level LICM prologues (per call, per row) active.
-//! Byte order comes from the pixel format the frame is stored in
+//! A scene is a [`PackedFrame`] — four channel kernels compiled at the
+//! frame's lattice shape, with the pixel pack inside the kernel, which is a
+//! compiled manifold with four channels. Rendering it is **one collapse call
+//! per stripe**, stripes across threads, the kernel's stores landing **in the
+//! frame itself**. No per-batch FFI boundary, no virtual dispatch, no
+//! per-pixel scalar pack, no staging plane and no row copy, and the collapse
+//! kernel's two-level LICM prologues (per call, per row) active. Byte order
+//! comes from the pixel format the frame is stored in
 //! ([`compile_packed_for`], [`compile_platform_packed`]), never from
 //! application code.
 //!
@@ -46,8 +47,9 @@ pub enum Scene {
     /// **no new consumer is permitted** — a scene that can be written as four
     /// channel kernels is a [`Scene::Packed`].
     Surface(Arc<dyn Manifold<Output = Discrete> + Send + Sync>),
-    /// A packed-pixel program over the frame lattice: the 2D collapse kernel
-    /// writes finished `u32` pixels; stripes copy rows into the frame.
+    /// Four channel kernels compiled at the frame's lattice shape, packed to
+    /// a `u32` pixel inside the kernel. The scene collapses it one call per
+    /// stripe, straight into the frame's own memory.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     Packed(PackedFrame),
 }
@@ -65,9 +67,11 @@ impl From<PackedFrame> for Scene {
     }
 }
 
-/// Compile a colour output for the pixel format `P`: four channel kernels in
-/// `[0, 1]` — red, green, blue, alpha, which is all a colour output ever is —
-/// over a `frame[0] × frame[1]` pixel lattice.
+/// Compose a colour output for the pixel format `P` and compile it at the
+/// frame's shape: four channel kernels in `[0, 1]` — red, green, blue, alpha,
+/// which is all a colour output ever is — over a `frame[0] × frame[1]` pixel
+/// lattice. What comes back is a compiled manifold the scene collapses one
+/// call per stripe.
 ///
 /// This is the constructor a shader author uses. Byte order comes from `P`
 /// itself, so the format the kernel packs for is the format the frame stores,
@@ -113,10 +117,11 @@ fn packed_shifts_of<P: Pixel>(what: &str) -> [u32; 4] {
     })
 }
 
-/// Compile the packed cell-grid program for the pixel format `P`, taking
-/// byte order from `P` itself — so the format the kernel packs for is the
-/// format the frame stores, by construction. Applications pass geometry and
-/// colors; they never see a shift.
+/// Compose the cell grid's four channel kernels and compile them at its
+/// frame's shape for the pixel format `P`, taking byte order from `P` itself
+/// — so the format the kernel packs for is the format the frame stores, by
+/// construction. Applications pass geometry and colors; they never see a
+/// shift.
 ///
 /// Use [`compile_platform_cell_grid`] when the frame is the platform's own
 /// format, which is the production path.
@@ -169,9 +174,9 @@ impl core::fmt::Debug for Scene {
 impl Scene {
     /// Render this scene into `frame` with up to `num_threads` workers.
     ///
-    /// Packed scenes bake finished pixels stripe-parallel through their one
-    /// collapse kernel, straight into the frame's memory; surfaces go through
-    /// the work-stealing per-batch rasterizer.
+    /// Packed scenes collapse their compiled manifold stripe-parallel,
+    /// finished pixels landing straight in the frame's memory; surfaces go
+    /// through the work-stealing per-batch rasterizer.
     pub fn render<P: Pixel + Send>(&self, frame: &mut Frame<P>, num_threads: usize) {
         match self {
             Self::Surface(manifold) => {
@@ -183,7 +188,8 @@ impl Scene {
     }
 }
 
-/// Rows one worker claims at a time.
+/// Rows one worker claims at a time — the band of the lattice one collapse
+/// call covers.
 ///
 /// The unit of scheduling, so the two costs it trades are: a stripe too short
 /// pays the collapse call's per-call LICM prologue too often and claims too
@@ -197,11 +203,11 @@ impl Scene {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const STRIPE_ROWS: usize = 8;
 
-/// Bake a packed frame, stripe-parallel.
+/// Collapse a compiled colour manifold over the frame, stripe-parallel.
 ///
 /// Workers pull fixed-height stripes from one shared cursor until the frame is
-/// done, and each bakes its stripe with ONE collapse call whose stores land in
-/// the frame itself: the collapse ABI steps the output pointer between rows, so
+/// done, and each collapses its stripe with ONE call whose stores land in the
+/// frame itself: the collapse ABI steps the output pointer between rows, so
 /// the frame's row stride is simply what it is handed. Nothing is staged,
 /// nothing is copied, and nothing per-worker is allocated.
 ///
@@ -214,7 +220,7 @@ fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, nu
     if width == 0 || height == 0 {
         return;
     }
-    // The kernel baked a packed word for the shifts it was compiled with;
+    // The kernel packed its word for the shifts it was compiled with;
     // storing that word as a format with different byte order would swap R
     // and B in every pixel. The old per-pixel `from_rgba` path converted, so
     // any `P` worked; this path moves bits, so the formats must match.
@@ -246,14 +252,14 @@ fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, nu
                 // them. One guard covers every stripe this worker claims and
                 // restores the mode before the scope joins.
                 //
-                // SAFETY: this thread was spawned to bake stripes and does
+                // SAFETY: this thread was spawned to collapse stripes and does
                 // nothing else, so nothing here depends on denormals being
                 // preserved; the guard restores the caller's mode on drop,
                 // and the scope joins before `render` returns.
                 let _fast_math = unsafe { FastMathGuard::new() };
                 while let Some((stripe, band)) = claim(&stripes) {
                     let rows = band.len() / width;
-                    packed.bake_packed_rows(
+                    packed.collapse_rows(
                         PlaneRegion {
                             width,
                             y0: stripe * STRIPE_ROWS,
@@ -286,7 +292,7 @@ fn worker_count(num_threads: usize, stripes: usize) -> usize {
 
 /// Take the next stripe, or `None` once the frame is done.
 ///
-/// Split out so the lock is provably dropped before the bake: holding it
+/// Split out so the lock is provably dropped before the collapse: holding it
 /// across a stripe would serialize the whole render.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn claim<'a>(
@@ -553,7 +559,7 @@ mod tests {
 #[cfg(test)]
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod frame_bench {
-    //! Steady-state frame-bake comparison: the retired four-plane-then-pack
+    //! Steady-state whole-frame comparison: the retired four-plane-then-pack
     //! shape against the packed kernel. Ignored by default — run manually:
     //! `cargo test --release -p pixelflow-graphics --lib -- --ignored
     //! bench_packed --nocapture`. The four-channel program still exists in
@@ -616,7 +622,7 @@ mod frame_bench {
             rows: h,
         };
         for _ in 0..150 {
-            packed.bake_packed_rows(region, &mut band, w);
+            packed.collapse_rows(region, &mut band, w);
             std::hint::black_box(&band);
         }
     }
@@ -643,7 +649,7 @@ mod frame_bench {
         // budget was: a megabyte of scratch per plane.
         let chunk_rows = (1 << 20) / (w * core::mem::size_of::<f32>());
 
-        // The retired shape: four plane bakes plus a per-pixel from_rgba.
+        // The retired shape: four plane collapses plus a per-pixel from_rgba.
         let old_pass = |band: &mut [u32]| {
             let mut planes = vec![0.0f32; 4 * chunk_rows * w];
             let mut done = 0usize;
@@ -658,10 +664,10 @@ mod frame_bench {
                         y0: done,
                         rows: n,
                     };
-                    four.bake_channel_rows(0, region, r, w);
-                    four.bake_channel_rows(1, region, g, w);
-                    four.bake_channel_rows(2, region, b, w);
-                    four.bake_channel_rows(3, region, a, w);
+                    four.collapse_channel_rows(0, region, r, w);
+                    four.collapse_channel_rows(1, region, g, w);
+                    four.collapse_channel_rows(2, region, b, w);
+                    four.collapse_channel_rows(3, region, a, w);
                 }
                 let plane = |c: usize| &planes[c * chunk_rows * w..];
                 for row in 0..n {
@@ -681,7 +687,7 @@ mod frame_bench {
             }
         };
         let new_pass = |band: &mut [u32]| {
-            packed.bake_packed_rows(
+            packed.collapse_rows(
                 PlaneRegion {
                     width: w,
                     y0: 0,

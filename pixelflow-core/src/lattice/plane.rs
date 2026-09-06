@@ -1,16 +1,20 @@
-//! # A kernel compiled at a frame's lattice, baked in bands of rows
+//! # A kernel compiled at a 2D lattice shape, collapsed in bands of rows
 //!
-//! One [`Kernel`], one frame extent, one compiled collapse program: the loop
-//! over batches and rows lives inside the emitted code, with the two-level
-//! LICM prologues (per call, per row) active, and one call bakes a whole band.
-//! Whatever memory the kernel declared is bound by identity once per frame and
-//! stays bound for every band baked from it.
+//! The middle object of `kernel ──compile(shape)──▶ manifold
+//! ──collapse(lattice)──▶ buffer`, for a plane. A [`Kernel`] is the
+//! description; compiling it at an extent gives a **compiled manifold**
+//! ([`PlaneProgram`], plus its bound memory as [`PlaneFrame`]); collapsing
+//! that over a band of rows gives numbers. The loop over batches and rows
+//! lives inside the emitted code, with the two-level LICM prologues (per
+//! call, per row) active, so one collapse call covers a whole band, and
+//! whatever memory the kernel declared is bound by identity once and stays
+//! bound for every band collapsed from it.
 //!
 //! This is the shape every frame path in the tree already had — the cell
 //! grid's four channel programs and its packed sibling were two copies of it
 //! — with nothing above it: no colour, no channels, no pixel format. Those
 //! live a layer up, in `pixelflow-graphics`, which composes a packed-pixel
-//! kernel and hands it here.
+//! kernel and compiles it here.
 //!
 //! ## Output planes
 //!
@@ -24,8 +28,8 @@
 //! module where the SIMD width is visible at all.
 //!
 //! The store is a raw vector store, type-blind bit movement, so a kernel
-//! whose root is int-domain (a packed pixel, a mask) bakes through
-//! [`PlaneFrame::bake_int_rows`] into a `u32` plane exactly: no float
+//! whose root is int-domain (a packed pixel, a mask) collapses through
+//! [`PlaneFrame::collapse_int_rows`] into a `u32` plane exactly: no float
 //! operation touches the value between the root and memory.
 
 use alloc::sync::Arc;
@@ -42,7 +46,7 @@ use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
 /// than silently overflowing it.
 pub const MAX_BOUND_BUFFERS: usize = 4;
 
-/// A horizontal band of rows to bake: `width` samples across, rows
+/// A horizontal band of the lattice to collapse: `width` samples across, rows
 /// `y0 .. y0 + rows`.
 #[derive(Clone, Copy, Debug)]
 pub struct PlaneRegion {
@@ -54,14 +58,33 @@ pub struct PlaneRegion {
     pub rows: usize,
 }
 
-/// One kernel compiled against one frame extent.
+/// One kernel compiled at one 2D lattice shape: a compiled manifold, before
+/// its memory is bound.
 ///
 /// Compile once per shape; bind memory per frame ([`PlaneProgram::bind`]).
-/// The program's size and compile time are independent of the frame's.
+/// The program's size and compile time are independent of the lattice's.
+///
+/// **This is the compiled manifold that can bind memory**, and the only one.
+/// A kernel composed over a buffer —
+/// [`DiscreteManifold::kernel_for`](crate::DiscreteManifold::kernel_for)'s
+/// gather, [`BilinearSampler::kernel_for`](crate::BilinearSampler::kernel_for)'s
+/// 4-tap blend, or anything built on them — declares buffer slots, and
+/// [`Lattice::bake`](crate::Lattice::bake) refuses those: it binds nothing, so
+/// the gathers would load their base pointers out of a null context. Compile
+/// the same kernel here, bind its buffers by identity, and collapse it into
+/// `f32` rows.
+///
+/// The three colour-shaped things in the tree are all this object wearing
+/// different numbers of channels: `Lattice::bake` is the one-channel,
+/// buffer-free instance (`collapse(compile(k))` fused, and can stop being a
+/// separate name); a field over bound memory is the one-channel instance with
+/// its slots filled; and `pixelflow-graphics`'s packed program is four channel
+/// kernels compiled through here with an integer pack at the root. Not three
+/// paths — one, sampled three ways.
 pub struct PlaneProgram {
     jit: Arc<JitManifold>,
-    /// The lattice the kernel was specialized to. Every region baked through
-    /// it lies within these extents.
+    /// The lattice shape the kernel was specialized to. Every region
+    /// collapsed through it lies within these extents.
     extent: [u32; 2],
     /// The memory the kernel declared, in the slot order its ABI binds.
     /// Shared so a [`PlaneFrame`] stays cheap to clone.
@@ -106,7 +129,7 @@ impl PlaneProgram {
                 buffer_len(decl)
             );
         }
-        // Bound-memory arenas are uncacheable (the code bakes buffer slot
+        // Bound-memory arenas are uncacheable (the code embeds buffer slot
         // metadata); the cache recognizes that and compiles fresh.
         let jit = pixelflow_codegen::jit_cache::compile(
             arena,
@@ -214,8 +237,8 @@ impl PlaneFrame {
         self.extent
     }
 
-    /// Bake the region at sample-center coordinates (`x + ½`, `y + ½`) into
-    /// `out`, whose rows are `stride` elements apart and whose first
+    /// Collapse the region at sample-center coordinates (`x + ½`, `y + ½`)
+    /// into `out`, whose rows are `stride` elements apart and whose first
     /// `region.width` elements each row are the samples.
     ///
     /// The destination is written in place — the collapse loop's own stores
@@ -227,15 +250,15 @@ impl PlaneFrame {
     ///
     /// Panics if the region's width is zero, `stride` is less than it, or
     /// `out` cannot hold the band.
-    pub fn bake_rows(&self, region: PlaneRegion, out: &mut [f32], stride: usize) {
-        let band = self.plan("bake_rows", region, stride, out.len());
-        // SAFETY: see `bake`. `out` is an `f32` plane, which is what the
+    pub fn collapse_rows(&self, region: PlaneRegion, out: &mut [f32], stride: usize) {
+        let band = self.plan("collapse_rows", region, stride, out.len());
+        // SAFETY: see `collapse`. `out` is an `f32` plane, which is what the
         // collapse ABI writes, and `plan` proved it holds the band.
-        unsafe { self.bake(region, out.as_mut_ptr(), band) }
+        unsafe { self.collapse(region, out.as_mut_ptr(), band) }
     }
 
-    /// [`PlaneFrame::bake_rows`] for a kernel whose root is int-domain: each
-    /// lane already holds a bit pattern (a packed pixel, a mask), and the
+    /// [`PlaneFrame::collapse_rows`] for a kernel whose root is int-domain:
+    /// each lane already holds a bit pattern (a packed pixel, a mask), and the
     /// collapse store is a raw vector store — type-blind bit movement — so
     /// writing through the ABI's `*mut f32` into a `u32` plane is exact.
     ///
@@ -243,11 +266,11 @@ impl PlaneFrame {
     ///
     /// Panics if the region's width is zero, `stride` is less than it, or
     /// `out` cannot hold the band.
-    pub fn bake_int_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
-        let band = self.plan("bake_int_rows", region, stride, out.len());
-        // SAFETY: see `bake`. `u32` and `f32` share size and alignment, and
-        // the store moves the root's bit pattern without interpreting it.
-        unsafe { self.bake(region, out.as_mut_ptr().cast::<f32>(), band) }
+    pub fn collapse_int_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
+        let band = self.plan("collapse_int_rows", region, stride, out.len());
+        // SAFETY: see `collapse`. `u32` and `f32` share size and alignment,
+        // and the store moves the root's bit pattern without interpreting it.
+        unsafe { self.collapse(region, out.as_mut_ptr().cast::<f32>(), band) }
     }
 
     /// How a band lands in a destination of a given stride, and the guard that
@@ -286,7 +309,7 @@ impl PlaneFrame {
         // pass this guard while the collapse call below still received the
         // real (enormous) row count and wrote past the slice. The documented
         // panic must fire before any unsafe call, not after.
-        let needed = plan.span().expect("bake: band span overflows usize");
+        let needed = plan.span().expect("collapse: band span overflows usize");
         assert!(
             out_len >= needed,
             "{what}: plane of {out_len} elements cannot hold {rows} rows at stride {stride}"
@@ -298,7 +321,7 @@ impl PlaneFrame {
     ///
     /// `out` must be writable for `band.span()` 4-byte elements — which
     /// [`PlaneFrame::plan`] asserted for the slice it came from.
-    unsafe fn bake(&self, region: PlaneRegion, out: *mut f32, band: BandPlan) {
+    unsafe fn collapse(&self, region: PlaneRegion, out: *mut f32, band: BandPlan) {
         if band.rows == 0 {
             return;
         }
@@ -460,16 +483,16 @@ mod tests {
         (col as f32 + 0.5) * 100.0 + row as f32 + 0.5
     }
 
-    /// Bake a kernel of the coordinates themselves and read the plane back:
+    /// Collapse a kernel of the coordinates themselves and read the plane back:
     /// the region's absolute rows, the sample-center convention, and a
     /// destination whose rows are exactly as wide as the samples, in one.
     #[test]
-    fn a_band_bakes_its_absolute_rows_at_sample_centers() {
+    fn a_band_collapses_its_absolute_rows_at_sample_centers() {
         let program = PlaneProgram::compile(&coordinate_kernel(), [8, 8]);
         let frame = program.bind(&[]);
         let (width, y0, rows) = (5, 4, 3);
         let mut out = vec![0.0f32; rows * width];
-        frame.bake_rows(PlaneRegion { width, y0, rows }, &mut out, width);
+        frame.collapse_rows(PlaneRegion { width, y0, rows }, &mut out, width);
         for row in 0..rows {
             for col in 0..width {
                 let want = expected(col, y0 + row);
@@ -488,8 +511,8 @@ mod tests {
     /// back the wrong values. This is the case the collapse ABI's
     /// `row_skip_bytes` exists for, and the packed frame path is built on it.
     ///
-    /// A spare row past the band stays pristine: the bake fills the rows it
-    /// was given and no more. (Within a row, everything past `width` is
+    /// A spare row past the band stays pristine: the collapse fills the rows
+    /// it was given and no more. (Within a row, everything past `width` is
     /// scratch — a final partial batch's lanes land there — which is why only
     /// the samples themselves are read back.)
     #[test]
@@ -499,7 +522,7 @@ mod tests {
         let (width, stride, rows) = (9, BATCH_LANES * 4 + 1, 4);
         const UNTOUCHED: f32 = -1.0;
         let mut out = vec![UNTOUCHED; (rows + 1) * stride];
-        frame.bake_rows(PlaneRegion { width, y0: 0, rows }, &mut out, stride);
+        frame.collapse_rows(PlaneRegion { width, y0: 0, rows }, &mut out, stride);
         for row in 0..rows {
             for col in 0..width {
                 let want = expected(col, row);
@@ -512,7 +535,7 @@ mod tests {
         }
         assert!(
             out[rows * stride..].iter().all(|&x| x == UNTOUCHED),
-            "the bake wrote past the {rows} rows it was given"
+            "the collapse wrote past the {rows} rows it was given"
         );
     }
 
@@ -520,7 +543,7 @@ mod tests {
     /// batch reaches memory through the scratch batch with the values it would
     /// have had from a whole-batch store into a padded row.
     #[test]
-    fn a_partial_last_batch_bakes_the_same_samples_at_any_stride() {
+    fn a_partial_last_batch_collapses_the_same_samples_at_any_stride() {
         let program = PlaneProgram::compile(&coordinate_kernel(), [32, 8]);
         let frame = program.bind(&[]);
         let (width, rows) = (BATCH_LANES * 2 - 1, 3);
@@ -528,8 +551,8 @@ mod tests {
         let mut packed = vec![0.0f32; rows * width];
         let mut spread = vec![0.0f32; rows * padded];
         let region = PlaneRegion { width, y0: 1, rows };
-        frame.bake_rows(region, &mut packed, width);
-        frame.bake_rows(region, &mut spread, padded);
+        frame.collapse_rows(region, &mut packed, width);
+        frame.collapse_rows(region, &mut spread, padded);
         for row in 0..rows {
             let a = &packed[row * width..(row + 1) * width];
             let b = &spread[row * padded..row * padded + width];
@@ -541,7 +564,7 @@ mod tests {
     /// with no float operation in between — including through the scratch
     /// batch, which is why the width here is not a whole batch.
     #[test]
-    fn an_int_domain_root_bakes_into_a_u32_plane_bit_exactly() {
+    fn an_int_domain_root_collapses_into_a_u32_plane_bit_exactly() {
         let kernel = Kernel::x()
             .trunc_to_int()
             .shl(8)
@@ -551,7 +574,7 @@ mod tests {
         let program = PlaneProgram::compile(&kernel, [width as u32, 4]);
         let frame = program.bind(&[]);
         let mut out = vec![0u32; 2 * width];
-        frame.bake_int_rows(
+        frame.collapse_int_rows(
             PlaneRegion {
                 width,
                 y0: 0,
@@ -577,7 +600,7 @@ mod tests {
         let program = PlaneProgram::compile(&coordinate_kernel(), [8, 8]);
         let frame = program.bind(&[]);
         let mut out = vec![0.0f32; 32];
-        frame.bake_rows(
+        frame.collapse_rows(
             PlaneRegion {
                 width: 5,
                 y0: 0,
@@ -586,6 +609,36 @@ mod tests {
             &mut out,
             4,
         );
+    }
+
+    /// The same object with one channel and no pack: a kernel whose root is a
+    /// gather over a declared buffer, compiled at the buffer's shape, bound by
+    /// identity, and collapsed into one `f32` field. `Lattice::bake` cannot do
+    /// this — it binds nothing and refuses a kernel that declares slots — so
+    /// this is how a buffer-backed sampler (a glyph's coverage, a texture)
+    /// reaches numbers.
+    #[test]
+    fn a_kernel_over_bound_memory_collapses_its_samples() {
+        let buffer = BufferIdentity::mint();
+        let (bw, bh) = (4u32, 3u32);
+        let data: Vec<f32> = (0..bw * bh).map(|i| i as f32 * 0.25).collect();
+        let kernel = crate::lattice::DiscreteManifold::kernel_for(buffer, bw, bh).at(
+            &Kernel::x(),
+            &Kernel::y(),
+            &Kernel::z(),
+            &Kernel::w(),
+        );
+        let program = PlaneProgram::compile(&kernel, [bw, bh]);
+        assert_eq!(
+            program.buffers().len(),
+            1,
+            "the sampler's slot must survive to the compiled program"
+        );
+        let frame = program.bind(&[(buffer, Arc::new(data.clone()))]);
+        let (width, rows) = (bw as usize, bh as usize);
+        let mut out = vec![0.0f32; rows * width];
+        frame.collapse_rows(PlaneRegion { width, y0: 0, rows }, &mut out, width);
+        assert_eq!(out, data, "the collapse did not read the bound buffer");
     }
 
     #[test]

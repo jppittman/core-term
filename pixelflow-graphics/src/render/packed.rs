@@ -1,15 +1,16 @@
-//! # A frame is one packed-pixel kernel over the frame lattice
+//! # A colour output is four channel kernels compiled at the frame's shape
 //!
 //! Four channel kernels in `[0, 1]` — red, green, blue, alpha, which is all a
 //! colour output ever is — packed to bytes and OR-folded into a `u32` pixel
-//! **inside the kernel**, then compiled once against the frame's lattice. One
-//! collapse call bakes a band of finished pixels: no per-batch FFI boundary,
-//! no virtual dispatch, no per-pixel scalar pack, and the collapse kernel's
-//! two-level LICM prologues (per call, per row) active.
+//! **inside the kernel**, then compiled at the frame's lattice shape. That is
+//! a compiled manifold with four channels, and collapsing a band of its rows
+//! writes finished pixels: no per-batch FFI boundary, no virtual dispatch, no
+//! per-pixel scalar pack, and the collapse kernel's two-level LICM prologues
+//! (per call, per row) active.
 //!
-//! The layer below ([`pixelflow_core::PlaneProgram`]) knows lattices, buffers
-//! and bit patterns and nothing about colour; this is where byte lanes and
-//! pixel formats begin.
+//! The layer below ([`pixelflow_core::PlaneProgram`]) is the same object with
+//! one channel and no pack — it knows lattices, buffers and bit patterns and
+//! nothing about colour. This is where byte lanes and pixel formats begin.
 
 use std::sync::Arc;
 
@@ -43,8 +44,9 @@ pub(crate) fn packed_kernel(channels: &[Kernel; 4], shifts: [u32; 4]) -> Kernel 
     byte(0).or(&byte(1)).or(&byte(2)).or(&byte(3)).into_kernel()
 }
 
-/// A colour output compiled at a frame's lattice: ONE program whose root is a
-/// packed `u32` pixel, so the collapse loop stores finished pixels directly.
+/// A colour output compiled at a frame's lattice shape: a compiled manifold
+/// with four channels, whose root is a packed `u32` pixel, so the collapse
+/// loop stores finished pixels directly.
 ///
 /// Compile once per (channels, format, frame extent); bind whatever memory the
 /// channels read per frame ([`PackedProgram::bind`]).
@@ -128,7 +130,7 @@ impl PackedProgram {
     }
 }
 
-/// One frame of a packed program: the compiled kernel plus the memory it
+/// One frame of a packed program: the compiled manifold plus the memory it
 /// reads. Cheap to clone.
 #[derive(Clone)]
 pub struct PackedFrame {
@@ -143,10 +145,9 @@ impl PackedFrame {
         self.shifts
     }
 
-    /// Bake packed pixels over the pixel rows `y0 .. y0 + rows` at
-    /// pixel-center coordinates, straight into `out` — a plane of `u32`
-    /// words whose rows are `stride` pixels apart, which for a frame is its
-    /// own row width.
+    /// Collapse the pixel rows `y0 .. y0 + rows` at pixel-center coordinates,
+    /// straight into `out` — a plane of `u32` words whose rows are `stride`
+    /// pixels apart, which for a frame is its own row width.
     ///
     /// The kernel's root is int-domain: each lane already holds a packed
     /// pixel's bit pattern, and the collapse store is a raw vector store, so
@@ -156,7 +157,7 @@ impl PackedFrame {
     ///
     /// Panics if the region's width is zero, `stride` is less than it, or
     /// `out` cannot hold the band.
-    pub fn bake_packed_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
-        self.frame.bake_int_rows(region, out, stride);
+    pub fn collapse_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
+        self.frame.collapse_int_rows(region, out, stride);
     }
 }

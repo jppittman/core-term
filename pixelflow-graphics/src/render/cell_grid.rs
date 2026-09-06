@@ -142,11 +142,11 @@ mod tests {
         (program, Arc::new(cells), Arc::new(atlas))
     }
 
-    /// Bake one channel over pixel centers and unpad to a dense w×h plane —
+    /// Collapse one channel over pixel centers into a dense w×h plane —
     /// the four-channel oracle the pack is checked against.
     fn plane(frame: &CellGridFrame, channel: usize, w: usize, h: usize) -> Vec<f32> {
         let mut dense = vec![0.0f32; h * w];
-        frame.bake_channel_rows(
+        frame.collapse_channel_rows(
             channel,
             PlaneRegion {
                 width: w,
@@ -215,7 +215,7 @@ mod tests {
         let (w, h) = (2560usize, 1584usize);
         let mut out = vec![0u32; w * h];
         for _ in 0..150 {
-            frame.bake_packed_rows(
+            frame.collapse_rows(
                 PlaneRegion {
                     width: w,
                     y0: 0,
@@ -243,10 +243,10 @@ mod tests {
             .fold(0, |acc, lane| acc | lane)
     }
 
-    /// Bake packed pixels over pixel centers and unpad to a dense w×h plane.
+    /// Collapse packed pixels over pixel centers into a dense w×h plane.
     fn packed_plane(frame: &PackedFrame, w: usize, h: usize) -> Vec<u32> {
         let mut dense = vec![0u32; h * w];
-        frame.bake_packed_rows(
+        frame.collapse_rows(
             PlaneRegion {
                 width: w,
                 y0: 0,
@@ -262,7 +262,7 @@ mod tests {
     fn packed_bake_is_bit_exact_with_channel_bakes_under_both_byte_orders() {
         // 12×6 over tiny_scene's 8×4 grid: the right and bottom margins are
         // off-grid, so default_bg flows through the pack too. THE invariant:
-        // for every pixel, the packed bake equals the four channel bakes
+        // for every pixel, the packed collapse equals the four channel ones
         // composed with the scalar pack — exact u32 equality, no epsilon.
         let (program, cells, atlas) = tiny_scene();
         let frame = program.frame(cells.clone(), atlas.clone());
@@ -404,8 +404,8 @@ mod tests {
     #[test]
     fn packed_row_offset_region_matches_the_full_bake() {
         // Mirrors `baking_a_row_offset_region_samples_the_correct_absolute_row`
-        // for the packed path: a bake starting at y0 = 4 must reproduce rows
-        // 4..8 of the full bake exactly (u32 equality — these are packed
+        // for the packed path: a collapse starting at y0 = 4 must reproduce
+        // rows 4..8 of the full one exactly (u32 equality — these are packed
         // pixels, not floats).
         let (aw, ah, slot) = (12usize, 6usize, 6usize);
         let mut atlas = vec![0.0f32; aw * ah];
@@ -438,7 +438,7 @@ mod tests {
         let full = packed_plane(&frame, 4, 8);
 
         let mut offset = vec![0u32; 4 * 4];
-        frame.bake_packed_rows(
+        frame.collapse_rows(
             PlaneRegion {
                 width: 4,
                 y0: 4,
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(
             offset,
             full[4 * 4..],
-            "the offset bake disagrees with the full bake"
+            "the offset collapse disagrees with the full one"
         );
     }
 

@@ -6,9 +6,8 @@
 //!   colour, packed by `ColorCube`, evaluated once per SIMD batch through the
 //!   `Manifold` trait by the work-stealing rasterizer.
 //! - **packed**: `Scene::Packed` — the same three channels plus an opaque
-//!   alpha as four `Kernel`s, compiled into ONE program over the frame's
-//!   lattice with the pixel pack inside it, baked one collapse call per
-//!   stripe.
+//!   alpha as four `Kernel`s compiled at the frame's lattice shape with the
+//!   pixel pack inside the kernel, collapsed one call per stripe.
 //!
 //! Same shader, same frame, same thread counts; the two are compared pixel by
 //! pixel before either is timed, so a fast wrong answer cannot win.

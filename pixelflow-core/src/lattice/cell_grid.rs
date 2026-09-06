@@ -359,22 +359,22 @@ pub struct CellGridFrame {
 }
 
 impl CellGridFrame {
-    /// Bake one color channel (0 = R, 1 = G, 2 = B, 3 = A) over the pixel
+    /// Collapse one color channel (0 = R, 1 = G, 2 = B, 3 = A) over the pixel
     /// rows `y0 .. y0 + rows` at pixel-center coordinates, into a plane whose
-    /// rows are `stride` samples apart — see [`PlaneFrame::bake_rows`].
+    /// rows are `stride` samples apart — see [`PlaneFrame::collapse_rows`].
     ///
     /// # Panics
     ///
     /// Panics if `channel >= 4`, the region's width is zero, `stride` is less
     /// than it, or `out` cannot hold the band.
-    pub fn bake_channel_rows(
+    pub fn collapse_channel_rows(
         &self,
         channel: usize,
         region: PlaneRegion,
         out: &mut [f32],
         stride: usize,
     ) {
-        self.channels[channel].bake_rows(region, out, stride);
+        self.channels[channel].collapse_rows(region, out, stride);
     }
 }
 
@@ -492,7 +492,7 @@ mod tests {
     /// Bake one channel over pixel centers and unpad to a dense w×h plane.
     fn plane(frame: &CellGridFrame, channel: usize, w: usize, h: usize) -> alloc::vec::Vec<f32> {
         let mut dense = vec![0.0f32; h * w];
-        frame.bake_channel_rows(
+        frame.collapse_channel_rows(
             channel,
             PlaneRegion {
                 width: w,
@@ -838,7 +838,7 @@ mod tests {
         let frame = program.frame(Arc::new(cells), Arc::new(atlas));
 
         let mut dense = vec![0.0f32; 4 * 4];
-        frame.bake_channel_rows(
+        frame.collapse_channel_rows(
             0,
             PlaneRegion {
                 width: 4,
