@@ -974,13 +974,14 @@ byte-identical, which is the check that the two macros really were one thing.
 **No golden moved**, and none was regenerated: all four `kernel_glyph_golden`
 contracts pass against the pictures already in the tree.
 
-**Net −24,399 lines** in this stage (1,286 insertions, 25,685 deletions across
-126 files, counting `subdiv/coeffs.rs`'s 359,636 lines of generated
-eigenstructure data separately — with it the raw figure is −388,427).
+**Net −28,548 lines** in this stage (129 files, 1,542 insertions, 30,090
+deletions), counting `subdiv/coeffs.rs`'s 359,636 lines of generated
+eigenstructure data separately — with it the raw figure is −388,184 over 130
+files.
 
 **The programme, S1 through S4b-2**, against `e6bc17b3` (the commit before S1):
-222 files changed, 10,321 insertions, **41,803 deletions** — net **−31,482
-lines** excluding that one generated table, or −391,118 with it. Four stages,
+224 files changed, 10,577 insertions, **41,816 deletions** — net **−31,239
+lines** excluding that one generated table, or −390,875 with it. Four stages,
 and every one of them a deletion with a migration rather than a new path beside
 an old one.
 
