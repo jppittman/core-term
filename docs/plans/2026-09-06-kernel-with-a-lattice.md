@@ -64,30 +64,38 @@ packed collapse kernel per stripe; glyphs bake through `Lattice::bake`.
 | `Scene::Surface(Arc<dyn Manifold<Output = Discrete>>)`, `rasterize`, `render_parallel`, `render_work_stealing`, `execute_stripe`, `materialize_discrete*` | `Scene` is a **packed program over the frame lattice**: `CellGridPackedProgram`/`Frame` generalized to any four channel kernels plus byte-lane shifts, with the pack inside the kernel (`packed_kernel` already does this), rendered by `render_cell_grid`'s stripe loop. `Scene::CellGrid` becomes an instance. The HiDPI contramap in `render_coordinator` becomes `Kernel::at` — precomposition in the language, not a Rust wrapper. |
 | the AVX-512/SSE2 `Discrete::pack` in Rust | the pack is IR (`trunc_to_int`, `shl`, `bitor`), as the cell grid already does. |
 
-## What does not lower yet, and the decision it forces
+## What does not lower yet, and the decision (made 2026-09-06)
 
 Hand-written combinators with `Manifold` but no `Lower` cannot be baked:
-`Color`/`ColorCube` (trivially lowerable, four channel constants),
-`spatial_bsp`, `baked.rs`, and **`scene3d`** — the ray-marched chrome
-spheres in `chrome_sphere`, `animated_sphere`, `chrome_asm`, and
-`scene3d_test`. Ray marching is a fixed-count iteration `x_{n+1} = f(x_n)`,
-and the IR has no iteration binder: `over` folds an index with a monoid,
-which is a domain, not a dynamics
-([kernel-unification P9](2026-07-20-kernel-unification.md) names the gap).
+`Color`/`ColorCube`, `spatial_bsp`, `baked.rs`, and **`scene3d`** — the
+ray-marched chrome spheres in `chrome_sphere`, `animated_sphere`,
+`chrome_asm`, and `scene3d_test`. Ray marching is a fixed-count iteration
+`x_{n+1} = f(x_n)`, and the IR has no iteration construct.
 
-Two ways to close it, and the choice is the project's:
+**Decision: the language is a DAG, and it stays one.** No iteration binder.
+Finite iteration is *unrolled at kernel construction*: `f` applied `n` times
+in Rust while building the arena is `n` compositions, an ordinary DAG the
+e-graph can CSE and fold across (the same move `expand_reduce` makes for
+`over`). A trip count that must change is a different kernel — **recompile**,
+through the same cache that already keys on shape. Anything that cannot be
+written as a finite unrolled DAG is not a kernel and does not belong in the
+language.
 
-1. **Add the binder.** `Iterate { n, body }` — a fold whose monoid is
-   function composition, static trip count, distributed (unrolled) for small
-   `n` and factored (looped) for large, exactly the distribute/factor rule
-   in [2026-09-01-loop-aware-codegen.md](2026-09-01-loop-aware-codegen.md).
-   The e-graph already holds `Reduce` as a binder e-node; this is the
-   second. Then scene3d lowers, and the last per-batch path is deleted.
-2. **Retire the demos.** Delete scene3d and its examples with the rasterizer.
+**Decision: no colour in the language.** `pixelflow-core` and `pixelflow-ir`
+know fields, lattices, and integer/bit ops; they do not know RGBA, byte
+lanes, or pixel formats. A colour output is the **colour-cube idea in the
+JIT**: four channel kernels (R, G, B, A, each a field in `[0, 1]`), packed
+into a `u32` at the frame boundary by IR integer ops the *graphics* crate
+composes (`×255`, clamp, `trunc_to_int`, `shl`, `bitor`). The packed program,
+its shifts, and the `Pixel`-format mapping live in `pixelflow-graphics`;
+what the cell grid keeps in `pixelflow-core` is its lattice geometry and the
+channel kernels over its buffers, not the pack.
 
-Until that is decided, `Scene::Surface` and `execute_stripe` remain as the
-**only** per-batch remnant, documented as such, with no new consumer
-permitted. Everything else in the inventory goes now.
+So S3 is a **rewrite of scene3d as kernel constructors**: ray direction from
+the screen coordinate, sphere tracing as `n` unrolled SDF steps, normals via
+`Dwrt` (the IR's derivative, already lowered by `lower_dwrt`), reflection and
+sky as field arithmetic, each producing four channel kernels. The Jet3-based
+`Manifold` impls go with the rasterizer.
 
 ## Stages
 
@@ -105,11 +113,16 @@ scenes become packed constant kernels; the HiDPI `At` becomes `Kernel::at`.
 rendered as a `Scene` through `Scene::render`, before and after, on SSE2
 and AVX-512 — the after must match the collapse row of the table above.
 
-**S3 — the iteration binder, or the retirement** (decision above). Then
-`Scene::Surface`, `execute_stripe`, `rasterize`, `render_parallel`,
-`render_work_stealing`, `materialize_discrete*`, `Discrete::pack` and the
-`Manifold<Output = Discrete>` bound on rendering are deleted, and the
-inventory is empty.
+**S3 — scene3d as unrolled kernels** (decision above). Ray marching,
+reflection, sky and checker become `Kernel` constructors with a static step
+count, producing four channel kernels rendered as a packed scene; the
+examples switch over; then `Scene::Surface`, `execute_stripe`, `rasterize`,
+`render_parallel`, `render_work_stealing`, `materialize_discrete*`,
+`Discrete::pack`, the `Manifold<Output = Discrete>` bound on rendering, and
+the Jet3 `Manifold` impls are deleted, and the inventory is empty. Gate: the
+chrome sphere at the examples' frame size, `Scene::render` before and after,
+both tiers — and the compile cost of the unrolled march at the step count
+the examples use, recorded.
 
 ## Constraints
 
