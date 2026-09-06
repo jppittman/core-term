@@ -2000,6 +2000,58 @@ mod tests {
             .expect("same kernel, same inputs: outputs must match exactly");
     }
 
+    /// [`BenchMode::Tile`] must divide the timed total by the evaluations the
+    /// tile actually performed, not by the evaluations a single-group call
+    /// would have.
+    ///
+    /// This is the one thing the mode can get silently wrong: one call fills
+    /// [`TILE_GROUPS`] groups, so a divisor that forgot the tile width reports
+    /// a per-eval time 64× too large — a plausible-looking number, in the
+    /// right units, that would price every kernel measured in this mode off
+    /// the same constant factor.
+    ///
+    /// Pinned by the mode's own premise rather than by restating the formula:
+    /// a tile call amortizes call/ret across its groups, so per-eval tile time
+    /// can never exceed per-eval throughput time for the same kernel. The
+    /// bound is deliberately loose (2×) — it is a divisor check, not a
+    /// benchmark, and 2× is nowhere near the 64× a miscount produces while
+    /// leaving room for any amount of clock noise.
+    #[test]
+    fn tile_mode_divides_by_the_whole_tile() {
+        let mut session = BenchSession::new();
+        assert!(session.call_overhead_ns(BenchMode::Tile) > 0.0);
+
+        let (arena, root) = sentinel_arena();
+        let throughput = session
+            .benchmark_arena(&arena, root, BenchMode::Throughput)
+            .expect("sentinel-shaped kernel benchmarks in throughput mode");
+        let tile = session
+            .benchmark_arena(&arena, root, BenchMode::Tile)
+            .expect("sentinel-shaped kernel benchmarks in tile mode");
+
+        assert_eq!(tile.mode, BenchMode::Tile);
+        assert_eq!(
+            tile.call_overhead_ns,
+            session.call_overhead_ns(BenchMode::Tile)
+        );
+        assert_eq!(tile.adjusted_ns, tile.ns - tile.call_overhead_ns);
+        assert!(
+            tile.ns < throughput.ns * 2.0,
+            "tile per-eval {:.4}ns against throughput {:.4}ns: a tile call does \
+             TILE_GROUPS={TILE_GROUPS}× the work of a single-group call, so this \
+             ratio is the eval-count divisor, not the machine",
+            tile.ns,
+            throughput.ns,
+        );
+
+        // Outputs are captured with independent single-group calls in every
+        // mode, so the tile path must not have disturbed them.
+        assert_eq!(tile.outputs.len(), INPUT_TUPLES);
+        throughput
+            .check_equivalence(&tile, 0.0)
+            .expect("same kernel, same inputs: outputs must match exactly");
+    }
+
     /// The plausibility floor is a per-LANE bound, because the measurement it
     /// guards is per-lane. Compared undivided it is not conservative but
     /// false, and it rejects correct measurements of large expressions.
