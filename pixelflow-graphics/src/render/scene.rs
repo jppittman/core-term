@@ -29,7 +29,7 @@ use crate::render::Pixel;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use pixelflow_core::{CellGridGeometry, Kernel, PlaneRegion};
 use pixelflow_core::{Discrete, Manifold};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// A renderable scene. See the module docs for the two lanes.
 #[derive(Clone)]
@@ -183,12 +183,31 @@ impl Scene {
     }
 }
 
+/// Rows one worker claims at a time.
+///
+/// The unit of scheduling, so the two costs it trades are: a stripe too short
+/// pays the collapse call's per-call LICM prologue too often and claims too
+/// often, while a stripe too tall makes the last worker's straggling stripe
+/// the frame's critical path. Swept at 4 / 8 / 16 / 32 rows on the
+/// psychedelic shader at 1920×1080 and the four values came out within 3% of
+/// each other — inside the run-to-run spread — so the height is chosen for
+/// the property a four-core host cannot show: stripes per worker on a wide
+/// machine. Eight rows keeps at least four stripes per worker up to 32 cores
+/// at 1080p, where sixteen would leave two.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const STRIPE_ROWS: usize = 8;
+
 /// Bake a packed frame, stripe-parallel.
 ///
-/// Each worker owns a contiguous run of the frame's own rows and bakes them
-/// with ONE collapse call whose stores land there: the collapse ABI steps the
-/// output pointer between rows, so the frame's row stride is simply what it is
-/// handed. Nothing is staged and nothing is copied.
+/// Workers pull fixed-height stripes from one shared cursor until the frame is
+/// done, and each bakes its stripe with ONE collapse call whose stores land in
+/// the frame itself: the collapse ABI steps the output pointer between rows, so
+/// the frame's row stride is simply what it is handed. Nothing is staged,
+/// nothing is copied, and nothing per-worker is allocated.
+///
+/// Pulling rather than partitioning is what makes a slow stripe survivable —
+/// a row band over a glyph-dense region costs more than one over background,
+/// and with a static split the whole frame waits for whoever drew it.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, num_threads: usize) {
     let (width, height) = (frame.width, frame.height);
@@ -205,31 +224,63 @@ fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, nu
         "packed frame format does not match the shifts its kernel packed \
          for — compile it with `compile_packed_for::<P>`"
     );
-    let workers = num_threads.max(1).min(height);
-    let rows_per = height.div_ceil(workers);
-    let mut bands: Vec<(usize, &mut [u32])> = Vec::with_capacity(workers);
-    {
-        // A packed pixel IS a `u32` word here — that is what the kernel's
-        // root computed and what `packed_shifts` above just agreed on.
-        let mut rest: &mut [u32] = &mut frame.as_u32_slice_mut()[..width * height];
-        let mut y = 0usize;
-        while y < height {
-            let rows = rows_per.min(height - y);
-            let (band, tail) = rest.split_at_mut(rows * width);
-            bands.push((y, band));
-            rest = tail;
-            y += rows;
-        }
-    }
+    let workers = worker_count(num_threads, height.div_ceil(STRIPE_ROWS));
+    // A packed pixel IS a `u32` word here — that is what the kernel's root
+    // computed and what `packed_shifts` above just agreed on.
+    let pixels: &mut [u32] = &mut frame.as_u32_slice_mut()[..width * height];
+    // The cursor and the disjointness proof in one: `chunks_mut` hands each
+    // claim a `&mut` band that provably overlaps no other, so the borrow
+    // checker states the invariant an atomic row counter would only assert.
+    let stripes = Mutex::new(pixels.chunks_mut(STRIPE_ROWS * width).enumerate());
 
     std::thread::scope(|scope| {
-        for (y0, band) in bands {
-            scope.spawn(move || {
-                let rows = band.len() / width;
-                packed.bake_packed_rows(PlaneRegion { width, y0, rows }, band, width);
+        for _ in 0..workers {
+            scope.spawn(|| {
+                while let Some((stripe, band)) = claim(&stripes) {
+                    let rows = band.len() / width;
+                    packed.bake_packed_rows(
+                        PlaneRegion {
+                            width,
+                            y0: stripe * STRIPE_ROWS,
+                            rows,
+                        },
+                        band,
+                        width,
+                    );
+                }
             });
         }
     });
+}
+
+/// How many workers to actually spawn for a request of `num_threads` over
+/// `stripes` stripes.
+///
+/// A request larger than the machine has cores is honoured as *the machine's
+/// cores*, not as itself. Stripes are pure compute with no I/O to overlap, so
+/// extra threads cannot hide latency; they only add context switches and
+/// evict each other's cache lines, and with a shared cursor there is no
+/// load-imbalance argument left for oversubscribing either — the pull already
+/// covers it. (`PerformanceConfig::default().render_threads` is 12, which on a
+/// four-core host used to mean twelve stripes contending for four cores.)
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn worker_count(num_threads: usize, stripes: usize) -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    num_threads.clamp(1, cores).min(stripes.max(1))
+}
+
+/// Take the next stripe, or `None` once the frame is done.
+///
+/// Split out so the lock is provably dropped before the bake: holding it
+/// across a stripe would serialize the whole render.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn claim<'a>(
+    stripes: &Mutex<core::iter::Enumerate<core::slice::ChunksMut<'a, u32>>>,
+) -> Option<(usize, &'a mut [u32])> {
+    stripes
+        .lock()
+        .expect("a render worker panicked holding the stripe cursor")
+        .next()
 }
 
 #[cfg(test)]
@@ -303,14 +354,24 @@ mod tests {
         assert!(m.r() >= 62 && m.r() <= 66, "margin r = {}", m.r());
     }
 
-    /// Where the stripe boundaries fall is a scheduling decision, and no
+    /// Which worker draws which stripe is a scheduling decision, and no
     /// scheduling decision may be visible in the pixels. The width here is
     /// deliberately not a whole number of SIMD batches, so each stripe's last
-    /// column is also the partial-batch case.
+    /// column is also the partial-batch case, and the height spans more than
+    /// one stripe so the cursor is actually contended.
     #[test]
-    fn stripe_boundaries_do_not_change_pixels() {
-        let scene = scene();
-        let (w, h) = (9u32, 8u32);
+    fn how_the_stripes_are_shared_out_does_not_change_pixels() {
+        let (w, h) = (9u32, (STRIPE_ROWS * 3 + 1) as u32);
+        // A coordinate ramp: every pixel's value names where it was sampled,
+        // so a stripe placed at the wrong row is a different colour, not a
+        // coincidentally equal one.
+        let ramp = |scale: f32| {
+            Kernel::x()
+                .add(&Kernel::y().mul(&Kernel::constant(scale)))
+                .mul(&Kernel::constant(1.0 / 255.0))
+        };
+        let channels = [ramp(1.0), ramp(3.0), ramp(7.0), Kernel::constant(1.0)];
+        let scene = Scene::Packed(compile_packed_for::<Rgba8>(&channels, [w, h]).bind(&[]));
         let mut one = Frame::<Rgba8>::new(w, h);
         scene.render(&mut one, 1);
         for threads in [2usize, 3, 8, 16] {
@@ -318,9 +379,22 @@ mod tests {
             scene.render(&mut many, threads);
             assert_eq!(
                 one.data, many.data,
-                "{threads} stripes rendered different pixels than one"
+                "{threads} workers rendered different pixels than one"
             );
         }
+    }
+
+    /// A request past the machine's cores is honoured as the machine's cores,
+    /// and a frame shorter than one stripe never spawns a worker with nothing
+    /// to do.
+    #[test]
+    fn a_request_beyond_the_cores_is_clamped_to_them() {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        let plenty = usize::MAX;
+        assert_eq!(super::worker_count(plenty, plenty), cores);
+        assert_eq!(super::worker_count(1, plenty), 1);
+        assert_eq!(super::worker_count(plenty, 1), 1);
+        assert_eq!(super::worker_count(0, plenty), 1);
     }
 
     #[test]
