@@ -543,7 +543,7 @@ impl EGraph {
 
     fn canonicalize_node(&self, node: &mut ENode) {
         match node {
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {}
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => {}
             ENode::Op { children, .. } => {
                 for child in children {
                     *child = self.find(*child);
@@ -999,6 +999,7 @@ impl EGraph {
             ENode::Var(_) => pixelflow_ir::OpKind::Var,
             ENode::Const(_) => pixelflow_ir::OpKind::Const,
             ENode::Buffer(_) => pixelflow_ir::OpKind::Buffer,
+            ENode::Uniform(_) => pixelflow_ir::OpKind::Uniform,
             ENode::Op { op, .. } => op.kind(),
         }
     }
@@ -1727,6 +1728,12 @@ impl EGraph {
                     b.0
                 )
             }
+            ExprNode::Uniform(u) => {
+                panic!(
+                    "instantiate_template: Uniform({}) in a rewrite RHS template",
+                    u.0
+                )
+            }
             _ => {
                 let kind = template.kind(id);
                 let static_op = ops::op_from_kind(kind).unwrap_or_else(|| {
@@ -2175,6 +2182,8 @@ impl EGraph {
             ENode::Buffer(decl) => {
                 panic!("build_derivative: Dwrt applied to a Buffer leaf ({decl:?})")
             }
+            // Invariant across the lattice: ∂u/∂x = 0, as for a constant.
+            ENode::Uniform(_) => return self.add(ENode::constant(0.0)),
             ENode::Op { op, children } => (*op, children.clone()),
         };
 

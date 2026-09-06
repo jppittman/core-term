@@ -295,7 +295,8 @@ mod jit {
         let (arena, root) = k.parts();
         let jit =
             pixelflow_codegen::jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT)
-                .expect("reduction JIT compile");
+                .expect("reduction JIT compile")
+                .kernel;
         unsafe {
             _mm256_cvtss_f32(jit.call(pixelflow_codegen::Point4::new(
                 _mm256_set1_ps(x),
@@ -312,7 +313,8 @@ mod jit {
         let (arena, root) = k.parts();
         let jit =
             pixelflow_codegen::jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT)
-                .expect("reduction JIT compile");
+                .expect("reduction JIT compile")
+                .kernel;
         unsafe {
             _mm_cvtss_f32(jit.call(pixelflow_codegen::Point4::new(
                 _mm_set1_ps(x),

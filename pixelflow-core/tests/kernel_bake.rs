@@ -88,12 +88,14 @@ fn each_lattice_extent_is_its_own_kernel() {
     let sdf = circle_sdf();
     let (arena, root) = sdf.parts();
     let shape_of = |l: Lattice| LatticeShape::new(l.extent);
-    let first =
-        jit_cache::compile(arena, root, shape_of(Lattice::frame(8, 8, 0.0))).expect("compile");
-    let again =
-        jit_cache::compile(arena, root, shape_of(Lattice::frame(8, 8, 0.0))).expect("compile");
-    let wider =
-        jit_cache::compile(arena, root, shape_of(Lattice::frame(9, 8, 0.0))).expect("compile");
+    let compile = |l: Lattice| {
+        jit_cache::compile(arena, root, shape_of(l))
+            .expect("compile")
+            .kernel
+    };
+    let first = compile(Lattice::frame(8, 8, 0.0));
+    let again = compile(Lattice::frame(8, 8, 0.0));
+    let wider = compile(Lattice::frame(9, 8, 0.0));
     assert!(std::sync::Arc::ptr_eq(&first, &again));
     assert!(!std::sync::Arc::ptr_eq(&first, &wider));
     assert_eq!(first.shape().extent(), [8, 8, 1, 1]);

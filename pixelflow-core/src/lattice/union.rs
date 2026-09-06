@@ -249,6 +249,13 @@ impl Union {
     /// [`CompiledUnion::collapse`] is the per-frame half. Hold the result if
     /// you collapse the same scene more than once.
     ///
+    /// A summand's kernel reads its uniforms' **defaults**, which is what
+    /// binding nothing means and what [`Lattice::bake`] does with the same
+    /// line. Handing a union a per-frame
+    /// [`UniformBlock`](crate::UniformBlock) — a `with_uniforms` that
+    /// distributes to the summands the way `collapse` does — is a step this
+    /// one does not take.
+    ///
     /// # Panics
     ///
     /// Whatever [`Manifold::compile`] and [`Manifold::bind`] panic for — in
@@ -291,6 +298,12 @@ pub struct CompiledUnion {
 impl CompiledUnion {
     /// Tabulate the union over the ambient lattice: each summand's program
     /// fills its own range, and every index no summand claims stays 0.
+    ///
+    /// Like [`Lattice::collapse`], this owns the buffer it fills, so it
+    /// allocates it — plus one staging plane, reused across every summand,
+    /// for the ones narrower than a frame row. The *band* collapses inside it
+    /// allocate nothing, which is the invariant
+    /// `pixelflow-core/tests/bind_allocates_nothing.rs` guards.
     #[must_use]
     pub fn collapse(&self) -> DiscreteManifold {
         let (ex, ey) = (

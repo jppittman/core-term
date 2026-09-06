@@ -62,7 +62,7 @@ pub use eval::{
 };
 
 pub mod kernel;
-pub use kernel::{Bits, Kernel, Monoid};
+pub use kernel::{Bits, Kernel, Monoid, Scalar, Uniform};
 
 pub use kind::OpKind;
 pub use kind::known_method_names;

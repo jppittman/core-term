@@ -18,7 +18,7 @@
 //! `pixelflow-core`: floor each index, clamp to `[0, extent - 1]`, read
 //! row-major. The round-trip test asserts that equivalence.
 
-use crate::arena::{ExprArena, ExprId, ExprNode};
+use crate::arena::{ExprArena, ExprId, ExprNode, UniformId};
 use crate::binding::BindingTable;
 use crate::kind::OpKind;
 // `alloc`, not `std`: the oracle must stay buildable with the `std` feature
@@ -412,9 +412,12 @@ pub fn equivalence_tolerance(op: OpKind) -> Tolerance {
 
     match op {
         // Leaves and loads: values pass through untouched.
-        OpKind::Var | OpKind::Const | OpKind::Buffer | OpKind::Gather | OpKind::RawGather => {
-            Tolerance::BitExact
-        }
+        OpKind::Var
+        | OpKind::Const
+        | OpKind::Buffer
+        | OpKind::Uniform
+        | OpKind::Gather
+        | OpKind::RawGather => Tolerance::BitExact,
         // Bit-pattern domain: masks, blends, and the integer primitives.
         OpKind::Lt
         | OpKind::Le
@@ -831,6 +834,13 @@ fn radius_of(lo: f32, hi: f32, value: f32) -> f32 {
     (hi - value).max(value - lo).max(0.0)
 }
 
+/// What a uniform evaluates to: the block's value for its slot, or the
+/// declared default when the table binds none — the same rule a bake without
+/// a block follows, so the oracle and the JIT agree on it by construction.
+fn uniform_value(arena: &ExprArena, bindings: &BindingTable<'_>, u: UniformId) -> f32 {
+    bindings.uniform(u).unwrap_or(arena.uniform_decl(u).default)
+}
+
 /// The children whose *values* feed a node. Identical to `ExprArena::children`
 /// except that a `Buffer` leaf — which is a name, not a value — is dropped from
 /// `Gather`/`RawGather`, exactly as [`eval_scalar`] handles them.
@@ -844,7 +854,7 @@ fn radius_of(lo: f32, hi: f32, value: f32) -> f32 {
 fn value_children(node: &ExprNode) -> ([ExprId; 3], usize) {
     const NONE: ExprId = ExprId(0);
     match node {
-        ExprNode::Var(_) | ExprNode::Const(_) => ([NONE; 3], 0),
+        ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Uniform(_) => ([NONE; 3], 0),
         ExprNode::Unary(_, a) => ([*a, NONE, NONE], 1),
         ExprNode::Binary(OpKind::RawGather, _, idx) => ([*idx, NONE, NONE], 1),
         ExprNode::Binary(_, a, b) => ([*a, *b, NONE], 2),
@@ -975,6 +985,7 @@ impl DifferentialCheck {
                 NodeBound::exact(vars[i])
             }
             ExprNode::Const(v) => NodeBound::exact(*v),
+            ExprNode::Uniform(u) => NodeBound::exact(uniform_value(arena, bindings, *u)),
             ExprNode::Binary(OpKind::RawGather, buf, idx) => {
                 self.gather_bound(*buf, &[child(*idx)], bindings, GatherKind::Raw)
             }
@@ -1673,6 +1684,7 @@ impl Env<'_> {
                 }
             }
             ExprNode::Const(v) => *v,
+            ExprNode::Uniform(u) => uniform_value(self.arena, self.bindings, *u),
             ExprNode::Param(p) => panic!("eval_scalar: Param({p}) — substitute params first"),
             ExprNode::Buffer(b) => panic!(
                 "eval_scalar: bare Buffer({}) is not a value; read it through Gather",
@@ -2751,6 +2763,7 @@ mod tests {
                 OpKind::Var
                     | OpKind::Const
                     | OpKind::Buffer
+                    | OpKind::Uniform
                     | OpKind::Gather
                     | OpKind::RawGather
                     | OpKind::Reduce

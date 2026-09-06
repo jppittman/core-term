@@ -1464,7 +1464,8 @@ pub fn benchmark_compile_cached_miss(kernels: Vec<(ExprArena, ExprId)>) -> Resul
 
     for (arena, root) in kernels.by_ref().take(COMPILE_WARMUP_ITERS) {
         let compiled = jit_cache::compile(&arena, root, pixelflow_ir::LatticeShape::POINT)
-            .map_err(BenchError::CompileFailed)?;
+            .map_err(BenchError::CompileFailed)?
+            .kernel;
         std::hint::black_box(&compiled);
     }
 
@@ -1473,7 +1474,8 @@ pub fn benchmark_compile_cached_miss(kernels: Vec<(ExprArena, ExprId)>) -> Resul
         let (arena, root) = kernels.next().expect("stream length asserted above");
         let start = nanos_now();
         let compiled = jit_cache::compile(&arena, root, pixelflow_ir::LatticeShape::POINT)
-            .map_err(BenchError::CompileFailed)?;
+            .map_err(BenchError::CompileFailed)?
+            .kernel;
         std::hint::black_box(&compiled);
         *t = nanos_now() - start;
         // The cache retains its own Arc, so dropping ours (and the source

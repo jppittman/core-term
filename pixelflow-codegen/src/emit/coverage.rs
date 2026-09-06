@@ -32,6 +32,9 @@
 //!   a four-lane scalar-load sequence on SSE2/aarch64) — deliberately NOT
 //!   included in a "every backend must support this" list; its own test
 //!   coverage lives with the gather-specific tests.
+//! - `Uniform` (per-call scalar) reaches `ResolvedOp::Uniform` as a leaf
+//!   definition with no operands — a broadcast load from the block — and is
+//!   pinned byte-for-byte per backend by `tests::uniforms` in `mod.rs`.
 
 use pixelflow_ir::kind::OpKind;
 

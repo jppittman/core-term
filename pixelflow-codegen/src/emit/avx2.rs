@@ -332,6 +332,21 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
     Vex::m0f38_66(0x18).rm(code, dst.0, RED_ZONE_CONST);
 }
 
+/// `dst = splat(block[offset])` at 256 bits: `mov rax, [rdi + ctx_slot*8]`
+/// then `vbroadcastss ymm<dst>, [rax + 4*offset]` (VEX.256.66.0F38.W0 18 /r).
+/// See `x86_64::emit_uniform_load` for the register contract.
+pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad) {
+    x86_64::emit_load_ptr_from_ctx(code, gpr::RAX.0, gpr::RDI.0, i32::from(load.ctx_slot) * 8);
+    Vex::m0f38_66(0x18).rm(
+        code,
+        dst.0,
+        Mem {
+            base: gpr::RAX,
+            disp: Imm32(i32::from(load.offset) * 4),
+        },
+    );
+}
+
 // =============================================================================
 // Stack frame (real frame; a ymm spill is 32 bytes)
 // =============================================================================
@@ -934,6 +949,9 @@ pub(crate) mod driver {
                             res_hi: crate::emit::declared_temp(plan.scratch.temp(3)),
                         },
                     );
+                }
+                ResolvedOp::Uniform { dst, load } => {
+                    super::emit_uniform_load(code, *dst, *load);
                 }
                 ResolvedOp::Binary {
                     op,

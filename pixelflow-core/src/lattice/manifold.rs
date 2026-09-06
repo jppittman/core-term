@@ -49,14 +49,108 @@ use alloc::vec::Vec;
 
 use crate::Field;
 use pixelflow_codegen::CompiledKernel;
-use pixelflow_ir::Kernel;
-use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
+use pixelflow_ir::arena::{BufferDecl, BufferIdentity, UniformDecl, UniformIdentity};
+use pixelflow_ir::{Kernel, Uniform};
 
 /// Buffer slots a [`BoundManifold`] can bind without allocating: binding builds
 /// its base-pointer array on the stack, so the bound is what makes that array
 /// a fixed size. A kernel declaring more is refused at compile time rather
 /// than silently overflowing it.
 pub const MAX_BOUND_BUFFERS: usize = 4;
+
+/// Entries in the context a collapse call hands the kernel: one base pointer
+/// per buffer slot, then the uniform block's, which sits in the entry after
+/// the kernel's last buffer and exists only when the kernel has an argument.
+const CONTEXT_ENTRIES: usize = MAX_BOUND_BUFFERS + 1;
+
+/// The values of a compiled kernel's arguments, laid out as its code reads
+/// them: one `f32` per [`Uniform`] the kernel declares, at the offset the
+/// link step assigned.
+///
+/// A block is an *argument of the collapse*, not state on the program: it is
+/// built from a [`Manifold`] with every argument at its default
+/// ([`Manifold::block`]), written through the handles the scene kept
+/// ([`UniformBlock::set`]), and handed to
+/// [`BoundManifold::with_uniforms`] — stripes on separate threads all read
+/// one block immutably, and nothing is ambient. Setting a value touches no
+/// arena, runs no saturation, and compiles nothing.
+///
+/// The values are shared with every bound manifold that took them, so
+/// handing a block to a frame is a refcount and never an allocation.
+/// [`UniformBlock::set`] writes in place while the block is the sole
+/// holder, and copies the values first when a frame still holds the
+/// previous ones — so a consumer that drops last frame's bound manifold
+/// before setting next frame's values allocates nothing per frame.
+#[derive(Clone, Debug)]
+pub struct UniformBlock {
+    values: Arc<Vec<f32>>,
+    /// The link this block is laid out against, shared with the manifold
+    /// that made it; a bound manifold checks it is the very same table.
+    link: Arc<[UniformDecl]>,
+}
+
+/// A handle that is not one of the program's arguments.
+///
+/// An error rather than a silent no-op, because the pixels would be
+/// plausible: a cursor that never moves looks like a cursor that has not
+/// moved yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnknownUniform(pub UniformIdentity);
+
+impl core::fmt::Display for UnknownUniform {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?} is not an argument of this compiled kernel", self.0)
+    }
+}
+
+impl core::error::Error for UnknownUniform {}
+
+impl UniformBlock {
+    fn offset(&self, u: Uniform) -> Result<usize, UnknownUniform> {
+        self.link
+            .iter()
+            .position(|d| d.id == u.identity())
+            .ok_or(UnknownUniform(u.identity()))
+    }
+
+    /// Bind `v` to the argument `u` names.
+    ///
+    /// # Errors
+    ///
+    /// [`UnknownUniform`] when `u` is not one of this program's arguments —
+    /// a composition mistake, never ignored.
+    pub fn set(&mut self, u: Uniform, v: f32) -> Result<(), UnknownUniform> {
+        let i = self.offset(u)?;
+        Arc::make_mut(&mut self.values)[i] = v;
+        Ok(())
+    }
+
+    /// The value currently bound to the argument `u` names.
+    ///
+    /// # Errors
+    ///
+    /// [`UnknownUniform`] when `u` is not one of this program's arguments.
+    pub fn get(&self, u: Uniform) -> Result<f32, UnknownUniform> {
+        self.offset(u).map(|i| self.values[i])
+    }
+
+    /// The values in link order — what the kernel reads. An `&[f32]` in
+    /// *this* order is not what the oracle takes; see [`Self::entries`].
+    #[must_use]
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+
+    /// Every argument with its value, by identity — the order-free form,
+    /// and the one to hand `BindingTable::bind_uniforms` so the oracle and
+    /// the kernel read the same block.
+    pub fn entries(&self) -> impl Iterator<Item = (UniformIdentity, f32)> + '_ {
+        self.link
+            .iter()
+            .map(|d| d.id)
+            .zip(self.values.iter().copied())
+    }
+}
 
 /// A horizontal band to collapse: `width` samples across, `rows` rows down,
 /// starting at some coordinate of the kernel's four-dimensional domain.
@@ -171,6 +265,14 @@ pub struct Manifold {
     /// The memory the kernel declared, in the slot order its ABI binds.
     /// Shared so a [`BoundManifold`] stays cheap to clone.
     slots: Arc<[BufferDecl]>,
+    /// The kernel's arguments, in the offset order its block is read in —
+    /// the link. Shared with every block and bound manifold made from here,
+    /// so "the same link" is pointer equality.
+    link: Arc<[UniformDecl]>,
+    /// Every argument at its default, built once here so that `bind` — a
+    /// per-frame call, four times a frame on the terminal path — is a
+    /// refcount and never an allocation, uniforms or none.
+    defaults: Arc<Vec<f32>>,
 }
 
 impl Manifold {
@@ -199,14 +301,7 @@ impl Manifold {
             "Manifold::compile: Field width does not match the JIT's emitted width"
         );
         let (arena, root) = kernel.parts();
-        let slots: Vec<BufferDecl> = arena.buffers().to_vec();
-        assert!(
-            slots.len() <= MAX_BOUND_BUFFERS,
-            "Manifold::compile: kernel needs {} buffer slots, over the \
-             {MAX_BOUND_BUFFERS} a frame can bind without allocating",
-            slots.len()
-        );
-        for decl in &slots {
+        for decl in arena.buffers() {
             assert!(
                 buffer_len(decl) <= EXACT_F32_INDEX,
                 "Manifold::compile: buffer of {} elements exceeds the \
@@ -215,18 +310,31 @@ impl Manifold {
                 buffer_len(decl)
             );
         }
-        // Bound-memory arenas are uncacheable (the code embeds buffer slot
-        // metadata); the cache recognizes that and compiles fresh.
-        let jit = pixelflow_codegen::jit_cache::compile(
+        // The cache keys on structure — buffers and uniforms by dense slot,
+        // not identity — so two compositions of one shape share code, and
+        // what comes back beside it is *this* composition's link: which
+        // identity each slot binds, in the order the code was compiled
+        // against. That order, not the arena's declaration order, is the
+        // one `bind` fills the context in.
+        let linked = pixelflow_codegen::jit_cache::compile(
             arena,
             root,
             pixelflow_ir::LatticeShape::new(extent),
         )
         .expect("Manifold: kernel failed to compile");
+        assert!(
+            linked.buffers.len() <= MAX_BOUND_BUFFERS,
+            "Manifold::compile: kernel needs {} buffer slots, over the \
+             {MAX_BOUND_BUFFERS} a frame can bind without allocating",
+            linked.buffers.len()
+        );
+        let defaults: Vec<f32> = linked.uniforms.iter().map(|d| d.default).collect();
         Self {
-            jit,
+            jit: linked.kernel,
             extent,
-            slots: slots.into(),
+            slots: linked.buffers.into(),
+            link: linked.uniforms.into(),
+            defaults: Arc::new(defaults),
         }
     }
 
@@ -244,6 +352,23 @@ impl Manifold {
         &self.slots
     }
 
+    /// The kernel's arguments, in the order the block holds them.
+    #[must_use]
+    pub fn uniforms(&self) -> &[UniformDecl] {
+        &self.link
+    }
+
+    /// A block with every argument at its default, laid out per this
+    /// manifold's link. Make one once, or once per frame; set what moved
+    /// through the handles; hand it to [`BoundManifold::with_uniforms`].
+    #[must_use]
+    pub fn block(&self) -> UniformBlock {
+        UniformBlock {
+            values: Arc::clone(&self.defaults),
+            link: Arc::clone(&self.link),
+        }
+    }
+
     /// The compiled kernel's emitted bytes (research/profiling harness).
     #[must_use]
     pub fn code_bytes(&self) -> &[u8] {
@@ -254,6 +379,9 @@ impl Manifold {
     /// its identity. `buffers` may be given in any order and may carry entries
     /// this kernel does not read. Buffers are `Arc`s so a frame in flight
     /// keeps its data alive while the caller prepares the next one.
+    ///
+    /// Every uniform argument is bound at its default; a frame that moves
+    /// one applies a block with [`BoundManifold::with_uniforms`].
     ///
     /// # Panics
     ///
@@ -282,6 +410,11 @@ impl Manifold {
             jit: Arc::clone(&self.jit),
             extent: self.extent,
             bound,
+            buffer_slots: self.slots.len(),
+            link: Arc::clone(&self.link),
+            // A refcount, not an allocation: `bind` is per frame, and the
+            // invariant is pinned by `tests/bind_allocates_nothing.rs`.
+            uniforms: Arc::clone(&self.defaults),
         }
     }
 }
@@ -317,6 +450,15 @@ pub struct BoundManifold {
     /// `None` and are never addressed, because the kernel only reads slots it
     /// declared.
     bound: [Option<Arc<Vec<f32>>>; MAX_BOUND_BUFFERS],
+    /// How many of `bound` the kernel declared — the context entry after
+    /// them is the block's.
+    buffer_slots: usize,
+    /// The link the block below is laid out against.
+    link: Arc<[UniformDecl]>,
+    /// The argument values the kernel reads, in link order — the manifold's
+    /// defaults or a block's values, shared rather than copied; empty when
+    /// it has none, and then no block pointer is passed at all.
+    uniforms: Arc<Vec<f32>>,
 }
 
 impl BoundManifold {
@@ -324,6 +466,25 @@ impl BoundManifold {
     #[must_use]
     pub fn extent(&self) -> [u32; 4] {
         self.extent
+    }
+
+    /// This bound memory with the kernel's arguments taken from `block` —
+    /// the per-frame step for whatever moved. A refcount on the block's
+    /// values, no copy and no allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `block` was made by a different program: its offsets would
+    /// be another kernel's, and the values would land in the wrong arguments
+    /// with entirely plausible pixels.
+    #[must_use]
+    pub fn with_uniforms(mut self, block: &UniformBlock) -> Self {
+        assert!(
+            Arc::ptr_eq(&block.link, &self.link),
+            "BoundManifold::with_uniforms: the block was laid out for a different program"
+        );
+        self.uniforms = Arc::clone(&block.values);
+        self
     }
 
     /// Collapse the region into `out`, whose rows are `stride` elements apart
@@ -463,15 +624,20 @@ impl BoundManifold {
         if band.rows == 0 {
             return;
         }
-        // One base pointer per declared slot, in slot order. Stack-allocated
-        // against the MAX_BOUND_BUFFERS bound `compile` checked, so baking a
-        // band allocates nothing; trailing entries stay null and are never
-        // read because the kernel only addresses slots it declared.
-        let mut ctx = [core::ptr::null::<f32>(); MAX_BOUND_BUFFERS];
+        // One base pointer per declared slot, in slot order, then the block's
+        // in the entry after them when the kernel has arguments.
+        // Stack-allocated against the MAX_BOUND_BUFFERS bound `compile`
+        // checked, so baking a band allocates nothing; trailing entries stay
+        // null and are never read because the kernel only addresses slots it
+        // declared.
+        let mut ctx = [core::ptr::null::<f32>(); CONTEXT_ENTRIES];
         for (dst, src) in ctx.iter_mut().zip(self.bound.iter()) {
             if let Some(data) = src {
                 *dst = data.as_ptr();
             }
+        }
+        if !self.uniforms.is_empty() {
+            ctx[self.buffer_slots] = self.uniforms.as_ptr();
         }
         // Where the band's first sample lies; X advances by one per lane, Y by
         // one per row, which is what the collapse loop does.
@@ -481,7 +647,10 @@ impl BoundManifold {
             // SAFETY: `compile` checked size_of::<Field>() == JIT_VECTOR_BYTES
             // and that every declared slot fits `ctx`; `bind` bound a buffer of
             // the declared length to each of them and this frame holds those
-            // `Arc`s alive for the duration of the call; the caller's guard
+            // `Arc`s alive for the duration of the call, as it does the block
+            // the entry after them points into (one `f32` per argument, in
+            // the link's order, which is the order the code was compiled
+            // against); the caller's guard
             // proved `out` holds `rows` rows of `groups` whole batches at
             // `stride`, which is what `row_skip_bytes` steps between.
             unsafe {

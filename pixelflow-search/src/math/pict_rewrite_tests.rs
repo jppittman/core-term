@@ -132,7 +132,7 @@ fn expr_to_egraph(arena: &ExprArena, id: ExprId, egraph: &mut EGraph) -> crate::
                 children: vec![ca, cb, cc],
             })
         }
-        ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Nary(..) => {
+        ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Uniform(_) | ExprNode::Nary(..) => {
             panic!("unsupported node in rewrite POC")
         }
     }
