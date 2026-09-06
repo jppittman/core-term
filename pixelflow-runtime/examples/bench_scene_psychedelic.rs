@@ -145,7 +145,14 @@ fn packed_scene() -> Scene {
         Kernel::constant(1.0),
     ];
     let color = Rgba::from(channels);
-    Scene::Packed(compile_packed_for::<Rgba8>(&color, [WIDTH as u32, HEIGHT as u32]).bind(&[]))
+    let program = compile_packed_for::<Rgba8>(&color, [WIDTH as u32, HEIGHT as u32]);
+    // The emitted size, printed because it is the exact quantity a codegen
+    // change must not move on a shader whose colour is a leaf.
+    println!(
+        "  packed kernel: {} bytes of code",
+        program.code_bytes().len()
+    );
+    Scene::Packed(program.bind(&[]))
 }
 
 /// Median ns/pixel over `runs` frames, after `warm` warm-up frames.
