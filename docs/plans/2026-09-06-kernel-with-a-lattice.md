@@ -143,12 +143,123 @@ when oversubscribed, which is the staging copy and the fixed stripes, not
 the compiler. Acceptance: packed never slower than surface at any thread
 count; ≥ 3× on 4 cores on both tiers; no loss at 12 threads on 4 cores.
 
-**S3 — scene3d as unrolled kernels.** Ray direction from the screen
-coordinate, sphere tracing as `n` unrolled SDF steps, normals via `Dwrt`,
-reflection and sky as field arithmetic, each producing four channel kernels;
-the examples switch over. Gate: the chrome sphere at the examples' frame
-size through `Scene::render` before and after, both tiers, and the compile
-cost of the unrolled march at the examples' step count, recorded.
+**S3 — scene3d as kernel constructors. Landed 2026-09-06.**
+`pixelflow_graphics::scene3d` is plain functions over small structs —
+`Ray::through_screen`, `Sphere::hit`, `Plane::hit`, `Hit::select`,
+`checker`, `sky` — each producing `Kernel`s and a scene producing four of
+them, compiled through S2's `PackedProgram` into `Scene::Packed`. No
+`Manifold` impls, no `kernel!`, no jet domain, no `Discrete`. The jet tier
+moves to `scene3d_surface` for S4 to delete, with two consumers left on it:
+the S3 gate's "before" side and `subdivision_autodiff`, whose
+`SubdivisionGeometry` evaluates a Catmull-Clark limit surface in `Jet3` and
+has no kernel form. The six CI-named contracts render through the packed
+lane; `mullet_vs_3channel_comparison` is replaced by
+`four_channels_share_one_geometry`.
+
+**The paragraph above this one was wrong about the code: scene3d is
+analytic and there is no ray march.** Nothing in the module iterates ("No
+iteration. Nesting is occlusion."): the sphere's `t` is the quadratic's
+near root with an epsilon under the radical for grazing rays, the plane's
+is a division, and reflection is a Householder step. So S3 needed no
+unrolled march and no language feature; every geometry is a closed-form
+kernel, and every derivative comes from `Kernel::dx()/dy()`, which
+differentiates screen → direction → hit → reflection → hit symbolically.
+A march, if a scene ever wants one, is `n` steps of an ordinary Rust `for`
+at construction and still a DAG when it reaches the compiler.
+
+Three findings, all about what the jet tier's derivatives were actually
+doing:
+
+1. **The hit mask was the discriminant, laundered through a derivative
+   test.** `Surface` accepted a hit on `t > 0` plus `|∇t|² < 10⁸`; for a
+   miss the sphere's `Field::sqrt` (`sqrt_fast`) selects 0, whose
+   derivative rule `1/(2√u)` is then infinite, and that is what rejected
+   the miss. Stated directly as `disc > 0` here, which also keeps the
+   silhouette off `NaN > 0` — unordered and therefore *true* on x86, false
+   on aarch64 (CLAUDE.md's `Gt` row). A mask read off `t` would have lit
+   the whole frame on one target and nothing on the other.
+2. **The jet tier's antialiasing filter was ~540 pixels wide.** Its jets
+   were seeded *after* the pixel-to-screen remap, so `|∂P/∂screen|` was per
+   *normalized* screen unit — half the frame height. That is why its
+   distant floor showed whole flipped cells (coverage → 0 selects the
+   neighbour's colour outright) while its near floor smeared checker edges
+   over a hundred pixels. `Hit::footprint` is one pixel, which is what a
+   footprint means, and the difference is 52% of the pixels in two goldens.
+3. **Time is a coordinate, not a rebuild.** `animated_sphere` rebuilt its
+   scene per frame with `t` baked in as a constant, which under kernels is
+   a ~200 ms JIT compile per frame. The sphere's centre is now
+   `sin(W)·amplitude` and the frame binds its timestamp with
+   `PackedFrame::on_slice` (`PlaneRegion` gained the `(z, w)` plane its
+   band lies in, private and set by constructor). This is the
+   uniform-shaped need of
+   [2026-09-06-uniform-slot-identity.md](2026-09-06-uniform-slot-identity.md)
+   met by a coordinate: it costs nothing because the scene already had a
+   free axis, and it does not generalize to a second uniform.
+
+**The gate** (`pixelflow-runtime/examples/bench_scene_chrome.rs`), chrome
+sphere at 1920×1080, median of 9 frames after 3 warm-ups, on an otherwise
+idle 4-core host (load ≈ 1.0 from the session itself):
+
+| tier | threads | surface (ns/px) | packed (ns/px) | packed/surface |
+|---|---:|---:|---:|---|
+| SSE2 | 1 | 14.04 | 43.53 | 0.32× |
+| SSE2 | 4 | 3.93 | 11.28 | 0.35× |
+| SSE2 | 12 | 3.99 | 11.21 | 0.36× |
+| AVX-512 | 1 | 6.01 | 15.93 | 0.38× |
+| AVX-512 | 4 | 2.21 | 4.35 | 0.51× |
+| AVX-512 | 12 | 2.32 | 4.18 | 0.56× |
+
+Compile cost: 429,395 arena nodes over the four channels, built in 27 ms
+and compiled in 210 ms (SSE2; 244 ms at AVX-512) to 8,847 bytes of code
+(6,131 at AVX-512). One compile, not one per frame. No saturation
+safety-ceiling panic.
+
+Agreement, before either lane is timed: a matte sphere over the checker
+floor with the filter widths matched agrees within 2/255 on **99.37%** of
+pixels — geometry, silhouette, floor, sky and pack are the same picture.
+Adding the reflection takes that to 96.90%, and the sphere covers 2.93% of
+the frame: the disagreement is the reflected checker's edges, where the jet
+tier multiplied the normal's derivatives by a hand-tuned `2/|cos θ|`
+because it did not trust dual numbers through a reflection, and no constant
+reproduces that. As shipped (one-pixel filter) the lanes differ on 50.7% of
+pixels, which is finding 2 and is the point.
+
+**The acceptance criterion "packed never slower than surface" is not met,
+and the reason is structural rather than a compiler defect.** Decomposed on
+this host, SSE2, single thread:
+
+- Floor and sky alone: surface 9.7, packed 18.6 ns/px. With a *constant*
+  filter width the packed kernel is 10.3 — so everything except the
+  derivatives is at parity, and exact symbolic AA costs ~8 ns/px where the
+  jet tier's forward-mode jets cost ~2. Symbolic `dx()`/`dy()` of a hit
+  point re-enters every division and square root through the quotient and
+  `0.5·rsqrt(u)·u'` rules, where a jet carries `(val, dx, dy)` through each
+  op once.
+- The chrome scene doubles that: `select(hit, world(R), world(D))` computes
+  both worlds in every lane, while the combinator tier's `Select` evaluates
+  a branch **only when some lane in the batch needs it** — the sphere
+  covers 2.9% of the frame, so the surface lane skips the reflected world
+  in ~97% of batches. A branchless kernel has no equivalent, and none can
+  be added without a data-dependent skip inside the collapse loop, which is
+  a language change and not this stage's to make.
+
+Two things that look like levers and are not, both measured: raising the
+runtime saturation class cap (telemetry says the chrome kernel hits
+`class_cap` after 2 iterations at 4,913 of 5,000 classes — hash-consing
+alone folds 193k nodes into ~4.9k) from 5,000 to 60,000 costs 30× the
+compile time and makes the kernel **15% slower** (43 → 51 ns/px); and
+rewriting the scene as `world(select(m, R, D))` — identical per lane, since
+a world is a function of its ray — buys 10% while taking the arena from
+429k to 4.6M nodes and the compile from 0.2 s to 2.0 s, because the
+derivative of a select is a select of both branches' derivatives.
+
+So S4's premise needs re-stating before it is executed: the collapse path's
+2.3–2.5× win on the psychedelic shader (S2) came from a kernel with no
+data-dependent branches, and a scene whose selects are strongly one-sided
+inverts it. Retiring `Scene::Surface` retires the branch-skipping, and for
+the demo scenes that costs 2–3×. That is a decision about the demos (they
+are demos), or an argument for the language gaining a per-batch skip, but
+it should be made deliberately rather than inherited from this stage.
 
 **S4 — the legacy tier retires.** `Scene::Surface`, `execute_stripe`,
 `rasterize`, `render_parallel`, `render_work_stealing`,
