@@ -116,7 +116,9 @@ impl fmt::Display for BenchError {
     }
 }
 
-// Platform-specific high-resolution timing.
+// Platform-specific high-resolution timing. `pub(crate)` because
+// `collapse_bench` times collapse kernels against the same clock rather than
+// declaring a second one — one definition, imported.
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
@@ -132,7 +134,7 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "macos")]
-fn nanos_now() -> u64 {
+pub(crate) fn nanos_now() -> u64 {
     // mach_absolute_time() ticks are NOT nanoseconds on native Apple Silicon:
     // the timebase is 125/3 (one tick = 41.67ns; 1:1 only holds on Intel Macs
     // and under Rosetta). Convert via mach_timebase_info, queried once.
@@ -152,7 +154,7 @@ fn nanos_now() -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-fn nanos_now() -> u64 {
+pub(crate) fn nanos_now() -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
@@ -164,7 +166,7 @@ fn nanos_now() -> u64 {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn nanos_now() -> u64 {
+pub(crate) fn nanos_now() -> u64 {
     use std::time::Instant;
     static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let epoch = EPOCH.get_or_init(Instant::now);

@@ -919,6 +919,7 @@ dependencies = [
  "pixelflow-codegen",
  "pixelflow-compiler",
  "pixelflow-core",
+ "pixelflow-graphics",
  "pixelflow-ir",
  "pixelflow-search",
  "pprof",
