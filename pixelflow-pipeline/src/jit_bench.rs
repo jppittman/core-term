@@ -29,6 +29,17 @@ const WARMUP_PASSES: usize = 8;
 /// `with_all_inputs!`.
 pub const INPUT_TUPLES: usize = 64;
 
+/// SIMD groups filled by a single call in [`BenchMode::Tile`].
+///
+/// The emitted collapse kernel loops over `groups` internally, advancing X
+/// lane-sequentially — so one call is `TILE_GROUPS * LANES` independent
+/// evaluations run by the kernel's OWN loop, which is the shape production
+/// runs (a scanline of a tile), not a shape the harness invents. 64 groups is
+/// 4KiB of output at AVX-512 width: comfortably L1-resident, so the number
+/// measures the arithmetic and not the memory system, and long enough that
+/// the loop's prologue amortizes to nothing.
+pub const TILE_GROUPS: usize = 64;
+
 /// The timed loop must accumulate at least this many nanoseconds per sample
 /// (audit H5): one `mach_absolute_time` tick is 41.67ns on Apple Silicon
 /// (timebase 125/3, see `nanos_now`), so a sample below ~100 ticks (~4.2µs)
@@ -413,6 +424,18 @@ pub enum BenchMode {
     /// inputs to output, so no chaining scheme can serialize it: its chained
     /// latency legitimately equals its throughput.
     Latency,
+    /// One call per [`TILE_GROUPS`]-group tile: the kernel's own emitted loop
+    /// supplies the independent evaluations, and call/ret is amortized over
+    /// all of them.
+    ///
+    /// The other two modes bracket reality from opposite sides — `Latency`
+    /// serializes evaluations that production never serializes, `Throughput`
+    /// overlaps them across a call boundary production does not pay. This one
+    /// is neither bracket but the thing itself: the loop `compile` emits,
+    /// running the way `Lattice::bake` and the render pool run it. Use it
+    /// whenever the question is "which kernel should ship", and the other two
+    /// when the question is "why".
+    Tile,
 }
 
 /// Result of benchmarking: timing, dispersion, and outputs for correctness checks.
@@ -866,6 +889,12 @@ fn measure_exec_code(
     }
     let output = outputs[0];
 
+    // One tile-sized destination, allocated outside the timed loop.
+    // `BenchMode::Tile` is the only mode that writes past the first group,
+    // but the allocation is 4KiB and once per measurement, so it is not worth
+    // a branch to skip.
+    let mut tile_buf = vec![0.0f32; TILE_GROUPS * LANES];
+
     let mut repeat_batches = start_batches.max(1);
     loop {
         let mut totals = [0u64; TIMED_RUNS];
@@ -879,6 +908,21 @@ fn measure_exec_code(
                                 exec_code.call_collapse(
                                     core::ptr::null(),
                                     TileSlice::single(out_buf.as_mut_ptr()),
+                                    p,
+                                );
+                            }
+                        }
+                    }
+                    *t = nanos_now() - start;
+                }
+                BenchMode::Tile => {
+                    let start = nanos_now();
+                    for _ in 0..repeat_batches {
+                        for &p in &input_points {
+                            unsafe {
+                                exec_code.call_collapse(
+                                    core::ptr::null(),
+                                    TileSlice::contiguous(tile_buf.as_mut_ptr(), TILE_GROUPS, 1),
                                     p,
                                 );
                             }
@@ -924,7 +968,13 @@ fn measure_exec_code(
             continue;
         }
 
-        let evals = (INPUT_TUPLES * repeat_batches) as f64;
+        // Every mode performs `INPUT_VECTORS` calls per batch; `Tile` is the
+        // one where a call is more than one vector of work.
+        let evals_per_batch = match mode {
+            BenchMode::Throughput | BenchMode::Latency => INPUT_TUPLES,
+            BenchMode::Tile => INPUT_TUPLES * TILE_GROUPS,
+        };
+        let evals = (evals_per_batch * repeat_batches) as f64;
         // totals is sorted and the per-eval transform is monotone, so the
         // median index is unchanged (audit M5: keep the median selection).
         let per_eval: Vec<f64> = totals.iter().map(|&t| t as f64 / evals).collect();
@@ -1074,6 +1124,7 @@ pub struct BenchSession {
     sentinel_samples: Vec<SentinelSample>,
     overhead_throughput_ns: f64,
     overhead_latency_ns: f64,
+    overhead_tile_ns: f64,
     exprs_benchmarked: usize,
     exprs_at_last_sentinel: usize,
 }
@@ -1122,6 +1173,11 @@ impl BenchSession {
                 panic!("BenchSession: identity overhead (latency) measurement failed: {e}")
             })
             .ns;
+        let overhead_tile_ns = measure_exec_code(&identity_code, 1, BenchMode::Tile)
+            .unwrap_or_else(|e| {
+                panic!("BenchSession: identity overhead (tile) measurement failed: {e}")
+            })
+            .ns;
 
         // Opening sentinel calibration (audit H4).
         let calibration_ns = measure_exec_code(&sentinel_code, 1, BenchMode::Throughput)
@@ -1137,6 +1193,7 @@ impl BenchSession {
             }],
             overhead_throughput_ns,
             overhead_latency_ns,
+            overhead_tile_ns,
             exprs_benchmarked: 0,
             exprs_at_last_sentinel: 0,
         }
@@ -1148,6 +1205,7 @@ impl BenchSession {
         match mode {
             BenchMode::Throughput => self.overhead_throughput_ns,
             BenchMode::Latency => self.overhead_latency_ns,
+            BenchMode::Tile => self.overhead_tile_ns,
         }
     }
 

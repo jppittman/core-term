@@ -107,6 +107,7 @@ impl ModeRecord {
             mode: match b.mode {
                 BenchMode::Throughput => "throughput",
                 BenchMode::Latency => "latency",
+                BenchMode::Tile => "tile",
             },
             ns: b.ns,
             adjusted_ns: b.adjusted_ns,
