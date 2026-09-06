@@ -71,7 +71,7 @@
 //! // result.val = 4.0, result.dx ≈ 0.6, result.dy ≈ 0.8
 //! ```
 
-use crate::{Discrete, Field};
+use crate::Field;
 
 /// A manifold is a function from a domain to a value.
 ///
@@ -93,7 +93,6 @@ use crate::{Discrete, Field};
 ///
 /// Common examples:
 /// - **Scalar manifold**: `Output = Field` — produces single values per coordinate
-/// - **Color manifold**: `Output = Discrete` — produces packed RGBA u32 pixels
 /// - **Vector manifold**: `Output = (Field, Field, Field, Field)` — produces 4D vectors
 ///
 /// # Type Parameter: `P` (Domain)
@@ -213,7 +212,7 @@ macro_rules! impl_constant_manifold {
     };
 }
 
-impl_constant_manifold!(Field, Discrete, crate::jet::Jet2, crate::jet::Jet3,);
+impl_constant_manifold!(Field, crate::jet::Jet2, crate::jet::Jet3,);
 
 // ============================================================================
 // Smart Pointer Implementations

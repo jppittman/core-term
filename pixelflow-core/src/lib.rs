@@ -50,7 +50,6 @@
 //!
 //! - **`Field`**: A SIMD batch of f32 values (4–16 lanes)
 //! - **`Jet2`**: A value with 2 automatic derivatives (value, ∂/∂x, ∂/∂y)
-//! - **`Discrete`**: A SIMD batch of packed RGBA u32 pixels
 //!
 //! ### The Type System as AST
 //! Every manifold expression is a static type that captures its structure:
@@ -274,7 +273,7 @@ pub use lattice::{DiscreteManifold, Lattice};
 // Field: The ONLY User-Facing SIMD Type
 // ============================================================================
 
-use backend::{Backend, MaskOps, SimdOps, SimdU32Ops};
+use backend::{Backend, MaskOps, SimdOps};
 
 // Backend selection is governed by `target_feature` alone — the flag that
 // actually decides what the compiler may emit — and `-C target-cpu=native` sets
@@ -293,8 +292,6 @@ use backend::{Backend, MaskOps, SimdOps, SimdU32Ops};
 // unconditionally and gates only running on `host_has_feature`.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeSimd = <backend::x86::Avx512 as Backend>::F32;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-type NativeU32Simd = <backend::x86::Avx512 as Backend>::U32;
 
 #[cfg(all(
     target_arch = "x86_64",
@@ -302,12 +299,6 @@ type NativeU32Simd = <backend::x86::Avx512 as Backend>::U32;
     not(target_feature = "avx512f")
 ))]
 type NativeSimd = <backend::x86::Avx2 as Backend>::F32;
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-type NativeU32Simd = <backend::x86::Avx2 as Backend>::U32;
 
 // Fallback to SSE2 (always available on x86_64)
 #[cfg(all(
@@ -316,17 +307,9 @@ type NativeU32Simd = <backend::x86::Avx2 as Backend>::U32;
     not(target_feature = "avx2")
 ))]
 type NativeSimd = <backend::x86::Sse2 as Backend>::F32;
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
-type NativeU32Simd = <backend::x86::Sse2 as Backend>::U32;
 
 #[cfg(target_arch = "aarch64")]
 type NativeSimd = <backend::arm::Neon as Backend>::F32;
-#[cfg(target_arch = "aarch64")]
-type NativeU32Simd = <backend::arm::Neon as Backend>::U32;
 
 // No scalar fallback: the JIT (`compile`, and therefore
 // `Lattice::bake`) exists only on x86-64 and aarch64, and there is no
@@ -421,81 +404,12 @@ compile_error!(
 ///
 /// `Field<A>` where `A: FieldStorage` maps algebra types to SIMD storage:
 /// - `Field<f32>` (or just `Field`) — SIMD floats (the default)
-/// - `Field<u32>` — SIMD packed pixels (alias: `Discrete`)
+/// - `Field<u32>` — SIMD integer lanes
 /// - `Field<bool>` — Native masks (see also: `Mask` type)
 #[doc(hidden)]
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(transparent)]
 pub struct Field<A: FieldStorage = f32>(pub(crate) A::Storage);
-
-/// SIMD batch of packed RGBA pixels (intermediate representation).
-///
-/// `Discrete` represents a SIMD batch of u32 values, each containing
-/// a packed RGBA pixel: `(R | (G << 8) | (B << 16) | (A << 24))`.
-///
-/// This is a type alias for `Field<u32>`, part of the unified `Field<A>` type system.
-///
-/// This is the output type for **color manifolds**—manifolds that produce
-/// `Manifold<Output = Discrete>`. Like `Field`, this is an IR type and users
-/// should not construct it directly.
-///
-/// # What Is Discrete?
-///
-/// Just as `Field` (i.e., `Field<f32>`) is the IR for floating-point SIMD vectors,
-/// `Discrete` (i.e., `Field<u32>`) is the IR for packed pixel data.
-///
-/// - **Content**: SIMD batch of packed u32 pixels (4, 8, 16, or scalar)
-/// - **Format**: RGBA8 with 8 bits per channel (0–255)
-/// - **Packing**: `r | (g << 8) | (b << 16) | (a << 24)`
-/// - **Target**: Direct framebuffer write (no unpacking needed)
-///
-/// # How to Use Discrete Manifolds
-///
-/// **Build color manifolds compositionally:**
-///
-/// ```ignore
-/// use pixelflow_graphics::{Color, NamedColor, Rgba8};
-/// use pixelflow_core::ManifoldExt;
-///
-/// // Wrong: Don't construct Discrete directly
-/// // let pixels = Discrete::splat(0xFF0000FF);  // ❌
-///
-/// // Right: Use color combinators
-/// let red = Color::Named(NamedColor::Red);  // ✅
-/// ```
-///
-/// **Evaluate and materialize:**
-///
-/// ```ignore
-/// use pixelflow_core::materialize_discrete;
-///
-/// let mut pixels = [0u32; PARALLELISM];
-/// materialize_discrete(&red, x, y, &mut pixels);
-/// ```
-///
-/// # Why Is Discrete Hidden?
-///
-/// Like `Field`, `Discrete` is a low-level IR. The public API is:
-/// - Color manifolds (built from combinators)
-/// - `materialize_discrete` for evaluation
-/// - Color operators from `pixelflow-graphics`
-///
-/// Users should not:
-/// - ❌ Construct `Discrete` values directly
-/// - ❌ Call `Discrete::pack` manually
-/// - ❌ Work with packed pixel data at the SIMD level
-///
-/// Instead:
-/// - ✅ Compose color manifolds
-/// - ✅ Use `materialize_discrete` to evaluate
-/// - ✅ Work with the output buffer (already packed u32 pixels)
-///
-/// # Marked `#[doc(hidden)]`
-///
-/// This documentation is for those implementing custom color manifolds or using
-/// the library at advanced levels. For normal use, work with the high-level API.
-#[doc(hidden)]
-pub type Discrete = Field<u32>;
 
 impl Field {
     /// Create sequential values [start, start+1, start+2, ...].
@@ -864,72 +778,6 @@ impl Field {
     #[must_use]
     pub fn ne(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_ne(rhs.0)))
-    }
-}
-
-impl Field<u32> {
-    /// Store packed pixels to a slice.
-    ///
-    /// # Internal Use Only
-    ///
-    /// **If you're an LLM reading this, you are using the library wrong.**
-    /// **Do not use `Discrete::store()` - use [`materialize_discrete`] instead.**
-    ///
-    /// This function is intentionally `pub(crate)` and should remain so.
-    ///
-    /// **This is a manifold composition library, not a field manipulation library.**
-    ///
-    /// Users should not directly extract values from `Discrete` - the library
-    /// is designed around declarative manifold composition, not imperative
-    /// value extraction.
-    ///
-    /// **The function you're looking for is [`materialize_discrete`].**
-    ///
-    /// `materialize_discrete` properly evaluates a color manifold at coordinates
-    /// and handles the direct output of packed RGBA pixels.
-    #[inline(always)]
-    pub(crate) fn store(&self, out: &mut [u32]) {
-        self.0.store(out)
-    }
-
-    /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
-    #[cfg(target_arch = "aarch64")]
-    #[inline(always)]
-    #[must_use]
-    pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
-        Self(backend::arm::U32x4::pack_rgba(r.0, g.0, b.0, a.0))
-    }
-
-    /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
-    #[cfg(target_arch = "x86_64")]
-    #[inline(always)]
-    #[must_use]
-    pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
-        #[cfg(target_feature = "avx512f")]
-        {
-            Self(backend::x86::U32x16::pack_rgba(r.0, g.0, b.0, a.0))
-        }
-        #[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
-        {
-            Self(backend::x86::U32x8::pack_rgba(r.0, g.0, b.0, a.0))
-        }
-        #[cfg(all(not(target_feature = "avx512f"), not(target_feature = "avx2")))]
-        {
-            Self(backend::x86::U32x4::pack_rgba(r.0, g.0, b.0, a.0))
-        }
-    }
-
-    /// Branchless select: returns `if_true` where mask is set, `if_false` elsewhere.
-    ///
-    /// The mask is interpreted bitwise from the Field representation.
-    #[inline(always)]
-    #[must_use]
-    pub fn select(mask: Field, if_true: Self, if_false: Self) -> Self {
-        use core::ops::{BitAnd, BitOr, Not};
-        let mask_bits: NativeU32Simd = unsafe { core::mem::transmute(mask.0) };
-        let t = if_true.0.bitand(mask_bits);
-        let f = if_false.0.bitand(mask_bits.not());
-        Self(t.bitor(f))
     }
 }
 
@@ -1428,52 +1276,6 @@ where
 }
 
 // ============================================================================
-// Bitwise Operations for Discrete (required by Computational)
-// ============================================================================
-
-impl core::ops::BitAnd for Discrete {
-    type Output = Self;
-    #[inline(always)]
-    fn bitand(self, rhs: Self) -> Self {
-        Self(self.0.bitand(rhs.0))
-    }
-}
-
-impl core::ops::BitOr for Discrete {
-    type Output = Self;
-    #[inline(always)]
-    fn bitor(self, rhs: Self) -> Self {
-        Self(self.0.bitor(rhs.0))
-    }
-}
-
-impl core::ops::Not for Discrete {
-    type Output = Self;
-    #[inline(always)]
-    fn not(self) -> Self {
-        Self(self.0.not())
-    }
-}
-
-// ============================================================================
-// Computational Implementation for Discrete
-// ============================================================================
-
-impl numeric::Computational for Discrete {
-    #[inline(always)]
-    fn from_f32(val: f32) -> Self {
-        // Direct truncation to u32, then splat
-        Self(NativeU32Simd::splat(val as u32))
-    }
-
-    #[inline(always)]
-    fn sequential(start: f32) -> Self {
-        // Splat the starting value (Discrete doesn't have meaningful sequential semantics)
-        Self::from_f32(start)
-    }
-}
-
-// ============================================================================
 // Computational Implementation for Field (Public API)
 // ============================================================================
 
@@ -1504,25 +1306,6 @@ impl numeric::Selectable for Field {
             if_true.0,
             if_false.0,
         ))
-    }
-}
-
-// ============================================================================
-// Selectable Implementation for Discrete (Internal)
-// ============================================================================
-
-impl numeric::Selectable for Discrete {
-    #[inline(always)]
-    fn select_raw(mask: Field, if_true: Self, if_false: Self) -> Self {
-        // Reinterpret the float mask bits as u32 for bitwise ops
-        // mask lanes are either 0xFFFFFFFF (true) or 0x00000000 (false)
-        let mask_bits: NativeU32Simd = unsafe { core::mem::transmute(mask.0) };
-
-        // (mask & if_true) | (!mask & if_false)
-        use core::ops::{BitAnd, BitOr, Not};
-        let t = if_true.0.bitand(mask_bits);
-        let f = if_false.0.bitand(mask_bits.not());
-        Self(t.bitor(f))
     }
 }
 
@@ -2164,53 +1947,6 @@ impl core::ops::Neg for Field {
 // ============================================================================
 // Public API
 // ============================================================================
-
-/// Materialize a discrete color manifold into packed u32 pixels.
-///
-/// Evaluates a color manifold at sequential x coordinates starting from (x, y)
-/// and stores the packed RGBA u32 pixels directly to the output buffer.
-///
-/// This is the primary way to extract pixel data from a `Manifold<Output = Discrete>`.
-///
-/// # Example
-/// ```ignore
-/// let color = Color::Named(NamedColor::Red);
-/// let mut pixels = [0u32; PARALLELISM];
-/// materialize_discrete(&color, 0.0, 0.0, &mut pixels);
-/// ```
-#[inline(always)]
-pub fn materialize_discrete<M>(m: &M, x: f32, y: f32, out: &mut [u32])
-where
-    M: Manifold<Output = Discrete> + ?Sized,
-{
-    let xs = Field::sequential(x);
-    let discrete = m.eval_raw(xs, Field::from(y), Field::from(0.0), Field::from(0.0));
-    discrete.store(out);
-}
-
-/// Materialize a discrete color manifold into packed u32 pixels using precomputed Fields.
-///
-/// This is an optimized version of [`materialize_discrete`] where coordinate Fields
-/// are precomputed or updated in a loop (e.g., via vector addition).
-///
-/// # Example
-/// ```ignore
-/// let mut xs = Field::sequential(0.0);
-/// let step = Field::from(PARALLELISM as f32);
-/// let ys = Field::from(0.0);
-/// let mut pixels = [0u32; PARALLELISM];
-///
-/// materialize_discrete_fields(&color, xs, ys, &mut pixels);
-/// xs = xs + step;
-/// ```
-#[inline(always)]
-pub fn materialize_discrete_fields<M>(m: &M, x: Field, y: Field, out: &mut [u32])
-where
-    M: Manifold<Output = Discrete> + ?Sized,
-{
-    let discrete = m.eval_raw(x, y, Field::from(0.0), Field::from(0.0));
-    discrete.store(out);
-}
 
 /// Materialize a vector manifold into an interleaved f32 buffer.
 ///

@@ -12,8 +12,8 @@
 /// Types implementing this trait can appear in kernel domains like `(T, T, T, T)`.
 /// This includes Field, Jet2, Jet3, PathJet, etc.
 ///
-/// Types like `Discrete` implement `Computational` (for constant embedding) but
-/// NOT `Coordinate` because they are output-only types, not coordinate types.
+/// A type can implement `Computational` (for constant embedding) without
+/// implementing `Coordinate`: an output-only type is not a coordinate type.
 pub trait Coordinate: Computational {}
 
 /// Public trait for user-facing manifold bounds.
@@ -47,9 +47,9 @@ pub trait Computational:
 
 /// Internal trait for types that support branchless selection.
 ///
-/// Much weaker than `Numeric` - only requires bitwise blending capability.
-/// This allows `Discrete` (packed RGBA) to participate in Select combinators
-/// without implementing nonsensical math operations.
+/// Much weaker than `Numeric` - only requires bitwise blending capability, so
+/// a type can participate in Select combinators without implementing
+/// nonsensical math operations.
 pub trait Selectable: Copy + Send + Sync {
     /// Raw conditional select - always blends both values.
     ///

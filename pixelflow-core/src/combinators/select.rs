@@ -270,7 +270,7 @@ where
 }
 
 // ============================================================================
-// Jet3 with Selectable output (for Discrete in the mullet architecture)
+// Jet3 with Selectable output
 // ============================================================================
 
 type Jet3_4 = (
