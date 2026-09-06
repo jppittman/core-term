@@ -6,6 +6,7 @@ pub mod frame;
 pub mod packed;
 pub mod pixel;
 pub mod rasterizer;
+pub mod renderer;
 pub mod scene;
 
 #[cfg(test)]

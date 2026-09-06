@@ -1,6 +1,6 @@
-//! Rasterizer actor for asynchronous frame rendering.
+//! Render actor for asynchronous frame rendering.
 //!
-//! The `RasterizerActor` provides a message-based interface for parallel frame
+//! The `RendererActor` provides a message-based interface for parallel frame
 //! rendering using the actor-scheduler's three-lane priority system:
 //!
 //! - **Data Lane**: Frame rendering requests with natural backpressure
@@ -9,32 +9,32 @@
 //!
 //! # Bootstrap Pattern
 //!
-//! The rasterizer uses a **bootstrap handshake** to ensure you can't send
+//! The actor uses a **bootstrap handshake** to ensure you can't send
 //! render requests before registering where responses should go:
 //!
 //! ```ignore
-//! use pixelflow_graphics::render::rasterizer::RasterizerActor;
+//! use pixelflow_graphics::render::renderer::RendererActor;
 //! use std::sync::mpsc;
 //!
 //! // Step 1: Spawn with setup handle
-//! let (setup_handle, join_handle) = RasterizerActor::spawn_with_setup(4);
+//! let (setup_handle, join_handle) = RendererActor::spawn_with_setup(4);
 //!
 //! // Step 2: Create your response channel
 //! let (response_tx, response_rx) = mpsc::channel();
 //!
 //! // Step 3: Register and get full handle - NOW you can send render requests
-//! let rasterizer = setup_handle.register(response_tx);
+//! let renderer = setup_handle.register(response_tx);
 //!
 //! // Step 4: Send render requests
-//! rasterizer.send(Message::Data(my_render_request)).unwrap();
+//! renderer.send(Message::Data(my_render_request)).unwrap();
 //!
 //! // Step 5: Receive responses
 //! let response = response_rx.recv().unwrap();
 //! ```
 
 use super::messages::{
-    RasterConfig, RasterControl, RasterManagement, RasterSetup, RasterizerSetupHandle,
-    RenderRequest, RenderResponse,
+    RenderConfig, RenderControl, RenderManagement, RenderRequest, RenderResponse, RendererSetup,
+    RendererSetupHandle,
 };
 use crate::render::Pixel;
 use actor_scheduler::mealy::Transducer;
@@ -46,39 +46,39 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 // ────────────────────────────────────────────────────────────────────────────
-// RasterCore: the pure decision logic
+// RenderCore: the pure decision logic
 // ────────────────────────────────────────────────────────────────────────────
 
 /// What a step decides to emit. `Default` (no response) is for the control and management steps,
 /// which legitimately emit nothing — mirrors `VsyncCoreOut` in `vsync_actor.rs`.
 ///
 /// **`step_data` never uses the `None` case.** A render always returns its frame, paused or not;
-/// see [`RasterCore::render`], where the return type makes that a compile-time obligation rather
+/// see [`RenderCore::render`], where the return type makes that a compile-time obligation rather
 /// than a convention.
-pub(crate) struct RasterCoreOut<P: Pixel, Meta = ()> {
+pub(crate) struct RenderCoreOut<P: Pixel, Meta = ()> {
     pub(crate) response: Option<RenderResponse<P, Meta>>,
 }
 
 // Hand-written rather than `#[derive(Default)]`: the derive macro would add a spurious
 // `P: Default` bound even though `Option<RenderResponse<P>>` needs no such bound on `P`.
-impl<P: Pixel, Meta> Default for RasterCoreOut<P, Meta> {
+impl<P: Pixel, Meta> Default for RenderCoreOut<P, Meta> {
     fn default() -> Self {
         Self { response: None }
     }
 }
 
-/// Pure rasterizer decision core: pause/resume, thread-count, and the actual `rasterize` call,
+/// Pure render decision core: pause/resume, thread-count, and the actual `Scene::render` call,
 /// with no channel or bootstrap-handshake machinery in it — a `step_*` call takes a message and
 /// returns what to emit, table-testable with no actor scheduler in the loop. Rollout step 3 of
 /// `docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5, following the same
 /// core/adapter split step 2 established for `vsync_actor.rs`'s `VsyncCore`.
-pub(crate) struct RasterCore<P: Pixel, Meta = ()> {
+pub(crate) struct RenderCore<P: Pixel, Meta = ()> {
     num_threads: usize,
     paused: bool,
     _pixel: std::marker::PhantomData<(P, Meta)>,
 }
 
-impl<P: Pixel, Meta> RasterCore<P, Meta> {
+impl<P: Pixel, Meta> RenderCore<P, Meta> {
     fn new(num_threads: usize) -> Self {
         Self {
             num_threads: num_threads.max(1),
@@ -96,7 +96,7 @@ impl<P: Pixel, Meta> RasterCore<P, Meta> {
     /// the caller's sole render buffer — losing it is not a dropped frame, it is a lost
     /// allocation the caller can never recover.
     ///
-    /// Infallible on purpose. Rasterisation writes pixels into a buffer and has no failure mode,
+    /// Infallible on purpose. Rendering writes pixels into a buffer and has no failure mode,
     /// and a `Result` here would reintroduce exactly the hole this signature closes: an `Err`
     /// path carrying no frame.
     fn render(&mut self, request: RenderRequest<P, Meta>) -> RenderResponse<P, Meta> {
@@ -107,7 +107,7 @@ impl<P: Pixel, Meta> RasterCore<P, Meta> {
         } = request;
 
         if self.paused {
-            log::debug!("Rasterizer paused; returning the frame unrendered");
+            log::debug!("Renderer paused; returning the frame unrendered");
             return RenderResponse {
                 frame,
                 render_time: None,
@@ -135,86 +135,89 @@ impl<P: Pixel, Meta> RasterCore<P, Meta> {
         }
     }
 
-    fn config(&self) -> RasterConfig {
-        RasterConfig {
+    fn config(&self) -> RenderConfig {
+        RenderConfig {
             num_threads: self.num_threads,
             paused: self.paused,
         }
     }
 }
 
-impl<P: Pixel, Meta> Transducer for RasterCore<P, Meta> {
-    type Control = RasterControl;
-    type Management = RasterManagement;
+impl<P: Pixel, Meta> Transducer for RenderCore<P, Meta> {
+    type Control = RenderControl;
+    type Management = RenderManagement;
     type Data = RenderRequest<P, Meta>;
-    type Out = RasterCoreOut<P, Meta>;
+    type Out = RenderCoreOut<P, Meta>;
 
-    /// Delegates to [`RasterCore::render`], which is where the frame-return obligation is
+    /// Delegates to [`RenderCore::render`], which is where the frame-return obligation is
     /// enforced. Deliberately a one-liner: there is no branch here that could lose a frame.
     fn step_data(
         &mut self,
         request: RenderRequest<P, Meta>,
-    ) -> Result<RasterCoreOut<P, Meta>, HandlerError> {
-        Ok(RasterCoreOut {
+    ) -> Result<RenderCoreOut<P, Meta>, HandlerError> {
+        Ok(RenderCoreOut {
             response: Some(self.render(request)),
         })
     }
 
     fn step_control(
         &mut self,
-        ctrl: RasterControl,
-    ) -> Result<RasterCoreOut<P, Meta>, HandlerError> {
+        ctrl: RenderControl,
+    ) -> Result<RenderCoreOut<P, Meta>, HandlerError> {
         match ctrl {
-            RasterControl::Pause => {
-                log::info!("Rasterizer paused");
+            RenderControl::Pause => {
+                log::info!("Renderer paused");
                 self.paused = true;
             }
-            RasterControl::Resume => {
-                log::info!("Rasterizer resumed");
+            RenderControl::Resume => {
+                log::info!("Renderer resumed");
                 self.paused = false;
             }
         }
-        Ok(RasterCoreOut::default())
+        Ok(RenderCoreOut::default())
     }
 
     fn step_management(
         &mut self,
-        mgmt: RasterManagement,
-    ) -> Result<RasterCoreOut<P, Meta>, HandlerError> {
+        mgmt: RenderManagement,
+    ) -> Result<RenderCoreOut<P, Meta>, HandlerError> {
         match mgmt {
-            RasterManagement::SetThreadCount(count) => {
+            RenderManagement::SetThreadCount(count) => {
                 let new_count = count.max(1);
                 log::info!(
-                    "Rasterizer thread count updated: {} -> {}",
+                    "Renderer thread count updated: {} -> {}",
                     self.num_threads,
                     new_count
                 );
                 self.num_threads = new_count;
             }
-            RasterManagement::GetConfig { response_tx } => {
+            RenderManagement::GetConfig { response_tx } => {
                 // Receiver may be dropped if requester cancelled, that's fine.
                 response_tx.send(self.config()).ok();
             }
         }
-        Ok(RasterCoreOut::default())
+        Ok(RenderCoreOut::default())
     }
 }
 
 #[cfg(test)]
 mod core_tests {
-    //! `RasterCore` in isolation — no threads, no bootstrap handshake, no scheduler. Mirrors
+    //! `RenderCore` in isolation — no threads, no bootstrap handshake, no scheduler. Mirrors
     //! `vsync_actor.rs`'s `mod tests` for `VsyncCore`.
 
     use super::*;
     use crate::render::color::Rgba8;
     use crate::render::frame::Frame;
-    use crate::render::Color;
+    use crate::render::scene::constant_scene_for;
     use std::sync::mpsc;
-    use std::sync::Arc;
+
+    /// Opaque red — a scene has to be *some* colour; which one is not the point.
+    const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+    const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
 
     fn request(size: u32) -> RenderRequest<Rgba8> {
         RenderRequest {
-            scene: crate::render::scene::Scene::Surface(Arc::new(Color::Rgb(255, 0, 0))),
+            scene: constant_scene_for::<Rgba8>(RED, [size, size]),
             frame: Frame::new(size, size),
             meta: (),
         }
@@ -232,10 +235,10 @@ mod core_tests {
             scale: f64,
         }
 
-        let mut core = RasterCore::<Rgba8, WindowMeta>::new(1);
+        let mut core = RenderCore::<Rgba8, WindowMeta>::new(1);
         let out = core
             .step_data(RenderRequest {
-                scene: crate::render::scene::Scene::Surface(Arc::new(Color::Rgb(0, 255, 0))),
+                scene: constant_scene_for::<Rgba8>(GREEN, [8, 8]),
                 frame: Frame::new(8, 8),
                 meta: WindowMeta {
                     id: 42,
@@ -260,7 +263,7 @@ mod core_tests {
 
     #[test]
     fn an_unpaused_core_renders_and_emits_a_response() {
-        let mut core = RasterCore::<Rgba8>::new(1);
+        let mut core = RenderCore::<Rgba8>::new(1);
         let out = core.step_data(request(8)).unwrap();
         let response = out.response.expect("must render when not paused");
         assert_eq!(response.frame.width, 8);
@@ -273,8 +276,8 @@ mod core_tests {
         // request. That destroyed the caller's sole render buffer, which is a lost allocation
         // rather than a skipped frame. The frame now comes back either way; only `render_time`
         // reports whether it was drawn into.
-        let mut core = RasterCore::<Rgba8>::new(1);
-        core.step_control(RasterControl::Pause).unwrap();
+        let mut core = RenderCore::<Rgba8>::new(1);
+        core.step_control(RenderControl::Pause).unwrap();
 
         let out = core.step_data(request(8)).unwrap();
         let response = out
@@ -289,21 +292,21 @@ mod core_tests {
 
     #[test]
     fn resume_after_pause_allows_rendering_again() {
-        let mut core = RasterCore::<Rgba8>::new(1);
-        core.step_control(RasterControl::Pause).unwrap();
-        core.step_control(RasterControl::Resume).unwrap();
+        let mut core = RenderCore::<Rgba8>::new(1);
+        core.step_control(RenderControl::Pause).unwrap();
+        core.step_control(RenderControl::Resume).unwrap();
         let out = core.step_data(request(8)).unwrap();
         assert!(out.response.is_some(), "resume must unblock rendering");
     }
 
     #[test]
     fn set_thread_count_is_reflected_in_config() {
-        let mut core = RasterCore::<Rgba8>::new(1);
-        core.step_management(RasterManagement::SetThreadCount(4))
+        let mut core = RenderCore::<Rgba8>::new(1);
+        core.step_management(RenderManagement::SetThreadCount(4))
             .unwrap();
 
         let (response_tx, response_rx) = mpsc::channel();
-        core.step_management(RasterManagement::GetConfig { response_tx })
+        core.step_management(RenderManagement::GetConfig { response_tx })
             .unwrap();
 
         let config = response_rx.recv().unwrap();
@@ -313,12 +316,12 @@ mod core_tests {
 
     #[test]
     fn zero_thread_count_is_clamped_to_one() {
-        let mut core = RasterCore::<Rgba8>::new(1);
-        core.step_management(RasterManagement::SetThreadCount(0))
+        let mut core = RenderCore::<Rgba8>::new(1);
+        core.step_management(RenderManagement::SetThreadCount(0))
             .unwrap();
 
         let (response_tx, response_rx) = mpsc::channel();
-        core.step_management(RasterManagement::GetConfig { response_tx })
+        core.step_management(RenderManagement::GetConfig { response_tx })
             .unwrap();
 
         assert_eq!(
@@ -330,32 +333,32 @@ mod core_tests {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// RasterizerActor: the thin adapter — bootstrap handshake, real sends
+// RendererActor: the thin adapter — bootstrap handshake, real sends
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Rasterizer actor for parallel frame rendering.
+/// Render actor for parallel frame rendering.
 ///
-/// Owns exactly what [`RasterCore`] cannot: the response channel and the bootstrap handshake
+/// Owns exactly what [`RenderCore`] cannot: the response channel and the bootstrap handshake
 /// that sets it up. Every decision (pause/resume, thread count, whether to actually render) is
-/// [`RasterCore`]'s job; this type only turns its `Out` into the real `response_tx.send(...)`.
+/// [`RenderCore`]'s job; this type only turns its `Out` into the real `response_tx.send(...)`.
 ///
 /// Use [`spawn_with_setup`](Self::spawn_with_setup) to create and start the actor.
-pub struct RasterizerActor<P: Pixel, Meta = ()> {
+pub struct RendererActor<P: Pixel, Meta = ()> {
     /// Channel to send completed frames back. Set during bootstrap.
     response_tx: Sender<RenderResponse<P, Meta>>,
-    core: RasterCore<P, Meta>,
+    core: RenderCore<P, Meta>,
 }
 
-impl<P: Pixel + Send + 'static, Meta: Send + 'static> ActorTypes for RasterizerActor<P, Meta> {
+impl<P: Pixel + Send + 'static, Meta: Send + 'static> ActorTypes for RendererActor<P, Meta> {
     type Data = RenderRequest<P, Meta>;
-    type Control = RasterControl;
-    type Management = RasterManagement;
+    type Control = RenderControl;
+    type Management = RenderManagement;
 }
 
-impl<P: Pixel + Send + 'static, Meta: Send + 'static> RasterizerActor<P, Meta> {
-    /// Spawn the rasterizer actor with a bootstrap handshake.
+impl<P: Pixel + Send + 'static, Meta: Send + 'static> RendererActor<P, Meta> {
+    /// Spawn the render actor with a bootstrap handshake.
     ///
-    /// This is the **primary way** to create a rasterizer. It spawns the actor
+    /// This is the **primary way** to create a renderer. It spawns the actor
     /// thread and returns a `SetupHandle` that you must use to register your
     /// response channel before sending any render requests.
     ///
@@ -368,23 +371,21 @@ impl<P: Pixel + Send + 'static, Meta: Send + 'static> RasterizerActor<P, Meta> {
     /// # Returns
     ///
     /// A tuple of:
-    /// - `RasterizerSetupHandle` - Use this to register your response channel
-    /// - `JoinHandle` - The thread handle for the rasterizer
+    /// - `RendererSetupHandle` - Use this to register your response channel
+    /// - `JoinHandle` - The thread handle for the renderer
     ///
     /// # Example
     ///
     /// ```ignore
-    /// let (setup_handle, _thread) = RasterizerActor::spawn_with_setup(4);
+    /// let (setup_handle, _thread) = RendererActor::spawn_with_setup(4);
     /// let (response_tx, response_rx) = std::sync::mpsc::channel();
-    /// let rasterizer = setup_handle.register(response_tx);
-    /// // Now you can send render requests via `rasterizer`
+    /// let renderer = setup_handle.register(response_tx);
+    /// // Now you can send render requests via `renderer`
     /// ```
     #[must_use]
-    pub fn spawn_with_setup(
-        num_threads: usize,
-    ) -> (RasterizerSetupHandle<P, Meta>, JoinHandle<()>) {
+    pub fn spawn_with_setup(num_threads: usize) -> (RendererSetupHandle<P, Meta>, JoinHandle<()>) {
         // Create the setup channel (buffer=1, only one setup message ever)
-        let (setup_tx, setup_rx) = mpsc::sync_channel::<RasterSetup<P, Meta>>(1);
+        let (setup_tx, setup_rx) = mpsc::sync_channel::<RendererSetup<P, Meta>>(1);
 
         // Spawn the actor thread
         let join_handle = thread::spawn(move || {
@@ -399,7 +400,7 @@ impl<P: Pixel + Send + 'static, Meta: Send + 'static> RasterizerActor<P, Meta> {
 
             // PHASE 2: Create the actor scheduler
             let (handle, mut scheduler) =
-                ActorScheduler::<RenderRequest<P, Meta>, RasterControl, RasterManagement>::new(
+                ActorScheduler::<RenderRequest<P, Meta>, RenderControl, RenderManagement>::new(
                     64, 16,
                 );
 
@@ -409,13 +410,13 @@ impl<P: Pixel + Send + 'static, Meta: Send + 'static> RasterizerActor<P, Meta> {
                 .expect("Setup caller dropped reply channel");
 
             // PHASE 3: Create actor and run
-            let mut actor = RasterizerActor {
+            let mut actor = RendererActor {
                 response_tx,
-                core: RasterCore::new(num_threads),
+                core: RenderCore::new(num_threads),
             };
 
             log::info!(
-                "RasterizerActor started with {} threads",
+                "RendererActor started with {} threads",
                 actor.core.num_threads
             );
 
@@ -423,13 +424,13 @@ impl<P: Pixel + Send + 'static, Meta: Send + 'static> RasterizerActor<P, Meta> {
         });
 
         // Return the setup handle
-        let setup_handle = RasterizerSetupHandle::new(setup_tx);
+        let setup_handle = RendererSetupHandle::new(setup_tx);
         (setup_handle, join_handle)
     }
 }
 
-impl<P: Pixel + Send, Meta> Actor<RenderRequest<P, Meta>, RasterControl, RasterManagement>
-    for RasterizerActor<P, Meta>
+impl<P: Pixel + Send, Meta> Actor<RenderRequest<P, Meta>, RenderControl, RenderManagement>
+    for RendererActor<P, Meta>
 {
     fn handle_data(&mut self, request: RenderRequest<P, Meta>) -> HandlerResult {
         let out = self.core.step_data(request)?;
@@ -442,12 +443,12 @@ impl<P: Pixel + Send, Meta> Actor<RenderRequest<P, Meta>, RasterControl, RasterM
         Ok(())
     }
 
-    fn handle_control(&mut self, ctrl: RasterControl) -> HandlerResult {
+    fn handle_control(&mut self, ctrl: RenderControl) -> HandlerResult {
         self.core.step_control(ctrl)?;
         Ok(())
     }
 
-    fn handle_management(&mut self, mgmt: RasterManagement) -> HandlerResult {
+    fn handle_management(&mut self, mgmt: RenderManagement) -> HandlerResult {
         self.core.step_management(mgmt)?;
         Ok(())
     }
@@ -463,14 +464,17 @@ mod tests {
     use super::*;
     use crate::render::color::Rgba8;
     use crate::render::frame::Frame;
-    use crate::render::Color;
+    use crate::render::scene::constant_scene_for;
     use actor_scheduler::Message;
-    use std::sync::{mpsc, Arc};
+    use std::sync::mpsc;
+
+    const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+    const BLUE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
     #[test]
-    fn rasterizer_actor_basic() {
+    fn render_actor_basic() {
         // Step 1: Spawn with setup handle
-        let (setup_handle, actor_thread) = RasterizerActor::<Rgba8>::spawn_with_setup(1);
+        let (setup_handle, actor_thread) = RendererActor::<Rgba8>::spawn_with_setup(1);
 
         // Step 2: Create response channel and register
         let (response_tx, response_rx) = mpsc::channel();
@@ -478,10 +482,9 @@ mod tests {
 
         // Create a render request (no response_tx field anymore!)
         let frame = Frame::new(64, 64);
-        let red = Color::Rgb(255, 0, 0);
 
         let request = RenderRequest {
-            scene: crate::render::scene::Scene::Surface(Arc::new(red)),
+            scene: constant_scene_for::<Rgba8>(RED, [64, 64]),
             frame,
             meta: (),
         };
@@ -501,7 +504,7 @@ mod tests {
         assert_eq!(response.frame.height, 64);
         assert!(
             response.render_time.is_some_and(|d| d.as_nanos() > 0),
-            "an unpaused rasterizer reports the time it spent"
+            "an unpaused renderer reports the time it spent"
         );
 
         // Shutdown
@@ -513,9 +516,9 @@ mod tests {
     }
 
     #[test]
-    fn rasterizer_actor_thread_count_update() {
+    fn render_actor_thread_count_update() {
         // Spawn with setup
-        let (setup_handle, actor_thread) = RasterizerActor::<Rgba8>::spawn_with_setup(2);
+        let (setup_handle, actor_thread) = RendererActor::<Rgba8>::spawn_with_setup(2);
 
         // Register response channel
         let (response_tx, _response_rx) = mpsc::channel();
@@ -523,13 +526,13 @@ mod tests {
 
         // Update thread count
         handle
-            .send(Message::Management(RasterManagement::SetThreadCount(4)))
+            .send(Message::Management(RenderManagement::SetThreadCount(4)))
             .expect("Failed to send SetThreadCount");
 
         // Query config
         let (config_tx, config_rx) = mpsc::channel();
         handle
-            .send(Message::Management(RasterManagement::GetConfig {
+            .send(Message::Management(RenderManagement::GetConfig {
                 response_tx: config_tx,
             }))
             .expect("Failed to send GetConfig");
@@ -550,9 +553,9 @@ mod tests {
     }
 
     #[test]
-    fn rasterizer_actor_pause_resume() {
+    fn render_actor_pause_resume() {
         // Spawn with setup
-        let (setup_handle, actor_thread) = RasterizerActor::<Rgba8>::spawn_with_setup(1);
+        let (setup_handle, actor_thread) = RendererActor::<Rgba8>::spawn_with_setup(1);
 
         // Register response channel
         let (response_tx, response_rx) = mpsc::channel();
@@ -560,15 +563,14 @@ mod tests {
 
         // Pause rendering
         handle
-            .send(Message::Control(RasterControl::Pause))
+            .send(Message::Control(RenderControl::Pause))
             .expect("Failed to send Pause");
 
         // Send a render request (should be dropped because paused)
         let frame = Frame::new(32, 32);
-        let blue = Color::Rgb(0, 0, 255);
 
         let request = RenderRequest {
-            scene: crate::render::scene::Scene::Surface(Arc::new(blue)),
+            scene: constant_scene_for::<Rgba8>(BLUE, [32, 32]),
             frame,
             meta: (),
         };
@@ -581,7 +583,7 @@ mod tests {
         // render buffer. `render_time: None` is how "not drawn into" is reported.
         let response = response_rx
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("a paused rasterizer must still return the frame");
+            .expect("a paused renderer must still return the frame");
         assert!(
             response.render_time.is_none(),
             "paused means not rendered, not buffer withheld"
@@ -589,7 +591,7 @@ mod tests {
 
         // Resume
         handle
-            .send(Message::Control(RasterControl::Resume))
+            .send(Message::Control(RenderControl::Resume))
             .expect("Failed to send Resume");
 
         // Shutdown

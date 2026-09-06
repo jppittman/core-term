@@ -1,10 +1,10 @@
-//! Message types for rasterizer actor communication.
+//! Message types for render actor communication.
 //!
-//! The rasterizer actor uses a **bootstrap pattern** for initialization:
+//! The render actor uses a **bootstrap pattern** for initialization:
 //!
-//! 1. Call `RasterizerActor::spawn_with_setup(num_threads)` to get a `SetupHandle`
+//! 1. Call `RendererActor::spawn_with_setup(num_threads)` to get a `SetupHandle`
 //! 2. Send your response channel via `setup_handle.register(response_tx)`
-//! 3. Receive the full `RasterizerHandle` back - now you can send render requests
+//! 3. Receive the full `RendererHandle` back - now you can send render requests
 //!
 //! This pattern enforces at the **type level** that you cannot send render requests
 //! without first registering where responses should go.
@@ -27,14 +27,14 @@ use std::time::Duration;
 /// The Data lane is designed for high-volume work items and will block
 /// senders when the buffer is full, providing natural backpressure.
 pub struct RenderRequest<P: Pixel, Meta = ()> {
-    /// The scene to render (an arbitrary color manifold, or a JIT
-    /// cell-grid frame on the collapse-baked fast lane).
+    /// The scene to render: four channel kernels compiled at the frame's
+    /// lattice shape.
     pub scene: Scene,
     /// The frame buffer to render into.
     pub frame: Frame<P>,
     /// Caller-owned payload, returned untouched in the [`RenderResponse`].
     ///
-    /// The rasterizer never reads this. It exists so a caller that has to split a larger value
+    /// The renderer never reads this. It exists so a caller that has to split a larger value
     /// apart to send the frame here can send the *rest of it* along too, instead of stashing it
     /// somewhere and reassembling on completion — the state that gets stashed is not
     /// coordination state, it is half of a torn value. Defaults to `()` for callers with
@@ -46,7 +46,7 @@ pub struct RenderRequest<P: Pixel, Meta = ()> {
 pub struct RenderResponse<P: Pixel, Meta = ()> {
     /// The rendered frame.
     pub frame: Frame<P>,
-    /// Time taken to render, or `None` if the rasterizer was paused and did not render.
+    /// Time taken to render, or `None` if the renderer was paused and did not render.
     ///
     /// The frame comes back either way — see [`RenderRequest::frame`]. Whether it was *rendered*
     /// is the optional part; whether the caller gets its buffer back never was.
@@ -63,7 +63,7 @@ pub struct RenderResponse<P: Pixel, Meta = ()> {
 ///
 /// To shut down the scheduler, use `Message::Shutdown` directly, not a control message.
 #[derive(Debug, Clone, Copy)]
-pub enum RasterControl {
+pub enum RenderControl {
     /// Pause rendering (stop processing Data messages).
     Pause,
     /// Resume rendering.
@@ -75,18 +75,18 @@ pub enum RasterControl {
 /// Management messages are processed after Control but before Data.
 /// These are used for configuration changes that should be applied promptly
 /// but don't need to interrupt ongoing work.
-pub enum RasterManagement {
+pub enum RenderManagement {
     /// Update the number of rendering threads.
     SetThreadCount(usize),
     /// Query current configuration (sends response via channel).
     GetConfig {
-        response_tx: std::sync::mpsc::Sender<RasterConfig>,
+        response_tx: std::sync::mpsc::Sender<RenderConfig>,
     },
 }
 
-/// Current rasterizer configuration.
+/// Current renderer configuration.
 #[derive(Debug, Clone)]
-pub struct RasterConfig {
+pub struct RenderConfig {
     /// Number of threads used for work-stealing parallelism.
     pub num_threads: usize,
     /// Whether rendering is paused.
@@ -100,57 +100,54 @@ pub struct RasterConfig {
 /// Setup message sent during bootstrap to register the response channel.
 ///
 /// This message is sent through a dedicated setup channel, separate from
-/// the actor's normal message lanes. The rasterizer blocks on this channel
+/// the actor's normal message lanes. The renderer blocks on this channel
 /// before entering its main run loop.
-pub struct RasterSetup<P: Pixel, Meta = ()> {
+pub struct RendererSetup<P: Pixel, Meta = ()> {
     /// Channel where completed frames will be sent.
     pub response_tx: Sender<RenderResponse<P, Meta>>,
     /// Channel to send back the full actor handle.
-    pub(crate) reply_tx: SyncSender<RasterizerHandle<P, Meta>>,
+    pub(crate) reply_tx: SyncSender<RendererHandle<P, Meta>>,
 }
 
 /// Handle returned after successful bootstrap - now you can send render requests.
 ///
 /// This is the full actor handle that allows sending Data, Control, and Management
 /// messages. You can only obtain this by completing the bootstrap handshake.
-pub type RasterizerHandle<P, Meta = ()> =
-    ActorHandle<RenderRequest<P, Meta>, RasterControl, RasterManagement>;
+pub type RendererHandle<P, Meta = ()> =
+    ActorHandle<RenderRequest<P, Meta>, RenderControl, RenderManagement>;
 
 /// Handle for initial setup - can ONLY register the response channel.
 ///
 /// This is a capability-restricted handle. The only thing you can do with it
 /// is call `register()` to complete the bootstrap handshake and receive
-/// the full `RasterizerHandle`.
-pub struct RasterizerSetupHandle<P: Pixel, Meta = ()> {
-    setup_tx: SyncSender<RasterSetup<P, Meta>>,
+/// the full `RendererHandle`.
+pub struct RendererSetupHandle<P: Pixel, Meta = ()> {
+    setup_tx: SyncSender<RendererSetup<P, Meta>>,
 }
 
-impl<P: Pixel, Meta> RasterizerSetupHandle<P, Meta> {
+impl<P: Pixel, Meta> RendererSetupHandle<P, Meta> {
     /// Create a new setup handle with the given channel.
-    pub(crate) fn new(setup_tx: SyncSender<RasterSetup<P, Meta>>) -> Self {
+    pub(crate) fn new(setup_tx: SyncSender<RendererSetup<P, Meta>>) -> Self {
         Self { setup_tx }
     }
 
     /// Complete the bootstrap handshake by registering the response channel.
     ///
     /// This method:
-    /// 1. Sends your response channel to the rasterizer
-    /// 2. Waits for the rasterizer to send back its full actor handle
+    /// 1. Sends your response channel to the renderer
+    /// 2. Waits for the renderer to send back its full actor handle
     /// 3. Returns the handle, allowing you to send render requests
     ///
     /// # Panics
     ///
-    /// Panics if the rasterizer thread has died before completing setup.
+    /// Panics if the render thread has died before completing setup.
     #[must_use]
-    pub fn register(
-        self,
-        response_tx: Sender<RenderResponse<P, Meta>>,
-    ) -> RasterizerHandle<P, Meta> {
+    pub fn register(self, response_tx: Sender<RenderResponse<P, Meta>>) -> RendererHandle<P, Meta> {
         // Create reply channel for this handshake
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
 
         // Build the setup message
-        let setup = RasterSetup {
+        let setup = RendererSetup {
             response_tx,
             reply_tx,
         };
@@ -158,14 +155,12 @@ impl<P: Pixel, Meta> RasterizerSetupHandle<P, Meta> {
         // Send setup - blocks if channel full (shouldn't happen with buffer=1)
         self.setup_tx
             .send(setup)
-            .expect("Rasterizer thread died before setup");
+            .expect("Render thread died before setup");
 
         // Wait for the full handle
-        reply_rx
-            .recv()
-            .expect("Rasterizer thread died during setup")
+        reply_rx.recv().expect("Render thread died during setup")
     }
 }
 
 // Implement message traits for actor-scheduler integration
-actor_scheduler::impl_control_message!(RasterControl);
+actor_scheduler::impl_control_message!(RenderControl);

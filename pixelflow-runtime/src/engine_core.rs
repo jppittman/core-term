@@ -1,6 +1,6 @@
 //! `EngineCore` — the pure decision logic behind `EngineHandler` (`engine_troupe.rs`).
 //!
-//! Mirrors the `VsyncCore`/`RasterCore`/`CoordinatorCore` split: a `step_*` call takes a message
+//! Mirrors the `VsyncCore`/`RenderCore`/`CoordinatorCore` split: a `step_*` call takes a message
 //! and **returns** what to emit, so the app/vsync/driver relays left once rendering moved to its
 //! own node (`coordinator_node.rs`, step 5c of
 //! `docs/designs/pixelflow-runtime-engine-mesh-migration.md`) are table-testable with no
@@ -9,7 +9,7 @@
 //!
 //! # What left
 //!
-//! The render coordinator (`RenderCoordinator`, `frame_number`, and the `rasterizer`/
+//! The render coordinator (`RenderCoordinator`, `frame_number`, and the `renderer`/
 //! `driver_data`/`vsync_data` ports that used to carry its decisions) is gone from here
 //! entirely — it runs as its own `Node` now, on the same green-host thread as vsync. What
 //! remains is a single relay port, `coordinator`: every input that used to drive `self.render`
@@ -37,11 +37,11 @@ pub(crate) struct EngineOut {
     pub(crate) driver_mgmt: Option<DisplayMgmt>,
     pub(crate) vsync_control: Option<VsyncCommand>,
     /// → the render coordinator's data lane (`coordinator_node.rs`). Replaces the old
-    /// `rasterizer`/`driver_data`/`vsync_data` ports outright: this type relays a decision, the
+    /// `renderer`/`driver_data`/`vsync_data` ports outright: this type relays a decision, the
     /// coordinator makes it and owns the ports those decisions used to ride.
     pub(crate) coordinator: Option<CoordinatorData>,
     /// Run the shutdown cascade: the green host (vsync + the coordinator node it also runs),
-    /// the rasterizer forwarder, app-drop, driver, self.
+    /// the renderer forwarder, app-drop, driver, self.
     pub(crate) quit: bool,
 }
 

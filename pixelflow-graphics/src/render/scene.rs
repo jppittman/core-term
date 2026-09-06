@@ -103,6 +103,35 @@ pub fn compile_platform_packed(color: &Rgba, frame: [u32; 2]) -> PackedProgram {
     compile_packed_for::<PlatformPixel>(color, frame)
 }
 
+/// A solid colour as a packed scene for the pixel format `P`: four constant
+/// channel kernels over a `frame[0] × frame[1]` lattice, nothing bound.
+///
+/// The simplest scene there is, and the shape every scene has — so a caller
+/// that only needs one flat colour takes the path production takes rather
+/// than a lane of its own.
+///
+/// # Panics
+///
+/// Panics for a `P` with no packed RGBA form, on a degenerate frame extent,
+/// or if the kernel fails to compile.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[must_use]
+pub fn constant_scene_for<P: Pixel>(rgba: [f32; 4], frame: [u32; 2]) -> Scene {
+    let color = Rgba::from(rgba.map(pixelflow_core::Kernel::constant));
+    Scene::Packed(compile_packed_for::<P>(&color, frame).bind(&[]))
+}
+
+/// [`constant_scene_for`] with THIS platform's pixel byte order.
+///
+/// # Panics
+///
+/// Panics on a degenerate frame extent, or if the kernel fails to compile.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[must_use]
+pub fn constant_platform_scene(rgba: [f32; 4], frame: [u32; 2]) -> Scene {
+    constant_scene_for::<PlatformPixel>(rgba, frame)
+}
+
 /// The byte lanes `P` packs into.
 ///
 /// # Panics

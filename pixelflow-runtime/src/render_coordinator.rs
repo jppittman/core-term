@@ -16,11 +16,11 @@ use crate::display::messages::{Window, WindowMeta};
 use crate::platform::PlatformPixel;
 use actor_scheduler::mealy::Credit;
 use pixelflow_core::{At, W, X, Y, Z};
-use pixelflow_graphics::render::rasterizer::{RenderRequest, RenderResponse};
+use pixelflow_graphics::render::renderer::{RenderRequest, RenderResponse};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A scene as it travels between the app and the rasterizer.
+/// A scene as it travels between the app and the renderer.
 use pixelflow_graphics::render::scene::Scene;
 
 /// What the coordinator wants delivered, having decided everything it can on its own.
@@ -34,7 +34,7 @@ pub enum Step {
     Idle,
     /// Ask the driver for the buffer (Management lane; carries nothing).
     RequestWindow,
-    /// Send this to the rasterizer. Carries the buffer, so losing it strands the display.
+    /// Send this to the renderer. Carries the buffer, so losing it strands the display.
     Render(RenderRequest<PlatformPixel, WindowMeta>),
 }
 
@@ -42,7 +42,7 @@ pub enum Step {
 pub struct Completed {
     /// The drawn buffer and how long it took, to be handed to the driver to show.
     ///
-    /// `None` when the rasterizer was paused and returned the buffer undrawn — presenting it
+    /// `None` when the renderer was paused and returned the buffer undrawn — presenting it
     /// would blit stale pixels, so it is retained in the coordinator instead. Pairing the two
     /// keeps "was it drawn?" a single question: the buffer and its render time are either both
     /// here or neither is.
@@ -72,7 +72,7 @@ pub struct RenderCoordinator {
     /// Ownership bounds how many *buffers* exist and says nothing about how many *requests* do,
     /// which is why this flag is not redundant with holding the buffer.
     awaiting_grant: bool,
-    /// The one-outstanding-render bound on the coordinator → rasterizer edge.
+    /// The one-outstanding-render bound on the coordinator → renderer edge.
     render_credit: Credit,
     /// Latest kernel from the app — keep-latest, so a newer one replaces any frame that has not
     /// started rendering.
@@ -124,9 +124,9 @@ impl RenderCoordinator {
         self.advance()
     }
 
-    /// The rasterizer finished with the buffer.
+    /// The renderer finished with the buffer.
     ///
-    /// `render_time` is `None` when the rasterizer was paused and handed the buffer back
+    /// `render_time` is `None` when the renderer was paused and handed the buffer back
     /// undrawn; the buffer's return is unconditional, its having been drawn into is not.
     pub fn completed(&mut self, response: RenderResponse<PlatformPixel, WindowMeta>) -> Completed {
         // The render is over, so the edge's one credit is free again.
@@ -300,7 +300,7 @@ mod tests {
     use crate::display::messages::Surface;
     use crate::display::window_keeper::WindowKeeper;
     use pixelflow_core::Kernel;
-    use pixelflow_graphics::render::rasterizer::RenderResponse;
+    use pixelflow_graphics::render::renderer::RenderResponse;
     use pixelflow_graphics::render::scene::compile_platform_packed;
     use pixelflow_graphics::render::Frame;
 
@@ -313,7 +313,7 @@ mod tests {
     }
 
     /// A scene whose pixels depend on where they are sampled, so a coordinate
-    /// transform applied on the way to the rasterizer would show up in them.
+    /// transform applied on the way to the renderer would show up in them.
     fn ramp_scene(frame: [u32; 2]) -> Scene {
         let k = Kernel::constant;
         let axis = |v: Kernel, extent: u32| v.mul(&k(1.0 / extent as f32));
@@ -362,7 +362,7 @@ mod tests {
         }
     }
 
-    /// A render the rasterizer skipped because it was paused.
+    /// A render the renderer skipped because it was paused.
     fn skipped(
         request: RenderRequest<PlatformPixel, WindowMeta>,
     ) -> RenderResponse<PlatformPixel, WindowMeta> {
@@ -481,7 +481,7 @@ mod tests {
         );
     }
 
-    /// A paused rasterizer hands the buffer back undrawn. Presenting it would blit stale pixels,
+    /// A paused renderer hands the buffer back undrawn. Presenting it would blit stale pixels,
     /// so it is kept — and it is still in hand for the next render.
     #[test]
     fn a_skipped_render_retains_the_buffer_unpresented() {

@@ -191,19 +191,10 @@ use pixelflow_core::{
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
 
-pub mod actor;
-pub mod messages;
 pub mod parallel;
 
 // Public API - simplified to single rasterize function
 pub use parallel::rasterize;
-
-// Actor-based API for asynchronous rendering with bootstrap pattern
-pub use actor::RasterizerActor;
-pub use messages::{
-    RasterConfig, RasterControl, RasterManagement, RasterSetup, RasterizerHandle,
-    RasterizerSetupHandle, RenderRequest, RenderResponse,
-};
 
 /// A wrapper that adapts a continuous manifold for rasterization.
 #[derive(Clone, Copy, Debug)]
