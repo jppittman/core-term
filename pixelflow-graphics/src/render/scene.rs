@@ -28,7 +28,9 @@ use crate::render::frame::Frame;
 use crate::render::packed::{PackedFrame, PackedProgram};
 use crate::render::Pixel;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use pixelflow_core::{CellGridGeometry, FastMathGuard, Kernel, PlaneRegion};
+use crate::scene3d::Rgba;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use pixelflow_core::{CellGridGeometry, FastMathGuard, PlaneRegion};
 use pixelflow_core::{Discrete, Manifold};
 use std::sync::{Arc, Mutex};
 
@@ -90,15 +92,15 @@ impl From<PackedFrame> for Scene {
 /// into, and silently packing RGBA into it would be garbage.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[must_use]
-pub fn compile_packed_for<P: Pixel>(channels: &[Kernel; 4], frame: [u32; 2]) -> PackedProgram {
-    PackedProgram::compile(channels, packed_shifts_of::<P>("compile_packed_for"), frame)
+pub fn compile_packed_for<P: Pixel>(color: &Rgba, frame: [u32; 2]) -> PackedProgram {
+    PackedProgram::compile(color, packed_shifts_of::<P>("compile_packed_for"), frame)
 }
 
 /// [`compile_packed_for`] with THIS platform's pixel byte order.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[must_use]
-pub fn compile_platform_packed(channels: &[Kernel; 4], frame: [u32; 2]) -> PackedProgram {
-    compile_packed_for::<PlatformPixel>(channels, frame)
+pub fn compile_platform_packed(color: &Rgba, frame: [u32; 2]) -> PackedProgram {
+    compile_packed_for::<PlatformPixel>(color, frame)
 }
 
 /// The byte lanes `P` packs into.
@@ -307,6 +309,7 @@ mod tests {
     use crate::render::cell_grid::CellGridPackedProgram;
     use crate::render::color::Rgba8;
     use crate::render::color::RgbaColorCube;
+    use pixelflow_core::Kernel;
 
     /// A 2×2 grid of solid/half tiles; oracle is the scalar blend math.
     fn scene() -> Scene {
@@ -388,7 +391,8 @@ mod tests {
                 .mul(&Kernel::constant(1.0 / 255.0))
         };
         let channels = [ramp(1.0), ramp(3.0), ramp(7.0), Kernel::constant(1.0)];
-        let scene = Scene::Packed(compile_packed_for::<Rgba8>(&channels, [w, h]).bind(&[]));
+        let color = Rgba::from(&channels);
+        let scene = Scene::Packed(compile_packed_for::<Rgba8>(&color, [w, h]).bind(&[]));
         let mut one = Frame::<Rgba8>::new(w, h);
         scene.render(&mut one, 1);
         for threads in [2usize, 3, 8, 16] {
@@ -465,7 +469,7 @@ mod tests {
             k(0.0),
             k(1.0),
         ];
-        let program = compile_packed_for::<Rgba8>(&channels, [8, 8]);
+        let program = compile_packed_for::<Rgba8>(&Rgba::from(&channels), [8, 8]);
         let scene = Scene::Packed(program.bind(&[]));
         let mut frame = Frame::<Rgba8>::new(8, 8);
         scene.render(&mut frame, 2);
@@ -499,19 +503,19 @@ mod tests {
         let channels = |r: Kernel| [r, k(0.0), k(0.0), k(1.0)];
 
         // Authored over a 16-point-wide surface...
-        let points = compile_packed_for::<Rgba8>(&channels(red.clone()), [16, 16]);
+        let points = compile_packed_for::<Rgba8>(&Rgba::from(channels(red.clone())), [16, 16]);
         let mut point_frame = Frame::<Rgba8>::new(16, 16);
         Scene::Packed(points.bind(&[])).render(&mut point_frame, 1);
 
         // ...and sampled on a 2x device grid: x_point = x_device / 2.
         let half = |v: &Kernel| v.mul(&k(0.5));
         let device = compile_packed_for::<Rgba8>(
-            &channels(red.at(
+            &Rgba::from(channels(red.at(
                 &half(&Kernel::x()),
                 &half(&Kernel::y()),
                 &Kernel::z(),
                 &Kernel::w(),
-            )),
+            ))),
             [32, 32],
         );
         let mut device_frame = Frame::<Rgba8>::new(32, 32);

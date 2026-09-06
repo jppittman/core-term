@@ -2,6 +2,7 @@
 
 use pixelflow_core::Kernel;
 use pixelflow_graphics::render::scene::{compile_platform_packed, Scene};
+use pixelflow_graphics::scene3d::Rgba;
 
 /// A solid opaque colour as a packed program over a `frame[0] × frame[1]`
 /// lattice: four constant channel kernels, nothing bound.
@@ -15,8 +16,8 @@ use pixelflow_graphics::render::scene::{compile_platform_packed, Scene};
 /// Panics on a degenerate frame extent, or if the kernel fails to compile.
 #[must_use]
 pub fn constant_scene(rgba: [f32; 4], frame: [u32; 2]) -> Scene {
-    let channels = rgba.map(Kernel::constant);
-    Scene::Packed(compile_platform_packed(&channels, frame).bind(&[]))
+    let color = Rgba::from(rgba.map(Kernel::constant));
+    Scene::Packed(compile_platform_packed(&color, frame).bind(&[]))
 }
 
 /// [`constant_scene`] in opaque black — what a test that only cares about the

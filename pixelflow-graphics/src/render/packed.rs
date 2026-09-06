@@ -1,4 +1,4 @@
-//! # A colour output is four channel kernels compiled at the frame's shape
+//! # A colour output is a colour tree compiled at the frame's shape
 //!
 //! Four channel kernels in `[0, 1]` — red, green, blue, alpha, which is all a
 //! colour output ever is — packed to bytes and OR-folded into a `u32` pixel
@@ -8,6 +8,14 @@
 //! per-pixel scalar pack, and the collapse kernel's two-level LICM prologues
 //! (per call, per row) active.
 //!
+//! A colour is an [`Rgba`] tree rather than an array, so a *choice* between
+//! colours reaches here as one node and leaves as one `Select` on the packed
+//! words ([`pixelflow_ir::Bits::select`] — the blend the hardware already
+//! does). That is the difference between a scene the emitter can short-circuit
+//! and one it cannot: with four selects sharing a mask, everything either arm
+//! computes is shared from each select's point of view, and none of it can be
+//! skipped.
+//!
 //! The layer below ([`pixelflow_core::PlaneProgram`]) is the same object with
 //! one channel and no pack — it knows lattices, buffers and bit patterns and
 //! nothing about colour. This is where byte lanes and pixel formats begin.
@@ -16,11 +24,14 @@ use std::sync::Arc;
 
 use pixelflow_core::{PlaneFrame, PlaneProgram, PlaneRegion};
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
-use pixelflow_ir::Kernel;
+use pixelflow_ir::{Bits, Kernel};
 
-/// The four channel kernels packed to one `u32` pixel, each channel packed to
-/// a byte exactly as `Pixel::from_rgba` does — `(x·255).clamp(0, 255)` then
-/// truncate toward zero — shifted to its byte lane and OR-folded at the root.
+use crate::scene3d::Rgba;
+
+/// A colour packed to one `u32` pixel: each leaf's four channels packed to a
+/// byte exactly as `Pixel::from_rgba` does — `(x·255).clamp(0, 255)` then
+/// truncate toward zero — shifted to its byte lane and OR-folded, and each
+/// choice between colours blended as one `Select` on those words.
 ///
 /// `shifts[c]` is the bit position of channel `c` in `(r, g, b, a)` order.
 /// Both pixel orders are little-endian byte arrays wrapping a `u32`, so byte
@@ -30,18 +41,31 @@ use pixelflow_ir::Kernel;
 /// Truncation (not rounding) is deliberate twice over: it is bit-exact with
 /// the scalar pack's `as u8`, and `cvttps2dq`/`fcvtzs` both truncate toward
 /// zero — no per-target tie divergence to inherit.
-pub(crate) fn packed_kernel(channels: &[Kernel; 4], shifts: [u32; 4]) -> Kernel {
+///
+/// Selecting words and selecting channels give the same bits, since `Select`
+/// is a lanewise bitwise blend and the pack is lanewise: whatever the
+/// not-taken arm packed is masked away whole. That equality is why this
+/// changes no pixel and why the goldens do not move
+/// (`selecting_packed_words_is_selecting_the_channels`).
+pub(crate) fn packed_kernel(color: &Rgba, shifts: [u32; 4]) -> Kernel {
     let k = Kernel::constant;
-    let byte = |c: usize| {
-        channels[c]
-            .mul(&k(255.0))
-            .clamp(&k(0.0), &k(255.0))
-            .trunc_to_int()
-            .shl(shifts[c])
-    };
-    // Fold in the bit domain, then take the single named exit: the packed
-    // pattern IS the kernel's output.
-    byte(0).or(&byte(1)).or(&byte(2)).or(&byte(3)).into_kernel()
+    color
+        .fold(
+            &|channels: &[Kernel; 4]| {
+                let byte = |c: usize| {
+                    channels[c]
+                        .mul(&k(255.0))
+                        .clamp(&k(0.0), &k(255.0))
+                        .trunc_to_int()
+                        .shl(shifts[c])
+                };
+                byte(0).or(&byte(1)).or(&byte(2)).or(&byte(3))
+            },
+            &|mask, if_true: Bits, if_false: Bits| Bits::select(mask, &if_true, &if_false),
+        )
+        // The single named exit from the bit domain: the packed pattern IS the
+        // kernel's output.
+        .into_kernel()
 }
 
 /// A colour output compiled at a frame's lattice shape: a compiled manifold
@@ -58,8 +82,11 @@ pub struct PackedProgram {
 }
 
 impl PackedProgram {
-    /// Compose and JIT-compile the packed program for four channel kernels
-    /// over a `extent[0] × extent[1]` pixel frame.
+    /// Compose and JIT-compile the packed program for a colour over an
+    /// `extent[0] × extent[1]` pixel frame.
+    ///
+    /// Four channel kernels are a colour with no choice in it
+    /// (`Rgba::from(&channels)`), which is what a procedural shader hands over.
     ///
     /// # Panics
     ///
@@ -69,7 +96,7 @@ impl PackedProgram {
     /// past exact `f32` indexing, a `Field` width that does not match the
     /// JIT's, or a compile failure.
     #[must_use]
-    pub fn compile(channels: &[Kernel; 4], shifts: [u32; 4], extent: [u32; 2]) -> Self {
+    pub fn compile(color: &Rgba, shifts: [u32; 4], extent: [u32; 2]) -> Self {
         {
             let mut lanes = shifts;
             lanes.sort_unstable();
@@ -82,7 +109,7 @@ impl PackedProgram {
         }
         Self {
             shifts,
-            program: PlaneProgram::compile(&packed_kernel(channels, shifts), extent),
+            program: PlaneProgram::compile(&packed_kernel(color, shifts), extent),
         }
     }
 
@@ -186,5 +213,81 @@ impl PackedFrame {
     pub fn collapse_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
         self.frame
             .collapse_int_rows(region.on_slice(self.slice[0], self.slice[1]), out, stride);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pixelflow_core::Lattice;
+
+    const RGBA: [u32; 4] = [0, 8, 16, 24];
+    const BGRA: [u32; 4] = [16, 8, 0, 24];
+
+    /// The packed words a kernel produces over a `w × 1` strip. The root is
+    /// int-domain, so the lane's bit pattern IS the pixel.
+    fn words(kernel: &Kernel, w: usize) -> Vec<u32> {
+        Lattice::frame(w, 1, 0.0)
+            .bake(kernel)
+            .buffer()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect()
+    }
+
+    /// The four channels of a colour that has no choice in it.
+    fn leaf(color: &Rgba) -> [Kernel; 4] {
+        color.fold(&|channels| channels.clone(), &|_, _, _| {
+            panic!("this colour is a choice, not a leaf")
+        })
+    }
+
+    /// **The equality S3b rests on.** Choosing between two packed words is
+    /// choosing between each of their channels: `Select` is a lanewise
+    /// bitwise blend and the pack is lanewise, so the not-taken arm's bytes
+    /// are masked away whole. Bit-exact, under both byte orders — which is
+    /// why one select over a whole colour draws the same picture as four, and
+    /// why no golden moves when the colour becomes a tree.
+    #[test]
+    fn selecting_packed_words_is_selecting_the_channels() {
+        let k = Kernel::constant;
+        let ramp = |scale: f32| Kernel::x().mul(&k(scale / 8.0));
+        let a = Rgba::new(ramp(1.0), k(0.25), k(0.5), k(1.0));
+        let b = Rgba::new(k(0.75), ramp(0.5), k(0.125), k(1.0));
+        // A mask that is neither uniform nor aligned to a SIMD batch, so the
+        // two forms are compared where the blend actually blends.
+        let mask = Kernel::x().lt(&k(3.0));
+
+        let (ca, cb) = (leaf(&a), leaf(&b));
+        let per_channel = Rgba::new(
+            mask.select(&ca[0], &cb[0]),
+            mask.select(&ca[1], &cb[1]),
+            mask.select(&ca[2], &cb[2]),
+            mask.select(&ca[3], &cb[3]),
+        );
+        let one_select = a.select(&mask, &b);
+
+        for shifts in [RGBA, BGRA] {
+            assert_eq!(
+                words(&packed_kernel(&one_select, shifts), 8),
+                words(&packed_kernel(&per_channel, shifts), 8),
+                "one select on the words disagrees with four on the channels, \
+                 shifts {shifts:?}"
+            );
+        }
+    }
+
+    /// The two byte orders are the same pixels in a different arrangement, so
+    /// a test that passed by packing everything into one lane would not
+    /// notice. This one does.
+    #[test]
+    fn the_two_byte_orders_disagree_about_where_red_goes() {
+        let k = Kernel::constant;
+        let red = Rgba::new(k(1.0), k(0.0), k(0.0), k(1.0));
+        assert_eq!(words(&packed_kernel(&red, RGBA), 1)[0], 0xff00_00ff);
+        assert_eq!(
+            words(&packed_kernel(&red, BGRA), 1)[0],
+            0xff00_0000 | 0xff_0000
+        );
     }
 }

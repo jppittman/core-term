@@ -41,12 +41,10 @@ fn scene() -> (Scene, usize, std::time::Duration) {
     let ray = Ray::through_screen(W as f32, H as f32);
     let sphere = Sphere::new([k(0.0), k(0.0), k(4.0)], k(1.0)).hit(&ray);
     let mirrored = ray.reflected(sphere.normal());
-    let channels = sphere
-        .select(&world(&mirrored), &world(&ray))
-        .into_channels();
+    let color = sphere.select(&world(&mirrored), &world(&ray));
 
     let start = Instant::now();
-    let program = compile_platform_packed(&channels, [W as u32, H as u32]);
+    let program = compile_platform_packed(&color, [W as u32, H as u32]);
     let compile = start.elapsed();
     let code = program.code_bytes().len();
     (Scene::Packed(program.bind(&[])), code, compile)

@@ -61,10 +61,8 @@ fn compile(width: u32, height: u32) -> PackedProgram {
     ];
     let sphere = Sphere::new(center, k(RADIUS)).hit(&ray);
     let mirrored = ray.reflected(sphere.normal());
-    let channels = sphere
-        .select(&world(&mirrored), &world(&ray))
-        .into_channels();
-    compile_platform_packed(&channels, [width, height])
+    let color = sphere.select(&world(&mirrored), &world(&ray));
+    compile_platform_packed(&color, [width, height])
 }
 
 /// The compiled scene and the frame size it was compiled for. A resize is the

@@ -323,7 +323,8 @@ mod tests {
             k(0.0),
             k(1.0),
         ];
-        Scene::Packed(compile_platform_packed(&channels, frame).bind(&[]))
+        let color = pixelflow_graphics::scene3d::Rgba::from(channels);
+        Scene::Packed(compile_platform_packed(&color, frame).bind(&[]))
     }
 
     /// A keeper holding one buffer at the given logical size, sampled 1:1.
