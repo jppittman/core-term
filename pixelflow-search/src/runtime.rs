@@ -1,6 +1,6 @@
 //! E-graph optimization for runtime-built kernels.
 //!
-//! `kernel!`/`kernel_jit!` already run full saturation at macro-expansion
+//! `kernel!` already runs full saturation at macro-expansion
 //! time: `pixelflow-compiler::optimize` builds an e-graph from the parsed
 //! AST, saturates, and extracts before ever touching an
 //! [`ExprArena`](pixelflow_ir::ExprArena). Anything stamped by those macros
@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 /// Optimize a runtime-built arena via bounded e-graph saturation, through
 /// the same [`Optimizer`] entry point — rule set, budget, cost model,
-/// extractor — as the `kernel!`/`kernel_jit!` macros.
+/// extractor — as the `kernel!` macro.
 ///
 /// `Buffer`/`Gather` (bound-memory reads) are representable: they enter the
 /// e-graph as opaque structure — no rewrite rule can name them, so their

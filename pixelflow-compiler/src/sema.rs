@@ -11,19 +11,16 @@
 //! ## Symbol Resolution Rules
 //!
 //! When an identifier is encountered:
-//! 1. Check if it's an intrinsic (X, Y, Z, W) → leave unchanged
-//! 2. Check if it's a captured parameter → transform to `self.param`
-//! 3. Check if it's a local variable → leave unchanged
-//! 4. Otherwise → error (undefined symbol)
+//! 1. Check if it's an intrinsic (X, Y, Z, W) → a coordinate `Var`
+//! 2. Check if it's a declared parameter → a `Param` folded in by the builder
+//! 3. Check if it's a local variable → a shared arena id
+//! 4. Otherwise → captured from the caller's scope, and Rust resolves it
 //!
 //! ## Output
 //!
-//! The semantic phase produces an `AnalyzedKernel` which includes:
-//! - The original AST (possibly annotated)
-//! - The populated symbol table
-//! - Any resolved type information
+//! The semantic phase produces an `AnalyzedKernel`: the AST, validated.
 
-use crate::ast::{BlockExpr, Expr, KernelDef, LetStmt, MethodCallExpr, Param, ParamKind, Stmt};
+use crate::ast::{BlockExpr, Expr, KernelDef, LetStmt, MethodCallExpr, Param, Stmt};
 use crate::symbol::{SymbolKind, SymbolTable};
 use pixelflow_ir::known_method_names;
 use syn::Ident;
@@ -42,19 +39,11 @@ const DSL_METHODS: &[&str] = &[
 pub struct AnalyzedKernel {
     /// The original kernel definition.
     pub def: KernelDef,
-    /// The populated symbol table.
-    pub symbols: SymbolTable,
 }
 
 /// Perform semantic analysis on a parsed kernel.
 pub fn analyze(kernel: KernelDef) -> syn::Result<AnalyzedKernel> {
-    // Anonymous kernels (no struct_decl) allow captured variables from environment
-    let kernel_type = if kernel.struct_decl.is_none() {
-        KernelType::Anonymous
-    } else {
-        KernelType::Named
-    };
-    let mut analyzer = SemanticAnalyzer::new(kernel_type);
+    let mut analyzer = SemanticAnalyzer::new();
 
     // Register all parameters in the symbol table
     for param in &kernel.params {
@@ -64,29 +53,18 @@ pub fn analyze(kernel: KernelDef) -> syn::Result<AnalyzedKernel> {
     // Analyze the body expression
     analyzer.analyze_expr(&kernel.body)?;
 
-    Ok(AnalyzedKernel {
-        def: kernel,
-        symbols: analyzer.symbols,
-    })
+    Ok(AnalyzedKernel { def: kernel })
 }
 
 /// The semantic analyzer state.
-enum KernelType {
-    Anonymous,
-    Named,
-}
-
 struct SemanticAnalyzer {
     symbols: SymbolTable,
-    /// Whether this is an anonymous kernel (allows captured variables).
-    kernel_type: KernelType,
 }
 
 impl SemanticAnalyzer {
-    fn new(kernel_type: KernelType) -> Self {
+    fn new() -> Self {
         SemanticAnalyzer {
             symbols: SymbolTable::new(),
-            kernel_type,
         }
     }
 
@@ -119,16 +97,8 @@ impl SemanticAnalyzer {
             ));
         }
 
-        // Register based on parameter kind
-        match &param.kind {
-            ParamKind::Scalar(ty) => {
-                self.symbols
-                    .register_parameter(param.name.clone(), (**ty).clone());
-            }
-            ParamKind::Manifold => {
-                self.symbols.register_manifold_param(param.name.clone());
-            }
-        }
+        self.symbols
+            .register_parameter(param.name.clone(), (*param.ty).clone());
         Ok(())
     }
 
@@ -186,71 +156,17 @@ impl SemanticAnalyzer {
     }
 
     /// Resolve an identifier reference.
+    ///
+    /// An unknown name is not an error: the expansion is a closure in the
+    /// caller's scope, so anything the symbol table does not know is captured
+    /// from the environment and Rust's own resolver reports it if it is not
+    /// there either.
     fn resolve_ident(&self, ident: &Ident) -> syn::Result<SymbolKind> {
         let name = ident.to_string();
-
-        match self.symbols.lookup(&name) {
-            Some(symbol) => Ok(symbol.kind),
-            None => {
-                // For anonymous kernels, unknown symbols are captured from environment
-                // The Rust closure will handle the capture - no error needed
-                if matches!(self.kernel_type, KernelType::Anonymous) {
-                    return Ok(SymbolKind::Local); // Treat as external/captured
-                }
-
-                // For named kernels, undefined symbols are errors
-                let suggestion = self.find_similar_symbol(&name);
-                let msg = match suggestion {
-                    Some(similar) => format!(
-                        "undefined symbol '{}'\n\
-                         help: did you mean '{}'?\n\
-                         note: available intrinsics: X, Y, Z, W",
-                        name, similar
-                    ),
-                    None => format!(
-                        "undefined symbol '{}'\n\
-                         note: available intrinsics: X, Y, Z, W\n\
-                         help: check spelling or add as a parameter",
-                        name
-                    ),
-                };
-                Err(syn::Error::new(ident.span(), msg))
-            }
-        }
-    }
-
-    /// Find a similar symbol name for typo suggestions.
-    fn find_similar_symbol(&self, name: &str) -> Option<String> {
-        let name_lower = name.to_lowercase();
-
-        // Check intrinsics first (common typos)
-        let intrinsics = ["X", "Y", "Z", "W"];
-        for intr in intrinsics {
-            if intr.to_lowercase() == name_lower {
-                return Some(intr.to_string());
-            }
-        }
-
-        // Check parameters and locals
-        for sym_name in self.symbols.all_names() {
-            // Simple similarity: same length and differs by 1-2 chars
-            if sym_name.len() == name.len() {
-                let diff_count = sym_name
-                    .chars()
-                    .zip(name.chars())
-                    .filter(|(a, b)| a != b)
-                    .count();
-                if diff_count <= 2 {
-                    return Some(sym_name);
-                }
-            }
-            // Case-insensitive match
-            if sym_name.to_lowercase() == name_lower {
-                return Some(sym_name);
-            }
-        }
-
-        None
+        Ok(self
+            .symbols
+            .lookup(&name)
+            .map_or(SymbolKind::Local, |symbol| symbol.kind))
     }
 
     /// Analyze a method call.
@@ -298,7 +214,7 @@ impl SemanticAnalyzer {
                 None => format!(
                     "unknown method '{}'\n\
                      note: common methods: sqrt, abs, sin, cos, exp, min, max, clone\n\
-                     help: see ManifoldExt trait for available methods",
+                     help: see Kernel's method surface for what is available",
                     method_name
                 ),
             };
@@ -366,35 +282,17 @@ mod tests {
     fn analyze_simple_kernel() {
         let input = quote! { |r: f32| X * X + Y * Y - r };
         let kernel = parse(input).unwrap();
-        let analyzed = analyze(kernel).unwrap();
-
-        assert!(analyzed.symbols.is_parameter("r"));
-        assert!(analyzed.symbols.is_intrinsic("X"));
-        assert!(analyzed.symbols.is_intrinsic("Y"));
+        assert!(analyze(kernel).is_ok());
     }
 
+    /// An unknown name is a capture from the caller's scope, not an error:
+    /// the expansion is a closure written where the caller wrote it, so
+    /// Rust's own resolver is the one that can say whether the name exists.
     #[test]
-    fn error_on_undefined_symbol() {
-        // Named kernels reject undefined symbols (anonymous kernels allow captures)
-        let input = quote! { struct Test = |r: f32| X * X + undefined_var };
-        let kernel = parse(input).unwrap();
-        let result = analyze(kernel);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("undefined symbol"));
-    }
-
-    #[test]
-    fn anonymous_allows_captured_variables() {
-        // Anonymous kernels allow captured variables from environment
+    fn an_unknown_name_is_captured_from_the_callers_scope() {
         let input = quote! { |r: f32| X * X + captured_from_env };
         let kernel = parse(input).unwrap();
-        let result = analyze(kernel);
-        assert!(
-            result.is_ok(),
-            "Anonymous kernels should allow captured variables"
-        );
+        assert!(analyze(kernel).is_ok());
     }
 
     #[test]
@@ -409,22 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn error_on_undefined_symbol_in_block_final_expression() {
-        // A block's final expression must still be analyzed for undefined
-        // symbols, not just its `let` statements.
-        let input = quote! { struct Test = |cx: f32| {
-            let dx = X - cx;
-            dx * undefined_var
-        }};
-        let kernel = parse(input).unwrap();
-        let result = analyze(kernel);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("undefined symbol"), "{err}");
-    }
-
-    #[test]
     fn block_scoping() {
         let input = quote! {
             |cx: f32| {
@@ -435,71 +317,6 @@ mod tests {
         let kernel = parse(input).unwrap();
         let result = analyze(kernel);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn typo_suggestion_for_intrinsic() {
-        // Lowercase "x" should suggest uppercase "X" (named kernel rejects typos)
-        let input = quote! { struct Test = || x * x };
-        let kernel = parse(input).unwrap();
-        let result = analyze(kernel);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("undefined symbol"));
-        assert!(err.contains("did you mean 'X'"));
-    }
-
-    #[test]
-    fn typo_suggestion_for_parameter() {
-        // "radiu" should suggest "radius" (named kernel rejects typos)
-        let input = quote! { struct Test = |radius: f32| X - radiu };
-        let kernel = parse(input).unwrap();
-        let result = analyze(kernel);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("undefined symbol"));
-        // Similar names with 1-2 char difference should be suggested
-    }
-
-    #[test]
-    fn typo_suggestion_for_parameter_names_the_exact_match_at_the_two_char_diff_boundary() {
-        // "sigxb" differs from "sigma" in exactly 2 chars (m->x, a->b) — the
-        // inclusive boundary of the "similar enough to suggest" rule.
-        let input = quote! { struct Test = |sigma: f32| X - sigxb };
-        let kernel = parse(input).unwrap();
-        let result = analyze(kernel);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("did you mean 'sigma'"), "{err}");
-    }
-
-    #[test]
-    fn typo_suggestion_for_parameter_is_absent_past_the_two_char_diff_boundary() {
-        // "wigxo" differs from "sigma" in 3 chars — one past the boundary
-        // where a same-length typo is considered similar enough to suggest.
-        let input = quote! { struct Test = |sigma: f32| X - wigxo };
-        let kernel = parse(input).unwrap();
-        let result = analyze(kernel);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(!err.contains("did you mean"), "{err}");
-    }
-
-    #[test]
-    fn typo_suggestion_for_parameter_matches_case_insensitively_regardless_of_char_diff_count() {
-        // "GAMMA" differs from "gamma" in every character position
-        // case-sensitively, so only the case-insensitive fallback catches it.
-        let input = quote! { struct Test = |gamma: f32| X - GAMMA };
-        let kernel = parse(input).unwrap();
-        let result = analyze(kernel);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("did you mean 'gamma'"), "{err}");
     }
 
     #[test]
@@ -570,7 +387,6 @@ mod tests {
 
     #[test]
     fn known_methods_accepted() {
-        // All ManifoldExt methods should be accepted
         let input = quote! { || X.sqrt().abs().sin().cos().clone() };
         let kernel = parse(input).unwrap();
         let result = analyze(kernel);

@@ -73,7 +73,7 @@ fn triangle_coverage_bakes_from_line_kernels() {
 }
 
 #[test]
-fn quad_leaf_bakes_as_kernel_value() {
+fn quad_leaf_bakes_as_a_kernel_value() {
     // A single quadratic Bezier bulging right: P0=(4,2) P1=(12,8) P2=(4,14).
     // Smoke-proof that AnalyticalQuad::kernel() lowers, composes, and bakes —
     // the curve branch (non-degenerate ay) exercises the analytical root solver

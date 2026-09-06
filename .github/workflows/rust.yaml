@@ -223,15 +223,15 @@ jobs:
           restore-keys: |
             cargo-registry-
 
-      # This integration target expands the public `kernel!` and `kernel_jit!`
-      # macros in a consumer crate. A host-only proc-macro check would miss
-      # generated code that disagrees with the second supported architecture's
-      # JIT ABI.
-      - name: Type-check both kernel tiers on aarch64
+      # This integration target expands the public `kernel!` macro in a
+      # consumer crate and bakes what it builds. A host-only proc-macro check
+      # would miss generated code that disagrees with the second supported
+      # architecture's JIT ABI.
+      - name: Type-check the kernel macro on aarch64
         shell: bash
         run: |
           cargo check -p pixelflow-compiler \
-            --test kernel_routing_parity \
+            --test bake_vs_scalar_truth \
             --target aarch64-unknown-linux-gnu
 
   test:
@@ -337,23 +337,23 @@ jobs:
       # These are named public-behavior contracts, not an incidental subset of
       # the workspace suite. nextest's explicit `--no-tests fail` makes deleting
       # or renaming them a hard failure instead of a green zero-test run.
-      # Each test checks both tiers itself (the LLVM tier through
-      # `Manifold::eval`, the arena tier through `Lattice::bake`), so one run
-      # per name covers both; there is no routing feature to flip any more.
-      - name: Check kernel tier parity
+      # Each bakes a `kernel!` body over a one-point lattice and compares it to
+      # scalar f32 computed in the test — an oracle outside the compiler, not a
+      # second implementation of the same definitions.
+      - name: Check baked kernels against scalar truth
         shell: bash
         run: |
           set -euo pipefail
           tests=(
-            abs_recip_matches_truth_on_both_tiers
-            arithmetic_matches_truth_on_both_tiers
-            params_match_truth_on_both_tiers
-            piecewise_matches_truth_on_both_tiers
-            projections_differ_by_tier_and_that_is_the_contract
+            abs_recip_matches_scalar_truth
+            arithmetic_matches_scalar_truth
+            params_match_scalar_truth
+            piecewise_matches_scalar_truth
+            projections_are_the_symbolic_derivative
           )
           for test_name in "${tests[@]}"; do
             cargo nextest run -p pixelflow-compiler \
-              --test kernel_routing_parity \
+              --test bake_vs_scalar_truth \
               -E "test(=$test_name)" \
               --no-tests fail
           done

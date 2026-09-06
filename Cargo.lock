@@ -849,7 +849,6 @@ dependencies = [
 name = "pixelflow-compiler"
 version = "0.1.0"
 dependencies = [
- "criterion",
  "pixelflow-codegen",
  "pixelflow-core",
  "pixelflow-ir",
@@ -863,9 +862,7 @@ dependencies = [
 name = "pixelflow-core"
 version = "0.1.0"
 dependencies = [
- "criterion",
  "pixelflow-codegen",
- "pixelflow-compiler",
  "pixelflow-ir",
 ]
 
