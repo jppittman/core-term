@@ -17,10 +17,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # See rust.yaml's env block for why.
-  RUSTC_WRAPPER: sccache
-  CARGO_INCREMENTAL: "0"
-  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   # ── Pushes to main: advance the baseline, attribute regressions ──────────
@@ -39,6 +35,11 @@ jobs:
       group: benchmark-baseline
       cancel-in-progress: false
     timeout-minutes: 90
+    # See rust.yaml's env block for why this is job-level, not workflow-level.
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
         with:

@@ -6,19 +6,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # sccache caches compiled objects by (source, compiler flags) rather than
-  # by job name, so jobs that build overlapping parts of the dependency
-  # graph (clippy, the test matrix, behavior-contracts, isa-matrix's
-  # per-target-feature builds, ...) share compilation work through the
-  # GitHub Actions cache backend instead of each paying for it in its own
-  # `actions/cache`-keyed `target/` — see docs/POSTSUBMIT.md's sibling note
-  # in CLAUDE.md's Build Commands section for the rationale. Incremental
-  # compilation's on-disk artifacts aren't sccache cache entries, so leaving
-  # it on here would burn wall-clock recompiling per-crate incremental state
-  # that never gets reused across jobs anyway.
-  RUSTC_WRAPPER: sccache
-  CARGO_INCREMENTAL: "0"
-  SCCACHE_GHA_ENABLED: "true"
+  # sccache env vars (RUSTC_WRAPPER, CARGO_INCREMENTAL, SCCACHE_GHA_ENABLED)
+  # are set per-job below, not here: `dependency-advisories` runs
+  # cargo-deny-action inside its own Docker container, which doesn't have
+  # sccache installed, and `RUSTC_WRAPPER=sccache` set workflow-wide broke
+  # its internal `cargo metadata` (rustc version probe tries to exec a
+  # wrapper that doesn't exist in that container). Job-level scoping keeps
+  # it opt-in to exactly the jobs that install sccache via
+  # mozilla-actions/sccache-action.
 
 # Cancel superseded runs on the same ref so a hung job doesn't linger.
 concurrency:
@@ -101,6 +96,10 @@ jobs:
   feature-matrix:
     name: Feature matrix
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -159,6 +158,10 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -193,6 +196,10 @@ jobs:
   cross-target-abi:
     name: Cross-target ABI (aarch64)
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -242,6 +249,11 @@ jobs:
       matrix:
         # Test on multiple operating systems
         os: [ubuntu-latest, macos-latest]
+
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
 
     steps:
       - name: Checkout code
@@ -295,6 +307,10 @@ jobs:
     name: Behavior contracts
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -414,6 +430,10 @@ jobs:
     # workspace per level (see postsubmit-flake-detection.yaml) -- this catches
     # the level-specific miscompiles early, not all of them.
     timeout-minutes: 25
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -473,6 +493,10 @@ jobs:
     continue-on-error: true
     runs-on: macos-latest
     timeout-minutes: 30
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -541,6 +565,10 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 15
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -615,6 +643,10 @@ jobs:
     name: pixelflow-ir no_std + pixelflow-search std-feature-off builds
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
