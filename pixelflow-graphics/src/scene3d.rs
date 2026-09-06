@@ -418,6 +418,36 @@ mod tests {
         assert!((z + 1.0).abs() < 1e-6, "got {z}");
     }
 
+    /// The checker's two limits, which are what its filter *is*: resolved
+    /// finer than a cell it is the cell's own colour, and coarser than one it
+    /// is the average of the two — never the neighbour's colour, which is
+    /// what a coverage without the `½` gives and what made a distant floor
+    /// flicker between whole cells.
+    #[test]
+    fn a_checker_finer_than_its_footprint_washes_out_to_grey() {
+        let cell_centre = |footprint: f32| {
+            let rgba = checker(&Kernel::x(), &Kernel::y(), &k(footprint));
+            let at = |c: &Kernel| Lattice::point(0.5, 0.5, 0.0, 0.0).bake(c).buffer()[0];
+            [at(&rgba.0[0]), at(&rgba.0[1]), at(&rgba.0[2])]
+        };
+
+        let sharp = cell_centre(1e-4);
+        assert_eq!(
+            sharp, CHECKER_LIGHT,
+            "a cell far larger than the footprint is its own colour"
+        );
+
+        let washed = cell_centre(1e4);
+        for c in 0..3 {
+            let mean = 0.5 * (CHECKER_LIGHT[c] + CHECKER_DARK[c]);
+            assert!(
+                (washed[c] - mean).abs() < 1e-3,
+                "channel {c} washes out to {mean}, got {}",
+                washed[c]
+            );
+        }
+    }
+
     /// The floor's screen footprint is what a material filters over: a
     /// pixel's worth of the surface, growing as the surface recedes. (The jet
     /// tier's footprint was in units of the *normalized* screen — half the
