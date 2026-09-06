@@ -170,6 +170,7 @@ pub mod mesh;
 pub mod patch;
 pub mod render;
 pub mod scene3d;
+pub mod scene3d_surface;
 pub mod shapes;
 pub mod spatial_bsp;
 pub mod subdiv;

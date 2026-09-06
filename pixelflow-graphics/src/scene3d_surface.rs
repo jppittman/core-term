@@ -1,3 +1,16 @@
+//! # The legacy scene tier: `Manifold<Jet3>` combinators (S4 deletes this)
+//!
+//! Kept only as the "before" side of S3's measurement
+//! (`pixelflow-runtime/examples/bench_scene_chrome.rs`) and for the one
+//! consumer that cannot yet be written as kernels — `subdivision_autodiff`,
+//! whose geometry is a `Jet3`-valued subdivision evaluator rather than a
+//! closed-form kernel. Everything else moved to [`crate::scene3d`], where a
+//! scene is four channel [`pixelflow_core::Kernel`]s and derivatives come
+//! from `Kernel::dx()`/`dy()` instead of a jet domain.
+//!
+//! **No new consumer.** See `docs/plans/2026-09-06-kernel-with-a-lattice.md`,
+//! stage S4: this module retires with the `Manifold` trait itself.
+//!
 //! Three-Layer Pull-Based Architecture:
 //! 1. Geometry: Returns `t` (Jet3)
 //! 2. Surface: Warps `P = ray * t` (Creates tangent frame via Chain Rule)
