@@ -27,7 +27,7 @@ use crate::render::frame::Frame;
 use crate::render::packed::{PackedFrame, PackedProgram};
 use crate::render::Pixel;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use pixelflow_core::{CellGridGeometry, Kernel, PlaneRegion};
+use pixelflow_core::{CellGridGeometry, FastMathGuard, Kernel, PlaneRegion};
 use pixelflow_core::{Discrete, Manifold};
 use std::sync::{Arc, Mutex};
 
@@ -236,6 +236,21 @@ fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, nu
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
+                // Denormals cost up to 100x a normal operation, and a shader
+                // that decays toward zero — an exponential falloff, a
+                // reciprocal of something large — produces them by the
+                // batch. FTZ/DAZ is per-thread CPU state (MXCSR on x86, FPCR
+                // on aarch64, saved and restored across context switches), so
+                // it has to be set on the thread that runs the kernel: a
+                // guard held where the workers are spawned would not reach
+                // them. One guard covers every stripe this worker claims and
+                // restores the mode before the scope joins.
+                //
+                // SAFETY: this thread was spawned to bake stripes and does
+                // nothing else, so nothing here depends on denormals being
+                // preserved; the guard restores the caller's mode on drop,
+                // and the scope joins before `render` returns.
+                let _fast_math = unsafe { FastMathGuard::new() };
                 while let Some((stripe, band)) = claim(&stripes) {
                     let rows = band.len() / width;
                     packed.bake_packed_rows(
