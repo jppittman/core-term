@@ -124,6 +124,53 @@ chrome sphere at the examples' frame size, `Scene::render` before and after,
 both tiers — and the compile cost of the unrolled march at the step count
 the examples use, recorded.
 
+
+## S1 — landed 2026-09-06, with three findings for the inventory
+
+Landed: `kernel_jit!` is a `Kernel`; `JitManifold::eval_row`/`eval_at`/
+`eval_grid` are gone (`call_collapse` is the collapse driver's one entry);
+`collapse_with`/`collapse_scalar`/`collapse_axis`/`ReduceOp` are gone (a
+reduction is a binder inside the kernel — `Kernel::sum_over`); every caller
+bakes; `bench_psychedelic` times one 1920×1080 frame on both sides, then
+again under `FastMathGuard`. Net −630 lines. `pixelflow-codegen/src/emit/`
+untouched.
+
+**`Lattice::collapse` survives, with exactly three callers**, all
+`CachedGlyph` tests in `fonts/cache.rs`, and the reasons it survives are
+gaps in this plan rather than in the work:
+
+1. **`Lower` is implemented for two types in the whole tree: `f32` and
+   `Kernel`.** The lower/realize design's "one impl per generator beside
+   each `Manifold` impl" — coordinates, the op ZSTs, `Select`, `At`,
+   comparisons, `Let` — was never landed. Nothing built from combinators
+   lowers compositionally; only macro output and `Kernel` values do. The
+   inventory's "a `kernel!` struct lowers" is true; "hand-written
+   combinators lower trivially" was not, for anything but constants.
+2. **`Lattice::bake` refuses an arena that binds memory**
+   (`arena.buffers().is_empty()` is asserted). `CachedGlyph`'s coverage is a
+   bound buffer sampled by `Gather`. The cell grid bakes bound buffers today
+   through its packed frame (`CellGridPackedFrame::bake_packed_rows` binds
+   slots at call time), so the capability exists, but only on the packed
+   path. A bake that takes bound buffers is the same shape the packed
+   program already has; S2's generalized program should expose it for
+   fields, not only for packed pixels, and `Lattice::bake` should be the
+   buffer-free instance of it.
+3. **Outside `pixelflow-core` there is no other way to turn a `Manifold`
+   into numbers** (`Field::store` is `pub(crate)`). Deleting `collapse`
+   removes that capability from consumer crates entirely — the intent — so a
+   blocked caller cannot keep a local loop the way the codegen tests did.
+
+A `Kernel` twin of `CachedGlyph::eval` was deliberately not written: it
+would test a definition the rasterizer does not run, the shared-definition
+trap `CLAUDE.md` names. `collapse`'s rustdoc says why it is still there.
+
+Bench (this host, single thread, whole frame, median of 5; the host was
+~1.5× slower than the reference table that day and both agents saw the same
+offset): SSE2 `kernel!` 31.9–35.0 vs bake 11.8–13.3 ns/px (2.6–2.9×);
+AVX-512 5.5–5.7 vs 4.0–4.3 (1.3–1.4×). FTZ/DAZ moves neither. The old
+ten-scanline baseline had flattered the templates by ~20% (a warm working
+set); whole-frame is the honest number.
+
 ## Constraints
 
 - **Subtract before you add.** Every row of the inventory is a deletion with
