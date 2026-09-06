@@ -1768,7 +1768,9 @@ mod dwrt_tests {
         let root = expand_reduce(&mut a, red);
         // Σ_{i<3} (i + u) = 3 + 3u.
         assert_eq!(eval(&a, root, &[0.0; 4]), 33.0);
-        let bound = BindingTable::empty().with_uniforms(&[1.0]);
+        let bound = BindingTable::empty()
+            .bind_uniforms(&a, &[(a.uniforms()[0].id, 1.0)])
+            .expect("declared");
         assert_eq!(eval_scalar(&a, root, &[0.0; 4], &bound), 6.0);
         // Over the reachable subgraph: the rebuild leaves the pre-unroll
         // original behind as garbage, which is not what is being counted.

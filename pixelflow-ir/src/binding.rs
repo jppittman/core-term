@@ -9,7 +9,7 @@
 //! Bindings here *borrow* their contents: a [`BindingTable`] is valid for the
 //! duration of one evaluation, not the lifetime of a compiled kernel.
 
-use crate::arena::{BufferId, ExprArena, UniformId};
+use crate::arena::{BufferId, ExprArena, UniformId, UniformIdentity};
 use alloc::vec::Vec;
 
 /// Why binding a buffer table failed. Binding fails loud rather than reading
@@ -32,6 +32,9 @@ pub enum BindError {
         /// Length supplied.
         actual: usize,
     },
+    /// A uniform value was supplied for an identity the arena does not
+    /// declare.
+    Uniform(UniformIdentity),
 }
 
 impl core::fmt::Display for BindError {
@@ -49,6 +52,7 @@ impl core::fmt::Display for BindError {
                 f,
                 "buffer slot {slot}: declared length {expected}, bound slice has {actual}"
             ),
+            BindError::Uniform(id) => write!(f, "{id:?} is not a uniform this arena declares"),
         }
     }
 }
@@ -56,23 +60,47 @@ impl core::fmt::Display for BindError {
 /// Borrowed contents for every buffer an [`ExprArena`] declares, indexed by
 /// [`BufferId`]. Row-major, `stride == width`, matching `BufferDecl`.
 ///
-/// Also the values of the arena's uniforms, indexed by [`UniformId`] — the
-/// oracle's block. A table bound without one evaluates every uniform at its
-/// declared default, which is what a bake without a block does.
+/// Also the values of the arena's uniforms — the oracle's block. They are
+/// supplied **by identity** ([`BindingTable::bind_uniforms`]), never as a
+/// positional slice: a compiled kernel's block is laid out in the link's
+/// order and an arena's table in its own, and the two disagree in general,
+/// so a `&[f32]` that means one of them cannot be the type that means the
+/// other. A table bound without uniforms evaluates every one at its declared
+/// default, which is what a bake without a block does.
 #[derive(Clone, Debug)]
 pub struct BindingTable<'a> {
     slots: Vec<&'a [f32]>,
-    uniforms: &'a [f32],
+    /// One value per uniform slot, in [`UniformId`] order — the arena's
+    /// order, resolved from identities here — or empty for "every default".
+    uniforms: Vec<f32>,
 }
 
 impl<'a> BindingTable<'a> {
-    /// Supply a value for each of the arena's uniform slots, in
-    /// [`UniformId`] order. Slots past the end of `values` keep their
-    /// declared default.
-    #[must_use]
-    pub fn with_uniforms(mut self, values: &'a [f32]) -> Self {
-        self.uniforms = values;
-        self
+    /// Bind a value to each of the named uniforms; every other slot keeps its
+    /// declared default. Identities, not positions: the caller cannot get
+    /// the order wrong, and a kernel's block converts by naming each entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BindError::Uniform`] for an identity the arena does not
+    /// declare — a composition mistake, and the pixels would be plausible.
+    pub fn bind_uniforms(
+        mut self,
+        arena: &ExprArena,
+        values: &[(UniformIdentity, f32)],
+    ) -> Result<Self, BindError> {
+        let decls = arena.uniforms();
+        if self.uniforms.len() != decls.len() {
+            self.uniforms = decls.iter().map(|d| d.default).collect();
+        }
+        for &(id, v) in values {
+            let slot = decls
+                .iter()
+                .position(|d| d.id == id)
+                .ok_or(BindError::Uniform(id))?;
+            self.uniforms[slot] = v;
+        }
+        Ok(self)
     }
 
     /// The value bound to uniform slot `id`, or `None` to mean its default.
@@ -111,7 +139,7 @@ impl<'a> BindingTable<'a> {
         }
         Ok(Self {
             slots: slices.to_vec(),
-            uniforms: &[],
+            uniforms: Vec::new(),
         })
     }
 
@@ -120,7 +148,7 @@ impl<'a> BindingTable<'a> {
     pub fn empty() -> Self {
         Self {
             slots: Vec::new(),
-            uniforms: &[],
+            uniforms: Vec::new(),
         }
     }
 

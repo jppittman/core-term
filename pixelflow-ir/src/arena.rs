@@ -1120,60 +1120,95 @@ impl ExprArena {
 
     // ───────────────────── linking ───────────────────────────
 
-    /// The same graph with its buffer and uniform tables renumbered into the
-    /// given orders — the link step: slot `i` of the result names
-    /// `buffers[i]` / `uniforms[i]`, every leaf is remapped, and the nodes
-    /// themselves are untouched, in the same order, so nothing downstream
-    /// of the tables (the schedule, the registers, the bytes) can move.
+    /// The subgraph reachable from `root`, with its buffer and uniform tables
+    /// replaced by the given orders — the link step: slot `i` of the result
+    /// names `buffers[i]` / `uniforms[i]` and every reachable leaf is
+    /// remapped to its slot there. Reachable nodes keep their relative order
+    /// (ascending id, so still topological), which is the order a schedule
+    /// is built in; construction garbage is dropped, which no schedule ever
+    /// saw. So nothing downstream of the tables — the schedule, the
+    /// registers, the bytes — can move.
     ///
-    /// The orders may declare identities this arena never reads; those slots
-    /// exist in the result unread. The converse is a caller error.
+    /// A declaration this arena holds but no reachable node reads is left
+    /// behind with the garbage: `Kernel::at` splices all four coordinate
+    /// fragments whether or not the receiver reads that axis, so a table
+    /// routinely names an instance the graph does not, and the link — which
+    /// is computed over the reachable subgraph — rightly omits it. The orders
+    /// may likewise declare identities nothing here reads; those slots exist
+    /// in the result unread.
     ///
     /// # Panics
     ///
-    /// Panics if a declaration in this arena has no entry in the given order,
-    /// or disagrees with it (extents, default).
+    /// Panics if a *reachable* leaf's declaration has no entry in the given
+    /// order, or disagrees with it (extents, default).
     #[must_use]
-    pub fn relink(&self, buffers: &[BufferDecl], uniforms: &[UniformDecl]) -> ExprArena {
-        let buffer_slot: Vec<BufferId> = self
-            .buffers
-            .iter()
-            .map(|decl| {
-                let i = buffers
-                    .iter()
-                    .position(|d| d.id == decl.id)
-                    .unwrap_or_else(|| panic!("relink: {decl:?} is not in the link"));
-                assert_eq!(buffers[i], *decl, "relink: buffer declaration disagrees");
-                BufferId(i as u16)
-            })
-            .collect();
-        let uniform_slot: Vec<UniformId> = self
-            .uniforms
-            .iter()
-            .map(|decl| {
-                let i = uniforms
-                    .iter()
-                    .position(|d| d.id == decl.id)
-                    .unwrap_or_else(|| panic!("relink: {decl:?} is not in the link"));
-                assert_eq!(uniforms[i], *decl, "relink: uniform declaration disagrees");
-                UniformId(i as u16)
-            })
-            .collect();
-        let nodes = self
-            .nodes
-            .iter()
-            .map(|node| match node {
-                ExprNode::Buffer(b) => ExprNode::Buffer(buffer_slot[b.0 as usize]),
-                ExprNode::Uniform(u) => ExprNode::Uniform(uniform_slot[u.0 as usize]),
-                other => other.clone(),
-            })
-            .collect();
-        ExprArena {
-            nodes,
-            nary_children: self.nary_children.clone(),
+    pub fn relink(
+        &self,
+        root: ExprId,
+        buffers: &[BufferDecl],
+        uniforms: &[UniformDecl],
+    ) -> (ExprArena, ExprId) {
+        let mut reachable = vec![false; self.nodes.len()];
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut reachable[id.0 as usize], true) {
+                continue;
+            }
+            stack.extend(self.children(id));
+        }
+
+        let buffer_slot = |b: BufferId| -> BufferId {
+            let decl = self.buffers[b.0 as usize];
+            let i = buffers
+                .iter()
+                .position(|d| d.id == decl.id)
+                .unwrap_or_else(|| panic!("relink: reachable {decl:?} is not in the link"));
+            assert_eq!(buffers[i], decl, "relink: buffer declaration disagrees");
+            BufferId(i as u16)
+        };
+        let uniform_slot = |u: UniformId| -> UniformId {
+            let decl = self.uniforms[u.0 as usize];
+            let i = uniforms
+                .iter()
+                .position(|d| d.id == decl.id)
+                .unwrap_or_else(|| panic!("relink: reachable {decl:?} is not in the link"));
+            assert_eq!(uniforms[i], decl, "relink: uniform declaration disagrees");
+            UniformId(i as u16)
+        };
+
+        let mut out = ExprArena {
+            nodes: Vec::with_capacity(self.nodes.len()),
+            nary_children: Vec::new(),
             buffers: buffers.to_vec(),
             uniforms: uniforms.to_vec(),
+        };
+        let mut dense: Vec<Option<ExprId>> = vec![None; self.nodes.len()];
+        for (idx, node) in self.nodes.iter().enumerate() {
+            if !reachable[idx] {
+                continue;
+            }
+            let m =
+                |old: ExprId| dense[old.0 as usize].expect("relink: child densified before parent");
+            let new_id = match node {
+                ExprNode::Var(i) => out.push_var(*i),
+                ExprNode::Const(v) => out.push_const(*v),
+                ExprNode::Param(i) => out.push_param(*i),
+                ExprNode::Buffer(b) => out.push_buffer(buffer_slot(*b)),
+                ExprNode::Uniform(u) => out.push_uniform(uniform_slot(*u)),
+                ExprNode::Unary(op, a) => out.push_unary(*op, m(*a)),
+                ExprNode::Binary(op, a, b) => out.push_binary(*op, m(*a), m(*b)),
+                ExprNode::Ternary(op, a, b, c) => out.push_ternary(*op, m(*a), m(*b), m(*c)),
+                ExprNode::Nary(op, start, len) => {
+                    let (s, l) = (*start as usize, *len as usize);
+                    let mapped: Vec<ExprId> =
+                        self.nary_children[s..s + l].iter().map(|c| m(*c)).collect();
+                    out.push_nary(*op, &mapped)
+                }
+            };
+            dense[idx] = Some(new_id);
         }
+        let new_root = dense[root.0 as usize].expect("relink: root is reachable from itself");
+        (out, new_root)
     }
 
     // ───────────────────── display ───────────────────────────
@@ -1861,8 +1896,18 @@ mod composition_tests {
 
         // Defaults when nothing is bound; the block, slot by slot, when it is.
         assert_eq!(eval(&host, root, &[0.0; 4]), 3.0);
-        let bound = BindingTable::empty().with_uniforms(&[5.0, 7.0]);
+        let bound = BindingTable::empty()
+            .bind_uniforms(&host, &[(other.id, 7.0), (same.id, 5.0)])
+            .expect("both are declared");
         assert_eq!(eval_scalar(&host, root, &[0.0; 4], &bound), 17.0);
+        // An identity the arena does not declare is refused by name.
+        let stranger = uniform_decl(0.0).id;
+        assert_eq!(
+            BindingTable::empty()
+                .bind_uniforms(&host, &[(stranger, 1.0)])
+                .err(),
+            Some(crate::binding::BindError::Uniform(stranger))
+        );
     }
 
     #[test]

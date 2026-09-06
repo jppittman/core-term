@@ -2425,14 +2425,29 @@ mod tests {
     ///
     /// Before the backends stopped being `#[cfg]`-gated into existence, three
     /// of these four could not even be *named* here.
+    ///
+    /// The arena reads a uniform, so each backend's `ResolvedOp::Uniform`
+    /// dispatch arm — not only the encoder behind it — is what emits here.
     #[test]
     fn every_backend_emits_from_this_host() {
-        use pixelflow_ir::arena::ExprArena;
+        use pixelflow_ir::arena::{ExprArena, UniformDecl, UniformIdentity};
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let y = a.push_var(1);
-        let root = a.push_binary(OpKind::Add, a.clone().push_var(0).max(x).min(x), y);
+        let u = a.declare_uniform(UniformDecl {
+            id: UniformIdentity::mint(),
+            default: 1.0,
+        });
+        let u = a.push_uniform(u);
+        let scaled = a.push_binary(OpKind::Mul, y, u);
+        let root = a.push_binary(OpKind::Add, a.clone().push_var(0).max(x).min(x), scaled);
         let (a, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
+        assert!(
+            arena_to_schedule(&a, root)
+                .iter()
+                .any(|d| matches!(d.op, ScheduledOp::Uniform(_))),
+            "the schedule must carry the uniform load for the backends to dispatch on"
+        );
 
         let ctx = EmitCtx::default();
         let mut neon = aarch64::driver::Aarch64Backend::new(ctx.clone());

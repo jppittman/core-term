@@ -50,9 +50,8 @@ fn circle(declared_in_order: bool) -> (ExprArena, ExprId) {
 fn a_thousand_circles_is_one_compile() {
     const SHAPE: LatticeShape = LatticeShape::new([64, 64, 1, 1]);
     let before = entry_count();
-    let first = compile(&circle(true).0, circle(true).1, SHAPE)
-        .expect("compile")
-        .kernel;
+    let (a, root) = circle(true);
+    let first = compile(&a, root, SHAPE).expect("compile").kernel;
     let after_first = entry_count();
     assert_eq!(after_first - before, 1, "the first circle compiles once");
     for i in 1..1000 {

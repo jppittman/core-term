@@ -114,7 +114,7 @@ pub fn compile(
         if buffers.is_empty() && uniforms.is_empty() {
             return emit::compile(arena, root);
         }
-        let linked = arena.relink(&buffers, &uniforms);
+        let (linked, root) = arena.relink(root, &buffers, &uniforms);
         emit::compile(&linked, root)
     };
 
@@ -532,16 +532,61 @@ mod tests {
         assert_eq!(a.uniforms(), &[r, cy, cx], "declared in the other order");
         let Canonical { uniforms, .. } = canonical(&a, root);
         assert_eq!(uniforms, [cx, r, cy]);
-        let linked = a.relink(&[], &uniforms);
+        let (linked, lroot) = a.relink(root, &[], &uniforms);
         assert_eq!(linked.uniforms(), &[cx, r, cy]);
         assert_eq!(
             linked.nodes_raw().len(),
             a.nodes_raw().len(),
-            "relinking touches tables, not nodes"
+            "every node here is reachable, so relinking keeps them all"
+        );
+        assert_eq!(
+            canonical(&linked, lroot).key,
+            canonical(&a, root).key,
+            "relinking changes no structure"
         );
         // Both declaration orders canonicalize to one key — the shape, not
         // the table, is what the code is a function of.
         let (b, broot, _) = circle_of(true);
         assert_eq!(canonical(&a, root).key, canonical(&b, broot).key);
+    }
+
+    /// A table naming an instance the graph never reads — what `Kernel::at`
+    /// leaves behind for every axis the receiver does not read — must link.
+    /// The link omits it; the relink drops it with the garbage. Forced down
+    /// the optimizer's bail path (`RawGather` is post-lowering, so the
+    /// e-graph declines and the input arena, table and all, is what gets
+    /// linked), which is where an unreachable declaration used to panic.
+    #[test]
+    fn a_declared_but_unread_uniform_links_on_the_bail_path() {
+        let decl = |default| UniformDecl {
+            id: UniformIdentity::mint(),
+            default,
+        };
+        let (phase, scale) = (decl(0.0), decl(2.0));
+        let mut a = ExprArena::new();
+        let buf = a.declare_buffer(BufferDecl {
+            id: BufferIdentity::mint(),
+            width: 4,
+            height: 1,
+        });
+        // Declared and read by a node nothing reaches — the `.at` shape.
+        let dead = a.declare_uniform(phase);
+        let _dead_read = a.push_uniform(dead);
+        let live = a.declare_uniform(scale);
+        let x = a.push_var(0);
+        let b = a.push_buffer(buf);
+        let g = a.push_binary(OpKind::RawGather, b, x);
+        let s = a.push_uniform(live);
+        let root = a.push_binary(OpKind::Mul, g, s);
+        assert_eq!(a.uniforms().len(), 2, "the table names both");
+
+        let linked =
+            compile(&a, root, TEST_SHAPE).expect("a dead declaration must not refuse to link");
+        assert_eq!(
+            linked.uniforms,
+            [scale],
+            "the link holds what the graph reads"
+        );
+        assert_eq!(linked.buffers.len(), 1);
     }
 }

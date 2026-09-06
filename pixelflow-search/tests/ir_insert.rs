@@ -101,15 +101,11 @@ fn a_uniform_survives_the_optimizer_unfolded() {
         "`u + 1` was folded with the default into 3: {}",
         oa.display(oroot)
     );
-    for (block, x) in [
-        (None, 5.0f32),
-        (Some(&[4.0f32][..]), 5.0),
-        (Some(&[-1.5][..]), 0.25),
-    ] {
+    for (block, x) in [(None, 5.0f32), (Some(4.0f32), 5.0), (Some(-1.5), 0.25)] {
         let bind = |arena: &ExprArena| {
             let t = BindingTable::bind(arena, &[]).expect("no buffers");
             match block {
-                Some(b) => t.with_uniforms(b),
+                Some(v) => t.bind_uniforms(arena, &[(u.id, v)]).expect("u is declared"),
                 None => t,
             }
         };

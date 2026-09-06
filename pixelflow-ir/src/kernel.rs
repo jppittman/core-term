@@ -911,7 +911,9 @@ mod tests {
         let (arena, root) = k.parts();
         assert_eq!(arena.uniforms(), &[cx.decl(), r.decl()]);
         assert_eq!(eval(&k, 3.0, 0.0), 4.0 + 4.0);
-        let bound = BindingTable::empty().with_uniforms(&[0.0, 1.0]);
+        let bound = BindingTable::empty()
+            .bind_uniforms(arena, &[(cx.identity(), 0.0), (r.identity(), 1.0)])
+            .expect("both are arguments");
         assert_eq!(
             eval_scalar(arena, root, &[3.0, 0.0, 0.0, 0.0], &bound),
             10.0
