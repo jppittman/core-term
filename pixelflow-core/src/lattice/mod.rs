@@ -278,7 +278,9 @@ impl Lattice {
 
     /// Compile a [`Kernel`](pixelflow_ir::Kernel) at this lattice's shape, bind
     /// nothing, and collapse it: `collapse(compile(k).bind(&[]))` in one line,
-    /// for the buffer-free case that is most of the tree.
+    /// for the buffer-free case that is most of the tree. Every uniform
+    /// argument the kernel has is bound at its default; bit for bit the same
+    /// bake as a block holding those defaults.
     ///
     /// Compilation goes through the global cache, and the compile entry runs
     /// the optimizer itself, so a runtime-composed kernel
