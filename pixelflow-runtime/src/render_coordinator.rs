@@ -299,29 +299,31 @@ mod tests {
     use crate::api::public::WindowId;
     use crate::display::messages::Surface;
     use crate::display::window_keeper::WindowKeeper;
-    use pixelflow_core::Field;
-    use pixelflow_core::{Discrete, Manifold};
+    use pixelflow_core::Kernel;
     use pixelflow_graphics::render::rasterizer::RenderResponse;
+    use pixelflow_graphics::render::scene::compile_platform_packed;
+    use pixelflow_graphics::render::Frame;
 
-    /// A manifold that ignores its input — the coordinator never samples it, it only decides
-    /// whether to wrap it.
-    #[derive(Clone, Copy)]
-    struct Flat;
-
-    impl Manifold<(Field, Field, Field, Field)> for Flat {
-        type Output = Discrete;
-        fn eval(&self, _p: (Field, Field, Field, Field)) -> Discrete {
-            Discrete::pack(
-                Field::from(0.0),
-                Field::from(0.0),
-                Field::from(0.0),
-                Field::from(1.0),
-            )
-        }
-    }
+    /// The lattice the fixture scenes are compiled for, and the size of every
+    /// window the 1:1 tests grant.
+    const FIXTURE_FRAME: [u32; 2] = [100, 100];
 
     fn scene() -> Scene {
-        Scene::Surface(Arc::new(Flat))
+        crate::testing::black_scene(FIXTURE_FRAME)
+    }
+
+    /// A scene whose pixels depend on where they are sampled, so a coordinate
+    /// transform applied on the way to the rasterizer would show up in them.
+    fn ramp_scene(frame: [u32; 2]) -> Scene {
+        let k = Kernel::constant;
+        let axis = |v: Kernel, extent: u32| v.mul(&k(1.0 / extent as f32));
+        let channels = [
+            axis(Kernel::x(), frame[0]),
+            axis(Kernel::y(), frame[1]),
+            k(0.0),
+            k(1.0),
+        ];
+        Scene::Packed(compile_platform_packed(&channels, frame).bind(&[]))
     }
 
     /// A keeper holding one buffer at the given logical size, sampled 1:1.
@@ -509,45 +511,41 @@ mod tests {
         assert_requests_window(coord.submit(scene()));
     }
 
-    /// The HiDPI case the design doc calls out as uncovered: the scene is authored in points and
-    /// the frame is the device lattice, so a denser frame has to be contramapped or it renders at
-    /// half density.
+    /// The HiDPI case the design doc calls out as uncovered: the frame is the device lattice
+    /// and may be denser than the surface's logical size.
     ///
-    /// This pins the *decision*, not the numeric scale — reading the ratio back out of the bound
-    /// manifold would mean sampling a `Field`, and lane access is deliberately not public. The
-    /// branch is what the doc warns about: forwarding unchanged is invisible on a 1:1 monitor and
-    /// wrong on every Retina one.
+    /// A packed scene answers it by construction rather than at bind time — its kernels were
+    /// compiled against the frame's own lattice, so an author working in points precomposed the
+    /// points-per-pixel embedding with `Kernel::at` before compiling — which means the
+    /// coordinator must hand it through UNTOUCHED at every scale. Rendering the scene as bound
+    /// and as submitted and demanding identical pixels is what catches a transform sneaking back
+    /// in: a wrap would resample the ramp and every pixel would move.
     #[test]
-    fn a_retina_frame_warps_the_scene_and_a_1_1_frame_does_not() {
-        // 1:1 — the scene must arrive at the rasterizer untouched.
-        let mut coord = RenderCoordinator::new();
-        let flat = scene();
-        assert_requests_window(coord.submit(flat.clone()));
-        coord.request_sent();
-        let request = expect_render(coord.granted(one_to_one_window()));
-        let (Scene::Surface(got), Scene::Surface(sent)) = (&request.scene, &flat) else {
-            panic!("surface scenes in, surface scenes out");
-        };
-        assert!(
-            Arc::ptr_eq(got, sent),
-            "a 1:1 frame needs no warp, so the scene should pass through unwrapped"
-        );
+    fn a_packed_scene_reaches_the_rasterizer_in_the_frames_own_space() {
+        for (logical, frame_px, scale) in
+            [((100, 100), (100, 100), 1.0), ((100, 100), (200, 200), 2.0)]
+        {
+            let mut coord = RenderCoordinator::new();
+            let submitted = ramp_scene([frame_px.0, frame_px.1]);
+            assert_requests_window(coord.submit(submitted.clone()));
+            coord.request_sent();
+            let request =
+                expect_render(coord.granted(grant_from(&mut keeper_at(logical, frame_px, scale))));
+            assert_eq!(
+                (request.frame.width as u32, request.frame.height as u32),
+                frame_px
+            );
 
-        // 2:1 — 100 points across a 200-pixel frame.
-        let mut coord = RenderCoordinator::new();
-        let flat = scene();
-        assert_requests_window(coord.submit(flat.clone()));
-        coord.request_sent();
-        let retina = grant_from(&mut keeper_at((100, 100), (200, 200), 2.0));
-        let request = expect_render(coord.granted(retina));
-        assert_eq!((request.frame.width, request.frame.height), (200, 200));
-        let (Scene::Surface(got), Scene::Surface(sent)) = (&request.scene, &flat) else {
-            panic!("surface scenes in, surface scenes out");
-        };
-        assert!(
-            !Arc::ptr_eq(got, sent),
-            "a Retina frame must be contramapped by points/pixels, not forwarded as authored"
-        );
+            let mut bound = Frame::<PlatformPixel>::new(frame_px.0, frame_px.1);
+            request.scene.render(&mut bound, 1);
+            let mut authored = Frame::<PlatformPixel>::new(frame_px.0, frame_px.1);
+            submitted.render(&mut authored, 1);
+            assert_eq!(
+                bound.data, authored.data,
+                "a packed scene is device-pixel space; binding it to a {scale}x frame must not \
+                 transform it"
+            );
+        }
     }
 
     /// The metadata rides with the request and comes back untouched, which is what deleted the
