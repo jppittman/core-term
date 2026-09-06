@@ -8,7 +8,7 @@
 //!            │                               ▲
 //!            │  compile_packed_for::<P>      │
 //!            ▼                               │
-//!     PackedProgram  ──bind(buffers)──▶  PackedFrame
+//!     PackedManifold  ──bind(buffers)──▶  PackedFrame
 //!                                            │
 //!                             Scene::render: one collapse call per stripe
 //! ```

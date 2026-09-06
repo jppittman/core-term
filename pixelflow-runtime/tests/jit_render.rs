@@ -3,12 +3,14 @@
 //! as `kernel_jit!` arena kernels, tabulated over the frame's own pixel-center
 //! lattice.
 //!
-//! Neither tier has a per-batch entry any more. The arena tier never did —
-//! `kernel_jit!` produces a `Kernel` and a `Kernel` becomes numbers through
-//! `Lattice::bake`, which hands the compiler the whole loop nest — and since
-//! S4a the combinator tier's only way out is `Lattice::collapse`, the
-//! rasterizer that used to sample it a SIMD batch at a time being gone. So
-//! both sides here are planes over the same lattice, compared at the 8-bit
+//! The arena tier has no per-batch entry: `kernel_jit!` produces a `Kernel`,
+//! and a `Kernel` becomes numbers by being compiled at a lattice's shape and
+//! collapsed — `Lattice::bake` here, which hands the compiler the whole loop
+//! nest. The combinator tier has no tabulation entry at all since S4b-1
+//! retargeted `Lattice::collapse` onto the compiled manifold, so its plane is
+//! filled by this test's own loop over `Manifold::eval`, exactly as
+//! `kernel_routing_parity` does: a test owns its loop, and that is not an API.
+//! Both sides are then planes over the same lattice, compared at the 8-bit
 //! precision a frame would have shown.
 //!
 //! The colour pack is not part of the comparison and never was the claim: a
@@ -17,7 +19,8 @@
 //! that pack against the scalar one.
 
 use pixelflow_compiler::{kernel, kernel_jit};
-use pixelflow_core::Lattice;
+use pixelflow_core::combinator::Manifold;
+use pixelflow_core::{Field, Lattice};
 
 const W: u32 = 64;
 const H: u32 = 64;
@@ -28,6 +31,32 @@ const H: u32 = 64;
 /// conventions.
 fn to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0) as u8
+}
+
+/// Lane 0 of a batch — all this test ever asks a combinator for, since it
+/// evaluates one point at a time.
+fn lane0(f: Field) -> f32 {
+    unsafe { core::mem::transmute_copy(&f) }
+}
+
+/// The combinator tier's plane over `lattice`, row-major, this test's own
+/// loop. There is no library entry that does this and there is not meant to
+/// be one.
+fn tabulate(
+    m: &impl Manifold<(Field, Field, Field, Field), Output = Field>,
+    lattice: &Lattice,
+) -> Vec<f32> {
+    (0..lattice.len())
+        .map(|i| {
+            let (x, y, z, w) = lattice.coord(i);
+            lane0(m.eval((
+                Field::from(x),
+                Field::from(y),
+                Field::from(z),
+                Field::from(w),
+            )))
+        })
+        .collect()
 }
 
 #[test]
@@ -53,9 +82,9 @@ fn baked_jit_channels_match_the_combinator_render() {
     };
 
     let combo = [
-        lattice.collapse(&kernel!(|| X * 0.015)()),
-        lattice.collapse(&kernel!(|| Y * 0.015)()),
-        lattice.collapse(&kernel!(|| (X * X + Y * Y).sqrt() * 0.011)()),
+        tabulate(&kernel!(|| X * 0.015)(), &lattice),
+        tabulate(&kernel!(|| Y * 0.015)(), &lattice),
+        tabulate(&kernel!(|| (X * X + Y * Y).sqrt() * 0.011)(), &lattice),
     ];
     let baked = [
         lattice.bake(&kernel_jit!(|| X * 0.015)),
@@ -70,7 +99,7 @@ fn baked_jit_channels_match_the_combinator_render() {
     let mut max_diff = 0u8;
     let mut worst = (0usize, 0u8, 0u8);
     for (combo, baked) in combo.iter().zip(baked.iter()) {
-        for (i, (c, b)) in combo.buffer().iter().zip(baked.buffer()).enumerate() {
+        for (i, (c, b)) in combo.iter().zip(baked.buffer()).enumerate() {
             let (c, b) = (to_u8(*c), to_u8(*b));
             let d = c.abs_diff(b);
             if d > max_diff {

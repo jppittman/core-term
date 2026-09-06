@@ -1,12 +1,12 @@
 //! # Lattice: Representable Functor for Kernel Evaluation
 //!
-//! A Lattice is a finite box domain that tabulates a [`Kernel`] into a
-//! discrete buffer. This is the `tabulate`/`index` pair from representable
-//! functors:
+//! A Lattice is a finite box domain that tabulates a [`Manifold`] — a
+//! [`Kernel`] compiled at that domain's shape — into a discrete buffer. This
+//! is the `tabulate`/`index` pair from representable functors:
 //!
-//! - **[`Lattice::bake`]** = `tabulate`: `(Rep -> a) -> F a` -- the kernel at every point
+//! - **[`Lattice::collapse`]** = `tabulate`: `(Rep -> a) -> F a` -- the manifold at every point
 //! - **`DiscreteManifold::eval`** = `index`: `F a -> Rep -> a` -- read back by coordinate
-//! - **Isomorphism**: `index(bake(k, domain), i) = k(coord(i))` (up to discretization)
+//! - **Isomorphism**: `index(collapse(m), i) = m(coord(i))` (up to discretization)
 //!
 //! Nothing computes until a Lattice demands it. A single-point evaluation is
 //! just `Lattice::point` -- the degenerate case with all coordinates fixed.
@@ -17,17 +17,24 @@
 //! for common shapes -- the shape is data, not a type. Extents only need to
 //! be static at JIT-compile time, which is when the kernel is specialized.
 //!
-//! A kernel with a lattice is the evaluation API: `bake` compiles ONE kernel
-//! for the whole domain and the loop nest lives inside the emitted code, so
-//! the compiler owns the hoisting and the register allocation across all of
-//! it. Reductions are a binder in the kernel (`Kernel::over` and friends),
-//! not a fold the lattice performs over a manifold.
+//! A kernel with a lattice is the evaluation API:
+//!
+//! ```text
+//! kernel ──compile(shape)──▶ manifold ──bind(buffers)──▶ bound ──collapse──▶ buffer
+//! ```
+//!
+//! One kernel is compiled for the whole domain and the loop nest lives inside
+//! the emitted code, so the compiler owns the hoisting and the register
+//! allocation across all of it. [`Lattice::bake`] is that line for a kernel
+//! that reads no memory. Reductions are a binder in the kernel
+//! (`Kernel::over` and friends), not a fold the lattice performs.
 //!
 //! [`Kernel`]: pixelflow_ir::Kernel
+//! [`Manifold`]: crate::Manifold
 
+use crate::Field;
 use crate::combinator::Manifold;
 use crate::numeric::Numeric;
-use crate::{Field, PARALLELISM};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -268,172 +275,79 @@ impl Lattice {
         )
     }
 
-    // ──────────────── collapse (the per-batch remnant) ───────────────
+    // ─────────────────────── collapse ────────────────────────
 
-    /// Evaluate a manifold at every point in the domain by calling its
-    /// `eval` once per SIMD batch. Returns a discrete manifold (buffer
-    /// lookup) with `width = extent[0]` and `height` = the product of the
-    /// remaining extents.
+    /// **Tabulate a bound manifold over this domain**: the one verb, and the
+    /// only way a compiled kernel becomes a buffer of numbers.
     ///
-    /// **Not the evaluation API.** [`Lattice::bake`] is: it hands the
-    /// compiler the kernel and the whole loop nest, where this makes one call
-    /// per SIMD batch. Every caller that can bake, bakes.
+    /// The manifold must have been compiled at this lattice's extents
+    /// ([`Manifold::compile`](crate::Manifold::compile)) and had every buffer
+    /// slot it declared bound ([`Manifold::bind`](crate::Manifold::bind)).
+    /// Samples are taken at `origin + index` on every axis.
     ///
-    /// What keeps this alive is the glyph cache's `CachedGlyph`, whose tests
-    /// tabulate it and which cannot be baked for two independent reasons:
-    /// it has no [`Lower`](pixelflow_ir::Lower) or `Kernel` form (it is in
-    /// the same "does not lower yet" class as `Color`, `spatial_bsp` and
-    /// `scene3d`), and its coverage lives in a buffer while `bake` binds no
-    /// memory and refuses a kernel that declares one. Writing a `Kernel`
-    /// twin of its `eval` would move the tested definition off the one the
-    /// rasterizer actually runs, so it waits for the stage that makes the
-    /// combinators lower. No new caller.
-    pub fn collapse<M>(&self, manifold: &M) -> DiscreteManifold
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
+    /// The X/Y loop nest lives *inside* the emitted code, so each `(z, w)`
+    /// plane's full-width band is one call rather than one `extern "C"` call
+    /// per row or SIMD batch; a domain with Z or W extent above 1 is one such
+    /// call per plane, because a band lies in a plane. The result is a
+    /// [`DiscreteManifold`] of `width = extent[0]` rows and `height` = the
+    /// product of the remaining extents — the buffer that IS a manifold, which
+    /// closes `index(collapse(f)) = f`.
+    ///
+    /// An empty domain collapses to an empty buffer without calling anything.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[must_use]
+    pub fn collapse(&self, manifold: &manifold::BoundManifold) -> DiscreteManifold {
         let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
         let mut buffer = vec![0.0f32; self.len()];
-        let mut packed = [0.0f32; PARALLELISM];
-        let step = Field::from(PARALLELISM as f32);
-
-        let mut row = 0usize;
+        let mut plane = 0usize;
         for w in 0..ew {
-            let w_field = Field::from(self.origin[3] + w as f32);
             for z in 0..ez {
-                let z_field = Field::from(self.origin[2] + z as f32);
-                for y in 0..ey {
-                    let y_field = Field::from(self.origin[1] + y as f32);
-                    let row_offset = row * ex;
-                    let mut x = 0usize;
-                    let mut x_field = Field::sequential(self.origin[0]);
-
-                    // SIMD hot path: full batches of PARALLELISM points.
-                    while x + PARALLELISM <= ex {
-                        let result = manifold.eval((x_field, y_field, z_field, w_field));
-                        result.store(&mut packed);
-                        buffer[row_offset + x..row_offset + x + PARALLELISM]
-                            .copy_from_slice(&packed);
-                        x += PARALLELISM;
-                        x_field = x_field.raw_add(step);
-                    }
-
-                    // SIMD tail: evaluate the last partial batch.
-                    if x < ex {
-                        let result = manifold.eval((x_field, y_field, z_field, w_field));
-                        result.store(&mut packed);
-                        let tail_len = ex - x;
-                        buffer[row_offset + x..row_offset + ex]
-                            .copy_from_slice(&packed[..tail_len]);
-                    }
-                    row += 1;
+                if !self.is_empty() {
+                    let origin = [
+                        self.origin[0],
+                        self.origin[1],
+                        self.origin[2] + z as f32,
+                        self.origin[3] + w as f32,
+                    ];
+                    let band = manifold::PlaneRegion::from_origin(ex, ey, origin);
+                    manifold.collapse_rows(band, &mut buffer[plane * ey * ex..], ex);
                 }
+                plane += 1;
             }
         }
-
         DiscreteManifold::new(buffer, ex, ey * ez * ew)
     }
 
-    /// Bake a [`Kernel`](pixelflow_ir::Kernel) — the front-end value — over the
-    /// domain: JIT-compile it once (through the global cache) and tabulate. The
-    /// JIT-first path: no combinator manifold, no `Lower`, just the arena the
-    /// `Kernel` already carries. Its `Dwrt` derivatives are resolved by the
-    /// compiler during codegen. Falls back to nothing — a `Kernel` is always
-    /// an arena, always compilable — except when this build's `Field` width is
-    /// not the JIT's, where it panics rather than silently mis-tabulating.
+    /// Compile a [`Kernel`](pixelflow_ir::Kernel) at this lattice's shape, bind
+    /// nothing, and collapse it: `collapse(compile(k).bind(&[]))` in one line,
+    /// for the buffer-free case that is most of the tree.
     ///
-    /// Runtime-composed kernels (`Kernel::over`/`.at()`/arithmetic) never run
-    /// through the `kernel!`/`kernel_jit!` macros' e-graph saturation. They do
-    /// not need to be optimized here either: the compile entry runs the
-    /// optimizer itself, so there is no arena shape that reaches a backend
-    /// unoptimized and no caller that has to remember to ask.
+    /// Compilation goes through the global cache, and the compile entry runs
+    /// the optimizer itself, so a runtime-composed kernel
+    /// (`Kernel::over`/`.at()`/arithmetic) — which never sees the
+    /// `kernel!`/`kernel_jit!` macros' e-graph saturation — still reaches the
+    /// backend optimized, with no caller having to remember to ask. `Dwrt`
+    /// derivatives are resolved during codegen.
     ///
-    /// The compiled form is the collapse kernel: the X/Y loop nest lives
-    /// *inside* the emitted code, so each Z/W plane's full-width region is one
-    /// call rather than one `extern "C"` call per row or SIMD batch. Scalar
-    /// tails remain explicit one-batch calls into scratch storage.
+    /// # Panics
+    ///
+    /// Panics if the kernel **declares a buffer**: binding nothing leaves that
+    /// slot empty, and [`Manifold::bind`](crate::Manifold::bind) refuses it by
+    /// name rather than letting the gathers load a base pointer out of an
+    /// unbound context. Compile such a kernel yourself and bind its memory.
+    /// Also panics if this build's `Field` width is not the JIT's, or if
+    /// compilation fails.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[must_use]
     pub fn bake(&self, kernel: &pixelflow_ir::Kernel) -> DiscreteManifold {
-        assert_eq!(
-            core::mem::size_of::<Field>(),
-            pixelflow_codegen::JIT_VECTOR_BYTES,
-            "Lattice::bake: Field width does not match the JIT's emitted width"
-        );
-        let (arena, root) = kernel.parts();
-        let jit = pixelflow_codegen::jit_cache::compile(
-            arena,
-            root,
-            pixelflow_ir::LatticeShape::new(self.extent),
-        )
-        .expect("kernel failed to compile");
-
-        let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
-        let mut buffer = vec![0.0f32; self.len()];
-        let full_groups = ex / PARALLELISM;
-        let tail = ex % PARALLELISM;
-        // Nothing here binds memory, so the context register must never be
-        // read. A kernel composed with a sampler (`BilinearSampler::kernel`)
-        // does declare buffers, and its gathers would load base pointers out
-        // of this null — refuse it here rather than fault in emitted code.
-        assert!(
-            arena.buffers().is_empty(),
-            "Lattice::bake: kernel declares {} buffer(s), but bake binds none. \
-             Bake a buffer-free kernel, or evaluate the sampler through a path \
-             that binds its memory.",
-            arena.buffers().len()
-        );
-        let ctx = core::ptr::null();
-        let x0 = Field::sequential(self.origin[0]);
-        let x_tail = Field::sequential(self.origin[0] + (full_groups * PARALLELISM) as f32);
-
-        let mut row = 0usize;
-        for w in 0..ew {
-            let w_field = Field::from(self.origin[3] + w as f32);
-            for z in 0..ez {
-                let z_field = Field::from(self.origin[2] + z as f32);
-                let plane_offset = row * ex;
-                if full_groups > 0 && ey > 0 {
-                    let y0 = Field::from(self.origin[1]);
-                    // SAFETY: bake checked size_of::<Field>() == the JIT's
-                    // emitted width. The 2D collapse writes `full_groups`
-                    // batches per row, then skips the scalar tail bytes before
-                    // advancing Y; `ey` rows fit in this Z/W plane.
-                    unsafe {
-                        jit.call_collapse(
-                            ctx,
-                            pixelflow_codegen::TileSlice::new(
-                                buffer[plane_offset..].as_mut_ptr(),
-                                full_groups,
-                                ey,
-                                tail * core::mem::size_of::<f32>(),
-                            ),
-                            pixelflow_codegen::Point4::new(x0, y0, z_field, w_field),
-                        );
-                    }
-                }
-                for y in 0..ey {
-                    let y_field = Field::from(self.origin[1] + y as f32);
-                    let row_offset = row * ex;
-                    if tail > 0 {
-                        let mut scratch = [0.0f32; PARALLELISM];
-                        // SAFETY: as above; scratch holds one whole batch.
-                        unsafe {
-                            jit.call_collapse(
-                                ctx,
-                                pixelflow_codegen::TileSlice::single(scratch.as_mut_ptr()),
-                                pixelflow_codegen::Point4::new(x_tail, y_field, z_field, w_field),
-                            );
-                        }
-                        buffer[row_offset + full_groups * PARALLELISM..row_offset + ex]
-                            .copy_from_slice(&scratch[..tail]);
-                    }
-                    row += 1;
-                }
-            }
+        if self.is_empty() {
+            // No samples, so no code: there is no lattice for the JIT to
+            // specialize to, and `Manifold::compile` refuses the degenerate
+            // extent rather than emitting a loop that runs zero times.
+            let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
+            return DiscreteManifold::new(Vec::new(), ex, ey * ez * ew);
         }
-
-        DiscreteManifold::new(buffer, ex, ey * ez * ew)
+        self.collapse(&manifold::Manifold::compile(kernel, self.extent).bind(&[]))
     }
 }
 
@@ -441,7 +355,7 @@ impl Lattice {
 pub mod cell_grid;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub mod plane;
+pub mod manifold;
 
 #[cfg(test)]
 mod tests;
@@ -612,6 +526,24 @@ impl DiscreteManifold {
         let (x, y) = (a.push_var(0), a.push_var(1));
         let root = a.push_gather(buf, x, y);
         pixelflow_ir::Kernel::from_parts(a, root)
+    }
+
+    /// This buffer paired with the identity [`Self::kernel`] declared, ready
+    /// for [`Manifold::bind`](crate::Manifold::bind).
+    ///
+    /// A kernel over a buffer names its memory by identity and nothing else,
+    /// so the two halves have to travel together to reach a collapse; this is
+    /// the other half. The buffer is copied into the `Arc` a bound manifold
+    /// holds — once per bind, not once per band — because a collapsed lattice
+    /// owns its samples outright.
+    #[must_use]
+    pub fn binding(
+        &self,
+    ) -> (
+        pixelflow_ir::arena::BufferIdentity,
+        alloc::sync::Arc<Vec<f32>>,
+    ) {
+        (self.id, alloc::sync::Arc::new(self.buffer.clone()))
     }
 
     /// This buffer's nearest-neighbour read as a composable fragment. See

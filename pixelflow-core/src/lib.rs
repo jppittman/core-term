@@ -230,7 +230,7 @@ pub use storage::{FieldStorage, NativeMaskStorage};
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 //
 // The `Manifold` *trait* is deliberately absent: the crate-root `Manifold` is
-// the compiled object (see `lattice::plane`). The trait is
+// the compiled object (see [`lattice::manifold`]). The trait is
 // `combinator::Manifold`.
 pub use combinator::{ManifoldCompat, Scale, Thunk, scale};
 pub use numeric::{Computational, Coordinate, Selectable};
@@ -279,7 +279,7 @@ pub use lattice::cell_grid::{
     CELL_STRIDE, CellGridBuffers, CellGridFrame, CellGridGeometry, CellGridKernels, CellGridProgram,
 };
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub use lattice::plane::{MAX_BOUND_BUFFERS, PlaneFrame, PlaneProgram, PlaneRegion};
+pub use lattice::manifold::{BoundManifold, MAX_BOUND_BUFFERS, Manifold, PlaneRegion};
 pub use lattice::{DiscreteManifold, Lattice};
 
 // ============================================================================

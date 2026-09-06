@@ -1,4 +1,5 @@
 use super::*;
+use crate::PARALLELISM;
 use pixelflow_ir::Kernel;
 
 // The kernels the tabulation tests bake. Written as `Kernel` arithmetic —

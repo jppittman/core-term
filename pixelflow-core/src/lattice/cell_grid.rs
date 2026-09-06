@@ -46,7 +46,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::plane::{PlaneFrame, PlaneProgram, PlaneRegion};
+use super::manifold::{BoundManifold, Manifold, PlaneRegion};
 use super::{BilinearSampler, DiscreteManifold};
 use pixelflow_ir::Kernel;
 use pixelflow_ir::arena::BufferIdentity;
@@ -267,7 +267,7 @@ pub struct CellGridKernels {
 ///
 /// Panics on a degenerate geometry: zero cells, non-positive cell extent or
 /// density, or an empty atlas. Buffers too large to index exactly in `f32`
-/// are refused by [`PlaneProgram::compile`], which sees every declared
+/// are refused by [`Manifold::compile`], which sees every declared
 /// buffer's real extents rather than this geometry's idea of them.
 fn assert_compilable(geom: &CellGridGeometry) {
     assert!(
@@ -305,7 +305,7 @@ fn assert_compilable(geom: &CellGridGeometry) {
 pub struct CellGridProgram {
     geom: CellGridGeometry,
     buffers: CellGridBuffers,
-    channels: [PlaneProgram; 4],
+    channels: [Manifold; 4],
 }
 
 impl CellGridProgram {
@@ -320,11 +320,11 @@ impl CellGridProgram {
     #[must_use]
     pub fn compile(geom: CellGridGeometry, default_bg: [f32; 4]) -> Self {
         let CellGridKernels { channels, buffers } = geom.channel_kernels(default_bg);
-        let extent = [geom.frame_w, geom.frame_h];
+        let extent = [geom.frame_w, geom.frame_h, 1, 1];
         Self {
             geom,
             buffers,
-            channels: channels.map(|kernel| PlaneProgram::compile(&kernel, extent)),
+            channels: channels.map(|kernel| Manifold::compile(&kernel, extent)),
         }
     }
 
@@ -355,13 +355,13 @@ impl CellGridProgram {
 /// Cheap to clone.
 #[derive(Clone)]
 pub struct CellGridFrame {
-    channels: [PlaneFrame; 4],
+    channels: [BoundManifold; 4],
 }
 
 impl CellGridFrame {
     /// Collapse one color channel (0 = R, 1 = G, 2 = B, 3 = A) over the pixel
     /// rows `y0 .. y0 + rows` at pixel-center coordinates, into a plane whose
-    /// rows are `stride` samples apart — see [`PlaneFrame::collapse_rows`].
+    /// rows are `stride` samples apart — see [`BoundManifold::collapse_rows`].
     ///
     /// # Panics
     ///

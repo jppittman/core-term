@@ -12,7 +12,7 @@ use actor_scheduler::{
     SystemStatus,
 };
 use pixelflow_core::CellGridGeometry;
-use pixelflow_graphics::render::cell_grid::CellGridPackedProgram;
+use pixelflow_graphics::render::cell_grid::CellGridPackedManifold;
 use pixelflow_graphics::render::scene::{constant_platform_scene, Scene};
 
 /// Adapter to send PTY commands to TerminalApp actor.
@@ -116,7 +116,7 @@ pub struct TerminalApp {
     /// frame's pixel size — changes; `None` until the first frame. This is the JIT answer to
     /// dynamic resize: the program's size and compile time are independent
     /// of the grid's.
-    program: Option<CellGridPackedProgram>,
+    program: Option<CellGridPackedManifold>,
     /// The solid-background scene and the device-pixel frame it was compiled
     /// for. Only ever drawn before anything has been presented (see
     /// [`TerminalApp::build_scene`]); cached because a `Scene` is a compiled
@@ -420,7 +420,7 @@ impl TerminalApp {
             frame_w: frame_px[0],
             frame_h: frame_px[1],
         };
-        if self.program.as_ref().map(CellGridPackedProgram::geometry) != Some(&geom) {
+        if self.program.as_ref().map(CellGridPackedManifold::geometry) != Some(&geom) {
             log::info!(
                 "Compiling cell-grid scene: {}x{} cells, cell {}x{} pt, atlas {}x{} texels",
                 cols,

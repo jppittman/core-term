@@ -16,13 +16,13 @@
 //! computes is shared from each select's point of view, and none of it can be
 //! skipped.
 //!
-//! The layer below ([`pixelflow_core::PlaneProgram`]) is the same object with
+//! The layer below ([`pixelflow_core::Manifold`]) is the same object with
 //! one channel and no pack — it knows lattices, buffers and bit patterns and
 //! nothing about colour. This is where byte lanes and pixel formats begin.
 
 use std::sync::Arc;
 
-use pixelflow_core::{PlaneFrame, PlaneProgram, PlaneRegion};
+use pixelflow_core::{BoundManifold, Manifold, PlaneRegion};
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
 use pixelflow_ir::{Bits, Kernel};
 
@@ -73,15 +73,15 @@ pub(crate) fn packed_kernel(color: &Rgba, shifts: [u32; 4]) -> Kernel {
 /// loop stores finished pixels directly.
 ///
 /// Compile once per (channels, format, frame extent); bind whatever memory the
-/// channels read per frame ([`PackedProgram::bind`]).
-pub struct PackedProgram {
+/// channels read per frame ([`PackedManifold::bind`]).
+pub struct PackedManifold {
     /// The byte lanes this kernel packs into. A frame stores raw words, so
     /// whoever consumes them must confirm their format agrees.
     shifts: [u32; 4],
-    program: PlaneProgram,
+    program: Manifold,
 }
 
-impl PackedProgram {
+impl PackedManifold {
     /// Compose and JIT-compile the packed program for a colour over an
     /// `extent[0] × extent[1]` pixel frame.
     ///
@@ -92,7 +92,7 @@ impl PackedProgram {
     ///
     /// Panics on shifts that are not a permutation of the four byte lanes
     /// (channels would overlap), on a degenerate extent, or for anything
-    /// [`PlaneProgram::compile`] refuses — too many buffer slots, a buffer
+    /// [`Manifold::compile`] refuses — too many buffer slots, a buffer
     /// past exact `f32` indexing, a `Field` width that does not match the
     /// JIT's, or a compile failure.
     #[must_use]
@@ -103,13 +103,13 @@ impl PackedProgram {
             assert_eq!(
                 lanes,
                 [0, 8, 16, 24],
-                "PackedProgram::compile: shifts {shifts:?} are not a \
+                "PackedManifold::compile: shifts {shifts:?} are not a \
                  permutation of the byte lanes; channels would overlap"
             );
         }
         Self {
             shifts,
-            program: PlaneProgram::compile(&packed_kernel(color, shifts), extent),
+            program: Manifold::compile(&packed_kernel(color, shifts), [extent[0], extent[1], 1, 1]),
         }
     }
 
@@ -119,10 +119,11 @@ impl PackedProgram {
         self.shifts
     }
 
-    /// The pixel extents this program was compiled for.
+    /// The pixel extents this manifold was compiled for.
     #[must_use]
     pub fn extent(&self) -> [u32; 2] {
-        self.program.extent()
+        let [w, h, _, _] = self.program.extent();
+        [w, h]
     }
 
     /// The memory the composed kernel declared, in slot order — how a caller
@@ -135,7 +136,7 @@ impl PackedProgram {
 
     /// The compiled kernel's emitted bytes — what the scene will actually
     /// run, for a harness that measures or disassembles it
-    /// ([`pixelflow_core::PlaneProgram::code_bytes`] is the same hook one
+    /// ([`pixelflow_core::Manifold::code_bytes`] is the same hook one
     /// layer down). Inspection only: nothing about rendering goes through it.
     #[must_use]
     pub fn code_bytes(&self) -> &[u8] {
@@ -143,7 +144,7 @@ impl PackedProgram {
     }
 
     /// Bind one frame's memory, by buffer identity — see
-    /// [`PlaneProgram::bind`]. A program whose channels read nothing (a
+    /// [`Manifold::bind`]. A program whose channels read nothing (a
     /// procedural shader) binds the empty slice.
     ///
     /// # Panics
@@ -166,7 +167,7 @@ impl PackedProgram {
 #[derive(Clone)]
 pub struct PackedFrame {
     shifts: [u32; 4],
-    frame: PlaneFrame,
+    frame: BoundManifold,
     /// The `Z` and `W` every pixel of this frame carries — see
     /// [`PackedFrame::on_slice`].
     slice: [f32; 2],

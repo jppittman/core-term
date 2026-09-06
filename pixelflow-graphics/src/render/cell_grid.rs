@@ -3,7 +3,7 @@
 //! [`pixelflow_core::CellGridGeometry`] denotes four channel kernels over two
 //! bound buffers — cell data and a coverage atlas — and knows nothing about
 //! bytes or pixel formats. This is the instance that turns them into a frame:
-//! the four channels packed to one `u32` pixel in IR ([`PackedProgram`]) for a
+//! the four channels packed to one `u32` pixel in IR ([`PackedManifold`]) for a
 //! given byte order, with the two buffers bound per frame.
 //!
 //! The terminal's text grid is the production caller; sprite grids and
@@ -13,22 +13,22 @@ use std::sync::Arc;
 
 use pixelflow_core::{CellGridBuffers, CellGridGeometry, CellGridKernels};
 
-use crate::render::packed::{PackedFrame, PackedProgram};
+use crate::render::packed::{PackedFrame, PackedManifold};
 use crate::scene3d::Rgba;
 
 /// A cell grid compiled for one geometry and one pixel byte order.
 ///
-/// Compile once per geometry ([`CellGridPackedProgram::compile`]) — a resize
+/// Compile once per geometry ([`CellGridPackedManifold::compile`]) — a resize
 /// or a density change is a recompile, whose cost is independent of the grid's
 /// dimensions — and stamp per-frame data into it with
-/// [`CellGridPackedProgram::frame`].
-pub struct CellGridPackedProgram {
+/// [`CellGridPackedManifold::frame`].
+pub struct CellGridPackedManifold {
     geom: CellGridGeometry,
     buffers: CellGridBuffers,
-    packed: PackedProgram,
+    packed: PackedManifold,
 }
 
-impl CellGridPackedProgram {
+impl CellGridPackedManifold {
     /// Compose and JIT-compile the packed program for `geom`, with
     /// `default_bg` (linear RGBA) painted outside the grid and `shifts[c]`
     /// giving the bit position of channel `c` in `(r, g, b, a)` order —
@@ -44,7 +44,7 @@ impl CellGridPackedProgram {
     pub fn compile(geom: CellGridGeometry, default_bg: [f32; 4], shifts: [u32; 4]) -> Self {
         let CellGridKernels { channels, buffers } = geom.channel_kernels(default_bg);
         let packed =
-            PackedProgram::compile(&Rgba::from(&channels), shifts, [geom.frame_w, geom.frame_h]);
+            PackedManifold::compile(&Rgba::from(&channels), shifts, [geom.frame_w, geom.frame_h]);
         // Identity-merge across the four channels' splices is load-bearing:
         // all cell reads and atlas taps must land in the same two slots a
         // frame binds. A third slot means splice stopped merging — refuse.
@@ -79,7 +79,7 @@ impl CellGridPackedProgram {
     }
 
     /// The compiled kernel's emitted bytes, for the profiling harness in
-    /// `cell_grid`'s tests. `PlaneProgram::code_bytes` is the public way in.
+    /// `cell_grid`'s tests. `Manifold::code_bytes` is the public way in.
     #[cfg(test)]
     pub(crate) fn code_bytes(&self) -> &[u8] {
         self.packed.code_bytes()
@@ -186,7 +186,7 @@ mod tests {
             frame_w: 2560,
             frame_h: 1584,
         };
-        let program = CellGridPackedProgram::compile(geom, [0.1, 0.1, 0.1, 1.0], [0, 8, 16, 24]);
+        let program = CellGridPackedManifold::compile(geom, [0.1, 0.1, 0.1, 1.0], [0, 8, 16, 24]);
         let code = program.code_bytes();
         println!(
             "CODE_BASE=0x{:x} CODE_LEN={}",
@@ -247,7 +247,7 @@ mod tests {
         let planes: [Vec<f32>; 4] = core::array::from_fn(|c| plane(&frame, c, w, h));
         for shifts in [RGBA_SHIFTS, BGRA_SHIFTS] {
             let packed =
-                CellGridPackedProgram::compile(*program.geometry(), [0.9, 0.8, 0.7, 0.6], shifts);
+                CellGridPackedManifold::compile(*program.geometry(), [0.9, 0.8, 0.7, 0.6], shifts);
             let got = packed_plane(&packed.frame(cells.clone(), atlas.clone()), w, h);
             for i in 0..w * h {
                 let expected = pack_expected(
@@ -299,7 +299,7 @@ mod tests {
         let program = CellGridProgram::compile(geom, default_bg);
         let frame = program.frame(cells.clone(), atlas.clone());
         let planes: [Vec<f32>; 4] = core::array::from_fn(|c| plane(&frame, c, w, h));
-        let packed = CellGridPackedProgram::compile(geom, default_bg, RGBA_SHIFTS);
+        let packed = CellGridPackedManifold::compile(geom, default_bg, RGBA_SHIFTS);
         let got = packed_plane(&packed.frame(cells, atlas), w, h);
         for i in 0..w * h {
             let expected = pack_expected(
@@ -408,7 +408,7 @@ mod tests {
             frame_w: 4,
             frame_h: 8,
         };
-        let program = CellGridPackedProgram::compile(geom, [0.0; 4], RGBA_SHIFTS);
+        let program = CellGridPackedManifold::compile(geom, [0.0; 4], RGBA_SHIFTS);
         let cells = Arc::new(vec![
             1.0, 1.0, /* row0 fg */ 1.0, 0.0, 0.0, 1.0, /* bg */ 0.0, 0.0, 0.0, 1.0, 7.0,
             1.0, /* row1 fg */ 0.0, 0.0, 1.0, 1.0, /* bg */ 1.0, 1.0, 1.0, 1.0,
@@ -443,7 +443,7 @@ mod tests {
             frame_h: 4,
         };
         // R and B both at bit 0: the OR would blend two channels' bytes.
-        let _refused = CellGridPackedProgram::compile(geom, [0.0; 4], [0, 8, 0, 24]);
+        let _refused = CellGridPackedManifold::compile(geom, [0.0; 4], [0, 8, 0, 24]);
     }
 
     /// Production saturation telemetry, stage 1 of 2
