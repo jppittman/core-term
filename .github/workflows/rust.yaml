@@ -382,7 +382,7 @@ jobs:
           tests=(
             color_chrome_sphere
             floor_only
-            mullet_vs_3channel_comparison
+            four_channels_share_one_geometry
           )
           for test_name in "${tests[@]}"; do
             cargo nextest run -p pixelflow-graphics \
