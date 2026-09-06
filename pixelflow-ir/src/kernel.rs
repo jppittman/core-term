@@ -16,7 +16,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::arena::{ExprArena, ExprId, ExprNode};
+use crate::arena::{ExprArena, ExprId, ExprNode, UniformDecl, UniformIdentity};
 use crate::kind::OpKind;
 
 /// One bit per placeholder index, set while that index is claimed by a binder
@@ -146,6 +146,89 @@ impl Monoid {
             "Monoid must wrap an associative op with an identity"
         );
         self.0
+    }
+}
+
+/// A named scalar argument of a kernel: the JIT tier's spelling of a
+/// builder's struct field.
+///
+/// Creating one mints an identity; the handle is the only way to set the
+/// value later, so a kernel's arguments are exactly the handles its author
+/// kept. It composes as a leaf ([`Uniform::kernel`]) or stands in for a
+/// builder's scalar parameter ([`Scalar`]); either way the value is invariant
+/// across the lattice and unknown until the call, so the compiler hoists
+/// everything that depends only on it into the per-call prologue and never
+/// folds it.
+///
+/// Two handles from two `new` calls are two arguments, even with equal
+/// defaults; one handle read from twenty places is one argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Uniform {
+    decl: UniformDecl,
+}
+
+impl Uniform {
+    /// A new argument, holding `default` until a block binds it.
+    #[must_use]
+    pub fn new(default: f32) -> Self {
+        Self {
+            decl: UniformDecl {
+                id: UniformIdentity::mint(),
+                default,
+            },
+        }
+    }
+
+    /// The declaration this handle carries into every arena that reads it.
+    #[must_use]
+    pub fn decl(self) -> UniformDecl {
+        self.decl
+    }
+
+    /// Which argument this is.
+    #[must_use]
+    pub fn identity(self) -> UniformIdentity {
+        self.decl.id
+    }
+
+    /// The value the kernel holds for this argument when nothing binds it.
+    #[must_use]
+    pub fn default_value(self) -> f32 {
+        self.decl.default
+    }
+
+    /// The leaf, as a fragment: composes like any [`Kernel`].
+    #[must_use]
+    pub fn kernel(self) -> Kernel {
+        let mut a = ExprArena::new();
+        let slot = a.declare_uniform(self.decl);
+        let r = a.push_uniform(slot);
+        Kernel::wrap(a, r)
+    }
+}
+
+/// What a builder accepts for a scalar parameter. The *type* decides whether
+/// the value is folded into the fragment as a constant or declared as a
+/// uniform slot: an `f32` folds, so every call site that passes one keeps its
+/// meaning, and a [`Uniform`] handle makes the parameter an argument of the
+/// compiled kernel instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Scalar {
+    /// Folded in: part of the kernel.
+    Const(f32),
+    /// Bound per call: an argument of the kernel.
+    Uniform(Uniform),
+}
+
+impl From<f32> for Scalar {
+    fn from(v: f32) -> Self {
+        Self::Const(v)
+    }
+}
+
+impl From<Uniform> for Scalar {
+    fn from(u: Uniform) -> Self {
+        Self::Uniform(u)
     }
 }
 
@@ -811,6 +894,52 @@ mod tests {
     #[should_panic(expected = "32-bit lane")]
     fn shl_past_the_lane_is_refused() {
         let _refused = Kernel::x().trunc_to_int().shl(32);
+    }
+
+    /// A handle composes like any kernel, one instance is one slot however
+    /// many times it is read, two instances are two, and `dwrt` of it is 0.
+    #[test]
+    fn a_uniform_is_one_argument_however_often_it_is_read() {
+        use crate::passes::lower_dwrt_owned;
+        let cx = Uniform::new(1.0);
+        let r = Uniform::new(2.0);
+        // (x - cx)² + r·r — cx read twice, r read twice, from separate kernels.
+        let dx = Kernel::x().sub(&cx.kernel());
+        let k = dx
+            .mul(&Kernel::x().sub(&cx.kernel()))
+            .add(&r.kernel().mul(&r.kernel()));
+        let (arena, root) = k.parts();
+        assert_eq!(arena.uniforms(), &[cx.decl(), r.decl()]);
+        assert_eq!(eval(&k, 3.0, 0.0), 4.0 + 4.0);
+        let bound = BindingTable::empty().with_uniforms(&[0.0, 1.0]);
+        assert_eq!(
+            eval_scalar(arena, root, &[3.0, 0.0, 0.0, 0.0], &bound),
+            10.0
+        );
+
+        // ∂/∂x = 2(x − cx): the uniform differentiates to zero.
+        let (out, oroot) = lower_dwrt_owned(arena, root).expect("calculus");
+        let _ = oroot;
+        let ddx = k.dx();
+        let (da, dr) = ddx.parts();
+        let (out2, oroot2) = lower_dwrt_owned(da, dr).expect("calculus");
+        assert_eq!(
+            eval_scalar(&out2, oroot2, &[3.0, 0.0, 0.0, 0.0], &BindingTable::empty()),
+            4.0
+        );
+        assert_eq!(out.uniforms(), arena.uniforms());
+    }
+
+    #[test]
+    fn scalar_is_chosen_by_type() {
+        let u = Uniform::new(0.0);
+        assert!(matches!(Scalar::from(1.5), Scalar::Const(v) if v == 1.5));
+        assert!(matches!(Scalar::from(u), Scalar::Uniform(h) if h == u));
+        assert_ne!(
+            Uniform::new(0.0),
+            Uniform::new(0.0),
+            "two instances are two arguments"
+        );
     }
 
     #[test]

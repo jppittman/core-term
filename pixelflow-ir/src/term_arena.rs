@@ -23,6 +23,7 @@ impl Ir for ExprArena {
             ExprNode::Const(v) => Shape::Const(v),
             ExprNode::Param(i) => Shape::Param(i),
             ExprNode::Buffer(b) => Shape::Buffer(*self.buffer_decl(b)),
+            ExprNode::Uniform(u) => Shape::Uniform(*self.uniform_decl(u)),
             ExprNode::Unary(op, a) => Shape::Op(op, Children::One(a)),
             ExprNode::Binary(op, a, b) => Shape::Op(op, Children::Two(a, b)),
             ExprNode::Ternary(op, a, b, c) => Shape::Op(op, Children::Three(a, b, c)),
@@ -40,6 +41,10 @@ impl Ir for ExprArena {
             Shape::Buffer(decl) => {
                 let slot = self.buffer_slot_for(decl);
                 self.push_buffer(slot)
+            }
+            Shape::Uniform(decl) => {
+                let slot = self.uniform_slot_for(decl);
+                self.push_uniform(slot)
             }
             Shape::Op(op, children) => match children {
                 Children::Zero => {
@@ -124,6 +129,7 @@ impl ExprArena {
                 Shape::Const(v) => out.embed(Shape::Const(v)),
                 Shape::Param(i) => out.embed(Shape::Param(i)),
                 Shape::Buffer(d) => out.embed(Shape::Buffer(d)),
+                Shape::Uniform(d) => out.embed(Shape::Uniform(d)),
                 Shape::Op(op, kids) => {
                     let mapped: Vec<O::Ref> = kids
                         .iter()

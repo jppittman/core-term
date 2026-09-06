@@ -9,7 +9,7 @@
 //! Bindings here *borrow* their contents: a [`BindingTable`] is valid for the
 //! duration of one evaluation, not the lifetime of a compiled kernel.
 
-use crate::arena::{BufferId, ExprArena};
+use crate::arena::{BufferId, ExprArena, UniformId};
 use alloc::vec::Vec;
 
 /// Why binding a buffer table failed. Binding fails loud rather than reading
@@ -55,12 +55,33 @@ impl core::fmt::Display for BindError {
 
 /// Borrowed contents for every buffer an [`ExprArena`] declares, indexed by
 /// [`BufferId`]. Row-major, `stride == width`, matching `BufferDecl`.
+///
+/// Also the values of the arena's uniforms, indexed by [`UniformId`] — the
+/// oracle's block. A table bound without one evaluates every uniform at its
+/// declared default, which is what a bake without a block does.
 #[derive(Clone, Debug)]
 pub struct BindingTable<'a> {
     slots: Vec<&'a [f32]>,
+    uniforms: &'a [f32],
 }
 
 impl<'a> BindingTable<'a> {
+    /// Supply a value for each of the arena's uniform slots, in
+    /// [`UniformId`] order. Slots past the end of `values` keep their
+    /// declared default.
+    #[must_use]
+    pub fn with_uniforms(mut self, values: &'a [f32]) -> Self {
+        self.uniforms = values;
+        self
+    }
+
+    /// The value bound to uniform slot `id`, or `None` to mean its default.
+    #[inline]
+    #[must_use]
+    pub fn uniform(&self, id: UniformId) -> Option<f32> {
+        self.uniforms.get(id.0 as usize).copied()
+    }
+
     /// Bind `slices` to the arena's buffer slots, in [`BufferId`] order.
     ///
     /// Validates that the count and every length match the declarations, so a
@@ -90,13 +111,17 @@ impl<'a> BindingTable<'a> {
         }
         Ok(Self {
             slots: slices.to_vec(),
+            uniforms: &[],
         })
     }
 
     /// An empty binding table, for arenas that declare no buffers.
     #[must_use]
     pub fn empty() -> Self {
-        Self { slots: Vec::new() }
+        Self {
+            slots: Vec::new(),
+            uniforms: &[],
+        }
     }
 
     /// The contents bound to `id`.

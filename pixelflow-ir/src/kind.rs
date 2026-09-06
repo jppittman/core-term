@@ -176,6 +176,12 @@ op_table! {
     /// arbitrary combiner function. Lowered to an unrolled accumulation by
     /// `expand_reduce` before codegen — the analogue of `Gather -> RawGather`.
     Reduce = 49,
+
+    // --- Uniforms (per-call scalars) ---
+    /// Uniform leaf: a slot referencing a `UniformDecl` in the arena's
+    /// uniform table. A scalar invariant across the lattice, supplied per
+    /// call from a block; never folded, loaded once per call.
+    Uniform = 50,
 }
 
 impl OpKind {
@@ -350,7 +356,7 @@ impl OpKind {
     #[must_use]
     pub const fn arity(self) -> usize {
         match self {
-            Self::Var | Self::Const | Self::Tuple | Self::Buffer => 0,
+            Self::Var | Self::Const | Self::Tuple | Self::Buffer | Self::Uniform => 0,
 
             Self::Neg
             | Self::Sqrt
@@ -457,6 +463,7 @@ impl OpKind {
             Self::Gather => "gather",
             Self::RawGather => "raw_gather",
             Self::Reduce => "reduce",
+            Self::Uniform => "uniform",
         }
     }
 
@@ -514,6 +521,7 @@ impl OpKind {
             "gather" => Some(Self::Gather),
             "raw_gather" => Some(Self::RawGather),
             "reduce" => Some(Self::Reduce),
+            "uniform" => Some(Self::Uniform),
             _ => None,
         }
     }
@@ -522,7 +530,7 @@ impl OpKind {
     #[must_use]
     pub const fn default_cost(self) -> usize {
         match self {
-            Self::Var | Self::Const | Self::Tuple | Self::Buffer => 0,
+            Self::Var | Self::Const | Self::Tuple | Self::Buffer | Self::Uniform => 0,
             // Memory read: native gather on AVX2/AVX-512, scalar loads on
             // NEON/SSE2. Priced between an arithmetic op and a transcendental.
             Self::Gather | Self::RawGather => 10,
@@ -641,6 +649,7 @@ impl OpKind {
                 | Self::Gather
                 | Self::RawGather
                 | Self::Reduce
+                | Self::Uniform
         )
     }
 
@@ -702,8 +711,9 @@ impl OpKind {
             // Differentiation: never emitted (rewritten away in the e-graph).
             Self::Dwrt => EmitStyle::Special,
 
-            // Memory ops: emitted by the JIT binding path, not as method calls.
-            Self::Buffer | Self::Gather | Self::RawGather => EmitStyle::Special,
+            // Memory ops and uniforms: emitted by the JIT binding path, not
+            // as method calls.
+            Self::Buffer | Self::Gather | Self::RawGather | Self::Uniform => EmitStyle::Special,
 
             // Reduction: lowered to unrolled arithmetic before codegen.
             Self::Reduce => EmitStyle::Special,
@@ -1364,6 +1374,7 @@ mod algebraic_properties {
         OpKind::Gather,
         OpKind::RawGather,
         OpKind::Reduce,
+        OpKind::Uniform,
     ];
 
     #[test]
@@ -1409,7 +1420,7 @@ mod algebraic_properties {
     fn match_each_ops_actual_operand_count() {
         for op in OpKind::all() {
             let want = match op {
-                OpKind::Var | OpKind::Const | OpKind::Tuple | OpKind::Buffer => 0,
+                OpKind::Var | OpKind::Const | OpKind::Tuple | OpKind::Buffer | OpKind::Uniform => 0,
 
                 OpKind::Neg
                 | OpKind::Sqrt

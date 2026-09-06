@@ -26,7 +26,7 @@
 //! unreachable nodes were inserted, precisely because no such boundary was
 //! written down.
 
-use crate::arena::BufferDecl;
+use crate::arena::{BufferDecl, UniformDecl};
 use crate::kind::OpKind;
 
 /// The children of one node, borrowed where they are contiguous.
@@ -103,6 +103,9 @@ pub enum Shape<'a, R> {
     Param(u8),
     /// Bound-memory leaf, carrying the identity that survives a merge.
     Buffer(BufferDecl),
+    /// Per-call scalar leaf, carrying its identity and default for the same
+    /// reason a buffer carries its declaration.
+    Uniform(UniformDecl),
     /// An operation over `children`.
     Op(OpKind, Children<'a, R>),
 }
