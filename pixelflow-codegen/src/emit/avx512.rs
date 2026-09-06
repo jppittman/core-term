@@ -338,6 +338,23 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
     Evex::m0f38_66(0x18).rm(code, dst.0, RED_ZONE_CONST);
 }
 
+/// `dst = splat(block[offset])` at 512 bits: `mov rax, [rdi + ctx_slot*8]`
+/// then `vbroadcastss zmm<dst>, [rax + 4*offset]` (EVEX.512.66.0F38.W0 18
+/// /r). A full `disp32`, as [`emit_const`]'s is, so EVEX's compressed-`disp8`
+/// scaling never enters into it. See `x86_64::emit_uniform_load` for the
+/// register contract.
+pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad) {
+    emit_load_ptr_from_ctx(code, gpr::RAX.0, gpr::RDI.0, i32::from(load.ctx_slot) * 8);
+    Evex::m0f38_66(0x18).rm(
+        code,
+        dst.0,
+        Mem {
+            base: gpr::RAX,
+            disp: Imm32(i32::from(load.offset) * 4),
+        },
+    );
+}
+
 // =============================================================================
 // Stack frame (real frame; zmm spills are 64 bytes)
 // =============================================================================
@@ -961,6 +978,9 @@ pub(crate) mod driver {
                     super::emit_load_ptr_from_ctx(code, RAX, RDI, (*slot as i32) * 8);
                     super::emit_gather(code, gather_dst, RAX, idx_int);
                     super::emit_mov(code, *dst, gather_dst);
+                }
+                ResolvedOp::Uniform { dst, load } => {
+                    super::emit_uniform_load(code, *dst, *load);
                 }
                 ResolvedOp::Binary {
                     op,

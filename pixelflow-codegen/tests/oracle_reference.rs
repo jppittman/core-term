@@ -69,6 +69,7 @@ fn expression_tolerance(arena: &ExprArena, root: ExprId) -> Tolerance {
             ExprNode::Var(_) => OpKind::Var,
             ExprNode::Const(_) => OpKind::Const,
             ExprNode::Buffer(_) => OpKind::Buffer,
+            ExprNode::Uniform(_) => OpKind::Uniform,
             ExprNode::Param(p) => panic!("expression_tolerance: unbound Param({p})"),
             ExprNode::Unary(op, _)
             | ExprNode::Binary(op, _, _)
@@ -94,7 +95,8 @@ fn assert_jit_matches_oracle(
 ) {
     let tol = expression_tolerance(arena, root);
     let jit = jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT)
-        .unwrap_or_else(|e| panic!("{name}: kernel failed to compile on this backend: {e}"));
+        .unwrap_or_else(|e| panic!("{name}: kernel failed to compile on this backend: {e}"))
+        .kernel;
     let bindings = BindingTable::empty();
     let mut checked = 0usize;
     let valid_points: Vec<[f32; 4]> = points.iter().copied().filter(|p| !skip(p)).collect();

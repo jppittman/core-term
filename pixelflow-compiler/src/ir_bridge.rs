@@ -358,6 +358,15 @@ pub fn ast_to_runtime_arena(
                     b.0
                 )
             }
+            // Likewise unreachable: a uniform enters a kernel at the builder
+            // call (`substitute_params`), never from the macro's own arena.
+            pixelflow_ir::arena::ExprNode::Uniform(u) => {
+                panic!(
+                    "kernel! produced ExprNode::Uniform({}) — uniforms are chosen at the \
+                     builder call site, not in the macro body",
+                    u.0
+                )
+            }
             pixelflow_ir::arena::ExprNode::Unary(op, child) => {
                 let op_code = opkind_to_tokens(*op);
                 let child = child.0;
@@ -673,13 +682,17 @@ mod expansion_derivative_tests {
 
             // Reference: substitute params into the ORIGINAL arena and run the
             // runtime lowering tier on it.
+            let params: Vec<pixelflow_ir::Scalar> = params
+                .iter()
+                .map(|&v| pixelflow_ir::Scalar::from(v))
+                .collect();
             let mut reference = a.clone();
-            let ref_root = reference.substitute_params(root, params);
+            let ref_root = reference.substitute_params(root, &params);
             let (ref_arena, ref_root) =
                 lower_dwrt_owned(&reference, ref_root).expect("runtime tier lowers the reference");
 
             let mut got = out.clone();
-            let got_root = got.substitute_params(out_root, params);
+            let got_root = got.substitute_params(out_root, &params);
 
             for p in pts {
                 let want = eval_scalar(&ref_arena, ref_root, p, &BindingTable::empty());
@@ -1151,7 +1164,10 @@ mod production_telemetry {
                 continue;
             }
             let kind = match arena.node(id) {
-                ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Buffer(_) => None,
+                ExprNode::Var(_)
+                | ExprNode::Const(_)
+                | ExprNode::Buffer(_)
+                | ExprNode::Uniform(_) => None,
                 ExprNode::Unary(k, _)
                 | ExprNode::Binary(k, _, _)
                 | ExprNode::Ternary(k, _, _, _) => Some(*k),
@@ -1197,6 +1213,7 @@ mod production_telemetry {
                     (pixelflow_search::egraph::ops::op_from_kind(*op).is_none()).then_some(*op)
                 }
                 ExprNode::Buffer(_) => Some(OpKind::Buffer), // ir_bridge.rs:690: Buffer => false unconditionally
+                ExprNode::Uniform(_) => Some(OpKind::Uniform),
                 ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) => None,
                 ExprNode::Nary(op, _, _) => {
                     (pixelflow_search::egraph::ops::op_from_kind(*op).is_none()).then_some(*op)

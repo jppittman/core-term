@@ -284,6 +284,10 @@ fn compact_subtree(
             "compact_subtree: unexpected Param({i}) in a BwdGenerator expression \
              (the generator never produces Param nodes)"
         ),
+        ExprNode::Uniform(_) => panic!(
+            "compact_subtree: unexpected Uniform node in a BwdGenerator expression \
+             (the generator never produces Uniform nodes)"
+        ),
         ExprNode::Buffer(_) => panic!(
             "compact_subtree: unexpected Buffer node in a BwdGenerator expression \
              (the generator never produces memory ops)"

@@ -429,7 +429,11 @@ const POLY_OPS: &[OpKind] = &[
 /// (`Var`/`Const`/`Param`/`Buffer` — excluded from the stratification rule).
 fn non_leaf_op(node: &ExprNode) -> Option<OpKind> {
     match node {
-        ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => None,
+        ExprNode::Var(_)
+        | ExprNode::Const(_)
+        | ExprNode::Param(_)
+        | ExprNode::Buffer(_)
+        | ExprNode::Uniform(_) => None,
         ExprNode::Unary(op, _)
         | ExprNode::Binary(op, _, _)
         | ExprNode::Ternary(op, _, _, _)

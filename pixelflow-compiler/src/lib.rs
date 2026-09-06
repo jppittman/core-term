@@ -76,6 +76,24 @@ use proc_macro::TokenStream;
 /// let plane = Lattice::frame(64, 64, 0.0).bake(&unit_circle);
 /// ```
 ///
+/// # Parameters
+///
+/// A builder's arguments are anything `Into<Scalar>`, and the type at the
+/// call site decides what the parameter is. An `f32` is folded into the
+/// fragment as a constant, so `circle(0.0, 0.0, 1.0)` is the same kernel it
+/// always was. A [`Uniform`](pixelflow_core::Uniform) handle makes the
+/// parameter an *argument* of the compiled kernel instead — invariant across
+/// the lattice, bound per call from a `UniformBlock`, never folded — so a
+/// scene transform or a cursor position moves without a recompile:
+///
+/// ```ignore
+/// let cx = Uniform::new(0.0);
+/// let moving = circle(cx, 0.0, 1.0);   // cx is an argument; cy and r are folded
+/// ```
+///
+/// Each `let` binding of a builder is one signature: the same binding cannot
+/// be called with an `f32` and a `Uniform` in the same position.
+///
 /// # Pipeline
 ///
 /// 1. **Parser**: closure syntax → AST

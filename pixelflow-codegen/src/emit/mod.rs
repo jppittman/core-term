@@ -316,6 +316,27 @@ pub enum ResolvedOp {
     /// halves, SSE2 and NEON as four scalar loads. The buffer base pointer is
     /// loaded from the context struct (rdi) at `slot * 8`.
     Gather { dst: Reg, idx: Reg, slot: u16 },
+    /// Uniform broadcast: `dst = splat(block[offset])`. The block's base
+    /// pointer is loaded from the context struct at `ctx_slot * 8` — the
+    /// entry after the last buffer — and the scalar at `4 * offset` is
+    /// broadcast to every lane: `vbroadcastss` on every x86 tier, `ldr s` +
+    /// `dup` on NEON. Its variance is `CONST`, so it lands in the per-call
+    /// prologue.
+    Uniform { dst: Reg, load: UniformLoad },
+}
+
+/// Where one uniform lives, relative to the context the kernel is called with.
+///
+/// Two immediates, both fixed at compile time: which context entry holds the
+/// block (always the one past the kernel's buffer slots, so a kernel with no
+/// uniforms has no such entry and its context is exactly what it was), and
+/// the uniform's dense offset within the block, assigned by the link step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UniformLoad {
+    /// Index into the context array of the block's base pointer.
+    pub ctx_slot: u16,
+    /// Index of the value within the block, in `f32`s.
+    pub offset: u16,
 }
 
 /// A deferred reload: value loaded mid-instruction (after a partial computation).
@@ -409,7 +430,7 @@ pub fn operand_sources(op: &ScheduledOp, resident: [bool; 3]) -> [OperandSource;
         _ => None,
     };
     let arity = match op {
-        ScheduledOp::Var(_) | ScheduledOp::Const(_) => 0,
+        ScheduledOp::Var(_) | ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => 0,
         ScheduledOp::Unary(..) | ScheduledOp::ShiftImm(..) | ScheduledOp::Gather(..) => 1,
         ScheduledOp::Binary(..) => 2,
         ScheduledOp::Ternary(..) => 3,
@@ -1304,6 +1325,11 @@ pub enum ScheduledOp {
     /// leaf is folded out to the `slot` immediate (like `ShiftImm`'s count) so it
     /// never becomes a scheduled value. The index is the one real input.
     Gather(regalloc::ValueId, u16),
+    /// Per-call scalar, broadcast from the block: a definition with no
+    /// operands — like `Const`, but not a leaf to the hoisting partition,
+    /// since the load is an instruction worth doing once per call rather
+    /// than once per batch.
+    Uniform(UniformLoad),
 }
 
 // =============================================================================
@@ -1413,6 +1439,16 @@ fn arena_to_schedule(
             // placeholder occupying its ValueId slot, exactly as ShiftImm leaves
             // its folded shift-count Const as a dead schedule entry.
             ExprNode::Buffer(_) => ScheduledOp::Const(0.0),
+            // The block pointer sits in the context entry after the buffer
+            // slots; the value's offset is its slot index — the link step
+            // (`jit_cache`) renumbers the table into dense first-occurrence
+            // order before anything reaches here, and a caller compiling an
+            // arena directly gets the table order it declared.
+            ExprNode::Uniform(u) => ScheduledOp::Uniform(UniformLoad {
+                ctx_slot: u16::try_from(arena.buffers().len())
+                    .expect("buffer table index fits the context slot immediate"),
+                offset: u.0,
+            }),
             ExprNode::Unary(op, child) => ScheduledOp::Unary(*op, map_child(child)),
             // Shl/Shr fold their Const shift-count operand into an immediate, so
             // the count never becomes a scheduled value (matching the imm-only
@@ -1481,7 +1517,9 @@ fn schedule_variance(schedule: &[regalloc::Def]) -> Vec<pixelflow_ir::variance::
         v[i] = match op {
             ScheduledOp::Var(idx) if *idx < 8 => Variance::from_var(*idx),
             ScheduledOp::Var(_) => Variance::ALL,
-            ScheduledOp::Const(_) => Variance::CONST,
+            // Invariant across the lattice; unknown until the call. The
+            // `CONST` here is what carries it into the per-call prologue.
+            ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => Variance::CONST,
             ScheduledOp::Unary(_, a)
             | ScheduledOp::ShiftImm(_, a, _)
             // A gather reads from a bound buffer, whose contents are fixed for
@@ -1518,7 +1556,9 @@ struct HoistPlan {
 /// computed from one — are never hoisted: hoisting moves a value out of any
 /// select-guard arm it sits in, and while speculating arithmetic is free,
 /// keeping memory reads exactly where the per-batch kernel had them costs
-/// nothing today (winding kernels are gather-free).
+/// nothing today (winding kernels are gather-free). A `Uniform` load is the
+/// one memory read that *is* hoisted: it is invariant for the whole call, it
+/// cannot fault, and loading it once is the entire point of the leaf.
 ///
 /// Returns `None` when nothing qualifies, leaving the caller on the plain
 /// un-hoisted path.
@@ -1536,7 +1576,9 @@ fn plan_collapse_hoist(
 
     let operands = |op: &ScheduledOp| -> alloc::vec::Vec<ValueId> {
         match op {
-            ScheduledOp::Var(_) | ScheduledOp::Const(_) => alloc::vec![],
+            ScheduledOp::Var(_) | ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => {
+                alloc::vec![]
+            }
             ScheduledOp::Unary(_, a)
             | ScheduledOp::ShiftImm(_, a, _)
             | ScheduledOp::Gather(a, _) => {
@@ -1918,6 +1960,7 @@ pub fn resolve_operands(
                 slot: *slot,
             }
         }
+        ScheduledOp::Uniform(load) => ResolvedOp::Uniform { dst, load: *load },
         ScheduledOp::Binary(op_kind, left, right) => {
             // `left` goes to `dst` when it needs reloading — the two-operand
             // form consumes it from there anyway — and `right` to a
@@ -2103,6 +2146,11 @@ type Native = x86_64::driver::X86Backend;
 /// Matches the
 /// [`KernelFn`](executable::KernelFn) ABI
 /// `(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)`.
+///
+/// The context is one base pointer per declared buffer, in the arena's slot
+/// order, followed — only when the arena declares a uniform — by the uniform
+/// block's base pointer: `f32` values in the arena's uniform-slot order, read
+/// once per call in the frame prologue.
 pub fn compile(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
@@ -2472,14 +2520,29 @@ mod tests {
     ///
     /// Before the backends stopped being `#[cfg]`-gated into existence, three
     /// of these four could not even be *named* here.
+    ///
+    /// The arena reads a uniform, so each backend's `ResolvedOp::Uniform`
+    /// dispatch arm — not only the encoder behind it — is what emits here.
     #[test]
     fn every_backend_emits_from_this_host() {
-        use pixelflow_ir::arena::ExprArena;
+        use pixelflow_ir::arena::{ExprArena, UniformDecl, UniformIdentity};
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let y = a.push_var(1);
-        let root = a.push_binary(OpKind::Add, a.clone().push_var(0).max(x).min(x), y);
+        let u = a.declare_uniform(UniformDecl {
+            id: UniformIdentity::mint(),
+            default: 1.0,
+        });
+        let u = a.push_uniform(u);
+        let scaled = a.push_binary(OpKind::Mul, y, u);
+        let root = a.push_binary(OpKind::Add, a.clone().push_var(0).max(x).min(x), scaled);
         let (a, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
+        assert!(
+            arena_to_schedule(&a, root)
+                .iter()
+                .any(|d| matches!(d.op, ScheduledOp::Uniform(_))),
+            "the schedule must carry the uniform load for the backends to dispatch on"
+        );
 
         let ctx = EmitCtx::default();
         let mut neon = aarch64::driver::Aarch64Backend::new(ctx.clone());
@@ -5037,6 +5100,173 @@ mod tests {
     // this same test starts running and will fail loudly, by name, for every
     // op `avx512::emit_unary`/`emit_binary`/`emit_plan` doesn't yet cover —
     // rather than waiting for an unrelated test to trip over the gap.
+    mod uniforms {
+        use super::*;
+        use pixelflow_ir::arena::{UniformDecl, UniformIdentity};
+
+        fn decl(default: f32) -> UniformDecl {
+            UniformDecl {
+                id: UniformIdentity::mint(),
+                default,
+            }
+        }
+
+        /// `x + u·u`: the uniform's load and the product that depends on it
+        /// alone are per-call work. Asserted on the partition — which region
+        /// holds them — not on timing.
+        #[test]
+        fn a_uniform_and_what_depends_on_it_alone_land_in_the_frame_prologue() {
+            let mut a = ExprArena::new();
+            let u = a.declare_uniform(decl(3.0));
+            let x = a.push_var(0);
+            let uu = a.push_uniform(u);
+            let sq = a.push_binary(OpKind::Mul, uu, uu);
+            let root = a.push_binary(OpKind::Add, x, sq);
+
+            let (arena, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
+            let schedule = arena_to_schedule(&arena, root);
+            let variance = schedule_variance(&schedule);
+            let scoped = partition_by_scope(schedule, &variance, &[0u8, 1]);
+
+            let frame = &scoped.regions[0];
+            assert!(
+                frame
+                    .schedule
+                    .iter()
+                    .any(|d| matches!(d.op, ScheduledOp::Uniform(_))),
+                "the broadcast load is once per call"
+            );
+            assert!(
+                frame
+                    .schedule
+                    .iter()
+                    .any(|d| matches!(d.op, ScheduledOp::Binary(OpKind::Mul, ..))),
+                "and so is u·u"
+            );
+            assert_eq!(frame.roots.len(), 1, "the product is the one parked value");
+            assert!(
+                !scoped
+                    .body
+                    .iter()
+                    .any(|d| matches!(d.op, ScheduledOp::Uniform(_))),
+                "the body reads the parked product, never the block"
+            );
+            assert!(
+                scoped.regions[1].schedule.is_empty(),
+                "nothing about a uniform is per row"
+            );
+        }
+
+        /// `x + u₀ + 2·u₁`, compiled once and run under two blocks: the
+        /// values come from the block at the call, and the uniform-only
+        /// product was hoisted.
+        #[test]
+        fn a_block_is_read_at_the_call_not_at_compile() {
+            let mut a = ExprArena::new();
+            let u0 = a.declare_uniform(decl(0.0));
+            let u1 = a.declare_uniform(decl(0.0));
+            let x = a.push_var(0);
+            let r0 = a.push_uniform(u0);
+            let r1 = a.push_uniform(u1);
+            let two = a.push_const(2.0);
+            let scaled = a.push_binary(OpKind::Mul, r1, two);
+            let sum = a.push_binary(OpKind::Add, x, r0);
+            let root = a.push_binary(OpKind::Add, sum, scaled);
+            let res = compile(&a, root).expect("compile");
+            assert!(res.hoisted_values >= 1, "2·u₁ is per call");
+
+            let xs: [f32; LANES] = core::array::from_fn(|i| i as f32);
+            for block in [[1.0f32, 10.0], [-2.5, 0.25]] {
+                let ctx = [block.as_ptr()];
+                let out = eval_batch(
+                    &res.code,
+                    &ctx,
+                    executable::Point4::new(xs, [0.0; LANES], [0.0; LANES], [0.0; LANES]),
+                );
+                for (i, got) in out.iter().enumerate() {
+                    assert_eq!(
+                        *got,
+                        i as f32 + block[0] + 2.0 * block[1],
+                        "lane {i} under {block:?}"
+                    );
+                }
+            }
+        }
+
+        /// The block's pointer is the context entry after the buffer slots:
+        /// a kernel over one buffer reads its block from `ctx[1]`.
+        #[test]
+        fn the_block_pointer_follows_the_buffer_slots() {
+            use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
+            let data = [10.0f32, 20.0, 30.0, 40.0];
+            let mut a = ExprArena::new();
+            let buf = a.declare_buffer(BufferDecl {
+                id: BufferIdentity::mint(),
+                width: 4,
+                height: 1,
+            });
+            let u = a.declare_uniform(decl(0.0));
+            let x = a.push_var(0);
+            let zero = a.push_const(0.0);
+            let g = a.push_gather(buf, x, zero);
+            let r = a.push_uniform(u);
+            let root = a.push_binary(OpKind::Add, g, r);
+            let res = compile(&a, root).expect("compile");
+
+            let block = [0.5f32];
+            let ctx = [data.as_ptr(), block.as_ptr()];
+            let xs: [f32; LANES] = core::array::from_fn(|i| i as f32);
+            let out = eval_batch(
+                &res.code,
+                &ctx,
+                executable::Point4::new(xs, [0.0; LANES], [0.0; LANES], [0.0; LANES]),
+            );
+            for (i, got) in out.iter().enumerate() {
+                assert_eq!(*got, data[i.min(3)] + 0.5, "lane {i}");
+            }
+        }
+
+        /// The bytes, per backend, for `ctx_slot = 2, offset = 3, dst = 5`.
+        /// Checked against `llvm-mc --disassemble` (LLVM 18):
+        /// `movq 16(%rdi), %rax` then `vbroadcastss 12(%rax), %xmm5` /
+        /// `%ymm5` / `%zmm5`; `ldr x9, [x0, #16]`, `ldr s5, [x9, #12]`,
+        /// `dup v5.4s, v5.s[0]`.
+        #[test]
+        fn every_backend_encodes_the_broadcast_load() {
+            let load = UniformLoad {
+                ctx_slot: 2,
+                offset: 3,
+            };
+            const MOV_RAX_CTX2: [u8; 7] = [0x48, 0x8B, 0x87, 0x10, 0, 0, 0];
+
+            let mut sse = Vec::new();
+            x86_64::emit_uniform_load(&mut sse, Reg(5), load);
+            assert_eq!(&sse[..7], &MOV_RAX_CTX2);
+            assert_eq!(&sse[7..], &[0xC4, 0xE2, 0x79, 0x18, 0xA8, 0x0C, 0, 0, 0]);
+
+            let mut avx2 = Vec::new();
+            avx2::emit_uniform_load(&mut avx2, Reg(5), load);
+            assert_eq!(&avx2[..7], &MOV_RAX_CTX2);
+            assert_eq!(&avx2[7..], &[0xC4, 0xE2, 0x7D, 0x18, 0xA8, 0x0C, 0, 0, 0]);
+
+            let mut avx512 = Vec::new();
+            avx512::emit_uniform_load(&mut avx512, Reg(5), load);
+            assert_eq!(&avx512[..7], &MOV_RAX_CTX2);
+            assert_eq!(
+                &avx512[7..],
+                &[0x62, 0xF2, 0x7D, 0x48, 0x18, 0xA8, 0x0C, 0, 0, 0]
+            );
+
+            let mut neon = Vec::new();
+            aarch64::emit_uniform_load(&mut neon, Reg(5), load);
+            let words: Vec<u32> = neon
+                .chunks(4)
+                .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+                .collect();
+            assert_eq!(words, [0xF940_0809, 0xBD40_0D25, 0x4E04_04A5]);
+        }
+    }
+
     mod backend_op_coverage {
         use super::super::coverage::*;
         use super::*;

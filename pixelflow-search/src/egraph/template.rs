@@ -67,7 +67,7 @@ fn match_root(
         // rather than guess a binding with no class to bind it to.
         ExprNode::Var(_) => false,
         ExprNode::Const(v) => node.is_const(*v),
-        ExprNode::Param(_) | ExprNode::Buffer(_) => false,
+        ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Uniform(_) => false,
         _ => match_op(egraph, arena, pat, node, bindings),
     }
 }
@@ -83,7 +83,7 @@ fn match_class(
     match arena.node(pat) {
         ExprNode::Var(mv) => bind_var(*mv, class, egraph, bindings),
         ExprNode::Const(v) => egraph.contains_const(class, *v),
-        ExprNode::Param(_) | ExprNode::Buffer(_) => false,
+        ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Uniform(_) => false,
         _ => {
             for node in egraph.nodes(class) {
                 let mut trial = bindings.clone();
@@ -131,7 +131,7 @@ fn collect_metavars(arena: &ExprArena, id: ExprId, out: &mut std::collections::B
         ExprNode::Var(mv) => {
             out.insert(*mv);
         }
-        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => {}
+        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Uniform(_) => {}
         _ => {
             for c in arena.children(id) {
                 collect_metavars(arena, c, out);
@@ -325,7 +325,9 @@ fn occurs(arena: &ExprArena, mv: u8, id: ExprId, subst: &BTreeMap<u8, ExprId>, d
                     .get(v)
                     .is_some_and(|&t| occurs(arena, mv, t, subst, depth + 1))
         }
-        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => false,
+        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Uniform(_) => {
+            false
+        }
         _ => arena
             .children(id)
             .any(|c| occurs(arena, mv, c, subst, depth + 1)),
@@ -370,6 +372,7 @@ fn unify(arena: &ExprArena, x: ExprId, y: ExprId, subst: &mut BTreeMap<u8, ExprI
         (ExprNode::Const(cx), ExprNode::Const(cy)) => cx.to_bits() == cy.to_bits(),
         (ExprNode::Param(_), _) | (_, ExprNode::Param(_)) => false,
         (ExprNode::Buffer(_), _) | (_, ExprNode::Buffer(_)) => false,
+        (ExprNode::Uniform(_), _) | (_, ExprNode::Uniform(_)) => false,
         _ => {
             if arena.kind(x) != arena.kind(y) {
                 return false;
@@ -396,7 +399,7 @@ fn apply_subst_deep(arena: &mut ExprArena, id: ExprId, subst: &BTreeMap<u8, Expr
             Some(&t) => apply_subst_deep(arena, t, subst),
             None => id,
         },
-        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => id,
+        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Uniform(_) => id,
         _ => {
             let kind = arena.kind(id);
             let children: Vec<ExprId> = arena.children(id).collect();

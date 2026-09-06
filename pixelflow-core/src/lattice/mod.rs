@@ -18,6 +18,11 @@
 //! for common shapes -- the shape is data, not a type. Extents only need to
 //! be static at JIT-compile time, which is when the kernel is specialized.
 //!
+//! A sub-lattice is an index range, and a **[`union::Union`]** is a sum of
+//! them: disjoint ranges, each with the kernel sampled on it, collapsing into
+//! one buffer. That is the domain-side encoding of an extent, the counterpart
+//! to a `select` mask on the range side.
+//!
 //! A kernel with a lattice is the evaluation API:
 //!
 //! ```text
@@ -278,7 +283,9 @@ impl Lattice {
 
     /// Compile a [`Kernel`](pixelflow_ir::Kernel) at this lattice's shape, bind
     /// nothing, and collapse it: `collapse(compile(k).bind(&[]))` in one line,
-    /// for the buffer-free case that is most of the tree.
+    /// for the buffer-free case that is most of the tree. Every uniform
+    /// argument the kernel has is bound at its default; bit for bit the same
+    /// bake as a block holding those defaults.
     ///
     /// Compilation goes through the global cache, and the compile entry runs
     /// the optimizer itself, so a runtime-composed kernel
@@ -314,6 +321,9 @@ pub mod cell_grid;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub mod manifold;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub mod union;
 
 #[cfg(test)]
 mod tests;

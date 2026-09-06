@@ -65,6 +65,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// - `Param` — a `pixelflow-compiler` macro-parameter slot that should never
 ///   reach a runtime-built `Kernel` in the first place.
 ///
+/// `Uniform` leaves are representable like `Buffer`: opaque to every rule,
+/// hash-consed by identity, redeclared by extraction. Nothing folds one.
+///
 /// Callers compile the original arena unchanged in that case — `optimize_runtime_arena`
 /// is strictly an optimization, never required for correctness.
 ///
@@ -103,7 +106,15 @@ pub fn optimize_runtime_arena(
     // share a key — every lookup would miss while every insert stayed
     // forever (the cache is static and unbounded). A terminal resizing all
     // day would leak one full optimized arena per recompile for zero hits.
-    if !arena.buffers().is_empty() {
+    //
+    // Uniform-bearing arenas bypass it for the same reason and one more: the
+    // optimized arena carries its uniforms' identities, and the link step
+    // downstream maps *those* to block offsets. A hit keyed on structure
+    // alone would hand a second composition an arena naming the first one's
+    // instances. The JIT cache in front of this one is keyed on structure
+    // (dense offsets, not identities), so the saturation is still paid once
+    // per shape.
+    if !arena.buffers().is_empty() || !arena.uniforms().is_empty() {
         return optimize_runtime_arena_uncached(arena, root, shape).map(Arc::new);
     }
 
@@ -223,6 +234,14 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
                 key.extend_from_slice(alloc::format!("{id:?}").as_bytes());
                 key.extend_from_slice(&width.to_le_bytes());
                 key.extend_from_slice(&height.to_le_bytes());
+            }
+            &ExprNode::Uniform(u) => {
+                // Keyed by identity for the reason `Buffer` is; unreachable
+                // in practice, since uniform-bearing arenas bypass the cache.
+                key.push(8);
+                let decl = *arena.uniform_decl(u);
+                key.extend_from_slice(alloc::format!("{:?}", decl.id).as_bytes());
+                key.extend_from_slice(&decl.default.to_bits().to_le_bytes());
             }
             &ExprNode::Unary(op, a) => {
                 key.push(4);
@@ -2030,7 +2049,10 @@ pub(crate) mod production_telemetry {
                 continue;
             }
             let kind = match arena.node(id) {
-                ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Buffer(_) => None,
+                ExprNode::Var(_)
+                | ExprNode::Const(_)
+                | ExprNode::Buffer(_)
+                | ExprNode::Uniform(_) => None,
                 ExprNode::Unary(k, _)
                 | ExprNode::Binary(k, _, _)
                 | ExprNode::Ternary(k, _, _, _) => Some(*k),

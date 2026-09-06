@@ -65,7 +65,7 @@ pub(crate) struct SelectGuard {
 
 fn operands(op: &ScheduledOp) -> impl Iterator<Item = ValueId> {
     let list: [Option<ValueId>; 3] = match op {
-        ScheduledOp::Var(_) | ScheduledOp::Const(_) => [None, None, None],
+        ScheduledOp::Var(_) | ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => [None, None, None],
         ScheduledOp::Unary(_, c) | ScheduledOp::ShiftImm(_, c, _) | ScheduledOp::Gather(c, _) => {
             [Some(*c), None, None]
         }
@@ -391,6 +391,9 @@ fn select_arms(schedule: &[Def], exclusivity: &Exclusivity) -> Vec<SelectArms> {
             .iter()
             .map(|&idx| match &schedule[idx].op {
                 ScheduledOp::Var(_) | ScheduledOp::Const(_) => 0,
+                // One broadcast load; priced as the leaf it is in the
+                // prologue, where it lands.
+                ScheduledOp::Uniform(_) => cycles.cost(OpKind::Uniform),
                 ScheduledOp::Unary(op, _) | ScheduledOp::Binary(op, _, _) => cycles.cost(*op),
                 ScheduledOp::ShiftImm(op, _, _) => cycles.cost(*op),
                 ScheduledOp::Ternary(op, _, _, _) => cycles.cost(*op),

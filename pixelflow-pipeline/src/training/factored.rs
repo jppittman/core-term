@@ -607,6 +607,11 @@ pub fn arena_to_kernel_code(arena: &ExprArena, root: ExprId) -> String {
                          a binding table, not yet wired (M2, see KERNELS_AND_LATTICES.md)",
                         b.0
                     ),
+                    ExprNode::Uniform(u) => panic!(
+                        "ExprNode::Uniform({}) reached arena_to_kernel_code — kernel code has \
+                         no block to read it from",
+                        u.0
+                    ),
                     ExprNode::Unary(op, _)
                     | ExprNode::Binary(op, _, _)
                     | ExprNode::Ternary(op, _, _, _) => emit_op_kc(*op, &args),
