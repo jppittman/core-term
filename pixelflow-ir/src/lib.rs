@@ -65,7 +65,7 @@ pub use eval::{
 };
 
 pub mod kernel;
-pub use kernel::{Kernel, Monoid};
+pub use kernel::{Bits, Kernel, Monoid};
 
 pub use kind::OpKind;
 pub use kind::known_method_names;

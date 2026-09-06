@@ -690,6 +690,27 @@ impl Bits {
         }
     }
 
+    /// `mask ? if_true : if_false` — a choice between two lane patterns.
+    ///
+    /// The same IR node as [`Kernel::select`], because there was never a
+    /// second one to write: `Select` is a bitwise blend on every backend
+    /// (`andps`/`andnps`/`orps`, `vpternlogd 0xCA`, `BSL`), so a choice
+    /// between patterns is the instruction that already exists. What is new
+    /// is the type, and it is the whole point — a colour packed into a word
+    /// can now be chosen as ONE value rather than a channel at a time.
+    ///
+    /// An associated function, not a method, and the mask stays a [`Kernel`]:
+    /// a comparison mask is a bit pattern that still travels as a `Kernel`
+    /// (see this type's docs), so `mask.select(..)` is already taken and means
+    /// a choice between *numbers*. Naming the domain of the arms — which is
+    /// the domain of the result — is what says which of the two this is.
+    #[must_use]
+    pub fn select(mask: &Kernel, if_true: &Self, if_false: &Self) -> Self {
+        Self {
+            inner: mask.select(&if_true.inner, &if_false.inner),
+        }
+    }
+
     /// Reinterpret as a [`Kernel`] for storage or as a kernel root.
     ///
     /// The lanes still hold a bit pattern; this is the deliberate, named exit
@@ -769,6 +790,31 @@ mod tests {
         let hi = Kernel::y().trunc_to_int().shl(8);
         let packed = hi.or(&lo).into_kernel();
         assert_eq!(eval(&packed, 2.9, 3.7).to_bits(), 0x0302);
+    }
+
+    /// A choice between two packed words is the same blend, one word at a
+    /// time: selecting the words is bit-exact with selecting each byte before
+    /// it is packed. That equality is what lets a colour be one `Select`.
+    #[test]
+    fn selecting_packed_words_is_selecting_the_bytes() {
+        let pack = |lo: &Kernel, hi: &Kernel| hi.trunc_to_int().shl(8).or(&lo.trunc_to_int());
+        let mask = Kernel::x().lt(&Kernel::constant(4.0));
+        let (a_lo, a_hi) = (Kernel::constant(2.0), Kernel::constant(3.0));
+        let (b_lo, b_hi) = (Kernel::constant(9.0), Kernel::constant(7.0));
+
+        let on_words = Bits::select(&mask, &pack(&a_lo, &a_hi), &pack(&b_lo, &b_hi));
+        let on_bytes = pack(&mask.select(&a_lo, &b_lo), &mask.select(&a_hi, &b_hi));
+
+        for (x, want) in [(1.0, 0x0302), (9.0, 0x0709)] {
+            assert_eq!(
+                eval(&on_words.clone().into_kernel(), x, 0.0).to_bits(),
+                want
+            );
+            assert_eq!(
+                eval(&on_bytes.clone().into_kernel(), x, 0.0).to_bits(),
+                want
+            );
+        }
     }
 
     /// The count is still checked at runtime; the OPERAND no longer needs
