@@ -78,7 +78,11 @@ pub use render::color::{
 };
 pub use render::frame::Frame;
 
-// Re-export core types for convenience
-// Field/Discrete are doc(hidden) - use manifolds instead of direct field manipulation
-pub use pixelflow_core::combinator::Manifold;
+// Re-export core types for convenience.
+//
+// The per-batch `Manifold` *trait* is deliberately not among them: since
+// S4b-1 `Manifold` names the compiled object (`pixelflow_core::Manifold`),
+// and a second re-export of the trait under that name at this crate's root
+// would make `pixelflow_graphics::Manifold` and `pixelflow_core::Manifold`
+// two different things. Nothing in the tree imported it from here.
 pub use pixelflow_core::{ManifoldExt, Map, W, X, Y, Z};
