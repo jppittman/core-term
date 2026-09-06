@@ -17,7 +17,6 @@
 //!   [`saturate::SaturationConfig`] presets both tiers drive it with
 //! - [`graph`]: The EGraph itself
 //! - [`deps`]: Dependency analysis for uniform hoisting
-//! - [`codegen`]: Code generation from extracted expressions (tree & DAG)
 //!
 //! Mathematical rewrite rules are now in the [`crate::math`] module.
 //!
@@ -28,7 +27,6 @@
 
 pub mod anytime;
 pub mod candidate;
-pub mod codegen;
 pub(crate) mod cost;
 pub mod deps;
 pub mod derivative;
