@@ -374,6 +374,39 @@ fn print_row(row: &Row) {
     );
 }
 
+/// Marginal cost of one more degree, per call, by differencing two degrees.
+///
+/// The absolute per-row figures subtract a separately-calibrated overhead;
+/// this cancels overhead AND the shared prelude exactly, which is the protocol
+/// `measure_latency_prior` uses and the only one that survives a mode whose
+/// fixed cost rivals the kernel. `BenchMode::Latency`'s chaining apparatus —
+/// a 4×`LANES`-wide `Point4` stored to the stack, a call, and a store→load
+/// round trip, all of it serial — costs ~30ns per call at AVX-512, which pins
+/// every degree below ~16 to the same reading and makes an absolute ratio
+/// there a measurement of the harness. The slope does not care.
+///
+/// Reported per CALL, not per lane: the quantity being compared is one more
+/// instruction in the kernel, and a kernel instruction serves all `LANES`.
+fn slope_ns_per_degree(
+    session: &mut BenchSession,
+    form: PolyForm,
+    mode: BenchMode,
+    lo: usize,
+    hi: usize,
+) -> f64 {
+    let mut at = |n: usize| {
+        let (arena, root) = timing_kernel(form, &sweep_coeffs(n), NOMINAL_SCALE);
+        measure(session, &arena, root, mode).0
+    };
+    let (ns_lo, ns_hi) = (at(lo), at(hi));
+    (ns_hi - ns_lo) * LANES as f64 / (hi - lo) as f64
+}
+
+/// Degrees the slope is differenced across. `SLOPE_LO` is above the point
+/// where AVX-512's latency-mode fixed cost stops dominating.
+const SLOPE_LO: usize = 16;
+const SLOPE_HI: usize = 32;
+
 /// The polynomials production evaluates, with the coefficient tables
 /// `pixelflow_ir::passes` expands — not a restatement of their arithmetic.
 fn production_polys() -> [(&'static str, &'static [f32]); 4] {
@@ -477,6 +510,37 @@ fn main() {
             );
             print_row(&row);
         }
+    }
+
+    // What one more degree costs. This is the mechanism the per-row ratios are
+    // a consequence of, and it is measured rather than inferred: if the two
+    // schedules have the SAME marginal cost, the machine is throughput-bound
+    // and only op count can separate them — which is the regime where an
+    // additive cost model is exactly right.
+    println!(
+        "\n## marginal cost of one more degree (slope across n={SLOPE_LO}→{SLOPE_HI}, ns per call)"
+    );
+    println!(
+        "# equal slopes = throughput-bound (op count decides, and Estrin has strictly more ops).\n\
+         # horner slope above estrin = latency still exposed (depth decides, past some degree)."
+    );
+    println!("{:<12} {:>10} {:>10}   reading", "mode", "horner", "estrin");
+    for &mode in &MODES {
+        let h = slope_ns_per_degree(&mut session, PolyForm::Horner, mode, SLOPE_LO, SLOPE_HI);
+        let e = slope_ns_per_degree(&mut session, PolyForm::Estrin, mode, SLOPE_LO, SLOPE_HI);
+        let reading = if (h - e).abs() < 0.15 * h.abs().max(e.abs()) {
+            "throughput-bound: same marginal op, Estrin pays its extra ones"
+        } else if h > e {
+            "latency exposed: Horner's chain costs more per degree"
+        } else {
+            "unexpected: Estrin's marginal degree costs more"
+        };
+        println!(
+            "{:<12} {:>10.3} {:>10.3}   {reading}",
+            format!("{mode:?}"),
+            h,
+            e
+        );
     }
 
     // The decision line: scanline mode is production's regime, so its ratio is

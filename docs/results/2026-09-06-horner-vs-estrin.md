@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-06
 **Question:** `passes::horner_step` emits every transcendental polynomial as a serial chain of `MulAdd`s — `a₀ + x(a₁ + x(a₂ + …))`. Horner minimizes operations but maximizes dependency depth. Estrin's scheme evaluates the same polynomial as a `log₂ n`-deep tree over explicit powers `x², x⁴, x⁸, …`, trading `log₂ n` extra multiplies for `O(log n)` depth. Is that trade worth taking for `sin`/`cos`/`exp2`/`log2`/`atan`?
-**Answer:** **No, at the degrees PixelFlow uses.** Estrin is 1.2–2.0× faster when a single evaluation is serialized, and that advantage is completely erased by the collapse loop, which already overlaps consecutive evaluations. In production's regime (one call per contiguous row, the kernel's own loop supplying the independent work) Estrin is a **tie to 11% slower** at every ISA level for every production polynomial. It only wins once the chain outgrows what cross-iteration ILP can hide: degree ≥ 12 on SSE2, ≥ 24 on AVX2, and never within degree ≤ 32 on AVX-512. Production's polynomials are degree 4–9. Two further findings fall out: Estrin introduces an **underflow hazard Horner does not have** (up to 30× slower, fixed entirely by `FastMathGuard`, which nothing in the render path currently holds), and the extraction cost model prefers Horner **for the wrong reason** — it cannot see schedule at all, and is therefore wrong by up to 1.9× on the cases where Estrin does win.
+**Answer:** **No, at the degrees PixelFlow uses.** Estrin is 1.2–4.0× faster when a single evaluation is serialized, and the collapse loop erases that advantage by converting a latency problem into a throughput problem: measured as marginal cost per degree, Horner's gets ~2× cheaper inside the loop while Estrin's gets *more expensive*, because in the loop it is charged for ops rather than depth. At AVX-512 the two meet exactly (slope ratio 1.03 — throughput-bound), and once neither schedule is latency-limited the only thing left to compare is op count, where Estrin is strictly worse by its `log₂ n` squarings. In production's regime (one call per contiguous row, the kernel's own loop supplying the independent work) Estrin is a **tie to 11% slower** at every ISA level for every production polynomial. It only wins once the chain outgrows what cross-iteration ILP can hide: degree ≥ 12 on SSE2, ≥ 24 on AVX2, and never within degree ≤ 32 on AVX-512. Production's polynomials are degree 4–9. Two further findings fall out: Estrin introduces an **underflow hazard Horner does not have** (up to 30× slower, fixed entirely by `FastMathGuard`, which nothing in the render path currently holds), and the extraction cost model prefers Horner **for the wrong reason** — it cannot see schedule at all, and is therefore wrong by up to 1.9× on the cases where Estrin does win.
 **Reproduction:** `cargo run --release -p pixelflow-pipeline --example horner_vs_estrin`, at each ISA level per `xtask isa-matrix`'s flags. Host: 4-vCPU Intel Xeon @ 2.80GHz (avx512f/dq/vl, fma), Linux, shared VM. Numbers below are medians of 4–5 clean runs × 5 in-session repetitions × the harness's own median-of-20 samples. Runs that tripped `BenchSession`'s sentinel regime-change abort were discarded, not averaged in — roughly a third of runs on this host.
 
 ## 1. What was measured
@@ -22,6 +22,8 @@ Three regimes, because the answer differs in each:
 ## 2. Results
 
 Every cell is **Horner ÷ Estrin**: above 1.00 means Estrin is faster. Latency/throughput/scanline columns are overhead-adjusted (audit M1); `scanline (raw)` is end-to-end, which is what a shipping decision is made on.
+
+**Read the AVX-512 `latency` column with care, and not per row.** `BenchMode::Latency`'s chaining apparatus — a 4×`LANES`-wide `Point4` stored to the stack, a call, and a store→load round trip, all serial — costs ~30ns per call at 16 lanes. That is the same order as the kernel, so every degree below ~16 reads ~30ns regardless of the polynomial (`n=4` and `n=8` measure 30.25 and 30.10ns/call: four extra serial FMAs for free, which is not a thing that happens). The overhead subtraction removes most of it and leaves a small difference of large numbers, which is why those cells are noisy and non-monotonic. §3's slope table is the same measurement without that defect, and it is what the mechanism should be read from. The `scanline` columns are unaffected — their fixed cost is 0.37ns/lane, an order below the kernel.
 
 
 ### SSE2 baseline (4 lanes, 16 regs, no FMA — `MulAdd` is `mulps`+`addps`) — 5 clean runs
@@ -109,15 +111,29 @@ Every cell is **Horner ÷ Estrin**: above 1.00 means Estrin is faster. Latency/t
 
 The critical path is real and behaves exactly as theory says: at SSE2 a degree-32 Horner chain takes 4.0× longer than the Estrin tree when evaluations are serialized, and the advantage grows monotonically with degree. That column is not wrong — it is answering a question production does not ask.
 
-The collapse kernel evaluates a **row**: `groups × LANES` independent points, produced by the emitted loop with X advancing lane-sequentially into contiguous memory. Consecutive iterations have no data dependence, so the out-of-order engine has a second, third, and fourth evaluation available to fill exactly the stalls Estrin restructures the polynomial to remove. The chain does not have to be short; it only has to be shorter than the reorder window can cover with the next iteration's work. At degree ≤ 9 it always is.
+The collapse kernel evaluates a **row**: `groups × LANES` independent points, produced by the emitted loop with X advancing lane-sequentially into contiguous memory. Consecutive iterations have no data dependence, so the out-of-order engine has a second, third, and fourth evaluation available to fill exactly the stalls Estrin restructures the polynomial to remove.
 
-What breaks that is not degree as such but **degree relative to the machine**:
+The cleanest way to see this is the **marginal cost of one more degree**, differenced across `n = 16 → 32` so the shared prelude and the mode's fixed cost cancel exactly (the protocol `measure_latency_prior` uses). Medians of 6 clean runs, ns per call:
 
-- **SSE2** (16 registers, no FMA — every `MulAdd` is two instructions with two roundings) has the longest chains and the least register room, and crosses over first: Estrin wins from degree 12 (1.24×) to degree 32 (1.88×).
-- **AVX2+FMA** halves the chain in instructions and crosses over at degree 24 (1.17×).
-- **AVX-512** (32 registers) never crosses over inside degree ≤ 32: every scanline ratio sits in 0.89–1.02, and the `latency` column itself flattens toward 1.0 — with 32 zmm registers and no spills at any degree measured, there is enough architectural state to keep several iterations in flight and the chain simply stops being the constraint.
+| level | mode | Horner | Estrin | H ÷ E |
+|---|---|---|---|---|
+| SSE2 | Latency | 2.476 | 0.368 | 6.72 |
+| SSE2 | **Scanline** | **1.271** | **0.506** | **2.51** |
+| AVX2 | Latency | 1.190 | 0.207 | 5.75 |
+| AVX2 | **Scanline** | **0.643** | **0.368** | **1.75** |
+| AVX-512 | Latency | 0.974 | 0.428 | 2.27 |
+| AVX-512 | **Scanline** | **0.567** | **0.549** | **1.03** |
 
-The register story is visible in the `spills` column: Estrin spills 4 slots at degree 24 and 8 at degree 32 on both 16-register targets, and never on AVX-512. Those spilling configurations are also the only ones whose timings are unstable — the AVX2 degree-24 scanline ratio ranges 0.53–1.18 across runs, against 0.93–0.96 for the non-spilling degree-6 row. **Once Estrin spills it is both slower and erratic**, which is the shape of a schedule that has run out of the resource it was trading for.
+Read down each pair rather than across:
+
+- **Horner's marginal degree gets cheaper in the loop** — 2.476 → 1.271 at SSE2, 1.190 → 0.643 at AVX2, 0.974 → 0.567 at AVX-512. Consistently a little under half. That is the neighbouring iteration paying for the chain.
+- **Estrin's marginal degree gets *more expensive*** — 0.368 → 0.506, 0.207 → 0.368, 0.428 → 0.549. Nothing regressed: in the loop it is no longer being charged for depth, it is being charged for **ops**, and it has more of them.
+
+The two curves therefore converge, and how far they converge is the whole result. At AVX-512 they meet: **1.03**, equal marginal cost per degree. Equal slope means the machine is **throughput-bound** — it is retiring instructions at its own rate, dependency structure no longer constrains anything, and the only thing that can separate two schedules is how many instructions each contains. Estrin contains strictly more (its `log₂ n` squarings), so in that regime it can only be equal or worse, which is exactly the 0.89–1.02 measured. Its extra ops are ~2–3 instructions out of ~10 at production's degrees, hence a ratio that reads as a tie rather than a visible loss.
+
+At SSE2 and AVX2 the convergence is only partial (2.51 and 1.75): with 16 registers the engine cannot keep enough iterations in flight to hide the whole chain, latency stays partly exposed, and past some degree that residue exceeds Estrin's extra ops. That is the crossover, at 12 and 24 respectively.
+
+So the answer is not that AVX-512 is a wash for unclear reasons. **The loop converts a latency problem into a throughput problem, and AVX-512 — 16 lanes, 32 registers, no spills at any degree measured — converts it completely.** The register story is visible in the `spills` column: Estrin spills 4 slots at degree 24 and 8 at degree 32 on both 16-register targets, and never on AVX-512. Those spilling configurations are also the only ones whose timings are unstable — the AVX2 degree-24 scanline ratio ranges 0.53–1.18 across runs, against 0.93–0.96 for the non-spilling degree-6 row. **Once Estrin spills it is both slower and erratic**, which is the shape of a schedule that has run out of the resource it was trading for.
 
 ## 4. The underflow hazard is new, and belongs to Estrin alone
 
@@ -149,7 +165,7 @@ Estrin costs roughly a factor of two in the worst case and stays inside single-p
 
 `CostModel::latency_prior` sums per-node costs. It therefore prices the two schedules by op count alone and prefers Horner everywhere — by 5 table-cycles at degree 4 (26 vs 31), 20 at degree 32 (166 vs 186), the extra squarings. Read as a **critical path** through the same table, the same weights say the opposite: 26 vs 21 cycles at degree 4, 166 vs 36 at degree 32.
 
-For production's polynomials, extraction's preference happens to match the measurement — but not because the model modeled anything. It cannot represent the distinction at all, and where the schedules genuinely diverge (SSE2, degree ≥ 12) it is wrong by up to 1.9×. This is a concrete worked example for `docs/plans/2026-09-01-schedule-cost-model-denotation.md`: a pair of extractions with identical semantics, an op-count ordering, a measured ordering that inverts, and an inversion point that moves with ISA level and register file size. It is precisely the residual that document specifies and the `Reranker` seam is held open for.
+§3 says exactly when each reading is the right one, and it is not a matter of taste. **An additive cost model is precisely correct in a throughput-bound regime** — where marginal costs are equal, total cost really is the sum of the parts, and AVX-512's 1.03 slope ratio says the machine is there. It is wrong exactly where latency stays exposed: SSE2's 2.51 and AVX2's 1.75 mean a degree of Horner and a degree of Estrin are not the same purchase, and no sum over nodes can say so. So extraction's preference matches the measurement for production's polynomials, and is wrong by up to 1.9× on SSE2 at degree ≥ 12 — not because the table's entries are off, but because additivity itself is a claim about the machine that holds at one ISA level and fails at another. This is a concrete worked example for `docs/plans/2026-09-01-schedule-cost-model-denotation.md`: a pair of extractions with identical semantics, an op-count ordering, a measured ordering that inverts, and an inversion point that moves with ISA level and register file size. It is precisely the residual that document specifies and the `Reranker` seam is held open for.
 
 Note also that the e-graph could not choose Estrin today even if the model wanted it: `horner_step`'s `MulAdd` nodes are created in `passes`, *after* saturation, and there is no rewrite rule that reassociates a polynomial. Adopting Estrin would be a change to the expansion in `pixelflow-ir/src/passes.rs`, not to the optimizer.
 
