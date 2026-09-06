@@ -260,11 +260,7 @@ fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, nu
                 while let Some((stripe, band)) = claim(&stripes) {
                     let rows = band.len() / width;
                     packed.collapse_rows(
-                        PlaneRegion {
-                            width,
-                            y0: stripe * STRIPE_ROWS,
-                            rows,
-                        },
+                        PlaneRegion::rows(width, stripe * STRIPE_ROWS, rows),
                         band,
                         width,
                     );

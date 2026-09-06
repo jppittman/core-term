@@ -58,11 +58,7 @@ fn bench_packed_hot_loop(c: &mut Criterion) {
     let packed =
         CellGridPackedProgram::compile(geom, [0.1, 0.1, 0.1, 1.0], RgbaColorCube::PACKED_SHIFTS)
             .frame(Arc::new(cells), Arc::new(atlas));
-    let region = PlaneRegion {
-        width: w,
-        y0: 0,
-        rows: h,
-    };
+    let region = PlaneRegion::rows(w, 0, h);
     let mut band = vec![0u32; w * h];
 
     c.bench_function("packed_kernel_hot_loop", |b| {
@@ -108,11 +104,7 @@ fn bench_packed_vs_four_plane(c: &mut Criterion) {
                     let (r, rest) = planes.split_at_mut(chunk_rows * w);
                     let (g, rest) = rest.split_at_mut(chunk_rows * w);
                     let (blue, a) = rest.split_at_mut(chunk_rows * w);
-                    let region = PlaneRegion {
-                        width: w,
-                        y0: done,
-                        rows: n,
-                    };
+                    let region = PlaneRegion::rows(w, done, n);
                     four.collapse_channel_rows(0, region, r, w);
                     four.collapse_channel_rows(1, region, g, w);
                     four.collapse_channel_rows(2, region, blue, w);
@@ -139,11 +131,7 @@ fn bench_packed_vs_four_plane(c: &mut Criterion) {
     });
 
     group.bench_function("packed_kernel_direct_write", |b| {
-        let region = PlaneRegion {
-            width: w,
-            y0: 0,
-            rows: h,
-        };
+        let region = PlaneRegion::rows(w, 0, h);
         b.iter(|| {
             packed.collapse_rows(region, &mut band, w);
             black_box(&band);
