@@ -83,6 +83,7 @@ pub(crate) fn analyze_select_guards(schedule: &[Def]) -> Vec<SelectGuard> {
     use alloc::collections::BTreeSet;
 
     let mut guards = Vec::new();
+    let mut telemetry = Telemetry::new();
 
     if schedule.is_empty() {
         return guards;
@@ -248,6 +249,17 @@ pub(crate) fn analyze_select_guards(schedule: &[Def]) -> Vec<SelectGuard> {
                 }
             };
 
+            telemetry.select(|| SelectStat {
+                select_idx: i,
+                mask_idx,
+                exclusive: (true_exclusive.len(), false_exclusive.len()),
+                guarded: (true_range.1 - true_range.0, false_range.1 - false_range.0),
+                intruders: (
+                    intruders(&true_indices, schedule),
+                    intruders(&false_indices, schedule),
+                ),
+            });
+
             // Only create a guard if at least one arm has exclusive nodes
             if true_range.0 != true_range.1 || false_range.0 != false_range.1 {
                 guards.push(SelectGuard {
@@ -260,5 +272,98 @@ pub(crate) fn analyze_select_guards(schedule: &[Def]) -> Vec<SelectGuard> {
         }
     }
 
+    telemetry.report(schedule.len());
     guards
+}
+
+/// What one `Select` in the schedule offered a guard, and what survived.
+struct SelectStat {
+    select_idx: usize,
+    /// Where the mask lands in the schedule; a guard needs it before the arm.
+    mask_idx: usize,
+    /// Values exclusive to (true, false) — what a guard could skip if the
+    /// exclusive set happened to be contiguous.
+    exclusive: (usize, usize),
+    /// Schedule entries a guard actually skips, (true, false).
+    guarded: (usize, usize),
+    /// Entries that are NOT this arm's but lie between its first and its last,
+    /// as (total, of which leaves) — the values a single branch would have to
+    /// jump over, which is why the arm is not guardable.
+    intruders: ((usize, usize), (usize, usize)),
+}
+
+/// Entries inside `[min(arm), max(arm)]` that the arm does not own, and how
+/// many of those are leaves (a `Const` or a coordinate). Diagnosis only.
+fn intruders(arm: &alloc::collections::BTreeSet<usize>, schedule: &[Def]) -> (usize, usize) {
+    let (Some(&start), Some(&end)) = (arm.iter().next(), arm.iter().next_back()) else {
+        return (0, 0);
+    };
+    let mut total = 0;
+    let mut leaves = 0;
+    for (idx, def) in schedule.iter().enumerate().take(end + 1).skip(start) {
+        if arm.contains(&idx) {
+            continue;
+        }
+        total += 1;
+        if matches!(def.op, ScheduledOp::Const(_) | ScheduledOp::Var(_)) {
+            leaves += 1;
+        }
+    }
+    (total, leaves)
+}
+
+/// The guard analysis, counted, on stderr when `PIXELFLOW_GUARD_TELEMETRY` is
+/// set in the environment.
+///
+/// Diagnosis only, and off by default: nothing the emitter decides with, and
+/// no emitted byte changes. It exists because "the guard did not fire" is a
+/// claim about the *schedule*, and the only way to settle it is to count. The
+/// two numbers per select are the two ways a guard is lost and they have
+/// different fixes: `exclusive` short of the arm's size is the analysis
+/// refusing (a value some other expression also reads), while `guarded` short
+/// of `exclusive` is the *order* refusing (the arm's own values are not a
+/// contiguous run, so one branch cannot span them).
+struct Telemetry {
+    stats: Option<Vec<SelectStat>>,
+}
+
+impl Telemetry {
+    fn new() -> Self {
+        Self {
+            stats: std::env::var_os("PIXELFLOW_GUARD_TELEMETRY").map(|_| Vec::new()),
+        }
+    }
+
+    /// The stat is built lazily: computing it walks the schedule, and nothing
+    /// should pay for that when the telemetry is off.
+    fn select(&mut self, stat: impl FnOnce() -> SelectStat) {
+        if let Some(stats) = self.stats.as_mut() {
+            stats.push(stat());
+        }
+    }
+
+    fn report(&self, sched_len: usize) {
+        let Some(stats) = self.stats.as_ref() else {
+            return;
+        };
+        let covered: usize = stats.iter().map(|s| s.guarded.0 + s.guarded.1).sum();
+        let offered: usize = stats.iter().map(|s| s.exclusive.0 + s.exclusive.1).sum();
+        std::eprintln!(
+            "guard-telemetry: schedule={sched_len} selects={} guarded={covered} \
+             exclusive={offered} per_select={:?}",
+            stats.len(),
+            stats
+                .iter()
+                .map(|s| {
+                    (
+                        s.select_idx,
+                        s.mask_idx,
+                        s.exclusive,
+                        s.guarded,
+                        s.intruders,
+                    )
+                })
+                .collect::<Vec<_>>()
+        );
+    }
 }
