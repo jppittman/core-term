@@ -279,12 +279,11 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn shr_u32(self, n: u32) -> Self {
+    fn shr_exponent(self) -> Self {
         unsafe {
-            let as_int = _mm_castps_si128(self.0);
-            let shift = _mm_cvtsi32_si128(n as i32);
-            let shifted = _mm_srl_epi32(as_int, shift);
-            Self(_mm_castsi128_ps(shifted))
+            Self(_mm_castsi128_ps(_mm_srli_epi32::<23>(_mm_castps_si128(
+                self.0,
+            ))))
         }
     }
 
@@ -301,11 +300,11 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn shl_u32(self, n: u32) -> Self {
+    fn shl_exponent(self) -> Self {
         unsafe {
-            let as_int = _mm_castps_si128(self.0);
-            let shift = _mm_cvtsi32_si128(n as i32);
-            Self(_mm_castsi128_ps(_mm_sll_epi32(as_int, shift)))
+            Self(_mm_castsi128_ps(_mm_slli_epi32::<23>(_mm_castps_si128(
+                self.0,
+            ))))
         }
     }
 
@@ -819,12 +818,11 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
-    fn shr_u32(self, n: u32) -> Self {
+    fn shr_exponent(self) -> Self {
         unsafe {
-            let as_int = _mm256_castps_si256(self.0);
-            let shift = _mm_cvtsi32_si128(n as i32);
-            let shifted = _mm256_srl_epi32(as_int, shift);
-            Self(_mm256_castsi256_ps(shifted))
+            Self(_mm256_castsi256_ps(_mm256_srli_epi32::<23>(
+                _mm256_castps_si256(self.0),
+            )))
         }
     }
 
@@ -841,11 +839,11 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
-    fn shl_u32(self, n: u32) -> Self {
+    fn shl_exponent(self) -> Self {
         unsafe {
-            let as_int = _mm256_castps_si256(self.0);
-            let shift = _mm_cvtsi32_si128(n as i32);
-            Self(_mm256_castsi256_ps(_mm256_sll_epi32(as_int, shift)))
+            Self(_mm256_castsi256_ps(_mm256_slli_epi32::<23>(
+                _mm256_castps_si256(self.0),
+            )))
         }
     }
 
@@ -1374,12 +1372,11 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn shr_u32(self, n: u32) -> Self {
+    fn shr_exponent(self) -> Self {
         unsafe {
-            let as_int = _mm512_castps_si512(self.0);
-            let shift = _mm_cvtsi32_si128(n as i32);
-            let shifted = _mm512_srl_epi32(as_int, shift);
-            Self(_mm512_castsi512_ps(shifted))
+            Self(_mm512_castsi512_ps(_mm512_srli_epi32::<23>(
+                _mm512_castps_si512(self.0),
+            )))
         }
     }
 
@@ -1397,11 +1394,11 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn shl_u32(self, n: u32) -> Self {
+    fn shl_exponent(self) -> Self {
         unsafe {
-            let as_int = _mm512_castps_si512(self.0);
-            let shift = _mm_cvtsi32_si128(n as i32);
-            Self(_mm512_castsi512_ps(_mm512_sll_epi32(as_int, shift)))
+            Self(_mm512_castsi512_ps(_mm512_slli_epi32::<23>(
+                _mm512_castps_si512(self.0),
+            )))
         }
     }
 

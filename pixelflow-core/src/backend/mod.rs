@@ -139,8 +139,15 @@ pub trait SimdOps:
     /// Splat u32 bit pattern as float (BITCAST).
     fn from_u32_bits(bits: u32) -> Self;
 
-    /// Shift bits right treating as u32.
-    fn shr_u32(self, n: u32) -> Self;
+    /// `bits >> 23`: slide the exponent field down to the low bits.
+    ///
+    /// Named for the operation rather than exposed as a general shift because
+    /// there is exactly one shift distance in this trait's transcendentals,
+    /// and baking it in lets every backend emit the immediate-form shift
+    /// (`psrld xmm, 23`) instead of moving a count into a register first —
+    /// which is what a generic count costs, in the inner loop of every
+    /// `log2`.
+    fn shr_exponent(self) -> Self;
 
     /// Interpret bits as i32, convert to f32.
     fn i32_to_f32(self) -> Self;
@@ -149,8 +156,9 @@ pub trait SimdOps:
     /// The inverse of [`SimdOps::i32_to_f32`].
     fn f32_to_i32(self) -> Self;
 
-    /// Shift bits left treating as u32. The mirror of [`SimdOps::shr_u32`].
-    fn shl_u32(self, n: u32) -> Self;
+    /// `bits << 23`: slide a biased exponent up into the exponent field.
+    /// The mirror of [`SimdOps::shr_exponent`], immediate for the same reason.
+    fn shl_exponent(self) -> Self;
 
     /// Base-2 logarithm.
     ///
@@ -163,7 +171,7 @@ pub trait SimdOps:
     #[inline(always)]
     fn log2(self) -> Self {
         // e = (bits >> 23) − 127; m = mantissa | 1.0 ∈ [1, 2).
-        let e = self.shr_u32(23).i32_to_f32() - Self::splat(127.0);
+        let e = self.shr_exponent().i32_to_f32() - Self::splat(127.0);
         let m = (self & Self::from_u32_bits(0x007F_FFFF)) | Self::from_u32_bits(0x3F80_0000);
 
         // Range-reduce to √2-centered so t = m − 1 ∈ [−0.293, 0.414].
@@ -211,7 +219,7 @@ pub trait SimdOps:
         // 2^n = bitcast((int(n) + 127) << 23). The bias is added in the float
         // domain, where it is exact for the clamped range, so this needs no
         // integer-add primitive.
-        let pow2n = (n + Self::splat(127.0)).f32_to_i32().shl_u32(23);
+        let pow2n = (n + Self::splat(127.0)).f32_to_i32().shl_exponent();
         p * pow2n
     }
 

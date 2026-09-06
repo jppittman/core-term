@@ -306,13 +306,11 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn shr_u32(self, n: u32) -> Self {
+    fn shr_exponent(self) -> Self {
         unsafe {
-            let as_int = vreinterpretq_u32_f32(self.0);
-            // NEON uses negative shift for right shift
-            let shift = vdupq_n_s32(-(n as i32));
-            let shifted = vshlq_u32(as_int, shift);
-            Self(vreinterpretq_f32_u32(shifted))
+            Self(vreinterpretq_f32_u32(vshrq_n_u32::<23>(
+                vreinterpretq_u32_f32(self.0),
+            )))
         }
     }
 
@@ -330,11 +328,11 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn shl_u32(self, n: u32) -> Self {
+    fn shl_exponent(self) -> Self {
         unsafe {
-            let as_int = vreinterpretq_u32_f32(self.0);
-            let shift = vdupq_n_s32(n as i32);
-            Self(vreinterpretq_f32_u32(vshlq_u32(as_int, shift)))
+            Self(vreinterpretq_f32_u32(vshlq_n_u32::<23>(
+                vreinterpretq_u32_f32(self.0),
+            )))
         }
     }
 
