@@ -63,7 +63,7 @@ fn priority_holds_on_a_dedicated_thread_fed_by_ordinary_handles() {
     let mut builder = ActorBuilder::<(), (), ()>::new(64, None);
     let handle = builder.add_producer();
     let (tx_seen, mut rx_seen) = spsc_channel::<&'static str>(32);
-    let mut thread = builder.build_node(LaneLog, LaneLogWiring { tx: tx_seen });
+    let mut thread = builder.build_dedicated_thread(LaneLog, LaneLogWiring { tx: tx_seen });
 
     // The whole burst is queued before the thread exists to drain any of it.
     for _ in 0..3 {
@@ -171,7 +171,7 @@ fn an_os_bridge_transducer_drains_through_step_os_and_parks_when_idle() {
     let mut builder = ActorBuilder::<Infallible, Infallible, Infallible>::new(4, None);
     let handle = builder.add_producer();
     let (tx_out, mut rx_out) = spsc_channel::<u32>(16);
-    let mut thread = builder.build_node(
+    let mut thread = builder.build_dedicated_thread(
         BridgeSource { external: rx_ext },
         BridgeWiring { tx: tx_out },
     );
@@ -260,7 +260,7 @@ fn a_flooded_lane_does_not_starve_shutdown() {
     let mut builder = ActorBuilder::<(), (), ()>::new(64, None);
     let flood_handle = builder.add_producer();
     let shutdown_handle = builder.add_producer();
-    let mut thread = builder.build_node(LaneLog, DiscardWiring);
+    let mut thread = builder.build_dedicated_thread(LaneLog, DiscardWiring);
 
     // The driver hands its node back after exiting, so the lanes and doorbell stay alive
     // until the flooder is stopped — `ActorHandle::wake` panics on a disconnected doorbell by
@@ -310,7 +310,7 @@ fn step_os_gets_a_final_turn_after_the_last_handle_drops() {
     let mut builder = ActorBuilder::<Infallible, Infallible, Infallible>::new(4, None);
     let handle = builder.add_producer();
     let (tx_out, mut rx_out) = spsc_channel::<u32>(16);
-    let mut thread = builder.build_node(
+    let mut thread = builder.build_dedicated_thread(
         BridgeSource { external: rx_ext },
         BridgeWiring { tx: tx_out },
     );
@@ -394,7 +394,7 @@ fn a_blocking_step_os_is_interrupted_for_shutdown() {
     let mut builder = ActorBuilder::<Infallible, Infallible, Infallible>::new(4, Some(handler));
     let handle = builder.add_producer();
     let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
-    let mut thread = builder.build_node(
+    let mut thread = builder.build_dedicated_thread(
         BlockingBridge { external: rx_ext },
         BridgeWiring { tx: tx_out },
     );
@@ -432,7 +432,7 @@ fn a_disconnected_wiring_target_panics_instead_of_spinning() {
     let mut builder = ActorBuilder::<(), (), ()>::new(8, None);
     let handle = builder.add_producer();
     let (tx_seen, rx_seen) = spsc_channel::<&'static str>(8);
-    let mut thread = builder.build_node(LaneLog, LaneLogWiring { tx: tx_seen });
+    let mut thread = builder.build_dedicated_thread(LaneLog, LaneLogWiring { tx: tx_seen });
 
     drop(rx_seen); // the downstream consumer dies before the first delivery
 
@@ -451,7 +451,7 @@ fn an_idle_os_bridge_survives_while_a_waker_exists() {
     let handle = builder.add_producer();
     let waker = handle.waker();
     let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
-    let mut thread = builder.build_node(
+    let mut thread = builder.build_dedicated_thread(
         BridgeSource { external: rx_ext },
         BridgeWiring { tx: tx_out },
     );
@@ -497,7 +497,7 @@ fn a_parked_final_word_survives_lane_completion() {
     let (tx_out, mut rx_out) = spsc_channel::<u32>(2);
     while tx_out.try_send(99).is_ok() {}
 
-    let mut thread = builder.build_node(
+    let mut thread = builder.build_dedicated_thread(
         BridgeSource { external: rx_ext },
         BridgeWiring { tx: tx_out },
     );
@@ -586,7 +586,7 @@ fn a_step_os_continuation_resumes_without_an_external_wake() {
     let mut builder = ActorBuilder::<u32, Infallible, Infallible>::new(4, None);
     let handle = builder.add_producer();
     let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
-    let mut thread = builder.build_node(OsKick { kicked: false }, OsKickWiring { tx: tx_out });
+    let mut thread = builder.build_dedicated_thread(OsKick { kicked: false }, OsKickWiring { tx: tx_out });
     drop(handle);
 
     thread.run();

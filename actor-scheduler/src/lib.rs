@@ -571,7 +571,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
     /// module) or a `Node` (`mealy.rs`), because [`sharded::ShardedInbox`] implements both
     /// `ShardedInbox::drain` (for the former) and [`mealy::Inbox`] (for the latter).
     #[must_use]
-    pub fn build_node<T, W>(
+    pub fn build_dedicated_thread<T, W>(
         self,
         actor: T,
         wiring: W,
@@ -601,7 +601,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
             sweep_burst,
             doorbell: self
                 .doorbell
-                .expect("ActorBuilder::build_node called twice"),
+                .expect("ActorBuilder::build_dedicated_thread called twice"),
         }
     }
 }
@@ -1233,9 +1233,9 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 /// `host.rs` so the doorbell-loop discipline it must mirror ([`ActorScheduler::run_inner`])
 /// stays on the same page as the mirror.
 ///
-/// Built by [`ActorBuilder::build_node`], never directly: the doorbell receiver and the three
-/// sharded lanes must come from the same builder as the [`ActorHandle`]s that feed them, and
-/// `ActorBuilder` is the only thing that owns that invariant.
+/// Built by [`ActorBuilder::build_dedicated_thread`], never directly: the doorbell receiver
+/// and the three sharded lanes must come from the same builder as the [`ActorHandle`]s that
+/// feed them, and `ActorBuilder` is the only thing that owns that invariant.
 pub struct DedicatedThread<
     T,
     W,
