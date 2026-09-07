@@ -216,14 +216,20 @@ impl CachedGlyph {
 // GlyphCache: The Functor
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Quantization granularity for size buckets: multiples of 4 pixels, for
+/// SIMD-friendly dimensions.
+const SIZE_BUCKET_GRANULARITY: usize = 4;
+
+/// Smallest size bucket a glyph can round down into.
+const MIN_SIZE_BUCKET: usize = 8;
+
 /// Size bucket for cache keys.
 ///
 /// Quantizes sizes to reduce cache entries while maintaining quality.
-/// Uses multiples of 4 pixels for SIMD-friendly dimensions.
 fn size_bucket(size: f32) -> usize {
-    // Round up to next multiple of 4, minimum 8
-    let bucket = ((size / 4.0).ceil() as usize) * 4;
-    bucket.max(8)
+    let granularity = SIZE_BUCKET_GRANULARITY as f32;
+    let bucket = ((size / granularity).ceil() as usize) * SIZE_BUCKET_GRANULARITY;
+    bucket.max(MIN_SIZE_BUCKET)
 }
 
 /// Quantization granularity for density buckets: eighth-of-a-texel steps.
