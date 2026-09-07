@@ -366,6 +366,17 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
   `Round` expansion (`(x + 0.5).floor()`, two instructions where `roundps` is
   one, and not any IEEE rounding mode) is the worked counter-example, and
   "Floating point at the edges" above is the long version.
+
+  Note *what* is branchless: the **denotation**, not the instruction stream.
+  `Select` is the worked example of the difference. The operation blends —
+  every lane, always — and codegen *also* emits a short-circuit branch that
+  skips computing an arm no lane selected (`emit/guards.rs`, bought only where
+  the arm outcosts `MISPREDICT_PENALTY_CYCLES`, since mask coherence is a
+  property of the data that no static analysis can know). That branch is not a
+  case: it can change the work done, never the value. Which is the payoff of
+  folding rather than an exception to it — once the meaning carries one case,
+  the compiler is free to put branches back for speed, because nothing
+  downstream has to know they exist.
 - **New implementation of an existing category → trait first** - Before
   adding a second way of doing something the codebase already does one way,
   check whether that category is already a trait. If it is, implement the new
@@ -386,6 +397,12 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
   at construction** is not what the fold rule is warning about; dispatch
   **repeated at every use** is. Same factoring as a guard clause, one level up:
   put the case at the boundary so the interior is straight-line.
+
+  That also ranks the ways of varying behavior. A `match` over an enum, or a
+  monomorphized generic, settles the case at one point and leaves every use
+  unconditional. A `Box<dyn Trait>` does not — it pays the dispatch per call,
+  at every use, which is the shape this rule is against; on a hot path it is
+  usually better as one of the other two.
 
 ## Common Patterns
 
