@@ -79,21 +79,17 @@ These points are particularly relevant when working with or generating code usin
 
 2.  **Prefer `match` over `else if`:** When choosing between complex `if`/`else if`/`else` chains and a `match` statement, prefer `match`, especially when dealing with enums or a fixed set of conditions.
 
-3.  **`if` Folds, `match` Handles:** This sharpens rule 2 into a test you can apply to any single `if`. An `if`/`else` is doing its job when both arms are the *same kind of thing* and the branch is just choosing which value of it applies — folding two cases down to one meaning. An `if`/`else` is in the wrong place when its arms are genuinely *different behaviors* — that's not a fold, it's a case, and cases belong to `match` (over an enum, or to a trait method). Applied consistently, this means you stop accumulating `else` blocks that are quietly doing two jobs at once: picking a value, and dispatching behavior.
+3.  **`if` Folds, `match` Handles:** This sharpens rule 2 into a test you can apply to any single `if`. An `if` is doing its job when it *narrows* — the set of possible states after it is smaller than the set before it. `if x > 0.0 { x *= -1.0 }` takes "any sign" down to "non-positive"; two possibilities become one, which is exactly why it needs no `else` — there is nothing left to say once the narrowing is done. An `if`/`else` is in the wrong place when it does the opposite: when its arms send execution toward genuinely different downstream behavior, so that *more* distinct cases are live after the branch than were live before it. That's not narrowing, it's dispatch, and dispatch belongs to `match` (over an enum, or to a trait method). Applied consistently, this means you stop accumulating `else` blocks that are quietly doing two jobs at once: narrowing a value, and dispatching behavior.
 
-    * **Good (fold — both arms are "the value, adjusted"):**
+    * **Good (narrows — two possibilities become one):**
         ```rust
-        fn clamp_unit(x: f32) -> f32 {
-            if x < 0.0 {
-                0.0
-            } else if x > 1.0 {
-                1.0
-            } else {
-                x
-            }
+        // z is non-positive after this, whatever sign x started as.
+        let mut z = x;
+        if z > 0.0 {
+            z *= -1.0;
         }
         ```
-    * **Bad (handling dressed up as folding — the arms are different behaviors sharing an `if`):**
+    * **Bad (dispatch dressed up as narrowing — the arms are different behaviors sharing an `if`, and there are still two live cases after it):**
         ```rust
         fn commit(tx: &Transaction) {
             if tx.is_readonly() {

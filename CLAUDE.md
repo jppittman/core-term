@@ -339,13 +339,16 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
   concepts want to be a module, a method on a struct, or a builder, not suffixes
   on a free function. Especially watch for an accreting family of `*_with_ctx`,
   `*_scanline`, `*_jet` variants: that's the cue to introduce the struct/builder.
-- **`if` folds, `match` handles** - `if` collapses two cases into one meaning —
-  a fold (`if x < 0.0 { -x } else { x }`, clamping, defaulting) — and should
-  read as one path with a shortcut, not two behaviors. When the arms of an
-  `if`/`else` actually do different things, that difference is a case, and
-  cases are handled by `match` (over an enum, or a trait), not by `else`. A
-  codebase applying this well doesn't accumulate `else`s doing double duty as
-  both control flow and case handling.
+- **`if` folds, `match` handles** - an `if` should *narrow*: the set of
+  possible states after it is smaller than before it, not larger. `if x >
+  0.0 { x *= -1.0 }` takes "any sign" down to "non-positive" — two
+  possibilities become one. That's a fold, and it needs no `else` because
+  there's nothing left to say. When a branch instead leaves *more* distinct
+  cases live after it than before — the arms send execution toward genuinely
+  different behavior — that's not narrowing, it's dispatch, and dispatch is
+  `match`'s job (over an enum, or a trait), not `if`/`else`'s. A codebase
+  applying this well doesn't accumulate `else`s doing double duty as both
+  narrowing and dispatch.
 - **New implementation of an existing category → trait first** - Before
   adding a second way of doing something the codebase already does one way,
   check whether that category is already a trait. If it is, implement the new
