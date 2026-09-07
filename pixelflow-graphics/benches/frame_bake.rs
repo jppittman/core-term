@@ -18,46 +18,49 @@
 //! reconstruction of it.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use pixelflow_core::{CellGridGeometry, CellGridProgram, PlaneRegion};
+use pixelflow_core::{CellGridMetrics, CellGridProgram, CellGridShape, IndexRange};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::scene::compile_cell_grid_for;
 use pixelflow_graphics::render::Pixel;
 use std::sync::Arc;
 
 /// A 2560x1584 frame of 12x24 cells: 213x66 — a full-screen terminal.
-fn realistic() -> (CellGridGeometry, Vec<f32>, Vec<f32>) {
-    let geom = CellGridGeometry {
+fn realistic() -> (CellGridShape, CellGridMetrics, Vec<f32>, Vec<f32>) {
+    let shape = CellGridShape {
         cols: 213,
         rows: 66,
-        cell_w: 12.0,
-        cell_h: 24.0,
-        density: 1.0,
         atlas_width: 64,
         atlas_height: 32,
-        tile_w: 12,
-        tile_h: 24,
         frame_w: 2560,
         frame_h: 1584,
     };
-    let mut atlas = vec![0.0f32; geom.atlas_len()];
+    let metrics = CellGridMetrics {
+        cell_w: 12.0,
+        cell_h: 24.0,
+        density: 1.0,
+        tile_w: 12,
+        tile_h: 24,
+        scale: 1.0,
+    };
+    let mut atlas = vec![0.0f32; shape.atlas_len()];
     for (i, t) in atlas.iter_mut().enumerate() {
         *t = ((i * 7) % 11) as f32 / 10.0;
     }
-    let mut cells = vec![0.0f32; geom.cells_len()];
+    let mut cells = vec![0.0f32; shape.cells_len()];
     for (i, c) in cells.iter_mut().enumerate() {
         *c = ((i * 13) % 17) as f32 / 16.0;
     }
-    (geom, cells, atlas)
+    (shape, metrics, cells, atlas)
 }
 
 /// Hot-loop-only target for external sampling profilers: nothing but the
 /// packed path, long enough to sample.
 fn bench_packed_hot_loop(c: &mut Criterion) {
-    let (geom, cells, atlas) = realistic();
+    let (shape, metrics, cells, atlas) = realistic();
     let (w, h) = (2560usize, 1584usize);
-    let packed = compile_cell_grid_for::<Rgba8>(geom, [0.1, 0.1, 0.1, 1.0])
-        .frame(Arc::new(cells), Arc::new(atlas));
-    let region = PlaneRegion::rows(w, 0, h);
+    let program = compile_cell_grid_for::<Rgba8>(shape, [0.1, 0.1, 0.1, 1.0]);
+    let packed = program.frame(&program.params(&metrics), Arc::new(cells), Arc::new(atlas));
+    let region = IndexRange::new(0, 0, w, h);
     let mut band = vec![0u32; w * h];
 
     c.bench_function("packed_kernel_hot_loop", |b| {
@@ -73,14 +76,15 @@ fn bench_packed_hot_loop(c: &mut Criterion) {
 /// pixelflow-core as the parity oracle, which is what lets the retired shape
 /// be reconstructed here without keeping dead render code.
 fn bench_packed_vs_four_plane(c: &mut Criterion) {
-    let (geom, cells, atlas) = realistic();
+    let (shape, metrics, cells, atlas) = realistic();
     let (w, h) = (2560usize, 1584usize);
     let cells = Arc::new(cells);
     let atlas = Arc::new(atlas);
 
-    let four =
-        CellGridProgram::compile(geom, [0.1, 0.1, 0.1, 1.0]).frame(cells.clone(), atlas.clone());
-    let packed = compile_cell_grid_for::<Rgba8>(geom, [0.1, 0.1, 0.1, 1.0]).frame(cells, atlas);
+    let four_program = CellGridProgram::compile(shape, [0.1, 0.1, 0.1, 1.0]);
+    let four = four_program.frame(&four_program.params(&metrics), cells.clone(), atlas.clone());
+    let packed_program = compile_cell_grid_for::<Rgba8>(shape, [0.1, 0.1, 0.1, 1.0]);
+    let packed = packed_program.frame(&packed_program.params(&metrics), cells, atlas);
 
     // The retired shape staged a megabyte of scratch per plane; keep that
     // band height so what is being priced is the shape, not a new tuning.
@@ -101,7 +105,7 @@ fn bench_packed_vs_four_plane(c: &mut Criterion) {
                     let (r, rest) = planes.split_at_mut(chunk_rows * w);
                     let (g, rest) = rest.split_at_mut(chunk_rows * w);
                     let (blue, a) = rest.split_at_mut(chunk_rows * w);
-                    let region = PlaneRegion::rows(w, done, n);
+                    let region = IndexRange::new(0, done, w, n);
                     four.collapse_channel_rows(0, region, r, w);
                     four.collapse_channel_rows(1, region, g, w);
                     four.collapse_channel_rows(2, region, blue, w);
@@ -128,7 +132,7 @@ fn bench_packed_vs_four_plane(c: &mut Criterion) {
     });
 
     group.bench_function("packed_kernel_direct_write", |b| {
-        let region = PlaneRegion::rows(w, 0, h);
+        let region = IndexRange::new(0, 0, w, h);
         b.iter(|| {
             packed.collapse_rows(region, &mut band, w);
             black_box(&band);

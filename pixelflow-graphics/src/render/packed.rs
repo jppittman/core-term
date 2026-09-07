@@ -68,6 +68,25 @@ pub(crate) fn packed_kernel(color: &Rgba, shifts: [u32; 4]) -> Kernel {
         .into_kernel()
 }
 
+/// The scalar half of [`packed_kernel`]'s pack: one `[0, 1]` RGBA value as
+/// the `u32` word the kernel would compute for it.
+///
+/// The **one** definition of that arithmetic outside the kernel — the border
+/// a partially-covering scene paints and the parity oracle in this crate's
+/// tests are the same bytes because they are the same function, not because
+/// two restatements happen to agree.
+///
+/// `(x·255).clamp(0, 255)` then truncate toward zero, shifted to its lane
+/// and OR-folded — `Pixel::from_rgba` composed with `Pixel::to_u32`, pinned
+/// against exactly that in `border_word_is_the_pixel_conversion`.
+#[must_use]
+pub(crate) fn pack_scalar(rgba: [f32; 4], shifts: [u32; 4]) -> u32 {
+    rgba.iter()
+        .zip(shifts)
+        .map(|(&x, s)| u32::from((x * 255.0).clamp(0.0, 255.0) as u8) << s)
+        .fold(0, |acc, lane| acc | lane)
+}
+
 /// A colour output compiled at a frame's lattice shape: a compiled manifold
 /// with four channels, whose root is a packed `u32` pixel, so the collapse
 /// loop stores finished pixels directly.
@@ -246,6 +265,24 @@ impl PackedFrame {
     /// `out` cannot hold the band.
     pub fn collapse_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
         self.frame.collapse_int_rows(region, out, stride);
+    }
+
+    /// [`Self::collapse_rows`] for a program that answers for only part of a
+    /// row: **exactly** `region.width` words per row, leaving the rest of the
+    /// stride as it was.
+    ///
+    /// `collapse_rows` lets a row's final partial batch overhang into the
+    /// stride's spare columns, because for a whole-frame scene those columns
+    /// are padding nobody reads. For a scene that covers part of the frame
+    /// they are the *border's* columns, filled by something else, so an
+    /// overhang there is wrong pixels rather than scratch.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the region's width is zero, `stride` is less than it, or
+    /// `out` cannot hold the sub-rectangle.
+    pub(crate) fn collapse_subrect(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
+        self.frame.collapse_int_subrect(region, out, stride);
     }
 }
 

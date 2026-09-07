@@ -11,8 +11,8 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::CellGridGeometry;
-use pixelflow_graphics::render::cell_grid::CellGridPackedManifold;
+use pixelflow_core::{CellGridMetrics, CellGridShape};
+use pixelflow_graphics::render::cell_grid::{CellGridPackedManifold, CellGridPackedParams};
 use pixelflow_graphics::render::scene::{constant_platform_scene, Scene};
 
 /// Adapter to send PTY commands to TerminalApp actor.
@@ -109,14 +109,9 @@ pub struct TerminalApp {
     loaded_font: Arc<LoadedFont<MmapSource>>,
     /// Baked glyph coverage tiles, gathered by the scene kernel.
     atlas: GlyphAtlas,
-    /// The compiled cell-grid scene: ONE packed kernel producing finished
-    /// `u32` pixels, byte order bound by the platform's ColorCube inside
-    /// pixelflow-graphics. Recompiled whenever the geometry it was compiled
-    /// against — grid dimensions, cell size, density, atlas extents, the
-    /// frame's pixel size — changes; `None` until the first frame. This is the JIT answer to
-    /// dynamic resize: the program's size and compile time are independent
-    /// of the grid's.
-    program: Option<CellGridPackedManifold>,
+    /// The compiled cell-grid scene and the metric it is currently drawn at;
+    /// `None` until the first frame. See [`CellGridScene`].
+    scene: Option<CellGridScene>,
     /// The solid-background scene and the device-pixel frame it was compiled
     /// for. Only ever drawn before anything has been presented (see
     /// [`TerminalApp::build_scene`]); cached because a `Scene` is a compiled
@@ -137,9 +132,49 @@ pub struct TerminalApp {
     /// The window's size in LOGICAL POINTS, from the last `WindowCreated` /
     /// `Resized` (`Surface::width_px`, which is points despite the name).
     /// Scaled by `density` it is the device-pixel lattice the cell-grid
-    /// kernels are compiled for, so it is part of the geometry the recompile
-    /// check compares.
+    /// kernels are compiled for, so it is part of the [`CellGridShape`] the
+    /// recompile check compares.
     frame_px: [u32; 2],
+}
+
+/// The compiled cell-grid scene, the metric it is drawn at, and that
+/// metric's block: ONE packed kernel producing finished `u32` pixels, byte
+/// order bound by the platform's ColorCube inside pixelflow-graphics.
+///
+/// **The two halves change on different schedules, which is why they are
+/// different fields.** The program is compiled against *extents* — grid
+/// dimensions, atlas extents, the frame's pixel size — and only those
+/// recompile it. The metric (cell size, sample density, tile size, display
+/// scale) is a block of uniforms, so a font-size or DPI change rewrites eight
+/// floats and reuses the kernel. Neither happens per frame: `frame` is
+/// refcounts, which is what keeps the render path free of per-frame
+/// allocation.
+struct CellGridScene {
+    program: CellGridPackedManifold,
+    metrics: CellGridMetrics,
+    params: CellGridPackedParams,
+}
+
+impl CellGridScene {
+    fn new(program: CellGridPackedManifold, metrics: CellGridMetrics) -> Self {
+        let params = program.params(&metrics);
+        Self {
+            program,
+            metrics,
+            params,
+        }
+    }
+
+    /// Adopt `metrics`, laying out a new block only when it actually moved.
+    /// Laying one out allocates (the values are shared with the frame still
+    /// in flight), so doing it per frame would put a heap allocation on the
+    /// render path for no change at all.
+    fn set_metrics(&mut self, metrics: CellGridMetrics) {
+        if self.metrics != metrics {
+            self.params = self.program.params(&metrics);
+            self.metrics = metrics;
+        }
+    }
 }
 
 /// Parameters for constructing a TerminalApp.
@@ -223,7 +258,7 @@ impl TerminalApp {
             engine_tx: params.engine_tx,
             loaded_font,
             atlas,
-            program: None,
+            scene: None,
             background: None,
             has_presented: false,
             frame_px: [0, 0],
@@ -290,10 +325,11 @@ impl TerminalApp {
     /// atlas and this snapshot's per-cell data.
     ///
     /// The per-frame work is filling one flat `f32` buffer (10 floats per
-    /// cell); the compiled program is reused until the geometry changes.
-    /// A resize therefore IS a recompile — four channel kernels, sized
-    /// independently of the grid — which replaces the old per-frame tree of
-    /// boxed combinators entirely.
+    /// cell); the compiled program is reused until an EXTENT changes — the
+    /// grid's dimensions, the atlas's, or the window's. A change of *metric*
+    /// (font size, display scale, tile size) rewrites the uniform block and
+    /// keeps the program, so only a window resize or an atlas growth is a
+    /// recompile — four channel kernels, sized independently of the grid.
     /// `None` means nothing has changed since the last frame and the engine
     /// should be answered with [`AppData::Skipped`] rather than a scene.
     fn build_scene(&mut self) -> Option<Scene> {
@@ -338,14 +374,15 @@ impl TerminalApp {
         // says nothing about *geometry*, which is why the grid shape is checked
         // separately below rather than trusted to come with a dirty line.
         let nothing_drawn_changed = !snapshot.lines.iter().any(|line| line.is_dirty);
-        let geometry_matches = self.program.as_ref().is_some_and(|p| {
-            let g = p.geometry();
-            g.cols == cols as u32
-                && g.rows == rows as u32
-                && g.cell_w == cell_width * self.density
-                && g.cell_h == cell_height * self.density
+        let geometry_matches = self.scene.as_ref().is_some_and(|scene| {
+            let shape = scene.program.shape();
+            shape.cols == cols as u32
+                && shape.rows == rows as u32
+                && scene.metrics.cell_w == cell_width
+                && scene.metrics.cell_h == cell_height
+                && scene.metrics.scale == self.density
         });
-        // `geometry_matches` is false while `program` is `None`, so the first
+        // `geometry_matches` is false while `scene` is `None`, so the first
         // frame after startup always draws.
         if nothing_drawn_changed && geometry_matches {
             return None;
@@ -392,13 +429,18 @@ impl TerminalApp {
             }
         }
 
-        // (Re)compile the scene program when the geometry moved: resize,
-        // density change, atlas growth. Compile cost is independent of the
-        // grid size, so this is the entire cost of a dynamic resize.
-        // A packed scene renders in DEVICE-PIXEL space (the runtime does
-        // not contramap it): cell extents scale by the display density, and
-        // the atlas — baked at `density` texels per point — is exactly one
-        // texel per device pixel.
+        // The metric is in POINT space; the display scale is the contramap
+        // onto the frame's device-pixel lattice, not a factor folded into
+        // every extent. The atlas is baked at `density` texels per point, so
+        // that is exactly what `density` means here.
+        let metrics = CellGridMetrics {
+            cell_w: cell_width,
+            cell_h: cell_height,
+            density: self.density,
+            tile_w: self.atlas.tile_px() as u32,
+            tile_h: self.atlas.tile_px() as u32,
+            scale: self.density,
+        };
         // The lattice the compiled kernels bake over. Before the first window
         // event there is no window to measure: fall back to the grid's own
         // extent, which is what the kernels would bake if the surface were
@@ -407,40 +449,44 @@ impl TerminalApp {
             (cols as f32 * cell_width * self.density).round() as u32,
             (rows as f32 * cell_height * self.density).round() as u32,
         ]);
-        let geom = CellGridGeometry {
+        let shape = CellGridShape {
             cols: cols as u32,
             rows: rows as u32,
-            cell_w: cell_width * self.density,
-            cell_h: cell_height * self.density,
-            density: 1.0,
             atlas_width: self.atlas.width() as u32,
             atlas_height: self.atlas.height() as u32,
-            tile_w: self.atlas.tile_px() as u32,
-            tile_h: self.atlas.tile_px() as u32,
             frame_w: frame_px[0],
             frame_h: frame_px[1],
         };
-        if self.program.as_ref().map(CellGridPackedManifold::geometry) != Some(&geom) {
-            log::info!(
-                "Compiling cell-grid scene: {}x{} cells, cell {}x{} pt, atlas {}x{} texels",
-                cols,
-                rows,
-                cell_width,
-                cell_height,
-                geom.atlas_width,
-                geom.atlas_height
-            );
-            self.program = Some(
-                pixelflow_graphics::render::scene::compile_platform_cell_grid(
-                    geom,
+        // (Re)compile only when an EXTENT moved — the grid gaining a column,
+        // the atlas growing, the window changing size. A change of metric
+        // (font size, display scale, tile size) is a parameter write into the
+        // block, which is what `set_metrics` does below.
+        let scene = match self.scene.take() {
+            Some(scene) if *scene.program.shape() == shape => scene,
+            _ => {
+                log::info!(
+                    "Compiling cell-grid scene: {}x{} cells, frame {}x{} px, atlas {}x{} texels",
+                    cols,
+                    rows,
+                    shape.frame_w,
+                    shape.frame_h,
+                    shape.atlas_width,
+                    shape.atlas_height
+                );
+                let program = pixelflow_graphics::render::scene::compile_platform_cell_grid(
+                    shape,
                     [dbg_r, dbg_g, dbg_b, dbg_a],
-                ),
-            );
-        }
-        let program = self.program.as_ref().expect("program compiled above");
-        Some(Scene::Packed(
-            program.frame(Arc::new(cells), self.atlas.buffer()),
-        ))
+                );
+                CellGridScene::new(program, metrics)
+            }
+        };
+        let scene = self.scene.insert(scene);
+        scene.set_metrics(metrics);
+        Some(Scene::CellGrid(scene.program.frame(
+            &scene.params,
+            Arc::new(cells),
+            self.atlas.buffer(),
+        )))
     }
 
     /// Answer the engine's frame request.
