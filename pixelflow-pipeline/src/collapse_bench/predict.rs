@@ -5,8 +5,9 @@
 //! built to serve says three allocator policies lost to a hand-written
 //! constant because the quantity they optimized was not time, and a model with
 //! more parameters than the data supports would repeat that failure with more
-//! machinery (`docs/paper/2026-08-egraph-nnue-parity.md` is the same lesson
-//! one layer up). What is wanted first is whether *any* simple, inspectable
+//! machinery (the extraction-head workshop paper is the same lesson one layer
+//! up; see `docs/plans/2026-09-01-schedule-cost-model-denotation.md`). What
+//! is wanted first is whether *any* simple, inspectable
 //! quantity tracks the clock on both tiers.
 //!
 //! Two scores, and the second is the one that matters.

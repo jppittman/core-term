@@ -4,7 +4,9 @@
 //! (`guide`), and the backward expression generator (`BwdGenerator`) that
 //! mints rewrite-pair corpora. The extraction (value) head this module was
 //! named for — an NNUE cost model for e-graph extraction — tied the static
-//! table on schedule-free kernels (docs/paper/2026-08-egraph-nnue-parity.md)
+//! table on schedule-free kernels (workshop paper on branch
+//! `claude/workshop-writeup`, PR #1072, closed without merging — not in this
+//! tree; see the denotation doc below for the citations and numbers in-repo)
 //! and its shape was deleted on 2026-09-01; the static latency prior is the
 //! extraction policy, and the seam a future schedule-cost residual plugs into
 //! is `egraph::extract::Reranker`
