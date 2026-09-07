@@ -2066,11 +2066,16 @@ fn write_report(
 // #1116: does pricing sharing close the gap the probe above measured?
 // ---------------------------------------------------------------------------
 
+/// Where the objective probe writes. The 2026-09-02 files are the original
+/// measurement under the #1134 cost table and are kept as the record of it;
+/// this stem is the rebase onto main's table (#1116, second landing).
+const OBJECTIVE_STEM: &str = "2026-09-06-extraction-objective-rebase";
+
 /// THE measurement for #1116: the sharing-aware objective, scored against the
 /// same two exact references — Knuth's exact tree optimum on every kernel, and
 /// the branch-and-bound DAG optimum where it closes.
 ///
-/// Writes docs/results/2026-09-02-extraction-objective.{md,csv,json}.
+/// Writes docs/results/`OBJECTIVE_STEM`.{md,csv,json}.
 #[test]
 #[ignore = "offline measurement: PIXELFLOW_EXTRACTION_GAP_ARENA_DIR=<dir of .arena dumps> cargo test -p pixelflow-search --release --lib -- --ignored extraction_objective_measurement"]
 fn extraction_objective_measurement() {
@@ -2345,7 +2350,7 @@ fn write_objective_report(
             r.scoped_ns
         ));
     }
-    std::fs::write(out_dir.join("2026-09-02-extraction-objective.csv"), csv).expect("write csv");
+    std::fs::write(out_dir.join(format!("{OBJECTIVE_STEM}.csv")), csv).expect("write csv");
 
     // ---- JSON ----
     let mut json = String::new();
@@ -2431,7 +2436,7 @@ fn write_objective_report(
         .collect();
     json.push_str(&body.join(",\n"));
     json.push_str("\n  ]\n}\n");
-    std::fs::write(out_dir.join("2026-09-02-extraction-objective.json"), json).expect("write json");
+    std::fs::write(out_dir.join(format!("{OBJECTIVE_STEM}.json")), json).expect("write json");
 
     // ---- Markdown ----
     let mut md = String::new();
@@ -2447,9 +2452,10 @@ fn write_objective_report(
     );
     let _ = writeln!(
         md,
-        "Cost table: the latency prior as re-measured on current main (#1134 — Sin 70->95, \
-         Cos 75->103, Tan 87->117, Sqrt 15->13, Select 4->3). Every number below is \
-         deterministic: `CostModel::latency_prior` through `ExtractedDAG::dag_cost`.\n"
+        "Cost table: `CostModel::latency_prior` as it stands on the tree this probe was built \
+         from (the #1134 refresh was closed unmerged, so this is main's table, not the one \
+         the 2026-09-02 run used). Every number below is deterministic: \
+         `CostModel::latency_prior` through `ExtractedDAG::dag_cost`.\n"
     );
 
     let _ = writeln!(md, "## Headline\n");
@@ -2484,10 +2490,10 @@ fn write_objective_report(
     let _ = writeln!(
         md,
         "**The gap denominator is this run's own, not #1115's.** #1115 pooled 195 units over \
-         the 89 kernels its branch and bound closed, under the pre-#1134 cost table. This run \
-         closes {} kernels under the refreshed table and pools {gap_total} units over them. \
-         Where the two numbers agree that is arithmetic coincidence, not the same set \
-         re-measured, and the fraction above is computed entirely within this run.\n",
+         the 89 kernels its branch and bound closed. This run closes {} kernels and pools \
+         {gap_total} units over them. Where the two numbers agree that is arithmetic \
+         coincidence, not the same set re-measured, and the fraction above is computed \
+         entirely within this run.\n",
         solved.len()
     );
 
@@ -2664,13 +2670,15 @@ fn write_objective_report(
     let _ = writeln!(md, "## The gate\n");
     let _ = writeln!(
         md,
-        "The bar this change was held to was: no real kernel regresses in `dag_cost`, and \
-         extraction runs in under 2x. The first is met and is structural. **The second is \
-         not** — {ratio_med:.2}x median. The second DP pass is not free and the compacted \
+        "No real kernel regresses in `dag_cost` — asserted above, and structural. Extraction \
+         runs at {ratio_med:.2}x median: the second DP pass is not free, and the compacted \
          bitset only took it from 2.57x to {ratio_med:.2}x, because the sharing arm also pays \
-         a repair and a costing pass of its own. So this is not self-arming: the trade is \
-         {units_all} cost units and {:.1}% of the closable gap against {ratio_med:.2}x on a \
-         phase that runs once per compile, and that is a judgement call, not a threshold.\n",
+         a repair and a costing pass of its own. The trade is {units_all} cost units and \
+         {:.1}% of the closable gap against {ratio_med:.2}x on a phase that runs once per \
+         compile. What that costs at the two production shapes — a scene's compile against \
+         its ~250 ms budget and a glyph warm's compile summed — is the shape A / shape B \
+         report next to this file (`2026-09-06-egraph-at-production-scale.md` §5.3), not \
+         something this probe can see.\n",
         pooled_closed * 100.0
     );
 
@@ -2700,13 +2708,13 @@ fn write_objective_report(
     let _ = writeln!(md, "```\n");
     let _ = writeln!(
         md,
-        "`2026-09-02-extraction-objective.csv` / `.json` carry every kernel's row."
+        "`{OBJECTIVE_STEM}.csv` / `.json` carry every kernel's row."
     );
 
-    std::fs::write(out_dir.join("2026-09-02-extraction-objective.md"), md).expect("write md");
+    std::fs::write(out_dir.join(format!("{OBJECTIVE_STEM}.md")), md).expect("write md");
     eprintln!(
         "wrote {}",
-        out_dir.join("2026-09-02-extraction-objective.md").display()
+        out_dir.join(format!("{OBJECTIVE_STEM}.md")).display()
     );
 }
 
