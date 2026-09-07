@@ -1,11 +1,19 @@
 # Demand is a property of the DAG
 
 **Date:** 2026-09-07
-**Status:** Draft
+**Status:** Draft. Only stage C1a has executed, and its outcome inverted
+what this plan expected — see §9 for what actually happened. C1b onward
+(the demand predicate itself) is unbuilt. §3 has been corrected in place
+against what is actually on `main`.
 **Author:** JP (direction), Claude (draft)
 **Refines:** §5 of [2026-09-06-lattice-is-the-index.md](2026-09-06-lattice-is-the-index.md)
-("exclusivity does not survive the partition"), whose first implementation
-(#1187) this plan replaces before it merges.
+("exclusivity does not survive the partition"). This plan's premise was that
+#1187 would land a small per-select `Exclusivity`/`ArmOwnership`
+implementation of that gate for this plan to replace before merging. That
+implementation never merged — see §9: five candidate fixes were tried and
+refuted, and #1187 shipped test-only, with the glyph defect still open on
+`main`. §3's "what this deletes" described machinery that was never built;
+it is corrected in place to describe what `guards.rs` actually holds.
 **Depends on:** the uniform leaf (#1183) for the frame prologue's shape;
 index-range unions (#1184) for the loop-nest destination in §6.
 **Decision it records (JP, 2026-09-07):** *"This operands work being
@@ -141,19 +149,56 @@ predicate". The frame prologue is `Trips::Once`; guard analysis is gated
 on the same `Trips` the emitter uses so nothing is pinned for a branch
 that is never emitted.
 
-## 3. What this deletes
+## 3. What this deletes — corrected against what actually shipped (see §10)
 
-`Exclusivity` and `ArmOwnership`; `cluster_select_arms` and
-`CLUSTER_ROUNDS_PER_SELECT`; `SelectGuard::select_idx: Option<_>` and the
-absent-select special-casing; `analyze_select_guards` in its
-select-centric form. What remains of `guards.rs` is: compute demand,
-sort by it, emit a branch per region that clears the bound.
+**As drafted, this section assumed #1187 would land a per-select
+`Exclusivity { selects: Vec<ArmOwnership> }` implementation of §5's gate for
+this plan to delete before merging.** That implementation was never built:
+`Exclusivity` and `ArmOwnership` name no type on `main` (verified directly
+in `pixelflow-codegen/src/emit/guards.rs`), and #1187 shipped as three test
+files with zero production code changes. So there is nothing of that shape
+to delete, and "what this deletes" has to be restated against what
+`guards.rs` actually holds — which predates *both* this plan and #1187, from
+`pixelflow-codegen`'s register-allocation work (#1150) and S3b (#1177).
 
-What it keeps from #1187: `HoistCtx::Prologue { Trips }` and the
-corrected comment; the liveness rule, generalized; the park-write rule,
-with zero; the tight `y_extent` and `EXTENT_SLOP` on `AnalyticalQuad`;
-both regression tests, re-stated over demand regions; the `Uniform` arms
-in the operand helpers, including `arm_cycles`' cost arm.
+What is on `main` today, to be replaced by the demand predicate when C1b
+lands:
+
+- **`SelectGuard`** — one struct per guardable `Select`, holding
+  `select_idx`, `mask_vid`, and a `(usize, usize)` half-open schedule range
+  per arm. Not the `Option<_>`-shaped field this draft anticipated; there is
+  no absent-select case to special-case away.
+- **`SelectArms`** and `select_arms(schedule)`, which compute each arm's
+  transitive dependency closure, its schedule-index run, and its
+  latency-prior cost (`arm_cycles`) — the per-node piece this plan's demand
+  predicate replaces with one backward pass over the whole DAG.
+- **`analyze_select_guards`**, which turns each `SelectArms` into a
+  `SelectGuard`, and the `Telemetry`/`SelectStat` machinery behind
+  `PIXELFLOW_GUARD_TELEMETRY` — the counts §"Why now" cites.
+- **`cluster_select_arms`** and its round cap, which is **`MAX_CLUSTER_ROUNDS
+  = 8`**, not the `CLUSTER_ROUNDS_PER_SELECT = 2` this draft named (that
+  number belonged to the undelivered design, not to anything merged). The
+  cap's own doc already says plainly what it bounds — compile cost of the
+  search, not correctness — so "a module whose doc promised none" is not
+  accurate to the code that exists; it accurately describes the
+  never-shipped alternative.
+- **`HoistCtx::Prologue { Trips }`**, `MISPREDICT_PENALTY_CYCLES`, and the
+  park-write rule referenced in §2 all predate #1187 as well (S3b, #1177);
+  none of it is something #1187 "kept," since #1187 touched no production
+  file.
+
+Nothing in `ttf_curve_analytical.rs` carries a `y_extent`/`EXTENT_SLOP` gate
+on `AnalyticalQuad` — that was approach 1 of #1187's five refuted attempts
+(§9), and being refuted, it was never committed to production code.
+
+The shape of the deletion this plan intends is otherwise unchanged: when
+the demand predicate (§1–§2) lands, `SelectArms`/`select_arms`,
+`analyze_select_guards` in its select-centric form, and `cluster_select_arms`
+with its round cap are what get replaced by "compute demand, sort by it,
+emit a branch per region that clears the bound." `SelectGuard` itself, or
+something isomorphic to it, likely survives as the per-region output shape
+that emission and allocation already consume — that decision is for C1b,
+which is unbuilt.
 
 ## 4. The e-graph is currently against it
 
@@ -214,6 +259,13 @@ branch, the tangent gate is ill-conditioned at `disc ≈ 0` by construction
 and is replaced by the tight `y_extent` (which contains the vertex) or
 compared against a scaled `−eps`. The `y_extent` commit rides here. Small
 PR; lands before anything else.
+**Landed as #1187, commit `4fe39607` — but inverted.** The tight-Y-extent
+gate's mechanism was disproved rather than confirmed (an always-true gate
+fixed the observed divergence equally well — it was perturbing extraction,
+not correcting anything), and after five refuted approaches the fix was
+abandoned. #1187 shipped test-only: an independent FreeType oracle, an
+e-graph-free reproducer of the tangency math, and pinned baselines on the
+existing goldens. **The glyph waist bug remains open on `main`.** See §9.
 
 **C1b — demand replaces exclusivity.** §1–§3, on a fresh branch from
 `main` after C1a. Gate: row-prologue telemetry on `O`@32 no worse than
@@ -259,3 +311,102 @@ being the loop-nest primitive.
 - Guarding in the frame prologue.
 - Changing `Select`'s NaN or bit-pattern semantics (CLAUDE.md's
   floating-point section).
+
+## 9. What happened to C1a, and why the glyph waist bug is still open
+
+C1a landed as **#1187** (`test(graphics): main renders the '8' waist wrong —
+an external oracle that proves it, and five fixes that don't work`,
+commit `4fe39607`). It made **no production code changes** — three test
+files only, `pixelflow-graphics/tests/freetype_oracle.rs` (new),
+`pixelflow-graphics/tests/quad_tangency_winding.rs` (new), and an extended
+`optimized_glyph_matches_raw_within_reassociation_noise` in
+`kernel_glyph_optimize.rs`. `main`'s rasterizer is untouched, byte for byte.
+
+### The mechanism
+
+`main` renders `'8'` wrong at ordinary terminal font sizes: on the waist row
+a half-covered band extends four texels past the glyph's right edge — ink
+where the letter is not (`'8'@19`: our ink extent x[1,12] against FreeType's
+x[1,8]; `'8'@7`: x[0,4] against x[0,2]). Where an outline reaches a local
+Y-extremum at an on-curve point, the two quadratics meeting there each have
+that point as an endpoint *and* as their own extremum. A ray through that
+row should graze — equal coverage, opposite winding, sum zero — but each
+segment decides `disc >= 0` from its own rounding of its own discriminant
+expression, and on that row both discriminants sit within an ulp of zero.
+They disagree, and one crossing survives uncancelled.
+
+### The five approaches, and the measurement that killed each
+
+1. **A tight Y-extent gate** — refuted, and refuted in the strongest
+   possible way: an `EXTENT_SLOP` of `1e6` (a gate true on every row, i.e.
+   no gate at all) removed the divergence just as well as a tight one. The
+   fix was not correcting the geometry; it was perturbing the e-graph into
+   a different extraction that happened not to exhibit the bug. This is
+   the plan's own stated mechanism for C1a, and it is the one the
+   measurement disproved.
+2. **Dropping `disc >= 0`** so the clamped root pair cancels — refuted: the
+   pair does not cancel when the tangent point sits exactly at parameter
+   `t = 0` or `t = 1` (the common TrueType shape), because one root passes
+   `t ∈ [0,1]` and the other does not. Regressed `'8'` at five more sizes.
+3. **A scale-relative `MIN_DISC`** — refuted: the non-cancellation is
+   driven by root *validity*, not by how close the two discriminants sit
+   to each other, so widening or narrowing the separation threshold did
+   not move the residual at all.
+4. **Splitting each quadratic at its vertex into monotone pieces**, so
+   existence is decided by comparing `Y` to exact control-point
+   coordinates rather than by a rounded discriminant — half right: the
+   discrete decision becomes exact and the optimized-vs-raw sweep goes
+   green, but it moves 616 corpus texels by up to 0.83, and removing the
+   root clamp entirely gives identical numbers — so whatever the actual
+   cause is, it isn't the clamp, and this approach was masking rather than
+   fixing it.
+5. **Ramping the contribution to zero across a band around `disc == 0`** —
+   the closest of the five, and refuted the most decisively. The ramp is
+   only safe when *both* segments of a near-tangency fall inside the band;
+   where one is inside and the other is comfortably positive, the ramp
+   halves one signed contribution and the pair stops cancelling — the
+   ramp creates the imbalance it exists to remove. That is corpus-dependent
+   by construction: widening the glyph-and-size corpus from 94 glyphs at
+   sizes 6–32 to the same set at sizes 6–64 took the count of orphan texels
+   from 0 (at the chosen band width) to 140 on new glyphs (`f`, `{`, `}`),
+   and the estimated safe ceiling fell every time the corpus grew — 10⁴,
+   then 3×10⁴, then 2400, then ≈125, then ≈0.3 on a second font — while the
+   floor needed to fix the original defect stayed at 876. **The usable
+   window is empty, not narrow**, and this is the one of the five shown
+   unfixable by parameter choice rather than merely unproven.
+
+What shipped instead pins the defect rather than fixing it: an external
+FreeType oracle (`freetype_oracle.rs`) bounding total ink and orphan-texel
+count against an independent rasterizer; a JIT- and e-graph-free numerical
+reproducer of the tangency cancellation (`quad_tangency_winding.rs`); and a
+restored, actually-asserting sweep of
+`optimized_glyph_matches_raw_within_reassociation_noise` across ten sizes,
+pinned at 29 known divergent texels all on `'8'`. The module docs on all
+three files carry the full detail (exact geometry, corpus tables, and two
+more vacuous-guard findings folded into the lattice plan's CI section);
+this is a summary, not a replacement for reading them.
+
+**The glyph waist bug is open on `main` as of `d0b504c2`.** Nothing in
+this session's tree fixes it. C1b (§1–§3 above) is unbuilt, and per JP's
+2026-09-07 decision recorded at the top of this plan, the general demand
+predicate — not a sixth per-select patch — is the intended next attempt.
+
+### The regression-corpus lesson
+
+`freetype_oracle.rs`'s own module doc states the lesson plainly, and it is
+worth repeating because it cost a real reversal during this work: **a
+regression corpus is a change-detector, not an oracle.** It silently
+encodes whatever the code did on the day it was minted, and a comparison
+against it cannot distinguish a wrong change from a right one — both move
+the corpus. During the investigation, the ramp fix (approach 5) was
+initially rejected on the grounds that it "discarded a crossing" the
+existing corpus expected; the corpus was being read as ground truth. It
+was not: the crossing being discarded was the very spurious one the corpus
+had encoded as correct, because the corpus was minted from `main`'s
+already-wrong rasterizer. Only the external oracle — a second, independent
+rasterizer that had never seen this codebase's output — could tell the two
+cases apart. This is the reason `freetype_oracle.rs` exists as a blocking
+check rather than as one more same-form comparison, and it is the general
+argument, from CLAUDE.md, that "a same-form check cannot see a
+shared-definition bug; only an external bound can" — a regression corpus
+is a same-form check with extra steps.
