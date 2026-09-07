@@ -168,13 +168,14 @@ went with the tiers that held them. A copy is a future divergence.
 
 ## Workspace Structure
 
-Cargo workspace with 12 member crates:
+Cargo workspace with 13 member crates:
 
 | Crate | Purpose |
 |-------|---------|
 | `pixelflow-core` | Lattices, the compiled `Manifold`, `collapse`, and the cell grid. Backends: x86-64 (SSE2 baseline, AVX2/AVX-512 opt-in via `target-feature`) and aarch64 (NEON) only — no portable/scalar fallback for other architectures. Edition 2024. |
 | `pixelflow-compiler` | Proc-macro front end: `kernel!` and `kernel_raw!`, parser, sema, e-graph optimization, arena lowering. Edition 2024. |
-| `pixelflow-ir` | Shared IR. `ExprArena` (sole IR), OpKind enum, backend execution traits, JIT manifold. |
+| `pixelflow-ir` | Shared IR. `ExprArena` (sole IR), OpKind enum, backend execution traits, the `Kernel` value/AST. |
+| `pixelflow-codegen` | Expression graphs to machine code: per-ISA emitters (x86-64, aarch64), register allocation, executable memory, the JIT compile cache (`jit_cache`, `CompiledKernel`). Runs the optimizer itself, so a compiled kernel is never obtained unoptimized. |
 | `pixelflow-graphics` | Font loading (TTF, SDF), colors (`Rgba8`, `Color`), the packed frame program, analytic 3-D scenes. |
 | `pixelflow-ml` | Graphics ML experiments (harmonic attention, SH feature maps). Not part of the compiler cost model. |
 | `pixelflow-search` | E-graph optimization. Rewrite rules, saturation, static latency-prior extraction, rule provenance + hindsight labeling, the saturation Guide. |
@@ -233,7 +234,9 @@ The compiler uses e-graphs (equality graphs) to find optimal instruction sequenc
    both tiers choose it through `env_extraction_policy()`)
 
 A learned NNUE extraction cost model was tried (2026-07 to 2026-09) and measured a tie with
-the static table on schedule-free expression kernels (docs/paper/2026-08-egraph-nnue-parity.md).
+the static table on schedule-free expression kernels (the workshop paper on branch
+`claude/workshop-writeup`, PR #1072, closed without merging — not in this tree; see
+docs/plans/2026-09-01-schedule-cost-model-denotation.md for the citations and numbers in-repo).
 That closed its *shape* — a bag-of-edges MLP predicting total cost in place of the table — not
 the idea: extraction is where codegen's schedule choice will be made, and a non-additive
 schedule cost belongs there as a residual over the table. The shape is deleted (history in
@@ -325,7 +328,7 @@ All errors must be explicitly handled. No silent failures.
 
 ### SIMD Backend Selection
 
-Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU feature probing + `target_feature` flags. See `pixelflow-core/src/backend/`.
+Priority: AVX-512 > SSE2 (x86-64), NEON (aarch64) — no scalar fallback for other architectures. Detection via `build.rs` CPU feature probing + `target_feature` flags. See `pixelflow-core/src/backend/`.
 
 ## Code Style
 
@@ -480,11 +483,12 @@ Two learned programs have had their code removed here, each with its record in t
 - The AlphaZero-style self-play/critic/REINFORCE loop, removed July 2026 after a four-agent
   audit found it methodologically unsound (docs/plans/2026-07-07-guided-saturation-redesign.md).
 - The extraction head (learned NNUE cost model for extraction): its shape was deleted in
-  September 2026 after it tied the static table on schedule-free kernels
-  (docs/paper/2026-08-egraph-nnue-parity.md); its denotation — schedule cost as the analytic
-  table plus a learned residual that reranks extractions — is kept behind the `Reranker` seam
-  and specified in docs/plans/2026-09-01-schedule-cost-model-denotation.md. Not built until
-  codegen gives the e-graph schedules to choose.
+  September 2026 after it tied the static table on schedule-free kernels (workshop paper on
+  branch `claude/workshop-writeup`, PR #1072, closed without merging — not in this tree); its
+  denotation — schedule cost as the analytic table plus a learned residual that reranks
+  extractions — is kept behind the `Reranker` seam and specified in
+  docs/plans/2026-09-01-schedule-cost-model-denotation.md, which also carries the citations and
+  numbers in-repo. Not built until codegen gives the e-graph schedules to choose.
 
 What remains:
 - The static latency prior (`CostModel::latency_prior()`) is the extraction cost model.

@@ -18,7 +18,9 @@
 //!
 //! The weights sidecar (the objective/identity record written next to an
 //! extraction-head checkpoint) left with the extraction-head
-//! program on 2026-09-01; see docs/paper/2026-08-egraph-nnue-parity.md and
+//! program on 2026-09-01; see
+//! docs/plans/2026-09-01-schedule-cost-model-denotation.md (which cites the
+//! closed workshop paper, PR #1072, branch `claude/workshop-writeup`) and
 //! git history for it.
 //!
 //! Both functions below are thin `f64` wrappers around

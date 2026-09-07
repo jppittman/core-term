@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-This repository is a Cargo workspace centered on `core-term`, a terminal emulator built on PixelFlow. Primary crates live in `core-term/`, `pixelflow-core/`, `pixelflow-graphics/`, `pixelflow-runtime/`, `pixelflow-compiler/`, `pixelflow-search/`, `pixelflow-pipeline/`, `pixelflow-ml/`, `pixelflow-ir/`, `actor-scheduler/`, and `actor-scheduler-macros/`. Shared docs live in `docs/`, reusable assets in `assets/`, developer scripts in `scripts/`, and automation tasks in `xtask/`. Keep terminal-specific behavior inside `core-term`; do not move terminal logic into PixelFlow crates.
+This repository is a Cargo workspace centered on `core-term`, a terminal emulator built on PixelFlow. Primary crates live in `core-term/`, `pixelflow-core/`, `pixelflow-graphics/`, `pixelflow-runtime/`, `pixelflow-compiler/`, `pixelflow-search/`, `pixelflow-pipeline/`, `pixelflow-ml/`, `pixelflow-ir/`, `pixelflow-codegen/`, `actor-scheduler/`, and `actor-scheduler-macros/`. Shared docs live in `docs/`, reusable assets in `assets/`, developer scripts in `scripts/`, and automation tasks in `xtask/`. Keep terminal-specific behavior inside `core-term`; do not move terminal logic into PixelFlow crates.
 
 ## Build, Test, and Development Commands
 Use the stable Rust toolchain from `rust-toolchain.toml`.

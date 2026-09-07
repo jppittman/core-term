@@ -2,8 +2,10 @@
 
 > **Shape deleted 2026-09-01; denotation kept.** The extraction-head program this doc tracked
 > — a learned NNUE cost model for e-graph extraction, opt-in behind a weights-file env var —
-> tied the static latency table on schedule-free expression kernels
-> ([`paper/2026-08-egraph-nnue-parity.md`](paper/2026-08-egraph-nnue-parity.md)). JP's ruling
+> tied the static latency table on schedule-free expression kernels (the workshop paper on
+> branch `claude/workshop-writeup`, PR #1072, closed without merging — not in this tree; see
+> [`plans/2026-09-01-schedule-cost-model-denotation.md`](plans/2026-09-01-schedule-cost-model-denotation.md)
+> for the citations and numbers in-repo). JP's ruling
 > (2026-09-01): "delete the shape, keep the denotation" — the bag-of-edges value head, its
 > checkpoint format, the NNUE-scored extractor, the trainer and the 3-way gate are in git
 > history, not in the tree. What stays is the seam a schedule-cost residual needs: the
