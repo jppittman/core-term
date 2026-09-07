@@ -18,12 +18,7 @@ const THRESHOLD: f32 = 32.0 / 255.0;
 fn bake_text(s: &str) -> Vec<f32> {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     let kernel = text(&font, s, 48.0);
-    Lattice {
-        extent: [WIDTH as u32, HEIGHT as u32],
-        origin: [0.5, 0.5],
-    }
-    .bake(&kernel)
-    .into_buffer()
+    Lattice::frame(WIDTH, HEIGHT).bake(&kernel).into_buffer()
 }
 
 /// Width of rendered content at a given Y row (0 if the row is empty).

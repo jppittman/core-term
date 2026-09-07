@@ -24,7 +24,7 @@ use pixelflow_core::{Kernel, Lattice};
 /// Tabulate a kernel over a one-point lattice and read the value back — the
 /// only way a kernel becomes a number.
 fn eval(k: &Kernel, p: (f32, f32, f32, f32)) -> f32 {
-    Lattice::point(p.0, p.1).bake(k).into_buffer()[0]
+    Lattice::eval_at(k, p.0, p.1)
 }
 
 /// Sample points spanning magnitudes/signs across all four coords.

@@ -27,7 +27,7 @@ use pixelflow_core::{Kernel, Lattice};
 
 /// Tabulate over a one-point lattice and read the value back.
 fn bake(k: &Kernel, p: (f32, f32, f32, f32)) -> f32 {
-    Lattice::point(p.0, p.1).bake(k).into_buffer()[0]
+    Lattice::eval_at(k, p.0, p.1)
 }
 
 /// `(x, y, z, w)` — the first two are coordinates, the last two are scalars

@@ -15,7 +15,7 @@ use pixelflow_core::{Kernel, Lattice};
 
 /// Tabulate a kernel over a one-point lattice and read the value back.
 fn eval(k: &Kernel, x: f32, y: f32) -> f32 {
-    Lattice::point(x, y).bake(k).into_buffer()[0]
+    Lattice::eval_at(k, x, y)
 }
 
 fn check(name: &str, got: f32, want: f32) {
