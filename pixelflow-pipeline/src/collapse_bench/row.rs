@@ -119,7 +119,7 @@ pub struct Row {
     pub pass: u32,
     pub kernel: String,
     pub family: String,
-    pub extent: [u32; 4],
+    pub extent: [u32; 2],
     pub lanes: u32,
     pub rows: u64,
     pub groups: u64,

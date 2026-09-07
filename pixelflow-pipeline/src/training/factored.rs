@@ -676,13 +676,62 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     use crate::jit_bench::benchmark_jit_arena;
 
-    const REWRITE_BUG_INPUTS: [f32; 4] = [0.5, 0.7, 1.3, -0.2];
+    const REWRITE_BUG_INPUTS: [f32; 2] = [0.5, 0.7];
+
+    /// The values the frozen corpus expressions' third and fourth variables
+    /// take. Those were the Z and W coordinates; a lattice has two axes now,
+    /// so the fixtures' `Var(2)`/`Var(3)` are bound as arguments — invariant
+    /// across the lattice, which at a single point is the same number the
+    /// coordinate carried.
+    const REWRITE_BUG_ARGS: [f32; 2] = [1.3, -0.2];
 
     // The scalar reference is the differential-testing oracle: it runs the same
     // `expand_transcendentals` lowering the JIT runs, so Pow/exp/log evaluate
     // through their one definition rather than a second host-libm semantics.
-    fn eval_arena_scalar(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
-        pixelflow_ir::eval_scalar(arena, id, vars, &pixelflow_ir::BindingTable::empty())
+    /// Replace the frozen fixtures' `Var(2)`/`Var(3)` with the values they
+    /// used to carry as the Z and W coordinates.
+    ///
+    /// **Every** consumer of a fixture goes through this, which is the whole
+    /// point. The scalar oracle used to substitute here while the JIT
+    /// harness fed the emitter zeros in those lanes, so the two evaluated
+    /// different programs and disagreed by three orders of magnitude — a
+    /// silent numeric divergence, not a failure, and invisible on x86 where
+    /// the JIT half of the comparison is not even compiled. `emit::compile`
+    /// now refuses an arena that names a retired axis, so a fixture that
+    /// skipped this would panic rather than diverge.
+    ///
+    /// Constants, not uniforms: `benchmark_jit_arena` calls the collapse ABI
+    /// with a null context, so a uniform read would fault. A constant needs
+    /// no context and denotes exactly the same number on both sides.
+    fn bind_retired_axes(arena: &ExprArena, id: ExprId) -> (ExprArena, ExprId) {
+        let mut arena = arena.clone();
+        let subs: Vec<(u8, ExprId)> = REWRITE_BUG_ARGS
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let axis = pixelflow_ir::arena::COORD_AXES as u8 + i as u8;
+                (axis, arena.push_const(v))
+            })
+            .collect();
+        let id = arena.substitute_vars_with(id, &subs);
+        // The precondition `emit::compile` will assert, checked here where
+        // *every* caller reaches it on *every* architecture. The scalar/JIT
+        // comparisons below are `cfg(target_arch = "aarch64")`, so on an x86
+        // machine they do not exist and the emitter is never reached with
+        // these arenas at all — this file has learned that from a macOS
+        // runner twice. Asserting the precondition rather than the outcome is
+        // what makes the next miss local.
+        assert_eq!(
+            arena.retired_axis(id),
+            None,
+            "bind_retired_axes left a reachable retired axis"
+        );
+        (arena, id)
+    }
+
+    fn eval_arena_scalar(arena: &ExprArena, id: ExprId, vars: &[f32; 2]) -> f32 {
+        let (arena, id) = bind_retired_axes(arena, id);
+        pixelflow_ir::eval_scalar(&arena, id, vars, &pixelflow_ir::BindingTable::empty())
     }
 
     fn logged_expr_scalar_output(src: &str) -> f32 {
@@ -693,6 +742,9 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     fn logged_expr_jit_output(src: &str) -> f32 {
         let (arena, root) = parse_expr(src).unwrap_or_else(|| panic!("parse_expr failed: {src}"));
+        // The same substitution the oracle applies. Skipping it here is the
+        // bug this pairing exists to catch.
+        let (arena, root) = bind_retired_axes(&arena, root);
         benchmark_jit_arena(&arena, root)
             .unwrap_or_else(|err| panic!("benchmark_jit_arena failed for {src}: {err:?}"))
             .output[0]
@@ -715,6 +767,35 @@ mod tests {
         assert!(
             diff <= epsilon,
             "scalar/JIT mismatch\nexpr: {src}\nscalar: {scalar}\njit: {jit}\ndiff: {diff} > {epsilon}"
+        );
+    }
+
+    /// `substitute_vars_with` rewrites the reachable graph and leaves what it
+    /// replaced behind, so the arena still *holds* `Var(2)` afterwards. What
+    /// matters — and what the emitter asks — is whether one is reachable from
+    /// the root. Scanning every node instead cost this change a CI round trip.
+    #[test]
+    fn substitution_clears_the_reachable_retired_axes_not_the_arena() {
+        let mut a = ExprArena::new();
+        let y = a.push_var(1);
+        let z = a.push_var(2);
+        let w = a.push_var(3);
+        let zw = a.push_binary(pixelflow_ir::OpKind::Add, z, w);
+        let root = a.push_binary(pixelflow_ir::OpKind::Mul, y, zw);
+        assert!(
+            a.retired_axis(root).is_some_and(|v| v == 2 || v == 3),
+            "the fixture names a retired axis (which one depends on walk order)"
+        );
+
+        let (bound, bound_root) = bind_retired_axes(&a, root);
+        assert_eq!(
+            bound.retired_axis(bound_root),
+            None,
+            "nothing reachable names a retired axis after substitution"
+        );
+        assert!(
+            bound.len() > a.len(),
+            "the replaced nodes are still in the arena, merely unreachable"
         );
     }
 
@@ -787,14 +868,8 @@ mod tests {
         // this must expand to the primitive subgraph, not a single node.
         let src = "fract(Var(0))";
         let (arena, root) = parse_expr(src).unwrap_or_else(|| panic!("parse failed: {src}"));
-        assert_eq!(
-            eval_arena_scalar(&arena, root, &[1.75, 0.0, 0.0, 0.0]),
-            0.75
-        );
-        assert_eq!(
-            eval_arena_scalar(&arena, root, &[-1.25, 0.0, 0.0, 0.0]),
-            0.75
-        );
+        assert_eq!(eval_arena_scalar(&arena, root, &[1.75, 0.0]), 0.75);
+        assert_eq!(eval_arena_scalar(&arena, root, &[-1.25, 0.0]), 0.75);
     }
 
     #[test]
@@ -802,7 +877,7 @@ mod tests {
         // hypot(x, y) = sqrt(x*x + y*y); no OpKind::Hypot exists (see kernel.rs).
         let src = "hypot(Var(0), Var(1))";
         let (arena, root) = parse_expr(src).unwrap_or_else(|| panic!("parse failed: {src}"));
-        assert_eq!(eval_arena_scalar(&arena, root, &[3.0, 4.0, 0.0, 0.0]), 5.0);
+        assert_eq!(eval_arena_scalar(&arena, root, &[3.0, 4.0]), 5.0);
     }
 
     // ========================================================================

@@ -250,7 +250,7 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
             let optimized = pixelflow_search::runtime::optimize_runtime_arena(
                 arena,
                 root,
-                pixelflow_ir::LatticeShape::new([extent, extent, 1, 1]),
+                pixelflow_ir::LatticeShape::new([extent, extent]),
             )
             .expect("glyph arenas must optimize (pure arithmetic + Dwrt + masks)");
             let (opt, opt_root) = (&optimized.0, optimized.1);
@@ -258,9 +258,8 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
             for j in 0..extent as usize {
                 for i in 0..extent as usize {
                     let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
-                    let vars = [x, y, 0.0, 0.0];
-                    let want = eval_scalar(&raw, raw_root, &vars, &BindingTable::empty());
-                    let got = eval_scalar(opt, opt_root, &vars, &BindingTable::empty());
+                    let want = eval_scalar(&raw, raw_root, &[x, y], &BindingTable::empty());
+                    let got = eval_scalar(opt, opt_root, &[x, y], &BindingTable::empty());
                     if (want - got).abs() >= TOLERANCE {
                         divergences.push(format!(
                             "{ch}@{size} texel ({i},{j}): raw {want} vs optimized {got} \

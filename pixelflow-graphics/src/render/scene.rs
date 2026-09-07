@@ -63,8 +63,8 @@ impl From<PackedFrame> for Scene {
 /// The channel kernels are sampled at **device pixel centers** of the frame
 /// they are compiled for. A shader authored in some other space says so in
 /// the language, by precomposing the embedding — `channel.at(&(X * s), &(Y *
-/// s), &Z, &W)` — before compiling here; there is no separate scale for
-/// anything downstream to keep in step.
+/// s))` — before compiling here; there is no separate scale for anything
+/// downstream to keep in step.
 ///
 /// # Panics
 ///
@@ -502,12 +502,7 @@ mod tests {
         // ...and sampled on a 2x device grid: x_point = x_device / 2.
         let half = |v: &Kernel| v.mul(&k(0.5));
         let device = compile_packed_for::<Rgba8>(
-            &Rgba::from(channels(red.at(
-                &half(&Kernel::x()),
-                &half(&Kernel::y()),
-                &Kernel::z(),
-                &Kernel::w(),
-            ))),
+            &Rgba::from(channels(red.at(&half(&Kernel::x()), &half(&Kernel::y())))),
             [32, 32],
         );
         let mut device_frame = Frame::<Rgba8>::new(32, 32);

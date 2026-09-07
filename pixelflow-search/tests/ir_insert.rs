@@ -109,8 +109,8 @@ fn a_uniform_survives_the_optimizer_unfolded() {
                 None => t,
             }
         };
-        let want = eval_scalar(&a, root, &[x, 0.0, 0.0, 0.0], &bind(&a));
-        let got = eval_scalar(oa, oroot, &[x, 0.0, 0.0, 0.0], &bind(oa));
+        let want = eval_scalar(&a, root, &[x, 0.0], &bind(&a));
+        let got = eval_scalar(oa, oroot, &[x, 0.0], &bind(oa));
         assert!(
             (want - got).abs() < 1e-5,
             "block {block:?} at x={x}: {want} != {got}"

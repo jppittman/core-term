@@ -75,13 +75,8 @@ const SUPPORT_SIZES_FULL: [f32; 3] = [12.0, 20.0, 48.0];
 fn frame(text_str: &str, size: f32) -> Lattice {
     let columns = text_str.chars().count().max(1) as f32;
     Lattice {
-        extent: [
-            (columns * size).ceil() as u32,
-            (size * 1.5).ceil() as u32,
-            1,
-            1,
-        ],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [(columns * size).ceil() as u32, (size * 1.5).ceil() as u32],
+        origin: [0.5, 0.5],
     }
 }
 
@@ -89,17 +84,10 @@ fn frame(text_str: &str, size: f32) -> Lattice {
 /// extent, sampled at the ambient frame's coordinates for those indices.
 fn cell_lattice(frame: Lattice, cell: &TextCell) -> Lattice {
     Lattice {
-        extent: [
-            cell.range.width() as u32,
-            cell.range.rows() as u32,
-            frame.extent[2],
-            frame.extent[3],
-        ],
+        extent: [cell.range.width() as u32, cell.range.rows() as u32],
         origin: [
             frame.origin[0] + cell.range.x0() as f32,
             frame.origin[1] + cell.range.y0() as f32,
-            frame.origin[2],
-            frame.origin[3],
         ],
     }
 }
@@ -134,12 +122,9 @@ fn split_and_added(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> 
         let Some(glyph) = font.glyph_scaled_by_id(id, size) else {
             continue;
         };
-        let placed = glyph.kernel.at(
-            &Kernel::x().sub(&Kernel::constant(pen)),
-            &Kernel::y(),
-            &Kernel::z(),
-            &Kernel::w(),
-        );
+        let placed = glyph
+            .kernel
+            .at(&Kernel::x().sub(&Kernel::constant(pen)), &Kernel::y());
         for (dst, src) in split.iter_mut().zip(lattice.bake(&placed).buffer()) {
             *dst += src;
         }
@@ -186,8 +171,8 @@ fn a_glyph_is_zero_outside_its_support(font: &Font, sizes: &[f32]) {
     const PEN: f32 = 48.0;
     for &size in sizes {
         let lattice = Lattice {
-            extent: [160, (size * 2.5) as u32, 1, 1],
-            origin: [0.5, 0.5, 0.0, 0.0],
+            extent: [160, (size * 2.5) as u32],
+            origin: [0.5, 0.5],
         };
         let (w, h) = (lattice.extent[0] as usize, lattice.extent[1] as usize);
         for ch in ' '..='~' {
@@ -195,12 +180,9 @@ fn a_glyph_is_zero_outside_its_support(font: &Font, sizes: &[f32]) {
             let Some(glyph) = font.glyph_scaled_by_id(id, size) else {
                 continue;
             };
-            let placed = glyph.kernel.at(
-                &Kernel::x().sub(&Kernel::constant(PEN)),
-                &Kernel::y(),
-                &Kernel::z(),
-                &Kernel::w(),
-            );
+            let placed = glyph
+                .kernel
+                .at(&Kernel::x().sub(&Kernel::constant(PEN)), &Kernel::y());
             let [x0, y0, x1, y1] = glyph.support.shifted_x(PEN).bounds();
             let baked = lattice.bake(&placed);
             for row in 0..h {
@@ -371,8 +353,8 @@ fn a_cell_that_takes_every_glyph_agrees_exactly() {
 fn text_that_reaches_nothing_collapses_to_zero() {
     let font = Font::parse(FONT_DATA).expect("font");
     let lattice = Lattice {
-        extent: [32, 32, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [32, 32],
+        origin: [0.5, 0.5],
     };
     let union = text_union(&font, lattice, "", 16.0);
     assert!(union.is_empty(), "the empty string places no summand");
@@ -386,8 +368,8 @@ fn text_that_reaches_nothing_collapses_to_zero() {
 #[should_panic(expected = "overlaps the summand")]
 fn overlapping_ranges_are_refused_at_build() {
     let lattice = Lattice {
-        extent: [64, 16, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [64, 16],
+        origin: [0.5, 0.5],
     };
     let mut union = Union::over(lattice);
     union.place(IndexRange::new(0, 0, 32, 16), &Kernel::constant(1.0));

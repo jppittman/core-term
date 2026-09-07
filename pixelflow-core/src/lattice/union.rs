@@ -181,18 +181,10 @@ pub struct Union {
 impl Union {
     /// The empty union over `lattice`: every index collapses to 0.
     ///
-    /// # Panics
-    ///
-    /// Panics if the ambient lattice is not a plane (Z or W extent above 1).
-    /// A union decomposes a plane's index; a stack of planes is
-    /// [`Lattice::collapse`]'s nest, not a summand.
+    /// A lattice is a plane by construction — it has two axes — so there is
+    /// nothing left to refuse here.
     #[must_use]
     pub fn over(lattice: Lattice) -> Self {
-        assert!(
-            lattice.extent[2] == 1 && lattice.extent[3] == 1,
-            "Union::over: the ambient lattice must be a plane, not {:?}",
-            lattice.extent
-        );
         Self {
             lattice,
             pieces: Vec::new(),
@@ -270,7 +262,7 @@ impl Union {
             .pieces
             .iter()
             .map(|(range, kernel)| {
-                let extent = [range.width as u32, range.rows as u32, 1, 1];
+                let extent = [range.width as u32, range.rows as u32];
                 (*range, Manifold::compile(kernel, extent).bind(&[]))
             })
             .collect();
@@ -317,8 +309,6 @@ impl CompiledUnion {
             let origin = [
                 self.lattice.origin[0] + range.x0 as f32,
                 self.lattice.origin[1] + range.y0 as f32,
-                self.lattice.origin[2],
-                self.lattice.origin[3],
             ];
             let band = PlaneRegion::from_origin(range.width, range.rows, origin);
             let start = range.y0 * ex + range.x0;
@@ -337,7 +327,7 @@ mod tests {
     }
 
     fn frame(width: usize, height: usize) -> Lattice {
-        Lattice::frame(width, height, 0.0)
+        Lattice::frame(width, height)
     }
 
     /// The degenerate union is the plain bake, bit for bit: one summand
@@ -459,13 +449,15 @@ mod tests {
         assert!(union.bake().buffer().iter().all(|&v| v == 0.0));
     }
 
+    /// A union's ambient domain is a plane because a lattice *is* one: two
+    /// axes, no stack to refuse. This used to be a `should_panic` on a Z
+    /// extent above 1, and the type is what retired it.
     #[test]
-    #[should_panic(expected = "must be a plane")]
-    fn a_union_over_a_stack_of_planes_is_refused() {
-        let refused = Union::over(Lattice {
-            extent: [8, 8, 4, 1],
-            origin: [0.0; 4],
+    fn the_ambient_lattice_is_a_plane_by_construction() {
+        let over = Union::over(Lattice {
+            extent: [8, 8],
+            origin: [0.0; crate::lattice::AXES],
         });
-        assert_eq!(refused.len(), 0, "unreachable: `over` panics above");
+        assert_eq!(over.len(), 0);
     }
 }

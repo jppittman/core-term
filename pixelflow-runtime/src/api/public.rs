@@ -260,8 +260,8 @@ pub enum EngineEventData {
     /// # Example Use
     ///
     /// Use `target_timestamp` to animate content that should be time-accurate.
-    /// Send the compiled scene on the plane that timestamp names
-    /// (`PackedFrame::on_slice`) rather than recompiling it per frame.
+    /// Write that timestamp into the compiled scene's block
+    /// (`PackedManifold::bind_with`) rather than recompiling it per frame.
     RequestFrame {
         timestamp: std::time::Instant,
         target_timestamp: std::time::Instant,
@@ -321,8 +321,9 @@ pub enum AppData {
     ///
     /// One internal-loop JIT call per stripe, pack included, stripes pulled
     /// by the render workers. Compiling a scene is what costs — do it on
-    /// resize, not per frame; a value that changes every frame belongs on a
-    /// coordinate (`PackedFrame::on_slice`), not in a constant.
+    /// resize, not per frame; a value that changes every frame is an
+    /// argument of the program (a `Uniform`, written into its
+    /// `UniformBlock`), not a constant.
     RenderSurface(pixelflow_graphics::render::scene::Scene),
 
     /// Skip this frame (no rendering needed).

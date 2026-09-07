@@ -366,8 +366,8 @@ mod tests {
     use pixelflow_core::Lattice;
 
     /// A kernel at one point: compiled at a one-sample lattice, then collapsed.
-    fn at(k: &Kernel, x: f32, y: f32, z: f32) -> f32 {
-        Lattice::point(x, y, z, 0.0).bake(k).into_buffer()[0]
+    fn at(k: &Kernel, x: f32, y: f32) -> f32 {
+        Lattice::point(x, y).bake(k).into_buffer()[0]
     }
 
     fn close(got: f32, want: f32) -> bool {
@@ -379,7 +379,7 @@ mod tests {
         // ELU(x) + 1 is positive everywhere: max(0, x) + exp(min(0, x)).
         let phi = EluFeature.apply(&Kernel::x());
         for x in [-4.0_f32, -1.0, 0.0, 1.0, 4.0] {
-            let (got, want) = (at(&phi, x, 0.0, 0.0), x.max(0.0) + x.min(0.0).exp());
+            let (got, want) = (at(&phi, x, 0.0), x.max(0.0) + x.min(0.0).exp());
             assert!(close(got, want), "elu({x}): got {got}, want {want}");
             assert!(got > 0.0, "elu({x}) = {got} is not positive");
         }
@@ -433,9 +433,12 @@ mod tests {
 
     #[test]
     fn sh_feature_map_projects_direction() {
-        // Along +Z only the m=0 members survive, at the band constants
-        // themselves (the l=2 one carries 3*nz^2 - 1 = 2).
-        let basis = ShFeatureMap::<9>::project(&Kernel::x(), &Kernel::y(), &Kernel::z());
+        // Along +z only the m=0 members survive, at the band constants
+        // themselves (the l=2 one carries 3*nz^2 - 1 = 2). The direction's
+        // third component is a value, not a coordinate: a lattice has two
+        // axes, and this projection is a function of a direction it is
+        // handed rather than of where it is sampled.
+        let basis = ShFeatureMap::<9>::project(&Kernel::x(), &Kernel::y(), &Kernel::constant(1.0));
         assert_eq!(basis.len(), 9);
         let want = [
             SH_NORM[0][0],
@@ -449,7 +452,7 @@ mod tests {
             0.0,
         ];
         for (i, (k, w)) in basis.iter().zip(want.iter()).enumerate() {
-            let got = at(k, 0.0, 0.0, 1.0);
+            let got = at(k, 0.0, 0.0);
             assert!(close(got, *w), "basis[{i}]: got {got}, want {w}");
         }
     }

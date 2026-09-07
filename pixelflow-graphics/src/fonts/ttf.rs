@@ -56,12 +56,7 @@ pub(crate) fn affine_kernel(inner: &Kernel, [a, b, c, d, tx, ty]: [f32; 6]) -> K
             .mul(&kc(ca))
             .add(&Kernel::y().sub(&kc(ty)).mul(&kc(cb)))
     };
-    inner.at(
-        &coord(inv_a, inv_b),
-        &coord(inv_c, inv_d),
-        &Kernel::z(),
-        &Kernel::w(),
-    )
+    inner.at(&coord(inv_a, inv_b), &coord(inv_c, inv_d))
 }
 
 /// **The box outside which a coverage [`Kernel`] is exactly zero.**

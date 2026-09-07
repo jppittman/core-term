@@ -33,18 +33,29 @@ const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 /// One point of a compiled kernel: a single-batch collapse call, lane 0 read
 /// back. `call_collapse` is the collapse driver's entry; a test that wants one
 /// number owns this loop rather than the crate growing a point API for it.
-fn eval_point(jit: &CompiledKernel, x: f32, y: f32, z: f32) -> f32 {
+///
+/// `block` holds the kernel's arguments in link order — the addend and the
+/// wall's multiplier, which used to be the Z and W coordinates.
+fn eval_point(jit: &CompiledKernel, x: f32, y: f32, block: &[f32]) -> f32 {
     let mut out = [0.0f32; LANES];
+    let ctx: [*const f32; 1] = [block.as_ptr()];
     // SAFETY: `out` holds exactly one whole batch; these arenas declare no
-    // buffers, so the null context is never read.
+    // buffers, so `ctx[0]` is the block entry and holds one `f32` per
+    // declared argument, alive for the call.
     unsafe {
         jit.call_collapse(
-            core::ptr::null(),
+            ctx.as_ptr(),
             TileSlice::single(out.as_mut_ptr()),
-            Point4::new([x; LANES], [y; LANES], [z; LANES], [0.0; LANES]),
+            Point4::new([x; LANES], [y; LANES], [0.0; LANES], [0.0; LANES]),
         );
     }
     out[0]
+}
+
+/// Declare an argument in `a` and return its leaf.
+fn arg_leaf(a: &mut ExprArena) -> ExprId {
+    let slot = a.declare_uniform(pixelflow_ir::Uniform::new(0.0).decl());
+    a.push_uniform(slot)
 }
 
 // ── The two rounding forms, as scalar references ─────────────────────────────
@@ -122,13 +133,13 @@ fn an_unspilled_muladd_rounds_the_way_this_target_does() {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
+    let z = arg_leaf(&mut a);
     let root = a.push_ternary(OpKind::MulAdd, x, y, z);
 
-    let result = compile(&a, root).expect("compile MulAdd(X, Y, Z)");
+    let result = compile(&a, root).expect("compile MulAdd(X, Y, U)");
     assert_eq!(result.spill_count, 0, "this scenario must not spill");
     let jit = CompiledKernel::new(result.code, pixelflow_ir::LatticeShape::POINT);
-    let got = eval_point(&jit, A, B, C);
+    let got = eval_point(&jit, A, B, &[C]);
 
     #[cfg(target_feature = "fma")]
     assert_bits("fused MulAdd on an FMA target", got, fused(A, B, C));
@@ -173,7 +184,7 @@ fn a_spilled_muladd_rounds_twice_on_every_target() {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
+    let z = arg_leaf(&mut a);
     // The multiplicands, defined first and consumed last, so they hold the
     // longest live ranges in the schedule — which is what makes them Belady's
     // first two eviction choices once the wall fills the pool.
@@ -184,16 +195,17 @@ fn a_spilled_muladd_rounds_twice_on_every_target() {
     // only decomposes when *both* are out of registers — so something has to
     // hold the pool across the whole schedule.
     //
-    // Every term is `(X + i) · W`, which is exactly +0.0 at W = 0 and so
-    // perturbs no bit of the sum it lands in. It has to be built from a
-    // *variable* to survive: the wall here was `(l − r) − (l − r)`, also worth
-    // zero, and `legalize` folded all six of those to one constant — the
-    // scenario had no wall at all, and only ever reached the decomposed arm
-    // because the pool was smaller than three. `W` is not a constant, so
-    // nothing folds this away, and multiplying by it keeps the term worth zero
-    // without saying so in a form the folder can see. Each term still depends
-    // on X, so none is loop-invariant and hoistable out of a collapse body.
-    let w = a.push_var(3);
+    // Every term is `(X + i) · U`, which is exactly +0.0 at U = 0 and so
+    // perturbs no bit of the sum it lands in. It has to be built from
+    // something the folder cannot see through: the wall here was
+    // `(l − r) − (l − r)`, also worth zero, and `legalize` folded all six of
+    // those to one constant — the scenario had no wall at all, and only ever
+    // reached the decomposed arm because the pool was smaller than three. A
+    // uniform is never folded — its value is unknown until the call — so
+    // multiplying by it keeps the term worth zero without saying so in a form
+    // the folder can see. Each term still depends on X, so none is
+    // loop-invariant and hoistable out of a collapse body.
+    let w = arg_leaf(&mut a);
     let wall: Vec<ExprId> = (1..=10u32)
         .map(|i| {
             let c = a.push_const(i as f32);
@@ -220,6 +232,6 @@ fn a_spilled_muladd_rounds_twice_on_every_target() {
         "scenario failed to create register pressure"
     );
     let jit = CompiledKernel::new(result.code, pixelflow_ir::LatticeShape::POINT);
-    let got = eval_point(&jit, HALF_A, HALF_B, C);
+    let got = eval_point(&jit, HALF_A, HALF_B, &[C, 0.0]);
     assert_bits("decomposed MulAdd", got, decomposed(A, B, C));
 }

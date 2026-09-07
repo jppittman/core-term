@@ -21,8 +21,8 @@ fn coverage(segments: &[Kernel]) -> Kernel {
 /// plus the origin. Extent is a plain square.
 fn bake_square(cov: &Kernel, n: u32) -> Vec<f32> {
     let lattice = Lattice {
-        extent: [n, n, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [n, n],
+        origin: [0.5, 0.5],
     };
     lattice.bake(cov).buffer().to_vec()
 }

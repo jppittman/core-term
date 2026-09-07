@@ -79,6 +79,14 @@ pub struct Linked {
 /// # Errors
 ///
 /// Whatever [`emit::compile`] reports for the (optimized) arena.
+///
+/// # Panics
+///
+/// Panics if the arena — as handed in, or as saturation leaves it — names a
+/// retired coordinate axis (`Var(2)`/`Var(3)`, the old Z and W). The
+/// assertion itself lives one layer down, in
+/// [`emit::compile`](crate::emit::compile), because that is the boundary
+/// every route to machine code passes through and this is only one of them.
 pub fn compile(
     arena: &ExprArena,
     root: ExprId,
@@ -278,10 +286,29 @@ mod tests {
     use pixelflow_ir::arena::{BufferIdentity, UniformIdentity};
     use pixelflow_ir::kind::OpKind;
 
-    const TEST_SHAPE: LatticeShape = LatticeShape::new([64, 64, 1, 1]);
+    const TEST_SHAPE: LatticeShape = LatticeShape::new([64, 64]);
 
     fn kernel_of(arena: &ExprArena, root: ExprId) -> Arc<CompiledKernel> {
         compile(arena, root, TEST_SHAPE).expect("compile").kernel
+    }
+
+    /// The backstop, exercised through the route this module owns:
+    /// `Kernel::from_parts` refuses a caller's arena, but a rewrite rule
+    /// instantiating one of its own metavariables would arrive here already
+    /// past that. The assertion itself lives in `emit::compile`, so this
+    /// asserts the *route* reaches it rather than re-testing the check.
+    #[test]
+    #[should_panic(expected = "the arena names Var")]
+    fn an_arena_naming_a_retired_axis_never_reaches_the_emitter() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        // A constant no other test uses, so this arena misses the cache and
+        // the emit path actually runs.
+        let z = a.push_var(2);
+        let c = a.push_const(7.25);
+        let scaled = a.push_binary(OpKind::Mul, z, c);
+        let root = a.push_binary(OpKind::Add, x, scaled);
+        let _refused = compile(&a, root, TEST_SHAPE);
     }
 
     fn circle_arena(garbage: bool) -> (ExprArena, ExprId) {
@@ -406,7 +433,7 @@ mod tests {
         let (a, r) = circle_arena(false);
         let frame = kernel_of(&a, r);
         let again = kernel_of(&a, r);
-        let wider = compile(&a, r, LatticeShape::new([65, 64, 1, 1]))
+        let wider = compile(&a, r, LatticeShape::new([65, 64]))
             .expect("compile")
             .kernel;
         assert!(
@@ -418,7 +445,7 @@ mod tests {
             "one more column is a different lattice, hence a different kernel"
         );
         assert_eq!(frame.shape(), TEST_SHAPE);
-        assert_eq!(wider.shape().extent(), [65, 64, 1, 1]);
+        assert_eq!(wider.shape().extent(), [65, 64]);
     }
 
     // ─────────────────────── the link step ───────────────────────

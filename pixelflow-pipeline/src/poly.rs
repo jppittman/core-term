@@ -251,7 +251,7 @@ mod tests {
             let bindings = BindingTable::empty();
             for step in 0..=20 {
                 let xv = step as f32 / 20.0;
-                let vars = [xv, 0.0, 0.0, 0.0];
+                let vars = [xv, 0.0];
                 let hv = eval_scalar(&arena, h, &vars, &bindings);
                 let ev = eval_scalar(&arena, e, &vars, &bindings);
                 let tol = 1e-5 * hv.abs().max(1e-3);

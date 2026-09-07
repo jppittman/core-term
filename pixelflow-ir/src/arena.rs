@@ -14,6 +14,32 @@ use core::fmt;
 use crate::kernel::Scalar;
 use crate::kind::OpKind;
 
+/// Coordinate axes a lattice has, and so the coordinate `Var` indices: `X = 0`,
+/// `Y = 1`.
+///
+/// There were four. Z and W had extent 1 in every production call — an axis
+/// that never varies is not an axis — so they left the language and the
+/// scalars they carried became [`UniformDecl`]s
+/// (docs/plans/2026-09-06-lattice-is-the-index.md).
+pub const COORD_AXES: usize = 2;
+
+/// The `Var` indices Z and W had. Reserved, never reissued: a reduction
+/// binder taking one of them would make an arena written before the change
+/// read back as a different program.
+pub(crate) const RETIRED_COORD_AXES: [u8; 2] = [2, 3];
+
+/// The first `Var` index a reduction binder takes.
+///
+/// Binder indices are dense from here, and *here* is past the reserved
+/// [`RETIRED_COORD_AXES`] rather than past [`COORD_AXES`] — which is what
+/// keeps them where they were when there were four axes. The gap between
+/// the two is the reason `Var`'s three meanings do not collide.
+pub(crate) const REDUCE_BINDER_BASE: u8 = COORD_AXES as u8 + RETIRED_COORD_AXES.len() as u8;
+
+/// How many reduction binders the index space holds, starting at
+/// [`REDUCE_BINDER_BASE`] — the depth of nested folds a kernel may carry.
+pub(crate) const REDUCE_BINDERS: u8 = 4;
+
 // ───────────────────────────────────────── ExprId ─────────────────────────────
 
 /// Index into an [`ExprArena`]. Copy, 4 bytes, no refcount.
@@ -160,6 +186,12 @@ impl core::hash::Hash for UniformDecl {
 /// Layout is kept tight: the static assertion below guarantees <= 16 bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprNode {
+    /// A bound variable: a lattice coordinate ([`COORD_AXES`] of them, X and
+    /// Y), a reduction binder's index (`4..8`), or — in the macro front end
+    /// only, before substitution — a parameter placeholder. Which one an
+    /// index means is [`ExprArena::push_var`]'s documentation; the indices
+    /// between the coordinates and the binders are not a hole to grow into,
+    /// they are where Z and W used to be and nothing may claim them.
     Var(u8),
     Const(f32),
     Param(u8),
@@ -319,8 +351,51 @@ impl ExprArena {
     }
 
     /// Push a `Var(i)` node.
+    ///
+    /// Only `0..COORD_AXES` are lattice coordinates. [`RETIRED_COORD_AXES`]
+    /// are the Z and W axes, which no longer exist: an arena that names one
+    /// is refused where it would become code
+    /// ([`Kernel::from_parts`](crate::Kernel::from_parts), and the JIT cache),
+    /// rather than here, because the same node is also a reduction binder's
+    /// index and a rewrite rule's pattern metavariable, and those namespaces
+    /// are dense from zero.
     pub fn push_var(&mut self, i: u8) -> ExprId {
         self.push_node(ExprNode::Var(i))
+    }
+
+    /// The retired coordinate axis reachable from `root`, if any — the guard
+    /// [`Kernel::from_parts`](crate::Kernel::from_parts) and
+    /// `emit::compile` apply before an arena can become a compiled kernel.
+    ///
+    /// A `Var(2)` reaching the emitter would read the third base coordinate,
+    /// which a collapse passes as zero and no longer means anything: the
+    /// pixels would be plausible and wrong. Refusing it is what makes "no
+    /// emitted kernel reads the retired lanes" a fact rather than a habit.
+    ///
+    /// **Reachable from `root`, not every node.** An arena is a bump list and
+    /// nothing prunes it: `substitute_vars_with` rewrites the reachable graph
+    /// and leaves what it replaced behind, so an arena whose retired axes were
+    /// correctly substituted still *holds* the original `Var(2)` nodes. They
+    /// are not emitted, because nothing reaches them. Scanning every node
+    /// refuses that arena and is simply wrong — it cost this change a CI round
+    /// trip.
+    #[must_use]
+    pub fn retired_axis(&self, root: ExprId) -> Option<u8> {
+        let mut seen = alloc::vec![false; self.nodes.len()];
+        let mut stack = alloc::vec![root];
+        while let Some(id) = stack.pop() {
+            let idx = id.0 as usize;
+            if core::mem::replace(&mut seen[idx], true) {
+                continue;
+            }
+            if let ExprNode::Var(i) = &self.nodes[idx]
+                && RETIRED_COORD_AXES.contains(i)
+            {
+                return Some(*i);
+            }
+            stack.extend(self.children(id));
+        }
+        None
     }
 
     /// Push a `Const(v)` node.
@@ -463,9 +538,11 @@ impl ExprArena {
             combiner.is_monoid(),
             "push_reduce: {combiner:?} is not a valid reduction combiner"
         );
+        let binders = REDUCE_BINDER_BASE..REDUCE_BINDER_BASE + REDUCE_BINDERS;
         assert!(
-            (4..8).contains(&reduce_var),
-            "push_reduce: reduce_var {reduce_var} out of range (must be 4..8)"
+            binders.contains(&reduce_var),
+            "push_reduce: reduce_var {reduce_var} out of range (must be {:?})",
+            binders
         );
         let c = self.push_const(combiner.index() as f32);
         let v = self.push_const(reduce_var as f32);
@@ -1650,7 +1727,7 @@ mod composition_tests {
     use crate::eval::eval_scalar;
     use crate::kind::OpKind;
 
-    fn eval(a: &ExprArena, root: ExprId, vars: &[f32; 4]) -> f32 {
+    fn eval(a: &ExprArena, root: ExprId, vars: &[f32; 2]) -> f32 {
         eval_scalar(a, root, vars, &BindingTable::empty())
     }
 
@@ -1668,7 +1745,7 @@ mod composition_tests {
         let root = host.push_binary(OpKind::Add, hx, spliced);
 
         // x + x*y, and the donor's dead node did not come along.
-        assert_eq!(eval(&host, root, &[3.0, 4.0, 0.0, 0.0]), 3.0 + 12.0);
+        assert_eq!(eval(&host, root, &[3.0, 4.0]), 3.0 + 12.0);
         assert!(
             !host
                 .nodes_raw()
@@ -1692,7 +1769,7 @@ mod composition_tests {
         let spliced = host.splice(&donor, frag);
         // x, y, s, add = 4 nodes — not 6 (s duplicated).
         assert_eq!(host.nodes_raw().len() - before, 4);
-        assert_eq!(eval(&host, spliced, &[3.0, 2.0, 0.0, 0.0]), 12.0);
+        assert_eq!(eval(&host, spliced, &[3.0, 2.0]), 12.0);
     }
 
     #[test]
@@ -1726,11 +1803,8 @@ mod composition_tests {
 
         let (p, q) = ([10.0f32, 20.0], [3.0f32, 4.0]);
         let binding = BindingTable::bind(&host, &[&p[..], &q[..]]).expect("bind");
-        assert_eq!(eval_scalar(&host, root, &[0.0; 4], &binding), 13.0);
-        assert_eq!(
-            eval_scalar(&host, root, &[1.0, 0.0, 0.0, 0.0], &binding),
-            24.0
-        );
+        assert_eq!(eval_scalar(&host, root, &[0.0; 2], &binding), 13.0);
+        assert_eq!(eval_scalar(&host, root, &[1.0, 0.0], &binding), 24.0);
     }
 
     #[test]
@@ -1757,7 +1831,7 @@ mod composition_tests {
 
         let p = [5.0f32, 7.0];
         let binding = BindingTable::bind(&host, &[&p[..]]).expect("bind");
-        assert_eq!(eval_scalar(&host, root, &[0.0; 4], &binding), 12.0);
+        assert_eq!(eval_scalar(&host, root, &[0.0; 2], &binding), 12.0);
     }
 
     #[test]
@@ -1782,7 +1856,7 @@ mod composition_tests {
 
         let p = [5.0f32, 7.0];
         let binding = BindingTable::bind(&host, &[&p[..]]).expect("bind");
-        assert_eq!(eval_scalar(&host, root, &[0.0; 4], &binding), 10.0);
+        assert_eq!(eval_scalar(&host, root, &[0.0; 2], &binding), 10.0);
     }
 
     #[test]
@@ -1803,7 +1877,7 @@ mod composition_tests {
 
         let root = a.substitute_vars_with(root, &[(8, frag)]);
         // sqrt(x²+y²) + x at (3,4) = 5 + 3.
-        assert_eq!(eval(&a, root, &[3.0, 4.0, 0.0, 0.0]), 8.0);
+        assert_eq!(eval(&a, root, &[3.0, 4.0]), 8.0);
     }
 
     #[test]
@@ -1821,10 +1895,10 @@ mod composition_tests {
 
         let warped = a.substitute_vars_with(body, &[(0, wx), (1, wy)]);
         // (x+1) * 2y at (3, 4) = 4 * 8 = 32.
-        assert_eq!(eval(&a, warped, &[3.0, 4.0, 0.0, 0.0]), 32.0);
+        assert_eq!(eval(&a, warped, &[3.0, 4.0]), 32.0);
 
         // The warp expressions' own Var(0)/Var(1) still read raw coordinates.
-        assert_eq!(eval(&a, warped, &[0.0, 1.0, 0.0, 0.0]), 2.0);
+        assert_eq!(eval(&a, warped, &[0.0, 1.0]), 2.0);
     }
 
     #[test]
@@ -1847,7 +1921,7 @@ mod composition_tests {
         let root = host.push_binary(OpKind::Dwrt, frag, v0);
 
         let (out, out_root) = lower_dwrt_owned(&host, root).expect("lower_dwrt");
-        let got = eval(&out, out_root, &[3.0, 4.0, 0.0, 0.0]);
+        let got = eval(&out, out_root, &[3.0, 4.0]);
         assert!((got - 0.6).abs() < 1e-4, "d/dx dist at (3,4): got {got}");
     }
 
@@ -1895,11 +1969,11 @@ mod composition_tests {
         assert!(matches!(host.node(c), ExprNode::Uniform(UniformId(1))));
 
         // Defaults when nothing is bound; the block, slot by slot, when it is.
-        assert_eq!(eval(&host, root, &[0.0; 4]), 3.0);
+        assert_eq!(eval(&host, root, &[0.0; 2]), 3.0);
         let bound = BindingTable::empty()
             .bind_uniforms(&host, &[(other.id, 7.0), (same.id, 5.0)])
             .expect("both are declared");
-        assert_eq!(eval_scalar(&host, root, &[0.0; 4], &bound), 17.0);
+        assert_eq!(eval_scalar(&host, root, &[0.0; 2], &bound), 17.0);
         // An identity the arena does not declare is refused by name.
         let stranger = uniform_decl(0.0).id;
         assert_eq!(
@@ -1920,7 +1994,7 @@ mod composition_tests {
         let again = host.splice(&donor, r);
         let root = host.push_binary(OpKind::Mul, r, again);
         assert_eq!(host.uniforms().len(), 1);
-        assert_eq!(eval(&host, root, &[0.0; 4]), 4.0);
+        assert_eq!(eval(&host, root, &[0.0; 2]), 4.0);
     }
 
     #[test]
@@ -1951,7 +2025,7 @@ mod composition_tests {
             format!("{}", arena.display(root)),
             "add(add(Uniform(0), Const(3)), Uniform(0))"
         );
-        assert_eq!(eval(&arena, root, &[0.0; 4]), 4.0);
+        assert_eq!(eval(&arena, root, &[0.0; 2]), 4.0);
     }
 
     #[test]

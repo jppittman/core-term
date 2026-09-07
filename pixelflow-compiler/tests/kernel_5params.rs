@@ -12,7 +12,7 @@ use pixelflow_core::{Kernel, Lattice};
 
 /// A kernel at one point — compiled at a one-sample lattice, then collapsed.
 fn at_origin(k: &Kernel) -> f32 {
-    Lattice::point(0.0, 0.0, 0.0, 0.0).bake(k).into_buffer()[0]
+    Lattice::point(0.0, 0.0).bake(k).into_buffer()[0]
 }
 
 #[test]

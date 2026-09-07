@@ -311,8 +311,8 @@ mod tests {
             (3.7, -4.1, 0.0, 1.0),
         ];
         for &(x, y, z, w) in coords {
-            let want = eval_scalar(arena, root, &[x, y, z, w], &BindingTable::empty());
-            let got = eval_scalar(opt_arena, *opt_root, &[x, y, z, w], &BindingTable::empty());
+            let want = eval_scalar(arena, root, &[x, y], &BindingTable::empty());
+            let got = eval_scalar(opt_arena, *opt_root, &[x, y], &BindingTable::empty());
             assert!(
                 (want - got).abs() < 1e-3 || (want.is_nan() && got.is_nan()),
                 "optimize_runtime_arena changed semantics at ({x},{y},{z},{w}): {want} != {got}"
@@ -386,7 +386,10 @@ mod tests {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let y = a.push_var(1);
-        let z = a.push_var(2);
+        // The addend is the kernel's argument: a lattice has two axes, so a
+        // third free scalar is a uniform, and it is never folded.
+        let slot = a.declare_uniform(pixelflow_ir::Uniform::new(0.5).decl());
+        let z = a.push_uniform(slot);
         let mul = a.push_binary(OpKind::Mul, x, y);
         let root = a.push_binary(OpKind::Add, mul, z);
 
@@ -526,8 +529,8 @@ mod tests {
         // flip cells on rounding differences introduced by rewrites.
         let coords: &[(f32, f32)] = &[(0.3, 0.4), (1.5, 0.6), (2.2, 1.7), (3.6, 2.4), (-1.2, 9.5)];
         for &(cx, cy) in coords {
-            let want = eval_scalar(arena, root, &[cx, cy, 0.0, 0.0], &want_bind);
-            let got = eval_scalar(opt_arena, *opt_root, &[cx, cy, 0.0, 0.0], &got_bind);
+            let want = eval_scalar(arena, root, &[cx, cy], &want_bind);
+            let got = eval_scalar(opt_arena, *opt_root, &[cx, cy], &got_bind);
             assert!(
                 (want - got).abs() < 1e-3,
                 "gather optimization changed semantics at ({cx},{cy}): {want} != {got}"
@@ -816,17 +819,26 @@ mod tests {
     fn scope_weighted_extraction_preserves_semantics() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
-        let z = a.push_var(2);
+        // The per-call term is a uniform, which is `CONST` — the deepest
+        // scope there is, and so the one the weighting most wants to hoist.
+        let u = pixelflow_ir::Uniform::new(0.0);
+        let slot = a.declare_uniform(u.decl());
+        let z = a.push_uniform(slot);
         let inner = a.push_binary(OpKind::Add, x, z);
         let root = a.push_binary(OpKind::Add, inner, z);
 
-        let frame = pixelflow_ir::LatticeShape::new([256, 256, 1, 1]);
+        let frame = pixelflow_ir::LatticeShape::new([256, 256]);
         let arc = optimize_runtime_arena(&a, root, frame).expect("must optimize");
         let (opt, opt_root) = &*arc;
-        for (x, z) in [(0.0f32, 0.0f32), (1.5, -2.0), (-3.25, 7.5)] {
-            let want = eval_scalar(&a, root, &[x, 0.0, z, 0.0], &BindingTable::empty());
-            let got = eval_scalar(opt, *opt_root, &[x, 0.0, z, 0.0], &BindingTable::empty());
-            assert_eq!(got, want, "at X={x}, Z={z}");
+        for (x, zv) in [(0.0f32, 0.0f32), (1.5, -2.0), (-3.25, 7.5)] {
+            let bind = |arena: &ExprArena| {
+                BindingTable::empty()
+                    .bind_uniforms(arena, &[(u.identity(), zv)])
+                    .expect("the argument survives extraction")
+            };
+            let want = eval_scalar(&a, root, &[x, 0.0], &bind(&a));
+            let got = eval_scalar(opt, *opt_root, &[x, 0.0], &bind(opt));
+            assert_eq!(got, want, "at X={x}, U={zv}");
         }
     }
 
@@ -855,7 +867,7 @@ mod tests {
             "the binder must be gone from the optimized arena"
         );
         assert_eq!(
-            eval_scalar(opt, *opt_root, &[0.0; 4], &BindingTable::empty()),
+            eval_scalar(opt, *opt_root, &[0.0; 2], &BindingTable::empty()),
             14.0,
             "Σ_{{i<4}} i² = 0 + 1 + 4 + 9"
         );
@@ -873,13 +885,8 @@ mod tests {
         let (opt, opt_root) = &*arc;
         assert!(!reaches_nary(opt, *opt_root));
         for x in [0.0f32, 1.5, -2.25, 7.0] {
-            let want = eval_scalar(
-                &unrolled,
-                unrolled_root,
-                &[x, 0.0, 0.0, 0.0],
-                &BindingTable::empty(),
-            );
-            let got = eval_scalar(opt, *opt_root, &[x, 0.0, 0.0, 0.0], &BindingTable::empty());
+            let want = eval_scalar(&unrolled, unrolled_root, &[x, 0.0], &BindingTable::empty());
+            let got = eval_scalar(opt, *opt_root, &[x, 0.0], &BindingTable::empty());
             assert_eq!(got, want, "Σ_{{i<3}} X·i at X={x}");
         }
     }

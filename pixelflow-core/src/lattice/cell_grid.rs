@@ -184,7 +184,7 @@ fn channel_kernel(
     default_bg: f32,
 ) -> Kernel {
     let k = Kernel::constant;
-    let (x, y, z, w) = (Kernel::x(), Kernel::y(), Kernel::z(), Kernel::w());
+    let (x, y) = (Kernel::x(), Kernel::y());
 
     // Which cell, and where inside it.
     let col = x.mul(&k(1.0 / geom.cell_w)).floor();
@@ -203,7 +203,7 @@ fn channel_kernel(
         } else {
             cx.add(&k(offset as f32))
         };
-        cells.at(&idx, &row, &z, &w)
+        cells.at(&idx, &row)
     };
     let u0 = field(0);
     let v0 = field(1);
@@ -218,7 +218,7 @@ fn channel_kernel(
     let au = u0.add(&lx.mul(&k(geom.density)).min(&k(geom.tile_w as f32 + 0.5)));
     let av = v0.add(&ly.mul(&k(geom.density)).min(&k(geom.tile_h as f32 + 0.5)));
     let atlas = BilinearSampler::kernel_for(bufs.atlas, geom.atlas_width, geom.atlas_height);
-    let cov = atlas.at(&au.sub(&k(0.5)), &av.sub(&k(0.5)), &z, &w);
+    let cov = atlas.at(&au.sub(&k(0.5)), &av.sub(&k(0.5)));
 
     // blended = bg + cov·(fg − bg), and the default background off-grid.
     let blended = bg.add(&cov.mul(&fg.sub(&bg)));
@@ -320,7 +320,7 @@ impl CellGridProgram {
     #[must_use]
     pub fn compile(geom: CellGridGeometry, default_bg: [f32; 4]) -> Self {
         let CellGridKernels { channels, buffers } = geom.channel_kernels(default_bg);
-        let extent = [geom.frame_w, geom.frame_h, 1, 1];
+        let extent = [geom.frame_w, geom.frame_h];
         Self {
             geom,
             buffers,

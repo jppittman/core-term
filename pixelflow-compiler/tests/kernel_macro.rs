@@ -15,20 +15,16 @@ use pixelflow_core::{Kernel, Lattice};
 ///
 /// This is the whole evaluation surface: a kernel plus a lattice, baked. There
 /// is no per-batch entry to call instead.
-fn bake1(k: &Kernel, x: f32, y: f32, z: f32) -> f32 {
-    Lattice::point(x, y, z, 0.0).bake(k).into_buffer()[0]
+fn bake1(k: &Kernel, x: f32, y: f32) -> f32 {
+    Lattice::point(x, y).bake(k).into_buffer()[0]
 }
 
 fn eval1(k: &Kernel, x: f32) -> f32 {
-    bake1(k, x, 0.0, 0.0)
+    bake1(k, x, 0.0)
 }
 
 fn eval2(k: &Kernel, x: f32, y: f32) -> f32 {
-    bake1(k, x, y, 0.0)
-}
-
-fn eval3(k: &Kernel, x: f32, y: f32, z: f32) -> f32 {
-    bake1(k, x, y, z)
+    bake1(k, x, y)
 }
 
 // ============================================================================
@@ -49,9 +45,10 @@ fn macro_add_xy() {
 
 #[test]
 fn macro_complex_expr() {
-    // (X + Y) * Z
-    let m = kernel!(|| (X + Y) * Z);
-    assert_eq!(eval3(&m, 2.0, 5.0, 6.0), 42.0); // (2+5)*6 = 42
+    // (X + Y) * k, where the third input is a parameter rather than a third
+    // axis: a lattice has two.
+    let m = kernel!(|k: f32| (X + Y) * k);
+    assert_eq!(eval2(&m(6.0), 2.0, 5.0), 42.0); // (2+5)*6 = 42
 }
 
 #[test]
@@ -290,7 +287,7 @@ fn a_uniform_argument_is_bound_per_call() {
     assert_eq!(k.parts().0.uniforms(), &[cx.decl()]);
     assert!((eval1(&k, 5.0) - 8.0).abs() < 1e-5, "default cx = 1");
 
-    let lattice = Lattice::point(5.0, 0.0, 0.0, 0.0);
+    let lattice = Lattice::point(5.0, 0.0);
     let program = Manifold::compile(&k, lattice.extent);
     let mut block = program.block();
     block.set(cx, 3.0).expect("cx is the argument");

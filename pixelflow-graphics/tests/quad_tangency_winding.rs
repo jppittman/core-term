@@ -61,7 +61,7 @@ fn a_grazing_ray_picks_up_no_winding_at_a_shared_extremum() {
     let mut worst = 0.0f32;
     let mut worst_y = y;
     for _ in 0..17 {
-        let v = eval_scalar(&lowered, r, &[x, y, 0.0, 0.0], &BindingTable::empty());
+        let v = eval_scalar(&lowered, r, &[x, y], &BindingTable::empty());
         if v.abs() > worst.abs() {
             worst = v;
             worst_y = y;

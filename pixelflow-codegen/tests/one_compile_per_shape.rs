@@ -48,7 +48,7 @@ fn circle(declared_in_order: bool) -> (ExprArena, ExprId) {
 
 #[test]
 fn a_thousand_circles_is_one_compile() {
-    const SHAPE: LatticeShape = LatticeShape::new([64, 64, 1, 1]);
+    const SHAPE: LatticeShape = LatticeShape::new([64, 64]);
     let before = entry_count();
     let (a, root) = circle(true);
     let first = compile(&a, root, SHAPE).expect("compile").kernel;
