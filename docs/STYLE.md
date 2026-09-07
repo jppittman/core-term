@@ -79,9 +79,13 @@ These points are particularly relevant when working with or generating code usin
 
 2.  **Prefer `match` over `else if`:** When choosing between complex `if`/`else if`/`else` chains and a `match` statement, prefer `match`, especially when dealing with enums or a fixed set of conditions.
 
-3.  **`if` Narrows, `match` Dispatches:** This sharpens rule 2 into a test you can apply to any single `if`. An `if` should leave fewer live possibilities than it found. `if x > 0.0 { x *= -1.0 }` folds two signs into one, and needs no `else` — narrowing has nothing left to say once it's done. An `if`/`else` is in the wrong place when its arms instead send execution toward genuinely different behavior, leaving *more* distinct cases live afterward than before: that's not narrowing, it's dispatch, and dispatch belongs to `match` (over an enum, or to a trait method).
+3.  **Fold Before You Dispatch:** This is not a division of labor between `if` and `match` — it is a preference between two things you can do with a set of cases, and folding is the better one wherever it is available.
 
-    * **Good (narrows — two possibilities become one):**
+    A **fold** leaves fewer live possibilities than it found. `if x > 0.0 { x *= -1.0 }` takes "any sign" down to "non-positive"; two possibilities become one, which is exactly why it needs no `else` — there is nothing left to say. **Dispatch** does the opposite: it keeps every case alive and hands them all to whatever comes next. That is the cost that makes this an ordering rather than a taxonomy, because a case is never carried by the branch alone — every reader, every test, and every later change downstream of it carries it too.
+
+    So: collapse the cases wherever they can be collapsed, and reach for `match` (over an enum, or a trait method) for the ones that genuinely cannot be. An `if`/`else` whose arms send execution toward different behavior is usually a fold that wasn't taken; when it isn't — when the cases really are irreducible — it should be a `match`, which at least says so honestly.
+
+    * **Good (a fold — two possibilities become one):**
         ```rust
         // z is non-positive after this, whatever sign x started as.
         let mut z = x;
@@ -89,7 +93,7 @@ These points are particularly relevant when working with or generating code usin
             z *= -1.0;
         }
         ```
-    * **Bad (dispatch dressed up as narrowing — the arms are different behaviors sharing an `if`, and there are still two live cases after it):**
+    * **Bad (dispatch wearing an `if` — the arms are different behaviors, and both cases are still live afterward):**
         ```rust
         fn commit(tx: &Transaction) {
             if tx.is_readonly() {
@@ -100,7 +104,7 @@ These points are particularly relevant when working with or generating code usin
             }
         }
         ```
-    * **Good (the same distinction, handled as a case):**
+    * **Good (the cases are irreducible here, so dispatch — and say so):**
         ```rust
         enum TxKind { ReadOnly, Write }
 

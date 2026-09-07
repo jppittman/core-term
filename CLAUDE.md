@@ -339,12 +339,14 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
   concepts want to be a module, a method on a struct, or a builder, not suffixes
   on a free function. Especially watch for an accreting family of `*_with_ctx`,
   `*_scanline`, `*_jet` variants: that's the cue to introduce the struct/builder.
-- **`if` narrows, `match` dispatches** - an `if` should leave fewer live
-  possibilities than it found. `if x > 0.0 { x *= -1.0 }` folds two signs
-  into one, and needs no `else` because narrowing has nothing left to say.
-  Arms that instead send execution toward genuinely different behavior
-  aren't narrowing — that's dispatch, and dispatch is `match`'s job (over an
-  enum, or a trait), not `if`/`else`'s.
+- **Fold before you dispatch** - a fold leaves fewer live possibilities than
+  it found: `if x > 0.0 { x *= -1.0 }` takes "any sign" down to
+  "non-positive", and needs no `else` because there is nothing left to say.
+  Dispatch does the opposite — it keeps every case alive, and each surviving
+  case is carried by everything downstream of it. So these are not two peers
+  with separate jobs: fold wherever the cases can be collapsed, and reach for
+  `match` (over an enum, or a trait) only for the ones that genuinely cannot
+  be. An `else` doing double duty is usually a fold that wasn't taken.
 - **New implementation of an existing category → trait first** - Before
   adding a second way of doing something the codebase already does one way,
   check whether that category is already a trait. If it is, implement the new
