@@ -25,7 +25,8 @@
 //! whatever buffer they were built with.
 
 use crate::fonts::ttf::Font;
-use pixelflow_core::Lattice;
+use crate::fonts::PIXEL_CENTER;
+use pixelflow_core::{Kernel, Lattice};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -176,11 +177,15 @@ impl GlyphAtlas {
             .glyph_kernel_scaled(ch, self.tile_px as f32)
             .map(|kernel| {
                 let n = self.tile_px as u32;
-                Lattice {
-                    extent: [n, n],
-                    origin: [0.5, 0.5],
-                }
-                .bake(&kernel)
+                // This crate's shared pixel-center convention (`fonts/mod.rs`):
+                // texel (i, j) holds coverage at (i + PIXEL_CENTER, j +
+                // PIXEL_CENTER). Used to be the lattice's own origin; a
+                // contramap on the kernel now that a lattice is a pure index.
+                let centered = kernel.at(
+                    &Kernel::x().add(&Kernel::constant(PIXEL_CENTER)),
+                    &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
+                );
+                Lattice { extent: [n, n] }.bake(&centered)
             });
         let Some(baked) = baked else {
             self.slots.insert(ch, None);

@@ -70,26 +70,36 @@ const SIZES_FULL: [f32; 4] = [12.0, 16.0, 20.0, 32.0];
 const SUPPORT_SIZES_FAST: [f32; 1] = [20.0];
 const SUPPORT_SIZES_FULL: [f32; 3] = [12.0, 20.0, 48.0];
 
-/// A frame wide enough for the string at the sample-center convention the
-/// font path uses.
+/// A frame wide enough for the string. `text`/`text_union` are
+/// convention-agnostic (raw glyph space); the frame is a plain index with no
+/// coordinate frame of its own to carry a sampling convention either way.
 fn frame(text_str: &str, size: f32) -> Lattice {
     let columns = text_str.chars().count().max(1) as f32;
-    Lattice {
-        extent: [(columns * size).ceil() as u32, (size * 1.5).ceil() as u32],
-        origin: [0.5, 0.5],
-    }
+    Lattice::frame(
+        (columns * size).ceil() as usize,
+        (size * 1.5).ceil() as usize,
+    )
 }
 
-/// The lattice one cell of the decomposition is collapsed over: the cell's
-/// extent, sampled at the ambient frame's coordinates for those indices.
-fn cell_lattice(frame: Lattice, cell: &TextCell) -> Lattice {
-    Lattice {
-        extent: [cell.range.width() as u32, cell.range.rows() as u32],
-        origin: [
-            frame.origin[0] + cell.range.x0() as f32,
-            frame.origin[1] + cell.range.y0() as f32,
-        ],
-    }
+/// The pixel-center contramap `text_union` applies once per cell, and that
+/// `text`'s callers apply once over the whole sum — the same convention,
+/// applied at the two different points the two encodings need it.
+fn pixel_centered(k: &Kernel) -> Kernel {
+    k.at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    )
+}
+
+/// One cell of the decomposition, baked on its own at pixel centers: the
+/// range's own extent, collapsed starting at the range's own index — the same
+/// per-summand step [`Union`] performs, exposed here so a cell can be
+/// compared against the union it came from. Matches `text_union`'s own
+/// per-cell contramap, not `layout`'s (`layout` stays in raw glyph space).
+fn cell_baked(cell: &TextCell) -> Vec<f32> {
+    cell.range
+        .bake(&pixel_centered(&Kernel::sum(&cell.glyphs)))
+        .into_buffer()
 }
 
 /// Samples that differ, and by how much.
@@ -122,9 +132,15 @@ fn split_and_added(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> 
         let Some(glyph) = font.glyph_scaled_by_id(id, size) else {
             continue;
         };
-        let placed = glyph
-            .kernel
-            .at(&Kernel::x().sub(&Kernel::constant(pen)), &Kernel::y());
+        // `layout`'s pen shift, plus the pixel-center ½ applied by hand here
+        // (matching what `text_union` applies once per cell): `lattice` is a
+        // plain index with no origin to carry either.
+        let placed = glyph.kernel.at(
+            &Kernel::x()
+                .add(&Kernel::constant(0.5))
+                .sub(&Kernel::constant(pen)),
+            &Kernel::y().add(&Kernel::constant(0.5)),
+        );
         for (dst, src) in split.iter_mut().zip(lattice.bake(&placed).buffer()) {
             *dst += src;
         }
@@ -169,26 +185,28 @@ fn the_union_machinery_is_exact(font: &Font, corpus: &[&str], sizes: &[f32]) {
 /// constant.
 fn a_glyph_is_zero_outside_its_support(font: &Font, sizes: &[f32]) {
     const PEN: f32 = 48.0;
+    const CENTER: f32 = 0.5;
     for &size in sizes {
-        let lattice = Lattice {
-            extent: [160, (size * 2.5) as u32],
-            origin: [0.5, 0.5],
-        };
-        let (w, h) = (lattice.extent[0] as usize, lattice.extent[1] as usize);
+        let (w, h) = (160usize, (size * 2.5) as usize);
+        let lattice = Lattice::frame(w, h);
         for ch in ' '..='~' {
             let id = font.cmap_lookup(ch).unwrap_or(0);
             let Some(glyph) = font.glyph_scaled_by_id(id, size) else {
                 continue;
             };
-            let placed = glyph
-                .kernel
-                .at(&Kernel::x().sub(&Kernel::constant(PEN)), &Kernel::y());
+            // Placed, and shifted onto the rasterizer's pixel centers — the
+            // same contramap `text`'s `layout` bakes in, applied by hand here
+            // since this checks the raw glyph kernel directly.
+            let placed = glyph.kernel.at(
+                &Kernel::x().add(&Kernel::constant(CENTER - PEN)),
+                &Kernel::y().add(&Kernel::constant(CENTER)),
+            );
             let [x0, y0, x1, y1] = glyph.support.shifted_x(PEN).bounds();
             let baked = lattice.bake(&placed);
             for row in 0..h {
-                let cy = row as f32 + lattice.origin[1];
+                let cy = row as f32 + CENTER;
                 for col in 0..w {
-                    let cx = col as f32 + lattice.origin[0];
+                    let cx = col as f32 + CENTER;
                     if (x0..=x1).contains(&cx) && (y0..=y1).contains(&cy) {
                         continue;
                     }
@@ -220,19 +238,19 @@ fn every_cell_bakes_its_own_kernel(font: &Font, corpus: &[&str], sizes: &[f32]) 
             let united = text_union(font, lattice, text_str, size).bake();
             for cell in text_cells(font, lattice, text_str, size) {
                 checked += 1;
-                let alone = cell_lattice(lattice, &cell).bake(&Kernel::sum(&cell.glyphs));
+                let alone = cell_baked(&cell);
                 for row in 0..cell.range.rows() {
                     for col in 0..cell.range.width() {
                         let here = (cell.range.y0() + row) * width + cell.range.x0() + col;
                         let there = row * cell.range.width() + col;
                         assert_eq!(
                             united.buffer()[here].to_bits(),
-                            alone.buffer()[there].to_bits(),
+                            alone[there].to_bits(),
                             "{text_str:?} at {size}: the cell at column {} is {:?} at \
                              (row {row}, col {col}) in the union but {:?} baked on its own",
                             cell.range.x0(),
                             united.buffer()[here],
-                            alone.buffer()[there],
+                            alone[there],
                         );
                     }
                 }
@@ -275,7 +293,7 @@ fn the_union_only_moves_a_sample_by_scheduling_noise(font: &Font, corpus: &[&str
     for text_str in corpus {
         for &size in sizes {
             let lattice = frame(text_str, size);
-            let whole = lattice.bake(&text(font, text_str, size));
+            let whole = lattice.bake(&pixel_centered(&text(font, text_str, size)));
             let united = text_union(font, lattice, text_str, size).bake();
             let split = split_and_added(font, lattice, text_str, size);
 
@@ -336,7 +354,9 @@ fn a_cell_that_takes_every_glyph_agrees_exactly() {
         for size in [16.0f32, 48.0] {
             let lattice = frame(text_str, size);
             let (differing, worst) = compare(
-                lattice.bake(&text(&font, text_str, size)).buffer(),
+                lattice
+                    .bake(&pixel_centered(&text(&font, text_str, size)))
+                    .buffer(),
                 text_union(&font, lattice, text_str, size).bake().buffer(),
             );
             assert_eq!(
@@ -352,10 +372,7 @@ fn a_cell_that_takes_every_glyph_agrees_exactly() {
 #[test]
 fn text_that_reaches_nothing_collapses_to_zero() {
     let font = Font::parse(FONT_DATA).expect("font");
-    let lattice = Lattice {
-        extent: [32, 32],
-        origin: [0.5, 0.5],
-    };
+    let lattice = Lattice::frame(32, 32);
     let union = text_union(&font, lattice, "", 16.0);
     assert!(union.is_empty(), "the empty string places no summand");
     assert!(union.bake().buffer().iter().all(|&v| v == 0.0));
@@ -367,10 +384,7 @@ fn text_that_reaches_nothing_collapses_to_zero() {
 #[test]
 #[should_panic(expected = "overlaps the summand")]
 fn overlapping_ranges_are_refused_at_build() {
-    let lattice = Lattice {
-        extent: [64, 16],
-        origin: [0.5, 0.5],
-    };
+    let lattice = Lattice::frame(64, 16);
     let mut union = Union::over(lattice);
     union.place(IndexRange::new(0, 0, 32, 16), &Kernel::constant(1.0));
     union.place(IndexRange::new(31, 0, 33, 16), &Kernel::constant(2.0));

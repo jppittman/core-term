@@ -161,11 +161,17 @@ impl UniformBlock {
 /// sample varies along.
 ///
 /// The band's own **origin** — the coordinate its first sample is taken at —
-/// is what separates the two conventions in the tree. A pixel band samples
-/// *centers* (`x + ½`, `y + ½`), which is what [`PlaneRegion::rows`] builds; a
-/// [`Lattice`](crate::Lattice) samples its own `origin + index`. Both are the
-/// same band with a different starting coordinate, which is why there is one
-/// collapse and not two.
+/// is what separates the conventions in the tree, and every one of them is
+/// an *index*, never an arbitrary coordinate: a pixel band samples *centers*
+/// (`i + ½`, `j + ½`), which is what [`PlaneRegion::rows`] builds; a
+/// [`Lattice`](crate::Lattice) or an
+/// [`IndexRange`](crate::IndexRange) samples the raw index, which is what
+/// `PlaneRegion::at_index` builds. A single real-valued point
+/// ([`Lattice::eval_at`](crate::Lattice::eval_at)) is the one place an
+/// arbitrary coordinate legitimately appears, because there both axes are
+/// fixed and there is no index to be one of. All three are the same band
+/// mechanism with a different starting coordinate, which is why there is one
+/// collapse and not three.
 #[derive(Clone, Copy, Debug)]
 pub struct PlaneRegion {
     /// Samples per row.
@@ -174,7 +180,7 @@ pub struct PlaneRegion {
     pub rows: usize,
     /// The coordinate the first sample is taken at: lane 0 of the first row.
     /// Private so a band is always somewhere — no axis can be set alone or
-    /// left undefined — and because which of the two sampling conventions
+    /// left undefined — and because which of the sampling conventions
     /// applies is the constructor's to decide, not the caller's to patch
     /// afterwards.
     origin: [f32; crate::lattice::AXES],
@@ -192,18 +198,29 @@ impl PlaneRegion {
         }
     }
 
-    /// A band of `rows` rows whose first sample is taken at `origin`, with
-    /// each subsequent sample one unit further along X and each row one unit
-    /// further along Y. The lattice's own convention.
-    pub(crate) fn from_origin(
-        width: usize,
-        rows: usize,
-        origin: [f32; crate::lattice::AXES],
-    ) -> Self {
+    /// A band of `rows` rows whose first sample is at raw index `(x0, y0)`,
+    /// with each subsequent sample one unit further along X and each row one
+    /// unit further along Y — no coordinate frame, just the index itself.
+    /// What [`Lattice::collapse`](crate::Lattice::collapse) and a
+    /// [`Union`](crate::Union) summand sample.
+    pub(crate) fn at_index(width: usize, rows: usize, x0: usize, y0: usize) -> Self {
         Self {
             width,
             rows,
-            origin,
+            origin: [x0 as f32, y0 as f32],
+        }
+    }
+
+    /// A single sample at the literal coordinate `(x, y)` — not an index and
+    /// not a pixel center, the one case where an arbitrary real-valued
+    /// coordinate is legitimate: both axes are fixed, so there is no index
+    /// left to restrict. What [`Lattice::eval_at`](crate::Lattice::eval_at)
+    /// samples.
+    pub(crate) fn at_point(x: f32, y: f32) -> Self {
+        Self {
+            width: 1,
+            rows: 1,
+            origin: [x, y],
         }
     }
 }
@@ -259,10 +276,10 @@ pub struct Manifold {
 impl Manifold {
     /// JIT-compile `kernel` in collapse mode at a lattice of these extents.
     ///
-    /// `extent` is a [`Lattice`](crate::Lattice)'s own `[x, y]`; the lattice's
-    /// *origin* is not part of it, because the shape is what specializes the
-    /// code and where a collapse starts is a property of the collapse. A frame
-    /// is `[w, h]`.
+    /// `extent` is a [`Lattice`](crate::Lattice)'s own `[x, y]` — the shape,
+    /// and nothing else, because the shape is what specializes the code and
+    /// where a collapse starts is a property of the collapse
+    /// ([`PlaneRegion`]), not of the manifold. A frame is `[w, h]`.
     ///
     /// # Panics
     ///
@@ -468,6 +485,22 @@ impl BoundManifold {
         self
     }
 
+    /// Evaluate this manifold at one literal coordinate — a single-sample
+    /// collapse, and the mechanism behind
+    /// [`Lattice::eval_at`](crate::Lattice::eval_at). Not a domain: a
+    /// different operation from [`Self::collapse_rows`], answering one value
+    /// instead of filling a buffer. Works at any compiled extent, since a
+    /// `1×1` band lies inside every non-degenerate one — the common case is
+    /// [`Lattice::eval_at`](crate::Lattice::eval_at), which compiles at
+    /// `[1, 1]` so every coordinate this kernel is ever asked about shares
+    /// one compiled program.
+    #[must_use]
+    pub fn eval_at(&self, x: f32, y: f32) -> f32 {
+        let mut out = [0.0f32];
+        self.collapse_rows(PlaneRegion::at_point(x, y), &mut out, 1);
+        out[0]
+    }
+
     /// Collapse the region into `out`, whose rows are `stride` elements apart
     /// and whose first `region.width` elements each row are the samples. Where
     /// the samples are taken is the region's — pixel centers for
@@ -623,8 +656,11 @@ impl BoundManifold {
         // The ABI still carries four base coordinates. The last two are dead:
         // the emitter refuses an arena naming `Var(2)` or `Var(3)`, so no
         // emitted body reads them, and passing zero keeps every kernel's
-        // bytes exactly what they were. Narrowing the ABI to two is L2's, because it changes the
-        // scaffold's own stores and loads and so every kernel's bytes.
+        // bytes exactly what they were. Narrowing the ABI to two is not this
+        // stage's either — L2 removed `Lattice::origin`, a type-level change
+        // with no effect on the ABI's own shape — because it changes the
+        // scaffold's own stores and loads and so every kernel's bytes, which
+        // is exactly what an identity gate needs held still.
         let [x0, y0] = region.origin;
         let dead = Field::from(0.0);
         if band.groups > 0 {

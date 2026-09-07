@@ -365,9 +365,9 @@ mod tests {
     use alloc::vec;
     use pixelflow_core::Lattice;
 
-    /// A kernel at one point: compiled at a one-sample lattice, then collapsed.
+    /// A kernel at one point.
     fn at(k: &Kernel, x: f32, y: f32) -> f32 {
-        Lattice::point(x, y).bake(k).into_buffer()[0]
+        Lattice::eval_at(k, x, y)
     }
 
     fn close(got: f32, want: f32) -> bool {

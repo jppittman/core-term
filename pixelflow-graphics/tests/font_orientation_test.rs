@@ -4,7 +4,7 @@
 //! glyphs were rendering upside-down. The text run is one fused coverage
 //! `Kernel` baked over a lattice; assertions measure the coverage grid.
 
-use pixelflow_core::Lattice;
+use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::{text, Font};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
@@ -17,13 +17,12 @@ const THRESHOLD: f32 = 32.0 / 255.0;
 /// Bake a one-string text kernel over the test grid at pixel centers.
 fn bake_text(s: &str) -> Vec<f32> {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
-    let kernel = text(&font, s, 48.0);
-    Lattice {
-        extent: [WIDTH as u32, HEIGHT as u32],
-        origin: [0.5, 0.5],
-    }
-    .bake(&kernel)
-    .into_buffer()
+    // `text` is convention-agnostic; land on pixel centers as a contramap.
+    let kernel = text(&font, s, 48.0).at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    );
+    Lattice::frame(WIDTH, HEIGHT).bake(&kernel).into_buffer()
 }
 
 /// Width of rendered content at a given Y row (0 if the row is empty).

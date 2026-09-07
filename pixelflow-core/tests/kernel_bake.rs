@@ -12,11 +12,11 @@ fn kernel_bakes_over_lattice() {
     let y = Kernel::y();
     let sdf = x.mul(&x).add(&y.mul(&y)).sqrt().sub(&Kernel::constant(3.0));
 
-    let lattice = Lattice {
-        extent: [8, 8],
-        origin: [0.5, 0.5],
-    };
-    let baked = lattice.bake(&sdf);
+    let lattice = Lattice::frame(8, 8);
+    let baked = lattice.bake(&sdf.at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    ));
     let buf = baked.buffer();
     assert_eq!(buf.len(), 64);
 
@@ -47,8 +47,12 @@ fn closed_form(px: f32, py: f32) -> f32 {
 fn kernel_bakes_at_every_lattice_shape() {
     let sdf = circle_sdf();
 
-    // A scanline: X loops, Y is a per-call constant.
-    let row = Lattice::scanline(37, 2.5).bake(&sdf);
+    // A row at a fixed, non-integer Y: X loops via `Lattice::frame`, Y is a
+    // contramapped constant. `Lattice::scanline` is the integer-row case
+    // (an index range); an arbitrary fixed Y is a contramap instead, the
+    // same move `eval_at` makes for a point.
+    let fixed_row = sdf.at(&Kernel::x(), &Kernel::constant(2.5));
+    let row = Lattice::frame(37, 1).bake(&fixed_row);
     let buf = row.buffer();
     assert_eq!(buf.len(), 37);
     for (i, &got) in buf.iter().enumerate() {
@@ -56,11 +60,18 @@ fn kernel_bakes_at_every_lattice_shape() {
         assert!((got - want).abs() < 1e-3, "scanline x={i}: {got} vs {want}");
     }
 
+    // An integer row via `Lattice::scanline`, at row 2.
+    let scanned = Lattice::scanline(&sdf, 37, 2);
+    assert_eq!(scanned.buffer().len(), 37);
+    for (i, &got) in scanned.buffer().iter().enumerate() {
+        let want = closed_form(i as f32, 2.0);
+        assert!((got - want).abs() < 1e-3, "scanline x={i}: {got} vs {want}");
+    }
+
     // A point: nothing loops.
-    let point = Lattice::point(1.5, 4.5).bake(&sdf);
-    assert_eq!(point.buffer().len(), 1);
+    let point = Lattice::eval_at(&sdf, 1.5, 4.5);
     let want = closed_form(1.5, 4.5);
-    assert!((point.buffer()[0] - want).abs() < 1e-3);
+    assert!((point - want).abs() < 1e-3);
 
     // A frame with a scalar tail on every row.
     let frame = Lattice::frame(19, 5).bake(&sdf);

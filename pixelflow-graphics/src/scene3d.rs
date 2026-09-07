@@ -572,7 +572,7 @@ mod tests {
     fn a_checker_finer_than_its_footprint_washes_out_to_grey() {
         let cell_centre = |footprint: f32| {
             let rgba = checker(&Kernel::x(), &Kernel::y(), &k(footprint));
-            let at = |c: &Kernel| Lattice::point(0.5, 0.5).bake(c).buffer()[0];
+            let at = |c: &Kernel| Lattice::eval_at(c, 0.5, 0.5);
             let channels = leaf_channels(&rgba);
             [at(&channels[0]), at(&channels[1]), at(&channels[2])]
         };
