@@ -18,6 +18,17 @@ use syn::Lit;
 // AST → Arena IR Conversion
 // ============================================================================
 
+/// DSL method calls that denote a fixed composition of primitive ops rather
+/// than a single [`OpKind`] — `(name, arg_count)`, `arg_count` excluding the
+/// receiver.
+///
+/// Each backend (arena lowering here, the e-graph in `optimize.rs`) builds
+/// the composition in its own node representation, so the expansion itself
+/// isn't shared — but this list is the one place that says which names and
+/// arities exist, so `sema`'s validation and both backends' dispatch cannot
+/// silently drift on which library methods a kernel body may call.
+pub(crate) const LIBRARY_METHODS: &[(&str, usize)] = &[("fract", 0), ("hypot", 1), ("clamp", 2)];
+
 /// Build a `param_name → index` map over the params of a kernel.
 ///
 /// Indices are dense in declaration order: each becomes a `Param(i)` arena
@@ -148,62 +159,48 @@ impl Lowering<'_> {
                 }
 
                 let receiver = self.lower(&call.receiver)?;
+                let arg_count = call.args.len();
 
-                match (method.as_str(), call.args.len()) {
-                    // Arena expressions are values; `.clone()` (needed by the
-                    // combinator backend for non-Copy trees) is the identity here,
-                    // so one kernel body compiles under both backends.
-                    ("clone", 0) => Ok(receiver),
+                // Arena expressions are values; `.clone()` (needed by the
+                // combinator backend for non-Copy trees) is the identity here,
+                // so one kernel body compiles under both backends.
+                if method == "clone" && arg_count == 0 {
+                    return Ok(receiver);
+                }
 
-                    // Unary methods - primitives
-                    ("sqrt", 0) => Ok(self.arena.push_unary(OpKind::Sqrt, receiver)),
-                    ("abs", 0) => Ok(self.arena.push_unary(OpKind::Abs, receiver)),
-                    ("neg", 0) => Ok(self.arena.push_unary(OpKind::Neg, receiver)),
-                    ("floor", 0) => Ok(self.arena.push_unary(OpKind::Floor, receiver)),
-                    ("ceil", 0) => Ok(self.arena.push_unary(OpKind::Ceil, receiver)),
-                    ("recip", 0) => Ok(self.arena.push_unary(OpKind::Recip, receiver)),
-                    ("rsqrt", 0) => Ok(self.arena.push_unary(OpKind::Rsqrt, receiver)),
+                // Primitive ops: one `OpKind` per (name, arity), read from
+                // the single table `OpKind::from_method_call` resolves
+                // against — not re-listed here as a second copy that could
+                // silently drift from it (see `LIBRARY_METHODS` below for
+                // the one part of this dispatch that table doesn't cover).
+                if let Some(op) = OpKind::from_method_call(&method, arg_count) {
+                    let mut args = Vec::with_capacity(arg_count);
+                    for arg in &call.args {
+                        args.push(self.lower(arg)?);
+                    }
+                    return Ok(match *args.as_slice() {
+                        [] => self.arena.push_unary(op, receiver),
+                        [a] => self.arena.push_binary(op, receiver, a),
+                        [a, b] => self.arena.push_ternary(op, receiver, a, b),
+                        _ => unreachable!(
+                            "OpKind::from_method_call only resolves ops of arity 1..=3"
+                        ),
+                    });
+                }
 
-                    // Unary methods - transcendentals (lowered before JIT)
-                    ("sin", 0) => Ok(self.arena.push_unary(OpKind::Sin, receiver)),
-                    ("cos", 0) => Ok(self.arena.push_unary(OpKind::Cos, receiver)),
-                    ("tan", 0) => Ok(self.arena.push_unary(OpKind::Tan, receiver)),
-                    ("exp", 0) => Ok(self.arena.push_unary(OpKind::Exp, receiver)),
-                    ("exp2", 0) => Ok(self.arena.push_unary(OpKind::Exp2, receiver)),
-                    ("ln", 0) => Ok(self.arena.push_unary(OpKind::Ln, receiver)),
-                    ("log2", 0) => Ok(self.arena.push_unary(OpKind::Log2, receiver)),
-
-                    // Unary methods - inverse trigonometric
-                    ("atan", 0) => Ok(self.arena.push_unary(OpKind::Atan, receiver)),
-                    ("asin", 0) => Ok(self.arena.push_unary(OpKind::Asin, receiver)),
-                    ("acos", 0) => Ok(self.arena.push_unary(OpKind::Acos, receiver)),
-
-                    // Binary methods
-                    ("min", 1) => {
+                match (method.as_str(), arg_count) {
+                    // `fract(x) = x - floor(x)`.
+                    ("fract", 0) => {
+                        let f = self.arena.push_unary(OpKind::Floor, receiver);
+                        Ok(self.arena.push_binary(OpKind::Sub, receiver, f))
+                    }
+                    // `hypot(x, y) = sqrt(x² + y²)`.
+                    ("hypot", 1) => {
                         let arg = self.lower(&call.args[0])?;
-                        Ok(self.arena.push_binary(OpKind::Min, receiver, arg))
-                    }
-                    ("max", 1) => {
-                        let arg = self.lower(&call.args[0])?;
-                        Ok(self.arena.push_binary(OpKind::Max, receiver, arg))
-                    }
-                    ("atan2", 1) => {
-                        let arg = self.lower(&call.args[0])?;
-                        Ok(self.arena.push_binary(OpKind::Atan2, receiver, arg))
-                    }
-
-                    // Ternary methods
-                    ("mul_add", 2) => {
-                        let b = self.lower(&call.args[0])?;
-                        let c = self.lower(&call.args[1])?;
-                        Ok(self.arena.push_ternary(OpKind::MulAdd, receiver, b, c))
-                    }
-                    ("select", 2) => {
-                        let if_true = self.lower(&call.args[0])?;
-                        let if_false = self.lower(&call.args[1])?;
-                        Ok(self
-                            .arena
-                            .push_ternary(OpKind::Select, receiver, if_true, if_false))
+                        let xx = self.arena.push_binary(OpKind::Mul, receiver, receiver);
+                        let yy = self.arena.push_binary(OpKind::Mul, arg, arg);
+                        let sum = self.arena.push_binary(OpKind::Add, xx, yy);
+                        Ok(self.arena.push_unary(OpKind::Sqrt, sum))
                     }
                     // `clamp` is library, not a primitive: it denotes
                     // `min(max(x, lo), hi)` and is built as that composition.
@@ -212,32 +209,6 @@ impl Lowering<'_> {
                         let hi = self.lower(&call.args[1])?;
                         let floored = self.arena.push_binary(OpKind::Max, receiver, lo);
                         Ok(self.arena.push_binary(OpKind::Min, floored, hi))
-                    }
-
-                    // Comparison methods (emitted by e-graph extraction)
-                    ("lt", 1) => {
-                        let a = self.lower(&call.args[0])?;
-                        Ok(self.arena.push_binary(OpKind::Lt, receiver, a))
-                    }
-                    ("le", 1) => {
-                        let a = self.lower(&call.args[0])?;
-                        Ok(self.arena.push_binary(OpKind::Le, receiver, a))
-                    }
-                    ("gt", 1) => {
-                        let a = self.lower(&call.args[0])?;
-                        Ok(self.arena.push_binary(OpKind::Gt, receiver, a))
-                    }
-                    ("ge", 1) => {
-                        let a = self.lower(&call.args[0])?;
-                        Ok(self.arena.push_binary(OpKind::Ge, receiver, a))
-                    }
-                    ("eq", 1) => {
-                        let a = self.lower(&call.args[0])?;
-                        Ok(self.arena.push_binary(OpKind::Eq, receiver, a))
-                    }
-                    ("ne", 1) => {
-                        let a = self.lower(&call.args[0])?;
-                        Ok(self.arena.push_binary(OpKind::Ne, receiver, a))
                     }
 
                     _ => Err(format!("Unsupported method: {}", method)),

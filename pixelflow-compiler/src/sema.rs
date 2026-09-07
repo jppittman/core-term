@@ -21,8 +21,9 @@
 //! The semantic phase produces an `AnalyzedKernel`: the AST, validated.
 
 use crate::ast::{BlockExpr, Expr, KernelDef, LetStmt, MethodCallExpr, Param, Stmt};
+use crate::ir_bridge::LIBRARY_METHODS;
 use crate::symbol::{SymbolKind, SymbolTable};
-use pixelflow_ir::known_method_names;
+use pixelflow_ir::{OpKind, known_method_names};
 use syn::Ident;
 
 /// DSL-specific methods that aren't IR operations.
@@ -203,14 +204,20 @@ impl SemanticAnalyzer {
             self.analyze_expr(arg)?;
         }
 
-        // Validate method name against known methods (IR ops + DSL methods)
+        // Validate method name AND arity against known methods (IR ops +
+        // library compositions + DSL methods) — `OpKind::from_method_call`
+        // checks arity, so `.sqrt(1)` is rejected here rather than slipping
+        // through as "known" and failing later with a less specific error.
         let method_name = call.method.to_string();
-        let is_ir_method = known_method_names().any(|m| m == method_name);
+        let arg_count = call.args.len();
+        let is_ir_method = OpKind::from_method_call(&method_name, arg_count).is_some();
+        let is_library_method = LIBRARY_METHODS.contains(&(method_name.as_str(), arg_count));
         let is_dsl_method = DSL_METHODS.contains(&method_name.as_str());
 
-        if !is_ir_method && !is_dsl_method {
+        if !is_ir_method && !is_library_method && !is_dsl_method {
             // Find similar method for suggestion - collect all known methods
             let all_methods: Vec<&str> = known_method_names()
+                .chain(LIBRARY_METHODS.iter().map(|(name, _)| *name))
                 .chain(DSL_METHODS.iter().copied())
                 .collect();
 

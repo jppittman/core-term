@@ -26,7 +26,9 @@ use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, Expr, IdentExpr, LetStmt, LiteralExpr, MethodCallExpr, Stmt,
     UnaryExpr, UnaryOp,
 };
+use crate::ir_bridge::LIBRARY_METHODS;
 use crate::sema::AnalyzedKernel;
+use pixelflow_ir::OpKind;
 use pixelflow_search::egraph::{
     EClassId, EGraph, ENode, ExtractedDAG, Optimizer, build_extracted_dag_from_choices,
     compute_ref_counts, ops,
@@ -523,24 +525,12 @@ impl EGraphContext {
         self.get_or_create_var(&name)
     }
 
-    /// Check if a method is known and can be converted to ENode.
+    /// Check if a method is known and can be converted to ENode: either a
+    /// primitive op (one `OpKind` per name+arity) or a library composition
+    /// (see `LIBRARY_METHODS`).
     fn is_known_method(method: &str, arg_count: usize) -> bool {
-        match method {
-            // Unary methods (0 args)
-            "sqrt" | "rsqrt" | "recip" | "abs" | "neg" | "floor" | "ceil" | "round" | "fract"
-            | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "exp" | "exp2" | "ln" | "log2"
-            | "log10" => arg_count == 0,
-
-            // Binary methods (1 arg)
-            "min" | "max" | "atan2" | "pow" | "hypot" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" => {
-                arg_count == 1
-            }
-
-            // Ternary methods (2 args)
-            "mul_add" | "select" | "clamp" => arg_count == 2,
-
-            _ => false,
-        }
+        OpKind::from_method_call(method, arg_count).is_some()
+            || LIBRARY_METHODS.contains(&(method, arg_count))
     }
 
     /// Convert an AST expression to an e-graph, returning the root e-class.
@@ -630,41 +620,24 @@ impl EGraphContext {
                 }
 
                 let receiver = self.expr_to_egraph(&call.receiver);
+                let arg_count = call.args.len();
+
+                // Primitive ops: one `OpKind` per (name, arity) — resolved
+                // from the same table `ir_bridge`'s arena lowering reads, so
+                // the two backends cannot silently drift on which primitive
+                // method names/arities exist.
+                if let Some(op_kind) = OpKind::from_method_call(&method, arg_count) {
+                    let op = ops::op_from_kind(op_kind).unwrap_or_else(|| {
+                        panic!("{op_kind:?} is a DSL method but has no e-graph Op")
+                    });
+                    let mut children = vec![receiver];
+                    for arg in &call.args {
+                        children.push(self.expr_to_egraph(arg));
+                    }
+                    return self.egraph.add(ENode::Op { op, children });
+                }
 
                 match method.as_str() {
-                    // === Unary methods ===
-                    "sqrt" => self.egraph.add(ENode::Op {
-                        op: &ops::Sqrt,
-                        children: vec![receiver],
-                    }),
-                    "rsqrt" => self.egraph.add(ENode::Op {
-                        op: &ops::Rsqrt,
-                        children: vec![receiver],
-                    }),
-                    "recip" => self.egraph.add(ENode::Op {
-                        op: &ops::Recip,
-                        children: vec![receiver],
-                    }),
-                    "abs" => self.egraph.add(ENode::Op {
-                        op: &ops::Abs,
-                        children: vec![receiver],
-                    }),
-                    "neg" => self.egraph.add(ENode::Op {
-                        op: &ops::Neg,
-                        children: vec![receiver],
-                    }),
-                    "floor" => self.egraph.add(ENode::Op {
-                        op: &ops::Floor,
-                        children: vec![receiver],
-                    }),
-                    "ceil" => self.egraph.add(ENode::Op {
-                        op: &ops::Ceil,
-                        children: vec![receiver],
-                    }),
-                    "round" => self.egraph.add(ENode::Op {
-                        op: &ops::Round,
-                        children: vec![receiver],
-                    }),
                     // Library: fract(x) = x - floor(x).
                     "fract" => {
                         let f = self.egraph.add(ENode::Op {
@@ -674,80 +647,6 @@ impl EGraphContext {
                         self.egraph.add(ENode::Op {
                             op: &ops::Sub,
                             children: vec![receiver, f],
-                        })
-                    }
-                    "sin" => self.egraph.add(ENode::Op {
-                        op: &ops::Sin,
-                        children: vec![receiver],
-                    }),
-                    "cos" => self.egraph.add(ENode::Op {
-                        op: &ops::Cos,
-                        children: vec![receiver],
-                    }),
-                    "tan" => self.egraph.add(ENode::Op {
-                        op: &ops::Tan,
-                        children: vec![receiver],
-                    }),
-                    "asin" => self.egraph.add(ENode::Op {
-                        op: &ops::Asin,
-                        children: vec![receiver],
-                    }),
-                    "acos" => self.egraph.add(ENode::Op {
-                        op: &ops::Acos,
-                        children: vec![receiver],
-                    }),
-                    "atan" => self.egraph.add(ENode::Op {
-                        op: &ops::Atan,
-                        children: vec![receiver],
-                    }),
-                    "exp" => self.egraph.add(ENode::Op {
-                        op: &ops::Exp,
-                        children: vec![receiver],
-                    }),
-                    "exp2" => self.egraph.add(ENode::Op {
-                        op: &ops::Exp2,
-                        children: vec![receiver],
-                    }),
-                    "ln" => self.egraph.add(ENode::Op {
-                        op: &ops::Ln,
-                        children: vec![receiver],
-                    }),
-                    "log2" => self.egraph.add(ENode::Op {
-                        op: &ops::Log2,
-                        children: vec![receiver],
-                    }),
-                    "log10" => self.egraph.add(ENode::Op {
-                        op: &ops::Log10,
-                        children: vec![receiver],
-                    }),
-
-                    // === Binary methods ===
-                    "min" => {
-                        let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Min,
-                            children: vec![receiver, arg],
-                        })
-                    }
-                    "max" => {
-                        let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Max,
-                            children: vec![receiver, arg],
-                        })
-                    }
-                    "atan2" => {
-                        let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Atan2,
-                            children: vec![receiver, arg],
-                        })
-                    }
-                    "pow" => {
-                        let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Pow,
-                            children: vec![receiver, arg],
                         })
                     }
                     // Library: hypot(x, y) = sqrt(x² + y²).
@@ -768,68 +667,6 @@ impl EGraphContext {
                         self.egraph.add(ENode::Op {
                             op: &ops::Sqrt,
                             children: vec![sum],
-                        })
-                    }
-
-                    // === Comparison methods ===
-                    "lt" => {
-                        let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Lt,
-                            children: vec![receiver, arg],
-                        })
-                    }
-                    "le" => {
-                        let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Le,
-                            children: vec![receiver, arg],
-                        })
-                    }
-                    "gt" => {
-                        let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Gt,
-                            children: vec![receiver, arg],
-                        })
-                    }
-                    "ge" => {
-                        let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Ge,
-                            children: vec![receiver, arg],
-                        })
-                    }
-                    "eq" => {
-                        let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Eq,
-                            children: vec![receiver, arg],
-                        })
-                    }
-                    "ne" => {
-                        let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Ne,
-                            children: vec![receiver, arg],
-                        })
-                    }
-
-                    // === Ternary methods ===
-                    "mul_add" => {
-                        let b = self.expr_to_egraph(&call.args[0]);
-                        let c = self.expr_to_egraph(&call.args[1]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::MulAdd,
-                            children: vec![receiver, b, c],
-                        })
-                    }
-                    "select" => {
-                        let if_true = self.expr_to_egraph(&call.args[0]);
-                        let if_false = self.expr_to_egraph(&call.args[1]);
-                        self.egraph.add(ENode::Op {
-                            op: &ops::Select,
-                            children: vec![receiver, if_true, if_false],
                         })
                     }
                     // `clamp` is library: it enters the e-graph as the
