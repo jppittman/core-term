@@ -497,8 +497,9 @@ pub fn quarantine_verdict(arena: &ExprArena, root: ExprId, grid: &QuarantineGrid
             xs[i] = p[0];
             ys[i] = p[1];
         }
-        // The base coordinate's last two lanes are dead: no arena can name
-        // `Var(2)` or `Var(3)`, so nothing reads them.
+        // The base coordinate's last two lanes are dead: `emit::compile`
+        // refuses an arena naming `Var(2)`/`Var(3)`, so nothing that got
+        // this far can read them.
         let p = Point4::new(xs, ys, [0.0; LANES], [0.0; LANES]);
         let mut out = [0.0f32; LANES];
         unsafe {

@@ -2079,10 +2079,34 @@ type Native = x86_64::driver::X86Backend;
 /// order, followed — only when the arena declares a uniform — by the uniform
 /// block's base pointer: `f32` values in the arena's uniform-slot order, read
 /// once per call in the frame prologue.
+///
+/// # Panics
+///
+/// Panics if the arena names a retired coordinate axis (`Var(2)`/`Var(3)`,
+/// the old Z and W). This is the boundary the check belongs on, because it
+/// is the *only* one every route to machine code passes through — the
+/// shape-keyed cache is one caller, and the benchmark harnesses, the corpus
+/// tools and several tests come straight here. It is also the *diagnostic*
+/// place: a panic naming `Var(2)` at the first `cargo test` is worth far
+/// more than what the alternative produces, which is a silent numeric
+/// disagreement between this kernel and the scalar oracle, surfacing on
+/// whichever machine happens to run the comparison.
+///
+/// A retired axis reaching here is not merely unread. The scaffold passes
+/// zero in those two lanes, and `Variance::from_var(2)` sits outside both
+/// `COORDS` and `BINDERS` — so the node reads as frame-uniform and LICM
+/// lifts it into the per-call prologue. Plausible pixels, computed once,
+/// from a lane that means nothing.
 pub fn compile(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
 ) -> Result<CompileResult, CompileError> {
+    assert!(
+        arena.retired_axis().is_none(),
+        "emit::compile: the arena names Var({:?}), a coordinate axis a \
+         lattice no longer has; a per-call scalar is a Uniform",
+        arena.retired_axis()
+    );
     EmitCtx::default().compile(arena, root)
 }
 

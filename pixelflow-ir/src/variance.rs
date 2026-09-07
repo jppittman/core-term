@@ -69,13 +69,19 @@ impl Variance {
     /// Create from a variable index: `0..2` are the coordinates X/Y, `4..8`
     /// the reduction index slots.
     ///
-    /// Indices 2 and 3 were the Z and W axes. No arena can name them —
-    /// [`ExprArena::push_var`](crate::arena::ExprArena::push_var) refuses
-    /// them — but the macro tier's e-graph indexes its *names* (parameters,
-    /// opaque captures) in this same `u8`, so the bits stay constructible and
-    /// simply belong to no scope. They are outside [`Self::COORDS`], so a
-    /// value carrying one is weighted per call, which is what an axis of
-    /// extent 1 always was.
+    /// Indices 2 and 3 were the Z and W axes.
+    /// [`ExprArena::push_var`](crate::arena::ExprArena::push_var) still
+    /// builds them — `Var` is also a rewrite metavariable — and it is
+    /// [`emit::compile`] that refuses one, so the bits stay constructible
+    /// and belong to no scope.
+    ///
+    /// **Note what that costs, because it is a trap.** Bits 2 and 3 are
+    /// outside *both* [`Self::COORDS`] and [`Self::BINDERS`], so a stray
+    /// retired axis reads as [`Self::is_frame_uniform`] and LICM hoists it
+    /// into the per-call prologue. When they were `Z`/`W` inside `COORDS`
+    /// they were never hoisted. The failure mode got strictly worse when the
+    /// axes retired, which is exactly why the emitter's refusal is
+    /// unconditional rather than advisory.
     ///
     /// # Panics
     ///

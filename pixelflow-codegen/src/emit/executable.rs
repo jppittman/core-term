@@ -108,9 +108,11 @@ impl ExecutableCode {
 /// The base coordinate a collapse call starts from.
 ///
 /// Four wide because the ABI is: a lattice has two axes, so `z` and `w` are
-/// dead weight passed as zero and read by nothing — no arena that becomes a
-/// kernel can name `Var(2)` or `Var(3)`. Narrowing this narrows the emitted
-/// scaffold too, which moves every kernel's bytes, so it is L2's step
+/// dead weight passed as zero and read by nothing — an arena that names
+/// `Var(2)` or `Var(3)` is refused by
+/// [`compile`](crate::emit::compile) before it can become a kernel.
+/// Narrowing this narrows the emitted scaffold too, which moves every
+/// kernel's bytes, so it is L2's step
 /// (docs/plans/2026-09-06-lattice-is-the-index.md).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Point4<T> {

@@ -621,9 +621,9 @@ impl BoundManifold {
         // one per row, which is what the collapse loop does.
         //
         // The ABI still carries four base coordinates. The last two are dead:
-        // no arena can name `Var(2)` or `Var(3)`, so no emitted body reads
-        // them, and passing zero keeps every kernel's bytes exactly what they
-        // were. Narrowing the ABI to two is L2's, because it changes the
+        // the emitter refuses an arena naming `Var(2)` or `Var(3)`, so no
+        // emitted body reads them, and passing zero keeps every kernel's
+        // bytes exactly what they were. Narrowing the ABI to two is L2's, because it changes the
         // scaffold's own stores and loads and so every kernel's bytes.
         let [x0, y0] = region.origin;
         let dead = Field::from(0.0);
