@@ -832,7 +832,11 @@ const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
 fn latency_chain_step(exec_code: &ExecutableCode, prev: &mut [f32; LANES]) {
     use pixelflow_codegen::emit::executable::{Point4, TileSlice};
 
-    let p = Point4::new(*prev, *prev, *prev, *prev);
+    // Every coordinate the language has, so an expression that never reads
+    // X still has a data path from the chain. The last two lanes are the
+    // retired axes: nothing can name them, so feeding them would say a
+    // dependency exists where none can.
+    let p = Point4::new(*prev, *prev, [0.0f32; LANES], [0.0f32; LANES]);
     std::hint::black_box(&p);
     unsafe {
         exec_code.call_collapse(core::ptr::null(), TileSlice::single(prev.as_mut_ptr()), p);
@@ -866,7 +870,13 @@ fn measure_exec_code(
             xs[lane] = t[0];
             ys[lane] = t[1];
         }
-        // The last two base coordinates are dead: no arena can name them.
+        // Zero in the two retired lanes, and `emit::compile` refuses an
+        // arena that names them — so this is the whole coordinate input,
+        // not a convention a fixture can quietly disagree with. It did:
+        // the frozen corpus fixtures name `Var(2)`/`Var(3)`, and while the
+        // scalar oracle substituted real values here the JIT read these
+        // zeros, which is a silent scalar/JIT divergence rather than a
+        // failure. See `training::factored`'s `bind_retired_axes`.
         *pt = Point4::new(xs, ys, [0.0f32; LANES], [0.0f32; LANES]);
     }
 
@@ -2126,30 +2136,32 @@ mod tests {
         // inflating the pass bar past an ordinary measurement, and the test
         // flaked in CI. The property it was guarding is unchanged: under
         // `BenchMode::Latency`, the harness must chain-serialize by feeding
-        // the previous iteration's result into EVERY input lane (x, y, z,
-        // AND w) — not only x — because an expression that never reads
-        // `Var(0)` has no data path from a chain that feeds only x. Under
-        // that old x-lane-only feeding, such an expression silently
-        // decoupled from the chain and measured in the throughput regime
-        // instead of latency (see `BenchMode::Latency`'s doc comment).
+        // the previous iteration's result into EVERY coordinate lane — not
+        // only x — because an expression that never reads `Var(0)` has no
+        // data path from a chain that feeds only x. Under that old
+        // x-lane-only feeding, such an expression silently decoupled from
+        // the chain and measured in the throughput regime instead of
+        // latency (see `BenchMode::Latency`'s doc comment).
         //
-        // This is now checked structurally instead of by timing, via
+        // This is checked structurally rather than by timing, via
         // `latency_chain_step` — the exact per-iteration function
         // `measure_exec_code`'s timed loop calls, not a re-implementation of
-        // it. For `y + z` (reads neither x nor w), feeding `prev`
-        // identically into every lane gives an exact, clock-free signature:
+        // it. The witness must read a coordinate that is *not* X, which with
+        // two axes means Y: `y + y` gives an exact, clock-free signature —
         // each step computes `prev' = prev + prev = 2*prev`, so the output
-        // strictly doubles every chain step. Under the audit-H3 bug, y and z
-        // would sit fixed at whatever the initial call put there (only x
-        // would track `prev`), so the root — reading neither the fed lane
-        // nor anything downstream of it — would emit the SAME constant every
-        // step: `next != 2*prev` on the very first iteration this test
-        // performs, so this test would have failed under that bug.
+        // strictly doubles. Under the audit-H3 bug, y would sit fixed at
+        // whatever the initial call put there while only x tracked `prev`,
+        // so the root would emit the SAME constant every step and
+        // `next != 2*prev` on the very first iteration.
+        //
+        // (It used to be `y + z`, which also proved the *fourth* lane was
+        // fed. That is not a property the language still has — Z is retired
+        // and no arena can name it — so what survives is the property that
+        // was load-bearing: a non-X coordinate is chained.)
         let mut arena = ExprArena::new();
         let y = arena.push_var(1);
-        let z = arena.push_var(2);
-        let root = arena.push_binary(OpKind::Add, y, z);
-        let compiled = compile(&arena, root).expect("y+z must JIT-compile");
+        let root = arena.push_binary(OpKind::Add, y, y);
+        let compiled = compile(&arena, root).expect("y+y must JIT-compile");
 
         let mut prev = [0.25f32; LANES]; // nonzero seed so doubling is observable.
         for step in 0..8 {

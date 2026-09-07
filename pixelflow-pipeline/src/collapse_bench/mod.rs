@@ -349,7 +349,13 @@ fn run_calls(code: &ExecutableCode, buffer: &mut [f32], trips: Trips, calls: usi
         *lane = 0.5 + i as f32;
     }
     let origin = Point4::new(x0, [0.5f32; LANES], [0.0f32; LANES], [0.0f32; LANES]);
-    let ctx: *const *const f32 = core::ptr::null();
+    // A real one-slot context, always — the corpus declares no buffer, so
+    // slot 0 is the uniform block. Passing it unconditionally costs a
+    // pointer and retires the "the null is never dereferenced" reasoning
+    // that a kernel with an argument would have falsified.
+    let block = [corpus::CORPUS_ARG];
+    let slots: [*const f32; 1] = [block.as_ptr()];
+    let ctx: *const *const f32 = slots.as_ptr();
     let tile = TileSlice::contiguous(
         buffer.as_mut_ptr(),
         trips.groups as usize,
@@ -359,8 +365,8 @@ fn run_calls(code: &ExecutableCode, buffer: &mut [f32], trips: Trips, calls: usi
     for _ in 0..calls {
         // SAFETY: the kernel was compiled for this shape, the tile is exactly
         // `rows × groups × LANES` floats of the buffer allocated for it, and
-        // the corpus refuses buffer-bearing arenas, so the null context is
-        // never dereferenced.
+        // `ctx` points at a live one-slot table holding the uniform block
+        // the `invariant` family reads.
         unsafe {
             code.call_collapse(ctx, tile, origin);
         }
