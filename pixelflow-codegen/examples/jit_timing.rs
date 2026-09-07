@@ -52,7 +52,7 @@ fn build_expr(target_nodes: usize) -> (ExprArena, pixelflow_ir::arena::ExprId) {
         OpKind::Cos,
         OpKind::Sqrt,
     ];
-    let vars = [x, y, z, w];
+    let vars = [x, y];
     let mut seed = 12345u64;
     while arena.len() < target_nodes {
         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);

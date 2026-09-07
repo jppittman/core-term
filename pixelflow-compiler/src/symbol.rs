@@ -78,9 +78,10 @@ impl SymbolTable {
             scope_stack: vec![Vec::new()],
         };
 
-        // Register intrinsic coordinate variables
-        // These mirror pixelflow_core::variables::{X, Y, Z, W}
-        for name in ["X", "Y", "Z", "W"] {
+        // Register intrinsic coordinate variables. A lattice has two axes;
+        // `Z` and `W` are refused by name in sema, with the message that
+        // points at uniforms.
+        for name in ["X", "Y"] {
             table.symbols.insert(
                 name.to_string(),
                 Symbol {
@@ -186,8 +187,8 @@ mod tests {
         let table = SymbolTable::new();
         assert!(table.is_intrinsic("X"));
         assert!(table.is_intrinsic("Y"));
-        assert!(table.is_intrinsic("Z"));
-        assert!(table.is_intrinsic("W"));
+        assert!(!table.is_intrinsic("Z"));
+        assert!(!table.is_intrinsic("W"));
         assert!(!table.is_intrinsic("cx"));
     }
 
@@ -211,10 +212,8 @@ mod tests {
         );
 
         let names: std::collections::HashSet<String> = table.all_names().collect();
-        let expected: std::collections::HashSet<String> = ["X", "Y", "Z", "W", "radius"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let expected: std::collections::HashSet<String> =
+            ["X", "Y", "radius"].iter().map(|s| s.to_string()).collect();
         assert_eq!(names, expected);
     }
 

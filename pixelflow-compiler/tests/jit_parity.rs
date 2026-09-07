@@ -24,7 +24,7 @@ use pixelflow_core::{Kernel, Lattice};
 /// Tabulate a kernel over a one-point lattice and read the value back — the
 /// only way a kernel becomes a number.
 fn eval(k: &Kernel, p: (f32, f32, f32, f32)) -> f32 {
-    Lattice::point(p.0, p.1, p.2, p.3).bake(k).into_buffer()[0]
+    Lattice::point(p.0, p.1).bake(k).into_buffer()[0]
 }
 
 /// Sample points spanning magnitudes/signs across all four coords.
@@ -59,17 +59,27 @@ fn check(name: &str, got: f32, want: f32, abs_tol: f32, rel_tol: f32) {
     );
 }
 
-/// Build a JIT kernel, evaluate it at every sample, and compare to the scalar
+/// Build a JIT kernel at each sample's `z` and compare it to the scalar
 /// reference `$ref` (a closure of `(x,y,z,w) -> f32`).
+///
+/// `$jit` is a closure of `z`, not a kernel: a lattice has two axes, so what
+/// used to be the sample's `Z` coordinate is a scalar the builder folds in.
+/// The kernels that never read it take it and ignore it.
 macro_rules! jit_truth {
     ($name:literal, $jit:expr, $ref:expr, $abs:expr, $rel:expr) => {
         jit_truth!($name, $jit, $ref, $abs, $rel, SAMPLES)
     };
     ($name:literal, $jit:expr, $ref:expr, $abs:expr, $rel:expr, $pts:expr) => {{
-        let m = $jit;
+        let build = $jit;
         let r = $ref;
         for &p in $pts {
-            check($name, eval(&m, p), r(p.0, p.1, p.2, p.3), $abs, $rel);
+            check(
+                $name,
+                eval(&build(p.2), p),
+                r(p.0, p.1, p.2, p.3),
+                $abs,
+                $rel,
+            );
         }
     }};
 }
@@ -78,14 +88,14 @@ macro_rules! jit_truth {
 fn jit_arithmetic() {
     jit_truth!(
         "sub_div",
-        kernel!(|| (X - Y) / (Z + 1.0)),
+        |z: f32| kernel!(|z: f32| (X - Y) / (z + 1.0))(z),
         |x: f32, y: f32, z: f32, _w| (x - y) / (z + 1.0),
         1e-4,
         1e-4
     );
     jit_truth!(
         "affine",
-        kernel!(|| 2.0 * X - 3.0 * Y + 1.0),
+        |_z: f32| kernel!(|| 2.0 * X - 3.0 * Y + 1.0),
         |x: f32, y: f32, _z, _w| 2.0 * x - 3.0 * y + 1.0,
         1e-4,
         1e-4
@@ -95,14 +105,14 @@ fn jit_arithmetic() {
     // the Sethi-Ullman emitter; covered here as a regression guard.
     jit_truth!(
         "mul_add",
-        kernel!(|| X * Y + Z),
+        |z: f32| kernel!(|z: f32| X * Y + z)(z),
         |x: f32, y: f32, z: f32, _w| x * y + z,
         1e-4,
         1e-4
     );
     jit_truth!(
         "add_mul",
-        kernel!(|| X + Y * Z),
+        |z: f32| kernel!(|z: f32| X + Y * z)(z),
         |x: f32, y: f32, z: f32, _w| x + y * z,
         1e-4,
         1e-4
@@ -113,17 +123,23 @@ fn jit_arithmetic() {
 fn jit_unary() {
     jit_truth!(
         "abs",
-        kernel!(|| (X - Y).abs()),
+        |_z: f32| kernel!(|| (X - Y).abs()),
         |x: f32, y: f32, _z, _w| (x - y).abs(),
         1e-5,
         1e-5
     );
-    jit_truth!("neg", kernel!(|| (-X)), |x: f32, _y, _z, _w| -x, 1e-5, 1e-5);
+    jit_truth!(
+        "neg",
+        |_z: f32| kernel!(|| (-X)),
+        |x: f32, _y, _z, _w| -x,
+        1e-5,
+        1e-5
+    );
     // floor is now in the AVX-512 op set too (vrndscaleps), so this runs on
     // both widths.
     jit_truth!(
         "floor",
-        kernel!(|| X.floor()),
+        |_z: f32| kernel!(|| X.floor()),
         |x: f32, _y, _z, _w| x.floor(),
         1e-5,
         1e-5
@@ -134,14 +150,14 @@ fn jit_unary() {
 fn jit_sqrt_norm() {
     jit_truth!(
         "norm2",
-        kernel!(|| (X * X + Y * Y).sqrt()),
+        |_z: f32| kernel!(|| (X * X + Y * Y).sqrt()),
         |x: f32, y: f32, _z, _w| (x * x + y * y).sqrt(),
         1e-3,
         1e-3
     );
     jit_truth!(
         "norm3",
-        kernel!(|| (X * X + Y * Y + Z * Z).sqrt()),
+        |z: f32| kernel!(|z: f32| (X * X + Y * Y + z * z).sqrt())(z),
         |x: f32, y: f32, z: f32, _w| (x * x + y * y + z * z).sqrt(),
         1e-3,
         1e-3
@@ -152,7 +168,7 @@ fn jit_sqrt_norm() {
 fn jit_chained_max_then_min_matches_scalar_reference() {
     jit_truth!(
         "min_max",
-        kernel!(|| X.max(Y).min(Z)),
+        |z: f32| kernel!(|z: f32| X.max(Y).min(z))(z),
         |x: f32, y: f32, z: f32, _w| x.max(y).min(z),
         1e-5,
         1e-5
@@ -168,7 +184,7 @@ fn jit_chained_max_then_min_matches_scalar_reference() {
 fn jit_sin_cos() {
     jit_truth!(
         "sin",
-        kernel!(|| X.sin()),
+        |_z: f32| kernel!(|| X.sin()),
         |x: f32, _y, _z, _w| x.sin(),
         3e-2,
         3e-2,
@@ -176,7 +192,7 @@ fn jit_sin_cos() {
     );
     jit_truth!(
         "cos",
-        kernel!(|| X.cos()),
+        |_z: f32| kernel!(|| X.cos()),
         |x: f32, _y, _z, _w| x.cos(),
         3e-2,
         3e-2,
@@ -193,7 +209,7 @@ fn jit_sin_cos() {
 fn jit_exp() {
     jit_truth!(
         "exp",
-        kernel!(|| X.exp()),
+        |_z: f32| kernel!(|| X.exp()),
         |x: f32, _y, _z, _w| x.exp(),
         3e-2,
         3e-2,
@@ -223,14 +239,14 @@ fn jit_scalar_params() {
 fn jit_noncommutative_heavy_right() {
     jit_truth!(
         "sub_heavy_r",
-        kernel!(|| X - Y * Z),
+        |z: f32| kernel!(|z: f32| X - Y * z)(z),
         |x: f32, y: f32, z: f32, _w| x - y * z,
         1e-4,
         1e-4
     );
     jit_truth!(
         "div_heavy_r",
-        kernel!(|| X / (Y * Z + 1.0)),
+        |z: f32| kernel!(|z: f32| X / (Y * z + 1.0))(z),
         |x: f32, y: f32, z: f32, _w| x / (y * z + 1.0),
         1e-4,
         1e-4
@@ -250,7 +266,7 @@ fn jit_noncommutative_heavy_right() {
 fn jit_v_is_identity() {
     jit_truth!(
         "v_identity",
-        kernel!(|| V(X * Y + Z)),
+        |z: f32| kernel!(|z: f32| V(X * Y + z))(z),
         |x: f32, y: f32, z: f32, _w| x * y + z,
         1e-4,
         1e-4
@@ -269,7 +285,7 @@ fn jit_dx_dy_of_distance_field() {
     ];
     jit_truth!(
         "dx_dist",
-        kernel!(|| DX((X * X + Y * Y).sqrt())),
+        |_z: f32| kernel!(|| DX((X * X + Y * Y).sqrt())),
         |x: f32, y: f32, _z, _w| x / (x * x + y * y).sqrt(),
         1e-4,
         1e-3,
@@ -277,7 +293,7 @@ fn jit_dx_dy_of_distance_field() {
     );
     jit_truth!(
         "dy_dist",
-        kernel!(|| DY((X * X + Y * Y).sqrt())),
+        |_z: f32| kernel!(|| DY((X * X + Y * Y).sqrt())),
         |x: f32, y: f32, _z, _w| y / (x * x + y * y).sqrt(),
         1e-4,
         1e-3,
@@ -290,7 +306,7 @@ fn jit_dxx_is_second_derivative() {
     // d²/dx² x³ = 6x, via nested Dwrt.
     jit_truth!(
         "dxx_cubic",
-        kernel!(|| DXX(X * X * X)),
+        |_z: f32| kernel!(|| DXX(X * X * X)),
         |x: f32, _y, _z, _w| 6.0 * x,
         1e-3,
         1e-3
@@ -365,7 +381,7 @@ fn jit_font_coverage_matches_interpreter() {
 
     for &(x, y) in COVERAGE_GRID {
         let got = eval(&jit, (x, y, 0.0, 0.0));
-        let want = eval_scalar(&lowered, lroot, &[x, y, 0.0, 0.0], &BindingTable::empty());
+        let want = eval_scalar(&lowered, lroot, &[x, y], &BindingTable::empty());
         check("font_coverage_vs_interpreter", got, want, 1e-4, 1e-4);
     }
 }

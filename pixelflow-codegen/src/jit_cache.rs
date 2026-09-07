@@ -79,11 +79,25 @@ pub struct Linked {
 /// # Errors
 ///
 /// Whatever [`emit::compile`] reports for the (optimized) arena.
+///
+/// # Panics
+///
+/// Panics if the arena names a retired coordinate axis (`Var(2)`/`Var(3)`,
+/// the old Z and W). The collapse ABI still carries four base coordinates and
+/// passes zero in the last two, so such a node would read a lane that means
+/// nothing and draw a plausible wrong picture. This is the guard that makes
+/// "no emitted kernel reads the retired lanes" a fact.
 pub fn compile(
     arena: &ExprArena,
     root: ExprId,
     shape: LatticeShape,
 ) -> Result<Linked, CompileError> {
+    assert!(
+        arena.retired_axis().is_none(),
+        "jit_cache::compile: the arena names Var({:?}), a coordinate axis a \
+         lattice no longer has; a per-call scalar is a Uniform",
+        arena.retired_axis()
+    );
     let Canonical {
         mut key,
         buffers,
@@ -278,7 +292,7 @@ mod tests {
     use pixelflow_ir::arena::{BufferIdentity, UniformIdentity};
     use pixelflow_ir::kind::OpKind;
 
-    const TEST_SHAPE: LatticeShape = LatticeShape::new([64, 64, 1, 1]);
+    const TEST_SHAPE: LatticeShape = LatticeShape::new([64, 64]);
 
     fn kernel_of(arena: &ExprArena, root: ExprId) -> Arc<CompiledKernel> {
         compile(arena, root, TEST_SHAPE).expect("compile").kernel
@@ -406,7 +420,7 @@ mod tests {
         let (a, r) = circle_arena(false);
         let frame = kernel_of(&a, r);
         let again = kernel_of(&a, r);
-        let wider = compile(&a, r, LatticeShape::new([65, 64, 1, 1]))
+        let wider = compile(&a, r, LatticeShape::new([65, 64]))
             .expect("compile")
             .kernel;
         assert!(
@@ -418,7 +432,7 @@ mod tests {
             "one more column is a different lattice, hence a different kernel"
         );
         assert_eq!(frame.shape(), TEST_SHAPE);
-        assert_eq!(wider.shape().extent(), [65, 64, 1, 1]);
+        assert_eq!(wider.shape().extent(), [65, 64]);
     }
 
     // ─────────────────────── the link step ───────────────────────

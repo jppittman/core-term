@@ -15,7 +15,7 @@ use pixelflow_core::{Kernel, Lattice};
 
 /// Tabulate a kernel over a one-point lattice and read the value back.
 fn eval(k: &Kernel, x: f32, y: f32) -> f32 {
-    Lattice::point(x, y, 0.0, 0.0).bake(k).into_buffer()[0]
+    Lattice::point(x, y).bake(k).into_buffer()[0]
 }
 
 fn check(name: &str, got: f32, want: f32) {
@@ -107,19 +107,8 @@ fn a_kernel_used_multiple_times_stays_one_dag() {
 #[test]
 fn at_sites_warp_coordinates_per_site() {
     let f = kernel!(|| X * X * Y);
-    let (z, w) = (Kernel::z(), Kernel::w());
-    let right = f.at(
-        &Kernel::x().add(&Kernel::constant(1.0)),
-        &Kernel::y(),
-        &z,
-        &w,
-    );
-    let left = f.at(
-        &Kernel::x().sub(&Kernel::constant(1.0)),
-        &Kernel::y(),
-        &z,
-        &w,
-    );
+    let right = f.at(&Kernel::x().add(&Kernel::constant(1.0)), &Kernel::y());
+    let left = f.at(&Kernel::x().sub(&Kernel::constant(1.0)), &Kernel::y());
     let central_dx = right.sub(&left).mul(&Kernel::constant(0.5));
 
     for (x, y) in [(2.0f32, 3.0f32), (-1.5, 0.5), (0.0, 4.0)] {
@@ -132,7 +121,7 @@ fn at_sites_warp_coordinates_per_site() {
 #[test]
 fn bare_and_at_sites_mix() {
     let f = kernel!(|| X + Y * 10.0);
-    let swapped = f.at(&Kernel::y(), &Kernel::x(), &Kernel::z(), &Kernel::w());
+    let swapped = f.at(&Kernel::y(), &Kernel::x());
     let m = f.add(&swapped);
 
     for (x, y) in [(1.0f32, 2.0f32), (-3.0, 0.5)] {

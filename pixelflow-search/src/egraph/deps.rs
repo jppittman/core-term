@@ -9,7 +9,9 @@
 //! # Variance Bitset
 //!
 //! Each e-class gets a `Variance` annotation: `{X?, Y?, Z?, W?}`.
-//! - `Var(0)` → `{X}`, `Var(1)` → `{Y}`, `Var(2)` → `{Z}`, `Var(3)` → `{W}`
+//! - `Var(0)` → `{X}`, `Var(1)` → `{Y}`. A lattice has two axes; the indices
+//!   above them are the macro tier's *name* slots (parameters, opaque
+//!   captures), each with a bit of its own and no scope.
 //! - `BinaryOp(a, b)` → `variance(a).union(variance(b))`
 //! - Across e-nodes in the same class: `meet` (pick lowest-deps representative)
 
@@ -276,16 +278,24 @@ mod tests {
     use super::super::ops;
     use super::*;
 
+    /// A `Var` index above the coordinate axes: the macro tier indexes its
+    /// names in this same space, so such a class is a name — a parameter or
+    /// an opaque capture — and not a coordinate. It stands in here for what
+    /// `Var(3)` (the W axis) used to be.
+    const NAME: u8 = 3;
+
+    /// That name's variance bit.
+    fn name_var() -> Variance {
+        Variance::from_var(NAME)
+    }
+
     #[test]
     fn variance_union() {
         assert_eq!(Variance::CONST.union(Variance::CONST), Variance::CONST);
-        assert_eq!(Variance::CONST.union(Variance::W), Variance::W);
+        assert_eq!(Variance::CONST.union(name_var()), name_var());
         assert_eq!(Variance::CONST.union(Variance::X), Variance::X);
-        assert_eq!(Variance::W.union(Variance::W), Variance::W);
-        assert_eq!(
-            Variance::W.union(Variance::X),
-            Variance::X.union(Variance::W)
-        );
+        assert_eq!(name_var().union(name_var()), name_var());
+        assert_eq!(name_var().union(Variance::X), Variance::X.union(name_var()));
         assert_eq!(Variance::X.union(Variance::X), Variance::X);
     }
 
@@ -293,8 +303,10 @@ mod tests {
     fn verify_var_variance() {
         assert_eq!(var_variance(0), Variance::X);
         assert_eq!(var_variance(1), Variance::Y);
-        assert_eq!(var_variance(2), Variance::Z);
-        assert_eq!(var_variance(3), Variance::W);
+        // Above the axes the index is a name slot, one bit each, and past the
+        // eight the analysis gives up and says everything.
+        assert_eq!(var_variance(NAME), Variance::from_var(NAME));
+        assert_eq!(var_variance(8), Variance::ALL);
     }
 
     #[test]
@@ -307,9 +319,9 @@ mod tests {
     }
 
     #[test]
-    fn w_only_analysis() {
+    fn name_only_analysis() {
         let mut eg = EGraph::new();
-        let w = eg.add(ENode::Var(3)); // W
+        let w = eg.add(ENode::Var(NAME));
         let two = eg.add(ENode::constant(2.0));
         let w_times_2 = eg.add(ENode::Op {
             op: &ops::Mul,
@@ -321,10 +333,10 @@ mod tests {
         });
 
         let analysis = DepsAnalysis::analyze(&eg);
-        assert_eq!(analysis.get(&eg, w), Variance::W);
-        assert_eq!(analysis.get(&eg, w_times_2), Variance::W);
-        assert_eq!(analysis.get(&eg, sin_w), Variance::W);
-        // All are frame-uniform (no spatial deps)
+        assert_eq!(analysis.get(&eg, w), name_var());
+        assert_eq!(analysis.get(&eg, w_times_2), name_var());
+        assert_eq!(analysis.get(&eg, sin_w), name_var());
+        // All are frame-uniform: nothing here depends on a coordinate.
         assert!(analysis.get(&eg, sin_w).is_frame_uniform());
     }
 
@@ -344,17 +356,17 @@ mod tests {
         assert_eq!(analysis.get(&eg, sum), Variance::X.union(Variance::Y));
         assert!(analysis.get(&eg, sum).depends_on_x());
         assert!(analysis.get(&eg, sum).depends_on_y());
-        assert!(!analysis.get(&eg, sum).depends_on_z());
+        assert_eq!(analysis.get(&eg, sum), Variance::COORDS);
     }
 
     #[test]
     fn mixed_deps_hoistable() {
-        // sin(W * 2.0) + X:
-        //   sin(W * 2.0) has variance {W} (X-invariant, hoistable)
+        // sin(u * 2.0) + X, where `u` is a name slot:
+        //   sin(u * 2.0) has variance {u} (X-invariant, hoistable)
         //   X has variance {X}
-        //   result has variance {X, W}
+        //   result has variance {X, u}
         let mut eg = EGraph::new();
-        let w = eg.add(ENode::Var(3));
+        let w = eg.add(ENode::Var(NAME));
         let two = eg.add(ENode::constant(2.0));
         let w2 = eg.add(ENode::Op {
             op: &ops::Mul,
@@ -372,11 +384,11 @@ mod tests {
         });
 
         let analysis = DepsAnalysis::analyze(&eg);
-        assert_eq!(analysis.get(&eg, sin_w2), Variance::W);
+        assert_eq!(analysis.get(&eg, sin_w2), name_var());
         assert!(analysis.get(&eg, sin_w2).is_x_invariant());
-        assert_eq!(analysis.get(&eg, result), Variance::X.union(Variance::W));
+        assert_eq!(analysis.get(&eg, result), Variance::X.union(name_var()));
 
-        // sin(W * 2) should be hoistable (X-invariant child of X-dependent parent)
+        // sin(u * 2) should be hoistable (X-invariant child of X-dependent parent)
         let hoistable = analysis.find_hoistable(&eg, result);
         assert!(hoistable.contains(&eg.find(sin_w2)));
     }
@@ -442,9 +454,9 @@ mod tests {
         );
     }
 
-    /// Meet of {X,Y} and {W} should give {W} (fewer deps).
+    /// Meet of {X,Y} and one name slot should give the name (fewer deps).
     #[test]
-    fn meet_xy_and_w_gives_w() {
+    fn meet_xy_and_a_name_gives_the_name() {
         let mut eg = EGraph::new();
 
         let x = eg.add(ENode::Var(0));
@@ -454,7 +466,7 @@ mod tests {
             children: vec![x, y],
         });
 
-        let w = eg.add(ENode::Var(3));
+        let w = eg.add(ENode::Var(NAME));
 
         eg.union(xy, w);
         eg.rebuild();
@@ -463,8 +475,8 @@ mod tests {
         let merged = eg.find(xy);
         assert_eq!(
             analysis.get(&eg, merged),
-            Variance::W,
-            "Meet of {{X,Y}} and {{W}} should be {{W}} (fewer deps)"
+            name_var(),
+            "meet of two deps and one should be the one"
         );
     }
 

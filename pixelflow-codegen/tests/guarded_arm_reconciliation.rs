@@ -44,11 +44,11 @@ fn kernel(width: u32, after_reads: usize) -> (ExprArena, ExprId) {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
 
-    // The mask is Z's sign, so a caller can make it uniform per batch.
+    // The mask is Y's sign, so a caller makes it uniform per batch by
+    // choosing the signs of the row it samples.
     let zero = a.push_const(0.0);
-    let cond = a.push_binary(OpKind::Gt, z, zero);
+    let cond = a.push_binary(OpKind::Gt, y, zero);
     // Computed first, read last: what eviction takes when the filler fills
     // the pool.
     let split = a.push_binary(OpKind::Mul, x, y);
@@ -83,14 +83,18 @@ fn kernel(width: u32, after_reads: usize) -> (ExprArena, ExprId) {
     (a, acc)
 }
 
-/// Z decides the mask: all-negative skips the true arm, all-positive skips the
-/// false arm, and the mixed row takes neither branch.
+/// Y's sign decides the mask: all-negative skips the true arm, all-positive
+/// skips the false arm, and the mixed row takes neither branch. The magnitude
+/// still varies per lane, so the arms are not computing one value.
 fn lanes_for(kind: usize) -> [f32; LANES] {
-    core::array::from_fn(|i| match kind {
-        0 => -1.0,
-        1 => 1.0,
-        _ if i % 2 == 0 => 1.0,
-        _ => -1.0,
+    core::array::from_fn(|i| {
+        let sign = match kind {
+            0 => -1.0,
+            1 => 1.0,
+            _ if i % 2 == 0 => 1.0,
+            _ => -1.0,
+        };
+        sign * (1.5 + i as f32 * 0.25)
     })
 }
 
@@ -107,13 +111,12 @@ fn a_reload_at_a_guarded_arms_end_happens_on_the_skipping_path_too() {
                     .expect("compiles");
                 let jit = CompiledKernel::new(compiled.code, LatticeShape::POINT);
                 for kind in 0..3 {
-                    let zs = lanes_for(kind);
                     let xs: [f32; LANES] = core::array::from_fn(|i| 0.5 + i as f32);
-                    let ys: [f32; LANES] = core::array::from_fn(|i| 1.5 - i as f32 * 0.25);
-                    let ws = [0.0f32; LANES];
-                    let got: [f32; LANES] = unsafe { jit.call(Point4::new(xs, ys, zs, ws)) };
+                    let ys = lanes_for(kind);
+                    let zero = [0.0f32; LANES];
+                    let got: [f32; LANES] = unsafe { jit.call(Point4::new(xs, ys, zero, zero)) };
                     for lane in 0..LANES {
-                        let point = [xs[lane], ys[lane], zs[lane], ws[lane]];
+                        let point = [xs[lane], ys[lane]];
                         let want = eval_scalar(&arena, root, &point, &bindings);
                         assert_eq!(
                             got[lane].to_bits(),
@@ -140,17 +143,16 @@ fn a_reload_at_a_guarded_arms_end_happens_on_the_skipping_path_too() {
 /// it exclusive and so guardable. An instruction inside the inner arm therefore
 /// reserves its scratch with nothing free — the case the residue was about.
 ///
-/// Z and W carry the two masks so a caller can make either uniform.
+/// X's and Y's signs carry the two masks, so a caller makes either uniform by
+/// choosing the signs of the batch it samples.
 fn nested_guards(width: u32, depth: usize) -> (ExprArena, ExprId) {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
-    let w = a.push_var(3);
     let zero = a.push_const(0.0);
 
-    let outer_mask = a.push_binary(OpKind::Gt, z, zero);
-    let inner_mask = a.push_binary(OpKind::Gt, w, zero);
+    let outer_mask = a.push_binary(OpKind::Gt, x, zero);
+    let inner_mask = a.push_binary(OpKind::Gt, y, zero);
 
     // Live across everything below: computed first, read last.
     let fillers: Vec<ExprId> = (0..width)
@@ -180,7 +182,7 @@ fn nested_guards(width: u32, depth: usize) -> (ExprArena, ExprId) {
     let inner = a.push_ternary(OpKind::Select, inner_mask, inner_true, inner_false);
 
     let outer_true = chain(&mut a, inner, y);
-    let outer_false = chain(&mut a, x, z);
+    let outer_false = chain(&mut a, x, y);
     let outer = a.push_ternary(OpKind::Select, outer_mask, outer_true, outer_false);
 
     let mut acc = outer;
@@ -190,13 +192,18 @@ fn nested_guards(width: u32, depth: usize) -> (ExprArena, ExprId) {
     (a, acc)
 }
 
-/// Uniform-negative, uniform-positive, or alternating.
-fn mask_lanes(kind: usize) -> [f32; LANES] {
-    core::array::from_fn(|i| match kind {
-        0 => -1.0,
-        1 => 1.0,
-        _ if i % 2 == 0 => 1.0,
-        _ => -1.0,
+/// Uniform-negative, uniform-positive, or alternating — as a sign on a
+/// magnitude that still varies per lane, so the arms compute different things
+/// in different lanes.
+fn mask_lanes(kind: usize, magnitude: impl Fn(usize) -> f32) -> [f32; LANES] {
+    core::array::from_fn(|i| {
+        let sign = match kind {
+            0 => -1.0,
+            1 => 1.0,
+            _ if i % 2 == 0 => 1.0,
+            _ => -1.0,
+        };
+        sign * magnitude(i)
     })
 }
 
@@ -226,13 +233,13 @@ fn a_reservation_inside_a_nested_guarded_arm_always_has_a_register() {
                 let jit = CompiledKernel::new(compiled.code, LatticeShape::POINT);
                 for outer in 0..3 {
                     for inner in 0..3 {
-                        let zs = mask_lanes(outer);
-                        let ws = mask_lanes(inner);
-                        let xs: [f32; LANES] = core::array::from_fn(|i| 0.75 + i as f32 * 0.5);
-                        let ys: [f32; LANES] = core::array::from_fn(|i| 1.25 - i as f32 * 0.125);
-                        let got: [f32; LANES] = unsafe { jit.call(Point4::new(xs, ys, zs, ws)) };
+                        let xs = mask_lanes(outer, |i| 0.75 + i as f32 * 0.5);
+                        let ys = mask_lanes(inner, |i| 1.25 + i as f32 * 0.125);
+                        let zero = [0.0f32; LANES];
+                        let got: [f32; LANES] =
+                            unsafe { jit.call(Point4::new(xs, ys, zero, zero)) };
                         for lane in 0..LANES {
-                            let point = [xs[lane], ys[lane], zs[lane], ws[lane]];
+                            let point = [xs[lane], ys[lane]];
                             let want = eval_scalar(&arena, root, &point, &bindings);
                             assert_eq!(
                                 got[lane].to_bits(),

@@ -57,6 +57,10 @@ pub fn analyze(kernel: KernelDef) -> syn::Result<AnalyzedKernel> {
 }
 
 /// The semantic analyzer state.
+/// Coordinate names a `kernel!` body may not use: they named the Z and W
+/// axes, which a lattice no longer has.
+const RETIRED_COORDINATES: [&str; 2] = ["Z", "W"];
+
 struct SemanticAnalyzer {
     symbols: SymbolTable,
 }
@@ -78,7 +82,7 @@ impl SemanticAnalyzer {
                 param.name.span(),
                 format!(
                     "parameter '{}' shadows intrinsic coordinate variable\n\
-                     note: intrinsics are: X, Y, Z, W (coordinate variables)\n\
+                     note: intrinsics are: X, Y (coordinate variables)\n\
                      help: rename this parameter to something else",
                     name
                 ),
@@ -163,10 +167,26 @@ impl SemanticAnalyzer {
     /// there either.
     fn resolve_ident(&self, ident: &Ident) -> syn::Result<SymbolKind> {
         let name = ident.to_string();
-        Ok(self
-            .symbols
-            .lookup(&name)
-            .map_or(SymbolKind::Local, |symbol| symbol.kind))
+        if let Some(symbol) = self.symbols.lookup(&name) {
+            return Ok(symbol.kind);
+        }
+        // `Z` and `W` were coordinate intrinsics until a lattice became two
+        // axes. An unknown name is normally a capture from the caller's
+        // scope, so without this they would resolve to whatever the caller
+        // happens to have in scope — or to nothing, with a message about a
+        // missing variable rather than about the change.
+        if let Some(axis) = RETIRED_COORDINATES.iter().find(|a| **a == name) {
+            return Err(syn::Error::new(
+                ident.span(),
+                format!(
+                    "`{axis}` is no longer a coordinate: a lattice has two axes, X and Y\n\
+                     note: a scalar that is the same at every sample is a uniform, not an axis\n\
+                     help: declare it as a parameter of this kernel and pass a \
+                     `Uniform` handle at the call site"
+                ),
+            ));
+        }
+        Ok(SymbolKind::Local)
     }
 
     /// Analyze a method call.
@@ -277,6 +297,30 @@ mod tests {
     use super::*;
     use crate::parser::parse;
     use quote::quote;
+
+    /// A body that names `Z` or `W` is a compile error that says where the
+    /// value goes instead — not a capture from the caller's scope, which is
+    /// what an unknown name would otherwise become.
+    #[test]
+    fn a_body_naming_a_retired_axis_is_refused_with_the_uniform_note() {
+        for body in [quote! { || X + Z }, quote! { || X * W }] {
+            let kernel = parse(body).unwrap();
+            let err = analyze(kernel).expect_err("Z and W are not coordinates");
+            let text = err.to_string();
+            assert!(
+                text.contains("no longer a coordinate") && text.contains("Uniform"),
+                "the message must point at uniforms, got: {text}"
+            );
+        }
+    }
+
+    /// A parameter may still be *called* Z: the refusal is about the
+    /// intrinsic that is gone, not about the letter.
+    #[test]
+    fn a_parameter_named_z_is_ordinary() {
+        let kernel = parse(quote! { |Z: f32| X + Z }).unwrap();
+        assert!(analyze(kernel).is_ok());
+    }
 
     #[test]
     fn analyze_simple_kernel() {

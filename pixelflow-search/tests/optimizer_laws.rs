@@ -33,18 +33,18 @@ use pixelflow_search::egraph::{Budget, EClassId, Optimizer, RuleSet, all_rules};
 /// Evaluate an arena through the language's own reference interpreter — the
 /// same one the rewrite-soundness tests use, so "denotes the same function"
 /// means here what it means there.
-fn eval(arena: &ExprArena, root: ExprId, vars: &[f32; 4]) -> f32 {
+fn eval(arena: &ExprArena, root: ExprId, vars: &[f32; 2]) -> f32 {
     pixelflow_ir::eval_scalar(arena, root, vars, &BindingTable::empty())
 }
 
-const POINTS: [[f32; 4]; 7] = [
-    [0.0, 0.0, 0.0, 0.0],
-    [1.0, 2.0, 3.0, 4.0],
-    [-1.5, 0.25, 2.0, -3.0],
-    [0.5, -0.5, 1.25, 0.75],
-    [3.0, 1.0, -2.0, 0.5],
-    [-0.75, -2.25, 0.125, 1.0],
-    [2.5, 2.5, 2.5, 2.5],
+const POINTS: [[f32; 2]; 7] = [
+    [0.0, 0.0],
+    [1.0, 2.0],
+    [-1.5, 0.25],
+    [0.5, -0.5],
+    [3.0, 1.0],
+    [-0.75, -2.25],
+    [2.5, 2.5],
 ];
 
 /// A mid-sized expression with sharing, several rule families in reach, and

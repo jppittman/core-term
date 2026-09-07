@@ -2330,6 +2330,21 @@ mod tests {
         eval_batch(code, &[], o)[0]
     }
 
+    /// One batch of a kernel whose single argument is bound to `u` — the
+    /// lattice-invariant third input a test used to spell `Var(2)`.
+    fn eval_point_with_arg(code: &executable::ExecutableCode, x: f32, y: f32, u: f32) -> f32 {
+        let block = [u];
+        let ctx: [*const f32; 1] = [block.as_ptr()];
+        let o = executable::Point4::new([x; LANES], [y; LANES], [0.0; LANES], [0.0; LANES]);
+        eval_batch(code, &ctx, o)[0]
+    }
+
+    /// Declare one argument in `a` and return its leaf.
+    fn arg_leaf(a: &mut ExprArena, default: f32) -> pixelflow_ir::ExprId {
+        let slot = a.declare_uniform(pixelflow_ir::Uniform::new(default).decl());
+        a.push_uniform(slot)
+    }
+
     /// A `Dwrt` that reaches the scheduler (a caller bypassed the lowering
     /// pipeline) must fail loudly at the schedule boundary, not as a cryptic
     /// emit panic. The compile entry points run `lower_dwrt` first, so this
@@ -4243,11 +4258,12 @@ mod tests {
         /// itself; only the ground-truth comparison was load-bearing.
         #[test]
         fn sched_no_spill_is_correct() {
-            // f = sqrt(X*X + Y*Y) - Z, plus a non-commutative `X - Y*Z` shape.
+            // f = sqrt(X*X + Y*Y) - Y*U, a non-commutative shape whose third
+            // input is the kernel's argument rather than a third coordinate.
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
+            let z = arg_leaf(&mut a, 0.0);
             let xx = a.push_binary(OpKind::Mul, x, x);
             let yy = a.push_binary(OpKind::Mul, y, y);
             let sum = a.push_binary(OpKind::Add, xx, yy);
@@ -4259,9 +4275,9 @@ mod tests {
             let sched = compile(&a, root).expect("compile");
             assert_eq!(sched.spill_count, 0, "should fit without spilling");
 
-            for &(px, py, pz, pw) in PTS {
+            for &(px, py, pz, _pw) in PTS {
                 let want = (px * px + py * py).sqrt() - py * pz;
-                let got = run(&sched, px, py, pz, pw);
+                let got = eval_point_with_arg(&sched.code, px, py, pz);
                 assert!((got - want).abs() <= 1e-4, "got {got} want {want}");
             }
         }
@@ -4314,32 +4330,35 @@ mod tests {
         }
 
         /// Exercises the shared driver's Select short-circuit guard path on x86
-        /// (MOVMSKPS all-true/all-false branches): `(X > 0) ? Y*Y*Y : Z+Z+Z`,
+        /// (MOVMSKPS all-true/all-false branches): `(X > 0) ? Y*Y*Y : X+X+X`,
         /// with arm-exclusive subexpressions so a guard region forms. Uniform
         /// inputs take the all-true / all-false branches.
+        ///
+        /// Both arms are per-*lane*, which is what makes them arms: an arm of
+        /// the kernel's arguments alone would be lattice-invariant and hoist
+        /// out of the body entirely, leaving nothing for a guard to skip.
         #[test]
         fn sched_select_guards() {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
             let zero = a.push_const(0.0);
             let cond = a.push_binary(OpKind::Gt, x, zero); // X > 0 -> mask
             let yy = a.push_binary(OpKind::Mul, y, y);
             let yyy = a.push_binary(OpKind::Mul, yy, y); // true arm: Y^3
-            let zz = a.push_binary(OpKind::Add, z, z);
-            let zzz = a.push_binary(OpKind::Add, zz, z); // false arm: 3Z
+            let zz = a.push_binary(OpKind::Add, x, x);
+            let zzz = a.push_binary(OpKind::Add, zz, x); // false arm: 3X
             let root = a.push_ternary(OpKind::Select, cond, yyy, zzz);
 
             let sched = compile(&a, root).expect("scheduled compile");
 
-            // x>0 -> all-true -> Y^3 ; x<=0 -> all-false -> 3Z.
-            for &(px, py, pz, _pw) in PTS {
-                let want = if px > 0.0 { py * py * py } else { 3.0 * pz };
-                let got = run(&sched, px, py, pz, 0.0);
+            // x>0 -> all-true -> Y^3 ; x<=0 -> all-false -> 3X.
+            for &(px, py, _pz, _pw) in PTS {
+                let want = if px > 0.0 { py * py * py } else { 3.0 * px };
+                let got = run(&sched, px, py, 0.0, 0.0);
                 assert!(
                     (got - want).abs() <= 1e-3,
-                    "select: ({px},{py},{pz}) got {got} want {want}"
+                    "select: ({px},{py}) got {got} want {want}"
                 );
             }
         }
@@ -4403,12 +4422,8 @@ mod tests {
                 cy.copy_from_slice(&ys[batch * 4..batch * 4 + 4]);
                 let got = run4_ctx(&res, &ctx, cx, cy);
                 for i in 0..4 {
-                    let want = pixelflow_ir::eval::eval_scalar(
-                        arena,
-                        root,
-                        &[cx[i], cy[i], 0.0, 0.0],
-                        &bindings,
-                    );
+                    let want =
+                        pixelflow_ir::eval::eval_scalar(arena, root, &[cx[i], cy[i]], &bindings);
                     assert_eq!(
                         got[i], want,
                         "{tag} batch {batch} lane {i} (x={}, y={})",
@@ -4615,12 +4630,7 @@ mod tests {
 
             let bindings = pixelflow_ir::binding::BindingTable::bind(arena, buffers).unwrap();
             for (i, &g) in got.iter().enumerate() {
-                let want = pixelflow_ir::eval::eval_scalar(
-                    arena,
-                    root,
-                    &[xs[i], ys[i], 0.0, 0.0],
-                    &bindings,
-                );
+                let want = pixelflow_ir::eval::eval_scalar(arena, root, &[xs[i], ys[i]], &bindings);
                 assert_eq!(g, want, "{tag} lane {i} (x={}, y={})", xs[i], ys[i]);
             }
         }
@@ -4759,7 +4769,7 @@ mod tests {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
+            let z = a.push_binary(OpKind::Mul, y, x);
             let xx = a.push_binary(OpKind::Mul, x, x);
             let yy = a.push_binary(OpKind::Mul, y, y);
             let sum = a.push_binary(OpKind::Add, xx, yy);
@@ -4772,7 +4782,7 @@ mod tests {
             let (xs, ys, zs) = lanes();
             check(
                 run16(&res, xs, ys, zs),
-                |i| (xs[i] * xs[i] + ys[i] * ys[i]).sqrt() - zs[i],
+                |i| (xs[i] * xs[i] + ys[i] * ys[i]).sqrt() - ys[i] * xs[i],
                 "norm-z",
             );
         }
@@ -4854,13 +4864,12 @@ mod tests {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
             let zero = a.push_const(0.0);
             let cond = a.push_binary(OpKind::Gt, x, zero);
             let yy = a.push_binary(OpKind::Mul, y, y);
             let yyy = a.push_binary(OpKind::Mul, yy, y);
-            let zz = a.push_binary(OpKind::Add, z, z);
-            let zzz = a.push_binary(OpKind::Add, zz, z);
+            let zz = a.push_binary(OpKind::Add, x, x);
+            let zzz = a.push_binary(OpKind::Add, zz, x);
             let root = a.push_ternary(OpKind::Select, cond, yyy, zzz);
 
             let res = compile(&a, root).expect("avx512 compile");
@@ -4874,7 +4883,12 @@ mod tests {
                 |i| ys[i] * ys[i] * ys[i],
                 "guard-true",
             );
-            check(run16(&res, allneg, ys, zs), |i| 3.0 * zs[i], "guard-false");
+            let _unused_third_input = zs;
+            check(
+                run16(&res, allneg, ys, zs),
+                |_| 3.0 * allneg[0],
+                "guard-false",
+            );
 
             let mixed = core::array::from_fn::<f32, 16, _>(|i| if i % 2 == 0 { 1.0 } else { -1.0 });
             check(
@@ -4883,7 +4897,7 @@ mod tests {
                     if mixed[i] > 0.0 {
                         ys[i] * ys[i] * ys[i]
                     } else {
-                        3.0 * zs[i]
+                        3.0 * mixed[i]
                     }
                 },
                 "guard-mixed",
@@ -5556,7 +5570,7 @@ mod tests {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
+            let z = a.push_binary(OpKind::Add, y, x);
             let root = a.push_ternary(OpKind::MulAdd, x, y, z);
             let (a, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
 

@@ -27,9 +27,12 @@ use pixelflow_core::{Kernel, Lattice};
 
 /// Tabulate over a one-point lattice and read the value back.
 fn bake(k: &Kernel, p: (f32, f32, f32, f32)) -> f32 {
-    Lattice::point(p.0, p.1, p.2, p.3).bake(k).into_buffer()[0]
+    Lattice::point(p.0, p.1).bake(k).into_buffer()[0]
 }
 
+/// `(x, y, z, w)` — the first two are coordinates, the last two are scalars
+/// the builder folds in. They were the Z and W coordinates until a lattice
+/// became two axes.
 const SAMPLES: &[(f32, f32, f32, f32)] = &[
     (0.0, 0.0, 0.0, 0.0),
     (1.0, 2.0, 3.0, 4.0),
@@ -52,10 +55,10 @@ fn check(name: &str, got: f32, want: f32) {
 
 #[test]
 fn arithmetic_matches_scalar_truth() {
-    let k = kernel!(|| (X - Y) * Z + X / (W + 10.0));
+    let build = kernel!(|z: f32, w: f32| (X - Y) * z + X / (w + 10.0));
     for &p in SAMPLES {
         let want = (p.0 - p.1) * p.2 + p.0 / (p.3 + 10.0);
-        check("arith", bake(&k, p), want);
+        check("arith", bake(&build(p.2, p.3), p), want);
     }
 }
 
@@ -75,25 +78,25 @@ fn params_match_scalar_truth() {
 
 #[test]
 fn piecewise_matches_scalar_truth() {
-    let k = kernel!(|| (X * Y).max(Z).min(10.0));
+    let build = kernel!(|z: f32| (X * Y).max(z).min(10.0));
     for &p in SAMPLES {
         let want = (p.0 * p.1).max(p.2).min(10.0);
-        check("minmax", bake(&k, p), want);
+        check("minmax", bake(&build(p.2), p), want);
     }
 
-    let k = kernel!(|| (X.lt(Y)).select(Z, W));
+    let build = kernel!(|z: f32, w: f32| (X.lt(Y)).select(z, w));
     for &p in SAMPLES {
         let want = if p.0 < p.1 { p.2 } else { p.3 };
-        check("select", bake(&k, p), want);
+        check("select", bake(&build(p.2, p.3), p), want);
     }
 }
 
 #[test]
 fn abs_recip_matches_scalar_truth() {
-    let k = kernel!(|| (X - Y).abs() + (Z + 5.0).recip());
+    let build = kernel!(|z: f32| (X - Y).abs() + (z + 5.0).recip());
     for &p in SAMPLES {
         let want = (p.0 - p.1).abs() + 1.0 / (p.2 + 5.0);
-        check("abs_recip", bake(&k, p), want);
+        check("abs_recip", bake(&build(p.2), p), want);
     }
 }
 

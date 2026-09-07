@@ -31,32 +31,71 @@ const MAGS: [f32; 14] = [
     -1e4, -1e2, -3.7, -1.0, -0.5, -1e-4, -0.0, 0.0, 1e-4, 0.5, 1.0, 3.7, 1e2, 1e4,
 ];
 
-fn grid_x() -> Vec<[f32; 4]> {
-    MAGS.iter().map(|&x| [x, 0.6, 0.0, 0.0]).collect()
+/// One call's worth of sweep: the values of the kernel's two arguments, which
+/// are fixed for the whole call, and the coordinates to sample under them.
+///
+/// A sweep over four inputs used to be one flat point list, because Z and W
+/// were coordinates and varied per lane. They are uniforms now, so the sweep
+/// is nested: a block, then the lattice under it.
+struct Sweep {
+    block: [f32; 2],
+    coords: Vec<[f32; 2]>,
 }
 
-fn grid_xy() -> Vec<[f32; 4]> {
+/// The coordinate half of the grid: every (x, y) pair of magnitude extremes.
+fn coord_grid() -> Vec<[f32; 2]> {
     let mut pts = Vec::new();
     for &x in &MAGS {
         for &y in &MAGS {
-            pts.push([x, y, 0.6, -0.3]);
+            pts.push([x, y]);
         }
     }
     pts
 }
 
-fn grid_xyzw() -> Vec<[f32; 4]> {
-    let mut pts = Vec::new();
-    for &x in &MAGS {
-        for &y in &MAGS {
-            for &z in &MAGS {
-                for &w in &MAGS {
-                    pts.push([x, y, z, w]);
-                }
-            }
+fn grid_x() -> Vec<Sweep> {
+    vec![Sweep {
+        block: [0.0, 0.0],
+        coords: MAGS.iter().map(|&x| [x, 0.6]).collect(),
+    }]
+}
+
+fn grid_xy() -> Vec<Sweep> {
+    vec![Sweep {
+        block: [0.6, -0.3],
+        coords: coord_grid(),
+    }]
+}
+
+fn grid_xyzw() -> Vec<Sweep> {
+    let mut sweeps = Vec::new();
+    for &z in &MAGS {
+        for &w in &MAGS {
+            sweeps.push(Sweep {
+                block: [z, w],
+                coords: coord_grid(),
+            });
         }
     }
-    pts
+    sweeps
+}
+
+/// The two lattice-invariant arguments a sweep arena may declare, in link
+/// order — what `Var(2)` and `Var(3)` became.
+struct Args {
+    z: pixelflow_ir::Uniform,
+    w: pixelflow_ir::Uniform,
+}
+
+/// Declare both arguments in `a` and return their leaves.
+fn args(a: &mut ExprArena) -> (Args, ExprId, ExprId) {
+    let (z, w) = (
+        pixelflow_ir::Uniform::new(0.0),
+        pixelflow_ir::Uniform::new(0.0),
+    );
+    let (zs, ws) = (a.declare_uniform(z.decl()), a.declare_uniform(w.decl()));
+    let (zl, wl) = (a.push_uniform(zs), a.push_uniform(ws));
+    (Args { z, w }, zl, wl)
 }
 
 /// The intended caller pattern: fold per-op allowances over the nodes reachable
@@ -84,44 +123,81 @@ fn expression_tolerance(arena: &ExprArena, root: ExprId) -> Tolerance {
     tol
 }
 
+/// What a sweep is *of*: the expression, and the arguments it declares.
+struct Subject<'a> {
+    name: &'a str,
+    arena: &'a ExprArena,
+    root: ExprId,
+    /// The two lattice-invariant arguments, when the arena declares them.
+    declared: Option<&'a Args>,
+}
+
 /// Compile once, then compare JIT vectors against the oracle across all
 /// non-skipped points in SIMD batches, under the expression's folded tolerance.
 fn assert_jit_matches_oracle(
-    name: &str,
-    arena: &ExprArena,
-    root: ExprId,
-    points: &[[f32; 4]],
+    subject: Subject<'_>,
+    sweeps: &[Sweep],
     skip: impl Fn(&[f32; 4]) -> bool,
 ) {
+    let Subject {
+        name,
+        arena,
+        root,
+        declared,
+    } = subject;
     let tol = expression_tolerance(arena, root);
     let jit = jit_cache::compile(arena, root, pixelflow_ir::LatticeShape::POINT)
         .unwrap_or_else(|e| panic!("{name}: kernel failed to compile on this backend: {e}"))
         .kernel;
-    let bindings = BindingTable::empty();
     let mut checked = 0usize;
-    let valid_points: Vec<[f32; 4]> = points.iter().copied().filter(|p| !skip(p)).collect();
-    for chunk in valid_points.chunks(LANES) {
-        let mut x = [0.0f32; LANES];
-        let mut y = [0.0f32; LANES];
-        let mut z = [0.0f32; LANES];
-        let mut w = [0.0f32; LANES];
-        for (i, p) in chunk.iter().enumerate() {
-            x[i] = p[0];
-            y[i] = p[1];
-            z[i] = p[2];
-            w[i] = p[3];
-        }
-        let res = unsafe { jit.call(pixelflow_codegen::Point4::new(x, y, z, w)) };
-        for (i, p) in chunk.iter().enumerate() {
-            let got = res[i];
-            let want = eval_scalar(arena, root, p, &bindings);
-            assert!(
-                tol.accepts(got, want),
-                "{name}{p:?}: JIT {got} ({:#010x}) vs oracle {want} ({:#010x}) exceeds {tol:?}",
-                got.to_bits(),
-                want.to_bits(),
-            );
-            checked += 1;
+    for sweep in sweeps {
+        let block = sweep.block;
+        // The oracle reads the same block the code does: by identity, not by
+        // the order either side happens to hold it in.
+        let bindings = match declared {
+            Some(a) => BindingTable::empty()
+                .bind_uniforms(
+                    arena,
+                    &[(a.z.identity(), block[0]), (a.w.identity(), block[1])],
+                )
+                .expect("both arguments are declared in this arena"),
+            None => BindingTable::empty(),
+        };
+        let ctx: [*const f32; 1] = [block.as_ptr()];
+        let valid: Vec<[f32; 2]> = sweep
+            .coords
+            .iter()
+            .copied()
+            .filter(|c| !skip(&[c[0], c[1], block[0], block[1]]))
+            .collect();
+        for chunk in valid.chunks(LANES) {
+            let mut x = [0.0f32; LANES];
+            let mut y = [0.0f32; LANES];
+            for (i, c) in chunk.iter().enumerate() {
+                x[i] = c[0];
+                y[i] = c[1];
+            }
+            // SAFETY: `ctx` holds this kernel's block — one `f32` per declared
+            // argument, in link order — alive for the call, and the vector
+            // width is this build's.
+            let res = unsafe {
+                jit.call_bound(
+                    ctx.as_ptr(),
+                    pixelflow_codegen::Point4::new(x, y, [0.0; LANES], [0.0; LANES]),
+                )
+            };
+            for (i, c) in chunk.iter().enumerate() {
+                let got = res[i];
+                let want = eval_scalar(arena, root, c, &bindings);
+                let p = [c[0], c[1], block[0], block[1]];
+                assert!(
+                    tol.accepts(got, want),
+                    "{name}{p:?}: JIT {got} ({:#010x}) vs oracle {want} ({:#010x}) exceeds {tol:?}",
+                    got.to_bits(),
+                    want.to_bits(),
+                );
+                checked += 1;
+            }
         }
     }
     // A sweep that skipped everything verified nothing — fail loudly.
@@ -134,7 +210,7 @@ const T: u32 = u32::MAX; // an all-ones mask lane
 const F: u32 = 0;
 
 fn eval1(arena: &ExprArena, root: ExprId, x: f32, y: f32) -> f32 {
-    eval_scalar(arena, root, &[x, y, 0.0, 0.0], &BindingTable::empty())
+    eval_scalar(arena, root, &[x, y], &BindingTable::empty())
 }
 
 #[test]
@@ -264,7 +340,7 @@ fn unsupported_op_panics_with_the_op_name() {
     let root = a.push_binary(OpKind::Dwrt, x, zero);
     // Bound (not `let _`) so the workspace's must-use lints hold; the call is
     // expected to panic before the value exists.
-    let _unreachable = eval_scalar(&a, root, &[1.0; 4], &BindingTable::empty());
+    let _unreachable = eval_scalar(&a, root, &[1.0; 2], &BindingTable::empty());
 }
 
 // ── The tolerance table itself ───────────────────────────────────────────────
@@ -371,15 +447,23 @@ fn jit_matches_oracle_arithmetic() {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
-    let w = a.push_var(3);
+    let (declared, z, w) = args(&mut a);
     let xy = a.push_binary(OpKind::Mul, x, y);
     let s = a.push_binary(OpKind::Add, xy, z);
     let d = a.push_binary(OpKind::Sub, s, w);
     let c = a.push_const(2.5);
     let den = a.push_binary(OpKind::Add, x, c);
     let root = a.push_binary(OpKind::Div, d, den);
-    assert_jit_matches_oracle("arith", &a, root, &grid_xyzw(), |_| false);
+    assert_jit_matches_oracle(
+        Subject {
+            name: "arith",
+            arena: &a,
+            root,
+            declared: Some(&declared),
+        },
+        &grid_xyzw(),
+        |_| false,
+    );
 }
 
 #[test]
@@ -390,8 +474,7 @@ fn jit_matches_oracle_exact_unaries_and_min_max() {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
-    let w = a.push_var(3);
+    let (declared, z, w) = args(&mut a);
     let sq = {
         let ax = a.push_unary(OpKind::Abs, x);
         a.push_unary(OpKind::Sqrt, ax)
@@ -409,7 +492,16 @@ fn jit_matches_oracle_exact_unaries_and_min_max() {
     };
     let t = a.push_binary(OpKind::Add, sq, nc);
     let root = a.push_binary(OpKind::Add, t, mn);
-    assert_jit_matches_oracle("exact_unaries", &a, root, &grid_xyzw(), |_| false);
+    assert_jit_matches_oracle(
+        Subject {
+            name: "exact_unaries",
+            arena: &a,
+            root,
+            declared: Some(&declared),
+        },
+        &grid_xyzw(),
+        |_| false,
+    );
 }
 
 #[test]
@@ -422,9 +514,16 @@ fn jit_matches_oracle_min_max_where_promised() {
         let x = a.push_var(0);
         let y = a.push_var(1);
         let root = a.push_binary(op, x, y);
-        assert_jit_matches_oracle(op.name(), &a, root, &grid_xy(), |p| {
-            op.fold_is_platform_specific(&[p[0], p[1]])
-        });
+        assert_jit_matches_oracle(
+            Subject {
+                name: op.name(),
+                arena: &a,
+                root,
+                declared: None,
+            },
+            &grid_xy(),
+            |p| op.fold_is_platform_specific(&[p[0], p[1]]),
+        );
     }
 }
 
@@ -433,16 +532,28 @@ fn jit_matches_oracle_round_away_from_ties() {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let root = a.push_unary(OpKind::Round, x);
-    let pts: Vec<[f32; 4]> = MAGS
-        .iter()
-        .chain(&[2.4, 2.6, -2.4, -2.6, 7.0, -7.0, 0.4999, 1234.56])
-        .map(|&x| [x, 0.0, 0.0, 0.0])
-        .collect();
-    assert_jit_matches_oracle("round", &a, root, &pts, |p| {
-        // Ties break differently per target; (-0.5, -0.0] loses its sign in
-        // the combinator tier. Both flagged; both skipped.
-        OpKind::Round.fold_is_platform_specific(&[p[0]])
-    });
+    let pts = vec![Sweep {
+        block: [0.0, 0.0],
+        coords: MAGS
+            .iter()
+            .chain(&[2.4, 2.6, -2.4, -2.6, 7.0, -7.0, 0.4999, 1234.56])
+            .map(|&x| [x, 0.0])
+            .collect(),
+    }];
+    assert_jit_matches_oracle(
+        Subject {
+            name: "round",
+            arena: &a,
+            root,
+            declared: None,
+        },
+        &pts,
+        |p| {
+            // Ties break differently per target; (-0.5, -0.0] loses its sign in
+            // the combinator tier. Both flagged; both skipped.
+            OpKind::Round.fold_is_platform_specific(&[p[0]])
+        },
+    );
 }
 
 #[test]
@@ -451,8 +562,7 @@ fn jit_matches_oracle_comparisons_and_select() {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
-    let w = a.push_var(3);
+    let (declared, z, w) = args(&mut a);
     let lt = a.push_binary(OpKind::Lt, x, y);
     let ge = a.push_binary(OpKind::Ge, z, w);
     let m = a.push_binary(OpKind::BitAnd, lt, ge);
@@ -460,7 +570,16 @@ fn jit_matches_oracle_comparisons_and_select() {
     let fb = a.push_binary(OpKind::Mul, z, w);
     let root = a.push_ternary(OpKind::Select, m, tb, fb);
     // The grid holds no NaN, so no comparison lands on a divergent row.
-    assert_jit_matches_oracle("cmp_select", &a, root, &grid_xyzw(), |_| false);
+    assert_jit_matches_oracle(
+        Subject {
+            name: "cmp_select",
+            arena: &a,
+            root,
+            declared: Some(&declared),
+        },
+        &grid_xyzw(),
+        |_| false,
+    );
 }
 
 #[test]
@@ -471,13 +590,21 @@ fn jit_matches_oracle_mask_root_bit_for_bit() {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
-    let w = a.push_var(3);
+    let (declared, z, w) = args(&mut a);
     let lt = a.push_binary(OpKind::Lt, x, y);
     let gt = a.push_binary(OpKind::Gt, z, w);
     let root = a.push_binary(OpKind::BitOr, lt, gt);
     assert_eq!(expression_tolerance(&a, root), Tolerance::BitExact);
-    assert_jit_matches_oracle("mask_root", &a, root, &grid_xyzw(), |_| false);
+    assert_jit_matches_oracle(
+        Subject {
+            name: "mask_root",
+            arena: &a,
+            root,
+            declared: Some(&declared),
+        },
+        &grid_xyzw(),
+        |_| false,
+    );
 }
 
 #[test]
@@ -488,20 +615,27 @@ fn jit_matches_oracle_fma() {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
+    let (declared, z, _w) = args(&mut a);
     let root = a.push_ternary(OpKind::MulAdd, x, y, z);
-    // W is unused: sweep the three live coordinates.
-    let mut pts = Vec::new();
-    for &x in &MAGS {
-        for &y in &MAGS {
-            for &z in &MAGS {
-                pts.push([x, y, z, 0.0]);
-            }
-        }
-    }
-    assert_jit_matches_oracle("fma", &a, root, &pts, |p| {
-        OpKind::MulAdd.fold_is_platform_specific(&[p[0], p[1], p[2]])
-    });
+    // The addend is the kernel's argument: one value per call, every (x, y)
+    // pair swept under it.
+    let sweeps: Vec<Sweep> = MAGS
+        .iter()
+        .map(|&z| Sweep {
+            block: [z, 0.0],
+            coords: coord_grid(),
+        })
+        .collect();
+    assert_jit_matches_oracle(
+        Subject {
+            name: "fma",
+            arena: &a,
+            root,
+            declared: Some(&declared),
+        },
+        &sweeps,
+        |p| OpKind::MulAdd.fold_is_platform_specific(&[p[0], p[1], p[2]]),
+    );
 }
 
 #[test]
@@ -512,7 +646,16 @@ fn jit_matches_oracle_recip_rsqrt() {
         let root = a.push_unary(op, x);
         // ±0 → ±inf agrees by bits; negative rsqrt → NaN in both tiers; the
         // finite points must land inside the estimate band vs the exact oracle.
-        assert_jit_matches_oracle(op.name(), &a, root, &grid_x(), |_| false);
+        assert_jit_matches_oracle(
+            Subject {
+                name: op.name(),
+                arena: &a,
+                root,
+                declared: None,
+            },
+            &grid_x(),
+            |_| false,
+        );
     }
 }
 
@@ -524,7 +667,16 @@ fn jit_matches_oracle_int_primitives() {
     let x = a.push_var(0);
     let ti = a.push_unary(OpKind::TruncToInt, x);
     let root = a.push_unary(OpKind::IntToFloat, ti);
-    assert_jit_matches_oracle("trunc_int", &a, root, &grid_x(), |_| false);
+    assert_jit_matches_oracle(
+        Subject {
+            name: "trunc_int",
+            arena: &a,
+            root,
+            declared: None,
+        },
+        &grid_x(),
+        |_| false,
+    );
 }
 
 #[test]
@@ -548,7 +700,16 @@ fn jit_matches_oracle_transcendentals_unary() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let root = a.push_unary(op, x);
-        assert_jit_matches_oracle(op.name(), &a, root, &grid_x(), |_| false);
+        assert_jit_matches_oracle(
+            Subject {
+                name: op.name(),
+                arena: &a,
+                root,
+                declared: None,
+            },
+            &grid_x(),
+            |_| false,
+        );
     }
 }
 
@@ -559,6 +720,15 @@ fn jit_matches_oracle_transcendentals_binary() {
         let x = a.push_var(0);
         let y = a.push_var(1);
         let root = a.push_binary(op, x, y);
-        assert_jit_matches_oracle(op.name(), &a, root, &grid_xy(), |_| false);
+        assert_jit_matches_oracle(
+            Subject {
+                name: op.name(),
+                arena: &a,
+                root,
+                declared: None,
+            },
+            &grid_xy(),
+            |_| false,
+        );
     }
 }

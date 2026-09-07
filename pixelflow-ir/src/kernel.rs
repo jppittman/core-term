@@ -27,8 +27,8 @@ use crate::kind::OpKind;
 /// 0 while B still holds 1, and the next claim hands out 1 again.
 static PLACEHOLDERS_IN_USE: AtomicU64 = AtomicU64::new(0);
 
-/// Placeholder indices sit above the coordinate (`0..4`) and reduction index
-/// (`4..8`) spaces. A `Kernel` never contains the compiler's manifold-param
+/// Placeholder indices sit above the retired coordinate space (`0..4`, of
+/// which only X and Y are live) and the reduction index space (`4..8`). A `Kernel` never contains the compiler's manifold-param
 /// slots (the value-producing macro path rejects manifold params outright), so
 /// everything from 8 up is free.
 const PLACEHOLDER_BASE: u32 = 8;
@@ -262,17 +262,6 @@ impl Kernel {
     pub fn y() -> Self {
         Self::coord(1)
     }
-    /// The Z coordinate.
-    #[must_use]
-    pub fn z() -> Self {
-        Self::coord(2)
-    }
-    /// The W coordinate.
-    #[must_use]
-    pub fn w() -> Self {
-        Self::coord(3)
-    }
-
     fn coord(i: u8) -> Self {
         let mut a = ExprArena::new();
         let r = a.push_var(i);
@@ -288,8 +277,31 @@ impl Kernel {
     }
 
     /// Adopt an already-built fragment — the `kernel!` macro's entry point.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the arena names a retired coordinate axis (`Var(2)` or
+    /// `Var(3)`, the old Z and W). A lattice has
+    /// [`COORD_AXES`](crate::arena::COORD_AXES) axes; a scalar that is the
+    /// same at every sample is a [`Uniform`], not an axis of extent 1. This
+    /// is where the refusal lives because `Var` is also a reduction binder's
+    /// index and a rewrite rule's metavariable, and a `Kernel` is the one
+    /// thing that becomes machine code.
     #[must_use]
     pub fn from_parts(arena: ExprArena, root: ExprId) -> Self {
+        assert!(
+            arena.retired_axis().is_none(),
+            "Kernel::from_parts: the arena names Var({}), which was the {} \
+             coordinate; a lattice has {} axes and a per-call scalar is a \
+             Uniform (docs/plans/2026-09-06-lattice-is-the-index.md)",
+            arena.retired_axis().unwrap_or_default(),
+            if arena.retired_axis() == Some(2) {
+                "Z"
+            } else {
+                "W"
+            },
+            crate::arena::COORD_AXES,
+        );
         Self::wrap(arena, root)
     }
 
@@ -660,24 +672,36 @@ impl Kernel {
     }
 
     /// Sample `self` at warped coordinates — contramap / `.at()`. Each of
-    /// `cx..cw` is itself a kernel of the outer coordinates; the inner's
-    /// `X/Y/Z/W` are substituted by them.
+    /// `cx`, `cy` is itself a kernel of the outer coordinates; the inner's
+    /// `X`/`Y` are substituted by them.
+    ///
+    /// Two coordinates, because a lattice has two axes. A scalar that was a
+    /// third or fourth coordinate is a [`Uniform`], and it needs no
+    /// substitution: it is already the same value everywhere.
     #[must_use]
-    pub fn at(&self, cx: &Kernel, cy: &Kernel, cz: &Kernel, cw: &Kernel) -> Self {
+    pub fn at(&self, cx: &Kernel, cy: &Kernel) -> Self {
         let mut arena = self.inner.arena.clone();
         let x = arena.splice(&cx.inner.arena, cx.inner.root);
         let y = arena.splice(&cy.inner.arena, cy.inner.root);
-        let z = arena.splice(&cz.inner.arena, cz.inner.root);
-        let w = arena.splice(&cw.inner.arena, cw.inner.root);
-        let root = arena.substitute_vars_with(self.inner.root, &[(0, x), (1, y), (2, z), (3, w)]);
+        let root = arena.substitute_vars_with(self.inner.root, &[(0, x), (1, y)]);
         Self::wrap(arena, root)
     }
 
-    /// The derivative `∂self/∂var` (0=X, 1=Y, 2=Z), resolved symbolically at
+    /// The derivative `∂self/∂var` (0=X, 1=Y), resolved symbolically at
     /// compile time. The building block of screen-space antialiasing: no jet
     /// domain, just an expression the calculus differentiates.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `var` names a coordinate axis.
     #[must_use]
     pub fn dwrt(&self, var: u8) -> Self {
+        assert!(
+            (var as usize) < crate::arena::COORD_AXES,
+            "Kernel::dwrt: no axis {var}; a lattice has {} \
+             (0 = X, 1 = Y)",
+            crate::arena::COORD_AXES
+        );
         let mut arena = self.inner.arena.clone();
         let v = arena.push_const(f32::from(var));
         let root = arena.push_binary(OpKind::Dwrt, self.inner.root, v);
@@ -800,7 +824,7 @@ mod tests {
 
     fn eval(k: &Kernel, x: f32, y: f32) -> f32 {
         let (arena, root) = k.parts();
-        eval_scalar(arena, root, &[x, y, 0.0, 0.0], &BindingTable::empty())
+        eval_scalar(arena, root, &[x, y], &BindingTable::empty())
     }
 
     #[test]
@@ -846,8 +870,6 @@ mod tests {
         let warped = body.at(
             &Kernel::x().add(&Kernel::constant(1.0)),
             &Kernel::y().mul(&Kernel::constant(2.0)),
-            &Kernel::z(),
-            &Kernel::w(),
         );
         assert_eq!(eval(&warped, 3.0, 4.0), 4.0 * 8.0);
     }
@@ -914,10 +936,7 @@ mod tests {
         let bound = BindingTable::empty()
             .bind_uniforms(arena, &[(cx.identity(), 0.0), (r.identity(), 1.0)])
             .expect("both are arguments");
-        assert_eq!(
-            eval_scalar(arena, root, &[3.0, 0.0, 0.0, 0.0], &bound),
-            10.0
-        );
+        assert_eq!(eval_scalar(arena, root, &[3.0, 0.0], &bound), 10.0);
 
         // ∂/∂x = 2(x − cx): the uniform differentiates to zero.
         let (out, oroot) = lower_dwrt_owned(arena, root).expect("calculus");
@@ -926,10 +945,41 @@ mod tests {
         let (da, dr) = ddx.parts();
         let (out2, oroot2) = lower_dwrt_owned(da, dr).expect("calculus");
         assert_eq!(
-            eval_scalar(&out2, oroot2, &[3.0, 0.0, 0.0, 0.0], &BindingTable::empty()),
+            eval_scalar(&out2, oroot2, &[3.0, 0.0], &BindingTable::empty()),
             4.0
         );
         assert_eq!(out.uniforms(), arena.uniforms());
+    }
+
+    /// A hand-built arena that names the retired Z axis is refused where it
+    /// would become a kernel. `Var` still carries reduction indices and the
+    /// rewrite tier's pattern metavariables, so the arena cannot refuse the
+    /// node itself; this is the boundary where it means a coordinate.
+    #[test]
+    #[should_panic(expected = "which was the Z coordinate")]
+    fn an_arena_naming_a_retired_axis_is_not_a_kernel() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let z = a.push_var(2);
+        let root = a.push_binary(OpKind::Add, x, z);
+        let _refused = Kernel::from_parts(a, root);
+    }
+
+    /// And the same for W, so neither index is quietly readmitted.
+    #[test]
+    #[should_panic(expected = "which was the W coordinate")]
+    fn the_fourth_axis_is_refused_too() {
+        let mut a = ExprArena::new();
+        let w = a.push_var(3);
+        let _refused = Kernel::from_parts(a, w);
+    }
+
+    /// A reduction binder's index sits in the same `Var` space and is not a
+    /// coordinate — the guard must not catch it.
+    #[test]
+    fn a_reduction_binder_is_not_a_retired_axis() {
+        let k = Kernel::sum_over(4, |i| i.add(&Kernel::x()));
+        assert_eq!(eval(&k, 1.0, 0.0), 6.0 + 4.0);
     }
 
     #[test]
@@ -954,7 +1004,7 @@ mod tests {
         let ddx = dist.dx();
         let (arena, root) = ddx.parts();
         let (out, oroot) = lower_dwrt_owned(arena, root).expect("calculus");
-        let got = eval_scalar(&out, oroot, &[3.0, 4.0, 0.0, 0.0], &BindingTable::empty());
+        let got = eval_scalar(&out, oroot, &[3.0, 4.0], &BindingTable::empty());
         assert!((got - 0.6).abs() < 1e-5);
     }
 }

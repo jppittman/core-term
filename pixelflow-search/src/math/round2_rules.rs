@@ -28,7 +28,7 @@
 //!   `lhs_template`/`rhs_template` share the same metavariable encoding
 //!   `eval_scalar` already understands (`Var(i)`), so "instantiate LHS and
 //!   RHS with the same leaf assignment" is exactly "evaluate both templates
-//!   at the same `vars: [f32; 4]`" — see `round2_oracle_check` below.
+//!   at the same point" — see `round2_oracle_check` below.
 //!
 //! ## Naming
 //!
@@ -1299,6 +1299,7 @@ pub fn experimental_rules() -> Vec<Box<dyn Rewrite>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_ir::Uniform;
     use pixelflow_ir::binding::BindingTable;
     use pixelflow_ir::eval_scalar;
 
@@ -1347,25 +1348,64 @@ mod tests {
         ]
     }
 
+    /// Replace every metavariable past the coordinate axes with one of
+    /// `args`, declared in this arena. `Var(2)`/`Var(3)` are not coordinates
+    /// — a lattice has two axes — and a value invariant across the lattice is
+    /// exactly what an arbitrary subterm's stand-in should be.
+    fn bind_metavars_past_the_axes(
+        arena: &mut ExprArena,
+        root: ExprId,
+        args: &[Uniform],
+    ) -> ExprId {
+        let subs: Vec<(u8, ExprId)> = args
+            .iter()
+            .enumerate()
+            .map(|(i, u)| {
+                let slot = arena.declare_uniform(u.decl());
+                let axis = pixelflow_ir::arena::COORD_AXES as u8 + i as u8;
+                (axis, arena.push_uniform(slot))
+            })
+            .collect();
+        arena.substitute_vars_with(root, &subs)
+    }
+
     /// Evaluate `rule`'s LHS and RHS templates at every point in `points`
     /// and assert they agree within `tol` (relative for |value| > 1, else
     /// absolute) — the cross-form conditioned gate (§2.4). `tol` is per-rule:
     /// exact identities use a tight tolerance, estimate-based ones (`Recip`,
     /// `Rsqrt`) use a loose one, matching CLAUDE.md's own table.
     fn assert_oracle(rule: &dyn Rewrite, points: &[[f32; 4]], tol: f32) {
+        // A metavariable stands for an arbitrary subterm. The first two can
+        // be coordinates — a lattice has two axes — and the rest are the
+        // kernel arguments they would be, sampled from the point's remaining
+        // slots through the block. The same handles go into both arenas, so
+        // the two sides read one value per metavariable.
+        let args = [Uniform::new(0.0), Uniform::new(0.0)];
         let mut lhs_arena = ExprArena::new();
         let lhs_root = rule
             .lhs_template(&mut lhs_arena)
             .unwrap_or_else(|| panic!("{}: missing lhs_template", rule.name()));
+        let lhs_root = bind_metavars_past_the_axes(&mut lhs_arena, lhs_root, &args);
         let mut rhs_arena = ExprArena::new();
         let rhs_root = rule
             .rhs_template(&mut rhs_arena)
             .unwrap_or_else(|| panic!("{}: missing rhs_template", rule.name()));
+        let rhs_root = bind_metavars_past_the_axes(&mut rhs_arena, rhs_root, &args);
 
         for point in points {
-            let bindings = BindingTable::empty();
-            let lhs = eval_scalar(&lhs_arena, lhs_root, point, &bindings);
-            let rhs = eval_scalar(&rhs_arena, rhs_root, point, &bindings);
+            let values = [
+                (args[0].identity(), point[2]),
+                (args[1].identity(), point[3]),
+            ];
+            let coords = [point[0], point[1]];
+            let lhs_bindings = BindingTable::empty()
+                .bind_uniforms(&lhs_arena, &values)
+                .expect("declared just above");
+            let rhs_bindings = BindingTable::empty()
+                .bind_uniforms(&rhs_arena, &values)
+                .expect("declared just above");
+            let lhs = eval_scalar(&lhs_arena, lhs_root, &coords, &lhs_bindings);
+            let rhs = eval_scalar(&rhs_arena, rhs_root, &coords, &rhs_bindings);
             if lhs.is_nan() && rhs.is_nan() {
                 continue;
             }

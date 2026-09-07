@@ -448,9 +448,9 @@ fn syn_expr_references_any(expr: &syn::Expr, names: &std::collections::HashSet<S
     }
 }
 
-/// Check if a name is a coordinate intrinsic (X, Y, Z, W).
+/// Check if a name is a coordinate intrinsic (X, Y).
 fn is_coordinate_intrinsic(name: &str) -> bool {
-    matches!(name, "X" | "Y" | "Z" | "W")
+    matches!(name, "X" | "Y")
 }
 
 /// Optimize a block while preserving its structure.
@@ -1021,8 +1021,6 @@ impl EGraphContext {
                         .unwrap_or_else(|| match idx {
                             0 => "X".to_string(),
                             1 => "Y".to_string(),
-                            2 => "Z".to_string(),
-                            3 => "W".to_string(),
                             _ => format!("__var{}", idx),
                         });
 
@@ -1516,7 +1514,7 @@ mod tests {
 
         // Full pipeline test matching actual kernel! macro
         let input = quote! { |cx: f32, cy: f32, cz: f32, r: f32| {
-            let d_dot_c = X * cx + Y * cy + Z * cz;
+            let d_dot_c = X * cx + Y * cy + cz;
             let c_sq = cx * cx + cy * cy + cz * cz;
             let r_sq = r * r;
             d_dot_c * d_dot_c - (c_sq - r_sq)

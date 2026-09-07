@@ -1995,7 +1995,7 @@ mod tests {
             "with no lattice the fused form is one instruction against two"
         );
         assert_eq!(
-            chosen(LatticeShape::new([256, 256, 1, 1])),
+            chosen(LatticeShape::new([256, 256])),
             OpKind::Add,
             "over a frame the fused form pays for Z at every sample"
         );
