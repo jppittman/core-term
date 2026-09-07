@@ -304,12 +304,12 @@ impl Kernel {
     #[must_use]
     pub fn from_parts(arena: ExprArena, root: ExprId) -> Self {
         assert!(
-            arena.retired_axis().is_none(),
+            arena.retired_axis(root).is_none(),
             "Kernel::from_parts: the arena names Var({}), which was the {} \
              coordinate; a lattice has {} axes and a per-call scalar is a \
              Uniform (docs/plans/2026-09-06-lattice-is-the-index.md)",
-            arena.retired_axis().unwrap_or_default(),
-            if arena.retired_axis() == Some(2) {
+            arena.retired_axis(root).unwrap_or_default(),
+            if arena.retired_axis(root) == Some(2) {
                 "Z"
             } else {
                 "W"

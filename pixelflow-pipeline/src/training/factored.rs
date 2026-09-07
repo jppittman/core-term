@@ -714,6 +714,18 @@ mod tests {
             })
             .collect();
         let id = arena.substitute_vars_with(id, &subs);
+        // The precondition `emit::compile` will assert, checked here where
+        // *every* caller reaches it on *every* architecture. The scalar/JIT
+        // comparisons below are `cfg(target_arch = "aarch64")`, so on an x86
+        // machine they do not exist and the emitter is never reached with
+        // these arenas at all — this file has learned that from a macOS
+        // runner twice. Asserting the precondition rather than the outcome is
+        // what makes the next miss local.
+        assert_eq!(
+            arena.retired_axis(id),
+            None,
+            "bind_retired_axes left a reachable retired axis"
+        );
         (arena, id)
     }
 
@@ -755,6 +767,35 @@ mod tests {
         assert!(
             diff <= epsilon,
             "scalar/JIT mismatch\nexpr: {src}\nscalar: {scalar}\njit: {jit}\ndiff: {diff} > {epsilon}"
+        );
+    }
+
+    /// `substitute_vars_with` rewrites the reachable graph and leaves what it
+    /// replaced behind, so the arena still *holds* `Var(2)` afterwards. What
+    /// matters — and what the emitter asks — is whether one is reachable from
+    /// the root. Scanning every node instead cost this change a CI round trip.
+    #[test]
+    fn substitution_clears_the_reachable_retired_axes_not_the_arena() {
+        let mut a = ExprArena::new();
+        let y = a.push_var(1);
+        let z = a.push_var(2);
+        let w = a.push_var(3);
+        let zw = a.push_binary(pixelflow_ir::OpKind::Add, z, w);
+        let root = a.push_binary(pixelflow_ir::OpKind::Mul, y, zw);
+        assert!(
+            a.retired_axis(root).is_some_and(|v| v == 2 || v == 3),
+            "the fixture names a retired axis (which one depends on walk order)"
+        );
+
+        let (bound, bound_root) = bind_retired_axes(&a, root);
+        assert_eq!(
+            bound.retired_axis(bound_root),
+            None,
+            "nothing reachable names a retired axis after substitution"
+        );
+        assert!(
+            bound.len() > a.len(),
+            "the replaced nodes are still in the arena, merely unreachable"
         );
     }
 

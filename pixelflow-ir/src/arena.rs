@@ -26,7 +26,7 @@ pub const COORD_AXES: usize = 2;
 /// The `Var` indices Z and W had. Reserved, never reissued: a reduction
 /// binder taking one of them would make an arena written before the change
 /// read back as a different program.
-pub const RETIRED_COORD_AXES: [u8; 2] = [2, 3];
+pub(crate) const RETIRED_COORD_AXES: [u8; 2] = [2, 3];
 
 /// The first `Var` index a reduction binder takes.
 ///
@@ -34,11 +34,11 @@ pub const RETIRED_COORD_AXES: [u8; 2] = [2, 3];
 /// [`RETIRED_COORD_AXES`] rather than past [`COORD_AXES`] — which is what
 /// keeps them where they were when there were four axes. The gap between
 /// the two is the reason `Var`'s three meanings do not collide.
-pub const REDUCE_BINDER_BASE: u8 = COORD_AXES as u8 + RETIRED_COORD_AXES.len() as u8;
+pub(crate) const REDUCE_BINDER_BASE: u8 = COORD_AXES as u8 + RETIRED_COORD_AXES.len() as u8;
 
 /// How many reduction binders the index space holds, starting at
 /// [`REDUCE_BINDER_BASE`] — the depth of nested folds a kernel may carry.
-pub const REDUCE_BINDERS: u8 = 4;
+pub(crate) const REDUCE_BINDERS: u8 = 4;
 
 // ───────────────────────────────────────── ExprId ─────────────────────────────
 
@@ -363,20 +363,39 @@ impl ExprArena {
         self.push_node(ExprNode::Var(i))
     }
 
-    /// The retired coordinate axis this arena names, if any — the guard
-    /// [`Kernel::from_parts`](crate::Kernel::from_parts) and the JIT cache
-    /// apply before an arena can become a compiled kernel.
+    /// The retired coordinate axis reachable from `root`, if any — the guard
+    /// [`Kernel::from_parts`](crate::Kernel::from_parts) and
+    /// `emit::compile` apply before an arena can become a compiled kernel.
     ///
     /// A `Var(2)` reaching the emitter would read the third base coordinate,
     /// which a collapse passes as zero and no longer means anything: the
     /// pixels would be plausible and wrong. Refusing it is what makes "no
     /// emitted kernel reads the retired lanes" a fact rather than a habit.
+    ///
+    /// **Reachable from `root`, not every node.** An arena is a bump list and
+    /// nothing prunes it: `substitute_vars_with` rewrites the reachable graph
+    /// and leaves what it replaced behind, so an arena whose retired axes were
+    /// correctly substituted still *holds* the original `Var(2)` nodes. They
+    /// are not emitted, because nothing reaches them. Scanning every node
+    /// refuses that arena and is simply wrong — it cost this change a CI round
+    /// trip.
     #[must_use]
-    pub fn retired_axis(&self) -> Option<u8> {
-        self.nodes.iter().find_map(|n| match n {
-            ExprNode::Var(i) if RETIRED_COORD_AXES.contains(i) => Some(*i),
-            _ => None,
-        })
+    pub fn retired_axis(&self, root: ExprId) -> Option<u8> {
+        let mut seen = alloc::vec![false; self.nodes.len()];
+        let mut stack = alloc::vec![root];
+        while let Some(id) = stack.pop() {
+            let idx = id.0 as usize;
+            if core::mem::replace(&mut seen[idx], true) {
+                continue;
+            }
+            if let ExprNode::Var(i) = &self.nodes[idx]
+                && RETIRED_COORD_AXES.contains(i)
+            {
+                return Some(*i);
+            }
+            stack.extend(self.children(id));
+        }
+        None
     }
 
     /// Push a `Const(v)` node.

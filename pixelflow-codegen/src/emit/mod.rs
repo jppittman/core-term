@@ -2102,10 +2102,10 @@ pub fn compile(
     root: pixelflow_ir::arena::ExprId,
 ) -> Result<CompileResult, CompileError> {
     assert!(
-        arena.retired_axis().is_none(),
+        arena.retired_axis(root).is_none(),
         "emit::compile: the arena names Var({:?}), a coordinate axis a \
          lattice no longer has; a per-call scalar is a Uniform",
-        arena.retired_axis()
+        arena.retired_axis(root)
     );
     EmitCtx::default().compile(arena, root)
 }
