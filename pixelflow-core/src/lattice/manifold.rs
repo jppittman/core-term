@@ -166,7 +166,7 @@ impl UniformBlock {
 /// (`i + ½`, `j + ½`), which is what [`PlaneRegion::rows`] builds; a
 /// [`Lattice`](crate::Lattice) or an
 /// [`IndexRange`](crate::IndexRange) samples the raw index, which is what
-/// [`PlaneRegion::at_index`] builds. A single real-valued point
+/// `PlaneRegion::at_index` builds. A single real-valued point
 /// ([`Lattice::eval_at`](crate::Lattice::eval_at)) is the one place an
 /// arbitrary coordinate legitimately appears, because there both axes are
 /// fixed and there is no index to be one of. All three are the same band
@@ -490,9 +490,10 @@ impl BoundManifold {
     /// [`Lattice::eval_at`](crate::Lattice::eval_at). Not a domain: a
     /// different operation from [`Self::collapse_rows`], answering one value
     /// instead of filling a buffer. Works at any compiled extent, since a
-    /// `1×1` band lies inside every non-degenerate one — [`Lattice::eval_at`]
-    /// is the common case, compiling at `[1, 1]` so every coordinate this
-    /// kernel is ever asked about shares one compiled program.
+    /// `1×1` band lies inside every non-degenerate one — the common case is
+    /// [`Lattice::eval_at`](crate::Lattice::eval_at), which compiles at
+    /// `[1, 1]` so every coordinate this kernel is ever asked about shares
+    /// one compiled program.
     #[must_use]
     pub fn eval_at(&self, x: f32, y: f32) -> f32 {
         let mut out = [0.0f32];
