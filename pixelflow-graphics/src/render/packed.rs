@@ -310,6 +310,33 @@ mod tests {
         }
     }
 
+    /// A scene whose clock is an argument at its default draws a plausible
+    /// picture — frozen at time zero — so nothing downstream can notice it.
+    /// `bind` refuses it instead, and this is the check that keeps the
+    /// refusal: without it the mistake is invisible to every job we run.
+    #[test]
+    #[should_panic(expected = "this program has 1 argument(s)")]
+    fn binding_a_scene_without_its_arguments_is_refused() {
+        let clock = pixelflow_core::Uniform::new(0.0);
+        let k = Kernel::constant;
+        let color = Rgba::new(clock.kernel(), k(0.0), k(0.0), k(1.0));
+        let _refused = PackedManifold::compile(&color, RGBA, [4, 1]).bind(&[]);
+    }
+
+    /// The other half: the same program binds once a block carries the
+    /// argument, so the refusal is a missing block and not a ban on scenes
+    /// that have one.
+    #[test]
+    fn the_same_scene_binds_with_a_block() {
+        let clock = pixelflow_core::Uniform::new(0.0);
+        let k = Kernel::constant;
+        let color = Rgba::new(clock.kernel(), k(0.0), k(0.0), k(1.0));
+        let program = PackedManifold::compile(&color, RGBA, [4, 1]);
+        let mut block = program.block();
+        block.set(clock, 1.0).expect("the clock is the argument");
+        assert_eq!(program.bind_with(&[], &block).shifts(), RGBA);
+    }
+
     /// The two byte orders are the same pixels in a different arrangement, so
     /// a test that passed by packing everything into one lane would not
     /// notice. This one does.
