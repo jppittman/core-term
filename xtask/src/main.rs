@@ -607,8 +607,10 @@ enum IsaExecutionMode {
     BuildOnly,
     /// Compile, lint, and execute the *ISA-sensitive* tests for whichever
     /// levels this host's CPU can run. Presubmit's path: see
-    /// [`IsaExecutionMode::test_args`] for what that set is and why running it
-    /// is nearly free once the lint has built it.
+    /// `IsaExecutionMode::test_args` for what that set is and why running it
+    /// is nearly free once the lint has built it. (Plain code span, not an
+    /// intra-doc link: that method is `#[cfg(target_arch = "x86_64")]`, so a
+    /// link would be broken on every other rustdoc target.)
     Smoke,
     /// Compile, lint, and execute the whole workspace's tests for whichever
     /// levels this host's CPU can run. Postsubmit's job, once a change has
