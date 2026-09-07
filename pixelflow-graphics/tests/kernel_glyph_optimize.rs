@@ -201,38 +201,124 @@ fn lowered_winding_ops_are_all_egraph_representable() {
 /// Tolerance: reassociation/FMA-fusion re-rounds a long winding sum at the
 /// 1e-4 scale (observed); an unsound rule (wrong branch of a root, a lost
 /// mask) shifts coverage by O(1).
+///
+/// **Sizes, not one size, and coarse ones.** Cost is quadratic in the size
+/// while the chance of catching this is roughly linear in the row count, so a
+/// wide sweep of coarse sizes dominates a narrow sweep that includes fine
+/// ones — 128 px alone would be 75% of the texels and has never caught
+/// anything.
+///
+/// This is **more expensive than what it replaced**, and worth it. Against the
+/// single 32 px pass this test used to make, ten sizes cost about 7x more
+/// (7200 texels per glyph against 1024) — roughly 40 s in a debug run. It buys
+/// 29 real divergences at four sizes where 32 px alone found none. An earlier
+/// revision of this comment claimed a 6.9x *saving*; that compared against an
+/// intermediate 7/12/17/32/64/128 sweep that existed only within this branch,
+/// never on `main`, which is not a baseline anyone else would recognize.
+const SIZES: [u32; 10] = [7, 9, 11, 13, 15, 17, 19, 21, 23, 32];
+
+/// **Sizes, not one size.** A rounding difference only *decides* something
+/// where a comparison sits on a knife edge, and which rows land on one is a
+/// function of the size, so a single size is not a sample of this failure
+/// mode — it is a lottery ticket. `'8'` at 17 px is the recorded case: the
+/// quadratic solver's `disc >= 0` is exact zero at the parabola's vertex row,
+/// one rounding of `Y·slope + c` (fused) against two (raw) flips it, and a
+/// whole crossing (0.5 of coverage) appears on one side and not the other.
+/// Eight texels of a single row moved. 32 px — the only size this test used to
+/// run at, and the size the glyph goldens use — sees nothing.
 #[test]
 fn optimized_glyph_matches_raw_within_reassociation_noise() {
     use pixelflow_graphics::fonts::Font;
     use pixelflow_ir::binding::BindingTable;
     use pixelflow_ir::eval_scalar;
 
+    /// Reassociation and FMA fusion re-round a long winding sum at the 1e-4
+    /// scale; an unsound rewrite moves coverage by O(1).
+    const TOLERANCE: f32 = 1e-3;
+
+    /// Texels where the optimized and raw arenas disagree today, all on the
+    /// `'8'` waist at 13/15/17/21 px. Not noise and not an optimizer bug: the
+    /// quadratic solver's `disc >= 0` is a knife edge at a tangency, so the
+    /// two arenas' different fusion choices land on different sides of it.
+    const KNOWN_DIVERGENT_TEXELS: usize = 29;
+
     const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
     let font = Font::parse(FONT_DATA).unwrap();
+    let mut divergences: Vec<String> = Vec::new();
 
-    for ch in ['A', 'O', 'g', '8'] {
-        let kernel = font.glyph_kernel_scaled(ch, 32.0).expect("glyph kernel");
-        let (arena, root) = kernel.parts();
-        let (raw, raw_root) = lower_dwrt_owned(arena, root).expect("lower raw");
-        let optimized = pixelflow_search::runtime::optimize_runtime_arena(
-            arena,
-            root,
-            pixelflow_ir::LatticeShape::POINT,
-        )
-        .expect("glyph arenas must optimize (pure arithmetic + Dwrt + masks)");
-        let (opt, opt_root) = (&optimized.0, optimized.1);
+    for size in SIZES {
+        for ch in ['A', 'O', 'g', '8'] {
+            let kernel = font
+                .glyph_kernel_scaled(ch, size as f32)
+                .expect("glyph kernel");
+            let (arena, root) = kernel.parts();
+            let (raw, raw_root) = lower_dwrt_owned(arena, root).expect("lower raw");
+            // The lattice a bake of this glyph would compile at — the
+            // extraction is a function of the shape, and the bake's is the one
+            // that reaches pixels.
+            let extent = size + size / 2;
+            let optimized = pixelflow_search::runtime::optimize_runtime_arena(
+                arena,
+                root,
+                pixelflow_ir::LatticeShape::new([extent, extent]),
+            )
+            .expect("glyph arenas must optimize (pure arithmetic + Dwrt + masks)");
+            let (opt, opt_root) = (&optimized.0, optimized.1);
 
-        for j in 0..32usize {
-            for i in 0..32usize {
-                let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
-                let want = eval_scalar(&raw, raw_root, &[x, y], &BindingTable::empty());
-                let got = eval_scalar(opt, opt_root, &[x, y], &BindingTable::empty());
-                assert!(
-                    (want - got).abs() < 1e-3,
-                    "{ch}@32: optimized {got} != raw {want} at texel ({i},{j}) — \
-                     an optimization changed glyph coverage beyond rounding noise"
-                );
+            for j in 0..extent as usize {
+                for i in 0..extent as usize {
+                    let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
+                    let want = eval_scalar(&raw, raw_root, &[x, y], &BindingTable::empty());
+                    let got = eval_scalar(opt, opt_root, &[x, y], &BindingTable::empty());
+                    // Before the comparison, not folded into it: `NaN >= x` is
+                    // false, so a threshold test *accepts* a non-finite
+                    // coverage silently. The `assert!` this loop replaced
+                    // caught NaN for free by asserting the negation; a
+                    // collector has to say so itself.
+                    assert!(
+                        want.is_finite() && got.is_finite(),
+                        "{ch}@{size} texel ({i},{j}): non-finite coverage \
+                         (raw {want}, optimized {got})"
+                    );
+                    if (want - got).abs() >= TOLERANCE {
+                        divergences.push(format!(
+                            "{ch}@{size} texel ({i},{j}): raw {want} vs optimized {got} \
+                             (delta {})",
+                            got - want
+                        ));
+                    }
+                }
             }
         }
     }
+
+    // Reported together rather than at the first hit: which rows sit on a
+    // knife edge is the diagnostic, and one texel does not show it.
+    // Pinned, not empty. These 29 texels are the runtime e-graph and the raw
+    // arena disagreeing about the `'8'` waist, and they are a symptom of a
+    // live rendering defect that this PR proves and does not fix — see
+    // `quad_tangency_winding` and `freetype_oracle`. Every one is on `'8'`,
+    // so a divergence anywhere else fails here even if the count happens to
+    // match, which is what keeps this a guard against unsound rewrites rather
+    // than a record of one bug.
+    //
+    // Both saturation and `eval_scalar` are deterministic (CLAUDE.md: a kernel
+    // cannot be built differently on two machines), so the count is stable
+    // across targets. If a platform reports a different one, that is a finding
+    // about determinism, not a flaky test.
+    assert!(
+        divergences.iter().all(|d| d.starts_with('8')),
+        "optimization changed coverage on a glyph other than the known \
+         `'8'` case:\n{}",
+        divergences.join("\n")
+    );
+    assert_eq!(
+        divergences.len(),
+        KNOWN_DIVERGENT_TEXELS,
+        "expected the {KNOWN_DIVERGENT_TEXELS} known `'8'` divergences, got \
+         {}. Fewer means the tangency defect has been fixed — lower the pin, \
+         or delete it and assert the set is empty.\n{}",
+        divergences.len(),
+        divergences.join("\n")
+    );
 }
