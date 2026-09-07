@@ -35,7 +35,9 @@ These points are particularly relevant when working with or generating code usin
 
 ## Code Structure
 
-1.  **Avoid Deep Nesting:** Prefer guard clauses and early returns to deeply nested `if`/`else` or `match` blocks. Aim for a flatter control flow where possible. (Think Go's `if err != nil { return err }` style).
+1.  **Guard Clauses and Early Returns:** Prefer them to deeply nested `if`/`else` or `match` blocks. (Think Go's `if err != nil { return err }` style.) Flatter control flow is the visible result, but it is not the reason — this is rule 3 below at function scope, and the strongest form of it: a `return` does not collapse one case into another, it deletes the case outright. It also takes the join point with it, which is why code written this way accumulates no `else` blocks. Nothing rejoins, so nothing can attach.
+
+    Read downward, such a function is a proof: discharge, discharge, discharge, conclude. By the last line exactly one case is still inhabited, and the code handling it asks no questions, because every condition was already spent above it.
 
     * **Bad:**
         ```rust
@@ -78,6 +80,54 @@ These points are particularly relevant when working with or generating code usin
         ```
 
 2.  **Prefer `match` over `else if`:** When choosing between complex `if`/`else if`/`else` chains and a `match` statement, prefer `match`, especially when dealing with enums or a fixed set of conditions.
+
+3.  **Fold Before You Dispatch:** This is not a division of labor between `if` and `match` — it is a preference between two things you can do with a set of cases, and folding is the better one wherever it is available.
+
+    A **fold** leaves fewer live possibilities than it found. `if x > 0.0 { x *= -1.0 }` takes "any sign" down to "non-positive"; two possibilities become one, which is exactly why it needs no `else` — there is nothing left to say. **Dispatch** does the opposite: it keeps every case alive and hands them all to whatever comes next. That is the cost that makes this an ordering rather than a taxonomy, because a case is never carried by the branch alone — every reader, every test, and every later change downstream of it carries it too.
+
+    So: collapse the cases wherever they can be collapsed, and reach for `match` (over an enum, or a trait method) for the ones that genuinely cannot be. An `if`/`else` whose arms send execution toward different behavior is usually a fold that wasn't taken; when it isn't — when the cases really are irreducible — it should be a `match`, which at least says so honestly.
+
+    * **Good (a fold — two possibilities become one):**
+        ```rust
+        // z is non-positive after this, whatever sign x started as.
+        let mut z = x;
+        if z > 0.0 {
+            z *= -1.0;
+        }
+        ```
+    * **Bad (dispatch wearing an `if` — the arms are different behaviors, and both cases are still live afterward):**
+        ```rust
+        fn commit(tx: &Transaction) {
+            if tx.is_readonly() {
+                log_readonly(tx);
+            } else {
+                write_to_disk(tx);
+                notify_subscribers(tx);
+            }
+        }
+        ```
+    * **Good (the cases are irreducible here, so dispatch — and say so):**
+        ```rust
+        enum TxKind { ReadOnly, Write }
+
+        fn commit(tx: &Transaction, kind: TxKind) {
+            match kind {
+                TxKind::ReadOnly => log_readonly(tx),
+                TxKind::Write => {
+                    write_to_disk(tx);
+                    notify_subscribers(tx);
+                }
+            }
+        }
+        ```
+
+    **Branchless is the limit of this rule.** A fold reduces the live cases; branchless removes them from runtime entirely, because one expression is correct for every input. It is what pixelflow itself is built out of — `Select` is a bitwise blend on every backend, a comparison yields an all-ones mask rather than a `bool`, and the language is a DAG with no iteration binder — so take it wherever the hardware offers it.
+
+    The one thing it does not license is hand-rolling a *worse* branchless form than the instruction already sitting there. The retired `Round` expansion is the worked counter-example: `(x + 0.5).floor()` is two instructions where `roundps` is one, and it isn't any IEEE rounding mode either. Slower *and* wrong is never the trade. See "Floating point at the edges" in `CLAUDE.md`.
+
+    **What is branchless is the denotation, not the instruction stream** — and `Select` is the worked example of the difference, worth knowing before you "fix" it. The operation blends: every lane, always. But codegen *also* emits a short-circuit branch that skips computing an arm no lane selected (`pixelflow-codegen/src/emit/guards.rs`), bought only where the skipped arm outcosts `MISPREDICT_PENALTY_CYCLES` — mask coherence is a property of the data, which no static analysis can know, so the analysis bounds the downside by the upside instead of guessing.
+
+    That branch is not a live case: it can change the work done, never the value. And that is the payoff of folding rather than an exception to it. Once the meaning carries one case, the compiler is free to put branches back for speed, because nothing downstream depends on their existence.
 
 ## Functions and APIs
 
@@ -207,6 +257,19 @@ These points are particularly relevant when working with or generating code usin
     * **Bad:** `test1`, `min_max`, `handles_edge_case`
     * **Good:** `render_letter_when_it_receives_letter_keypress` — reads as "it should render letter when it receives letter keypress".
     * **Good:** `push_reduce_should_panic_when_the_combiner_is_not_a_monoid_op` — already a complete sentence on its own; the file-local convention of spelling out `_should_` explicitly is an acceptable variant of the same rule.
+
+## Extensibility
+
+1.  **New Implementation of an Existing Category → Trait First:** Before adding a second way of doing something the codebase already does one way, check whether that category is already named as a trait.
+    * **If a trait exists:** implement the new behavior as another `impl` of it — that's the whole task.
+    * **If it doesn't:** a single concrete implementation with no trait means nothing has needed to vary yet. That's not a green light to bolt the second case on however is quickest — extract a trait around the existing implementation *first*, then add the new implementation as a second `impl`. Don't grow the second implementation as a parallel free function, a copy-pasted module, or a mode flag/`enum` wedged into the first one's signature — each of those is a case pretending not to be one, and the next reader has to rediscover the trait that should have been written down.
+    * **Worked example already in this tree:** `pixelflow-codegen`'s register allocation. `RegisterAllocator` is a trait with one required method (`allocate_nest`); `LinearScan` is its one `impl`. A second allocator — a Sethi-Ullman variant, say — is added as a second `impl RegisterAllocator`, not as a fork of `LinearScan`'s internals or a flag that changes its behavior in place.
+
+    **This is "Fold Before You Dispatch" (Code Structure, rule 3) at type scope**, which is why the two do not contradict each other despite one of them being named "dispatch". A case matched at twenty call sites is live at all twenty. Extracting a trait moves that distinction to the single point where the concrete type is chosen, and every use downstream becomes unconditional — it calls a method rather than taking a branch. Dispatch that happens **once, at construction** is not what rule 3 warns against; dispatch **repeated at every use** is.
+
+    This also ranks the ways of varying behavior, by *where* the case gets paid. A `match` over an enum, or a monomorphized generic (`impl Trait`/`<T: Trait>`), settles it at one point and leaves every use unconditional. A `Box<dyn Trait>` does not — it pays dispatch per call, at every use, which is exactly the shape this rule is against. Reach for it when the set of implementations genuinely isn't known at compile time; on a hot path, a `match` over an enum or static dispatch is usually the better answer.
+
+    So all three are one factoring at different scopes: a guard clause puts the case at the top of a function so the body is straight-line; a trait puts it at construction so the call sites are straight-line; branchless removes it altogether. In each, the case is moved to a boundary — or deleted — so that the interior asks no questions.
 
 ## Flexibility
 
