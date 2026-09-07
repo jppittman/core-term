@@ -420,8 +420,9 @@ fn push_dwrt(arena: &mut ExprArena, expr: ExprId, var: u8) -> ExprId {
 // ============================================================================
 
 /// Base `Var` index used to carry `Param(i)` leaves through the e-graph, which
-/// has no Param representation: indices 0..4 are coordinates and 4..8 are
-/// reduction indices, so params ride at 16+ and are mapped back after
+/// has no Param representation: indices 0..2 are the coordinates, 2..4 are the
+/// retired Z and W, and 4..8 are reduction indices, so params ride at 16+ and
+/// are mapped back after
 /// extraction. To every rewrite rule they are opaque leaves — exactly the
 /// semantics of an unbound scalar — and the chain rule gives them derivative
 /// zero like any non-differentiation variable.

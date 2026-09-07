@@ -1,6 +1,6 @@
 //! Isolate Rust-to-JIT call overhead from expression cost.
 //!
-//! Both cases execute the *same compiled kernel* over the same 2D lattice and
+//! Both cases execute the *same compiled kernel* over the same lattice and
 //! differ only in call granularity: the baseline crosses the Rust↔JIT boundary
 //! once per SIMD group from a Rust loop, the collapse case once for the whole
 //! frame. One kernel timed two ways is what makes the delta attributable to

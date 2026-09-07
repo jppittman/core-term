@@ -985,7 +985,12 @@ impl DifferentialCheck {
                 let i = *i as usize;
                 assert!(
                     i < crate::arena::COORD_AXES,
-                    "PointCheck: Var({i}) — a reduction index outside a Reduce"
+                    "PointCheck: Var({i}) — {}",
+                    if crate::arena::RETIRED_COORD_AXES.contains(&(i as u8)) {
+                        "a retired coordinate axis; a per-call scalar is a Uniform"
+                    } else {
+                        "a reduction index outside a Reduce"
+                    }
                 );
                 NodeBound::exact(vars[i])
             }

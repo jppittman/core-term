@@ -418,7 +418,15 @@ pub fn screen_for_oracle(arena: &ExprArena, root: ExprId) -> Result<(), String> 
             // never set it would get. A `Buffer` has no such fallback, which
             // is why that one is still refused.
             ExprNode::Var(i) if *i >= pixelflow_ir::arena::COORD_AXES as u8 => {
-                return Err(format!("Var({i}) — reduction index outside a Reduce"));
+                // Past the axes is two different things: the retired Z/W, and
+                // a reduction binder that escaped its `Reduce`. Naming the
+                // wrong one sends the reader to the wrong file.
+                let why = if *i < 4 {
+                    "a retired coordinate axis; a per-call scalar is a Uniform"
+                } else {
+                    "a reduction index outside a Reduce"
+                };
+                return Err(format!("Var({i}) — {why}"));
             }
             _ => {
                 if let op @ (OpKind::Gather | OpKind::RawGather | OpKind::Dwrt | OpKind::Tuple) =

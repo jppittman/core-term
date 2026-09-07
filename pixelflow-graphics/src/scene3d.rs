@@ -407,11 +407,28 @@ const CHECKER_DARK: [f32; 3] = [0.2, 0.25, 0.3];
 /// The two *geometric* facts about where the hit lands — which square it is
 /// in, and how far it is from the nearest edge — are functions of the hit's
 /// `x` and `z` alone, so they are built over the two coordinate slots and
-/// precomposed once, which is what keeps the hit point from appearing in the
-/// arena once per use. The footprint is not a coordinate of the material: it
-/// is a screen-space quantity the caller already has, and it enters where it
-/// is used rather than as a third axis nothing varies along. (It was one, and
-/// it was the last reader of `Z` outside a shader's clock.)
+/// substituted there. The footprint is not a coordinate of the material: it is
+/// a screen-space quantity the caller already has, and it enters where it is
+/// used rather than as a third axis nothing varies along. (It was one, and it
+/// was the last reader of `Z` outside a shader's clock.)
+///
+/// **What that costs, measured rather than assumed.** Substituting here — into
+/// `light` and `to_edge`, before each is read by all three colour channels —
+/// puts the hit point in the arena **twelve** times where the four-slot form
+/// put it four: 2,404 nodes per channel against 1,201, and 7,213 for the
+/// colour against 4,618. It is not a value bug (saturation absorbs it; the
+/// `chrome` byte-identity table in the L1 CL is the evidence) but it doubles
+/// the *input* to saturation for every scene calling this, and budgets here
+/// are hard — `safety_ceiling` panics the build rather than truncating.
+///
+/// The four-slot form substituted once, last, over the finished blend, because
+/// a four-coordinate `at` could carry the footprint through untouched as a
+/// third slot. With two axes there is no way to say "substitute `x` and `z`,
+/// leave `footprint` alone" in one operation: substitution rewrites every
+/// `Var(0)`/`Var(1)`, and the footprint arrives already in the caller's space.
+/// Expressing it would need `pixelflow-ir`'s placeholder machinery, which is
+/// private to that crate and is not worth widening for this. So the cost is
+/// recorded here rather than removed.
 #[must_use]
 pub fn checker(x: &Kernel, z: &Kernel, footprint: &Kernel) -> Rgba {
     let (cx, cz) = (Kernel::x(), Kernel::y());
