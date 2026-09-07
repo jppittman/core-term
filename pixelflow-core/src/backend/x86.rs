@@ -1196,16 +1196,6 @@ impl F32x16 {
         unsafe { _mm512_storeu_ps(arr.as_mut_ptr(), self.0) };
         arr
     }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    unsafe fn from_mask(mask: __mmask16) -> Self {
-        unsafe {
-            let all_ones = _mm512_castsi512_ps(_mm512_set1_epi32(-1));
-            let all_zeros = _mm512_setzero_ps();
-            Self(_mm512_mask_blend_ps(mask, all_zeros, all_ones))
-        }
-    }
 }
 
 #[cfg(target_feature = "avx512f")]

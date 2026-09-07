@@ -303,15 +303,6 @@ impl NixPty {
         })
     }
 
-    /// Helper to spawn a shell command (deprecated/unimplemented convenience method).
-    pub fn spawn_shell_command(
-        _shell_command_str: &str,
-        _initial_cols: u16,
-        _initial_rows: u16,
-    ) -> Result<Self> {
-        unimplemented!("spawn_shell_command is not fully implemented with OwnedFd yet.");
-    }
-
     fn set_cloexec<Fd: AsFd>(fd: Fd) -> Result<()> {
         let raw_fd = fd.as_fd().as_raw_fd();
         fcntl(fd.as_fd(), FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))
@@ -332,17 +323,6 @@ impl NixPty {
         Ok(())
     }
 
-    /// Terminates the child process.
-    #[allow(dead_code)]
-    pub fn terminate_child_process(&mut self) -> Result<()> {
-        if let Some(pid) = self.child_pid {
-            log::info!("Terminating child process {}", pid);
-            kill(pid, Some(Signal::SIGKILL))
-                .with_context(|| format!("Failed to send SIGKILL to child process {}", pid))
-        } else {
-            Ok(())
-        }
-    }
 }
 
 impl Drop for NixPty {

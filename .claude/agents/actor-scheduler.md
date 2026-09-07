@@ -15,7 +15,7 @@ Multi-priority actor model with three lanes: Control > Management > Data. Lock-f
 - `ActorTypes` trait — Separates message type definition from Actor (enables troupe! macro without lifetimes)
 - `TroupeActor` trait — Actors with directory access
 - `troupe!` macro — Generates actor groups with Directory, ExposedHandles, and lifecycle
-- `actor_impl` macro — Transforms impl blocks into TroupeActor impls
+- `ports!` macro — Generates an actor's output word and its wiring
 - `ShutdownMode` enum — Three graceful shutdown strategies
 - `ActorStatus` enum — Controls actor behavior (Idle vs Busy)
 - `SendError` type — Timeout or Unknown (receiver disconnected)
@@ -111,7 +111,6 @@ Three-phase strategy for data lane congestion:
 ActorScheduler::new()                       // Basic creation
 ActorScheduler::new_with_wake_handler(wh)   // With platform wake handler
 ActorScheduler::new_with_shutdown_mode(sm)  // With custom shutdown
-create_actor()                              // Convenience function
 ```
 
 ## Key Files
@@ -124,7 +123,7 @@ create_actor()                              // Convenience function
 The macro crate:
 | File | Purpose |
 |------|---------|
-| `actor-scheduler-macros/src/lib.rs` | `troupe!` and `actor_impl` proc macros |
+| `actor-scheduler-macros/src/lib.rs` | `troupe!` and `ports!` proc macros |
 
 ## Message Type Macros
 

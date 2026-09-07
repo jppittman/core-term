@@ -109,7 +109,7 @@ pub use params::SchedulerParams;
 pub use spsc::TrySendError;
 
 // Re-export macros from the proc-macro crate
-pub use actor_scheduler_macros::{actor_impl, ports, troupe};
+pub use actor_scheduler_macros::{ports, troupe};
 
 use doorbell::{Chime, Doorbell, Ring};
 use sharded::{InboxBuilder, ShardedInbox};
@@ -410,8 +410,7 @@ pub trait ActorTypes {
 /// The TroupeActor trait for actors managed by the troupe! macro.
 ///
 /// Unlike the basic `Actor` trait, `TroupeActor` is parameterized over a Directory
-/// type, enabling type-safe access to other actors in the group. The `#[actor_impl]`
-/// macro generates the impl for this trait.
+/// type, enabling type-safe access to other actors in the group.
 ///
 /// # Example
 ///
@@ -451,27 +450,6 @@ pub trait TroupeActor<Dir>:
     /// With SPSC channels, each actor OWNS its directory instance.
     /// The directory contains dedicated SPSC handles to every other actor.
     fn new(dir: Dir) -> Self;
-}
-
-/// Create a new actor with one producer handle.
-///
-/// Convenience function for single-producer actors. For multi-producer setups
-/// (e.g., troupe actors where multiple peers send to the same target), use
-/// [`ActorBuilder`] directly.
-///
-/// # Arguments
-/// * `data_buffer_size` - Size of bounded data buffer
-/// * `wake_handler` - Optional wake handler for platform event loops
-#[must_use]
-pub fn create_actor<D, C, M>(
-    data_buffer_size: usize,
-    wake_handler: Option<Arc<dyn WakeHandler>>,
-) -> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>) {
-    ActorScheduler::new_with_wake_handler(
-        SchedulerParams::DEFAULT.default_data_burst_limit,
-        data_buffer_size,
-        wake_handler,
-    )
 }
 
 /// Builder for multi-producer actor channels.
