@@ -659,6 +659,13 @@ impl IsaExecutionMode {
     /// that). That is the difference between a check that fits in a PR's wait
     /// and one that does not.
     /// What a `PASS` from this mode covers, for the summary line.
+    ///
+    /// Called only from the `#[cfg(target_arch = "x86_64")]` half of
+    /// `isa_matrix` — there is no ISA level to matrix on any other
+    /// architecture (see that function's doc comment) — so this is dead
+    /// code, correctly, everywhere else. Same treatment as
+    /// [`host_has_feature`] and [`LevelResult`] below, for the same reason.
+    #[cfg(target_arch = "x86_64")]
     fn scope(&self) -> &'static str {
         match self {
             Self::BuildOnly => "none",
@@ -667,6 +674,7 @@ impl IsaExecutionMode {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn test_args(&self) -> Option<&'static [&'static str]> {
         match self {
             Self::BuildOnly => None,
