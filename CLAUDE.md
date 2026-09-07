@@ -422,7 +422,7 @@ let circle = kernel!(|cx: f32, cy: f32, r: f32| {
 });
 
 let unit_circle: Kernel = circle(0.0, 0.0, 1.0);
-let plane = Lattice::frame(64, 64, 0.0).bake(&unit_circle);
+let plane = Lattice::frame(64, 64).bake(&unit_circle);
 ```
 
 Use `kernel_raw!` to skip optimization (for benchmarking exact expression forms).
@@ -430,9 +430,11 @@ Use `kernel_raw!` to skip optimization (for benchmarking exact expression forms)
 ### Composing Kernels
 
 ```rust
-let warped = k.at(&Kernel::x().mul(&Kernel::constant(2.0)), &y, &z, &w);
+let warped = k.at(&Kernel::x().mul(&Kernel::constant(2.0)), &y);
 let selected = mask.select(&if_true, &if_false);
-let radius = Kernel::x().mul(&x).add(&y.mul(&y)).add(&z.mul(&z)).sqrt();
+let radius = Kernel::x().mul(&x).add(&y.mul(&y)).sqrt();
+// A scalar that is the same at every sample is an argument, not an axis.
+let breathing = radius.mul(&clock.kernel());
 ```
 
 ### Actor Message Sending

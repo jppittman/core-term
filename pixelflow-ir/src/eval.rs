@@ -1820,7 +1820,7 @@ mod tests {
     use alloc::vec;
 
     /// A lattice-invariant leaf holding `default` — what a scalar that used
-    /// to ride the Z or W axis is now.
+    /// to ride a retired axis is now.
     fn uniform_leaf(arena: &mut ExprArena, default: f32) -> ExprId {
         let slot = arena.declare_uniform(crate::Uniform::new(default).decl());
         arena.push_uniform(slot)

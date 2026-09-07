@@ -63,8 +63,8 @@ impl From<PackedFrame> for Scene {
 /// The channel kernels are sampled at **device pixel centers** of the frame
 /// they are compiled for. A shader authored in some other space says so in
 /// the language, by precomposing the embedding — `channel.at(&(X * s), &(Y *
-/// s), &Z, &W)` — before compiling here; there is no separate scale for
-/// anything downstream to keep in step.
+/// s))` — before compiling here; there is no separate scale for anything
+/// downstream to keep in step.
 ///
 /// # Panics
 ///

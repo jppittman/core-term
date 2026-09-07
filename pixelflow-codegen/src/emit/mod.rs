@@ -704,14 +704,21 @@ trait IsaBackend {
     /// complete [`KernelFn`](executable::KernelFn): the
     /// caller's lane-sequential X is an induction value stepped by the batch
     /// width in the inner loop and reset for each row; Y advances by 1.0 in
-    /// the outer loop; Z/W are loop-invariant. Each batch's result is stored
-    /// straight to the output pointer. The body's branches are self-relative,
-    /// so inlining it inside the loop is sound.
+    /// the outer loop. Each batch's result is stored straight to the output
+    /// pointer. The body's branches are self-relative, so inlining it inside
+    /// the loop is sound.
     ///
     /// Coordinate state lives in stack slots above the body's spill frame:
     /// the ABI's vector registers are caller-saved scratch to the body, so
-    /// each iteration reloads X/Y/Z/W into the input registers from the
-    /// slots and the X slot alone is stepped.
+    /// each iteration reloads the input registers from the slots and the X
+    /// slot alone is stepped.
+    ///
+    /// The scaffold moves [`INPUT_COORDS`] of them and a body reads two: the
+    /// ABI still carries the base coordinates that were Z and W, the caller
+    /// passes zero in both, and no arena that became a `Kernel` can name
+    /// them. Dropping them changes this scaffold's own stores and loads, and
+    /// so every kernel's bytes — L2's step, not L1's
+    /// (docs/plans/2026-09-06-lattice-is-the-index.md).
     ///
     /// The two LICM tiers in [`CollapseBody`] park their results in vector
     /// slots directly above the coordinate slots reserved here.
@@ -837,10 +844,15 @@ enum OutStep {
     RowSkip,
 }
 
-/// Coordinate slots the scaffold reserves above the body's frame: X/Y/Z/W as
-/// the body expects to find them, plus a copy of the row's starting X.
+/// Coordinate slots the scaffold reserves above the body's frame: the four
+/// the ABI passes, plus a copy of the row's starting X.
 const COORD_SLOTS: u32 = 5;
 /// The leading slots that are reloaded into the ABI's input registers.
+///
+/// Four, of which a body reads two: a lattice has X and Y, and the last two
+/// base coordinates are passed as zero and named by nothing that reaches the
+/// emitter. See [`IsaBackend::emit_collapse_loop`] for why they are still
+/// moved.
 const INPUT_COORDS: u32 = 4;
 const SLOT_X: u32 = 0;
 const SLOT_Y: u32 = 1;
@@ -852,7 +864,8 @@ const SCAFFOLD_HEADROOM: usize = 160;
 const BYTES_PER_LANE: u32 = 4;
 
 /// The register a coordinate slot is passed and reloaded in. Every ABI here
-/// puts X/Y/Z/W in the first four vector registers, in that order.
+/// puts the four base coordinates in the first four vector registers, in
+/// that order; only the first two are ever read.
 const fn coord_reg(slot: u32) -> Reg {
     Reg(slot as u8)
 }
@@ -2055,8 +2068,9 @@ type Native = x86_64::driver::X86Backend;
 /// reductions / gathers / transcendentals already lowered) is wrapped in the
 /// build width's
 /// [`IsaBackend::emit_collapse_loop`] scaffold: X steps by the batch width and
-/// resets per row, Y steps by 1.0, Z/W stay invariant, gathers read buffer
-/// bases from the context register, and each batch stores straight to `out`.
+/// resets per row, Y steps by 1.0, the two dead base coordinates stay as the
+/// caller passed them, gathers read buffer bases from the context register,
+/// and each batch stores straight to `out`.
 /// Matches the
 /// [`KernelFn`](executable::KernelFn) ABI
 /// `(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)`.
@@ -2149,7 +2163,8 @@ fn compile_via_backend<B: IsaBackend>(
     };
 
     // The two prologues and the loop body share one stack frame: spill slots
-    // in [0, m), the scaffold's five coordinate slots (X/Y/Z/W plus row-start
+    // in [0, m), the scaffold's five coordinate slots (four base coordinates
+    // plus row-start
     // X) at [m, m + 5·vector_bytes), and hoist slots above those. `m` is the
     // max of the three frames — each region is only live while its own code
     // runs, but the hoist slots outlive all of them. Allocation and frame
@@ -3130,8 +3145,8 @@ mod tests {
 
     /// `Σᵢ (X+i)·(Y+i)` for i in 1..=10, summed as a balanced tree: ten
     /// products are live at once, so any pool must spill. Every leaf depends on
-    /// X or Y — a Z/W subtree would be loop-invariant, hoisted out of the
-    /// collapse body, and leave nothing to spill.
+    /// X or Y — a uniform-only subtree would be loop-invariant, hoisted out
+    /// of the collapse body, and leave nothing to spill.
     ///
     /// The pressure comes from the live ranges rather than from the budget.
     /// This used to be `(X+Y)·(X−Y) + (X·Y)·(X+1)` under `max_regs(2)`, which
@@ -3699,7 +3714,7 @@ mod tests {
         }
     }
 
-    /// Run an arena kernel at `x` (Y/Z/W = 0) and return lane 0. The
+    /// Run an arena kernel at `x` (Y = 0) and return lane 0. The
     /// builtin-parity tests below use it. Gated off `+avx512f` (those builtins
     /// aren't in the AVX-512 op set yet anyway).
     #[cfg(all(
