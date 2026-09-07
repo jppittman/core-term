@@ -146,8 +146,22 @@ fn discrete_manifold_round_trip() {
 /// carries; and the law is what this asserts directly rather than up to a
 /// shift. (`Lattice::origin` still exists and is `[0, 0]` here, which is
 /// L2's to remove; the point is that the *default* domain closes the law.)
+///
+/// Up to rounding, and not to bits: the two sides are two *compilations* of
+/// one expression — a 13x7 frame, and a point lattice whose coordinates fold
+/// to constants — so each is extracted against its own set of shared
+/// subterms and associates its arithmetic differently. That last-bit freedom
+/// is what "Floating point at the edges" reserves, and it is not what this
+/// test is for: a real break of the law (an index off by one, a lost origin,
+/// a dropped axis) moves a sample by orders of magnitude, not by a few units
+/// in the last place.
 #[test]
 fn index_of_collapse_is_the_kernel_everywhere() {
+    /// Units in the last place the two extractions may differ by. Measured
+    /// at 3 across this kernel's 91 samples; a real law break is nowhere
+    /// near it.
+    const LAW_ULPS: i64 = 8;
+
     // sin(X) · (Y + 2) + X·Y: reads both axes, and no rewrite can turn it
     // into something the buffer could reproduce by accident.
     let k = Kernel::x()
@@ -166,10 +180,13 @@ fn index_of_collapse_is_the_kernel_everywhere() {
         let indexed = sample_bound(&index, &collapsed, x, y);
         // The right-hand side: the kernel itself, at the same point.
         let direct = Lattice::point(x, y).bake(&k).into_buffer()[0];
-        assert_eq!(
-            indexed.to_bits(),
-            direct.to_bits(),
-            "index(collapse(f)) != f at index {i} = ({x}, {y}): {indexed} vs {direct}"
+        // A sign flip puts the two bit patterns astronomically far apart, so
+        // this distance refuses one as loudly as it refuses a wrong value.
+        let ulps = (i64::from(indexed.to_bits()) - i64::from(direct.to_bits())).abs();
+        assert!(
+            ulps <= LAW_ULPS,
+            "index(collapse(f)) != f at index {i} = ({x}, {y}): \
+             {indexed} vs {direct} ({ulps} ulp)"
         );
     }
 }
