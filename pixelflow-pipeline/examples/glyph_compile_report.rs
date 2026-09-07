@@ -90,7 +90,7 @@ fn kernels(font: &Font) {
             };
             let (arena, root) = kernel.parts();
             let started = Instant::now();
-            let result = compile_as_baked(arena, root, [tile, tile, 1, 1]);
+            let result = compile_as_baked(arena, root, [tile, tile]);
             let ms = started.elapsed().as_secs_f64() * 1e3;
             let bytes = result.code.len();
             println!(
