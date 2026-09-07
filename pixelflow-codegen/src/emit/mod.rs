@@ -2345,21 +2345,6 @@ mod tests {
         eval_batch(code, &[], o)[0]
     }
 
-    /// One batch of a kernel whose single argument is bound to `u` — the
-    /// lattice-invariant third input a test used to spell `Var(2)`.
-    fn eval_point_with_arg(code: &executable::ExecutableCode, x: f32, y: f32, u: f32) -> f32 {
-        let block = [u];
-        let ctx: [*const f32; 1] = [block.as_ptr()];
-        let o = executable::Point4::new([x; LANES], [y; LANES], [0.0; LANES], [0.0; LANES]);
-        eval_batch(code, &ctx, o)[0]
-    }
-
-    /// Declare one argument in `a` and return its leaf.
-    fn arg_leaf(a: &mut ExprArena, default: f32) -> pixelflow_ir::ExprId {
-        let slot = a.declare_uniform(pixelflow_ir::Uniform::new(default).decl());
-        a.push_uniform(slot)
-    }
-
     /// A `Dwrt` that reaches the scheduler (a caller bypassed the lowering
     /// pipeline) must fail loudly at the schedule boundary, not as a cryptic
     /// emit panic. The compile entry points run `lower_dwrt` first, so this
@@ -4251,6 +4236,22 @@ mod tests {
     ))]
     mod sched {
         use super::*;
+
+        /// One batch of a kernel whose single argument is bound to `u` — the
+        /// lattice-invariant third input a test used to spell `Var(2)`.
+        fn eval_point_with_arg(code: &executable::ExecutableCode, x: f32, y: f32, u: f32) -> f32 {
+            let block = [u];
+            let ctx: [*const f32; 1] = [block.as_ptr()];
+            let o = executable::Point4::new([x; LANES], [y; LANES], [0.0; LANES], [0.0; LANES]);
+            eval_batch(code, &ctx, o)[0]
+        }
+
+        /// Declare one argument in `a` and return its leaf.
+        fn arg_leaf(a: &mut ExprArena, default: f32) -> pixelflow_ir::ExprId {
+            let slot = a.declare_uniform(pixelflow_ir::Uniform::new(default).decl());
+            a.push_uniform(slot)
+        }
+
         use pixelflow_ir::arena::ExprArena;
 
         fn run(res: &CompileResult, x: f32, y: f32, z: f32, w: f32) -> f32 {
