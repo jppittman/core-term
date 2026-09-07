@@ -35,7 +35,9 @@ These points are particularly relevant when working with or generating code usin
 
 ## Code Structure
 
-1.  **Avoid Deep Nesting:** Prefer guard clauses and early returns to deeply nested `if`/`else` or `match` blocks. Aim for a flatter control flow where possible. (Think Go's `if err != nil { return err }` style).
+1.  **Guard Clauses and Early Returns:** Prefer them to deeply nested `if`/`else` or `match` blocks. (Think Go's `if err != nil { return err }` style.) Flatter control flow is the visible result, but it is not the reason — this is rule 3 below at function scope, and the strongest form of it: a `return` does not collapse one case into another, it deletes the case outright. It also takes the join point with it, which is why code written this way accumulates no `else` blocks. Nothing rejoins, so nothing can attach.
+
+    Read downward, such a function is a proof: discharge, discharge, discharge, conclude. By the last line exactly one case is still inhabited, and the code handling it asks no questions, because every condition was already spent above it.
 
     * **Bad:**
         ```rust

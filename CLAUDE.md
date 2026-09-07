@@ -328,7 +328,6 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
 
 - **Clarity over comments** - Refactor unclear code rather than explaining it
 - **Rustdoc (`///`)** for public API, **`//`** for WHY not what
-- Guard clauses and early returns over deep nesting
 - `match` over `else if` for enums
 - Functions < 4 arguments (group into structs)
 - No boolean arguments (use enums or separate functions)
@@ -347,6 +346,16 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
   with separate jobs: fold wherever the cases can be collapsed, and reach for
   `match` (over an enum, or a trait) only for the ones that genuinely cannot
   be. An `else` doing double duty is usually a fold that wasn't taken.
+
+  Guard clauses and early returns are this rule at function scope, and the
+  strongest fold available: a `return` doesn't collapse a case into another,
+  it deletes the case outright — and it takes the join point with it, which
+  is why `else` stops being *discouraged* in code written this way and starts
+  being unsayable. Nothing rejoins, so nothing can attach. A function reads as
+  a proof: discharge, discharge, discharge, conclude. By the last line exactly
+  one case is still inhabited, and the code handling it asks no questions
+  because every condition was already spent above it. Flat control flow is the
+  symptom of this; eliminating cases is the reason.
 - **New implementation of an existing category → trait first** - Before
   adding a second way of doing something the codebase already does one way,
   check whether that category is already a trait. If it is, implement the new
