@@ -18,7 +18,7 @@
 //! variant and the work-stealing rasterizer behind it.
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use crate::render::cell_grid::CellGridPackedManifold;
+use crate::render::cell_grid::{CellGridPackedFrame, CellGridPackedManifold};
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use crate::render::color::PlatformPixel;
 use crate::render::frame::Frame;
@@ -28,7 +28,7 @@ use crate::render::Pixel;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use crate::scene3d::Rgba;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use pixelflow_core::{CellGridGeometry, FastMathGuard, PlaneRegion};
+use pixelflow_core::{CellGridShape, FastMathGuard, IndexRange, PlaneRegion};
 use std::sync::Mutex;
 
 /// A renderable scene: four channel kernels compiled at the frame's lattice
@@ -36,17 +36,33 @@ use std::sync::Mutex;
 /// one call per stripe, straight into the frame's own memory.
 #[derive(Clone)]
 pub enum Scene {
-    /// The only variant, and an enum for one reason: `Packed` is
-    /// architecture-gated, and a target with no JIT backend has no scene at
-    /// all rather than a different one.
+    /// A program that answers for the whole frame.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     Packed(PackedFrame),
+    /// A cell grid: a program that answers for the grid's own index range,
+    /// with a constant border over the rest of the frame.
+    ///
+    /// The second variant, and the reason there is one: the range a cell
+    /// grid covers is a function of its per-frame *metric*, not of the shape
+    /// it was compiled at, so it cannot be folded into the compiled program
+    /// the way an extent can. Both variants are architecture-gated, because a
+    /// target with no JIT backend has no scene at all rather than a
+    /// different one.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    CellGrid(CellGridPackedFrame),
 }
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 impl From<PackedFrame> for Scene {
     fn from(frame: PackedFrame) -> Self {
         Self::Packed(frame)
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+impl From<CellGridPackedFrame> for Scene {
+    fn from(frame: CellGridPackedFrame) -> Self {
+        Self::CellGrid(frame)
     }
 }
 
@@ -131,8 +147,9 @@ fn packed_shifts_of<P: Pixel>(what: &str) -> [u32; 4] {
 /// Compose the cell grid's four channel kernels and compile them at its
 /// frame's shape for the pixel format `P`, taking byte order from `P` itself
 /// — so the format the kernel packs for is the format the frame stores, by
-/// construction. Applications pass geometry and colors; they never see a
-/// shift.
+/// construction. Applications pass a shape and colors; they never see a
+/// shift. The grid's metric arrives later, through
+/// `CellGridPackedManifold::params`, without recompiling anything.
 ///
 /// Use [`compile_platform_cell_grid`] when the frame is the platform's own
 /// format, which is the production path.
@@ -145,11 +162,11 @@ fn packed_shifts_of<P: Pixel>(what: &str) -> [u32; 4] {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[must_use]
 pub fn compile_cell_grid_for<P: Pixel>(
-    geom: CellGridGeometry,
+    shape: CellGridShape,
     default_bg: [f32; 4],
 ) -> CellGridPackedManifold {
     CellGridPackedManifold::compile(
-        geom,
+        shape,
         default_bg,
         packed_shifts_of::<P>("compile_cell_grid_for"),
     )
@@ -160,10 +177,10 @@ pub fn compile_cell_grid_for<P: Pixel>(
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[must_use]
 pub fn compile_platform_cell_grid(
-    geom: CellGridGeometry,
+    shape: CellGridShape,
     default_bg: [f32; 4],
 ) -> CellGridPackedManifold {
-    compile_cell_grid_for::<PlatformPixel>(geom, default_bg)
+    compile_cell_grid_for::<PlatformPixel>(shape, default_bg)
 }
 
 impl core::fmt::Debug for Scene {
@@ -171,6 +188,8 @@ impl core::fmt::Debug for Scene {
         match self {
             #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Packed(_) => f.debug_tuple("Scene::Packed").finish(),
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            Self::CellGrid(_) => f.debug_tuple("Scene::CellGrid").finish(),
         }
     }
 }
@@ -182,7 +201,21 @@ impl Scene {
     pub fn render<P: Pixel + Send>(&self, frame: &mut Frame<P>, num_threads: usize) {
         match self {
             #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-            Self::Packed(packed) => render_packed(packed, frame, num_threads),
+            Self::Packed(packed) => {
+                render_bands(packed.shifts(), frame, num_threads, &|band, out, stride| {
+                    packed.collapse_rows(
+                        PlaneRegion::rows(band.width(), band.y0(), band.rows()),
+                        out,
+                        stride,
+                    );
+                })
+            }
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            Self::CellGrid(grid) => {
+                render_bands(grid.shifts(), frame, num_threads, &|band, out, stride| {
+                    grid.collapse_rows(band, out, stride);
+                });
+            }
         }
     }
 }
@@ -202,7 +235,12 @@ impl Scene {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const STRIPE_ROWS: usize = 8;
 
-/// Collapse a compiled colour manifold over the frame, stripe-parallel.
+/// Collapse a scene over the frame, stripe-parallel, through whatever
+/// `collapse` does with one index band.
+///
+/// The band is an [`IndexRange`] rather than a `PlaneRegion` because this is
+/// the domain side: the loop chooses *which* indices a worker claims, and
+/// what coordinate a frame samples them at belongs to the collapse it calls.
 ///
 /// Workers pull fixed-height stripes from one shared cursor until the frame is
 /// done, and each collapses its stripe with ONE call whose stores land in the
@@ -214,7 +252,12 @@ const STRIPE_ROWS: usize = 8;
 /// a row band over a glyph-dense region costs more than one over background,
 /// and with a static split the whole frame waits for whoever drew it.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, num_threads: usize) {
+fn render_bands<P: Pixel + Send>(
+    shifts: [u32; 4],
+    frame: &mut Frame<P>,
+    num_threads: usize,
+    collapse: &(dyn Fn(IndexRange, &mut [u32], usize) + Sync),
+) {
     let (width, height) = (frame.width, frame.height);
     if width == 0 || height == 0 {
         return;
@@ -225,7 +268,7 @@ fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, nu
     // any `P` worked; this path moves bits, so the formats must match.
     assert_eq!(
         P::packed_shifts(),
-        Some(packed.shifts()),
+        Some(shifts),
         "packed frame format does not match the shifts its kernel packed \
          for — compile it with `compile_packed_for::<P>`"
     );
@@ -258,8 +301,8 @@ fn render_packed<P: Pixel + Send>(packed: &PackedFrame, frame: &mut Frame<P>, nu
                 let _fast_math = unsafe { FastMathGuard::new() };
                 while let Some((stripe, band)) = claim(&stripes) {
                     let rows = band.len() / width;
-                    packed.collapse_rows(
-                        PlaneRegion::rows(width, stripe * STRIPE_ROWS, rows),
+                    collapse(
+                        IndexRange::new(0, stripe * STRIPE_ROWS, width, rows),
                         band,
                         width,
                     );
@@ -304,7 +347,7 @@ fn claim<'a>(
 mod tests {
     use super::*;
     use crate::render::color::Rgba8;
-    use pixelflow_core::Kernel;
+    use pixelflow_core::{CellGridMetrics, Kernel};
     use std::sync::Arc;
 
     /// A 2×2 grid of solid/half tiles; oracle is the scalar blend math.
@@ -317,20 +360,23 @@ mod tests {
                 atlas[(1 + r) * aw + slot + 1 + c] = 0.5; // tile 1: half
             }
         }
-        let geom = CellGridGeometry {
+        let shape = CellGridShape {
             cols: 2,
             rows: 2,
-            cell_w: 4.0,
-            cell_h: 4.0,
-            density: 1.0,
             atlas_width: aw as u32,
             atlas_height: ah as u32,
-            tile_w: 4,
-            tile_h: 4,
             frame_w: 10,
             frame_h: 10,
         };
-        let program = compile_cell_grid_for::<Rgba8>(geom, [0.25, 0.25, 0.25, 1.0]);
+        let metrics = CellGridMetrics {
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            tile_w: 4,
+            tile_h: 4,
+            scale: 1.0,
+        };
+        let program = compile_cell_grid_for::<Rgba8>(shape, [0.25, 0.25, 0.25, 1.0]);
         #[rustfmt::skip]
         let cells = vec![
             // (0,0): solid tile, red on black
@@ -342,7 +388,7 @@ mod tests {
             // (1,1): solid tile, black on white
             1.0, 1.0,  0.0, 0.0, 0.0, 1.0,  1.0, 1.0, 1.0, 1.0,
         ];
-        Scene::Packed(program.frame(Arc::new(cells), Arc::new(atlas)))
+        Scene::CellGrid(program.frame(&program.params(&metrics), Arc::new(cells), Arc::new(atlas)))
     }
 
     #[test]
@@ -414,27 +460,30 @@ mod tests {
     fn platform_wrapper_needs_no_shifts_from_the_caller() {
         let (aw, ah) = (12usize, 6usize);
         let atlas = vec![0.0f32; aw * ah];
-        let geom = CellGridGeometry {
+        let shape = CellGridShape {
             cols: 2,
             rows: 2,
-            cell_w: 4.0,
-            cell_h: 4.0,
-            density: 1.0,
             atlas_width: aw as u32,
             atlas_height: ah as u32,
-            tile_w: 4,
-            tile_h: 4,
             frame_w: 8,
             frame_h: 8,
         };
-        let program = super::compile_platform_cell_grid(geom, [0.0, 0.0, 0.0, 1.0]);
+        let metrics = CellGridMetrics {
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            tile_w: 4,
+            tile_h: 4,
+            scale: 1.0,
+        };
+        let program = super::compile_platform_cell_grid(shape, [0.0, 0.0, 0.0, 1.0]);
         // Zero coverage everywhere, so every in-grid pixel shows its cell's
         // BACKGROUND — which must be opaque for the alpha assertion to hold.
-        let mut cells = vec![0.0f32; geom.cells_len()];
+        let mut cells = vec![0.0f32; shape.cells_len()];
         for cell in cells.chunks_mut(pixelflow_core::CELL_STRIDE) {
             cell[9] = 1.0; // bg_a
         }
-        let frame_data = program.frame(Arc::new(cells), Arc::new(atlas));
+        let frame_data = program.frame(&program.params(&metrics), Arc::new(cells), Arc::new(atlas));
         // The platform wrapper packs for PlatformPixel, so the frame must BE
         // PlatformPixel — pairing it with a hardcoded format is the mistake
         // the render-time format guard exists to catch, and did catch here
@@ -442,7 +491,7 @@ mod tests {
         // is Bgra8). Alpha is byte 3 in both orders, so the assertion below
         // is the one claim that holds whichever platform runs it.
         let mut frame = Frame::<crate::render::color::PlatformPixel>::new(8, 8);
-        Scene::Packed(frame_data).render(&mut frame, 1);
+        Scene::CellGrid(frame_data).render(&mut frame, 1);
         assert!(
             frame.data.iter().all(|p| p.0 >> 24 == 255),
             "alpha lane must be opaque regardless of platform byte order"
@@ -548,6 +597,7 @@ mod tests {
 mod pixel_format_tests {
     use super::*;
     use crate::render::color::{Bgra8, Rgba8};
+    use pixelflow_core::{CellGridMetrics, CellGridShape};
     use std::sync::Arc;
 
     /// The kernel packs for one byte order and the frame stores raw words,
@@ -557,50 +607,57 @@ mod pixel_format_tests {
     #[should_panic(expected = "does not match the shifts its kernel packed for")]
     fn mismatched_frame_format_is_refused() {
         let (aw, ah) = (12usize, 6usize);
-        let geom = CellGridGeometry {
+        let shape = CellGridShape {
             cols: 2,
             rows: 2,
-            cell_w: 4.0,
-            cell_h: 4.0,
-            density: 1.0,
             atlas_width: aw as u32,
             atlas_height: ah as u32,
-            tile_w: 4,
-            tile_h: 4,
             frame_w: 8,
             frame_h: 8,
         };
+        let metrics = CellGridMetrics {
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            tile_w: 4,
+            tile_h: 4,
+            scale: 1.0,
+        };
         // Compiled for Rgba8's lanes...
-        let program = compile_cell_grid_for::<Rgba8>(geom, [0.0, 0.0, 0.0, 1.0]);
+        let program = compile_cell_grid_for::<Rgba8>(shape, [0.0, 0.0, 0.0, 1.0]);
         let frame_data = program.frame(
-            Arc::new(vec![0.0f32; geom.cells_len()]),
+            &program.params(&metrics),
+            Arc::new(vec![0.0f32; shape.cells_len()]),
             Arc::new(vec![0.0f32; aw * ah]),
         );
         // ...rendered into a Bgra8 frame.
         let mut frame = Frame::<Bgra8>::new(8, 8);
-        Scene::Packed(frame_data).render(&mut frame, 1);
+        Scene::CellGrid(frame_data).render(&mut frame, 1);
     }
 
     /// Both packed formats work when the kernel is compiled for them.
     #[test]
     fn each_packed_format_renders_through_its_own_shifts() {
         let (aw, ah) = (12usize, 6usize);
-        let geom = CellGridGeometry {
+        let shape = CellGridShape {
             cols: 2,
             rows: 2,
-            cell_w: 4.0,
-            cell_h: 4.0,
-            density: 1.0,
             atlas_width: aw as u32,
             atlas_height: ah as u32,
-            tile_w: 4,
-            tile_h: 4,
             frame_w: 8,
             frame_h: 8,
         };
+        let metrics = CellGridMetrics {
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            tile_w: 4,
+            tile_h: 4,
+            scale: 1.0,
+        };
         // Opaque red background everywhere: coverage is zero (empty atlas),
         // so every in-grid pixel is its cell's background.
-        let mut cells = vec![0.0f32; geom.cells_len()];
+        let mut cells = vec![0.0f32; shape.cells_len()];
         for cell in cells.chunks_mut(pixelflow_core::CELL_STRIDE) {
             cell[6] = 1.0; // bg_r
             cell[9] = 1.0; // bg_a
@@ -608,14 +665,15 @@ mod pixel_format_tests {
         let atlas = Arc::new(vec![0.0f32; aw * ah]);
         let cells = Arc::new(cells);
 
-        let rgba = compile_cell_grid_for::<Rgba8>(geom, [1.0, 0.0, 0.0, 1.0])
-            .frame(cells.clone(), atlas.clone());
+        let rgba_program = compile_cell_grid_for::<Rgba8>(shape, [1.0, 0.0, 0.0, 1.0]);
+        let rgba = rgba_program.frame(&rgba_program.params(&metrics), cells.clone(), atlas.clone());
         let mut rf = Frame::<Rgba8>::new(8, 8);
-        Scene::Packed(rgba).render(&mut rf, 1);
+        Scene::CellGrid(rgba).render(&mut rf, 1);
 
-        let bgra = compile_cell_grid_for::<Bgra8>(geom, [1.0, 0.0, 0.0, 1.0]).frame(cells, atlas);
+        let bgra_program = compile_cell_grid_for::<Bgra8>(shape, [1.0, 0.0, 0.0, 1.0]);
+        let bgra = bgra_program.frame(&bgra_program.params(&metrics), cells, atlas);
         let mut bf = Frame::<Bgra8>::new(8, 8);
-        Scene::Packed(bgra).render(&mut bf, 1);
+        Scene::CellGrid(bgra).render(&mut bf, 1);
 
         // Same color through both formats: the raw words differ (byte order),
         // the decoded channels agree.

@@ -45,8 +45,9 @@
 //!
 //! ## Scenes
 //!
-//! [`render::scene::compile_cell_grid_for`] is the terminal's: a geometry that
-//! denotes four channel kernels over a cell buffer and a coverage atlas.
+//! [`render::scene::compile_cell_grid_for`] is the terminal's: a shape that
+//! denotes four channel kernels over a cell buffer and a coverage atlas, with
+//! the grid's metric arriving per frame as a block of uniforms.
 //! [`scene3d`] is analytic 3D: `Ray::through_screen`, `Sphere::hit`,
 //! `Hit::select`, `checker`, `sky` — plain functions producing `Kernel`s,
 //! every derivative from `Kernel::dx()`/`dy()`.

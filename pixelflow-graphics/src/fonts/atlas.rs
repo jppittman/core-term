@@ -139,7 +139,7 @@ impl GlyphAtlas {
     }
 
     /// Content texels per tile edge (the glyph bake extent) — the scene
-    /// geometry's `tile_w`/`tile_h`.
+    /// metric's `tile_w`/`tile_h`.
     #[must_use]
     pub fn tile_px(&self) -> usize {
         self.tile_px
