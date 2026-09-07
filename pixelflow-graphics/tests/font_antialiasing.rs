@@ -16,7 +16,7 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf"
 /// Evaluate a coverage kernel at a single point (the compile cache makes
 /// repeated samples of the same kernel cheap).
 fn sample(k: &Kernel, x: f32, y: f32) -> f32 {
-    Lattice::point(x, y).bake(k).into_buffer()[0]
+    Lattice::eval_at(k, x, y)
 }
 
 /// Winding coverage for segment kernels: `min(|Σ|, 1)`.
@@ -160,11 +160,11 @@ fn coverage_saturates_far_from_edges() {
     let glyph = font.glyph_kernel_scaled('H', size).unwrap();
 
     let n = size as usize;
-    let baked = Lattice {
-        extent: [n as u32, n as u32],
-        origin: [0.5, 0.5],
-    }
-    .bake(&glyph);
+    let centered = glyph.at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    );
+    let baked = Lattice::frame(n, n).bake(&centered);
     let buf = baked.buffer();
     let cov = |i: usize, j: usize| buf[j * n + i];
 
@@ -237,11 +237,7 @@ fn quad_heavy_glyph_is_finite_everywhere() {
         &Kernel::x().mul(&Kernel::constant(0.5)),
         &Kernel::y().mul(&Kernel::constant(0.5)),
     );
-    let baked = Lattice {
-        extent: [n as u32, n as u32],
-        origin: [0.0, 0.0],
-    }
-    .bake(&half);
+    let baked = Lattice::frame(n, n).bake(&half);
 
     let mut covered = 0;
     for &c in baked.buffer() {

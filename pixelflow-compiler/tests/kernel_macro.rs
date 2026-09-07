@@ -16,7 +16,7 @@ use pixelflow_core::{Kernel, Lattice};
 /// This is the whole evaluation surface: a kernel plus a lattice, baked. There
 /// is no per-batch entry to call instead.
 fn bake1(k: &Kernel, x: f32, y: f32) -> f32 {
-    Lattice::point(x, y).bake(k).into_buffer()[0]
+    Lattice::eval_at(k, x, y)
 }
 
 fn eval1(k: &Kernel, x: f32) -> f32 {
@@ -287,12 +287,11 @@ fn a_uniform_argument_is_bound_per_call() {
     assert_eq!(k.parts().0.uniforms(), &[cx.decl()]);
     assert!((eval1(&k, 5.0) - 8.0).abs() < 1e-5, "default cx = 1");
 
-    let lattice = Lattice::point(5.0, 0.0);
-    let program = Manifold::compile(&k, lattice.extent);
+    let program = Manifold::compile(&k, [1, 1]);
     let mut block = program.block();
     block.set(cx, 3.0).expect("cx is the argument");
-    let moved = lattice.collapse(&program.bind(&[]).with_uniforms(&block));
-    assert!((moved.into_buffer()[0] - 4.0).abs() < 1e-5, "(5 − 3)·2");
+    let moved = program.bind(&[]).with_uniforms(&block).eval_at(5.0, 0.0);
+    assert!((moved - 4.0).abs() < 1e-5, "(5 − 3)·2");
 
     let twice = kernel!(|a: f32, b: f32| a * b)(cx, cx);
     assert_eq!(twice.parts().0.uniforms().len(), 1);

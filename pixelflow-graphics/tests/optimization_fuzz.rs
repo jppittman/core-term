@@ -9,7 +9,7 @@
 //!
 //! Strategy:
 //! 1. Define kernel expressions that exercise various optimizations
-//! 2. Bake each at one point over a `Lattice::point` — the one evaluation
+//! 2. Evaluate each at one point with `Lattice::eval_at` — the one evaluation
 //!    entry there is
 //! 3. Use proptest to generate random inputs
 //! 4. Assert the baked value matches scalar `f32` within epsilon
@@ -29,9 +29,9 @@ const EPSILON: f32 = 5e-4;
 /// Absolute tolerance for values near zero where relative error explodes.
 const ABS_EPSILON: f32 = 1e-6;
 
-/// Tabulate a kernel over a one-point lattice and read the value back.
+/// Evaluate a kernel at one point.
 fn bake(k: &Kernel, x: f32, y: f32) -> f32 {
-    Lattice::point(x, y).bake(k).into_buffer()[0]
+    Lattice::eval_at(k, x, y)
 }
 
 /// Check if two f32 values are approximately equal.

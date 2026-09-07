@@ -10,7 +10,7 @@ use pixelflow_core::{Kernel, Manifold};
 /// a one-sample lattice, with the buffer bound, then collapsed.
 fn read(dm: &DiscreteManifold, x: f32, y: f32) -> f32 {
     let bound = Manifold::compile(&dm.kernel(), [1, 1]).bind(&[dm.binding()]);
-    Lattice::point(x, y).collapse(&bound).into_buffer()[0]
+    bound.eval_at(x, y)
 }
 
 fn main() {

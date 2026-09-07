@@ -93,6 +93,16 @@ pub mod text;
 pub mod ttf;
 pub mod ttf_curve_analytical;
 
+/// The rasterizer's pixel-center convention, shared by every module in this
+/// crate that bakes or samples at one: texel/pixel `(i, j)` corresponds to
+/// continuous coordinate `(i + PIXEL_CENTER, j + PIXEL_CENTER)`. One
+/// definition, so `atlas.rs`, `cache.rs` and `text.rs` cannot drift onto
+/// different halves — `pixelflow-core`'s own `SAMPLE_CENTER`
+/// (`lattice/manifold.rs`) is the same value for the same reason, restated
+/// there rather than imported because it is on the other side of the crate
+/// boundary and predates this module.
+pub(crate) const PIXEL_CENTER: f32 = 0.5;
+
 // Re-export font types (user-facing only)
 pub use ttf::{Font, Glyph, Support};
 

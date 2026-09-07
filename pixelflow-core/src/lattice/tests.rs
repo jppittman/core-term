@@ -8,7 +8,7 @@ use pixelflow_ir::Kernel;
 /// is the same three steps every consumer takes, at the degenerate shape.
 fn sample_bound(kernel: &Kernel, buffer: &DiscreteManifold, x: f32, y: f32) -> f32 {
     let bound = Manifold::compile(kernel, [1, 1]).bind(&[buffer.binding()]);
-    Lattice::point(x, y).collapse(&bound).into_buffer()[0]
+    bound.eval_at(x, y)
 }
 
 // The kernels the tabulation tests bake. Written as `Kernel` arithmetic —
@@ -36,22 +36,19 @@ fn y_times_10() -> Kernel {
 
 #[test]
 fn frame_coord_generation() {
-    let lattice = Lattice {
-        extent: [4, 3],
-        origin: [0.5, 1.5],
-    };
+    let lattice = Lattice { extent: [4, 3] };
 
     assert_eq!(lattice.len(), 12);
     assert!(!lattice.is_empty());
 
     // First pixel.
-    assert_eq!(lattice.coord(0), (0.5, 1.5));
+    assert_eq!(lattice.coord(0), (0.0, 0.0));
     // End of first row.
-    assert_eq!(lattice.coord(3), (3.5, 1.5));
+    assert_eq!(lattice.coord(3), (3.0, 0.0));
     // Start of second row.
-    assert_eq!(lattice.coord(4), (0.5, 2.5));
+    assert_eq!(lattice.coord(4), (0.0, 1.0));
     // Last pixel.
-    assert_eq!(lattice.coord(11), (3.5, 3.5));
+    assert_eq!(lattice.coord(11), (3.0, 2.0));
 
     // Loop axes: X and Y
     assert_eq!(lattice.loop_mask(), 0b0011);
@@ -64,41 +61,38 @@ fn frame_coord_oob() {
     let _c = lattice.coord(12);
 }
 
-// ---- Scanline coord generation ----
+// ---- Scanline: a row-range collapse ----
 
 #[test]
-fn scanline_coord_generation() {
-    let lattice = Lattice::scanline(8, 5.0);
-    assert_eq!(lattice.len(), 8);
-    assert_eq!(lattice.coord(0), (0.0, 5.0));
-    assert_eq!(lattice.coord(7), (7.0, 5.0));
-    assert_eq!(lattice.loop_mask(), 0b0001);
-}
-
-// ---- Point bake = a single value ----
-
-#[test]
-fn point_bake_is_a_single_value() {
-    let lattice = Lattice::point(3.0, 4.0);
-    assert_eq!(lattice.len(), 1);
-    assert_eq!(lattice.loop_mask(), 0);
-    assert_eq!(lattice.coord(0), (3.0, 4.0));
-
-    let discrete = lattice.bake(&x_plus_y());
-    assert_eq!(discrete.width(), 1);
+fn scanline_is_x_only_at_a_fixed_row() {
+    // X + Y at row 5: every sample reads its own column plus the fixed row.
+    let discrete = Lattice::scanline(&x_plus_y(), 8, 5);
+    assert_eq!(discrete.width(), 8);
     assert_eq!(discrete.height(), 1);
-
-    // X + Y = 3 + 4 = 7
-    let buf = discrete.buffer();
-    assert_eq!(buf.len(), 1);
-    assert!((buf[0] - 7.0).abs() < 1e-5, "expected 7.0, got {}", buf[0]);
+    for x in 0..8 {
+        let want = x as f32 + 5.0;
+        assert!(
+            (discrete.buffer()[x] - want).abs() < 1e-5,
+            "x={x}: expected {want}, got {}",
+            discrete.buffer()[x]
+        );
+    }
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn point_coord_oob() {
-    let lattice = Lattice::point(0.0, 0.0);
-    let _c = lattice.coord(1);
+fn an_empty_scanline_is_a_zero_width_buffer() {
+    let discrete = Lattice::scanline(&x_plus_y(), 0, 5);
+    assert_eq!(discrete.buffer().len(), 0);
+    assert_eq!(discrete.width(), 0);
+}
+
+// ---- eval_at = a single value, not a domain ----
+
+#[test]
+fn eval_at_is_a_single_value() {
+    // X + Y = 3 + 4 = 7
+    let got = Lattice::eval_at(&x_plus_y(), 3.0, 4.0);
+    assert!((got - 7.0).abs() < 1e-5, "expected 7.0, got {got}");
 }
 
 // ---- DiscreteManifold round-trip ----
@@ -142,19 +136,17 @@ fn discrete_manifold_round_trip() {
 ///
 /// It used to need one: a lattice carried an origin, so `collapse(f)(i)` was
 /// `f(origin + i)` and the equation only held when `index` knew the origin
-/// too. A lattice is an extent; the origin is a contramap the kernel already
-/// carries; and the law is what this asserts directly rather than up to a
-/// shift. (`Lattice::origin` still exists and is `[0, 0]` here, which is
-/// L2's to remove; the point is that the *default* domain closes the law.)
+/// too. A lattice is an extent, full stop — `Lattice::origin` is gone — so
+/// the law is what this asserts directly rather than up to a shift.
 ///
 /// Up to rounding, and not to bits: the two sides are two *compilations* of
-/// one expression — a 13x7 frame, and a point lattice whose coordinates fold
-/// to constants — so each is extracted against its own set of shared
-/// subterms and associates its arithmetic differently. That last-bit freedom
-/// is what "Floating point at the edges" reserves, and it is not what this
-/// test is for: a real break of the law (an index off by one, a lost origin,
-/// a dropped axis) moves a sample by orders of magnitude, not by a few units
-/// in the last place.
+/// one expression — a 13x7 frame, and a single-point evaluation whose
+/// coordinates fold to constants — so each is extracted against its own set
+/// of shared subterms and associates its arithmetic differently. That
+/// last-bit freedom is what "Floating point at the edges" reserves, and it
+/// is not what this test is for: a real break of the law (an index off by
+/// one, a lost origin, a dropped axis) moves a sample by orders of
+/// magnitude, not by a few units in the last place.
 #[test]
 fn index_of_collapse_is_the_kernel_everywhere() {
     /// Units in the last place the two extractions may differ by. Measured
@@ -179,7 +171,7 @@ fn index_of_collapse_is_the_kernel_everywhere() {
         // The left-hand side: the buffer read back at the index.
         let indexed = sample_bound(&index, &collapsed, x, y);
         // The right-hand side: the kernel itself, at the same point.
-        let direct = Lattice::point(x, y).bake(&k).into_buffer()[0];
+        let direct = Lattice::eval_at(&k, x, y);
         // A sign flip puts the two bit patterns astronomically far apart, so
         // this distance refuses one as loudly as it refuses a wrong value.
         let ulps = (i64::from(indexed.to_bits()) - i64::from(direct.to_bits())).abs();
@@ -256,7 +248,6 @@ fn discrete_manifold_size_mismatch() {
 fn constructor_shapes() {
     let f = Lattice::frame(1920, 1080);
     assert_eq!(f.extent, [1920, 1080]);
-    assert_eq!(f.origin, [0.0, 0.0]);
 
     let i = Lattice::index(132);
     assert_eq!(i.extent, [132, 1]);
@@ -265,27 +256,6 @@ fn constructor_shapes() {
     let m = Lattice::index2(64, 32);
     assert_eq!(m.extent, [64, 32]);
     assert_eq!(m.loop_mask(), 0b0011);
-}
-
-// ---- Scanline bake round-trip ----
-
-#[test]
-fn scanline_bake_round_trip() {
-    let lattice = Lattice::scanline(16, 3.0);
-    let discrete = lattice.bake(&x_plus_y());
-
-    // Each pixel x should have value x + 3.0.
-    for x in 0..16 {
-        let expected = x as f32 + 3.0;
-        let actual = discrete.buffer()[x];
-        assert!(
-            (actual - expected).abs() < 1e-5,
-            "at x={}: expected {}, got {}",
-            x,
-            expected,
-            actual,
-        );
-    }
 }
 
 // ---- Empty lattice ----
@@ -335,7 +305,7 @@ fn sum_over_an_index_domain() {
     // Sum of [0,1,2,3] = 6. The reduction is a binder inside the kernel, so
     // the lattice that tabulates it is a single point.
     let k = Kernel::sum_over(4, |i| i.clone());
-    let result = Lattice::point(0.0, 0.0).bake(&k).into_buffer()[0];
+    let result = Lattice::eval_at(&k, 0.0, 0.0);
     assert!((result - 6.0).abs() < 1e-5, "expected 6.0, got {result}");
 }
 
@@ -365,7 +335,7 @@ fn nested_sums_over_two_index_domains() {
         let j = j.clone();
         Kernel::sum_over(3, move |i| i.add(&j))
     });
-    let result = Lattice::point(0.0, 0.0).bake(&k).into_buffer()[0];
+    let result = Lattice::eval_at(&k, 0.0, 0.0);
     assert!((result - 9.0).abs() < 1e-5, "expected 9.0, got {result}");
 }
 
