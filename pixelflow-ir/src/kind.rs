@@ -518,6 +518,75 @@ impl OpKind {
         }
     }
 
+    /// True for ops a kernel body may call as `.method(args)` — the surface
+    /// set [`OpKind::from_method_call`] resolves into.
+    ///
+    /// Stricter than "not [`EmitStyle::Special`]": [`Self::Add`]/[`Self::Sub`]/
+    /// [`Self::Mul`]/[`Self::Div`] are real, non-special ops but are spelled
+    /// `+ - * /`, never `.add(y)`, and [`Self::TruncToInt`]/[`Self::IAdd`]/
+    /// [`Self::Shl`]/[`Self::Shr`]/[`Self::BitAnd`]/[`Self::BitOr`]/
+    /// [`Self::IntToFloat`] are primitives that only ever arise from lowering
+    /// passes (`Gather`/`Reduce` expansion), never from surface syntax a
+    /// kernel body writes directly.
+    #[must_use]
+    const fn is_dsl_method(self) -> bool {
+        matches!(
+            self,
+            Self::Neg
+                | Self::Sqrt
+                | Self::Rsqrt
+                | Self::Abs
+                | Self::Recip
+                | Self::Floor
+                | Self::Ceil
+                | Self::Round
+                | Self::Sin
+                | Self::Cos
+                | Self::Tan
+                | Self::Asin
+                | Self::Acos
+                | Self::Atan
+                | Self::Exp
+                | Self::Exp2
+                | Self::Ln
+                | Self::Log2
+                | Self::Log10
+                | Self::Min
+                | Self::Max
+                | Self::Atan2
+                | Self::Pow
+                | Self::Lt
+                | Self::Le
+                | Self::Gt
+                | Self::Ge
+                | Self::Eq
+                | Self::Ne
+                | Self::MulAdd
+                | Self::Select
+        )
+    }
+
+    /// Resolve a DSL method call — as written in a `kernel!` body, e.g.
+    /// `.sqrt()` or `.min(y)` — to the primitive op it denotes.
+    ///
+    /// `arg_count` is the call's argument list length, not counting the
+    /// receiver; this checks it against the op's arity, so `"sqrt"` at
+    /// `arg_count` 1 is rejected exactly as an unrecognized name would be.
+    /// `None` for anything [`OpKind::is_dsl_method`] excludes, or a name
+    /// [`OpKind::from_name`] doesn't recognize at all.
+    ///
+    /// This is the one place `(name, arity) -> op` is decided; a compiler
+    /// front end that re-lists method names itself is a second place for that
+    /// mapping to drift from this one.
+    #[must_use]
+    pub fn from_method_call(name: &str, arg_count: usize) -> Option<Self> {
+        let op = Self::from_name(name)?;
+        if !op.is_dsl_method() {
+            return None;
+        }
+        (op.arity() == arg_count + 1).then_some(op)
+    }
+
     /// Get the default cost estimate for this operation (in cycles).
     #[must_use]
     pub const fn default_cost(self) -> usize {
@@ -1088,10 +1157,9 @@ impl<T> IndexMut<OpKind> for OpMap<T> {
 
 // EmitStyle is imported from crate::traits - single source of truth
 
-/// Every op name the surface language accepts as a method.
-///
-/// `Special` ops are excluded: they are structural (`Var`, `Const`, `Buffer`,
-/// `Reduce`, ...) and have no method spelling.
+/// Every op name the surface language accepts as a method — see
+/// [`OpKind::is_dsl_method`] for exactly which ops that is and why it is
+/// narrower than "not `Special`".
 ///
 /// This used to walk a parallel array of one zero-sized type per op, each
 /// implementing an `OpMeta`/`Op`/arity-marker trait family, purely to answer
@@ -1099,7 +1167,7 @@ impl<T> IndexMut<OpKind> for OpMap<T> {
 /// the family and its 230-line module are gone.
 pub fn known_method_names() -> impl Iterator<Item = &'static str> {
     OpKind::all()
-        .filter(|op| !matches!(op.emit_style(), EmitStyle::Special))
+        .filter(|op| op.is_dsl_method())
         .map(OpKind::name)
 }
 
@@ -1243,6 +1311,90 @@ mod method_names {
             names.contains(&"min"),
             "Min is not EmitStyle::Special and should surface as a known method"
         );
+    }
+
+    #[test]
+    fn excludes_infix_arithmetic_spelled_as_operators_not_methods() {
+        let names: Vec<&str> = known_method_names().collect();
+        for op in ["add", "sub", "mul", "div"] {
+            assert!(
+                !names.contains(&op),
+                "{op:?} is spelled with an operator, not a method call"
+            );
+        }
+    }
+
+    #[test]
+    fn excludes_lowering_only_bit_manipulation_primitives() {
+        let names: Vec<&str> = known_method_names().collect();
+        for op in [
+            "trunc_to_int",
+            "int_to_float",
+            "iadd",
+            "shl",
+            "shr",
+            "bitand",
+            "bitor",
+        ] {
+            assert!(
+                !names.contains(&op),
+                "{op:?} only arises from lowering passes, never surface syntax"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod from_method_call {
+    use super::OpKind;
+
+    #[test]
+    fn resolves_a_unary_method_at_zero_args() {
+        assert_eq!(OpKind::from_method_call("sqrt", 0), Some(OpKind::Sqrt));
+    }
+
+    #[test]
+    fn resolves_a_binary_method_at_one_arg() {
+        assert_eq!(OpKind::from_method_call("min", 1), Some(OpKind::Min));
+    }
+
+    #[test]
+    fn resolves_a_ternary_method_at_two_args() {
+        assert_eq!(OpKind::from_method_call("mul_add", 2), Some(OpKind::MulAdd));
+        assert_eq!(OpKind::from_method_call("select", 2), Some(OpKind::Select));
+    }
+
+    #[test]
+    fn resolves_neg_as_a_method_despite_its_operator_emit_style() {
+        assert_eq!(OpKind::from_method_call("neg", 0), Some(OpKind::Neg));
+    }
+
+    #[test]
+    fn accepts_the_powf_alias_for_pow() {
+        assert_eq!(OpKind::from_method_call("powf", 1), Some(OpKind::Pow));
+    }
+
+    #[test]
+    fn rejects_a_wrong_arg_count() {
+        assert_eq!(OpKind::from_method_call("sqrt", 1), None);
+        assert_eq!(OpKind::from_method_call("min", 0), None);
+        assert_eq!(OpKind::from_method_call("min", 2), None);
+    }
+
+    #[test]
+    fn rejects_infix_arithmetic() {
+        assert_eq!(OpKind::from_method_call("add", 1), None);
+    }
+
+    #[test]
+    fn rejects_lowering_only_primitives() {
+        assert_eq!(OpKind::from_method_call("trunc_to_int", 0), None);
+        assert_eq!(OpKind::from_method_call("shl", 1), None);
+    }
+
+    #[test]
+    fn rejects_an_unrecognized_name() {
+        assert_eq!(OpKind::from_method_call("not_a_real_op", 0), None);
     }
 }
 
