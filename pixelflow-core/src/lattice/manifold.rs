@@ -578,6 +578,33 @@ impl BoundManifold {
         unsafe { self.collapse(region, out.as_mut_ptr(), band) }
     }
 
+    /// [`Self::collapse_subrect`] for a kernel whose root is int-domain — a
+    /// packed pixel or a mask — the way [`Self::collapse_int_rows`] is for
+    /// [`Self::collapse_rows`].
+    ///
+    /// Public because the caller that needs it is a *union summand* in
+    /// another crate: a program that answers for part of a frame writes
+    /// exactly its own columns, and the columns past them belong to whatever
+    /// fills the rest. `collapse_int_rows`'s overhang policy — "the caller
+    /// owns the padding" — is false there.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the region's width is zero, `stride` is less than it, or
+    /// `out` cannot hold the sub-rectangle.
+    pub fn collapse_int_subrect(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
+        let band = self.plan(
+            "collapse_int_subrect",
+            region,
+            Destination::exact(stride, out.len()),
+        );
+        // SAFETY: see `collapse`. `u32` and `f32` share size and alignment,
+        // the store moves the root's bit pattern without interpreting it, and
+        // `plan` proved `out` holds the sub-rectangle — which under
+        // `RowTail::Exact` reaches no further than `width` in any row.
+        unsafe { self.collapse(region, out.as_mut_ptr().cast::<f32>(), band) }
+    }
+
     /// How a band lands in a destination of a given stride, and the guard that
     /// the destination can hold it.
     ///

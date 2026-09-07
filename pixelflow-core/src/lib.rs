@@ -92,7 +92,8 @@ pub use pixelflow_ir::{Bits, Kernel, Monoid, Scalar, Uniform};
 pub use lattice::BilinearSampler;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub use lattice::cell_grid::{
-    CELL_STRIDE, CellGridBuffers, CellGridFrame, CellGridGeometry, CellGridKernels, CellGridProgram,
+    CELL_STRIDE, CellGridBuffers, CellGridFrame, CellGridKernels, CellGridMetrics, CellGridParams,
+    CellGridProgram, CellGridShape, CellGridSlots, paint_outside,
 };
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub use lattice::manifold::{

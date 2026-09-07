@@ -151,6 +151,26 @@ impl IndexRange {
         self.width == 0 || self.rows == 0
     }
 
+    /// The range of indices in both — empty when they share none.
+    ///
+    /// The domain-side `∩` a restricted collapse needs: a caller asked for a
+    /// band, a program answers for a range, and what it is asked is the meet.
+    /// Total rather than optional, because an empty range is a perfectly good
+    /// answer and a `None` would only be unwrapped back into one.
+    #[must_use]
+    pub fn intersect(&self, other: &Self) -> Self {
+        let x0 = self.x0.max(other.x0);
+        let y0 = self.y0.max(other.y0);
+        let x1 = (self.x0 + self.width).min(other.x0 + other.width);
+        let y1 = (self.y0 + self.rows).min(other.y0 + other.rows);
+        Self {
+            x0,
+            y0,
+            width: x1.saturating_sub(x0),
+            rows: y1.saturating_sub(y0),
+        }
+    }
+
     /// Whether two ranges share an index. Empty ranges meet nothing.
     ///
     /// Internal because it exists for [`Union::place`]'s disjointness check;
