@@ -10,13 +10,18 @@
 //! - **Isomorphism**: `index(collapse(m), i) = m(coord(i))` (up to discretization)
 //!
 //! Nothing computes until a Lattice demands it. A single-point evaluation is
-//! just `Lattice::point` -- the degenerate case with both coordinates fixed.
+//! not a lattice at all -- it is [`Lattice::eval_at`], a different operation
+//! with a different signature: it answers one value, not a domain to
+//! tabulate.
 //!
 //! There is one `Lattice` type, not one per shape. An axis with extent 1 is
-//! fixed at its origin; an axis with extent > 1 is a loop dimension. The
-//! constructors (`frame`, `scanline`, `point`, `index2`, `index`) are sugar
-//! for common shapes -- the shape is data, not a type. Extents only need to
-//! be static at JIT-compile time, which is when the kernel is specialized.
+//! fixed; an axis with extent > 1 is a loop dimension. The constructors
+//! (`frame`, `index2`, `index`) are sugar for common shapes -- the shape is
+//! data, not a type. Extents only need to be static at JIT-compile time,
+//! which is when the kernel is specialized. A coordinate frame is never part
+//! of the shape: pixel-center sampling, a placed glyph, a DPI scale are all
+//! contramaps on the kernel (`Kernel::at`), composed before the lattice ever
+//! sees a coordinate.
 //!
 //! A sub-lattice is an index range, and a **[`union::Union`]** is a sum of
 //! them: disjoint ranges, each with the kernel sampled on it, collapsing into
@@ -118,26 +123,33 @@ impl DiscreteManifold {
 // Lattice: a finite box domain over the two coordinate axes
 // ============================================================================
 
-/// A finite box domain over the two coordinate axes (X, Y).
+/// A finite box domain over the two coordinate axes (X, Y): the indices
+/// `[0, extent[0]) × [0, extent[1])` and nothing else.
 ///
 /// `extent[i]` is the number of samples along axis `i`; an axis with extent 1
-/// is fixed at `origin[i]`. `origin[i]` is the coordinate of index 0 on each
-/// axis. Iteration is row-major with X innermost (SIMD lanes ride X).
+/// is a fixed point, extent > 1 a loop dimension. Iteration is row-major with
+/// X innermost (SIMD lanes ride X).
 ///
-/// The shape is data, not a type: a frame, a scanline, a point, and a tensor
-/// index range are all the same `Lattice` with different extents. The JIT
-/// specializes on the extents at kernel-compile time.
+/// The shape is data, not a type: a frame, a tensor index range, and a sub-
+/// lattice ([`IndexRange`](crate::IndexRange)) are all the same `Lattice`
+/// shape with different extents. The JIT specializes on the extents at
+/// kernel-compile time.
 ///
-/// There were four axes. Z and W had extent 1 in every production call in the
-/// tree — an axis that never varies is not an axis, it is a per-call scalar —
-/// so what they carried is a [`Uniform`](pixelflow_ir::Uniform) now
-/// (docs/plans/2026-09-06-lattice-is-the-index.md).
+/// A `Lattice` is the index, and nothing else — it carries no coordinate
+/// frame. It used to: an `origin` field let two lattices of the same extent
+/// disagree about where their samples fell, which broke the representable
+/// functor's law (`index(collapse(f)) = f`) on paper even though the emitted
+/// code already treated the origin as a runtime argument. Where an origin
+/// used to go, a contramap does instead — pixel-center sampling is
+/// `f ∘ (+½)`, a placed glyph is `f ∘ (−pos)` — composed on the *kernel*
+/// with [`Kernel::at`](pixelflow_ir::Kernel::at) before it ever reaches a
+/// lattice (docs/plans/2026-09-06-lattice-is-the-index.md). There were also
+/// four axes; Z and W left the same way, one stage earlier, because an axis
+/// that never varies is a [`Uniform`](pixelflow_ir::Uniform), not an axis.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Lattice {
     /// Samples per axis: `[x, y]`. Extent 1 = fixed axis.
     pub extent: [u32; AXES],
-    /// Coordinate of index 0 on each axis.
-    pub origin: [f32; AXES],
 }
 
 /// Coordinate axes a lattice has.
@@ -149,25 +161,6 @@ impl Lattice {
     pub fn frame(width: usize, height: usize) -> Self {
         Self {
             extent: [width as u32, height as u32],
-            origin: [0.0, 0.0],
-        }
-    }
-
-    /// A 1D scanline: only X varies; Y is fixed.
-    #[must_use]
-    pub fn scanline(width: usize, y: f32) -> Self {
-        Self {
-            extent: [width as u32, 1],
-            origin: [0.0, y],
-        }
-    }
-
-    /// A single point: both coordinates fixed. The degenerate (0-loop) case.
-    #[must_use]
-    pub fn point(x: f32, y: f32) -> Self {
-        Self {
-            extent: [1, 1],
-            origin: [x, y],
         }
     }
 
@@ -176,7 +169,6 @@ impl Lattice {
     pub fn index(len: usize) -> Self {
         Self {
             extent: [len as u32, 1],
-            origin: [0.0; AXES],
         }
     }
 
@@ -186,8 +178,55 @@ impl Lattice {
     pub fn index2(width: usize, height: usize) -> Self {
         Self {
             extent: [width as u32, height as u32],
-            origin: [0.0; AXES],
         }
+    }
+
+    /// Collapse one row of `kernel`: X loops across `width`, Y is fixed at
+    /// row `y0` — the row-range special case of an
+    /// [`IndexRange`](crate::IndexRange), compiled at exactly that range's
+    /// own extent (`[width, 1]`) rather than a taller frame's, since nothing
+    /// above `y0` is ever asked about.
+    ///
+    /// Not a `Lattice` constructor: a fixed row is a coordinate, and a
+    /// coordinate has nowhere to live on a domain that is only an index. A
+    /// caller that wants an arbitrary (possibly fractional) fixed Y wants a
+    /// contramap instead — `kernel.at(&Kernel::x(), &Kernel::constant(y))`
+    /// baked with [`Lattice::frame`], the same move `eval_at` makes for a
+    /// point.
+    ///
+    /// # Panics
+    ///
+    /// Whatever [`IndexRange::bake`](crate::IndexRange::bake) panics for.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[must_use]
+    pub fn scanline(kernel: &pixelflow_ir::Kernel, width: usize, y0: usize) -> DiscreteManifold {
+        if width == 0 {
+            return DiscreteManifold::new(Vec::new(), 0, 1);
+        }
+        union::IndexRange::new(0, y0, width, 1).bake(kernel)
+    }
+
+    /// Evaluate `kernel` at one coordinate: the degenerate case with both
+    /// axes fixed. Not a domain with a one-point extent and a weird origin —
+    /// a different operation, answering a single value rather than
+    /// tabulating a buffer, compiled once at `[1, 1]` and shared by the
+    /// global compile cache across every coordinate this kernel is evaluated
+    /// at (the coordinate is a collapse-time argument, never part of the
+    /// compiled shape).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `kernel` **declares a buffer** — compile and bind it
+    /// yourself, then call
+    /// [`BoundManifold::eval_at`](crate::BoundManifold::eval_at). Also
+    /// panics if this build's `Field` width is not the JIT's, or if
+    /// compilation fails.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[must_use]
+    pub fn eval_at(kernel: &pixelflow_ir::Kernel, x: f32, y: f32) -> f32 {
+        manifold::Manifold::compile(kernel, [1, 1])
+            .bind(&[])
+            .eval_at(x, y)
     }
 
     // ───────────────────── domain queries ──────────────────────
@@ -233,7 +272,7 @@ impl Lattice {
         let [ex, _] = self.extent.map(|e| e as usize);
         let x = index % ex;
         let y = index / ex;
-        (self.origin[0] + x as f32, self.origin[1] + y as f32)
+        (x as f32, y as f32)
     }
 
     // ─────────────────────── collapse ────────────────────────
@@ -244,7 +283,8 @@ impl Lattice {
     /// The manifold must have been compiled at this lattice's extents
     /// ([`Manifold::compile`](crate::Manifold::compile)) and had every buffer
     /// slot it declared bound ([`Manifold::bind`](crate::Manifold::bind)).
-    /// Samples are taken at `origin + index` on every axis.
+    /// Samples are taken at the index itself on every axis — a plain
+    /// coordinate frame is nowhere to be found.
     ///
     /// The X/Y loop nest lives *inside* the emitted code, so the whole domain
     /// is one call rather than one `extern "C"` call per row or SIMD batch.
@@ -259,7 +299,7 @@ impl Lattice {
         let [ex, ey] = self.extent.map(|e| e as usize);
         let mut buffer = vec![0.0f32; self.len()];
         if !self.is_empty() {
-            let band = manifold::PlaneRegion::from_origin(ex, ey, self.origin);
+            let band = manifold::PlaneRegion::at_index(ex, ey, 0, 0);
             manifold.collapse_rows(band, &mut buffer, ex);
         }
         DiscreteManifold::new(buffer, ex, ey)

@@ -15,9 +15,10 @@
 //!   that can be sampled over a domain, specialized on the extents it was
 //!   compiled for, held behind the global compile cache. It has no `eval` and
 //!   is not batch-shaped.
-//! - A **[`Lattice`]** is the domain: extents and an origin. The shape is
-//!   data, not a type — a frame, a scanline, a point and an index range are
-//!   one `Lattice` with different extents.
+//! - A **[`Lattice`]** is the domain: an extent, and nothing else. The shape
+//!   is data, not a type — a frame and an index range are one `Lattice` with
+//!   different extents. A coordinate frame is never part of it; where one is
+//!   needed it is a contramap on the kernel instead.
 //! - **[`Lattice::collapse`]** is the verb: tabulate a bound manifold over a
 //!   lattice into a [`DiscreteManifold`], the buffer that *is* a manifold by
 //!   the representable-functor law `index(collapse(f)) = f`.

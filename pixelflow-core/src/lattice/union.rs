@@ -164,6 +164,31 @@ impl IndexRange {
             && self.y0 < other.y0 + other.rows
             && other.y0 < self.y0 + self.rows
     }
+
+    /// Bake `kernel` over exactly this range, in isolation: compiled at the
+    /// range's own extent (`[width, rows]`) and collapsed starting at its own
+    /// index `(x0, y0)` — the same per-summand step [`Union`] performs when
+    /// it folds a piece into an ambient buffer, useful standalone when a
+    /// caller wants one placed piece's samples on their own rather than
+    /// folded into something larger. [`Lattice::scanline`](crate::Lattice::scanline)
+    /// is this at one row.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is empty, or whatever [`Manifold::compile`] and
+    /// [`Manifold::bind`] panic for.
+    #[must_use]
+    pub fn bake(&self, kernel: &Kernel) -> DiscreteManifold {
+        assert!(!self.is_empty(), "IndexRange::bake: {self:?} is empty");
+        let bound = Manifold::compile(kernel, [self.width as u32, self.rows as u32]).bind(&[]);
+        let mut buffer = vec![0.0f32; self.width * self.rows];
+        bound.collapse_rows(
+            PlaneRegion::at_index(self.width, self.rows, self.x0, self.y0),
+            &mut buffer,
+            self.width,
+        );
+        DiscreteManifold::new(buffer, self.width, self.rows)
+    }
 }
 
 /// **A disjoint union of index ranges, each with the kernel sampled on it** —
@@ -306,11 +331,7 @@ impl CompiledUnion {
         );
         let mut buffer = vec![0.0f32; ex * ey];
         for (range, program) in &self.pieces {
-            let origin = [
-                self.lattice.origin[0] + range.x0 as f32,
-                self.lattice.origin[1] + range.y0 as f32,
-            ];
-            let band = PlaneRegion::from_origin(range.width, range.rows, origin);
+            let band = PlaneRegion::at_index(range.width, range.rows, range.x0, range.y0);
             let start = range.y0 * ex + range.x0;
             program.collapse_subrect(band, &mut buffer[start..], ex);
         }
@@ -454,10 +475,7 @@ mod tests {
     /// extent above 1, and the type is what retired it.
     #[test]
     fn the_ambient_lattice_is_a_plane_by_construction() {
-        let over = Union::over(Lattice {
-            extent: [8, 8],
-            origin: [0.0; crate::lattice::AXES],
-        });
+        let over = Union::over(Lattice { extent: [8, 8] });
         assert_eq!(over.len(), 0);
     }
 }
