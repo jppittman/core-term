@@ -654,6 +654,10 @@ pub trait WakeHandler: Send + Sync {
 /// Fibonacci hash constant for jitter calculation.
 const JITTER_HASH_CONSTANT: u64 = 0x9e3779b97f4a7c15;
 
+/// Mixes the attempt number into the wall-clock nanoseconds before hashing,
+/// so consecutive attempts on the same thread still land in different buckets.
+const ATTEMPT_MIX_CONSTANT: u64 = 0x517cc1b727220a95;
+
 /// Calculate exponential backoff with jitter.
 ///
 /// Uses a simple exponential backoff strategy with added jitter to prevent
@@ -675,7 +679,7 @@ fn backoff_with_jitter(attempt: u32, params: &SchedulerParams) -> Result<Duratio
         .unwrap_or(Duration::from_secs(0));
 
     // Mix nanoseconds with attempt number for better distribution across threads
-    let hash = (now.as_nanos() as u64 ^ (attempt as u64).wrapping_mul(0x517cc1b727220a95))
+    let hash = (now.as_nanos() as u64 ^ (attempt as u64).wrapping_mul(ATTEMPT_MIX_CONSTANT))
         .wrapping_mul(JITTER_HASH_CONSTANT);
 
     let jitter_pct = params.jitter_min_pct + (hash % params.jitter_range_pct);
@@ -1058,8 +1062,12 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     {
         use std::time::Instant;
 
+        /// Messages drained per lane before re-checking the deadline, so the
+        /// deadline check itself doesn't dominate a large backlog.
+        const SHUTDOWN_DRAIN_BATCH_SIZE: usize = 10;
+
         let deadline = Instant::now() + timeout;
-        let batch_size = 10;
+        let batch_size = SHUTDOWN_DRAIN_BATCH_SIZE;
 
         loop {
             let control_status = self
