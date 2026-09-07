@@ -16,7 +16,7 @@ Multi-priority actor model with three lanes: Control > Management > Data. Lock-f
 - `TroupeActor` trait — Actors with directory access
 - `troupe!` macro — Generates actor groups with Directory, ExposedHandles, and lifecycle
 - `ports!` macro — Generates an actor's output word and its wiring
-- `ShutdownMode` enum — Three graceful shutdown strategies
+- `ShutdownMode` enum — shutdown strategy (currently `Immediate` only)
 - `ActorStatus` enum — Controls actor behavior (Idle vs Busy)
 - `SendError` type — Timeout or Unknown (receiver disconnected)
 - `WakeHandler` trait — Platform-specific wake mechanisms (e.g., NSEvent on macOS)
@@ -80,13 +80,7 @@ self.dir.display.send(Message::Control(Render));
 
 ### Shutdown Modes
 
-Three graceful shutdown strategies via `ShutdownMode`:
-
-| Mode | Behavior |
-|------|----------|
-| `Immediate` | Drop all pending messages (default) |
-| `DrainControl` | Process control+management, drop data |
-| `DrainAll { timeout }` | Process all with timeout fallback |
+`ShutdownMode::Immediate` (the default, and only variant): drop all pending messages on shutdown.
 
 ### Actor Status
 
@@ -110,7 +104,6 @@ Three-phase strategy for data lane congestion:
 ```rust
 ActorScheduler::new()                       // Basic creation
 ActorScheduler::new_with_wake_handler(wh)   // With platform wake handler
-ActorScheduler::new_with_shutdown_mode(sm)  // With custom shutdown
 ```
 
 ## Key Files
