@@ -87,11 +87,11 @@ impl AnsiParser {
     }
 
     fn add_param(&mut self, param: u16) {
-        if self.params.len() < MAX_PARAMS {
-            self.params.push(param);
-        } else {
+        if self.params.len() >= MAX_PARAMS {
             warn!("Exceeded maximum CSI parameters ({})", MAX_PARAMS);
+            return;
         }
+        self.params.push(param);
     }
 
     fn finalize_param(&mut self) {
@@ -105,22 +105,22 @@ impl AnsiParser {
     }
 
     fn add_intermediate(&mut self, intermediate: u8) {
-        if self.intermediates.len() < MAX_INTERMEDIATES {
-            self.intermediates.push(intermediate);
-        } else {
+        if self.intermediates.len() >= MAX_INTERMEDIATES {
             warn!(
                 "Exceeded maximum CSI intermediate bytes ({})",
                 MAX_INTERMEDIATES
             );
+            return;
         }
+        self.intermediates.push(intermediate);
     }
 
     fn add_string_byte(&mut self, byte: u8) {
-        if self.string_buffer.len() < MAX_OSC_LEN {
-            self.string_buffer.push(byte);
-        } else {
+        if self.string_buffer.len() >= MAX_OSC_LEN {
             warn!("Exceeded maximum string length ({})", MAX_OSC_LEN);
+            return;
         }
+        self.string_buffer.push(byte);
     }
 
     fn dispatch_c0(&mut self, byte: u8) {
