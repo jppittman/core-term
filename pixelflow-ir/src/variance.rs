@@ -375,7 +375,9 @@ fn bound_index_slot(
         return None;
     };
     let slot = *v as u8;
-    (4..8).contains(&slot).then_some(slot)
+    let binders = crate::arena::REDUCE_BINDER_BASE
+        ..crate::arena::REDUCE_BINDER_BASE + crate::arena::REDUCE_BINDERS;
+    binders.contains(&slot).then_some(slot)
 }
 
 /// Find arena nodes that should be hoisted out of the X-loop.
