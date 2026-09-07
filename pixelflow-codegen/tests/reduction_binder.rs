@@ -13,7 +13,7 @@ use pixelflow_ir::{Kernel, Monoid, eval_scalar};
 /// Evaluate through the IR interpreter — the language's reference semantics.
 fn interp(k: &Kernel, x: f32, y: f32) -> f32 {
     let (arena, root) = k.parts();
-    eval_scalar(arena, root, &[x, y, 0.0, 0.0], &BindingTable::empty())
+    eval_scalar(arena, root, &[x, y], &BindingTable::empty())
 }
 
 #[test]
@@ -267,15 +267,8 @@ fn occlusion_shaped_accumulation_over_samples() {
     // field(x, y) = x, sampled at x + i  =>  (1/N) Σ_{i<N} (X + i) = X + 1.5
     const N: u32 = 4;
     let field = Kernel::x();
-    let ao = Kernel::sum_over(N, move |i| {
-        field.at(
-            &Kernel::x().add(i),
-            &Kernel::y(),
-            &Kernel::z(),
-            &Kernel::w(),
-        )
-    })
-    .div(&Kernel::constant(N as f32));
+    let ao = Kernel::sum_over(N, move |i| field.at(&Kernel::x().add(i), &Kernel::y()))
+        .div(&Kernel::constant(N as f32));
 
     assert_eq!(interp(&ao, 10.0, 0.0), 11.5);
 }

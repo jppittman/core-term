@@ -28,7 +28,7 @@ pub struct CollapseKernel {
     pub arena: ExprArena,
     pub root: ExprId,
     /// The lattice extent, exactly as `Lattice::bake` would see it.
-    pub extent: [u32; 4],
+    pub extent: [u32; 2],
 }
 
 /// How many times each scope of the collapse nest runs, for one
@@ -46,18 +46,13 @@ pub struct Trips {
 impl Trips {
     /// # Panics
     /// If the extent is narrower than one SIMD group — the collapse kernel is
-    /// never called for such a lattice, so there would be nothing to time —
-    /// or if it names a Z/W plane, which is a separate call.
+    /// never called for such a lattice, so there would be nothing to time.
     #[must_use]
-    pub fn of(extent: [u32; 4], lanes: u32) -> Self {
+    pub fn of(extent: [u32; 2], lanes: u32) -> Self {
         assert!(
             extent[0] >= lanes,
             "extent {extent:?} is narrower than the {lanes}-lane batch: bake would run \
              the scalar tail only and never call the collapse kernel"
-        );
-        assert!(
-            extent[2] == 1 && extent[3] == 1,
-            "extent {extent:?}: the corpus is 2D — Z/W planes are separate calls"
         );
         Self {
             rows: u64::from(extent[1]),
@@ -70,7 +65,16 @@ impl Trips {
 // Fixture format
 // =============================================================================
 
-const HEADER: &str = "# pixelflow collapse corpus v1";
+// v2 adds `A <default-bits>`, a kernel argument. v1 had no such node
+// because the `invariant` family's frame-scope leaf was the Z axis, and a
+// lattice has two axes now — so an argument is the only leaf that is
+// invariant across the lattice and survives constant folding. A v1 fixture
+// cannot be replayed into a v2 corpus and the header says so rather than
+// letting the ids drift silently.
+const HEADER: &str = "# pixelflow collapse corpus v2";
+/// The version this format replaced, recognised only so [`decode`] can say
+/// *which* mismatch it hit.
+const SUPERSEDED_HEADER: &str = "# pixelflow collapse corpus v1";
 
 /// Write `kernels` into `dir`, one `.collapse` file each.
 ///
@@ -128,8 +132,8 @@ pub fn encode(kernel: &CollapseKernel) -> String {
     writeln!(out, "{HEADER}").expect("fmt");
     writeln!(out, "name {}", kernel.name).expect("fmt");
     writeln!(out, "family {}", kernel.family).expect("fmt");
-    let [ex, ey, ez, ew] = kernel.extent;
-    writeln!(out, "extent {ex} {ey} {ez} {ew}").expect("fmt");
+    let [ex, ey] = kernel.extent;
+    writeln!(out, "extent {ex} {ey}").expect("fmt");
 
     let mut dense: Vec<u32> = vec![u32::MAX; len];
     let mut next = 0u32;
@@ -145,6 +149,16 @@ pub fn encode(kernel: &CollapseKernel) -> String {
         let id = ExprId(idx as u32);
         match arena.node(id) {
             ExprNode::Var(i) => writeln!(out, "V {i}"),
+            // A kernel argument. The format knows about one because, with
+            // two coordinate axes, a `Uniform` is the *only* leaf that is
+            // both invariant across the lattice and beyond the constant
+            // folder's reach — which is precisely what the `invariant`
+            // family needs to give LICM's frame prologue something to lift.
+            // The Z axis used to serve that role; it was the same thing
+            // wearing a coordinate's name.
+            ExprNode::Uniform(u) => {
+                writeln!(out, "A {}", arena.uniform_decl(*u).default.to_bits())
+            }
             ExprNode::Const(v) => writeln!(out, "C {}", v.to_bits()),
             ExprNode::Unary(k, a) => writeln!(out, "U {k:?} {}", d(&dense, *a)),
             ExprNode::Binary(k, a, b) => {
@@ -174,12 +188,21 @@ fn decode(path: &Path) -> CollapseKernel {
     let text =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let mut lines = text.lines();
-    assert_eq!(
-        lines.next(),
-        Some(HEADER),
-        "{}: not a collapse corpus fixture",
-        path.display()
-    );
+    // Name the version mismatch here rather than letting a v1 body surface
+    // as "unparseable line": a stale corpus is regenerated, not debugged.
+    match lines.next() {
+        Some(HEADER) => {}
+        Some(SUPERSEDED_HEADER) => panic!(
+            "{}: this is a v1 corpus and the format is now v2 — v2 carries \
+             an argument node (`A`), which v1 had no way to spell. Regenerate \
+             the corpus; a v1 fixture cannot be replayed into a v2 arena.",
+            path.display()
+        ),
+        other => panic!(
+            "{}: not a collapse corpus fixture (expected {HEADER:?}, found {other:?})",
+            path.display()
+        ),
+    }
 
     let mut name = None;
     let mut family = None;
@@ -215,8 +238,8 @@ fn decode(path: &Path) -> CollapseKernel {
                 family = Some((*n).to_string());
                 continue;
             }
-            ["extent", x, y, z, w] => {
-                extent = Some([dim(x), dim(y), dim(z), dim(w)]);
+            ["extent", x, y] => {
+                extent = Some([dim(x), dim(y)]);
                 continue;
             }
             ["root", r] => {
@@ -224,6 +247,11 @@ fn decode(path: &Path) -> CollapseKernel {
                 continue;
             }
             ["V", i] => arena.push_var(i.parse().expect("var index")),
+            ["A", bits] => {
+                let default = f32::from_bits(bits.parse().expect("argument default bits"));
+                let slot = arena.declare_uniform(pixelflow_ir::Uniform::new(default).decl());
+                arena.push_uniform(slot)
+            }
             ["C", bits] => arena.push_const(f32::from_bits(bits.parse().expect("const bits"))),
             ["U", k, a] => arena.push_unary(op(k), id(a)),
             ["Bi", k, a, b] => arena.push_binary(op(k), id(a), id(b)),
@@ -254,11 +282,15 @@ fn decode(path: &Path) -> CollapseKernel {
 
 /// Shape the pressure families are baked at: wide enough that the body
 /// dominates, small enough to keep a sample cheap.
-const PRESSURE_EXTENT: [u32; 4] = [256, 64, 1, 1];
+const PRESSURE_EXTENT: [u32; 2] = [256, 64];
 /// Where a loop-invariant term is amortized over many body iterations.
-const INVARIANT_HOT_EXTENT: [u32; 4] = [256, 256, 1, 1];
+const INVARIANT_HOT_EXTENT: [u32; 2] = [256, 256];
 /// Where it is not: two rows of a few batch groups pay the prologues in full.
-const INVARIANT_COLD_EXTENT: [u32; 4] = [64, 2, 1, 1];
+const INVARIANT_COLD_EXTENT: [u32; 2] = [64, 2];
+/// The value the `invariant` family's frame-scope argument carries. Any
+/// finite number does — the timing does not depend on it — but the block the
+/// runner passes must agree with this so the kernel reads a real `f32`.
+pub const CORPUS_ARG: f32 = 1.0;
 
 /// Every synthetic kernel, in a fixed order.
 ///
@@ -276,7 +308,7 @@ const INVARIANT_COLD_EXTENT: [u32; 4] = [64, 2, 1, 1];
 pub fn synthetic() -> Vec<CollapseKernel> {
     let mut out = Vec::new();
     let mut push =
-        |name: String, family: &str, extent: [u32; 4], build: &dyn Fn(&mut ExprArena) -> ExprId| {
+        |name: String, family: &str, extent: [u32; 2], build: &dyn Fn(&mut ExprArena) -> ExprId| {
             let mut arena = ExprArena::new();
             let root = build(&mut arena);
             out.push(CollapseKernel {
@@ -372,7 +404,12 @@ fn anchored(a: &mut ExprArena, w: usize, d: usize) -> ExprId {
 /// prologues get work — each read exactly once by an X-varying body term.
 fn invariants(a: &mut ExprArena, n: usize) -> ExprId {
     let y = a.push_var(1);
-    let z = a.push_var(2);
+    // Frame scope needs a leaf the folder cannot collapse and the lattice
+    // cannot vary. That is a kernel argument; it used to be the Z axis,
+    // which was the same thing wearing a coordinate's name. A `Const` would
+    // fold and leave LICM nothing to lift.
+    let arg = a.declare_uniform(pixelflow_ir::Uniform::new(CORPUS_ARG).decl());
+    let z = a.push_uniform(arg);
     let terms: Vec<ExprId> = (0..n)
         .map(|i| {
             let c = a.push_const(0.5 + i as f32 * 0.125);
@@ -436,5 +473,25 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(&dir).expect("clean up");
+    }
+
+    /// A stale v1 corpus must say so. Nothing commits corpora, so failing is
+    /// right — but "unparseable line" would send the reader into their file
+    /// instead of into `gen_bench_corpus`.
+    #[test]
+    #[should_panic(expected = "this is a v1 corpus and the format is now v2")]
+    fn a_superseded_corpus_names_the_version_it_is() {
+        let dir = std::env::temp_dir().join(format!(
+            "pixelflow-collapse-corpus-v1-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("stale.txt");
+        std::fs::write(
+            &path,
+            format!("{SUPERSEDED_HEADER}\nname stale\nfamily wide\nextent 8 8\nV 0\nroot 0\n"),
+        )
+        .expect("write");
+        let _ = decode(&path);
     }
 }

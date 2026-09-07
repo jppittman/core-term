@@ -15,16 +15,17 @@ Kernel ──Manifold::compile(extent)──▶ Manifold ──bind(&[(id, buf)]
 
 ## What Lives Here
 
-- `Lattice` — a finite box over the four axes: `extent: [u32; 4]` and `origin: [f32; 4]`.
+- `Lattice` — a finite box over the two axes: `extent: [u32; 2]` and `origin: [f32; 2]`.
   The shape is data, not a type; a frame, a scanline, a point and an index range are one
-  `Lattice` with different extents.
+  `Lattice` with different extents. There were four axes; Z and W had extent 1 in every
+  production call, and an axis that never varies is a `Uniform`, not an axis.
 - `Manifold` — a `Kernel` compiled at a lattice's shape, behind the global compile cache.
   It knows its extents, its buffer declarations and its code bytes. It has **no `eval`** and
   is **not batch-shaped**.
 - `BoundManifold` — a manifold with a buffer bound to every slot it declared. `bind`
   panics *naming the slot* it cannot fill; nothing silently reads a null context.
 - `Lattice::collapse(&BoundManifold) -> DiscreteManifold` — the one verb. One call per
-  `(z, w)` plane; the X/Y loop nest is inside the emitted code.
+  stripe; the X/Y loop nest is inside the emitted code.
 - `Lattice::bake(&Kernel)` — `collapse(compile(k, extent).bind(&[]))`, one line, for the
   buffer-free case that is most callers.
 - `DiscreteManifold` — the buffer that IS a manifold (`index(collapse(f)) = f`). It reads
@@ -45,14 +46,14 @@ there.
 ### A kernel is compiled at a shape, not evaluated at a point
 
 There is no `eval`, no per-batch entry, and no interpreter. If you find yourself wanting to
-"just evaluate this manifold here", the answer is `Lattice::point(x, y, z, w).bake(&k)` —
+"just evaluate this manifold here", the answer is `Lattice::point(x, y).bake(&k)` —
 compile at the degenerate shape and collapse. A test may own that loop; a library may not.
 
 ### Rank is a property of the shape, not of the store
 
-A manifold compiles at a `[u32; 4]` — a lattice's whole extent. The collapse ABI stays
-two-dimensional: one call fills batches across X and rows down Y, so a band lies in one
-`(z, w)` plane and `collapse` calls it once per plane.
+A manifold compiles at a `[u32; 2]` — a lattice's whole extent — and the collapse ABI is
+the same two axes: one call fills batches across X and rows down Y. A per-call scalar is
+an argument (`Uniform`, written into a `UniformBlock`), not a third extent of 1.
 
 ### The origin is not part of compilation
 

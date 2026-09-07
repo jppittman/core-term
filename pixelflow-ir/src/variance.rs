@@ -8,8 +8,9 @@
 //!
 //! - Bit 0 (X): pixel column — varies per pixel
 //! - Bit 1 (Y): pixel row — varies per scanline
-//! - Bit 2 (Z): time/frame — varies per frame
-//! - Bit 3 (W): layer/channel — varies per instance
+//! - Bits 2..4: retired. They were the Z and W axes; a lattice has
+//!   [`COORD_AXES`](crate::arena::COORD_AXES) axes and a per-call scalar is a
+//!   uniform, whose variance is `CONST`.
 //! - Bits 4..8: the four reduction index slots — vary per step of the binder
 //!   that binds them
 //!
@@ -22,9 +23,7 @@
 //!
 //! | Variance | Scope | Meaning |
 //! |----------|-------|---------|
-//! | `0b0000_0000` | Const | Compile-time constant |
-//! | `0b0000_1000` | Frame | W-only, compute once per frame |
-//! | `0b0000_0100` | Frame | Z-only, compute once per frame |
+//! | `0b0000_0000` | Const | Compile-time constant — a uniform is here |
 //! | `0b0000_0010` | Scanline | Y-only, compute once per scanline |
 //! | `0b0000_0001` | Pixel | X-dependent, compute per pixel |
 //! | `0b0001_0000` | Binder | varies with reduction slot 4 only |
@@ -35,8 +34,8 @@
 
 /// Which variables an expression depends on: one bit per variable.
 ///
-/// Coordinates X=bit0, Y=bit1, Z=bit2, W=bit3; reduction index slots `4..8` in
-/// bits `4..8`. Operations:
+/// Coordinates X=bit0, Y=bit1; reduction index slots `4..8` in bits `4..8`.
+/// Bits 2 and 3 are the retired Z and W axes and are never set. Operations:
 /// - `union`: bitwise OR (join — a binary op depends on both operands' vars)
 /// - `meet`: minimum across e-class representatives (pick lowest-deps form)
 /// - `without`: set difference — what a binder does to its own index
@@ -57,17 +56,8 @@ impl Variance {
     /// Depends on Y (pixel row). Bit 1.
     pub const Y: Self = Self(1 << 1);
 
-    /// Depends on Z (time/frame). Bit 2.
-    pub const Z: Self = Self(1 << 2);
-
-    /// Depends on W (layer/channel). Bit 3.
-    pub const W: Self = Self(1 << 3);
-
-    /// All spatial coordinates (X, Y, Z). Common for per-pixel expressions.
-    pub const SPATIAL: Self = Self(0b0000_0111);
-
-    /// The four coordinates the lattice nest binds (X, Y, Z, W).
-    pub const COORDS: Self = Self(0b0000_1111);
+    /// The coordinates the lattice nest binds (X, Y).
+    pub const COORDS: Self = Self(0b0000_0011);
 
     /// The four reduction index slots a binder can bind.
     pub const BINDERS: Self = Self(0b1111_0000);
@@ -76,8 +66,22 @@ impl Variance {
     /// analysis cannot prove something narrower.
     pub const ALL: Self = Self(0b1111_1111);
 
-    /// Create from a variable index: `0..4` are the coordinates X/Y/Z/W,
-    /// `4..8` the reduction index slots.
+    /// Create from a variable index: `0..2` are the coordinates X/Y, `4..8`
+    /// the reduction index slots.
+    ///
+    /// Indices 2 and 3 were the Z and W axes.
+    /// [`ExprArena::push_var`](crate::arena::ExprArena::push_var) still
+    /// builds them — `Var` is also a rewrite metavariable — and it is
+    /// [`emit::compile`] that refuses one, so the bits stay constructible
+    /// and belong to no scope.
+    ///
+    /// **Note what that costs, because it is a trap.** Bits 2 and 3 are
+    /// outside *both* [`Self::COORDS`] and [`Self::BINDERS`], so a stray
+    /// retired axis reads as [`Self::is_frame_uniform`] and LICM hoists it
+    /// into the per-call prologue. When they were `Z`/`W` inside `COORDS`
+    /// they were never hoisted. The failure mode got strictly worse when the
+    /// axes retired, which is exactly why the emitter's refusal is
+    /// unconditional rather than advisory.
     ///
     /// # Panics
     ///
@@ -215,38 +219,23 @@ impl Variance {
         self.0 & Self::Y.0 != 0
     }
 
-    /// True if depends on Z.
-    #[inline]
-    #[must_use]
-    pub const fn depends_on_z(self) -> bool {
-        self.0 & Self::Z.0 != 0
-    }
-
-    /// True if depends on W.
-    #[inline]
-    #[must_use]
-    pub const fn depends_on_w(self) -> bool {
-        self.0 & Self::W.0 != 0
-    }
-
-    /// True if this can be computed once per frame: depends only on W (or is
-    /// const). Compatible with the old `Deps::is_uniform()`.
+    /// True if this can be computed once per call: it depends on no
+    /// coordinate and no binder, which is where a uniform's arithmetic lives.
     ///
-    /// A binder index disqualifies it as surely as a spatial coordinate does —
-    /// a value that changes per step of a reduction cannot be lifted to frame
+    /// A binder index disqualifies it as surely as a coordinate does — a
+    /// value that changes per step of a reduction cannot be lifted to frame
     /// scope, which sits outside the binder.
     #[inline]
     #[must_use]
     pub const fn is_frame_uniform(self) -> bool {
-        self.0 & (Self::SPATIAL.0 | Self::BINDERS.0) == 0
+        self.0 & (Self::COORDS.0 | Self::BINDERS.0) == 0
     }
 
-    /// True if this is "varying" in the older three-level sense: depends on any
-    /// spatial coordinate (X, Y, or Z).
+    /// True if this varies across the lattice: it depends on a coordinate.
     #[inline]
     #[must_use]
     pub const fn is_spatially_varying(self) -> bool {
-        self.0 & Self::SPATIAL.0 != 0
+        self.0 & Self::COORDS.0 != 0
     }
 
     /// Number of variables this expression depends on (0-8).
@@ -275,8 +264,9 @@ impl core::fmt::Debug for Variance {
             match bit {
                 0 => write!(f, "X")?,
                 1 => write!(f, "Y")?,
-                2 => write!(f, "Z")?,
-                3 => write!(f, "W")?,
+                // A retired axis: no arena can name one, but the macro
+                // tier's e-graph indexes its names in the same space.
+                2 | 3 => write!(f, "?{bit}")?,
                 // Reduction index slots print as the slot they bind, so a
                 // variance set reads back as the binders that enclose the node.
                 slot => write!(f, "i{slot}")?,
@@ -536,7 +526,7 @@ pub fn find_hoistable_out_of(
 // `find_hoistable_arena_nodes` are not callers at all — they take an
 // already-computed variance slice from theirs.
 /// The extents of the lattice a kernel is compiled for: samples per axis,
-/// `[x, y, z, w]`.
+/// `[x, y]`.
 ///
 /// A kernel together with its lattice is a closed, finite, loop-free
 /// expression: every axis has a static extent, so the whole program is one
@@ -552,24 +542,24 @@ pub fn find_hoistable_out_of(
 /// [`varying`](Self::varying) names the binders as a [`Variance`], so
 /// `deps(node) ∩ shape.varying()` is the scope a node's value lives at.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct LatticeShape([u32; 4]);
+pub struct LatticeShape([u32; crate::arena::COORD_AXES]);
 
 impl LatticeShape {
-    /// No lattice: one batch of caller-supplied points per call, as every
-    /// per-batch `eval` does. Nothing is a binder.
-    pub const POINT: Self = Self([1, 1, 1, 1]);
+    /// No lattice: one batch of caller-supplied points per call. Nothing is a
+    /// binder.
+    pub const POINT: Self = Self([1; crate::arena::COORD_AXES]);
 
     /// A lattice with these samples per axis.
     #[inline]
     #[must_use]
-    pub const fn new(extent: [u32; 4]) -> Self {
+    pub const fn new(extent: [u32; crate::arena::COORD_AXES]) -> Self {
         Self(extent)
     }
 
-    /// Samples per axis, `[x, y, z, w]`.
+    /// Samples per axis, `[x, y]`.
     #[inline]
     #[must_use]
-    pub const fn extent(self) -> [u32; 4] {
+    pub const fn extent(self) -> [u32; crate::arena::COORD_AXES] {
         self.0
     }
 
@@ -581,7 +571,7 @@ impl LatticeShape {
     pub const fn varying(self) -> Variance {
         let mut bits = 0u8;
         let mut axis = 0;
-        while axis < 4 {
+        while axis < crate::arena::COORD_AXES {
             if self.0[axis] > 1 {
                 bits |= 1 << axis;
             }
@@ -619,7 +609,7 @@ impl LatticeShape {
         };
         let mut count: u64 = 1;
         let mut axis = innermost;
-        while axis < 4 {
+        while axis < crate::arena::COORD_AXES {
             count *= self.0[axis] as u64;
             axis += 1;
         }
@@ -629,10 +619,10 @@ impl LatticeShape {
     /// The extents serialized little-endian, for cache keys.
     #[inline]
     #[must_use]
-    pub const fn key_bytes(self) -> [u8; 16] {
-        let mut out = [0u8; 16];
+    pub const fn key_bytes(self) -> [u8; 4 * crate::arena::COORD_AXES] {
+        let mut out = [0u8; 4 * crate::arena::COORD_AXES];
         let mut axis = 0;
-        while axis < 4 {
+        while axis < crate::arena::COORD_AXES {
             let b = self.0[axis].to_le_bytes();
             let mut k = 0;
             while k < 4 {
@@ -653,8 +643,6 @@ mod tests {
     fn verify_from_var() {
         assert_eq!(Variance::from_var(0), Variance::X);
         assert_eq!(Variance::from_var(1), Variance::Y);
-        assert_eq!(Variance::from_var(2), Variance::Z);
-        assert_eq!(Variance::from_var(3), Variance::W);
         // The reduction index slots are variables in the same space, so the
         // hoisting question can be asked of them too.
         assert_eq!(
@@ -664,18 +652,16 @@ mod tests {
                 .union(Variance::from_var(7)),
             Variance::BINDERS
         );
-        assert!(Variance::COORDS.union(Variance::BINDERS) == Variance::ALL);
+        // The retired axes' bits sit between the two, in no scope at all.
+        assert!(Variance::COORDS.union(Variance::BINDERS) != Variance::ALL);
     }
 
     #[test]
     fn verify_union() {
         assert_eq!(Variance::X.union(Variance::Y), Variance::from_bits(0b0011));
-        assert_eq!(Variance::CONST.union(Variance::Z), Variance::Z);
+        assert_eq!(Variance::CONST.union(Variance::Y), Variance::Y);
         assert_eq!(Variance::X.union(Variance::X), Variance::X);
-        assert_eq!(
-            Variance::X.union(Variance::Y).union(Variance::Z),
-            Variance::SPATIAL
-        );
+        assert_eq!(Variance::X.union(Variance::Y), Variance::COORDS);
     }
 
     #[test]
@@ -690,7 +676,7 @@ mod tests {
 
         // 2-bit vs 1-bit: 1-bit wins
         let xy = Variance::X.union(Variance::Y);
-        assert_eq!(xy.meet(Variance::Z), Variance::Z);
+        assert_eq!(xy.meet(Variance::from_var(4)), Variance::from_var(4));
     }
 
     #[test]
@@ -704,13 +690,14 @@ mod tests {
         assert!(Variance::Y.is_x_invariant());
         assert!(!Variance::X.is_x_invariant());
 
-        assert!(Variance::W.is_frame_uniform());
+        // A uniform is CONST, and CONST is what lands in the per-call
+        // prologue; nothing else is frame-uniform now that Z and W are gone.
         assert!(Variance::CONST.is_frame_uniform());
         assert!(!Variance::X.is_frame_uniform());
-        assert!(!Variance::X.union(Variance::W).is_frame_uniform());
+        assert!(!Variance::from_var(4).is_frame_uniform());
 
         assert!(Variance::X.is_spatially_varying());
-        assert!(!Variance::W.is_spatially_varying());
+        assert!(!Variance::CONST.is_spatially_varying());
     }
 
     #[test]
@@ -718,10 +705,10 @@ mod tests {
         assert_eq!(format!("{:?}", Variance::CONST), "Variance(CONST)");
         assert_eq!(format!("{:?}", Variance::X), "Variance{X}");
         assert_eq!(
-            format!("{:?}", Variance::X.union(Variance::Z)),
-            "Variance{X,Z}"
+            format!("{:?}", Variance::X.union(Variance::from_var(4))),
+            "Variance{X,i4}"
         );
-        assert_eq!(format!("{:?}", Variance::COORDS), "Variance{X,Y,Z,W}");
+        assert_eq!(format!("{:?}", Variance::COORDS), "Variance{X,Y}");
         // Binder slots print as the slot they bind.
         assert_eq!(format!("{:?}", Variance::from_var(4)), "Variance{i4}");
         assert_eq!(
@@ -730,7 +717,7 @@ mod tests {
         );
         assert_eq!(
             format!("{:?}", Variance::ALL),
-            "Variance{X,Y,Z,W,i4,i5,i6,i7}"
+            "Variance{X,Y,?2,?3,i4,i5,i6,i7}"
         );
     }
 
@@ -739,7 +726,7 @@ mod tests {
         assert_eq!(Variance::CONST.popcount(), 0);
         assert_eq!(Variance::X.popcount(), 1);
         assert_eq!(Variance::X.union(Variance::Y).popcount(), 2);
-        assert_eq!(Variance::COORDS.popcount(), 4);
+        assert_eq!(Variance::COORDS.popcount(), 2);
         assert_eq!(Variance::BINDERS.popcount(), 4);
         assert_eq!(Variance::ALL.popcount(), 8);
     }
@@ -750,30 +737,29 @@ mod tests {
         use crate::kind::OpKind;
 
         let mut arena = ExprArena::new();
-        // Build: sin(Z * 0.3) * (X + Y)
-        let z = arena.push_var(2); // Z → {Z}
+        // Build: sin(u * 0.3) * (X + Y), where `u` is a uniform — the shape
+        // the old `sin(Z * 0.3)` becomes, and CONST rather than a coordinate.
+        let u = arena.declare_uniform(crate::Uniform::new(0.0).decl());
+        let z = arena.push_uniform(u); // u → {}
         let c03 = arena.push_const(0.3); // 0.3 → {}
-        let z_mul = arena.push_binary(OpKind::Mul, z, c03); // Z*0.3 → {Z}
-        let sin_z = arena.push_unary(OpKind::Sin, z_mul); // sin(Z*0.3) → {Z}
+        let z_mul = arena.push_binary(OpKind::Mul, z, c03); // u*0.3 → {}
+        let sin_z = arena.push_unary(OpKind::Sin, z_mul); // sin(u*0.3) → {}
         let x = arena.push_var(0); // X → {X}
         let y = arena.push_var(1); // Y → {Y}
         let x_add_y = arena.push_binary(OpKind::Add, x, y); // X+Y → {X,Y}
-        let result = arena.push_binary(OpKind::Mul, sin_z, x_add_y); // → {X,Y,Z}
+        let result = arena.push_binary(OpKind::Mul, sin_z, x_add_y); // → {X,Y}
 
         let v = super::compute_arena_variance(&arena);
 
-        assert_eq!(v[z.0 as usize], Variance::Z);
+        assert_eq!(v[z.0 as usize], Variance::CONST);
         assert_eq!(v[c03.0 as usize], Variance::CONST);
-        assert_eq!(v[z_mul.0 as usize], Variance::Z);
-        assert_eq!(v[sin_z.0 as usize], Variance::Z);
+        assert_eq!(v[z_mul.0 as usize], Variance::CONST);
+        assert_eq!(v[sin_z.0 as usize], Variance::CONST);
         assert!(v[sin_z.0 as usize].is_x_invariant());
         assert_eq!(v[x.0 as usize], Variance::X);
         assert_eq!(v[y.0 as usize], Variance::Y);
         assert_eq!(v[x_add_y.0 as usize], Variance::X.union(Variance::Y));
-        assert_eq!(
-            v[result.0 as usize],
-            Variance::X.union(Variance::Y).union(Variance::Z)
-        );
+        assert_eq!(v[result.0 as usize], Variance::X.union(Variance::Y));
     }
 
     /// `deps(⊕_{i∈D} body) = deps(body) \ {i}` — REDUCTIONS_AND_FOLDS.md:32.
@@ -898,40 +884,22 @@ mod lattice_shape_tests {
     #[test]
     fn binders_are_the_axes_with_extent_above_one() {
         assert_eq!(LatticeShape::POINT.varying(), Variance::CONST);
-        assert_eq!(LatticeShape::new([37, 1, 1, 1]).varying(), Variance::X);
-        assert_eq!(
-            LatticeShape::new([8, 8, 1, 1]).varying(),
-            Variance::X.union(Variance::Y)
-        );
-        assert_eq!(
-            LatticeShape::new([8, 8, 4, 1]).varying(),
-            Variance::X.union(Variance::Y).union(Variance::Z)
-        );
-        assert_eq!(LatticeShape::new([1, 1, 1, 2]).varying(), Variance::W);
+        assert_eq!(LatticeShape::new([37, 1]).varying(), Variance::X);
+        assert_eq!(LatticeShape::new([1, 37]).varying(), Variance::Y);
+        assert_eq!(LatticeShape::new([8, 8]).varying(), Variance::COORDS);
     }
 
     #[test]
     fn evals_counts_the_iterations_of_the_innermost_binder_depended_on() {
-        let frame = LatticeShape::new([1920, 1080, 1, 1]);
+        let frame = LatticeShape::new([1920, 1080]);
         // Per sample, per row, per call — the three scopes the collapse loop
         // already has, as numbers.
         assert_eq!(frame.evals(Variance::X), 1920 * 1080);
         assert_eq!(frame.evals(Variance::X.union(Variance::Y)), 1920 * 1080);
         assert_eq!(frame.evals(Variance::Y), 1080);
+        // A uniform is CONST, so it is evaluated once per call — which is the
+        // whole reason a per-call scalar stopped being an axis of extent 1.
         assert_eq!(frame.evals(Variance::CONST), 1);
-        // Z and W are per-call in a frame, so anything not touching X or Y
-        // is evaluated once.
-        assert_eq!(frame.evals(Variance::Z), 1);
-        assert_eq!(frame.evals(Variance::Z.union(Variance::W)), 1);
-        // X dominates: the innermost dependency sets the scope.
-        assert_eq!(frame.evals(Variance::X.union(Variance::Z)), 1920 * 1080);
-
-        // A volume of Z planes: a Z-only value is computed once per plane.
-        let volume = LatticeShape::new([64, 32, 8, 2]);
-        assert_eq!(volume.evals(Variance::Z), 8 * 2);
-        assert_eq!(volume.evals(Variance::W), 2);
-        assert_eq!(volume.evals(Variance::Y), 32 * 8 * 2);
-        assert_eq!(volume.evals(Variance::X), 64 * 32 * 8 * 2);
 
         // No lattice: everything is evaluated exactly once, so weighting a
         // cost by `evals` leaves it unchanged.
@@ -946,11 +914,11 @@ mod lattice_shape_tests {
 
     #[test]
     fn key_bytes_are_the_extents_and_distinguish_sizes() {
-        let a = LatticeShape::new([8, 8, 1, 1]);
-        let b = LatticeShape::new([9, 8, 1, 1]);
+        let a = LatticeShape::new([8, 8]);
+        let b = LatticeShape::new([9, 8]);
         assert_eq!(a.key_bytes()[..4], 8u32.to_le_bytes());
         assert_eq!(a.key_bytes()[4..8], 8u32.to_le_bytes());
         assert_ne!(a.key_bytes(), b.key_bytes());
-        assert_eq!(a.extent(), [8, 8, 1, 1]);
+        assert_eq!(a.extent(), [8, 8]);
     }
 }

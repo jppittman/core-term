@@ -16,7 +16,7 @@
 
 use std::time::Instant;
 
-use pixelflow_core::Kernel;
+use pixelflow_core::{Kernel, Uniform};
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::scene::{compile_packed_for, Scene};
 use pixelflow_graphics::render::Frame;
@@ -28,12 +28,12 @@ const HEIGHT: usize = 1080;
 // ── the shader, as four channel kernels ──
 
 /// The `y` weight is the only thing that separates the three channels.
-fn psych_channel(y_weight: f32) -> Kernel {
+fn psych_channel(y_weight: f32, clock: Uniform) -> Kernel {
     let k = Kernel::constant;
     let scale = 2.0 / 1080.0;
     let x = Kernel::x().sub(&k(960.0)).mul(&k(scale));
     let y = k(540.0).sub(&Kernel::y()).mul(&k(scale));
-    let time = Kernel::w().add(&k(1.3));
+    let time = clock.kernel().add(&k(1.3));
     let r_sq = x.mul(&x).add(&y.mul(&y));
     let radial = r_sq.sub(&k(0.7)).abs();
     let swirl_scale = k(1.0).sub(&radial).mul(&k(5.0));
@@ -61,10 +61,13 @@ fn psych_channel(y_weight: f32) -> Kernel {
 }
 
 fn packed_scene() -> Scene {
+    // One clock, read by all three channels: one argument in the fused
+    // program, and the bench holds it at its default.
+    let clock = Uniform::new(0.0);
     let channels = [
-        psych_channel(1.0),
-        psych_channel(-1.0),
-        psych_channel(-2.0),
+        psych_channel(1.0, clock),
+        psych_channel(-1.0, clock),
+        psych_channel(-2.0, clock),
         Kernel::constant(1.0),
     ];
     let color = Rgba::from(channels);
@@ -79,7 +82,8 @@ fn packed_scene() -> Scene {
         "  packed kernel: compiled in {compile_time:?} to {} bytes of code",
         program.code_bytes().len()
     );
-    Scene::Packed(program.bind(&[]))
+    let block = program.block();
+    Scene::Packed(program.bind_with(&[], &block))
 }
 
 /// Median ns/pixel over `runs` frames, after `warm` warm-up frames.

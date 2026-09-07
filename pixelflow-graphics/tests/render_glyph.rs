@@ -24,8 +24,8 @@ fn parse_font_and_get_glyph() {
 
     // Bake the glyph and confirm it renders real ink in range.
     let baked = Lattice {
-        extent: [64, 64, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [64, 64],
+        origin: [0.5, 0.5],
     }
     .bake(&glyph_a);
     let buf = baked.buffer();

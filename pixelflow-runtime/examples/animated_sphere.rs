@@ -5,18 +5,18 @@
 //! - The app answers with a scene sampled at the requested timestamp
 //! - No busy loops, no sleeps — vsync drives the cadence
 //!
-//! **Time is the W coordinate.** The sphere's centre is `sin(W)·amplitude`, a
+//! **Time is a uniform.** The sphere's centre is `sin(time)·amplitude`, a
 //! kernel like any other, so the scene is compiled **once** and each frame is
-//! the same compiled program collapsed on a later plane
-//! (`PackedFrame::on_slice`). Baking the timestamp in as a constant — which
-//! is what this example used to do — would mean a JIT compile per frame, and
-//! this scene takes ~200 ms to compile.
+//! the same compiled program with a new value written into its block
+//! (`UniformBlock`). Baking the timestamp in as a constant — which is what
+//! this example used to do — would mean a JIT compile per frame, and this
+//! scene takes ~200 ms to compile.
 //!
 //! Resizing does recompile, because the camera's frame size is spent when the
 //! rays are built; that is once per resize, not once per frame.
 
 use actor_scheduler::Message;
-use pixelflow_core::Kernel;
+use pixelflow_core::{Kernel, Uniform, UniformBlock};
 use pixelflow_graphics::render::packed::PackedManifold;
 use pixelflow_graphics::render::scene::{compile_platform_packed, Scene};
 use pixelflow_graphics::scene3d::{checker, sky, Plane, Ray, Rgba, Sphere};
@@ -49,11 +49,12 @@ fn world(ray: &Ray) -> Rgba {
     )
 }
 
-/// The scene, with the sphere swinging in `W`. Compiled at the frame's shape;
-/// every frame after that is a different `W`.
-fn compile(width: u32, height: u32) -> PackedManifold {
+/// The scene, with the sphere swinging in `time`. Compiled at the frame's
+/// shape; every frame after that writes a new value into the block.
+fn compile(width: u32, height: u32) -> (PackedManifold, Uniform) {
     let ray = Ray::through_screen(width as f32, height as f32);
-    let swing = Kernel::w().mul(&k(FREQUENCY)).sin().mul(&k(AMPLITUDE));
+    let time = Uniform::new(0.0);
+    let swing = time.kernel().mul(&k(FREQUENCY)).sin().mul(&k(AMPLITUDE));
     let center = [
         k(BASE_CENTER.0).add(&swing),
         k(BASE_CENTER.1),
@@ -62,7 +63,7 @@ fn compile(width: u32, height: u32) -> PackedManifold {
     let sphere = Sphere::new(center, k(RADIUS)).hit(&ray);
     let mirrored = ray.reflected(sphere.normal());
     let color = sphere.select(&world(&mirrored), &world(&ray));
-    compile_platform_packed(&color, [width, height])
+    (compile_platform_packed(&color, [width, height]), time)
 }
 
 /// The compiled scene and the frame size it was compiled for. A resize is the
@@ -71,14 +72,23 @@ struct CompiledScene {
     width: u32,
     height: u32,
     program: PackedManifold,
+    /// The scene's clock, kept because a handle is the only way to write it.
+    time: Uniform,
+    /// This program's block, reused across frames: writing a value into it
+    /// touches no arena and compiles nothing.
+    block: UniformBlock,
 }
 
 impl CompiledScene {
     fn new(width: u32, height: u32) -> Self {
+        let (program, time) = compile(width, height);
+        let block = program.block();
         Self {
             width,
             height,
-            program: compile(width, height),
+            program,
+            time,
+            block,
         }
     }
 
@@ -88,7 +98,10 @@ impl CompiledScene {
             log::info!("recompiling the scene for {width}x{height}");
             *self = Self::new(width, height);
         }
-        Scene::Packed(self.program.bind(&[]).on_slice(0.0, t))
+        self.block
+            .set(self.time, t)
+            .expect("the clock is this program's argument");
+        Scene::Packed(self.program.bind_with(&[], &self.block))
     }
 }
 

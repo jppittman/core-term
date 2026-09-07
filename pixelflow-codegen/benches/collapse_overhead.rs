@@ -1,6 +1,6 @@
 //! Isolate Rust-to-JIT call overhead from expression cost.
 //!
-//! Both cases execute the *same compiled kernel* over the same 2D lattice and
+//! Both cases execute the *same compiled kernel* over the same lattice and
 //! differ only in call granularity: the baseline crosses the Rust↔JIT boundary
 //! once per SIMD group from a Rust loop, the collapse case once for the whole
 //! frame. One kernel timed two ways is what makes the delta attributable to
@@ -23,14 +23,18 @@ fn arena() -> (ExprArena, pixelflow_ir::arena::ExprId) {
     let mut arena = ExprArena::new();
     let x = arena.push_var(0);
     let y = arena.push_var(1);
-    let z = arena.push_var(2);
     let scale = arena.push_const(0.013);
     let bias = arena.push_const(1.75);
     let xs = arena.push_binary(OpKind::Mul, x, scale);
     let ys = arena.push_binary(OpKind::Mul, y, scale);
     let xy = arena.push_binary(OpKind::Mul, xs, ys);
-    let z2 = arena.push_binary(OpKind::Mul, z, z);
-    let sum = arena.push_binary(OpKind::Add, xy, z2);
+    // Was `Z * Z`, on an axis a lattice no longer has — and the ABI passed
+    // zero in that lane, so it was a multiply whose result never mattered.
+    // Squaring `ys` keeps the node count and the op mix, which is all this
+    // expression owes a call-overhead measurement: the two cases run the
+    // *same* compiled kernel and differ only in call granularity.
+    let ys2 = arena.push_binary(OpKind::Mul, ys, ys);
+    let sum = arena.push_binary(OpKind::Add, xy, ys2);
     let root = arena.push_binary(OpKind::Add, sum, bias);
     (arena, root)
 }

@@ -374,16 +374,16 @@ fn has_reachable_var(arena: &ExprArena, root: ExprId) -> bool {
 /// data-dependent cost (denormals, select paths) is visible and the recorded
 /// outputs cover 64 points instead of one.
 ///
-/// Tuple 0 is the legacy single test point `(0.5, 0.7, 1.3, -0.2)`, so
+/// Tuple 0 is the legacy single test point `(0.5, 0.7)`, so
 /// [`BenchResult::output`] keeps its historical meaning.
-fn input_tuples() -> &'static [[f32; 4]; INPUT_TUPLES] {
-    static TUPLES: std::sync::OnceLock<[[f32; 4]; INPUT_TUPLES]> = std::sync::OnceLock::new();
+fn input_tuples() -> &'static [[f32; 2]; INPUT_TUPLES] {
+    static TUPLES: std::sync::OnceLock<[[f32; 2]; INPUT_TUPLES]> = std::sync::OnceLock::new();
     TUPLES.get_or_init(|| {
-        let mut t = [[0.0f32; 4]; INPUT_TUPLES];
-        t[0] = [0.5, 0.7, 1.3, -0.2];
-        t[1] = [0.0, -0.0, 1.0, -1.0];
-        t[2] = [1e-4, -1e-4, 1e4, -1e4];
-        t[3] = [1.0, 2.0, 0.5, 0.25];
+        let mut t = [[0.0f32; 2]; INPUT_TUPLES];
+        t[0] = [0.5, 0.7];
+        t[1] = [0.0, -0.0];
+        t[2] = [1e-4, -1e-4];
+        t[3] = [1.0, 2.0];
         // Remaining tuples: xorshift64, fixed seed — sign × mantissa [1,2) ×
         // 10^{-4..=4}. Deterministic so every measurement (and every
         // equivalence comparison) sees the identical buffer.
@@ -832,7 +832,11 @@ const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
 fn latency_chain_step(exec_code: &ExecutableCode, prev: &mut [f32; LANES]) {
     use pixelflow_codegen::emit::executable::{Point4, TileSlice};
 
-    let p = Point4::new(*prev, *prev, *prev, *prev);
+    // Every coordinate the language has, so an expression that never reads
+    // X still has a data path from the chain. The last two lanes are the
+    // retired axes: nothing can name them, so feeding them would say a
+    // dependency exists where none can.
+    let p = Point4::new(*prev, *prev, [0.0f32; LANES], [0.0f32; LANES]);
     std::hint::black_box(&p);
     unsafe {
         exec_code.call_collapse(core::ptr::null(), TileSlice::single(prev.as_mut_ptr()), p);
@@ -861,16 +865,19 @@ fn measure_exec_code(
     for (v_idx, pt) in input_points.iter_mut().enumerate() {
         let mut xs = [0.0f32; LANES];
         let mut ys = [0.0f32; LANES];
-        let mut zs = [0.0f32; LANES];
-        let mut ws = [0.0f32; LANES];
         for lane in 0..LANES {
             let t = &tuples[v_idx * LANES + lane];
             xs[lane] = t[0];
             ys[lane] = t[1];
-            zs[lane] = t[2];
-            ws[lane] = t[3];
         }
-        *pt = Point4::new(xs, ys, zs, ws);
+        // Zero in the two retired lanes, and `emit::compile` refuses an
+        // arena that names them — so this is the whole coordinate input,
+        // not a convention a fixture can quietly disagree with. It did:
+        // the frozen corpus fixtures name `Var(2)`/`Var(3)`, and while the
+        // scalar oracle substituted real values here the JIT read these
+        // zeros, which is a silent scalar/JIT divergence rather than a
+        // failure. See `training::factored`'s `bind_retired_axes`.
+        *pt = Point4::new(xs, ys, [0.0f32; LANES], [0.0f32; LANES]);
     }
 
     let mut out_buf = [0.0f32; LANES];
@@ -1080,23 +1087,21 @@ pub struct SentinelSample {
 }
 
 /// The fixed moderate-size reference kernel: ~40 compute ops of mixed
-/// mul/add/sqrt over all four coordinates. Big enough that its cost tracks
+/// mul/add/sqrt over both coordinates. Big enough that its cost tracks
 /// real kernel throughput, small enough to re-measure cheaply every
 /// [`SENTINEL_INTERVAL`] expressions.
 fn sentinel_arena() -> (ExprArena, ExprId) {
     let mut arena = ExprArena::new();
     let x = arena.push_var(0);
     let y = arena.push_var(1);
-    let z = arena.push_var(2);
-    let w = arena.push_var(3);
-    let vars = [x, y, z, w];
+    let vars = [x, y];
     let mut acc = x;
-    // 8 rounds × 5 ops = 40 ops (+ 8 consts + 4 vars = 52 nodes).
+    // 8 rounds × 5 ops = 40 ops (+ 8 consts + 2 vars = 50 nodes).
     // sqrt argument is acc² + positive constant, so it never goes negative.
     let round_consts = [1.25f32, 0.75, 2.5, 0.5, 3.0, 1.5, 0.25, 2.0];
     for (i, &c) in round_consts.iter().enumerate() {
         let k = arena.push_const(c);
-        let v = vars[i % 4];
+        let v = vars[i % vars.len()];
         let scaled = arena.push_binary(OpKind::Mul, acc, v);
         let squared = arena.push_binary(OpKind::Mul, acc, acc);
         let shifted = arena.push_binary(OpKind::Add, squared, k);
@@ -2131,30 +2136,32 @@ mod tests {
         // inflating the pass bar past an ordinary measurement, and the test
         // flaked in CI. The property it was guarding is unchanged: under
         // `BenchMode::Latency`, the harness must chain-serialize by feeding
-        // the previous iteration's result into EVERY input lane (x, y, z,
-        // AND w) — not only x — because an expression that never reads
-        // `Var(0)` has no data path from a chain that feeds only x. Under
-        // that old x-lane-only feeding, such an expression silently
-        // decoupled from the chain and measured in the throughput regime
-        // instead of latency (see `BenchMode::Latency`'s doc comment).
+        // the previous iteration's result into EVERY coordinate lane — not
+        // only x — because an expression that never reads `Var(0)` has no
+        // data path from a chain that feeds only x. Under that old
+        // x-lane-only feeding, such an expression silently decoupled from
+        // the chain and measured in the throughput regime instead of
+        // latency (see `BenchMode::Latency`'s doc comment).
         //
-        // This is now checked structurally instead of by timing, via
+        // This is checked structurally rather than by timing, via
         // `latency_chain_step` — the exact per-iteration function
         // `measure_exec_code`'s timed loop calls, not a re-implementation of
-        // it. For `y + z` (reads neither x nor w), feeding `prev`
-        // identically into every lane gives an exact, clock-free signature:
+        // it. The witness must read a coordinate that is *not* X, which with
+        // two axes means Y: `y + y` gives an exact, clock-free signature —
         // each step computes `prev' = prev + prev = 2*prev`, so the output
-        // strictly doubles every chain step. Under the audit-H3 bug, y and z
-        // would sit fixed at whatever the initial call put there (only x
-        // would track `prev`), so the root — reading neither the fed lane
-        // nor anything downstream of it — would emit the SAME constant every
-        // step: `next != 2*prev` on the very first iteration this test
-        // performs, so this test would have failed under that bug.
+        // strictly doubles. Under the audit-H3 bug, y would sit fixed at
+        // whatever the initial call put there while only x tracked `prev`,
+        // so the root would emit the SAME constant every step and
+        // `next != 2*prev` on the very first iteration.
+        //
+        // (It used to be `y + z`, which also proved the *fourth* lane was
+        // fed. That is not a property the language still has — Z is retired
+        // and no arena can name it — so what survives is the property that
+        // was load-bearing: a non-X coordinate is chained.)
         let mut arena = ExprArena::new();
         let y = arena.push_var(1);
-        let z = arena.push_var(2);
-        let root = arena.push_binary(OpKind::Add, y, z);
-        let compiled = compile(&arena, root).expect("y+z must JIT-compile");
+        let root = arena.push_binary(OpKind::Add, y, y);
+        let compiled = compile(&arena, root).expect("y+y must JIT-compile");
 
         let mut prev = [0.25f32; LANES]; // nonzero seed so doubling is observable.
         for step in 0..8 {

@@ -164,7 +164,7 @@ mod tests {
             ExprNode::Const(val) => egraph.add(ENode::Const(val.to_bits())),
             ExprNode::Param(i) => panic!("Param({i}) reached math tests"),
             ExprNode::Buffer(b) => panic!("Buffer({}) reached math tests", b.0),
-            ExprNode::Uniform(u) => panic!("Uniform({}) reached math tests", u.0),
+            ExprNode::Uniform(u) => egraph.add(ENode::Uniform(*arena.uniform_decl(u))),
             ExprNode::Unary(kind, a) => {
                 let ca = expr_to_egraph(arena, a, egraph);
                 let op = crate::egraph::ops::op_from_kind(kind)
@@ -208,7 +208,10 @@ mod tests {
             ENode::Var(idx) => arena.push_var(idx),
             ENode::Const(bits) => arena.push_const(f32::from_bits(bits)),
             ENode::Buffer(decl) => panic!("Buffer({decl:?}) reached math tests"),
-            ENode::Uniform(decl) => panic!("Uniform({decl:?}) reached math tests"),
+            ENode::Uniform(decl) => {
+                let slot = arena.declare_uniform(decl);
+                arena.push_uniform(slot)
+            }
             ENode::Op { op, children } => {
                 let kind = op.kind();
                 let child_ids: Vec<ExprId> = children
@@ -231,7 +234,7 @@ mod tests {
     /// here: that is the language's semantics (it lowers transcendentals to the
     /// expansion the compiler emits), and a private walker would be a second
     /// definition free to drift from it.
-    fn eval_arena(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
+    fn eval_arena(arena: &ExprArena, id: ExprId, vars: &[f32; 2]) -> f32 {
         pixelflow_ir::eval_scalar(
             arena,
             id,
@@ -245,7 +248,7 @@ mod tests {
     fn check_optimization_preserves_semantics(
         arena: &ExprArena,
         root: ExprId,
-        test_points: &[[f32; 4]],
+        test_points: &[[f32; 2]],
         epsilon: f32,
     ) {
         let mut eg = EGraph::new();
@@ -287,18 +290,26 @@ mod tests {
         }
     }
 
+    /// A third free scalar, as the kernel argument it would be: a lattice
+    /// has two axes, so `var 2` is not a coordinate. Never folded, so the
+    /// tree shape the rules act on is the one the test wrote.
+    fn arg(a: &mut ExprArena, default: f32) -> ExprId {
+        let slot = a.declare_uniform(pixelflow_ir::Uniform::new(default).decl());
+        a.push_uniform(slot)
+    }
+
     /// Standard test points including edge cases.
-    fn standard_test_points() -> Vec<[f32; 4]> {
+    fn standard_test_points() -> Vec<[f32; 2]> {
         vec![
-            [0.5, 0.7, 1.3, -0.2],
-            [0.0, 0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0, 1.0],
-            [-1.0, -1.0, -1.0, -1.0],
-            [100.0, 100.0, 100.0, 100.0],
-            [-100.0, -100.0, 0.01, 0.01],
-            [0.001, 0.001, 0.001, 0.001],
-            [3.14159, 1.5708, 0.7854, 2.3562],
-            [-0.5, 0.3, -0.8, 0.1],
+            [0.5, 0.7],
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [-1.0, -1.0],
+            [100.0, 100.0],
+            [-100.0, -100.0],
+            [0.001, 0.001],
+            [3.14159, 1.5708],
+            [-0.5, 0.3],
         ]
     }
 
@@ -399,7 +410,9 @@ mod tests {
     fn associativity_left_to_right() {
         // (v0 + v1) + v2 should produce v0 + (v1 + v2) in the e-graph
         let mut a = ExprArena::new();
-        let e = arena_pat!(&mut a, bin OpKind::Add, (bin OpKind::Add, (var 0), (var 1)), (var 2));
+        let v2 = arg(&mut a, 0.75);
+        let inner = arena_pat!(&mut a, bin OpKind::Add, (var 0), (var 1));
+        let e = a.push_binary(OpKind::Add, inner, v2);
         check_assoc(&a, e);
     }
 
@@ -407,7 +420,11 @@ mod tests {
     fn associativity_right_to_left() {
         // v0 + (v1 + v2) should produce (v0 + v1) + v2 in the e-graph
         let mut a = ExprArena::new();
-        let e = arena_pat!(&mut a, bin OpKind::Add, (var 0), (bin OpKind::Add, (var 1), (var 2)));
+        let v2 = arg(&mut a, 0.75);
+        let v1 = a.push_var(1);
+        let inner = a.push_binary(OpKind::Add, v1, v2);
+        let v0 = a.push_var(0);
+        let e = a.push_binary(OpKind::Add, v0, inner);
         check_assoc(&a, e);
     }
 
@@ -415,7 +432,9 @@ mod tests {
     fn associativity_mul() {
         // (v0 * v1) * v2 should produce v0 * (v1 * v2) and vice versa
         let mut a = ExprArena::new();
-        let e = arena_pat!(&mut a, bin OpKind::Mul, (bin OpKind::Mul, (var 0), (var 1)), (var 2));
+        let v2 = arg(&mut a, 0.75);
+        let inner = arena_pat!(&mut a, bin OpKind::Mul, (var 0), (var 1));
+        let e = a.push_binary(OpKind::Mul, inner, v2);
         check_optimization_preserves_semantics(&a, e, &standard_test_points(), 1e-4);
     }
 
@@ -425,11 +444,15 @@ mod tests {
         let mut a = ExprArena::new();
 
         // min(min(v0, v1), v2) should produce min(v0, min(v1, v2))
-        let e = arena_pat!(&mut a, bin OpKind::Min, (bin OpKind::Min, (var 0), (var 1)), (var 2));
+        let v2 = arg(&mut a, 0.75);
+        let inner = arena_pat!(&mut a, bin OpKind::Min, (var 0), (var 1));
+        let e = a.push_binary(OpKind::Min, inner, v2);
         check_optimization_preserves_semantics(&a, e, &pts, 1e-6);
 
         // max(max(v0, v1), v2) should produce max(v0, max(v1, v2))
-        let e = arena_pat!(&mut a, bin OpKind::Max, (bin OpKind::Max, (var 0), (var 1)), (var 2));
+        let v2 = arg(&mut a, 0.75);
+        let inner = arena_pat!(&mut a, bin OpKind::Max, (var 0), (var 1));
+        let e = a.push_binary(OpKind::Max, inner, v2);
         check_optimization_preserves_semantics(&a, e, &pts, 1e-6);
     }
 

@@ -73,8 +73,6 @@ fn ast_to_arena_inner(
             match name.as_str() {
                 "X" => Ok(arena.push_var(0)),
                 "Y" => Ok(arena.push_var(1)),
-                "Z" => Ok(arena.push_var(2)),
-                "W" => Ok(arena.push_var(3)),
                 _ => {
                     if let Some(&id) = locals.get(&name) {
                         Ok(id)
@@ -135,7 +133,7 @@ fn ast_to_arena_inner(
         Expr::MethodCall(call) => {
             let method = call.method.to_string();
 
-            // `.at(x, y, z, w)` warped a manifold-typed macro param at a
+            // `.at(x, y)` warped a manifold-typed macro param at a
             // call site. There are no manifold params: a kernel composes
             // `Kernel` values, and `Kernel::at` is the warp.
             if method == "at" {
@@ -422,8 +420,9 @@ fn push_dwrt(arena: &mut ExprArena, expr: ExprId, var: u8) -> ExprId {
 // ============================================================================
 
 /// Base `Var` index used to carry `Param(i)` leaves through the e-graph, which
-/// has no Param representation: indices 0..4 are coordinates and 4..8 are
-/// reduction indices, so params ride at 16+ and are mapped back after
+/// has no Param representation: indices 0..2 are the coordinates, 2..4 are the
+/// retired Z and W, and 4..8 are reduction indices, so params ride at 16+ and
+/// are mapped back after
 /// extraction. To every rewrite rule they are opaque leaves — exactly the
 /// semantics of an unbound scalar — and the chain rule gives them derivative
 /// zero like any non-differentiation variable.
@@ -641,7 +640,7 @@ mod expansion_derivative_tests {
     /// output directly — the public `ast_to_runtime_arena` entry point only
     /// exposes generated `TokenStream`, not the intermediate arena needed for
     /// this differential check.
-    fn assert_matches_runtime_tier(a: &ExprArena, root: ExprId, params: &[f32], pts: &[[f32; 4]]) {
+    fn assert_matches_runtime_tier(a: &ExprArena, root: ExprId, params: &[f32], pts: &[[f32; 2]]) {
         let Some((out, out_root)) = differentiate_in_optimizer(a, root) else {
             return; // fallback tier's job; nothing claimed, nothing to check
         };
@@ -663,7 +662,7 @@ mod expansion_derivative_tests {
         arena: &'a ExprArena,
         root: ExprId,
         params: &'a [f32],
-        pts: &'a [[f32; 4]],
+        pts: &'a [[f32; 2]],
     }
 
     impl RuntimeTierReference<'_> {
@@ -721,16 +720,7 @@ mod expansion_derivative_tests {
         let e = a.push_binary(OpKind::Mul, p0, dist);
         let root = push_dwrt(&mut a, e, 0);
 
-        assert_matches_runtime_tier(
-            &a,
-            root,
-            &[2.0],
-            &[
-                [3.0, 4.0, 0.0, 0.0],
-                [1.0, 1.0, 0.0, 0.0],
-                [-2.0, 5.0, 0.0, 0.0],
-            ],
-        );
+        assert_matches_runtime_tier(&a, root, &[2.0], &[[3.0, 4.0], [1.0, 1.0], [-2.0, 5.0]]);
     }
 
     /// The piecewise font ramp: min/max over a gradient-normalized ratio,
@@ -753,16 +743,7 @@ mod expansion_derivative_tests {
         let mx = a.push_binary(OpKind::Max, ratio, zero);
         let root = a.push_binary(OpKind::Min, mx, one);
 
-        assert_matches_runtime_tier(
-            &a,
-            root,
-            &[],
-            &[
-                [2.0, 1.0, 0.0, 0.0],
-                [0.5, 0.2, 0.0, 0.0],
-                [-1.0, 1.0, 0.0, 0.0],
-            ],
-        );
+        assert_matches_runtime_tier(&a, root, &[], &[[2.0, 1.0], [0.5, 0.2], [-1.0, 1.0]]);
     }
 
     /// No `Dwrt` -> nothing to do; the caller keeps the original arena (and
@@ -870,12 +851,7 @@ mod expansion_derivative_tests {
     /// Params for [`winding_ramp_core`] / [`winding_kernel_arena`]:
     /// `x0`, `y0`, `dx_over_dy`, `y_min`, `y_max`, `min_grad`, `dir`.
     const WINDING_PARAMS: [f32; 7] = [0.3, -0.2, 0.7, -1.0, 1.0, 1e-3, 1.0];
-    const WINDING_POINTS: [[f32; 4]; 4] = [
-        [0.0, 0.0, 0.0, 0.0],
-        [0.4, 0.1, 0.0, 0.0],
-        [-0.3, 0.5, 0.0, 0.0],
-        [1.2, -0.7, 0.0, 0.0],
-    ];
+    const WINDING_POINTS: [[f32; 2]; 4] = [[0.0, 0.0], [0.4, 0.1], [-0.3, 0.5], [1.2, -0.7]];
 
     /// Wall-clock ceiling for the tests below, standing in for the tier's own
     /// deadline.

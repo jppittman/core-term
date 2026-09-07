@@ -704,14 +704,21 @@ trait IsaBackend {
     /// complete [`KernelFn`](executable::KernelFn): the
     /// caller's lane-sequential X is an induction value stepped by the batch
     /// width in the inner loop and reset for each row; Y advances by 1.0 in
-    /// the outer loop; Z/W are loop-invariant. Each batch's result is stored
-    /// straight to the output pointer. The body's branches are self-relative,
-    /// so inlining it inside the loop is sound.
+    /// the outer loop. Each batch's result is stored straight to the output
+    /// pointer. The body's branches are self-relative, so inlining it inside
+    /// the loop is sound.
     ///
     /// Coordinate state lives in stack slots above the body's spill frame:
     /// the ABI's vector registers are caller-saved scratch to the body, so
-    /// each iteration reloads X/Y/Z/W into the input registers from the
-    /// slots and the X slot alone is stepped.
+    /// each iteration reloads the input registers from the slots and the X
+    /// slot alone is stepped.
+    ///
+    /// The scaffold moves [`INPUT_COORDS`] of them and a body reads two: the
+    /// ABI still carries the base coordinates that were Z and W, the caller
+    /// passes zero in both, and no arena that became a `Kernel` can name
+    /// them. Dropping them changes this scaffold's own stores and loads, and
+    /// so every kernel's bytes — L2's step, not L1's
+    /// (docs/plans/2026-09-06-lattice-is-the-index.md).
     ///
     /// The two LICM tiers in [`CollapseBody`] park their results in vector
     /// slots directly above the coordinate slots reserved here.
@@ -837,10 +844,15 @@ enum OutStep {
     RowSkip,
 }
 
-/// Coordinate slots the scaffold reserves above the body's frame: X/Y/Z/W as
-/// the body expects to find them, plus a copy of the row's starting X.
+/// Coordinate slots the scaffold reserves above the body's frame: the four
+/// the ABI passes, plus a copy of the row's starting X.
 const COORD_SLOTS: u32 = 5;
 /// The leading slots that are reloaded into the ABI's input registers.
+///
+/// Four, of which a body reads two: a lattice has X and Y, and the last two
+/// base coordinates are passed as zero and named by nothing that reaches the
+/// emitter. See [`IsaBackend::emit_collapse_loop`] for why they are still
+/// moved.
 const INPUT_COORDS: u32 = 4;
 const SLOT_X: u32 = 0;
 const SLOT_Y: u32 = 1;
@@ -852,7 +864,8 @@ const SCAFFOLD_HEADROOM: usize = 160;
 const BYTES_PER_LANE: u32 = 4;
 
 /// The register a coordinate slot is passed and reloaded in. Every ABI here
-/// puts X/Y/Z/W in the first four vector registers, in that order.
+/// puts the four base coordinates in the first four vector registers, in
+/// that order; only the first two are ever read.
 const fn coord_reg(slot: u32) -> Reg {
     Reg(slot as u8)
 }
@@ -2055,8 +2068,9 @@ type Native = x86_64::driver::X86Backend;
 /// reductions / gathers / transcendentals already lowered) is wrapped in the
 /// build width's
 /// [`IsaBackend::emit_collapse_loop`] scaffold: X steps by the batch width and
-/// resets per row, Y steps by 1.0, Z/W stay invariant, gathers read buffer
-/// bases from the context register, and each batch stores straight to `out`.
+/// resets per row, Y steps by 1.0, the two dead base coordinates stay as the
+/// caller passed them, gathers read buffer bases from the context register,
+/// and each batch stores straight to `out`.
 /// Matches the
 /// [`KernelFn`](executable::KernelFn) ABI
 /// `(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)`.
@@ -2065,10 +2079,34 @@ type Native = x86_64::driver::X86Backend;
 /// order, followed — only when the arena declares a uniform — by the uniform
 /// block's base pointer: `f32` values in the arena's uniform-slot order, read
 /// once per call in the frame prologue.
+///
+/// # Panics
+///
+/// Panics if the arena names a retired coordinate axis (`Var(2)`/`Var(3)`,
+/// the old Z and W). This is the boundary the check belongs on, because it
+/// is the *only* one every route to machine code passes through — the
+/// shape-keyed cache is one caller, and the benchmark harnesses, the corpus
+/// tools and several tests come straight here. It is also the *diagnostic*
+/// place: a panic naming `Var(2)` at the first `cargo test` is worth far
+/// more than what the alternative produces, which is a silent numeric
+/// disagreement between this kernel and the scalar oracle, surfacing on
+/// whichever machine happens to run the comparison.
+///
+/// A retired axis reaching here is not merely unread. The scaffold passes
+/// zero in those two lanes, and `Variance::from_var(2)` sits outside both
+/// `COORDS` and `BINDERS` — so the node reads as frame-uniform and LICM
+/// lifts it into the per-call prologue. Plausible pixels, computed once,
+/// from a lane that means nothing.
 pub fn compile(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
 ) -> Result<CompileResult, CompileError> {
+    assert!(
+        arena.retired_axis(root).is_none(),
+        "emit::compile: the arena names Var({:?}), a coordinate axis a \
+         lattice no longer has; a per-call scalar is a Uniform",
+        arena.retired_axis(root)
+    );
     EmitCtx::default().compile(arena, root)
 }
 
@@ -2149,7 +2187,8 @@ fn compile_via_backend<B: IsaBackend>(
     };
 
     // The two prologues and the loop body share one stack frame: spill slots
-    // in [0, m), the scaffold's five coordinate slots (X/Y/Z/W plus row-start
+    // in [0, m), the scaffold's five coordinate slots (four base coordinates
+    // plus row-start
     // X) at [m, m + 5·vector_bytes), and hoist slots above those. `m` is the
     // max of the three frames — each region is only live while its own code
     // runs, but the hoist slots outlive all of them. Allocation and frame
@@ -3115,8 +3154,8 @@ mod tests {
 
     /// `Σᵢ (X+i)·(Y+i)` for i in 1..=10, summed as a balanced tree: ten
     /// products are live at once, so any pool must spill. Every leaf depends on
-    /// X or Y — a Z/W subtree would be loop-invariant, hoisted out of the
-    /// collapse body, and leave nothing to spill.
+    /// X or Y — a uniform-only subtree would be loop-invariant, hoisted out
+    /// of the collapse body, and leave nothing to spill.
     ///
     /// The pressure comes from the live ranges rather than from the budget.
     /// This used to be `(X+Y)·(X−Y) + (X·Y)·(X+1)` under `max_regs(2)`, which
@@ -3684,7 +3723,7 @@ mod tests {
         }
     }
 
-    /// Run an arena kernel at `x` (Y/Z/W = 0) and return lane 0. The
+    /// Run an arena kernel at `x` (Y = 0) and return lane 0. The
     /// builtin-parity tests below use it. Gated off `+avx512f` (those builtins
     /// aren't in the AVX-512 op set yet anyway).
     #[cfg(all(
@@ -4221,6 +4260,22 @@ mod tests {
     ))]
     mod sched {
         use super::*;
+
+        /// One batch of a kernel whose single argument is bound to `u` — the
+        /// lattice-invariant third input a test used to spell `Var(2)`.
+        fn eval_point_with_arg(code: &executable::ExecutableCode, x: f32, y: f32, u: f32) -> f32 {
+            let block = [u];
+            let ctx: [*const f32; 1] = [block.as_ptr()];
+            let o = executable::Point4::new([x; LANES], [y; LANES], [0.0; LANES], [0.0; LANES]);
+            eval_batch(code, &ctx, o)[0]
+        }
+
+        /// Declare one argument in `a` and return its leaf.
+        fn arg_leaf(a: &mut ExprArena, default: f32) -> pixelflow_ir::ExprId {
+            let slot = a.declare_uniform(pixelflow_ir::Uniform::new(default).decl());
+            a.push_uniform(slot)
+        }
+
         use pixelflow_ir::arena::ExprArena;
 
         fn run(res: &CompileResult, x: f32, y: f32, z: f32, w: f32) -> f32 {
@@ -4243,11 +4298,12 @@ mod tests {
         /// itself; only the ground-truth comparison was load-bearing.
         #[test]
         fn sched_no_spill_is_correct() {
-            // f = sqrt(X*X + Y*Y) - Z, plus a non-commutative `X - Y*Z` shape.
+            // f = sqrt(X*X + Y*Y) - Y*U, a non-commutative shape whose third
+            // input is the kernel's argument rather than a third coordinate.
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
+            let z = arg_leaf(&mut a, 0.0);
             let xx = a.push_binary(OpKind::Mul, x, x);
             let yy = a.push_binary(OpKind::Mul, y, y);
             let sum = a.push_binary(OpKind::Add, xx, yy);
@@ -4259,9 +4315,9 @@ mod tests {
             let sched = compile(&a, root).expect("compile");
             assert_eq!(sched.spill_count, 0, "should fit without spilling");
 
-            for &(px, py, pz, pw) in PTS {
+            for &(px, py, pz, _pw) in PTS {
                 let want = (px * px + py * py).sqrt() - py * pz;
-                let got = run(&sched, px, py, pz, pw);
+                let got = eval_point_with_arg(&sched.code, px, py, pz);
                 assert!((got - want).abs() <= 1e-4, "got {got} want {want}");
             }
         }
@@ -4314,32 +4370,35 @@ mod tests {
         }
 
         /// Exercises the shared driver's Select short-circuit guard path on x86
-        /// (MOVMSKPS all-true/all-false branches): `(X > 0) ? Y*Y*Y : Z+Z+Z`,
+        /// (MOVMSKPS all-true/all-false branches): `(X > 0) ? Y*Y*Y : X+X+X`,
         /// with arm-exclusive subexpressions so a guard region forms. Uniform
         /// inputs take the all-true / all-false branches.
+        ///
+        /// Both arms are per-*lane*, which is what makes them arms: an arm of
+        /// the kernel's arguments alone would be lattice-invariant and hoist
+        /// out of the body entirely, leaving nothing for a guard to skip.
         #[test]
         fn sched_select_guards() {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
             let zero = a.push_const(0.0);
             let cond = a.push_binary(OpKind::Gt, x, zero); // X > 0 -> mask
             let yy = a.push_binary(OpKind::Mul, y, y);
             let yyy = a.push_binary(OpKind::Mul, yy, y); // true arm: Y^3
-            let zz = a.push_binary(OpKind::Add, z, z);
-            let zzz = a.push_binary(OpKind::Add, zz, z); // false arm: 3Z
+            let zz = a.push_binary(OpKind::Add, x, x);
+            let zzz = a.push_binary(OpKind::Add, zz, x); // false arm: 3X
             let root = a.push_ternary(OpKind::Select, cond, yyy, zzz);
 
             let sched = compile(&a, root).expect("scheduled compile");
 
-            // x>0 -> all-true -> Y^3 ; x<=0 -> all-false -> 3Z.
-            for &(px, py, pz, _pw) in PTS {
-                let want = if px > 0.0 { py * py * py } else { 3.0 * pz };
-                let got = run(&sched, px, py, pz, 0.0);
+            // x>0 -> all-true -> Y^3 ; x<=0 -> all-false -> 3X.
+            for &(px, py, _pz, _pw) in PTS {
+                let want = if px > 0.0 { py * py * py } else { 3.0 * px };
+                let got = run(&sched, px, py, 0.0, 0.0);
                 assert!(
                     (got - want).abs() <= 1e-3,
-                    "select: ({px},{py},{pz}) got {got} want {want}"
+                    "select: ({px},{py}) got {got} want {want}"
                 );
             }
         }
@@ -4403,12 +4462,8 @@ mod tests {
                 cy.copy_from_slice(&ys[batch * 4..batch * 4 + 4]);
                 let got = run4_ctx(&res, &ctx, cx, cy);
                 for i in 0..4 {
-                    let want = pixelflow_ir::eval::eval_scalar(
-                        arena,
-                        root,
-                        &[cx[i], cy[i], 0.0, 0.0],
-                        &bindings,
-                    );
+                    let want =
+                        pixelflow_ir::eval::eval_scalar(arena, root, &[cx[i], cy[i]], &bindings);
                     assert_eq!(
                         got[i], want,
                         "{tag} batch {batch} lane {i} (x={}, y={})",
@@ -4615,12 +4670,7 @@ mod tests {
 
             let bindings = pixelflow_ir::binding::BindingTable::bind(arena, buffers).unwrap();
             for (i, &g) in got.iter().enumerate() {
-                let want = pixelflow_ir::eval::eval_scalar(
-                    arena,
-                    root,
-                    &[xs[i], ys[i], 0.0, 0.0],
-                    &bindings,
-                );
+                let want = pixelflow_ir::eval::eval_scalar(arena, root, &[xs[i], ys[i]], &bindings);
                 assert_eq!(g, want, "{tag} lane {i} (x={}, y={})", xs[i], ys[i]);
             }
         }
@@ -4759,7 +4809,7 @@ mod tests {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
+            let z = a.push_binary(OpKind::Mul, y, x);
             let xx = a.push_binary(OpKind::Mul, x, x);
             let yy = a.push_binary(OpKind::Mul, y, y);
             let sum = a.push_binary(OpKind::Add, xx, yy);
@@ -4772,7 +4822,7 @@ mod tests {
             let (xs, ys, zs) = lanes();
             check(
                 run16(&res, xs, ys, zs),
-                |i| (xs[i] * xs[i] + ys[i] * ys[i]).sqrt() - zs[i],
+                |i| (xs[i] * xs[i] + ys[i] * ys[i]).sqrt() - ys[i] * xs[i],
                 "norm-z",
             );
         }
@@ -4854,13 +4904,12 @@ mod tests {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
             let zero = a.push_const(0.0);
             let cond = a.push_binary(OpKind::Gt, x, zero);
             let yy = a.push_binary(OpKind::Mul, y, y);
             let yyy = a.push_binary(OpKind::Mul, yy, y);
-            let zz = a.push_binary(OpKind::Add, z, z);
-            let zzz = a.push_binary(OpKind::Add, zz, z);
+            let zz = a.push_binary(OpKind::Add, x, x);
+            let zzz = a.push_binary(OpKind::Add, zz, x);
             let root = a.push_ternary(OpKind::Select, cond, yyy, zzz);
 
             let res = compile(&a, root).expect("avx512 compile");
@@ -4874,7 +4923,12 @@ mod tests {
                 |i| ys[i] * ys[i] * ys[i],
                 "guard-true",
             );
-            check(run16(&res, allneg, ys, zs), |i| 3.0 * zs[i], "guard-false");
+            let _unused_third_input = zs;
+            check(
+                run16(&res, allneg, ys, zs),
+                |_| 3.0 * allneg[0],
+                "guard-false",
+            );
 
             let mixed = core::array::from_fn::<f32, 16, _>(|i| if i % 2 == 0 { 1.0 } else { -1.0 });
             check(
@@ -4883,7 +4937,7 @@ mod tests {
                     if mixed[i] > 0.0 {
                         ys[i] * ys[i] * ys[i]
                     } else {
-                        3.0 * zs[i]
+                        3.0 * mixed[i]
                     }
                 },
                 "guard-mixed",
@@ -5556,7 +5610,7 @@ mod tests {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
+            let z = a.push_binary(OpKind::Add, y, x);
             let root = a.push_ternary(OpKind::MulAdd, x, y, z);
             let (a, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
 

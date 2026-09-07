@@ -41,12 +41,7 @@ fn allocations_during(f: impl FnOnce()) -> usize {
 /// `gather(buf, x) · scale + cx`, over one buffer and (optionally) two
 /// uniforms — the terminal's shape and a moving scene's, in one kernel.
 fn kernel(buffer: BufferIdentity, with_uniforms: bool) -> Kernel {
-    let read = DiscreteManifold::kernel_for(buffer, 4, 1).at(
-        &Kernel::x(),
-        &Kernel::constant(0.0),
-        &Kernel::z(),
-        &Kernel::w(),
-    );
+    let read = DiscreteManifold::kernel_for(buffer, 4, 1).at(&Kernel::x(), &Kernel::constant(0.0));
     if with_uniforms {
         read.mul(&Uniform::new(2.0).kernel())
             .add(&Uniform::new(0.5).kernel())
@@ -59,7 +54,7 @@ fn kernel(buffer: BufferIdentity, with_uniforms: bool) -> Kernel {
 fn binding_and_collapsing_allocate_nothing_per_frame() {
     for with_uniforms in [false, true] {
         let buffer = BufferIdentity::mint();
-        let program = Manifold::compile(&kernel(buffer, with_uniforms), [4, 2, 1, 1]);
+        let program = Manifold::compile(&kernel(buffer, with_uniforms), [4, 2]);
         let data = Arc::new(vec![1.0f32, 2.0, 3.0, 4.0]);
         let mut out = vec![0.0f32; 8];
         let block = program.block();
@@ -95,14 +90,9 @@ fn setting_a_sole_holders_block_allocates_nothing() {
     let buffer = BufferIdentity::mint();
     let cx = Uniform::new(0.5);
     let k = DiscreteManifold::kernel_for(buffer, 4, 1)
-        .at(
-            &Kernel::x(),
-            &Kernel::constant(0.0),
-            &Kernel::z(),
-            &Kernel::w(),
-        )
+        .at(&Kernel::x(), &Kernel::constant(0.0))
         .add(&cx.kernel());
-    let program = Manifold::compile(&k, [4, 1, 1, 1]);
+    let program = Manifold::compile(&k, [4, 1]);
     let mut block = program.block();
     let data = Arc::new(vec![1.0f32; 4]);
     let mut out = vec![0.0f32; 4];

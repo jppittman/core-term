@@ -13,7 +13,7 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf"
 
 /// Evaluate a coverage kernel at a single point.
 fn sample(k: &Kernel, x: f32, y: f32) -> f32 {
-    Lattice::point(x, y, 0.0, 0.0).bake(k).into_buffer()[0]
+    Lattice::point(x, y).bake(k).into_buffer()[0]
 }
 
 /// Winding coverage for segment kernels: `min(|Σ|, 1)`.
@@ -84,8 +84,8 @@ fn regression_glyph_ascent_offset() {
 
     let (width, height) = (80u32, 120u32);
     let baked = Lattice {
-        extent: [width, height, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [width, height],
+        origin: [0.5, 0.5],
     }
     .bake(&kernel);
     let buf = baked.buffer();
@@ -114,8 +114,8 @@ fn regression_text_rendering_pipeline() {
 
     let (width, height) = (100u32, 30u32);
     let baked = Lattice {
-        extent: [width, height, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [width, height],
+        origin: [0.5, 0.5],
     }
     .bake(&kernel);
     let buf = baked.buffer();

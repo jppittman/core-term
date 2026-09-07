@@ -25,8 +25,8 @@ fn golden_for(ch: char, size: usize) {
     // JIT: bake over the texel-center lattice.
     let n = size as u32;
     let baked = Lattice {
-        extent: [n, n, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [n, n],
+        origin: [0.5, 0.5],
     }
     .bake(&kernel);
     let got = baked.buffer();
@@ -43,7 +43,7 @@ fn golden_for(ch: char, size: usize) {
     let optimized = pixelflow_search::runtime::optimize_runtime_arena(
         arena,
         root,
-        pixelflow_ir::LatticeShape::new([size as u32, size as u32, 1, 1]),
+        pixelflow_ir::LatticeShape::new([size as u32, size as u32]),
     );
     let (lowered, lroot) = match optimized.as_deref() {
         Some((a, r)) => (a.clone(), *r),
@@ -54,7 +54,7 @@ fn golden_for(ch: char, size: usize) {
     for j in 0..size {
         for i in 0..size {
             let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
-            let want = eval_scalar(&lowered, lroot, &[x, y, 0.0, 0.0], &BindingTable::empty());
+            let want = eval_scalar(&lowered, lroot, &[x, y], &BindingTable::empty());
             let jit = got[j * size + i];
             assert!(
                 jit.is_finite(),

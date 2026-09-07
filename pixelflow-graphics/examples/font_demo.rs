@@ -27,8 +27,8 @@ fn main() {
     let width = 620u32;
     let height = (size * 1.4) as u32;
     let baked = Lattice {
-        extent: [width, height, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [width, height],
+        origin: [0.5, 0.5],
     }
     .bake(&kernel);
 

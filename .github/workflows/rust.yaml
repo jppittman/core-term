@@ -257,16 +257,31 @@ jobs:
           restore-keys: |
             cargo-registry-
 
-      # This integration target expands the public `kernel!` macro in a
-      # consumer crate and bakes what it builds. A host-only proc-macro check
-      # would miss generated code that disagrees with the second supported
-      # architecture's JIT ABI.
-      - name: Type-check the kernel macro on aarch64
+      # Every `cfg(target_arch = "aarch64")` block in the tree, type-checked.
+      #
+      # This used to be one test target in one crate (`pixelflow-compiler`'s
+      # `bake_vs_scalar_truth`, still covered below by `--all-targets`). That
+      # is too narrow: an aarch64-only file in *another* crate is invisible to
+      # every x86 job — `cargo test`, `clippy --all-targets` and all three
+      # `isa-matrix` levels are x86 targets, so such a file compiles to
+      # nothing for them — and it reached the macOS runner instead, minutes
+      # later. `pixelflow-core/tests/naked_scale.rs` shipped a type error that
+      # way. A cross `check` costs no execution and no qemu: measured at 40s
+      # from an empty target directory.
+      #
+      # Package-scoped rather than `--workspace` on purpose: pixelflow-runtime's
+      # build script probes for X11 through pkg-config, which refuses to answer
+      # when cross-compiling, so a workspace-wide check fails in the build
+      # script before it type-checks a single line. These are the crates whose
+      # output is architecture-specific; runtime and core-term carry no
+      # aarch64-only code. Do not "simplify" this to `--workspace`.
+      - name: Type-check every aarch64 block
         shell: bash
         run: |
-          cargo check -p pixelflow-compiler \
-            --test bake_vs_scalar_truth \
-            --target aarch64-unknown-linux-gnu
+          cargo check --target aarch64-unknown-linux-gnu --all-targets \
+            -p pixelflow-core -p pixelflow-codegen -p pixelflow-ir \
+            -p pixelflow-search -p pixelflow-graphics -p pixelflow-pipeline \
+            -p pixelflow-compiler
 
   test:
     name: Test on ${{ matrix.os }}

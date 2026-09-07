@@ -29,7 +29,7 @@ pub struct CompiledKernel {
 /// rows than the Y extent, and no more batches per row than the X extent
 /// fills (`ceil(x / LANES)` — the last batch may be a partial one).
 fn fits(shape: LatticeShape, tile: &TileSlice) -> bool {
-    let [x, y, _, _] = shape.extent();
+    let [x, y] = shape.extent();
     tile.rows <= y as usize && tile.groups <= (x as usize).div_ceil(LANES)
 }
 

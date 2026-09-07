@@ -78,7 +78,7 @@ pub const MAX_EXCLUSION_RATE: f64 = 0.05;
 /// free, and both callers must hoist it out of their expression loop.
 #[derive(Clone, Debug)]
 pub struct QuarantineGrid {
-    points: [[f32; 4]; QUARANTINE_POINTS],
+    points: [[f32; 2]; QUARANTINE_POINTS],
 }
 
 impl Default for QuarantineGrid {
@@ -93,11 +93,11 @@ impl QuarantineGrid {
     /// are xorshift64 draws of sign × mantissa [1,2) × 10^{-4..=4}.
     #[must_use]
     pub fn new() -> Self {
-        let mut points = [[0.0f32; 4]; QUARANTINE_POINTS];
-        points[0] = [0.5, 0.7, 1.3, -0.2];
-        points[1] = [0.0, -0.0, 1.0, -1.0];
-        points[2] = [1e-4, -1e-4, 1e4, -1e4];
-        points[3] = [1.0, 2.0, 0.5, 0.25];
+        let mut points = [[0.0f32; 2]; QUARANTINE_POINTS];
+        points[0] = [0.5, 0.7];
+        points[1] = [0.0, -0.0];
+        points[2] = [1e-4, -1e-4];
+        points[3] = [1.0, 2.0];
         let mut state = QUARANTINE_GRID_SEED;
         for point in points.iter_mut().skip(4) {
             for lane in point.iter_mut() {
@@ -117,7 +117,7 @@ impl QuarantineGrid {
     /// pin a grid-wide property (every point unbounded, say) that the seeded
     /// sweep deliberately does not have.
     #[cfg(test)]
-    fn uniform(point: [f32; 4]) -> Self {
+    fn uniform(point: [f32; 2]) -> Self {
         Self {
             points: [point; QUARANTINE_POINTS],
         }
@@ -125,7 +125,7 @@ impl QuarantineGrid {
 
     /// The grid points, in index order — the indices sidecar records name.
     #[must_use]
-    pub fn points(&self) -> &[[f32; 4]; QUARANTINE_POINTS] {
+    pub fn points(&self) -> &[[f32; 2]; QUARANTINE_POINTS] {
         &self.points
     }
 }
@@ -167,7 +167,7 @@ pub enum Exclusion {
     /// The JIT lane fell outside the composed error bound at some point.
     Mismatch {
         /// The grid point.
-        point: [f32; 4],
+        point: [f32; 2],
         /// The oracle's value.
         expected: f32,
         /// The JIT's lane.
@@ -184,7 +184,7 @@ pub enum Exclusion {
     /// wrong answer (Codex R2).
     MaskMiscompile {
         /// The grid point.
-        point: [f32; 4],
+        point: [f32; 2],
         /// The oracle's mask lane.
         expected: f32,
         /// The JIT's mask lane.
@@ -195,7 +195,7 @@ pub enum Exclusion {
     /// consumer, so no proximity and no tolerance excuses it.
     InvalidMaskPattern {
         /// The grid point.
-        point: [f32; 4],
+        point: [f32; 2],
         /// The oracle's lane.
         expected: f32,
         /// The JIT's lane.
@@ -394,7 +394,8 @@ pub struct Verdict {
 /// `Nary`/`Reduce` rather than screening them — loudly, by design — so this
 /// must run first. `Gather`/`RawGather` are supported by the check itself but
 /// refused here anyway: both callers run with an empty [`BindingTable`], so
-/// there is no buffer to read.
+/// there is no buffer to read. A `Uniform` is fine — an empty table reads its
+/// declared default.
 pub fn screen_for_oracle(arena: &ExprArena, root: ExprId) -> Result<(), String> {
     let mut visited = vec![false; arena.len()];
     let mut stack = vec![root];
@@ -407,14 +408,25 @@ pub fn screen_for_oracle(arena: &ExprArena, root: ExprId) -> Result<(), String> 
         match arena.node(id) {
             ExprNode::Param(i) => return Err(format!("Param({i}) — substitute params first")),
             ExprNode::Buffer(b) => return Err(format!("Buffer({}) — no binding table here", b.0)),
-            ExprNode::Uniform(u) => return Err(format!("Uniform({}) — no block here", u.0)),
             ExprNode::Nary(op, _, _) => {
                 return Err(format!(
                     "Nary({op:?}) — a reduction rebinds its body per iteration; expand_reduce first"
                 ));
             }
-            ExprNode::Var(i) if *i >= 4 => {
-                return Err(format!("Var({i}) — reduction index outside a Reduce"));
+            // A `Uniform` needs no block: unbound, it reads the default its
+            // declaration carries, which is exactly the value a caller who
+            // never set it would get. A `Buffer` has no such fallback, which
+            // is why that one is still refused.
+            ExprNode::Var(i) if *i >= pixelflow_ir::arena::COORD_AXES as u8 => {
+                // Past the axes is two different things: the retired Z/W, and
+                // a reduction binder that escaped its `Reduce`. Naming the
+                // wrong one sends the reader to the wrong file.
+                let why = if *i < 4 {
+                    "a retired coordinate axis; a per-call scalar is a Uniform"
+                } else {
+                    "a reduction index outside a Reduce"
+                };
+                return Err(format!("Var({i}) — {why}"));
             }
             _ => {
                 if let op @ (OpKind::Gather | OpKind::RawGather | OpKind::Dwrt | OpKind::Tuple) =
@@ -462,6 +474,15 @@ pub fn quarantine_verdict(arena: &ExprArena, root: ExprId, grid: &QuarantineGrid
     let check = DifferentialCheck::new(arena, root);
     let mask_root = check.root_is_mask_valued();
     let bindings = BindingTable::empty();
+    // The kernel's arguments at their declared defaults — the same values the
+    // empty binding table gives the oracle, so both sides read one block.
+    // The screen refuses buffers, so the block is the whole context.
+    let block: Vec<f32> = arena.uniforms().iter().map(|d| d.default).collect();
+    let ctx: [*const f32; 1] = [if block.is_empty() {
+        core::ptr::null()
+    } else {
+        block.as_ptr()
+    }];
 
     // `checkable` counts points that survived the platform-divergence screen;
     // `bounded` counts the strictly smaller set where the point actually
@@ -480,20 +501,19 @@ pub fn quarantine_verdict(arena: &ExprArena, root: ExprId, grid: &QuarantineGrid
     for (chunk_idx, points) in grid.points().chunks(LANES).enumerate() {
         let mut xs = [0.0f32; LANES];
         let mut ys = [0.0f32; LANES];
-        let mut zs = [0.0f32; LANES];
-        let mut ws = [0.0f32; LANES];
         for (i, p) in points.iter().enumerate() {
             xs[i] = p[0];
             ys[i] = p[1];
-            zs[i] = p[2];
-            ws[i] = p[3];
         }
-        let p = Point4::new(xs, ys, zs, ws);
+        // The base coordinate's last two lanes are dead: `emit::compile`
+        // refuses an arena naming `Var(2)`/`Var(3)`, so nothing that got
+        // this far can read them.
+        let p = Point4::new(xs, ys, [0.0; LANES], [0.0; LANES]);
         let mut out = [0.0f32; LANES];
         unsafe {
             compiled
                 .code
-                .call_collapse(core::ptr::null(), TileSlice::single(out.as_mut_ptr()), p);
+                .call_collapse(ctx.as_ptr(), TileSlice::single(out.as_mut_ptr()), p);
         }
 
         for (i, point) in points.iter().enumerate() {
@@ -917,7 +937,6 @@ mod tests {
         // Signed zero and the magnitude extremes are pinned.
         assert_eq!(a.points()[1][0].to_bits(), 0.0f32.to_bits());
         assert_eq!(a.points()[1][1].to_bits(), (-0.0f32).to_bits());
-        assert_eq!(a.points()[2][2], 1e4);
         assert_eq!(a.points()[2][0], 1e-4);
         for point in &a.points()[4..] {
             for lane in point {
@@ -971,7 +990,7 @@ mod tests {
             "an unverifiable expression accuses the corpus, not the compiler"
         );
         let m = Exclusion::Mismatch {
-            point: [0.0; 4],
+            point: [0.0; 2],
             expected: 1.0,
             got: 2.0,
             bound: 0.0,
@@ -980,7 +999,7 @@ mod tests {
         assert_eq!(m.reason(), "numeric_mismatch");
         assert!(m.is_miscompile());
         let mm = Exclusion::MaskMiscompile {
-            point: [0.0; 4],
+            point: [0.0; 2],
             expected: 0.0,
             got: f32::from_bits(0xFFFF_FFFF),
         };

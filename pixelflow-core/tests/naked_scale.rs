@@ -84,6 +84,9 @@ fn naked_abi_multithreaded_scale() {
                             let vw: float32x4_t = std::mem::transmute(zero);
 
                             let res = invoke_naked_kernel(kernel_ptr, vx, vy, vz, vw);
+                            // Four, because a `float32x4_t` has four lanes —
+                            // this is the NEON register's width, not a count
+                            // of lattice axes, and the two are unrelated.
                             let out: [f32; 4] = std::mem::transmute(res);
 
                             // 1*2=2, 2*2=4, 3*2=6, 4*2=8

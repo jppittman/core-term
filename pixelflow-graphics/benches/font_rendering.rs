@@ -23,8 +23,8 @@ fn bench_pixelflow_single_char(c: &mut Criterion) {
         group.bench_function(label, |b| {
             let kernel = text(&font, &ch.to_string(), 32.0);
             let lattice = Lattice {
-                extent: [40, 45, 1, 1],
-                origin: [0.5, 0.5, 0.0, 0.0],
+                extent: [40, 45],
+                origin: [0.5, 0.5],
             };
 
             b.iter(|| black_box(lattice.bake(black_box(&kernel))));
@@ -53,8 +53,8 @@ fn bench_pixelflow_text_sizes(c: &mut Criterion) {
             "the specimen is shorter than the length this case claims to render"
         );
         let lattice = Lattice {
-            extent: [(length as u32) * 15, 24, 1, 1],
-            origin: [0.5, 0.5, 0.0, 0.0],
+            extent: [(length as u32) * 15, 24],
+            origin: [0.5, 0.5],
         };
 
         // The range encoding: one kernel, every pixel evaluating every glyph.
@@ -84,8 +84,8 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
     // iterations; construction + tabulation dominate).
     group.bench_function("uncached_HELLO", |b| {
         let lattice = Lattice {
-            extent: [100, 30, 1, 1],
-            origin: [0.5, 0.5, 0.0, 0.0],
+            extent: [100, 30],
+            origin: [0.5, 0.5],
         };
         b.iter(|| {
             let kernel = text(&font, "HELLO", 20.0);
@@ -103,8 +103,8 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
         let mut cache = GlyphCache::new();
         let cached = CachedText::new(&font, &mut cache, "HELLO", 20.0, 1.0);
         let lattice = Lattice {
-            extent: [100, 30, 1, 1],
-            origin: [0.5, 0.5, 0.0, 0.0],
+            extent: [100, 30],
+            origin: [0.5, 0.5],
         };
         let bound = Manifold::compile(&cached.kernel(), lattice.extent).bind(&cached.bindings());
 

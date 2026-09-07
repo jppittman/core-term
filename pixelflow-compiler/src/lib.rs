@@ -73,7 +73,7 @@ use proc_macro::TokenStream;
 /// });
 ///
 /// let unit_circle: Kernel = circle(0.0, 0.0, 1.0);
-/// let plane = Lattice::frame(64, 64, 0.0).bake(&unit_circle);
+/// let plane = Lattice::frame(64, 64).bake(&unit_circle);
 /// ```
 ///
 /// # Parameters

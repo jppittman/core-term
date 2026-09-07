@@ -296,7 +296,7 @@ fn test_points() -> Vec<[f32; 4]> {
         pts.push([x, y, z, w]);
     }
     // A few explicit edge points.
-    pts.push([0.0, 1.0, -1.0, 2.0]);
+    pts.push([0.0, 1.0, 2.0, 3.0]);
     pts.push([1.0, 1.0, 1.0, 1.0]);
     pts.push([-1.0, -1.0, -1.0, -1.0]);
     pts

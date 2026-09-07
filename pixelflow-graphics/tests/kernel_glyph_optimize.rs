@@ -225,8 +225,8 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
         for j in 0..32usize {
             for i in 0..32usize {
                 let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
-                let want = eval_scalar(&raw, raw_root, &[x, y, 0.0, 0.0], &BindingTable::empty());
-                let got = eval_scalar(opt, opt_root, &[x, y, 0.0, 0.0], &BindingTable::empty());
+                let want = eval_scalar(&raw, raw_root, &[x, y], &BindingTable::empty());
+                let got = eval_scalar(opt, opt_root, &[x, y], &BindingTable::empty());
                 assert!(
                     (want - got).abs() < 1e-3,
                     "{ch}@32: optimized {got} != raw {want} at texel ({i},{j}) — \

@@ -1431,11 +1431,11 @@ mod dwrt_tests {
         false
     }
 
-    fn eval(arena: &ExprArena, root: ExprId, vars: &[f32; 4]) -> f32 {
+    fn eval(arena: &ExprArena, root: ExprId, vars: &[f32; 2]) -> f32 {
         eval_scalar(arena, root, vars, &BindingTable::empty())
     }
 
-    fn assert_close(got: f32, want: f32, pt: &[f32; 4]) {
+    fn assert_close(got: f32, want: f32, pt: &[f32; 2]) {
         assert_close_rel(got, want, pt, 1e-3);
     }
 
@@ -1448,7 +1448,7 @@ mod dwrt_tests {
     /// 4-term Chebyshev approximation. That error is the language's actual
     /// answer, and pinning it here is the point: the tolerance documents the
     /// approximation instead of hiding it behind an exact host function.
-    fn assert_close_rel(got: f32, want: f32, pt: &[f32; 4], rel: f32) {
+    fn assert_close_rel(got: f32, want: f32, pt: &[f32; 2], rel: f32) {
         let tol = rel * want.abs().max(1.0);
         assert!(
             (got - want).abs() <= tol,
@@ -1461,20 +1461,12 @@ mod dwrt_tests {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let (out, root) = lowered_derivative(&a, x, 0);
-        assert_close(
-            eval(&out, root, &[3.0, 5.0, 0.0, 0.0]),
-            1.0,
-            &[3.0, 5.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[3.0, 5.0]), 1.0, &[3.0, 5.0]);
 
         let mut a = ExprArena::new();
         let y = a.push_var(1);
         let (out, root) = lowered_derivative(&a, y, 0);
-        assert_close(
-            eval(&out, root, &[3.0, 5.0, 0.0, 0.0]),
-            0.0,
-            &[3.0, 5.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[3.0, 5.0]), 0.0, &[3.0, 5.0]);
     }
 
     #[test]
@@ -1488,11 +1480,7 @@ mod dwrt_tests {
         let sum = a.push_binary(OpKind::Add, x2, y2);
         let e = a.push_unary(OpKind::Sqrt, sum);
         let (out, root) = lowered_derivative(&a, e, 0);
-        for p in &[
-            [3.0f32, 4.0, 0.0, 0.0],
-            [1.0, 1.0, 0.0, 0.0],
-            [-2.0, 5.0, 0.0, 0.0],
-        ] {
+        for p in &[[3.0f32, 4.0], [1.0, 1.0], [-2.0, 5.0]] {
             let want = p[0] / (p[0] * p[0] + p[1] * p[1]).sqrt();
             assert_close(eval(&out, root, p), want, p);
         }
@@ -1510,16 +1498,8 @@ mod dwrt_tests {
         let y3 = a.push_binary(OpKind::Mul, y, three);
         let e = a.push_binary(OpKind::Min, x2, y3);
         let (out, root) = lowered_derivative(&a, e, 0);
-        assert_close(
-            eval(&out, root, &[1.0, 5.0, 0.0, 0.0]),
-            2.0,
-            &[1.0, 5.0, 0.0, 0.0],
-        );
-        assert_close(
-            eval(&out, root, &[9.0, 1.0, 0.0, 0.0]),
-            0.0,
-            &[9.0, 1.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[1.0, 5.0]), 2.0, &[1.0, 5.0]);
+        assert_close(eval(&out, root, &[9.0, 1.0]), 0.0, &[9.0, 1.0]);
 
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1530,16 +1510,8 @@ mod dwrt_tests {
         let y3 = a.push_binary(OpKind::Mul, y, three);
         let e = a.push_binary(OpKind::Max, x2, y3);
         let (out, root) = lowered_derivative(&a, e, 0);
-        assert_close(
-            eval(&out, root, &[9.0, 1.0, 0.0, 0.0]),
-            2.0,
-            &[9.0, 1.0, 0.0, 0.0],
-        );
-        assert_close(
-            eval(&out, root, &[1.0, 5.0, 0.0, 0.0]),
-            0.0,
-            &[1.0, 5.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[9.0, 1.0]), 2.0, &[9.0, 1.0]);
+        assert_close(eval(&out, root, &[1.0, 5.0]), 0.0, &[1.0, 5.0]);
     }
 
     #[test]
@@ -1555,16 +1527,8 @@ mod dwrt_tests {
         let x5 = a.push_binary(OpKind::Mul, x, five);
         let e = a.push_ternary(OpKind::Select, mask, xx, x5);
         let (out, root) = lowered_derivative(&a, e, 0);
-        assert_close(
-            eval(&out, root, &[3.0, 1.0, 0.0, 0.0]),
-            6.0,
-            &[3.0, 1.0, 0.0, 0.0],
-        );
-        assert_close(
-            eval(&out, root, &[3.0, -1.0, 0.0, 0.0]),
-            5.0,
-            &[3.0, -1.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[3.0, 1.0]), 6.0, &[3.0, 1.0]);
+        assert_close(eval(&out, root, &[3.0, -1.0]), 5.0, &[3.0, -1.0]);
     }
 
     #[test]
@@ -1580,16 +1544,8 @@ mod dwrt_tests {
         let floored = a.push_binary(OpKind::Max, xx, zero);
         let e = a.push_binary(OpKind::Min, floored, ten);
         let (out, root) = lowered_derivative(&a, e, 0);
-        assert_close(
-            eval(&out, root, &[2.0, 0.0, 0.0, 0.0]),
-            4.0,
-            &[2.0, 0.0, 0.0, 0.0],
-        );
-        assert_close(
-            eval(&out, root, &[5.0, 0.0, 0.0, 0.0]),
-            0.0,
-            &[5.0, 0.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[2.0, 0.0]), 4.0, &[2.0, 0.0]);
+        assert_close(eval(&out, root, &[5.0, 0.0]), 0.0, &[5.0, 0.0]);
     }
 
     #[test]
@@ -1600,7 +1556,7 @@ mod dwrt_tests {
         let y = a.push_var(1);
         let e = a.push_ternary(OpKind::MulAdd, x, y, x);
         let (out, root) = lowered_derivative(&a, e, 0);
-        for p in &[[2.0f32, 3.0, 0.0, 0.0], [-1.0, 7.0, 0.0, 0.0]] {
+        for p in &[[2.0f32, 3.0], [-1.0, 7.0]] {
             assert_close(eval(&out, root, p), p[1] + 1.0, p);
         }
     }
@@ -1617,7 +1573,7 @@ mod dwrt_tests {
         // charge that approximation error to the chain rule and force a
         // tolerance loose enough to hide a real rule bug. Polynomial accuracy
         // versus libm is a separate concern, measured in the emit tests.
-        let pts = [[0.7f32, 0.0, 0.0, 0.0], [1.3, 0.0, 0.0, 0.0]];
+        let pts = [[0.7f32, 0.0], [1.3, 0.0]];
 
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1664,7 +1620,7 @@ mod dwrt_tests {
         let d1 = a.push_binary(OpKind::Dwrt, xxx, v0);
         let root = a.push_binary(OpKind::Dwrt, d1, v0);
         let (out, out_root) = lower_dwrt_owned(&a, root).expect("lower_dwrt");
-        for p in &[[2.0f32, 0.0, 0.0, 0.0], [-1.5, 0.0, 0.0, 0.0]] {
+        for p in &[[2.0f32, 0.0], [-1.5, 0.0]] {
             assert_close(eval(&out, out_root, p), 6.0 * p[0], p);
         }
     }
@@ -1679,7 +1635,7 @@ mod dwrt_tests {
         let s = a.push_binary(OpKind::Mul, x, y);
         let e = a.push_binary(OpKind::Mul, s, s);
         let (out, root) = lowered_derivative(&a, e, 0);
-        let p = [3.0f32, 2.0, 0.0, 0.0];
+        let p = [3.0f32, 2.0];
         assert_close(eval(&out, root, &p), 2.0 * (p[0] * p[1]) * p[1], &p);
     }
 
@@ -1767,11 +1723,11 @@ mod dwrt_tests {
         let red = a.push_reduce(OpKind::Add, 4, 3, body);
         let root = expand_reduce(&mut a, red);
         // Σ_{i<3} (i + u) = 3 + 3u.
-        assert_eq!(eval(&a, root, &[0.0; 4]), 33.0);
+        assert_eq!(eval(&a, root, &[0.0; 2]), 33.0);
         let bound = BindingTable::empty()
             .bind_uniforms(&a, &[(a.uniforms()[0].id, 1.0)])
             .expect("declared");
-        assert_eq!(eval_scalar(&a, root, &[0.0; 4], &bound), 6.0);
+        assert_eq!(eval_scalar(&a, root, &[0.0; 2], &bound), 6.0);
         // Over the reachable subgraph: the rebuild leaves the pre-unroll
         // original behind as garbage, which is not what is being counted.
         let mut reachable = alloc::vec![false; a.len()];
@@ -1802,7 +1758,7 @@ mod dwrt_tests {
         let xx = a.push_binary(OpKind::Mul, x, x);
         let e = a.push_unary(OpKind::Neg, xx);
         let (out, root) = lowered_derivative(&a, e, 0);
-        for p in &[[3.0f32, 0.0, 0.0, 0.0], [-2.0, 0.0, 0.0, 0.0]] {
+        for p in &[[3.0f32, 0.0], [-2.0, 0.0]] {
             assert_close(eval(&out, root, p), -2.0 * p[0], p);
         }
 
@@ -1811,7 +1767,7 @@ mod dwrt_tests {
         let x = a.push_var(0);
         let e = a.push_unary(OpKind::Recip, x);
         let (out, root) = lowered_derivative(&a, e, 0);
-        for p in &[[2.0f32, 0.0, 0.0, 0.0], [-4.0, 0.0, 0.0, 0.0]] {
+        for p in &[[2.0f32, 0.0], [-4.0, 0.0]] {
             assert_close(eval(&out, root, p), -1.0 / (p[0] * p[0]), p);
         }
     }
@@ -1823,16 +1779,8 @@ mod dwrt_tests {
         let x = a.push_var(0);
         let e = a.push_unary(OpKind::Abs, x);
         let (out, root) = lowered_derivative(&a, e, 0);
-        assert_close(
-            eval(&out, root, &[3.0, 0.0, 0.0, 0.0]),
-            1.0,
-            &[3.0, 0.0, 0.0, 0.0],
-        );
-        assert_close(
-            eval(&out, root, &[-3.0, 0.0, 0.0, 0.0]),
-            -1.0,
-            &[-3.0, 0.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[3.0, 0.0]), 1.0, &[3.0, 0.0]);
+        assert_close(eval(&out, root, &[-3.0, 0.0]), -1.0, &[-3.0, 0.0]);
     }
 
     #[test]
@@ -1844,7 +1792,7 @@ mod dwrt_tests {
         let (out, root) = lowered_derivative(&a, e, 0);
         for xv in [4.0f32, 9.0] {
             let want = -0.5 * xv.powf(-1.5);
-            let p = [xv, 0.0, 0.0, 0.0];
+            let p = [xv, 0.0];
             assert_close(eval(&out, root, &p), want, &p);
         }
     }
@@ -1855,7 +1803,7 @@ mod dwrt_tests {
         // expressions and evaluated the same way as the derivative under
         // test, NOT taken from host libm — see `differentiate_sin_exp_and_ln_to_their_own_rules_under_composition` for why:
         // it isolates the chain-rule from the polynomial-approximation error.
-        let pt = [0.4f32, 0.0, 0.0, 0.0];
+        let pt = [0.4f32, 0.0];
 
         // d/dx cos(x) = -sin(x).
         let mut a = ExprArena::new();
@@ -1901,7 +1849,7 @@ mod dwrt_tests {
         let e = a.push_unary(OpKind::Atan, x);
         let (out, root) = lowered_derivative(&a, e, 0);
         for xv in [0.5f32, 2.0, -3.0] {
-            let p = [xv, 0.0, 0.0, 0.0];
+            let p = [xv, 0.0];
             let want = 1.0 / (1.0 + xv * xv);
             assert_close(eval(&out, root, &p), want, &p);
         }
@@ -1918,7 +1866,7 @@ mod dwrt_tests {
         let expected = a.push_binary(OpKind::Mul, exp2x, ln2);
         let (out, root) = lowered_derivative(&a, e, 0);
         for xv in [0.3f32, 2.0, -1.0] {
-            let p = [xv, 0.0, 0.0, 0.0];
+            let p = [xv, 0.0];
             let want = eval(&a, expected, &p);
             assert_close(eval(&out, root, &p), want, &p);
         }
@@ -1929,7 +1877,7 @@ mod dwrt_tests {
         let e = a.push_unary(OpKind::Log2, x);
         let (out, root) = lowered_derivative(&a, e, 0);
         for xv in [0.5f32, 3.0] {
-            let p = [xv, 0.0, 0.0, 0.0];
+            let p = [xv, 0.0];
             let want = 1.0 / (xv * core::f32::consts::LN_2);
             assert_close(eval(&out, root, &p), want, &p);
         }
@@ -1940,7 +1888,7 @@ mod dwrt_tests {
         let e = a.push_unary(OpKind::Log10, x);
         let (out, root) = lowered_derivative(&a, e, 0);
         for xv in [0.5f32, 3.0] {
-            let p = [xv, 0.0, 0.0, 0.0];
+            let p = [xv, 0.0];
             let want = 1.0 / (xv * core::f32::consts::LN_10);
             assert_close(eval(&out, root, &p), want, &p);
         }
@@ -1956,7 +1904,7 @@ mod dwrt_tests {
         let xx = a.push_binary(OpKind::Mul, x, x);
         let e = a.push_binary(OpKind::Sub, xx, x);
         let (out, root) = lowered_derivative(&a, e, 0);
-        let p = [3.0f32, 5.0, 0.0, 0.0];
+        let p = [3.0f32, 5.0];
         assert_close(eval(&out, root, &p), 2.0 * p[0] - 1.0, &p);
 
         // d/dx (x·x / (x + y)) = (2x(x+y) - x²)/(x+y)² — the full quotient
@@ -1970,7 +1918,7 @@ mod dwrt_tests {
         let denom = a.push_binary(OpKind::Add, x, y);
         let e = a.push_binary(OpKind::Div, xx, denom);
         let (out, root) = lowered_derivative(&a, e, 0);
-        let p = [3.0f32, 2.0, 0.0, 0.0];
+        let p = [3.0f32, 2.0];
         let (xv, b) = (p[0], p[0] + p[1]);
         assert_close(eval(&out, root, &p), (2.0 * xv * b - xv * xv) / (b * b), &p);
     }
@@ -1984,7 +1932,7 @@ mod dwrt_tests {
         let y = a.push_var(1);
         let e = a.push_binary(OpKind::Atan2, y, x);
         let (out, root) = lowered_derivative(&a, e, 0);
-        let p = [3.0f32, 4.0, 0.0, 0.0];
+        let p = [3.0f32, 4.0];
         let want = -p[1] / (p[0] * p[0] + p[1] * p[1]);
         assert_close(eval(&out, root, &p), want, &p);
 
@@ -1997,7 +1945,7 @@ mod dwrt_tests {
         let xx = a.push_binary(OpKind::Mul, x, x);
         let e = a.push_binary(OpKind::Atan2, xx, x);
         let (out, root) = lowered_derivative(&a, e, 0);
-        let p = [3.0f32, 0.0, 0.0, 0.0];
+        let p = [3.0f32, 0.0];
         let xv = p[0];
         let want = (xv * xv) / (xv * xv * xv * xv + xv * xv);
         assert_close(eval(&out, root, &p), want, &p);
@@ -2009,7 +1957,7 @@ mod dwrt_tests {
         let three = a.push_const(3.0);
         let e = a.push_binary(OpKind::Pow, x, three);
         let (out, root) = lowered_derivative(&a, e, 0);
-        let p = [2.0f32, 0.0, 0.0, 0.0];
+        let p = [2.0f32, 0.0];
         assert_close(eval(&out, root, &p), 3.0 * p[0] * p[0], &p);
 
         // A constant exponent leaves `dg` zero, so the general rule's
@@ -2019,7 +1967,7 @@ mod dwrt_tests {
         let x = a.push_var(0);
         let e = a.push_binary(OpKind::Pow, x, x);
         let (out, root) = lowered_derivative(&a, e, 0);
-        let p = [2.0f32, 0.0, 0.0, 0.0];
+        let p = [2.0f32, 0.0];
         let xv = p[0];
         let want = libm::powf(xv, xv) * (libm::logf(xv) + 1.0);
         // Pow expands through exp/ln polynomial fits, so hold this to the
@@ -2044,8 +1992,8 @@ mod dwrt_tests {
         // [-1, 1] for Asin/Acos, strictly positive for the logs, and nonzero
         // for Recip/Rsqrt.
         const X: f32 = 0.6;
-        let outer = [X, 0.0, 0.0, 0.0];
-        let inner = [X * X, 0.0, 0.0, 0.0];
+        let outer = [X, 0.0];
+        let inner = [X * X, 0.0];
 
         for op in [
             OpKind::Sin,
@@ -2116,11 +2064,7 @@ mod dwrt_tests {
             let (out, root) = lowered_derivative(&a, e, 0);
             // Both orderings and equality, so no arm can pass by accident of
             // the operands it was handed.
-            for p in &[
-                [1.0f32, 2.0, 0.0, 0.0],
-                [2.0f32, 1.0, 0.0, 0.0],
-                [1.0f32, 1.0, 0.0, 0.0],
-            ] {
+            for p in &[[1.0f32, 2.0], [2.0f32, 1.0], [1.0f32, 1.0]] {
                 assert_close(eval(&out, root, p), 0.0, p);
             }
         }
@@ -2171,7 +2115,7 @@ mod dwrt_tests {
                 let mut a = ExprArena::new();
                 let xv = a.push_var(0);
                 let e = a.push_unary(op, xv);
-                let pt = [x, 0.0, 0.0, 0.0];
+                let pt = [x, 0.0];
                 let got = eval(&a, e, &pt);
                 let want = reference(x);
                 assert_close_rel(got, want, &pt, TRIG_TOL);
@@ -2194,7 +2138,7 @@ mod dwrt_tests {
                 let mut a = ExprArena::new();
                 let xv = a.push_var(0);
                 let e = a.push_unary(op, xv);
-                let pt = [x, 0.0, 0.0, 0.0];
+                let pt = [x, 0.0];
                 let got = eval(&a, e, &pt);
                 let want = reference(x);
                 assert!(
@@ -2215,7 +2159,7 @@ mod dwrt_tests {
             let mut a = ExprArena::new();
             let xv = a.push_var(0);
             let e = a.push_unary(OpKind::Atan, xv);
-            let pt = [x, 0.0, 0.0, 0.0];
+            let pt = [x, 0.0];
             assert_close_rel(eval(&a, e, &pt), libm::atanf(x), &pt, LIBM_TOL);
         }
         let inverse_trig_pts = [-0.9f32, -0.5, -0.1, 0.1, 0.5, 0.9];
@@ -2223,7 +2167,7 @@ mod dwrt_tests {
             let mut a = ExprArena::new();
             let xv = a.push_var(0);
             let asin_e = a.push_unary(OpKind::Asin, xv);
-            let pt = [x, 0.0, 0.0, 0.0];
+            let pt = [x, 0.0];
             assert_close_rel(eval(&a, asin_e, &pt), libm::asinf(x), &pt, LIBM_TOL);
 
             let mut a = ExprArena::new();
@@ -2258,7 +2202,7 @@ mod dwrt_tests {
                 let mut a = ExprArena::new();
                 let xv = a.push_var(0);
                 let e = a.push_unary(op, xv);
-                let pt = [x, 0.0, 0.0, 0.0];
+                let pt = [x, 0.0];
                 let got = eval(&a, e, &pt);
                 let want = reference(x);
                 assert_close_rel(got, want, &pt, LOG_TOL);
@@ -2278,7 +2222,7 @@ mod dwrt_tests {
             let yv = a.push_var(0);
             let xv = a.push_var(1);
             let e = a.push_binary(OpKind::Atan2, yv, xv);
-            let pt = [y, x, 0.0, 0.0];
+            let pt = [y, x];
             let got = eval(&a, e, &pt);
             let want = libm::atan2f(y, x);
             assert_close_rel(got, want, &pt, LIBM_TOL);
@@ -2290,7 +2234,7 @@ mod dwrt_tests {
             let bv = a.push_var(0);
             let ev = a.push_var(1);
             let e = a.push_binary(OpKind::Pow, bv, ev);
-            let pt = [base, exp, 0.0, 0.0];
+            let pt = [base, exp];
             let got = eval(&a, e, &pt);
             let want = libm::powf(base, exp);
             assert_close_rel(got, want, &pt, LIBM_TOL);
@@ -2431,7 +2375,7 @@ mod dwrt_tests {
             let g = a.push_gather(b, gx, zero);
             let e = a.push_unary(op, g);
             let (out, root) = lowered_derivative(&a, e, 0);
-            let p = [0.0f32, 0.0, 0.0, 0.0];
+            let p = [0.0f32, 0.0];
             assert_close(eval(&out, root, &p), 0.0, &p);
         }
     }
@@ -2447,8 +2391,8 @@ mod dwrt_tests {
 
         let x = a.push_var(0);
         let y = a.push_var(1);
-        let z = a.push_var(2);
-        let root = a.push_nary(OpKind::Tuple, &[x, y, z]); // start=1, len=3
+        let i = a.push_var(4);
+        let root = a.push_nary(OpKind::Tuple, &[x, y, i]); // start=1, len=3
 
         // Any rebuild pass runs every reachable node through `copy_node` for
         // its non-matching arms; `expand_transcendentals` is the simplest
@@ -2459,7 +2403,7 @@ mod dwrt_tests {
         };
         let children = a.nary_children_slice(*start, *len);
         assert_eq!(children.len(), 3, "wrong slice length");
-        for (child, expected_var) in children.iter().zip([0u8, 1, 2]) {
+        for (child, expected_var) in children.iter().zip([0u8, 1, 4]) {
             assert!(
                 matches!(a.node(*child), ExprNode::Var(v) if *v == expected_var),
                 "child {child:?} should be Var({expected_var})"
@@ -2498,10 +2442,7 @@ mod dwrt_tests {
 
         let buf_data = [10.0f32, 20.0, 30.0, 40.0];
         let bindings = BindingTable::bind(&out, &[&buf_data[..]]).unwrap();
-        assert_eq!(
-            eval_scalar(&out, out_root, &[2.0, 0.0, 0.0, 0.0], &bindings),
-            30.0
-        );
+        assert_eq!(eval_scalar(&out, out_root, &[2.0, 0.0], &bindings), 30.0);
     }
 
     #[test]
@@ -2560,7 +2501,7 @@ mod dwrt_tests {
         // 3 + cos(X), at X = 0.5.
         let want = 3.0 + 0.5f32.cos();
         let bindings = BindingTable::empty();
-        let pt = [0.5f32, 0.0, 0.0, 0.0];
+        let pt = [0.5f32, 0.0];
         let got = eval_scalar(&out, out_root, &pt, &bindings);
         assert_close_rel(got, want, &pt, 3e-2);
     }

@@ -10,7 +10,7 @@
 //! - **Isomorphism**: `index(collapse(m), i) = m(coord(i))` (up to discretization)
 //!
 //! Nothing computes until a Lattice demands it. A single-point evaluation is
-//! just `Lattice::point` -- the degenerate case with all coordinates fixed.
+//! just `Lattice::point` -- the degenerate case with both coordinates fixed.
 //!
 //! There is one `Lattice` type, not one per shape. An axis with extent 1 is
 //! fixed at its origin; an axis with extent > 1 is a loop dimension. The
@@ -115,10 +115,10 @@ impl DiscreteManifold {
 }
 
 // ============================================================================
-// Lattice: a finite box domain over the four coordinate axes
+// Lattice: a finite box domain over the two coordinate axes
 // ============================================================================
 
-/// A finite box domain over the four coordinate axes (X, Y, Z, W).
+/// A finite box domain over the two coordinate axes (X, Y).
 ///
 /// `extent[i]` is the number of samples along axis `i`; an axis with extent 1
 /// is fixed at `origin[i]`. `origin[i]` is the coordinate of index 0 on each
@@ -127,40 +127,47 @@ impl DiscreteManifold {
 /// The shape is data, not a type: a frame, a scanline, a point, and a tensor
 /// index range are all the same `Lattice` with different extents. The JIT
 /// specializes on the extents at kernel-compile time.
+///
+/// There were four axes. Z and W had extent 1 in every production call in the
+/// tree — an axis that never varies is not an axis, it is a per-call scalar —
+/// so what they carried is a [`Uniform`](pixelflow_ir::Uniform) now
+/// (docs/plans/2026-09-06-lattice-is-the-index.md).
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Lattice {
-    /// Samples per axis: `[x, y, z, w]`. Extent 1 = fixed axis.
-    pub extent: [u32; 4],
+    /// Samples per axis: `[x, y]`. Extent 1 = fixed axis.
+    pub extent: [u32; AXES],
     /// Coordinate of index 0 on each axis.
-    pub origin: [f32; 4],
+    pub origin: [f32; AXES],
 }
 
+/// Coordinate axes a lattice has.
+pub const AXES: usize = pixelflow_ir::arena::COORD_AXES;
+
 impl Lattice {
-    /// A 2D pixel frame: X varies per pixel, Y per scanline; Z is the fixed
-    /// frame time, W is fixed at 0.
+    /// A 2D pixel frame: X varies per pixel, Y per scanline.
     #[must_use]
-    pub fn frame(width: usize, height: usize, z: f32) -> Self {
+    pub fn frame(width: usize, height: usize) -> Self {
         Self {
-            extent: [width as u32, height as u32, 1, 1],
-            origin: [0.0, 0.0, z, 0.0],
+            extent: [width as u32, height as u32],
+            origin: [0.0, 0.0],
         }
     }
 
-    /// A 1D scanline: only X varies; Y, Z, W are fixed.
+    /// A 1D scanline: only X varies; Y is fixed.
     #[must_use]
-    pub fn scanline(width: usize, y: f32, z: f32, w: f32) -> Self {
+    pub fn scanline(width: usize, y: f32) -> Self {
         Self {
-            extent: [width as u32, 1, 1, 1],
-            origin: [0.0, y, z, w],
+            extent: [width as u32, 1],
+            origin: [0.0, y],
         }
     }
 
-    /// A single point: all coordinates fixed. The degenerate (0-loop) case.
+    /// A single point: both coordinates fixed. The degenerate (0-loop) case.
     #[must_use]
-    pub fn point(x: f32, y: f32, z: f32, w: f32) -> Self {
+    pub fn point(x: f32, y: f32) -> Self {
         Self {
-            extent: [1, 1, 1, 1],
-            origin: [x, y, z, w],
+            extent: [1, 1],
+            origin: [x, y],
         }
     }
 
@@ -168,8 +175,8 @@ impl Lattice {
     #[must_use]
     pub fn index(len: usize) -> Self {
         Self {
-            extent: [len as u32, 1, 1, 1],
-            origin: [0.0; 4],
+            extent: [len as u32, 1],
+            origin: [0.0; AXES],
         }
     }
 
@@ -178,8 +185,8 @@ impl Lattice {
     #[must_use]
     pub fn index2(width: usize, height: usize) -> Self {
         Self {
-            extent: [width as u32, height as u32, 1, 1],
-            origin: [0.0; 4],
+            extent: [width as u32, height as u32],
+            origin: [0.0; AXES],
         }
     }
 
@@ -197,7 +204,7 @@ impl Lattice {
         self.len() == 0
     }
 
-    /// Bitmask of loop axes (extent > 1): bit 0 = X, 1 = Y, 2 = Z, 3 = W.
+    /// Bitmask of loop axes (extent > 1): bit 0 = X, 1 = Y.
     /// Fixed axes are constants from the kernel's point of view.
     #[must_use]
     pub fn loop_mask(&self) -> u8 {
@@ -216,26 +223,17 @@ impl Lattice {
     ///
     /// Panics if `index >= self.len()`.
     #[must_use]
-    pub fn coord(&self, index: usize) -> (f32, f32, f32, f32) {
+    pub fn coord(&self, index: usize) -> (f32, f32) {
         assert!(
             index < self.len(),
             "Lattice::coord index {} out of bounds (len = {})",
             index,
             self.len(),
         );
-        let [ex, ey, ez, _] = self.extent.map(|e| e as usize);
+        let [ex, _] = self.extent.map(|e| e as usize);
         let x = index % ex;
-        let rest = index / ex;
-        let y = rest % ey;
-        let rest = rest / ey;
-        let z = rest % ez;
-        let w = rest / ez;
-        (
-            self.origin[0] + x as f32,
-            self.origin[1] + y as f32,
-            self.origin[2] + z as f32,
-            self.origin[3] + w as f32,
-        )
+        let y = index / ex;
+        (self.origin[0] + x as f32, self.origin[1] + y as f32)
     }
 
     // ─────────────────────── collapse ────────────────────────
@@ -248,37 +246,23 @@ impl Lattice {
     /// slot it declared bound ([`Manifold::bind`](crate::Manifold::bind)).
     /// Samples are taken at `origin + index` on every axis.
     ///
-    /// The X/Y loop nest lives *inside* the emitted code, so each `(z, w)`
-    /// plane's full-width band is one call rather than one `extern "C"` call
-    /// per row or SIMD batch; a domain with Z or W extent above 1 is one such
-    /// call per plane, because a band lies in a plane. The result is a
-    /// [`DiscreteManifold`] of `width = extent[0]` rows and `height` = the
-    /// product of the remaining extents — the buffer that IS a manifold, which
-    /// closes `index(collapse(f)) = f`.
+    /// The X/Y loop nest lives *inside* the emitted code, so the whole domain
+    /// is one call rather than one `extern "C"` call per row or SIMD batch.
+    /// The result is a [`DiscreteManifold`] of `extent[0]` columns and
+    /// `extent[1]` rows — the buffer that IS a manifold, which closes
+    /// `index(collapse(f)) = f`.
     ///
     /// An empty domain collapses to an empty buffer without calling anything.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[must_use]
     pub fn collapse(&self, manifold: &manifold::BoundManifold) -> DiscreteManifold {
-        let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
+        let [ex, ey] = self.extent.map(|e| e as usize);
         let mut buffer = vec![0.0f32; self.len()];
-        let mut plane = 0usize;
-        for w in 0..ew {
-            for z in 0..ez {
-                if !self.is_empty() {
-                    let origin = [
-                        self.origin[0],
-                        self.origin[1],
-                        self.origin[2] + z as f32,
-                        self.origin[3] + w as f32,
-                    ];
-                    let band = manifold::PlaneRegion::from_origin(ex, ey, origin);
-                    manifold.collapse_rows(band, &mut buffer[plane * ey * ex..], ex);
-                }
-                plane += 1;
-            }
+        if !self.is_empty() {
+            let band = manifold::PlaneRegion::from_origin(ex, ey, self.origin);
+            manifold.collapse_rows(band, &mut buffer, ex);
         }
-        DiscreteManifold::new(buffer, ex, ey * ez * ew)
+        DiscreteManifold::new(buffer, ex, ey)
     }
 
     /// Compile a [`Kernel`](pixelflow_ir::Kernel) at this lattice's shape, bind
@@ -309,8 +293,8 @@ impl Lattice {
             // No samples, so no code: there is no lattice for the JIT to
             // specialize to, and `Manifold::compile` refuses the degenerate
             // extent rather than emitting a loop that runs zero times.
-            let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
-            return DiscreteManifold::new(Vec::new(), ex, ey * ez * ew);
+            let [ex, ey] = self.extent.map(|e| e as usize);
+            return DiscreteManifold::new(Vec::new(), ex, ey);
         }
         self.collapse(&manifold::Manifold::compile(kernel, self.extent).bind(&[]))
     }
@@ -422,7 +406,7 @@ impl BilinearSampler {
 
     /// The 4-tap blend over a buffer of these extents, as a composable
     /// fragment — read it at *computed* coordinates inside a larger kernel
-    /// with `.at(&u, &v, &z, &w)` instead of only at the caller's own.
+    /// with `.at(&u, &v)` instead of only at the caller's own.
     ///
     /// Takes extents rather than a sampler because extents are all the IR
     /// carries; the data binds later. So a program can compose against a
@@ -466,7 +450,7 @@ impl BilinearSampler {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 impl DiscreteManifold {
     /// A nearest-neighbour read of a buffer of these extents, as a composable
-    /// fragment — `.at(&idx, &row, &z, &w)` reads at *computed* indices.
+    /// fragment — `.at(&idx, &row)` reads at *computed* indices.
     ///
     /// One `Gather`, which already carries [`Self::eval`]'s semantics: floor,
     /// clamp to the declared extents, index row-major. Takes extents rather
