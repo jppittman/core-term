@@ -82,9 +82,12 @@ The `Recip` and `MulAdd` rows are the reminder that "target" is finer than
 "architecture": they differ between *ISA levels of the same machine*, which is
 what `cargo xtask isa-matrix` exists to keep honest. `Recip`/`Rsqrt` are
 estimates — only ever guaranteed close, never equal — so no argument to them is
-ever foldable; `MulAdd` is value-aware, since one rounding and two agree on most
-inputs (`mul_add(1.0000001, 4097.0, 4097.0)` is one of the inputs where they
-don't).
+ever foldable. `MulAdd` is the opposite case and is *not* fold-refused: FMA is
+available on every target, some just spell it as a multiply then an add, and
+one rounding versus two is a last-bit precision difference inside the contract
+(the emitter itself decomposes a `MulAdd` under register pressure on an FMA
+target). The folder and the oracle round once (`libm::fmaf`); a differential
+check bounds the product's rounding as tolerance rather than skipping the point.
 
 Unifying any row costs instructions — x86 has no ties-away rounding mode, and
 NaN or signed-zero blending is a compare plus a select — so none of them are
@@ -328,7 +331,6 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
 
 - **Clarity over comments** - Refactor unclear code rather than explaining it
 - **Rustdoc (`///`)** for public API, **`//`** for WHY not what
-- Guard clauses and early returns over deep nesting
 - `match` over `else if` for enums
 - Functions < 4 arguments (group into structs)
 - No boolean arguments (use enums or separate functions)
@@ -339,6 +341,71 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
   concepts want to be a module, a method on a struct, or a builder, not suffixes
   on a free function. Especially watch for an accreting family of `*_with_ctx`,
   `*_scanline`, `*_jet` variants: that's the cue to introduce the struct/builder.
+- **Fold before you dispatch** - a fold leaves fewer live possibilities than
+  it found: `if x > 0.0 { x *= -1.0 }` takes "any sign" down to
+  "non-positive", and needs no `else` because there is nothing left to say.
+  Dispatch does the opposite — it keeps every case alive, and each surviving
+  case is carried by everything downstream of it. So these are not two peers
+  with separate jobs: fold wherever the cases can be collapsed, and reach for
+  `match` (over an enum, or a trait) only for the ones that genuinely cannot
+  be. An `else` doing double duty is usually a fold that wasn't taken.
+
+  Guard clauses and early returns are this rule at function scope, and the
+  strongest fold available: a `return` doesn't collapse a case into another,
+  it deletes the case outright — and it takes the join point with it, which
+  is why `else` stops being *discouraged* in code written this way and starts
+  being unsayable. Nothing rejoins, so nothing can attach. A function reads as
+  a proof: discharge, discharge, discharge, conclude. By the last line exactly
+  one case is still inhabited, and the code handling it asks no questions
+  because every condition was already spent above it. Flat control flow is the
+  symptom of this; eliminating cases is the reason.
+
+  **Branchless is the limit**: no case survives to runtime at all, because one
+  expression is correct for every input. It is what this codebase is made of —
+  `Select` is a bitwise blend on every backend, a comparison yields a mask
+  rather than a `bool`, and the language is a DAG with no binder — so take it
+  wherever the hardware offers it. What it does not license is hand-rolling a
+  *worse* branchless form than the instruction already there: the retired
+  `Round` expansion (`(x + 0.5).floor()`, two instructions where `roundps` is
+  one, and not any IEEE rounding mode) is the worked counter-example, and
+  "Floating point at the edges" above is the long version.
+
+  Note *what* is branchless: the **denotation**, not the instruction stream.
+  `Select` is the worked example of the difference. The operation blends —
+  every lane, always — and codegen *also* emits a short-circuit branch that
+  skips computing an arm no lane selected (`emit/guards.rs`, bought only where
+  the arm outcosts `MISPREDICT_PENALTY_CYCLES`, since mask coherence is a
+  property of the data that no static analysis can know). That branch is not a
+  case: it can change the work done, never the value. Which is the payoff of
+  folding rather than an exception to it — once the meaning carries one case,
+  the compiler is free to put branches back for speed, because nothing
+  downstream has to know they exist.
+- **New implementation of an existing category → trait first** - Before
+  adding a second way of doing something the codebase already does one way,
+  check whether that category is already a trait. If it is, implement the new
+  behavior as another `impl`. If it isn't, that's the signal the first
+  implementation was written before anything needed to vary — extract a trait
+  around the existing implementation *first*, then add the new one as a
+  second `impl`. Don't grow the second implementation as a parallel free
+  function, a copy of the first, or a mode flag/enum bolted onto it. Worked
+  example already in this tree: `pixelflow-codegen`'s `RegisterAllocator`
+  trait with `LinearScan` as its one `impl` — a second allocator is a second
+  `impl RegisterAllocator`, not a fork of `LinearScan`.
+
+  This is "fold before you dispatch" at type scope, which is why the two rules
+  don't contradict each other. A case matched at twenty call sites is live at
+  all twenty; extracting a trait moves the distinction to the one point where
+  the concrete type is chosen, and every use downstream goes unconditional —
+  it calls a method rather than taking a branch. Dispatch that happens **once,
+  at construction** is not what the fold rule is warning about; dispatch
+  **repeated at every use** is. Same factoring as a guard clause, one level up:
+  put the case at the boundary so the interior is straight-line.
+
+  That also ranks the ways of varying behavior. A `match` over an enum, or a
+  monomorphized generic, settles the case at one point and leaves every use
+  unconditional. A `Box<dyn Trait>` does not — it pays the dispatch per call,
+  at every use, which is the shape this rule is against; on a hot path it is
+  usually better as one of the other two.
 
 ## Common Patterns
 

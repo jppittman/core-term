@@ -482,9 +482,10 @@ fn jit_matches_oracle_mask_root_bit_for_bit() {
 
 #[test]
 fn jit_matches_oracle_fma() {
-    // MulAdd rounds once on FMA targets and twice in the oracle; inputs where
-    // that is observable are exactly the flagged ones, and skipping them is
-    // the documented protocol.
+    // The oracle rounds once (`libm::fmaf`); an FMA target agrees bit for
+    // bit and an SSE2 target is one product-rounding away, inside
+    // `EXACT_ARITH`. No point is skipped: rounding is tolerance, not
+    // divergence.
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
@@ -499,9 +500,7 @@ fn jit_matches_oracle_fma() {
             }
         }
     }
-    assert_jit_matches_oracle("fma", &a, root, &pts, |p| {
-        OpKind::MulAdd.fold_is_platform_specific(&[p[0], p[1], p[2]])
-    });
+    assert_jit_matches_oracle("fma", &a, root, &pts, |_| false);
 }
 
 #[test]

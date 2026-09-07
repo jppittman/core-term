@@ -324,14 +324,6 @@ impl OpKind {
                 [_, count] => !(0.0..32.0).contains(count) || (*count as u32) as f32 != *count,
                 _ => false,
             },
-            // One rounding or two. `mul_add` is the single-rounding FMA every
-            // first-class target has (`vfmadd`, `FMLA`); `x * y + z` is what
-            // SSE2 emits without one. Value-aware, because they agree for most
-            // inputs and folding is worth keeping where they do.
-            Self::MulAdd => match args {
-                [x, y, z] => libm::fmaf(*x, *y, *z).to_bits() != (x * y + z).to_bits(),
-                _ => false,
-            },
             _ => false,
         }
     }
@@ -872,11 +864,16 @@ impl OpKind {
     #[must_use]
     pub fn eval_ternary(self, x: f32, y: f32, z: f32) -> Option<f32> {
         match self {
-            // Two roundings, which is what a target without FMA emits (SSE2:
-            // `mulps` then `addps`). AVX2+FMA, AVX-512 and aarch64 all round
-            // once (`vfmadd`, `FMLA`), so the answers differ by target and
-            // `fold_is_platform_specific` declines exactly where they do.
-            Self::MulAdd => Some(x * y + z),
+            // One rounding, always. `MulAdd` denotes `x*y + z`; whether a
+            // target spells it as one instruction (`vfmadd`, `FMLA`) or as a
+            // multiply and an add (SSE2, or any backend under register
+            // pressure — see `ResolvedOp::DecomposedMulAdd`) is a last-bit
+            // precision difference inside the contract, not a divergence, so
+            // it folds unconditionally. `libm::fmaf` rather than `x * y + z`
+            // because the latter is whatever the compiler that built THIS
+            // crate chose to contract it into: under `-fp-contract=fast` a
+            // fold's answer must not depend on the folder's build profile.
+            Self::MulAdd => Some(libm::fmaf(x, y, z)),
             // The bitwise blend every backend emits — `andps`/`andnps`/`orps`
             // on SSE2 and AVX2, one `vpternlogd 0xCA` on AVX-512, `BSL` on
             // aarch64. Spelling it `if x != 0.0` would be right only for a
@@ -1738,9 +1735,19 @@ mod fold_is_platform_specific {
     }
 
     #[test]
-    fn decline_to_fold_mul_add_exactly_where_fused_and_split_rounding_disagree() {
-        assert!(OpKind::MulAdd.fold_is_platform_specific(&[1.0000001, 4097.0, 4097.0]));
-        assert!(!OpKind::MulAdd.fold_is_platform_specific(&[2.0, 3.0, 4.0]));
+    fn always_fold_mul_add_and_round_it_once() {
+        // The inputs where one rounding and two disagree are the whole point:
+        // that gap is precision, inside the contract, and never blocks a fold.
+        let (a, b, c) = (1.0000001f32, 4097.0, 4097.0);
+        assert_ne!(
+            libm::fmaf(a, b, c).to_bits(),
+            (core::hint::black_box(a * b) + c).to_bits()
+        );
+        assert!(!OpKind::MulAdd.fold_is_platform_specific(&[a, b, c]));
+        assert_eq!(
+            OpKind::MulAdd.eval_ternary(a, b, c).map(f32::to_bits),
+            Some(libm::fmaf(a, b, c).to_bits())
+        );
     }
 
     #[test]
