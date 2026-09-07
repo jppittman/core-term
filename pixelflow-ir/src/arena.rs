@@ -36,6 +36,10 @@ pub const RETIRED_COORD_AXES: [u8; 2] = [2, 3];
 /// the two is the reason `Var`'s three meanings do not collide.
 pub const REDUCE_BINDER_BASE: u8 = COORD_AXES as u8 + RETIRED_COORD_AXES.len() as u8;
 
+/// How many reduction binders the index space holds, starting at
+/// [`REDUCE_BINDER_BASE`] — the depth of nested folds a kernel may carry.
+pub const REDUCE_BINDERS: u8 = 4;
+
 // ───────────────────────────────────────── ExprId ─────────────────────────────
 
 /// Index into an [`ExprArena`]. Copy, 4 bytes, no refcount.
@@ -515,9 +519,11 @@ impl ExprArena {
             combiner.is_monoid(),
             "push_reduce: {combiner:?} is not a valid reduction combiner"
         );
+        let binders = REDUCE_BINDER_BASE..REDUCE_BINDER_BASE + REDUCE_BINDERS;
         assert!(
-            (4..8).contains(&reduce_var),
-            "push_reduce: reduce_var {reduce_var} out of range (must be 4..8)"
+            binders.contains(&reduce_var),
+            "push_reduce: reduce_var {reduce_var} out of range (must be {:?})",
+            binders
         );
         let c = self.push_const(combiner.index() as f32);
         let v = self.push_const(reduce_var as f32);

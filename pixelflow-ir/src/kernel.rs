@@ -89,6 +89,7 @@ impl Drop for BinderScope {
 ///
 /// Panics when all four slots are live, i.e. a fifth nested reduction.
 fn lowest_free_index_slot(arena: &ExprArena) -> u8 {
+    const BINDER_BASE: usize = crate::arena::REDUCE_BINDER_BASE as usize;
     let mut used = [false; 4];
     for node in arena.nodes_raw() {
         let ExprNode::Nary(OpKind::Reduce, start, len) = node else {
@@ -96,16 +97,29 @@ fn lowest_free_index_slot(arena: &ExprArena) -> u8 {
         };
         let children = arena.nary_children_slice(*start, *len);
         // Child 1 is the bound index, stored as a `Const` slot number.
+        // `checked_sub`, not `- BASE`: a slot number below the base is a
+        // retired axis or a coordinate, and subtracting past zero would wrap
+        // in release, make `get_mut` return `None`, and leave a live binder's
+        // bit unmarked — so this would hand out an index already in use and
+        // two nested reductions would silently share a slot.
         if let Some(ExprNode::Const(v)) = children.get(1).map(|id| arena.node(*id))
-            && let Some(bit) = used.get_mut(*v as usize - 4)
+            && let Some(slot) = (*v as usize).checked_sub(BINDER_BASE)
+            && let Some(bit) = used.get_mut(slot)
         {
             *bit = true;
         }
     }
     used.iter()
         .position(|u| !u)
-        .map(|i| i as u8 + 4)
-        .expect("more than 4 live nested reductions: the index space is 4..8")
+        .map(|i| i as u8 + crate::arena::REDUCE_BINDER_BASE)
+        .unwrap_or_else(|| {
+            panic!(
+                "more than {} live nested reductions: the index space is {}..{}",
+                used.len(),
+                BINDER_BASE,
+                BINDER_BASE + used.len()
+            )
+        })
 }
 
 /// The algebra a reduction folds under: an associative combining operation
