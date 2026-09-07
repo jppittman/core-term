@@ -121,6 +121,10 @@ These points are particularly relevant when working with or generating code usin
         }
         ```
 
+    **Branchless is the limit of this rule.** A fold reduces the live cases; branchless removes them from runtime entirely, because one expression is correct for every input. It is what pixelflow itself is built out of — `Select` is a bitwise blend on every backend, a comparison yields an all-ones mask rather than a `bool`, and the language is a DAG with no iteration binder — so take it wherever the hardware offers it.
+
+    The one thing it does not license is hand-rolling a *worse* branchless form than the instruction already sitting there. The retired `Round` expansion is the worked counter-example: `(x + 0.5).floor()` is two instructions where `roundps` is one, and it isn't any IEEE rounding mode either. Slower *and* wrong is never the trade. See "Floating point at the edges" in `CLAUDE.md`.
+
 ## Functions and APIs
 
 1.  **Argument Management (Count & Grouping):** Functions should generally take fewer than 4 arguments. More arguments often indicate a function is trying to do too much or that arguments could be better organized. Group multiple related arguments into a single struct to improve clarity, reduce the argument count, and make function signatures more manageable, especially if the same group of arguments is passed to multiple functions.
@@ -256,6 +260,10 @@ These points are particularly relevant when working with or generating code usin
     * **If a trait exists:** implement the new behavior as another `impl` of it — that's the whole task.
     * **If it doesn't:** a single concrete implementation with no trait means nothing has needed to vary yet. That's not a green light to bolt the second case on however is quickest — extract a trait around the existing implementation *first*, then add the new implementation as a second `impl`. Don't grow the second implementation as a parallel free function, a copy-pasted module, or a mode flag/`enum` wedged into the first one's signature — each of those is a case pretending not to be one, and the next reader has to rediscover the trait that should have been written down.
     * **Worked example already in this tree:** `pixelflow-codegen`'s register allocation. `RegisterAllocator` is a trait with one required method (`allocate_nest`); `LinearScan` is its one `impl`. A second allocator — a Sethi-Ullman variant, say — is added as a second `impl RegisterAllocator`, not as a fork of `LinearScan`'s internals or a flag that changes its behavior in place.
+
+    **This is "Fold Before You Dispatch" (Code Structure, rule 3) at type scope**, which is why the two do not contradict each other despite one of them being named "dispatch". A case matched at twenty call sites is live at all twenty. Extracting a trait moves that distinction to the single point where the concrete type is chosen, and every use downstream becomes unconditional — it calls a method rather than taking a branch. Dispatch that happens **once, at construction** is not what rule 3 warns against; dispatch **repeated at every use** is.
+
+    So all three are one factoring at different scopes: a guard clause puts the case at the top of a function so the body is straight-line; a trait puts it at construction so the call sites are straight-line; branchless removes it altogether. In each, the case is moved to a boundary — or deleted — so that the interior asks no questions.
 
 ## Flexibility
 

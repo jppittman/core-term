@@ -356,6 +356,16 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
   one case is still inhabited, and the code handling it asks no questions
   because every condition was already spent above it. Flat control flow is the
   symptom of this; eliminating cases is the reason.
+
+  **Branchless is the limit**: no case survives to runtime at all, because one
+  expression is correct for every input. It is what this codebase is made of —
+  `Select` is a bitwise blend on every backend, a comparison yields a mask
+  rather than a `bool`, and the language is a DAG with no binder — so take it
+  wherever the hardware offers it. What it does not license is hand-rolling a
+  *worse* branchless form than the instruction already there: the retired
+  `Round` expansion (`(x + 0.5).floor()`, two instructions where `roundps` is
+  one, and not any IEEE rounding mode) is the worked counter-example, and
+  "Floating point at the edges" above is the long version.
 - **New implementation of an existing category → trait first** - Before
   adding a second way of doing something the codebase already does one way,
   check whether that category is already a trait. If it is, implement the new
@@ -367,6 +377,15 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
   example already in this tree: `pixelflow-codegen`'s `RegisterAllocator`
   trait with `LinearScan` as its one `impl` — a second allocator is a second
   `impl RegisterAllocator`, not a fork of `LinearScan`.
+
+  This is "fold before you dispatch" at type scope, which is why the two rules
+  don't contradict each other. A case matched at twenty call sites is live at
+  all twenty; extracting a trait moves the distinction to the one point where
+  the concrete type is chosen, and every use downstream goes unconditional —
+  it calls a method rather than taking a branch. Dispatch that happens **once,
+  at construction** is not what the fold rule is warning about; dispatch
+  **repeated at every use** is. Same factoring as a guard clause, one level up:
+  put the case at the boundary so the interior is straight-line.
 
 ## Common Patterns
 
