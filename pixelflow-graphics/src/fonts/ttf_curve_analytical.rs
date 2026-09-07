@@ -36,6 +36,36 @@ const MIN_GRADIENT: f32 = 1e-3;
 /// is ~1e-6 font units. The `disc >= 0` gate still rejects non-intersections.
 const MIN_DISC: f32 = 1e-12;
 
+/// Half-width of the band around `disc == 0` in which a crossing contributes
+/// nothing, in ulps of the magnitudes the discriminant is assembled from.
+///
+/// `disc = Y·4ay + (by² − 4ay·cy)` decides, by its sign, whether a segment is
+/// crossed at all — a whole crossing of winding. On the row where an outline
+/// reaches a local Y-extremum at an on-curve point, `disc` is within an ulp of
+/// zero for *both* segments meeting there, each assembled by a different
+/// rounding of a different expression. They disagree; one crossing survives
+/// uncancelled; the glyph grows a half-covered smear. Ramping the contribution
+/// to zero across the band makes the answer near a tangency independent of how
+/// `disc` rounded — and the true answer there is zero anyway, because the two
+/// segments cancel.
+///
+/// **The value is bounded from both sides by measurement, not chosen.**
+/// Below, by the mechanism: `quad_tangency_winding`'s residual falls as `1/K`
+/// (0.59 at 1, 0.14 at 16, 0.035 at 64, 0.018 at 128) and crosses the
+/// test's 1e-2 bound between 128 and 256. Above, by an independent
+/// rasterizer: FreeType agrees with us on the same 10 texels and disagrees on
+/// the same 60 for every `K` from 1 to 16384, with total L1 over 6 glyphs ×
+/// 8 sizes varying by 0.02% across that whole range. So the choice provably
+/// does not matter over four orders of magnitude; 1024 sits with 4x margin
+/// over the lower bound and 16x under the largest value measured.
+///
+/// There is no companion cap on the band's width in `Y`. One was tried, on
+/// the theory that a nearly-linear quadratic (`|ay| → 0`) would give a
+/// macroscopic band; the oracle showed it inert from 1e-4 to 1e9, and it is
+/// unnecessary by construction — such a segment's tangent row lies far outside
+/// `t ∈ [0, 1]`, so `disc` there is `≈ by²` and the ramp saturates to 1.
+const DISC_BAND_ULPS: f32 = 1024.0;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Line Segment (Ray-Crossing Winding)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -166,6 +196,8 @@ pub struct AnalyticalQuad {
     neg_b_2a: f32,
     disc_const: f32, // by^2 - 4*ay*cy
     disc_slope: f32, // 4*ay (discriminant = disc_slope*Y + disc_const)
+    // Width of the band around `disc == 0` in which no crossing is counted.
+    disc_band: f32,
     // Degenerate quadratic (actually a line)
     is_linear: bool,
 }
@@ -187,6 +219,18 @@ impl AnalyticalQuad {
         let neg_b_2a = -by * inv_2ay;
         let disc_const = by * by - 4.0 * ay * cy;
         let disc_slope = 4.0 * ay;
+        // The tangent row, read off the control points where it is one of
+        // them, so two segments meeting at a shared extremum centre the band
+        // on the same Y rather than on two roundings of it.
+        let tangent_row = if y0 == y1 {
+            y0
+        } else if y1 == y2 {
+            y2
+        } else {
+            y0 - by * by / (4.0 * ay)
+        };
+        let disc_band =
+            DISC_BAND_ULPS * f32::EPSILON * ((disc_slope * tangent_row).abs() + disc_const.abs());
 
         Self {
             ax,
@@ -199,6 +243,7 @@ impl AnalyticalQuad {
             neg_b_2a,
             disc_const,
             disc_slope,
+            disc_band,
             is_linear,
         }
     }
@@ -242,7 +287,8 @@ impl AnalyticalQuad {
                      disc_const: f32,
                      disc_slope: f32,
                      min_grad: f32,
-                     min_disc: f32| {
+                     min_disc: f32,
+                     disc_band: f32| {
                 let disc = Y * disc_slope + disc_const;
                 // max(min_disc) keeps sqrt finite (value AND derivative) at the
                 // tangent point; disc >= 0 below still gates validity.
@@ -287,7 +333,13 @@ impl AnalyticalQuad {
                 // (unclamped) discriminant.
                 let contrib_plus = valid_plus.select(cov_plus * sign_plus, V(0.0));
                 let contrib_minus = valid_minus.select(cov_minus * sign_minus, V(0.0));
-                disc.ge(0.0).select(contrib_plus + contrib_minus, V(0.0))
+                // Zero across the band where `disc`'s sign is its own rounding
+                // rather than a fact about the geometry — not merely where it
+                // is negative. `disc >= 0` was the old test, and it is exactly
+                // the comparison that cannot be made to agree between the two
+                // segments of a shared extremum.
+                let reach = (disc * (1.0 / disc_band)).max(0.0).min(1.0);
+                (contrib_plus + contrib_minus) * reach
             })(
                 self.ax,
                 self.bx,
@@ -300,6 +352,7 @@ impl AnalyticalQuad {
                 self.disc_slope,
                 MIN_GRADIENT,
                 MIN_DISC,
+                self.disc_band,
             )
         }
     }

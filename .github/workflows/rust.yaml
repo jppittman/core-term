@@ -733,3 +733,55 @@ jobs:
 
       - name: cargo check -p pixelflow-search --no-default-features
         run: cargo check -p pixelflow-search --no-default-features
+
+  # An EXTERNAL bound on glyph rendering, and the only one we have. Every
+  # other glyph check compares us to ourselves -- JIT against interpreter on
+  # one arena, optimized arena against raw, this release against a corpus
+  # minted from the last one -- and CLAUDE.md states the limit of that: a
+  # same-form check cannot see a shared-definition bug. That is not
+  # hypothetical here. A spurious half-covered smear four texels wide sat
+  # outside '8' at 19px, agreed on by our raw arena, our goldens and our
+  # corpus alike, and nothing in the blocking set could see it; FreeType
+  # found it immediately.
+  #
+  # Informational because it needs a system libfreetype, not because the
+  # signal is weak -- it is the strongest signal here. The assertion is
+  # topological (where the ink is, within one texel), never a comparison of
+  # antialiasing values, which would fail for reasons that are not bugs.
+  freetype-oracle:
+    name: FreeType glyph oracle (informational, non-blocking)
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-
+
+      - name: Install FreeType
+        run: sudo apt-get update && sudo apt-get install -y libfreetype6-dev libfontconfig1-dev
+
+      - name: cargo test -p pixelflow-graphics --features freetype --test freetype_oracle
+        run: cargo test --release -p pixelflow-graphics --features freetype --test freetype_oracle
