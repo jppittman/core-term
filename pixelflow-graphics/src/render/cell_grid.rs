@@ -444,6 +444,17 @@ mod tests {
     /// A real miscompile — a lost channel, a swapped lane, a wrong cell —
     /// moves a byte by far more than one step, and the exact half below would
     /// catch it outright.
+    ///
+    /// **The tolerant clause rests on one pixel.** As written, the 401x197
+    /// fixture differs on exactly **1 of 78,997**, and nothing asserts that it
+    /// differs at all — an assertion that it must would fail on an
+    /// improvement, which is the wrong way round. So read `0 of 78997` in the
+    /// output below as **coverage lapsed**, not as the invariant tightening:
+    /// it means extraction happened to coincide again and the ±1 clause is no
+    /// longer exercised by anything. The data matters as much as the metric
+    /// here — a two-tile atlas of 0, ½ and 1 puts no packed byte near a
+    /// rounding boundary and reports 0 whatever the schedule does, which is
+    /// why this fixture carries its own.
     #[test]
     fn packed_bake_agrees_with_channel_bakes_under_both_byte_orders() {
         // Two fixtures. The small one is tiny_scene's 8×4 grid in a 12×6
@@ -544,18 +555,27 @@ mod tests {
     }
 
     /// **The restricted collapse writes exactly its own columns.** A grid
-    /// that covers its frame at an ODD width is the case `RowTail::Exact`
-    /// exists for: the row's final batch is partial at every ISA level (21 is
-    /// no multiple of 4, 8 or 16), and `collapse_rows`' overhang policy —
-    /// "the caller owns the padding" — would put the tail's spare lanes in
-    /// whatever lies past the band.
+    /// that covers its frame is the case `RowTail::Exact` exists for:
+    /// `collapse_rows`' overhang policy — "the caller owns the padding" —
+    /// would put the final batch's spare lanes in whatever lies past the
+    /// band, and here that is a sentinel this test owns rather than padding
+    /// nobody reads.
     ///
-    /// Given a stride wider than the frame, those lanes are a sentinel this
-    /// test owns; swapping `collapse_subrect` for `collapse_rows` clobbers
-    /// it. Without an odd width nothing here fires, and every other fixture in
-    /// this module has a grid narrower than its frame, where an overhang
-    /// lands in border columns that are painted over immediately afterwards
-    /// and so cannot be seen at all.
+    /// **The discriminating quantity is the STRIDE, not the width.**
+    /// `BandPlan` only overhangs when `stride >= batches · BATCH_LANES`, so a
+    /// stride chosen against one vector width silently stops discriminating
+    /// at another: at width 21, a stride of 24 admits the overhang at 4 lanes
+    /// (`6·4 = 24`) and at 8 (`3·8 = 24`) but not at 16 (`2·16 = 32 > 24`),
+    /// where `Absorbs` falls through to the same row count as `Exact` and the
+    /// mutation is invisible. A stride of 40 clears `batches · BATCH_LANES`
+    /// at 4, 8 and 16 lanes alike. An odd width is still needed — the batch
+    /// must be partial for there to be spare lanes at all — but it is not
+    /// sufficient, and reasoning about it alone is what left this test
+    /// certifying nothing at AVX-512.
+    ///
+    /// Every other fixture in this module has a grid narrower than its frame,
+    /// where an overhang lands in border columns that are painted over
+    /// immediately afterwards and so cannot be seen at all.
     #[test]
     fn a_grid_that_covers_its_frame_writes_no_further_than_the_frame() {
         const SENTINEL: u32 = 0xdead_beef;
@@ -599,7 +619,8 @@ mod tests {
         );
         let frame = program.frame(&params, cells, Arc::new(two_tile_atlas(0.5)));
 
-        let stride = 24;
+        // 40, not 24: see the discriminating-quantity paragraph above.
+        let stride = 40;
         let mut plane = vec![SENTINEL; 5 * stride];
         frame.collapse_rows(whole(21, 5), &mut plane, stride);
         for row in 0..5 {

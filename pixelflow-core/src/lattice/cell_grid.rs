@@ -164,6 +164,18 @@ impl CellGridMetrics {
     /// Panics on a non-positive or non-finite cell extent, density or scale;
     /// on a cell extent or scale whose reciprocal is not finite; and on a
     /// tile with no content, which denotes a cell that can show nothing.
+    ///
+    /// **This does not close the metric space, and should not be read as
+    /// doing so.** The tile extents have a lower bound here and no upper one,
+    /// because the bound that matters — `tile_w <= atlas_width` — is a fact
+    /// about the *shape*, which a metric-local check cannot see. A `tile_w`
+    /// larger than the atlas is accepted, its `tile_w + ½` clamp never binds,
+    /// and a cell wider than its tile walks into the adjacent slot's content:
+    /// exactly the failure `cells_wider_than_their_tile_fade_to_background`
+    /// says the clamp prevents, arriving as a plausible wrong picture rather
+    /// than a crash. Refusing it belongs where the shape is in hand —
+    /// `assert_compilable` or [`CellGridShape::grid_extent`]'s callers — and
+    /// is not done yet.
     fn assert_writable(&self) {
         let finite_positive = |v: f32| v.is_finite() && v > 0.0;
         assert!(
@@ -1363,8 +1375,15 @@ mod tests {
 
     /// One configuration of `the_border_range_agrees_with_the_mask_it_replaced`.
     struct MaskCase {
-        shape: CellGridShape,
-        metrics: CellGridMetrics,
+        cols: u32,
+        rows: u32,
+        cell_w: f32,
+        cell_h: f32,
+        /// Device pixels per point. The one axis of this fixture that the
+        /// rest of the module never varies.
+        scale: f32,
+        frame_w: u32,
+        frame_h: u32,
         /// The grid extent this case must produce, stated rather than
         /// derived — a case whose expected value came from the code under
         /// test would pin nothing.
@@ -1372,35 +1391,22 @@ mod tests {
     }
 
     impl MaskCase {
-        #[allow(clippy::too_many_arguments)]
-        const fn new(
-            cols: u32,
-            rows: u32,
-            cell_w: f32,
-            cell_h: f32,
-            scale: f32,
-            frame_w: u32,
-            frame_h: u32,
-            grid: [u32; 2],
-        ) -> Self {
-            Self {
-                shape: CellGridShape {
-                    cols,
-                    rows,
-                    frame_w,
-                    frame_h,
-                    atlas_width: TINY_SHAPE.atlas_width,
-                    atlas_height: TINY_SHAPE.atlas_height,
-                },
-                metrics: CellGridMetrics {
-                    cell_w,
-                    cell_h,
-                    scale,
-                    density: TINY_METRICS.density,
-                    tile_w: TINY_METRICS.tile_w,
-                    tile_h: TINY_METRICS.tile_h,
-                },
-                grid,
+        fn shape(&self) -> CellGridShape {
+            CellGridShape {
+                cols: self.cols,
+                rows: self.rows,
+                frame_w: self.frame_w,
+                frame_h: self.frame_h,
+                ..TINY_SHAPE
+            }
+        }
+
+        fn metrics(&self) -> CellGridMetrics {
+            CellGridMetrics {
+                cell_w: self.cell_w,
+                cell_h: self.cell_h,
+                scale: self.scale,
+                ..TINY_METRICS
             }
         }
     }
@@ -1419,7 +1425,7 @@ mod tests {
     /// |---|---|---|
     /// | integral | 12 x 8 | the ordinary case; a border on both axes |
     /// | fractional | 17 x 12 | **the `− ½`**: the grid spans `[0, 17.5)`, so pixel 17 (centre 17.5) is outside, and a range computed as `ceil(g)` would claim it. Also a claim width that is no multiple of any SIMD batch, so `RowTail::Exact`'s scratch path is live. |
-    /// | fractional, scaled | 33 x 15 | the same, with the display contramap in the product — `cols · cell_w · scale` fractional through `scale` |
+    /// | fractional through the scale | 22 x 11 | the same, with the display contramap carrying it: `3 · 5 · 1.5 = 22.5` is fractional though every cell extent on X is integral, and `3 · 2.5 · 1.5 = 11.25` is fractional in both. **Both axes discriminate** — `ceil(g)` gives 23 x 12. At `scale = 2.0`, which this case had first, both products came out integral and it pinned nothing about the half-pixel however fractional its cell extents looked. |
     /// | grid past the frame | 15 x 11 | the clip to the frame, with no border at all |
     ///
     /// Without the fractional rows this test — and every other fixture in
@@ -1429,20 +1435,58 @@ mod tests {
     #[test]
     fn the_border_range_agrees_with_the_mask_it_replaced() {
         let cases = [
-            MaskCase::new(3, 2, 4.0, 4.0, 1.0, 15, 11, [12, 8]),
-            MaskCase::new(5, 5, 3.5, 2.5, 1.0, 24, 20, [17, 12]),
-            MaskCase::new(3, 3, 5.5, 2.5, 2.0, 40, 18, [33, 15]),
-            MaskCase::new(4, 4, 4.0, 4.0, 1.0, 15, 11, [15, 11]),
+            MaskCase {
+                cols: 3,
+                rows: 2,
+                cell_w: 4.0,
+                cell_h: 4.0,
+                scale: 1.0,
+                frame_w: 15,
+                frame_h: 11,
+                grid: [12, 8],
+            },
+            MaskCase {
+                cols: 5,
+                rows: 5,
+                cell_w: 3.5,
+                cell_h: 2.5,
+                scale: 1.0,
+                frame_w: 24,
+                frame_h: 20,
+                grid: [17, 12],
+            },
+            MaskCase {
+                cols: 3,
+                rows: 3,
+                // Integral on X, fractional on Y, and a fractional scale over
+                // both: `3 · 5 · 1.5 = 22.5` is fractional through the
+                // contramap ALONE, which is what this case is here to say.
+                // At `scale = 2.0` — what this case had before — every
+                // product came out integral and it pinned nothing about the
+                // half-pixel however fractional its cell extents looked.
+                cell_w: 5.0,
+                cell_h: 2.5,
+                scale: 1.5,
+                frame_w: 40,
+                frame_h: 18,
+                grid: [22, 11],
+            },
+            MaskCase {
+                cols: 4,
+                rows: 4,
+                cell_w: 4.0,
+                cell_h: 4.0,
+                scale: 1.0,
+                frame_w: 15,
+                frame_h: 11,
+                grid: [15, 11],
+            },
         ];
         for case in cases {
-            let MaskCase {
-                shape,
-                metrics,
-                grid: want_grid,
-            } = case;
-            let (cols, rows) = (shape.cols, shape.rows);
-            let (cell_w, cell_h, scale) = (metrics.cell_w, metrics.cell_h, metrics.scale);
-            let (frame_w, frame_h) = (shape.frame_w, shape.frame_h);
+            let (shape, metrics, want_grid) = (case.shape(), case.metrics(), case.grid);
+            let (cols, rows) = (case.cols, case.rows);
+            let (cell_w, cell_h, scale) = (case.cell_w, case.cell_h, case.scale);
+            let (frame_w, frame_h) = (case.frame_w, case.frame_h);
             let default_bg = [0.9, 0.8, 0.7, 0.6];
             let cells: Vec<f32> = (0..(cols * rows))
                 .flat_map(|i| {
