@@ -8,6 +8,16 @@ use pixelflow_graphics::fonts::{text, text_union, CachedText, Font, GlyphCache};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
+/// `text`/`text_union` return convention-agnostic kernels (raw glyph space);
+/// the pixel-center convention is a contramap the caller applies, same as a
+/// raw glyph kernel would.
+fn pixel_centered(k: &Kernel) -> Kernel {
+    k.at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    )
+}
+
 // ============================================================================
 // PixelFlow Kernel Rendering Benchmarks
 // ============================================================================
@@ -21,7 +31,7 @@ fn bench_pixelflow_single_char(c: &mut Criterion) {
     // measure the tabulation (the per-frame cost).
     for (label, ch) in [("A_linear", 'A'), ("O_quadratic", 'O'), ("S_complex", 'S')] {
         group.bench_function(label, |b| {
-            let kernel = text(&font, &ch.to_string(), 32.0);
+            let kernel = pixel_centered(&text(&font, &ch.to_string(), 32.0));
             let lattice = Lattice::frame(40, 45);
 
             b.iter(|| black_box(lattice.bake(black_box(&kernel))));
@@ -53,7 +63,7 @@ fn bench_pixelflow_text_sizes(c: &mut Criterion) {
 
         // The range encoding: one kernel, every pixel evaluating every glyph.
         group.bench_with_input(BenchmarkId::new("sum", length), &length, |b, _| {
-            let kernel = text(&font, &text_str, 16.0);
+            let kernel = pixel_centered(&text(&font, &text_str, 16.0));
             b.iter(|| black_box(lattice.bake(black_box(&kernel))));
         });
 
@@ -79,7 +89,7 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
     group.bench_function("uncached_HELLO", |b| {
         let lattice = Lattice::frame(100, 30);
         b.iter(|| {
-            let kernel = text(&font, "HELLO", 20.0);
+            let kernel = pixel_centered(&text(&font, "HELLO", 20.0));
             black_box(lattice.bake(&kernel));
         });
     });
@@ -94,12 +104,7 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
         let mut cache = GlyphCache::new();
         let cached = CachedText::new(&font, &mut cache, "HELLO", 20.0, 1.0);
         let lattice = Lattice::frame(100, 30);
-        // Pixel-center convention, applied as a contramap: `CachedText`
-        // queries in point space with no coordinate frame of its own.
-        let centered = cached.kernel().at(
-            &Kernel::x().add(&Kernel::constant(0.5)),
-            &Kernel::y().add(&Kernel::constant(0.5)),
-        );
+        let centered = pixel_centered(&cached.kernel());
         let bound = Manifold::compile(&centered, lattice.extent).bind(&cached.bindings());
 
         b.iter(|| black_box(lattice.collapse(black_box(&bound))));

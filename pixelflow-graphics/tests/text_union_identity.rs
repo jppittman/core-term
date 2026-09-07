@@ -70,9 +70,9 @@ const SIZES_FULL: [f32; 4] = [12.0, 16.0, 20.0, 32.0];
 const SUPPORT_SIZES_FAST: [f32; 1] = [20.0];
 const SUPPORT_SIZES_FULL: [f32; 3] = [12.0, 20.0, 48.0];
 
-/// A frame wide enough for the string. `text`/`text_union` bake the
-/// sample-center convention into their own kernels now (`layout`), so the
-/// frame is a plain index — no origin to carry it.
+/// A frame wide enough for the string. `text`/`text_union` are
+/// convention-agnostic (raw glyph space); the frame is a plain index with no
+/// coordinate frame of its own to carry a sampling convention either way.
 fn frame(text_str: &str, size: f32) -> Lattice {
     let columns = text_str.chars().count().max(1) as f32;
     Lattice::frame(
@@ -81,12 +81,25 @@ fn frame(text_str: &str, size: f32) -> Lattice {
     )
 }
 
-/// One cell of the decomposition, baked on its own: the range's own extent,
-/// collapsed starting at the range's own index — exactly the per-summand step
-/// [`Union`] performs, exposed here so a cell can be compared against the
-/// union it came from.
+/// The pixel-center contramap `text_union` applies once per cell, and that
+/// `text`'s callers apply once over the whole sum — the same convention,
+/// applied at the two different points the two encodings need it.
+fn pixel_centered(k: &Kernel) -> Kernel {
+    k.at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    )
+}
+
+/// One cell of the decomposition, baked on its own at pixel centers: the
+/// range's own extent, collapsed starting at the range's own index — the same
+/// per-summand step [`Union`] performs, exposed here so a cell can be
+/// compared against the union it came from. Matches `text_union`'s own
+/// per-cell contramap, not `layout`'s (`layout` stays in raw glyph space).
 fn cell_baked(cell: &TextCell) -> Vec<f32> {
-    cell.range.bake(&Kernel::sum(&cell.glyphs)).into_buffer()
+    cell.range
+        .bake(&pixel_centered(&Kernel::sum(&cell.glyphs)))
+        .into_buffer()
 }
 
 /// Samples that differ, and by how much.
@@ -279,7 +292,7 @@ fn the_union_only_moves_a_sample_by_scheduling_noise(font: &Font, corpus: &[&str
     for text_str in corpus {
         for &size in sizes {
             let lattice = frame(text_str, size);
-            let whole = lattice.bake(&text(font, text_str, size));
+            let whole = lattice.bake(&pixel_centered(&text(font, text_str, size)));
             let united = text_union(font, lattice, text_str, size).bake();
             let split = split_and_added(font, lattice, text_str, size);
 
@@ -340,7 +353,9 @@ fn a_cell_that_takes_every_glyph_agrees_exactly() {
         for size in [16.0f32, 48.0] {
             let lattice = frame(text_str, size);
             let (differing, worst) = compare(
-                lattice.bake(&text(&font, text_str, size)).buffer(),
+                lattice
+                    .bake(&pixel_centered(&text(&font, text_str, size)))
+                    .buffer(),
                 text_union(&font, lattice, text_str, size).bake().buffer(),
             );
             assert_eq!(

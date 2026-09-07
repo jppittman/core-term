@@ -80,7 +80,11 @@ fn regression_line_x_intersection_test() {
 #[test]
 fn regression_glyph_ascent_offset() {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
-    let kernel = text(&font, "A", 100.0);
+    // `text` is convention-agnostic; land on pixel centers as a contramap.
+    let kernel = text(&font, "A", 100.0).at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    );
 
     let (width, height) = (80u32, 120u32);
     let baked = Lattice::frame(width as usize, height as usize).bake(&kernel);
@@ -106,7 +110,11 @@ fn regression_glyph_ascent_offset() {
 #[test]
 fn regression_text_rendering_pipeline() {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
-    let kernel = text(&font, "HELLO", 20.0);
+    // `text` is convention-agnostic; land on pixel centers as a contramap.
+    let kernel = text(&font, "HELLO", 20.0).at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    );
 
     let (width, height) = (100u32, 30u32);
     let baked = Lattice::frame(width as usize, height as usize).bake(&kernel);

@@ -31,36 +31,35 @@
 //! [`Support`]: super::ttf::Support
 
 use super::ttf::{Font, Support};
+use super::PIXEL_CENTER;
 use pixelflow_core::{IndexRange, Kernel, Lattice, Union};
 
-/// The rasterizer's pixel-center convention: pixel `(i, j)` is sampled at
-/// `(i + PIXEL_CENTER, j + PIXEL_CENTER)` — the same convention
-/// `manifold.rs`'s `SAMPLE_CENTER` and `cache.rs`'s `TEXEL_CENTER` name for
-/// their own domains, restated here because `layout` needs it baked into
-/// every placed glyph.
-///
-/// Before L2 this arrived for free: the ambient `Lattice` an unshifted glyph
-/// was baked over carried the ½ as its own `origin`, invisible to the glyph
-/// kernels themselves. A `Lattice` is a pure index now, so a `text_union`
-/// summand — collapsed at its own raw index range, with no coordinate frame
-/// to inherit — would sample at the wrong point unless the ½ travels with
-/// the kernel. `text`'s sum and `text_union`'s cells share one placement
-/// ([`layout`]), so both get it from here alike, and [`text_cells`]' own
-/// column math uses the same constant to stay in agreement with what it cuts.
-const PIXEL_CENTER: f32 = 0.5;
+// `PIXEL_CENTER` (this crate's shared rasterizer convention) is used by
+// `text_cells`' own column-cut math to decide which columns a glyph's
+// support reaches, and by `text_union` to place each cell's kernel where a
+// caller sampling at pixel centers expects it.
+//
+// `layout` itself stays in raw glyph space and does **not** apply it: `text`
+// and `text_union` are convention-agnostic composable `Kernel` values, same
+// as any other kernel in the language (`text(..).at(&(X * 0.5), &Y)` scales,
+// exactly as composing any other kernel would). A caller that wants pixel
+// centers applies this contramap itself — `text_union` does so once per
+// cell, since a `Union` summand collapses by pure index with no coordinate
+// frame of its own to lend it; `text`'s callers do the same over the whole
+// sum.
 
-/// Lay out uncached analytical text as a single coverage [`Kernel`].
+/// Lay out uncached analytical text as a single coverage [`Kernel`], in raw
+/// glyph space.
 ///
 /// Advance-based (kerning-free) layout: each glyph is scaled to `size` and
 /// contramapped by the accumulated advance. Antialiasing comes from the glyph
 /// kernels' `Dwrt` ramps at bake.
 ///
 /// This is the denotation — the function a laid-out string *is*. Rendering it
-/// over a whole frame is what [`text_union`] does faster.
-///
-/// The returned kernel already samples at the rasterizer's pixel centers
-/// (`X`, `Y` name the pixel index, not its continuous coordinate) — bake it
-/// straight over a [`Lattice::frame`] with no further shift.
+/// over a whole frame is what [`text_union`] does faster. Like any other
+/// `Kernel`, it carries no coordinate frame: a caller wanting pixel-center
+/// sampling applies `.at(&(X + 0.5), &(Y + 0.5))` before baking, same as a
+/// raw glyph kernel would.
 #[must_use]
 pub fn text(font: &Font, text_str: &str, size: f32) -> Kernel {
     let terms: Vec<Kernel> = layout(font, text_str, size)
@@ -84,14 +83,23 @@ pub fn text(font: &Font, text_str: &str, size: f32) -> Kernel {
 /// supports stay in their own cells, which is what a monospace face
 /// guarantees.
 ///
-/// Each cell's kernel samples at pixel centers, same as [`text`] — baked in
-/// by [`layout`], not by `lattice`, which is a pure index and carries no
-/// coordinate frame to lend it.
+/// Each cell's kernel is placed at pixel centers — a `.at(&(X + ½), &(Y +
+/// ½))` contramap applied once per cell here, not in `layout`, because a
+/// `Union` summand collapses by pure index and `lattice` carries no
+/// coordinate frame to lend it. This is the one place [`text`] and
+/// `text_union` genuinely differ in *how* they reach a number (`text`'s
+/// caller applies the same contramap over the whole sum instead) — they
+/// still agree bit for bit given the same convention, since summing before
+/// or after one shared contramap is the same value.
 #[must_use]
 pub fn text_union(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> Union {
     let mut union = Union::over(lattice);
     for cell in text_cells(font, lattice, text_str, size) {
-        union.place(cell.range, &Kernel::sum(&cell.glyphs));
+        let centered = Kernel::sum(&cell.glyphs).at(
+            &Kernel::x().add(&Kernel::constant(PIXEL_CENTER)),
+            &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
+        );
+        union.place(cell.range, &centered);
     }
     union
 }
@@ -211,18 +219,9 @@ fn layout<'a>(
             None => (Kernel::constant(0.0), Support::EMPTY),
         };
         Placed {
-            // Translate, and land on the rasterizer's pixel centers: sample
-            // the glyph at (X - pen + ½, Y + ½). The ½ used to arrive for
-            // free from the ambient lattice's origin; baked in here instead,
-            // it costs nothing extra — `X + ½` and the pen's `- pen` are both
-            // exactly representable at these magnitudes, so this folds to
-            // the same single subtraction the old runtime origin produced.
-            kernel: kernel.at(
-                &Kernel::x()
-                    .add(&Kernel::constant(PIXEL_CENTER))
-                    .sub(&Kernel::constant(pen)),
-                &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
-            ),
+            // Translate: sample the glyph at (X - pen, Y). Raw glyph space —
+            // no sampling convention here; see the module docs.
+            kernel: kernel.at(&Kernel::x().sub(&Kernel::constant(pen)), &Kernel::y()),
             pen,
             support,
         }

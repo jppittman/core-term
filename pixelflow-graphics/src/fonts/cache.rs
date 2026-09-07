@@ -66,14 +66,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ttf::Font;
+use super::PIXEL_CENTER;
 
-/// Offset of a texel's sampling point from its integer index.
-///
-/// Texel `(i, j)` stores coverage at continuous coordinate
-/// `(i + TEXEL_CENTER, j + TEXEL_CENTER)`, matching the rasterizer's
-/// pixel-center convention. The bake adds this offset (lattice origin);
-/// [`CachedGlyph::kernel`] subtracts it before bilinear sampling.
-const TEXEL_CENTER: f32 = 0.5;
+// Texel `(i, j)` stores coverage at continuous coordinate
+// `(i + PIXEL_CENTER, j + PIXEL_CENTER)` — this crate's shared rasterizer
+// convention (`fonts/mod.rs`). The bake applies it as a contramap;
+// [`CachedGlyph::kernel`] subtracts it before bilinear sampling.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CachedGlyph: The Morphism
@@ -149,12 +147,12 @@ impl CachedGlyph {
         );
         let px = px_extent(size, density);
         // Texel-center convention: texel (i, j) holds coverage at
-        // (i + TEXEL_CENTER, j + TEXEL_CENTER). Used to be the bake
+        // (i + PIXEL_CENTER, j + PIXEL_CENTER). Used to be the bake
         // lattice's own origin; a contramap on the kernel now that a
         // lattice is a pure index.
         let centered = kernel.at(
-            &Kernel::x().add(&Kernel::constant(TEXEL_CENTER)),
-            &Kernel::y().add(&Kernel::constant(TEXEL_CENTER)),
+            &Kernel::x().add(&Kernel::constant(PIXEL_CENTER)),
+            &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
         );
         let lattice = Lattice {
             extent: [px as u32, px as u32],
@@ -194,7 +192,7 @@ impl CachedGlyph {
     pub fn kernel(&self) -> Kernel {
         let texel = |axis: &Kernel| {
             axis.mul(&Kernel::constant(self.density))
-                .sub(&Kernel::constant(TEXEL_CENTER))
+                .sub(&Kernel::constant(PIXEL_CENTER))
         };
         let sampled = self
             .sampler

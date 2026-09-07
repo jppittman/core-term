@@ -8,7 +8,7 @@
 //!
 //! Run: `cargo run -p pixelflow-graphics --example font_demo -- out.png`
 
-use pixelflow_core::Lattice;
+use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::{text, Font};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
@@ -22,7 +22,12 @@ fn main() {
     let message = "pixelflow: fonts are Kernels now";
     let size = 32.0f32;
 
-    let kernel = text(&font, message, size);
+    // `text` is convention-agnostic (raw glyph space); land on the
+    // rasterizer's pixel centers as a contramap, same as a raw glyph kernel.
+    let kernel = text(&font, message, size).at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    );
 
     let width = 620u32;
     let height = (size * 1.4) as u32;
