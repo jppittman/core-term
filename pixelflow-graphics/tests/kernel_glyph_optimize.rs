@@ -202,6 +202,16 @@ fn lowered_winding_ops_are_all_egraph_representable() {
 /// 1e-4 scale (observed); an unsound rule (wrong branch of a root, a lost
 /// mask) shifts coverage by O(1).
 ///
+/// **Sizes, not one size, and cheap ones.** Cost is quadratic in the size
+/// while the chance of catching this is roughly linear in the row count, so a
+/// wide sweep of coarse sizes dominates a narrow sweep that includes fine
+/// ones. The first version of this sweep ran 7/12/17/32/64/128 px and cost
+/// 317 s on CI — 90% of that job's wall clock, with 128 px alone accounting
+/// for 75% of the texels. These ten sizes are 6.9x cheaper in texels than
+/// those six (7200 vs 49433 per glyph) and sample the coarse rasterizations,
+/// where a texel row is most likely to land on a knife edge, far more densely.
+const SIZES: [u32; 10] = [7, 9, 11, 13, 15, 17, 19, 21, 23, 32];
+
 /// **Sizes, not one size.** A rounding difference only *decides* something
 /// where a comparison sits on a knife edge, and which rows land on one is a
 /// function of the size, so a single size is not a sample of this failure
@@ -226,7 +236,7 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
     let font = Font::parse(FONT_DATA).unwrap();
     let mut divergences: Vec<String> = Vec::new();
 
-    for size in [7u32, 12, 17, 32, 64, 128] {
+    for size in SIZES {
         for ch in ['A', 'O', 'g', '8'] {
             let kernel = font
                 .glyph_kernel_scaled(ch, size as f32)
