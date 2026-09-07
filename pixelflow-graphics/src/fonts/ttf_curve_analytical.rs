@@ -49,22 +49,24 @@ const MIN_DISC: f32 = 1e-12;
 /// `disc` rounded — and the true answer there is zero anyway, because the two
 /// segments cancel.
 ///
-/// **The value is bounded from both sides by measurement, not chosen.**
-/// Below, by the mechanism: `quad_tangency_winding`'s residual falls as `1/K`
-/// (0.59 at 1, 0.14 at 16, 0.035 at 64, 0.018 at 128) and crosses the
-/// test's 1e-2 bound between 128 and 256. Above, by an independent
-/// rasterizer: FreeType agrees with us on the same 10 texels and disagrees on
-/// the same 60 for every `K` from 1 to 16384, with total L1 over 6 glyphs ×
-/// 8 sizes varying by 0.02% across that whole range. So the choice provably
-/// does not matter over four orders of magnitude; 1024 sits with 4x margin
-/// over the lower bound and 16x under the largest value measured.
+/// **The window is narrow, and both ends are measured.**
 ///
-/// There is no companion cap on the band's width in `Y`. One was tried, on
-/// the theory that a nearly-linear quadratic (`|ay| → 0`) would give a
-/// macroscopic band; the oracle showed it inert from 1e-4 to 1e9, and it is
-/// unnecessary by construction — such a segment's tangent row lies far outside
-/// `t ∈ [0, 1]`, so `disc` there is `≈ by²` and the ramp saturates to 1.
-const DISC_BAND_ULPS: f32 = 1024.0;
+/// - *Floor, 876.* `quad_tangency_winding`'s residual saturates at exactly
+///   `8.76/K`, peaking about 104 ulps from the extremum — which is why that
+///   test walks ±512 ulps and not ±8, where it would report a tenth of the
+///   real figure. `8.76/K < 1e-2` gives `K > 876`.
+/// - *Ceiling, about 2400.* Too wide a band stops being a guard and starts
+///   discarding real crossings. Against FreeType over 75 glyphs × 27 sizes:
+///   0 violations at 900/1024/1400/2048, then 6 at 2800, 18 at 4096, 49 at
+///   8192. `{` and `}` at 8 px go first.
+///
+/// So the usable range is about `[876, 2400]` — a factor of 2.7, not the four
+/// orders of magnitude an earlier revision of this comment claimed. That claim
+/// came from sweeping only 6 glyphs × 8 sizes, where violations stay at 0 out
+/// to K = 16384; the ceiling is invisible until the glyph set is wide enough
+/// to contain a segment thin enough to lose. 1400 is the geometric middle:
+/// 1.6× over the floor, 2× under the first measured failure.
+const DISC_BAND_ULPS: f32 = 1400.0;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Line Segment (Ray-Crossing Winding)
@@ -219,9 +221,11 @@ impl AnalyticalQuad {
         let neg_b_2a = -by * inv_2ay;
         let disc_const = by * by - 4.0 * ay * cy;
         let disc_slope = 4.0 * ay;
-        // The tangent row, read off the control points where it is one of
-        // them, so two segments meeting at a shared extremum centre the band
-        // on the same Y rather than on two roundings of it.
+        // The band must exceed the discriminant's own rounding, and that
+        // rounding is origin-dependent because the expression is: `disc` is
+        // evaluated as `Y * disc_slope + disc_const`, so it is those two terms
+        // that round. Hence the first estimate is their magnitude at the
+        // tangency.
         let tangent_row = if y0 == y1 {
             y0
         } else if y1 == y2 {
@@ -229,8 +233,43 @@ impl AnalyticalQuad {
         } else {
             y0 - by * by / (4.0 * ay)
         };
-        let disc_band =
-            DISC_BAND_ULPS * f32::EPSILON * ((disc_slope * tangent_row).abs() + disc_const.abs());
+        let rounding = (disc_slope * tangent_row).abs() + disc_const.abs();
+        // That estimate is exactly zero in one case, and it is not a rare one:
+        // `Font::compile` normalizes every outline with the bbox y-minimum at
+        // exactly 0.0, so a segment whose extremum is the glyph's lowest point
+        // has `tangent_row` and `disc_const` both exactly zero — 50 of the 563
+        // quadratics in the alphanumerics, including the pair meeting at
+        // `'8'`'s bottom, the very shape this band exists for.
+        //
+        // A zero band is not a weak guard, it is a broken one: `1.0 / 0.0` is
+        // `+inf` and `0 * inf` is NaN, and that NaN is platform-divergent —
+        // `f32::max` and x86 `maxps` swallow `NaN.max(0.0)` as `0.0`, while
+        // per CLAUDE.md aarch64's `FMAX` propagates it, so coverage would go
+        // NaN on Apple Silicon. The e-graph also installs commutativity for
+        // `Max`, so operand order pins nothing.
+        //
+        // The tempting repair is to rebuild the estimate from differences of
+        // the control points so translation cannot zero it. Do not: that scale
+        // is ~3x smaller, the band narrows with it, and `{` and `}` at 8 px
+        // lose real crossings — measured, 6 new violations against FreeType
+        // where this version has none. Origin-relative is not a flaw in the
+        // model, it *is* the model: the rounding being estimated is the
+        // rounding of `Y * disc_slope + disc_const`, and those two terms are
+        // origin-relative.
+        //
+        // No *band* is needed at the degenerate point anyway. When both terms vanish, `disc` is `Y *
+        // disc_slope`: a single correctly-rounded product, whose SIGN is
+        // therefore exact. A step is the right answer, and all that is needed
+        // is to keep from forming `0 * inf` while spelling it. Flooring the
+        // band at the smallest positive normal does exactly that: the
+        // reciprocal stays finite, any non-zero `disc` saturates the clamp to
+        // a clean 0 or 1, and `disc == 0` gives `0 * 8.5e37 == 0`.
+        let disc_band = (DISC_BAND_ULPS * f32::EPSILON * rounding).max(f32::MIN_POSITIVE);
+        debug_assert!(
+            disc_band > 0.0 && (1.0f32 / disc_band).is_finite(),
+            "the band must never vanish: a zero band is a division by zero \
+             dressed as a multiplication by infinity"
+        );
 
         Self {
             ax,

@@ -31,10 +31,54 @@ const GRAZE_TOLERANCE: f32 = 1.0e-2;
 
 /// Found by search over shared-extremum segment pairs: coefficients whose
 /// discriminants straddle zero differently at the extremum row.
+/// How far either side of the extremum row to walk, in ulps. The band the fix
+/// installs is ~2200 ulps wide and the residual peaks around 100 ulps out, so
+/// a narrow window reports a number from the wrong part of the curve: at ±8
+/// ulps this test measured 0.0076 where the true saturated peak is 8.76/K.
+const WALK_ULPS: i32 = 512;
+
+/// Worst grazing winding within [`WALK_ULPS`] of `extremum`, for a pair of
+/// quadratics meeting there, sampled at `x`.
+fn worst_grazing(
+    incoming: AnalyticalQuad,
+    outgoing: AnalyticalQuad,
+    extremum: f32,
+    x: f32,
+) -> (f32, f32) {
+    let sum = incoming.kernel().add(&outgoing.kernel());
+    let (arena, root) = sum.parts();
+    let (lowered, r) = lower_dwrt_owned(arena, root).expect("lower");
+
+    // `next_down`/`next_up`, not bit arithmetic: the extremum here can be
+    // exactly 0.0, where `to_bits() - 1` underflows (a debug panic, and in
+    // release a wrap to a NaN bit pattern that silently walks nowhere near the
+    // row under test).
+    let mut y = extremum;
+    for _ in 0..WALK_ULPS {
+        y = y.next_down();
+    }
+    let (mut worst, mut worst_y) = (0.0f32, y);
+    for _ in 0..=(2 * WALK_ULPS) {
+        let v = eval_scalar(&lowered, r, &[x, y], &BindingTable::empty());
+        assert!(
+            v.is_finite(),
+            "winding is {v} at y = {y:?} ({:#x}) — a non-finite coverage is a \
+             division by a vanished quantity, not an inaccurate one",
+            y.to_bits()
+        );
+        if v.abs() > worst.abs() {
+            worst = v;
+            worst_y = y;
+        }
+        y = y.next_up();
+    }
+    (worst, worst_y)
+}
+
+/// Found by search over shared-extremum segment pairs: coefficients whose
+/// discriminants straddle zero differently at the extremum row.
 #[test]
 fn a_grazing_ray_picks_up_no_winding_at_a_shared_extremum() {
-    // Incoming segment rises to the shared point at its END (y1 == y2, so
-    // t_vertex == 1); outgoing leaves it at its START (y0 == y1, t_vertex == 0).
     let shared = [-0.966_354_37f32, 8.683_796];
     let incoming = AnalyticalQuad::new(
         [-4.499_054, 0.079_550_94],
@@ -43,37 +87,46 @@ fn a_grazing_ray_picks_up_no_winding_at_a_shared_extremum() {
     );
     let outgoing =
         AnalyticalQuad::new(shared, [1.835_096_6, 8.683_796], [4.617_066_4, 3.184_099_4]);
-
-    let sum = incoming.kernel().add(&outgoing.kernel());
-    let (arena, root) = sum.parts();
-    let (lowered, r) = lower_dwrt_owned(arena, root).expect("lower");
-
-    // A ray origin well to the right of both segments, so both crossings are
-    // fully covered and any surviving one shows at its full weight.
-    let x = 39.033_646f32;
-
-    // Walk the extremum row in single ulps: the disagreement band is a few
-    // ulps wide, so sampling only the exact row would miss it.
-    let mut y = shared[1];
-    for _ in 0..8 {
-        y = f32::from_bits(y.to_bits() - 1);
-    }
-    let mut worst = 0.0f32;
-    let mut worst_y = y;
-    for _ in 0..17 {
-        let v = eval_scalar(&lowered, r, &[x, y], &BindingTable::empty());
-        if v.abs() > worst.abs() {
-            worst = v;
-            worst_y = y;
-        }
-        y = f32::from_bits(y.to_bits() + 1);
-    }
-
+    let (worst, worst_y) = worst_grazing(incoming, outgoing, shared[1], 39.033_646);
     assert!(
         worst.abs() < GRAZE_TOLERANCE,
         "a grazing ray picked up {worst} of winding at y = {worst_y:?} \
-         ({:#x}) — the two segments' `disc >= 0` decisions disagreed and one \
+         ({:#x}) — the two segments' reach into this row disagreed and one \
          crossing survived uncancelled",
         worst_y.to_bits()
+    );
+}
+
+/// The same pair, translated so the shared extremum sits at **exactly zero**.
+///
+/// This is not a contrived coordinate. `Font::compile` normalizes every
+/// outline with the bbox y-minimum at exactly 0.0, so any glyph whose lowest
+/// point is an on-curve extremum — `'8'`, `'O'`, `'e'`, most round letters —
+/// puts this pair at `y == 0.0` in the frame the kernel is built in.
+///
+/// A band scaled by the discriminant's distance from the coordinate origin
+/// vanishes here, and `0 * (1/0)` is NaN. The band must be built from
+/// differences of the control points, which translation cannot touch.
+#[test]
+fn a_shared_extremum_at_the_origin_still_cancels() {
+    let dy = -8.683_796f32; // put the shared extremum on y == 0.0
+    let shared = [-0.966_354_37f32, 8.683_796 + dy];
+    assert_eq!(shared[1], 0.0, "the extremum must land exactly on zero");
+    let incoming = AnalyticalQuad::new(
+        [-4.499_054, 0.079_550_94 + dy],
+        [-1.554_296_3, 8.683_796 + dy],
+        shared,
+    );
+    let outgoing = AnalyticalQuad::new(
+        shared,
+        [1.835_096_6, 8.683_796 + dy],
+        [4.617_066_4, 3.184_099_4 + dy],
+    );
+    let (worst, worst_y) = worst_grazing(incoming, outgoing, shared[1], 39.033_646);
+    assert!(
+        worst.abs() < GRAZE_TOLERANCE,
+        "a grazing ray picked up {worst} of winding at y = {worst_y:?} at the \
+         origin — the band is being measured from the origin rather than from \
+         the segment's own geometry"
     );
 }

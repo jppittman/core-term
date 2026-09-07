@@ -202,14 +202,19 @@ fn lowered_winding_ops_are_all_egraph_representable() {
 /// 1e-4 scale (observed); an unsound rule (wrong branch of a root, a lost
 /// mask) shifts coverage by O(1).
 ///
-/// **Sizes, not one size, and cheap ones.** Cost is quadratic in the size
+/// **Sizes, not one size, and coarse ones.** Cost is quadratic in the size
 /// while the chance of catching this is roughly linear in the row count, so a
 /// wide sweep of coarse sizes dominates a narrow sweep that includes fine
-/// ones. The first version of this sweep ran 7/12/17/32/64/128 px and cost
-/// 317 s on CI — 90% of that job's wall clock, with 128 px alone accounting
-/// for 75% of the texels. These ten sizes are 6.9x cheaper in texels than
-/// those six (7200 vs 49433 per glyph) and sample the coarse rasterizations,
-/// where a texel row is most likely to land on a knife edge, far more densely.
+/// ones — 128 px alone would be 75% of the texels and has never caught
+/// anything.
+///
+/// This is **more expensive than what it replaced**, and worth it. Against the
+/// single 32 px pass this test used to make, ten sizes cost about 7x more
+/// (7200 texels per glyph against 1024) — roughly 40 s in a debug run. It buys
+/// 29 real divergences at four sizes where 32 px alone found none. An earlier
+/// revision of this comment claimed a 6.9x *saving*; that compared against an
+/// intermediate 7/12/17/32/64/128 sweep that existed only within this branch,
+/// never on `main`, which is not a baseline anyone else would recognize.
 const SIZES: [u32; 10] = [7, 9, 11, 13, 15, 17, 19, 21, 23, 32];
 
 /// **Sizes, not one size.** A rounding difference only *decides* something
@@ -219,9 +224,8 @@ const SIZES: [u32; 10] = [7, 9, 11, 13, 15, 17, 19, 21, 23, 32];
 /// quadratic solver's `disc >= 0` is exact zero at the parabola's vertex row,
 /// one rounding of `Y·slope + c` (fused) against two (raw) flips it, and a
 /// whole crossing (0.5 of coverage) appears on one side and not the other.
-/// Eight texels of a single row moved; every other size in this sweep, this
-/// glyph included, was clean. 32 px — the only size this test used to run at,
-/// and the size the glyph goldens use — sees nothing.
+/// Eight texels of a single row moved. 32 px — the only size this test used to
+/// run at, and the size the glyph goldens use — sees nothing.
 #[test]
 fn optimized_glyph_matches_raw_within_reassociation_noise() {
     use pixelflow_graphics::fonts::Font;
@@ -260,6 +264,16 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
                     let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
                     let want = eval_scalar(&raw, raw_root, &[x, y], &BindingTable::empty());
                     let got = eval_scalar(opt, opt_root, &[x, y], &BindingTable::empty());
+                    // Before the comparison, not folded into it: `NaN >= x` is
+                    // false, so a threshold test *accepts* a non-finite
+                    // coverage silently. The `assert!` this loop replaced
+                    // caught NaN for free by asserting the negation; a
+                    // collector has to say so itself.
+                    assert!(
+                        want.is_finite() && got.is_finite(),
+                        "{ch}@{size} texel ({i},{j}): non-finite coverage \
+                         (raw {want}, optimized {got})"
+                    );
                     if (want - got).abs() >= TOLERANCE {
                         divergences.push(format!(
                             "{ch}@{size} texel ({i},{j}): raw {want} vs optimized {got} \

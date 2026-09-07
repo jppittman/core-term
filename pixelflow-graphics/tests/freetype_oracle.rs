@@ -11,6 +11,13 @@
 //! agreed on by our raw arena, our goldens and our corpus, and was found only
 //! by asking a different rasterizer.
 //!
+//! **What it covers, exactly.** It evaluates `eval_scalar` on the *raw
+//! lowered* arena: no optimizer, no JIT. So it is an external bound on the IR
+//! interpreter's reading of the unoptimized arena, and it reaches real pixels
+//! only transitively — `kernel_glyph_optimize` ties the optimized arena to the
+//! raw one, and `kernel_glyph_golden` ties the JIT to the interpreter. A
+//! miscompile that this suite cannot see is one of those two tests' business.
+//!
 //! **The assertion is topological, not photometric.** FreeType's antialiasing
 //! convention is its own and need not equal ours; comparing coverage values
 //! would fail for reasons that are not bugs. What must agree is *where the ink
@@ -19,9 +26,16 @@
 //! none at all (`0.000` across several texels); a difference of AA convention
 //! never does.
 //!
-//! Not part of the blocking set: it needs a system `libfreetype`, so it is
-//! feature-gated and its CI job is informational. An informational job that
-//! would have caught this is worth more than no job.
+//! **This is a blocking check, and it depends on a vendored rasterizer.** It
+//! needs no system library — `freetype-sys` compiles FreeType from vendored
+//! sources with `cc`, unconditionally, with no `pkg_config` probe — so the
+//! required `Test on ubuntu-latest` / `Test on macos-latest` jobs already run
+//! it, via `cargo nextest run --workspace --all-features`. There is no
+//! separate job and no `apt-get`; an earlier revision of this file added both
+//! and justified them with a system-library dependency that does not exist.
+//! The cost of that is worth stating plainly: a required merge gate now
+//! depends on a third-party rasterizer, so a `freetype-rs` bump can break the
+//! build for reasons that have nothing to do with this crate.
 //!
 //! **Being feature-gated, this file is invisible to the obvious local lint.**
 //! `cargo clippy --workspace --all-targets` never compiles it — the same shape
@@ -52,6 +66,20 @@ const OURS_INKED: f32 = 0.5;
 /// threshold differently in two rasterizers, and that is not a finding. A
 /// spurious crossing is not near a half — it is near zero.
 const REFERENCE_INKED: f32 = 0.25;
+/// How far the total ink we lay down may stray from the reference's. Measured
+/// at 0.22% over the pairs below (1842.94 against 1847.03), so this is 9x
+/// headroom — loose enough never to fire on an antialiasing difference, tight
+/// enough that dropping or duplicating whole strokes cannot hide behind it.
+const INK_RATIO_TOLERANCE: f64 = 0.02;
+/// Texels FreeType inks and we do not, over the pairs below — **pinned**, not
+/// capped. It is zero on this set, which reads like a claim that the defect is
+/// absent; it is not. Widen the glyph set and it is 50: this rasterizer ramps
+/// coverage only in X, so a horizontal edge gets no vertical antialiasing and
+/// lands a texel boundary hard. Pinned rather than bounded because both
+/// directions are news — upward is that defect spreading, downward is somebody
+/// having fixed it, and either should be a deliberate edit here rather than a
+/// silent drift.
+const TEXELS_WE_MISS: u32 = 0;
 
 fn font_path() -> String {
     format!(
@@ -76,6 +104,15 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
     let descender = face.raw().descender as f32;
 
     let mut orphans = Vec::new();
+    // The reverse direction, recorded as a number that may not grow rather
+    // than asserted to zero: FreeType inks texels we leave blank because this
+    // rasterizer ramps coverage only in X, so a horizontal edge gets no
+    // vertical antialiasing. That is a real, separate defect (see the module
+    // docs); pinning today's count stops it spreading without asserting it
+    // away.
+    let mut we_miss = 0u32;
+    let mut ink_ours = 0.0f64;
+    let mut ink_reference = 0.0f64;
 
     for ch in ['8', 'O', 'S', 'g', 'e', 'A'] {
         for size in [7u32, 11, 13, 15, 17, 19, 21, 32] {
@@ -144,6 +181,32 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
                         &[i as f32 + 0.5, j as f32 + 0.5],
                         &BindingTable::empty(),
                     );
+                    assert!(
+                        cov.is_finite(),
+                        "{ch}@{size} texel ({i},{j}): coverage is {cov}"
+                    );
+                    ink_ours += f64::from(cov.clamp(0.0, 1.0));
+                    ink_reference += f64::from(reference(i, j));
+                    if reference(i, j) > OURS_INKED {
+                        let ours_near = (-1..=1).any(|dj| {
+                            (-1..=1).any(|di| {
+                                let (a, b) = (i + di, j + dj);
+                                a >= 0
+                                    && b >= 0
+                                    && a < extent
+                                    && b < extent
+                                    && eval_scalar(
+                                        &lowered,
+                                        r,
+                                        &[a as f32 + 0.5, b as f32 + 0.5],
+                                        &BindingTable::empty(),
+                                    ) > OURS_INKED
+                            })
+                        });
+                        if !ours_near {
+                            we_miss += 1;
+                        }
+                    }
                     if cov > OURS_INKED && !corroborated(i, j) {
                         let mut best = 0.0f32;
                         for dj in -1..=1i64 {
@@ -163,6 +226,23 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
             }
         }
     }
+
+    // Total ink. A predicate about individual texels is weak on its own — it
+    // survives deleting every other row, or shifting the whole glyph by a
+    // texel — and this closes that: two rasterizers drawing the same outlines
+    // put down the same amount of ink. Measured 0.22% apart, bounded at 2%.
+    let ratio = ink_ours / ink_reference;
+    assert!(
+        (ratio - 1.0).abs() < INK_RATIO_TOLERANCE,
+        "we lay down {ratio:.4}x FreeType's ink ({ink_ours:.1} vs \
+         {ink_reference:.1}) — the outlines are not being filled the same way"
+    );
+    assert_eq!(
+        we_miss, TEXELS_WE_MISS,
+        "FreeType inks {we_miss} texels we leave blank, pinned at \
+         {TEXELS_WE_MISS} — up means the no-vertical-antialiasing defect has \
+         spread, down means it has been fixed and this number wants lowering"
+    );
 
     assert!(
         orphans.is_empty(),
