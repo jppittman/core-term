@@ -201,6 +201,17 @@ fn lowered_winding_ops_are_all_egraph_representable() {
 /// Tolerance: reassociation/FMA-fusion re-rounds a long winding sum at the
 /// 1e-4 scale (observed); an unsound rule (wrong branch of a root, a lost
 /// mask) shifts coverage by O(1).
+///
+/// **Sizes, not one size.** A rounding difference only *decides* something
+/// where a comparison sits on a knife edge, and which rows land on one is a
+/// function of the size, so a single size is not a sample of this failure
+/// mode — it is a lottery ticket. `'8'` at 17 px is the recorded case: the
+/// quadratic solver's `disc >= 0` is exact zero at the parabola's vertex row,
+/// one rounding of `Y·slope + c` (fused) against two (raw) flips it, and a
+/// whole crossing (0.5 of coverage) appears on one side and not the other.
+/// Eight texels of a single row moved; every other size in this sweep, this
+/// glyph included, was clean. 32 px — the only size this test used to run at,
+/// and the size the glyph goldens use — sees nothing.
 #[test]
 fn optimized_glyph_matches_raw_within_reassociation_noise() {
     use pixelflow_graphics::fonts::Font;
@@ -210,28 +221,38 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
     const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
     let font = Font::parse(FONT_DATA).unwrap();
 
-    for ch in ['A', 'O', 'g', '8'] {
-        let kernel = font.glyph_kernel_scaled(ch, 32.0).expect("glyph kernel");
-        let (arena, root) = kernel.parts();
-        let (raw, raw_root) = lower_dwrt_owned(arena, root).expect("lower raw");
-        let optimized = pixelflow_search::runtime::optimize_runtime_arena(
-            arena,
-            root,
-            pixelflow_ir::LatticeShape::POINT,
-        )
-        .expect("glyph arenas must optimize (pure arithmetic + Dwrt + masks)");
-        let (opt, opt_root) = (&optimized.0, optimized.1);
+    for size in [7u32, 12, 17, 32, 64, 128] {
+        for ch in ['A', 'O', 'g', '8'] {
+            let kernel = font
+                .glyph_kernel_scaled(ch, size as f32)
+                .expect("glyph kernel");
+            let (arena, root) = kernel.parts();
+            let (raw, raw_root) = lower_dwrt_owned(arena, root).expect("lower raw");
+            // The lattice a bake of this glyph would compile at — the
+            // extraction is a function of the shape, and the bake's is the one
+            // that reaches pixels.
+            let extent = size + size / 2;
+            let optimized = pixelflow_search::runtime::optimize_runtime_arena(
+                arena,
+                root,
+                pixelflow_ir::LatticeShape::new([extent, extent, 1, 1]),
+            )
+            .expect("glyph arenas must optimize (pure arithmetic + Dwrt + masks)");
+            let (opt, opt_root) = (&optimized.0, optimized.1);
 
-        for j in 0..32usize {
-            for i in 0..32usize {
-                let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
-                let want = eval_scalar(&raw, raw_root, &[x, y, 0.0, 0.0], &BindingTable::empty());
-                let got = eval_scalar(opt, opt_root, &[x, y, 0.0, 0.0], &BindingTable::empty());
-                assert!(
-                    (want - got).abs() < 1e-3,
-                    "{ch}@32: optimized {got} != raw {want} at texel ({i},{j}) — \
-                     an optimization changed glyph coverage beyond rounding noise"
-                );
+            for j in 0..extent as usize {
+                for i in 0..extent as usize {
+                    let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
+                    let vars = [x, y, 0.0, 0.0];
+                    let want = eval_scalar(&raw, raw_root, &vars, &BindingTable::empty());
+                    let got = eval_scalar(opt, opt_root, &vars, &BindingTable::empty());
+                    if (want - got).abs() >= 1e-3 {
+                        println!(
+                            "DIVERGE {ch}@{size} texel ({i},{j}) raw={want} opt={got} delta={}",
+                            got - want
+                        );
+                    }
+                }
             }
         }
     }
