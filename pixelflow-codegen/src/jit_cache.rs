@@ -82,22 +82,17 @@ pub struct Linked {
 ///
 /// # Panics
 ///
-/// Panics if the arena names a retired coordinate axis (`Var(2)`/`Var(3)`,
-/// the old Z and W). The collapse ABI still carries four base coordinates and
-/// passes zero in the last two, so such a node would read a lane that means
-/// nothing and draw a plausible wrong picture. This is the guard that makes
-/// "no emitted kernel reads the retired lanes" a fact.
+/// Panics if the arena that reaches the emitter — *after* saturation — names
+/// a retired coordinate axis (`Var(2)`/`Var(3)`, the old Z and W). The
+/// collapse ABI still carries four base coordinates and passes zero in the
+/// last two, so such a node would read a lane that means nothing and draw a
+/// plausible wrong picture. This is the guard that makes "no emitted kernel
+/// reads the retired lanes" a fact.
 pub fn compile(
     arena: &ExprArena,
     root: ExprId,
     shape: LatticeShape,
 ) -> Result<Linked, CompileError> {
-    assert!(
-        arena.retired_axis().is_none(),
-        "jit_cache::compile: the arena names Var({:?}), a coordinate axis a \
-         lattice no longer has; a per-call scalar is a Uniform",
-        arena.retired_axis()
-    );
     let Canonical {
         mut key,
         buffers,
@@ -125,6 +120,20 @@ pub fn compile(
             .as_deref()
             .map(|(a, r)| (a, *r))
             .unwrap_or((arena, root));
+        // After saturation, not before: `Kernel::from_parts` already refuses
+        // a caller's arena, so what is left to catch is a rewrite rule
+        // instantiating one of its own `Var(2)` metavariables into the
+        // extraction. Checking the arena that is emitted is what makes "no
+        // emitted kernel reads a retired lane" a fact rather than a habit —
+        // the lane is passed as zero, so it would draw a plausible wrong
+        // picture. `relink` below renumbers tables without touching a node.
+        assert!(
+            arena.retired_axis().is_none(),
+            "jit_cache: the arena reaching the emitter names Var({:?}), a \
+             coordinate axis a lattice no longer has; a per-call scalar is a \
+             Uniform",
+            arena.retired_axis()
+        );
         if buffers.is_empty() && uniforms.is_empty() {
             return emit::compile(arena, root);
         }
@@ -296,6 +305,26 @@ mod tests {
 
     fn kernel_of(arena: &ExprArena, root: ExprId) -> Arc<CompiledKernel> {
         compile(arena, root, TEST_SHAPE).expect("compile").kernel
+    }
+
+    /// The backstop, exercised where it has to hold: `Kernel::from_parts`
+    /// refuses a caller's arena, but a rewrite rule instantiating one of its
+    /// own metavariables would arrive here already past that. Nothing in the
+    /// tree does it today, and this is what would notice if something did —
+    /// a `Var(2)` reads a base coordinate the collapse passes as zero, so
+    /// the picture would be plausible and wrong.
+    #[test]
+    #[should_panic(expected = "reaching the emitter names Var")]
+    fn an_arena_naming_a_retired_axis_never_reaches_the_emitter() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        // A constant no other test uses, so this arena misses the cache and
+        // the emit path actually runs.
+        let z = a.push_var(2);
+        let c = a.push_const(7.25);
+        let scaled = a.push_binary(OpKind::Mul, z, c);
+        let root = a.push_binary(OpKind::Add, x, scaled);
+        let _refused = compile(&a, root, TEST_SHAPE);
     }
 
     fn circle_arena(garbage: bool) -> (ExprArena, ExprId) {
