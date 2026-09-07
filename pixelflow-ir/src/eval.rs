@@ -1657,14 +1657,17 @@ pub enum MaskVerdict {
 
 /// The immutable evaluation environment threaded through the recursion: the
 /// arena, the coordinate values, the buffer bindings, and the current binding
-/// of each reduction index (`Var(4..8)`). Grouping them keeps the recursive
+/// of each reduction index (`Var(REDUCE_BINDER_BASE..)`). Grouping them keeps
+/// the recursive
 /// helpers to a single `ExprId` argument.
 #[derive(Clone, Copy)]
 struct Env<'a> {
     arena: &'a ExprArena,
     vars: &'a [f32; crate::arena::COORD_AXES],
     bindings: &'a BindingTable<'a>,
-    /// Values bound to reduction indices `Var(4)..Var(8)` by enclosing folds.
+    /// Values bound to the reduction indices from
+    /// [`REDUCE_BINDER_BASE`](crate::arena::REDUCE_BINDER_BASE) by enclosing
+    /// folds.
     reduce_vars: [f32; 4],
     variance: &'a [crate::variance::Variance],
     memo: &'a core::cell::RefCell<alloc::vec::Vec<Option<f32>>>,
@@ -1682,11 +1685,21 @@ impl Env<'_> {
         let val = match self.arena.node(id) {
             ExprNode::Var(i) => {
                 let i = *i as usize;
-                // 0..COORD_AXES are coordinates; 4..8 are reduction indices.
+                // Three ranges, and the middle one holds nothing: coordinates
+                // below COORD_AXES, then the reserved retired axes, then the
+                // binders from REDUCE_BINDER_BASE. Reading a retired index as
+                // a binder is off the end of the coordinates and short of the
+                // slots, so say so rather than subtract past zero.
+                assert!(
+                    !crate::arena::RETIRED_COORD_AXES.contains(&(i as u8)),
+                    "eval_scalar: Var({i}) was a retired coordinate axis; a \
+                     lattice has {} axes and a per-call scalar is a Uniform",
+                    crate::arena::COORD_AXES
+                );
                 if i < crate::arena::COORD_AXES {
                     self.vars[i]
                 } else {
-                    self.reduce_vars[i - 4]
+                    self.reduce_vars[i - crate::arena::REDUCE_BINDER_BASE as usize]
                 }
             }
             ExprNode::Const(v) => *v,
@@ -1783,11 +1796,13 @@ impl Env<'_> {
             .expect("reduce combiner must be a valid OpKind index");
         let var_idx = self.const_of(reduce_var, "reduce var index") as usize;
         let n = self.const_of(extent, "reduce extent") as usize;
+        let base = crate::arena::REDUCE_BINDER_BASE as usize;
+        let slots = base + self.reduce_vars.len();
         assert!(
-            (4..8).contains(&var_idx),
-            "reduce index Var({var_idx}) out of range (must be 4..8)"
+            (base..slots).contains(&var_idx),
+            "reduce index Var({var_idx}) out of range (must be {base}..{slots})"
         );
-        let slot = var_idx - 4;
+        let slot = var_idx - base;
 
         let mut acc = op
             .monoid_identity()

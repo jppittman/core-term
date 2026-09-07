@@ -28,6 +28,14 @@ pub const COORD_AXES: usize = 2;
 /// read back as a different program.
 pub const RETIRED_COORD_AXES: [u8; 2] = [2, 3];
 
+/// The first `Var` index a reduction binder takes.
+///
+/// Binder indices are dense from here, and *here* is past the reserved
+/// [`RETIRED_COORD_AXES`] rather than past [`COORD_AXES`] — which is what
+/// keeps them where they were when there were four axes. The gap between
+/// the two is the reason `Var`'s three meanings do not collide.
+pub const REDUCE_BINDER_BASE: u8 = COORD_AXES as u8 + RETIRED_COORD_AXES.len() as u8;
+
 // ───────────────────────────────────────── ExprId ─────────────────────────────
 
 /// Index into an [`ExprArena`]. Copy, 4 bytes, no refcount.
