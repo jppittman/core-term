@@ -39,8 +39,6 @@ fn build_expr(target_nodes: usize) -> (ExprArena, pixelflow_ir::arena::ExprId) {
     let mut arena = ExprArena::new();
     let x = arena.push_var(0);
     let y = arena.push_var(1);
-    let z = arena.push_var(2);
-    let w = arena.push_var(3);
     let mut acc = arena.push_binary(OpKind::Mul, x, y);
     let c = arena.push_const(0.5);
     acc = arena.push_binary(OpKind::Add, acc, c);

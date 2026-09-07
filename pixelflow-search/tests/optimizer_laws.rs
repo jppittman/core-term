@@ -27,7 +27,7 @@
 //! `POLICIES` table here rather than re-derive the argument.
 
 use pixelflow_ir::arena::{ExprArena, ExprId};
-use pixelflow_ir::{OpKind, binding::BindingTable};
+use pixelflow_ir::{OpKind, Uniform, binding::BindingTable};
 use pixelflow_search::egraph::{Budget, EClassId, Optimizer, RuleSet, all_rules};
 
 /// Evaluate an arena through the language's own reference interpreter — the
@@ -49,11 +49,17 @@ const POINTS: [[f32; 2]; 7] = [
 
 /// A mid-sized expression with sharing, several rule families in reach, and
 /// no transcendental domain hazards at the sample points.
+///
+/// The third leaf is an argument rather than a third axis: a lattice has two,
+/// and what makes this fixture worth optimizing is the sharing, not where the
+/// leaf comes from. Unbound it reads its declared default, which is the same
+/// value on both sides of every law here.
 fn fixture() -> (ExprArena, ExprId) {
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
+    let slot = a.declare_uniform(Uniform::new(0.75).decl());
+    let z = a.push_uniform(slot);
     let one = a.push_const(1.0);
     let two = a.push_const(2.0);
 
