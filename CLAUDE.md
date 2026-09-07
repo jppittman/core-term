@@ -82,9 +82,12 @@ The `Recip` and `MulAdd` rows are the reminder that "target" is finer than
 "architecture": they differ between *ISA levels of the same machine*, which is
 what `cargo xtask isa-matrix` exists to keep honest. `Recip`/`Rsqrt` are
 estimates — only ever guaranteed close, never equal — so no argument to them is
-ever foldable; `MulAdd` is value-aware, since one rounding and two agree on most
-inputs (`mul_add(1.0000001, 4097.0, 4097.0)` is one of the inputs where they
-don't).
+ever foldable. `MulAdd` is the opposite case and is *not* fold-refused: FMA is
+available on every target, some just spell it as a multiply then an add, and
+one rounding versus two is a last-bit precision difference inside the contract
+(the emitter itself decomposes a `MulAdd` under register pressure on an FMA
+target). The folder and the oracle round once (`libm::fmaf`); a differential
+check bounds the product's rounding as tolerance rather than skipping the point.
 
 Unifying any row costs instructions — x86 has no ties-away rounding mode, and
 NaN or signed-zero blending is a compare plus a select — so none of them are

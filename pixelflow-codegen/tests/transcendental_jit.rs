@@ -335,15 +335,17 @@ fn platform_specific_ops_are_classified() {
         }
     }
 
-    // MulAdd is value-aware: one rounding or two, and most inputs cannot tell.
+    // MulAdd always folds. One rounding versus two is precision, not a
+    // different value, even on the inputs where the two forms disagree.
     let fused_differs = [1.000_000_1f32, 4097.0, 4097.0];
     assert!(
-        OpKind::MulAdd.fold_is_platform_specific(&fused_differs),
-        "an input where FMA and mul-then-add disagree must not fold"
+        !OpKind::MulAdd.fold_is_platform_specific(&fused_differs),
+        "a rounding difference is inside the contract and must not block a fold"
     );
-    assert!(
-        !OpKind::MulAdd.fold_is_platform_specific(&[2.0, 3.0, 4.0]),
-        "exact inputs are the same either way and stay foldable"
+    assert_eq!(
+        OpKind::MulAdd.eval_ternary(fused_differs[0], fused_differs[1], fused_differs[2]),
+        Some(fused_differs[0].mul_add(fused_differs[1], fused_differs[2])),
+        "the folder's answer is the single-rounding one, whatever profile built it"
     );
 }
 
