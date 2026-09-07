@@ -339,6 +339,24 @@ Priority: AVX-512 > SSE2 > NEON > Scalar fallback. Detection via `build.rs` CPU 
   concepts want to be a module, a method on a struct, or a builder, not suffixes
   on a free function. Especially watch for an accreting family of `*_with_ctx`,
   `*_scanline`, `*_jet` variants: that's the cue to introduce the struct/builder.
+- **`if` folds, `match` handles** - `if` collapses two cases into one meaning —
+  a fold (`if x < 0.0 { -x } else { x }`, clamping, defaulting) — and should
+  read as one path with a shortcut, not two behaviors. When the arms of an
+  `if`/`else` actually do different things, that difference is a case, and
+  cases are handled by `match` (over an enum, or a trait), not by `else`. A
+  codebase applying this well doesn't accumulate `else`s doing double duty as
+  both control flow and case handling.
+- **New implementation of an existing category → trait first** - Before
+  adding a second way of doing something the codebase already does one way,
+  check whether that category is already a trait. If it is, implement the new
+  behavior as another `impl`. If it isn't, that's the signal the first
+  implementation was written before anything needed to vary — extract a trait
+  around the existing implementation *first*, then add the new one as a
+  second `impl`. Don't grow the second implementation as a parallel free
+  function, a copy of the first, or a mode flag/enum bolted onto it. Worked
+  example already in this tree: `pixelflow-codegen`'s `RegisterAllocator`
+  trait with `LinearScan` as its one `impl` — a second allocator is a second
+  `impl RegisterAllocator`, not a fork of `LinearScan`.
 
 ## Common Patterns
 

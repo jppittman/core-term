@@ -79,6 +79,46 @@ These points are particularly relevant when working with or generating code usin
 
 2.  **Prefer `match` over `else if`:** When choosing between complex `if`/`else if`/`else` chains and a `match` statement, prefer `match`, especially when dealing with enums or a fixed set of conditions.
 
+3.  **`if` Folds, `match` Handles:** This sharpens rule 2 into a test you can apply to any single `if`. An `if`/`else` is doing its job when both arms are the *same kind of thing* and the branch is just choosing which value of it applies — folding two cases down to one meaning. An `if`/`else` is in the wrong place when its arms are genuinely *different behaviors* — that's not a fold, it's a case, and cases belong to `match` (over an enum, or to a trait method). Applied consistently, this means you stop accumulating `else` blocks that are quietly doing two jobs at once: picking a value, and dispatching behavior.
+
+    * **Good (fold — both arms are "the value, adjusted"):**
+        ```rust
+        fn clamp_unit(x: f32) -> f32 {
+            if x < 0.0 {
+                0.0
+            } else if x > 1.0 {
+                1.0
+            } else {
+                x
+            }
+        }
+        ```
+    * **Bad (handling dressed up as folding — the arms are different behaviors sharing an `if`):**
+        ```rust
+        fn commit(tx: &Transaction) {
+            if tx.is_readonly() {
+                log_readonly(tx);
+            } else {
+                write_to_disk(tx);
+                notify_subscribers(tx);
+            }
+        }
+        ```
+    * **Good (the same distinction, handled as a case):**
+        ```rust
+        enum TxKind { ReadOnly, Write }
+
+        fn commit(tx: &Transaction, kind: TxKind) {
+            match kind {
+                TxKind::ReadOnly => log_readonly(tx),
+                TxKind::Write => {
+                    write_to_disk(tx);
+                    notify_subscribers(tx);
+                }
+            }
+        }
+        ```
+
 ## Functions and APIs
 
 1.  **Argument Management (Count & Grouping):** Functions should generally take fewer than 4 arguments. More arguments often indicate a function is trying to do too much or that arguments could be better organized. Group multiple related arguments into a single struct to improve clarity, reduce the argument count, and make function signatures more manageable, especially if the same group of arguments is passed to multiple functions.
@@ -207,6 +247,13 @@ These points are particularly relevant when working with or generating code usin
     * **Bad:** `test1`, `min_max`, `handles_edge_case`
     * **Good:** `render_letter_when_it_receives_letter_keypress` — reads as "it should render letter when it receives letter keypress".
     * **Good:** `push_reduce_should_panic_when_the_combiner_is_not_a_monoid_op` — already a complete sentence on its own; the file-local convention of spelling out `_should_` explicitly is an acceptable variant of the same rule.
+
+## Extensibility
+
+1.  **New Implementation of an Existing Category → Trait First:** Before adding a second way of doing something the codebase already does one way, check whether that category is already named as a trait.
+    * **If a trait exists:** implement the new behavior as another `impl` of it — that's the whole task.
+    * **If it doesn't:** a single concrete implementation with no trait means nothing has needed to vary yet. That's not a green light to bolt the second case on however is quickest — extract a trait around the existing implementation *first*, then add the new implementation as a second `impl`. Don't grow the second implementation as a parallel free function, a copy-pasted module, or a mode flag/`enum` wedged into the first one's signature — each of those is a case pretending not to be one, and the next reader has to rediscover the trait that should have been written down.
+    * **Worked example already in this tree:** `pixelflow-codegen`'s register allocation. `RegisterAllocator` is a trait with one required method (`allocate_nest`); `LinearScan` is its one `impl`. A second allocator — a Sethi-Ullman variant, say — is added as a second `impl RegisterAllocator`, not as a fork of `LinearScan`'s internals or a flag that changes its behavior in place.
 
 ## Flexibility
 
