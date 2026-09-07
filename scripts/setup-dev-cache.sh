@@ -10,18 +10,30 @@
 # `target/` directory (which would risk lock contention between concurrent
 # builds) -- it's a content-addressed cache, not a shared-location one.
 #
-# `incremental = false` goes with it, not optionally: rustc's incremental
-# compilation state lives in `target/incremental/` and is itself a per-location
-# cache, which is exactly what sccache can't see or reuse -- measured locally,
-# 161 of 172 compiler invocations in a clean build were "non-cacheable:
-# incremental" until this was turned off. The trade is real (editing one file
-# and rebuilding in a worktree you've already warmed up loses incremental's
-# finer-grained reuse), but it's the right default for what this script is
-# for: a *new* worktree/container is exactly the case incremental can't help
-# with anyway (there is no prior incremental state to reuse), and that's where
-# most of the wasted time in this project's build actually goes. Override
-# per-invocation with `CARGO_INCREMENTAL=1` if you're iterating heavily in one
-# worktree and want that instead.
+# `incremental` is deliberately LEFT ALONE, and the reason is worth stating
+# because the obvious move is to turn it off. sccache cannot cache an
+# incremental compilation, so forcing `incremental = false` does raise the
+# hit rate -- but it raises it on compilations that were never shared
+# anyway, and it costs every human on the machine their edit-rebuild loop.
+#
+# The two concerns turn out not to overlap. Cargo applies incremental only
+# to *workspace/path* crates in the dev profile; registry dependencies are
+# always built non-incrementally. And the workspace's own crates can never
+# be shared between worktrees regardless (see the `-C metadata` note below),
+# while the ~150 registry crates are exactly what sccache does share. So
+# with incremental left at its default: workspace crates compile
+# incrementally and pass through sccache as non-cacheable, dependencies
+# still come from the cache, and nobody gives anything up. Measured on this
+# machine, a clean `cargo build -p pixelflow-codegen` with incremental at
+# its default created 3 incremental dirs AND took 2 of 2 cacheable compiles
+# from cache.
+#
+# One real footgun, which is why this is documented rather than left
+# implicit: setting `CARGO_INCREMENTAL=1` *explicitly* makes sccache refuse
+# to run at all -- `sccache: incremental compilation is prohibited: Unset
+# CARGO_INCREMENTAL to continue`, and the build fails. Cargo arriving at
+# incremental by default is fine; naming it in the environment is not. Do
+# not set that variable while `rustc-wrapper` is sccache.
 #
 # `SCCACHE_CACHE_SIZE` also goes with it, raised from the client's 10G
 # default -- but by less than intuition suggests, and the reason why is worth
@@ -100,7 +112,6 @@ add_build_key() {
 }
 
 add_build_key "rustc-wrapper" '"sccache"'
-add_build_key "incremental" "false"
 
 # Same idempotence contract as add_build_key, but for the `[env]` table --
 # cargo forwards these to every rustc (and thus every `sccache rustc ...`
