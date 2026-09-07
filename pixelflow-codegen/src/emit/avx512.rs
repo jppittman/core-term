@@ -686,7 +686,7 @@ mod tests {
         type BinaryCase = (OpKind, fn(f32, f32) -> f32);
 
         #[test]
-        fn binary_ops() {
+        fn emit_binary_matches_the_scalar_reference_for_every_arithmetic_op() {
             let (xs, ys, zs) = lanes();
             let cases: &[BinaryCase] = &[
                 (OpKind::Add, |a, b| a + b),
@@ -704,7 +704,7 @@ mod tests {
         }
 
         #[test]
-        fn high_register() {
+        fn emit_binary_writes_a_high_numbered_register() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_binary(&mut c, OpKind::Mul, Reg(20), X, Y);
@@ -713,7 +713,7 @@ mod tests {
         }
 
         #[test]
-        fn sqrt_op() {
+        fn emit_unary_computes_sqrt_of_a_positive_operand() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_unary(&mut c, OpKind::Sqrt, X, Y, None); // Y > 0
@@ -721,7 +721,7 @@ mod tests {
         }
 
         #[test]
-        fn neg_abs() {
+        fn emit_unary_negates_and_takes_the_absolute_value_of_every_lane() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_unary(&mut c, OpKind::Neg, X, X, Some(TEMP));
@@ -732,7 +732,7 @@ mod tests {
         }
 
         #[test]
-        fn const_broadcast() {
+        fn emit_const_broadcasts_and_adds_to_every_lane() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_const(&mut c, Reg(5), 2.5);
@@ -741,7 +741,7 @@ mod tests {
         }
 
         #[test]
-        fn fma_231() {
+        fn emit_fmadd_c_in_dst_computes_the_fused_multiply_add() {
             let (xs, ys, zs) = lanes();
             // emit_fmadd_c_in_dst(dst, a, b): dst = a*b + dst.
             let mut c = Vec::new();
@@ -754,13 +754,13 @@ mod tests {
         /// The FMA bytes really are an FMA: **one** rounding, not a multiply
         /// followed by an add.
         ///
-        /// `fma_231`'s 1e-3 tolerance cannot tell those apart — the whole
+        /// `emit_fmadd_c_in_dst_computes_the_fused_multiply_add`'s 1e-3 tolerance cannot tell those apart — the whole
         /// difference is the last mantissa bit — so a stand-in built out of a
         /// multiply and an add would pass it. `1.0000001 * 4097 + 4097` is one
         /// of the inputs CLAUDE.md's `MulAdd` row is about, where the two
         /// forms genuinely disagree, and this asserts the bits.
         #[test]
-        fn fma_rounds_once() {
+        fn emit_fmadd_c_in_dst_rounds_once_not_twice() {
             let xs = [1.000_000_1f32; 16];
             let ys = [4097.0f32; 16];
             let zs = [4097.0f32; 16];
@@ -788,7 +788,7 @@ mod tests {
         }
 
         #[test]
-        fn gather_from_buffer() {
+        fn emit_gather_reads_the_value_at_each_lanes_index() {
             // JIT a function: fn(*const f32 base [rdi], __m512 idx_float [zmm0]) -> __m512
             // that truncates the float indices, sets the mask, and gathers
             // base[idx] per lane. Validates the VSIB vgatherdps bytes on hardware.
@@ -827,7 +827,7 @@ mod tests {
         }
 
         #[test]
-        fn spill_frame_roundtrip() {
+        fn emit_load_after_emit_store_recovers_the_spilled_value() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             crate::emit::x86_64::emit_sub_rsp(&mut c, 64);

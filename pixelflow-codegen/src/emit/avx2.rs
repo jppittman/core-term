@@ -612,7 +612,7 @@ mod tests {
         const TEMP: Reg = Reg(15);
 
         #[test]
-        fn binary_ops() {
+        fn emit_binary_matches_the_scalar_reference_for_every_arithmetic_op() {
             let (xs, ys, zs) = lanes();
             let cases: &[BinaryCase] = &[
                 (OpKind::Add, |a, b| a + b),
@@ -630,7 +630,7 @@ mod tests {
         }
 
         #[test]
-        fn compare_lt() {
+        fn emit_binary_produces_an_all_ones_mask_when_lt_holds() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_binary(&mut c, OpKind::Lt, X, X, Y);
@@ -642,7 +642,7 @@ mod tests {
         }
 
         #[test]
-        fn sqrt_and_neg_abs() {
+        fn emit_unary_computes_sqrt_neg_and_abs_per_lane() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_unary(&mut c, OpKind::Sqrt, X, Y, None);
@@ -658,7 +658,7 @@ mod tests {
         }
 
         #[test]
-        fn select_blend() {
+        fn emit_select_blends_if_true_and_if_false_by_the_mask() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_binary(&mut c, OpKind::Lt, Reg(5), X, Y); // mask
@@ -673,18 +673,22 @@ mod tests {
         }
 
         #[test]
-        fn const_broadcast_and_fma() {
+        fn emit_const_broadcasts_and_adds_to_every_lane() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_const(&mut c, Reg(5), 2.5);
             emit_binary(&mut c, OpKind::Add, X, X, Reg(5));
             check(run(&c, xs, ys, zs), |i| xs[i] + 2.5, "const+add");
+        }
 
+        #[test]
+        fn emit_fmadd_c_in_dst_computes_the_fused_multiply_add() {
+            let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_mov(&mut c, Reg(5), Z);
             emit_fmadd_c_in_dst(&mut c, Reg(5), X, Y);
             emit_mov(&mut c, X, Reg(5));
-            check(run(&c, xs, ys, zs), |i| xs[i] * ys[i] + zs[i], "fma sw");
+            check(run(&c, xs, ys, zs), |i| xs[i] * ys[i] + zs[i], "fma231");
         }
 
         /// The FMA bytes really are an FMA: **one** rounding, not a multiply
@@ -696,7 +700,7 @@ mod tests {
         /// of the inputs CLAUDE.md's `MulAdd` row is about, where the two
         /// forms genuinely disagree, and this asserts the bits.
         #[test]
-        fn fma_rounds_once() {
+        fn emit_fmadd_c_in_dst_rounds_once_not_twice() {
             let xs = [1.000_000_1f32; 8];
             let ys = [4097.0f32; 8];
             let zs = [4097.0f32; 8];
@@ -724,7 +728,7 @@ mod tests {
         }
 
         #[test]
-        fn spill_frame_roundtrip() {
+        fn emit_load_after_emit_store_recovers_the_spilled_value() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             crate::emit::x86_64::emit_sub_rsp(&mut c, 32);
@@ -737,7 +741,7 @@ mod tests {
         }
 
         #[test]
-        fn gather_from_buffer() {
+        fn emit_gather_scalar_reads_the_value_at_each_lanes_index() {
             // Matches the production ABI (mod.rs's ResolvedOp::Gather): the
             // first arg is a context pointer to an ARRAY of buffer base
             // pointers (one per slot), not a buffer pointer directly —
