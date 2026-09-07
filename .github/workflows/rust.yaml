@@ -733,4 +733,3 @@ jobs:
 
       - name: cargo check -p pixelflow-search --no-default-features
         run: cargo check -p pixelflow-search --no-default-features
-
