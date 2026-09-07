@@ -66,12 +66,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::ttf::Font;
+// `PIXEL_CENTER` is this crate's shared rasterizer convention (`fonts/mod.rs`)
+// — see the "Coordinate convention" section above for what it means here.
 use super::PIXEL_CENTER;
-
-// Texel `(i, j)` stores coverage at continuous coordinate
-// `(i + PIXEL_CENTER, j + PIXEL_CENTER)` — this crate's shared rasterizer
-// convention (`fonts/mod.rs`). The bake applies it as a contramap;
-// [`CachedGlyph::kernel`] subtracts it before bilinear sampling.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CachedGlyph: The Morphism

@@ -2,8 +2,13 @@
 //!
 //! A string is a scan (prefix sum) over character advances with each glyph's
 //! coverage [`Kernel`] contramapped to its pen position. What differs between
-//! [`text`] and [`text_union`] is not the values — they agree bit for bit —
-//! but *who visits what*:
+//! [`text`] and [`text_union`] is not the values *given the same sampling
+//! convention* — they agree bit for bit once one is applied — but *who
+//! applies it and who visits what*: [`text_union`] carries the pixel-center
+//! contramap itself (see its own doc), while [`text`] does not and expects
+//! its caller to supply one, same as any other `Kernel`. Baked straight over
+//! a lattice with no contramap at all, the two differ by exactly that half
+//! pixel.
 //!
 //! - [`text`] sums the placed glyphs into ONE kernel. A sum has no mask, so
 //!   nothing in it can be guarded and **every pixel evaluates every glyph**.
@@ -113,9 +118,15 @@ pub fn text_union(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> U
 /// not a type a consumer builds against.
 #[doc(hidden)]
 pub struct TextCell {
-    /// The columns this cell answers for, over the whole height of the frame.
+    /// The columns this cell answers for, over the whole height of the
+    /// frame. Cut assuming pixel-center sampling (`text_union`'s own
+    /// convention) — a consumer using a different convention to place
+    /// `glyphs` may cut columns slightly differently than this range does.
     pub range: IndexRange,
-    /// The glyphs that can be nonzero there. Never empty.
+    /// The glyphs that can be nonzero there, in raw glyph space (unshifted,
+    /// same as `layout` produces) — never empty. Reading these directly
+    /// rather than through [`text_union`] means applying the pixel-center
+    /// contramap yourself to land where `range` was cut for.
     pub glyphs: Vec<Kernel>,
 }
 

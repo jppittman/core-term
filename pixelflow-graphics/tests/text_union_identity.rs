@@ -132,8 +132,9 @@ fn split_and_added(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> 
         let Some(glyph) = font.glyph_scaled_by_id(id, size) else {
             continue;
         };
-        // Same placement `layout` makes: pen shift plus the pixel-center ½,
-        // since `lattice` is a plain index with no origin to carry it.
+        // `layout`'s pen shift, plus the pixel-center ½ applied by hand here
+        // (matching what `text_union` applies once per cell): `lattice` is a
+        // plain index with no origin to carry either.
         let placed = glyph.kernel.at(
             &Kernel::x()
                 .add(&Kernel::constant(0.5))
