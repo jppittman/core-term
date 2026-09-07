@@ -309,6 +309,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Install X11 dependencies (Linux)
         if: runner.os == 'Linux'
@@ -334,6 +336,21 @@ jobs:
           key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             cargo-registry-
+
+      # The dedicated `clippy` job below only ever runs on ubuntu-latest
+      # (x86_64), and `cross-target-abi`'s aarch64 leg runs `cargo check`
+      # (no `-D warnings`, and it skips xtask) rather than clippy. So an
+      # aarch64-only lint -- e.g. a `#[cfg(target_arch = "x86_64")]` block
+      # leaving a method dead-code everywhere else -- had no CI job that
+      # could ever see it; it surfaced only on a contributor's own
+      # Apple-Silicon checkout. `macos-latest` is already an aarch64 runner
+      # and this job already builds the workspace here, so a clippy pass
+      # is the cheap way to close that: no new job, no new runner minutes
+      # beyond the lint itself.
+      - name: Run Clippy (macOS/aarch64 coverage)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       # Compile tests first so the run step below is (mostly) pure execution.
       - name: Build tests
