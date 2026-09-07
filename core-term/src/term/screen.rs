@@ -619,16 +619,16 @@ impl Screen {
     }
 
     pub fn mark_line_dirty(&mut self, y: usize) {
-        if y < self.dirty.len() {
-            self.dirty[y] = 1;
-        } else {
+        if y >= self.dirty.len() {
             warn!(
                 "mark_line_dirty: y coordinate {} is out of bounds for dirty flags (len {}), screen height is {}",
                 y,
                 self.dirty.len(),
                 self.height
             );
+            return;
         }
+        self.dirty[y] = 1;
     }
 
     pub fn enter_alt_screen(&mut self, clear_mode: AltScreenClear) {
@@ -692,11 +692,7 @@ impl Screen {
         let height_for_log = self.height;
 
         let grid_to_use = self.active_grid_mut();
-        if y < grid_to_use.len() && x < grid_to_use.get(y).map_or(0, |row| row.len()) {
-            let row = Arc::make_mut(&mut grid_to_use[y]);
-            row[x] = glyph;
-            self.mark_line_dirty(y);
-        } else {
+        if y >= grid_to_use.len() || x >= grid_to_use.get(y).map_or(0, |row| row.len()) {
             warn!(
                 "set_glyph: coordinates ({},{}) out of grid internal bounds. Screen: {}x{}, Grid row {} len: {:?}",
                 x,
@@ -706,7 +702,11 @@ impl Screen {
                 y,
                 grid_to_use.get(y).map(|r| r.len())
             );
+            return;
         }
+        let row = Arc::make_mut(&mut grid_to_use[y]);
+        row[x] = glyph;
+        self.mark_line_dirty(y);
     }
 
     pub fn clear_line_segment(&mut self, y: usize, x_start: usize, x_end: usize) {
@@ -716,29 +716,29 @@ impl Screen {
 
     // --- Tab stop methods ---
     pub fn set_tabstop(&mut self, x: usize) {
-        if x < self.tabs.len() {
-            self.tabs[x] = true;
-        } else {
+        if x >= self.tabs.len() {
             warn!(
                 "set_tabstop: column {} is out of bounds for tabs (width {})",
                 x,
                 self.tabs.len()
             );
+            return;
         }
+        self.tabs[x] = true;
     }
 
     pub fn clear_tabstops(&mut self, current_cursor_x: usize, mode: TabClearMode) {
         match mode {
             TabClearMode::CurrentColumn => {
-                if current_cursor_x < self.tabs.len() {
-                    self.tabs[current_cursor_x] = false;
-                } else {
+                if current_cursor_x >= self.tabs.len() {
                     warn!(
                         "clear_tabstops (CurrentColumn): cursor_x {} out of bounds for tabs (width {})",
                         current_cursor_x,
                         self.tabs.len()
                     );
+                    return;
                 }
+                self.tabs[current_cursor_x] = false;
             }
             TabClearMode::All => {
                 self.tabs.fill(false);
