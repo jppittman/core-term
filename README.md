@@ -47,7 +47,8 @@ buffers; it does not promise that all scenes are free of overdraw or branches.
 | Crate | Purpose |
 |---|---|
 | `pixelflow-core` | `no_std` lattices, the compiled `Manifold`, and `collapse` — the one evaluation API |
-| `pixelflow-ir` | `Kernel`, `ExprArena`, operations, lowering, and CPU emitters |
+| `pixelflow-ir` | `Kernel`, `ExprArena`, operations, and lowering |
+| `pixelflow-codegen` | Per-ISA emitters (x86-64, aarch64), register allocation, and the JIT compile cache |
 | `pixelflow-compiler` | `kernel!` and `kernel_raw!`, and the parser/sema/optimization front end behind them |
 | `pixelflow-search` | E-graphs, rewrite rules, extraction, provenance, and guided-search experiments |
 | `pixelflow-pipeline` | Benchmark, corpus, and cost-model research tooling |
