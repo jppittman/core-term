@@ -1007,8 +1007,8 @@ pub const ATAN_MINIMAX: [f32; 4] = [0.999_268_04, -0.321_431_33, 0.146_614_41, -
 
 /// `atan2(y, x)` (four-quadrant) as a primitive subgraph.
 ///
-/// Mirrors the runtime `SimdOps` version: reduce to a ratio in [-1,1] (swapping
-/// y/x when |y|>|x|), a degree-7 odd polynomial for atan on that interval, then
+/// Reduces to a ratio in [-1,1] (swapping y/x when |y|>|x|), a degree-7 odd
+/// polynomial for atan on that interval, then
 /// quadrant fix-ups via `Select` on comparison masks. Uses `Select`/`Lt`/`Gt`/
 /// `Ge`/`Recip` — all primitives the value path emits. (Like other Select-using
 /// expansions this is value-path only; the jet path has no Ternary rule.)
