@@ -23,6 +23,15 @@
 //! feature-gated and its CI job is informational. An informational job that
 //! would have caught this is worth more than no job.
 //!
+//! **Being feature-gated, this file is invisible to the obvious local lint.**
+//! `cargo clippy --workspace --all-targets` never compiles it — the same shape
+//! of gap this suite exists to close, one level down: a target no job builds
+//! is a target no check can see. CI runs
+//! `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+//! and that is the command to run before touching this file; the plain one
+//! will pass on code that does not compile. Likewise the test itself runs only
+//! under `--features freetype`.
+//!
 //! Known and deliberately not asserted: the reverse direction. There are two
 //! texels where FreeType has ink and we do not, unchanged by any work here —
 //! this rasterizer ramps coverage only in X, so a horizontal edge gets no
@@ -62,9 +71,9 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
     // Our screen frame: `scale = size / (ascender + |descender|)`, y flipped
     // about the baseline at `ascent_px`. Read the metrics from FreeType so the
     // mapping is not calibrated against the thing under test.
-    let upem = (*face.raw()).units_per_EM as f32;
-    let ascender = (*face.raw()).ascender as f32;
-    let descender = (*face.raw()).descender as f32;
+    let upem = face.raw().units_per_EM as f32;
+    let ascender = face.raw().ascender as f32;
+    let descender = face.raw().descender as f32;
 
     let mut orphans = Vec::new();
 
