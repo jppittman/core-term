@@ -12,15 +12,14 @@
 //!
 //! ## Rank
 //!
-//! A manifold is compiled at a [`Lattice`](crate::Lattice)'s **whole**
-//! `[x, y, z, w]` extent, which is exactly what a
+//! A manifold is compiled at a [`Lattice`](crate::Lattice)'s whole `[x, y]`
+//! extent, which is exactly what a
 //! [`LatticeShape`](pixelflow_ir::LatticeShape) is: the extents decide which
 //! axes are binders, and therefore what the emitter may hoist out of what. The
-//! *collapse ABI* is two-dimensional — one call fills batches across X and rows
-//! down Y — so a band always lies in one `(z, w)` plane, and a domain with
-//! Z or W extent above 1 is collapsed one plane per call by whoever owns the
-//! nest ([`Lattice::collapse`](crate::Lattice::collapse)). Rank is a property
-//! of the shape a kernel was compiled for; two is a property of the store.
+//! *collapse ABI* is two-dimensional — one call fills batches across X and
+//! rows down Y — and so is the domain, so a lattice is one call. A scalar the
+//! kernel needs but the lattice does not vary is an argument
+//! ([`UniformBlock`]), not a third axis of extent 1.
 //!
 //! This is the shape every frame path in the tree already had — the cell
 //! grid's four channel programs and its packed sibling were two copies of it
@@ -153,15 +152,13 @@ impl UniformBlock {
 }
 
 /// A horizontal band to collapse: `width` samples across, `rows` rows down,
-/// starting at some coordinate of the kernel's four-dimensional domain.
+/// starting at some coordinate of the kernel's two-dimensional domain.
 ///
-/// A kernel is a function of four coordinates and a band fixes two of them, so
-/// which plane it lies in is part of naming it, not a detail of the caller's:
-/// [`PlaneRegion::rows`] names a pixel band of the origin plane and
-/// [`PlaneRegion::on_slice`] moves it to another. That is where a frame's
-/// timestamp enters a compiled kernel — a shader animated in `W`
-/// (`Kernel::w()`) is compiled once and collapsed on a different slice each
-/// frame, instead of being recompiled with the time baked in as a constant.
+/// A frame's timestamp used to enter a compiled kernel through here, as the
+/// `(z, w)` plane the band lay in. It is a [`UniformBlock`] value now: the
+/// program is still compiled once and still collapsed with a new time each
+/// frame, but the time is an argument of the call rather than a coordinate no
+/// sample varies along.
 ///
 /// The band's own **origin** — the coordinate its first sample is taken at —
 /// is what separates the two conventions in the tree. A pixel band samples
@@ -175,12 +172,12 @@ pub struct PlaneRegion {
     pub width: usize,
     /// Number of rows.
     pub rows: usize,
-    /// The coordinate the first sample is taken at: lane 0 of the first row,
-    /// and the `Z`/`W` every sample of the band carries. Private so a band is
-    /// always somewhere — no axis can be set alone or left undefined — and
-    /// because which of the two sampling conventions applies is the
-    /// constructor's to decide, not the caller's to patch afterwards.
-    origin: [f32; 4],
+    /// The coordinate the first sample is taken at: lane 0 of the first row.
+    /// Private so a band is always somewhere — no axis can be set alone or
+    /// left undefined — and because which of the two sampling conventions
+    /// applies is the constructor's to decide, not the caller's to patch
+    /// afterwards.
+    origin: [f32; crate::lattice::AXES],
 }
 
 impl PlaneRegion {
@@ -191,39 +188,23 @@ impl PlaneRegion {
         Self {
             width,
             rows,
-            origin: [SAMPLE_CENTER, y0 as f32 + SAMPLE_CENTER, 0.0, 0.0],
+            origin: [SAMPLE_CENTER, y0 as f32 + SAMPLE_CENTER],
         }
     }
 
     /// A band of `rows` rows whose first sample is taken at `origin`, with
     /// each subsequent sample one unit further along X and each row one unit
     /// further along Y. The lattice's own convention.
-    pub(crate) fn from_origin(width: usize, rows: usize, origin: [f32; 4]) -> Self {
+    pub(crate) fn from_origin(
+        width: usize,
+        rows: usize,
+        origin: [f32; crate::lattice::AXES],
+    ) -> Self {
         Self {
             width,
             rows,
             origin,
         }
-    }
-
-    /// The same band on the plane at `(z, w)`.
-    #[must_use]
-    pub fn on_slice(mut self, z: f32, w: f32) -> Self {
-        self.origin[2] = z;
-        self.origin[3] = w;
-        self
-    }
-
-    /// The `Z` this band's samples carry.
-    #[must_use]
-    pub fn z(&self) -> f32 {
-        self.origin[2]
-    }
-
-    /// The `W` this band's samples carry.
-    #[must_use]
-    pub fn w(&self) -> f32 {
-        self.origin[3]
     }
 }
 
@@ -259,9 +240,9 @@ const SAMPLE_CENTER: f32 = 0.5;
 /// integer pack at the root. Not three paths — one, sampled three ways.
 pub struct Manifold {
     jit: Arc<CompiledKernel>,
-    /// The lattice shape the kernel was specialized to, `[x, y, z, w]`. Every
-    /// band collapsed through it lies within these extents.
-    extent: [u32; 4],
+    /// The lattice shape the kernel was specialized to, `[x, y]`. Every band
+    /// collapsed through it lies within these extents.
+    extent: [u32; crate::lattice::AXES],
     /// The memory the kernel declared, in the slot order its ABI binds.
     /// Shared so a [`BoundManifold`] stays cheap to clone.
     slots: Arc<[BufferDecl]>,
@@ -278,10 +259,10 @@ pub struct Manifold {
 impl Manifold {
     /// JIT-compile `kernel` in collapse mode at a lattice of these extents.
     ///
-    /// `extent` is a [`Lattice`](crate::Lattice)'s own `[x, y, z, w]`, whatever
-    /// its rank; the lattice's *origin* is not part of it, because the shape is
-    /// what specializes the code and where a collapse starts is a property of
-    /// the collapse. A frame is `[w, h, 1, 1]`.
+    /// `extent` is a [`Lattice`](crate::Lattice)'s own `[x, y]`; the lattice's
+    /// *origin* is not part of it, because the shape is what specializes the
+    /// code and where a collapse starts is a property of the collapse. A frame
+    /// is `[w, h]`.
     ///
     /// # Panics
     ///
@@ -290,7 +271,7 @@ impl Manifold {
     /// than [`MAX_BOUND_BUFFERS`] or one too large to index exactly in `f32`,
     /// or if compilation fails.
     #[must_use]
-    pub fn compile(kernel: &Kernel, extent: [u32; 4]) -> Self {
+    pub fn compile(kernel: &Kernel, extent: [u32; crate::lattice::AXES]) -> Self {
         assert!(
             extent.iter().all(|&e| e > 0),
             "Manifold::compile: degenerate extent {extent:?}"
@@ -338,9 +319,9 @@ impl Manifold {
         }
     }
 
-    /// The lattice extents this manifold was compiled for, `[x, y, z, w]`.
+    /// The lattice extents this manifold was compiled for, `[x, y]`.
     #[must_use]
-    pub fn extent(&self) -> [u32; 4] {
+    pub fn extent(&self) -> [u32; crate::lattice::AXES] {
         self.extent
     }
 
@@ -445,7 +426,7 @@ fn buffer_len(decl: &BufferDecl) -> usize {
 #[derive(Clone)]
 pub struct BoundManifold {
     jit: Arc<CompiledKernel>,
-    extent: [u32; 4],
+    extent: [u32; crate::lattice::AXES],
     /// Bound memory in slot order; entries past the declared slots stay
     /// `None` and are never addressed, because the kernel only reads slots it
     /// declared.
@@ -462,9 +443,9 @@ pub struct BoundManifold {
 }
 
 impl BoundManifold {
-    /// The lattice extents the kernel was compiled for, `[x, y, z, w]`.
+    /// The lattice extents the kernel was compiled for, `[x, y]`.
     #[must_use]
-    pub fn extent(&self) -> [u32; 4] {
+    pub fn extent(&self) -> [u32; crate::lattice::AXES] {
         self.extent
     }
 
@@ -638,8 +619,14 @@ impl BoundManifold {
         }
         // Where the band's first sample lies; X advances by one per lane, Y by
         // one per row, which is what the collapse loop does.
-        let [x0, y0, z, w] = region.origin;
-        let (z, w) = (Field::from(z), Field::from(w));
+        //
+        // The ABI still carries four base coordinates. The last two are dead:
+        // no arena can name `Var(2)` or `Var(3)`, so no emitted body reads
+        // them, and passing zero keeps every kernel's bytes exactly what they
+        // were. Narrowing the ABI to two is L2's, because it changes the
+        // scaffold's own stores and loads and so every kernel's bytes.
+        let [x0, y0] = region.origin;
+        let dead = Field::from(0.0);
         if band.groups > 0 {
             // SAFETY: `compile` checked size_of::<Field>() == JIT_VECTOR_BYTES
             // and that every declared slot fits `ctx`; `bind` bound a buffer of
@@ -659,7 +646,12 @@ impl BoundManifold {
                         band.rows,
                         band.row_skip_bytes(),
                     ),
-                    pixelflow_codegen::Point4::new(Field::sequential(x0), Field::from(y0), z, w),
+                    pixelflow_codegen::Point4::new(
+                        Field::sequential(x0),
+                        Field::from(y0),
+                        dead,
+                        dead,
+                    ),
                 );
             }
         }
@@ -679,8 +671,8 @@ impl BoundManifold {
                     pixelflow_codegen::Point4::new(
                         Field::sequential(x0 + band.whole_lanes() as f32),
                         Field::from(y0 + row as f32),
-                        z,
-                        w,
+                        dead,
+                        dead,
                     ),
                 );
             }
@@ -841,7 +833,7 @@ mod tests {
     /// destination whose rows are exactly as wide as the samples, in one.
     #[test]
     fn a_band_collapses_its_absolute_rows_at_sample_centers() {
-        let program = Manifold::compile(&coordinate_kernel(), [8, 8, 1, 1]);
+        let program = Manifold::compile(&coordinate_kernel(), [8, 8]);
         let frame = program.bind(&[]);
         let (width, y0, rows) = (5, 4, 3);
         let mut out = vec![0.0f32; rows * width];
@@ -870,7 +862,7 @@ mod tests {
     /// the samples themselves are read back.)
     #[test]
     fn a_band_lands_at_the_stride_the_caller_asked_for() {
-        let program = Manifold::compile(&coordinate_kernel(), [16, 8, 1, 1]);
+        let program = Manifold::compile(&coordinate_kernel(), [16, 8]);
         let frame = program.bind(&[]);
         let (width, stride, rows) = (9, BATCH_LANES * 4 + 1, 4);
         const UNTOUCHED: f32 = -1.0;
@@ -897,7 +889,7 @@ mod tests {
     /// have had from a whole-batch store into a padded row.
     #[test]
     fn a_partial_last_batch_collapses_the_same_samples_at_any_stride() {
-        let program = Manifold::compile(&coordinate_kernel(), [32, 8, 1, 1]);
+        let program = Manifold::compile(&coordinate_kernel(), [32, 8]);
         let frame = program.bind(&[]);
         let (width, rows) = (BATCH_LANES * 2 - 1, 3);
         let padded = BATCH_LANES * 2;
@@ -924,7 +916,7 @@ mod tests {
             .or(&Kernel::y().trunc_to_int())
             .into_kernel();
         let width = BATCH_LANES + 1;
-        let program = Manifold::compile(&kernel, [width as u32, 4, 1, 1]);
+        let program = Manifold::compile(&kernel, [width as u32, 4]);
         let frame = program.bind(&[]);
         let mut out = vec![0u32; 2 * width];
         frame.collapse_int_rows(PlaneRegion::rows(width, 0, 2), &mut out, width);
@@ -942,7 +934,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "narrower than")]
     fn a_stride_below_the_sampled_width_is_refused() {
-        let program = Manifold::compile(&coordinate_kernel(), [8, 8, 1, 1]);
+        let program = Manifold::compile(&coordinate_kernel(), [8, 8]);
         let frame = program.bind(&[]);
         let mut out = vec![0.0f32; 32];
         frame.collapse_rows(PlaneRegion::rows(5, 0, 2), &mut out, 4);
@@ -959,13 +951,9 @@ mod tests {
         let buffer = BufferIdentity::mint();
         let (bw, bh) = (4u32, 3u32);
         let data: Vec<f32> = (0..bw * bh).map(|i| i as f32 * 0.25).collect();
-        let kernel = crate::lattice::DiscreteManifold::kernel_for(buffer, bw, bh).at(
-            &Kernel::x(),
-            &Kernel::y(),
-            &Kernel::z(),
-            &Kernel::w(),
-        );
-        let program = Manifold::compile(&kernel, [bw, bh, 1, 1]);
+        let kernel = crate::lattice::DiscreteManifold::kernel_for(buffer, bw, bh)
+            .at(&Kernel::x(), &Kernel::y());
+        let program = Manifold::compile(&kernel, [bw, bh]);
         assert_eq!(
             program.buffers().len(),
             1,
@@ -982,13 +970,9 @@ mod tests {
     #[should_panic(expected = "nothing bound to slot")]
     fn a_declared_slot_with_no_buffer_is_refused() {
         let buffer = BufferIdentity::mint();
-        let kernel = crate::lattice::DiscreteManifold::kernel_for(buffer, 4, 4).at(
-            &Kernel::x(),
-            &Kernel::y(),
-            &Kernel::z(),
-            &Kernel::w(),
-        );
-        let program = Manifold::compile(&kernel, [4, 4, 1, 1]);
+        let kernel = crate::lattice::DiscreteManifold::kernel_for(buffer, 4, 4)
+            .at(&Kernel::x(), &Kernel::y());
+        let program = Manifold::compile(&kernel, [4, 4]);
         let _refused = program.bind(&[]);
     }
 
@@ -996,13 +980,9 @@ mod tests {
     #[should_panic(expected = "floats bound to slot")]
     fn a_buffer_of_the_wrong_length_is_refused() {
         let buffer = BufferIdentity::mint();
-        let kernel = crate::lattice::DiscreteManifold::kernel_for(buffer, 4, 4).at(
-            &Kernel::x(),
-            &Kernel::y(),
-            &Kernel::z(),
-            &Kernel::w(),
-        );
-        let program = Manifold::compile(&kernel, [4, 4, 1, 1]);
+        let kernel = crate::lattice::DiscreteManifold::kernel_for(buffer, 4, 4)
+            .at(&Kernel::x(), &Kernel::y());
+        let program = Manifold::compile(&kernel, [4, 4]);
         let _refused = program.bind(&[(buffer, Arc::new(vec![0.0f32; 15]))]);
     }
 }

@@ -84,7 +84,7 @@ fn naked_abi_multithreaded_scale() {
                             let vw: float32x4_t = std::mem::transmute(zero);
 
                             let res = invoke_naked_kernel(kernel_ptr, vx, vy, vz, vw);
-                            let out: [f32; 4] = std::mem::transmute(res);
+                            let out: [f32; 2] = std::mem::transmute(res);
 
                             // 1*2=2, 2*2=4, 3*2=6, 4*2=8
                             if out == [2.0, 4.0, 6.0, 8.0] {

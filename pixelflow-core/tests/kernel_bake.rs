@@ -13,8 +13,8 @@ fn kernel_bakes_over_lattice() {
     let sdf = x.mul(&x).add(&y.mul(&y)).sqrt().sub(&Kernel::constant(3.0));
 
     let lattice = Lattice {
-        extent: [8, 8, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [8, 8],
+        origin: [0.5, 0.5],
     };
     let baked = lattice.bake(&sdf);
     let buf = baked.buffer();
@@ -48,7 +48,7 @@ fn kernel_bakes_at_every_lattice_shape() {
     let sdf = circle_sdf();
 
     // A scanline: X loops, Y is a per-call constant.
-    let row = Lattice::scanline(37, 2.5, 0.0, 0.0).bake(&sdf);
+    let row = Lattice::scanline(37, 2.5).bake(&sdf);
     let buf = row.buffer();
     assert_eq!(buf.len(), 37);
     for (i, &got) in buf.iter().enumerate() {
@@ -57,13 +57,13 @@ fn kernel_bakes_at_every_lattice_shape() {
     }
 
     // A point: nothing loops.
-    let point = Lattice::point(1.5, 4.5, 0.0, 0.0).bake(&sdf);
+    let point = Lattice::point(1.5, 4.5).bake(&sdf);
     assert_eq!(point.buffer().len(), 1);
     let want = closed_form(1.5, 4.5);
     assert!((point.buffer()[0] - want).abs() < 1e-3);
 
     // A frame with a scalar tail on every row.
-    let frame = Lattice::frame(19, 5, 0.0).bake(&sdf);
+    let frame = Lattice::frame(19, 5).bake(&sdf);
     assert_eq!(frame.buffer().len(), 95);
     for j in 0..5 {
         for i in 0..19 {
@@ -93,11 +93,11 @@ fn each_lattice_extent_is_its_own_kernel() {
             .expect("compile")
             .kernel
     };
-    let first = compile(Lattice::frame(8, 8, 0.0));
-    let again = compile(Lattice::frame(8, 8, 0.0));
-    let wider = compile(Lattice::frame(9, 8, 0.0));
+    let first = compile(Lattice::frame(8, 8));
+    let again = compile(Lattice::frame(8, 8));
+    let wider = compile(Lattice::frame(9, 8));
     assert!(std::sync::Arc::ptr_eq(&first, &again));
     assert!(!std::sync::Arc::ptr_eq(&first, &wider));
-    assert_eq!(first.shape().extent(), [8, 8, 1, 1]);
-    assert_eq!(wider.shape().extent(), [9, 8, 1, 1]);
+    assert_eq!(first.shape().extent(), [8, 8]);
+    assert_eq!(wider.shape().extent(), [9, 8]);
 }

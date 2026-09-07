@@ -9,10 +9,8 @@ use pixelflow_core::{Kernel, Manifold};
 /// Read a buffer at one coordinate: its nearest-neighbour gather compiled at
 /// a one-sample lattice, with the buffer bound, then collapsed.
 fn read(dm: &DiscreteManifold, x: f32, y: f32) -> f32 {
-    let bound = Manifold::compile(&dm.kernel(), [1, 1, 1, 1]).bind(&[dm.binding()]);
-    Lattice::point(x, y, 0.0, 0.0)
-        .collapse(&bound)
-        .into_buffer()[0]
+    let bound = Manifold::compile(&dm.kernel(), [1, 1]).bind(&[dm.binding()]);
+    Lattice::point(x, y).collapse(&bound).into_buffer()[0]
 }
 
 fn main() {
@@ -24,7 +22,7 @@ fn main() {
     println!("{:?} {:?}", read(&dm, 0.0, 1.0), read(&dm, 1.0, 1.0));
 
     // Bake a kernel over a 4x4 frame.
-    let lattice = Lattice::frame(4, 4, 0.0);
+    let lattice = Lattice::frame(4, 4);
     let baked = lattice.bake(&Kernel::x().add(&Kernel::y().mul(&Kernel::constant(10.0))));
     println!("\nBaked 4x4 `X + 10*Y`: {:?}", baked.buffer());
 }
