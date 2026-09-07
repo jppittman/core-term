@@ -380,12 +380,7 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .map(|actor| {
             let fields: String = actors
                 .iter()
-                .map(|target| {
-                    format!(
-                        "{name}: {name}_builder.add_producer(),",
-                        name = target.name
-                    )
-                })
+                .map(|target| format!("{name}: {name}_builder.add_producer(),", name = target.name))
                 .collect::<Vec<_>>()
                 .join("\n                    ");
             format!(
@@ -408,7 +403,12 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // Generate spawns for non-main actors in play()
     let build_schedulers: String = actors
         .iter()
-        .map(|a| format!("let mut {name}_s = self.{name}_builder.build();", name = a.name))
+        .map(|a| {
+            format!(
+                "let mut {name}_s = self.{name}_builder.build();",
+                name = a.name
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -449,7 +449,12 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     let shutdown_impl = actors
         .iter()
         .rev()
-        .map(|a| format!("let _ = self.{name}.send(::actor_scheduler::Message::Shutdown);", name = a.name))
+        .map(|a| {
+            format!(
+                "let _ = self.{name}.send(::actor_scheduler::Message::Shutdown);",
+                name = a.name
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
