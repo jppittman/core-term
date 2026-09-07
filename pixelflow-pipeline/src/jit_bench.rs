@@ -374,16 +374,16 @@ fn has_reachable_var(arena: &ExprArena, root: ExprId) -> bool {
 /// data-dependent cost (denormals, select paths) is visible and the recorded
 /// outputs cover 64 points instead of one.
 ///
-/// Tuple 0 is the legacy single test point `(0.5, 0.7, 1.3, -0.2)`, so
+/// Tuple 0 is the legacy single test point `(0.5, 0.7)`, so
 /// [`BenchResult::output`] keeps its historical meaning.
-fn input_tuples() -> &'static [[f32; 4]; INPUT_TUPLES] {
-    static TUPLES: std::sync::OnceLock<[[f32; 4]; INPUT_TUPLES]> = std::sync::OnceLock::new();
+fn input_tuples() -> &'static [[f32; 2]; INPUT_TUPLES] {
+    static TUPLES: std::sync::OnceLock<[[f32; 2]; INPUT_TUPLES]> = std::sync::OnceLock::new();
     TUPLES.get_or_init(|| {
-        let mut t = [[0.0f32; 4]; INPUT_TUPLES];
-        t[0] = [0.5, 0.7, 1.3, -0.2];
-        t[1] = [0.0, -0.0, 1.0, -1.0];
-        t[2] = [1e-4, -1e-4, 1e4, -1e4];
-        t[3] = [1.0, 2.0, 0.5, 0.25];
+        let mut t = [[0.0f32; 2]; INPUT_TUPLES];
+        t[0] = [0.5, 0.7];
+        t[1] = [0.0, -0.0];
+        t[2] = [1e-4, -1e-4];
+        t[3] = [1.0, 2.0];
         // Remaining tuples: xorshift64, fixed seed — sign × mantissa [1,2) ×
         // 10^{-4..=4}. Deterministic so every measurement (and every
         // equivalence comparison) sees the identical buffer.
@@ -861,16 +861,13 @@ fn measure_exec_code(
     for (v_idx, pt) in input_points.iter_mut().enumerate() {
         let mut xs = [0.0f32; LANES];
         let mut ys = [0.0f32; LANES];
-        let mut zs = [0.0f32; LANES];
-        let mut ws = [0.0f32; LANES];
         for lane in 0..LANES {
             let t = &tuples[v_idx * LANES + lane];
             xs[lane] = t[0];
             ys[lane] = t[1];
-            zs[lane] = t[2];
-            ws[lane] = t[3];
         }
-        *pt = Point4::new(xs, ys, zs, ws);
+        // The last two base coordinates are dead: no arena can name them.
+        *pt = Point4::new(xs, ys, [0.0f32; LANES], [0.0f32; LANES]);
     }
 
     let mut out_buf = [0.0f32; LANES];
@@ -1080,23 +1077,21 @@ pub struct SentinelSample {
 }
 
 /// The fixed moderate-size reference kernel: ~40 compute ops of mixed
-/// mul/add/sqrt over all four coordinates. Big enough that its cost tracks
+/// mul/add/sqrt over both coordinates. Big enough that its cost tracks
 /// real kernel throughput, small enough to re-measure cheaply every
 /// [`SENTINEL_INTERVAL`] expressions.
 fn sentinel_arena() -> (ExprArena, ExprId) {
     let mut arena = ExprArena::new();
     let x = arena.push_var(0);
     let y = arena.push_var(1);
-    let z = arena.push_var(2);
-    let w = arena.push_var(3);
-    let vars = [x, y, z, w];
+    let vars = [x, y];
     let mut acc = x;
-    // 8 rounds × 5 ops = 40 ops (+ 8 consts + 4 vars = 52 nodes).
+    // 8 rounds × 5 ops = 40 ops (+ 8 consts + 2 vars = 50 nodes).
     // sqrt argument is acc² + positive constant, so it never goes negative.
     let round_consts = [1.25f32, 0.75, 2.5, 0.5, 3.0, 1.5, 0.25, 2.0];
     for (i, &c) in round_consts.iter().enumerate() {
         let k = arena.push_const(c);
-        let v = vars[i % 4];
+        let v = vars[i % vars.len()];
         let scaled = arena.push_binary(OpKind::Mul, acc, v);
         let squared = arena.push_binary(OpKind::Mul, acc, acc);
         let shifted = arena.push_binary(OpKind::Add, squared, k);

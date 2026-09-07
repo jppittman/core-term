@@ -177,8 +177,8 @@ impl GlyphAtlas {
             .map(|kernel| {
                 let n = self.tile_px as u32;
                 Lattice {
-                    extent: [n, n, 1, 1],
-                    origin: [0.5, 0.5, 0.0, 0.0],
+                    extent: [n, n],
+                    origin: [0.5, 0.5],
                 }
                 .bake(&kernel)
             });

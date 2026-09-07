@@ -95,7 +95,7 @@ const SENTINEL_WINDOW: usize = 3;
 
 /// The drift sentinel's shape — small, fixed, and unrelated to anything in the
 /// corpus, so its cost moves only when the machine does.
-const SENTINEL_EXTENT: [u32; 4] = [256, 32, 1, 1];
+const SENTINEL_EXTENT: [u32; 2] = [256, 32];
 
 /// Which ISA level this binary was built for, read off the target features the
 /// backend selection itself keys on.
@@ -136,7 +136,7 @@ pub fn tier() -> &'static str {
 /// corpus bug, and continuing past it would silently change which kernels the
 /// two sides of a comparison share.
 #[must_use]
-pub fn compile_as_baked(arena: &ExprArena, root: ExprId, extent: [u32; 4]) -> CompileResult {
+pub fn compile_as_baked(arena: &ExprArena, root: ExprId, extent: [u32; 2]) -> CompileResult {
     let shape = LatticeShape::new(extent);
     let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root, shape);
     let (arena, root) = optimized

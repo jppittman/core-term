@@ -181,27 +181,6 @@ impl Rgba {
             }),
         }
     }
-
-    /// Sample this colour at warped coordinates — [`Kernel::at`] through the
-    /// whole tree, mask included, because sampling a choice somewhere else
-    /// asks the condition there too.
-    fn at(&self, x: &Kernel, y: &Kernel, z: &Kernel) -> Self {
-        let w = Kernel::w();
-        match &self.0 {
-            Node::Channels(channels) => Self(Node::Channels(core::array::from_fn(|c| {
-                channels[c].at(x, y, z, &w)
-            }))),
-            Node::Choice {
-                mask,
-                if_true,
-                if_false,
-            } => Self(Node::Choice {
-                mask: mask.at(x, y, z, &w),
-                if_true: Box::new(if_true.at(x, y, z)),
-                if_false: Box::new(if_false.at(x, y, z)),
-            }),
-        }
-    }
 }
 
 /// Four channel kernels are a colour with no choice in it — the leaf every
@@ -425,12 +404,17 @@ const CHECKER_DARK: [f32; 3] = [0.2, 0.25, 0.3];
 /// A unit checkerboard in the `x`/`z` plane, its edges filtered over
 /// `footprint` — normally [`Hit::footprint`], which is one pixel wide.
 ///
-/// The material is built over the three coordinate slots that *are* its
-/// arguments (`x`, `z`, `footprint`) and precomposed once, so the hit point
-/// appears once in the arena however large an expression it is.
+/// The two *geometric* facts about where the hit lands — which square it is
+/// in, and how far it is from the nearest edge — are functions of the hit's
+/// `x` and `z` alone, so they are built over the two coordinate slots and
+/// precomposed once, which is what keeps the hit point from appearing in the
+/// arena once per use. The footprint is not a coordinate of the material: it
+/// is a screen-space quantity the caller already has, and it enters where it
+/// is used rather than as a third axis nothing varies along. (It was one, and
+/// it was the last reader of `Z` outside a shader's clock.)
 #[must_use]
 pub fn checker(x: &Kernel, z: &Kernel, footprint: &Kernel) -> Rgba {
-    let (cx, cz, width) = (Kernel::x(), Kernel::y(), Kernel::z());
+    let (cx, cz) = (Kernel::x(), Kernel::y());
 
     let cell_x = cx.floor();
     let cell_z = cz.floor();
@@ -448,14 +432,19 @@ pub fn checker(x: &Kernel, z: &Kernel, footprint: &Kernel) -> Rgba {
     // surface seen at a grazing angle flickers between whole cells.
     let edge = |f: &Kernel| k(0.5).sub(&f.sub(&k(0.5)).abs());
     let to_edge = edge(&cx.sub(&cell_x)).min(&edge(&cz.sub(&cell_z)));
-    let coverage = k(0.5).add(&to_edge.div(&width.add(&k(MIN_FOOTPRINT))).min(&k(0.5)));
+
+    // Both facts, sampled at the hit point. Everything below is in the
+    // caller's space already, so nothing else is substituted.
+    let light = light.at(x, z);
+    let to_edge = to_edge.at(x, z);
+    let coverage = k(0.5).add(&to_edge.div(&footprint.add(&k(MIN_FOOTPRINT))).min(&k(0.5)));
 
     let blend = |c: usize| {
         let here = light.select(&k(CHECKER_LIGHT[c]), &k(CHECKER_DARK[c]));
         let over = light.select(&k(CHECKER_DARK[c]), &k(CHECKER_LIGHT[c]));
         here.mul(&coverage).add(&over.mul(&k(1.0).sub(&coverage)))
     };
-    Rgba::new(blend(0), blend(1), blend(2), k(1.0)).at(x, z, footprint)
+    Rgba::new(blend(0), blend(1), blend(2), k(1.0))
 }
 
 #[cfg(test)]
@@ -474,7 +463,7 @@ mod tests {
     /// Tabulate a kernel over a `w × h` integer grid. A mask has to be read
     /// through a `select` — it is a bit pattern, not a number.
     fn bake(kernel: &Kernel, w: usize, h: usize) -> Vec<f32> {
-        Lattice::frame(w, h, 0.0).bake(kernel).buffer().to_vec()
+        Lattice::frame(w, h).bake(kernel).buffer().to_vec()
     }
 
     /// The camera's rays are unit length.
@@ -566,7 +555,7 @@ mod tests {
     fn a_checker_finer_than_its_footprint_washes_out_to_grey() {
         let cell_centre = |footprint: f32| {
             let rgba = checker(&Kernel::x(), &Kernel::y(), &k(footprint));
-            let at = |c: &Kernel| Lattice::point(0.5, 0.5, 0.0, 0.0).bake(c).buffer()[0];
+            let at = |c: &Kernel| Lattice::point(0.5, 0.5).bake(c).buffer()[0];
             let channels = leaf_channels(&rgba);
             [at(&channels[0]), at(&channels[1]), at(&channels[2])]
         };

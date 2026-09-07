@@ -117,6 +117,12 @@ trait Build {
         let v = self.var(i);
         self.clampf(v, -half, half)
     }
+    /// A lattice-invariant scalar the caller supplies: the plane a 3-D
+    /// shader is cut at, or a shader's clock. It was the Z coordinate until
+    /// a lattice became two axes — the ports below always sampled it at one
+    /// value per call, which is what a uniform is. Never folded, so the
+    /// expression keeps its shape.
+    fn arg(&mut self, default: f32) -> ExprId;
     /// `x*x + y*y`.
     fn length2(&mut self, x: ExprId, y: ExprId) -> ExprId {
         let xx = self.sq(x);
@@ -137,6 +143,10 @@ impl Build for ExprArena {
     }
     fn var(&mut self, i: u8) -> ExprId {
         self.push_var(i)
+    }
+    fn arg(&mut self, default: f32) -> ExprId {
+        let slot = self.declare_uniform(pixelflow_ir::Uniform::new(default).decl());
+        self.push_uniform(slot)
     }
     fn add(&mut self, x: ExprId, y: ExprId) -> ExprId {
         self.push_binary(OpKind::Add, x, y)
@@ -479,7 +489,7 @@ fn gyroid_slice() -> (ExprArena, ExprId) {
     let mut a = ExprArena::new();
     let x = a.viewport(0, 6.0);
     let y = a.viewport(1, 6.0);
-    let z = a.viewport(2, 6.0);
+    let z = a.arg(0.0);
 
     let g1 = gyroid(&mut a, x, y, z);
 
@@ -508,13 +518,14 @@ fn gyroid_slice() -> (ExprArena, ExprId) {
 /// - Simplified: exact GLSL was not transcribed (fetch blocked); this
 ///   reimplements the standard four-term plasma sum (axis + diagonal +
 ///   radial sines) the cited shader is a classic example of, rather than
-///   its specific palette/post-processing. The kernel's Z coordinate stands
-///   in for ShaderToy's `iTime`.
+///   its specific palette/post-processing. The kernel's clock — a uniform,
+///   because it is one value for a whole frame — stands in for ShaderToy's
+///   `iTime`.
 fn plasma() -> (ExprArena, ExprId) {
     let mut a = ExprArena::new();
     let x = a.viewport(0, 6.0);
     let y = a.viewport(1, 6.0);
-    let t = a.viewport(2, 6.0);
+    let t = a.arg(0.0);
 
     let f1 = a.k(1.0);
     let xt = a.mul(x, f1);
@@ -903,7 +914,7 @@ fn torus_slice() -> (ExprArena, ExprId) {
     let mut a = ExprArena::new();
     let x = a.viewport(0, 3.0);
     let y = a.viewport(1, 3.0);
-    let z = a.viewport(2, 3.0);
+    let z = a.arg(0.0);
 
     let t1 = torus(&mut a, (x, y, z), (1.0, 0.35));
 

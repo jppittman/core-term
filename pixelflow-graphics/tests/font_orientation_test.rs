@@ -19,8 +19,8 @@ fn bake_text(s: &str) -> Vec<f32> {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     let kernel = text(&font, s, 48.0);
     Lattice {
-        extent: [WIDTH as u32, HEIGHT as u32, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
+        extent: [WIDTH as u32, HEIGHT as u32],
+        origin: [0.5, 0.5],
     }
     .bake(&kernel)
     .into_buffer()

@@ -502,12 +502,7 @@ mod tests {
         // ...and sampled on a 2x device grid: x_point = x_device / 2.
         let half = |v: &Kernel| v.mul(&k(0.5));
         let device = compile_packed_for::<Rgba8>(
-            &Rgba::from(channels(red.at(
-                &half(&Kernel::x()),
-                &half(&Kernel::y()),
-                &Kernel::z(),
-                &Kernel::w(),
-            ))),
+            &Rgba::from(channels(red.at(&half(&Kernel::x()), &half(&Kernel::y())))),
             [32, 32],
         );
         let mut device_frame = Frame::<Rgba8>::new(32, 32);

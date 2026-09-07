@@ -22,8 +22,8 @@
 
 use std::sync::Arc;
 
-use pixelflow_core::{BoundManifold, Manifold, PlaneRegion};
-use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
+use pixelflow_core::{BoundManifold, Manifold, PlaneRegion, UniformBlock};
+use pixelflow_ir::arena::{BufferDecl, BufferIdentity, UniformDecl};
 use pixelflow_ir::{Bits, Kernel};
 
 use crate::scene3d::Rgba;
@@ -109,7 +109,7 @@ impl PackedManifold {
         }
         Self {
             shifts,
-            program: Manifold::compile(&packed_kernel(color, shifts), [extent[0], extent[1], 1, 1]),
+            program: Manifold::compile(&packed_kernel(color, shifts), [extent[0], extent[1]]),
         }
     }
 
@@ -122,8 +122,7 @@ impl PackedManifold {
     /// The pixel extents this manifold was compiled for.
     #[must_use]
     pub fn extent(&self) -> [u32; 2] {
-        let [w, h, _, _] = self.program.extent();
-        [w, h]
+        self.program.extent()
     }
 
     /// The memory the composed kernel declared, in slot order — how a caller
@@ -143,34 +142,72 @@ impl PackedManifold {
         self.program.code_bytes()
     }
 
+    /// The kernel's arguments, in the order the block holds them.
+    #[must_use]
+    pub fn uniforms(&self) -> &[UniformDecl] {
+        self.program.uniforms()
+    }
+
+    /// A block with every argument at its default — set what moved through
+    /// the handles the scene kept, then [`PackedManifold::bind_with`].
+    #[must_use]
+    pub fn block(&self) -> UniformBlock {
+        self.program.block()
+    }
+
     /// Bind one frame's memory, by buffer identity — see
     /// [`Manifold::bind`]. A program whose channels read nothing (a
     /// procedural shader) binds the empty slice.
     ///
     /// # Panics
     ///
-    /// Panics if a declared slot has no buffer bound to it, or if a bound
-    /// buffer's length is not the one its declaration promised.
+    /// Panics if a declared slot has no buffer bound to it, if a bound
+    /// buffer's length is not the one its declaration promised, or if the
+    /// program **has arguments**: binding them at their defaults would draw a
+    /// scene frozen at time zero, which is a plausible picture and so the
+    /// worst kind of wrong. Such a program is bound with
+    /// [`PackedManifold::bind_with`].
     #[must_use]
     pub fn bind(&self, buffers: &[(BufferIdentity, Arc<Vec<f32>>)]) -> PackedFrame {
+        assert!(
+            self.program.uniforms().is_empty(),
+            "PackedManifold::bind: this program has {} argument(s); bind them \
+             with `bind_with` and a block, or the frame renders at their defaults",
+            self.program.uniforms().len()
+        );
         PackedFrame {
             shifts: self.shifts,
             frame: self.program.bind(buffers),
-            slice: [0.0, 0.0],
+        }
+    }
+
+    /// Bind one frame's memory *and* the values of its arguments — the
+    /// per-frame call for an animated scene, which compiles once and takes a
+    /// new block each frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics for [`PackedManifold::bind`]'s memory reasons, or if `block`
+    /// was laid out for a different program.
+    #[must_use]
+    pub fn bind_with(
+        &self,
+        buffers: &[(BufferIdentity, Arc<Vec<f32>>)],
+        block: &UniformBlock,
+    ) -> PackedFrame {
+        PackedFrame {
+            shifts: self.shifts,
+            frame: self.program.bind(buffers).with_uniforms(block),
         }
     }
 }
 
 /// One frame of a packed program: the compiled manifold, the memory it reads,
-/// and the plane of the kernel's four-coordinate domain this frame samples.
-/// Cheap to clone.
+/// and the values of the arguments it was bound with. Cheap to clone.
 #[derive(Clone)]
 pub struct PackedFrame {
     shifts: [u32; 4],
     frame: BoundManifold,
-    /// The `Z` and `W` every pixel of this frame carries — see
-    /// [`PackedFrame::on_slice`].
-    slice: [f32; 2],
 }
 
 impl PackedFrame {
@@ -180,23 +217,19 @@ impl PackedFrame {
         self.shifts
     }
 
-    /// The same compiled program sampled on the plane at `(z, w)` instead of
-    /// the origin plane.
+    /// The same compiled program with its arguments taken from `block` — how
+    /// an animated scene stays compiled: the channel kernels read time as a
+    /// [`Uniform`](pixelflow_ir::Uniform), the program is compiled once, and
+    /// each frame writes its timestamp into a block. Baking the time into the
+    /// kernel as a constant would recompile the scene every frame instead.
     ///
-    /// This is how an animated scene stays compiled: the channel kernels read
-    /// time as `Kernel::w()`, the program is compiled once, and each frame
-    /// binds its timestamp here. Baking the time into the kernel as a
-    /// constant would recompile the scene every frame instead.
+    /// # Panics
+    ///
+    /// Panics if `block` was laid out for a different program.
     #[must_use]
-    pub fn on_slice(mut self, z: f32, w: f32) -> Self {
-        self.slice = [z, w];
+    pub fn with_uniforms(mut self, block: &UniformBlock) -> Self {
+        self.frame = self.frame.with_uniforms(block);
         self
-    }
-
-    /// The plane this frame samples: `(z, w)`.
-    #[must_use]
-    pub fn slice(&self) -> (f32, f32) {
-        (self.slice[0], self.slice[1])
     }
 
     /// Collapse the pixel rows `y0 .. y0 + rows` at pixel-center coordinates,
@@ -212,8 +245,7 @@ impl PackedFrame {
     /// Panics if the region's width is zero, `stride` is less than it, or
     /// `out` cannot hold the band.
     pub fn collapse_rows(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
-        self.frame
-            .collapse_int_rows(region.on_slice(self.slice[0], self.slice[1]), out, stride);
+        self.frame.collapse_int_rows(region, out, stride);
     }
 }
 
@@ -228,7 +260,7 @@ mod tests {
     /// The packed words a kernel produces over a `w × 1` strip. The root is
     /// int-domain, so the lane's bit pattern IS the pixel.
     fn words(kernel: &Kernel, w: usize) -> Vec<u32> {
-        Lattice::frame(w, 1, 0.0)
+        Lattice::frame(w, 1)
             .bake(kernel)
             .buffer()
             .iter()

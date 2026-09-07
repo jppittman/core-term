@@ -47,7 +47,7 @@ const ATLAS_CAPACITY: usize = 128;
 const BENCH_CHARS: [(&str, char); 3] =
     [("A_linear", 'A'), ("O_quadratic", 'O'), ("S_complex", 'S')];
 const BENCH_PT: f32 = 32.0;
-const BENCH_EXTENT: [u32; 4] = [40, 45, 1, 1];
+const BENCH_EXTENT: [u32; 2] = [40, 45];
 
 #[derive(Parser)]
 #[command(
@@ -168,7 +168,7 @@ fn capture(out: &std::path::Path, font: Option<&std::path::Path>) {
                 family: format!("glyph{tile}"),
                 arena: arena.clone(),
                 root,
-                extent: [tile, tile, 1, 1],
+                extent: [tile, tile],
             });
         }
     }

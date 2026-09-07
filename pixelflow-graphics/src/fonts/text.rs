@@ -196,12 +196,7 @@ fn layout<'a>(
         };
         Placed {
             // Translate: sample the glyph at (X - pen, Y).
-            kernel: kernel.at(
-                &Kernel::x().sub(&Kernel::constant(pen)),
-                &Kernel::y(),
-                &Kernel::z(),
-                &Kernel::w(),
-            ),
+            kernel: kernel.at(&Kernel::x().sub(&Kernel::constant(pen)), &Kernel::y()),
             pen,
             support,
         }

@@ -12,14 +12,14 @@
 //! is just summing interference at different frequencies. That's algebra, not
 //! iteration.
 //!
-//! **Time is the W coordinate**, as in `animated_sphere`: the three channels
-//! differ only in one weight, they are compiled **once** at the window's
-//! shape, and each frame is the same program collapsed on a later plane
-//! (`PackedFrame::on_slice`). Baking the timestamp in as a constant would
-//! mean a JIT compile per frame.
+//! **Time is a uniform**, as in `animated_sphere`: the three channels differ
+//! only in one weight, they are compiled **once** at the window's shape, and
+//! each frame is the same program with a new value written into its block
+//! (`UniformBlock`). Baking the timestamp in as a constant would mean a JIT
+//! compile per frame.
 
 use actor_scheduler::Message;
-use pixelflow_core::Kernel;
+use pixelflow_core::{Kernel, Uniform, UniformBlock};
 use pixelflow_graphics::render::packed::PackedManifold;
 use pixelflow_graphics::render::scene::{compile_platform_packed, Scene};
 use pixelflow_graphics::scene3d::Rgba;
@@ -42,11 +42,15 @@ fn k(v: f32) -> Kernel {
 
 /// One colour channel. The `y` weight is the only thing that separates the
 /// three; everything else is shared, so the e-graph sees it once.
-fn channel(width: f32, height: f32, y_weight: f32) -> Kernel {
+///
+/// All three read the *same* `time` handle, so the fused program has one
+/// argument however many channels read it — which is what identity by
+/// instance buys.
+fn channel(width: f32, height: f32, y_weight: f32, time: Uniform) -> Kernel {
     let scale = 2.0 / height;
     let x = Kernel::x().sub(&k(width * 0.5)).mul(&k(scale));
     let y = k(height * 0.5).sub(&Kernel::y()).mul(&k(scale));
-    let time = Kernel::w();
+    let time = time.kernel();
 
     let r_sq = x.mul(&x).add(&y.mul(&y));
     let radial = r_sq.sub(&k(0.7)).abs();
@@ -81,15 +85,16 @@ fn channel(width: f32, height: f32, y_weight: f32) -> Kernel {
 
 /// The scene compiled at the window's shape. A resize is the only thing that
 /// invalidates it.
-fn compile(width: u32, height: u32) -> PackedManifold {
+fn compile(width: u32, height: u32) -> (PackedManifold, Uniform) {
     let (w, h) = (width as f32, height as f32);
+    let time = Uniform::new(0.0);
     let color = Rgba::from([
-        channel(w, h, 1.0),
-        channel(w, h, -1.0),
-        channel(w, h, -2.0),
+        channel(w, h, 1.0, time),
+        channel(w, h, -1.0, time),
+        channel(w, h, -2.0, time),
         k(1.0),
     ]);
-    compile_platform_packed(&color, [width, height])
+    (compile_platform_packed(&color, [width, height]), time)
 }
 
 /// The compiled scene and the frame size it was compiled for.
@@ -97,14 +102,22 @@ struct CompiledScene {
     width: u32,
     height: u32,
     program: PackedManifold,
+    /// The shader's clock, kept because a handle is the only way to write it.
+    time: Uniform,
+    /// This program's block, reused across frames.
+    block: UniformBlock,
 }
 
 impl CompiledScene {
     fn new(width: u32, height: u32) -> Self {
+        let (program, time) = compile(width, height);
+        let block = program.block();
         Self {
             width,
             height,
-            program: compile(width, height),
+            program,
+            time,
+            block,
         }
     }
 
@@ -114,7 +127,10 @@ impl CompiledScene {
             log::info!("recompiling the shader for {width}x{height}");
             *self = Self::new(width, height);
         }
-        Scene::Packed(self.program.bind(&[]).on_slice(0.0, t))
+        self.block
+            .set(self.time, t)
+            .expect("the clock is this program's argument");
+        Scene::Packed(self.program.bind_with(&[], &self.block))
     }
 }
 

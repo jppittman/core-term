@@ -28,7 +28,7 @@ pub struct CollapseKernel {
     pub arena: ExprArena,
     pub root: ExprId,
     /// The lattice extent, exactly as `Lattice::bake` would see it.
-    pub extent: [u32; 4],
+    pub extent: [u32; 2],
 }
 
 /// How many times each scope of the collapse nest runs, for one
@@ -46,18 +46,13 @@ pub struct Trips {
 impl Trips {
     /// # Panics
     /// If the extent is narrower than one SIMD group — the collapse kernel is
-    /// never called for such a lattice, so there would be nothing to time —
-    /// or if it names a Z/W plane, which is a separate call.
+    /// never called for such a lattice, so there would be nothing to time.
     #[must_use]
-    pub fn of(extent: [u32; 4], lanes: u32) -> Self {
+    pub fn of(extent: [u32; 2], lanes: u32) -> Self {
         assert!(
             extent[0] >= lanes,
             "extent {extent:?} is narrower than the {lanes}-lane batch: bake would run \
              the scalar tail only and never call the collapse kernel"
-        );
-        assert!(
-            extent[2] == 1 && extent[3] == 1,
-            "extent {extent:?}: the corpus is 2D — Z/W planes are separate calls"
         );
         Self {
             rows: u64::from(extent[1]),
@@ -128,8 +123,8 @@ pub fn encode(kernel: &CollapseKernel) -> String {
     writeln!(out, "{HEADER}").expect("fmt");
     writeln!(out, "name {}", kernel.name).expect("fmt");
     writeln!(out, "family {}", kernel.family).expect("fmt");
-    let [ex, ey, ez, ew] = kernel.extent;
-    writeln!(out, "extent {ex} {ey} {ez} {ew}").expect("fmt");
+    let [ex, ey] = kernel.extent;
+    writeln!(out, "extent {ex} {ey}").expect("fmt");
 
     let mut dense: Vec<u32> = vec![u32::MAX; len];
     let mut next = 0u32;
@@ -215,8 +210,8 @@ fn decode(path: &Path) -> CollapseKernel {
                 family = Some((*n).to_string());
                 continue;
             }
-            ["extent", x, y, z, w] => {
-                extent = Some([dim(x), dim(y), dim(z), dim(w)]);
+            ["extent", x, y] => {
+                extent = Some([dim(x), dim(y)]);
                 continue;
             }
             ["root", r] => {
@@ -254,11 +249,11 @@ fn decode(path: &Path) -> CollapseKernel {
 
 /// Shape the pressure families are baked at: wide enough that the body
 /// dominates, small enough to keep a sample cheap.
-const PRESSURE_EXTENT: [u32; 4] = [256, 64, 1, 1];
+const PRESSURE_EXTENT: [u32; 2] = [256, 64];
 /// Where a loop-invariant term is amortized over many body iterations.
-const INVARIANT_HOT_EXTENT: [u32; 4] = [256, 256, 1, 1];
+const INVARIANT_HOT_EXTENT: [u32; 2] = [256, 256];
 /// Where it is not: two rows of a few batch groups pay the prologues in full.
-const INVARIANT_COLD_EXTENT: [u32; 4] = [64, 2, 1, 1];
+const INVARIANT_COLD_EXTENT: [u32; 2] = [64, 2];
 
 /// Every synthetic kernel, in a fixed order.
 ///
@@ -276,7 +271,7 @@ const INVARIANT_COLD_EXTENT: [u32; 4] = [64, 2, 1, 1];
 pub fn synthetic() -> Vec<CollapseKernel> {
     let mut out = Vec::new();
     let mut push =
-        |name: String, family: &str, extent: [u32; 4], build: &dyn Fn(&mut ExprArena) -> ExprId| {
+        |name: String, family: &str, extent: [u32; 2], build: &dyn Fn(&mut ExprArena) -> ExprId| {
             let mut arena = ExprArena::new();
             let root = build(&mut arena);
             out.push(CollapseKernel {

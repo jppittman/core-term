@@ -147,8 +147,8 @@ impl CachedGlyph {
         );
         let px = px_extent(size, density);
         let lattice = Lattice {
-            extent: [px as u32, px as u32, 1, 1],
-            origin: [TEXEL_CENTER, TEXEL_CENTER, 0.0, 0.0],
+            extent: [px as u32, px as u32],
+            origin: [TEXEL_CENTER, TEXEL_CENTER],
         };
         let baked = lattice.bake(kernel);
 
@@ -187,12 +187,10 @@ impl CachedGlyph {
             axis.mul(&Kernel::constant(self.density))
                 .sub(&Kernel::constant(TEXEL_CENTER))
         };
-        let sampled = self.sampler.kernel().at(
-            &texel(&Kernel::x()),
-            &texel(&Kernel::y()),
-            &Kernel::z(),
-            &Kernel::w(),
-        );
+        let sampled = self
+            .sampler
+            .kernel()
+            .at(&texel(&Kernel::x()), &texel(&Kernel::y()));
         let zero = Kernel::constant(0.0);
         let in_bounds = Kernel::x()
             .ge(&zero)
@@ -484,8 +482,6 @@ impl CachedText {
                 pg.glyph.kernel().at(
                     &Kernel::x().sub(&Kernel::constant(pg.dx)).mul(&scale),
                     &Kernel::y().mul(&scale),
-                    &Kernel::z(),
-                    &Kernel::w(),
                 )
             })
             .collect();
@@ -535,7 +531,7 @@ mod tests {
 
     /// One glyph's coverage at a single point — the degenerate lattice.
     fn sample(g: &CachedGlyph, x: f32, y: f32) -> f32 {
-        glyph_grid(g, Lattice::point(x, y, 0.0, 0.0))[0]
+        glyph_grid(g, Lattice::point(x, y))[0]
     }
 
     /// Center of mass of a row-major coverage grid.
@@ -630,7 +626,7 @@ mod tests {
         // must reproduce the analytical coverage kernel to f32 tolerance.
         //
         // The reference is the interpreter, not a second bake. This used to
-        // compare against `Lattice::point(x, y, ..).bake(&kernel)`, which was
+        // compare against `Lattice::point(x, y).bake(&kernel)`, which was
         // bit-exact while every lattice compiled identically. Extraction is
         // now priced against the lattice a kernel runs over, so a point and a
         // 32×32 frame are two compilations of the same function: over a frame
@@ -658,7 +654,7 @@ mod tests {
             let reference = pixelflow_ir::eval_scalar(
                 &lowered,
                 lowered_root,
-                &[x, y, 0.0, 0.0],
+                &[x, y],
                 &pixelflow_ir::BindingTable::empty(),
             );
             let baked = sample(&cached, x, y);
@@ -682,8 +678,8 @@ mod tests {
         // Direct analytical tabulation at pixel centers (the rasterizer's
         // sampling convention).
         let direct = Lattice {
-            extent: [size as u32, size as u32, 1, 1],
-            origin: [0.5, 0.5, 0.0, 0.0],
+            extent: [size as u32, size as u32],
+            origin: [0.5, 0.5],
         }
         .bake(&kernel);
         let (dx, dy) = center_of_mass(direct.buffer(), size);
@@ -694,8 +690,8 @@ mod tests {
         let resampled = glyph_grid(
             &cached,
             Lattice {
-                extent: [size as u32, size as u32, 1, 1],
-                origin: [0.5, 0.5, 0.0, 0.0],
+                extent: [size as u32, size as u32],
+                origin: [0.5, 0.5],
             },
         );
         let (cx, cy) = center_of_mass(&resampled, size);
@@ -777,7 +773,7 @@ mod tests {
 
         // One kernel, one buffer slot, one compile at the grid's shape: the
         // whole point-space extent comes back in one collapse, in [0, 1].
-        let grid = glyph_grid(&cached, Lattice::frame(32, 32, 0.0));
+        let grid = glyph_grid(&cached, Lattice::frame(32, 32));
         assert_eq!(grid.len(), 32 * 32);
         assert!(
             grid.iter().all(|v| (0.0..=1.0).contains(v)),
@@ -799,7 +795,7 @@ mod tests {
         // The run is ONE kernel — every glyph placed by `Kernel::at` and
         // summed — over the four distinct coverage buffers its glyphs bake,
         // repeats sharing one identity. Collapsing it draws the whole line.
-        let lattice = Lattice::frame(48, 16, 0.0);
+        let lattice = Lattice::frame(48, 16);
         let line = collapse(&text.kernel(), &text.bindings(), lattice);
         assert_eq!(line.len(), 48 * 16);
         assert!(
@@ -845,8 +841,8 @@ mod tests {
             glyph_grid(
                 g,
                 Lattice {
-                    extent: [16, 16, 1, 1],
-                    origin: [0.5, 0.5, 0.0, 0.0],
+                    extent: [16, 16],
+                    origin: [0.5, 0.5],
                 },
             )
         };

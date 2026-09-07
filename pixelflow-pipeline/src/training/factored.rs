@@ -676,13 +676,48 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     use crate::jit_bench::benchmark_jit_arena;
 
-    const REWRITE_BUG_INPUTS: [f32; 4] = [0.5, 0.7, 1.3, -0.2];
+    const REWRITE_BUG_INPUTS: [f32; 2] = [0.5, 0.7];
+
+    /// The values the frozen corpus expressions' third and fourth variables
+    /// take. Those were the Z and W coordinates; a lattice has two axes now,
+    /// so the fixtures' `Var(2)`/`Var(3)` are bound as arguments — invariant
+    /// across the lattice, which at a single point is the same number the
+    /// coordinate carried.
+    const REWRITE_BUG_ARGS: [f32; 2] = [1.3, -0.2];
 
     // The scalar reference is the differential-testing oracle: it runs the same
     // `expand_transcendentals` lowering the JIT runs, so Pow/exp/log evaluate
     // through their one definition rather than a second host-libm semantics.
-    fn eval_arena_scalar(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
-        pixelflow_ir::eval_scalar(arena, id, vars, &pixelflow_ir::BindingTable::empty())
+    fn eval_arena_scalar(arena: &ExprArena, id: ExprId, vars: &[f32; 2]) -> f32 {
+        // The fixtures below are frozen strings from a four-variable corpus.
+        // Bind everything past the axes as an argument rather than rewriting
+        // the fixtures, which would stop them being the expressions the bug
+        // was found in.
+        let mut arena = arena.clone();
+        let args = [
+            pixelflow_ir::Uniform::new(REWRITE_BUG_ARGS[0]),
+            pixelflow_ir::Uniform::new(REWRITE_BUG_ARGS[1]),
+        ];
+        let subs: Vec<(u8, ExprId)> = args
+            .iter()
+            .enumerate()
+            .map(|(i, u)| {
+                let slot = arena.declare_uniform(u.decl());
+                let axis = pixelflow_ir::arena::COORD_AXES as u8 + i as u8;
+                (axis, arena.push_uniform(slot))
+            })
+            .collect();
+        let id = arena.substitute_vars_with(id, &subs);
+        let bindings = pixelflow_ir::BindingTable::empty()
+            .bind_uniforms(
+                &arena,
+                &[
+                    (args[0].identity(), REWRITE_BUG_ARGS[0]),
+                    (args[1].identity(), REWRITE_BUG_ARGS[1]),
+                ],
+            )
+            .expect("declared just above");
+        pixelflow_ir::eval_scalar(&arena, id, vars, &bindings)
     }
 
     fn logged_expr_scalar_output(src: &str) -> f32 {
@@ -787,14 +822,8 @@ mod tests {
         // this must expand to the primitive subgraph, not a single node.
         let src = "fract(Var(0))";
         let (arena, root) = parse_expr(src).unwrap_or_else(|| panic!("parse failed: {src}"));
-        assert_eq!(
-            eval_arena_scalar(&arena, root, &[1.75, 0.0, 0.0, 0.0]),
-            0.75
-        );
-        assert_eq!(
-            eval_arena_scalar(&arena, root, &[-1.25, 0.0, 0.0, 0.0]),
-            0.75
-        );
+        assert_eq!(eval_arena_scalar(&arena, root, &[1.75, 0.0]), 0.75);
+        assert_eq!(eval_arena_scalar(&arena, root, &[-1.25, 0.0]), 0.75);
     }
 
     #[test]
@@ -802,7 +831,7 @@ mod tests {
         // hypot(x, y) = sqrt(x*x + y*y); no OpKind::Hypot exists (see kernel.rs).
         let src = "hypot(Var(0), Var(1))";
         let (arena, root) = parse_expr(src).unwrap_or_else(|| panic!("parse failed: {src}"));
-        assert_eq!(eval_arena_scalar(&arena, root, &[3.0, 4.0, 0.0, 0.0]), 5.0);
+        assert_eq!(eval_arena_scalar(&arena, root, &[3.0, 4.0]), 5.0);
     }
 
     // ========================================================================

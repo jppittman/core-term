@@ -729,7 +729,7 @@ mod oracle_tests {
     use pixelflow_ir::{BindingTable, eval_scalar};
 
     fn eval(a: &ExprArena, root: ExprId, x: f32, y: f32) -> f32 {
-        eval_scalar(a, root, &[x, y, 0.0, 0.0], &BindingTable::empty())
+        eval_scalar(a, root, &[x, y], &BindingTable::empty())
     }
 
     fn ref_bernstein_1d(t: f32, b: &[f32], values: &[f32]) -> f32 {
