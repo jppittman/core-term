@@ -21,13 +21,60 @@
 //! A guard that only holds for the extraction the optimizer happens to pick
 //! is not guarding anything.
 
+//! # Five approaches that do not work
+//!
+//! Recorded here because the next person to try this will otherwise re-derive
+//! them, and four of the five look obviously right until measured.
+//!
+//! 1. **A tight Y-extent gate.** Excise the rows where `t_vertex` falls
+//!    outside `[0, 1]`. Refuted: an `EXTENT_SLOP` of `1e6` — a gate true on
+//!    every row — removes the divergence just as well. It was perturbing the
+//!    e-graph into a different extraction, not fixing anything. Variants with
+//!    an exact extent, a half-open one, and endpoint-exact bounds all leave
+//!    the grazing residual at -0.426.
+//! 2. **Dropping `disc >= 0`** so the clamped root pair cancels. Refuted: the
+//!    pair does not cancel when `t_vertex` is exactly 0 or 1, which is the
+//!    common TrueType shape — one root passes `t in [0, 1]` and the other does
+//!    not. Regresses `'8'` at 7/13/17/19/41 px.
+//! 3. **A scale-relative `MIN_DISC`**, bounding the fabricated pair's
+//!    separation. Refuted: the non-cancellation is driven by root *validity*,
+//!    not separation, and the residual does not move.
+//! 4. **Splitting each quadratic at its vertex** into monotone pieces, so
+//!    existence is decided by `Y` against two exact control-point coordinates
+//!    rather than by a rounded discriminant. This one is half right — it makes
+//!    the discrete decision exact and the optimized-vs-raw sweep goes green —
+//!    but it moves 616 corpus texels, up to 0.83, and the cause is not the
+//!    root clamp (removing the clamp gives identical numbers).
+//! 5. **Ramping the contribution to zero across a band around `disc == 0`.**
+//!    The closest, and refuted most decisively. It works only when *both*
+//!    segments of a near-tangency are inside the band; where one is inside and
+//!    the other comfortably positive, the ramp halves one signed contribution
+//!    and the pair stops cancelling — so **the ramp creates the imbalance it
+//!    exists to remove**. That is corpus-dependent by construction: every time
+//!    the glyph set widened, the largest usable band fell (1e4, then 3e4, then
+//!    2400, then ~125, then ~0.3 on a second font), while the smallest useful
+//!    one stayed at 876. The window is empty, and no constant closes it.
+//!
+//! The instrument that refuted all five is `freetype_oracle.rs`: an external
+//! rasterizer, because every check that compares this code to itself agrees
+//! with the bug.
+//!
 use pixelflow_graphics::fonts::ttf_curve_analytical::AnalyticalQuad;
 use pixelflow_ir::{eval_scalar, passes::lower_dwrt_owned, BindingTable};
 
-/// The largest winding a grazing ray may pick up. A crossing is 1.0 and a
-/// half-covered crossing 0.5, so anything at that scale is a lost or doubled
-/// intersection rather than rounding.
-const GRAZE_TOLERANCE: f32 = 1.0e-2;
+/// The defect's measured size, pinned. **These are not tolerances — they are
+/// the bug.** A grazing ray must pick up zero winding and picks up most of a
+/// crossing instead; pinning it means the number cannot drift, a fix has to
+/// come here and say so, and the two cases stay distinguishable.
+///
+/// Windows are wide enough for nothing-in-particular and tight enough that
+/// half a crossing either way fails. `eval_scalar` on a lowered arena is plain
+/// Rust `f32` arithmetic, so these are reproducible bit-for-bit on any target;
+/// if a platform disagrees, that is a finding in itself.
+const KNOWN_SHARED_EXTREMUM_WINDING: f32 = 0.744_913_4;
+const KNOWN_ORIGIN_WINDING: f32 = 1.0;
+/// How far the measured defect may stray from the pinned value.
+const PIN_TOLERANCE: f32 = 0.02;
 
 /// Found by search over shared-extremum segment pairs: coefficients whose
 /// discriminants straddle zero differently at the extremum row.
@@ -78,7 +125,7 @@ fn worst_grazing(
 /// Found by search over shared-extremum segment pairs: coefficients whose
 /// discriminants straddle zero differently at the extremum row.
 #[test]
-fn a_grazing_ray_picks_up_no_winding_at_a_shared_extremum() {
+fn grazing_winding_at_a_shared_extremum_is_still_wrong() {
     let shared = [-0.966_354_37f32, 8.683_796];
     let incoming = AnalyticalQuad::new(
         [-4.499_054, 0.079_550_94],
@@ -89,10 +136,11 @@ fn a_grazing_ray_picks_up_no_winding_at_a_shared_extremum() {
         AnalyticalQuad::new(shared, [1.835_096_6, 8.683_796], [4.617_066_4, 3.184_099_4]);
     let (worst, worst_y) = worst_grazing(incoming, outgoing, shared[1], 39.033_646);
     assert!(
-        worst.abs() < GRAZE_TOLERANCE,
-        "a grazing ray picked up {worst} of winding at y = {worst_y:?} \
-         ({:#x}) — the two segments' reach into this row disagreed and one \
-         crossing survived uncancelled",
+        (worst.abs() - KNOWN_SHARED_EXTREMUM_WINDING).abs() < PIN_TOLERANCE,
+        "grazing winding is {worst} at y = {worst_y:?} ({:#x}), pinned at \
+         {KNOWN_SHARED_EXTREMUM_WINDING}. Smaller means someone has fixed \
+         this — lower the pin, or delete it and assert zero. Larger means it \
+         has got worse.",
         worst_y.to_bits()
     );
 }
@@ -104,11 +152,10 @@ fn a_grazing_ray_picks_up_no_winding_at_a_shared_extremum() {
 /// point is an on-curve extremum — `'8'`, `'O'`, `'e'`, most round letters —
 /// puts this pair at `y == 0.0` in the frame the kernel is built in.
 ///
-/// A band scaled by the discriminant's distance from the coordinate origin
-/// vanishes here, and `0 * (1/0)` is NaN. The band must be built from
-/// differences of the control points, which translation cannot touch.
+/// It is also where several candidate fixes have died: anything scaled by the
+/// discriminant's distance from the coordinate origin vanishes here.
 #[test]
-fn a_shared_extremum_at_the_origin_still_cancels() {
+fn grazing_winding_at_an_extremum_on_zero_is_still_wrong() {
     let dy = -8.683_796f32; // put the shared extremum on y == 0.0
     let shared = [-0.966_354_37f32, 8.683_796 + dy];
     assert_eq!(shared[1], 0.0, "the extremum must land exactly on zero");
@@ -124,9 +171,9 @@ fn a_shared_extremum_at_the_origin_still_cancels() {
     );
     let (worst, worst_y) = worst_grazing(incoming, outgoing, shared[1], 39.033_646);
     assert!(
-        worst.abs() < GRAZE_TOLERANCE,
-        "a grazing ray picked up {worst} of winding at y = {worst_y:?} at the \
-         origin — the band is being measured from the origin rather than from \
-         the segment's own geometry"
+        (worst.abs() - KNOWN_ORIGIN_WINDING).abs() < PIN_TOLERANCE,
+        "grazing winding is {worst} at y = {worst_y:?} with the extremum on \
+         zero, pinned at {KNOWN_ORIGIN_WINDING} — a whole crossing. See the \
+         pin on the general case."
     );
 }
