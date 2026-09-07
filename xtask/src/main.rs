@@ -607,8 +607,10 @@ enum IsaExecutionMode {
     BuildOnly,
     /// Compile, lint, and execute the *ISA-sensitive* tests for whichever
     /// levels this host's CPU can run. Presubmit's path: see
-    /// [`IsaExecutionMode::test_args`] for what that set is and why running it
-    /// is nearly free once the lint has built it.
+    /// `IsaExecutionMode::test_args` for what that set is and why running it
+    /// is nearly free once the lint has built it. (Plain code span, not an
+    /// intra-doc link: that method is `#[cfg(target_arch = "x86_64")]`, so a
+    /// link would be broken on every other rustdoc target.)
     Smoke,
     /// Compile, lint, and execute the whole workspace's tests for whichever
     /// levels this host's CPU can run. Postsubmit's job, once a change has
@@ -659,6 +661,13 @@ impl IsaExecutionMode {
     /// that). That is the difference between a check that fits in a PR's wait
     /// and one that does not.
     /// What a `PASS` from this mode covers, for the summary line.
+    ///
+    /// Called only from the `#[cfg(target_arch = "x86_64")]` half of
+    /// `isa_matrix` — there is no ISA level to matrix on any other
+    /// architecture (see that function's doc comment) — so this is dead
+    /// code, correctly, everywhere else. Same treatment as
+    /// [`host_has_feature`] and [`LevelResult`] below, for the same reason.
+    #[cfg(target_arch = "x86_64")]
     fn scope(&self) -> &'static str {
         match self {
             Self::BuildOnly => "none",
@@ -667,6 +676,7 @@ impl IsaExecutionMode {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn test_args(&self) -> Option<&'static [&'static str]> {
         match self {
             Self::BuildOnly => None,

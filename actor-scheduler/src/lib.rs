@@ -2134,6 +2134,80 @@ mod handle_wake_targeted_tests {
         );
     }
 
+    /// The `Message` docs' disclaimer — "no cross-lane ordering guarantees, only best-effort
+    /// priority" — as an executable fact rather than prose.
+    ///
+    /// Priority reorders messages that are **simultaneously pending** when a drain pass
+    /// begins. It is not a barrier: a `Control` message that arrives *while a Management
+    /// drain is already in flight* is not observed until that burst ends, because
+    /// `handle_wake` hands `rx_mgmt.drain` its whole budget before the `control2` pass runs.
+    /// Nothing can retract work the drain loop has already been handed.
+    ///
+    /// This exists because the opposite belief keeps getting written as a test: send N ticks,
+    /// send a shutdown, send N more ticks, assert only the first N were counted. Those pass
+    /// by timing luck on an idle machine and fail on a loaded one. Here the actor enqueues
+    /// the `Control` message *itself*, from inside the drain, so the interleaving is caused
+    /// by the program rather than arranged by a sleep — the counterexample is deterministic.
+    #[test]
+    fn a_control_message_enqueued_mid_drain_is_not_seen_until_the_drain_ends() {
+        struct MidDrainSender {
+            control: ActorHandle<i32, i32, i32>,
+            log: Vec<&'static str>,
+            sent: bool,
+        }
+        impl Actor<i32, i32, i32> for MidDrainSender {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                self.log.push("C");
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                self.log.push("M");
+                // Exactly one, on the first Management message: four more are already
+                // queued behind it, so a barrier would have to stop them.
+                if !self.sent {
+                    self.sent = true;
+                    self.control.send(Message::Control(0)).unwrap();
+                }
+                Ok(())
+            }
+            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
+            }
+        }
+
+        let mut builder = ActorBuilder::<i32, i32, i32>::new(100, None);
+        let preload = builder.add_producer();
+        let from_handler = builder.add_producer();
+        let mut rx = builder.build_with_burst(100, ShutdownMode::default());
+
+        for _ in 0..5 {
+            preload.send(Message::Management(0)).unwrap();
+        }
+
+        let mut actor = MidDrainSender {
+            control: from_handler,
+            log: Vec::new(),
+            sent: false,
+        };
+        while actor.log.len() < 6 {
+            assert!(
+                !rx.poll_once(&mut actor),
+                "the scheduler exited before draining both lanes, log {:?}",
+                actor.log
+            );
+        }
+
+        assert_eq!(
+            actor.log,
+            ["M", "M", "M", "M", "M", "C"],
+            "the in-flight Management burst runs to completion first; \
+             Control is best-effort priority, not a barrier"
+        );
+    }
+
     // Same setup, but with 5 messages: correct half_control=8 drains all 5 (not
     // More). A `%` mutant collapses half_control to (16 % 2).max(1) == 1, so
     // control1 only drains 1 of 5 and reports More instead.
