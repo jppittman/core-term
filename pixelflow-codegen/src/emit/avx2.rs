@@ -539,6 +539,35 @@ pub fn emit_gather_scalar(code: &mut Vec<u8>, dst: Reg, idx: Reg, slot: u16, s: 
 mod tests {
     //! Hardware validation, mirroring `avx512.rs`'s runtime test tier: JIT real
     //! `ymm` kernels and execute them on the host.
+    use super::*;
+
+    #[test]
+    fn is_compare_is_true_only_for_the_six_ordered_comparison_ops() {
+        for op in [
+            OpKind::Eq,
+            OpKind::Ne,
+            OpKind::Lt,
+            OpKind::Le,
+            OpKind::Gt,
+            OpKind::Ge,
+        ] {
+            assert!(is_compare(op), "{op:?} should be a compare");
+        }
+        for op in [
+            OpKind::Add,
+            OpKind::Sub,
+            OpKind::Mul,
+            OpKind::Div,
+            OpKind::Min,
+            OpKind::Max,
+            OpKind::BitAnd,
+            OpKind::BitOr,
+            OpKind::IAdd,
+        ] {
+            assert!(!is_compare(op), "{op:?} should not be a compare");
+        }
+    }
+
     #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
     mod runtime {
         use super::super::*;
@@ -639,6 +668,38 @@ mod tests {
                 |i| if xs[i] < ys[i] { 0xFFFF_FFFF } else { 0 },
                 "lt mask",
             );
+        }
+
+        #[test]
+        fn emit_movmskps_eax_gathers_the_lanewise_compare_mask_sign_bits() {
+            #[allow(improper_ctypes_definitions)]
+            type MaskCheck = unsafe extern "C" fn(__m256, __m256) -> i32;
+
+            fn run_mask(body: &[u8], xs: [f32; 8], ys: [f32; 8]) -> i32 {
+                let mut code = body.to_vec();
+                crate::emit::x86_64::ret(&mut code);
+                let exec = unsafe { ExecutableCode::from_code(&code).expect("mmap") };
+                unsafe {
+                    let f: MaskCheck = exec.as_fn();
+                    f(_mm256_loadu_ps(xs.as_ptr()), _mm256_loadu_ps(ys.as_ptr()))
+                }
+            }
+
+            // Half true, half false, so the result exercises every mask bit
+            // rather than only the all-true/all-false extremes.
+            let xs = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+            let ys = [9.0, 9.0, 9.0, 9.0, -9.0, -9.0, -9.0, -9.0];
+            let mut c = Vec::new();
+            emit_binary(&mut c, OpKind::Lt, X, X, Y);
+            emit_movmskps_eax(&mut c, X);
+            assert_eq!(run_mask(&c, xs, ys), 0b0000_1111, "lt mask, lanes 0-3 true");
+
+            // The complementary comparison, to pin the other half of eax
+            // independently of the first assertion.
+            let mut c = Vec::new();
+            emit_binary(&mut c, OpKind::Gt, X, X, Y);
+            emit_movmskps_eax(&mut c, X);
+            assert_eq!(run_mask(&c, xs, ys), 0b1111_0000, "gt mask, lanes 4-7 true");
         }
 
         #[test]
