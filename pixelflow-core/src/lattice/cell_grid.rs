@@ -151,24 +151,37 @@ pub struct CellGridMetrics {
 impl CellGridMetrics {
     /// The metric preconditions a program's arguments must satisfy.
     ///
+    /// **Asserted on the values that reach the block, not only on the fields
+    /// that were passed.** A subnormal `cell_w` — `1e-42` — is positive and
+    /// finite and passes any check on the input, and then `1/cell_w`
+    /// overflows to `+inf` and every pixel of the frame reads cell 0. The
+    /// slots are private precisely so no half-denoted state is reachable, and
+    /// an input-only check leaves one reachable: what must be finite is what
+    /// the kernel loads.
+    ///
     /// # Panics
     ///
-    /// Panics on a non-positive or non-finite cell extent, density or scale.
-    /// A zero cell width would make `1/cell_w` infinite and every pixel of
-    /// the frame read one cell; a negative scale would sample the grid from
-    /// outside itself. Both draw a plausible wrong picture, so both are
-    /// refused where the value is written rather than where it is seen.
+    /// Panics on a non-positive or non-finite cell extent, density or scale;
+    /// on a cell extent or scale whose reciprocal is not finite; and on a
+    /// tile with no content, which denotes a cell that can show nothing.
     fn assert_writable(&self) {
+        let finite_positive = |v: f32| v.is_finite() && v > 0.0;
         assert!(
-            self.cell_w > 0.0
-                && self.cell_h > 0.0
-                && self.density > 0.0
-                && self.scale > 0.0
-                && self.cell_w.is_finite()
-                && self.cell_h.is_finite()
-                && self.density.is_finite()
-                && self.scale.is_finite(),
+            finite_positive(self.cell_w)
+                && finite_positive(self.cell_h)
+                && finite_positive(self.density)
+                && finite_positive(self.scale),
             "cell-grid metrics: non-positive or non-finite {self:?}"
+        );
+        assert!(
+            (1.0 / self.cell_w).is_finite()
+                && (1.0 / self.cell_h).is_finite()
+                && (1.0 / self.scale).is_finite(),
+            "cell-grid metrics: non-positive or non-finite reciprocal of {self:?}"
+        );
+        assert!(
+            self.tile_w > 0 && self.tile_h > 0,
+            "cell-grid metrics: a tile with no content in {self:?}"
         );
     }
 }
@@ -246,6 +259,10 @@ impl CellGridShape {
     /// a frame stores; `grid_range` is the form it is asked about.
     #[must_use]
     pub fn grid_extent(&self, metrics: &CellGridMetrics) -> [u32; crate::lattice::AXES] {
+        // The same refusal `CellGridSlots::write` makes, for the same reason:
+        // this is public, and an infinite `cell_w` would report a full-frame
+        // range from a metric no program will accept.
+        metrics.assert_writable();
         let covered = |cells: u32, cell: f32, frame: u32| -> u32 {
             // Device-pixel extent of the grid on this axis. `ceil(g - ½)` is
             // the count of pixel centres strictly inside `[0, g)`.
@@ -359,14 +376,28 @@ impl CellGridSlots {
         metrics: &CellGridMetrics,
     ) -> Result<(), UnknownUniform> {
         metrics.assert_writable();
-        block.set(self.points_per_pixel, 1.0 / metrics.scale)?;
-        block.set(self.cell_w, metrics.cell_w)?;
-        block.set(self.cells_per_point_x, 1.0 / metrics.cell_w)?;
-        block.set(self.cell_h, metrics.cell_h)?;
-        block.set(self.cells_per_point_y, 1.0 / metrics.cell_h)?;
-        block.set(self.density, metrics.density)?;
-        block.set(self.tile_u_max, metrics.tile_w as f32 + SAMPLE_CENTER)?;
-        block.set(self.tile_v_max, metrics.tile_h as f32 + SAMPLE_CENTER)?;
+        let values = [
+            (self.points_per_pixel, 1.0 / metrics.scale),
+            (self.cell_w, metrics.cell_w),
+            (self.cells_per_point_x, 1.0 / metrics.cell_w),
+            (self.cell_h, metrics.cell_h),
+            (self.cells_per_point_y, 1.0 / metrics.cell_h),
+            (self.density, metrics.density),
+            (self.tile_u_max, metrics.tile_w as f32 + SAMPLE_CENTER),
+            (self.tile_v_max, metrics.tile_h as f32 + SAMPLE_CENTER),
+        ];
+        // Every slot is probed before any is written. `set` on a foreign
+        // handle would otherwise leave the block half-written — the exact
+        // state the private fields exist to make unrepresentable, reachable
+        // again through a partial failure.
+        for (slot, _) in values {
+            block.get(slot)?;
+        }
+        for (slot, value) in values {
+            block
+                .set(slot, value)
+                .expect("every slot was probed above and cannot now be unknown");
+        }
         Ok(())
     }
 }
@@ -490,53 +521,6 @@ fn assert_compilable(shape: &CellGridShape) {
         shape.cells_len() > 0 && shape.cells_row_width() > 0,
         "cell-grid compile: empty cell buffer for {shape:?}"
     );
-}
-
-/// **Paint `value` over the part of a band no kernel answers for** — the
-/// constant summand of the two-summand union a cell-grid frame collapses.
-///
-/// `out` is the band's own plane: its first element is the band's first
-/// index and its rows are `stride` elements apart. `claim` is the leading
-/// sub-rectangle some kernel filled, which must start where the band does.
-///
-/// Generic in the element because the two consumers differ only there: the
-/// per-channel form writes `f32` coverage and the packed form writes `u32`
-/// pixels.
-///
-/// # Panics
-///
-/// Panics if `claim` is not a leading sub-rectangle of `band`, or if `out`
-/// cannot hold the band at `stride`.
-pub fn paint_outside<T: Copy>(
-    out: &mut [T],
-    stride: usize,
-    band: IndexRange,
-    claim: IndexRange,
-    value: T,
-) {
-    assert!(
-        stride >= band.width(),
-        "paint_outside: stride {stride} is narrower than the {} samples a row holds",
-        band.width()
-    );
-    let (claim_w, claim_rows) = if claim.is_empty() {
-        (0, 0)
-    } else {
-        assert!(
-            claim.x0() == band.x0()
-                && claim.y0() == band.y0()
-                && claim.width() <= band.width()
-                && claim.rows() <= band.rows(),
-            "paint_outside: {claim:?} is not a leading sub-rectangle of {band:?}"
-        );
-        (claim.width(), claim.rows())
-    };
-    for j in 0..band.rows() {
-        let start = j * stride;
-        let row = &mut out[start..start + band.width()];
-        let from = if j < claim_rows { claim_w } else { 0 };
-        row[from..].fill(value);
-    }
 }
 
 /// The four compiled channel kernels for one grid/atlas shape, each baking
@@ -730,7 +714,7 @@ impl CellGridFrame {
                 stride,
             );
         }
-        paint_outside(out, stride, band, claim, self.default_bg[channel]);
+        band.paint_complement(claim, out, stride, self.default_bg[channel]);
     }
 }
 
@@ -1377,6 +1361,50 @@ mod tests {
     /// tile clamps.
     const METRIC_SLOTS: usize = 8;
 
+    /// One configuration of `the_border_range_agrees_with_the_mask_it_replaced`.
+    struct MaskCase {
+        shape: CellGridShape,
+        metrics: CellGridMetrics,
+        /// The grid extent this case must produce, stated rather than
+        /// derived — a case whose expected value came from the code under
+        /// test would pin nothing.
+        grid: [u32; 2],
+    }
+
+    impl MaskCase {
+        #[allow(clippy::too_many_arguments)]
+        const fn new(
+            cols: u32,
+            rows: u32,
+            cell_w: f32,
+            cell_h: f32,
+            scale: f32,
+            frame_w: u32,
+            frame_h: u32,
+            grid: [u32; 2],
+        ) -> Self {
+            Self {
+                shape: CellGridShape {
+                    cols,
+                    rows,
+                    frame_w,
+                    frame_h,
+                    atlas_width: TINY_SHAPE.atlas_width,
+                    atlas_height: TINY_SHAPE.atlas_height,
+                },
+                metrics: CellGridMetrics {
+                    cell_w,
+                    cell_h,
+                    scale,
+                    density: TINY_METRICS.density,
+                    tile_w: TINY_METRICS.tile_w,
+                    tile_h: TINY_METRICS.tile_h,
+                },
+                grid,
+            }
+        }
+    }
+
     /// **The border range is the mask it replaced.** The old kernel totalized
     /// the grid's extent into its range — `in_grid.select(blended,
     /// default_bg)`, evaluated at every pixel of the frame — and this one
@@ -1384,108 +1412,159 @@ mod tests {
     /// masked one is a bigger arena, extracted on its own), so this is a
     /// comparison of two encodings and not of one thing with itself.
     ///
-    /// Asserted bit-exactly, and the frame is deliberately not a whole number
-    /// of cells on either axis so the border is real on both.
+    /// Asserted bit-exactly, over configurations chosen so that each of the
+    /// range's own arithmetic decisions is load-bearing in at least one:
+    ///
+    /// | case | grid extent | what it pins |
+    /// |---|---|---|
+    /// | integral | 12 x 8 | the ordinary case; a border on both axes |
+    /// | fractional | 17 x 12 | **the `− ½`**: the grid spans `[0, 17.5)`, so pixel 17 (centre 17.5) is outside, and a range computed as `ceil(g)` would claim it. Also a claim width that is no multiple of any SIMD batch, so `RowTail::Exact`'s scratch path is live. |
+    /// | fractional, scaled | 33 x 15 | the same, with the display contramap in the product — `cols · cell_w · scale` fractional through `scale` |
+    /// | grid past the frame | 15 x 11 | the clip to the frame, with no border at all |
+    ///
+    /// Without the fractional rows this test — and every other fixture in
+    /// this module — passes with the `− ½` deleted, because `ceil(g − ½)` and
+    /// `ceil(g)` agree on every integral `g`. That is a missing fixture, and
+    /// these are it.
     #[test]
     fn the_border_range_agrees_with_the_mask_it_replaced() {
-        let shape = CellGridShape {
-            cols: 3,
-            rows: 2,
-            frame_w: 15,
-            frame_h: 11,
-            ..TINY_SHAPE
-        };
-        let metrics = TINY_METRICS;
-        let default_bg = [0.9, 0.8, 0.7, 0.6];
-        let cells: Vec<f32> = (0..6)
-            .flat_map(|i| {
-                let f = i as f32;
-                [
-                    1.0 + 6.0 * (i % 2) as f32,
-                    1.0,
-                    f * 0.15,
-                    0.5,
-                    0.75,
-                    1.0,
-                    0.1,
-                    0.2,
-                    0.3,
-                    1.0,
-                ]
-            })
-            .collect();
-        let (cells, atlas) = (Arc::new(cells), Arc::new(two_tile_atlas(0.5)));
+        let cases = [
+            MaskCase::new(3, 2, 4.0, 4.0, 1.0, 15, 11, [12, 8]),
+            MaskCase::new(5, 5, 3.5, 2.5, 1.0, 24, 20, [17, 12]),
+            MaskCase::new(3, 3, 5.5, 2.5, 2.0, 40, 18, [33, 15]),
+            MaskCase::new(4, 4, 4.0, 4.0, 1.0, 15, 11, [15, 11]),
+        ];
+        for case in cases {
+            let MaskCase {
+                shape,
+                metrics,
+                grid: want_grid,
+            } = case;
+            let (cols, rows) = (shape.cols, shape.rows);
+            let (cell_w, cell_h, scale) = (metrics.cell_w, metrics.cell_h, metrics.scale);
+            let (frame_w, frame_h) = (shape.frame_w, shape.frame_h);
+            let default_bg = [0.9, 0.8, 0.7, 0.6];
+            let cells: Vec<f32> = (0..(cols * rows))
+                .flat_map(|i| {
+                    let f = i as f32;
+                    [
+                        1.0 + 6.0 * (i % 2) as f32,
+                        1.0,
+                        (f * 0.15) % 1.0,
+                        0.5,
+                        0.75,
+                        1.0,
+                        0.1,
+                        0.2,
+                        0.3,
+                        1.0,
+                    ]
+                })
+                .collect();
+            let (cells, atlas) = (Arc::new(cells), Arc::new(two_tile_atlas(0.5)));
 
-        // The range encoding: what this module now does.
-        let program = CellGridProgram::compile(shape, default_bg);
-        let params = program.params(&metrics);
-        assert_eq!(
-            params.grid_range(),
-            IndexRange::new(0, 0, 12, 8),
-            "the border must be real on both axes or this proves nothing"
-        );
-        let ranged = program.frame(&params, cells.clone(), atlas.clone());
-
-        // The value encoding: the same channel kernels under the mask the
-        // select used to carry, evaluated over the whole frame.
-        let CellGridKernels {
-            channels,
-            buffers,
-            slots,
-        } = shape.channel_kernels();
-        let k = Kernel::constant;
-        let (x, y) = (Kernel::x(), Kernel::y());
-        let in_grid = x
-            .ge(&k(0.0))
-            .and(&x.lt(&k(shape.cols as f32 * metrics.cell_w * metrics.scale)))
-            .and(&y.ge(&k(0.0)))
-            .and(&y.lt(&k(shape.rows as f32 * metrics.cell_h * metrics.scale)));
-        let bound = [(buffers.cells, cells), (buffers.atlas, atlas)];
-        for (c, channel) in channels.iter().enumerate() {
-            let masked = in_grid.select(channel, &k(default_bg[c]));
-            let manifold = Manifold::compile(&masked, [shape.frame_w, shape.frame_h]);
-            let mut block = manifold.block();
-            slots.write(&mut block, &metrics).expect("same slots");
-            let mut want = vec![0.0f32; 15 * 11];
-            manifold.bind(&bound).with_uniforms(&block).collapse_rows(
-                PlaneRegion::rows(15, 0, 11),
-                &mut want,
-                15,
-            );
-
-            let got = plane(&ranged, c, 15, 11);
+            // The range encoding: what this module now does.
+            let program = CellGridProgram::compile(shape, default_bg);
+            let params = program.params(&metrics);
             assert_eq!(
-                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                "channel {c}: the range encoding and the mask encoding disagree"
+                params.grid_range(),
+                IndexRange::new(0, 0, want_grid[0] as usize, want_grid[1] as usize),
+                "{shape:?} at {metrics:?}"
             );
+            let ranged = program.frame(&params, cells.clone(), atlas.clone());
+
+            // The value encoding: the same channel kernels under the mask the
+            // select used to carry, evaluated over the whole frame.
+            let CellGridKernels {
+                channels,
+                buffers,
+                slots,
+            } = shape.channel_kernels();
+            let k = Kernel::constant;
+            let (x, y) = (Kernel::x(), Kernel::y());
+            let in_grid = x
+                .ge(&k(0.0))
+                .and(&x.lt(&k(cols as f32 * cell_w * scale)))
+                .and(&y.ge(&k(0.0)))
+                .and(&y.lt(&k(rows as f32 * cell_h * scale)));
+            let bound = [(buffers.cells, cells), (buffers.atlas, atlas)];
+            let (w, h) = (frame_w as usize, frame_h as usize);
+            for (c, channel) in channels.iter().enumerate() {
+                let masked = in_grid.select(channel, &k(default_bg[c]));
+                let manifold = Manifold::compile(&masked, [frame_w, frame_h]);
+                let mut block = manifold.block();
+                slots.write(&mut block, &metrics).expect("same slots");
+                let mut want = vec![0.0f32; w * h];
+                manifold.bind(&bound).with_uniforms(&block).collapse_rows(
+                    PlaneRegion::rows(w, 0, h),
+                    &mut want,
+                    w,
+                );
+
+                let got = plane(&ranged, c, w, h);
+                assert_eq!(
+                    got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    "channel {c} of {shape:?} at {metrics:?}: the range encoding \
+                     and the mask encoding disagree"
+                );
+            }
         }
     }
 
-    /// `paint_outside` fills exactly the complement of the claim and touches
-    /// nothing else in the plane — including the stride's spare columns,
-    /// which for a union summand are a neighbour's.
+    /// A metric whose *derived* values are not finite is refused where it is
+    /// written, not where the picture is seen. A subnormal cell extent passes
+    /// every check on the input — positive, finite — and then `1/cell_w`
+    /// overflows to `+inf` and every pixel of the frame reads cell 0.
     #[test]
-    fn paint_outside_fills_the_complement_and_only_it() {
-        let (w, rows, stride) = (5usize, 3usize, 7usize);
-        let mut plane = vec![-1.0f32; rows * stride];
-        paint_outside(
-            &mut plane,
-            stride,
-            IndexRange::new(0, 2, w, rows),
-            IndexRange::new(0, 2, 3, 2),
-            9.0,
-        );
-        for j in 0..rows {
-            for i in 0..stride {
-                let inside_claim = j < 2 && i < 3;
-                let want = if i >= w || inside_claim { -1.0 } else { 9.0 };
-                assert_eq!(
-                    plane[j * stride + i],
-                    want,
-                    "plane[{j}][{i}] (claim 3x2, band {w} wide, stride {stride})"
-                );
-            }
+    fn a_metric_whose_reciprocal_overflows_is_refused_where_it_is_written() {
+        let program = CellGridProgram::compile(TINY_SHAPE, [0.0; 4]);
+        let refused = [
+            CellGridMetrics {
+                cell_w: 0.0,
+                ..TINY_METRICS
+            },
+            CellGridMetrics {
+                cell_w: 1e-42,
+                ..TINY_METRICS
+            },
+            CellGridMetrics {
+                cell_h: -4.0,
+                ..TINY_METRICS
+            },
+            CellGridMetrics {
+                scale: 1e-42,
+                ..TINY_METRICS
+            },
+            CellGridMetrics {
+                scale: f32::INFINITY,
+                ..TINY_METRICS
+            },
+            CellGridMetrics {
+                density: f32::NAN,
+                ..TINY_METRICS
+            },
+            CellGridMetrics {
+                tile_w: 0,
+                ..TINY_METRICS
+            },
+            CellGridMetrics {
+                tile_h: 0,
+                ..TINY_METRICS
+            },
+        ];
+        for metrics in refused {
+            assert!(
+                std::panic::catch_unwind(|| program.params(&metrics)).is_err(),
+                "{metrics:?} was accepted"
+            );
+            // The public range accessors refuse it too: reporting a
+            // full-frame range for a metric no program will take is exactly
+            // the kind of plausible answer this type refuses to give.
+            assert!(
+                std::panic::catch_unwind(|| TINY_SHAPE.grid_range(&metrics)).is_err(),
+                "{metrics:?} was accepted by grid_range"
+            );
         }
     }
 }

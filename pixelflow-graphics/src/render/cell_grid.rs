@@ -19,8 +19,8 @@
 use std::sync::Arc;
 
 use pixelflow_core::{
-    paint_outside, CellGridBuffers, CellGridKernels, CellGridMetrics, CellGridShape, CellGridSlots,
-    IndexRange, PlaneRegion, UniformBlock,
+    CellGridBuffers, CellGridKernels, CellGridMetrics, CellGridShape, CellGridSlots, IndexRange,
+    PlaneRegion, UniformBlock,
 };
 
 use crate::render::packed::{pack_scalar, PackedFrame, PackedManifold};
@@ -240,7 +240,7 @@ impl CellGridPackedFrame {
                 stride,
             );
         }
-        paint_outside(out, stride, band, claim, self.border);
+        band.paint_complement(claim, out, stride, self.border);
     }
 }
 
@@ -414,35 +414,208 @@ mod tests {
         dense
     }
 
+    /// **The parity oracle: the packed collapse against the four channel
+    /// collapses composed with the scalar pack.** This is the crate's
+    /// correctness proof for the pack, so what it promises has to be exactly
+    /// what holds.
+    ///
+    /// It promises **±1 in a channel byte**, not `u32` equality, and the two
+    /// halves of this test say where each holds:
+    ///
+    /// - Where the metric's arithmetic is exact — an integral grid extent,
+    ///   cell extents that are powers of two — the two agree **exactly**, and
+    ///   that is asserted with no epsilon.
+    /// - Where it is not, they may differ by one unit in the last place of a
+    ///   channel byte, and that is asserted as a bound.
+    ///
+    /// **Why it stopped being exact everywhere.** The metric is a block of
+    /// `Uniform`s now, and a uniform leaf is opaque to the folder: no rewrite
+    /// can look inside it. So the packed arena and a standalone channel arena
+    /// no longer extract the same schedule for the subexpression they share —
+    /// before, the metric folded to constants and the two coincided. The
+    /// *channel planes themselves are bit-identical* to the pre-uniform tree;
+    /// what moved is only which of two equally valid schedules the packed
+    /// program's shared subterm gets. `union.rs` writes down exactly this
+    /// licence for the same reason ("extraction is a function of the arena and
+    /// of the lattice shape, not of the expression alone"), and CLAUDE.md's
+    /// "within a target, the optimizer may still produce a different answer
+    /// than the unoptimized code" is the general statement.
+    ///
+    /// A real miscompile — a lost channel, a swapped lane, a wrong cell —
+    /// moves a byte by far more than one step, and the exact half below would
+    /// catch it outright.
     #[test]
-    fn packed_bake_is_bit_exact_with_channel_bakes_under_both_byte_orders() {
-        // 12×6 over tiny_scene's 8×4 grid: the right and bottom margins are
-        // off-grid, so default_bg flows through the pack too. THE invariant:
-        // for every pixel, the packed collapse equals the four channel ones
-        // composed with the scalar pack — exact u32 equality, no epsilon.
-        let (program, cells, atlas) = tiny_scene();
-        let frame = program.frame(&program.params(&TINY_METRICS), cells.clone(), atlas.clone());
-        let (w, h) = (12, 6);
-        let planes: [Vec<f32>; 4] = core::array::from_fn(|c| plane(&frame, c, w, h));
-        for shifts in [RGBA_SHIFTS, BGRA_SHIFTS] {
-            let packed =
-                CellGridPackedManifold::compile(*program.shape(), [0.9, 0.8, 0.7, 0.6], shifts);
-            let got = packed_plane(
-                &packed.frame(&packed.params(&TINY_METRICS), cells.clone(), atlas.clone()),
-                w,
-                h,
-            );
-            for i in 0..w * h {
-                let expected = pack_scalar(
-                    [planes[0][i], planes[1][i], planes[2][i], planes[3][i]],
-                    shifts,
+    fn packed_bake_agrees_with_channel_bakes_under_both_byte_orders() {
+        // Two fixtures. The small one is tiny_scene's 8×4 grid in a 12×6
+        // frame, whose margins put default_bg through the pack too, at a
+        // metric whose arithmetic is exact. The large one is a fractional
+        // metric over enough pixels for a schedule difference to actually
+        // appear — at 72 pixels it never would, and a bound nothing exercises
+        // is a bound nobody has checked.
+        let (small, cells, atlas) = tiny_scene();
+        let big_shape = CellGridShape {
+            cols: 40,
+            rows: 24,
+            atlas_width: 64,
+            atlas_height: 32,
+            frame_w: 401,
+            frame_h: 197,
+        };
+        // Coverage and colour values that are not all exact halves and ones:
+        // a schedule difference only shows where a packed byte sits near a
+        // rounding boundary, and a two-tile atlas of 0/½/1 never puts one
+        // there.
+        let big_atlas = Arc::new(
+            (0..big_shape.atlas_len())
+                .map(|i| ((i * 7) % 11) as f32 / 10.0)
+                .collect::<Vec<f32>>(),
+        );
+        let big_cells = Arc::new(
+            (0..big_shape.cells_len())
+                .map(|i| ((i * 13) % 17) as f32 / 16.0)
+                .collect::<Vec<f32>>(),
+        );
+        let big = CellGridProgram::compile(big_shape, [0.9, 0.8, 0.7, 0.6]);
+        let fractional = CellGridMetrics {
+            cell_w: 9.7,
+            cell_h: 7.3,
+            density: 0.37,
+            ..TINY_METRICS
+        };
+
+        for (program, cells, atlas, metrics, w, h, exact) in [
+            (&small, &cells, &atlas, TINY_METRICS, 12usize, 6usize, true),
+            (&big, &big_cells, &big_atlas, fractional, 401, 197, false),
+        ] {
+            let frame = program.frame(&program.params(&metrics), cells.clone(), atlas.clone());
+            let planes: [Vec<f32>; 4] = core::array::from_fn(|c| plane(&frame, c, w, h));
+            for shifts in [RGBA_SHIFTS, BGRA_SHIFTS] {
+                let packed =
+                    CellGridPackedManifold::compile(*program.shape(), [0.9, 0.8, 0.7, 0.6], shifts);
+                let got = packed_plane(
+                    &packed.frame(&packed.params(&metrics), cells.clone(), atlas.clone()),
+                    w,
+                    h,
                 );
+                let mut differing = 0usize;
+                for i in 0..w * h {
+                    let want = pack_scalar(
+                        [planes[0][i], planes[1][i], planes[2][i], planes[3][i]],
+                        shifts,
+                    );
+                    if got[i] == want {
+                        continue;
+                    }
+                    differing += 1;
+                    for s in shifts {
+                        let (a, b) = ((got[i] >> s) & 0xff, (want >> s) & 0xff);
+                        assert!(
+                            a.abs_diff(b) <= 1,
+                            "pixel {i} under shifts {shifts:?} at {metrics:?}: byte at \
+                             {s} is {a} against {b} — a schedule difference is one step, \
+                             this is not one"
+                        );
+                    }
+                }
+                println!(
+                    "parity {w}x{h} shifts {shifts:?} exact={exact}: {differing} of {} pixels differ",
+                    w * h
+                );
+                if exact {
+                    assert_eq!(
+                        differing,
+                        0,
+                        "an exact metric must pack exactly, and {differing} of {} pixels \
+                         disagree under shifts {shifts:?}",
+                        w * h
+                    );
+                } else {
+                    // A schedule difference touches a handful of boundary
+                    // values; a broken pack touches most of the frame.
+                    assert!(
+                        differing * 1000 <= w * h,
+                        "{differing} of {} pixels differ under shifts {shifts:?} — a \
+                         last-bit schedule difference does not reach a tenth of a percent",
+                        w * h
+                    );
+                }
+            }
+        }
+    }
+
+    /// **The restricted collapse writes exactly its own columns.** A grid
+    /// that covers its frame at an ODD width is the case `RowTail::Exact`
+    /// exists for: the row's final batch is partial at every ISA level (21 is
+    /// no multiple of 4, 8 or 16), and `collapse_rows`' overhang policy —
+    /// "the caller owns the padding" — would put the tail's spare lanes in
+    /// whatever lies past the band.
+    ///
+    /// Given a stride wider than the frame, those lanes are a sentinel this
+    /// test owns; swapping `collapse_subrect` for `collapse_rows` clobbers
+    /// it. Without an odd width nothing here fires, and every other fixture in
+    /// this module has a grid narrower than its frame, where an overhang
+    /// lands in border columns that are painted over immediately afterwards
+    /// and so cannot be seen at all.
+    #[test]
+    fn a_grid_that_covers_its_frame_writes_no_further_than_the_frame() {
+        const SENTINEL: u32 = 0xdead_beef;
+        let shape = CellGridShape {
+            cols: 3,
+            rows: 1,
+            frame_w: 21,
+            frame_h: 5,
+            ..TINY_SHAPE
+        };
+        let metrics = CellGridMetrics {
+            cell_w: 7.0,
+            cell_h: 8.0,
+            ..TINY_METRICS
+        };
+        let program = CellGridPackedManifold::compile(shape, [0.0, 0.0, 0.0, 1.0], RGBA_SHIFTS);
+        let params = program.params(&metrics);
+        assert_eq!(
+            params.grid_range(),
+            IndexRange::new(0, 0, 21, 5),
+            "the grid must cover the frame, or the overhang lands in border \
+             columns and is painted over before anyone can see it"
+        );
+        let cells = Arc::new(
+            (0..3)
+                .flat_map(|i| {
+                    [
+                        1.0 + 6.0 * (i % 2) as f32,
+                        1.0,
+                        1.0,
+                        0.5,
+                        0.25,
+                        1.0,
+                        0.1,
+                        0.2,
+                        0.3,
+                        1.0,
+                    ]
+                })
+                .collect::<Vec<f32>>(),
+        );
+        let frame = program.frame(&params, cells, Arc::new(two_tile_atlas(0.5)));
+
+        let stride = 24;
+        let mut plane = vec![SENTINEL; 5 * stride];
+        frame.collapse_rows(whole(21, 5), &mut plane, stride);
+        for row in 0..5 {
+            for col in 21..stride {
                 assert_eq!(
-                    got[i], expected,
-                    "pixel {i} under shifts {shifts:?}: {:#010x} != {:#010x}",
-                    got[i], expected
+                    plane[row * stride + col],
+                    SENTINEL,
+                    "the collapse wrote past its own 21 columns at ({row}, {col})"
                 );
             }
+            assert!(
+                plane[row * stride..row * stride + 21]
+                    .iter()
+                    .all(|&w| w != SENTINEL),
+                "row {row} was not filled at all, so the check above is vacuous"
+            );
         }
     }
 

@@ -281,7 +281,7 @@ impl PackedFrame {
     ///
     /// Panics if the region's width is zero, `stride` is less than it, or
     /// `out` cannot hold the sub-rectangle.
-    pub fn collapse_subrect(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
+    pub(crate) fn collapse_subrect(&self, region: PlaneRegion, out: &mut [u32], stride: usize) {
         self.frame.collapse_int_subrect(region, out, stride);
     }
 }

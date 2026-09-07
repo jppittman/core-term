@@ -171,6 +171,50 @@ impl IndexRange {
         }
     }
 
+    /// **Paint `value` over every index of this band that `claim` does not
+    /// cover** — the constant summand of a two-summand union, where one
+    /// kernel answers for `claim` and a constant answers for the rest.
+    ///
+    /// `out` is this band's own plane: its first element is the band's first
+    /// index and its rows are `stride` elements apart. `claim` must be a
+    /// *leading* sub-rectangle — it starts where the band does — which is
+    /// what an origin-anchored restriction of a frame band always is.
+    ///
+    /// Generic in the element because the two consumers differ only there: a
+    /// per-channel form writes `f32` coverage and a packed form writes `u32`
+    /// pixels. `(out, stride)` is one question asked in two arguments, exactly
+    /// as every `collapse_*` in this crate asks it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `claim` is not a leading sub-rectangle of this band, or if
+    /// `out` cannot hold the band at `stride`.
+    pub fn paint_complement<T: Copy>(&self, claim: Self, out: &mut [T], stride: usize, value: T) {
+        assert!(
+            stride >= self.width,
+            "IndexRange::paint_complement: stride {stride} is narrower than the {} samples a row holds",
+            self.width
+        );
+        let (claim_w, claim_rows) = if claim.is_empty() {
+            (0, 0)
+        } else {
+            assert!(
+                claim.x0 == self.x0
+                    && claim.y0 == self.y0
+                    && claim.width <= self.width
+                    && claim.rows <= self.rows,
+                "IndexRange::paint_complement: {claim:?} is not a leading sub-rectangle of {self:?}"
+            );
+            (claim.width, claim.rows)
+        };
+        for j in 0..self.rows {
+            let start = j * stride;
+            let row = &mut out[start..start + self.width];
+            let from = if j < claim_rows { claim_w } else { 0 };
+            row[from..].fill(value);
+        }
+    }
+
     /// Whether two ranges share an index. Empty ranges meet nothing.
     ///
     /// Internal because it exists for [`Union::place`]'s disjointness check;
@@ -378,6 +422,93 @@ impl CompiledUnion {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `intersect` is the domain-side meet, and it is total: an empty answer
+    /// is a perfectly good one. Exercised directly and away from the origin,
+    /// because its only production caller always meets an origin-anchored
+    /// grid against an origin-anchored band — which is one case out of many.
+    #[test]
+    fn intersect_is_the_meet_of_two_ranges() {
+        let r = |x0, y0, w, h| IndexRange::new(x0, y0, w, h);
+        let cases: [(IndexRange, IndexRange, IndexRange); 9] = [
+            // Overlapping, neither containing the other.
+            (r(2, 3, 6, 5), r(5, 1, 6, 5), r(5, 3, 3, 3)),
+            // `other` left of and above `self`, still meeting.
+            (r(5, 5, 4, 4), r(3, 3, 4, 4), r(5, 5, 2, 2)),
+            // Containment, both ways.
+            (r(0, 0, 10, 10), r(3, 4, 2, 2), r(3, 4, 2, 2)),
+            (r(3, 4, 2, 2), r(0, 0, 10, 10), r(3, 4, 2, 2)),
+            // Disjoint on X only — the saturating path, and a width of 0.
+            (r(0, 0, 4, 9), r(6, 2, 4, 9), r(6, 2, 0, 7)),
+            // Disjoint on Y only.
+            (r(0, 0, 9, 4), r(2, 6, 9, 4), r(2, 6, 7, 0)),
+            // Edge-adjacent: `[0, 4)` and `[4, 8)` share no index.
+            (r(0, 0, 4, 4), r(4, 0, 4, 4), r(4, 0, 0, 4)),
+            // An empty operand meets nothing.
+            (r(0, 0, 8, 8), r(3, 3, 0, 5), r(3, 3, 0, 5)),
+            // Both empty.
+            (r(1, 1, 0, 0), r(2, 2, 0, 0), r(2, 2, 0, 0)),
+        ];
+        for (a, b, want) in cases {
+            let got = a.intersect(&b);
+            assert_eq!(got, want, "{a:?} ∩ {b:?}");
+            assert_eq!(
+                got.is_empty(),
+                want.is_empty(),
+                "emptiness of {a:?} ∩ {b:?}"
+            );
+            // The meet is symmetric in what it contains, even where the
+            // empty answer's origin differs.
+            assert_eq!(
+                b.intersect(&a).is_empty(),
+                want.is_empty(),
+                "{b:?} ∩ {a:?} disagrees on emptiness"
+            );
+        }
+    }
+
+    /// `paint_complement` fills exactly the complement of the claim and
+    /// touches nothing else in the plane — including the stride's spare
+    /// columns, which for a union summand are a neighbour's.
+    #[test]
+    fn paint_complement_fills_the_complement_and_only_it() {
+        let (w, rows, stride) = (5usize, 3usize, 7usize);
+        for (claim_w, claim_rows) in [(3usize, 2usize), (0, 0), (5, 3), (5, 1), (1, 3)] {
+            let mut plane = vec![-1.0f32; rows * stride];
+            let band = IndexRange::new(0, 2, w, rows);
+            let claim = if claim_w == 0 {
+                IndexRange::new(9, 9, 0, 0)
+            } else {
+                IndexRange::new(0, 2, claim_w, claim_rows)
+            };
+            band.paint_complement(claim, &mut plane, stride, 9.0);
+            for j in 0..rows {
+                for i in 0..stride {
+                    let inside_claim = j < claim_rows && i < claim_w;
+                    let want = if i >= w || inside_claim { -1.0 } else { 9.0 };
+                    assert_eq!(
+                        plane[j * stride + i],
+                        want,
+                        "plane[{j}][{i}] (claim {claim_w}x{claim_rows}, band {w} wide, stride {stride})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A claim that does not start where the band does is a caller mistake,
+    /// not a shape to paint around.
+    #[test]
+    #[should_panic(expected = "leading sub-rectangle")]
+    fn paint_complement_refuses_a_claim_that_is_not_leading() {
+        let mut plane = vec![0.0f32; 12];
+        IndexRange::new(0, 0, 4, 3).paint_complement(
+            IndexRange::new(1, 0, 2, 2),
+            &mut plane,
+            4,
+            1.0,
+        );
+    }
 
     fn coordinate_kernel() -> Kernel {
         Kernel::x().mul(&Kernel::constant(100.0)).add(&Kernel::y())
