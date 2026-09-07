@@ -218,8 +218,13 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
     use pixelflow_ir::binding::BindingTable;
     use pixelflow_ir::eval_scalar;
 
+    /// Reassociation and FMA fusion re-round a long winding sum at the 1e-4
+    /// scale; an unsound rewrite moves coverage by O(1).
+    const TOLERANCE: f32 = 1e-3;
+
     const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
     let font = Font::parse(FONT_DATA).unwrap();
+    let mut divergences: Vec<String> = Vec::new();
 
     for size in [7u32, 12, 17, 32, 64, 128] {
         for ch in ['A', 'O', 'g', '8'] {
@@ -246,14 +251,25 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
                     let vars = [x, y, 0.0, 0.0];
                     let want = eval_scalar(&raw, raw_root, &vars, &BindingTable::empty());
                     let got = eval_scalar(opt, opt_root, &vars, &BindingTable::empty());
-                    if (want - got).abs() >= 1e-3 {
-                        println!(
-                            "DIVERGE {ch}@{size} texel ({i},{j}) raw={want} opt={got} delta={}",
+                    if (want - got).abs() >= TOLERANCE {
+                        divergences.push(format!(
+                            "{ch}@{size} texel ({i},{j}): raw {want} vs optimized {got} \
+                             (delta {})",
                             got - want
-                        );
+                        ));
                     }
                 }
             }
         }
     }
+
+    // Reported together rather than at the first hit: which rows sit on a
+    // knife edge is the diagnostic, and one texel does not show it.
+    assert!(
+        divergences.is_empty(),
+        "an optimization changed glyph coverage beyond rounding noise \
+         ({} texels):\n{}",
+        divergences.len(),
+        divergences.join("\n")
+    );
 }

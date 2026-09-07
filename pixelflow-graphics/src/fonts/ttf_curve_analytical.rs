@@ -34,34 +34,7 @@ const MIN_GRADIENT: f32 = 1e-3;
 /// discriminant to a tiny positive value keeps values and derivatives finite
 /// at the curve's Y-extremum (tangent point); the resulting root perturbation
 /// is ~1e-6 font units. The `disc >= 0` gate still rejects non-intersections.
-///
-/// It is not optional. On a row whose discriminant is negative the clamp
-/// fabricates a root pair either side of `t_vertex`, and the pair does not
-/// self-cancel in general: when the segment's extremum is an endpoint
-/// (`by = 0`, so `t_vertex = 0` — the common shape in a TrueType outline)
-/// exactly one of the two satisfies `t ∈ [0, 1]`, and a whole crossing enters
-/// the winding sum. Dropping the comparison was measured against the tight
-/// Y-extent gate alone and regresses `'8'` at 7/13/17/19/41 px.
 const MIN_DISC: f32 = 1e-12;
-
-/// How far past a quadratic's exact Y-extent its `in_y` gate reaches, as a
-/// fraction of the magnitudes the solver rounds on.
-///
-/// The gate is a superset of where the solver's own validity tests admit a
-/// root, never a substitute for them: the `t ∈ [0, 1]` and `disc ≥ 0` checks
-/// still decide every pixel, and the gate only lets a row that cannot contain
-/// this segment skip solving for it. What makes "cannot" true in `f32` rather
-/// than in the reals is this margin. The solver's discriminant rounds on
-/// `4·ay·Y`, `4·ay·cy` and `by²`, and its small root cancels on the order of
-/// `by²/ay`, so a row within a few ulps of those of the exact extent can still
-/// pass its tests; `2⁻¹⁶` of their sum is a 64× margin over that, and for a
-/// 2048-em font it is a fraction of a font unit.
-///
-/// The margin can only ever cost a row's rejection, never buy it coverage:
-/// a row in the band is outside the curve's true Y-range, so either its
-/// discriminant is negative or its roots fall outside `t ∈ [0, 1]`, and the
-/// solver's own tests return zero for it either way.
-const EXTENT_SLOP: f32 = 1.0 / 65536.0;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Line Segment (Ray-Crossing Winding)
@@ -169,29 +142,6 @@ impl AnalyticalLine {
 // Quadratic Bezier (Analytical Root-Finding with Gradient Ramp)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// The Y-extent of `y(t) = (1-t)² y0 + 2(1-t)t y1 + t² y2` over `t ∈ [0, 1]`,
-/// widened by [`EXTENT_SLOP`]: the endpoints, and the vertex when it falls
-/// strictly inside the segment.
-///
-/// A degenerate (linear) quadratic has no vertex; its extent is its endpoints.
-fn y_extent([y0, y1, y2]: [f32; 3], is_linear: bool) -> (f32, f32) {
-    let ay = y0 - 2.0 * y1 + y2;
-    let by = 2.0 * (y1 - y0);
-    let (mut lo, mut hi) = (y0.min(y2), y0.max(y2));
-    if !is_linear {
-        let t_vertex = -by / (2.0 * ay);
-        if t_vertex > 0.0 && t_vertex < 1.0 {
-            let y_vertex = y0 - by * by / (4.0 * ay);
-            lo = lo.min(y_vertex);
-            hi = hi.max(y_vertex);
-        }
-    }
-    // What the solver rounds on, in the units it rounds in; see EXTENT_SLOP.
-    let cancels_on = if is_linear { 0.0 } else { by * by / ay.abs() };
-    let slop = EXTENT_SLOP * (lo.abs() + hi.abs() + cancels_on + 1.0);
-    (lo - slop, hi + slop)
-}
-
 /// Quadratic Bezier with precomputed analytical ray-crossing coefficients.
 ///
 /// Parametric form: P(t) = (1-t)^2 P0 + 2(1-t)t P1 + t^2 P2
@@ -216,10 +166,6 @@ pub struct AnalyticalQuad {
     neg_b_2a: f32,
     disc_const: f32, // by^2 - 4*ay*cy
     disc_slope: f32, // 4*ay (discriminant = disc_slope*Y + disc_const)
-    // Rows outside [y_lo, y_hi] cannot contain the curve: the tight extent of
-    // y(t) over t in [0, 1], widened by EXTENT_SLOP.
-    y_lo: f32,
-    y_hi: f32,
     // Degenerate quadratic (actually a line)
     is_linear: bool,
 }
@@ -241,7 +187,6 @@ impl AnalyticalQuad {
         let neg_b_2a = -by * inv_2ay;
         let disc_const = by * by - 4.0 * ay * cy;
         let disc_slope = 4.0 * ay;
-        let (y_lo, y_hi) = y_extent([y0, y1, y2], is_linear);
 
         Self {
             ax,
@@ -254,8 +199,6 @@ impl AnalyticalQuad {
             neg_b_2a,
             disc_const,
             disc_slope,
-            y_lo,
-            y_hi,
             is_linear,
         }
     }
@@ -264,40 +207,6 @@ impl AnalyticalQuad {
     /// [`AnalyticalLine::kernel`]). The degenerate linear branch and the
     /// true-quadratic branch build their coverage bodies with `DX`/`DY`
     /// becoming `Dwrt` resolved at bake.
-    ///
-    /// The quadratic branch is gated on the curve's Y-extent the way the line
-    /// is gated on `in_y`, and everything the gate guards — the discriminant,
-    /// both roots, their crossings, tangents and validity — is exclusive to
-    /// its true arm. Those are Y-only, so the collapse hoists them to the row
-    /// prologue; the gate hoists alongside, and a row the curve does not cross
-    /// solves nothing for it. `disc ≥ 0` alone could not do that: it is a
-    /// half-plane, true on every row past the vertex.
-    ///
-    /// The gate is also a correctness fix, and that is the reason it is the
-    /// *tight* extent rather than the endpoints' bounding box. `disc ≥ 0` is
-    /// a knife edge at exactly one row — the vertex of the parabola `y(t)`
-    /// taken over all of `t`, where `Y·4ay + (by² - 4ay·cy)` is zero. Within
-    /// an ulp of that row the comparison is decided by whether the multiply
-    /// and the add were fused (one rounding) or not (two), which is a choice
-    /// the e-graph makes independently for the raw and the optimized arena.
-    /// The outcome is not benign: `max(min_disc)` keeps `sqrt` finite by
-    /// fabricating a root pair a hair either side of `t_vertex`, so when
-    /// `t_vertex` sits just outside `[0, 1]` one fabricated root lands inside
-    /// it and contributes a whole crossing. `'8'` at 17 px was that — eight
-    /// texels of one row, up to 0.5 of coverage apart between the two arenas.
-    ///
-    /// Those rows are exactly the ones this gate excises: `t_vertex ∉ [0, 1]`
-    /// is precisely when the vertex row lies outside `[y_lo, y_hi]`. And the
-    /// gate is well-conditioned where the discriminant is not — it compares
-    /// the coordinate `Y` against two constants folded at construction, with
-    /// no arithmetic in between for reassociation or fusion to re-round.
-    ///
-    /// `disc ≥ 0` stays, because inside the extent it still decides pixels.
-    /// A segment whose extremum is an endpoint (`by = 0`, so `t_vertex = 0`)
-    /// is the common case in a TrueType outline, and there the fabricated
-    /// pair straddles `t = 0`: one root is valid, the other is not, and
-    /// nothing cancels. The gate is a superset of the solver's tests, never a
-    /// substitute for them.
     #[must_use]
     pub fn kernel(&self) -> Kernel {
         if self.is_linear {
@@ -323,17 +232,17 @@ impl AnalyticalQuad {
                 MIN_GRADIENT,
             )
         } else {
-            let contribution = kernel!(|ax: f32,
-                                        bx: f32,
-                                        cx: f32,
-                                        ay: f32,
-                                        by: f32,
-                                        inv_2a: f32,
-                                        neg_b_2a: f32,
-                                        disc_const: f32,
-                                        disc_slope: f32,
-                                        min_grad: f32,
-                                        min_disc: f32| {
+            kernel!(|ax: f32,
+                     bx: f32,
+                     cx: f32,
+                     ay: f32,
+                     by: f32,
+                     inv_2a: f32,
+                     neg_b_2a: f32,
+                     disc_const: f32,
+                     disc_slope: f32,
+                     min_grad: f32,
+                     min_disc: f32| {
                 let disc = Y * disc_slope + disc_const;
                 // max(min_disc) keeps sqrt finite (value AND derivative) at the
                 // tangent point; disc >= 0 below still gates validity.
@@ -391,75 +300,7 @@ impl AnalyticalQuad {
                 self.disc_slope,
                 MIN_GRADIENT,
                 MIN_DISC,
-            );
-            // Rows the curve cannot cross contribute nothing, and need none
-            // of the above. Composed around the macro's kernel rather than
-            // inside it so the solver's expression — and the form the macro's
-            // optimizer extracts for it — is exactly what it was.
-            let y = Kernel::y();
-            let in_y = y
-                .ge(&Kernel::constant(self.y_lo))
-                .and(&y.le(&Kernel::constant(self.y_hi)));
-            in_y.select(&contribution, &Kernel::constant(0.0))
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::y_extent;
-
-    /// `y_extent` must contain the curve, not merely its endpoints: the
-    /// extremum of a quadratic is interior whenever `t_vertex ∈ (0, 1)`, and
-    /// a gate derived from the endpoints alone would clip it. Sampling the
-    /// parametric form is the independent statement of that.
-    #[test]
-    fn y_extent_contains_every_point_of_the_curve() {
-        let cases = [
-            // Vertex strictly inside: an arch, and its reflection.
-            ([0.0f32, 10.0, 0.0], true),
-            ([0.0f32, -10.0, 0.0], true),
-            // Vertex inside but off-centre.
-            ([0.0f32, 8.0, 3.0], true),
-            ([-3.0f32, 40.0, 1.0], true),
-            // Monotone over [0, 1]: the vertex is outside, endpoints bound it.
-            ([0.0f32, 1.0, 2.0], false),
-            ([5.0f32, 4.0, -20.0], false),
-            // Near-degenerate curvature.
-            ([0.0f32, 0.5000001, 1.0], false),
-        ];
-        for ([y0, y1, y2], expect_interior_vertex) in cases {
-            let ay = y0 - 2.0 * y1 + y2;
-            let by = 2.0 * (y1 - y0);
-            let is_linear = ay.abs() < 1e-6;
-            let (lo, hi) = y_extent([y0, y1, y2], is_linear);
-            assert!(lo <= hi, "{y0},{y1},{y2}: empty extent");
-
-            for k in 0..=1000 {
-                let t = k as f32 / 1000.0;
-                let y = ay * t * t + by * t + y0;
-                assert!(
-                    y >= lo && y <= hi,
-                    "{y0},{y1},{y2}: y({t}) = {y} escapes [{lo}, {hi}]"
-                );
-            }
-
-            let t_vertex = -by / (2.0 * ay);
-            let interior = !is_linear && t_vertex > 0.0 && t_vertex < 1.0;
-            assert_eq!(
-                interior, expect_interior_vertex,
-                "{y0},{y1},{y2}: vertex at t = {t_vertex}"
-            );
-            if interior {
-                // The endpoints alone would not have covered it.
-                let (e_lo, e_hi) = (y0.min(y2), y0.max(y2));
-                let y_vertex = y0 - by * by / (4.0 * ay);
-                assert!(
-                    y_vertex < e_lo || y_vertex > e_hi,
-                    "{y0},{y1},{y2}: vertex {y_vertex} is inside the endpoint span"
-                );
-                assert!(y_vertex >= lo && y_vertex <= hi);
-            }
+            )
         }
     }
 }
