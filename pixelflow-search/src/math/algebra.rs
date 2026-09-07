@@ -963,16 +963,16 @@ impl Rewrite for ConstantFold {
         // arithmetic into code that may run somewhere that computes
         // differently. `fold_is_platform_specific` owns the classification (NaN
         // and signed-zero Min/Max, NaN Gt/Ge, Round at a tie, the reciprocal
-        // estimates, MulAdd's one-vs-two roundings, invalid TruncToInt) so it
-        // lives in one place next to the semantics rather than as conditions
-        // here.
+        // estimates, invalid TruncToInt) so it lives in one place next to the
+        // semantics rather than as conditions here. `MulAdd` is deliberately
+        // not on the list: one rounding versus two is precision, which the
+        // language puts on the table, not a different value.
         //
         // Complete for `Round`/`Recip`/`Rsqrt`/`TruncToInt` (unary — no rewrite
-        // can reintroduce the fold) and for `MulAdd` (its only commutable pair is
-        // the two multiplicands, which round identically either way). Partial
-        // for `Min`/`Max`: the e-graph installs commutativity for them, so a
-        // commuted form can still be folded. That is permitted, since the
-        // result is unspecified, but this removes the direct path.
+        // can reintroduce the fold). Partial for `Min`/`Max`: the e-graph
+        // installs commutativity for them, so a commuted form can still be
+        // folded. That is permitted, since the result is unspecified, but this
+        // removes the direct path.
         if kind.fold_is_platform_specific(&args) {
             return None;
         }
@@ -1160,15 +1160,17 @@ mod platform_specific_fold_tests {
         }
     }
 
-    /// `MulAdd` rounds once on every target with an FMA (`vfmadd`, `FMLA`) and
-    /// twice on SSE2 (`mulps` then `addps`). Value-aware, because the two agree
-    /// for most inputs — declining everything would give up real folding to
-    /// guard a narrow set of arguments.
+    /// `MulAdd` always folds, and the fold rounds once. One rounding (an FMA
+    /// instruction) versus two (`mulps` then `addps`, or a decomposition under
+    /// register pressure) is precision inside the language's contract, never a
+    /// different value, so no argument is refused.
     #[test]
-    fn declines_muladd_only_where_the_roundings_differ() {
-        // One rounding gives 8194.001, two give 8194.0.
-        assert_eq!(folds(&ops::MulAdd, &[1.000_000_1, 4097.0, 4097.0]), None);
-        // Exactly representable throughout: both forms agree.
+    fn folds_muladd_unconditionally_with_one_rounding() {
+        // One rounding gives 8194.001, two give 8194.0: the fold is the former.
+        assert_eq!(
+            folds(&ops::MulAdd, &[1.000_000_1, 4097.0, 4097.0]).map(f32::to_bits),
+            Some(libm::fmaf(1.000_000_1, 4097.0, 4097.0).to_bits())
+        );
         assert_eq!(folds(&ops::MulAdd, &[2.0, 3.0, 4.0]), Some(10.0));
     }
 

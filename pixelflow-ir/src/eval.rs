@@ -373,10 +373,11 @@ pub fn trunc_input_is_divergent(v: f32) -> bool {
 ///   instruction is IEEE-exact and identical to the oracle's scalar op, but an
 ///   extracted/rewritten form may associate differently, so a few ulps of
 ///   headroom (`rel 1e-5`) rather than bit equality.
-/// - **`MulAdd`**: one rounding on FMA targets, two in the oracle (`x*y + z`,
-///   matching `OpKind::eval_ternary` and SSE2). Away from catastrophic
-///   cancellation — which `fold_is_platform_specific` flags — they differ by
-///   at most an ulp.
+/// - **`MulAdd`**: one rounding in the oracle (`libm::fmaf`, matching
+///   `OpKind::eval_ternary` and every FMA target); two where a target
+///   multiplies then adds. Away from catastrophic cancellation they differ
+///   by at most an ulp, and [`PointCheck`]'s radius carries the product's
+///   rounding so the cancelling inputs are bounded rather than skipped.
 /// - **`Recip`/`Rsqrt`**: hardware *estimates*. The loosest backend is
 ///   SSE2/AVX2 `rcpps`/`vrcpps` at ~12 bits (max relative error `1.5·2⁻¹²`
 ///   ≈ 3.7e-4); `vrcp14ps` is ~14 bits and aarch64's `FRECPE`+`FRECPS`
@@ -1341,7 +1342,8 @@ fn ternary_bound_pinned(op: OpKind, a: NodeBound, b: NodeBound, c: NodeBound) ->
     let radius = match op {
         // One rounding fused, two split (CLAUDE.md's MulAdd row): the two
         // answers differ by at most the rounding of the product, so that gap is
-        // part of the bound even when every input is exact.
+        // part of the bound even when every input is exact. This is the whole
+        // policy for MulAdd — it is a tolerance, never a divergence.
         OpKind::MulAdd => {
             a.value.abs() * b.radius
                 + b.value.abs() * a.radius

@@ -1,9 +1,11 @@
 //! `MulAdd`'s rounding form, asserted through compiled code.
 //!
-//! CLAUDE.md's platform-divergence table calls `MulAdd` *value-aware*: one
-//! rounding where the hardware has an FMA, two where it does not, and the two
-//! disagree on inputs like `mul_add(1.0000001, 4097.0, 4097.0)`. That
-//! divergence is the entire reason the emitter carries two shapes for one op —
+//! CLAUDE.md's platform-divergence table has a `MulAdd` row: one rounding
+//! where the hardware has an FMA, two where it does not, and the two disagree
+//! on inputs like `mul_add(1.0000001, 4097.0, 4097.0)`. That is a precision
+//! difference the language puts on the table, not a divergence — the folder
+//! and the oracle round once and never refuse an input over it. It is still
+//! the entire reason the emitter carries two shapes for one op —
 //! `ResolvedOp::FusedMulAdd` and `ResolvedOp::DecomposedMulAdd` — and which
 //! one a node gets is decided by register pressure alone.
 //!
@@ -100,10 +102,10 @@ fn the_reference_forms_disagree_on_these_inputs() {
         "the chosen inputs no longer separate one rounding from two, so the \
          rest of this file proves nothing"
     );
-    assert!(
-        OpKind::MulAdd.fold_is_platform_specific(&[A, B, C]),
-        "the IR must agree these inputs are platform-specific — this is the \
-         same divergence `ConstantFold` declines to fold"
+    assert_eq!(
+        OpKind::MulAdd.eval_ternary(A, B, C).map(f32::to_bits),
+        Some(fused(A, B, C).to_bits()),
+        "the folder rounds once, and does so whatever profile built it"
     );
     // The halved constants must double back exactly.
     assert_eq!((HALF_A + HALF_A).to_bits(), A.to_bits());
