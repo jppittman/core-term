@@ -768,16 +768,19 @@ fn actors_can_coordinate_startup_with_barrier() {
     // Release the barrier
     barrier.wait();
 
-    // Now both should start
-    thread::sleep(Duration::from_millis(50));
-    assert!(alpha_started.load(Ordering::SeqCst));
-    assert!(beta_started.load(Ordering::SeqCst));
-
+    // Both must now be past it. Asserting that on a wall-clock deadline — sleep 50ms, then
+    // read the flags — is a bet that the OS scheduled two released threads within 50ms, which
+    // a loaded runner will lose. Dropping the handles and joining needs no bet: each thread
+    // sets its flag *before* entering `run()`, so a thread that has finished has provably
+    // passed the barrier.
     drop(alpha_h);
     drop(beta_h);
 
     alpha_thread.join().unwrap();
     beta_thread.join().unwrap();
+
+    assert!(alpha_started.load(Ordering::SeqCst));
+    assert!(beta_started.load(Ordering::SeqCst));
 }
 
 // ============================================================================

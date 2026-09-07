@@ -402,8 +402,9 @@ mod tests {
 
     #[test]
     fn rendered_response_does_not_return_a_token() {
-        // Matches the documented, intentional behavior in vsync_actor_real_tests.rs: frame
-        // completion and credit return are deliberately separate signals.
+        // Frame completion and credit return are deliberately separate signals — only
+        // `VsyncCommand::ReturnToken` moves credit. (The now-deleted
+        // `tests/vsync_actor_tests.rs` mocked the opposite, which is part of why it went.)
         let mut core = VsyncCore::new(60.0);
         core.step_control(VsyncCommand::Start).unwrap();
 
