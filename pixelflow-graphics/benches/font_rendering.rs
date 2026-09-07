@@ -3,7 +3,7 @@
 //! Run with: cargo bench -p pixelflow-graphics
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use pixelflow_core::{Lattice, Manifold};
+use pixelflow_core::{Kernel, Lattice, Manifold};
 use pixelflow_graphics::fonts::{text, text_union, CachedText, Font, GlyphCache};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
@@ -22,10 +22,7 @@ fn bench_pixelflow_single_char(c: &mut Criterion) {
     for (label, ch) in [("A_linear", 'A'), ("O_quadratic", 'O'), ("S_complex", 'S')] {
         group.bench_function(label, |b| {
             let kernel = text(&font, &ch.to_string(), 32.0);
-            let lattice = Lattice {
-                extent: [40, 45],
-                origin: [0.5, 0.5],
-            };
+            let lattice = Lattice::frame(40, 45);
 
             b.iter(|| black_box(lattice.bake(black_box(&kernel))));
         });
@@ -52,10 +49,7 @@ fn bench_pixelflow_text_sizes(c: &mut Criterion) {
             length,
             "the specimen is shorter than the length this case claims to render"
         );
-        let lattice = Lattice {
-            extent: [(length as u32) * 15, 24],
-            origin: [0.5, 0.5],
-        };
+        let lattice = Lattice::frame(length * 15, 24);
 
         // The range encoding: one kernel, every pixel evaluating every glyph.
         group.bench_with_input(BenchmarkId::new("sum", length), &length, |b, _| {
@@ -83,10 +77,7 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
     // Uncached: compose the text kernel and bake it (compile is cached across
     // iterations; construction + tabulation dominate).
     group.bench_function("uncached_HELLO", |b| {
-        let lattice = Lattice {
-            extent: [100, 30],
-            origin: [0.5, 0.5],
-        };
+        let lattice = Lattice::frame(100, 30);
         b.iter(|| {
             let kernel = text(&font, "HELLO", 20.0);
             black_box(lattice.bake(&kernel));
@@ -102,11 +93,14 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
     group.bench_function("cached_HELLO", |b| {
         let mut cache = GlyphCache::new();
         let cached = CachedText::new(&font, &mut cache, "HELLO", 20.0, 1.0);
-        let lattice = Lattice {
-            extent: [100, 30],
-            origin: [0.5, 0.5],
-        };
-        let bound = Manifold::compile(&cached.kernel(), lattice.extent).bind(&cached.bindings());
+        let lattice = Lattice::frame(100, 30);
+        // Pixel-center convention, applied as a contramap: `CachedText`
+        // queries in point space with no coordinate frame of its own.
+        let centered = cached.kernel().at(
+            &Kernel::x().add(&Kernel::constant(0.5)),
+            &Kernel::y().add(&Kernel::constant(0.5)),
+        );
+        let bound = Manifold::compile(&centered, lattice.extent).bind(&cached.bindings());
 
         b.iter(|| black_box(lattice.collapse(black_box(&bound))));
     });

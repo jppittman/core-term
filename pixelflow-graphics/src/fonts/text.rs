@@ -33,6 +33,22 @@
 use super::ttf::{Font, Support};
 use pixelflow_core::{IndexRange, Kernel, Lattice, Union};
 
+/// The rasterizer's pixel-center convention: pixel `(i, j)` is sampled at
+/// `(i + PIXEL_CENTER, j + PIXEL_CENTER)` — the same convention
+/// `manifold.rs`'s `SAMPLE_CENTER` and `cache.rs`'s `TEXEL_CENTER` name for
+/// their own domains, restated here because `layout` needs it baked into
+/// every placed glyph.
+///
+/// Before L2 this arrived for free: the ambient `Lattice` an unshifted glyph
+/// was baked over carried the ½ as its own `origin`, invisible to the glyph
+/// kernels themselves. A `Lattice` is a pure index now, so a `text_union`
+/// summand — collapsed at its own raw index range, with no coordinate frame
+/// to inherit — would sample at the wrong point unless the ½ travels with
+/// the kernel. `text`'s sum and `text_union`'s cells share one placement
+/// ([`layout`]), so both get it from here alike, and [`text_cells`]' own
+/// column math uses the same constant to stay in agreement with what it cuts.
+const PIXEL_CENTER: f32 = 0.5;
+
 /// Lay out uncached analytical text as a single coverage [`Kernel`].
 ///
 /// Advance-based (kerning-free) layout: each glyph is scaled to `size` and
@@ -41,6 +57,10 @@ use pixelflow_core::{IndexRange, Kernel, Lattice, Union};
 ///
 /// This is the denotation — the function a laid-out string *is*. Rendering it
 /// over a whole frame is what [`text_union`] does faster.
+///
+/// The returned kernel already samples at the rasterizer's pixel centers
+/// (`X`, `Y` name the pixel index, not its continuous coordinate) — bake it
+/// straight over a [`Lattice::frame`] with no further shift.
 #[must_use]
 pub fn text(font: &Font, text_str: &str, size: f32) -> Kernel {
     let terms: Vec<Kernel> = layout(font, text_str, size)
@@ -64,9 +84,9 @@ pub fn text(font: &Font, text_str: &str, size: f32) -> Kernel {
 /// supports stay in their own cells, which is what a monospace face
 /// guarantees.
 ///
-/// # Panics
-///
-/// Panics if `lattice` is not a plane — see [`Union::over`].
+/// Each cell's kernel samples at pixel centers, same as [`text`] — baked in
+/// by [`layout`], not by `lattice`, which is a pure index and carries no
+/// coordinate frame to lend it.
 #[must_use]
 pub fn text_union(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> Union {
     let mut union = Union::over(lattice);
@@ -102,10 +122,6 @@ pub struct TextCell {
 /// anything standalone and the compiler may schedule it differently (see the
 /// [module documentation](self)) — and a test that cannot see it cannot tell
 /// the two apart. Use [`text_union`].
-///
-/// # Panics
-///
-/// Panics if `lattice` is not a plane — see [`Union::over`].
 #[doc(hidden)]
 #[must_use]
 pub fn text_cells(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> Vec<TextCell> {
@@ -123,7 +139,7 @@ pub fn text_cells(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> V
     // or after glyph i's pen and before glyph i+1's. The first cell reaches
     // the left edge and the last the right, so the cells partition the frame
     // and every column has exactly one owner.
-    let center = lattice.origin[0];
+    let center = PIXEL_CENTER;
     let mut cut: Vec<usize> = Vec::with_capacity(placed.len() + 1);
     cut.push(0);
     for p in &placed[1..] {
@@ -195,8 +211,18 @@ fn layout<'a>(
             None => (Kernel::constant(0.0), Support::EMPTY),
         };
         Placed {
-            // Translate: sample the glyph at (X - pen, Y).
-            kernel: kernel.at(&Kernel::x().sub(&Kernel::constant(pen)), &Kernel::y()),
+            // Translate, and land on the rasterizer's pixel centers: sample
+            // the glyph at (X - pen + ½, Y + ½). The ½ used to arrive for
+            // free from the ambient lattice's origin; baked in here instead,
+            // it costs nothing extra — `X + ½` and the pen's `- pen` are both
+            // exactly representable at these magnitudes, so this folds to
+            // the same single subtraction the old runtime origin produced.
+            kernel: kernel.at(
+                &Kernel::x()
+                    .add(&Kernel::constant(PIXEL_CENTER))
+                    .sub(&Kernel::constant(pen)),
+                &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
+            ),
             pen,
             support,
         }

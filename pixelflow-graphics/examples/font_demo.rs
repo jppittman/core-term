@@ -26,11 +26,7 @@ fn main() {
 
     let width = 620u32;
     let height = (size * 1.4) as u32;
-    let baked = Lattice {
-        extent: [width, height],
-        origin: [0.5, 0.5],
-    }
-    .bake(&kernel);
+    let baked = Lattice::frame(width as usize, height as usize).bake(&kernel);
 
     let coverage = baked.buffer();
     println!(

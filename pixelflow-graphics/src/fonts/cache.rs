@@ -35,7 +35,9 @@
 //! manifold evaluated at `(i + 0.5, j + 0.5)` (see `render/rasterizer`).
 //! The bake follows the same convention: texel `(i, j)` of the coverage
 //! lattice stores the glyph's coverage at continuous coordinate
-//! `(i + 0.5, j + 0.5)` (the lattice origin is `(0.5, 0.5)`).
+//! `(i + 0.5, j + 0.5)` — a contramap on the kernel before it is baked
+//! over a plain index lattice, since a lattice carries no coordinate frame
+//! of its own to shift by.
 //! [`CachedGlyph::kernel`] shifts incoming coordinates by −0.5 into the
 //! sampler's integer texel grid, so a query at a pixel center returns
 //! the stored texel exactly — the cached glyph reproduces the analytical
@@ -146,11 +148,18 @@ impl CachedGlyph {
             "invalid bake density: {density}"
         );
         let px = px_extent(size, density);
+        // Texel-center convention: texel (i, j) holds coverage at
+        // (i + TEXEL_CENTER, j + TEXEL_CENTER). Used to be the bake
+        // lattice's own origin; a contramap on the kernel now that a
+        // lattice is a pure index.
+        let centered = kernel.at(
+            &Kernel::x().add(&Kernel::constant(TEXEL_CENTER)),
+            &Kernel::y().add(&Kernel::constant(TEXEL_CENTER)),
+        );
         let lattice = Lattice {
             extent: [px as u32, px as u32],
-            origin: [TEXEL_CENTER, TEXEL_CENTER],
         };
-        let baked = lattice.bake(kernel);
+        let baked = lattice.bake(&centered);
 
         Self {
             sampler: Arc::new(baked.bilinear()),
@@ -529,9 +538,23 @@ mod tests {
         collapse(&g.kernel(), &[g.binding()], lattice)
     }
 
-    /// One glyph's coverage at a single point — the degenerate lattice.
+    /// One glyph's coverage over a `size × size` point-space grid, sampled at
+    /// pixel centers — the rasterizer's own convention, applied as a
+    /// contramap since the lattice it bakes over is a pure index.
+    fn glyph_grid_at_pixel_centers(g: &CachedGlyph, size: usize) -> Vec<f32> {
+        let centered = g.kernel().at(
+            &Kernel::x().add(&Kernel::constant(0.5)),
+            &Kernel::y().add(&Kernel::constant(0.5)),
+        );
+        collapse(&centered, &[g.binding()], Lattice::frame(size, size))
+    }
+
+    /// One glyph's coverage at a single point — not a lattice at all now,
+    /// since a lattice carries no coordinate; a bound manifold answers a
+    /// point directly.
     fn sample(g: &CachedGlyph, x: f32, y: f32) -> f32 {
-        glyph_grid(g, Lattice::point(x, y))[0]
+        let bound = Manifold::compile(&g.kernel(), [1, 1]).bind(&[g.binding()]);
+        bound.eval_at(x, y)
     }
 
     /// Center of mass of a row-major coverage grid.
@@ -676,24 +699,18 @@ mod tests {
         let kernel = font.glyph_kernel_scaled('A', size as f32).unwrap();
 
         // Direct analytical tabulation at pixel centers (the rasterizer's
-        // sampling convention).
-        let direct = Lattice {
-            extent: [size as u32, size as u32],
-            origin: [0.5, 0.5],
-        }
-        .bake(&kernel);
+        // sampling convention), as a contramap over a plain index lattice.
+        let centered = kernel.at(
+            &Kernel::x().add(&Kernel::constant(0.5)),
+            &Kernel::y().add(&Kernel::constant(0.5)),
+        );
+        let direct = Lattice::frame(size, size).bake(&centered);
         let (dx, dy) = center_of_mass(direct.buffer(), size);
 
         // Cached glyph sampled at pixel centers through the full
         // bake -> bilinear -> half-pixel-shift chain.
         let cached = CachedGlyph::from_kernel(&kernel, size, 1.0);
-        let resampled = glyph_grid(
-            &cached,
-            Lattice {
-                extent: [size as u32, size as u32],
-                origin: [0.5, 0.5],
-            },
-        );
+        let resampled = glyph_grid_at_pixel_centers(&cached, size);
         let (cx, cy) = center_of_mass(&resampled, size);
 
         assert!(
@@ -837,15 +854,7 @@ mod tests {
 
         // Ink sits in the same place: centers of mass over the same
         // point-space grid agree to well under a point.
-        let grid = |g: &CachedGlyph| {
-            glyph_grid(
-                g,
-                Lattice {
-                    extent: [16, 16],
-                    origin: [0.5, 0.5],
-                },
-            )
-        };
+        let grid = |g: &CachedGlyph| glyph_grid_at_pixel_centers(g, 16);
         let (x1, y1) = center_of_mass(&grid(&d1), 16);
         let (x2, y2) = center_of_mass(&grid(&d2), 16);
         assert!(
