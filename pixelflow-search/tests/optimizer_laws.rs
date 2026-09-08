@@ -569,6 +569,7 @@ fn observation_is_optional_and_does_not_move_the_budget() {
 use pixelflow_ir::Kernel;
 use pixelflow_ir::optimize::{Identity, Optimize, Rewritten, Then};
 use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
+use pixelflow_search::Tier;
 use pixelflow_search::egraph::ops::Vocabulary;
 use pixelflow_search::saturate_pass::Saturate;
 
@@ -709,8 +710,15 @@ fn expanding_reduce_preserves_denotation() {
 fn saturating_preserves_denotation_under_each_vocabulary() {
     // `Templates` is the macro and `Dwrt`-expansion tiers' vocabulary;
     // `Runtime` adds the mask and integer-domain ops.
-    for vocab in [Vocabulary::Templates, Vocabulary::Runtime] {
-        let mut sat = Saturate::with(Optimizer::production(), vocab);
+    // The tier only decides where a telemetry record is written, which is a
+    // side channel this law says nothing about; each vocabulary is paired
+    // with the tier that actually uses it so the pairing cannot read as
+    // arbitrary.
+    for (vocab, tier) in [
+        (Vocabulary::Templates, Tier::Macro),
+        (Vocabulary::Runtime, Tier::Runtime),
+    ] {
+        let mut sat = Saturate::with(Optimizer::production(), vocab, tier);
         let changed = assert_preserves_denotation(&format!("Saturate<{vocab:?}>"), &mut sat);
         assert!(
             changed > 0,
@@ -727,7 +735,7 @@ fn a_composed_pipeline_preserves_denotation() {
     // can produce a term neither half would have produced alone.
     let mut pipeline = Then(
         LowerDwrt,
-        Saturate::with(Optimizer::production(), Vocabulary::Templates),
+        Saturate::with(Optimizer::production(), Vocabulary::Templates, Tier::Macro),
     );
     assert_preserves_denotation("Then(LowerDwrt, Saturate)", &mut pipeline);
 }

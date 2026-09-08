@@ -28,7 +28,8 @@
 //! after the warp. Removing the mask would have silently changed their values.
 //!
 //! This file is also where the two tiers' *equivalence* is now asserted. It
-//! used to be checked inside `ir_bridge.rs` by running the expansion-time
+//! used to be checked inside the compiler's arena bridge by running the
+//! expansion-time
 //! differentiator and the runtime one on the same arena and comparing — two
 //! implementations of one calculus, holding each other honest through private
 //! functions. There is one implementation now, so the surviving claim is the

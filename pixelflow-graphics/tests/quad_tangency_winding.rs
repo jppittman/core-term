@@ -16,10 +16,23 @@
 //! expressions. When they disagree, one segment contributes its single valid
 //! root and the other contributes nothing, and a whole crossing survives.
 //!
-//! This test is deliberately free of the e-graph: it evaluates the lowered
-//! arena directly, so it pins the numerics rather than an extraction choice.
-//! A guard that only holds for the extraction the optimizer happens to pick
-//! is not guarding anything.
+//! This test evaluates the lowered arena directly, with no *runtime* e-graph
+//! in the path, so it pins the numerics rather than a bake-time extraction
+//! choice. It is not free of the e-graph altogether, and an earlier revision
+//! of this comment claimed it was: `AnalyticalQuad::kernel()` is built by
+//! `kernel!`, so the macro tier's optimizer has already chosen an association
+//! before the first line of this file runs.
+//!
+//! That is not a defect in the test so much as a limit on what a pin like
+//! this can mean, and it showed itself when the macro tier moved from the AST
+//! to the arena (docs/plans/2026-09-08-macro-tier-is-arena-native.md): the
+//! residual went from 0.745 to 0.688 without anything about the numerics
+//! changing. Which is precisely the trap "approach 1" below records — a
+//! number that moves when the optimizer is perturbed is measuring the
+//! extraction, not the bug. So read the pin as an order of magnitude with a
+//! tight leash, not as a constant: what it is really asserting is that a
+//! grazing ray still picks up *most of a crossing* where it must pick up
+//! zero.
 
 //! # Five approaches that do not work
 //!
@@ -71,7 +84,11 @@ use pixelflow_ir::{eval_scalar, passes::lower_dwrt_owned, BindingTable};
 /// half a crossing either way fails. `eval_scalar` on a lowered arena is plain
 /// Rust `f32` arithmetic, so these are reproducible bit-for-bit on any target;
 /// if a platform disagrees, that is a finding in itself.
-const KNOWN_SHARED_EXTREMUM_WINDING: f32 = 0.744_913_4;
+/// Was 0.744_913_4 while `kernel!` optimized on the AST. The arena-native
+/// macro tier associates the same expression differently, so the same defect
+/// now measures 0.688 — see the note above on what this number can and
+/// cannot mean.
+const KNOWN_SHARED_EXTREMUM_WINDING: f32 = 0.687_676_4;
 const KNOWN_ORIGIN_WINDING: f32 = 1.0;
 /// How far the measured defect may stray from the pinned value.
 const PIN_TOLERANCE: f32 = 0.02;

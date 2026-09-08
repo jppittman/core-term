@@ -18,11 +18,11 @@ use syn::Lit;
 /// than a single [`OpKind`] — `(name, arg_count)`, `arg_count` excluding the
 /// receiver.
 ///
-/// Each backend (arena lowering here, the e-graph in `optimize.rs`) builds
-/// the composition in its own node representation, so the expansion itself
-/// isn't shared — but this list is the one place that says which names and
-/// arities exist, so `sema`'s validation and both backends' dispatch cannot
-/// silently drift on which library methods a kernel body may call.
+/// Lowering builds the composition; this list is the one place that says
+/// which names and arities exist, so `sema`'s validation and lowering's
+/// dispatch cannot silently drift on which library methods a kernel body may
+/// call. They did once, in both directions at once — see
+/// `every_advertised_method_compiles` in the crate root.
 pub(crate) const LIBRARY_METHODS: &[(&str, usize)] = &[("fract", 0), ("hypot", 1), ("clamp", 2)];
 
 /// Build a `param_name → index` map over the params of a kernel.
@@ -275,6 +275,16 @@ impl Lowering<'_> {
                     None => Err("Block has no final expression".to_string()),
                 }
             }
+
+            // The parser's catch-all: syntax the DSL has no node for, kept
+            // whole so the error can name it. A captured local lands here —
+            // `let s = 2.0; kernel!(|| X * s)` — and "unsupported expression
+            // type" was a poor way to say "`s` is not in scope inside a
+            // kernel body".
+            Expr::Verbatim(e) => Err(format!(
+                "unsupported expression in a kernel body: `{}`",
+                quote::quote!(#e)
+            )),
 
             _ => Err("Unsupported expression type".to_string()),
         }

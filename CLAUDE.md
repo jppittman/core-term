@@ -173,7 +173,7 @@ Cargo workspace with 13 member crates:
 | Crate | Purpose |
 |-------|---------|
 | `pixelflow-core` | Lattices, the compiled `Manifold`, `collapse`, and the cell grid. Backends: x86-64 (SSE2 baseline, AVX2/AVX-512 opt-in via `target-feature`) and aarch64 (NEON) only — no portable/scalar fallback for other architectures. Edition 2024. |
-| `pixelflow-compiler` | Proc-macro front end: `kernel!` and `kernel_raw!`, parser, sema, e-graph optimization, arena lowering. Edition 2024. |
+| `pixelflow-compiler` | Proc-macro front end: `kernel!` and `kernel_raw!`, parser, sema, arena lowering, then optimization as an `Optimize` value over the arena. Edition 2024. |
 | `pixelflow-ir` | Shared IR. `ExprArena` (sole IR), OpKind enum, backend execution traits, the `Kernel` value/AST. |
 | `pixelflow-codegen` | Expression graphs to machine code: per-ISA emitters (x86-64, aarch64), register allocation, executable memory, the JIT compile cache (`jit_cache`, `CompiledKernel`). Runs the optimizer itself, so a compiled kernel is never obtained unoptimized. |
 | `pixelflow-graphics` | Font loading (TTF, SDF), colors (`Rgba8`, `Color`), the packed frame program, analytic 3-D scenes. |
@@ -217,17 +217,35 @@ Control creates backpressure by timing out senders who are too aggressive. If th
 ### Compiler Pipeline
 
 ```
-Source → Parser → Sema → Optimize → Arena lowering → Rust TokenStream
-            ↓         ↓
-       Symbol Table  E-graph + latency prior
+Source → Parser → Sema → Arena lowering → Optimize → Rust TokenStream
+            ↓                                 ↓
+       Symbol Table                E-graph + latency prior
 ```
 
-`kernel!` runs all of it; `kernel_raw!` skips `Optimize` and is otherwise identical. Both
-emit code that rebuilds an `ExprArena` at load time as a `Kernel` — zero params gives a
-`Kernel`, N params a builder closure that folds them in as constants.
+Two representations, the AST and `ExprArena`, and **optimization runs on the arena**.
+It used to run on the AST — `kernel!` went AST → e-graph → extracted DAG → back to a
+synthesized AST → and only then to the arena the e-graph had already built and discarded.
+Each boundary was a place two stages could disagree about what the language is, and three
+defects were found there in one week, every one a stage accepting what a later stage
+refused. See docs/plans/2026-09-08-macro-tier-is-arena-native.md.
+
+Both macros are `expand(input, optimizer)`; the optimizer is the only difference, and
+"do not optimize" is a value rather than a skipped branch — `kernel_raw!` passes
+`Identity`. Both emit code that rebuilds an `ExprArena` at load time as a `Kernel` — zero
+params gives a `Kernel`, N params a builder closure that folds them in as constants.
+
+**The macro tier does not resolve `Dwrt`.** A surviving `Dwrt` is what makes the chain
+rule work under composition: `Kernel::at` warps by substituting into `Var` leaves, so the
+warp reaches the `Dwrt`'s operand and differentiates the warped function. Saturation
+*would* resolve it (the chain rule is in the rule set, and a `Dwrt` is priced so the
+extractor never keeps one), so the macro tier declines any term carrying one and the
+runtime tier lowers it at bake time, after composition. Resolving derivatives at expansion
+time was a miscompilation for four months, visible only under a warp, and the production
+glyph kernels escaped it by coincidence — a `&` mask made the e-graph decline their arena.
+`pixelflow-compiler/tests/derivative_under_warp.rs` is the guard.
 
 The compiler uses e-graphs (equality graphs) to find optimal instruction sequences:
-1. **Build e-graph** from expression AST
+1. **Build e-graph** from the arena
 2. **Saturate** by applying rewrite rules (associativity, FMA fusion, etc.)
 3. **Extract** minimum-cost implementation using the **static latency-prior cost model**
    (`CostModel::latency_prior()` — handwritten per-op cycle estimates, the only policy;

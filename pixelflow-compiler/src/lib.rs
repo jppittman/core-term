@@ -13,15 +13,27 @@
 //!     ▼ Semantic Analysis (sema.rs)
 //! Analyzed AST + Symbol Table
 //!     │
-//!     ▼ E-graph optimization (optimize.rs)   — `kernel!` only
-//! Optimized AST
-//!     │
 //!     ▼ Arena lowering (lower.rs)
+//! ExprArena
+//!     │
+//!     ▼ `impl Optimize`  — `kernel!` saturates, `kernel_raw!` is `Identity`
 //! ExprArena
 //!     │
 //!     ▼ Emission (emit.rs)
 //! Rust TokenStream that rebuilds a `Kernel` at load time
 //! ```
+//!
+//! Two representations, the surface AST and the IR. It used to be five: the
+//! optimizer ran
+//! on the *AST*, so `kernel!` went AST → e-graph → extracted DAG → back to an
+//! AST nothing had written (synthesized `let` bindings naming shared
+//! subexpressions, opaque placeholder identifiers standing in for terms the
+//! e-graph could not hold) → and only then to the arena the e-graph had
+//! already built and thrown away. Each of those boundaries is a place two
+//! stages can disagree about what the language is, and three such
+//! disagreements were found in one week — every one of them a stage accepting
+//! what a later stage refused. See
+//! docs/plans/2026-09-08-macro-tier-is-arena-native.md.
 //!
 //! There is **one backend**, and it produces a [`Kernel`] — an arena fragment,
 //! the language's own value. Nothing is compiled at macro-expansion time and
@@ -29,20 +41,25 @@
 //! consumer compiles it at a lattice's shape and collapses it
 //! (`Lattice::bake`), which is the only way a kernel turns into numbers.
 //!
-//! So there are two macros, and the only difference between them is whether
-//! the e-graph runs: [`kernel!`](macro@kernel) optimizes,
-//! [`kernel_raw!`](macro@kernel_raw) does not.
+//! So there are two macros, and the only difference between them is the
+//! [`Optimize`] value they hand the same `expand`:
+//! [`kernel!`](macro@kernel) saturates, [`kernel_raw!`](macro@kernel_raw)
+//! passes [`Identity`]. Not optimizing is a value here, not a branch that
+//! declines to call a function, which is what that type exists to say.
 //!
 //! [`Kernel`]: pixelflow_core::Kernel
 
 mod ast;
 mod emit;
 mod lower;
-mod optimize;
 mod parser;
 mod sema;
 mod symbol;
 
+use pixelflow_ir::OpKind;
+use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
+use pixelflow_ir::optimize::{Identity, Optimize, Rewritten};
+use pixelflow_search::Saturate;
 use proc_macro::TokenStream;
 
 /// The `kernel!` macro: closure syntax for a [`Kernel`](pixelflow_core::Kernel),
@@ -101,19 +118,14 @@ use proc_macro::TokenStream;
 ///
 /// 1. **Parser**: closure syntax → AST
 /// 2. **Semantic analysis**: symbol resolution, method validation
-/// 3. **Optimization**: e-graph saturation + latency-prior extraction
-/// 4. **Arena lowering**: the optimized AST becomes an `ExprArena`
+/// 3. **Arena lowering**: the AST becomes an `ExprArena`
+/// 4. **Optimization**: e-graph saturation + latency-prior extraction, on
+///    the arena. A kernel carrying a `Dwrt` declines here and is optimized
+///    at bake time instead, so composition still gets the chain rule.
+/// 5. **Emission**: the arena becomes code that rebuilds it at load time
 #[proc_macro]
 pub fn kernel(input: TokenStream) -> TokenStream {
-    let analyzed = match front_end(input) {
-        Ok(a) => a,
-        Err(e) => return e.to_compile_error().into(),
-    };
-    // E-graph saturation + latency-prior extraction at macro-expansion time:
-    // FMA fusion, algebraic simplification, CSE and rsqrt all happen here,
-    // before the arena is emitted.
-    let analyzed = optimize::optimize(analyzed);
-    emit(&analyzed)
+    expand(input, &mut macro_tier())
 }
 
 /// The `kernel_raw!` macro: like [`kernel!`](macro@kernel) but **without**
@@ -135,22 +147,64 @@ pub fn kernel(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro]
 pub fn kernel_raw(input: TokenStream) -> TokenStream {
-    let analyzed = match front_end(input) {
+    expand(input, &mut Identity)
+}
+
+/// The macro tier's optimizer: equality saturation over the template
+/// vocabulary, under the same production policy the runtime tier uses.
+///
+/// It deliberately does **not** include `LowerDwrt`. A `Dwrt` node left
+/// intact is what makes the chain rule work under composition — `Kernel::at`
+/// warps by substituting into `Var` leaves, so the warp reaches a surviving
+/// `Dwrt`'s operand and differentiates the warped function. Resolving
+/// derivatives here instead was a miscompilation, and `tests/
+/// derivative_under_warp.rs` pins that. The runtime tier lowers them at bake
+/// time, after composition, in `legalize`'s order.
+fn macro_tier() -> impl Optimize {
+    DwrtFree(Saturate::macro_tier())
+}
+
+/// Run `inner`, unless the term carries a `Dwrt`.
+///
+/// Saturation would resolve one — the chain rule is in the rule set, and a
+/// `Dwrt` node is priced so the extractor never keeps it — which at expansion
+/// time is exactly the miscompilation above. Measured, not assumed: dropping
+/// this wrapper puts `derivative_under_warp.rs` back to 12 where the chain
+/// rule says 24.
+///
+/// It declines the *whole* kernel rather than the `Dwrt` subterm, and that
+/// costs something. For `'8'` at 17 px the bake-time arena goes from 2964
+/// nodes to 3318 — 12% — because the glyph's fragments now reach the runtime
+/// tier unfused and one saturation does not recover what two did. Correctness
+/// is not negotiable against 12%, so this ships, but the price is real and it
+/// is not the floor: what this kernel actually wants is saturation with the
+/// derivative rules *withheld*, which would fuse it without resolving
+/// anything. That needs a rule-set the search crate does not currently
+/// expose, so it is denoted here and not built.
+struct DwrtFree<P>(P);
+
+impl<P: Optimize> Optimize for DwrtFree<P> {
+    fn optimize(&mut self, arena: &ExprArena, root: ExprId) -> Rewritten {
+        let carries_dwrt = arena
+            .nodes_raw()
+            .iter()
+            .any(|n| matches!(n, ExprNode::Binary(OpKind::Dwrt, _, _)));
+        if carries_dwrt {
+            return Rewritten::Declined;
+        }
+        self.0.optimize(arena, root)
+    }
+}
+
+/// Parse, analyze, lower, optimize, emit — the whole front end. The macros
+/// differ only in the optimizer they hand it.
+fn expand(input: TokenStream, optimizer: &mut dyn Optimize) -> TokenStream {
+    let tokens = proc_macro2::TokenStream::from(input);
+    let analyzed = match parser::parse(tokens).and_then(sema::analyze) {
         Ok(a) => a,
         Err(e) => return e.to_compile_error().into(),
     };
-    emit(&analyzed)
-}
-
-/// Parse and analyze: the half both macros share, verbatim.
-fn front_end(input: TokenStream) -> syn::Result<sema::AnalyzedKernel> {
-    let tokens = proc_macro2::TokenStream::from(input);
-    sema::analyze(parser::parse(tokens)?)
-}
-
-/// Lower to an arena and emit the code that rebuilds it.
-fn emit(analyzed: &sema::AnalyzedKernel) -> TokenStream {
-    match emit::emit_kernel(analyzed) {
+    match emit::emit_kernel(&analyzed, optimizer) {
         Ok(tokens) => tokens.into(),
         Err(e) => syn::Error::new(proc_macro2::Span::call_site(), e)
             .to_compile_error()
@@ -181,7 +235,7 @@ fn emit(analyzed: &sema::AnalyzedKernel) -> TokenStream {
 #[cfg(test)]
 mod every_advertised_method_compiles {
     use crate::lower::LIBRARY_METHODS;
-    use crate::{emit, optimize, parser, sema};
+    use crate::{Identity, Optimize, emit, macro_tier, parser, sema};
     use pixelflow_ir::{OpKind, known_method_names};
     use proc_macro2::Span;
     use quote::quote;
@@ -207,11 +261,19 @@ mod every_advertised_method_compiles {
 
         let def = parser::parse(body).map_err(|e| e.to_string())?;
         let analyzed = sema::analyze(def).map_err(|e| e.to_string())?;
-        let analyzed = match which {
-            Macro::Kernel => optimize::optimize(analyzed),
-            Macro::KernelRaw => analyzed,
+        let mut kernel_optimizer;
+        let mut raw_optimizer;
+        let optimizer: &mut dyn Optimize = match which {
+            Macro::Kernel => {
+                kernel_optimizer = macro_tier();
+                &mut kernel_optimizer
+            }
+            Macro::KernelRaw => {
+                raw_optimizer = Identity;
+                &mut raw_optimizer
+            }
         };
-        emit::emit_kernel(&analyzed).map(|_| ())
+        emit::emit_kernel(&analyzed, optimizer).map(|_| ())
     }
 
     /// Every `(method, arg_count)` the front end accepts: the primitive ops

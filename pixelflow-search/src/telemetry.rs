@@ -48,22 +48,7 @@ use std::time::Duration;
 use crate::egraph::{CostModel, OptimizerStats, SaturationStop};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
-/// Which tier invoked saturation.
-///
-/// A closed set of two, so [`record`] can serialize it as a JSON string
-/// literal directly — unlike `kernel_label`, there is no free-text value
-/// here for `escape_json` to have to defend against. Extending "which tier"
-/// to a type (rather than leaving it as a caller-supplied `&'static str`,
-/// which a future call site could pass anything through) is what makes a
-/// third, malformed tier unrepresentable instead of merely undocumented.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tier {
-    /// [`crate::runtime::optimize_runtime_arena`].
-    Runtime,
-    /// `pixelflow_compiler::optimize`, running inside rustc at macro
-    /// expansion time.
-    Macro,
-}
+pub use crate::tier::Tier;
 
 impl Tier {
     fn as_json_str(self) -> &'static str {
@@ -272,28 +257,10 @@ fn write_line(tier: Tier, line: &str) {
         None => {
             let stderr = std::io::stderr();
             let mut lock = stderr.lock();
-            // `Tier::Macro` runs inside rustc's own process at
-            // macro-expansion time: this stderr IS rustc's stderr, not some
-            // ordinary binary's. Under `cargo ... --message-format=json`,
-            // cargo parses each line of rustc's stderr and forwards
-            // whatever parses as JSON as a `"reason":"compiler-message"`
-            // event — our record is itself valid JSON (just not
-            // diagnostic-shaped), so a bare line here gets misread as a
-            // genuine compiler message and forwarded downstream, corrupting
-            // the stream for any JSON consumer. Confirmed empirically:
-            // `cargo check --features saturation-telemetry
-            // --message-format=json` produced exactly these bogus events.
-            // A short plain-text prefix guarantees the line fails JSON
-            // parsing, so cargo relays it as an ordinary (non-diagnostic)
-            // line instead — still visible on stderr for a human, just not
-            // parseable as one more compiler message. The runtime tier has
-            // no such collision (its stderr is an ordinary process's own
-            // stream, never read by cargo's diagnostic parser), so it keeps
-            // emitting a bare, directly-JSONL-parseable line.
-            let write_result = match tier {
-                Tier::Macro => write!(lock, "saturation-telemetry(macro): {record}"),
-                Tier::Runtime => lock.write_all(record.as_bytes()),
-            };
+            // The prefix, and why it is not decoration, is on
+            // `Tier::stderr_prefix`. Empty for the runtime tier, so this one
+            // write serves both.
+            let write_result = write!(lock, "{}{record}", tier.stderr_prefix());
             write_result
                 .unwrap_or_else(|e| panic!("saturation-telemetry: failed to write stderr: {e}"));
         }

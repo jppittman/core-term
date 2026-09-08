@@ -212,3 +212,91 @@ the tier-equivalence claim stated over the public surface instead of over two
 private functions. It is broadened to carry what the deleted tests carried: a
 scalar param inside the differentiand, and a differentiand whose derivative is
 not a constant.
+
+---
+
+## Amendment (2026-09-08): what execution changed about the plan
+
+Three things the plan got wrong or did not know, recorded because two of them
+are the interesting part of the change.
+
+### The macro tier cannot saturate a `Dwrt`, and that costs 12%
+
+The plan assumed steps 2 and 5 were independent: delete expansion-time
+differentiation, then move saturation onto the arena. They are not. Saturation
+*is* a differentiator — the chain rule is in the production rule set, and a
+`Dwrt` node is priced so the extractor never keeps one — so moving the e-graph
+onto an arena that still holds `Dwrt` resolves it, which is exactly the
+miscompilation step 2 deleted. Measured, not reasoned: dropping the guard puts
+`derivative_under_warp.rs` straight back to 12 where the chain rule says 24.
+
+So the macro tier declines any term carrying a `Dwrt` and lets the runtime tier
+optimize it at bake time, after `LowerDwrt`, in the order `runtime.rs` argues
+for. That is correct and it is not free. For `'8'` at 17 px the bake-time arena
+goes from 2964 nodes to 3318 — **12% larger** — because the glyph's fragments
+now reach one saturation unfused where they used to reach two.
+
+Correctness does not trade against 12%, so this ships. But 12% is not the
+floor, and the floor is reachable: what these kernels want is saturation with
+the *derivative rules withheld*, which fuses without resolving. The search
+crate does not expose a rule-set knob today, so it is denoted here rather than
+built.
+
+### Two pinned defects moved, and neither was fixed
+
+`kernel_glyph_optimize.rs` pinned 29 texels where the optimized and raw glyph
+arenas disagree on `'8'`'s waist. It is now 0, and the honest reading is not
+"the tangency defect is fixed" — it is still a knife edge, and
+`quad_tangency_winding` and `freetype_oracle` still hold it under test. What
+changed is that there is only one optimizer. Two independent sets of fusion
+decisions used to compound, and the *compounding* is what straddled the edge.
+The test goes back to asserting emptiness, which is the guard it was written to
+be.
+
+`quad_tangency_winding.rs` pinned the grazing residual at 0.745; it now
+measures 0.688. Also not a fix — the defect is the same size in the only unit
+that matters (most of a crossing, where zero is correct). This one is worth
+recording for a second reason: the file's doc claimed it was "deliberately free
+of the e-graph", and it never was. `AnalyticalQuad::kernel()` is built by
+`kernel!`, so the macro tier had already chosen an association before the test
+ran. A number that moves when the optimizer is perturbed is measuring the
+extraction, which is precisely the trap that file's own "approach 1" records.
+The claim is corrected there.
+
+### `OpKind` was cheaper to extend than expected
+
+Adding a variant broke exactly four matches, all inside `kind.rs` — `op_table!`
+working as designed. One of the four was a sweep that skipped "leaves" by
+listing six names; the seventh leaf did not land in the list and arrived as a
+nonsense `push_ternary(Param, ..)`. It asks `arity() == 0` now.
+
+### Sharing a pass means sharing what the pass assumed
+
+`Saturate` hard-coded `Tier::Runtime` into its telemetry record, which was
+true while it had one caller. The macro tier adopting it inherited that label
+silently — and the label is not bookkeeping: the two tiers write to *different
+sinks*, because a macro-tier saturation runs inside rustc and anything it puts
+on stderr is parsed by cargo's `--message-format=json` and forwarded as a
+compiler message. The record is valid JSON but not diagnostic-shaped, so a bare
+line corrupts that stream for every consumer. `telemetry.rs` carries a
+paragraph saying exactly this, with "confirmed empirically" attached; the
+prefix that prevents it was chosen for that reason and this change would have
+removed it by accident.
+
+So `Tier` moves out of the feature-gated `telemetry` module and becomes an
+ordinary type the crate always compiles, and `Saturate` carries one —
+`Saturate::runtime(shape)` and `Saturate::macro_tier()`, the two tier
+configurations finally sitting next to each other. The tier is a property of
+the pass, not an argument its one call site happened to remember.
+
+The finding underneath is about the gate, not the change: **nothing in CI
+exercises this feature beyond compiling it**, so no job could have caught
+this, and a human reading the diff is not a gate. `Tier::stderr_prefix` now
+owns the prefix and `tier.rs` asserts the invariant it exists for — a
+macro-tier record must not lead with `{`, a runtime one must. The test is
+unconditional (the feature gates the *sink*, not the tier), and it was
+mutation-checked: restoring the empty prefix fails it.
+
+That also folded the sink, which had a two-arm `match` to decide between a
+prefixed `write!` and a bare `write_all`. With the prefix empty for the
+runtime tier, one write serves both.

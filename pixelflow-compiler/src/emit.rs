@@ -17,6 +17,7 @@
 
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
+use pixelflow_ir::optimize::Optimize;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -40,11 +41,27 @@ use crate::sema::AnalyzedKernel;
 /// by inlining a manifold through a macro slot, so there is no
 /// manifold-typed parameter and nothing here to lower one with.
 ///
-/// Returns `Err` if the body contains an operation the IR bridge cannot lower.
-pub fn emit_kernel(analyzed: &AnalyzedKernel) -> Result<TokenStream, String> {
+/// `optimizer` rewrites the lowered arena before it is emitted. It is a
+/// parameter rather than a branch because "do not optimize" is a value:
+/// `kernel_raw!` passes [`Identity`](pixelflow_ir::optimize::Identity), and
+/// that is the entire difference between the two macros.
+///
+/// Returns `Err` if the body contains an operation lowering cannot express.
+pub fn emit_kernel(
+    analyzed: &AnalyzedKernel,
+    optimizer: &mut dyn Optimize,
+) -> Result<TokenStream, String> {
     let param_map = lower::param_indices(analyzed);
     let mut arena = ExprArena::new();
     let root = lower::ast_to_arena(&analyzed.def.body, &param_map, &mut arena)?;
+
+    // Declining is ordinary and needs no arm: the lowered term stands, and a
+    // kernel that reaches the runtime tier unoptimized is optimized there.
+    let (arena, root) = optimizer
+        .optimize(&arena, root)
+        .into_changed()
+        .unwrap_or((arena, root));
+
     let arena_code = arena_to_tokens(&arena, root);
 
     if analyzed.def.params.is_empty() {

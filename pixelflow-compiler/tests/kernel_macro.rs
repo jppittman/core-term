@@ -122,7 +122,7 @@ fn macro_min_returns_smaller_and_max_returns_larger() {
 }
 
 // ============================================================================
-// Primitive methods `ir_bridge`'s arena lowering used to have no arm for
+// Primitive methods the arena lowering used to have no arm for
 // (`round`/`log10`/`pow` are real `OpKind`s, but the hand-written method-call
 // match was missing all three, so a kernel body calling them failed to
 // compile with "Unsupported method" even though sema and the e-graph both
@@ -165,7 +165,7 @@ fn macro_pow() {
 
 // ============================================================================
 // Library methods: fixed compositions of primitive ops, not an `OpKind`
-// themselves. Previously accepted by `optimize.rs`'s e-graph pass but
+// themselves. Previously accepted by the AST-tier e-graph pass but
 // rejected by `sema.rs` as "unknown method" before ever reaching it — the
 // e-graph's `fract`/`hypot`/`clamp` decomposition was unreachable dead code.
 // Fixed by validating against the same `LIBRARY_METHODS` list the two
@@ -199,9 +199,9 @@ fn macro_clamp_bounds_the_value_on_both_sides() {
 }
 
 // `kernel_raw!` skips the e-graph entirely and goes straight from sema to
-// `ir_bridge`'s arena lowering — the one path that used to have no arm for
+// the arena lowering — the one path that used to have no arm for
 // `round`/`log10`/`pow` at all, and no decomposition for `hypot`/`fract`
-// (only `optimize.rs`'s e-graph pass had those, so `kernel!` could express
+// (only the AST-tier e-graph pass had those, so `kernel!` could express
 // them once sema stopped rejecting the names, but `kernel_raw!` had no
 // second implementation to fall back on). Proven here directly, without the
 // optimizer in the way.
