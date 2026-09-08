@@ -369,8 +369,13 @@ plan's form. JP's decision on 2026-09-07 was to build the general demand
 predicate on the DAG rather than merge the per-select special case first;
 that became its own plan,
 [2026-09-07-demand-is-a-dag-property.md](2026-09-07-demand-is-a-dag-property.md),
-whose amendment records what happened to the gate PR along the way. G1 (§4)
-was not scheduled and nothing here changes that.
+whose amendment records what happened to the gate PR along the way. That
+plan is in turn superseded by
+[2026-09-08-one-conditional-three-lowerings.md](2026-09-08-one-conditional-three-lowerings.md),
+which also refines §5 above: guards and index ranges are one thing because
+they are two lowerings of one `Select`, and `Union`/`IndexRange` are what
+the compiler should derive rather than what a caller writes. G1 (§4) was
+not scheduled and nothing here changes that.
 
 The stage-by-stage findings below are corrections and additions to what the
 draft above predicted — read them alongside the sections they amend, not as

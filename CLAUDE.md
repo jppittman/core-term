@@ -292,7 +292,7 @@ the gate, not the author.** "Should have looked harder" is not a finding.
 "This class of bug is invisible to every job we run" is one, and it has a fix.
 
 A CL that touches only `docs/` and Markdown skips the build-and-test jobs
-(`scripts/ci-change-scope.sh` classifies the diff; the three metadata jobs still
+(`scripts/ci-change-scope.sh` classifies the diff; the four metadata jobs still
 run). The skip is a job-level `if`, so the required checks report "skipped" and
 merge; a workflow-level `paths-ignore` would leave them pending.
 

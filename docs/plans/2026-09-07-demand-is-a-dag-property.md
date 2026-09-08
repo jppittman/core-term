@@ -1,10 +1,17 @@
 # Demand is a property of the DAG
 
 **Date:** 2026-09-07
-**Status:** Draft. Only stage C1a has executed, and its outcome inverted
-what this plan expected — see §9 for what actually happened. C1b onward
-(the demand predicate itself) is unbuilt. §3 has been corrected in place
-against what is actually on `main`.
+**Status:** **Superseded** by
+[2026-09-08-one-conditional-three-lowerings.md](2026-09-08-one-conditional-three-lowerings.md).
+Do not start C1b from this document. Only stage C1a executed, and its
+outcome inverted what this plan expected — see §9 for what actually
+happened. What this plan got wrong is its framing, not its analysis: it
+treated demand as a codegen concern replacing per-select guard machinery,
+when it is a language concern and that machinery is one of three lowerings
+of a single conditional. §1–§2 survive as the analysis the successor needs
+(they are its §6); §9–§10 remain the record of the glyph investigation. §3
+was corrected in place against what is actually on `main` and is kept for
+that record.
 **Author:** JP (direction), Claude (draft)
 **Refines:** §5 of [2026-09-06-lattice-is-the-index.md](2026-09-06-lattice-is-the-index.md)
 ("exclusivity does not survive the partition"). This plan's premise was that
