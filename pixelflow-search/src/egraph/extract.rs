@@ -398,17 +398,18 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
     fn get_active_classes(&self, extraction: &Extraction<'_>) -> Vec<EClassId> {
         let egraph = extraction.egraph();
         let root = extraction.root();
-        use alloc::collections::BTreeSet;
 
         let mut active = Vec::new();
-        let mut visited = BTreeSet::new();
+        let mut visited: alloc::vec::Vec<bool> = alloc::vec![false; egraph.num_classes()];
         let mut stack = vec![root];
 
         while let Some(class) = stack.pop() {
             let canonical = egraph.find(class);
-            if !visited.insert(canonical.0) {
+            let idx = canonical.0 as usize;
+            if visited[idx] {
                 continue;
             }
+            visited[idx] = true;
 
             active.push(canonical);
 
@@ -755,14 +756,14 @@ fn repair_choices_well_founded(egraph: &EGraph, root: EClassId, choices: &mut [O
     }
 
     // Admit `pos` through `node_idx`, propagating readiness to parents.
-    let mut admit = |pos: usize,
-                     node_idx: usize,
-                     admitted: &mut Vec<bool>,
-                     admitted_count: &mut usize,
-                     recorded_ready: &mut Vec<usize>,
-                     any_ready: &mut Vec<usize>,
-                     pending: &mut Vec<Vec<usize>>,
-                     choices: &mut [Option<usize>]| {
+    let admit = |pos: usize,
+                 node_idx: usize,
+                 admitted: &mut Vec<bool>,
+                 admitted_count: &mut usize,
+                 recorded_ready: &mut Vec<usize>,
+                 any_ready: &mut Vec<usize>,
+                 pending: &mut Vec<Vec<usize>>,
+                 choices: &mut [Option<usize>]| {
         admitted[pos] = true;
         *admitted_count += 1;
         choices[scope[pos] as usize] = Some(node_idx);
@@ -856,8 +857,6 @@ pub fn extract<C: CostFunction>(
     root: EClassId,
     costs: &C,
 ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId, usize) {
-    use alloc::collections::BTreeSet;
-
     // Cap for cycle/self-referential costs - high but not astronomical
     const CYCLE_COST: usize = 1_000_000;
 
@@ -868,7 +867,7 @@ pub fn extract<C: CostFunction>(
     // Phase 1: Iterative bottom-up cost computation using topological order
     // We use a work stack to avoid recursion
     let mut stack: Vec<(EClassId, bool)> = vec![(root, false)]; // (class, children_processed)
-    let mut on_stack: BTreeSet<u32> = BTreeSet::new();
+    let mut on_stack: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
 
     while let Some((class, children_done)) = stack.pop() {
         let canonical = egraph.find(class);
@@ -880,10 +879,11 @@ pub fn extract<C: CostFunction>(
 
         if !children_done {
             // First visit: push self back (to process after children), then push children
-            if !on_stack.insert(canonical.0) {
+            if on_stack[canonical.0 as usize] {
                 // Cycle detected - don't cache, parent will handle with high cost
                 continue;
             }
+            on_stack[canonical.0 as usize] = true;
 
             stack.push((canonical, true)); // Come back after children
 
@@ -900,7 +900,7 @@ pub fn extract<C: CostFunction>(
             }
         } else {
             // Second visit: all children are computed, now compute this class
-            on_stack.remove(&canonical.0);
+            on_stack[canonical.0 as usize] = false;
 
             let nodes = egraph.nodes(canonical);
             let mut min_cost = usize::MAX;
@@ -1746,7 +1746,8 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
 /// ties going to the tree pass. So the returned DAG cost can only be lower
 /// than the pre-#1116 extractor's, never higher — no-regression is structural
 /// rather than empirical, at the price of a second DP pass over a graph
-/// extraction walks once per compile.
+/// extraction walks once per compile — **below [`SHARED_DAG_PASS_CLASS_LIMIT`]**;
+/// see that constant's doc comment for what changes above it.
 pub fn extract_dag_scoped<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
@@ -1760,25 +1761,42 @@ pub fn extract_dag_scoped<C: CostFunction>(
         costs,
         shape,
     );
-    let shared = repaired_and_costed(
-        egraph,
-        root,
-        shared_dag_dp_pass(egraph, root, costs, shape),
-        costs,
-        shape,
-    );
-    // Only the winner is assembled: the reference counts and the emission
-    // schedule describe a term, and one of these two is not going to be one.
-    assemble(
-        egraph,
-        root,
+    // `shared_dag_dp_pass` is O(live_classes^2) in time and memory (its own
+    // doc comment). Below this limit that is the ~12.5 MB the codebase's own
+    // production preset already budgets for (10,000 classes,
+    // `saturate.rs::SaturationConfig::compatibility`) — comfortably above
+    // every shipped tier (`classical`'s cap is 5,000) so this never fires on
+    // a kernel that ships today. Above it — reachable only by a caller
+    // deliberately raising the class cap past what any production preset
+    // uses, e.g. the research experiment in
+    // docs/plans/2026-09-06-egraph-at-production-scale.md §3 that made a
+    // 60,000-class compile 30x slower — the pass is skipped and extraction
+    // falls back to the tree objective alone. That is never a *wrong*
+    // extraction (the tree pass is a real, if less sharing-aware, cost
+    // function), only a potentially more expensive one; the two-objective
+    // no-regression property above holds exactly below this limit and is
+    // simply not attempted above it, rather than being violated.
+    let num_classes = egraph.num_classes();
+    if num_classes <= SHARED_DAG_PASS_CLASS_LIMIT {
+        let shared = repaired_and_costed(
+            egraph,
+            root,
+            shared_dag_dp_pass(egraph, root, costs, shape),
+            costs,
+            shape,
+        );
+        // Only the winner is assembled: the reference counts and the
+        // emission schedule describe a term, and one of these two is not
+        // going to be one.
         if shared.cost.dag < tree.cost.dag {
-            shared
-        } else {
-            tree
-        },
-    )
+            return assemble(egraph, root, shared);
+        }
+    }
+    assemble(egraph, root, tree)
 }
+
+/// See [`extract_dag_scoped`]'s gate on [`shared_dag_dp_pass`].
+pub const SHARED_DAG_PASS_CLASS_LIMIT: usize = 10_000;
 
 /// A repaired choice map and the cost of the term it names.
 struct CostedChoices {
@@ -2126,24 +2144,32 @@ fn shared_dag_dp_pass<C: CostFunction>(
 /// has. Shared by both DP passes so their traversal, and therefore which
 /// classes end up cycle-priced, cannot drift apart.
 fn post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
-    use alloc::collections::BTreeSet;
-
+    // Dense bitset over canonical class ids, not `BTreeSet<u32>`: every id
+    // here is already bounded by `egraph.num_classes()`, so a `Vec<bool>`
+    // index is O(1) and allocation-free per probe, versus an O(log n)
+    // tree-node alloc per insert on a set this file already indexes by plain
+    // `Vec` elsewhere (`cost_of_choices`'s `color: Vec<u8>`). `post_order`
+    // runs twice per extraction (once per DP pass), so this is on the same
+    // hot path as `shared_dag_dp_pass`.
+    let num_classes = egraph.num_classes();
     let mut order: Vec<EClassId> = Vec::new();
-    let mut settled: BTreeSet<u32> = BTreeSet::new();
-    let mut on_stack: BTreeSet<u32> = BTreeSet::new();
+    let mut settled: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
+    let mut on_stack: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
     let mut stack: Vec<(EClassId, bool)> = vec![(root, false)];
 
     while let Some((class, children_done)) = stack.pop() {
         let canonical = egraph.find(class);
+        let idx = canonical.0 as usize;
 
-        if settled.contains(&canonical.0) {
+        if settled[idx] {
             continue;
         }
 
         if !children_done {
-            if !on_stack.insert(canonical.0) {
+            if on_stack[idx] {
                 continue;
             }
+            on_stack[idx] = true;
 
             stack.push((canonical, true));
 
@@ -2151,15 +2177,15 @@ fn post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
                 if let ENode::Op { children, .. } = node {
                     for &child in children {
                         let child_canonical = egraph.find(child);
-                        if !settled.contains(&child_canonical.0) {
+                        if !settled[child_canonical.0 as usize] {
                             stack.push((child, false));
                         }
                     }
                 }
             }
         } else {
-            on_stack.remove(&canonical.0);
-            settled.insert(canonical.0);
+            on_stack[idx] = false;
+            settled[idx] = true;
             order.push(canonical);
         }
     }
@@ -2208,10 +2234,15 @@ fn toposort_dag(
     best_node: &[Option<usize>],
     shared: &[(EClassId, usize)],
 ) -> Vec<EClassId> {
-    use alloc::collections::BTreeSet;
-
-    let shared_set: BTreeSet<u32> = shared.iter().map(|(id, _)| id.0).collect();
-    let mut visited: BTreeSet<u32> = BTreeSet::new();
+    // Dense bitsets over canonical class ids (bounded by `best_node.len()`,
+    // itself sized to `egraph.num_classes()` by the DP pass that built it) —
+    // see `post_order`'s doc comment for why this beats `BTreeSet<u32>` here.
+    let num_classes = best_node.len();
+    let mut shared_set: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
+    for (id, _) in shared {
+        shared_set[id.0 as usize] = true;
+    }
+    let mut visited: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
     let mut result = Vec::new();
 
     // Iterative post-order: (class, children_pushed)
@@ -2219,29 +2250,30 @@ fn toposort_dag(
 
     while let Some((class, children_done)) = stack.pop() {
         let canonical = egraph.find(class);
+        let idx = canonical.0 as usize;
 
-        if visited.contains(&canonical.0) {
+        if visited[idx] {
             continue;
         }
 
         if !children_done {
             stack.push((canonical, true));
 
-            if let Some(node_idx) = best_node.get(canonical.0 as usize).and_then(|o| *o) {
+            if let Some(node_idx) = best_node.get(idx).and_then(|o| *o) {
                 let node = &egraph.nodes(canonical)[node_idx];
                 if let ENode::Op { children, .. } = node {
                     for &child in children {
                         let child_can = egraph.find(child);
-                        if !visited.contains(&child_can.0) {
+                        if !visited[child_can.0 as usize] {
                             stack.push((child, false));
                         }
                     }
                 }
             }
         } else {
-            visited.insert(canonical.0);
+            visited[idx] = true;
 
-            if shared_set.contains(&canonical.0) {
+            if shared_set[idx] {
                 result.push(canonical);
             }
         }
@@ -2321,6 +2353,47 @@ mod tests {
             OpKind::Add,
             "over a frame the fused form pays for Z at every sample"
         );
+    }
+
+    /// Above [`SHARED_DAG_PASS_CLASS_LIMIT`], `extract_dag_scoped` falls
+    /// back to the tree-only objective rather than paying the O(n^2)
+    /// `shared_dag_dp_pass` bitset — see that constant's doc comment.
+    ///
+    /// A chain of `SHARED_DAG_PASS_CLASS_LIMIT + 50` distinct-const `Add`
+    /// nodes gives exactly that many classes with no saturation (each
+    /// `add()` is a fresh, non-folding node), so `num_classes()` crosses the
+    /// limit deterministically and cheaply — this is a shape test, not a
+    /// cost-model test, so a long non-sharing chain is the right fixture:
+    /// it has nothing for the shared pass to find anyway, which is exactly
+    /// what makes "was it skipped" checkable by comparing against the
+    /// tree-only arm directly.
+    #[test]
+    fn extract_dag_scoped_skips_the_shared_pass_above_the_class_limit() {
+        let mut egraph = EGraph::new();
+        let mut cur = egraph.add(ENode::Var(0));
+        for i in 0..(SHARED_DAG_PASS_CLASS_LIMIT + 50) {
+            let c = egraph.add(ENode::constant(i as f32 + 1.0));
+            cur = egraph.add(ENode::Op {
+                op: crate::egraph::ops::op_from_kind(pixelflow_ir::OpKind::Add)
+                    .expect("Add is modelled"),
+                children: vec![cur, c],
+            });
+        }
+        egraph.rebuild();
+        assert!(
+            egraph.num_classes() > SHARED_DAG_PASS_CLASS_LIMIT,
+            "fixture must actually cross the gate to test it"
+        );
+
+        let costs = CostModel::latency_prior();
+        let scoped = extract_dag_scoped(&egraph, cur, &costs, LatticeShape::POINT);
+        let tree_only = extract_dag_tree_arm(&egraph, cur, &costs, LatticeShape::POINT);
+        assert_eq!(
+            scoped.dag_cost, tree_only.dag_cost,
+            "above the limit, extract_dag_scoped must equal the tree-only arm \
+             exactly — the shared pass was skipped, not merely outscored"
+        );
+        assert_eq!(scoped.choices, tree_only.choices);
     }
 
     #[test]

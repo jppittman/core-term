@@ -15,7 +15,7 @@
 //! println!("Unions: {}, Saturated: {}", result.total_unions, result.saturated);
 //! ```
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use super::graph::{EGraph, SaturationStop};
 use super::node::EClassId;
@@ -447,7 +447,7 @@ mod tests {
             saturated: true,
             classes_before: 10,
             classes_after: 15,
-            rule_matches: HashMap::new(),
+            rule_matches: HashMap::default(),
             budget: 100,
             max_classes: 10_000,
             hard_timeout: std::time::Duration::from_millis(500),

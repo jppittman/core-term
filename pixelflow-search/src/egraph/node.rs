@@ -90,14 +90,25 @@ impl ENode {
     }
 
     /// Get children of this node.
+    ///
+    /// Allocates and clones — see [`Self::children_slice`] for the
+    /// zero-allocation borrow, which every call site on a saturation/
+    /// extraction hot path should prefer. This owned form stays for callers
+    /// (training/eval tooling outside this crate) that want a `Vec` to hold
+    /// past the node's borrow.
     pub fn children(&self) -> Vec<EClassId> {
+        self.children_slice().to_vec()
+    }
+
+    /// Borrow this node's children with no allocation.
+    pub fn children_slice(&self) -> &[EClassId] {
         match self {
             ENode::Var(_)
             | ENode::Const(_)
             | ENode::Buffer(_)
             | ENode::Uniform(_)
-            | ENode::Param(_) => vec![],
-            ENode::Op { children, .. } => children.clone(),
+            | ENode::Param(_) => &[],
+            ENode::Op { children, .. } => children,
         }
     }
 

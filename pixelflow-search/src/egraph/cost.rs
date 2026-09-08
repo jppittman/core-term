@@ -177,7 +177,7 @@ pub trait CostFunction {
     fn node_cost(&self, node: &ENode, parent: Option<OpKind>) -> usize;
 
     /// Get the cost of an operation by OpKind (optional, for interop).
-    fn cost_by_kind(&self, op: OpKind, parent: Option<OpKind>) -> usize {
+    fn cost_by_kind(&self, _op: OpKind, _parent: Option<OpKind>) -> usize {
         panic!("CostFunction::cost_by_kind not implemented");
     }
 }
@@ -346,7 +346,7 @@ impl CostFunction for CostModel {
 #[cfg(test)]
 mod every_op_is_priceable {
     use super::{CostModel, latency_prior_cycles};
-    use pixelflow_ir::kind::{OpKind, OpMap};
+    use pixelflow_ir::kind::OpKind;
 
     /// `cost`/`set_cost` subscript a positional per-op array with
     /// `OpKind::index()`. That is only total while the discriminants are dense.
