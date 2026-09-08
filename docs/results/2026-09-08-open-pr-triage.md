@@ -58,9 +58,9 @@ CLAUDE.md's "three metadata jobs" is now four.
 | #1188 | yes | 0 | green | **merged** — docs-only |
 | #1199 | yes | 0 | green | **merged** — test-only, target files untouched since its base |
 | #1086 | yes | 0 | green | **merged** — the 2026-09-01 triage record |
-| #1154 | yes | 0 | green after repair | repaired, see below |
+| #1154 | yes | 0 | green after repair | **merged** — repaired, see below |
 | #1206 | yes | 0 (3 resolved) | green | **ready — author's call** |
-| #1209 | yes | 1 P2 (outdated) | green | one thread to answer |
+| #1209 | yes | 0 (1 resolved) | green | **meets all three** — author's call |
 | #994 | yes | 0 | green | blocked on credentials, correctly draft |
 | #1213 | **no** | 13 open (9 P1) | never ran | active WIP |
 | #1207 | **no** | 18 open | docs-skip | conflict unresolvable here |
@@ -203,12 +203,19 @@ Substantively both still need work regardless:
 
 ## #1209 and #994
 
-**#1209** is green and rebased with one open thread, a P2 marked outdated:
-`Loc::Remat` satisfies the public `StoreTarget` bound but `target_storage`
-panics on it, so the trait promises a writable location it cannot always
-provide. Eight sibling threads were resolved; this one needs either the
-type-level fix (a destination type excluding `Remat`) or a reply saying why
-not. Small and self-contained.
+**#1209** is green, rebased, and now thread-free. Its last open thread — a
+P2 marked outdated, saying `Loc::Remat` satisfies the public `StoreTarget`
+bound while `target_storage` panics on it — was already fixed and simply
+never resolved. Verified against head `87aa0dd` rather than trusting the
+outdated marker: `Loc` has no `StoreTarget` impl at all (only `Reg`, `Slot`
+and `Storage`, none of which can be `Remat`), no `target_storage` impl
+panics, and the read side is the fallible one (`impl SourceOperand for Loc`
+returning `None` for `Remat`). The branch's own history carries the commit
+that did it, `fix(codegen): exclude Loc::Remat from StoreTarget`. Replied
+and resolved.
+
+That makes #1209 the second PR after #1206 to satisfy all three conditions;
+both are now waiting only on a merge decision.
 
 **#994** is green, rebased, thread-free, and correctly a draft: it is blocked
 on five Apple credentials that do not exist as repository secrets, and its
@@ -246,6 +253,25 @@ Nothing failed and nothing was learned by waiting — but the sweep was its own
 bottleneck, and the fix is free: update in small batches, or update the ones
 you actually intend to merge first. Worth doing on the next run of this
 routine.
+
+## Addendum — final state
+
+Written mid-sweep; two rows moved afterwards and the table above is corrected
+to match. #1154's macOS jobs eventually got runners (~70 minutes after
+queueing), the run went green on all 17, and it merged. #1209's last thread
+was verified stale and resolved.
+
+Six PRs landed this run: #1217, #1188, #1199, #1086, #1218 (this document)
+and #1154. Of the seven still open, #1206, #1209 and #994 satisfy all three
+conditions — the first two await a merge decision, the third is correctly
+parked. The four that do not are #1054 (red, closure recommended), #1213
+(active WIP), and #1207/#1215 (LFS-blocked conflicts plus content work).
+
+`/root/.ccr/README.md` is explicit that a 403 from the egress proxy is an
+organization policy denial to be reported rather than worked around, so the
+LFS block on #1207/#1215 is a hard stop for any session under this policy —
+not a gap in this one. It is the single environment change that would let a
+scheduled sweep close the "rebased" condition unaided.
 
 ## Method note
 
