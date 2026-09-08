@@ -1202,7 +1202,16 @@ fn prepare(included: &[Included]) -> Vec<Prepared> {
             let d = inc.ramp.then(|| {
                 let across = across(piece.chord);
                 let chord = segment_distance(piece.chord, &across);
-                let bound = chord.sub(&constant_of(piece.deviation()));
+                // Both in the same units, or the subtraction is meaningless.
+                // `segment_distance` is already divided by its own gradient,
+                // so it is in pixels of whatever lattice this is baked on;
+                // `deviation` is a length in the outline's own coordinates.
+                // Those agree only while nothing warps the kernel — under a
+                // magnifying `Kernel::at` the raw constant under-subtracts by
+                // the magnification, and a lower bound that is too large is
+                // not a lower bound. Normalising it through the same gradient
+                // makes them agree by construction; today it divides by one.
+                let bound = chord.sub(&in_pixels(&constant_of(piece.deviation()), &across));
                 match piece.bulge {
                     Some(bulge) => implicit_distance(bulge).max(&bound),
                     None => bound,
