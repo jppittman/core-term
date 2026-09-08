@@ -113,7 +113,7 @@ fn match_op(
         return false;
     }
     let pat_children: Vec<ExprId> = arena.children(pat).collect();
-    let node_children = node.children();
+    let node_children = node.children_slice();
     if pat_children.len() != node_children.len() {
         return false;
     }

@@ -287,7 +287,7 @@ impl CandidateFeatures {
 fn neighborhood_ops(egraph: &EGraph, canonical: EClassId) -> Vec<OpKind> {
     let mut ops = Vec::new();
     for node in egraph.nodes(canonical) {
-        for child in node.children() {
+        for &child in node.children_slice() {
             let child_canonical = egraph.find(child);
             for child_node in egraph.nodes(child_canonical) {
                 if let ENode::Op { op, .. } = child_node {

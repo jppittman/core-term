@@ -257,6 +257,13 @@ required-features = ["training"]
 bench = false
 
 [[bin]]
+name = "egraph_profile"
+path = "src/bin/egraph_profile.rs"
+required-features = ["training", "profiling"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
 name = "corpus_gaps"
 path = "src/bin/corpus_gaps.rs"
 # Reads `training::{bezier_family, sh_family}` for the SYNTHETIC half of the
