@@ -1075,7 +1075,7 @@ fn eval(
     for (i, kernel) in kernels.iter().enumerate() {
         let started = Instant::now();
         let p = prepare(kernel);
-        let fold = fold_of(&kernel.class.trim_start_matches("bold_").to_string());
+        let fold = fold_of(kernel.class.trim_start_matches("bold_"));
         let production = run_arm(&p, Budget::Production, &Arm::Identity, &models);
         let b = production.stats.applications;
         let mut arms: Vec<Arm<'_>> = vec![Arm::Identity];
@@ -1113,14 +1113,14 @@ fn eval(
                         kernel.name
                     );
                 }
-                if let Arm::Bilinear { rho, model, .. } = &arm {
-                    if out.filter.cells > 0 {
-                        queue.push(Arm::UniformMatched {
-                            rho: *rho,
-                            keep_rate: (out.filter.kept as f64 / out.filter.cells as f64) as f32,
-                            model,
-                        });
-                    }
+                if let Arm::Bilinear { rho, model, .. } = &arm
+                    && out.filter.cells > 0
+                {
+                    queue.push(Arm::UniformMatched {
+                        rho: *rho,
+                        keep_rate: (out.filter.kept as f64 / out.filter.cells as f64) as f32,
+                        model,
+                    });
                 }
                 let matched_keep_rate = match &arm {
                     Arm::UniformMatched { keep_rate, .. } => Some(f64::from(*keep_rate)),
@@ -1295,6 +1295,11 @@ fn aggregate(rows: &[Row]) -> Vec<Cell> {
     out
 }
 
+/// `(family, arm, ρ, model)`.
+type ArmKey = (String, String, String, String);
+/// Per kernel, the `(budget label, dag_cost)` pairs one arm produced.
+type KernelCosts<'a> = BTreeMap<String, Vec<(&'a str, usize)>>;
+
 /// The dual: per (family, arm, ρ, model), how many kernels reach
 /// `Identity@B`'s dag_cost at each budget of the grid.
 #[derive(Serialize, Clone)]
@@ -1315,8 +1320,7 @@ fn reach(rows: &[Row]) -> Vec<Reach> {
             identity_b.insert(r.kernel.clone(), r.dag_cost);
         }
     }
-    let mut per: BTreeMap<(String, String, String, String), BTreeMap<String, Vec<(&str, usize)>>> =
-        BTreeMap::new();
+    let mut per: BTreeMap<ArmKey, KernelCosts<'_>> = BTreeMap::new();
     for r in rows {
         per.entry((
             r.family.clone(),
@@ -1356,6 +1360,17 @@ fn reach(rows: &[Row]) -> Vec<Reach> {
         });
     }
     out
+}
+
+/// Inference-cost totals for one (family, arm).
+#[derive(Default)]
+struct CostTotals {
+    cells: u64,
+    scored: u64,
+    macs: u64,
+    filter_ms: f64,
+    wall_ms: f64,
+    identity_wall_ms: f64,
 }
 
 fn arm_label(c: &Cell) -> String {
@@ -1582,8 +1597,7 @@ fn report(
         "| family | arm | Σ cells | Σ scored | Σ multiply-adds | Σ filter ms | Σ run ms | Σ Identity run ms | filter share of run |"
     );
     let _ = writeln!(md, "|---|---|---:|---:|---:|---:|---:|---:|---:|");
-    let mut per_family: BTreeMap<(String, String), (u64, u64, u64, f64, f64, f64)> =
-        BTreeMap::new();
+    let mut per_family: BTreeMap<(String, String), CostTotals> = BTreeMap::new();
     for r in rows.iter().filter(|r| r.arm == "bilinear") {
         let id_wall = rows
             .iter()
@@ -1595,18 +1609,24 @@ fn report(
                 format!("Bilinear[{}] ρ={}", r.model, r.rho),
             ))
             .or_default();
-        e.0 += r.cells;
-        e.1 += r.scored;
-        e.2 += r.macs;
-        e.3 += r.filter_ms;
-        e.4 += r.wall_ms;
-        e.5 += id_wall;
+        e.cells += r.cells;
+        e.scored += r.scored;
+        e.macs += r.macs;
+        e.filter_ms += r.filter_ms;
+        e.wall_ms += r.wall_ms;
+        e.identity_wall_ms += id_wall;
     }
-    for ((family, arm), (cells, scored, macs, f_ms, w_ms, iw_ms)) in &per_family {
+    for ((family, arm), t) in &per_family {
         let _ = writeln!(
             md,
-            "| {family} | {arm} | {cells} | {scored} | {macs} | {f_ms:.0} | {w_ms:.0} | {iw_ms:.0} | {:.1}% |",
-            100.0 * f_ms / w_ms.max(1e-9)
+            "| {family} | {arm} | {} | {} | {} | {:.0} | {:.0} | {:.0} | {:.1}% |",
+            t.cells,
+            t.scored,
+            t.macs,
+            t.filter_ms,
+            t.wall_ms,
+            t.identity_wall_ms,
+            100.0 * t.filter_ms / t.wall_ms.max(1e-9)
         );
     }
     if !held_cells.is_empty() {

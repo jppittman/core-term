@@ -194,13 +194,19 @@ arm, Σ `optimize_ms` over the 190 glyph bakes): round 1 11,314 → 11,171 ms
 The sign agrees with the allocation count and is small: the seam costs
 nothing and returns the per-match label hashes.
 
-## Phase 2 (not this change)
+## Phase 2
 
-Port `BilinearCandidateGuide` onto `ApplicationFilter` (rule embedding ×
-node embedding of the matched class, scored per cell, keep the top-k or
-above-threshold), train it on `dag_cost`-minted hindsight labels
-(docs/plans/2026-09-01-guide-return-to-go.md; tree-cost labels steer toward
-unshared terms, docs/results/2026-09-02-guided-regression-bisect.md), and
-measure regret-at-budget against `Identity` on DEV only
-(docs/plans/2026-09-01-phase3-registration.md). Then delete
-`SaturationGuide` and the guided loop.
+Registered before it was built in
+docs/plans/2026-09-08-rules-filter-bilinear-registration.md and measured in
+docs/results/2026-09-08-rules-filter-bilinear.md. The port is
+`pixelflow-search/src/nnue/guide/filter.rs`: `BilinearFilter` scores each
+cell with the existing `SaturationHead` over a `CellContext` observed on the
+live graph at this seam (the same function the training samples are minted
+with, so there is no feature skew between mint and deploy), and keeps the
+cells whose score clears a threshold; `PerRuleRateFilter` and
+`UniformRandomFilter` are the registered controls at the same keep-rate.
+`ApplicationFilter::fingerprint` closes the cache-key debt noted above:
+`Optimizer::fingerprint` mixes it in and `KeepAll` is the identity of
+`Fingerprint::combine`. The harness is `pixelflow-pipeline`'s
+`rules_filter` (mint / train / eval / report). `SaturationGuide` and the
+guided loop are still in the tree; their deletion is its own change.
