@@ -11,6 +11,7 @@ use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::optimize::{Optimize, Rewritten};
 
 use crate::egraph::{Optimizer, Vocabulary, insert, reachable_count};
+use crate::tier::Tier;
 
 /// Rewrite a term by equality saturation under `optimizer`.
 ///
@@ -20,6 +21,7 @@ use crate::egraph::{Optimizer, Vocabulary, insert, reachable_count};
 pub struct Saturate {
     optimizer: Optimizer,
     vocab: Vocabulary,
+    tier: Tier,
 }
 
 impl Saturate {
@@ -32,14 +34,39 @@ impl Saturate {
         Self {
             optimizer: Optimizer::production().for_lattice(shape),
             vocab: Vocabulary::Runtime,
+            tier: Tier::Runtime,
+        }
+    }
+
+    /// The macro tier's configuration: the same production policy, over the
+    /// template vocabulary, priced without a lattice — `kernel!` expands
+    /// before any consumer has said what shape it wants.
+    ///
+    /// Sits here beside [`Self::runtime`] rather than in the compiler crate
+    /// because the two are one decision: what differs between the tiers is
+    /// this, and it should be readable in one place. It also carries
+    /// [`Tier::Macro`], which is not bookkeeping — a macro-tier saturation
+    /// writes to rustc's stderr, and telemetry has to prefix its record so
+    /// cargo's `--message-format=json` parser does not read it as a compiler
+    /// message.
+    #[must_use]
+    pub fn macro_tier() -> Self {
+        Self {
+            optimizer: Optimizer::production(),
+            vocab: Vocabulary::Templates,
+            tier: Tier::Macro,
         }
     }
 
     /// Saturation under an explicitly chosen policy and vocabulary, for
     /// harnesses that vary one and hold the rest.
     #[must_use]
-    pub fn with(optimizer: Optimizer, vocab: Vocabulary) -> Self {
-        Self { optimizer, vocab }
+    pub fn with(optimizer: Optimizer, vocab: Vocabulary, tier: Tier) -> Self {
+        Self {
+            optimizer,
+            vocab,
+            tier,
+        }
     }
 }
 
@@ -58,7 +85,7 @@ impl Optimize for Saturate {
 
         #[cfg(feature = "saturation-telemetry")]
         crate::telemetry::record(crate::telemetry::SaturationInvocation {
-            tier: crate::telemetry::Tier::Runtime,
+            tier: self.tier,
             node_count,
             stats: &optimized.stats,
             union_count: optimized.stats.unions,

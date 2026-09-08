@@ -190,7 +190,7 @@ impl DepsAnalysis {
             // A buffer reference is coordinate-invariant — the *read* varies
             // through Gather's x/y children, which the Op arm unions in. A
             // uniform is invariant across the lattice by definition.
-            ENode::Buffer(_) | ENode::Uniform(_) => Variance::CONST,
+            ENode::Buffer(_) | ENode::Uniform(_) | ENode::Param(_) => Variance::CONST,
             ENode::Var(v) => var_variance(*v),
             ENode::Op { children, .. } => {
                 let mut v = Variance::CONST; // Identity for union
@@ -213,7 +213,9 @@ impl DepsAnalysis {
     fn leaf_deps_and_children(node: &ENode) -> (Option<Variance>, Vec<EClassId>) {
         match node {
             ENode::Const(_) => (Some(Variance::CONST), vec![]),
-            ENode::Buffer(_) | ENode::Uniform(_) => (Some(Variance::CONST), vec![]),
+            ENode::Buffer(_) | ENode::Uniform(_) | ENode::Param(_) => {
+                (Some(Variance::CONST), vec![])
+            }
             ENode::Var(v) => (Some(var_variance(*v)), vec![]),
             ENode::Op { children, .. } => (None, children.clone()),
         }

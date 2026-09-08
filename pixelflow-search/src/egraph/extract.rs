@@ -908,9 +908,11 @@ pub fn extract<C: CostFunction>(
 
             for (idx, node) in nodes.iter().enumerate() {
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => {
-                        costs.node_cost(node, None)
-                    }
+                    ENode::Var(_)
+                    | ENode::Const(_)
+                    | ENode::Buffer(_)
+                    | ENode::Uniform(_)
+                    | ENode::Param(_) => costs.node_cost(node, None),
                     ENode::Op { children, .. } => {
                         // Check for self-referential children
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
@@ -1334,6 +1336,16 @@ pub fn choices_to_arena(
                         }
                         result_stack.push(expr_id);
                     }
+                    ENode::Param(i) => {
+                        // The slot index is the whole node; it means the same
+                        // thing in the destination arena, and the builder
+                        // substitutes it there.
+                        let expr_id = arena.embed(Shape::Param(*i));
+                        if idx < id_map.len() {
+                            id_map[idx] = Some(expr_id);
+                        }
+                        result_stack.push(expr_id);
+                    }
                     ENode::Op { children, .. } => {
                         assert!(
                             color[idx] != 1,
@@ -1536,7 +1548,7 @@ fn node_variance(
         ENode::Var(v) => var_variance(*v),
         // A buffer's contents are fixed for the kernel's lifetime; a read of
         // one varies with its index, which is the `Gather`'s other child.
-        ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => Variance::CONST,
+        ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) | ENode::Param(_) => Variance::CONST,
         ENode::Op { children, .. } => children.iter().fold(Variance::CONST, |acc, &child| {
             let c = egraph.find(child);
             if c == canonical {
@@ -1670,7 +1682,11 @@ pub fn cost_of_choices<C: CostFunction>(
                     tree[c].expect("post-order visits every child before its parent")
                 })
                 .fold(0usize, usize::saturating_add),
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => 0,
+            ENode::Var(_)
+            | ENode::Const(_)
+            | ENode::Buffer(_)
+            | ENode::Uniform(_)
+            | ENode::Param(_) => 0,
         };
         tree[idx] = Some(own.saturating_add(children_cost));
         var[idx] = node_var;
@@ -1929,9 +1945,11 @@ fn tree_dp_pass<C: CostFunction>(
             let node_var = node_variance(egraph, node, &best_var, canonical);
             let weight = shape.evals(node_var);
             let this_node_cost = match node {
-                ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => {
-                    weighted_own(costs, node, weight)
-                }
+                ENode::Var(_)
+                | ENode::Const(_)
+                | ENode::Buffer(_)
+                | ENode::Uniform(_)
+                | ENode::Param(_) => weighted_own(costs, node, weight),
                 ENode::Op { children, .. } => {
                     if children.iter().any(|&c| egraph.find(c) == canonical) {
                         CYCLE_COST
@@ -2032,7 +2050,11 @@ fn shared_dag_dp_pass<C: CostFunction>(
             let weight = shape.evals(node_var);
             let own = weighted_own(costs, node, weight);
             let this_node_cost = match node {
-                ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => own,
+                ENode::Var(_)
+                | ENode::Const(_)
+                | ENode::Buffer(_)
+                | ENode::Uniform(_)
+                | ENode::Param(_) => own,
                 ENode::Op { children, .. } => {
                     if children.iter().any(|&c| egraph.find(c) == canonical) {
                         CYCLE_COST
@@ -3421,7 +3443,11 @@ mod tests {
             match node {
                 ENode::Op { op, .. } if op.kind() == pixelflow_ir::OpKind::Sin => usize::MAX / 2,
                 ENode::Op { .. } => 1,
-                ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => 0,
+                ENode::Var(_)
+                | ENode::Const(_)
+                | ENode::Buffer(_)
+                | ENode::Uniform(_)
+                | ENode::Param(_) => 0,
             }
         }
     }

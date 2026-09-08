@@ -78,11 +78,29 @@ const SIZES: [u32; 11] = [7, 11, 13, 15, 17, 19, 21, 32, 38, 40, 48];
 /// at 0.19% over the corpus below, so this is roughly 10x headroom — loose enough never to fire on an antialiasing difference, tight
 /// enough that dropping or duplicating whole strokes cannot hide behind it.
 const INK_RATIO_TOLERANCE: f64 = 0.02;
-/// Texels we ink where FreeType finds none, over the corpus below. The `'8'`
-/// waist smear, and nothing else: `main` counts a crossing that does not
-/// exist. **Pinned, not zero** — this PR proves the defect and does not fix
-/// it. See the module docs for the five approaches that failed.
-const KNOWN_ORPHAN_TEXELS: usize = 4;
+/// Texels we ink where FreeType finds none, over the corpus below. **Zero**,
+/// and asserted as zero.
+///
+/// It was 4 — the `'8'` waist smear, a spurious half-covered blot outside the
+/// glyph, from counting a crossing that does not exist. Five deliberate
+/// attempts to remove it failed (the module docs list them), and the pin
+/// existed to keep the defect countable until one worked.
+///
+/// None of them did. What removed it was deleting a *second optimizer*:
+/// `kernel!` used to saturate the glyph's fragments on the AST before the
+/// runtime tier ever saw the arena, so two independent sets of fusion
+/// decisions compounded, and the compound landed on the wrong side of the
+/// quadratic solver's `disc >= 0` knife edge at the tangency. One optimizer,
+/// no compounding, no smear. See
+/// docs/plans/2026-09-08-macro-tier-is-arena-native.md.
+///
+/// **The knife edge itself is untouched**, and this is not the test that
+/// would notice if it came back by another route: `disc >= 0` is still exact
+/// zero at a shared extremum, and `quad_tangency_winding.rs` still measures a
+/// grazing residual of 0.688 where zero is correct. What is fixed is that no
+/// glyph in this corpus lands on it. A new fusion choice could put one there
+/// again — which is exactly what this assertion is now for.
+const KNOWN_ORPHAN_TEXELS: usize = 0;
 
 /// Texels FreeType inks and we do not, over the pairs below — **pinned**, not
 /// capped. It is zero on this set, which reads like a claim that the defect is
@@ -257,13 +275,11 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
          spread, down means it has been fixed and this number wants lowering"
     );
 
-    // Pinned, not asserted empty. These four texels are a REAL, live rendering
-    // defect on `main` — a spurious half-covered smear outside `'8'` at the
-    // waist — and this PR proves it and does not fix it. Pinning makes it
-    // countable: it cannot grow unnoticed, a new orphan anywhere else in the
-    // corpus fails here, and whoever fixes it has to come and lower the
-    // number, which is the moment to delete the pin rather than the moment to
-    // wonder why a test broke.
+    // Asserted empty, which it was not until 2026-09-08 — see
+    // `KNOWN_ORPHAN_TEXELS`. Ink where an independent rasterizer finds none is
+    // a rendering defect with no tolerance to hide behind, and this is the one
+    // check in the suite that can say so: every comparison of this code to
+    // itself agreed with the bug for as long as it existed.
     assert!(
         orphans.iter().all(|o| o.starts_with('8')),
         "the known orphans are all on `'8'`; these are not:\n{}",

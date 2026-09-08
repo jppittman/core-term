@@ -41,6 +41,20 @@ pub enum ENode {
     /// `Const`, so it is never folded; its gain in the e-graph is CSE of the
     /// arithmetic that depends on it alone.
     Uniform(UniformDecl),
+    /// Unbound scalar slot of a `kernel!` builder, hash-consed by index.
+    ///
+    /// The same opaque leaf as [`ENode::Uniform`], one tier earlier: no rule
+    /// matches it, nothing folds it, its derivative is zero, and its gain in
+    /// the e-graph is CSE of the arithmetic depending on it alone. A builder
+    /// substitutes it away before anything is compiled, so only the macro
+    /// tier's [`Vocabulary::Templates`](super::ops::Vocabulary) may hold one.
+    ///
+    /// Before this leaf existed the e-graph refused `Param` outright, and
+    /// each macro-side caller smuggled one past as something else — as
+    /// `Var(16 + i)` in the compiler's arena bridge, as an opaque synthetic
+    /// identifier in its AST optimizer. Two encodings of one idea, next to
+    /// two worked examples of it.
+    Param(u8),
     /// Operation with children
     Op {
         op: &'static dyn Op,
@@ -89,7 +103,11 @@ impl ENode {
     /// Borrow this node's children with no allocation.
     pub fn children_slice(&self) -> &[EClassId] {
         match self {
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => &[],
+            ENode::Var(_)
+            | ENode::Const(_)
+            | ENode::Buffer(_)
+            | ENode::Uniform(_)
+            | ENode::Param(_) => &[],
             ENode::Op { children, .. } => children,
         }
     }
@@ -118,6 +136,7 @@ impl PartialEq for ENode {
             (ENode::Buffer(a), ENode::Buffer(b)) => a == b,
             // Identity and default, bitwise (`UniformDecl`'s own equality).
             (ENode::Uniform(a), ENode::Uniform(b)) => a == b,
+            (ENode::Param(a), ENode::Param(b)) => a == b,
             (
                 ENode::Op {
                     op: op1,
@@ -157,6 +176,10 @@ impl core::hash::Hash for ENode {
             ENode::Uniform(decl) => {
                 4u8.hash(state);
                 decl.hash(state);
+            }
+            ENode::Param(i) => {
+                5u8.hash(state);
+                i.hash(state);
             }
             ENode::Op { op, children } => {
                 2u8.hash(state);
