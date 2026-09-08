@@ -621,6 +621,38 @@ mod tests {
     //! real `zmm` kernels and execute them on the host (all 16 lanes), so a bad
     //! byte fails loudly. Runtime tests require `+avx512f`.
     #![allow(clippy::needless_range_loop)]
+    use super::*;
+
+    #[test]
+    fn emit_and_emits_the_same_bytes_as_vandps() {
+        // `emit_and` is `pub fn` (bitwise helpers exposed for completeness /
+        // future mask emulation, per its doc comment) but nothing in this
+        // file or the driver calls it — pin it directly against the private
+        // `vandps` it wraps, whose own correctness is already proven by
+        // `emit_unary_negates_and_takes_the_absolute_value_of_every_lane`'s
+        // Abs case.
+        let mut via_and = Vec::new();
+        emit_and(&mut via_and, Reg(3), Reg(1), Reg(2));
+        let mut via_vandps = Vec::new();
+        vandps(&mut via_vandps, 3, 1, 2);
+        assert_eq!(via_and, via_vandps);
+    }
+
+    #[test]
+    fn emit_load_ptr_from_ctx_encodes_arbitrary_low_gpr_pairs() {
+        // The only production caller (`emit_uniform_load`) always passes
+        // dst_gpr=rax(0), ctx_gpr=rdi(7) — values that happen to make this
+        // function's `&`/`<<` bit ops indistinguishable from `|`/`>>`
+        // (0 shifted either direction is 0; `7 & 7 == 7 | 7`). Pin the byte
+        // encoding directly with values that don't share that coincidence.
+        let mut c = Vec::new();
+        emit_load_ptr_from_ctx(&mut c, 5, 3, 0x10);
+        assert_eq!(
+            c,
+            vec![0x48, 0x8B, 0x80 | (5 << 3) | 3, 0x10, 0x00, 0x00, 0x00],
+            "REX.W mov r5, [r3 + 0x10]"
+        );
+    }
 
     #[cfg(target_feature = "avx512f")]
     mod runtime {
@@ -686,7 +718,7 @@ mod tests {
         type BinaryCase = (OpKind, fn(f32, f32) -> f32);
 
         #[test]
-        fn binary_ops() {
+        fn emit_binary_matches_the_scalar_reference_for_every_arithmetic_op() {
             let (xs, ys, zs) = lanes();
             let cases: &[BinaryCase] = &[
                 (OpKind::Add, |a, b| a + b),
@@ -704,7 +736,7 @@ mod tests {
         }
 
         #[test]
-        fn high_register() {
+        fn emit_binary_writes_a_high_numbered_register() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_binary(&mut c, OpKind::Mul, Reg(20), X, Y);
@@ -713,7 +745,45 @@ mod tests {
         }
 
         #[test]
-        fn sqrt_op() {
+        fn emit_load_and_emit_store_address_a_high_numbered_base_register_correctly() {
+            // Every production caller in this file addresses memory through
+            // rsp or rax (both < r8), so `Evex::rm`'s B-bit inversion for a
+            // >= r8 base has no other coverage. Move the incoming pointer
+            // into r9 (rbp/r13 have their own mod=00 RIP-relative special
+            // case, which `mem_operand` refuses outright) and round-trip
+            // through it to pin that bit.
+            #[allow(improper_ctypes_definitions)]
+            type F = unsafe extern "C" fn(*mut f32);
+
+            let r9 = x86_64::Gpr(9);
+            let mut c = Vec::new();
+            x86_64::mov(&mut c, r9, x86_64::gpr::RDI);
+            let via_r9 = Mem {
+                base: r9,
+                disp: NoDisp,
+            };
+            emit_load(&mut c, X, via_r9);
+            emit_const(&mut c, Reg(5), 1.0);
+            emit_binary(&mut c, OpKind::Add, X, X, Reg(5));
+            emit_store(&mut c, via_r9, X);
+            crate::emit::x86_64::ret(&mut c);
+
+            let mut buf = [0.0f32; 16];
+            for (i, v) in buf.iter_mut().enumerate() {
+                *v = i as f32;
+            }
+            let exec = unsafe { ExecutableCode::from_code(&c).expect("mmap") };
+            unsafe {
+                let f: F = exec.as_fn();
+                f(buf.as_mut_ptr());
+            }
+            for (i, &v) in buf.iter().enumerate() {
+                assert_eq!(v, i as f32 + 1.0, "lane {i}");
+            }
+        }
+
+        #[test]
+        fn emit_unary_computes_sqrt_of_a_positive_operand() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_unary(&mut c, OpKind::Sqrt, X, Y, None); // Y > 0
@@ -721,7 +791,7 @@ mod tests {
         }
 
         #[test]
-        fn neg_abs() {
+        fn emit_unary_negates_and_takes_the_absolute_value_of_every_lane() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_unary(&mut c, OpKind::Neg, X, X, Some(TEMP));
@@ -732,7 +802,7 @@ mod tests {
         }
 
         #[test]
-        fn const_broadcast() {
+        fn emit_const_broadcasts_and_adds_to_every_lane() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_const(&mut c, Reg(5), 2.5);
@@ -741,7 +811,7 @@ mod tests {
         }
 
         #[test]
-        fn fma_231() {
+        fn emit_fmadd_c_in_dst_computes_the_fused_multiply_add() {
             let (xs, ys, zs) = lanes();
             // emit_fmadd_c_in_dst(dst, a, b): dst = a*b + dst.
             let mut c = Vec::new();
@@ -754,13 +824,13 @@ mod tests {
         /// The FMA bytes really are an FMA: **one** rounding, not a multiply
         /// followed by an add.
         ///
-        /// `fma_231`'s 1e-3 tolerance cannot tell those apart — the whole
+        /// `emit_fmadd_c_in_dst_computes_the_fused_multiply_add`'s 1e-3 tolerance cannot tell those apart — the whole
         /// difference is the last mantissa bit — so a stand-in built out of a
         /// multiply and an add would pass it. `1.0000001 * 4097 + 4097` is one
         /// of the inputs CLAUDE.md's `MulAdd` row is about, where the two
         /// forms genuinely disagree, and this asserts the bits.
         #[test]
-        fn fma_rounds_once() {
+        fn emit_fmadd_c_in_dst_rounds_once_not_twice() {
             let xs = [1.000_000_1f32; 16];
             let ys = [4097.0f32; 16];
             let zs = [4097.0f32; 16];
@@ -788,7 +858,7 @@ mod tests {
         }
 
         #[test]
-        fn gather_from_buffer() {
+        fn emit_gather_reads_the_value_at_each_lanes_index() {
             // JIT a function: fn(*const f32 base [rdi], __m512 idx_float [zmm0]) -> __m512
             // that truncates the float indices, sets the mask, and gathers
             // base[idx] per lane. Validates the VSIB vgatherdps bytes on hardware.
@@ -827,7 +897,48 @@ mod tests {
         }
 
         #[test]
-        fn spill_frame_roundtrip() {
+        fn emit_gather_addresses_high_numbered_vector_registers_and_gpr_base() {
+            // The production driver always gathers through rax (base_gpr=0)
+            // with dst/idx below zmm16 in every kernel this test suite
+            // compiles, so `emit_gather_reads_the_value_at_each_lanes_index`
+            // never sets the R'/B/V' extension bits this emitter also has to
+            // encode. Move the base pointer into r9 (>= r8) and gather
+            // into/from zmm registers >= 16 to pin them, mirroring
+            // `emit_binary_writes_a_high_numbered_register`'s zmm20 case.
+            #[allow(improper_ctypes_definitions)]
+            type G = unsafe extern "C" fn(*const f32, __m512) -> __m512;
+
+            let mut c = Vec::new();
+            x86_64::mov(&mut c, x86_64::Gpr(9), gpr::RDI);
+            emit_cvttps2dq(&mut c, Reg(21), Reg(0)); // zmm21 = (i32) idx_float
+            emit_set_gather_mask(&mut c);
+            emit_gather(&mut c, Reg(20), 9, Reg(21)); // zmm20{k1} = [r9 + zmm21*4]
+            emit_mov(&mut c, Reg(0), Reg(20));
+            crate::emit::x86_64::ret(&mut c);
+
+            let buf: Vec<f32> = (0..64).map(|i| (i as f32) * 1.5 + 0.25).collect();
+            let idx: [f32; 16] = [
+                0.0, 63.0, 1.0, 2.0, 10.0, 10.0, 5.0, 32.0, 7.0, 8.0, 63.0, 0.0, 20.0, 21.0, 40.0,
+                41.0,
+            ];
+
+            let exec = unsafe { ExecutableCode::from_code(&c).expect("mmap") };
+            let out = unsafe {
+                let f: G = exec.as_fn();
+                let r = f(buf.as_ptr(), _mm512_loadu_ps(idx.as_ptr()));
+                let mut out = [0.0f32; 16];
+                _mm512_storeu_ps(out.as_mut_ptr(), r);
+                out
+            };
+
+            for i in 0..16 {
+                let want = buf[idx[i] as usize];
+                assert_eq!(out[i], want, "gather lane {i}: idx {}", idx[i]);
+            }
+        }
+
+        #[test]
+        fn emit_load_after_emit_store_recovers_the_spilled_value() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             crate::emit::x86_64::emit_sub_rsp(&mut c, 64);
@@ -1157,6 +1268,26 @@ pub(crate) mod driver {
 
         fn emit_ret(&mut self, code: &mut Vec<u8>) {
             x86::ret(code);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// `AVX512_FILE`'s field values are restated (not delegated to
+        /// `..SSE2_FILE`) because they genuinely differ — twenty-eight
+        /// registers and this backend's own `temps_for` rather than SSE2's
+        /// twelve and its select-reload-aware one — so nothing catches a
+        /// regression back to the SSE2 shape except a direct assertion.
+        #[test]
+        fn avx512_file_reserves_zmm4_through_27_with_no_fixed_registers() {
+            assert_eq!(AVX512_FILE.scratch, regalloc::RegSet::range(4, 28));
+            assert!(AVX512_FILE.fixed.is_empty());
+            assert_eq!(
+                AVX512_FILE.temps_for as *const () as usize,
+                super::super::temps_for as *const () as usize
+            );
         }
     }
 }
