@@ -726,6 +726,8 @@ impl OpKind {
     /// - Lt/Le/Gt/Ge/Eq/Ne (return masks, not floats — type-invalid in arithmetic)
     /// - Select (needs mask input — only valid composed with a comparison)
     /// - Buffer/Gather (memory ops — require a bound buffer, not synthesizable)
+    /// - Uniform/Param (unbound scalar slots — a value arrives per call or
+    ///   from a builder, so a generator cannot synthesize one that evaluates)
     #[must_use]
     pub const fn is_seed_op(self) -> bool {
         !matches!(
@@ -746,6 +748,7 @@ impl OpKind {
                 | Self::RawGather
                 | Self::Reduce
                 | Self::Uniform
+                | Self::Param
         )
     }
 
@@ -1592,6 +1595,7 @@ mod algebraic_properties {
         OpKind::RawGather,
         OpKind::Reduce,
         OpKind::Uniform,
+        OpKind::Param,
     ];
 
     #[test]
