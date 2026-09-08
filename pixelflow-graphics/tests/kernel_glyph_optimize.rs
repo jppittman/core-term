@@ -111,8 +111,8 @@ fn affine_edge_gradients_fold_to_constants() {
         [3.0, 20.0],
         [11.0, 9.0],
     ]);
-    let kernel = loop_blinn::glyph(&outline).kernel;
-    let (arena, root) = kernel.parts();
+    let glyph = loop_blinn::glyph(&outline);
+    let (arena, root) = glyph.kernel.parts();
 
     let raw_sqrt = count_op(arena, root, OpKind::Sqrt);
     let raw_dwrt = count_op(arena, root, OpKind::Dwrt);
@@ -144,8 +144,8 @@ fn affine_edge_gradients_fold_to_constants() {
 #[test]
 fn lowered_glyph_ops_are_all_egraph_representable() {
     let font = Font::parse(FONT_DATA).unwrap();
-    let kernel = font.glyph_kernel_scaled('g', 16.0).expect("glyph");
-    let (arena, root) = kernel.parts();
+    let glyph = font.glyph_kernel_scaled('g', 16.0).expect("glyph");
+    let (arena, root) = glyph.kernel.parts();
     let (lowered, lroot) = lower_dwrt_owned(arena, root).expect("lower");
     let mut missing = std::collections::BTreeSet::new();
     let len = lowered.nodes_raw().len();
@@ -212,11 +212,23 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
 
     for size in SIZES {
         for ch in ['A', 'O', 'g', '8'] {
-            let kernel = font
+            let glyph = font
                 .glyph_kernel_scaled(ch, size as f32)
                 .expect("glyph kernel");
-            let (arena, root) = kernel.parts();
+            let (arena, root) = glyph.kernel.parts();
             let (raw, raw_root) = lower_dwrt_owned(arena, root).expect("lower raw");
+            // `glyph.kernel`'s winding sum reads a bound piece table (S1a);
+            // both `eval_scalar` oracles below need it bound, not empty —
+            // `lower_dwrt`/`optimize_runtime_arena` restructure the Dwrt and
+            // arithmetic subtrees only, never the buffer declarations, so
+            // the one slot survives unchanged in both `raw` and `opt`.
+            let data: Vec<&[f32]> = glyph
+                .binding
+                .as_ref()
+                .map(|(_, d)| d.as_slice())
+                .into_iter()
+                .collect();
+            let raw_table = BindingTable::bind(&raw, &data).expect("bind winding table (raw)");
             // The lattice a bake of this glyph would compile at — the
             // extraction is a function of the shape, and the bake's is the one
             // that reaches pixels.
@@ -228,12 +240,13 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
             )
             .expect("glyph arenas must optimize (pure arithmetic + Dwrt + masks)");
             let (opt, opt_root) = (&optimized.0, optimized.1);
+            let opt_table = BindingTable::bind(opt, &data).expect("bind winding table (opt)");
 
             for j in 0..extent as usize {
                 for i in 0..extent as usize {
                     let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
-                    let want = eval_scalar(&raw, raw_root, &[x, y], &BindingTable::empty());
-                    let got = eval_scalar(opt, opt_root, &[x, y], &BindingTable::empty());
+                    let want = eval_scalar(&raw, raw_root, &[x, y], &raw_table);
+                    let got = eval_scalar(opt, opt_root, &[x, y], &opt_table);
                     // Before the comparison, not folded into it: `NaN >= x` is
                     // false, so a threshold test *accepts* a non-finite
                     // coverage silently. A collector has to say so itself.

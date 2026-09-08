@@ -26,7 +26,7 @@
 
 use crate::fonts::ttf::Font;
 use crate::fonts::PIXEL_CENTER;
-use pixelflow_core::{Kernel, Lattice};
+use pixelflow_core::{Kernel, Lattice, Manifold};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -175,17 +175,25 @@ impl GlyphAtlas {
         }
         let baked = font
             .glyph_kernel_scaled(ch, self.tile_px as f32)
-            .map(|kernel| {
+            .map(|glyph| {
                 let n = self.tile_px as u32;
                 // This crate's shared pixel-center convention (`fonts/mod.rs`):
                 // texel (i, j) holds coverage at (i + PIXEL_CENTER, j +
                 // PIXEL_CENTER). Used to be the lattice's own origin; a
                 // contramap on the kernel now that a lattice is a pure index.
-                let centered = kernel.at(
+                let centered = glyph.kernel.at(
                     &Kernel::x().add(&Kernel::constant(PIXEL_CENTER)),
                     &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
                 );
-                Lattice { extent: [n, n] }.bake(&centered)
+                let lattice = Lattice { extent: [n, n] };
+                // `glyph.kernel` now declares the winding table `glyph`
+                // built as a bound slot (S1a), so a bare `Lattice::bake`
+                // (which binds nothing) would panic on it — bind the table
+                // explicitly instead. `Manifold::bind` tolerates an empty
+                // slice, so a glyph with no outline (no binding) bakes the
+                // same as before.
+                let bindings: Vec<_> = glyph.binding.into_iter().collect();
+                lattice.collapse(&Manifold::compile(&centered, lattice.extent).bind(&bindings))
             });
         let Some(baked) = baked else {
             self.slots.insert(ch, None);

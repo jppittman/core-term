@@ -203,9 +203,21 @@ fn compare_against_freetype(glyphs: &[char], sizes: &[u32], texels_we_miss: u32)
                 acc as f32 / (255.0 * (SUPERSAMPLE * SUPERSAMPLE) as f32)
             };
 
-            let kernel = ours.glyph_kernel_scaled(ch, size as f32).expect("glyph");
-            let (arena, root) = kernel.parts();
+            let ours_glyph = ours.glyph_kernel_scaled(ch, size as f32).expect("glyph");
+            let (arena, root) = ours_glyph.kernel.parts();
             let (lowered, r) = lower_dwrt_owned(arena, root).expect("lower");
+            // `ours_glyph.kernel`'s winding sum reads a bound piece table
+            // (S1a), so the oracle's own binding table must carry it rather
+            // than evaluate empty — `lower_dwrt` restructures the Dwrt
+            // subtrees only, never the buffer declarations, so the one slot
+            // survives unchanged.
+            let ours_data: Vec<&[f32]> = ours_glyph
+                .binding
+                .as_ref()
+                .map(|(_, d)| d.as_slice())
+                .into_iter()
+                .collect();
+            let ours_table = BindingTable::bind(&lowered, &ours_data).expect("bind winding table");
 
             // Both grids once per (glyph, size), not per probe. `reference`
             // is a 16x16 supersample block and `eval_scalar` walks the whole
@@ -221,7 +233,7 @@ fn compare_against_freetype(glyphs: &[char], sizes: &[u32], texels_we_miss: u32)
                         &lowered,
                         r,
                         &[(n % extent) as f32 + 0.5, (n / extent) as f32 + 0.5],
-                        &BindingTable::empty(),
+                        &ours_table,
                     )
                 })
                 .collect();

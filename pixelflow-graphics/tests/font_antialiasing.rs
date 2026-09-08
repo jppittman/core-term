@@ -7,27 +7,41 @@
 //! mode — the old Field-domain "hard step" was a degenerate mode of the
 //! retired combinator pipeline.
 
-use pixelflow_core::{Kernel, Lattice};
-use pixelflow_graphics::fonts::{loop_blinn, Contour, Font, Outline, Segment};
+use pixelflow_core::{Kernel, Lattice, Manifold};
+use pixelflow_graphics::fonts::{loop_blinn, Contour, Font, Glyph, Outline, Segment};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
-/// Evaluate a coverage kernel at a single point (the compile cache makes
-/// repeated samples of the same kernel cheap).
-fn sample(k: &Kernel, x: f32, y: f32) -> f32 {
-    Lattice::eval_at(k, x, y)
+/// Evaluate a coverage kernel at a single point, binding `glyph`'s winding
+/// table if it has one (`glyph`'s `Kernel::sum_over` winding sum reads a
+/// bound piece table — S1a of
+/// docs/plans/2026-09-09-glyph-as-a-fold-execution.md). The compile cache
+/// makes repeated samples of the same kernel cheap.
+fn sample(glyph: &Glyph, x: f32, y: f32) -> f32 {
+    let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
+    Manifold::compile(&glyph.kernel, [1, 1])
+        .bind(&bindings)
+        .eval_at(x, y)
+}
+
+/// Bake `kernel` (derived from `glyph` by a coordinate contramap, so it
+/// declares the same winding table) over `lattice`.
+fn bake(lattice: Lattice, kernel: &Kernel, glyph: &Glyph) -> Vec<f32> {
+    let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
+    lattice
+        .collapse(&Manifold::compile(kernel, lattice.extent).bind(&bindings))
+        .into_buffer()
 }
 
 /// Coverage of one closed contour.
-fn coverage(segments: Vec<Segment>) -> Kernel {
+fn coverage(segments: Vec<Segment>) -> Glyph {
     loop_blinn::glyph(&Outline {
         contours: vec![Contour { segments }],
     })
-    .kernel
 }
 
 /// A square from (100,100) to (500,500) built from line segments.
-fn square_coverage() -> Kernel {
+fn square_coverage() -> Glyph {
     let corners = [
         [100.0, 100.0],
         [500.0, 100.0],
@@ -47,7 +61,7 @@ fn square_coverage() -> Kernel {
 /// A dome: quadratic from (0,0) up to the control point (50,100) and back to
 /// (100,0), closed by the horizontal chord. The curve's Y-extremum is at
 /// (50, 50).
-fn dome_coverage() -> Kernel {
+fn dome_coverage() -> Glyph {
     coverage(vec![
         Segment::Quad {
             from: [0.0, 0.0],
@@ -111,10 +125,10 @@ fn aa_ramp_across_straight_edge() {
 /// Measure the width (in screen pixels) of the first left-to-right coverage
 /// ramp on the given scanline, by scanning at 1/16px resolution and measuring
 /// the contiguous run of intermediate values around the 0.5 crossing.
-fn first_ramp_width(k: &Kernel, y: f32, x_max: f32) -> f32 {
+fn first_ramp_width(glyph: &Glyph, y: f32, x_max: f32) -> f32 {
     const STEP: f32 = 1.0 / 16.0;
     let n = (x_max / STEP) as usize;
-    let cov: Vec<f32> = (0..n).map(|i| sample(k, i as f32 * STEP, y)).collect();
+    let cov: Vec<f32> = (0..n).map(|i| sample(glyph, i as f32 * STEP, y)).collect();
 
     // First 0.5 crossing.
     let crossing = cov
@@ -171,12 +185,11 @@ fn coverage_saturates_far_from_edges() {
     let glyph = font.glyph_kernel_scaled('H', size).unwrap();
 
     let n = size as usize;
-    let centered = glyph.at(
+    let centered = glyph.kernel.at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );
-    let baked = Lattice::frame(n, n).bake(&centered);
-    let buf = baked.buffer();
+    let buf = bake(Lattice::frame(n, n), &centered, &glyph);
     let cov = |i: usize, j: usize| buf[j * n + i];
 
     let mut saturated_in = 0;
@@ -245,14 +258,14 @@ fn quad_heavy_glyph_is_finite_everywhere() {
     // Sample at half-pixel steps: warp coordinates by 1/2 and bake on the
     // integer grid — texel (i, j) holds coverage at (i/2, j/2).
     let n = size as usize * 2 + 1;
-    let half = glyph.at(
+    let half = glyph.kernel.at(
         &Kernel::x().mul(&Kernel::constant(0.5)),
         &Kernel::y().mul(&Kernel::constant(0.5)),
     );
-    let baked = Lattice::frame(n, n).bake(&half);
+    let buf = bake(Lattice::frame(n, n), &half, &glyph);
 
     let mut covered = 0;
-    for &c in baked.buffer() {
+    for &c in &buf {
         assert!(c.is_finite(), "'O' coverage not finite: {c}");
         assert!(
             (-1e-3..=1.0 + 1e-3).contains(&c),

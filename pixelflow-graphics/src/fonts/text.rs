@@ -24,7 +24,7 @@
 //!   length, and on the glyph's segment count too — only on how many
 //!   segments pass near the pixel's own cell.
 
-use super::loop_blinn;
+use super::loop_blinn::{self, Glyph};
 use super::outline::Outline;
 use super::ttf::Font;
 use pixelflow_core::{IndexRange, Kernel, Lattice, Union};
@@ -39,7 +39,7 @@ use pixelflow_core::{IndexRange, Kernel, Lattice, Union};
 /// replace this reasoning; see docs/plans/2026-09-08-loop-blinn-glyph.md §8.
 pub(crate) const TEXT_CELL: [usize; 2] = [16, 8];
 
-/// Lay out uncached analytical text as a single coverage [`Kernel`], in raw
+/// Lay out uncached analytical text as a single coverage [`Glyph`], in raw
 /// glyph space.
 ///
 /// Advance-based (kerning-free) layout: each glyph is scaled to `size` and
@@ -48,12 +48,13 @@ pub(crate) const TEXT_CELL: [usize; 2] = [16, 8];
 ///
 /// This is the denotation — the function a laid-out string *is*. Rendering
 /// it over a whole frame is what [`text_union`] does faster. Like any other
-/// `Kernel`, it carries no coordinate frame: a caller wanting pixel-center
-/// sampling applies `.at(&(X + 0.5), &(Y + 0.5))` before baking, same as a
-/// raw glyph kernel would.
+/// glyph kernel, it carries no coordinate frame: a caller wanting
+/// pixel-center sampling applies `.at(&(X + 0.5), &(Y + 0.5))` before
+/// baking, same as a raw glyph kernel would — and must bind
+/// [`Glyph::binding`] first, the winding sum's own piece table.
 #[must_use]
-pub fn text(font: &Font, text_str: &str, size: f32) -> Kernel {
-    loop_blinn::glyph(&placed_outline(font, text_str, size)).kernel
+pub fn text(font: &Font, text_str: &str, size: f32) -> Glyph {
+    loop_blinn::glyph(&placed_outline(font, text_str, size))
 }
 
 /// Every glyph of the string, placed at its pen, as one outline.

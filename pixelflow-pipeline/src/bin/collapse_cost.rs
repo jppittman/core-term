@@ -156,13 +156,13 @@ fn capture(out: &std::path::Path, font: Option<&std::path::Path>) {
             pixelflow_graphics::fonts::GlyphAtlas::new(CELL_HEIGHT_PT, density, ATLAS_CAPACITY);
         let tile = atlas.tile_px() as u32;
         for ch in WARM_RANGE {
-            let Some(kernel) = parsed.glyph_kernel_scaled(ch, tile as f32) else {
+            let Some(glyph) = parsed.glyph_kernel_scaled(ch, tile as f32) else {
                 // Production bakes nothing for these either (atlas.rs leaves
                 // the slot blank), so they are not kernels.
                 missing += 1;
                 continue;
             };
-            let (arena, root) = kernel.parts();
+            let (arena, root) = glyph.kernel.parts();
             kernels.push(CollapseKernel {
                 name: format!("glyph{tile}_U{:04X}", ch as u32),
                 family: format!("glyph{tile}"),
@@ -173,10 +173,10 @@ fn capture(out: &std::path::Path, font: Option<&std::path::Path>) {
         }
     }
     for (label, ch) in BENCH_CHARS {
-        let kernel = parsed
+        let glyph = parsed
             .glyph_kernel_scaled(ch, BENCH_PT)
             .unwrap_or_else(|| panic!("the font has no glyph for {ch:?}"));
-        let (arena, root) = kernel.parts();
+        let (arena, root) = glyph.kernel.parts();
         kernels.push(CollapseKernel {
             name: format!("bench_{label}"),
             family: "bench".to_string(),

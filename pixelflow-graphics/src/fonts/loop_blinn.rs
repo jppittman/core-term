@@ -117,7 +117,9 @@
 
 use super::outline::{Outline, Point, Segment};
 use super::PIXEL_CENTER;
-use pixelflow_core::{IndexRange, Kernel, Lattice};
+use pixelflow_core::{DiscreteManifold, IndexRange, Kernel, Lattice};
+use pixelflow_ir::arena::BufferIdentity;
+use std::sync::Arc;
 
 /// How far coverage can reach past the outline, in the frame the kernel is
 /// built in. A ramp is one unit wide and centred on its edge, so half a unit
@@ -172,6 +174,18 @@ pub struct Glyph {
     pub kernel: Kernel,
     /// Where it can be nonzero.
     pub support: Support,
+    /// The piece coefficient table [`kernel`](Self::kernel)'s winding sum
+    /// reads at its `Kernel::sum_over` binder ([`glyph`]'s S1a rewrite —
+    /// docs/plans/2026-09-09-glyph-as-a-fold-execution.md).
+    ///
+    /// `None` for the empty glyph (a space: no outline, the kernel is the
+    /// literal constant `0.0` and declares no buffer). Otherwise `Some` and
+    /// **required**: `kernel` cannot be baked or collapsed without it bound
+    /// (`Manifold::bind`) — a bare `Lattice::bake` panics on the declared,
+    /// unbound slot. `binding` and `kernel` are minted together by the same
+    /// call so their identity always agrees; a caller must not try to
+    /// recompute one without the other.
+    pub binding: Option<(BufferIdentity, Arc<Vec<f32>>)>,
 }
 
 /// **The box outside which a coverage [`Kernel`] is exactly zero.**
@@ -235,8 +249,33 @@ pub fn glyph(outline: &Outline) -> Glyph {
         return Glyph {
             kernel: constant(0.0),
             support: Support::EMPTY,
+            binding: None,
         };
     };
+
+    // The winding sum, as ONE `Kernel::sum_over` reading a bound table: row
+    // `i` is piece `i`'s [`piece_row`], and the reduce binder supplies the
+    // row index, so the arena holds one `Reduce` node rather than `n`
+    // per-piece fragments folded in Rust (S1a of
+    // docs/plans/2026-09-09-glyph-as-a-fold-execution.md — only the winding;
+    // the distance/boundary fold below is unconverted and still builds a
+    // per-piece constant fragment per [`prepare`]).
+    let n = u32::try_from(pieces.pieces.len())
+        .expect("a glyph outline has far fewer pieces than u32::MAX");
+    let data: Vec<f32> = pieces
+        .pieces
+        .iter()
+        .flat_map(|p| piece_row(*p))
+        .collect();
+    let id = BufferIdentity::mint();
+    let table = DiscreteManifold::kernel_for(id, PIECE_ROW_COLS as u32, n);
+    let winding = Kernel::sum_over(n, |row| {
+        let coeff = |k: usize| table.at(&Kernel::constant(k as f32), row);
+        crossing_term(&coeff).add(&sliver_term(&coeff))
+    });
+
+    // Every piece is present unconditionally: with the whole outline in the
+    // sum above, the ray from any sample is fully accounted for.
     let included: Vec<Included> = pieces
         .pieces
         .iter()
@@ -247,9 +286,8 @@ pub fn glyph(outline: &Outline) -> Glyph {
             ramp: true,
         })
         .collect();
-    // No constant: with every piece present, the ray from any sample is
-    // fully accounted for.
-    let coverage = coverage(0.0, &included);
+    let prepared = prepare(&included);
+    let coverage = coverage(winding, &prepared);
 
     let support = Support::around(bounds);
     let [x0, y0, x1, y1] = support.bounds();
@@ -261,6 +299,7 @@ pub fn glyph(outline: &Outline) -> Glyph {
     Glyph {
         kernel: inside.select(&coverage, &constant(0.0)),
         support,
+        binding: Some((id, Arc::new(data))),
     }
 }
 
@@ -381,7 +420,17 @@ pub fn cells(outline: &Outline, lattice: Lattice, cell: [usize; 2]) -> Vec<(Inde
                 }
                 continue;
             }
-            out.push((range, coverage(constant_winding, &included)));
+            // Per-piece constants, unconverted (S1a is `glyph`'s table-read
+            // winding only — see its doc comment): `prepare` builds each
+            // included piece's own term from its own row, and this cell's
+            // winding is their sum plus the pieces already folded into the
+            // host constant.
+            let prepared = prepare(&included);
+            let terms: Vec<Kernel> = std::iter::once(constant_of(constant_winding))
+                .chain(prepared.iter().map(|p| p.own.clone()))
+                .collect();
+            let winding = Kernel::sum(&terms);
+            out.push((range, coverage(winding, &prepared)));
         }
     }
     out
@@ -537,7 +586,17 @@ impl Piece {
             return;
         }
         let area2 = cross(p0, p1, p2);
-        let deviation = area2.abs() / chord.length() / 2.0;
+        // The same measure [`Piece::deviation`] reports, because both
+        // decisions below are about the quantity the ramp's bound
+        // subtracts. Measuring against the chord's infinite *line* here —
+        // `|area2| / length / 2`, which this used to do — is the very trap
+        // that method's doc names, and it fails in both directions on the
+        // hook it cites: `(0,0) → (−100, 0.1) → (1,0)` reads as 0.05 and is
+        // never split though the curve strays 49.75, and flattening the
+        // control point to `(−100, 0.005)` reads as 0.0025, under
+        // `FLAT_ENOUGH`, so the whole hook is discarded as a straight line.
+        // That one changes the *winding*, which is never approximated.
+        let deviation = point_to_segment(p1, chord);
         if deviation < FLAT_ENOUGH {
             out.extend(Self::line(p0, p2));
             return;
@@ -771,6 +830,127 @@ fn constant_of(v: f64) -> Kernel {
     Kernel::constant(v as f32)
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// The piece row: one layout, two coefficient sources
+// ─────────────────────────────────────────────────────────────────────────
+//
+// [`crossing_term`] and [`sliver_term`] read a piece's numbers by column
+// rather than by field, so they have exactly one definition regardless of
+// where the numbers come from: [`glyph`] reads column `k` of row `i` from a
+// bound table at the `Kernel::sum_over` binder (`i` varies per sample-batch
+// iteration, unrolled); [`prepare`] (feeding both `cells` and `glyph`'s
+// distance/boundary fold) reads column `k` of one piece's own row, folded
+// in as a `Kernel` constant. Same body, two [`Coeff`] sources — the
+// `Scalar::{Const, Uniform}` distinction the codebase already has
+// elsewhere, here a closure.
+//
+// A line is a quadratic whose sliver sign (column 12) is 0, so it carries
+// no per-kind branch: [`sliver_term`]'s mask is always true where the u/v
+// columns are all 0 (`0 ≥ 0` and `0·0 − 0 ≤ 0`), and it always selects the
+// `0.0` sign either way — never a mask multiplied by a coefficient (see
+// "Floating point at the edges" in CLAUDE.md: a mask is a bit pattern, and
+// `mask * 0.0` is not `0.0` when the mask is all-ones-as-NaN).
+
+/// `y_min` of the chord.
+const COL_Y_MIN: usize = 0;
+/// `y_max` of the chord.
+const COL_Y_MAX: usize = 1;
+/// `dx/dy` of the chord — `0.0` for a horizontal chord (H1: the crossing
+/// band is empty for one regardless, so this is never read as a divisor,
+/// but a finite placeholder keeps an `inf` from ever entering the table).
+const COL_DX_OVER_DY: usize = 2;
+/// `a.x`, the chord's start.
+const COL_AX: usize = 3;
+/// `a.y`, the chord's start.
+const COL_AY: usize = 4;
+/// The chord's `direction` (±1 running, `0.0` for a horizontal chord).
+const COL_DIRECTION: usize = 5;
+/// `u`'s affine coefficients `(a, b, c)` — `0.0` for a line.
+const COL_U_A: usize = 6;
+const COL_U_B: usize = 7;
+const COL_U_C: usize = 8;
+/// `v`'s affine coefficients `(a, b, c)` — `0.0` for a line.
+const COL_V_A: usize = 9;
+const COL_V_B: usize = 10;
+const COL_V_C: usize = 11;
+/// The sliver's sign (±1), `0.0` for a line — the sum's identity.
+const COL_SLIVER_SIGN: usize = 12;
+/// Columns in one piece's row: `y_min, y_max, dx/dy, a.x, a.y, direction,
+/// u.a, u.b, u.c, v.a, v.b, v.c, sliver_sign`.
+const PIECE_ROW_COLS: usize = 13;
+
+/// One piece's row, column `k`, as a [`Kernel`] — a bound-table read at a
+/// binder ([`glyph`]) or a literal per-piece constant ([`prepare`]). See the
+/// module section above.
+type Coeff<'a> = &'a dyn Fn(usize) -> Kernel;
+
+/// The affine maps taking `(X, Y)` to Loop–Blinn's canonical `(u, v)`,
+/// landing `bulge`'s arc on the one parabola `v = u²` — computed once, on
+/// the host, for [`piece_row`]. [`implicit_distance`] keeps its own copy:
+/// the distance/boundary fold is out of scope for S1a (only the winding sum
+/// converts to a table read), so it is left untouched rather than routed
+/// through this.
+fn bulge_uv(bulge: Bulge) -> (Linear, Linear) {
+    let Bulge { p0, p1, p2, .. } = bulge;
+    let e1 = [p1[0] - p0[0], p1[1] - p0[1]];
+    let e2 = [p2[0] - p0[0], p2[1] - p0[1]];
+    let det = e1[0] * e2[1] - e1[1] * e2[0];
+    // Barycentric coordinates as affine functions of the sample: λ₁ weights
+    // the control point, λ₂ the end point, λ₀ = 1 − λ₁ − λ₂ the start.
+    let lambda1 = Linear {
+        a: e2[1] / det,
+        b: -e2[0] / det,
+        c: (p0[1] * e2[0] - p0[0] * e2[1]) / det,
+    };
+    let lambda2 = Linear {
+        a: -e1[1] / det,
+        b: e1[0] / det,
+        c: (e1[1] * p0[0] - e1[0] * p0[1]) / det,
+    };
+    // (u, v) = (λ₁/2 + λ₂, λ₂), so λ₂ = v and λ₁ = 2(u − v).
+    let u = Linear {
+        a: lambda1.a / 2.0 + lambda2.a,
+        b: lambda1.b / 2.0 + lambda2.b,
+        c: lambda1.c / 2.0 + lambda2.c,
+    };
+    (u, lambda2)
+}
+
+/// One piece's row in the coefficient table (host-side, `f32`) — see the
+/// column layout above. A line's sliver columns (6–12) stay `0.0`, the
+/// sum's identity.
+fn piece_row(piece: Piece) -> [f32; PIECE_ROW_COLS] {
+    let chord = piece.chord;
+    let [y_min, y_max] = chord.y_range();
+    // H1: never store an infinite dx/dy — see the module note above.
+    let (dx_over_dy, direction) = if chord.is_horizontal() {
+        (0.0, 0.0)
+    } else {
+        (
+            (chord.b[0] - chord.a[0]) / (chord.b[1] - chord.a[1]),
+            chord.direction(),
+        )
+    };
+    let mut row = [0.0f32; PIECE_ROW_COLS];
+    row[COL_Y_MIN] = y_min as f32;
+    row[COL_Y_MAX] = y_max as f32;
+    row[COL_DX_OVER_DY] = dx_over_dy as f32;
+    row[COL_AX] = chord.a[0] as f32;
+    row[COL_AY] = chord.a[1] as f32;
+    row[COL_DIRECTION] = direction as f32;
+    if let Some(bulge) = piece.bulge {
+        let (u, v) = bulge_uv(bulge);
+        row[COL_U_A] = u.a as f32;
+        row[COL_U_B] = u.b as f32;
+        row[COL_U_C] = u.c as f32;
+        row[COL_V_A] = v.a as f32;
+        row[COL_V_B] = v.b as f32;
+        row[COL_V_C] = v.c as f32;
+        row[COL_SLIVER_SIGN] = bulge.sign as f32;
+    }
+    row
+}
+
 /// `a·X + b·Y + c`.
 #[derive(Clone, Copy, Debug)]
 struct Linear {
@@ -881,21 +1061,25 @@ fn segment_distance(chord: Chord, across: &Kernel) -> Kernel {
 /// solve** per segment per row, and there is none here because a chord is a
 /// line. A curve's own contribution is not a crossing at all — see
 /// [`sliver_term`].
-fn crossing_term(chord: Chord) -> Kernel {
-    let [y_min, y_max] = chord.y_range();
+///
+/// Reads columns 0–5 of `c` (`y_min, y_max, dx/dy, a.x, a.y, direction`) —
+/// see the piece-row layout above [`piece_row`]. Whether this term is even
+/// asked for is a decision its caller makes ([`glyph`] asks unconditionally
+/// via a bound table; [`prepare`] prunes by [`Included::crossing`] and a
+/// horizontal chord).
+fn crossing_term(c: Coeff) -> Kernel {
     let spans = Kernel::y()
-        .ge(&constant_of(y_min))
-        .and(&Kernel::y().lt(&constant_of(y_max)));
+        .ge(&c(COL_Y_MIN))
+        .and(&Kernel::y().lt(&c(COL_Y_MAX)));
     // x = a.x + (Y − a.y)·dx/dy, exact and linear: a chord is a line, so
     // there is no discriminant and no root to be on the wrong side of.
-    let dx_over_dy = (chord.b[0] - chord.a[0]) / (chord.b[1] - chord.a[1]);
     let crossing_x = Kernel::y()
-        .sub(&constant_of(chord.a[1]))
-        .mul(&constant_of(dx_over_dy))
-        .add(&constant_of(chord.a[0]));
+        .sub(&c(COL_AY))
+        .mul(&c(COL_DX_OVER_DY))
+        .add(&c(COL_AX));
     spans
         .and(&crossing_x.gt(&Kernel::x()))
-        .select(&constant_of(chord.direction()), &constant(0.0))
+        .select(&c(COL_DIRECTION), &constant(0.0))
 }
 
 /// **The sliver term**: `±1` inside the crescent between a curve and its
@@ -931,87 +1115,106 @@ fn crossing_term(chord: Chord) -> Kernel {
 ///
 /// Affine maps preserve half-planes and intersections, so this is the
 /// crescent in screen space too: two comparisons and one `and`.
-fn sliver_term(bulge: Bulge) -> Kernel {
-    let Bulge { p0, p1, p2, sign } = bulge;
-    let e1 = [p1[0] - p0[0], p1[1] - p0[1]];
-    let e2 = [p2[0] - p0[0], p2[1] - p0[1]];
-    let det = e1[0] * e2[1] - e1[1] * e2[0];
-    // Barycentric coordinates as affine functions of the sample: λ₁ weights
-    // the control point, λ₂ the end point, λ₀ = 1 − λ₁ − λ₂ the start.
-    let lambda1 = Linear {
-        a: e2[1] / det,
-        b: -e2[0] / det,
-        c: (p0[1] * e2[0] - p0[0] * e2[1]) / det,
-    };
-    let lambda2 = Linear {
-        a: -e1[1] / det,
-        b: e1[0] / det,
-        c: (e1[1] * p0[0] - e1[0] * p0[1]) / det,
-    };
-    // (u, v) = (λ₁/2 + λ₂, λ₂), so λ₂ = v and λ₁ = 2(u − v).
-    let u = Linear {
-        a: lambda1.a / 2.0 + lambda2.a,
-        b: lambda1.b / 2.0 + lambda2.b,
-        c: lambda1.c / 2.0 + lambda2.c,
-    }
-    .kernel();
-    let v = lambda2.kernel();
+///
+/// Reads columns 6–12 of `c` (`u.a, u.b, u.c, v.a, v.b, v.c, sign` — see
+/// [`piece_row`]/[`bulge_uv`]); the `(u, v)` affine map itself is computed
+/// once on the host, not here. A line's row makes every one of those
+/// columns `0.0`, which makes this term the identity unconditionally (see
+/// the module note above [`COL_Y_MIN`]) — so unlike [`crossing_term`],
+/// [`glyph`]'s table-read caller does not need to special-case a line, and
+/// [`prepare`] still prunes it by [`Included::bulge`] as an arena-size
+/// optimization only, never for correctness.
+fn sliver_term(c: Coeff) -> Kernel {
+    let u = Kernel::x()
+        .mul(&c(COL_U_A))
+        .add(&Kernel::y().mul(&c(COL_U_B)))
+        .add(&c(COL_U_C));
+    let v = Kernel::x()
+        .mul(&c(COL_V_A))
+        .add(&Kernel::y().mul(&c(COL_V_B)))
+        .add(&c(COL_V_C));
     let under_the_chord = u.ge(&v);
     let over_the_parabola = u.mul(&u).sub(&v).le(&constant(0.0));
     under_the_chord
         .and(&over_the_parabola)
-        .select(&constant_of(sign), &constant(0.0))
+        .select(&c(COL_SLIVER_SIGN), &constant(0.0))
 }
 
-/// Coverage of the included pieces: an exact winding decides inside from
+/// One included piece's contribution, computed once — from its own row,
+/// via a per-piece constant [`Coeff`] — so the winding accumulation and the
+/// boundary/ramp test below cannot drift apart: both read this same `own`.
+struct Prepared {
+    piece: Piece,
+    /// This piece's own crossing+sliver term, pruned to what `included`
+    /// says this call site needs ([`Included::crossing`],
+    /// [`Included::bulge`]).
+    own: Kernel,
+    /// The ramp distance, when the piece is near enough to soften a sample
+    /// ([`Included::ramp`]); `None` otherwise, so [`coverage`] skips it.
+    d: Option<Kernel>,
+}
+
+/// Build each included piece's [`Prepared`] contribution: the pruned
+/// crossing+sliver `own` term every caller needs (summed into the winding
+/// by [`cells`], read at the boundary test by [`coverage`]), and — only
+/// where [`Included::ramp`] asks for one — the antialiasing distance.
+///
+/// Reads every column through a per-piece constant [`Coeff`]
+/// (`Kernel::constant(row[k])`): the row is a concrete piece here, unlike
+/// [`glyph`]'s table read at the reduce binder. Both call [`crossing_term`]
+/// and [`sliver_term`], so the term itself cannot drift between the two
+/// coefficient sources.
+fn prepare(included: &[Included]) -> Vec<Prepared> {
+    included
+        .iter()
+        .map(|inc| {
+            let piece = inc.piece;
+            let row = piece_row(piece);
+            let coeff = |k: usize| Kernel::constant(row[k]);
+            let mut own_terms = Vec::new();
+            if inc.crossing && !piece.chord.is_horizontal() {
+                own_terms.push(crossing_term(&coeff));
+            }
+            if inc.bulge.is_some() {
+                own_terms.push(sliver_term(&coeff));
+            }
+            let own = Kernel::sum(&own_terms);
+            // The distance to the chord, less how far the segment strays
+            // from it, is a lower bound on the distance to the segment —
+            // exact for a line, where nothing strays. For a curve the
+            // implicit is the better estimate near the arc and the bound is
+            // the sound one away from it, so take whichever is larger: a
+            // bound can never exceed the truth, so the larger is the
+            // closer.
+            let d = inc.ramp.then(|| {
+                let across = across(piece.chord);
+                let chord = segment_distance(piece.chord, &across);
+                let bound = chord.sub(&constant_of(piece.deviation()));
+                match piece.bulge {
+                    Some(bulge) => implicit_distance(bulge).max(&bound),
+                    None => bound,
+                }
+            });
+            Prepared { piece, own, d }
+        })
+        .collect()
+}
+
+/// Coverage, given the winding: an exact integer decides inside from
 /// outside, and a distance decides how much of the pixel.
 ///
-/// `winding` starts at `constant`, the signed count of chords that cross
-/// every ray from this cell at the same place — folded on the host because
-/// they contribute the same number at every sample here.
+/// `winding` is already resolved by the caller — [`glyph`]'s
+/// `Kernel::sum_over` a bound table, or [`cells`]'s `Kernel::sum` of a host
+/// constant plus each [`Prepared::own`] — because how it is built is the
+/// one thing S1a changes; everything below (the boundary test, the ramp,
+/// the clamp) is unconverted and reads it as a plain `Kernel` either way.
 ///
 /// The two halves are separate on purpose. An earlier draft made each
 /// winding term *soft*, so a crossing's existence and its coverage were one
 /// number, and a comparison landing on the wrong side of an edge moved
 /// coverage by half a unit rather than by a rounding. That coupling is what
 /// made `'8'` render with a smear at its waist.
-fn coverage(constant_winding: f64, included: &[Included]) -> Kernel {
-    let mut terms = Vec::with_capacity(1 + 2 * included.len());
-    terms.push(constant_of(constant_winding));
-    // Each piece's own contribution, kept so the ramp can ask whether that
-    // piece is a boundary here — see below.
-    let mut ramps: Vec<(Piece, Kernel, Kernel)> = Vec::new();
-    for included in included {
-        let piece = included.piece;
-        let mut own = Vec::new();
-        if included.crossing && !piece.chord.is_horizontal() {
-            own.push(crossing_term(piece.chord));
-        }
-        if let Some(bulge) = included.bulge {
-            own.push(sliver_term(bulge));
-        }
-        let own = Kernel::sum(&own);
-        terms.push(own.clone());
-        if !included.ramp {
-            continue;
-        }
-        // The distance to the chord, less how far the segment strays from
-        // it, is a lower bound on the distance to the segment — exact for a
-        // line, where nothing strays. For a curve the implicit is the
-        // better estimate near the arc and the bound is the sound one away
-        // from it, so take whichever is larger: a bound can never exceed
-        // the truth, so the larger is the closer.
-        let across = across(piece.chord);
-        let chord = segment_distance(piece.chord, &across);
-        let bound = chord.sub(&constant_of(piece.deviation()));
-        let d = match piece.bulge {
-            Some(bulge) => implicit_distance(bulge).max(&bound),
-            None => bound,
-        };
-        ramps.push((piece, own, d));
-    }
-    let winding = Kernel::sum(&terms);
-
+fn coverage(winding: Kernel, prepared: &[Prepared]) -> Kernel {
     // **Only a boundary softens a pixel.** A font may draw an edge that is
     // not on the outside of anything — a stroke built from two overlapping
     // contours, or two components of a compound glyph that overlap — and
@@ -1032,14 +1235,15 @@ fn coverage(constant_winding: f64, included: &[Included]) -> Kernel {
     // long string's kernel quadratic — measured at 6 GB and climbing before
     // this early-out existed.
     let mut distances = vec![constant(RAMP_REACH)];
-    for (piece, own, d) in &ramps {
-        if !piece.may_be_interior {
+    for p in prepared {
+        let Some(d) = &p.d else { continue };
+        if !p.piece.may_be_interior {
             // Nothing else covers it, so it bounds the ink it draws.
             distances.push(d.clone());
             continue;
         }
-        let without = winding.sub(own);
-        let other_side = without.add(&constant_of(piece.chord.direction()));
+        let without = winding.sub(&p.own);
+        let other_side = without.add(&constant_of(p.piece.chord.direction()));
         let separates = without.abs().min(&other_side.abs()).lt(&constant(0.5));
         distances.push(separates.select(d, &constant(RAMP_REACH)));
     }
@@ -1167,6 +1371,59 @@ mod tests {
                 p.deviation()
             );
             assert!(p.bulge.is_some(), "a split piece lost its curve");
+        }
+    }
+
+    /// A curve whose control point projects *outside* its chord's span is
+    /// still measured against the segment, not the chord's infinite line.
+    ///
+    /// This is [`Piece::deviation`]'s own documented counterexample, and
+    /// [`Piece::quad`] used to miss it in both directions: measuring
+    /// `|area2| / length / 2` the hook below reads as 0.0025 — under
+    /// [`FLAT_ENOUGH`] — so the whole curve was discarded as a straight
+    /// line while it strays about 50 units from that line. Discarding a
+    /// sliver changes the **winding**, which nothing is allowed to
+    /// approximate, so this is a stronger requirement than the ramp's.
+    ///
+    /// Scaled down by 1e-3 from the doc's `(0, 0) → (−100, 0.1) → (1, 0)`
+    /// only to put the deviation under `FLAT_ENOUGH` on the line measure —
+    /// the failure is scale-free, and this is the half of it that is not
+    /// merely a loose bound.
+    #[test]
+    fn a_hook_is_not_flattened_by_measuring_the_wrong_distance() {
+        let mut o = Outline::default();
+        o.contours.push(super::super::outline::Contour {
+            segments: vec![Segment::Quad {
+                from: [0.0, 0.0],
+                control: [-100.0, 0.005],
+                to: [1.0, 0.0],
+            }],
+        });
+        let pieces = Pieces::of(&o);
+        // Not "every piece is a curve": once split, a sub-arc of a hook
+        // really can be straight to within `FLAT_ENOUGH`, and emitting it
+        // as a line is right. What must survive is the *shape* — the
+        // pieces have to go where the curve goes, so their endpoints reach
+        // far from the chord the whole thing used to collapse onto.
+        let chord = Chord {
+            a: [0.0, 0.0],
+            b: [1.0, 0.0],
+        };
+        let reach = pieces
+            .pieces
+            .iter()
+            .map(|p| point_to_segment(p.chord.a, chord).max(point_to_segment(p.chord.b, chord)))
+            .fold(0.0f64, f64::max);
+        assert!(
+            reach > 10.0,
+            "a hook straying ~50 units collapsed onto its chord: reach {reach}"
+        );
+        for p in &pieces.pieces {
+            assert!(
+                p.deviation() <= MAX_DEVIATION,
+                "a piece still strays {} from its chord",
+                p.deviation()
+            );
         }
     }
 }

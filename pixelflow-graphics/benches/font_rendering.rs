@@ -3,8 +3,10 @@
 //! Run with: cargo bench -p pixelflow-graphics
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use pixelflow_core::{Kernel, Lattice, Manifold};
-use pixelflow_graphics::fonts::{text, text_union, CachedText, Font, GlyphCache};
+use pixelflow_core::{DiscreteManifold, Kernel, Lattice, Manifold};
+use pixelflow_graphics::fonts::{text, text_union, CachedText, Font, Glyph, GlyphCache};
+use pixelflow_ir::arena::BufferIdentity;
+use std::sync::Arc;
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
@@ -16,6 +18,21 @@ fn pixel_centered(k: &Kernel) -> Kernel {
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     )
+}
+
+/// `Lattice::bake`, but binding `bindings` instead of nothing: `text`'s
+/// winding sum reads a bound piece table (S1a), which a bare
+/// `Lattice::bake` refuses. Compile goes through the same global cache
+/// `bake` uses, so a repeated call is a cache lookup plus bind plus
+/// collapse — the same "tabulation" cost the single-buffer-free `bake` used
+/// to measure.
+fn bake(lattice: Lattice, kernel: &Kernel, bindings: &[(BufferIdentity, Arc<Vec<f32>>)]) -> DiscreteManifold {
+    lattice.collapse(&Manifold::compile(kernel, lattice.extent).bind(bindings))
+}
+
+/// `glyph.binding` as the slice [`bake`]/[`Manifold::bind`] take.
+fn bindings_of(glyph: &Glyph) -> Vec<(BufferIdentity, Arc<Vec<f32>>)> {
+    glyph.binding.clone().into_iter().collect()
 }
 
 // ============================================================================
@@ -31,10 +48,12 @@ fn bench_pixelflow_single_char(c: &mut Criterion) {
     // measure the tabulation (the per-frame cost).
     for (label, ch) in [("A_linear", 'A'), ("O_quadratic", 'O'), ("S_complex", 'S')] {
         group.bench_function(label, |b| {
-            let kernel = pixel_centered(&text(&font, &ch.to_string(), 32.0));
+            let glyph = text(&font, &ch.to_string(), 32.0);
+            let kernel = pixel_centered(&glyph.kernel);
+            let bindings = bindings_of(&glyph);
             let lattice = Lattice::frame(40, 45);
 
-            b.iter(|| black_box(lattice.bake(black_box(&kernel))));
+            b.iter(|| black_box(bake(lattice, black_box(&kernel), &bindings)));
         });
     }
 
@@ -63,8 +82,10 @@ fn bench_pixelflow_text_sizes(c: &mut Criterion) {
 
         // The range encoding: one kernel, every pixel evaluating every glyph.
         group.bench_with_input(BenchmarkId::new("sum", length), &length, |b, _| {
-            let kernel = pixel_centered(&text(&font, &text_str, 16.0));
-            b.iter(|| black_box(lattice.bake(black_box(&kernel))));
+            let glyph = text(&font, &text_str, 16.0);
+            let kernel = pixel_centered(&glyph.kernel);
+            let bindings = bindings_of(&glyph);
+            b.iter(|| black_box(bake(lattice, black_box(&kernel), &bindings)));
         });
 
         // The domain encoding: one program per cell, each collapsed only over
@@ -89,8 +110,9 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
     group.bench_function("uncached_HELLO", |b| {
         let lattice = Lattice::frame(100, 30);
         b.iter(|| {
-            let kernel = pixel_centered(&text(&font, "HELLO", 20.0));
-            black_box(lattice.bake(&kernel));
+            let glyph = text(&font, "HELLO", 20.0);
+            let kernel = pixel_centered(&glyph.kernel);
+            black_box(bake(lattice, &kernel, &bindings_of(&glyph)));
         });
     });
 

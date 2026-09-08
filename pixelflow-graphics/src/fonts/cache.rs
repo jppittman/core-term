@@ -60,11 +60,12 @@
 //! let uncached = font.glyph_scaled('A', 17.3);
 //! ```
 
-use pixelflow_core::{BilinearSampler, DiscreteManifold, Kernel, Lattice};
+use pixelflow_core::{BilinearSampler, DiscreteManifold, Kernel, Lattice, Manifold};
 use pixelflow_ir::arena::BufferIdentity;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::loop_blinn::Glyph;
 use super::ttf::Font;
 // `PIXEL_CENTER` is this crate's shared rasterizer convention (`fonts/mod.rs`)
 // — see the "Coordinate convention" section above for what it means here.
@@ -130,14 +131,21 @@ impl CachedGlyph {
 
     /// Create a cached glyph by baking a glyph coverage [`Kernel`]
     /// ([`Font::glyph_kernel_scaled`] → one fused arena, compiled once
-    /// through the global cache, tabulated by [`Lattice::bake`]).
+    /// through the global cache, tabulated over a [`Lattice`]).
     /// Antialiasing comes from the kernel's symbolic `Dwrt` ramps resolved
     /// at compile time. The JIT-vs-interpreter goldens
     /// (tests/kernel_glyph_golden.rs) guard this path. The kernel's outline
     /// must be scaled to `size × density` pixels; texels sample at centers,
     /// and the result takes point-space coordinates.
+    ///
+    /// Takes the whole [`Glyph`], not a bare [`Kernel`]: the winding sum
+    /// reads a piece table at a `Kernel::sum_over` binder
+    /// ([`Glyph::binding`]), so the kernel cannot be baked without it —
+    /// `glyph.kernel` and `glyph.binding` must come from the same call
+    /// (the identity `glyph.kernel` declares is minted fresh each time
+    /// [`loop_blinn::glyph`](super::loop_blinn::glyph) runs).
     #[must_use]
-    pub fn from_kernel(kernel: &Kernel, size: usize, density: f32) -> Self {
+    pub fn from_kernel(glyph: &Glyph, size: usize, density: f32) -> Self {
         assert!(
             density.is_finite() && density > 0.0,
             "invalid bake density: {density}"
@@ -147,14 +155,19 @@ impl CachedGlyph {
         // (i + PIXEL_CENTER, j + PIXEL_CENTER). Used to be the bake
         // lattice's own origin; a contramap on the kernel now that a
         // lattice is a pure index.
-        let centered = kernel.at(
+        let centered = glyph.kernel.at(
             &Kernel::x().add(&Kernel::constant(PIXEL_CENTER)),
             &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
         );
         let lattice = Lattice {
             extent: [px as u32, px as u32],
         };
-        let baked = lattice.bake(&centered);
+        // Bind the winding table the kernel declares (S1a); `bind`
+        // tolerates an empty slice, so a glyph with no outline (no
+        // binding) bakes the same as before.
+        let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
+        let bound = Manifold::compile(&centered, lattice.extent).bind(&bindings);
+        let baked = lattice.collapse(&bound);
 
         Self {
             sampler: Arc::new(baked.bilinear()),
@@ -316,11 +329,12 @@ impl GlyphCache {
         // Bake at the quantized density so the key and the lattice agree.
         let density = density_q as f32 / DENSITY_STEPS;
         let px = px_extent(bucket, density);
-        // The glyph as ONE fused coverage Kernel, compiled once, tabulated by
-        // Lattice::bake. There is no fallback path: an architecture without an
-        // arena backend fails to build, loudly, rather than rendering slowly.
-        let kernel = font.glyph_kernel_scaled(ch, px as f32)?;
-        let cached = CachedGlyph::from_kernel(&kernel, bucket, density);
+        // The glyph as ONE fused coverage Kernel, compiled once, tabulated
+        // over a Lattice. There is no fallback path: an architecture without
+        // an arena backend fails to build, loudly, rather than rendering
+        // slowly.
+        let glyph = font.glyph_kernel_scaled(ch, px as f32)?;
+        let cached = CachedGlyph::from_kernel(&glyph, bucket, density);
         self.entries.insert(key, cached.clone());
         Some(cached)
     }
@@ -665,22 +679,29 @@ mod tests {
         // points, and a genuinely mistabulated glyph (a half-texel offset,
         // say) is off by O(0.1).
         let font = Font::parse(FONT_DATA).unwrap();
-        let kernel = font.glyph_kernel_scaled('A', 32.0).unwrap();
-        let cached = CachedGlyph::from_kernel(&kernel, 32, 1.0);
-        let (arena, root) = kernel.parts();
+        let glyph = font.glyph_kernel_scaled('A', 32.0).unwrap();
+        let cached = CachedGlyph::from_kernel(&glyph, 32, 1.0);
+        let (arena, root) = glyph.kernel.parts();
         // `Dwrt` (the antialiasing gradient) has no scalar evaluation until
         // it is lowered, exactly as the compile entries lower it.
         let (lowered, lowered_root) =
             pixelflow_ir::passes::lower_dwrt_owned(arena, root).expect("glyph kernel lowers");
+        // `glyph.kernel`'s winding sum reads a bound piece table (S1a); the
+        // oracle needs it bound too — `lower_dwrt` restructures the Dwrt
+        // subtrees only, never the buffer declarations, so the one slot
+        // survives unchanged.
+        let data: Vec<&[f32]> = glyph
+            .binding
+            .as_ref()
+            .map(|(_, d)| d.as_slice())
+            .into_iter()
+            .collect();
+        let table =
+            pixelflow_ir::BindingTable::bind(&lowered, &data).expect("bind winding table");
 
         for &(i, j) in &[(4usize, 4usize), (10, 16), (16, 8), (16, 20), (24, 28)] {
             let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
-            let reference = pixelflow_ir::eval_scalar(
-                &lowered,
-                lowered_root,
-                &[x, y],
-                &pixelflow_ir::BindingTable::empty(),
-            );
+            let reference = pixelflow_ir::eval_scalar(&lowered, lowered_root, &[x, y], &table);
             let baked = sample(&cached, x, y);
             assert!(
                 (reference - baked).abs() < 1e-4,
@@ -697,20 +718,25 @@ mod tests {
         // convention error here shows up as a ~0.5px center-of-mass shift.
         let size = 32usize;
         let font = Font::parse(FONT_DATA).unwrap();
-        let kernel = font.glyph_kernel_scaled('A', size as f32).unwrap();
+        let glyph = font.glyph_kernel_scaled('A', size as f32).unwrap();
 
         // Direct analytical tabulation at pixel centers (the rasterizer's
         // sampling convention), as a contramap over a plain index lattice.
-        let centered = kernel.at(
+        // The winding sum reads a bound piece table (S1a), so bind it
+        // rather than a bare `Lattice::bake`.
+        let centered = glyph.kernel.at(
             &Kernel::x().add(&Kernel::constant(0.5)),
             &Kernel::y().add(&Kernel::constant(0.5)),
         );
-        let direct = Lattice::frame(size, size).bake(&centered);
+        let lattice = Lattice::frame(size, size);
+        let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
+        let direct =
+            lattice.collapse(&Manifold::compile(&centered, lattice.extent).bind(&bindings));
         let (dx, dy) = center_of_mass(direct.buffer(), size);
 
         // Cached glyph sampled at pixel centers through the full
         // bake -> bilinear -> half-pixel-shift chain.
-        let cached = CachedGlyph::from_kernel(&kernel, size, 1.0);
+        let cached = CachedGlyph::from_kernel(&glyph, size, 1.0);
         let resampled = glyph_grid_at_pixel_centers(&cached, size);
         let (cx, cy) = center_of_mass(&resampled, size);
 

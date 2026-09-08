@@ -5,14 +5,30 @@
 //! - Missing Y-offset for ascent in scaled glyphs
 //! - Whole-pipeline blank output
 
-use pixelflow_core::{Kernel, Lattice};
-use pixelflow_graphics::fonts::{loop_blinn, text, Contour, Font, Outline, Segment};
+use pixelflow_core::{Kernel, Lattice, Manifold};
+use pixelflow_graphics::fonts::{loop_blinn, text, Contour, Font, Glyph, Outline, Segment};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
-/// Evaluate a coverage kernel at a single point.
-fn sample(k: &Kernel, x: f32, y: f32) -> f32 {
-    Lattice::eval_at(k, x, y)
+/// Evaluate a coverage kernel at a single point, binding `glyph`'s winding
+/// table if it has one (`glyph`'s `Kernel::sum_over` winding sum reads a
+/// bound piece table — S1a of
+/// docs/plans/2026-09-09-glyph-as-a-fold-execution.md).
+fn sample(glyph: &Glyph, x: f32, y: f32) -> f32 {
+    let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
+    Manifold::compile(&glyph.kernel, [1, 1])
+        .bind(&bindings)
+        .eval_at(x, y)
+}
+
+/// Bake `kernel` (derived from `glyph` by a coordinate contramap, so it
+/// declares the same winding table) over a `width x height` frame.
+fn bake(width: u32, height: u32, kernel: &Kernel, glyph: &Glyph) -> Vec<f32> {
+    let lattice = Lattice::frame(width as usize, height as usize);
+    let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
+    lattice
+        .collapse(&Manifold::compile(kernel, lattice.extent).bind(&bindings))
+        .into_buffer()
 }
 
 // =============================================================================
@@ -42,8 +58,7 @@ fn regression_mask_and_not_multiply() {
                     })
                     .collect(),
             }],
-        })
-        .kernel;
+        });
 
         assert!(
             sample(&cov, 300.0, 300.0) > 0.8,
@@ -72,14 +87,14 @@ fn regression_mask_and_not_multiply() {
 fn regression_glyph_ascent_offset() {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     // `text` is convention-agnostic; land on pixel centers as a contramap.
-    let kernel = text(&font, "A", 100.0).at(
+    let glyph = text(&font, "A", 100.0);
+    let kernel = glyph.kernel.at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );
 
     let (width, height) = (80u32, 120u32);
-    let baked = Lattice::frame(width as usize, height as usize).bake(&kernel);
-    let buf = baked.buffer();
+    let buf = bake(width, height, &kernel, &glyph);
 
     let inked = buf.iter().filter(|&&v| v > 0.0).count();
     assert!(
@@ -102,14 +117,14 @@ fn regression_glyph_ascent_offset() {
 fn regression_text_rendering_pipeline() {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     // `text` is convention-agnostic; land on pixel centers as a contramap.
-    let kernel = text(&font, "HELLO", 20.0).at(
+    let glyph = text(&font, "HELLO", 20.0);
+    let kernel = glyph.kernel.at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );
 
     let (width, height) = (100u32, 30u32);
-    let baked = Lattice::frame(width as usize, height as usize).bake(&kernel);
-    let buf = baked.buffer();
+    let buf = bake(width, height, &kernel, &glyph);
 
     let bright = buf.iter().filter(|&&v| v > 0.5).count();
     let dark = buf.iter().filter(|&&v| v < 0.5).count();

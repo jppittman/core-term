@@ -1,7 +1,7 @@
 //! pixelflow-graphics/src/fonts/ttf.rs
 //!
 //! TTF parser producing glyph [`Outline`]s, and the [`Font`] that turns them
-//! into coverage [`Kernel`]s.
+//! into coverage `Kernel`s.
 //!
 //! Parsing is geometry only: a glyph's contours come out as line and
 //! quadratic segments in font units, with compound glyphs flattened through
@@ -10,8 +10,6 @@
 //! so that the kernel [`loop_blinn`] builds is in
 //! the frame it will be evaluated in. Nothing here is a scene graph of Rust
 //! types and nothing here warps a finished kernel.
-
-use pixelflow_core::Kernel;
 
 use super::loop_blinn::{self, Glyph};
 use super::outline::{Affine, Contour, Outline};
@@ -321,11 +319,13 @@ impl<'a> Font<'a> {
         self.cmap.lookup(ch as u32)
     }
 
-    /// The glyph for `ch` as a coverage [`Kernel`] in font units. Bake it once
-    /// (`Lattice::bake`) or compose it into a scene; antialiasing resolves
-    /// from `Dwrt` at bake.
+    /// The glyph for `ch` in font units, as a [`Glyph`]: a coverage
+    /// `Kernel` together with the piece table its winding sum reads at a
+    /// `Kernel::sum_over` binder ([`Glyph::binding`]) — bind it
+    /// ([`pixelflow_core::Manifold::bind`]) before baking or collapsing the
+    /// kernel; antialiasing resolves from `Dwrt` at bake.
     #[must_use]
-    pub fn glyph_kernel(&self, ch: char) -> Option<Kernel> {
+    pub fn glyph_kernel(&self, ch: char) -> Option<Glyph> {
         self.glyph_kernel_by_id(self.cmap.lookup(ch as u32)?)
     }
 
@@ -337,23 +337,24 @@ impl<'a> Font<'a> {
     /// kernel exists — [`Font::glyph_scaled_by_id`] — rather than the kernel
     /// after.
     #[must_use]
-    pub fn glyph_kernel_by_id(&self, id: u16) -> Option<Kernel> {
-        Some(loop_blinn::glyph(&self.outline_by_id(id)?).kernel)
+    pub fn glyph_kernel_by_id(&self, id: u16) -> Option<Glyph> {
+        Some(loop_blinn::glyph(&self.outline_by_id(id)?))
     }
 
-    /// The `size`-scaled glyph for `ch` as a coverage [`Kernel`]: the ascent
-    /// line sits at screen y=0 (top) and the descent at y=`size`, with
-    /// screen Y increasing downward.
+    /// The `size`-scaled glyph for `ch` as a [`Glyph`]: the ascent line sits
+    /// at screen y=0 (top) and the descent at y=`size`, with screen Y
+    /// increasing downward. See [`Font::glyph_kernel`] for the binding this
+    /// carries alongside the kernel.
     #[must_use]
-    pub fn glyph_kernel_scaled(&self, ch: char, size: f32) -> Option<Kernel> {
+    pub fn glyph_kernel_scaled(&self, ch: char, size: f32) -> Option<Glyph> {
         let id = self.cmap.lookup(ch as u32)?;
         self.glyph_kernel_scaled_by_id(id, size)
     }
 
     /// [`Font::glyph_kernel_scaled`] by pre-looked-up glyph ID.
     #[must_use]
-    pub fn glyph_kernel_scaled_by_id(&self, id: u16, size: f32) -> Option<Kernel> {
-        Some(self.glyph_scaled_by_id(id, size)?.kernel)
+    pub fn glyph_kernel_scaled_by_id(&self, id: u16, size: f32) -> Option<Glyph> {
+        self.glyph_scaled_by_id(id, size)
     }
 
     /// The `size`-scaled glyph **and the box outside which its kernel is

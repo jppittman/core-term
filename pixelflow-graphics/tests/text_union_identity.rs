@@ -40,8 +40,8 @@
 //! cargo test -p pixelflow-graphics --test text_union_identity -- --ignored
 //! ```
 
-use pixelflow_core::{IndexRange, Kernel, Lattice, Union};
-use pixelflow_graphics::fonts::{text, text_cells, text_union, Font, TextCell};
+use pixelflow_core::{DiscreteManifold, IndexRange, Kernel, Lattice, Manifold, Union};
+use pixelflow_graphics::fonts::{text, text_cells, text_union, Font, Glyph, TextCell};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
@@ -89,6 +89,15 @@ fn pixel_centered(k: &Kernel) -> Kernel {
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     )
+}
+
+/// Bake `kernel` (derived from `glyph` by a coordinate contramap, so it
+/// declares the same winding table `glyph.kernel` does — S1a's
+/// `Kernel::sum_over`, unlike `text_union`/`text_cells`'s `cells`-derived
+/// kernels, which still declare no buffer) over `lattice`.
+fn bake(lattice: Lattice, kernel: &Kernel, glyph: &Glyph) -> DiscreteManifold {
+    let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
+    lattice.collapse(&Manifold::compile(kernel, lattice.extent).bind(&bindings))
 }
 
 /// One cell of the decomposition, baked on its own: the range's own extent,
@@ -139,7 +148,8 @@ fn split_and_added(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> 
                 .sub(&Kernel::constant(pen)),
             &Kernel::y().add(&Kernel::constant(0.5)),
         );
-        for (dst, src) in split.iter_mut().zip(lattice.bake(&placed).buffer()) {
+        let baked = bake(lattice, &placed, &glyph);
+        for (dst, src) in split.iter_mut().zip(baked.buffer()) {
             *dst += src;
         }
     }
@@ -154,13 +164,14 @@ fn the_union_machinery_is_exact(font: &Font, corpus: &[&str], sizes: &[f32]) {
     for text_str in corpus {
         for &size in sizes {
             let lattice = frame(text_str, size);
-            let kernel = text(font, text_str, size);
+            let glyph = text(font, text_str, size);
             let mut union = Union::over(lattice);
             union.place(
                 IndexRange::new(0, 0, lattice.extent[0] as usize, lattice.extent[1] as usize),
-                &kernel,
+                &glyph.kernel,
             );
-            let (differing, worst) = compare(lattice.bake(&kernel).buffer(), union.bake().buffer());
+            let whole = bake(lattice, &glyph.kernel, &glyph);
+            let (differing, worst) = compare(whole.buffer(), union.bake().buffer());
             assert_eq!(
                 differing, 0,
                 "{text_str:?} at {size}: a whole-frame union moved {differing} samples \
@@ -200,7 +211,7 @@ fn a_glyph_is_zero_outside_its_support(font: &Font, sizes: &[f32]) {
                 &Kernel::y().add(&Kernel::constant(CENTER)),
             );
             let [x0, y0, x1, y1] = glyph.support.shifted_x(PEN).bounds();
-            let baked = lattice.bake(&placed);
+            let baked = bake(lattice, &placed, &glyph);
             for row in 0..h {
                 let cy = row as f32 + CENTER;
                 for col in 0..w {
@@ -291,7 +302,9 @@ fn the_union_only_moves_a_sample_by_scheduling_noise(font: &Font, corpus: &[&str
     for text_str in corpus {
         for &size in sizes {
             let lattice = frame(text_str, size);
-            let whole = lattice.bake(&pixel_centered(&text(font, text_str, size)));
+            let glyph = text(font, text_str, size);
+            let centered = pixel_centered(&glyph.kernel);
+            let whole = bake(lattice, &centered, &glyph);
             let united = text_union(font, lattice, text_str, size).bake();
             let split = split_and_added(font, lattice, text_str, size);
 
@@ -372,10 +385,11 @@ fn one_glyph_leaves_only_the_compiler_to_disagree() {
     for text_str in ["W", "@", "{"] {
         for size in [16.0f32, 48.0] {
             let lattice = frame(text_str, size);
+            let glyph = text(&font, text_str, size);
+            let centered = pixel_centered(&glyph.kernel);
+            let whole = bake(lattice, &centered, &glyph);
             let (differing, worst) = compare(
-                lattice
-                    .bake(&pixel_centered(&text(&font, text_str, size)))
-                    .buffer(),
+                whole.buffer(),
                 text_union(&font, lattice, text_str, size).bake().buffer(),
             );
             assert!(
