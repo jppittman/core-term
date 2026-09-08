@@ -219,9 +219,7 @@ fn saturation_switch() -> SaturationSwitch {
         match var.as_deref() {
             Err(std::env::VarError::NotPresent) | Ok("on") => SaturationSwitch::On,
             Ok("off") => SaturationSwitch::Off,
-            other => panic!(
-                "PIXELFLOW_SATURATION must be `on` or `off` (or unset), got {other:?}"
-            ),
+            other => panic!("PIXELFLOW_SATURATION must be `on` or `off` (or unset), got {other:?}"),
         }
     })
 }
