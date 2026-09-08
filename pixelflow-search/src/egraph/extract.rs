@@ -1093,6 +1093,7 @@ pub fn build_extracted_dag_from_choices(
         choices: choices.to_vec(),
         total_cost: cost.tree,
         dag_cost: cost.dag,
+        report: ExtractionReport::external(),
     }
 }
 
@@ -1484,6 +1485,87 @@ pub struct ExtractedDAG {
     /// The DP does not minimize this (#1116); it is the honest price of what
     /// the DP happened to choose.
     pub dag_cost: usize,
+
+    /// Which objective the term in [`Self::choices`] came from, and what the
+    /// sharing-aware pass cost to find out. A number quoted from this struct
+    /// without its objective is a number from an unknown extractor.
+    pub report: ExtractionReport,
+}
+
+/// Which of [`extract_dag_scoped`]'s objectives produced the returned term.
+///
+/// The two-objective no-regression property (the sharing-aware term is
+/// returned only when it is cheaper by true [`ChoiceCost::dag`], else the
+/// tree term) holds for [`Self::Shared`] and [`Self::TreeCheaper`], where
+/// both objectives ran. It is **not attempted** for [`Self::TreeOnly`]: the
+/// sharing-aware pass was abandoned at [`SHARED_DAG_PASS_BYTE_BUDGET`] and
+/// the tree term is all there is. That case is loud by construction — it
+/// is a variant, not a silently identical `Vec<Option<usize>>` — so a
+/// measurement above the budget can never be quoted as if it were on the
+/// production objective.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtractionObjective {
+    /// Both objectives ran; the sharing-aware term was cheaper.
+    Shared,
+    /// Both objectives ran; the tree term was no dearer (ties go to it).
+    TreeCheaper,
+    /// Only the tree objective ran: the sharing-aware pass's reach sets
+    /// outgrew [`SHARED_DAG_PASS_BYTE_BUDGET`] and it was abandoned.
+    TreeOnly,
+    /// The choices were supplied from outside the two-objective DP — a
+    /// [`Reranker`](super::Reranker), or a caller's own choice map through
+    /// [`build_extracted_dag_from_choices`]. Neither objective's pass ran.
+    External,
+}
+
+impl ExtractionObjective {
+    /// The name the telemetry record and the measurement harnesses print.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::TreeCheaper => "tree_cheaper",
+            Self::TreeOnly => "tree_only",
+            Self::External => "external",
+        }
+    }
+}
+
+/// What [`shared_dag_dp_pass`] cost, whether or not it finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SharedPassStats {
+    /// Classes reachable from the root — the set the pass's reach sets
+    /// range over. On a saturated glyph a third of the e-graph.
+    pub live_classes: usize,
+    /// Bytes the reach sets held when the pass ended: at its completion,
+    /// or at the point it crossed [`SHARED_DAG_PASS_BYTE_BUDGET`] and was
+    /// abandoned (then the first total above the budget). A deterministic
+    /// function of the e-graph, so two hosts report the same number.
+    pub reach_bytes: usize,
+}
+
+/// The objective behind an [`ExtractedDAG`], with the sharing-aware pass's
+/// accounting beside it. Carried by [`ExtractedDAG::report`] and
+/// [`Optimized::extraction`](super::Optimized::extraction), and emitted by
+/// the `saturation-telemetry` record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtractionReport {
+    /// Which term was returned.
+    pub objective: ExtractionObjective,
+    /// The sharing-aware pass's accounting; `None` only under
+    /// [`ExtractionObjective::External`], where no pass ran.
+    pub shared_pass: Option<SharedPassStats>,
+}
+
+impl ExtractionReport {
+    /// Choices supplied from outside the DP: no objective, no pass.
+    #[must_use]
+    pub fn external() -> Self {
+        Self {
+            objective: ExtractionObjective::External,
+            shared_pass: None,
+        }
+    }
 }
 
 impl ExtractedDAG {
@@ -1746,8 +1828,11 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
 /// ties going to the tree pass. So the returned DAG cost can only be lower
 /// than the pre-#1116 extractor's, never higher — no-regression is structural
 /// rather than empirical, at the price of a second DP pass over a graph
-/// extraction walks once per compile — **below [`SHARED_DAG_PASS_CLASS_LIMIT`]**;
-/// see that constant's doc comment for what changes above it.
+/// extraction walks once per compile. The one exception is loud: the shared
+/// pass holds its reach sets under [`SHARED_DAG_PASS_BYTE_BUDGET`], and a
+/// graph whose sets outgrow it gets the tree term with
+/// [`ExtractionObjective::TreeOnly`] in [`ExtractedDAG::report`] — never
+/// the same `Vec` under a different objective.
 pub fn extract_dag_scoped<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
@@ -1761,42 +1846,64 @@ pub fn extract_dag_scoped<C: CostFunction>(
         costs,
         shape,
     );
-    // `shared_dag_dp_pass` is O(live_classes^2) in time and memory (its own
-    // doc comment). Below this limit that is the ~12.5 MB the codebase's own
-    // production preset already budgets for (10,000 classes,
-    // `saturate.rs::SaturationConfig::compatibility`) — comfortably above
-    // every shipped tier (`classical`'s cap is 5,000) so this never fires on
-    // a kernel that ships today. Above it — reachable only by a caller
-    // deliberately raising the class cap past what any production preset
-    // uses, e.g. the research experiment in
-    // docs/plans/2026-09-06-egraph-at-production-scale.md §3 that made a
-    // 60,000-class compile 30x slower — the pass is skipped and extraction
-    // falls back to the tree objective alone. That is never a *wrong*
-    // extraction (the tree pass is a real, if less sharing-aware, cost
-    // function), only a potentially more expensive one; the two-objective
-    // no-regression property above holds exactly below this limit and is
-    // simply not attempted above it, rather than being violated.
-    let num_classes = egraph.num_classes();
-    if num_classes <= SHARED_DAG_PASS_CLASS_LIMIT {
-        let shared = repaired_and_costed(
+    let pass = shared_dag_dp_pass(egraph, root, costs, shape, SHARED_DAG_PASS_BYTE_BUDGET);
+    let stats = Some(pass.stats);
+    let Some(choices) = pass.choices else {
+        return assemble(
             egraph,
             root,
-            shared_dag_dp_pass(egraph, root, costs, shape),
-            costs,
-            shape,
+            tree,
+            ExtractionReport {
+                objective: ExtractionObjective::TreeOnly,
+                shared_pass: stats,
+            },
         );
-        // Only the winner is assembled: the reference counts and the
-        // emission schedule describe a term, and one of these two is not
-        // going to be one.
-        if shared.cost.dag < tree.cost.dag {
-            return assemble(egraph, root, shared);
-        }
+    };
+    let shared = repaired_and_costed(egraph, root, choices, costs, shape);
+    // Only the winner is assembled: the reference counts and the emission
+    // schedule describe a term, and one of these two is not going to be one.
+    if shared.cost.dag < tree.cost.dag {
+        return assemble(
+            egraph,
+            root,
+            shared,
+            ExtractionReport {
+                objective: ExtractionObjective::Shared,
+                shared_pass: stats,
+            },
+        );
     }
-    assemble(egraph, root, tree)
+    assemble(
+        egraph,
+        root,
+        tree,
+        ExtractionReport {
+            objective: ExtractionObjective::TreeCheaper,
+            shared_pass: stats,
+        },
+    )
 }
 
-/// See [`extract_dag_scoped`]'s gate on [`shared_dag_dp_pass`].
-pub const SHARED_DAG_PASS_CLASS_LIMIT: usize = 10_000;
+/// The most memory [`shared_dag_dp_pass`] may hold in reach sets before it
+/// gives up and [`extract_dag_scoped`] returns the tree term as
+/// [`ExtractionObjective::TreeOnly`].
+///
+/// The pass's memory is the sum of its reach sets, each held in whichever
+/// form is smaller (see [`Reach`]), so the worst case is the dense bound
+/// `live_classes² / 8` bytes — a chain, where every class reaches every
+/// class below it — and real kernels sit far under it: the reach sets are
+/// the sub-DAGs of the chosen terms, and most of a saturated glyph's live
+/// classes are variants deep inside one Bézier segment with a sub-DAG of a
+/// few hundred classes. Calibrated on the 2026-09-08 class-cap sweep
+/// (`docs/results/2026-09-08-class-cap-sweep.md`): the number is set so
+/// that no DEV kernel at the shipped `classical` cap comes near it and the
+/// dense worst case is still bounded to a size a glyph bake can hold
+/// transiently — the sets are allocated once per extraction and dropped at
+/// its end. A budget in bytes rather than classes because bytes are what
+/// the gate protects, and the class count was a proxy that fired on the
+/// whole e-graph while the pass was sized by the third of it the root
+/// reaches.
+pub const SHARED_DAG_PASS_BYTE_BUDGET: usize = 256 << 20;
 
 /// A repaired choice map and the cost of the term it names.
 struct CostedChoices {
@@ -1836,24 +1943,44 @@ pub(crate) fn extract_dag_tree_arm<C: CostFunction>(
         costs,
         shape,
     );
-    assemble(egraph, root, costed)
+    // `shared_pass: None` — the pass was not run, as opposed to run and
+    // abandoned, which is what production's `TreeOnly` carries.
+    assemble(
+        egraph,
+        root,
+        costed,
+        ExtractionReport {
+            objective: ExtractionObjective::TreeOnly,
+            shared_pass: None,
+        },
+    )
 }
 
-/// The sharing-aware arm on its own (#1116).
+/// The sharing-aware arm on its own (#1116). Runs the pass to completion
+/// whatever it costs — an A/B that silently swapped its arm for the tree
+/// term above some size would be measuring nothing — so a graph that would
+/// exceed [`SHARED_DAG_PASS_BYTE_BUDGET`] in production is the caller's
+/// memory to spend here.
 pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
     costs: &C,
     shape: LatticeShape,
 ) -> ExtractedDAG {
-    let costed = repaired_and_costed(
+    let pass = shared_dag_dp_pass(egraph, root, costs, shape, usize::MAX);
+    let choices = pass
+        .choices
+        .expect("an unbounded shared pass cannot run out of budget");
+    let costed = repaired_and_costed(egraph, root, choices, costs, shape);
+    assemble(
         egraph,
         root,
-        shared_dag_dp_pass(egraph, root, costs, shape),
-        costs,
-        shape,
-    );
-    assemble(egraph, root, costed)
+        costed,
+        ExtractionReport {
+            objective: ExtractionObjective::Shared,
+            shared_pass: Some(pass.stats),
+        },
+    )
 }
 
 /// Repair a raw DP choice map and cost the term it names.
@@ -1879,7 +2006,12 @@ fn repaired_and_costed<C: CostFunction>(
 }
 
 /// Build the sharing and emission schedule around a settled choice map.
-fn assemble(egraph: &EGraph, root: EClassId, costed: CostedChoices) -> ExtractedDAG {
+fn assemble(
+    egraph: &EGraph,
+    root: EClassId,
+    costed: CostedChoices,
+    report: ExtractionReport,
+) -> ExtractedDAG {
     let CostedChoices { choices, cost } = costed;
     let mut ref_counts: Vec<usize> = alloc::vec![0; egraph.num_classes()];
     count_refs_recursive(egraph, root, &choices, &mut ref_counts);
@@ -1900,6 +2032,7 @@ fn assemble(egraph: &EGraph, root: EClassId, costed: CostedChoices) -> Extracted
         choices,
         total_cost: cost.tree,
         dag_cost: cost.dag,
+        report,
     }
 }
 
@@ -1992,35 +2125,41 @@ fn tree_dp_pass<C: CostFunction>(
 /// member priced once.
 ///
 /// Same skeleton as [`tree_dp_pass`]; the only change is what a candidate
-/// costs. Each class carries a bitset of the classes its chosen sub-DAG
-/// reaches, and a candidate unions its children's bitsets, adding a class's
-/// own cost the first time that class enters the union. Two siblings that
-/// both reach `sin(X)` therefore pay for it once, which is what the emitted
-/// kernel does: `choices_to_arena` materializes one node per reachable class
-/// and codegen let-binds the shared ones.
+/// costs. Each class carries the set of classes its chosen sub-DAG reaches
+/// (a [`Reach`]), and a candidate unions its children's sets, adding a
+/// class's own cost the first time that class enters the union. Two siblings
+/// that both reach `sin(X)` therefore pay for it once, which is what the
+/// emitted kernel does: `choices_to_arena` materializes one node per
+/// reachable class and codegen let-binds the shared ones.
 ///
-/// Space is one bit per REACHABLE class per reachable class. A production
-/// preset caps the e-graph at 10,000 classes (`saturate.rs`), so the ceiling
-/// is ~12.5 MB; a median production glyph reaches 1,755 of them and uses
-/// ~385 KB, allocated once per extraction and dropped at the end of it.
+/// A union is taken by stamping: every member of every child's set is
+/// visited once, and a per-class epoch mark says whether it has been seen
+/// under this candidate, so the cost of a candidate is the size of its
+/// children's sets, not the size of the graph. Memory is the sum of the
+/// sets, each in the smaller of its two forms, and is held under `budget`:
+/// the first class whose set would carry the total past it ends the pass
+/// with [`SharedPassOutcome::choices`] `None`, and the caller returns the
+/// tree term as [`ExtractionObjective::TreeOnly`]. The dense form bounds
+/// the worst case at `live² / 8` bytes (the 2026-09-08 memory profile's
+/// measured quadratic); real kernels hold a small fraction of that because
+/// most live classes are variants deep inside one sub-DAG.
 fn shared_dag_dp_pass<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
     costs: &C,
     shape: LatticeShape,
-) -> Vec<Option<usize>> {
-    const BITS: usize = usize::BITS as usize;
-
+    budget: usize,
+) -> SharedPassOutcome {
     let num_classes = egraph.num_classes();
     let order = post_order(egraph, root);
 
-    // Index the bitsets by position in `order`, not by e-class id: the sets
+    // Index the sets by position in `order`, not by e-class id: the sets
     // only ever hold classes the root reaches, and on a saturated glyph that
     // is a third of the e-graph (1,352 of 4,703 on `glyph16:U+0021`). Sizing
     // them by `num_classes` would pay for the rest of the graph in every
     // union.
     let live = order.len();
-    let words = live.div_ceil(BITS);
+    let words = live.div_ceil(REACH_WORD_BITS);
     let mut compact: Vec<u32> = alloc::vec![u32::MAX; num_classes];
     for (i, c) in order.iter().enumerate() {
         compact[c.0 as usize] = i as u32;
@@ -2032,34 +2171,54 @@ fn shared_dag_dp_pass<C: CostFunction>(
     // The weighted own cost of each live class's chosen node — what a union
     // pays when that class first enters it. Indexed by compact id.
     let mut best_own: Vec<usize> = alloc::vec![0; live];
-    // `reach[i * words .. (i + 1) * words]` is the set of classes the chosen
-    // sub-DAG at the `i`th live class contains, itself included.
-    let mut reach: Vec<usize> = alloc::vec![0; live.saturating_mul(words)];
-    let mut scratch: Vec<usize> = alloc::vec![0; words];
+    // `reach[i]` is the set of classes the chosen sub-DAG at the `i`th live
+    // class contains, itself included. Filled in post-order, so a child's
+    // set is settled before any parent reads it.
+    let mut reach: Vec<Reach> = Vec::with_capacity(live);
+    // `stamp[i] == epoch` iff live class `i` has entered the union being
+    // taken for the current candidate. One epoch per candidate; never
+    // cleared, so a union costs its members and nothing else.
+    let mut stamp: Vec<usize> = alloc::vec![0; live];
+    let mut epoch: usize = 0;
+    // The union under construction, and the winning candidate's — swapped
+    // rather than copied when a candidate takes the lead.
+    let mut scratch: Vec<u32> = Vec::new();
+    let mut winner: Vec<u32> = Vec::new();
+    let mut reach_bytes: usize = 0;
 
     for canonical in order.iter().copied() {
         let me = compact[canonical.0 as usize] as usize;
+        debug_assert_eq!(
+            reach.len(),
+            me,
+            "shared_dag_dp_pass: reach sets must be filled in post-order"
+        );
         let nodes = egraph.nodes(canonical);
         let mut min_cost = usize::MAX;
         let mut min_idx = 0;
         let mut min_var = Variance::CONST;
         let mut min_own = 0usize;
+        winner.clear();
 
         for (idx, node) in nodes.iter().enumerate() {
             let node_var = node_variance(egraph, node, &best_var, canonical);
             let weight = shape.evals(node_var);
             let own = weighted_own(costs, node, weight);
-            let this_node_cost = match node {
+            // `None`: this candidate reaches nothing below it (a leaf, or a
+            // cycle priced at the sentinel); `Some`: its children's union is
+            // in `scratch`.
+            let (this_node_cost, below) = match node {
                 ENode::Var(_)
                 | ENode::Const(_)
                 | ENode::Buffer(_)
                 | ENode::Uniform(_)
-                | ENode::Param(_) => own,
+                | ENode::Param(_) => (own, None),
                 ENode::Op { children, .. } => {
                     if children.iter().any(|&c| egraph.find(c) == canonical) {
-                        CYCLE_COST
+                        (CYCLE_COST, None)
                     } else {
-                        scratch.fill(0);
+                        epoch += 1;
+                        scratch.clear();
                         let mut below = 0usize;
                         let mut unresolved = false;
                         for &child in children.iter() {
@@ -2077,25 +2236,18 @@ fn shared_dag_dp_pass<C: CostFunction>(
                                  not enumerated by post_order — the two traversals have \
                                  drifted"
                             );
-                            let base = ci as usize * words;
-                            for w in 0..words {
-                                let fresh = reach[base + w] & !scratch[w];
-                                if fresh == 0 {
-                                    continue;
+                            reach[ci as usize].for_each(|member| {
+                                if stamp[member as usize] != epoch {
+                                    stamp[member as usize] = epoch;
+                                    below = below.saturating_add(best_own[member as usize]);
+                                    scratch.push(member);
                                 }
-                                scratch[w] |= fresh;
-                                let mut bits = fresh;
-                                while bits != 0 {
-                                    let bit = bits.trailing_zeros() as usize;
-                                    bits &= bits - 1;
-                                    below = below.saturating_add(best_own[w * BITS + bit]);
-                                }
-                            }
+                            });
                         }
                         if unresolved {
-                            CYCLE_COST
+                            (CYCLE_COST, None)
                         } else {
-                            own.saturating_add(below)
+                            (own.saturating_add(below), Some(()))
                         }
                     }
                 }
@@ -2106,26 +2258,30 @@ fn shared_dag_dp_pass<C: CostFunction>(
                 min_idx = idx;
                 min_var = node_var;
                 min_own = own;
-            }
-        }
-
-        // Rebuild the winner's reach set. Recomputing it costs one more union
-        // over the winning node's children and saves keeping a full bitset
-        // per candidate alive through the loop above.
-        let base = me * words;
-        reach[base..base + words].fill(0);
-        if let ENode::Op { children, .. } = &nodes[min_idx] {
-            if min_cost != CYCLE_COST {
-                for &child in children.iter() {
-                    let ci = compact[egraph.find(child).0 as usize] as usize;
-                    let cbase = ci * words;
-                    for w in 0..words {
-                        reach[base + w] |= reach[cbase + w];
-                    }
+                match below {
+                    Some(()) => core::mem::swap(&mut winner, &mut scratch),
+                    None => winner.clear(),
                 }
             }
         }
-        reach[base + me / BITS] |= 1usize << (me % BITS);
+
+        // A cycle-priced winner reaches only itself, as it always has.
+        if min_cost == CYCLE_COST {
+            winner.clear();
+        }
+        winner.push(me as u32);
+        let set = Reach::smaller_of(&winner, words);
+        reach_bytes = reach_bytes.saturating_add(set.bytes());
+        if reach_bytes > budget {
+            return SharedPassOutcome {
+                choices: None,
+                stats: SharedPassStats {
+                    live_classes: live,
+                    reach_bytes,
+                },
+            };
+        }
+        reach.push(set);
 
         best_cost[canonical.0 as usize] = Some(min_cost);
         best_node[canonical.0 as usize] = Some(min_idx);
@@ -2133,7 +2289,78 @@ fn shared_dag_dp_pass<C: CostFunction>(
         best_own[me] = min_own;
     }
 
-    best_node
+    SharedPassOutcome {
+        choices: Some(best_node),
+        stats: SharedPassStats {
+            live_classes: live,
+            reach_bytes,
+        },
+    }
+}
+
+/// What [`shared_dag_dp_pass`] returns: its choice map when it finished
+/// under budget, and its accounting either way.
+struct SharedPassOutcome {
+    /// `None` when the reach sets crossed the byte budget and the pass was
+    /// abandoned.
+    choices: Option<Vec<Option<usize>>>,
+    stats: SharedPassStats,
+}
+
+const REACH_WORD_BITS: usize = u64::BITS as usize;
+
+/// One live class's reach set — the compact ids of the classes its chosen
+/// sub-DAG contains — in whichever of two forms is smaller.
+///
+/// The sparse form is the members themselves, four bytes each; the dense
+/// form is one bit per live class. [`Reach::smaller_of`] picks per set, so
+/// a leaf's set is four bytes and the root's is a bitset, and the total
+/// held by [`shared_dag_dp_pass`] is never above the dense bound and is far
+/// below it on any graph that is not a chain.
+enum Reach {
+    Sparse(Vec<u32>),
+    Dense(Vec<u64>),
+}
+
+impl Reach {
+    /// `members` as the smaller of the two forms over `words` dense words.
+    /// `members` must be distinct.
+    fn smaller_of(members: &[u32], words: usize) -> Self {
+        let sparse_bytes = members.len() * core::mem::size_of::<u32>();
+        let dense_bytes = words * core::mem::size_of::<u64>();
+        if sparse_bytes <= dense_bytes {
+            return Self::Sparse(members.to_vec());
+        }
+        let mut bits = alloc::vec![0u64; words];
+        for &m in members {
+            let m = m as usize;
+            bits[m / REACH_WORD_BITS] |= 1u64 << (m % REACH_WORD_BITS);
+        }
+        Self::Dense(bits)
+    }
+
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Sparse(v) => v.len() * core::mem::size_of::<u32>(),
+            Self::Dense(v) => v.len() * core::mem::size_of::<u64>(),
+        }
+    }
+
+    fn for_each(&self, mut f: impl FnMut(u32)) {
+        match self {
+            Self::Sparse(v) => v.iter().copied().for_each(f),
+            Self::Dense(v) => {
+                for (w, &word) in v.iter().enumerate() {
+                    let mut bits = word;
+                    while bits != 0 {
+                        let bit = bits.trailing_zeros() as usize;
+                        bits &= bits - 1;
+                        f((w * REACH_WORD_BITS + bit) as u32);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The classes reachable from `root`, children before parents.
@@ -2355,23 +2582,16 @@ mod tests {
         );
     }
 
-    /// Above [`SHARED_DAG_PASS_CLASS_LIMIT`], `extract_dag_scoped` falls
-    /// back to the tree-only objective rather than paying the O(n^2)
-    /// `shared_dag_dp_pass` bitset — see that constant's doc comment.
-    ///
-    /// A chain of `SHARED_DAG_PASS_CLASS_LIMIT + 50` distinct-const `Add`
-    /// nodes gives exactly that many classes with no saturation (each
-    /// `add()` is a fresh, non-folding node), so `num_classes()` crosses the
-    /// limit deterministically and cheaply — this is a shape test, not a
-    /// cost-model test, so a long non-sharing chain is the right fixture:
-    /// it has nothing for the shared pass to find anyway, which is exactly
-    /// what makes "was it skipped" checkable by comparing against the
-    /// tree-only arm directly.
-    #[test]
-    fn extract_dag_scoped_skips_the_shared_pass_above_the_class_limit() {
+    /// A chain of `n` distinct-const `Add` nodes: exactly `n + 1` live
+    /// classes with no saturation (each `add()` is a fresh, non-folding
+    /// node), and the adversarial shape for the reach sets — every class
+    /// reaches every class below it, so the sets are as large as they can
+    /// be. What the tree-only test above the old class-count gate used, and
+    /// what the byte budget is bounded on.
+    fn add_chain(n: usize) -> (EGraph, EClassId) {
         let mut egraph = EGraph::new();
         let mut cur = egraph.add(ENode::Var(0));
-        for i in 0..(SHARED_DAG_PASS_CLASS_LIMIT + 50) {
+        for i in 0..n {
             let c = egraph.add(ENode::constant(i as f32 + 1.0));
             cur = egraph.add(ENode::Op {
                 op: crate::egraph::ops::op_from_kind(pixelflow_ir::OpKind::Add)
@@ -2380,20 +2600,273 @@ mod tests {
             });
         }
         egraph.rebuild();
+        (egraph, cur)
+    }
+
+    /// The shared pass abandons itself at its byte budget and says so: the
+    /// choice map is `None`, the stats carry the first total over the
+    /// budget, and `extract_dag_scoped` — whose budget is the production
+    /// constant — reports the objective it actually used rather than
+    /// returning the tree term under a shared label.
+    #[test]
+    fn shared_pass_over_budget_is_abandoned_loudly() {
+        const CHAIN: usize = 2_000;
+        let (egraph, root) = add_chain(CHAIN);
+        let costs = CostModel::latency_prior();
+
+        let full = shared_dag_dp_pass(&egraph, root, &costs, LatticeShape::POINT, usize::MAX);
+        let full_choices = full.choices.expect("unbounded pass finishes");
+        assert_eq!(full.stats.live_classes, 2 * CHAIN + 1);
+        // The dense bound, plus one word of rounding per set.
+        let live = full.stats.live_classes;
+        let dense_bound = live * live.div_ceil(REACH_WORD_BITS) * 8;
         assert!(
-            egraph.num_classes() > SHARED_DAG_PASS_CLASS_LIMIT,
-            "fixture must actually cross the gate to test it"
+            full.stats.reach_bytes <= dense_bound,
+            "reach sets ({}) must never exceed the dense bound ({dense_bound})",
+            full.stats.reach_bytes
         );
 
-        let costs = CostModel::latency_prior();
-        let scoped = extract_dag_scoped(&egraph, cur, &costs, LatticeShape::POINT);
-        let tree_only = extract_dag_tree_arm(&egraph, cur, &costs, LatticeShape::POINT);
-        assert_eq!(
-            scoped.dag_cost, tree_only.dag_cost,
-            "above the limit, extract_dag_scoped must equal the tree-only arm \
-             exactly — the shared pass was skipped, not merely outscored"
+        let budget = full.stats.reach_bytes / 2;
+        let cut = shared_dag_dp_pass(&egraph, root, &costs, LatticeShape::POINT, budget);
+        assert!(
+            cut.choices.is_none(),
+            "a pass over budget returns no choices"
         );
-        assert_eq!(scoped.choices, tree_only.choices);
+        assert!(
+            cut.stats.reach_bytes > budget,
+            "stats carry the total that crossed the budget ({} vs {budget})",
+            cut.stats.reach_bytes
+        );
+        assert_eq!(cut.stats.live_classes, full.stats.live_classes);
+
+        // Under the production budget this chain fits, and the report says
+        // which term came back and what it cost to know.
+        let scoped = extract_dag_scoped(&egraph, root, &costs, LatticeShape::POINT);
+        let stats = scoped
+            .report
+            .shared_pass
+            .expect("production extraction always runs the pass");
+        assert_eq!(stats, full.stats);
+        assert!(
+            full.stats.reach_bytes <= SHARED_DAG_PASS_BYTE_BUDGET,
+            "fixture must fit the production budget for this half of the test"
+        );
+        assert_ne!(scoped.report.objective, ExtractionObjective::TreeOnly);
+        assert_ne!(scoped.report.objective, ExtractionObjective::External);
+        let shared = extract_dag_shared_arm(&egraph, root, &costs, LatticeShape::POINT);
+        assert_eq!(shared.choices, full_choices);
+    }
+
+    /// Sparse and dense reach sets are one set: a union taken through
+    /// either form visits the same members, so a class whose set flips
+    /// form (the chain's upper half) prices its children identically.
+    #[test]
+    fn reach_forms_agree() {
+        let words = 4;
+        let few: Vec<u32> = vec![3, 200, 77];
+        let many: Vec<u32> = (0..words as u32 * 40).collect();
+        let sparse = Reach::smaller_of(&few, words);
+        let dense = Reach::smaller_of(&many, words);
+        assert!(matches!(sparse, Reach::Sparse(_)));
+        assert!(matches!(dense, Reach::Dense(_)));
+        assert_eq!(sparse.bytes(), few.len() * 4);
+        assert_eq!(dense.bytes(), words * 8);
+        let mut seen = Vec::new();
+        sparse.for_each(|m| seen.push(m));
+        assert_eq!(seen, few);
+        seen.clear();
+        dense.for_each(|m| seen.push(m));
+        assert_eq!(seen, many);
+    }
+
+    /// The sharing-aware DP as it shipped before the reach sets went
+    /// hybrid: one dense bitset per live class, the union taken word by
+    /// word. Kept verbatim as the reference the budgeted pass is held to —
+    /// its results are the ones every committed extraction row was taken
+    /// with (`docs/results/2026-09-07-egraph-off-vs-on-real-shaders-rows`),
+    /// so agreeing with it on a saturated graph is agreeing with them.
+    fn dense_reference_pass<C: CostFunction>(
+        egraph: &EGraph,
+        root: EClassId,
+        costs: &C,
+        shape: LatticeShape,
+    ) -> Vec<Option<usize>> {
+        const BITS: usize = usize::BITS as usize;
+        let num_classes = egraph.num_classes();
+        let order = post_order(egraph, root);
+        let live = order.len();
+        let words = live.div_ceil(BITS);
+        let mut compact: Vec<u32> = alloc::vec![u32::MAX; num_classes];
+        for (i, c) in order.iter().enumerate() {
+            compact[c.0 as usize] = i as u32;
+        }
+        let mut best_cost: Vec<Option<usize>> = alloc::vec![None; num_classes];
+        let mut best_node: Vec<Option<usize>> = alloc::vec![None; num_classes];
+        let mut best_var: Vec<Variance> = alloc::vec![Variance::CONST; num_classes];
+        let mut best_own: Vec<usize> = alloc::vec![0; live];
+        let mut reach: Vec<usize> = alloc::vec![0; live * words];
+        let mut scratch: Vec<usize> = alloc::vec![0; words];
+        for canonical in order.iter().copied() {
+            let me = compact[canonical.0 as usize] as usize;
+            let nodes = egraph.nodes(canonical);
+            let mut min_cost = usize::MAX;
+            let mut min_idx = 0;
+            let mut min_var = Variance::CONST;
+            let mut min_own = 0usize;
+            for (idx, node) in nodes.iter().enumerate() {
+                let node_var = node_variance(egraph, node, &best_var, canonical);
+                let own = weighted_own(costs, node, shape.evals(node_var));
+                let this_node_cost = match node {
+                    ENode::Var(_)
+                    | ENode::Const(_)
+                    | ENode::Buffer(_)
+                    | ENode::Uniform(_)
+                    | ENode::Param(_) => own,
+                    ENode::Op { children, .. } => {
+                        if children.iter().any(|&c| egraph.find(c) == canonical) {
+                            CYCLE_COST
+                        } else {
+                            scratch.fill(0);
+                            let mut below = 0usize;
+                            let mut unresolved = false;
+                            for &child in children.iter() {
+                                let c = egraph.find(child).0 as usize;
+                                if best_cost[c].is_none() {
+                                    unresolved = true;
+                                    break;
+                                }
+                                let base = compact[c] as usize * words;
+                                for w in 0..words {
+                                    let fresh = reach[base + w] & !scratch[w];
+                                    if fresh == 0 {
+                                        continue;
+                                    }
+                                    scratch[w] |= fresh;
+                                    let mut bits = fresh;
+                                    while bits != 0 {
+                                        let bit = bits.trailing_zeros() as usize;
+                                        bits &= bits - 1;
+                                        below = below.saturating_add(best_own[w * BITS + bit]);
+                                    }
+                                }
+                            }
+                            if unresolved {
+                                CYCLE_COST
+                            } else {
+                                own.saturating_add(below)
+                            }
+                        }
+                    }
+                };
+                if this_node_cost < min_cost {
+                    min_cost = this_node_cost;
+                    min_idx = idx;
+                    min_var = node_var;
+                    min_own = own;
+                }
+            }
+            let base = me * words;
+            reach[base..base + words].fill(0);
+            if let ENode::Op { children, .. } = &nodes[min_idx] {
+                if min_cost != CYCLE_COST {
+                    for &child in children.iter() {
+                        let cbase = compact[egraph.find(child).0 as usize] as usize * words;
+                        for w in 0..words {
+                            reach[base + w] |= reach[cbase + w];
+                        }
+                    }
+                }
+            }
+            reach[base + me / BITS] |= 1usize << (me % BITS);
+            best_cost[canonical.0 as usize] = Some(min_cost);
+            best_node[canonical.0 as usize] = Some(min_idx);
+            best_var[canonical.0 as usize] = min_var;
+            best_own[me] = min_own;
+        }
+        best_node
+    }
+
+    /// An SDF-shaped arena with real sharing (the same op mix as
+    /// `egraph_profile`'s), saturated by the production optimizer under a
+    /// small explicit budget: a graph with variants, cycles and shared
+    /// classes, as the passes meet them in production.
+    fn saturated_sdf_egraph(target_nodes: usize) -> (EGraph, EClassId) {
+        use pixelflow_ir::{ExprArena, OpKind};
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        let y = arena.push_var(1);
+        let c = arena.push_const(0.37);
+        let dx = arena.push_binary(OpKind::Sub, x, c);
+        let dy = arena.push_binary(OpKind::Sub, y, c);
+        let dx2 = arena.push_binary(OpKind::Mul, dx, dx);
+        let mut cur = arena.push_ternary(OpKind::MulAdd, dy, dy, dx2);
+        let mut step = 0usize;
+        while arena.len() < target_nodes {
+            cur = match step % 8 {
+                0 => {
+                    let inside = arena.push_binary(OpKind::Lt, cur, c);
+                    arena.push_ternary(OpKind::Select, inside, dx2, cur)
+                }
+                1 => arena.push_unary(OpKind::Sqrt, cur),
+                2 => arena.push_binary(OpKind::Mul, cur, dx),
+                3 => arena.push_binary(OpKind::Add, cur, dy),
+                4 => arena.push_ternary(OpKind::MulAdd, cur, c, dx2),
+                5 => arena.push_binary(OpKind::Max, cur, dx),
+                6 => arena.push_binary(OpKind::Sub, cur, c),
+                _ => arena.push_binary(OpKind::Mul, cur, cur),
+            };
+            step += 1;
+        }
+        let mut optimizer =
+            super::super::Optimizer::production().budget(super::super::Budget::Explicit {
+                iterations: 4,
+                classes: 3_000,
+                applications: Some(20_000),
+            });
+        let mut egraph = optimizer.egraph();
+        let root =
+            super::super::insert(&arena, cur, &mut egraph, super::super::Vocabulary::Runtime)
+                .expect("the SDF arena is representable");
+        let node_count = super::super::reachable_count(&arena, cur);
+        let optimized = optimizer.run(&mut egraph, root, node_count);
+        assert!(
+            optimized.stats.classes > 500,
+            "fixture must saturate into a real graph ({} classes)",
+            optimized.stats.classes
+        );
+        (egraph, root)
+    }
+
+    /// The budgeted hybrid-set pass and the dense pass it replaced choose
+    /// the same node in every class of a saturated graph — same objective,
+    /// same tie-breaking, priced through sparse and dense sets alike —
+    /// under both the point and a frame lattice. This is what lets the
+    /// committed extraction rows stand as this pass's regression baseline.
+    #[test]
+    fn shared_pass_matches_the_dense_reference_on_a_saturated_graph() {
+        let costs = CostModel::latency_prior();
+        for (nodes, shape) in [
+            (64, LatticeShape::POINT),
+            (256, LatticeShape::POINT),
+            (256, LatticeShape::new([32, 32])),
+        ] {
+            let (egraph, root) = saturated_sdf_egraph(nodes);
+            let reference = dense_reference_pass(&egraph, root, &costs, shape);
+            let pass = shared_dag_dp_pass(&egraph, root, &costs, shape, usize::MAX);
+            let live = pass.stats.live_classes;
+            assert!(live > 100, "{nodes} nodes: only {live} live classes");
+            let choices = pass.choices.expect("unbounded");
+            assert_eq!(
+                choices, reference,
+                "{nodes} nodes at {shape:?}: the hybrid pass disagrees with the dense reference"
+            );
+            let dense_bytes = live * live.div_ceil(REACH_WORD_BITS) * 8;
+            assert!(
+                pass.stats.reach_bytes <= dense_bytes,
+                "{nodes} nodes: hybrid sets ({}) above the dense bound ({dense_bytes})",
+                pass.stats.reach_bytes
+            );
+        }
     }
 
     #[test]
