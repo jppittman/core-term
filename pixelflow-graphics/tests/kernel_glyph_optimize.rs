@@ -217,16 +217,23 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
                 .expect("glyph kernel");
             let (arena, root) = glyph.kernel.parts();
             let (raw, raw_root) = lower_dwrt_owned(arena, root).expect("lower raw");
-            // `glyph.kernel`'s winding sum reads a bound piece table (S1a);
-            // both `eval_scalar` oracles below need it bound, not empty —
-            // `lower_dwrt`/`optimize_runtime_arena` restructure the Dwrt and
-            // arithmetic subtrees only, never the buffer declarations, so
-            // the one slot survives unchanged in both `raw` and `opt`.
-            let data: Vec<&[f32]> = glyph
-                .binding
-                .as_ref()
-                .map(|(_, d)| d.as_slice())
-                .into_iter()
+            // `glyph.kernel`'s winding sum reads a piece table that travels
+            // with the kernel itself; both `eval_scalar` oracles below need
+            // it bound, not empty — `lower_dwrt`/`optimize_runtime_arena`
+            // restructure the Dwrt and arithmetic subtrees only, never the
+            // buffer declarations, so the one slot survives unchanged in
+            // both `raw` and `opt`.
+            let data: Vec<&[f32]> = raw
+                .buffers()
+                .iter()
+                .map(|decl| {
+                    glyph
+                        .kernel
+                        .buffer_data()
+                        .find(|(id, _)| *id == decl.id)
+                        .map(|(_, d)| d.as_ref())
+                        .expect("glyph kernel carries data for every slot it declares")
+                })
                 .collect();
             let raw_table = BindingTable::bind(&raw, &data).expect("bind winding table (raw)");
             // The lattice a bake of this glyph would compile at — the

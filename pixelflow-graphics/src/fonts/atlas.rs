@@ -186,11 +186,13 @@ impl GlyphAtlas {
                     &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
                 );
                 let lattice = Lattice { extent: [n, n] };
-                // `glyph.kernel` now declares the winding table `glyph`
-                // built as a bound slot (S1a), so a bare `Lattice::bake`
-                // (which binds nothing) would panic on it — `Glyph::bake`
-                // binds it from `glyph` itself, tolerating a glyph with no
-                // outline (no binding) the same as before.
+                // `glyph.kernel` declares the winding table `glyph` built as
+                // a slot (S1a), so a bare `Lattice::bake` (which binds
+                // nothing itself) would panic on it — `Glyph::bake` goes
+                // through `Manifold::compile`/`bind` instead, and the table
+                // travels with `centered` itself (`Kernel::with_buffer_data`),
+                // so there is nothing to bind explicitly; a glyph with no
+                // outline declares no buffer and bakes the same way.
                 glyph.bake(&centered, lattice)
             });
         let Some(baked) = baked else {

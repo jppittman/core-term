@@ -106,8 +106,6 @@
 
 use super::outline::{Outline, Point, Segment};
 use pixelflow_core::{BoundManifold, DiscreteManifold, Kernel, Lattice, Manifold};
-use pixelflow_ir::arena::BufferIdentity;
-use std::sync::Arc;
 
 /// How far coverage can reach past the outline, in the frame the kernel is
 /// built in. A ramp is one unit wide and centred on its edge, so half a unit
@@ -158,58 +156,35 @@ const FLAT_ENOUGH: f64 = 1.0 / 256.0;
 /// divergence.
 #[derive(Clone)]
 pub struct Glyph {
-    /// The coverage kernel.
+    /// The coverage kernel. Its winding sum reads a piece coefficient table
+    /// at a `Kernel::sum_over` binder ([`glyph`]'s S1a rewrite —
+    /// docs/plans/2026-09-09-glyph-as-a-fold-execution.md); the table's data
+    /// travels with this value (`Kernel::with_buffer_data`, seeded by
+    /// [`DiscreteManifold::kernel`] when [`glyph`] builds it), so there is
+    /// no separate binding a caller must keep paired with it — a
+    /// `Kernel::at` contramap of `kernel` (a placement, a pixel-center
+    /// shift) still carries the same table, and [`Self::bound`]/
+    /// [`Self::bake`] need nothing more than the kernel itself.
     pub kernel: Kernel,
     /// Where it can be nonzero.
     pub support: Support,
-    /// The piece coefficient table [`kernel`](Self::kernel)'s winding sum
-    /// reads at its `Kernel::sum_over` binder ([`glyph`]'s S1a rewrite —
-    /// docs/plans/2026-09-09-glyph-as-a-fold-execution.md).
-    ///
-    /// `None` for the empty glyph (a space: no outline, the kernel is the
-    /// literal constant `0.0` and declares no buffer). Otherwise `Some` and
-    /// **required**: `kernel` cannot be baked or collapsed without it bound
-    /// (`Manifold::bind`) — a bare `Lattice::bake` panics on the declared,
-    /// unbound slot. `binding` and `kernel` are minted together by the same
-    /// call so their identity always agrees; a caller must not try to
-    /// recompute one without the other — pair them through [`Self::bound`]
-    /// or [`Self::bake`], which always read `self.binding` rather than
-    /// taking a table from the caller, so a foreign binding cannot reach
-    /// `Manifold::bind` in the first place. Reading `binding` directly is
-    /// still right for a caller that never binds it — the field access
-    /// count in the S1a plan's dump/oracle paths — where the winding table
-    /// feeds an IR interpreter or an arena dump instead of a `Manifold`.
-    pub binding: Option<(BufferIdentity, Arc<Vec<f32>>)>,
 }
 
 impl Glyph {
-    /// This glyph's own piece table, as the slice [`Manifold::bind`] takes
-    /// — empty for a glyph with no outline (a space: its kernel is the
-    /// literal `0.0` and declares no buffer, and `bind` tolerates an empty
-    /// slice).
-    fn bindings(&self) -> Vec<(BufferIdentity, Arc<Vec<f32>>)> {
-        self.binding.clone().into_iter().collect()
-    }
-
     /// `kernel` — [`Self::kernel`] itself, or a `Kernel::at` contramap of
-    /// it (a placement, a pixel-center shift) — compiled at `extent` with
-    /// *this glyph's own* piece table bound.
-    ///
-    /// The one sound way to pair a glyph's winding sum with the table its
-    /// `Kernel::sum_over` binder reads: a contramap changes no buffer
-    /// identity, so `self.binding` still pairs correctly with a transformed
-    /// `kernel`, and — unlike `Manifold::compile(..).bind(..)` spelled out
-    /// at the call site — there is no longer a separate `bindings` slice a
-    /// caller could build from the wrong glyph.
+    /// it (a placement, a pixel-center shift) — compiled at `extent`. The
+    /// piece table the winding sum reads travels with `kernel` itself (see
+    /// [`Self`]'s docs), so there is nothing further to bind here — a bare
+    /// `Lattice::bake` still refuses `kernel` because it *declares* a
+    /// buffer, so this goes through `Manifold::compile`/`bind` directly,
+    /// same as before, just with an empty binding list.
     #[must_use]
     pub fn bound(&self, kernel: &Kernel, extent: [u32; 2]) -> BoundManifold {
-        Manifold::compile(kernel, extent).bind(&self.bindings())
+        Manifold::compile(kernel, extent).bind(&[])
     }
 
-    /// Tabulate `kernel` over `lattice`: compile at its extent, bind this
-    /// glyph's piece table, collapse. The one sound way to turn a glyph
-    /// into numbers: the kernel and the table it reads are bound together
-    /// here, so they cannot be mismatched by a caller.
+    /// Tabulate `kernel` over `lattice`: compile at its extent, bind
+    /// (trivially — see [`Self::bound`]), collapse.
     #[must_use]
     pub fn bake(&self, kernel: &Kernel, lattice: Lattice) -> DiscreteManifold {
         lattice.collapse(&self.bound(kernel, lattice.extent))
@@ -276,7 +251,6 @@ pub fn glyph(outline: &Outline) -> Glyph {
         return Glyph {
             kernel: constant(0.0),
             support: Support::EMPTY,
-            binding: None,
         };
     };
 
@@ -286,12 +260,15 @@ pub fn glyph(outline: &Outline) -> Glyph {
     // per-piece fragments folded in Rust (S1a of
     // docs/plans/2026-09-09-glyph-as-a-fold-execution.md — only the winding;
     // the distance/boundary fold below is unconverted and still builds a
-    // per-piece constant fragment per [`prepare`]).
+    // per-piece constant fragment per [`prepare`]). `DiscreteManifold::new`
+    // mints the table's own identity and `.kernel()` seeds this fragment
+    // with the piece data itself (`Kernel::with_buffer_data`), so the data
+    // travels with `table` through every combinator below rather than
+    // riding beside it in a `Glyph` field a caller has to keep paired.
     let n = u32::try_from(pieces.pieces.len())
         .expect("a glyph outline has far fewer pieces than u32::MAX");
     let data: Vec<f32> = pieces.pieces.iter().flat_map(|p| piece_row(*p)).collect();
-    let id = BufferIdentity::mint();
-    let table = DiscreteManifold::kernel_for(id, PIECE_ROW_COLS as u32, n);
+    let table = DiscreteManifold::new(data, PIECE_ROW_COLS, n as usize).kernel();
     let winding = Kernel::sum_over(n, |row| {
         let coeff = |k: usize| table.at(&Kernel::constant(k as f32), row);
         crossing_term(&coeff).add(&sliver_term(&coeff))
@@ -322,7 +299,6 @@ pub fn glyph(outline: &Outline) -> Glyph {
     Glyph {
         kernel: inside.select(&coverage, &constant(0.0)),
         support,
-        binding: Some((id, Arc::new(data))),
     }
 }
 

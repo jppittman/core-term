@@ -136,19 +136,23 @@ fn main() {
     }
 }
 
-/// Captured contents for each buffer `arena` declares, matched to `glyph`'s
-/// own binding by [`BufferIdentity`](pixelflow_ir::arena::BufferIdentity) —
-/// the winding sum's real piece table, not a restatement of its shape.
-/// `None` at a slot means this glyph declared a buffer `glyph.binding`
-/// doesn't cover, which `dummy_context` reports loudly at replay rather than
-/// silently zeroing.
+/// Captured contents for each buffer `arena` declares, matched to the data
+/// `glyph.kernel` itself carries
+/// ([`Kernel::buffer_data`](pixelflow_ir::Kernel::buffer_data)) by
+/// [`BufferIdentity`](pixelflow_ir::arena::BufferIdentity) — the winding
+/// sum's real piece table, not a restatement of its shape. `None` at a slot
+/// means this glyph declared a buffer its kernel carries no data for, which
+/// `dummy_context` reports loudly at replay rather than silently zeroing.
 fn buffer_data_for(arena: &ExprArena, glyph: &Glyph) -> Vec<Option<Arc<Vec<f32>>>> {
     arena
         .buffers()
         .iter()
-        .map(|decl| match &glyph.binding {
-            Some((id, data)) if *id == decl.id => Some(Arc::clone(data)),
-            _ => None,
+        .map(|decl| {
+            glyph
+                .kernel
+                .buffer_data()
+                .find(|(id, _)| *id == decl.id)
+                .map(|(_, data)| Arc::new(data.to_vec()))
         })
         .collect()
 }

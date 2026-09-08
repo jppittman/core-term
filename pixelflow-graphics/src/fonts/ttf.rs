@@ -320,10 +320,10 @@ impl<'a> Font<'a> {
     }
 
     /// The glyph for `ch` in font units, as a [`Glyph`]: a coverage
-    /// `Kernel` together with the piece table its winding sum reads at a
-    /// `Kernel::sum_over` binder ([`Glyph::binding`]) — bind it
-    /// ([`pixelflow_core::Manifold::bind`]) before baking or collapsing the
-    /// kernel; antialiasing resolves from `Dwrt` at bake.
+    /// `Kernel` whose winding sum reads a piece table at a
+    /// `Kernel::sum_over` binder — the table travels with the kernel itself
+    /// (`Kernel::with_buffer_data`), so baking or collapsing it needs no
+    /// separate bind; antialiasing resolves from `Dwrt` at bake.
     #[must_use]
     pub fn glyph_kernel(&self, ch: char) -> Option<Glyph> {
         self.glyph_kernel_by_id(self.cmap.lookup(ch as u32)?)

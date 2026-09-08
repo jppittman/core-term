@@ -271,6 +271,17 @@ pub struct Manifold {
     /// per-frame call, four times a frame on the terminal path — is a
     /// refcount and never an allocation, uniforms or none.
     defaults: Arc<Vec<f32>>,
+    /// Tabulations `kernel` itself carried at compile time
+    /// (`Kernel::buffer_data`) — the data that travels with the kernel
+    /// rather than being gathered by a caller and threaded to `bind`
+    /// separately. A slot named here is already spoken for: `bind` fills it
+    /// from this table before it looks at its own `buffers` argument, so a
+    /// kernel built over bound memory
+    /// (`DiscreteManifold::kernel`/`BilinearSampler::kernel`) binds with
+    /// `bind(&[])`. A refcount clone out of the kernel, not a copy — the
+    /// copy into `Arc<Vec<f32>>` `bind` needs happens there, once, only for
+    /// a slot actually bound.
+    carried: Arc<[(BufferIdentity, Arc<[f32]>)]>,
 }
 
 impl Manifold {
@@ -327,12 +338,17 @@ impl Manifold {
             linked.buffers.len()
         );
         let defaults: Vec<f32> = linked.uniforms.iter().map(|d| d.default).collect();
+        let carried: Vec<(BufferIdentity, Arc<[f32]>)> = kernel
+            .buffer_data()
+            .map(|(id, data)| (id, Arc::clone(data)))
+            .collect();
         Self {
             jit: linked.kernel,
             extent,
             slots: linked.buffers.into(),
             link: linked.uniforms.into(),
             defaults: Arc::new(defaults),
+            carried: carried.into(),
         }
     }
 
@@ -374,7 +390,10 @@ impl Manifold {
     }
 
     /// Bind one frame's memory: each declared slot takes the buffer carrying
-    /// its identity. `buffers` may be given in any order and may carry entries
+    /// its identity — first from what `kernel` itself carried into this
+    /// [`Manifold`] at [`Manifold::compile`] (a kernel built over bound
+    /// memory needs nothing here), then from `buffers` for anything still
+    /// unfilled. `buffers` may be given in any order and may carry entries
     /// this kernel does not read. Buffers are `Arc`s so a frame in flight
     /// keeps its data alive while the caller prepares the next one.
     ///
@@ -383,26 +402,34 @@ impl Manifold {
     ///
     /// # Panics
     ///
-    /// Panics if a declared slot has no buffer bound to it, or if a buffer's
-    /// length is not the `width × height` its declaration promised — the
-    /// gathers address the declared shape, so a shorter buffer would be read
-    /// past its end through an entirely safe API.
+    /// Panics if a declared slot has no buffer bound to it (carried or
+    /// supplied), or if one's length is not the `width × height` its
+    /// declaration promised — the gathers address the declared shape, so a
+    /// shorter buffer would be read past its end through an entirely safe
+    /// API.
     #[must_use]
     pub fn bind(&self, buffers: &[(BufferIdentity, Arc<Vec<f32>>)]) -> BoundManifold {
         let mut bound: [Option<Arc<Vec<f32>>>; MAX_BOUND_BUFFERS] = Default::default();
         for (slot, decl) in bound.iter_mut().zip(self.slots.iter()) {
-            let data = buffers
-                .iter()
-                .find(|(id, _)| *id == decl.id)
-                .map(|(_, data)| data)
-                .unwrap_or_else(|| panic!("Manifold::bind: nothing bound to slot {decl:?}"));
+            let data: Arc<Vec<f32>> = match self.carried.iter().find(|(id, _)| *id == decl.id) {
+                // The kernel's own tabulation: a refcount clone out of it,
+                // copied into the `Vec` header `bind`'s ABI needs — once,
+                // here, not once per composition the way a caller gathering
+                // this by hand would have paid.
+                Some((_, data)) => Arc::new(data.to_vec()),
+                None => buffers
+                    .iter()
+                    .find(|(id, _)| *id == decl.id)
+                    .map(|(_, data)| Arc::clone(data))
+                    .unwrap_or_else(|| panic!("Manifold::bind: nothing bound to slot {decl:?}")),
+            };
             assert_eq!(
                 data.len(),
                 buffer_len(decl),
                 "Manifold::bind: buffer of {} floats bound to slot {decl:?}",
                 data.len()
             );
-            *slot = Some(Arc::clone(data));
+            *slot = Some(data);
         }
         BoundManifold {
             jit: Arc::clone(&self.jit),

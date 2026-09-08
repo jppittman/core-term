@@ -99,7 +99,10 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
         let cached = CachedText::new(&font, &mut cache, "HELLO", 20.0, 1.0);
         let lattice = Lattice::frame(100, 30);
         let centered = pixel_centered(&cached.kernel());
-        let bound = Manifold::compile(&centered, lattice.extent).bind(&cached.bindings());
+        // Every glyph's coverage buffer travels with `centered` itself
+        // (`Kernel::with_buffer_data`, seeded by `BilinearSampler::kernel`),
+        // so there is nothing left to gather into a binding list here.
+        let bound = Manifold::compile(&centered, lattice.extent).bind(&[]);
 
         b.iter(|| black_box(lattice.collapse(black_box(&bound))));
     });

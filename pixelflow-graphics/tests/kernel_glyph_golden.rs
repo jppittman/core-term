@@ -54,14 +54,21 @@ fn golden_for(ch: char, size: usize) {
         None => lower_dwrt_owned(arena, root).expect("dwrt lowering"),
     };
 
-    // The oracle's own binding table over the same (single) piece table the
-    // JIT read — optimization/lowering restructures the Gather graph, never
-    // the buffer declarations, so the one slot survives unchanged.
-    let data: Vec<&[f32]> = glyph
-        .binding
-        .as_ref()
-        .map(|(_, d)| d.as_slice())
-        .into_iter()
+    // The oracle's own binding table over the same piece table the JIT
+    // read — optimization/lowering restructures the Gather graph, never the
+    // buffer declarations, so `lowered` declares the same slot(s), in the
+    // same order, that `centered` (== `glyph.kernel`, contramapped) carries
+    // data for.
+    let data: Vec<&[f32]> = lowered
+        .buffers()
+        .iter()
+        .map(|decl| {
+            centered
+                .buffer_data()
+                .find(|(id, _)| *id == decl.id)
+                .map(|(_, d)| d.as_ref())
+                .expect("glyph kernel carries data for every slot it declares")
+        })
         .collect();
     let table = BindingTable::bind(&lowered, &data).expect("bind the winding table");
 

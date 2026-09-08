@@ -28,8 +28,9 @@ use super::ttf::Font;
 /// This is the denotation — the function a laid-out string *is*. Like any
 /// other glyph kernel, it carries no coordinate frame: a caller wanting
 /// pixel-center sampling applies `.at(&(X + 0.5), &(Y + 0.5))` before
-/// baking, same as a raw glyph kernel would — and must bind
-/// [`Glyph::binding`] first, the winding sum's own piece table.
+/// baking, same as a raw glyph kernel would. The winding sum's own piece
+/// table travels with [`Glyph::kernel`] itself, so there is nothing to bind
+/// separately.
 #[must_use]
 pub fn text(font: &Font, text_str: &str, size: f32) -> Glyph {
     loop_blinn::glyph(&placed_outline(font, text_str, size))

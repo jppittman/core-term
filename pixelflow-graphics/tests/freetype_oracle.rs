@@ -206,16 +206,23 @@ fn compare_against_freetype(glyphs: &[char], sizes: &[u32], texels_we_miss: u32)
             let ours_glyph = ours.glyph_kernel_scaled(ch, size as f32).expect("glyph");
             let (arena, root) = ours_glyph.kernel.parts();
             let (lowered, r) = lower_dwrt_owned(arena, root).expect("lower");
-            // `ours_glyph.kernel`'s winding sum reads a bound piece table
-            // (S1a), so the oracle's own binding table must carry it rather
-            // than evaluate empty — `lower_dwrt` restructures the Dwrt
-            // subtrees only, never the buffer declarations, so the one slot
-            // survives unchanged.
-            let ours_data: Vec<&[f32]> = ours_glyph
-                .binding
-                .as_ref()
-                .map(|(_, d)| d.as_slice())
-                .into_iter()
+            // `ours_glyph.kernel`'s winding sum reads a piece table that
+            // travels with the kernel itself, so the oracle's own binding
+            // table must carry it rather than evaluate empty —
+            // `lower_dwrt` restructures the Dwrt subtrees only, never the
+            // buffer declarations, so `lowered` declares the same slot(s),
+            // in the same order, `ours_glyph.kernel` carries data for.
+            let ours_data: Vec<&[f32]> = lowered
+                .buffers()
+                .iter()
+                .map(|decl| {
+                    ours_glyph
+                        .kernel
+                        .buffer_data()
+                        .find(|(id, _)| *id == decl.id)
+                        .map(|(_, d)| d.as_ref())
+                        .expect("glyph kernel carries data for every slot it declares")
+                })
                 .collect();
             let ours_table = BindingTable::bind(&lowered, &ours_data).expect("bind winding table");
 

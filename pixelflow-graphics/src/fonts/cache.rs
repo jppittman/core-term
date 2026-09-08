@@ -61,7 +61,6 @@
 //! ```
 
 use pixelflow_core::{BilinearSampler, DiscreteManifold, Kernel, Lattice};
-use pixelflow_ir::arena::BufferIdentity;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -138,12 +137,11 @@ impl CachedGlyph {
     /// must be scaled to `size × density` pixels; texels sample at centers,
     /// and the result takes point-space coordinates.
     ///
-    /// Takes the whole [`Glyph`], not a bare [`Kernel`]: the winding sum
-    /// reads a piece table at a `Kernel::sum_over` binder
-    /// ([`Glyph::binding`]), so the kernel cannot be baked without it —
-    /// `glyph.kernel` and `glyph.binding` must come from the same call
-    /// (the identity `glyph.kernel` declares is minted fresh each time
-    /// [`loop_blinn::glyph`](super::loop_blinn::glyph) runs).
+    /// Takes the whole [`Glyph`], not a bare [`Kernel`], to match
+    /// [`Glyph::bake`]'s own shape; the winding sum's piece table travels
+    /// with `glyph.kernel` itself (`Kernel::with_buffer_data`, seeded by
+    /// [`loop_blinn::glyph`](super::loop_blinn::glyph)), so — unlike
+    /// before — there is no second value that must come from the same call.
     #[must_use]
     pub fn from_kernel(glyph: &Glyph, size: usize, density: f32) -> Self {
         assert!(
@@ -162,9 +160,9 @@ impl CachedGlyph {
         let lattice = Lattice {
             extent: [px as u32, px as u32],
         };
-        // `Glyph::bake` binds the winding table the kernel declares (S1a)
-        // from `glyph` itself, so a glyph with no outline (no binding)
-        // bakes the same as before.
+        // `Glyph::bake` needs no explicit binding: the winding table the
+        // kernel declares (S1a) travels with it, and a glyph with no
+        // outline declares no buffer at all — both bake the same way.
         let baked = glyph.bake(&centered, lattice);
 
         Self {
@@ -180,9 +178,11 @@ impl CachedGlyph {
     /// This glyph's coverage in point space, as a [`Kernel`]: the baked texels
     /// read through the bilinear blend, masked to the glyph's own extent.
     ///
-    /// The kernel declares the coverage buffer as a slot, so it reaches
-    /// numbers the way any kernel over bound memory does — compiled at a
-    /// lattice's shape, [`Self::binding`] bound into it, collapsed. It
+    /// The kernel declares the coverage buffer as a slot, but reaches
+    /// numbers without a caller binding it: [`BilinearSampler::kernel`]
+    /// seeds this fragment with the coverage lattice's own texels
+    /// (`Kernel::with_buffer_data`), so the data travels with the value —
+    /// compile at a lattice's shape, bind (trivially), collapse. It
     /// composes like any other kernel too: `.at(..)` reads it at computed
     /// coordinates, which is how [`CachedText`] places it.
     ///
@@ -213,13 +213,6 @@ impl CachedGlyph {
             .and(&Kernel::y().ge(&zero))
             .and(&Kernel::y().le(&Kernel::constant(self.height as f32)));
         in_bounds.select(&sampled, &zero)
-    }
-
-    /// The coverage buffer paired with the identity [`Self::kernel`] declared,
-    /// for [`Manifold::bind`](pixelflow_core::Manifold::bind).
-    #[must_use]
-    pub fn binding(&self) -> (BufferIdentity, Arc<Vec<f32>>) {
-        self.coverage().binding()
     }
 }
 
@@ -493,7 +486,12 @@ impl CachedText {
     /// Composition is `Kernel::at` and `Kernel::sum` — the same two moves the
     /// layout above already makes, now in the language rather than in a Rust
     /// loop over `eval`, so the run compiles as one kernel with each glyph's
-    /// coverage a declared slot.
+    /// coverage a declared slot, its data carried along rather than gathered
+    /// separately. A run that draws the same character twice places two
+    /// `Kernel`s built from the same `CachedGlyph` (the cache returns a
+    /// clone, sharing its `Arc<BilinearSampler>`), so `Kernel::sum`'s merge
+    /// sees one `BufferIdentity` twice naming the very same `Arc` — a
+    /// pointer-equal no-op, not two tabulations to compare.
     #[must_use]
     pub fn kernel(&self) -> Kernel {
         let placed: Vec<Kernel> = self
@@ -508,17 +506,6 @@ impl CachedText {
             })
             .collect();
         Kernel::sum(&placed)
-    }
-
-    /// Every glyph's coverage buffer paired with the identity its kernel
-    /// declared, for [`Manifold::bind`](pixelflow_core::Manifold::bind).
-    ///
-    /// One entry per placed glyph, repeats included: a run that draws the same
-    /// character twice reads one buffer through one identity, and `bind`
-    /// matches slots to it by that identity rather than by position.
-    #[must_use]
-    pub fn bindings(&self) -> Vec<(BufferIdentity, Arc<Vec<f32>>)> {
-        self.glyphs.iter().map(|pg| pg.glyph.binding()).collect()
     }
 }
 
@@ -536,19 +523,16 @@ mod tests {
     const FONT_DATA: &[u8] = include_bytes!("../../assets/DejaVuSansMono-Fallback.ttf");
 
     /// A coverage kernel tabulated over `lattice`: compile at its shape, bind
-    /// the buffers the kernel declared, collapse. The whole evaluation API.
-    fn collapse(
-        kernel: &Kernel,
-        buffers: &[(BufferIdentity, Arc<Vec<f32>>)],
-        lattice: Lattice,
-    ) -> Vec<f32> {
-        let bound = Manifold::compile(kernel, lattice.extent).bind(buffers);
+    /// (trivially — every buffer slot `kernel` declares carries its own data
+    /// now), collapse. The whole evaluation API.
+    fn collapse(kernel: &Kernel, lattice: Lattice) -> Vec<f32> {
+        let bound = Manifold::compile(kernel, lattice.extent).bind(&[]);
         lattice.collapse(&bound).into_buffer()
     }
 
     /// One glyph's coverage over `lattice`.
     fn glyph_grid(g: &CachedGlyph, lattice: Lattice) -> Vec<f32> {
-        collapse(&g.kernel(), &[g.binding()], lattice)
+        collapse(&g.kernel(), lattice)
     }
 
     /// One glyph's coverage over a `size × size` point-space grid, sampled at
@@ -559,14 +543,14 @@ mod tests {
             &Kernel::x().add(&Kernel::constant(0.5)),
             &Kernel::y().add(&Kernel::constant(0.5)),
         );
-        collapse(&centered, &[g.binding()], Lattice::frame(size, size))
+        collapse(&centered, Lattice::frame(size, size))
     }
 
     /// One glyph's coverage at a single point — not a lattice at all now,
     /// since a lattice carries no coordinate; a bound manifold answers a
     /// point directly.
     fn sample(g: &CachedGlyph, x: f32, y: f32) -> f32 {
-        let bound = Manifold::compile(&g.kernel(), [1, 1]).bind(&[g.binding()]);
+        let bound = Manifold::compile(&g.kernel(), [1, 1]).bind(&[]);
         bound.eval_at(x, y)
     }
 
@@ -684,15 +668,22 @@ mod tests {
         // it is lowered, exactly as the compile entries lower it.
         let (lowered, lowered_root) =
             pixelflow_ir::passes::lower_dwrt_owned(arena, root).expect("glyph kernel lowers");
-        // `glyph.kernel`'s winding sum reads a bound piece table (S1a); the
-        // oracle needs it bound too — `lower_dwrt` restructures the Dwrt
-        // subtrees only, never the buffer declarations, so the one slot
-        // survives unchanged.
-        let data: Vec<&[f32]> = glyph
-            .binding
-            .as_ref()
-            .map(|(_, d)| d.as_slice())
-            .into_iter()
+        // `glyph.kernel`'s winding sum reads a piece table that travels with
+        // the kernel itself (`Kernel::with_buffer_data`); the oracle needs
+        // it bound too — `lower_dwrt` restructures the Dwrt subtrees only,
+        // never the buffer declarations, so `lowered` declares the same
+        // slot(s), in the same order, that `glyph.kernel` carries data for.
+        let data: Vec<&[f32]> = lowered
+            .buffers()
+            .iter()
+            .map(|decl| {
+                glyph
+                    .kernel
+                    .buffer_data()
+                    .find(|(id, _)| *id == decl.id)
+                    .map(|(_, d)| d.as_ref())
+                    .expect("glyph kernel carries data for every slot it declares")
+            })
             .collect();
         let table = pixelflow_ir::BindingTable::bind(&lowered, &data).expect("bind winding table");
 
@@ -833,9 +824,13 @@ mod tests {
 
         // The run is ONE kernel — every glyph placed by `Kernel::at` and
         // summed — over the four distinct coverage buffers its glyphs bake,
-        // repeats sharing one identity. Collapsing it draws the whole line.
+        // repeats sharing one identity and (now) one carried tabulation:
+        // `Kernel::sum`'s merge sees the repeated 'l's name the same
+        // `BufferIdentity` with the very same `Arc`, so it collapses to one
+        // entry rather than asserting a mismatch. Collapsing draws the
+        // whole line with no binding gathered by hand.
         let lattice = Lattice::frame(48, 16);
-        let line = collapse(&text.kernel(), &text.bindings(), lattice);
+        let line = collapse(&text.kernel(), lattice);
         assert_eq!(line.len(), 48 * 16);
         assert!(
             line.iter().sum::<f32>() > 10.0,
