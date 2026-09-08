@@ -1,6 +1,6 @@
 //! The E-Graph data structure and operations.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use super::cost::{CostFunction, CostModel};
 use super::node::{EClassId, ENode};
@@ -58,6 +58,14 @@ pub struct EGraph {
     pub(crate) parent: Vec<EClassId>,
     memo: HashMap<ENode, EClassId>,
     worklist: Vec<EClassId>,
+    /// `queued[id.index()]` is `true` while `id` has an entry on `worklist`
+    /// awaiting `rebuild_budgeted`. Guards `union`'s push: several unions
+    /// landing on the same parent in one round used to enqueue it once per
+    /// union, and `rebuild_budgeted` paid a full canonicalize-and-memo-probe
+    /// pass over that class's node vector per redundant entry even though
+    /// only the state after the *last* union in the round matters. Parallel
+    /// to `classes`/`parent`, grown alongside them in `add`.
+    queued: Vec<bool>,
     /// Rules are shared via Arc so EGraph can be cloned for search branching.
     rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
     /// Stable id per rule, parallel to `rules`. Kept so the graph can name a
@@ -247,6 +255,7 @@ impl Clone for EGraph {
             parent: self.parent.clone(),
             memo: self.memo.clone(),
             worklist: self.worklist.clone(),
+            queued: self.queued.clone(),
             rules: self.rules.clone(), // Arc clone - cheap, shares rules
             rule_ids: self.rule_ids.clone(),
             match_counts: self.match_counts.clone(),
@@ -390,11 +399,12 @@ impl EGraph {
         Self {
             classes: Vec::new(),
             parent: Vec::new(),
-            memo: HashMap::new(),
+            memo: HashMap::default(),
             worklist: Vec::new(),
+            queued: Vec::new(),
             rules: std::sync::Arc::new(Vec::new()),
             rule_ids: std::sync::Arc::new(Vec::new()),
-            match_counts: HashMap::new(),
+            match_counts: HashMap::default(),
             total_evals: 0,
             next_enode_id: 0,
             step: 0,
@@ -420,11 +430,12 @@ impl EGraph {
         Self {
             classes: Vec::new(),
             parent: Vec::new(),
-            memo: HashMap::new(),
+            memo: HashMap::default(),
             worklist: Vec::new(),
+            queued: Vec::new(),
             rules: std::sync::Arc::new(rules),
             rule_ids: std::sync::Arc::new(ids),
-            match_counts: HashMap::new(),
+            match_counts: HashMap::default(),
             total_evals: 0,
             next_enode_id: 0,
             step: 0,
@@ -591,6 +602,7 @@ impl EGraph {
             tags: vec![enode_id],
         });
         self.parent.push(id);
+        self.queued.push(false);
         self.memo.insert(node, id);
         id
     }
@@ -673,7 +685,10 @@ impl EGraph {
         if self.const_fact[parent.index()].is_none() {
             self.const_fact[parent.index()] = self.const_fact[child.index()];
         }
-        self.worklist.push(parent);
+        if !self.queued[parent.index()] {
+            self.queued[parent.index()] = true;
+            self.worklist.push(parent);
+        }
         #[cfg(feature = "provenance-journal")]
         self.provenance.record_union(UnionEvent {
             rule_idx: self.active_application.map(|a| a.rule_idx),
@@ -741,6 +756,10 @@ impl EGraph {
                 None => break,
             };
             processed += 1;
+            // Cleared by the slot pushed at (not the class it now
+            // canonicalizes to) — matches `union`'s guard, which sets it by
+            // the same slot.
+            self.queued[id.index()] = false;
             let id = self.find(id);
             let nodes = std::mem::take(&mut self.classes[id.index()].nodes);
             // `tags` must stay zipped with `nodes` through this loop: no
@@ -2500,7 +2519,7 @@ impl EGraph {
 
     pub fn extract_with_costs(&self, root: EClassId, costs: &CostModel) -> ENode {
         let root = self.find(root);
-        let mut cost_table: HashMap<EClassId, (usize, ENode)> = HashMap::new();
+        let mut cost_table: HashMap<EClassId, (usize, ENode)> = HashMap::default();
         let canonical_ids: Vec<EClassId> = self.class_ids().collect();
         // Fixed-point iteration: at most one pass per canonical class.
         for _ in 0..canonical_ids.len() {
@@ -2550,7 +2569,7 @@ impl EGraph {
         };
         let op_cost = costs.node_op_cost(node);
         let child_cost = node
-            .children()
+            .children_slice()
             .iter()
             .fold(0usize, |acc, &c| acc.saturating_add(get_child_cost(c)));
         child_cost.saturating_add(op_cost)

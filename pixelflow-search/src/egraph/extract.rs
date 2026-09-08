@@ -398,17 +398,18 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
     fn get_active_classes(&self, extraction: &Extraction<'_>) -> Vec<EClassId> {
         let egraph = extraction.egraph();
         let root = extraction.root();
-        use alloc::collections::BTreeSet;
 
         let mut active = Vec::new();
-        let mut visited = BTreeSet::new();
+        let mut visited: alloc::vec::Vec<bool> = alloc::vec![false; egraph.num_classes()];
         let mut stack = vec![root];
 
         while let Some(class) = stack.pop() {
             let canonical = egraph.find(class);
-            if !visited.insert(canonical.0) {
+            let idx = canonical.0 as usize;
+            if visited[idx] {
                 continue;
             }
+            visited[idx] = true;
 
             active.push(canonical);
 
@@ -755,14 +756,14 @@ fn repair_choices_well_founded(egraph: &EGraph, root: EClassId, choices: &mut [O
     }
 
     // Admit `pos` through `node_idx`, propagating readiness to parents.
-    let mut admit = |pos: usize,
-                     node_idx: usize,
-                     admitted: &mut Vec<bool>,
-                     admitted_count: &mut usize,
-                     recorded_ready: &mut Vec<usize>,
-                     any_ready: &mut Vec<usize>,
-                     pending: &mut Vec<Vec<usize>>,
-                     choices: &mut [Option<usize>]| {
+    let admit = |pos: usize,
+                 node_idx: usize,
+                 admitted: &mut Vec<bool>,
+                 admitted_count: &mut usize,
+                 recorded_ready: &mut Vec<usize>,
+                 any_ready: &mut Vec<usize>,
+                 pending: &mut Vec<Vec<usize>>,
+                 choices: &mut [Option<usize>]| {
         admitted[pos] = true;
         *admitted_count += 1;
         choices[scope[pos] as usize] = Some(node_idx);
@@ -856,8 +857,6 @@ pub fn extract<C: CostFunction>(
     root: EClassId,
     costs: &C,
 ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId, usize) {
-    use alloc::collections::BTreeSet;
-
     // Cap for cycle/self-referential costs - high but not astronomical
     const CYCLE_COST: usize = 1_000_000;
 
@@ -868,7 +867,7 @@ pub fn extract<C: CostFunction>(
     // Phase 1: Iterative bottom-up cost computation using topological order
     // We use a work stack to avoid recursion
     let mut stack: Vec<(EClassId, bool)> = vec![(root, false)]; // (class, children_processed)
-    let mut on_stack: BTreeSet<u32> = BTreeSet::new();
+    let mut on_stack: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
 
     while let Some((class, children_done)) = stack.pop() {
         let canonical = egraph.find(class);
@@ -880,10 +879,11 @@ pub fn extract<C: CostFunction>(
 
         if !children_done {
             // First visit: push self back (to process after children), then push children
-            if !on_stack.insert(canonical.0) {
+            if on_stack[canonical.0 as usize] {
                 // Cycle detected - don't cache, parent will handle with high cost
                 continue;
             }
+            on_stack[canonical.0 as usize] = true;
 
             stack.push((canonical, true)); // Come back after children
 
@@ -900,7 +900,7 @@ pub fn extract<C: CostFunction>(
             }
         } else {
             // Second visit: all children are computed, now compute this class
-            on_stack.remove(&canonical.0);
+            on_stack[canonical.0 as usize] = false;
 
             let nodes = egraph.nodes(canonical);
             let mut min_cost = usize::MAX;
@@ -2104,24 +2104,32 @@ fn shared_dag_dp_pass<C: CostFunction>(
 /// has. Shared by both DP passes so their traversal, and therefore which
 /// classes end up cycle-priced, cannot drift apart.
 fn post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
-    use alloc::collections::BTreeSet;
-
+    // Dense bitset over canonical class ids, not `BTreeSet<u32>`: every id
+    // here is already bounded by `egraph.num_classes()`, so a `Vec<bool>`
+    // index is O(1) and allocation-free per probe, versus an O(log n)
+    // tree-node alloc per insert on a set this file already indexes by plain
+    // `Vec` elsewhere (`cost_of_choices`'s `color: Vec<u8>`). `post_order`
+    // runs twice per extraction (once per DP pass), so this is on the same
+    // hot path as `shared_dag_dp_pass`.
+    let num_classes = egraph.num_classes();
     let mut order: Vec<EClassId> = Vec::new();
-    let mut settled: BTreeSet<u32> = BTreeSet::new();
-    let mut on_stack: BTreeSet<u32> = BTreeSet::new();
+    let mut settled: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
+    let mut on_stack: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
     let mut stack: Vec<(EClassId, bool)> = vec![(root, false)];
 
     while let Some((class, children_done)) = stack.pop() {
         let canonical = egraph.find(class);
+        let idx = canonical.0 as usize;
 
-        if settled.contains(&canonical.0) {
+        if settled[idx] {
             continue;
         }
 
         if !children_done {
-            if !on_stack.insert(canonical.0) {
+            if on_stack[idx] {
                 continue;
             }
+            on_stack[idx] = true;
 
             stack.push((canonical, true));
 
@@ -2129,15 +2137,15 @@ fn post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
                 if let ENode::Op { children, .. } = node {
                     for &child in children {
                         let child_canonical = egraph.find(child);
-                        if !settled.contains(&child_canonical.0) {
+                        if !settled[child_canonical.0 as usize] {
                             stack.push((child, false));
                         }
                     }
                 }
             }
         } else {
-            on_stack.remove(&canonical.0);
-            settled.insert(canonical.0);
+            on_stack[idx] = false;
+            settled[idx] = true;
             order.push(canonical);
         }
     }
@@ -2186,10 +2194,15 @@ fn toposort_dag(
     best_node: &[Option<usize>],
     shared: &[(EClassId, usize)],
 ) -> Vec<EClassId> {
-    use alloc::collections::BTreeSet;
-
-    let shared_set: BTreeSet<u32> = shared.iter().map(|(id, _)| id.0).collect();
-    let mut visited: BTreeSet<u32> = BTreeSet::new();
+    // Dense bitsets over canonical class ids (bounded by `best_node.len()`,
+    // itself sized to `egraph.num_classes()` by the DP pass that built it) —
+    // see `post_order`'s doc comment for why this beats `BTreeSet<u32>` here.
+    let num_classes = best_node.len();
+    let mut shared_set: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
+    for (id, _) in shared {
+        shared_set[id.0 as usize] = true;
+    }
+    let mut visited: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
     let mut result = Vec::new();
 
     // Iterative post-order: (class, children_pushed)
@@ -2197,29 +2210,30 @@ fn toposort_dag(
 
     while let Some((class, children_done)) = stack.pop() {
         let canonical = egraph.find(class);
+        let idx = canonical.0 as usize;
 
-        if visited.contains(&canonical.0) {
+        if visited[idx] {
             continue;
         }
 
         if !children_done {
             stack.push((canonical, true));
 
-            if let Some(node_idx) = best_node.get(canonical.0 as usize).and_then(|o| *o) {
+            if let Some(node_idx) = best_node.get(idx).and_then(|o| *o) {
                 let node = &egraph.nodes(canonical)[node_idx];
                 if let ENode::Op { children, .. } = node {
                     for &child in children {
                         let child_can = egraph.find(child);
-                        if !visited.contains(&child_can.0) {
+                        if !visited[child_can.0 as usize] {
                             stack.push((child, false));
                         }
                     }
                 }
             }
         } else {
-            visited.insert(canonical.0);
+            visited[idx] = true;
 
-            if shared_set.contains(&canonical.0) {
+            if shared_set[idx] {
                 result.push(canonical);
             }
         }

@@ -127,13 +127,13 @@ impl<T: InversePair> Rewrite for Involution<T> {
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         if !node_matches_op(node, T::inverse()) { return None; }
 
-        let children = node.children();
+        let children = node.children_slice();
         if children.len() != 1 { return None; }
         let inner_id = children[0];
 
         for inner_node in egraph.nodes(inner_id) {
             if node_matches_op(inner_node, T::inverse()) {
-                let inner_children = inner_node.children();
+                let inner_children = inner_node.children_slice();
                 if inner_children.len() == 1 {
                     return Some(RewriteAction::Union(inner_children[0]));
                 }
@@ -204,7 +204,7 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
         // x ⊕ inv(x) → identity
         for node_b in egraph.nodes(b) {
             if node_matches_op(node_b, T::inverse()) {
-                if let Some(&inner) = node_b.children().first() {
+                if let Some(&inner) = node_b.children_slice().first() {
                     if egraph.find(inner) == egraph.find(a) {
                         return Some(RewriteAction::Create(ENode::constant(T::identity())));
                     }
@@ -215,7 +215,7 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
         // inv(x) ⊕ x → identity
         for node_a in egraph.nodes(a) {
             if node_matches_op(node_a, T::inverse()) {
-                if let Some(&inner) = node_a.children().first() {
+                if let Some(&inner) = node_a.children_slice().first() {
                     if egraph.find(inner) == egraph.find(b) {
                         return Some(RewriteAction::Create(ENode::constant(T::identity())));
                     }
