@@ -488,10 +488,14 @@ fn real_kernels(font: &Path, filter: Option<&str>) -> Vec<RealKernel> {
         let atlas = GlyphAtlas::new(CELL_HEIGHT_PT, density, ATLAS_CAPACITY);
         let tile = atlas.tile_px() as u32;
         for ch in WARM_RANGE {
-            let Some(kernel) = parsed.glyph_kernel_scaled(ch, tile as f32) else {
+            // The winding sum reads a bound piece table, so a glyph is a
+            // kernel plus its binding. This harness measures the arena the
+            // optimizer sees, which the kernel alone carries.
+            let Some(glyph) = parsed.glyph_kernel_scaled(ch, tile as f32) else {
                 missing += 1;
                 continue;
             };
+            let kernel = glyph.kernel;
             push(
                 format!("glyph{tile}_U{:04X}", ch as u32),
                 &format!("glyph{tile}"),
@@ -505,7 +509,8 @@ fn real_kernels(font: &Path, filter: Option<&str>) -> Vec<RealKernel> {
     for (label, ch) in BENCH_CHARS {
         let kernel = parsed
             .glyph_kernel_scaled(ch, BENCH_PT)
-            .unwrap_or_else(|| panic!("no glyph for {ch:?}"));
+            .unwrap_or_else(|| panic!("no glyph for {ch:?}"))
+            .kernel;
         push(
             format!("bench_{label}"),
             "bench",
