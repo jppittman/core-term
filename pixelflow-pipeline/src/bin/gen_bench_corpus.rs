@@ -56,8 +56,8 @@ use std::hash::Hash;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use pixelflow_ir::{ExprArena, ExprId, OpKind};
-use pixelflow_pipeline::shader_bench::{NAMED_KERNEL_NAMES, named_kernel};
+use pixelflow_ir::{ExprArena, ExprId};
+use pixelflow_pipeline::shader_bench::named_kernel;
 use pixelflow_pipeline::training::corpus::write_corpus;
 use pixelflow_pipeline::training::quarantine::Quarantine;
 use pixelflow_pipeline::training::split::{Family, SplitManifest, Tier};
@@ -850,6 +850,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_pipeline::shader_bench::NAMED_KERNEL_NAMES;
     use std::collections::HashSet;
 
     // ── Cross-tier dedup ────────────────────────────────────────────────────
@@ -1049,7 +1050,7 @@ mod tests {
     }
 
     fn one_entry(name: &str) -> Vec<(String, ExprArena, ExprId)> {
-        let (arena, root) = poly();
+        let (arena, root) = named_kernel("poly").expect("poly is a named kernel");
         vec![(name.to_string(), arena, root)]
     }
 

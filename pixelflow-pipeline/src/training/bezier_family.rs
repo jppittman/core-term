@@ -288,7 +288,6 @@ impl Form {
     }
 }
 
-
 /// One draw: a form chosen uniformly, built from `rng`.
 #[must_use]
 pub fn draw(rng: &mut Lcg) -> (Form, ExprArena, ExprId) {
@@ -498,5 +497,4 @@ mod oracle_tests {
             10
         );
     }
-
 }

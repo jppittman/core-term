@@ -72,7 +72,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
-use pixelflow_pipeline::training::bezier_family::{FORMS, Form, Lcg};
+use pixelflow_pipeline::training::bezier_family::{FORMS, Lcg};
 use pixelflow_pipeline::training::corpus::{read_corpus, write_corpus};
 use pixelflow_pipeline::training::quarantine::Quarantine;
 use pixelflow_pipeline::training::split::SplitManifest;
@@ -471,6 +471,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_pipeline::training::bezier_family::Form;
 
     #[test]
     fn every_admitted_form_is_polynomial_only() {
