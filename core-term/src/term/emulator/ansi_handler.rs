@@ -174,6 +174,10 @@ fn handle_csi_command(emulator: &mut TerminalEmulator, csi: CsiCommand) -> Optio
             emulator.cursor_to_pos(r.saturating_sub(1) as usize, c.saturating_sub(1) as usize);
             None
         }
+        CsiCommand::LinePositionAbsolute(n) => {
+            emulator.cursor_to_row(n.saturating_sub(1) as usize);
+            None
+        }
         CsiCommand::EraseInDisplay(mode_val) => {
             emulator.erase_in_display(EraseMode::from(mode_val));
             None
