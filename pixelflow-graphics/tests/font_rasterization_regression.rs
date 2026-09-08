@@ -43,15 +43,14 @@ fn regression_mask_and_not_multiply() {
         if clockwise {
             corners.reverse();
         }
+        let segments = (0..4)
+            .map(|i| Segment::Line {
+                from: corners[i],
+                to: corners[(i + 1) % 4],
+            })
+            .collect();
         let cov = loop_blinn::glyph(&Outline {
-            contours: vec![Contour {
-                segments: (0..4)
-                    .map(|i| Segment::Line {
-                        from: corners[i],
-                        to: corners[(i + 1) % 4],
-                    })
-                    .collect(),
-            }],
+            contours: vec![Contour::new(segments).expect("the square closes")],
         });
 
         assert!(

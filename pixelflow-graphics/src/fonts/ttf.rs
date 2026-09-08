@@ -515,7 +515,7 @@ impl<'a> Font<'a> {
         let mut contours = Vec::with_capacity(n);
         let mut start = 0;
         for &e in &ends {
-            contours.push(Contour::from_truetype_points(&pts[start..=e]));
+            contours.push(Contour::from_truetype_points(&pts[start..=e])?);
             start = e + 1;
         }
         Some(Outline { contours })

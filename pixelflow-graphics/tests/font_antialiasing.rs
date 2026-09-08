@@ -30,7 +30,7 @@ fn bake(lattice: Lattice, kernel: &Kernel, glyph: &Glyph) -> Vec<f32> {
 /// Coverage of one closed contour.
 fn coverage(segments: Vec<Segment>) -> Glyph {
     loop_blinn::glyph(&Outline {
-        contours: vec![Contour { segments }],
+        contours: vec![Contour::new(segments).expect("test contour must close")],
     })
 }
 

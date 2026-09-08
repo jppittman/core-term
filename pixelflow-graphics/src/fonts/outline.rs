@@ -78,22 +78,94 @@ impl Segment {
     }
 }
 
+/// Why [`Contour::new`] refused a segment list.
+///
+/// A contour is the closed chain a winding computation walks — see
+/// [`Contour::new`] — so every producer of one, TrueType parsing included,
+/// funnels its failures through these same two cases rather than each
+/// inventing its own notion of "not a contour".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContourError {
+    /// No segments at all: a boundary with no edges encloses nothing.
+    Empty,
+    /// Segment `at`'s [`Segment::to`] does not exactly equal the next
+    /// segment's (`(at + 1) % len`) [`Segment::from`] — the chain never
+    /// gets back to where it started.
+    NotClosed {
+        /// The segment whose `to` breaks the chain.
+        at: usize,
+    },
+}
+
+impl std::fmt::Display for ContourError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "a contour needs at least one segment"),
+            Self::NotClosed { at } => {
+                write!(f, "segment {at} does not end where the next segment begins")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ContourError {}
+
 /// A closed contour: each segment starts where the previous one ends, and
 /// the last ends where the first starts.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Contour {
-    /// The segments, in the direction the font draws them.
-    pub segments: Vec<Segment>,
+    segments: Vec<Segment>,
 }
 
 impl Contour {
+    /// Build a contour from `segments`, checking the closure a winding
+    /// computation ([`loop_blinn::glyph`](super::loop_blinn::glyph)) depends
+    /// on: each segment's [`Segment::to`] must exactly equal the next
+    /// segment's [`Segment::from`], and the last segment's `to` must exactly
+    /// equal the first segment's `from`.
+    ///
+    /// "Exactly" is `f32` bit equality, not a tolerance. Every point a
+    /// well-formed caller passes here comes from one source — the same
+    /// value read or computed once and shared by the two segments that meet
+    /// there ([`Self::from_truetype_points`] and the affine map in `ttf.rs`
+    /// both build segments this way) — so a real gap is a construction bug
+    /// a tolerance would hide rather than catch.
+    ///
+    /// An empty list is refused too: it encloses nothing, so it was never a
+    /// contour, and this stops that state from being called one.
+    ///
+    /// # Errors
+    ///
+    /// [`ContourError::Empty`] for no segments, [`ContourError::NotClosed`]
+    /// for a chain that does not close.
+    pub fn new(segments: Vec<Segment>) -> Result<Self, ContourError> {
+        let n = segments.len();
+        if n == 0 {
+            return Err(ContourError::Empty);
+        }
+        for (i, s) in segments.iter().enumerate() {
+            let next = segments[(i + 1) % n];
+            if s.to() != next.from() {
+                return Err(ContourError::NotClosed { at: i });
+            }
+        }
+        Ok(Self { segments })
+    }
+
+    /// The segments, in the direction the font draws them.
+    #[must_use]
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
     /// A contour from TrueType's point list — `(x, y, on_curve)` in order —
     /// with the format's implicit on-curve points made explicit: two
-    /// consecutive off-curve points imply an on-curve point at their midpoint.
-    /// The contour starts at its first on-curve point, so every segment has
-    /// on-curve endpoints.
+    /// consecutive off-curve points imply an on-curve point at their
+    /// midpoint. The contour starts at its first on-curve point, so every
+    /// segment has on-curve endpoints. `None` for an empty point list —
+    /// there is no contour to build.
     #[must_use]
-    pub fn from_truetype_points(points: &[(f32, f32, bool)]) -> Self {
+    pub fn from_truetype_points(points: &[(f32, f32, bool)]) -> Option<Self> {
         let expanded: Vec<(Point, bool)> = points
             .iter()
             .enumerate()
@@ -106,9 +178,7 @@ impl Contour {
                 }
             })
             .collect();
-        let Some(start) = expanded.iter().position(|p| p.1) else {
-            return Self::default();
-        };
+        let start = expanded.iter().position(|p| p.1)?;
         let at = |j: usize| expanded[(start + j) % expanded.len()];
         let mut segments = Vec::with_capacity(expanded.len());
         let mut i = 0;
@@ -128,7 +198,16 @@ impl Contour {
                 i += 2;
             }
         }
-        Self { segments }
+        // Every segment's endpoints are read from `expanded` by index
+        // (`at(j)` for a shared `j`, never recomputed), so consecutive
+        // segments always share one bit-identical `Point` and this cannot
+        // fail for a non-empty `expanded` — which `start` having been found
+        // already proves.
+        Some(
+            Self::new(segments).expect(
+                "from_truetype_points shares endpoints by array index, so it always closes",
+            ),
+        )
     }
 }
 
@@ -144,17 +223,19 @@ pub struct Outline {
 }
 
 impl Outline {
-    /// Whether there is nothing to draw.
+    /// Whether there is nothing to draw. A [`Contour`] can never itself be
+    /// empty ([`Contour::new`] refuses one), so an outline has nothing to
+    /// draw exactly when it has no contours at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.contours.iter().all(|c| c.segments.is_empty())
+        self.contours.is_empty()
     }
 
     /// Every segment of every contour.
     pub fn segments(&self) -> impl Iterator<Item = Segment> + '_ {
         self.contours
             .iter()
-            .flat_map(|c| c.segments.iter().copied())
+            .flat_map(|c| c.segments().iter().copied())
     }
 
     /// The outline pushed through `m`.
@@ -164,8 +245,16 @@ impl Outline {
             contours: self
                 .contours
                 .iter()
-                .map(|c| Contour {
-                    segments: c.segments.iter().map(|s| s.transformed(m)).collect(),
+                .map(|c| {
+                    let segments = c.segments().iter().map(|s| s.transformed(m)).collect();
+                    // `m.apply` is a deterministic function of its input
+                    // bits, so the same shared endpoint that made `c` close
+                    // maps to the same output on both sides and the result
+                    // closes too.
+                    Contour::new(segments).expect(
+                        "an affine map preserves the exact equality a closed contour's \
+                         shared endpoints held",
+                    )
                 })
                 .collect(),
         }
@@ -249,11 +338,15 @@ mod tests {
 
     /// Every contour a font produces is closed, segment to segment: that is
     /// the property every winding computation depends on, and the implicit
-    /// midpoint expansion is where it would break.
+    /// midpoint expansion is where it would break. [`Contour::new`] (which
+    /// [`Contour::from_truetype_points`] itself routes through) already
+    /// refuses anything that fails this, so a `Some` result is proof — this
+    /// restates the check directly, in the caller's own terms, as the
+    /// property this module exists to protect.
     fn assert_closed(contour: &Contour) {
-        let n = contour.segments.len();
-        for (i, s) in contour.segments.iter().enumerate() {
-            let next = contour.segments[(i + 1) % n];
+        let n = contour.segments().len();
+        for (i, s) in contour.segments().iter().enumerate() {
+            let next = contour.segments()[(i + 1) % n];
             assert_eq!(
                 s.to(),
                 next.from(),
@@ -270,9 +363,13 @@ mod tests {
             (4.0, 0.0, true),
             (4.0, 4.0, true),
             (0.0, 4.0, true),
-        ]);
-        assert_eq!(c.segments.len(), 4);
-        assert!(c.segments.iter().all(|s| matches!(s, Segment::Line { .. })));
+        ])
+        .expect("four points make a contour");
+        assert_eq!(c.segments().len(), 4);
+        assert!(c
+            .segments()
+            .iter()
+            .all(|s| matches!(s, Segment::Line { .. })));
         assert_closed(&c);
     }
 
@@ -285,35 +382,124 @@ mod tests {
             (1.0, 1.0, false),
             (0.0, 1.0, false),
             (0.0, 0.0, false),
-        ]);
-        assert_eq!(c.segments.len(), 4);
-        assert!(c.segments.iter().all(|s| matches!(s, Segment::Quad { .. })));
-        assert_eq!(c.segments[0].from(), [1.0, 0.5]);
+        ])
+        .expect("four points make a contour");
+        assert_eq!(c.segments().len(), 4);
+        assert!(c
+            .segments()
+            .iter()
+            .all(|s| matches!(s, Segment::Quad { .. })));
+        assert_eq!(c.segments()[0].from(), [1.0, 0.5]);
         assert_closed(&c);
     }
 
     #[test]
     fn a_contour_starting_off_curve_is_rotated_to_an_on_curve_start() {
         let c =
-            Contour::from_truetype_points(&[(0.0, 1.0, false), (1.0, 0.0, true), (2.0, 2.0, true)]);
-        assert_eq!(c.segments.len(), 2);
-        assert_eq!(c.segments[0].from(), [1.0, 0.0]);
-        assert!(matches!(c.segments[1], Segment::Quad { .. }));
+            Contour::from_truetype_points(&[(0.0, 1.0, false), (1.0, 0.0, true), (2.0, 2.0, true)])
+                .expect("three points make a contour");
+        assert_eq!(c.segments().len(), 2);
+        assert_eq!(c.segments()[0].from(), [1.0, 0.0]);
+        assert!(matches!(c.segments()[1], Segment::Quad { .. }));
         assert_closed(&c);
     }
 
     #[test]
     fn a_single_off_curve_point_is_a_degenerate_quad() {
-        let c = Contour::from_truetype_points(&[(3.0, 3.0, false)]);
-        assert_eq!(c.segments.len(), 1);
+        let c = Contour::from_truetype_points(&[(3.0, 3.0, false)])
+            .expect("one point makes a degenerate contour");
+        assert_eq!(c.segments().len(), 1);
         assert_eq!(
-            c.segments[0],
+            c.segments()[0],
             Segment::Quad {
                 from: [3.0, 3.0],
                 control: [3.0, 3.0],
                 to: [3.0, 3.0]
             }
         );
+    }
+
+    #[test]
+    fn an_empty_point_list_is_no_contour_at_all() {
+        assert!(Contour::from_truetype_points(&[]).is_none());
+    }
+
+    /// The finding this module's constructor exists for: a single edge that
+    /// never returns to its own start is not a boundary, and building one by
+    /// hand must be refused rather than silently accepted as a "contour"
+    /// that a winding computation would then misread as a filled half-plane.
+    #[test]
+    fn a_single_open_line_is_refused() {
+        let err = Contour::new(vec![Segment::Line {
+            from: [0.0, 0.0],
+            to: [0.0, 10.0],
+        }])
+        .expect_err("a line's `to` does not equal its own `from`");
+        assert_eq!(err, ContourError::NotClosed { at: 0 });
+    }
+
+    /// A chain with every join sound but one: refused at the joint that
+    /// breaks, not merely "eventually" — [`ContourError::NotClosed`]'s `at`
+    /// names the segment.
+    #[test]
+    fn a_chain_with_one_gap_is_refused() {
+        let segments = vec![
+            Segment::Line {
+                from: [0.0, 0.0],
+                to: [4.0, 0.0],
+            },
+            Segment::Line {
+                from: [4.0, 0.0],
+                to: [4.0, 4.0],
+            },
+            // Should return to [0.0, 0.0] to close the loop; instead it
+            // stops short, leaving a gap only the last segment can see.
+            Segment::Line {
+                from: [4.0, 4.0],
+                to: [0.0, 4.0],
+            },
+        ];
+        let err = Contour::new(segments).expect_err("the loop never returns to [0.0, 0.0]");
+        assert_eq!(err, ContourError::NotClosed { at: 2 });
+    }
+
+    #[test]
+    fn an_empty_segment_list_is_refused() {
+        assert_eq!(Contour::new(vec![]), Err(ContourError::Empty));
+    }
+
+    /// A closed square and a closed ring — the shapes
+    /// `tests/loop_blinn_winding.rs` winds against an independent oracle —
+    /// are accepted. This only pins acceptance of the constructor itself;
+    /// the winding tests already cover what `loop_blinn::glyph` does with
+    /// the result.
+    #[test]
+    fn a_closed_square_and_ring_are_accepted() {
+        let square = Contour::new(
+            (0..4)
+                .map(|i| {
+                    let pts = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
+                    Segment::Line {
+                        from: pts[i],
+                        to: pts[(i + 1) % 4],
+                    }
+                })
+                .collect(),
+        );
+        assert!(square.is_ok());
+
+        let on = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
+        let off = [[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]];
+        let ring = Contour::new(
+            (0..4)
+                .map(|i| Segment::Quad {
+                    from: on[i],
+                    control: off[i],
+                    to: on[(i + 1) % 4],
+                })
+                .collect(),
+        );
+        assert!(ring.is_ok());
     }
 
     #[test]
@@ -329,13 +515,23 @@ mod tests {
     #[test]
     fn bounds_cover_control_points() {
         let mut o = Outline::default();
-        o.contours.push(Contour {
-            segments: vec![Segment::Quad {
-                from: [0.0, 0.0],
-                control: [5.0, -2.0],
-                to: [1.0, 1.0],
-            }],
-        });
+        // Closed by a straight edge back to the start; its own control
+        // points ([1,1] and [0,0]) fall inside the quadratic's bounds, so
+        // the expected box is unchanged by adding it.
+        o.contours.push(
+            Contour::new(vec![
+                Segment::Quad {
+                    from: [0.0, 0.0],
+                    control: [5.0, -2.0],
+                    to: [1.0, 1.0],
+                },
+                Segment::Line {
+                    from: [1.0, 1.0],
+                    to: [0.0, 0.0],
+                },
+            ])
+            .expect("the line closes the quadratic's loop"),
+        );
         assert_eq!(o.bounds(), Some([0.0, -2.0, 5.0, 1.0]));
         assert_eq!(Outline::default().bounds(), None);
         assert!(Outline::default().is_empty());

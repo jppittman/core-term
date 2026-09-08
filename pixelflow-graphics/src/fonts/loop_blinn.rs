@@ -539,7 +539,7 @@ impl Pieces {
         let mut by_contour: Vec<Vec<Piece>> = Vec::with_capacity(outline.contours.len());
         for contour in &outline.contours {
             let mut pieces = Vec::new();
-            for segment in &contour.segments {
+            for segment in contour.segments() {
                 match *segment {
                     Segment::Line { from, to } => {
                         pieces.extend(Piece::line(wide(from), wide(to)));
@@ -1087,19 +1087,29 @@ fn implicit_distance(bulge: Bulge) -> Kernel {
 mod tests {
     use super::*;
 
+    // The three tests below exercise `Piece::quad`'s splitting/flattening
+    // directly rather than through an `Outline`/`Contour` of one open arc:
+    // an arc alone is exactly the shape `Contour::new` now refuses (its
+    // `to` never meets its own `from`), and going through
+    // `Pieces::of(&Outline{..})` for a single-segment, single-contour
+    // outline is nothing more than this one call — `Pieces::of` only adds
+    // `may_be_interior` bookkeeping against *other* contours, and there is
+    // no other contour here (`covered` is `false` either way). So the
+    // shorter path tests the identical splitting logic without needing a
+    // closed boundary these cases were never testing in the first place.
+
     #[test]
     fn a_flat_quadratic_is_its_chord() {
-        let mut o = Outline::default();
-        o.contours.push(super::super::outline::Contour {
-            segments: vec![Segment::Quad {
-                from: [0.0, 0.0],
-                control: [5.0, 0.001], // deviation 5e-4, under FLAT_ENOUGH
-                to: [10.0, 0.0],
-            }],
-        });
-        let pieces = Pieces::of(&o);
-        assert_eq!(pieces.pieces.len(), 1);
-        assert!(pieces.pieces[0].bulge.is_none());
+        let mut pieces = Vec::new();
+        Piece::quad(
+            wide([0.0, 0.0]),
+            wide([5.0, 0.001]), // deviation 5e-4, under FLAT_ENOUGH
+            wide([10.0, 0.0]),
+            MAX_SPLITS,
+            &mut pieces,
+        );
+        assert_eq!(pieces.len(), 1);
+        assert!(pieces[0].bulge.is_none());
     }
 
     /// A curve too fat for the ramp's chord bound is split until it is not,
@@ -1107,17 +1117,16 @@ mod tests {
     /// split, so a split must not change it.
     #[test]
     fn a_fat_quadratic_is_split_until_its_chord_bounds_it() {
-        let mut o = Outline::default();
-        o.contours.push(super::super::outline::Contour {
-            segments: vec![Segment::Quad {
-                from: [0.0, 0.0],
-                control: [10.0, 40.0],
-                to: [20.0, 0.0],
-            }],
-        });
-        let pieces = Pieces::of(&o);
-        assert!(pieces.pieces.len() > 1, "a 20-px bulge was not split");
-        for p in &pieces.pieces {
+        let mut pieces = Vec::new();
+        Piece::quad(
+            wide([0.0, 0.0]),
+            wide([10.0, 40.0]),
+            wide([20.0, 0.0]),
+            MAX_SPLITS,
+            &mut pieces,
+        );
+        assert!(pieces.len() > 1, "a 20-px bulge was not split");
+        for p in &pieces {
             assert!(
                 p.deviation() <= MAX_DEVIATION,
                 "a piece still strays {} from its chord",
@@ -1144,15 +1153,14 @@ mod tests {
     /// merely a loose bound.
     #[test]
     fn a_hook_is_not_flattened_by_measuring_the_wrong_distance() {
-        let mut o = Outline::default();
-        o.contours.push(super::super::outline::Contour {
-            segments: vec![Segment::Quad {
-                from: [0.0, 0.0],
-                control: [-100.0, 0.005],
-                to: [1.0, 0.0],
-            }],
-        });
-        let pieces = Pieces::of(&o);
+        let mut pieces = Vec::new();
+        Piece::quad(
+            wide([0.0, 0.0]),
+            wide([-100.0, 0.005]),
+            wide([1.0, 0.0]),
+            MAX_SPLITS,
+            &mut pieces,
+        );
         // Not "every piece is a curve": once split, a sub-arc of a hook
         // really can be straight to within `FLAT_ENOUGH`, and emitting it
         // as a line is right. What must survive is the *shape* — the
@@ -1163,7 +1171,6 @@ mod tests {
             b: [1.0, 0.0],
         };
         let reach = pieces
-            .pieces
             .iter()
             .map(|p| point_to_segment(p.chord.a, chord).max(point_to_segment(p.chord.b, chord)))
             .fold(0.0f64, f64::max);
@@ -1171,7 +1178,7 @@ mod tests {
             reach > 10.0,
             "a hook straying ~50 units collapsed onto its chord: reach {reach}"
         );
-        for p in &pieces.pieces {
+        for p in &pieces {
             assert!(
                 p.deviation() <= MAX_DEVIATION,
                 "a piece still strays {} from its chord",

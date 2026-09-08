@@ -228,14 +228,13 @@ fn square(x0: f32, y0: f32, x1: f32, y1: f32, clockwise: bool) -> Contour {
     if clockwise {
         pts.reverse();
     }
-    Contour {
-        segments: (0..4)
-            .map(|i| Segment::Line {
-                from: pts[i],
-                to: pts[(i + 1) % 4],
-            })
-            .collect(),
-    }
+    let segments = (0..4)
+        .map(|i| Segment::Line {
+            from: pts[i],
+            to: pts[(i + 1) % 4],
+        })
+        .collect();
+    Contour::new(segments).expect("a square's own corners close the loop")
 }
 
 /// A circle of radius `r` about `c` from four quadratics through the
@@ -259,15 +258,14 @@ fn ring(c: [f32; 2], r: f32, clockwise: bool) -> Contour {
         off.reverse();
         off.rotate_right(1);
     }
-    Contour {
-        segments: (0..4)
-            .map(|i| Segment::Quad {
-                from: on[i],
-                control: off[i],
-                to: on[(i + 1) % 4],
-            })
-            .collect(),
-    }
+    let segments = (0..4)
+        .map(|i| Segment::Quad {
+            from: on[i],
+            control: off[i],
+            to: on[(i + 1) % 4],
+        })
+        .collect();
+    Contour::new(segments).expect("a ring's own on-curve points close the loop")
 }
 
 fn outline_of(contours: Vec<Contour>) -> Outline {
@@ -304,45 +302,43 @@ fn synthetic_outlines_wind_like_the_oracle() {
         ),
         (
             "bow tie",
-            outline_of(vec![Contour {
-                segments: vec![
-                    Segment::Line {
-                        from: [4.0, 4.0],
-                        to: [44.0, 44.0],
-                    },
-                    Segment::Line {
-                        from: [44.0, 44.0],
-                        to: [4.0, 44.0],
-                    },
-                    Segment::Line {
-                        from: [4.0, 44.0],
-                        to: [44.0, 4.0],
-                    },
-                    Segment::Line {
-                        from: [44.0, 4.0],
-                        to: [4.0, 4.0],
-                    },
-                ],
-            }]),
+            outline_of(vec![Contour::new(vec![
+                Segment::Line {
+                    from: [4.0, 4.0],
+                    to: [44.0, 44.0],
+                },
+                Segment::Line {
+                    from: [44.0, 44.0],
+                    to: [4.0, 44.0],
+                },
+                Segment::Line {
+                    from: [4.0, 44.0],
+                    to: [44.0, 4.0],
+                },
+                Segment::Line {
+                    from: [44.0, 4.0],
+                    to: [4.0, 4.0],
+                },
+            ])
+            .expect("the bow tie's own corners close the loop")]),
         ),
         (
             "sharp triangle",
-            outline_of(vec![Contour {
-                segments: vec![
-                    Segment::Line {
-                        from: [4.0, 4.0],
-                        to: [44.0, 22.0],
-                    },
-                    Segment::Line {
-                        from: [44.0, 22.0],
-                        to: [4.0, 30.0],
-                    },
-                    Segment::Line {
-                        from: [4.0, 30.0],
-                        to: [4.0, 4.0],
-                    },
-                ],
-            }]),
+            outline_of(vec![Contour::new(vec![
+                Segment::Line {
+                    from: [4.0, 4.0],
+                    to: [44.0, 22.0],
+                },
+                Segment::Line {
+                    from: [44.0, 22.0],
+                    to: [4.0, 30.0],
+                },
+                Segment::Line {
+                    from: [4.0, 30.0],
+                    to: [4.0, 4.0],
+                },
+            ])
+            .expect("the triangle's own corners close the loop")]),
         ),
         ("ring", outline_of(vec![ring([24.0, 24.0], 18.0, false)])),
         (
@@ -358,30 +354,29 @@ fn synthetic_outlines_wind_like_the_oracle() {
         ),
         (
             "concave bulges: a square pinched by curves",
-            outline_of(vec![Contour {
-                segments: vec![
-                    Segment::Quad {
-                        from: [4.0, 4.0],
-                        control: [24.0, 20.0],
-                        to: [44.0, 4.0],
-                    },
-                    Segment::Quad {
-                        from: [44.0, 4.0],
-                        control: [28.0, 24.0],
-                        to: [44.0, 44.0],
-                    },
-                    Segment::Quad {
-                        from: [44.0, 44.0],
-                        control: [24.0, 28.0],
-                        to: [4.0, 44.0],
-                    },
-                    Segment::Quad {
-                        from: [4.0, 44.0],
-                        control: [20.0, 24.0],
-                        to: [4.0, 4.0],
-                    },
-                ],
-            }]),
+            outline_of(vec![Contour::new(vec![
+                Segment::Quad {
+                    from: [4.0, 4.0],
+                    control: [24.0, 20.0],
+                    to: [44.0, 4.0],
+                },
+                Segment::Quad {
+                    from: [44.0, 4.0],
+                    control: [28.0, 24.0],
+                    to: [44.0, 44.0],
+                },
+                Segment::Quad {
+                    from: [44.0, 44.0],
+                    control: [24.0, 28.0],
+                    to: [4.0, 44.0],
+                },
+                Segment::Quad {
+                    from: [4.0, 44.0],
+                    control: [20.0, 24.0],
+                    to: [4.0, 4.0],
+                },
+            ])
+            .expect("the pinched square's own corners close the loop")]),
         ),
     ];
     for (name, outline) in &cases {

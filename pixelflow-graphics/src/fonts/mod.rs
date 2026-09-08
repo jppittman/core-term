@@ -128,7 +128,7 @@ pub(crate) const PIXEL_CENTER: f32 = 0.5;
 
 // Re-export font types (user-facing only)
 pub use loop_blinn::{Glyph, Support};
-pub use outline::{Affine, Contour, Outline, Segment};
+pub use outline::{Affine, Contour, ContourError, Outline, Segment};
 pub use ttf::Font;
 
 // Re-export loader types

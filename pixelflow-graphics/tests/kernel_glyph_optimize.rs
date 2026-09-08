@@ -85,15 +85,14 @@ fn bake_pipeline(arena: &ExprArena, root: ExprId, shape: [u32; 2]) -> (ExprArena
 /// A closed polygon of `n` straight edges: no curves, so every edge function
 /// is affine and every gradient a constant.
 fn polygon(points: &[[f32; 2]]) -> Outline {
+    let segments = (0..points.len())
+        .map(|i| Segment::Line {
+            from: points[i],
+            to: points[(i + 1) % points.len()],
+        })
+        .collect();
     Outline {
-        contours: vec![Contour {
-            segments: (0..points.len())
-                .map(|i| Segment::Line {
-                    from: points[i],
-                    to: points[(i + 1) % points.len()],
-                })
-                .collect(),
-        }],
+        contours: vec![Contour::new(segments).expect("a polygon's own vertices close the loop")],
     }
 }
 
