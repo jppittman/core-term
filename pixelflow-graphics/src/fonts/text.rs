@@ -24,8 +24,14 @@ use super::outline::Outline;
 use super::ttf::Font;
 use pixelflow_core::{IndexRange, Kernel, Lattice, Union};
 
-/// The rectangle of samples [`text_union`] decomposes a frame into. Chosen
-/// by measurement — see docs/plans/2026-09-08-loop-blinn-glyph.md.
+/// The rectangle of samples [`text_union`] decomposes a frame into.
+///
+/// **Argued, not measured**, which is the honest state of it: wide enough
+/// that a row of a cell is a whole SIMD batch at every ISA level (lanes ride
+/// X), short enough that a cell holds few segments, and a shape L3's own
+/// finding pushes toward — narrow summands cost per-row call overhead
+/// (measured there at 1.46× for 15-px-wide cells). A benchmark should
+/// replace this reasoning; see docs/plans/2026-09-08-loop-blinn-glyph.md §8.
 pub(crate) const TEXT_CELL: [usize; 2] = [16, 8];
 
 /// Lay out uncached analytical text as a single coverage [`Kernel`], in raw
@@ -52,7 +58,7 @@ pub fn text(font: &Font, text_str: &str, size: f32) -> Kernel {
 /// `lattice` — the domain-side encoding of the glyphs' extents.
 ///
 /// The string's outline is the outlines of its glyphs, placed; the frame is
-/// cut into [`TEXT_CELL`]-sized rectangles and each is placed with only the
+/// cut into `TEXT_CELL`-sized rectangles and each is placed with only the
 /// segments that reach it ([`loop_blinn::cells`]). Rectangles no segment
 /// reaches are the constant coverage of their interior, and the exterior's
 /// are not placed at all — which is what the sum gives there too.

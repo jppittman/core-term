@@ -474,7 +474,8 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 
 - **Hot paths:** the loop nest is inside the emitted code — one collapse call per stripe, not one per row or per SIMD batch
 - **Glyph caching:** a glyph bakes once and reads back as a gather over its bound buffer (`fonts/cache.rs`)
-- **Antialiasing:** symbolic derivatives — `Kernel::dx()`/`dy()`, resolved before emission
+- **Glyph coverage:** a winding number about a reference point, per-pixel and discriminant-free (`fonts/loop_blinn.rs`, docs/plans/2026-09-08-loop-blinn-glyph.md). Its bound is a domain-side extent because `u² − v` outside its control triangle is *wrong*, not merely slow — so the glyph is where a `Union` of index ranges earns its keep
+- **Antialiasing:** symbolic derivatives — `Kernel::dx()`/`dy()`, resolved before emission. A glyph's *winding* is exact (hard masks selecting signed constants); only the distance feeding the ramp is soft, so a comparison landing on the wrong side costs a rounding rather than half a unit of coverage
 - **One kernel per scene:** four channel kernels compile together, so shared geometry is emitted once
 
 ## Cost Model and the Guide (offline, supervised)

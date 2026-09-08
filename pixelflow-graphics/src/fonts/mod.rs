@@ -6,33 +6,48 @@
 //! ## Architecture: Four Layers
 //!
 //! ```text
-//! Text Layer (text(), CachedText)
+//! Text Layer (text(), text_union(), CachedText)
 //!      ↓
-//!      │  Layout: advances/kerning; sum of translated glyph kernels
+//!      │  Layout: advances/kerning; one outline, placed
 //!      │
 //! Cache Layer (GlyphCache, CachedGlyph)
 //!      ↓
 //!      │  Lattice::bake'd f32 AA coverage + bilinear read-back
 //!      │
-//! Font Layer (Font)
+//! Coverage Layer (loop_blinn)
 //!      ↓
-//!      │  TTF parsing; a glyph is ONE fused coverage Kernel
+//!      │  An outline's winding number, as one Kernel or as a Union
+//!      │
+//! Font Layer (Font, outline)
+//!      ↓
+//!      │  TTF parsing; a glyph is geometry, in the caller's frame
 //!      │
 //! Loading Layer (loader: DataSource, EmbeddedSource, MmapSource, LoadedFont)
 //!      ↓
 //! In-Memory Font Data
 //! ```
 //!
-//! ## Coverage semantics: antialiasing is intrinsic
+//! ## Coverage semantics: an exact winding, an antialiased distance
 //!
-//! Each outline segment is a leaf kernel (`AnalyticalLine`/`AnalyticalQuad`)
-//! whose crossing computes a gradient-normalized ramp
-//! `clamp(d / (‖∇d‖ + ε) + 0.5, 0, 1)`. The `DX`/`DY` in the ramp are
-//! symbolic `Dwrt` derivatives resolved when the kernel compiles, and the
-//! chain rule carries ‖∇d‖ through every coordinate warp (`Kernel::at`), so
-//! the ramp is ~1 *screen* pixel wide at any glyph scale. There is no
-//! separate hard/AA mode and no jet domain — coverage is antialiased by
-//! construction.
+//! A glyph's coverage is `min(|w|, 1)` for the winding number `w` under the
+//! non-zero rule, and [`loop_blinn`] computes `w` **exactly**: hard masks
+//! selecting signed constants, relative to a reference point, with
+//! Loop–Blinn's implicit `u² − v` for the sliver each quadratic bulges past
+//! its chord. What is antialiased is a separate number — the distance to
+//! the nearest piece of outline — ramped as
+//! `inside ? min(1, ½ + d) : max(0, ½ − d)`.
+//!
+//! `d` is gradient-normalized: divided by `‖∇d‖` with the `DX`/`DY` as
+//! symbolic `Dwrt` derivatives resolved when the kernel compiles, so the
+//! chain rule carries the scale through every coordinate warp
+//! (`Kernel::at`) and the ramp is ~1 *screen* pixel wide at any glyph
+//! scale. There is no separate hard/AA mode and no jet domain — coverage is
+//! antialiased by construction.
+//!
+//! Keeping the winding and the ramp apart is what makes a mis-decided
+//! comparison cost a rounding rather than half a unit of coverage. The
+//! formulation this replaced made a crossing's existence *be* its coverage
+//! (see docs/plans/2026-09-08-loop-blinn-glyph.md).
 //!
 //! ## Layer 1: Font Loading (`loader` module)
 //!
@@ -41,14 +56,20 @@
 //! (zero-copy memory-mapped file). [`LoadedFont`] owns the source and
 //! lends out parsed [`Font`] views.
 //!
-//! ## Layer 2: Glyph Compilation (`ttf` module)
+//! ## Layer 2: Glyph Compilation (`outline`, `loop_blinn` and `ttf`)
 //!
-//! [`Font::parse`] reads the TTF tables (cmap, glyf, loca, hmtx, kern).
-//! [`Font::glyph_kernel_scaled`] compiles a character's outline into one
-//! coverage `Kernel`: segment kernels summed under the non-zero winding
-//! rule (`abs().min(1)`), bounded by a unit-square mask, and warped through
-//! the restore/scale affines. Metrics come from `advance`/`kern` and their
-//! `*_by_id`/`*_scaled` variants.
+//! [`Font::parse`] reads the TTF tables (cmap, glyf, loca, hmtx, kern), and
+//! `ttf` produces **geometry**: an [`Outline`] of line and quadratic
+//! segments, with compound glyphs flattened through their component
+//! transforms. Every affine map — the em scale, the screen flip, a
+//! component's placement, a pen position — is applied to control points on
+//! the host, so the kernel is built in the frame it is evaluated in.
+//!
+//! [`loop_blinn`] turns an outline into coverage, in either encoding of its
+//! extent: [`loop_blinn::glyph`] as one kernel over the whole plane, cut to
+//! an exact [`Support`]; [`loop_blinn::cells`] as a union of index ranges,
+//! each holding only the segments that reach it. Metrics come from
+//! `advance`/`kern` and their `*_by_id`/`*_scaled` variants.
 //!
 //! ## Layer 3: Glyph Caching (`cache` module)
 //!
@@ -85,6 +106,9 @@
 //!
 //! - **TTF** (TrueType): quadratic Bézier outlines, cmap formats 4 and 12,
 //!   horizontal kerning (kern format 0).
+//!
+//! [`Outline`]: outline::Outline
+//! [`Support`]: loop_blinn::Support
 //!
 pub mod atlas;
 pub mod cache;

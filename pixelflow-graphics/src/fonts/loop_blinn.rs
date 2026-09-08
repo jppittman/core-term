@@ -103,7 +103,8 @@
 //! A lower bound can never exceed the truth, so the larger of the two is the
 //! closer of the two. That leaves one requirement on the geometry: the bound
 //! has to be tight enough to rescue the implicit, which is why a segment
-//! straying more than [`MAX_DEVIATION`] from its chord is halved (exactly,
+//! straying more than half a pixel (`MAX_DEVIATION`) from its chord is
+//! halved (exactly,
 //! de Casteljau) until it does not. The winding never needs a split.
 //!
 //! **Half-open cones.** A sample exactly on a ray through a vertex must be
