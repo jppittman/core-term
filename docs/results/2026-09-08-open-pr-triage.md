@@ -62,10 +62,65 @@ CLAUDE.md's "three metadata jobs" is now four.
 | #1206 | yes | 0 (3 resolved) | green | **ready — author's call** |
 | #1209 | yes | 0 (1 resolved) | green | **meets all three** — author's call |
 | #994 | yes | 0 | green | blocked on credentials, correctly draft |
-| #1213 | **no** | 13 open (9 P1) | never ran | active WIP |
-| #1207 | **yes** | 18 open | docs-skip | conflict resolved; threads are the work |
-| #1215 | **yes** | 7 open (5 P1) | docs-skip | conflict resolved; still wants #1207 first |
-| #1054 | yes | 0 (2 resolved) | **red** | **recommend closure** |
+| #1207 | yes | 18 → **10** | docs-skip | 8 arithmetic errors fixed; the rest are verdicts |
+| #1215 | yes | 7 → **4** | docs-skip | 3 factual errors fixed; the rest are thresholds |
+| #1054 | yes | 0 | **red → green** | **merged** — salvaged; closure recommendation retracted |
+| #1213 | **no** | 13 open (9 P1) | never ran | the one genuine hard stop |
+
+## What I was wrong about, five times
+
+The closure recommendation for #1054 is the clearest case, but it is one of
+five, and they are all the same mistake: **a true fact about part of a thing
+was allowed to settle the whole of it.**
+
+| | verified fact | wrong conclusion |
+|---|---|---|
+| #1209 | the thread was marked outdated | it was open work |
+| #1207/#1215 | LFS uploads are denied by policy | the conflicts were unresolvable |
+| #1054 | `emit_binary_safe` was deleted | the PR was non-salvageable |
+| this doc's backlog | the entry was accurate when written | it was still accurate after my own merge invalidated it |
+| #1207/#1215 threads | some are research verdicts | *all* of them were |
+
+None was caught by re-reading my own work. Four came from the goal hook and
+one from the review bot.
+
+The line I kept drawing — "research judgement vs mechanical" — was the wrong
+one. The right one is **whether a source in the tree settles it**:
+
+- **Settled by a source, so done:** counts over the committed CSV, a constant
+  in `saturate.rs`, a table's minimum, whether a file exists, whether
+  `scene.rs` holds a `FastMathGuard`, whether a grid appears in prior
+  artifacts, how many of a PR's tests target functions that still exist.
+- **Not settled by any source, so the author's:** whether L047 is FAILED or
+  synthetic-only; whether 5% or 10% is the threshold the programme acts on;
+  whether the Guide may be promoted on `dag_cost` alone. These are
+  commitments about what the research concludes, and no file decides them.
+
+## #1213 — the one genuine hard stop, checked at the mechanism
+
+Its textual conflict is one doc paragraph and resolves cleanly. Underneath,
+the merged tree does not compile: three `E0308`s where `egraph_off_on.rs`
+(landed on `main` as #1210, after this branch was cut) calls
+`glyph_kernel_scaled`, which this branch changes from `-> Option<Kernel>` to
+`-> Option<Glyph>`.
+
+Taking `.kernel` at those sites compiles and then **panics at runtime** on
+the declared-but-unbound buffer — `Glyph::binding`'s own doc on that branch
+says it is required. That is the same defect, in a third consumer, that two
+of the PR's open P1s already cover.
+
+The correct fix was checked rather than assumed: `context_for` does have a
+buffer path, but it is hardcoded to `CellGridCase` (keyed on
+`case.cells_id`/`case.atlas`, asserting `width × height`). Carrying a glyph's
+coefficient table through it means changing the corpus format — which is
+verbatim what the reviewer asked for on `collapse_cost`. Nor is there a
+`-> Option<Kernel>` accessor to restore: on this branch a glyph's kernel is
+meaningless without its binding, which is the point of the change.
+
+So every consumer must be updated, and that is this PR's own work. Doing it
+speculatively does not fail loudly — it yields plausible benchmark numbers
+describing the wrong control-flow path, which is the exact failure this
+repository's claims ledger exists to catalogue. Left alone on evidence.
 
 ## Salvageable vs not: the same series, opposite outcomes
 
@@ -104,7 +159,27 @@ Four targeted mutants is not a sweep, so the audit doc's `cargo mutants`
 tallies carry a dated supersession banner: a full re-run against the current
 file is still owed before "0 real gaps" is restated.
 
-### #1054 — recommend closing
+### #1054 — recommended for closure, then salvaged and merged
+
+**The recommendation below was wrong and is retracted.** It is kept as
+written because the error is more useful than a clean answer: two of the
+PR's tests referenced a deleted API, and I concluded the PR was dead
+without ever counting how many tests that described. It was 2 of 13. The
+other eleven target functions that all still exist, and they build and pass
+against current `main`.
+
+Salvaged instead: the two dead tests deleted with a note, plus — from the
+review that followed — two more that pinned *unreachable* state
+(`Vex { w: true }`, which `Vex::new` can never produce, and
+`x86_redzone_disp(113)`, which no kernel reaches since offsets advance in
+`vector_bytes` steps and red-zone mode caps at 112). Nine survive across
+five functions; CI went red → green and it merged. The audit doc carries a
+dated supersession banner, and a full `cargo mutants` re-run is still owed
+before "0 real gaps" is restated.
+
+The original reasoning follows.
+
+### #1054 — the original (withdrawn) recommendation
 
 Five jobs fail on the same five compile errors. Neither symbol survives:
 
