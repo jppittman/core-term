@@ -97,7 +97,7 @@ mod tests {
     /// here: that is the language's semantics (it lowers transcendentals to the
     /// expansion the compiler emits), and a private walker would be a second
     /// definition free to drift from it.
-    fn eval(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
+    fn eval(arena: &ExprArena, id: ExprId, vars: &[f32; 2]) -> f32 {
         pixelflow_ir::eval_scalar(
             arena,
             id,
@@ -119,7 +119,9 @@ mod tests {
         // here only invites e-graph explosion on `x²+y²`, which is a saturation
         // budgeting concern orthogonal to autodiff.)
         let mut eg = EGraph::with_rules(derivative_rules());
-        let root_class = eg.add_arena(&a, root);
+        let root_class =
+            crate::egraph::insert(&a, root, &mut eg, crate::egraph::Vocabulary::Templates)
+                .expect("insert into e-graph");
         SaturationConfig::compatibility(60).run(&mut eg);
 
         let (out, out_root, _cost) = extract(&eg, root_class, &CostModel::default());
@@ -142,7 +144,7 @@ mod tests {
         })
     }
 
-    fn assert_close(got: f32, want: f32, pt: &[f32; 4]) {
+    fn assert_close(got: f32, want: f32, pt: &[f32; 2]) {
         let tol = 1e-3 * want.abs().max(1.0);
         assert!(
             (got - want).abs() <= tol,
@@ -155,7 +157,7 @@ mod tests {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let (out, root) = differentiate(&a, x, 0);
-        let pts = [[3.0, 5.0, 0.0, 0.0], [-2.0, 7.0, 0.0, 0.0]];
+        let pts = [[3.0, 5.0], [-2.0, 7.0]];
         for p in &pts {
             assert_close(eval(&out, root, p), 1.0, p); // dx/dx = 1
         }
@@ -174,11 +176,7 @@ mod tests {
         let mut a = ExprArena::new();
         let e = arena_pat!(&mut a, bin OpKind::Mul, (var 0), (var 0));
         let (out, root) = differentiate(&a, e, 0);
-        for p in &[
-            [1.5, 0.0, 0.0, 0.0],
-            [-3.0, 0.0, 0.0, 0.0],
-            [4.2, 0.0, 0.0, 0.0],
-        ] {
+        for p in &[[1.5, 0.0], [-3.0, 0.0], [4.2, 0.0]] {
             assert_close(eval(&out, root, p), 2.0 * p[0], p);
         }
     }
@@ -196,12 +194,7 @@ mod tests {
         );
         let (out, root) = differentiate(&a, e, 0);
 
-        let pts: [[f32; 4]; 4] = [
-            [3.0, 4.0, 0.0, 0.0],
-            [1.0, 1.0, 0.0, 0.0],
-            [-2.0, 5.0, 0.0, 0.0],
-            [0.5, 0.25, 0.0, 0.0],
-        ];
+        let pts: [[f32; 2]; 4] = [[3.0, 4.0], [1.0, 1.0], [-2.0, 5.0], [0.5, 0.25]];
         for p in &pts {
             let want = p[0] / (p[0] * p[0] + p[1] * p[1]).sqrt();
             assert_close(eval(&out, root, p), want, p);
@@ -219,11 +212,7 @@ mod tests {
         let e = arena_pat!(&mut a, un OpKind::Sin, (var 0));
         let expected = arena_pat!(&mut a, un OpKind::Cos, (var 0));
         let (out, root) = differentiate(&a, e, 0);
-        for p in &[
-            [0.0, 0.0, 0.0, 0.0],
-            [0.7, 0.0, 0.0, 0.0],
-            [-1.2, 0.0, 0.0, 0.0],
-        ] {
+        for p in &[[0.0, 0.0], [0.7, 0.0], [-1.2, 0.0]] {
             assert_close(eval(&out, root, p), eval(&a, expected, p), p);
         }
     }
@@ -246,7 +235,9 @@ mod piecewise_tests {
         let v = a.push_const(var as f32);
         let root = a.push_binary(OpKind::Dwrt, differentiand, v);
         let mut eg = EGraph::with_rules(derivative_rules());
-        let root_class = eg.add_arena(&a, root);
+        let root_class =
+            crate::egraph::insert(&a, root, &mut eg, crate::egraph::Vocabulary::Templates)
+                .expect("insert into e-graph");
         SaturationConfig::compatibility(60).run(&mut eg);
         let (out, out_root, _cost) = extract(&eg, root_class, &CostModel::default());
         assert!(
@@ -260,7 +251,7 @@ mod piecewise_tests {
         (out, out_root)
     }
 
-    fn eval(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
+    fn eval(arena: &ExprArena, id: ExprId, vars: &[f32; 2]) -> f32 {
         match *arena.node(id) {
             ExprNode::Var(i) => vars[i as usize],
             ExprNode::Const(c) => c,
@@ -283,7 +274,7 @@ mod piecewise_tests {
         }
     }
 
-    fn assert_close(got: f32, want: f32, pt: &[f32; 4]) {
+    fn assert_close(got: f32, want: f32, pt: &[f32; 2]) {
         let tol = 1e-3 * want.abs().max(1.0);
         assert!(
             (got - want).abs() <= tol,
@@ -299,16 +290,8 @@ mod piecewise_tests {
             (bin OpKind::Mul, (var 0), (cst 2.0)),
             (bin OpKind::Mul, (var 1), (cst 3.0)));
         let (out, root) = differentiate(&a, e, 0);
-        assert_close(
-            eval(&out, root, &[1.0, 5.0, 0.0, 0.0]),
-            2.0,
-            &[1.0, 5.0, 0.0, 0.0],
-        );
-        assert_close(
-            eval(&out, root, &[9.0, 1.0, 0.0, 0.0]),
-            0.0,
-            &[9.0, 1.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[1.0, 5.0]), 2.0, &[1.0, 5.0]);
+        assert_close(eval(&out, root, &[9.0, 1.0]), 0.0, &[9.0, 1.0]);
     }
 
     #[test]
@@ -320,16 +303,8 @@ mod piecewise_tests {
             (bin OpKind::Mul, (var 0), (var 0)),
             (bin OpKind::Mul, (var 0), (cst 5.0)));
         let (out, root) = differentiate(&a, e, 0);
-        assert_close(
-            eval(&out, root, &[3.0, 1.0, 0.0, 0.0]),
-            6.0,
-            &[3.0, 1.0, 0.0, 0.0],
-        );
-        assert_close(
-            eval(&out, root, &[3.0, -1.0, 0.0, 0.0]),
-            5.0,
-            &[3.0, -1.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[3.0, 1.0]), 6.0, &[3.0, 1.0]);
+        assert_close(eval(&out, root, &[3.0, -1.0]), 5.0, &[3.0, -1.0]);
     }
 
     #[test]
@@ -344,16 +319,8 @@ mod piecewise_tests {
                 (cst 0.0)),
             (cst 10.0));
         let (out, root) = differentiate(&a, e, 0);
-        assert_close(
-            eval(&out, root, &[2.0, 0.0, 0.0, 0.0]),
-            4.0,
-            &[2.0, 0.0, 0.0, 0.0],
-        );
-        assert_close(
-            eval(&out, root, &[5.0, 0.0, 0.0, 0.0]),
-            0.0,
-            &[5.0, 0.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[2.0, 0.0]), 4.0, &[2.0, 0.0]);
+        assert_close(eval(&out, root, &[5.0, 0.0]), 0.0, &[5.0, 0.0]);
     }
 
     #[test]
@@ -361,10 +328,6 @@ mod piecewise_tests {
         let mut a = ExprArena::new();
         let e = arena_pat!(&mut a, bin OpKind::Lt, (var 0), (var 1));
         let (out, root) = differentiate(&a, e, 0);
-        assert_close(
-            eval(&out, root, &[3.0, 5.0, 0.0, 0.0]),
-            0.0,
-            &[3.0, 5.0, 0.0, 0.0],
-        );
+        assert_close(eval(&out, root, &[3.0, 5.0]), 0.0, &[3.0, 5.0]);
     }
 }

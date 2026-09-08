@@ -11,7 +11,34 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::kernel::Scalar;
 use crate::kind::OpKind;
+
+/// Coordinate axes a lattice has, and so the coordinate `Var` indices: `X = 0`,
+/// `Y = 1`.
+///
+/// There were four. Z and W had extent 1 in every production call — an axis
+/// that never varies is not an axis — so they left the language and the
+/// scalars they carried became [`UniformDecl`]s
+/// (docs/plans/2026-09-06-lattice-is-the-index.md).
+pub const COORD_AXES: usize = 2;
+
+/// The `Var` indices Z and W had. Reserved, never reissued: a reduction
+/// binder taking one of them would make an arena written before the change
+/// read back as a different program.
+pub(crate) const RETIRED_COORD_AXES: [u8; 2] = [2, 3];
+
+/// The first `Var` index a reduction binder takes.
+///
+/// Binder indices are dense from here, and *here* is past the reserved
+/// [`RETIRED_COORD_AXES`] rather than past [`COORD_AXES`] — which is what
+/// keeps them where they were when there were four axes. The gap between
+/// the two is the reason `Var`'s three meanings do not collide.
+pub(crate) const REDUCE_BINDER_BASE: u8 = COORD_AXES as u8 + RETIRED_COORD_AXES.len() as u8;
+
+/// How many reduction binders the index space holds, starting at
+/// [`REDUCE_BINDER_BASE`] — the depth of nested folds a kernel may carry.
+pub(crate) const REDUCE_BINDERS: u8 = 4;
 
 // ───────────────────────────────────────── ExprId ─────────────────────────────
 
@@ -48,22 +75,26 @@ impl BufferIdentity {
     #[must_use]
     pub fn mint() -> Self {
         static NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-        // `fetch_add` + assert was wrong: the add WRAPS before the assert
-        // fires, so if that panic is ever caught — or merely unwinds a
-        // non-fatal worker thread — the counter has already returned to 0 and
-        // the next mint hands out an identity that is still live. Two
-        // unrelated buffers would then compare identical and merge into one
-        // splice/JIT slot. `fetch_update` declining to store leaves the
-        // counter permanently exhausted instead.
-        let id = NEXT
-            .fetch_update(
-                core::sync::atomic::Ordering::Relaxed,
-                core::sync::atomic::Ordering::Relaxed,
-                |n| n.checked_add(1),
-            )
-            .expect("BufferIdentity: counter exhausted");
-        Self(id)
+        Self(mint_identity(&NEXT, "BufferIdentity"))
     }
+}
+
+/// The one counter discipline behind every provenance identity.
+///
+/// `fetch_add` + assert was wrong: the add WRAPS before the assert fires, so
+/// if that panic is ever caught — or merely unwinds a non-fatal worker thread
+/// — the counter has already returned to 0 and the next mint hands out an
+/// identity that is still live. Two unrelated buffers (or uniforms) would
+/// then compare identical and merge into one splice/JIT slot. `fetch_update`
+/// declining to store leaves the counter permanently exhausted instead.
+fn mint_identity(counter: &core::sync::atomic::AtomicU32, what: &str) -> u32 {
+    counter
+        .fetch_update(
+            core::sync::atomic::Ordering::Relaxed,
+            core::sync::atomic::Ordering::Relaxed,
+            |n| n.checked_add(1),
+        )
+        .unwrap_or_else(|_| panic!("{what}: counter exhausted"))
 }
 
 /// Declaration of a bound memory buffer: the static shape of a collapsed
@@ -85,6 +116,69 @@ pub struct BufferDecl {
     pub height: u32,
 }
 
+// ───────────────────────────────────────── Uniforms ───────────────────────────
+
+/// Slot index into an [`ExprArena`]'s uniform table. Copy, 2 bytes. Not an
+/// identity: two arenas each call their own first uniform slot 0.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct UniformId(pub u16);
+
+/// Which uniform a declaration refers to, independent of any arena.
+///
+/// A uniform is a scalar that is invariant across the lattice and supplied
+/// at call time — the JIT tier's spelling of a builder's struct field. Its
+/// identity is the *instance*: two instances of the same builder are two
+/// factors of the kernel's parameter space, and one instance read from
+/// twenty places is one factor. Neither a name nor a fragment-local index can
+/// say that across a splice, so, exactly as for [`BufferIdentity`], identity
+/// is provenance: minted once, copied into every declaration of the instance.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct UniformIdentity(u32);
+
+impl UniformIdentity {
+    /// Mint an identity distinct from every other in this process.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the counter is exhausted, rather than wrapping onto a live
+    /// identity and aliasing two unrelated uniforms.
+    #[must_use]
+    pub fn mint() -> Self {
+        static NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        Self(mint_identity(&NEXT, "UniformIdentity"))
+    }
+}
+
+/// Declaration of a uniform: its identity plus the value the kernel holds
+/// for it when nothing has been bound. The default is part of the IR so that
+/// a bake without a block, and the scalar oracle, are total.
+///
+/// Compared and hashed by the default's *bit pattern*, so a declaration is a
+/// plain key: `-0.0` and `0.0` are two defaults, and a NaN default is equal
+/// to itself.
+#[derive(Clone, Copy, Debug)]
+pub struct UniformDecl {
+    /// Which instance this names.
+    pub id: UniformIdentity,
+    /// The value bound when no block supplies one.
+    pub default: f32,
+}
+
+impl PartialEq for UniformDecl {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.default.to_bits() == other.default.to_bits()
+    }
+}
+
+impl Eq for UniformDecl {}
+
+impl core::hash::Hash for UniformDecl {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.default.to_bits().hash(state);
+    }
+}
+
 // ───────────────────────────────────────── ExprNode ───────────────────────────
 
 /// A single expression node stored in the arena.
@@ -92,12 +186,23 @@ pub struct BufferDecl {
 /// Layout is kept tight: the static assertion below guarantees <= 16 bytes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprNode {
+    /// A bound variable: a lattice coordinate ([`COORD_AXES`] of them, X and
+    /// Y), a reduction binder's index (`4..8`), or — in the macro front end
+    /// only, before substitution — a parameter placeholder. Which one an
+    /// index means is [`ExprArena::push_var`]'s documentation; the indices
+    /// between the coordinates and the binders are not a hole to grow into,
+    /// they are where Z and W used to be and nothing may claim them.
     Var(u8),
     Const(f32),
     Param(u8),
     /// Bound-memory leaf: references a [`BufferDecl`] in the arena's buffer
     /// table. Read through `Ternary(OpKind::Gather, buffer, x, y)`.
     Buffer(BufferId),
+    /// Lattice-invariant scalar supplied per call: references a
+    /// [`UniformDecl`] in the arena's uniform table. Never folded — its value
+    /// is unknown until the call — and constant across the lattice, so it is
+    /// loaded once per call rather than once per batch.
+    Uniform(UniformId),
     Unary(OpKind, ExprId),
     Binary(OpKind, ExprId, ExprId),
     Ternary(OpKind, ExprId, ExprId, ExprId),
@@ -181,6 +286,9 @@ pub struct ExprArena {
     /// Buffer declarations, indexed by [`BufferId`]. The memory analogue of
     /// the symbol table: shapes are static IR, contents are bound at JIT time.
     buffers: Vec<BufferDecl>,
+    /// Uniform declarations, indexed by [`UniformId`]: the scalar arguments
+    /// of the kernel, each with its default. Values are bound per call.
+    uniforms: Vec<UniformDecl>,
 }
 
 impl Default for ExprArena {
@@ -197,6 +305,7 @@ impl ExprArena {
             nodes: Vec::new(),
             nary_children: Vec::new(),
             buffers: Vec::new(),
+            uniforms: Vec::new(),
         }
     }
 
@@ -207,6 +316,7 @@ impl ExprArena {
             nodes: Vec::with_capacity(n),
             nary_children: Vec::new(),
             buffers: Vec::new(),
+            uniforms: Vec::new(),
         }
     }
 
@@ -215,6 +325,7 @@ impl ExprArena {
         self.nodes.clear();
         self.nary_children.clear();
         self.buffers.clear();
+        self.uniforms.clear();
     }
 
     /// Number of nodes in the arena. This is the O(1) node count.
@@ -240,8 +351,51 @@ impl ExprArena {
     }
 
     /// Push a `Var(i)` node.
+    ///
+    /// Only `0..COORD_AXES` are lattice coordinates. [`RETIRED_COORD_AXES`]
+    /// are the Z and W axes, which no longer exist: an arena that names one
+    /// is refused where it would become code
+    /// ([`Kernel::from_parts`](crate::Kernel::from_parts), and the JIT cache),
+    /// rather than here, because the same node is also a reduction binder's
+    /// index and a rewrite rule's pattern metavariable, and those namespaces
+    /// are dense from zero.
     pub fn push_var(&mut self, i: u8) -> ExprId {
         self.push_node(ExprNode::Var(i))
+    }
+
+    /// The retired coordinate axis reachable from `root`, if any — the guard
+    /// [`Kernel::from_parts`](crate::Kernel::from_parts) and
+    /// `emit::compile` apply before an arena can become a compiled kernel.
+    ///
+    /// A `Var(2)` reaching the emitter would read the third base coordinate,
+    /// which a collapse passes as zero and no longer means anything: the
+    /// pixels would be plausible and wrong. Refusing it is what makes "no
+    /// emitted kernel reads the retired lanes" a fact rather than a habit.
+    ///
+    /// **Reachable from `root`, not every node.** An arena is a bump list and
+    /// nothing prunes it: `substitute_vars_with` rewrites the reachable graph
+    /// and leaves what it replaced behind, so an arena whose retired axes were
+    /// correctly substituted still *holds* the original `Var(2)` nodes. They
+    /// are not emitted, because nothing reaches them. Scanning every node
+    /// refuses that arena and is simply wrong — it cost this change a CI round
+    /// trip.
+    #[must_use]
+    pub fn retired_axis(&self, root: ExprId) -> Option<u8> {
+        let mut seen = alloc::vec![false; self.nodes.len()];
+        let mut stack = alloc::vec![root];
+        while let Some(id) = stack.pop() {
+            let idx = id.0 as usize;
+            if core::mem::replace(&mut seen[idx], true) {
+                continue;
+            }
+            if let ExprNode::Var(i) = &self.nodes[idx]
+                && RETIRED_COORD_AXES.contains(i)
+            {
+                return Some(*i);
+            }
+            stack.extend(self.children(id));
+        }
+        None
     }
 
     /// Push a `Const(v)` node.
@@ -285,10 +439,79 @@ impl ExprArena {
         self.push_node(ExprNode::Buffer(id))
     }
 
+    /// Declare a uniform slot, returning its [`UniformId`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the uniform table is full (`u16::MAX` slots).
+    pub fn declare_uniform(&mut self, decl: UniformDecl) -> UniformId {
+        assert!(
+            self.uniforms.len() < u16::MAX as usize,
+            "declare_uniform: uniform table full ({} slots)",
+            self.uniforms.len()
+        );
+        let id = UniformId(self.uniforms.len() as u16);
+        self.uniforms.push(decl);
+        id
+    }
+
+    /// The slot naming `decl`'s instance in this arena, declaring one if this
+    /// is the first time that identity has been seen.
+    ///
+    /// Two declarations of one identity with different defaults cannot happen
+    /// through the handle that minted it — the default travels with the
+    /// identity in one `Copy` value — so it is a corrupt graph, and an
+    /// assertion rather than a silent alias onto whichever arrived first.
+    pub(crate) fn uniform_slot_for(&mut self, decl: UniformDecl) -> UniformId {
+        match self.uniforms.iter().position(|d| d.id == decl.id) {
+            Some(i) => {
+                assert_eq!(
+                    self.uniforms[i], decl,
+                    "two declarations share a UniformIdentity but disagree on the default"
+                );
+                UniformId(i as u16)
+            }
+            None => self.declare_uniform(decl),
+        }
+    }
+
+    /// Push a `Uniform(id)` leaf node.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` has not been declared via [`ExprArena::declare_uniform`].
+    pub fn push_uniform(&mut self, id: UniformId) -> ExprId {
+        assert!(
+            (id.0 as usize) < self.uniforms.len(),
+            "push_uniform: UniformId({}) not declared (table has {} entries)",
+            id.0,
+            self.uniforms.len()
+        );
+        self.push_node(ExprNode::Uniform(id))
+    }
+
+    /// Get the declaration for a uniform slot.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is out of bounds.
+    #[inline]
+    #[must_use]
+    pub fn uniform_decl(&self, id: UniformId) -> &UniformDecl {
+        &self.uniforms[id.0 as usize]
+    }
+
+    /// All declared uniforms, indexed by [`UniformId`].
+    #[inline]
+    #[must_use]
+    pub fn uniforms(&self) -> &[UniformDecl] {
+        &self.uniforms
+    }
+
     /// Push a `Gather(buffer, x, y)` read of a declared buffer.
     ///
-    /// Semantics match `DiscreteManifold::eval`: floor the indices, clamp to
-    /// the declared extents, gather row-major.
+    /// Semantics: floor the indices, clamp to the declared extents, gather
+    /// row-major. `DiscreteManifold::kernel` is exactly one of these.
     pub fn push_gather(&mut self, buffer: BufferId, x: ExprId, y: ExprId) -> ExprId {
         let buf = self.push_buffer(buffer);
         self.push_ternary(OpKind::Gather, buf, x, y)
@@ -315,9 +538,11 @@ impl ExprArena {
             combiner.is_monoid(),
             "push_reduce: {combiner:?} is not a valid reduction combiner"
         );
+        let binders = REDUCE_BINDER_BASE..REDUCE_BINDER_BASE + REDUCE_BINDERS;
         assert!(
-            (4..8).contains(&reduce_var),
-            "push_reduce: reduce_var {reduce_var} out of range (must be 4..8)"
+            binders.contains(&reduce_var),
+            "push_reduce: reduce_var {reduce_var} out of range (must be {:?})",
+            binders
         );
         let c = self.push_const(combiner.index() as f32);
         let v = self.push_const(reduce_var as f32);
@@ -399,27 +624,15 @@ impl ExprArena {
     /// `nodes` is in-bounds, and that `Nary` start/len pairs index validly
     /// into `nary_children`. Violating this will cause panics on access,
     /// not UB.
-    /// The reconstructed arena has an empty buffer table; arenas containing
-    /// `Buffer` nodes must use [`ExprArena::from_raw_with_buffers`].
+    /// The reconstructed arena has empty buffer and uniform tables, so it
+    /// cannot hold `Buffer` or `Uniform` nodes.
     #[must_use]
     pub fn from_raw(nodes: Vec<ExprNode>, nary_children: Vec<ExprId>) -> Self {
-        Self::from_raw_with_buffers(nodes, nary_children, Vec::new())
-    }
-
-    /// Reconstruct an arena from raw parts including the buffer table.
-    ///
-    /// Same logical safety contract as [`ExprArena::from_raw`]; additionally,
-    /// every `Buffer(id)` node must index validly into `buffers`.
-    #[must_use]
-    pub(crate) fn from_raw_with_buffers(
-        nodes: Vec<ExprNode>,
-        nary_children: Vec<ExprId>,
-        buffers: Vec<BufferDecl>,
-    ) -> Self {
         Self {
             nodes,
             nary_children,
-            buffers,
+            buffers: Vec::new(),
+            uniforms: Vec::new(),
         }
     }
 
@@ -451,7 +664,8 @@ impl ExprArena {
 
     /// Get the [`OpKind`] of the node at `id`.
     ///
-    /// Leaf nodes map to: `Var -> OpKind::Var`, `Const/Param -> OpKind::Const`.
+    /// Leaf nodes map to: `Var -> OpKind::Var`, `Const/Param -> OpKind::Const`,
+    /// `Buffer -> OpKind::Buffer`, `Uniform -> OpKind::Uniform`.
     #[inline]
     #[must_use]
     pub fn kind(&self, id: ExprId) -> OpKind {
@@ -459,6 +673,7 @@ impl ExprArena {
             ExprNode::Var(_) => OpKind::Var,
             ExprNode::Const(_) | ExprNode::Param(_) => OpKind::Const,
             ExprNode::Buffer(_) => OpKind::Buffer,
+            ExprNode::Uniform(_) => OpKind::Uniform,
             ExprNode::Unary(op, _) => *op,
             ExprNode::Binary(op, _, _) => *op,
             ExprNode::Ternary(op, _, _, _) => *op,
@@ -471,9 +686,11 @@ impl ExprArena {
     #[must_use]
     pub fn children(&self, id: ExprId) -> ExprChildren<'_> {
         match &self.nodes[id.0 as usize] {
-            ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => {
-                ExprChildren::Zero
-            }
+            ExprNode::Var(_)
+            | ExprNode::Const(_)
+            | ExprNode::Param(_)
+            | ExprNode::Buffer(_)
+            | ExprNode::Uniform(_) => ExprChildren::Zero,
             ExprNode::Unary(_, a) => ExprChildren::One(*a),
             ExprNode::Binary(_, a, b) => ExprChildren::Two(*a, *b),
             ExprNode::Ternary(_, a, b, c) => ExprChildren::Three(*a, *b, *c),
@@ -499,7 +716,8 @@ impl ExprArena {
                 ExprNode::Var(_)
                 | ExprNode::Const(_)
                 | ExprNode::Param(_)
-                | ExprNode::Buffer(_) => {
+                | ExprNode::Buffer(_)
+                | ExprNode::Uniform(_) => {
                     max_depth = max_depth.max(d);
                 }
                 ExprNode::Unary(_, a) => {
@@ -539,7 +757,10 @@ impl ExprArena {
         while let Some(id) = stack.pop() {
             match &self.nodes[id.0 as usize] {
                 ExprNode::Var(_) => return true,
-                ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => {}
+                ExprNode::Const(_)
+                | ExprNode::Param(_)
+                | ExprNode::Buffer(_)
+                | ExprNode::Uniform(_) => {}
                 ExprNode::Unary(_, a) => stack.push(*a),
                 ExprNode::Binary(_, a, b) => {
                     stack.push(*a);
@@ -587,7 +808,8 @@ impl ExprArena {
                 ExprNode::Var(_)
                 | ExprNode::Const(_)
                 | ExprNode::Param(_)
-                | ExprNode::Buffer(_) => {}
+                | ExprNode::Buffer(_)
+                | ExprNode::Uniform(_) => {}
                 ExprNode::Unary(_, a) => stack.push(*a),
                 ExprNode::Binary(_, a, b) => {
                     stack.push(*a);
@@ -627,7 +849,8 @@ impl ExprArena {
                 ExprNode::Var(_)
                 | ExprNode::Const(_)
                 | ExprNode::Param(_)
-                | ExprNode::Buffer(_) => {}
+                | ExprNode::Buffer(_)
+                | ExprNode::Uniform(_) => {}
                 ExprNode::Unary(_, a) => stack.push(*a),
                 ExprNode::Binary(_, a, b) => {
                     stack.push(*a);
@@ -650,7 +873,10 @@ impl ExprArena {
         count
     }
 
-    /// Replace every `Param(i)` node with `Const(params[i])`.
+    /// Replace every `Param(i)` node with what `params[i]` says it is: a
+    /// `Const` folded into the fragment, or a `Uniform` slot declared for the
+    /// handle's identity (one slot per identity, however many placeholders
+    /// name it).
     ///
     /// Returns the new root [`ExprId`] in the **same** arena. Old nodes become
     /// unreachable garbage — that is fine for an append-only arena.
@@ -658,7 +884,7 @@ impl ExprArena {
     /// # Panics
     ///
     /// Panics if any `Param(i)` has `i >= params.len()`.
-    pub fn substitute_params(&mut self, root: ExprId, params: &[f32]) -> ExprId {
+    pub fn substitute_params(&mut self, root: ExprId, params: &[Scalar]) -> ExprId {
         // Iterative post-order: map old ExprId -> new ExprId.
         // We use a Vec as a dense map since IDs are contiguous 0..n.
         enum Task {
@@ -686,7 +912,8 @@ impl ExprArena {
                         ExprNode::Var(_)
                         | ExprNode::Const(_)
                         | ExprNode::Param(_)
-                        | ExprNode::Buffer(_) => {}
+                        | ExprNode::Buffer(_)
+                        | ExprNode::Uniform(_) => {}
                         ExprNode::Unary(_, a) => {
                             work.push(Task::Descend(*a));
                         }
@@ -722,12 +949,20 @@ impl ExprArena {
                                 idx,
                                 params.len()
                             );
-                            self.push_const(params[idx])
+                            match params[idx] {
+                                Scalar::Const(v) => self.push_const(v),
+                                Scalar::Uniform(u) => {
+                                    let slot = self.uniform_slot_for(u.decl());
+                                    self.push_uniform(slot)
+                                }
+                            }
                         }
                         ExprNode::Var(i) => self.push_var(i),
                         ExprNode::Const(v) => self.push_const(v),
-                        // Buffer ids stay valid: the table lives in this arena.
+                        // Buffer and uniform ids stay valid: the tables live
+                        // in this arena.
                         ExprNode::Buffer(b) => self.push_node(ExprNode::Buffer(b)),
+                        ExprNode::Uniform(u) => self.push_node(ExprNode::Uniform(u)),
                         ExprNode::Unary(op, a) => {
                             let na = id_map[a.0 as usize]
                                 .expect("substitute_params: child not yet mapped for Unary");
@@ -782,11 +1017,14 @@ impl ExprArena {
     /// Buffers the fragment reads are merged into this arena's table by
     /// [`BufferIdentity`] and its `Buffer` leaves remapped, so a sampler
     /// composes like anything else and reading the same memory from twenty
-    /// places still binds one pointer.
+    /// places still binds one pointer. Uniforms merge the same way, by
+    /// [`UniformIdentity`]: one instance read from twenty places is one slot,
+    /// and two instances of one builder stay two.
     pub fn splice(&mut self, other: &ExprArena, root: ExprId) -> ExprId {
         let mut id_map: Vec<Option<ExprId>> = vec![None; other.nodes.len()];
         // Fragment-local BufferId -> this arena's slot, filled lazily.
         let mut buf_map: Vec<Option<BufferId>> = vec![None; other.buffers.len()];
+        let mut uni_map: Vec<Option<UniformId>> = vec![None; other.uniforms.len()];
 
         enum Task {
             Descend(ExprId),
@@ -840,6 +1078,17 @@ impl ExprArena {
                             };
                             self.push_buffer(slot)
                         }
+                        ExprNode::Uniform(u) => {
+                            let slot = match uni_map[u.0 as usize] {
+                                Some(slot) => slot,
+                                None => {
+                                    let slot = self.uniform_slot_for(other.uniforms[u.0 as usize]);
+                                    uni_map[u.0 as usize] = Some(slot);
+                                    slot
+                                }
+                            };
+                            self.push_uniform(slot)
+                        }
                         ExprNode::Unary(op, a) => {
                             let a = m(a);
                             self.push_unary(op, a)
@@ -871,9 +1120,8 @@ impl ExprArena {
 
     /// Rebuild the subgraph at `root`, replacing every `Var(i)` for which
     /// `subs` has an entry with the given (already existing) node — the
-    /// generic contramap. Manifold-param composition substitutes the reserved
-    /// slot variables with spliced kernel fragments; a coordinate warp
-    /// substitutes `Var(0..4)` with coordinate expressions.
+    /// generic contramap: a coordinate warp substitutes `Var(0..4)` with
+    /// coordinate expressions, which is what `Kernel::at` is built from.
     ///
     /// Entries must reference nodes already in this arena (e.g. from
     /// [`ExprArena::splice`]). Unlisted variables are preserved. Returns the
@@ -919,6 +1167,7 @@ impl ExprArena {
                         ExprNode::Const(v) => self.push_const(v),
                         ExprNode::Param(i) => self.push_param(i),
                         ExprNode::Buffer(b) => self.push_node(ExprNode::Buffer(b)),
+                        ExprNode::Uniform(u) => self.push_node(ExprNode::Uniform(u)),
                         ExprNode::Unary(op, a) => {
                             let a = m(a);
                             self.push_unary(op, a)
@@ -946,6 +1195,99 @@ impl ExprArena {
         id_map[root.0 as usize].expect("substitute_vars_with: root was never rebuilt")
     }
 
+    // ───────────────────── linking ───────────────────────────
+
+    /// The subgraph reachable from `root`, with its buffer and uniform tables
+    /// replaced by the given orders — the link step: slot `i` of the result
+    /// names `buffers[i]` / `uniforms[i]` and every reachable leaf is
+    /// remapped to its slot there. Reachable nodes keep their relative order
+    /// (ascending id, so still topological), which is the order a schedule
+    /// is built in; construction garbage is dropped, which no schedule ever
+    /// saw. So nothing downstream of the tables — the schedule, the
+    /// registers, the bytes — can move.
+    ///
+    /// A declaration this arena holds but no reachable node reads is left
+    /// behind with the garbage: `Kernel::at` splices all four coordinate
+    /// fragments whether or not the receiver reads that axis, so a table
+    /// routinely names an instance the graph does not, and the link — which
+    /// is computed over the reachable subgraph — rightly omits it. The orders
+    /// may likewise declare identities nothing here reads; those slots exist
+    /// in the result unread.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a *reachable* leaf's declaration has no entry in the given
+    /// order, or disagrees with it (extents, default).
+    #[must_use]
+    pub fn relink(
+        &self,
+        root: ExprId,
+        buffers: &[BufferDecl],
+        uniforms: &[UniformDecl],
+    ) -> (ExprArena, ExprId) {
+        let mut reachable = vec![false; self.nodes.len()];
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut reachable[id.0 as usize], true) {
+                continue;
+            }
+            stack.extend(self.children(id));
+        }
+
+        let buffer_slot = |b: BufferId| -> BufferId {
+            let decl = self.buffers[b.0 as usize];
+            let i = buffers
+                .iter()
+                .position(|d| d.id == decl.id)
+                .unwrap_or_else(|| panic!("relink: reachable {decl:?} is not in the link"));
+            assert_eq!(buffers[i], decl, "relink: buffer declaration disagrees");
+            BufferId(i as u16)
+        };
+        let uniform_slot = |u: UniformId| -> UniformId {
+            let decl = self.uniforms[u.0 as usize];
+            let i = uniforms
+                .iter()
+                .position(|d| d.id == decl.id)
+                .unwrap_or_else(|| panic!("relink: reachable {decl:?} is not in the link"));
+            assert_eq!(uniforms[i], decl, "relink: uniform declaration disagrees");
+            UniformId(i as u16)
+        };
+
+        let mut out = ExprArena {
+            nodes: Vec::with_capacity(self.nodes.len()),
+            nary_children: Vec::new(),
+            buffers: buffers.to_vec(),
+            uniforms: uniforms.to_vec(),
+        };
+        let mut dense: Vec<Option<ExprId>> = vec![None; self.nodes.len()];
+        for (idx, node) in self.nodes.iter().enumerate() {
+            if !reachable[idx] {
+                continue;
+            }
+            let m =
+                |old: ExprId| dense[old.0 as usize].expect("relink: child densified before parent");
+            let new_id = match node {
+                ExprNode::Var(i) => out.push_var(*i),
+                ExprNode::Const(v) => out.push_const(*v),
+                ExprNode::Param(i) => out.push_param(*i),
+                ExprNode::Buffer(b) => out.push_buffer(buffer_slot(*b)),
+                ExprNode::Uniform(u) => out.push_uniform(uniform_slot(*u)),
+                ExprNode::Unary(op, a) => out.push_unary(*op, m(*a)),
+                ExprNode::Binary(op, a, b) => out.push_binary(*op, m(*a), m(*b)),
+                ExprNode::Ternary(op, a, b, c) => out.push_ternary(*op, m(*a), m(*b), m(*c)),
+                ExprNode::Nary(op, start, len) => {
+                    let (s, l) = (*start as usize, *len as usize);
+                    let mapped: Vec<ExprId> =
+                        self.nary_children[s..s + l].iter().map(|c| m(*c)).collect();
+                    out.push_nary(*op, &mapped)
+                }
+            };
+            dense[idx] = Some(new_id);
+        }
+        let new_root = dense[root.0 as usize].expect("relink: root is reachable from itself");
+        (out, new_root)
+    }
+
     // ───────────────────── display ───────────────────────────
 
     /// Format the subtree rooted at `root` as an S-expression, matching the
@@ -966,6 +1308,7 @@ impl ExprArena {
                     ExprNode::Const(v) => write!(f, "Const({})", v)?,
                     ExprNode::Param(i) => write!(f, "Param({})", i)?,
                     ExprNode::Buffer(b) => write!(f, "Buffer({})", b.0)?,
+                    ExprNode::Uniform(u) => write!(f, "Uniform({})", u.0)?,
                     ExprNode::Unary(op, a) => {
                         stack.push(Task::WriteStr(")"));
                         stack.push(Task::Visit(*a));
@@ -1054,6 +1397,12 @@ impl ExprArena {
                 // comparison is meaningful across arenas with different tables.
                 (ExprNode::Buffer(sb), ExprNode::Buffer(ob)) => {
                     if sb != ob || self.buffers[sb.0 as usize] != other.buffers[ob.0 as usize] {
+                        return false;
+                    }
+                }
+                // Uniform slots likewise: by slot AND declaration.
+                (ExprNode::Uniform(su), ExprNode::Uniform(ou)) => {
+                    if su != ou || self.uniforms[su.0 as usize] != other.uniforms[ou.0 as usize] {
                         return false;
                     }
                 }
@@ -1258,7 +1607,7 @@ mod tests {
         let p1 = arena.push_param(1);
         let root = arena.push_binary(OpKind::Add, p0, p1);
 
-        let new_root = arena.substitute_params(root, &[10.0, 20.0]);
+        let new_root = arena.substitute_params(root, &[Scalar::Const(10.0), Scalar::Const(20.0)]);
 
         match arena.node(new_root) {
             ExprNode::Binary(OpKind::Add, a, b) => {
@@ -1378,7 +1727,7 @@ mod composition_tests {
     use crate::eval::eval_scalar;
     use crate::kind::OpKind;
 
-    fn eval(a: &ExprArena, root: ExprId, vars: &[f32; 4]) -> f32 {
+    fn eval(a: &ExprArena, root: ExprId, vars: &[f32; 2]) -> f32 {
         eval_scalar(a, root, vars, &BindingTable::empty())
     }
 
@@ -1396,7 +1745,7 @@ mod composition_tests {
         let root = host.push_binary(OpKind::Add, hx, spliced);
 
         // x + x*y, and the donor's dead node did not come along.
-        assert_eq!(eval(&host, root, &[3.0, 4.0, 0.0, 0.0]), 3.0 + 12.0);
+        assert_eq!(eval(&host, root, &[3.0, 4.0]), 3.0 + 12.0);
         assert!(
             !host
                 .nodes_raw()
@@ -1420,7 +1769,7 @@ mod composition_tests {
         let spliced = host.splice(&donor, frag);
         // x, y, s, add = 4 nodes — not 6 (s duplicated).
         assert_eq!(host.nodes_raw().len() - before, 4);
-        assert_eq!(eval(&host, spliced, &[3.0, 2.0, 0.0, 0.0]), 12.0);
+        assert_eq!(eval(&host, spliced, &[3.0, 2.0]), 12.0);
     }
 
     #[test]
@@ -1454,11 +1803,8 @@ mod composition_tests {
 
         let (p, q) = ([10.0f32, 20.0], [3.0f32, 4.0]);
         let binding = BindingTable::bind(&host, &[&p[..], &q[..]]).expect("bind");
-        assert_eq!(eval_scalar(&host, root, &[0.0; 4], &binding), 13.0);
-        assert_eq!(
-            eval_scalar(&host, root, &[1.0, 0.0, 0.0, 0.0], &binding),
-            24.0
-        );
+        assert_eq!(eval_scalar(&host, root, &[0.0; 2], &binding), 13.0);
+        assert_eq!(eval_scalar(&host, root, &[1.0, 0.0], &binding), 24.0);
     }
 
     #[test]
@@ -1485,7 +1831,7 @@ mod composition_tests {
 
         let p = [5.0f32, 7.0];
         let binding = BindingTable::bind(&host, &[&p[..]]).expect("bind");
-        assert_eq!(eval_scalar(&host, root, &[0.0; 4], &binding), 12.0);
+        assert_eq!(eval_scalar(&host, root, &[0.0; 2], &binding), 12.0);
     }
 
     #[test]
@@ -1510,7 +1856,7 @@ mod composition_tests {
 
         let p = [5.0f32, 7.0];
         let binding = BindingTable::bind(&host, &[&p[..]]).expect("bind");
-        assert_eq!(eval_scalar(&host, root, &[0.0; 4], &binding), 10.0);
+        assert_eq!(eval_scalar(&host, root, &[0.0; 2], &binding), 10.0);
     }
 
     #[test]
@@ -1531,7 +1877,7 @@ mod composition_tests {
 
         let root = a.substitute_vars_with(root, &[(8, frag)]);
         // sqrt(x²+y²) + x at (3,4) = 5 + 3.
-        assert_eq!(eval(&a, root, &[3.0, 4.0, 0.0, 0.0]), 8.0);
+        assert_eq!(eval(&a, root, &[3.0, 4.0]), 8.0);
     }
 
     #[test]
@@ -1549,10 +1895,10 @@ mod composition_tests {
 
         let warped = a.substitute_vars_with(body, &[(0, wx), (1, wy)]);
         // (x+1) * 2y at (3, 4) = 4 * 8 = 32.
-        assert_eq!(eval(&a, warped, &[3.0, 4.0, 0.0, 0.0]), 32.0);
+        assert_eq!(eval(&a, warped, &[3.0, 4.0]), 32.0);
 
         // The warp expressions' own Var(0)/Var(1) still read raw coordinates.
-        assert_eq!(eval(&a, warped, &[0.0, 1.0, 0.0, 0.0]), 2.0);
+        assert_eq!(eval(&a, warped, &[0.0, 1.0]), 2.0);
     }
 
     #[test]
@@ -1575,7 +1921,140 @@ mod composition_tests {
         let root = host.push_binary(OpKind::Dwrt, frag, v0);
 
         let (out, out_root) = lower_dwrt_owned(&host, root).expect("lower_dwrt");
-        let got = eval(&out, out_root, &[3.0, 4.0, 0.0, 0.0]);
+        let got = eval(&out, out_root, &[3.0, 4.0]);
         assert!((got - 0.6).abs() < 1e-4, "d/dx dist at (3,4): got {got}");
+    }
+
+    // ───────────────────────── uniforms ─────────────────────────
+
+    /// A fragment reading one uniform, as `Uniform::kernel` would build it.
+    fn uniform_fragment(decl: UniformDecl) -> (ExprArena, ExprId) {
+        let mut a = ExprArena::new();
+        let slot = a.declare_uniform(decl);
+        let root = a.push_uniform(slot);
+        (a, root)
+    }
+
+    fn uniform_decl(default: f32) -> UniformDecl {
+        UniformDecl {
+            id: UniformIdentity::mint(),
+            default,
+        }
+    }
+
+    #[test]
+    fn splice_merges_one_identity_into_one_slot_and_keeps_two_apart() {
+        let same = uniform_decl(1.0);
+        let other = uniform_decl(1.0); // equal default, distinct instance
+        let (da, ra) = uniform_fragment(same);
+        let (db, rb) = uniform_fragment(same);
+        let (dc, rc) = uniform_fragment(other);
+
+        let mut host = ExprArena::new();
+        let a = host.splice(&da, ra);
+        let b = host.splice(&db, rb);
+        let c = host.splice(&dc, rc);
+        let ab = host.push_binary(OpKind::Add, a, b);
+        let root = host.push_binary(OpKind::Add, ab, c);
+
+        assert_eq!(
+            host.uniforms().len(),
+            2,
+            "one slot per identity, not per read"
+        );
+        assert_eq!(host.uniforms()[0], same);
+        assert_eq!(host.uniforms()[1], other);
+        assert!(matches!(host.node(a), ExprNode::Uniform(UniformId(0))));
+        assert!(matches!(host.node(b), ExprNode::Uniform(UniformId(0))));
+        assert!(matches!(host.node(c), ExprNode::Uniform(UniformId(1))));
+
+        // Defaults when nothing is bound; the block, slot by slot, when it is.
+        assert_eq!(eval(&host, root, &[0.0; 2]), 3.0);
+        let bound = BindingTable::empty()
+            .bind_uniforms(&host, &[(other.id, 7.0), (same.id, 5.0)])
+            .expect("both are declared");
+        assert_eq!(eval_scalar(&host, root, &[0.0; 2], &bound), 17.0);
+        // An identity the arena does not declare is refused by name.
+        let stranger = uniform_decl(0.0).id;
+        assert_eq!(
+            BindingTable::empty()
+                .bind_uniforms(&host, &[(stranger, 1.0)])
+                .err(),
+            Some(crate::binding::BindError::Uniform(stranger))
+        );
+    }
+
+    #[test]
+    fn a_fragment_spliced_twice_reads_one_slot() {
+        // `k.add(&k)`: the receiver's arena already holds the slot, and the
+        // spliced copy must find it rather than declare a second.
+        let decl = uniform_decl(2.0);
+        let (donor, r) = uniform_fragment(decl);
+        let mut host = donor.clone();
+        let again = host.splice(&donor, r);
+        let root = host.push_binary(OpKind::Mul, r, again);
+        assert_eq!(host.uniforms().len(), 1);
+        assert_eq!(eval(&host, root, &[0.0; 2]), 4.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "disagree on the default")]
+    fn one_identity_with_two_defaults_is_refused() {
+        let id = UniformIdentity::mint();
+        let (donor, r) = uniform_fragment(UniformDecl { id, default: 1.0 });
+        let mut host = ExprArena::new();
+        let _ = host.declare_uniform(UniformDecl { id, default: 2.0 });
+        let _ = host.splice(&donor, r);
+    }
+
+    #[test]
+    fn substitute_params_declares_a_slot_for_a_uniform_and_folds_a_const() {
+        use crate::kernel::Uniform;
+        let mut arena = ExprArena::new();
+        let p0 = arena.push_param(0);
+        let p1 = arena.push_param(1);
+        let p0_again = arena.push_param(0);
+        let sum = arena.push_binary(OpKind::Add, p0, p1);
+        let root = arena.push_binary(OpKind::Add, sum, p0_again);
+
+        let u = Uniform::new(0.5);
+        let root = arena.substitute_params(root, &[Scalar::Uniform(u), Scalar::Const(3.0)]);
+
+        assert_eq!(arena.uniforms(), &[u.decl()]);
+        assert_eq!(
+            format!("{}", arena.display(root)),
+            "add(add(Uniform(0), Const(3)), Uniform(0))"
+        );
+        assert_eq!(eval(&arena, root, &[0.0; 2]), 4.0);
+    }
+
+    #[test]
+    fn f32_arguments_substitute_to_the_same_arena_as_before() {
+        // The fold path is byte-for-byte what it was: `f32` keeps its meaning.
+        let build = || {
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let p = a.push_param(0);
+            let root = a.push_binary(OpKind::Mul, x, p);
+            (a, root)
+        };
+        let (mut folded, root) = build();
+        let folded_root = folded.substitute_params(root, &[Scalar::from(2.5)]);
+        let (mut by_hand, root) = build();
+        let x = by_hand.push_var(0);
+        let c = by_hand.push_const(2.5);
+        let hand_root = by_hand.push_binary(OpKind::Mul, x, c);
+        let _ = root;
+        assert_eq!(folded.nodes_raw(), by_hand.nodes_raw());
+        assert_eq!(folded_root, hand_root);
+        assert!(folded.uniforms().is_empty());
+    }
+
+    #[test]
+    fn subtree_eq_distinguishes_uniform_declarations() {
+        let (a, ra) = uniform_fragment(uniform_decl(1.0));
+        let (b, rb) = uniform_fragment(uniform_decl(1.0));
+        assert!(a.subtree_eq(ra, &a, ra));
+        assert!(!a.subtree_eq(ra, &b, rb), "same slot, different instance");
     }
 }

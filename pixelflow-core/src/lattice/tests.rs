@@ -1,67 +1,54 @@
 use super::*;
-use crate::variables::{X, Y};
+use crate::PARALLELISM;
+use crate::lattice::manifold::Manifold;
+use pixelflow_ir::Kernel;
 
-// A trivial manifold for testing: returns X + Y.
-// This is a struct (not a closure) so it can implement Manifold.
-#[derive(Copy, Clone)]
-struct XPlusY;
-
-impl Manifold<(Field, Field, Field, Field)> for XPlusY {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, p: (Field, Field, Field, Field)) -> Field {
-        let (x, y, _, _) = p;
-        (x + y).eval(p)
-    }
+/// Read one sample of a bound-memory kernel: compile it at a one-sample
+/// lattice, bind the buffer it declares, collapse. A test owns its loop; this
+/// is the same three steps every consumer takes, at the degenerate shape.
+fn sample_bound(kernel: &Kernel, buffer: &DiscreteManifold, x: f32, y: f32) -> f32 {
+    let bound = Manifold::compile(kernel, [1, 1]).bind(&[buffer.binding()]);
+    bound.eval_at(x, y)
 }
 
-// Constant manifold: returns a fixed value regardless of coordinates.
-#[derive(Copy, Clone)]
-struct Constant(f32);
+// The kernels the tabulation tests bake. Written as `Kernel` arithmetic —
+// the arena the compiler consumes — because `Lattice::bake` is the only
+// evaluation entry: there is nothing here for a hand-written `Manifold` to
+// be handed to.
 
-impl Manifold<(Field, Field, Field, Field)> for Constant {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, _p: (Field, Field, Field, Field)) -> Field {
-        Field::from(self.0)
-    }
+/// `X + Y`.
+fn x_plus_y() -> Kernel {
+    Kernel::x().add(&Kernel::y())
 }
 
-// Returns X only (for simple 1D tests).
-#[derive(Copy, Clone)]
-struct XOnly;
+/// `X`, for the 1D shapes.
+fn x_only() -> Kernel {
+    Kernel::x()
+}
 
-impl Manifold<(Field, Field, Field, Field)> for XOnly {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, p: (Field, Field, Field, Field)) -> Field {
-        p.0
-    }
+/// `10·Y + X` — each axis readable in one digit of the result, so a
+/// transposed or dropped axis in the buffer layout is visible in the value.
+fn y_times_10() -> Kernel {
+    Kernel::y().mul(&Kernel::constant(10.0)).add(&Kernel::x())
 }
 
 // ---- Frame coord generation ----
 
 #[test]
 fn frame_coord_generation() {
-    let lattice = Lattice {
-        extent: [4, 3, 1, 1],
-        origin: [0.0, 0.0, 1.5, 2.0],
-    };
+    let lattice = Lattice { extent: [4, 3] };
 
     assert_eq!(lattice.len(), 12);
     assert!(!lattice.is_empty());
 
-    // First pixel: (0, 0, z, w)
-    assert_eq!(lattice.coord(0), (0.0, 0.0, 1.5, 2.0));
-    // End of first row: (3, 0, z, w)
-    assert_eq!(lattice.coord(3), (3.0, 0.0, 1.5, 2.0));
-    // Start of second row: (0, 1, z, w)
-    assert_eq!(lattice.coord(4), (0.0, 1.0, 1.5, 2.0));
-    // Last pixel: (3, 2, z, w)
-    assert_eq!(lattice.coord(11), (3.0, 2.0, 1.5, 2.0));
+    // First pixel.
+    assert_eq!(lattice.coord(0), (0.0, 0.0));
+    // End of first row.
+    assert_eq!(lattice.coord(3), (3.0, 0.0));
+    // Start of second row.
+    assert_eq!(lattice.coord(4), (0.0, 1.0));
+    // Last pixel.
+    assert_eq!(lattice.coord(11), (3.0, 2.0));
 
     // Loop axes: X and Y
     assert_eq!(lattice.loop_mask(), 0b0011);
@@ -70,54 +57,51 @@ fn frame_coord_generation() {
 #[test]
 #[should_panic(expected = "out of bounds")]
 fn frame_coord_oob() {
-    let lattice = Lattice::frame(4, 3, 0.0);
+    let lattice = Lattice::frame(4, 3);
     let _c = lattice.coord(12);
 }
 
-// ---- Scanline coord generation ----
+// ---- Scanline: a row-range collapse ----
 
 #[test]
-fn scanline_coord_generation() {
-    let lattice = Lattice::scanline(8, 5.0, 1.0, 0.0);
-    assert_eq!(lattice.len(), 8);
-    assert_eq!(lattice.coord(0), (0.0, 5.0, 1.0, 0.0));
-    assert_eq!(lattice.coord(7), (7.0, 5.0, 1.0, 0.0));
-    assert_eq!(lattice.loop_mask(), 0b0001);
-}
-
-// ---- Point collapse = single eval ----
-
-#[test]
-fn point_collapse_single_eval() {
-    let lattice = Lattice::point(3.0, 4.0, 0.0, 0.0);
-    assert_eq!(lattice.len(), 1);
-    assert_eq!(lattice.loop_mask(), 0);
-    assert_eq!(lattice.coord(0), (3.0, 4.0, 0.0, 0.0));
-
-    let discrete = lattice.collapse(&XPlusY);
-    assert_eq!(discrete.width(), 1);
+fn scanline_is_x_only_at_a_fixed_row() {
+    // X + Y at row 5: every sample reads its own column plus the fixed row.
+    let discrete = Lattice::scanline(&x_plus_y(), 8, 5);
+    assert_eq!(discrete.width(), 8);
     assert_eq!(discrete.height(), 1);
-
-    // X + Y = 3 + 4 = 7
-    let buf = discrete.buffer();
-    assert_eq!(buf.len(), 1);
-    assert!((buf[0] - 7.0).abs() < 1e-5, "expected 7.0, got {}", buf[0]);
+    for x in 0..8 {
+        let want = x as f32 + 5.0;
+        assert!(
+            (discrete.buffer()[x] - want).abs() < 1e-5,
+            "x={x}: expected {want}, got {}",
+            discrete.buffer()[x]
+        );
+    }
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn point_coord_oob() {
-    let lattice = Lattice::point(0.0, 0.0, 0.0, 0.0);
-    let _c = lattice.coord(1);
+fn an_empty_scanline_is_a_zero_width_buffer() {
+    let discrete = Lattice::scanline(&x_plus_y(), 0, 5);
+    assert_eq!(discrete.buffer().len(), 0);
+    assert_eq!(discrete.width(), 0);
+}
+
+// ---- eval_at = a single value, not a domain ----
+
+#[test]
+fn eval_at_is_a_single_value() {
+    // X + Y = 3 + 4 = 7
+    let got = Lattice::eval_at(&x_plus_y(), 3.0, 4.0);
+    assert!((got - 7.0).abs() < 1e-5, "expected 7.0, got {got}");
 }
 
 // ---- DiscreteManifold round-trip ----
 
 #[test]
 fn discrete_manifold_round_trip() {
-    // Collapse a simple manifold (XPlusY) over a small grid, then read back.
-    let lattice = Lattice::frame(8, 4, 0.0);
-    let discrete = lattice.collapse(&XPlusY);
+    // Bake X + Y over a small grid, then read the buffer back as a manifold.
+    let lattice = Lattice::frame(8, 4);
+    let discrete = lattice.bake(&x_plus_y());
 
     assert_eq!(discrete.width(), 8);
     assert_eq!(discrete.height(), 4);
@@ -139,72 +123,62 @@ fn discrete_manifold_round_trip() {
         }
     }
 
-    // Now eval the DiscreteManifold at known coordinates.
-    // Querying at (2.0, 1.0) should return buffer[1*8 + 2] = 3.0.
-    let result = discrete.eval((
-        Field::from(2.0),
-        Field::from(1.0),
-        Field::from(0.0),
-        Field::from(0.0),
-    ));
-    let mut out = [0.0f32; PARALLELISM];
-    result.store(&mut out);
-    assert!((out[0] - 3.0).abs() < 1e-5, "expected 3.0, got {}", out[0],);
+    // Now read the DiscreteManifold back by coordinate — the other half of
+    // `index(collapse(f)) = f`. Querying at (2.0, 1.0) returns
+    // buffer[1*8 + 2] = 3.0.
+    let got = sample_bound(&discrete.kernel(), &discrete, 2.0, 1.0);
+    assert!((got - 3.0).abs() < 1e-5, "expected 3.0, got {got}");
 }
 
-// ---- collapse_with Add on constant = value * count (per-lane fold) ----
-
+/// **The law, with no side condition.** `index(collapse(f)) = f` at *every*
+/// index of a two-axis lattice, for a kernel that reads both axes and is not
+/// affine in either.
+///
+/// It used to need one: a lattice carried an origin, so `collapse(f)(i)` was
+/// `f(origin + i)` and the equation only held when `index` knew the origin
+/// too. A lattice is an extent, full stop — `Lattice::origin` is gone — so
+/// the law is what this asserts directly rather than up to a shift.
+///
+/// Up to rounding, and not to bits: the two sides are two *compilations* of
+/// one expression — a 13x7 frame, and a single-point evaluation whose
+/// coordinates fold to constants — so each is extracted against its own set
+/// of shared subterms and associates its arithmetic differently. That
+/// last-bit freedom is what "Floating point at the edges" reserves, and it
+/// is not what this test is for: a real break of the law (an index off by
+/// one, a lost origin, a dropped axis) moves a sample by orders of
+/// magnitude, not by a few units in the last place.
 #[test]
-fn collapse_with_add_constant() {
-    let value = 2.5f32;
-    // Width must be a whole number of batches for every lane to see the same
-    // number of contributions: a partial batch is masked to the monoid identity
-    // in its out-of-range lanes, so lanes would disagree and the single
-    // `expected_per_lane` below would not exist. Deriving the width from
-    // `PARALLELISM` keeps that true at every SIMD width — hard-coding 8 held
-    // only while a batch was 4 wide, and silently computed `4 * (8 / 16) == 0`
-    // on a 16-lane build. Tail behaviour has its own test below.
-    const BATCHES_PER_ROW: usize = 2;
-    const HEIGHT: usize = 4;
-    let width = PARALLELISM * BATCHES_PER_ROW;
-    let lattice = Lattice::frame(width, HEIGHT, 0.0);
-    let result = lattice.collapse_with(ReduceOp::Add, &Constant(value));
+fn index_of_collapse_is_the_kernel_everywhere() {
+    /// Units in the last place the two extractions may differ by. Measured
+    /// at 3 across this kernel's 91 samples; a real law break is nowhere
+    /// near it.
+    const LAW_ULPS: i64 = 8;
 
-    // One eval per batch per row, each adding `value` to every lane.
-    let evals_per_lane = HEIGHT * BATCHES_PER_ROW;
-    let expected_per_lane = evals_per_lane as f32 * value;
+    // sin(X) · (Y + 2) + X·Y: reads both axes, and no rewrite can turn it
+    // into something the buffer could reproduce by accident.
+    let k = Kernel::x()
+        .sin()
+        .mul(&Kernel::y().add(&Kernel::constant(2.0)))
+        .add(&Kernel::x().mul(&Kernel::y()));
 
-    let mut out = [0.0f32; PARALLELISM];
-    result.store(&mut out);
-    for (i, &v) in out.iter().enumerate() {
+    let lattice = Lattice::frame(13, 7);
+    let collapsed = lattice.bake(&k);
+    // `index` is the gather the collapsed buffer composes as a kernel.
+    let index = collapsed.kernel();
+
+    for i in 0..lattice.len() {
+        let (x, y) = lattice.coord(i);
+        // The left-hand side: the buffer read back at the index.
+        let indexed = sample_bound(&index, &collapsed, x, y);
+        // The right-hand side: the kernel itself, at the same point.
+        let direct = Lattice::eval_at(&k, x, y);
+        // A sign flip puts the two bit patterns astronomically far apart, so
+        // this distance refuses one as loudly as it refuses a wrong value.
+        let ulps = (i64::from(indexed.to_bits()) - i64::from(direct.to_bits())).abs();
         assert!(
-            (v - expected_per_lane).abs() < 1e-3,
-            "lane {}: expected {}, got {}",
-            i,
-            expected_per_lane,
-            v,
-        );
-    }
-}
-
-// ---- collapse_with on a non-trivial manifold ----
-
-#[test]
-fn collapse_with_mul_constant() {
-    // Mul identity is 1.0. For a constant manifold returning 2.0,
-    // folding N batches: 2.0^N per lane.
-    let lattice = Lattice::scanline(PARALLELISM, 0.0, 0.0, 0.0);
-    let result = lattice.collapse_with(ReduceOp::Mul, &Constant(2.0));
-
-    // width = PARALLELISM, so exactly 1 batch. Result = 1.0 * 2.0 = 2.0 per lane.
-    let mut out = [0.0f32; PARALLELISM];
-    result.store(&mut out);
-    for (i, &v) in out.iter().enumerate() {
-        assert!(
-            (v - 2.0).abs() < 1e-5,
-            "lane {}: expected 2.0, got {}",
-            i,
-            v,
+            ulps <= LAW_ULPS,
+            "index(collapse(f)) != f at index {i} = ({x}, {y}): \
+             {indexed} vs {direct} ({ulps} ulp)"
         );
     }
 }
@@ -212,11 +186,11 @@ fn collapse_with_mul_constant() {
 // ---- Tail handling (non-multiple-of-PARALLELISM width) ----
 
 #[test]
-fn frame_collapse_non_aligned_width() {
+fn frame_bake_non_aligned_width() {
     // Width that's not a multiple of PARALLELISM.
     let width = PARALLELISM + 1;
-    let lattice = Lattice::frame(width, 2, 0.0);
-    let discrete = lattice.collapse(&XOnly);
+    let lattice = Lattice::frame(width, 2);
+    let discrete = lattice.bake(&x_only());
 
     assert_eq!(discrete.buffer().len(), width * 2);
 
@@ -245,33 +219,20 @@ fn discrete_manifold_clamp_oob_coords() {
     let dm = DiscreteManifold::new(buffer, 2, 2);
     // Layout: (0,0)=10, (1,0)=20, (0,1)=30, (1,1)=40
 
+    let read = dm.kernel();
+
     // Negative coords should clamp to 0.
-    let result = dm.eval((
-        Field::from(-5.0),
-        Field::from(-5.0),
-        Field::from(0.0),
-        Field::from(0.0),
-    ));
-    let mut out = [0.0f32; PARALLELISM];
-    result.store(&mut out);
+    let got = sample_bound(&read, &dm, -5.0, -5.0);
     assert!(
-        (out[0] - 10.0).abs() < 1e-5,
-        "expected 10.0 (clamped to 0,0), got {}",
-        out[0],
+        (got - 10.0).abs() < 1e-5,
+        "expected 10.0 (clamped to 0,0), got {got}"
     );
 
     // Coords beyond max should clamp.
-    let result = dm.eval((
-        Field::from(100.0),
-        Field::from(100.0),
-        Field::from(0.0),
-        Field::from(0.0),
-    ));
-    result.store(&mut out);
+    let got = sample_bound(&read, &dm, 100.0, 100.0);
     assert!(
-        (out[0] - 40.0).abs() < 1e-5,
-        "expected 40.0 (clamped to 1,1), got {}",
-        out[0],
+        (got - 40.0).abs() < 1e-5,
+        "expected 40.0 (clamped to 1,1), got {got}"
     );
 }
 
@@ -281,84 +242,55 @@ fn discrete_manifold_size_mismatch() {
     let _manifold = DiscreteManifold::new(alloc::vec![1.0, 2.0, 3.0], 2, 2);
 }
 
-// ---- ReduceOp identity elements ----
-
-#[test]
-fn reduce_op_identities() {
-    let mut out = [0.0f32; PARALLELISM];
-
-    ReduceOp::Add.identity().store(&mut out);
-    assert_eq!(out[0], 0.0);
-
-    ReduceOp::Mul.identity().store(&mut out);
-    assert_eq!(out[0], 1.0);
-
-    ReduceOp::Min.identity().store(&mut out);
-    assert_eq!(out[0], f32::INFINITY);
-
-    ReduceOp::Max.identity().store(&mut out);
-    assert_eq!(out[0], f32::NEG_INFINITY);
-}
-
 // ---- Constructor shapes ----
 
 #[test]
 fn constructor_shapes() {
-    let f = Lattice::frame(1920, 1080, 0.5);
-    assert_eq!(f.extent, [1920, 1080, 1, 1]);
-    assert_eq!(f.origin, [0.0, 0.0, 0.5, 0.0]);
+    let f = Lattice::frame(1920, 1080);
+    assert_eq!(f.extent, [1920, 1080]);
 
     let i = Lattice::index(132);
-    assert_eq!(i.extent, [132, 1, 1, 1]);
+    assert_eq!(i.extent, [132, 1]);
     assert_eq!(i.loop_mask(), 0b0001);
 
     let m = Lattice::index2(64, 32);
-    assert_eq!(m.extent, [64, 32, 1, 1]);
+    assert_eq!(m.extent, [64, 32]);
     assert_eq!(m.loop_mask(), 0b0011);
-}
-
-// ---- Scanline collapse round-trip ----
-
-#[test]
-fn scanline_collapse_round_trip() {
-    let lattice = Lattice::scanline(16, 3.0, 0.0, 0.0);
-    let discrete = lattice.collapse(&XPlusY);
-
-    // Each pixel x should have value x + 3.0.
-    for x in 0..16 {
-        let expected = x as f32 + 3.0;
-        let actual = discrete.buffer()[x];
-        assert!(
-            (actual - expected).abs() < 1e-5,
-            "at x={}: expected {}, got {}",
-            x,
-            expected,
-            actual,
-        );
-    }
 }
 
 // ---- Empty lattice ----
 
 #[test]
 fn frame_zero_dimensions() {
-    let lattice = Lattice::frame(0, 0, 0.0);
+    let lattice = Lattice::frame(0, 0);
     assert!(lattice.is_empty());
     assert_eq!(lattice.len(), 0);
 
-    // Collapsing an empty lattice produces an empty discrete manifold.
-    let discrete = lattice.collapse(&Constant(42.0));
+    // Baking over an empty lattice produces an empty discrete manifold.
+    let discrete = lattice.bake(&Kernel::constant(42.0));
     assert_eq!(discrete.buffer().len(), 0);
     assert_eq!(discrete.width(), 0);
     assert_eq!(discrete.height(), 0);
 }
 
+/// `bake` binds nothing, so a kernel that reads memory cannot be baked — and
+/// the refusal has to **name the slot it could not fill**, not read a null
+/// base pointer and hand back plausible numbers. The rule lives in
+/// `Manifold::bind`, which is the only place that can state it once for both
+/// callers; this pins that `bake` still reaches it.
+#[test]
+#[should_panic(expected = "nothing bound to slot")]
+fn baking_a_kernel_over_bound_memory_names_the_slot_it_cannot_fill() {
+    let texture = DiscreteManifold::new(alloc::vec![1.0, 2.0, 3.0, 4.0], 2, 2);
+    let _refused = Lattice::frame(2, 2).bake(&texture.kernel());
+}
+
 // ---- Index-space lattices (feature/tensor indexing) ----
 
 #[test]
-fn index_collapse_identity() {
+fn index_bake_identity() {
     let lattice = Lattice::index(4);
-    let result = lattice.collapse(&X);
+    let result = lattice.bake(&x_only());
     assert_eq!(result.width(), 4);
     assert_eq!(result.height(), 1);
     let buf = result.buffer();
@@ -369,19 +301,20 @@ fn index_collapse_identity() {
 }
 
 #[test]
-fn index_collapse_scalar_sum() {
-    // Sum of [0,1,2,3] across the whole lattice = 6.
-    let lattice = Lattice::index(4);
-    let result = lattice.collapse_scalar(ReduceOp::Add, &X);
-    assert!((result - 6.0).abs() < 1e-5, "expected 6.0, got {}", result);
+fn sum_over_an_index_domain() {
+    // Sum of [0,1,2,3] = 6. The reduction is a binder inside the kernel, so
+    // the lattice that tabulates it is a single point.
+    let k = Kernel::sum_over(4, |i| i.clone());
+    let result = Lattice::eval_at(&k, 0.0, 0.0);
+    assert!((result - 6.0).abs() < 1e-5, "expected 6.0, got {result}");
 }
 
 #[test]
-fn index2_collapse_xy_sum() {
+fn index2_bake_xy_sum() {
     // 3x2 lattice (width=3, height=2). Values = X + Y.
     // Row 0 (Y=0): [0,1,2]. Row 1 (Y=1): [1,2,3].
     let lattice = Lattice::index2(3, 2);
-    let result = lattice.collapse(&(X + Y));
+    let result = lattice.bake(&x_plus_y());
     assert_eq!(result.width(), 3);
     assert_eq!(result.height(), 2);
     let buf = result.buffer();
@@ -395,94 +328,31 @@ fn index2_collapse_xy_sum() {
 }
 
 #[test]
-fn index2_collapse_scalar_sum() {
-    // 3x2 lattice. Values = X + Y.
-    // Sum = (0+0) + (1+0) + (2+0) + (0+1) + (1+1) + (2+1) = 0+1+2+1+2+3 = 9.
-    let lattice = Lattice::index2(3, 2);
-    let result = lattice.collapse_scalar(ReduceOp::Add, &(X + Y));
-    assert!((result - 9.0).abs() < 1e-5, "expected 9.0, got {}", result);
+fn nested_sums_over_two_index_domains() {
+    // Sum over a 3x2 domain of (i + j) = 0+1+2 + 1+2+3 = 9. Two binders, so
+    // the inner index is contracted before the outer fold sees it.
+    let k = Kernel::sum_over(2, |j| {
+        let j = j.clone();
+        Kernel::sum_over(3, move |i| i.add(&j))
+    });
+    let result = Lattice::eval_at(&k, 0.0, 0.0);
+    assert!((result - 9.0).abs() < 1e-5, "expected 9.0, got {result}");
 }
 
-#[test]
-fn collapse_axis0_dot_product() {
-    // W = column-major layout for matmul:
-    // W(input_i=X, output_j=Y): W(0,0)=1, W(1,0)=3, W(0,1)=2, W(1,1)=4
-    // Row-major buffer (Y outer, X inner): [W(0,0), W(1,0), W(0,1), W(1,1)] = [1, 3, 2, 4]
-    let w_buf = alloc::vec![1.0f32, 3.0, 2.0, 4.0];
-    let w = DiscreteManifold::new(w_buf, 2, 2);
-    let x_buf = alloc::vec![1.0f32, 2.0];
-    let x_vec = DiscreteManifold::new(x_buf, 2, 1);
-
-    struct Product {
-        w: DiscreteManifold,
-        x: DiscreteManifold,
-    }
-    impl Manifold<(Field, Field, Field, Field)> for Product {
-        type Output = Field;
-        fn eval(&self, (xi, yj, _, _): (Field, Field, Field, Field)) -> Field {
-            let zero = Field::from(0.0);
-            let w_val = self.w.eval((xi, yj, zero, zero));
-            let x_val = self.x.eval((xi, zero, zero, zero));
-            (w_val * x_val).eval((xi, yj, zero, zero))
-        }
-    }
-
-    let lattice = Lattice::index2(2, 2); // width=INPUT=2, height=OUTPUT=2
-    let result = lattice.collapse_axis(0, ReduceOp::Add, &Product { w, x: x_vec });
-    // result: width=2 (= extent[1]), height=1
-    // result[0] = W(0,0)*x(0) + W(1,0)*x(1) = 1*1 + 3*2 = 7
-    // result[1] = W(0,1)*x(0) + W(1,1)*x(1) = 2*1 + 4*2 = 10
-    assert_eq!(result.width(), 2);
-    assert_eq!(result.height(), 1);
-    let buf = result.buffer();
-    assert!((buf[0] - 7.0).abs() < 1e-4, "expected 7.0, got {}", buf[0]);
-    assert!(
-        (buf[1] - 10.0).abs() < 1e-4,
-        "expected 10.0, got {}",
-        buf[1]
-    );
-}
+// ---- Buffer layout is row-major over the two axes ----
 
 #[test]
-fn collapse_axis1_row_sum() {
-    // 2x3 lattice (width=2, height=3). Values = Y.
-    // collapse_axis(1, Add): for each X=i, sum Y over [0,3) = 0+1+2 = 3
-    // result: width=2, height=1. result[0]=3, result[1]=3.
-    let lattice = Lattice::index2(2, 3);
-    let result = lattice.collapse_axis(1, ReduceOp::Add, &Y);
-    assert_eq!(result.width(), 2);
-    assert_eq!(result.height(), 1);
-    let buf = result.buffer();
-    assert!((buf[0] - 3.0).abs() < 1e-5, "expected 3.0, got {}", buf[0]);
-    assert!((buf[1] - 3.0).abs() < 1e-5, "expected 3.0, got {}", buf[1]);
-}
-
-// ---- 4D box collapse (Z/W extents > 1) ----
-
-#[test]
-fn box_collapse_4d_layout() {
-    // 2 wide, 2 tall, 2 deep: buffer rows are (w, z, y) outer-to-inner.
-    let lattice = Lattice {
-        extent: [2, 2, 2, 1],
-        origin: [0.0; 4],
-    };
+fn bake_lays_the_plane_out_row_major() {
+    // A lattice is a plane: X innermost, Y outermost, and nothing else.
+    let lattice = Lattice::frame(2, 4);
     assert_eq!(lattice.len(), 8);
-    assert_eq!(lattice.loop_mask(), 0b0111);
+    assert_eq!(lattice.loop_mask(), 0b0011);
 
-    struct ZTimes100;
-    impl Manifold<(Field, Field, Field, Field)> for ZTimes100 {
-        type Output = Field;
-        fn eval(&self, p @ (x, y, z, _): (Field, Field, Field, Field)) -> Field {
-            (z * Field::from(100.0) + y * Field::from(10.0) + x).eval(p)
-        }
-    }
-
-    let discrete = lattice.collapse(&ZTimes100);
+    let discrete = lattice.bake(&y_times_10());
     assert_eq!(discrete.width(), 2);
     assert_eq!(discrete.height(), 4);
     let buf = discrete.buffer();
-    // Rows in order: (z=0,y=0), (z=0,y=1), (z=1,y=0), (z=1,y=1)
-    let expected = [0.0, 1.0, 10.0, 11.0, 100.0, 101.0, 110.0, 111.0];
+    let expected = [0.0, 1.0, 10.0, 11.0, 20.0, 21.0, 30.0, 31.0];
     for (i, &e) in expected.iter().enumerate() {
         assert!(
             (buf[i] - e).abs() < 1e-5,
@@ -503,9 +373,12 @@ mod bilinear_sampler {
     use super::*;
     use crate::BilinearSampler;
 
-    /// Evaluate the sampler at a single point through the public lattice API.
+    /// One point of the sampler, read the way its production caller composes
+    /// it: the blend as a `Kernel`, compiled at a shape and collapsed with
+    /// the texture bound. `Lattice::bake` cannot do this, because the
+    /// texture is bound memory and `bake` binds none.
     fn sample(s: &BilinearSampler, x: f32, y: f32) -> f32 {
-        Lattice::point(x, y, 0.0, 0.0).collapse(s).into_buffer()[0]
+        sample_bound(&s.kernel(), s.texture(), x, y)
     }
 
     #[test]
@@ -587,12 +460,277 @@ mod bilinear_sampler {
     #[test]
     fn out_of_range_taps_clamp_to_edge() {
         // Queries outside the grid clamp to the edge texel, matching
-        // DiscreteManifold::eval's convention.
+        // `DiscreteManifold::kernel`'s gather convention.
         let s = DiscreteManifold::new(vec![1.0, 2.0, 3.0, 4.0], 2, 2).bilinear();
 
         assert!((sample(&s, -5.0, -5.0) - 1.0).abs() < 1e-6);
         assert!((sample(&s, 10.0, -5.0) - 2.0).abs() < 1e-6);
         assert!((sample(&s, -5.0, 10.0) - 3.0).abs() < 1e-6);
         assert!((sample(&s, 10.0, 10.0) - 4.0).abs() < 1e-6);
+    }
+}
+
+// ============================================================================
+// Uniforms: a kernel's arguments, bound per call
+// ============================================================================
+
+mod uniforms {
+    use super::*;
+    use crate::lattice::manifold::{Manifold, PlaneRegion};
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use pixelflow_ir::Uniform;
+    use pixelflow_ir::arena::BufferIdentity;
+
+    /// `√((x − cx)² + (y − cy)²) − r` over three handles.
+    fn circle() -> (Kernel, [Uniform; 3]) {
+        let (cx, cy, r) = (Uniform::new(1.5), Uniform::new(-0.5), Uniform::new(2.0));
+        let dx = Kernel::x().sub(&cx.kernel());
+        let dy = Kernel::y().sub(&cy.kernel());
+        let k = dx.mul(&dx).add(&dy.mul(&dy)).sqrt().sub(&r.kernel());
+        (k, [cx, cy, r])
+    }
+
+    fn circle_at(x: f32, y: f32, [cx, cy, r]: [f32; 3]) -> f32 {
+        ((x - cx) * (x - cx) + (y - cy) * (y - cy)).sqrt() - r
+    }
+
+    /// `Lattice::bake` (every argument at its default) and a block holding
+    /// those defaults are the same bake, bit for bit.
+    #[test]
+    fn a_bake_with_defaults_is_bit_for_bit_a_block_of_defaults() {
+        let (k, _) = circle();
+        let lattice = Lattice::frame(37, 5);
+        let baked = lattice.bake(&k);
+        let program = Manifold::compile(&k, lattice.extent);
+        assert_eq!(program.uniforms().len(), 3);
+        let blocked = lattice.collapse(&program.bind(&[]).with_uniforms(&program.block()));
+        let (a, b) = (baked.buffer(), blocked.buffer());
+        assert_eq!(a.len(), b.len());
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "sample {i}: {x} vs {y}");
+        }
+    }
+
+    /// Two circles are one compile; the block is what makes them two, and a
+    /// set is a write, not a recompile: the JIT agrees with the closed form
+    /// across several bindings of one program.
+    #[test]
+    fn a_block_rebinds_without_recompiling() {
+        let (k1, [cx, cy, r]) = circle();
+        let (k2, _) = circle();
+        let extent = [16, 4];
+        let p1 = Manifold::compile(&k1, extent);
+        let p2 = Manifold::compile(&k2, extent);
+        assert_eq!(
+            p1.code_bytes().as_ptr(),
+            p2.code_bytes().as_ptr(),
+            "two instances of one shape share one compiled region"
+        );
+        let lattice = Lattice::frame(16, 4);
+        let mut block = p1.block();
+        for values in [[1.5f32, -0.5, 2.0], [3.0, 1.0, 0.5], [-4.25, 2.5, 7.0]] {
+            block.set(cx, values[0]).expect("cx is an argument");
+            block.set(cy, values[1]).expect("cy is an argument");
+            block.set(r, values[2]).expect("r is an argument");
+            assert_eq!(block.get(r), Ok(values[2]));
+            let plane = lattice.collapse(&p1.bind(&[]).with_uniforms(&block));
+            for (i, got) in plane.buffer().iter().enumerate() {
+                let (x, y) = ((i % 16) as f32, (i / 16) as f32);
+                let want = circle_at(x, y, values);
+                assert!(
+                    (got - want).abs() <= 1e-4 * want.abs().max(1.0),
+                    "at ({x},{y}) under {values:?}: {got} vs {want}"
+                );
+            }
+        }
+    }
+
+    /// A handle from another composition is a composition mistake, and the
+    /// answer is an error — the pixels would be plausible otherwise.
+    #[test]
+    fn a_handle_that_is_not_an_argument_is_an_error() {
+        let (k, [cx, ..]) = circle();
+        let program = Manifold::compile(&k, [4, 4]);
+        let mut block = program.block();
+        let stranger = Uniform::new(0.0);
+        assert_eq!(
+            block.set(stranger, 1.0),
+            Err(crate::UnknownUniform(stranger.identity()))
+        );
+        assert!(block.get(stranger).is_err());
+        assert_eq!(block.set(cx, 1.0), Ok(()));
+    }
+
+    /// A block laid out for one program cannot be handed to another.
+    #[test]
+    #[should_panic(expected = "different program")]
+    fn a_block_from_another_program_is_refused() {
+        let (k1, _) = circle();
+        let (k2, _) = circle();
+        let p1 = Manifold::compile(&k1, [4, 4]);
+        let p2 = Manifold::compile(&k2, [4, 4]);
+        let _refused = p1.bind(&[]).with_uniforms(&p2.block());
+    }
+
+    /// A cursor: a column lit where `|x − cx| < ½`, over a background that
+    /// reads nothing but the coordinates. Moving the cursor changes the
+    /// columns it left and arrived at, and no other pixel.
+    #[test]
+    fn moving_a_uniform_moves_only_the_pixels_that_read_it() {
+        let cx = Uniform::new(2.0);
+        let under = Kernel::x()
+            .sub(&cx.kernel())
+            .abs()
+            .lt(&Kernel::constant(0.5));
+        let background = Kernel::y().mul(&Kernel::constant(0.25)).add(&Kernel::x());
+        let k = under.select(&Kernel::constant(-1.0), &background);
+        let (w, h) = (9usize, 3usize);
+        let lattice = Lattice::frame(w, h);
+        let program = Manifold::compile(&k, lattice.extent);
+
+        let frame_at = |col: f32| {
+            let mut block = program.block();
+            block.set(cx, col).expect("cx is the argument");
+            lattice.collapse(&program.bind(&[]).with_uniforms(&block))
+        };
+        let (here, there) = (frame_at(2.0), frame_at(5.0));
+        for row in 0..h {
+            for col in 0..w {
+                let (a, b) = (here.buffer()[row * w + col], there.buffer()[row * w + col]);
+                let want_a = if col == 2 {
+                    -1.0
+                } else {
+                    col as f32 + 0.25 * row as f32
+                };
+                let want_b = if col == 5 {
+                    -1.0
+                } else {
+                    col as f32 + 0.25 * row as f32
+                };
+                assert_eq!(a, want_a, "cursor at 2, ({col},{row})");
+                assert_eq!(b, want_b, "cursor at 5, ({col},{row})");
+                assert_eq!(a != b, col == 2 || col == 5, "({col},{row}) moved");
+            }
+        }
+    }
+
+    /// The context is filled in the order the code was compiled against —
+    /// the link's first-occurrence order — not the arena's declaration
+    /// order, and the block pointer follows the buffer slots.
+    #[test]
+    fn binding_follows_the_link_and_the_block_follows_the_buffers() {
+        let (a, b) = (BufferIdentity::mint(), BufferIdentity::mint());
+        let read =
+            |id| DiscreteManifold::kernel_for(id, 4, 1).at(&Kernel::x(), &Kernel::constant(0.0));
+        let scale = Uniform::new(10.0);
+        // `b` is declared first (the receiver's arena) and read second.
+        let k = read(b).add(&read(a).mul(&scale.kernel()));
+        let program = Manifold::compile(&k, [4, 1]);
+        assert_eq!(program.buffers()[0].id, b, "slot 0 is the first read");
+        assert_eq!(program.buffers()[1].id, a);
+        let bound = program.bind(&[(a, Arc::new(vec![1.0; 4])), (b, Arc::new(vec![2.0; 4]))]);
+        let mut out = vec![0.0f32; 4];
+        bound.collapse_rows(PlaneRegion::rows(4, 0, 1), &mut out, 4);
+        assert_eq!(out, [12.0; 4], "b + 10·a at the default");
+        let mut block = program.block();
+        block.set(scale, 100.0).expect("scale is the argument");
+        bound
+            .with_uniforms(&block)
+            .collapse_rows(PlaneRegion::rows(4, 0, 1), &mut out, 4);
+        assert_eq!(out, [102.0; 4], "b + 100·a under the block");
+    }
+}
+
+mod uniforms_link_and_oracle {
+    use super::*;
+    use crate::lattice::manifold::Manifold;
+    use pixelflow_ir::Uniform;
+    use pixelflow_ir::binding::BindingTable;
+    use pixelflow_ir::eval_scalar;
+
+    /// `Kernel::at` splices every coordinate fragment whether or not the
+    /// receiver reads that axis, so a kernel routinely *declares* an
+    /// instance it never reads. It must compile, its link must omit the
+    /// phantom, and the phantom's handle must be refused as an argument.
+    #[test]
+    fn a_uniform_spliced_on_an_unread_axis_is_not_an_argument() {
+        let (cx, phase) = (Uniform::new(1.0), Uniform::new(0.0));
+        // Reads X and cx only; Y is warped by `phase` and never read.
+        let circle = Kernel::x().sub(&cx.kernel()).abs();
+        let moving = circle.at(&Kernel::x(), &phase.kernel());
+        assert_eq!(
+            moving.parts().0.uniforms().len(),
+            2,
+            "the table names the phantom — that is the shape being tested"
+        );
+        let program = Manifold::compile(&moving, [4, 1]);
+        assert_eq!(
+            program.uniforms(),
+            &[cx.decl()],
+            "the link holds only what is read"
+        );
+        let mut block = program.block();
+        assert_eq!(
+            block.set(phase, 3.0),
+            Err(crate::UnknownUniform(phase.identity()))
+        );
+        block.set(cx, 2.0).expect("cx is read");
+        let plane = Lattice::frame(4, 1).collapse(&program.bind(&[]).with_uniforms(&block));
+        assert_eq!(plane.buffer(), &[2.0, 1.0, 0.0, 1.0]);
+    }
+
+    /// The plan's §5.2: JIT versus oracle under one bound block, across
+    /// several values, without recompiling between them. The block reaches
+    /// the oracle **by identity** (`entries`), never as a positional slice —
+    /// the link's order and the arena's differ, and the type says so.
+    #[test]
+    fn jit_and_oracle_read_one_block_by_identity() {
+        let (cx, cy, r) = (Uniform::new(1.5), Uniform::new(-0.5), Uniform::new(2.0));
+        let dx = Kernel::x().sub(&cx.kernel());
+        let dy = Kernel::y().sub(&cy.kernel());
+        // `√((X − cx)² + (Y − cy)²)` sampled with `r` warped onto X: `at`
+        // splices the coordinate fragment before rebuilding the receiver, so
+        // `r` is read first but declared last, and the link's order and the
+        // arena's differ.
+        let k = dx
+            .mul(&dx)
+            .add(&dy.mul(&dy))
+            .sqrt()
+            .at(&r.kernel(), &Kernel::y());
+        let (arena, root) = k.parts();
+        let lattice = Lattice::frame(8, 3);
+        let program = Manifold::compile(&k, lattice.extent);
+        assert_ne!(
+            program.uniforms().iter().map(|d| d.id).collect::<Vec<_>>(),
+            arena.uniforms().iter().map(|d| d.id).collect::<Vec<_>>(),
+            "the link's order and the arena's differ here, which is the point"
+        );
+        let code = program.code_bytes().as_ptr();
+        let mut block = program.block();
+        for values in [[1.5f32, -0.5, 2.0], [-3.0, 4.0, 0.25], [0.0, 0.0, 10.0]] {
+            block.set(cx, values[0]).expect("cx");
+            block.set(cy, values[1]).expect("cy");
+            block.set(r, values[2]).expect("r");
+            let entries: Vec<_> = block.entries().collect();
+            let bindings = BindingTable::bind(arena, &[])
+                .expect("no buffers")
+                .bind_uniforms(arena, &entries)
+                .expect("every entry is declared");
+            let plane = lattice.collapse(&program.bind(&[]).with_uniforms(&block));
+            for (i, got) in plane.buffer().iter().enumerate() {
+                let (x, y) = ((i % 8) as f32, (i / 8) as f32);
+                let want = eval_scalar(arena, root, &[x, y], &bindings);
+                assert!(
+                    (got - want).abs() <= 1e-5 * want.abs().max(1.0),
+                    "at ({x},{y}) under {values:?}: jit {got} vs oracle {want}"
+                );
+            }
+        }
+        assert_eq!(
+            program.code_bytes().as_ptr(),
+            code,
+            "three blocks, one compiled region"
+        );
     }
 }

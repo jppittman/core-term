@@ -3,7 +3,9 @@
 **Classification:** Historical/superseded (annotated 2026-09-01, not rewritten).
 The NNUE-scored `IncrementalExtractor` step and the `unified_backward.rs` gradient path
 this document describes belonged to the extraction-head program, whose shape was deleted
-on 2026-09-01 after it tied the static table (`paper/2026-08-egraph-nnue-parity.md`);
+on 2026-09-01 after it tied the static table (workshop paper on branch
+`claude/workshop-writeup`, PR #1072, closed without merging — not in this tree; see
+`plans/2026-09-01-schedule-cost-model-denotation.md` for the citations and numbers in-repo);
 extraction is the static latency prior only (`CLAUDE.md`, "Compiler Pipeline"), and the
 swap search survives behind an unimplemented `Reranker` seam
 (`plans/2026-09-01-schedule-cost-model-denotation.md`). The live learned program is the

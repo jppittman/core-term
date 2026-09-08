@@ -74,7 +74,13 @@ fn refused_union_is_journaled() {
     let mut a = ExprArena::new();
     let d = cancel(&mut a);
     let mut eg = EGraph::with_rules(all_rules());
-    let root = eg.add_arena(&a, d);
+    let root = pixelflow_search::egraph::insert(
+        &a,
+        d,
+        &mut eg,
+        pixelflow_search::egraph::Vocabulary::Templates,
+    )
+    .expect("insert into e-graph");
     SaturationConfig::compatibility(60).run(&mut eg);
     let _ = root;
     assert!(

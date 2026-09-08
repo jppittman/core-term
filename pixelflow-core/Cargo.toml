@@ -10,24 +10,17 @@ workspace = true
 bench = false
 
 [features]
-# Forwards to both crates that actually invoke saturation: `pixelflow-codegen`
-# (the `Lattice::bake` -> `jit_cache` -> `optimize_runtime_arena` runtime
-# tier) and `pixelflow-compiler` (the `kernel!`/`kernel_jit!` macro tier
-# every `kernel!` in this crate itself expands through). See
-# `pixelflow-search/src/telemetry.rs`.
-saturation-telemetry = [
-    "pixelflow-codegen/saturation-telemetry",
-    "pixelflow-compiler/saturation-telemetry",
-]
+# Forwards to `pixelflow-codegen`, the one crate that invokes saturation on
+# this crate's behalf (`Manifold::compile` -> `jit_cache` ->
+# `optimize_runtime_arena`). See `pixelflow-search/src/telemetry.rs`.
+saturation-telemetry = ["pixelflow-codegen/saturation-telemetry"]
 
 [dependencies]
 pixelflow-ir = { path = "../pixelflow-ir" }
 pixelflow-codegen = { path = "../pixelflow-codegen" }
-pixelflow-compiler = { path = "../pixelflow-compiler" }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "core_benches"
-harness = false
+# The scalar oracle, for JIT-versus-interpreter checks under a bound block —
+# a test-only walker, gated off every shipped build (see pixelflow-ir's
+# `eval` module), so it is a dev-dependency exactly as in codegen and search.
+pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }

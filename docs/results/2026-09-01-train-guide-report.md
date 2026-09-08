@@ -1,6 +1,22 @@
 # Guide cold-start training report (strict-v1 labels)
 
+> **Predates the 2026-09-02 review fixes; a re-run is required.** The trainer now excludes
+> `dedup_repeat` rows (candidates the live guide never scores — 93.4% of this TRAIN
+> split), sizes its rule table from the registered rule set, refuses overlapping
+> TRAIN/DEV families and single-class splits, applies L2 to every weight rather than only
+> the ones a sample touched, and reports a within-expression AUC alongside the pooled one;
+> `average_precision` also groups tied scores now. Every weight and metric below changes.
+
 > Budget denominator: REGISTERED_PRIMARY_BUDGET_APPLICATIONS = 100 (docs/plans/2026-09-01-phase3-registration.md §4, classical-band primary tier), imported by both gen_strict_labels and saturate_guided_until_applications so budget_fraction means the same thing at mint time and at deploy time. The first mint/train pass of this round (2026-09-01) used a 195-application placeholder (this round's measured median application count, before B was registered) — a train/deploy denominator skew, caught and fixed before this checkpoint (see git history for the placeholder-era numbers).
+
+> **Instrument change (2026-09-02 forward-port).** Two things about how a
+> Phase 3 anytime curve is measured changed with the port, so a re-run does
+> not reproduce the numbers below even if nothing else changed: the
+> application budget now binds **mid-scan** rather than between rule sweeps
+> (`app_actual == app_target` exactly, no overshoot), and the reported cost
+> is the **DAG** cost the emitted kernel pays rather than the extraction DP's
+> tree total (#1117). Full statement:
+> [docs/results/2026-09-02-phase3-instrument-changes.md](2026-09-02-phase3-instrument-changes.md).
 
 TRAIN: 660404 samples, 223 families, positive rate 0.5220%.
 

@@ -1,5 +1,12 @@
 # Oracle-filtered anytime budget curves: inconclusive as calibrated (2026-08-30)
 
+> **SUPERSEDED (2026-09-02).** This report's `cost` and `regret_pct` columns are the
+> extraction DP's **tree** cost, not the DAG cost the emitted kernel pays (#1117), and its
+> checkpoint grid is denominated in sweep fractions rather than applications. Both defects
+> are corrected in
+> [docs/results/2026-09-02-oracle-filtered-budget-curves.md](2026-09-02-oracle-filtered-budget-curves.md),
+> which supersedes this file. Nothing below has been edited; it is kept as measured.
+
 Reproduce:
 ```
 cargo run --release -p pixelflow-search --example oracle_filtered_budget_curves

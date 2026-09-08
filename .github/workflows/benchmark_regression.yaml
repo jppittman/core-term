@@ -35,6 +35,11 @@ jobs:
       group: benchmark-baseline
       cancel-in-progress: false
     timeout-minutes: 90
+    # See rust.yaml's env block for why this is job-level, not workflow-level.
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,16 +53,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
 
-      - name: Cache dependencies
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-bench-
+            cargo-registry-
 
       - name: Run benchmarks
         run: |

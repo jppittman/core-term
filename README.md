@@ -9,26 +9,27 @@ and concurrency requirements exercise the libraries as a system.
 
 ## What is current
 
-PixelFlow is under active architectural development. The current direction is JIT-first:
-a [`Kernel`](pixelflow-ir/src/kernel.rs) is an immutable handle to an `ExprArena` fragment,
-and composition (`add`, `select`, `at`, bounded reductions, derivatives) splices fragments
-into a larger arena. A root is lowered and emitted for the host CPU.
+PixelFlow is JIT-first. A [`Kernel`](pixelflow-ir/src/kernel.rs) is an immutable handle to an
+`ExprArena` fragment, and composition (`add`, `select`, `at`, bounded reductions,
+derivatives) splices fragments into a larger arena. A root is compiled at a lattice's shape
+and emitted for the host CPU.
 
 ```text
-kernel_value! source ── parse / sema / e-graph ──┐
-                                                 ▼
-direct Kernel construction ── arena splicing ── ExprArena
-                                                 │
-                                      lowering and emission
-                                                 │
-                                                 ▼
-                                              CPU JIT
+kernel! source ── parse / sema / e-graph ──┐
+                                           ▼
+direct Kernel construction ── splicing ── ExprArena
+                                           │
+                            compile at a lattice's shape
+                                           │
+                                           ▼
+                                        CPU JIT ── collapse ──▶ buffer
 ```
 
-This migration is not finished. `kernel_value!` builds arena-backed `Kernel` values today,
-and the font pipeline composes and bakes them end to end. The older `kernel!` surface still
-defaults to its type-level combinator emitter while arena-backend parity and remaining
-consumers are completed. The plan of record is
+There is one tier and one evaluation API: a kernel becomes numbers by being compiled at a
+lattice's shape and collapsed, or not at all. The type-level combinator tier — manifolds as
+zero-sized expression templates evaluated one SIMD batch at a time — was retired by
+[A Kernel with a Lattice](docs/plans/2026-09-06-kernel-with-a-lattice.md), which also records
+the measurements that decided it. The earlier plan of record is
 [One Kernel Language](docs/plans/2026-07-20-kernel-unification.md); the current language
 axiom and intended cost boundary are described in
 [Totality and the Cost Model](docs/designs/2026-07-24-totality-and-the-cost-model.md).
@@ -45,9 +46,10 @@ buffers; it does not promise that all scenes are free of overdraw or branches.
 
 | Crate | Purpose |
 |---|---|
-| `pixelflow-core` | `no_std` SIMD fields, the `Manifold` substrate, coordinates, combinators, and compatibility layer |
-| `pixelflow-ir` | `Kernel`, `ExprArena`, operations, lowering, and CPU emitters |
-| `pixelflow-compiler` | `kernel!`, `kernel_value!`, and related parser/sema/optimization front ends |
+| `pixelflow-core` | `no_std` lattices, the compiled `Manifold`, and `collapse` — the one evaluation API |
+| `pixelflow-ir` | `Kernel`, `ExprArena`, operations, and lowering |
+| `pixelflow-codegen` | Per-ISA emitters (x86-64, aarch64), register allocation, and the JIT compile cache |
+| `pixelflow-compiler` | `kernel!` and `kernel_raw!`, and the parser/sema/optimization front end behind them |
 | `pixelflow-search` | E-graphs, rewrite rules, extraction, provenance, and guided-search experiments |
 | `pixelflow-pipeline` | Benchmark, corpus, and cost-model research tooling |
 | `pixelflow-graphics` | Colors, font kernels and caches, scene composition, and framebuffer materialization |
@@ -63,15 +65,16 @@ general-purpose.
 
 ## A Kernel value
 
-`kernel_value!` runs parsing, semantic analysis, and e-graph optimization at macro expansion,
-then returns an uncompiled arena fragment. Scalar parameters are folded into the fragment;
-larger programs compose as `Kernel` values and compile at a materialization boundary.
+`kernel!` runs parsing, semantic analysis, and e-graph optimization at macro expansion, then
+returns an uncompiled arena fragment. Scalar parameters are folded into the fragment; larger
+programs compose as `Kernel` values and compile at a materialization boundary. `kernel_raw!`
+is the same without the e-graph, for benchmarking an exact expression form.
 
 ```rust
-use pixelflow_compiler::kernel_value;
+use pixelflow_compiler::kernel;
 use pixelflow_core::Kernel;
 
-let circle = kernel_value!(|cx: f32, cy: f32, radius: f32| {
+let circle = kernel!(|cx: f32, cy: f32, radius: f32| {
     let dx = X - cx;
     let dy = Y - cy;
     (dx * dx + dy * dy).sqrt() - radius
@@ -89,11 +92,11 @@ plan-of-record work, not completed features.
 
 ## Graphics
 
-The graphics crate turns kernels and manifolds into pixels. Its current font path parses TTF
-outlines directly into fused coverage `Kernel`s, resolves antialiasing through symbolic
-derivatives, and bakes reusable glyph lattices through the JIT. The ray-tracing modules remain
-a useful application of the older polymorphic `Manifold` layer, including derivative-derived
-surface normals.
+The graphics crate turns kernels into pixels. Its font path parses TTF outlines directly into
+fused coverage `Kernel`s, resolves antialiasing through symbolic derivatives, and bakes
+reusable glyph lattices through the JIT. `scene3d` is analytic 3D in the same language —
+`Ray::through_screen`, `Sphere::hit`, `Hit::select`, `checker`, `sky` — with every derivative
+from `Kernel::dx()`/`dy()`, packed into a frame by integer IR ops the graphics crate composes.
 
 See [pixelflow-graphics](pixelflow-graphics/README.md) for the current boundary between these
 paths.

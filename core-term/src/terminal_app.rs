@@ -11,8 +11,9 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::{At, CellGridGeometry, CellGridPackedProgram};
-use pixelflow_graphics::render::scene::Scene;
+use pixelflow_core::{CellGridMetrics, CellGridShape};
+use pixelflow_graphics::render::cell_grid::{CellGridPackedManifold, CellGridPackedParams};
+use pixelflow_graphics::render::scene::{constant_platform_scene, Scene};
 
 /// Adapter to send PTY commands to TerminalApp actor.
 pub struct TerminalAppSender {
@@ -46,7 +47,6 @@ use pixelflow_graphics::fonts::GlyphAtlas;
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::AppData;
 use pixelflow_runtime::api::public::EngineHandle;
-use pixelflow_runtime::platform::ColorCube;
 use pixelflow_runtime::{EngineEventControl, EngineEventData, EngineEventManagement};
 use std::sync::Arc;
 
@@ -55,6 +55,10 @@ const FONT_FILENAME: &str = "NotoSansMono-Regular.ttf";
 
 /// Atlas slots before the first growth (ASCII plus headroom).
 const ATLAS_CAPACITY: usize = 128;
+
+/// Scrollback navigation scales wheel delta by this many lines per unit,
+/// since a raw 1:1 mapping feels sluggish for keyboard-free scrolling.
+const SCROLL_LINES_PER_UNIT: i32 = 3;
 
 /// Find the font file, trying multiple locations:
 /// 1. macOS app bundle Resources directory (for bundled app)
@@ -109,14 +113,15 @@ pub struct TerminalApp {
     loaded_font: Arc<LoadedFont<MmapSource>>,
     /// Baked glyph coverage tiles, gathered by the scene kernel.
     atlas: GlyphAtlas,
-    /// The compiled cell-grid scene: ONE packed kernel producing finished
-    /// `u32` pixels, byte order bound by the platform's ColorCube inside
-    /// pixelflow-graphics. Recompiled whenever the geometry it was compiled
-    /// against — grid dimensions, cell size, density, atlas extents, the
-    /// frame's pixel size — changes; `None` until the first frame. This is the JIT answer to
-    /// dynamic resize: the program's size and compile time are independent
-    /// of the grid's.
-    program: Option<CellGridPackedProgram>,
+    /// The compiled cell-grid scene and the metric it is currently drawn at;
+    /// `None` until the first frame. See [`CellGridScene`].
+    scene: Option<CellGridScene>,
+    /// The solid-background scene and the device-pixel frame it was compiled
+    /// for. Only ever drawn before anything has been presented (see
+    /// [`TerminalApp::build_scene`]); cached because a `Scene` is a compiled
+    /// kernel and compiling one per frame request would be absurd for four
+    /// constants.
+    background: Option<([u32; 2], Scene)>,
     /// Whether any scene has been submitted yet. Synchronized output holds
     /// the last frame, which only exists once this is true; before that, the
     /// solid background is the only honest thing to show.
@@ -131,9 +136,49 @@ pub struct TerminalApp {
     /// The window's size in LOGICAL POINTS, from the last `WindowCreated` /
     /// `Resized` (`Surface::width_px`, which is points despite the name).
     /// Scaled by `density` it is the device-pixel lattice the cell-grid
-    /// kernels are compiled for, so it is part of the geometry the recompile
-    /// check compares.
+    /// kernels are compiled for, so it is part of the [`CellGridShape`] the
+    /// recompile check compares.
     frame_px: [u32; 2],
+}
+
+/// The compiled cell-grid scene, the metric it is drawn at, and that
+/// metric's block: ONE packed kernel producing finished `u32` pixels, byte
+/// order bound by the platform's ColorCube inside pixelflow-graphics.
+///
+/// **The two halves change on different schedules, which is why they are
+/// different fields.** The program is compiled against *extents* — grid
+/// dimensions, atlas extents, the frame's pixel size — and only those
+/// recompile it. The metric (cell size, sample density, tile size, display
+/// scale) is a block of uniforms, so a font-size or DPI change rewrites eight
+/// floats and reuses the kernel. Neither happens per frame: `frame` is
+/// refcounts, which is what keeps the render path free of per-frame
+/// allocation.
+struct CellGridScene {
+    program: CellGridPackedManifold,
+    metrics: CellGridMetrics,
+    params: CellGridPackedParams,
+}
+
+impl CellGridScene {
+    fn new(program: CellGridPackedManifold, metrics: CellGridMetrics) -> Self {
+        let params = program.params(&metrics);
+        Self {
+            program,
+            metrics,
+            params,
+        }
+    }
+
+    /// Adopt `metrics`, laying out a new block only when it actually moved.
+    /// Laying one out allocates (the values are shared with the frame still
+    /// in flight), so doing it per frame would put a heap allocation on the
+    /// render path for no change at all.
+    fn set_metrics(&mut self, metrics: CellGridMetrics) {
+        if self.metrics != metrics {
+            self.params = self.program.params(&metrics);
+            self.metrics = metrics;
+        }
+    }
 }
 
 /// Parameters for constructing a TerminalApp.
@@ -217,7 +262,8 @@ impl TerminalApp {
             engine_tx: params.engine_tx,
             loaded_font,
             atlas,
-            program: None,
+            scene: None,
+            background: None,
             has_presented: false,
             frame_px: [0, 0],
             pressed_mouse_button: None,
@@ -251,14 +297,43 @@ impl TerminalApp {
         self.atlas.warm(&self.loaded_font.font(), ' '..='~');
     }
 
+    /// The device-pixel lattice the scene kernels bake over: the window's
+    /// logical points scaled by the display density.
+    ///
+    /// Window events carry LOGICAL POINTS (`Surface::width_px`) while the
+    /// frame buffer the renderer hands us is device pixels, so the conversion
+    /// is not optional. `None` before the first window event, when there is
+    /// no window to measure and nothing to present into.
+    fn device_frame(&self) -> Option<[u32; 2]> {
+        let scaled = [
+            (self.frame_px[0] as f32 * self.density).round() as u32,
+            (self.frame_px[1] as f32 * self.density).round() as u32,
+        ];
+        (scaled[0] != 0 && scaled[1] != 0).then_some(scaled)
+    }
+
+    /// A solid `rgba` over the whole frame, compiled once per frame size.
+    ///
+    /// `None` when no window has been sized yet: there is nothing to present
+    /// into, so the engine is answered with [`AppData::Skipped`].
+    fn background_scene(&mut self, rgba: [f32; 4]) -> Option<Scene> {
+        let frame = self.device_frame()?;
+        let hit = self.background.as_ref().filter(|(at, _)| *at == frame);
+        if hit.is_none() {
+            self.background = Some((frame, constant_platform_scene(rgba, frame)));
+        }
+        self.background.as_ref().map(|(_, scene)| scene.clone())
+    }
+
     /// Build the frame scene: the JIT cell-grid program over the glyph
     /// atlas and this snapshot's per-cell data.
     ///
     /// The per-frame work is filling one flat `f32` buffer (10 floats per
-    /// cell); the compiled program is reused until the geometry changes.
-    /// A resize therefore IS a recompile — four channel kernels, sized
-    /// independently of the grid — which replaces the old per-frame tree of
-    /// boxed combinators entirely.
+    /// cell); the compiled program is reused until an EXTENT changes — the
+    /// grid's dimensions, the atlas's, or the window's. A change of *metric*
+    /// (font size, display scale, tile size) rewrites the uniform block and
+    /// keeps the program, so only a window resize or an atlas growth is a
+    /// recompile — four channel kernels, sized independently of the grid.
     /// `None` means nothing has changed since the last frame and the engine
     /// should be answered with [`AppData::Skipped`] rather than a scene.
     fn build_scene(&mut self) -> Option<Scene> {
@@ -279,14 +354,12 @@ impl TerminalApp {
                 if self.has_presented {
                     return None;
                 }
-                // Nothing was ever presented: there is no frame to hold.
-                return Some(Scene::Surface(Arc::new(At {
-                    inner: ColorCube::default(),
-                    x: dbg_r,
-                    y: dbg_g,
-                    z: dbg_b,
-                    w: dbg_a,
-                })));
+                // Nothing was ever presented: there is no frame to hold, so
+                // paint the default background over the whole frame. Four
+                // constant channel kernels compiled at the frame's own shape
+                // — a packed scene like every other, cached because its
+                // extents are what it was compiled for.
+                return self.background_scene([dbg_r, dbg_g, dbg_b, dbg_a]);
             }
         };
 
@@ -305,14 +378,15 @@ impl TerminalApp {
         // says nothing about *geometry*, which is why the grid shape is checked
         // separately below rather than trusted to come with a dirty line.
         let nothing_drawn_changed = !snapshot.lines.iter().any(|line| line.is_dirty);
-        let geometry_matches = self.program.as_ref().is_some_and(|p| {
-            let g = p.geometry();
-            g.cols == cols as u32
-                && g.rows == rows as u32
-                && g.cell_w == cell_width * self.density
-                && g.cell_h == cell_height * self.density
+        let geometry_matches = self.scene.as_ref().is_some_and(|scene| {
+            let shape = scene.program.shape();
+            shape.cols == cols as u32
+                && shape.rows == rows as u32
+                && scene.metrics.cell_w == cell_width
+                && scene.metrics.cell_h == cell_height
+                && scene.metrics.scale == self.density
         });
-        // `geometry_matches` is false while `program` is `None`, so the first
+        // `geometry_matches` is false while `scene` is `None`, so the first
         // frame after startup always draws.
         if nothing_drawn_changed && geometry_matches {
             return None;
@@ -359,69 +433,64 @@ impl TerminalApp {
             }
         }
 
-        // (Re)compile the scene program when the geometry moved: resize,
-        // density change, atlas growth. Compile cost is independent of the
-        // grid size, so this is the entire cost of a dynamic resize.
-        // Scene::CellGrid renders in DEVICE-PIXEL space (the runtime does
-        // not contramap it): cell extents scale by the display density, and
-        // the atlas — baked at `density` texels per point — is exactly one
-        // texel per device pixel.
-        // The lattice the compiled kernels bake over, in the same device-pixel
-        // space as every other field here. The window events carry LOGICAL
-        // POINTS (`Surface::width_px`), while the frame buffer the renderer
-        // hands us is `Surface::frame_width` device pixels — points × scale —
-        // so the conversion is not optional. Before the first window event
-        // there is no window to measure: fall back to the grid's own extent,
-        // which is what the kernels would bake if the surface were tight to
-        // the grid.
-        let frame_px = {
-            let scaled = [
-                (self.frame_px[0] as f32 * self.density).round() as u32,
-                (self.frame_px[1] as f32 * self.density).round() as u32,
-            ];
-            if scaled[0] == 0 || scaled[1] == 0 {
-                [
-                    (cols as f32 * cell_width * self.density).round() as u32,
-                    (rows as f32 * cell_height * self.density).round() as u32,
-                ]
-            } else {
-                scaled
-            }
-        };
-        let geom = CellGridGeometry {
-            cols: cols as u32,
-            rows: rows as u32,
-            cell_w: cell_width * self.density,
-            cell_h: cell_height * self.density,
-            density: 1.0,
-            atlas_width: self.atlas.width() as u32,
-            atlas_height: self.atlas.height() as u32,
+        // The metric is in POINT space; the display scale is the contramap
+        // onto the frame's device-pixel lattice, not a factor folded into
+        // every extent. The atlas is baked at `density` texels per point, so
+        // that is exactly what `density` means here.
+        let metrics = CellGridMetrics {
+            cell_w: cell_width,
+            cell_h: cell_height,
+            density: self.density,
             tile_w: self.atlas.tile_px() as u32,
             tile_h: self.atlas.tile_px() as u32,
+            scale: self.density,
+        };
+        // The lattice the compiled kernels bake over. Before the first window
+        // event there is no window to measure: fall back to the grid's own
+        // extent, which is what the kernels would bake if the surface were
+        // tight to the grid.
+        let frame_px = self.device_frame().unwrap_or([
+            (cols as f32 * cell_width * self.density).round() as u32,
+            (rows as f32 * cell_height * self.density).round() as u32,
+        ]);
+        let shape = CellGridShape {
+            cols: cols as u32,
+            rows: rows as u32,
+            atlas_width: self.atlas.width() as u32,
+            atlas_height: self.atlas.height() as u32,
             frame_w: frame_px[0],
             frame_h: frame_px[1],
         };
-        if self.program.as_ref().map(CellGridPackedProgram::geometry) != Some(&geom) {
-            log::info!(
-                "Compiling cell-grid scene: {}x{} cells, cell {}x{} pt, atlas {}x{} texels",
-                cols,
-                rows,
-                cell_width,
-                cell_height,
-                geom.atlas_width,
-                geom.atlas_height
-            );
-            self.program = Some(
-                pixelflow_graphics::render::scene::compile_platform_cell_grid(
-                    geom,
+        // (Re)compile only when an EXTENT moved — the grid gaining a column,
+        // the atlas growing, the window changing size. A change of metric
+        // (font size, display scale, tile size) is a parameter write into the
+        // block, which is what `set_metrics` does below.
+        let scene = match self.scene.take() {
+            Some(scene) if *scene.program.shape() == shape => scene,
+            _ => {
+                log::info!(
+                    "Compiling cell-grid scene: {}x{} cells, frame {}x{} px, atlas {}x{} texels",
+                    cols,
+                    rows,
+                    shape.frame_w,
+                    shape.frame_h,
+                    shape.atlas_width,
+                    shape.atlas_height
+                );
+                let program = pixelflow_graphics::render::scene::compile_platform_cell_grid(
+                    shape,
                     [dbg_r, dbg_g, dbg_b, dbg_a],
-                ),
-            );
-        }
-        let program = self.program.as_ref().expect("program compiled above");
-        Some(Scene::CellGrid(
-            program.frame(Arc::new(cells), self.atlas.buffer()),
-        ))
+                );
+                CellGridScene::new(program, metrics)
+            }
+        };
+        let scene = self.scene.insert(scene);
+        scene.set_metrics(metrics);
+        Some(Scene::CellGrid(scene.program.frame(
+            &scene.params,
+            Arc::new(cells),
+            self.atlas.buffer(),
+        )))
     }
 
     /// Answer the engine's frame request.
@@ -713,8 +782,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 } else {
                     // Scrollback navigation: negative dy scrolls up (into history),
                     // positive dy scrolls down (toward live screen)
-                    // Scale by 3 lines per scroll unit for better UX
-                    let scroll_lines = -(dy as i32) * 3;
+                    let scroll_lines = -(dy as i32) * SCROLL_LINES_PER_UNIT;
                     if self.emulator.scroll_viewport(scroll_lines) {
                         // Viewport changed, send frame immediately for responsive scrolling
                         self.send_frame();

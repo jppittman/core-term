@@ -1,6 +1,6 @@
 //! Tests for the TTF parser and glyph kernel rendering.
 
-use pixelflow_core::Lattice;
+use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::Font;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
@@ -23,11 +23,11 @@ fn parse_font_and_get_glyph() {
     assert!(advance > 0.0, "Glyph should have positive advance");
 
     // Bake the glyph and confirm it renders real ink in range.
-    let baked = Lattice {
-        extent: [64, 64, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
-    }
-    .bake(&glyph_a);
+    let centered = glyph_a.at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    );
+    let baked = Lattice::frame(64, 64).bake(&centered);
     let buf = baked.buffer();
     assert_eq!(buf.len(), 64 * 64);
     let ink: f32 = buf.iter().sum();

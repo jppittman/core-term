@@ -56,7 +56,7 @@ pub struct SchedulerParams {
     /// **Default: 1** (yields 32 * 1 = 32 messages per cycle)
     pub management_burst_multiplier: usize,
 
-    /// Default data burst limit used by [`create_actor`](crate::create_actor).
+    /// Default data burst limit.
     ///
     /// How many data messages the scheduler drains per cycle before yielding
     /// back to check higher-priority lanes.

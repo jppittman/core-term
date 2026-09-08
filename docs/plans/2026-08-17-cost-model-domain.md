@@ -4,8 +4,9 @@ Synthesis of three independent analyses over the cost-model pipeline
 (pixelflow-search/src/{nnue,egraph}, pixelflow-pipeline/src/{training,bin,jit_bench.rs}):
 
 > **2026-09-01 closure note (annotation, not a rewrite).** The extraction-head program this
-> domain model was written for is closed honest-negative (`docs/paper/2026-08-egraph-nnue-parity.md`)
-> and deleted per JP's ruling. Rows that are now dead-letter because their object no longer
+> domain model was written for is closed honest-negative (workshop paper on branch
+> `claude/workshop-writeup`, PR #1072, closed without merging — not in this tree; see
+> `2026-09-01-schedule-cost-model-denotation.md`) and deleted per JP's ruling. Rows that are now dead-letter because their object no longer
 > exists: **J3/J4** survive in `jit_bench` (harness, kept); **J6** (`VariantSet`) — PR #1044
 > closed unmerged; **J9** — the weights sidecar half is deleted, `SchemaIdentity` survives
 > for the corpus format only; **J12** (`RoundVerdict`) — `bench_extraction_3way` deleted;

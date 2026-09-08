@@ -1,5 +1,16 @@
 # E-graph NNUE research workflow: iterate to a publishable extraction-head result
 
+**Status:** Closed, 2026-09-01. The workflow below ran to completion: the workshop paper it
+targets (branch `claude/workshop-writeup`, PR #1072, closed without merging — not in this tree)
+found the NNUE extraction head ties `CostModel::latency_prior()` rather than beating it. JP's
+ruling ("delete the shape, keep the denotation") removed the extraction-head code this plan
+built toward — `bootstrap_extraction_head.rs` and `bench_extraction_3way.rs`, linked below, no
+longer exist. See
+[`2026-09-01-schedule-cost-model-denotation.md`](2026-09-01-schedule-cost-model-denotation.md)
+for the outcome, citations, and what the closure kept as a seam, and
+[`../NNUE_INTEGRATION_STATUS.md`](../NNUE_INTEGRATION_STATUS.md) for the current-state summary.
+The rest of this file is left as it was written, as the record of the workflow that was run.
+
 **Date:** 2026-08-05
 **Target:** workshop/preprint first (EGRAPHS @ PLDI, or NeurIPS/ICML ML-for-Systems workshop; arXiv preprint alongside).
 **Primary claim:** the NNUE extraction head produces measurably faster extracted kernels than

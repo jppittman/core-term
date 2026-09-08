@@ -3,13 +3,15 @@
 //! The middle width between the SSE2 leaf encoders (`x86_64.rs`, 128-bit) and
 //! the AVX-512 EVEX encoders (`avx512.rs`, 512-bit). Register numbering is
 //! identical to SSE2 (ymm0-15, no extended file — AVX2 has no REX2/EVEX), so
-//! this backend reuses the exact register-role layout `X86Backend` already
-//! established (inputs 0-3, allocatable 4-9, fixed scratch 10, reload 11-12,
-//! builtin scratch 10/13-15): only the instruction *encoding* changes.
+//! this backend reuses the register *roles* `X86Backend` established (inputs
+//! 0-3, reload 11-12) and only the instruction *encoding*
+//! changes. The pool itself differs: see `AVX2_FILE` for why the gather's
+//! half-temporaries cost it ymm8/ymm9, and why ymm10 — SSE2's own fixed
+//! scratch — is allocatable here.
 //!
 //! Unlike legacy SSE2, VEX is 3-operand and non-destructive — same property
 //! AVX-512's EVEX has — so there is no two-operand hazard to route around
-//! (contrast `emit_binary_safe` in `mod.rs`, needed only by the SSE2 path).
+//! (the SSE2 tier's two-operand form has no such freedom).
 //! Comparisons are simpler here than on AVX-512: `vcmpps` writes an ordinary
 //! all-ones/all-zeros `ymm` directly (no k-register, no mask-to-vector
 //! conversion) — the same representation NEON and SSE2 already use.
@@ -330,6 +332,21 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
     Vex::m0f38_66(0x18).rm(code, dst.0, RED_ZONE_CONST);
 }
 
+/// `dst = splat(block[offset])` at 256 bits: `mov rax, [rdi + ctx_slot*8]`
+/// then `vbroadcastss ymm<dst>, [rax + 4*offset]` (VEX.256.66.0F38.W0 18 /r).
+/// See `x86_64::emit_uniform_load` for the register contract.
+pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad) {
+    x86_64::emit_load_ptr_from_ctx(code, gpr::RAX.0, gpr::RDI.0, i32::from(load.ctx_slot) * 8);
+    Vex::m0f38_66(0x18).rm(
+        code,
+        dst.0,
+        Mem {
+            base: gpr::RAX,
+            disp: Imm32(i32::from(load.offset) * 4),
+        },
+    );
+}
+
 // =============================================================================
 // Stack frame (real frame; a ymm spill is 32 bytes)
 // =============================================================================
@@ -362,18 +379,23 @@ pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Re
 }
 
 /// `dst = op(src)`.
-pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) {
+///
+/// `temp` is the allocator's temp for this instruction; only `Neg` and `Abs`
+/// use it, to hold the sign mask they XOR or AND with.
+pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, temp: Option<Reg>) {
     match op {
         OpKind::Sqrt => vsqrtps(code, dst.0, src.0),
         OpKind::Rsqrt => vrsqrtps(code, dst.0, src.0),
         OpKind::Recip => vrcpps(code, dst.0, src.0),
         OpKind::Neg => {
-            emit_const(code, UNARY_SCRATCH, f32::from_bits(0x8000_0000));
-            vxorps(code, dst.0, src.0, UNARY_SCRATCH.0);
+            let mask = super::declared_temp(temp);
+            emit_const(code, mask, f32::from_bits(0x8000_0000));
+            vxorps(code, dst.0, src.0, mask.0);
         }
         OpKind::Abs => {
-            emit_const(code, UNARY_SCRATCH, f32::from_bits(0x7FFF_FFFF));
-            vandps(code, dst.0, src.0, UNARY_SCRATCH.0);
+            let mask = super::declared_temp(temp);
+            emit_const(code, mask, f32::from_bits(0x7FFF_FFFF));
+            vandps(code, dst.0, src.0, mask.0);
         }
         // imm8: bits[3:0] = rounding mode (0=nearest, 1=floor, 2=ceil).
         OpKind::Floor => vroundps(code, dst.0, src.0, 0x01),
@@ -385,10 +407,22 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) {
     }
 }
 
-/// Scratch register for unary mask materialization (neg/abs) and the select
-/// blend temp. ymm15 is outside the allocatable range (4-9), reload regs
-/// (11-12), and inputs (0-3).
-const UNARY_SCRATCH: Reg = Reg(15);
+/// How many registers this backend's encodings need beyond their operands.
+///
+/// `Neg`/`Abs` build a sign mask, and the select blends through a temporary;
+/// every other encoding here is a single non-destructive VEX instruction.
+pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
+    use super::ScheduledOp;
+    match op {
+        ScheduledOp::Unary(OpKind::Neg | OpKind::Abs, _) => 1,
+        ScheduledOp::Ternary(OpKind::Select, ..) => 1,
+        // A 256-bit gather is two 128-bit halves: the half-sequence's own
+        // index and value registers, plus one of each to carry the high half
+        // while the low one is assembled in `dst`.
+        ScheduledOp::Gather(..) => 4,
+        _ => 0,
+    }
+}
 
 /// Emit a shift of i32 lanes by a compile-time immediate.
 pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount: u8) {
@@ -400,9 +434,13 @@ pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount
 }
 
 /// `dst = mask ? if_true : if_false` (bit-select; mask already in `dst`, same
-/// convention as SSE2/AVX-512). `tmp` differs from all of `dst`/`if_true`/`if_false`.
-pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
-    let tmp = UNARY_SCRATCH;
+/// convention as SSE2/AVX-512).
+///
+/// `tmp` is the allocator's temp for this instruction, which it picks disjoint
+/// from every operand — the `debug_assert` restates that here, where the
+/// instruction would silently blend garbage if it ever failed.
+pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg, tmp: Option<Reg>) {
+    let tmp = super::declared_temp(tmp);
     debug_assert!(tmp.0 != dst.0 && tmp.0 != if_true.0 && tmp.0 != if_false.0);
     vandps(code, tmp.0, dst.0, if_true.0); // tmp = mask & if_true
     vandnps(code, dst.0, dst.0, if_false.0); // dst = ~mask & if_false
@@ -569,6 +607,9 @@ mod tests {
         const X: Reg = Reg(0);
         const Y: Reg = Reg(1);
         const Z: Reg = Reg(2);
+        /// Standing in for the allocator's instruction temp: any register
+        /// disjoint from the operands each case uses.
+        const TEMP: Reg = Reg(15);
 
         #[test]
         fn binary_ops() {
@@ -604,15 +645,15 @@ mod tests {
         fn sqrt_and_neg_abs() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Sqrt, X, Y);
+            emit_unary(&mut c, OpKind::Sqrt, X, Y, None);
             check(run(&c, xs, ys, zs), |i| ys[i].sqrt(), "sqrt");
 
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Neg, X, X);
+            emit_unary(&mut c, OpKind::Neg, X, X, Some(TEMP));
             check(run(&c, xs, ys, zs), |i| -xs[i], "neg");
 
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Abs, X, X);
+            emit_unary(&mut c, OpKind::Abs, X, X, Some(TEMP));
             check(run(&c, xs, ys, zs), |i| xs[i].abs(), "abs");
         }
 
@@ -622,7 +663,7 @@ mod tests {
             let mut c = Vec::new();
             emit_binary(&mut c, OpKind::Lt, Reg(5), X, Y); // mask
             emit_mov(&mut c, Reg(6), Reg(5));
-            emit_select(&mut c, Reg(6), X, Y); // dst = mask ? x : y
+            emit_select(&mut c, Reg(6), X, Y, Some(TEMP)); // dst = mask ? x : y
             emit_mov(&mut c, X, Reg(6));
             check(
                 run(&c, xs, ys, zs),
@@ -790,34 +831,32 @@ pub(crate) mod driver {
     /// The AVX2 register file (ymm, 256-bit).
     ///
     /// Same register roles as SSE2 (ymm0-15 is the same physical file as xmm0-15)
-    /// at twice the width, but with a pool of **four**, two fewer than SSE2's six.
+    /// at twice the width, with a pool of **five**, one fewer than SSE2's six.
     /// AVX2's gather splits into 128-bit halves and so needs two scratch registers
     /// beyond the pair SSE2 uses (ymm13/14) to hold the high-half indices and the
     /// high-half result across the recombine. Those live in ymm8/ymm9, which must
-    /// therefore sit OUTSIDE the allocator's range: with six allocatable (ymm4-9)
-    /// the allocator could hand `dst` or `idx` an ymm8/9 that the gather then
+    /// therefore sit OUTSIDE the allocator's range: with them allocatable the
+    /// allocator could hand `dst` or `idx` an ymm8/9 that the gather then
     /// overwrites mid-sequence, silently returning wrong lanes — reachable
     /// whenever five values stay live across a gather.
     ///
-    /// The cost is more spilling in AVX2 kernels generally, to fix a bug on the
-    /// gather path specifically. Spilling the two half-temporaries to the red zone
-    /// instead would restore the sixth register; that is a contained change to
-    /// `super::emit_gather_scalar` and is the better long-term fix.
+    /// The cost is more spilling in AVX2 kernels than SSE2 sees, to fix a bug on
+    /// the gather path specifically. Spilling the two half-temporaries to the red
+    /// zone instead would restore those two as well; that is a contained change
+    /// to `super::emit_gather_scalar` and is the better long-term fix.
     const AVX2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
-        // ymm4-7. ymm8/ymm9 carry the gather's high half and ymm14/ymm15 its
-        // low half and the unary temp, so a sixteen-register file leaves four.
-        scratch: regalloc::RegSet::range(4, 4),
-        // ymm13: outside the allocatable range and the reload pair; the AVX2
-        // select is a VEX blend with no internal temp.
-        select_reload: Reg(13),
-        // ymm15: `emit_unary`'s sign-mask temp.
-        fixed: &[
-            super::UNARY_SCRATCH,
-            x86_64::GATHER_VALUE,
-            x86_64::GATHER_IDX,
-            Reg(8),
-            Reg(9),
-        ],
+        // ymm4-15: every register the ABI does not use for an argument. The
+        // gather borrows four of them across its own sequence (ymm8/9 for the
+        // high half, ymm14/15 for the low), the sign mask and the select blend
+        // borrow one, and ymm11/12 were the reload pair — all reservations the
+        // allocator makes for one instruction, so all of them are its the rest
+        // of the time.
+        scratch: regalloc::RegSet::range(4, 12),
+        // Nothing. Every register this backend's encodings destroy is now a
+        // per-instruction reservation, so ymm8/9/14/15 are the allocator's
+        // except across the one gather that borrows them.
+        fixed: &[],
+        temps_for: super::temps_for,
         vector_bytes: 32,
         ..SSE2_FILE
     }
@@ -874,7 +913,7 @@ pub(crate) mod driver {
                     super::emit_const(code, *dst, f32::from_bits(*val_bits));
                 }
                 ResolvedOp::Unary { op, dst, src } => {
-                    super::emit_unary(code, *op, *dst, *src);
+                    super::emit_unary(code, *op, *dst, *src, plan.scratch.temp(0));
                 }
                 ResolvedOp::ShiftImm {
                     op,
@@ -903,13 +942,16 @@ pub(crate) mod driver {
                                 base_gpr: 0,  // rax
                                 index_gpr: 1, // rcx
                                 ctx_gpr: 7,   // rdi
-                                idx_lanes: x86_64::GATHER_IDX,
-                                value: x86_64::GATHER_VALUE,
+                                idx_lanes: crate::emit::declared_temp(plan.scratch.temp(0)),
+                                value: crate::emit::declared_temp(plan.scratch.temp(1)),
                             },
-                            idx_hi: Reg(9),
-                            res_hi: Reg(8),
+                            idx_hi: crate::emit::declared_temp(plan.scratch.temp(2)),
+                            res_hi: crate::emit::declared_temp(plan.scratch.temp(3)),
                         },
                     );
+                }
+                ResolvedOp::Uniform { dst, load } => {
+                    super::emit_uniform_load(code, *dst, *load);
                 }
                 ResolvedOp::Binary {
                     op,
@@ -948,11 +990,8 @@ pub(crate) mod driver {
                     if_false,
                 } => {
                     // setup_mov already placed the vector mask in dst.
-                    super::emit_select(code, *dst, *if_true, *if_false);
+                    super::emit_select(code, *dst, *if_true, *if_false, plan.scratch.temp(0));
                 }
-            }
-            if let Some(store) = &plan.store {
-                super::emit_store(code, frame_slot(store.offset), store.src);
             }
             Ok(())
         }
@@ -995,13 +1034,27 @@ pub(crate) mod driver {
         // X86Backend's MOVMSKPS guards but 8 lanes wide (al == 0xFF for
         // all-true, not 0x0F — see `super::emit_cmp_al_imm8`'s doc for why the
         // sign-extending `cmp eax, imm8` X86Backend uses doesn't work here).
-        fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        /// `_scratch` is unused: this tier's guard reduces the mask with
+        /// `movmskps`/`kortest` into the flags, needing no vector register.
+        fn emit_skip_if_all_false(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            _scratch: Option<Reg>,
+        ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             x86_64::emit_test_eax(code);
             x86_64::je(code).field() // ZF set when eax == 0 (all lanes false)
         }
 
-        fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        /// `_scratch` is unused: this tier's guard reduces the mask with
+        /// `movmskps`/`kortest` into the flags, needing no vector register.
+        fn emit_skip_if_all_true(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            _scratch: Option<Reg>,
+        ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_cmp_al_imm8(code, 0xFF);
             x86_64::je(code).field() // ZF set when al == 0xFF (all lanes true)

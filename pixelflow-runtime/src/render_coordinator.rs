@@ -15,12 +15,10 @@
 use crate::display::messages::{Window, WindowMeta};
 use crate::platform::PlatformPixel;
 use actor_scheduler::mealy::Credit;
-use pixelflow_core::{At, W, X, Y, Z};
-use pixelflow_graphics::render::rasterizer::{RenderRequest, RenderResponse};
-use std::sync::Arc;
+use pixelflow_graphics::render::renderer::{RenderRequest, RenderResponse};
 use std::time::Duration;
 
-/// A scene as it travels between the app and the rasterizer.
+/// A scene as it travels between the app and the renderer.
 use pixelflow_graphics::render::scene::Scene;
 
 /// What the coordinator wants delivered, having decided everything it can on its own.
@@ -34,7 +32,7 @@ pub enum Step {
     Idle,
     /// Ask the driver for the buffer (Management lane; carries nothing).
     RequestWindow,
-    /// Send this to the rasterizer. Carries the buffer, so losing it strands the display.
+    /// Send this to the renderer. Carries the buffer, so losing it strands the display.
     Render(RenderRequest<PlatformPixel, WindowMeta>),
 }
 
@@ -42,7 +40,7 @@ pub enum Step {
 pub struct Completed {
     /// The drawn buffer and how long it took, to be handed to the driver to show.
     ///
-    /// `None` when the rasterizer was paused and returned the buffer undrawn — presenting it
+    /// `None` when the renderer was paused and returned the buffer undrawn — presenting it
     /// would blit stale pixels, so it is retained in the coordinator instead. Pairing the two
     /// keeps "was it drawn?" a single question: the buffer and its render time are either both
     /// here or neither is.
@@ -72,7 +70,7 @@ pub struct RenderCoordinator {
     /// Ownership bounds how many *buffers* exist and says nothing about how many *requests* do,
     /// which is why this flag is not redundant with holding the buffer.
     awaiting_grant: bool,
-    /// The one-outstanding-render bound on the coordinator → rasterizer edge.
+    /// The one-outstanding-render bound on the coordinator → renderer edge.
     render_credit: Credit,
     /// Latest kernel from the app — keep-latest, so a newer one replaces any frame that has not
     /// started rendering.
@@ -124,9 +122,9 @@ impl RenderCoordinator {
         self.advance()
     }
 
-    /// The rasterizer finished with the buffer.
+    /// The renderer finished with the buffer.
     ///
-    /// `render_time` is `None` when the rasterizer was paused and handed the buffer back
+    /// `render_time` is `None` when the renderer was paused and handed the buffer back
     /// undrawn; the buffer's return is unconditional, its having been drawn into is not.
     pub fn completed(&mut self, response: RenderResponse<PlatformPixel, WindowMeta>) -> Completed {
         // The render is over, so the edge's one credit is free again.
@@ -234,52 +232,23 @@ impl RenderCoordinator {
     }
 }
 
-/// Bind a kernel to the buffer it will be drawn into.
+/// Pair a scene with the buffer it will be drawn into.
 ///
-/// The scene is authored in point space; the frame is the platform's sample lattice and may be
-/// denser (device pixels on HiDPI displays). The lattice embedding is the measured ratio
-/// points/pixels per axis — identity when the platform samples 1:1 (X11, non-Retina macOS).
-/// Contramapping here keeps the app scale-agnostic: platform = dimap.
-///
-/// Everything comes from the buffer itself, so the result is correct for the frame it was handed
-/// by construction — there is no separate scale to keep in step, and nothing to re-derive later.
+/// A scene is device-pixel space by construction: its kernels were compiled
+/// against a frame's own lattice, so an author working in points said so in
+/// the language — `Kernel::at` precomposition on the channel kernels — before
+/// compiling. There is nothing to contramap here, and wrapping the scene would
+/// mean recompiling its program every frame. (The HiDPI wrapper this function
+/// used to apply belonged to the per-batch `Scene::Surface` lane, which S4a
+/// deleted; `surface_scene_hidpi_warp.rs` went with it.)
 fn bind(scene: Scene, window: Window) -> RenderRequest<PlatformPixel, WindowMeta> {
     let (frame, meta) = window.tear();
-    let WindowMeta {
-        width_px,
-        height_px,
-        ..
-    } = meta;
-
     assert!(
         frame.width > 0 && frame.height > 0,
         "cannot render into an empty frame ({}x{})",
         frame.width,
         frame.height
     );
-    let point_per_px_x = width_px as f32 / frame.width as f32;
-    let point_per_px_y = height_px as f32 / frame.height as f32;
-    let scene: Scene = match scene {
-        // Point-space surfaces are contramapped into the denser device grid.
-        Scene::Surface(manifold) => {
-            if point_per_px_x == 1.0 && point_per_px_y == 1.0 {
-                Scene::Surface(manifold)
-            } else {
-                Scene::Surface(Arc::new(At {
-                    inner: manifold,
-                    x: X * point_per_px_x,
-                    y: Y * point_per_px_y,
-                    z: Z,
-                    w: W,
-                }))
-            }
-        }
-        // A cell-grid scene is device-pixel space by contract: its geometry
-        // (cell extents, atlas density) already carries any DPI scale, so
-        // the collapse kernels sample the buffer's own pixel grid directly.
-        Scene::CellGrid(grid) => Scene::CellGrid(grid),
-    };
-
     RenderRequest { scene, frame, meta }
 }
 
@@ -296,29 +265,32 @@ mod tests {
     use crate::api::public::WindowId;
     use crate::display::messages::Surface;
     use crate::display::window_keeper::WindowKeeper;
-    use pixelflow_core::Field;
-    use pixelflow_core::{Discrete, Manifold};
-    use pixelflow_graphics::render::rasterizer::RenderResponse;
+    use pixelflow_core::Kernel;
+    use pixelflow_graphics::render::renderer::RenderResponse;
+    use pixelflow_graphics::render::scene::compile_platform_packed;
+    use pixelflow_graphics::render::Frame;
 
-    /// A manifold that ignores its input — the coordinator never samples it, it only decides
-    /// whether to wrap it.
-    #[derive(Clone, Copy)]
-    struct Flat;
-
-    impl Manifold<(Field, Field, Field, Field)> for Flat {
-        type Output = Discrete;
-        fn eval(&self, _p: (Field, Field, Field, Field)) -> Discrete {
-            Discrete::pack(
-                Field::from(0.0),
-                Field::from(0.0),
-                Field::from(0.0),
-                Field::from(1.0),
-            )
-        }
-    }
+    /// The lattice the fixture scenes are compiled for, and the size of every
+    /// window the 1:1 tests grant.
+    const FIXTURE_FRAME: [u32; 2] = [100, 100];
 
     fn scene() -> Scene {
-        Scene::Surface(Arc::new(Flat))
+        crate::testing::black_scene(FIXTURE_FRAME)
+    }
+
+    /// A scene whose pixels depend on where they are sampled, so a coordinate
+    /// transform applied on the way to the renderer would show up in them.
+    fn ramp_scene(frame: [u32; 2]) -> Scene {
+        let k = Kernel::constant;
+        let axis = |v: Kernel, extent: u32| v.mul(&k(1.0 / extent as f32));
+        let channels = [
+            axis(Kernel::x(), frame[0]),
+            axis(Kernel::y(), frame[1]),
+            k(0.0),
+            k(1.0),
+        ];
+        let color = pixelflow_graphics::scene3d::Rgba::from(channels);
+        Scene::Packed(compile_platform_packed(&color, frame).bind(&[]))
     }
 
     /// A keeper holding one buffer at the given logical size, sampled 1:1.
@@ -356,7 +328,7 @@ mod tests {
         }
     }
 
-    /// A render the rasterizer skipped because it was paused.
+    /// A render the renderer skipped because it was paused.
     fn skipped(
         request: RenderRequest<PlatformPixel, WindowMeta>,
     ) -> RenderResponse<PlatformPixel, WindowMeta> {
@@ -475,7 +447,7 @@ mod tests {
         );
     }
 
-    /// A paused rasterizer hands the buffer back undrawn. Presenting it would blit stale pixels,
+    /// A paused renderer hands the buffer back undrawn. Presenting it would blit stale pixels,
     /// so it is kept — and it is still in hand for the next render.
     #[test]
     fn a_skipped_render_retains_the_buffer_unpresented() {
@@ -506,45 +478,41 @@ mod tests {
         assert_requests_window(coord.submit(scene()));
     }
 
-    /// The HiDPI case the design doc calls out as uncovered: the scene is authored in points and
-    /// the frame is the device lattice, so a denser frame has to be contramapped or it renders at
-    /// half density.
+    /// The HiDPI case the design doc calls out as uncovered: the frame is the device lattice
+    /// and may be denser than the surface's logical size.
     ///
-    /// This pins the *decision*, not the numeric scale — reading the ratio back out of the bound
-    /// manifold would mean sampling a `Field`, and lane access is deliberately not public. The
-    /// branch is what the doc warns about: forwarding unchanged is invisible on a 1:1 monitor and
-    /// wrong on every Retina one.
+    /// A packed scene answers it by construction rather than at bind time — its kernels were
+    /// compiled against the frame's own lattice, so an author working in points precomposed the
+    /// points-per-pixel embedding with `Kernel::at` before compiling — which means the
+    /// coordinator must hand it through UNTOUCHED at every scale. Rendering the scene as bound
+    /// and as submitted and demanding identical pixels is what catches a transform sneaking back
+    /// in: a wrap would resample the ramp and every pixel would move.
     #[test]
-    fn a_retina_frame_warps_the_scene_and_a_1_1_frame_does_not() {
-        // 1:1 — the scene must arrive at the rasterizer untouched.
-        let mut coord = RenderCoordinator::new();
-        let flat = scene();
-        assert_requests_window(coord.submit(flat.clone()));
-        coord.request_sent();
-        let request = expect_render(coord.granted(one_to_one_window()));
-        let (Scene::Surface(got), Scene::Surface(sent)) = (&request.scene, &flat) else {
-            panic!("surface scenes in, surface scenes out");
-        };
-        assert!(
-            Arc::ptr_eq(got, sent),
-            "a 1:1 frame needs no warp, so the scene should pass through unwrapped"
-        );
+    fn a_packed_scene_reaches_the_rasterizer_in_the_frames_own_space() {
+        for (logical, frame_px, scale) in
+            [((100, 100), (100, 100), 1.0), ((100, 100), (200, 200), 2.0)]
+        {
+            let mut coord = RenderCoordinator::new();
+            let submitted = ramp_scene([frame_px.0, frame_px.1]);
+            assert_requests_window(coord.submit(submitted.clone()));
+            coord.request_sent();
+            let request =
+                expect_render(coord.granted(grant_from(&mut keeper_at(logical, frame_px, scale))));
+            assert_eq!(
+                (request.frame.width as u32, request.frame.height as u32),
+                frame_px
+            );
 
-        // 2:1 — 100 points across a 200-pixel frame.
-        let mut coord = RenderCoordinator::new();
-        let flat = scene();
-        assert_requests_window(coord.submit(flat.clone()));
-        coord.request_sent();
-        let retina = grant_from(&mut keeper_at((100, 100), (200, 200), 2.0));
-        let request = expect_render(coord.granted(retina));
-        assert_eq!((request.frame.width, request.frame.height), (200, 200));
-        let (Scene::Surface(got), Scene::Surface(sent)) = (&request.scene, &flat) else {
-            panic!("surface scenes in, surface scenes out");
-        };
-        assert!(
-            !Arc::ptr_eq(got, sent),
-            "a Retina frame must be contramapped by points/pixels, not forwarded as authored"
-        );
+            let mut bound = Frame::<PlatformPixel>::new(frame_px.0, frame_px.1);
+            request.scene.render(&mut bound, 1);
+            let mut authored = Frame::<PlatformPixel>::new(frame_px.0, frame_px.1);
+            submitted.render(&mut authored, 1);
+            assert_eq!(
+                bound.data, authored.data,
+                "a packed scene is device-pixel space; binding it to a {scale}x frame must not \
+                 transform it"
+            );
+        }
     }
 
     /// The metadata rides with the request and comes back untouched, which is what deleted the

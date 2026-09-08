@@ -126,6 +126,7 @@ Auto-generated TOC of `cargo doc` output. Use this to find types, traits, and mo
 - `render/rasterizer`
 - `render/rasterizer/parallel`
 - `scene3d`
+- `scene3d_surface`
 - `shapes`
 - `spatial_bsp`
 - `subdiv`

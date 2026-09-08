@@ -19,7 +19,7 @@ fn eval1(build: impl FnOnce(&mut ExprArena, ExprId) -> ExprId, x: f32) -> f32 {
     let mut a = ExprArena::new();
     let v = a.push_var(0);
     let root = build(&mut a, v);
-    eval_scalar(&a, root, &[x, 0.0, 0.0, 0.0], &BindingTable::empty())
+    eval_scalar(&a, root, &[x, 0.0], &BindingTable::empty())
 }
 
 fn sin_at(x: f32) -> f32 {
@@ -45,7 +45,7 @@ fn atan2_at(y: f32, x: f32) -> f32 {
     let vy = a.push_var(0);
     let vx = a.push_var(1);
     let root = a.push_binary(OpKind::Atan2, vy, vx);
-    eval_scalar(&a, root, &[y, x, 0.0, 0.0], &BindingTable::empty())
+    eval_scalar(&a, root, &[y, x], &BindingTable::empty())
 }
 
 /// Reproducible LCG — a fixed seed keeps a failure reproducible from the
@@ -388,7 +388,7 @@ fn sin_differentiates_through_the_domain_guard() {
         let root = a.push_binary(OpKind::Dwrt, s, zero);
         let (out, out_root) = lower_dwrt_owned(&a, root).expect("d/dx sin must lower");
 
-        let got = eval_scalar(&out, out_root, &[x, 0.0, 0.0, 0.0], &BindingTable::empty());
+        let got = eval_scalar(&out, out_root, &[x, 0.0], &BindingTable::empty());
         let want = cos_at(x);
         assert!(
             (got - want).abs() <= 1e-5,

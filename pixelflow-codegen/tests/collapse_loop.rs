@@ -18,6 +18,14 @@ use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
+use pixelflow_ir::{DifferentialCheck, PointVerdict, Uniform};
+
+/// Declare `u` in `a` and return its leaf — a scalar invariant across the
+/// lattice, which is what a third and fourth coordinate always were.
+fn arg_leaf(a: &mut ExprArena, u: Uniform) -> ExprId {
+    let slot = a.declare_uniform(u.decl());
+    a.push_uniform(slot)
+}
 
 const LANES: usize = JIT_VECTOR_BYTES / 4;
 
@@ -91,10 +99,33 @@ fn assert_collapse_matches_interpreter(
         run_collapse(&collapse, &ctx, &mut got, Point4::new(x0, y, z, w));
         for (i, &g) in got.iter().enumerate() {
             let xi = x0 + i as f32;
-            let want = eval_scalar(arena, root, &[xi, y, z, w], &bindings);
+            let vars = [xi, y];
+            let want = eval_scalar(arena, root, &vars, &bindings);
+            if (want.is_nan() && g.is_nan()) || g == want {
+                continue;
+            }
+            // Not bit-identical. That is a miscompile for everything this
+            // suite builds EXCEPT where the op is one CLAUDE.md's "Floating
+            // point at the edges" table already marks target-divergent —
+            // `MulAdd` is one rounding where an FMA instruction exists and two
+            // where it does not, and the transcendental expansions are Horner
+            // chains of exactly that node. The oracle rounds twice, so an
+            // FMA-capable build legitimately lands within an ulp instead of on
+            // top. `DifferentialCheck` composes the per-node bound that says
+            // how far is legal here; a mask root has no such band, so it stays
+            // bit-exact.
             assert!(
-                (want.is_nan() && g.is_nan()) || g == want,
-                "{label}: collapse {g} != interp {want} at lane {i} of ({x0}, {y}, {z}, {w})"
+                !pixelflow_ir::is_mask_valued(arena, root),
+                "{label}: mask-valued root differs — collapse {g:?} != interp {want:?} \
+                 at lane {i} of ({x0}, {y}, {z}, {w}); masks are bit patterns, never near-misses"
+            );
+            let point = DifferentialCheck::new(arena, root).at(&vars, &bindings);
+            assert_eq!(
+                point.verdict(g),
+                PointVerdict::Accept,
+                "{label}: collapse {g} outside interp {want} ± {bound} at lane {i} of \
+                 ({x0}, {y}, {z}, {w})",
+                bound = point.error_bound(),
             );
         }
     }
@@ -120,20 +151,21 @@ fn arithmetic_row_matches_the_interpreter() {
     run_collapse(&res, &[], &mut out, Point4::new(2.0, 3.0, 0.0, 0.0));
     for (i, &got) in out.iter().enumerate() {
         let xi = 2.0 + i as f32;
-        let want = eval_scalar(&a, root, &[xi, 3.0, 0.0, 0.0], &BindingTable::empty());
+        let want = eval_scalar(&a, root, &[xi, 3.0], &BindingTable::empty());
         assert_eq!(got, want, "arith vs interp at lane {i}");
     }
 }
 
 #[test]
 fn two_dimensional_collapse_advances_y_preserves_stride_and_hoists_both_scopes() {
-    // sqrt(z*w + 2) is invariant across the whole X/Y nest; sqrt(y + 9) is
-    // invariant only across each X row. Both feed the X-dependent body.
+    // sqrt(u*v + 2), over the kernel's two arguments, is invariant across
+    // the whole X/Y nest; sqrt(y + 9) is invariant only across each X row.
+    // Both feed the X-dependent body.
     let mut a = ExprArena::new();
     let x = a.push_var(0);
     let y = a.push_var(1);
-    let z = a.push_var(2);
-    let w = a.push_var(3);
+    let (u, v) = (Uniform::new(0.0), Uniform::new(0.0));
+    let (z, w) = (arg_leaf(&mut a, u), arg_leaf(&mut a, v));
     let two = a.push_const(2.0);
     let nine = a.push_const(9.0);
     let zw = a.push_binary(OpKind::Mul, z, w);
@@ -156,28 +188,28 @@ fn two_dimensional_collapse_advances_y_preserves_stride_and_hoists_both_scopes()
     const TAIL: usize = 2;
     let row_len = GROUPS * LANES + TAIL;
     let mut out = vec![-1234.5f32; ROWS * row_len];
-    let (x0, y0, z0, w0) = (0.25f32, 1.5f32, 2.0f32, 3.0f32);
+    let (x0, y0) = (0.25f32, 1.5f32);
+    let block = [2.0f32, 3.0f32];
+    let ctx: [*const f32; 1] = [block.as_ptr()];
+    let bindings = BindingTable::empty()
+        .bind_uniforms(&a, &[(u.identity(), block[0]), (v.identity(), block[1])])
+        .expect("both arguments are declared");
     run_collapse_grid(
         &compiled,
-        &[],
+        &ctx,
         TileSlice::new(
             out.as_mut_ptr(),
             GROUPS,
             ROWS,
             TAIL * core::mem::size_of::<f32>(),
         ),
-        Point4::new(x0, y0, z0, w0),
+        Point4::new(x0, y0, 0.0, 0.0),
     );
 
     for row in 0..ROWS {
         for col in 0..GROUPS * LANES {
             let got = out[row * row_len + col];
-            let want = eval_scalar(
-                &a,
-                root,
-                &[x0 + col as f32, y0 + row as f32, z0, w0],
-                &BindingTable::empty(),
-            );
+            let want = eval_scalar(&a, root, &[x0 + col as f32, y0 + row as f32], &bindings);
             assert_eq!(got, want, "2D collapse at ({col},{row})");
         }
         assert!(
@@ -251,7 +283,7 @@ fn gather_reads_ctx_every_iteration() {
     let mut out = vec![0.0f32; 4 * LANES];
     run_collapse(&res, &ctx, &mut out, Point4::new(0.0, 1.0, 0.0, 0.0));
     for (i, &got) in out.iter().enumerate() {
-        let want = eval_scalar(&a, root, &[i as f32, 1.0, 0.0, 0.0], &bindings);
+        let want = eval_scalar(&a, root, &[i as f32, 1.0], &bindings);
         assert_eq!(got, want, "gather vs interp at lane {i}");
     }
 }
@@ -291,7 +323,7 @@ fn matmul_reduce_one_call_fills_output() {
 
     let bindings = BindingTable::bind(&a, &[w.as_slice(), input.as_slice()]).unwrap();
     for (j, &got) in out.iter().enumerate() {
-        let want = eval_scalar(&a, root, &[j as f32, 0.0, 0.0, 0.0], &bindings);
+        let want = eval_scalar(&a, root, &[j as f32, 0.0], &bindings);
         assert_eq!(got, want, "matmul out[{j}]");
     }
 }
@@ -325,18 +357,34 @@ fn hoisted_row_constants_match_the_interpreter() {
 
 #[test]
 fn fully_invariant_kernel_degenerates_to_a_store_loop() {
-    // sqrt(y + z*w): no X anywhere — the whole kernel hoists and the loop
-    // body is a bare reload-and-store of the one parked value.
+    // sqrt(y + u*v): no X anywhere — the whole kernel hoists and the loop
+    // body is a bare reload-and-store of the one parked value. `u` and `v`
+    // are the kernel's arguments, which are invariant across the lattice
+    // outright.
     let mut a = ExprArena::new();
     let y = a.push_var(1);
-    let z = a.push_var(2);
-    let w = a.push_var(3);
+    let (u, v) = (Uniform::new(0.0), Uniform::new(0.0));
+    let (z, w) = (arg_leaf(&mut a, u), arg_leaf(&mut a, v));
     let zw = a.push_binary(OpKind::Mul, z, w);
     let yzw = a.push_binary(OpKind::Add, y, zw);
     let root = a.push_unary(OpKind::Sqrt, yzw);
 
-    let res = assert_collapse_matches_interpreter(&a, root, &[], 4, "invariant-root");
-    assert!(res.hoisted_values >= 1);
+    let compiled = compile(&a, root).expect("invariant-root compile");
+    assert!(compiled.hoisted_values >= 1);
+
+    let block = [0.1f32, 0.9f32];
+    let ctx: [*const f32; 1] = [block.as_ptr()];
+    let bindings = BindingTable::empty()
+        .bind_uniforms(&a, &[(u.identity(), block[0]), (v.identity(), block[1])])
+        .expect("both arguments are declared");
+    for &(x0, yv) in &[(0.5f32, 0.5f32), (-7.25, 3.5), (100.0, -2.0)] {
+        let mut got = vec![0.0f32; 4 * LANES];
+        run_collapse(&compiled, &ctx, &mut got, Point4::new(x0, yv, 0.0, 0.0));
+        for (i, &g) in got.iter().enumerate() {
+            let want = eval_scalar(&a, root, &[x0 + i as f32, yv], &bindings);
+            assert_eq!(g.to_bits(), want.to_bits(), "invariant-root at lane {i}");
+        }
+    }
 }
 
 #[test]

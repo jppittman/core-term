@@ -619,16 +619,16 @@ impl Screen {
     }
 
     pub fn mark_line_dirty(&mut self, y: usize) {
-        if y < self.dirty.len() {
-            self.dirty[y] = 1;
-        } else {
+        if y >= self.dirty.len() {
             warn!(
                 "mark_line_dirty: y coordinate {} is out of bounds for dirty flags (len {}), screen height is {}",
                 y,
                 self.dirty.len(),
                 self.height
             );
+            return;
         }
+        self.dirty[y] = 1;
     }
 
     pub fn enter_alt_screen(&mut self, clear_mode: AltScreenClear) {
@@ -659,6 +659,16 @@ impl Screen {
     }
 
     pub fn set_scrolling_region(&mut self, top_1_based: usize, bottom_1_based: usize) {
+        // DECSTBM's bottom parameter defaults to the last line of the screen
+        // when omitted, which the CSI layer (`AnsiCommand::from_csi`) passes
+        // through as the sentinel `0` rather than a resolved line number
+        // (mirroring how `0` already means "omitted" for every other CSI
+        // parameter). Resolve it here, where the screen height is known.
+        let bottom_1_based = if bottom_1_based == 0 {
+            self.height
+        } else {
+            bottom_1_based
+        };
         let t = top_1_based.saturating_sub(1);
         let b = bottom_1_based.saturating_sub(1);
 
@@ -692,11 +702,7 @@ impl Screen {
         let height_for_log = self.height;
 
         let grid_to_use = self.active_grid_mut();
-        if y < grid_to_use.len() && x < grid_to_use.get(y).map_or(0, |row| row.len()) {
-            let row = Arc::make_mut(&mut grid_to_use[y]);
-            row[x] = glyph;
-            self.mark_line_dirty(y);
-        } else {
+        if y >= grid_to_use.len() || x >= grid_to_use.get(y).map_or(0, |row| row.len()) {
             warn!(
                 "set_glyph: coordinates ({},{}) out of grid internal bounds. Screen: {}x{}, Grid row {} len: {:?}",
                 x,
@@ -706,7 +712,11 @@ impl Screen {
                 y,
                 grid_to_use.get(y).map(|r| r.len())
             );
+            return;
         }
+        let row = Arc::make_mut(&mut grid_to_use[y]);
+        row[x] = glyph;
+        self.mark_line_dirty(y);
     }
 
     pub fn clear_line_segment(&mut self, y: usize, x_start: usize, x_end: usize) {
@@ -716,29 +726,29 @@ impl Screen {
 
     // --- Tab stop methods ---
     pub fn set_tabstop(&mut self, x: usize) {
-        if x < self.tabs.len() {
-            self.tabs[x] = true;
-        } else {
+        if x >= self.tabs.len() {
             warn!(
                 "set_tabstop: column {} is out of bounds for tabs (width {})",
                 x,
                 self.tabs.len()
             );
+            return;
         }
+        self.tabs[x] = true;
     }
 
     pub fn clear_tabstops(&mut self, current_cursor_x: usize, mode: TabClearMode) {
         match mode {
             TabClearMode::CurrentColumn => {
-                if current_cursor_x < self.tabs.len() {
-                    self.tabs[current_cursor_x] = false;
-                } else {
+                if current_cursor_x >= self.tabs.len() {
                     warn!(
                         "clear_tabstops (CurrentColumn): cursor_x {} out of bounds for tabs (width {})",
                         current_cursor_x,
                         self.tabs.len()
                     );
+                    return;
                 }
+                self.tabs[current_cursor_x] = false;
             }
             TabClearMode::All => {
                 self.tabs.fill(false);
@@ -1795,6 +1805,19 @@ mod tests {
         screen.set_scrolling_region(3, 6);
         assert_eq!(screen.scroll_top(), 2);
         assert_eq!(screen.scroll_bot(), 5);
+    }
+
+    #[test]
+    fn set_scrolling_region_with_bottom_0_means_last_line_of_screen() {
+        // DECSTBM's bottom parameter defaults to the last screen line when
+        // omitted; the CSI layer passes that through as the sentinel `0`.
+        // Regression test for a bug where `0` was used as a literal 0-based
+        // row instead, making `top < bottom` fail and silently resetting the
+        // region to the full screen instead of "top..=last line".
+        let mut screen = create_test_screen(10, 10);
+        screen.set_scrolling_region(3, 0);
+        assert_eq!(screen.scroll_top(), 2);
+        assert_eq!(screen.scroll_bot(), 9);
     }
 
     #[test]

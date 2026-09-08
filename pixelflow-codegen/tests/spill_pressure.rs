@@ -16,34 +16,90 @@
 
 #![cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 
-use pixelflow_codegen::JitManifold;
 use pixelflow_codegen::emit::compile;
-use pixelflow_codegen::emit::executable::Point4;
+use pixelflow_codegen::emit::executable::{Point4, TileSlice};
+use pixelflow_codegen::{CompiledKernel, JIT_VECTOR_BYTES};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
 
-/// Compile and compare against the interpreter over a coordinate grid.
-/// Returns the spill count so scenarios can assert they really exercised
-/// the spill paths (a pressure test that doesn't spill proves nothing).
-fn assert_jit_matches_interp(arena: &ExprArena, root: ExprId, label: &str) -> u32 {
+/// Lanes in one emitted batch.
+const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
+
+/// One point of a compiled kernel: a single-batch collapse call, lane 0 read
+/// back.
+///
+/// This test owns its loop. `call_collapse` is the collapse driver's entry and
+/// the only one there is; pixelflow-codegen cannot reach `Lattice::bake` (core
+/// depends on this crate, not the other way round), so a test that wants one
+/// number spells the batch itself rather than the crate growing a point API for
+/// it.
+fn eval_point(jit: &CompiledKernel, x: f32, y: f32, z: f32, w: f32) -> f32 {
+    let mut out = [0.0f32; LANES];
+    // SAFETY: `out` holds exactly one whole batch, and every arena in this file
+    // declares no buffers, so the null context is never read.
+    unsafe {
+        jit.call_collapse(
+            core::ptr::null(),
+            TileSlice::single(out.as_mut_ptr()),
+            Point4::new([x; LANES], [y; LANES], [z; LANES], [w; LANES]),
+        );
+    }
+    out[0]
+}
+
+/// How many registers this build's backend actually allocates.
+///
+/// The scenarios below are about what happens *past* the pool, so every one of
+/// them has to be sized against it. Writing that size in as a literal is how
+/// this file's pressure quietly evaporated once: `muladd_and_clamp_spilled`
+/// said "Sethi-Ullman number > 6", which stopped being more than the pool the
+/// moment the pool grew, and a scenario that no longer spills asserts nothing.
+fn pool_size() -> usize {
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let root = a.push_binary(OpKind::Add, x, x);
+    compile(&a, root).expect("trivial compile").max_regs as usize
+}
+
+/// Compile, assert the scenario actually spilled, and compare against the
+/// interpreter over a coordinate grid.
+///
+/// The spill assertion lives **here**, not in each scenario. Every test in
+/// this file is a claim about what happens past the pool, so one that no
+/// longer reaches the pool has stopped testing its subject while still
+/// reporting green — and that is not hypothetical: `muladd_and_clamp_spilled`
+/// spent an unknown stretch asserting nothing after the pool grew past the
+/// literal 6 written into it. A scenario cannot opt out of the check by
+/// forgetting to write it, which is the difference between a convention and
+/// an invariant.
+///
+/// It returns nothing on purpose. Handing back a count that callers were
+/// trusted to test was the shape that let the omission happen.
+fn assert_spills_and_matches_interp(arena: &ExprArena, root: ExprId, label: &str) {
     let result =
         compile(arena, root).unwrap_or_else(|e| panic!("{label}: JIT compile failed: {e}"));
     let spills = result.spill_count;
-    let jit = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT);
+    assert!(
+        spills > 0,
+        "{label}: compiled without spilling (pool is {} registers), so this \
+         scenario no longer exercises the spill paths it exists to test — \
+         size its pressure from `pool_size()` rather than a literal",
+        result.max_regs
+    );
+    let jit = CompiledKernel::new(result.code, pixelflow_ir::LatticeShape::POINT);
     let coords = [-2.5f32, -1.0, -0.3, 0.0, 0.4, 1.0, 1.7, 3.0];
     for &x in &coords {
         for &y in &coords {
-            let want = eval_scalar(arena, root, &[x, y, 0.1, 0.9], &BindingTable::empty());
-            let got = jit.eval_at(Point4::new(x, y, 0.1, 0.9));
+            let want = eval_scalar(arena, root, &[x, y], &BindingTable::empty());
+            let got = eval_point(&jit, x, y, 0.1, 0.9);
             assert!(
                 (want.is_nan() && got.is_nan()) || floats_agree(want, got),
                 "{label}: JIT {got} != interp {want} at ({x}, {y}) [spills={spills}]"
             );
         }
     }
-    spills
 }
 
 /// Bit-exact under every build this file was originally tested with (no
@@ -74,8 +130,18 @@ fn tree(a: &mut ExprArena, depth: usize, salt: u32) -> ExprId {
         return match salt % 6 {
             0 => a.push_var(0),
             1 => a.push_var(1),
-            2 => a.push_var(2),
-            3 => a.push_var(3),
+            // A lattice has two axes, so the leaves past them are distinct
+            // *values* of the two rather than distinct coordinates.
+            2 => {
+                let y = a.push_var(1);
+                let c = a.push_const(0.75 + (salt % 4) as f32 * 0.5);
+                a.push_binary(OpKind::Mul, y, c)
+            }
+            3 => {
+                let y = a.push_var(1);
+                let c = a.push_const(0.25 + (salt % 7) as f32 * 0.125);
+                a.push_binary(OpKind::Add, y, c)
+            }
             4 => a.push_const(0.5 + (salt % 5) as f32 * 0.25),
             _ => {
                 let x = a.push_var(0);
@@ -126,8 +192,7 @@ fn select_operands_spilled_across_pressure() {
     all.extend(fillers);
     let root = fold_add(&mut a, &all);
 
-    let spills = assert_jit_matches_interp(&a, root, "select_operands_spilled");
-    assert!(spills > 0, "scenario failed to create register pressure");
+    assert_spills_and_matches_interp(&a, root, "select_operands_spilled");
 }
 
 /// A sum of glyph-shaped terms: each term is `select(lt, contrib, 0)` with wide
@@ -153,8 +218,7 @@ fn glyph_shaped_sum_of_selects() {
     let one = a.push_const(1.0);
     let root = a.push_binary(OpKind::Min, abs, one);
 
-    let spills = assert_jit_matches_interp(&a, root, "glyph_shaped_sum");
-    assert!(spills > 0, "scenario failed to create register pressure");
+    assert_spills_and_matches_interp(&a, root, "glyph_shaped_sum");
 }
 
 /// Nested selects under pressure: a select whose branches are themselves
@@ -187,14 +251,17 @@ fn nested_selects_spilled() {
     all.extend(fillers);
     let root = fold_add(&mut a, &all);
 
-    let spills = assert_jit_matches_interp(&a, root, "nested_selects");
-    assert!(spills > 0, "scenario failed to create register pressure");
+    assert_spills_and_matches_interp(&a, root, "nested_selects");
 }
 
 /// Decomposed `MulAdd` plus a min/max clamp chain, with spilled operands.
 ///
-/// Pressure note: the operands are trees DEEPER than the register budget
-/// (Sethi-Ullman number > 6), so they spill regardless of schedule order.
+/// Pressure note: the fillers are pushed before the `MulAdd` and consumed after
+/// it, so they hold the pool across it and its operands have to go to memory —
+/// which is what makes the `MulAdd` decompose. There are `pool + 2` of them so
+/// that stays true at whatever width this build allocates; the operand trees
+/// are deep as well, but depth alone stopped being enough once the pool grew
+/// past their Sethi-Ullman number.
 #[test]
 fn muladd_and_clamp_spilled() {
     let mut a = ExprArena::new();
@@ -206,7 +273,9 @@ fn muladd_and_clamp_spilled() {
     let cl_lo = tree(&mut a, 2, 103);
     let cl_hi = tree(&mut a, 2, 107);
 
-    let fillers: Vec<ExprId> = (0..4).map(|i| tree(&mut a, 2, 500 + i * 19)).collect();
+    let fillers: Vec<ExprId> = (0..pool_size() as u32 + 2)
+        .map(|i| tree(&mut a, 2, 500 + i * 19))
+        .collect();
 
     let ma = a.push_ternary(OpKind::MulAdd, ma_a, ma_b, ma_c);
     // Order lo <= hi is not guaranteed by the trees; the composition must
@@ -218,8 +287,7 @@ fn muladd_and_clamp_spilled() {
     all.extend(fillers);
     let root = fold_add(&mut a, &all);
 
-    let spills = assert_jit_matches_interp(&a, root, "muladd_clamp");
-    assert!(spills > 0, "scenario failed to create register pressure");
+    assert_spills_and_matches_interp(&a, root, "muladd_clamp");
 }
 
 /// Enough simultaneously-live values to overflow the 128-byte red zone
@@ -238,10 +306,10 @@ fn frame_mode_beyond_red_zone() {
         "scenario stayed inside the red zone (spill_bytes={}), not testing frame mode",
         result.spill_bytes
     );
-    let jit = JitManifold::new(result.code, pixelflow_ir::LatticeShape::POINT);
+    let jit = CompiledKernel::new(result.code, pixelflow_ir::LatticeShape::POINT);
     for &(x, y) in &[(0.3f32, -1.2f32), (2.0, 0.7), (-0.9, 3.1)] {
-        let want = eval_scalar(&a, root, &[x, y, 0.1, 0.9], &BindingTable::empty());
-        let got = jit.eval_at(Point4::new(x, y, 0.1, 0.9));
+        let want = eval_scalar(&a, root, &[x, y], &BindingTable::empty());
+        let got = eval_point(&jit, x, y, 0.1, 0.9);
         assert!(
             want == got,
             "frame_mode: JIT {got} != interp {want} at ({x}, {y})"
