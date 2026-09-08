@@ -78,12 +78,12 @@
       "dag_off": 745471,
       "dag_on": 368113,
       "dag_pct": -50.62007777633202,
-      "median_clock_pct": null,
+      "median_clock_pct": -35.96343818397969,
       "mem_off": 10359990,
       "mem_on": 3570226,
       "n": 95,
       "picture_identical": 1,
-      "verdict": "helps (static)"
+      "verdict": "helps (bytes+clock)"
     },
     {
       "bytes_cse": 2176,
@@ -64394,11 +64394,18 @@
         "bytes": 164,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 8192,
+          "ns_per_call_iqr": 4.0689697265625,
+          "ns_per_call_median": 283.6456298828125,
+          "ns_per_call_min": 275.0345458984375,
+          "ns_per_px": 0.27943646907806396,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1,
         "dag_cost": 0,
         "dag_cost_input": 0,
-        "emit_ms": 6.356332999999999,
+        "emit_ms": 1.09275,
         "extent": [
           32,
           32
@@ -64415,7 +64422,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0020",
-        "optimize_ms": 19.620417,
+        "optimize_ms": 0.28275,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -64484,7 +64491,14 @@
         "bytes": 164,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 8192,
+          "ns_per_call_iqr": 13.1376953125,
+          "ns_per_call_median": 276.6063232421875,
+          "ns_per_call_min": 266.8050537109375,
+          "ns_per_px": 0.27012336254119873,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1,
         "dag_cost": 0,
         "dag_cost_input": 0,
@@ -64505,7 +64519,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0020",
-        "optimize_ms": 0.5748329999999999,
+        "optimize_ms": 0.434709,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -64812,11 +64826,18 @@
         "bytes": 1936,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 54.459375000000136,
+          "ns_per_call_median": 1942.25234375,
+          "ns_per_call_min": 1898.92578125,
+          "ns_per_px": 1.8986066182454424,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 255,
         "dag_cost": 719,
         "dag_cost_input": 24607,
-        "emit_ms": 8.604166999999999,
+        "emit_ms": 2.04475,
         "extent": [
           32,
           32
@@ -64833,7 +64854,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0021",
-        "optimize_ms": 0.162167,
+        "optimize_ms": 0.094083,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -64902,11 +64923,18 @@
         "bytes": 1408,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 26.85546875,
+          "ns_per_call_median": 993.7065972222222,
+          "ns_per_call_min": 973.1809895833334,
+          "ns_per_px": 0.9739485846625434,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 125,
         "dag_cost": 432,
         "dag_cost_input": 24607,
-        "emit_ms": 2.498958,
+        "emit_ms": 1.684083,
         "extent": [
           32,
           32
@@ -64923,7 +64951,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0021",
-        "optimize_ms": 138.91483399999998,
+        "optimize_ms": 105.187583,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -65472,11 +65500,18 @@
         "bytes": 1456,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2048,
+          "ns_per_call_iqr": 18.4326171875,
+          "ns_per_call_median": 1045.71533203125,
+          "ns_per_call_min": 1034.87109375,
+          "ns_per_px": 1.0336041450500488,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 183,
         "dag_cost": 481,
         "dag_cost_input": 16441,
-        "emit_ms": 1.414833,
+        "emit_ms": 1.395667,
         "extent": [
           32,
           32
@@ -65493,7 +65528,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0022",
-        "optimize_ms": 0.067666,
+        "optimize_ms": 0.060291,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -65562,11 +65597,18 @@
         "bytes": 848,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 3584,
+          "ns_per_call_iqr": 2.2670200892856656,
+          "ns_per_call_median": 579.6944754464286,
+          "ns_per_call_min": 577.6947544642857,
+          "ns_per_px": 0.5779721396309989,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 73,
         "dag_cost": 217,
         "dag_cost_input": 16441,
-        "emit_ms": 1.2665840000000002,
+        "emit_ms": 1.238833,
         "extent": [
           32,
           32
@@ -65583,7 +65625,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0022",
-        "optimize_ms": 64.376167,
+        "optimize_ms": 47.628458,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -66108,11 +66150,18 @@
         "bytes": 4400,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 768,
+          "ns_per_call_iqr": 56.53255208333303,
+          "ns_per_call_median": 3281.9010416666665,
+          "ns_per_call_min": 3230.3059895833335,
+          "ns_per_px": 3.2836596171061196,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 615,
         "dag_cost": 1909,
         "dag_cost_input": 65437,
-        "emit_ms": 19.463583999999997,
+        "emit_ms": 3.776541,
         "extent": [
           32,
           32
@@ -66129,7 +66178,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0023",
-        "optimize_ms": 0.238417,
+        "optimize_ms": 0.234333,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -66198,11 +66247,18 @@
         "bytes": 3152,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 47.264843749999955,
+          "ns_per_call_median": 1693.1640625,
+          "ns_per_call_min": 1652.08359375,
+          "ns_per_px": 1.685650634765625,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 302,
         "dag_cost": 1202,
         "dag_cost_input": 65437,
-        "emit_ms": 12.265,
+        "emit_ms": 5.4562919999999995,
         "extent": [
           32,
           32
@@ -66219,7 +66275,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0023",
-        "optimize_ms": 115.546125,
+        "optimize_ms": 75.32525,
         "oracle": {
           "cross_form_max_abs": 2.1457672119140625e-6,
           "cross_form_max_rel": 0.000050090664102024664,
@@ -66768,11 +66824,18 @@
         "bytes": 44640,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 112,
+          "ns_per_call_iqr": 322.5446428571413,
+          "ns_per_call_median": 21090.776785714286,
+          "ns_per_call_min": 20763.76785714286,
+          "ns_per_px": 20.870208740234375,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 5819,
         "dag_cost": 22645,
         "dag_cost_input": 239011,
-        "emit_ms": 136.338875,
+        "emit_ms": 54.2635,
         "extent": [
           32,
           32
@@ -66789,7 +66852,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0024",
-        "optimize_ms": 3.695417,
+        "optimize_ms": 2.680708,
         "oracle": {
           "cross_form_max_abs": 2.9802322387695312e-6,
           "cross_form_max_rel": 0.0002789089083505327,
@@ -66858,11 +66921,18 @@
         "bytes": 25248,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 112,
+          "ns_per_call_iqr": 196.42857142857247,
+          "ns_per_call_median": 18097.473214285714,
+          "ns_per_call_min": 17881.321428571428,
+          "ns_per_px": 17.763410295758927,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2538,
         "dag_cost": 11328,
         "dag_cost_input": 239011,
-        "emit_ms": 41.995875000000005,
+        "emit_ms": 24.302,
         "extent": [
           32,
           32
@@ -66879,7 +66949,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0024",
-        "optimize_ms": 92.674667,
+        "optimize_ms": 24.898042,
         "oracle": {
           "cross_form_max_abs": 2.86102294921875e-6,
           "cross_form_max_rel": 0.000011536971874510708,
@@ -67404,11 +67474,18 @@
         "bytes": 63136,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 112,
+          "ns_per_call_iqr": 340.76785714285506,
+          "ns_per_call_median": 17939.35714285714,
+          "ns_per_call_min": 17722.464285714286,
+          "ns_per_px": 17.61150360107422,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 8315,
         "dag_cost": 32733,
         "dag_cost_input": 313549,
-        "emit_ms": 233.042375,
+        "emit_ms": 74.487,
         "extent": [
           32,
           32
@@ -67425,7 +67502,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0025",
-        "optimize_ms": 4.3460410000000005,
+        "optimize_ms": 4.217125,
         "oracle": {
           "cross_form_max_abs": 1.1920928955078125e-6,
           "cross_form_max_rel": 0.000011318982121667738,
@@ -67494,11 +67571,18 @@
         "bytes": 35840,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 80,
+          "ns_per_call_iqr": 2465.100000000002,
+          "ns_per_call_median": 29635.9375,
+          "ns_per_call_min": 28581.25,
+          "ns_per_px": 28.94134521484375,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3521,
         "dag_cost": 15855,
         "dag_cost_input": 313549,
-        "emit_ms": 222.820292,
+        "emit_ms": 82.417083,
         "extent": [
           32,
           32
@@ -67515,7 +67599,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0025",
-        "optimize_ms": 55.742833,
+        "optimize_ms": 28.231291,
         "oracle": {
           "cross_form_max_abs": 1.3113021850585938e-6,
           "cross_form_max_rel": 0.0005227888408345611,
@@ -67920,11 +68004,18 @@
         "bytes": 55984,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 96,
+          "ns_per_call_iqr": 228.30208333333576,
+          "ns_per_call_median": 21877.604166666668,
+          "ns_per_call_min": 21539.0625,
+          "ns_per_px": 21.614919026692707,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 7302,
         "dag_cost": 28637,
         "dag_cost_input": 284533,
-        "emit_ms": 157.502667,
+        "emit_ms": 71.764542,
         "extent": [
           32,
           32
@@ -67941,7 +68032,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0026",
-        "optimize_ms": 4.102125,
+        "optimize_ms": 3.339,
         "oracle": {
           "cross_form_max_abs": 1.5497207641601562e-6,
           "cross_form_max_rel": 0.000030284675953967292,
@@ -68010,11 +68101,18 @@
         "bytes": 31424,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 112,
+          "ns_per_call_iqr": 936.0089285714276,
+          "ns_per_call_median": 19579.991071428572,
+          "ns_per_call_min": 19038.3125,
+          "ns_per_px": 19.418631417410715,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3132,
         "dag_cost": 14213,
         "dag_cost_input": 284533,
-        "emit_ms": 162.967166,
+        "emit_ms": 28.279875,
         "extent": [
           32,
           32
@@ -68031,7 +68129,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0026",
-        "optimize_ms": 85.091708,
+        "optimize_ms": 25.99075,
         "oracle": {
           "cross_form_max_abs": 1.7881393432617188e-6,
           "cross_form_max_rel": 0.00003749385876451271,
@@ -68496,11 +68594,18 @@
         "bytes": 1024,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2048,
+          "ns_per_call_iqr": 21.34228515625,
+          "ns_per_call_median": 1029.0322265625,
+          "ns_per_call_min": 1006.9580078125,
+          "ns_per_px": 1.0049142837524414,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 119,
         "dag_cost": 295,
         "dag_cost_input": 8275,
-        "emit_ms": 8.726708,
+        "emit_ms": 1.026625,
         "extent": [
           32,
           32
@@ -68517,7 +68622,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0027",
-        "optimize_ms": 0.107,
+        "optimize_ms": 0.08925,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -68586,11 +68691,18 @@
         "bytes": 672,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 6656,
+          "ns_per_call_iqr": 12.6640625,
+          "ns_per_call_median": 551.6201923076923,
+          "ns_per_call_min": 550.8751502403846,
+          "ns_per_px": 0.563006846110026,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 53,
         "dag_cost": 150,
         "dag_cost_input": 8275,
-        "emit_ms": 24.986708,
+        "emit_ms": 0.907166,
         "extent": [
           32,
           32
@@ -68607,7 +68719,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0027",
-        "optimize_ms": 297.476542,
+        "optimize_ms": 40.629125,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -69132,11 +69244,18 @@
         "bytes": 14528,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 208,
+          "ns_per_call_iqr": 150.84134615384573,
+          "ns_per_call_median": 9595.153846153846,
+          "ns_per_call_min": 9562.89903846154,
+          "ns_per_px": 9.441474327674278,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1855,
         "dag_cost": 7237,
         "dag_cost_input": 66133,
-        "emit_ms": 32.091208,
+        "emit_ms": 18.275416,
         "extent": [
           32,
           32
@@ -69222,11 +69341,18 @@
         "bytes": 7712,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 235.43359375,
+          "ns_per_call_median": 5169.3515625,
+          "ns_per_call_min": 5107.177734375,
+          "ns_per_px": 5.048194885253906,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 717,
         "dag_cost": 3145,
         "dag_cost_input": 66133,
-        "emit_ms": 18.101458,
+        "emit_ms": 7.687208,
         "extent": [
           32,
           32
@@ -69243,7 +69369,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0028",
-        "optimize_ms": 182.997542,
+        "optimize_ms": 26.904875,
         "oracle": {
           "cross_form_max_abs": 5.960464477539062e-7,
           "cross_form_max_rel": 1.7121261850695409e-6,
@@ -69774,11 +69900,18 @@
         "bytes": 13120,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 240,
+          "ns_per_call_iqr": 103.46666666666717,
+          "ns_per_call_median": 8860.245833333332,
+          "ns_per_call_min": 8798.608333333334,
+          "ns_per_px": 8.666483561197916,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1683,
         "dag_cost": 6556,
         "dag_cost_input": 61984,
-        "emit_ms": 56.200292,
+        "emit_ms": 16.424333,
         "extent": [
           32,
           32
@@ -69864,11 +69997,18 @@
         "bytes": 7072,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 205.80859375,
+          "ns_per_call_median": 4886.3125,
+          "ns_per_call_min": 4743.328125,
+          "ns_per_px": 4.873752593994141,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 659,
         "dag_cost": 2914,
         "dag_cost_input": 61984,
-        "emit_ms": 12.346416,
+        "emit_ms": 7.466958999999999,
         "extent": [
           32,
           32
@@ -69885,7 +70025,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0029",
-        "optimize_ms": 109.73175,
+        "optimize_ms": 26.706332999999997,
         "oracle": {
           "cross_form_max_abs": 1.132488250732422e-6,
           "cross_form_max_rel": 1.438967263797689e-6,
@@ -70416,11 +70556,18 @@
         "bytes": 4448,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 55.6640625,
+          "ns_per_call_median": 1945.540625,
+          "ns_per_call_min": 1920.5078125,
+          "ns_per_px": 1.917679786682129,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 615,
         "dag_cost": 1909,
         "dag_cost_input": 65437,
-        "emit_ms": 4.131958,
+        "emit_ms": 3.771875,
         "extent": [
           32,
           32
@@ -70437,7 +70584,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U002A",
-        "optimize_ms": 0.207833,
+        "optimize_ms": 0.208542,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -70506,7 +70653,14 @@
         "bytes": 3664,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1536,
+          "ns_per_call_iqr": 87.32096354166674,
+          "ns_per_call_median": 1516.1946614583333,
+          "ns_per_call_min": 1448.0794270833333,
+          "ns_per_px": 1.4806588490804036,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 333,
         "dag_cost": 1378,
         "dag_cost_input": 65437,
@@ -70527,7 +70681,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U002A",
-        "optimize_ms": 276.20412500000003,
+        "optimize_ms": 72.942167,
         "oracle": {
           "cross_form_max_abs": 1.2516975402832031e-6,
           "cross_form_max_rel": 0.0000219631500177274,
@@ -71052,7 +71206,14 @@
         "bytes": 1872,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1536,
+          "ns_per_call_iqr": 23.084635416666515,
+          "ns_per_call_median": 1383.2467447916667,
+          "ns_per_call_min": 1378.0651041666667,
+          "ns_per_px": 1.3689467112223308,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 247,
         "dag_cost": 667,
         "dag_cost_input": 24607,
@@ -71073,7 +71234,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U002B",
-        "optimize_ms": 0.089334,
+        "optimize_ms": 0.084042,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -71142,11 +71303,18 @@
         "bytes": 1056,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2816,
+          "ns_per_call_iqr": 31.634943181818244,
+          "ns_per_call_median": 751.1690340909091,
+          "ns_per_call_min": 737.0827414772727,
+          "ns_per_px": 0.7464956803755327,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 100,
         "dag_cost": 308,
         "dag_cost_input": 24607,
-        "emit_ms": 2.264833,
+        "emit_ms": 1.886292,
         "extent": [
           32,
           32
@@ -71163,7 +71331,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U002B",
-        "optimize_ms": 184.426625,
+        "optimize_ms": 34.03574999999999,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -71688,11 +71856,18 @@
         "bytes": 1536,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2048,
+          "ns_per_call_iqr": 8.66650390625,
+          "ns_per_call_median": 1082.25537109375,
+          "ns_per_call_min": 1074.72705078125,
+          "ns_per_px": 1.0693073272705078,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 191,
         "dag_cost": 533,
         "dag_cost_input": 16441,
-        "emit_ms": 1.715291,
+        "emit_ms": 1.518958,
         "extent": [
           32,
           32
@@ -71709,7 +71884,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U002C",
-        "optimize_ms": 0.063,
+        "optimize_ms": 0.058458,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -71778,11 +71953,18 @@
         "bytes": 1088,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 3328,
+          "ns_per_call_iqr": 8.851862980769283,
+          "ns_per_call_median": 634.0895432692307,
+          "ns_per_call_min": 629.6325120192307,
+          "ns_per_px": 0.6192280695988581,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 89,
         "dag_cost": 291,
         "dag_cost_input": 16441,
-        "emit_ms": 3.161833,
+        "emit_ms": 1.3890829999999998,
         "extent": [
           32,
           32
@@ -71799,7 +71981,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U002C",
-        "optimize_ms": 745.116166,
+        "optimize_ms": 104.591333,
         "oracle": {
           "cross_form_max_abs": 1.3113021850585938e-6,
           "cross_form_max_rel": 1.6066777813065183e-6,
@@ -72324,11 +72506,18 @@
         "bytes": 1040,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 21.28515625,
+          "ns_per_call_median": 948.5859375,
+          "ns_per_call_min": 930.6280381944443,
+          "ns_per_px": 0.9263534545898438,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 119,
         "dag_cost": 295,
         "dag_cost_input": 8275,
-        "emit_ms": 6.778333999999999,
+        "emit_ms": 1.011208,
         "extent": [
           32,
           32
@@ -72414,11 +72603,18 @@
         "bytes": 720,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 3584,
+          "ns_per_call_iqr": 20.135881696428555,
+          "ns_per_call_median": 571.4285714285714,
+          "ns_per_call_min": 554.7223772321429,
+          "ns_per_px": 0.5580357142857143,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 55,
         "dag_cost": 150,
         "dag_cost_input": 8275,
-        "emit_ms": 25.193875,
+        "emit_ms": 0.923375,
         "extent": [
           32,
           32
@@ -72435,7 +72631,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U002D",
-        "optimize_ms": 155.9625,
+        "optimize_ms": 36.919374999999995,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -72960,11 +73156,18 @@
         "bytes": 992,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 9.8381076388888,
+          "ns_per_call_median": 953.3598090277778,
+          "ns_per_call_min": 935.6375868055557,
+          "ns_per_px": 0.9460349082946776,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 119,
         "dag_cost": 295,
         "dag_cost_input": 8275,
-        "emit_ms": 1.547667,
+        "emit_ms": 0.986083,
         "extent": [
           32,
           32
@@ -73050,11 +73253,18 @@
         "bytes": 704,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 3840,
+          "ns_per_call_iqr": 32.77994791666663,
+          "ns_per_call_median": 544.5638020833334,
+          "ns_per_call_min": 536.2955729166666,
+          "ns_per_px": 0.5367067972819011,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 54,
         "dag_cost": 151,
         "dag_cost_input": 8275,
-        "emit_ms": 1.187084,
+        "emit_ms": 0.970083,
         "extent": [
           32,
           32
@@ -73071,7 +73281,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U002E",
-        "optimize_ms": 248.557542,
+        "optimize_ms": 157.106,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -73632,11 +73842,18 @@
         "bytes": 1104,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2560,
+          "ns_per_call_iqr": 50.87890625,
+          "ns_per_call_median": 1521.6796875,
+          "ns_per_call_min": 1482.373046875,
+          "ns_per_px": 1.5136667887369792,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 127,
         "dag_cost": 347,
         "dag_cost_input": 8275,
-        "emit_ms": 7.788125,
+        "emit_ms": 1.067334,
         "extent": [
           32,
           32
@@ -73653,7 +73870,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U002F",
-        "optimize_ms": 0.03925,
+        "optimize_ms": 0.03975,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -73722,11 +73939,18 @@
         "bytes": 864,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 3072,
+          "ns_per_call_iqr": 20.1826171875,
+          "ns_per_call_median": 724.4466145833334,
+          "ns_per_call_min": 718.1803385416666,
+          "ns_per_px": 0.7202696366743608,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 65,
         "dag_cost": 219,
         "dag_cost_input": 8275,
-        "emit_ms": 1.428459,
+        "emit_ms": 1.1025,
         "extent": [
           32,
           32
@@ -73743,7 +73967,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U002F",
-        "optimize_ms": 191.30725,
+        "optimize_ms": 154.57416600000002,
         "oracle": {
           "cross_form_max_abs": 8.940696716308594e-7,
           "cross_form_max_rel": 5.0280211619354665e-6,
@@ -74268,11 +74492,18 @@
         "bytes": 42016,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 128,
+          "ns_per_call_iqr": 743.8125,
+          "ns_per_call_median": 17820.640625,
+          "ns_per_call_min": 17119.46875,
+          "ns_per_px": 17.402969360351562,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 5455,
         "dag_cost": 21493,
         "dag_cost_input": 198181,
-        "emit_ms": 122.095334,
+        "emit_ms": 50.412917,
         "extent": [
           32,
           32
@@ -74289,7 +74520,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0030",
-        "optimize_ms": 1.943125,
+        "optimize_ms": 1.802,
         "oracle": {
           "cross_form_max_abs": 1.6689300537109375e-6,
           "cross_form_max_rel": 0.00002063484576926705,
@@ -74358,7 +74589,14 @@
         "bytes": 22928,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 160,
+          "ns_per_call_iqr": 685.15625,
+          "ns_per_call_median": 14658.85,
+          "ns_per_call_min": 14009.6375,
+          "ns_per_px": 14.315283203125,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2289,
         "dag_cost": 10500,
         "dag_cost_input": 198181,
@@ -74379,7 +74617,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0030",
-        "optimize_ms": 23.631125,
+        "optimize_ms": 23.047792,
         "oracle": {
           "cross_form_max_abs": 1.6689300537109375e-6,
           "cross_form_max_rel": 0.00002063484576926705,
@@ -74892,11 +75130,18 @@
         "bytes": 2176,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 74.1787109375,
+          "ns_per_call_median": 2073.8935546875,
+          "ns_per_call_min": 1992.2685546875,
+          "ns_per_px": 2.2275447845458984,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 287,
         "dag_cost": 812,
         "dag_cost_input": 28690,
-        "emit_ms": 2.3595420000000003,
+        "emit_ms": 2.102042,
         "extent": [
           32,
           32
@@ -74913,7 +75158,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0031",
-        "optimize_ms": 0.094208,
+        "optimize_ms": 0.0925,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -74982,11 +75227,18 @@
         "bytes": 1632,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2048,
+          "ns_per_call_iqr": 940.93798828125,
+          "ns_per_call_median": 1113.46435546875,
+          "ns_per_call_min": 1061.11669921875,
+          "ns_per_px": 1.0873675346374512,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 152,
         "dag_cost": 519,
         "dag_cost_input": 28690,
-        "emit_ms": 3.067666,
+        "emit_ms": 1.794583,
         "extent": [
           32,
           32
@@ -75003,7 +75255,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0031",
-        "optimize_ms": 36.663166,
+        "optimize_ms": 36.826208,
         "oracle": {
           "cross_form_max_abs": 4.76837158203125e-7,
           "cross_form_max_rel": 7.115201877844079e-7,
@@ -75552,11 +75804,18 @@
         "bytes": 28304,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 176,
+          "ns_per_call_iqr": 77.88636363636397,
+          "ns_per_call_median": 11726.323863636364,
+          "ns_per_call_min": 11587.829545454546,
+          "ns_per_px": 11.451488148082388,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3623,
         "dag_cost": 14161,
         "dag_cost_input": 140257,
-        "emit_ms": 89.631875,
+        "emit_ms": 68.470625,
         "extent": [
           32,
           32
@@ -75573,7 +75832,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0032",
-        "optimize_ms": 0.929333,
+        "optimize_ms": 0.96175,
         "oracle": {
           "cross_form_max_abs": 3.576278686523438e-7,
           "cross_form_max_rel": 8.907654347380704e-6,
@@ -75642,11 +75901,18 @@
         "bytes": 15648,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 224,
+          "ns_per_call_iqr": 426.52232142857065,
+          "ns_per_call_median": 9193.450892857143,
+          "ns_per_call_min": 9140.625,
+          "ns_per_px": 9.08258310953776,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1573,
         "dag_cost": 7071,
         "dag_cost_input": 140257,
-        "emit_ms": 15.600917,
+        "emit_ms": 12.339667,
         "extent": [
           32,
           32
@@ -76188,11 +76454,18 @@
         "bytes": 43408,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 128,
+          "ns_per_call_iqr": 325.1953125,
+          "ns_per_call_median": 16963.546875,
+          "ns_per_call_min": 16697.9140625,
+          "ns_per_px": 16.565963745117188,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 5583,
         "dag_cost": 21916,
         "dag_cost_input": 210430,
-        "emit_ms": 113.429417,
+        "emit_ms": 50.708417,
         "extent": [
           32,
           32
@@ -76209,7 +76482,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0033",
-        "optimize_ms": 7.105583,
+        "optimize_ms": 1.926125,
         "oracle": {
           "cross_form_max_abs": 1.3113021850585938e-6,
           "cross_form_max_rel": 7.450121436979423e-6,
@@ -76278,11 +76551,18 @@
         "bytes": 22832,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 288,
+          "ns_per_call_iqr": 391.3472222222226,
+          "ns_per_call_median": 14189.378472222224,
+          "ns_per_call_min": 14015.045138888889,
+          "ns_per_px": 13.856814914279514,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2398,
         "dag_cost": 10873,
         "dag_cost_input": 210430,
-        "emit_ms": 23.899,
+        "emit_ms": 17.940416,
         "extent": [
           32,
           32
@@ -76299,7 +76579,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0033",
-        "optimize_ms": 24.198917,
+        "optimize_ms": 23.112625,
         "oracle": {
           "cross_form_max_abs": 2.1457672119140625e-6,
           "cross_form_max_rel": 4.966747624652948e-6,
@@ -76812,11 +77092,18 @@
         "bytes": 2368,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 40.080078125,
+          "ns_per_call_median": 2364.3798828125,
+          "ns_per_call_min": 2356.16015625,
+          "ns_per_px": 2.308964729309082,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 319,
         "dag_cost": 905,
         "dag_cost_input": 32773,
-        "emit_ms": 11.272334,
+        "emit_ms": 2.299791,
         "extent": [
           32,
           32
@@ -76833,7 +77120,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0034",
-        "optimize_ms": 0.101834,
+        "optimize_ms": 0.091417,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -76902,11 +77189,18 @@
         "bytes": 1680,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1792,
+          "ns_per_call_iqr": 17.69419642857133,
+          "ns_per_call_median": 1184.174665178571,
+          "ns_per_call_min": 1176.385602678571,
+          "ns_per_px": 1.1820793151855469,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 160,
         "dag_cost": 553,
         "dag_cost_input": 32773,
-        "emit_ms": 7.571917,
+        "emit_ms": 2.3171250000000003,
         "extent": [
           32,
           32
@@ -76923,7 +77217,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0034",
-        "optimize_ms": 44.216584000000005,
+        "optimize_ms": 39.285333,
         "oracle": {
           "cross_form_max_abs": 9.5367431640625e-7,
           "cross_form_max_rel": 8.574619554848625e-6,
@@ -77472,11 +77766,18 @@
         "bytes": 29632,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 192,
+          "ns_per_call_iqr": 190.75520833333212,
+          "ns_per_call_median": 11300.34375,
+          "ns_per_call_min": 11191.625,
+          "ns_per_px": 11.035491943359377,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3815,
         "dag_cost": 14881,
         "dag_cost_input": 148489,
-        "emit_ms": 103.471209,
+        "emit_ms": 37.571541,
         "extent": [
           32,
           32
@@ -77493,7 +77794,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0035",
-        "optimize_ms": 1.461625,
+        "optimize_ms": 1.063083,
         "oracle": {
           "cross_form_max_abs": 2.6226043701171875e-6,
           "cross_form_max_rel": 6.991153278122642e-6,
@@ -77562,11 +77863,18 @@
         "bytes": 16240,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 224,
+          "ns_per_call_iqr": 382.44196428571377,
+          "ns_per_call_median": 9446.05357142857,
+          "ns_per_call_min": 9158.294642857143,
+          "ns_per_px": 9.748995267427883,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1632,
         "dag_cost": 7332,
         "dag_cost_input": 148489,
-        "emit_ms": 16.712457999999998,
+        "emit_ms": 13.574834,
         "extent": [
           32,
           32
@@ -77583,7 +77891,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0035",
-        "optimize_ms": 20.979875,
+        "optimize_ms": 20.896167,
         "oracle": {
           "cross_form_max_abs": 2.1457672119140625e-6,
           "cross_form_max_rel": 0.000020973459834367927,
@@ -78108,11 +78416,18 @@
         "bytes": 42784,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 128,
+          "ns_per_call_iqr": 519.859375,
+          "ns_per_call_median": 17435.546875,
+          "ns_per_call_min": 17270.5078125,
+          "ns_per_px": 17.040252685546875,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 5479,
         "dag_cost": 21546,
         "dag_cost_input": 202264,
-        "emit_ms": 113.382041,
+        "emit_ms": 54.334875,
         "extent": [
           32,
           32
@@ -78129,7 +78444,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0036",
-        "optimize_ms": 6.786667,
+        "optimize_ms": 1.878709,
         "oracle": {
           "cross_form_max_abs": 2.205371856689453e-6,
           "cross_form_max_rel": 0.00004508281713507714,
@@ -78198,11 +78513,18 @@
         "bytes": 22896,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 144,
+          "ns_per_call_iqr": 539.9305555555566,
+          "ns_per_call_median": 14321.756944444443,
+          "ns_per_call_min": 13822.333333333334,
+          "ns_per_px": 13.986090766059029,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2388,
         "dag_cost": 10849,
         "dag_cost_input": 202264,
-        "emit_ms": 20.99925,
+        "emit_ms": 18.47175,
         "extent": [
           32,
           32
@@ -78744,11 +79066,18 @@
         "bytes": 1520,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 37.63124999999991,
+          "ns_per_call_median": 1702.7015625,
+          "ns_per_call_min": 1687.79296875,
+          "ns_per_px": 1.6627944946289062,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 191,
         "dag_cost": 533,
         "dag_cost_input": 16441,
-        "emit_ms": 6.856083,
+        "emit_ms": 1.554291,
         "extent": [
           32,
           32
@@ -78765,7 +79094,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0037",
-        "optimize_ms": 0.127,
+        "optimize_ms": 0.062542,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -78834,11 +79163,18 @@
         "bytes": 1264,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 12.695746527777828,
+          "ns_per_call_median": 910.64453125,
+          "ns_per_call_min": 901.4032118055557,
+          "ns_per_px": 0.8893013000488281,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 106,
         "dag_cost": 361,
         "dag_cost_input": 16441,
-        "emit_ms": 2.090708,
+        "emit_ms": 1.258208,
         "extent": [
           32,
           32
@@ -78855,7 +79191,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0037",
-        "optimize_ms": 87.351709,
+        "optimize_ms": 87.188875,
         "oracle": {
           "cross_form_max_abs": 1.3709068298339844e-6,
           "cross_form_max_rel": 8.267913468017643e-6,
@@ -79404,11 +79740,18 @@
         "bytes": 56288,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 96,
+          "ns_per_call_iqr": 179.26041666666424,
+          "ns_per_call_median": 21012.145833333332,
+          "ns_per_call_min": 20836.802083333332,
+          "ns_per_px": 20.519673665364586,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 7255,
         "dag_cost": 28621,
         "dag_cost_input": 264205,
-        "emit_ms": 136.24562500000002,
+        "emit_ms": 67.73700000000001,
         "extent": [
           32,
           32
@@ -79425,7 +79768,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0038",
-        "optimize_ms": 2.9945000000000004,
+        "optimize_ms": 2.959959,
         "oracle": {
           "cross_form_max_abs": 4.172325134277344e-7,
           "cross_form_max_rel": 2.280990679872082e-6,
@@ -79494,11 +79837,18 @@
         "bytes": 29664,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 128,
+          "ns_per_call_iqr": 762.6953125,
+          "ns_per_call_median": 16782.2265625,
+          "ns_per_call_min": 16485.0234375,
+          "ns_per_px": 16.388893127441406,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2967,
         "dag_cost": 13645,
         "dag_cost_input": 264205,
-        "emit_ms": 26.826708,
+        "emit_ms": 24.073082999999997,
         "extent": [
           32,
           32
@@ -80016,11 +80366,18 @@
         "bytes": 43024,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 128,
+          "ns_per_call_iqr": 200.5234375,
+          "ns_per_call_median": 17464.515625,
+          "ns_per_call_min": 17097.65625,
+          "ns_per_px": 17.058059692382812,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 5519,
         "dag_cost": 21730,
         "dag_cost_input": 202264,
-        "emit_ms": 124.1035,
+        "emit_ms": 49.908042,
         "extent": [
           32,
           32
@@ -80037,7 +80394,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0039",
-        "optimize_ms": 27.385,
+        "optimize_ms": 1.984,
         "oracle": {
           "cross_form_max_abs": 3.516674041748047e-6,
           "cross_form_max_rel": 4.579158190454058e-6,
@@ -80106,11 +80463,18 @@
         "bytes": 22896,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 160,
+          "ns_per_call_iqr": 533.8499999999985,
+          "ns_per_call_median": 14305.99375,
+          "ns_per_call_min": 14045.3125,
+          "ns_per_px": 13.970697021484376,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2394,
         "dag_cost": 10892,
         "dag_cost_input": 202264,
-        "emit_ms": 24.023084,
+        "emit_ms": 19.795,
         "extent": [
           32,
           32
@@ -80127,7 +80491,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0039",
-        "optimize_ms": 23.899417,
+        "optimize_ms": 23.510458,
         "oracle": {
           "cross_form_max_abs": 3.0994415283203125e-6,
           "cross_form_max_rel": 6.794861307733781e-6,
@@ -80640,11 +81004,18 @@
         "bytes": 1424,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1792,
+          "ns_per_call_iqr": 34.64508928571422,
+          "ns_per_call_median": 1324.893415178571,
+          "ns_per_call_min": 1298.3169642857142,
+          "ns_per_px": 1.2938412257603236,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 183,
         "dag_cost": 481,
         "dag_cost_input": 16441,
-        "emit_ms": 6.491542,
+        "emit_ms": 1.574791,
         "extent": [
           32,
           32
@@ -80661,7 +81032,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U003A",
-        "optimize_ms": 0.07104200000000001,
+        "optimize_ms": 0.06887499999999999,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -80730,11 +81101,18 @@
         "bytes": 912,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2816,
+          "ns_per_call_iqr": 23.8515625,
+          "ns_per_call_median": 722.6711647727273,
+          "ns_per_call_min": 701.3643465909091,
+          "ns_per_px": 0.7057335593483665,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 80,
         "dag_cost": 235,
         "dag_cost_input": 16441,
-        "emit_ms": 1.407958,
+        "emit_ms": 1.42675,
         "extent": [
           32,
           32
@@ -81300,11 +81678,18 @@
         "bytes": 2000,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1536,
+          "ns_per_call_iqr": 23.030598958333485,
+          "ns_per_call_median": 1597.140625,
+          "ns_per_call_min": 1581.5970052083333,
+          "ns_per_px": 1.5597076416015625,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 255,
         "dag_cost": 719,
         "dag_cost_input": 24607,
-        "emit_ms": 2.508667,
+        "emit_ms": 2.036125,
         "extent": [
           32,
           32
@@ -81321,7 +81706,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U003B",
-        "optimize_ms": 0.52325,
+        "optimize_ms": 0.076334,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -81390,11 +81775,18 @@
         "bytes": 1408,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 54.92274305555566,
+          "ns_per_call_median": 869.6831597222222,
+          "ns_per_call_min": 862.0876736111111,
+          "ns_per_px": 0.8560638427734375,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 124,
         "dag_cost": 423,
         "dag_cost_input": 24607,
-        "emit_ms": 2.081375,
+        "emit_ms": 1.613625,
         "extent": [
           32,
           32
@@ -81936,11 +82328,18 @@
         "bytes": 2256,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1536,
+          "ns_per_call_iqr": 25.93359375,
+          "ns_per_call_median": 1496.12109375,
+          "ns_per_call_min": 1467.6920572916667,
+          "ns_per_px": 1.4610557556152344,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 295,
         "dag_cost": 864,
         "dag_cost_input": 28690,
-        "emit_ms": 2.7130409999999996,
+        "emit_ms": 2.0495,
         "extent": [
           32,
           32
@@ -81957,7 +82356,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U003C",
-        "optimize_ms": 0.23175,
+        "optimize_ms": 0.186541,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -82026,11 +82425,18 @@
         "bytes": 1888,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 1298.3394097222224,
+          "ns_per_call_median": 1101.07421875,
+          "ns_per_call_min": 930.7725694444443,
+          "ns_per_px": 1.0752677917480469,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 174,
         "dag_cost": 645,
         "dag_cost_input": 28690,
-        "emit_ms": 2.094833,
+        "emit_ms": 1.819708,
         "extent": [
           32,
           32
@@ -82047,7 +82453,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U003C",
-        "optimize_ms": 28.853792,
+        "optimize_ms": 28.610958,
         "oracle": {
           "cross_form_max_abs": 1.8477439880371096e-6,
           "cross_form_max_rel": 3.4172993499256587e-6,
@@ -82572,11 +82978,18 @@
         "bytes": 1424,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1792,
+          "ns_per_call_iqr": 42.57310267857133,
+          "ns_per_call_median": 1181.849888392857,
+          "ns_per_call_min": 1106.119977678571,
+          "ns_per_px": 1.1541502816336495,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 183,
         "dag_cost": 481,
         "dag_cost_input": 16441,
-        "emit_ms": 4.701042,
+        "emit_ms": 1.3716659999999998,
         "extent": [
           32,
           32
@@ -82593,7 +83006,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U003D",
-        "optimize_ms": 0.059666,
+        "optimize_ms": 0.049082999999999995,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -82662,11 +83075,18 @@
         "bytes": 880,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 3328,
+          "ns_per_call_iqr": 22.4609375,
+          "ns_per_call_median": 682.2665264423077,
+          "ns_per_call_min": 674.1036658653846,
+          "ns_per_px": 0.6662759047288161,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 77,
         "dag_cost": 231,
         "dag_cost_input": 16441,
-        "emit_ms": 1.806208,
+        "emit_ms": 1.23125,
         "extent": [
           32,
           32
@@ -83232,11 +83652,18 @@
         "bytes": 2256,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1536,
+          "ns_per_call_iqr": 25.634114583333258,
+          "ns_per_call_median": 1479.763671875,
+          "ns_per_call_min": 1450.1412760416667,
+          "ns_per_px": 1.4450817108154297,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 295,
         "dag_cost": 864,
         "dag_cost_input": 28690,
-        "emit_ms": 3.580167,
+        "emit_ms": 2.0495840000000003,
         "extent": [
           32,
           32
@@ -83253,7 +83680,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U003E",
-        "optimize_ms": 0.08429199999999999,
+        "optimize_ms": 0.092708,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -83322,11 +83749,18 @@
         "bytes": 1888,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 36.005642361111086,
+          "ns_per_call_median": 947.6996527777778,
+          "ns_per_call_min": 932.0928819444443,
+          "ns_per_px": 0.9254879421657988,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 175,
         "dag_cost": 650,
         "dag_cost_input": 28690,
-        "emit_ms": 2.3579999999999997,
+        "emit_ms": 1.8755,
         "extent": [
           32,
           32
@@ -83868,11 +84302,18 @@
         "bytes": 30176,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 192,
+          "ns_per_call_iqr": 235.4635416666661,
+          "ns_per_call_median": 11219.182291666666,
+          "ns_per_call_min": 10669.484375,
+          "ns_per_px": 10.956232706705729,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3935,
         "dag_cost": 15233,
         "dag_cost_input": 164821,
-        "emit_ms": 68.12662499999999,
+        "emit_ms": 36.459708,
         "extent": [
           32,
           32
@@ -83889,7 +84330,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U003F",
-        "optimize_ms": 3.3878749999999997,
+        "optimize_ms": 1.2206249999999998,
         "oracle": {
           "cross_form_max_abs": 1.043081283569336e-6,
           "cross_form_max_rel": 7.668510030411119e-6,
@@ -83958,11 +84399,18 @@
         "bytes": 17824,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 208,
+          "ns_per_call_iqr": 236.57692307692196,
+          "ns_per_call_median": 10299.47596153846,
+          "ns_per_call_min": 10164.466346153846,
+          "ns_per_px": 10.327657063802084,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1750,
         "dag_cost": 7768,
         "dag_cost_input": 164821,
-        "emit_ms": 16.104457999999997,
+        "emit_ms": 13.516417,
         "extent": [
           32,
           32
@@ -83979,7 +84427,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U003F",
-        "optimize_ms": 21.26875,
+        "optimize_ms": 21.2115,
         "oracle": {
           "cross_form_max_abs": 2.9802322387695312e-6,
           "cross_form_max_rel": 0.000010287157779693932,
@@ -84504,11 +84952,18 @@
         "bytes": 56160,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 96,
+          "ns_per_call_iqr": 412.3333333333321,
+          "ns_per_call_median": 22897.135416666668,
+          "ns_per_call_min": 22720.052083333332,
+          "ns_per_px": 22.513916015625,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 7379,
         "dag_cost": 28979,
         "dag_cost_input": 280537,
-        "emit_ms": 131.679417,
+        "emit_ms": 67.956667,
         "extent": [
           32,
           32
@@ -84594,11 +85049,18 @@
         "bytes": 30112,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 112,
+          "ns_per_call_iqr": 1805.0625,
+          "ns_per_call_median": 18966.151785714286,
+          "ns_per_call_min": 18735.116071428572,
+          "ns_per_px": 18.521632603236608,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3071,
         "dag_cost": 14070,
         "dag_cost_input": 280537,
-        "emit_ms": 35.692458,
+        "emit_ms": 25.682625,
         "extent": [
           32,
           32
@@ -85092,11 +85554,18 @@
         "bytes": 2128,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 87.60546875,
+          "ns_per_call_median": 2186.849609375,
+          "ns_per_call_min": 2121.58203125,
+          "ns_per_px": 2.1355953216552734,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 271,
         "dag_cost": 823,
         "dag_cost_input": 24607,
-        "emit_ms": 2.6185829999999997,
+        "emit_ms": 1.811333,
         "extent": [
           32,
           32
@@ -85113,7 +85582,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0041",
-        "optimize_ms": 0.08620799999999999,
+        "optimize_ms": 0.079417,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -85182,11 +85651,18 @@
         "bytes": 1968,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2048,
+          "ns_per_call_iqr": 19.20556640625,
+          "ns_per_call_median": 1114.54248046875,
+          "ns_per_call_min": 1067.5048828125,
+          "ns_per_px": 1.0884203910827637,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 169,
         "dag_cost": 670,
         "dag_cost_input": 24607,
-        "emit_ms": 1.897042,
+        "emit_ms": 1.7510830000000002,
         "extent": [
           32,
           32
@@ -85752,11 +86228,18 @@
         "bytes": 29264,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 192,
+          "ns_per_call_iqr": 255.859375,
+          "ns_per_call_median": 10542.536458333334,
+          "ns_per_call_min": 10245.875,
+          "ns_per_px": 10.295445760091146,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3751,
         "dag_cost": 14644,
         "dag_cost_input": 144406,
-        "emit_ms": 163.769916,
+        "emit_ms": 34.932958,
         "extent": [
           32,
           32
@@ -85842,7 +86325,14 @@
         "bytes": 16368,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 448,
+          "ns_per_call_iqr": 396.0178571428587,
+          "ns_per_call_median": 9064.546875,
+          "ns_per_call_min": 8786.830357142857,
+          "ns_per_px": 8.946249154897837,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1615,
         "dag_cost": 7280,
         "dag_cost_input": 144406,
@@ -86388,11 +86878,18 @@
         "bytes": 29040,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 160,
+          "ns_per_call_iqr": 170.83124999999927,
+          "ns_per_call_median": 12481.5125,
+          "ns_per_call_min": 12358.33125,
+          "ns_per_px": 12.18897705078125,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3751,
         "dag_cost": 14695,
         "dag_cost_input": 140323,
-        "emit_ms": 85.054041,
+        "emit_ms": 32.883541,
         "extent": [
           32,
           32
@@ -86409,7 +86906,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0043",
-        "optimize_ms": 0.935458,
+        "optimize_ms": 0.994,
         "oracle": {
           "cross_form_max_abs": 9.5367431640625e-7,
           "cross_form_max_rel": 3.176166049961092e-6,
@@ -86478,11 +86975,18 @@
         "bytes": 15728,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 208,
+          "ns_per_call_iqr": 249.20192307692375,
+          "ns_per_call_median": 9956.932692307691,
+          "ns_per_call_min": 9513.423076923076,
+          "ns_per_px": 9.72356708233173,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1604,
         "dag_cost": 7298,
         "dag_cost_input": 140323,
-        "emit_ms": 14.951708,
+        "emit_ms": 13.887,
         "extent": [
           32,
           32
@@ -86499,7 +87003,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0043",
-        "optimize_ms": 25.644167,
+        "optimize_ms": 20.669708,
         "oracle": {
           "cross_form_max_abs": 1.3113021850585938e-6,
           "cross_form_max_rel": 0.000017071892518540868,
@@ -87024,11 +87528,18 @@
         "bytes": 14944,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 72.671875,
+          "ns_per_call_median": 7429.1171875,
+          "ns_per_call_min": 7245.279296875,
+          "ns_per_px": 7.254997253417969,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1919,
         "dag_cost": 7423,
         "dag_cost_input": 74299,
-        "emit_ms": 50.785625,
+        "emit_ms": 19.7165,
         "extent": [
           32,
           32
@@ -87045,7 +87556,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0044",
-        "optimize_ms": 0.341209,
+        "optimize_ms": 0.345458,
         "oracle": {
           "cross_form_max_abs": 1.0132789611816406e-6,
           "cross_form_max_rel": 0.00002141084900313606,
@@ -87114,7 +87625,14 @@
         "bytes": 8288,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 251.302734375,
+          "ns_per_call_median": 4708.416015625,
+          "ns_per_call_min": 4606.365234375,
+          "ns_per_px": 4.598062515258789,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 756,
         "dag_cost": 3264,
         "dag_cost_input": 74299,
@@ -87702,11 +88220,18 @@
         "bytes": 1904,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 52.57187500000009,
+          "ns_per_call_median": 1994.56328125,
+          "ns_per_call_min": 1942.3828125,
+          "ns_per_px": 1.9478157043457032,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 247,
         "dag_cost": 667,
         "dag_cost_input": 24607,
-        "emit_ms": 16.587999999999997,
+        "emit_ms": 1.9802079999999995,
         "extent": [
           32,
           32
@@ -87723,7 +88248,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0045",
-        "optimize_ms": 0.08062499999999999,
+        "optimize_ms": 0.08125,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -87792,7 +88317,14 @@
         "bytes": 1248,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 4096,
+          "ns_per_call_iqr": 33.396240234375,
+          "ns_per_call_median": 997.365234375,
+          "ns_per_call_min": 972.310546875,
+          "ns_per_px": 0.973989486694336,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 114,
         "dag_cost": 324,
         "dag_cost_input": 24607,
@@ -88362,11 +88894,18 @@
         "bytes": 1664,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 59.79765624999982,
+          "ns_per_call_median": 1805.11015625,
+          "ns_per_call_min": 1787.9234375,
+          "ns_per_px": 1.8128074645996093,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 215,
         "dag_cost": 574,
         "dag_cost_input": 20524,
-        "emit_ms": 1.913333,
+        "emit_ms": 1.729458,
         "extent": [
           32,
           32
@@ -88452,11 +88991,18 @@
         "bytes": 1104,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 25.02907986111109,
+          "ns_per_call_median": 893.6814236111111,
+          "ns_per_call_min": 876.9166666666666,
+          "ns_per_px": 0.8727357652452257,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 99,
         "dag_cost": 281,
         "dag_cost_input": 20524,
-        "emit_ms": 1.937542,
+        "emit_ms": 1.839,
         "extent": [
           32,
           32
@@ -89022,11 +89568,18 @@
         "bytes": 29696,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 160,
+          "ns_per_call_iqr": 452.0812499999993,
+          "ns_per_call_median": 13120.575,
+          "ns_per_call_min": 12712.5,
+          "ns_per_px": 12.87510986328125,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3815,
         "dag_cost": 14881,
         "dag_cost_input": 148489,
-        "emit_ms": 159.347167,
+        "emit_ms": 36.028833000000006,
         "extent": [
           32,
           32
@@ -89112,7 +89665,14 @@
         "bytes": 16192,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 208,
+          "ns_per_call_iqr": 1217.548076923078,
+          "ns_per_call_median": 9877.403846153846,
+          "ns_per_call_min": 9653.04326923077,
+          "ns_per_px": 9.921536959134617,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1654,
         "dag_cost": 7431,
         "dag_cost_input": 148489,
@@ -89133,7 +89693,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0047",
-        "optimize_ms": 20.409584,
+        "optimize_ms": 20.670917,
         "oracle": {
           "cross_form_max_abs": 1.7881393432617188e-6,
           "cross_form_max_rel": 2.6766358311355752e-6,
@@ -89658,11 +90218,18 @@
         "bytes": 1856,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 39.958984375,
+          "ns_per_call_median": 2176.06640625,
+          "ns_per_call_min": 2161.9052734375,
+          "ns_per_px": 2.1983776092529297,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 247,
         "dag_cost": 667,
         "dag_cost_input": 24607,
-        "emit_ms": 2.440917,
+        "emit_ms": 1.894333,
         "extent": [
           32,
           32
@@ -89748,7 +90315,14 @@
         "bytes": 1088,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 27.14453125,
+          "ns_per_call_median": 939.6701388888888,
+          "ns_per_call_min": 934.42578125,
+          "ns_per_px": 0.9428660074869792,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 100,
         "dag_cost": 303,
         "dag_cost_input": 24607,
@@ -89769,7 +90343,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0048",
-        "optimize_ms": 65.128583,
+        "optimize_ms": 65.371208,
         "oracle": {
           "cross_form_max_abs": 5.960464477539062e-7,
           "cross_form_max_rel": 1.0596271256914862e-6,
@@ -90318,11 +90892,18 @@
         "bytes": 1856,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 81.18593749999991,
+          "ns_per_call_median": 1926.62734375,
+          "ns_per_call_min": 1893.13125,
+          "ns_per_px": 1.8970370292663576,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 247,
         "dag_cost": 667,
         "dag_cost_input": 24607,
-        "emit_ms": 1.972292,
+        "emit_ms": 1.858541,
         "extent": [
           32,
           32
@@ -90408,11 +90989,18 @@
         "bytes": 1088,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2048,
+          "ns_per_call_iqr": 39.44873046875,
+          "ns_per_call_median": 945.169921875,
+          "ns_per_call_min": 922.75,
+          "ns_per_px": 0.9230175018310548,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 102,
         "dag_cost": 309,
         "dag_cost_input": 24607,
-        "emit_ms": 1.585667,
+        "emit_ms": 1.5595,
         "extent": [
           32,
           32
@@ -90429,7 +91017,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0049",
-        "optimize_ms": 65.13633300000001,
+        "optimize_ms": 65.3805,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -90978,11 +91566,18 @@
         "bytes": 15552,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 162.515625,
+          "ns_per_call_median": 5868.490234375,
+          "ns_per_call_min": 5747.802734375,
+          "ns_per_px": 5.730947494506836,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1999,
         "dag_cost": 7681,
         "dag_cost_input": 82465,
-        "emit_ms": 28.507083,
+        "emit_ms": 20.136999999999997,
         "extent": [
           32,
           32
@@ -90999,7 +91594,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U004A",
-        "optimize_ms": 1.664333,
+        "optimize_ms": 0.413708,
         "oracle": {
           "cross_form_max_abs": 2.384185791015625e-7,
           "cross_form_max_rel": 4.1836015370552045e-6,
@@ -91068,11 +91663,18 @@
         "bytes": 8704,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 251.466796875,
+          "ns_per_call_median": 5011.392578125,
+          "ns_per_call_min": 4838.623046875,
+          "ns_per_px": 4.893938064575195,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 792,
         "dag_cost": 3386,
         "dag_cost_input": 82465,
-        "emit_ms": 8.019333,
+        "emit_ms": 8.480042000000001,
         "extent": [
           32,
           32
@@ -91089,7 +91691,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U004A",
-        "optimize_ms": 27.715375,
+        "optimize_ms": 27.765,
         "oracle": {
           "cross_form_max_abs": 7.748603820800781e-7,
           "cross_form_max_rel": 0.00010809347522285972,
@@ -91620,11 +92222,18 @@
         "bytes": 2512,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 22.4609375,
+          "ns_per_call_median": 2508.3408203125,
+          "ns_per_call_min": 2454.38671875,
+          "ns_per_px": 2.449551582336426,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 331,
         "dag_cost": 983,
         "dag_cost_input": 32773,
-        "emit_ms": 4.44125,
+        "emit_ms": 2.294042,
         "extent": [
           32,
           32
@@ -91641,7 +92250,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U004B",
-        "optimize_ms": 0.1005,
+        "optimize_ms": 0.08745900000000001,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -91710,11 +92319,18 @@
         "bytes": 2144,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1792,
+          "ns_per_call_iqr": 26.57645089285711,
+          "ns_per_call_median": 1247.349330357143,
+          "ns_per_call_min": 1226.353236607143,
+          "ns_per_px": 1.2479509626116072,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 190,
         "dag_cost": 732,
         "dag_cost_input": 32773,
-        "emit_ms": 3.910542,
+        "emit_ms": 2.114584,
         "extent": [
           32,
           32
@@ -92280,11 +92896,18 @@
         "bytes": 1216,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1536,
+          "ns_per_call_iqr": 50.75390625,
+          "ns_per_call_median": 1610.8938802083333,
+          "ns_per_call_min": 1552.24609375,
+          "ns_per_px": 1.5731385548909504,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 151,
         "dag_cost": 388,
         "dag_cost_input": 12358,
-        "emit_ms": 2.5078750000000003,
+        "emit_ms": 1.259125,
         "extent": [
           32,
           32
@@ -92370,11 +92993,18 @@
         "bytes": 848,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2816,
+          "ns_per_call_iqr": 10.623934659090878,
+          "ns_per_call_median": 736.12109375,
+          "ns_per_call_min": 733.88671875,
+          "ns_per_px": 0.7251392711292614,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 70,
         "dag_cost": 195,
         "dag_cost_input": 12358,
-        "emit_ms": 1.102792,
+        "emit_ms": 1.096042,
         "extent": [
           32,
           32
@@ -92391,7 +93021,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U004C",
-        "optimize_ms": 137.662083,
+        "optimize_ms": 138.25379099999998,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -92940,11 +93570,18 @@
         "bytes": 2464,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 768,
+          "ns_per_call_iqr": 53.44010416666697,
+          "ns_per_call_median": 2793.9986979166665,
+          "ns_per_call_min": 2694.9322916666665,
+          "ns_per_px": 2.7285143534342446,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 327,
         "dag_cost": 957,
         "dag_cost_input": 32773,
-        "emit_ms": 2.807875,
+        "emit_ms": 2.374583,
         "extent": [
           32,
           32
@@ -92961,7 +93598,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U004D",
-        "optimize_ms": 0.12175,
+        "optimize_ms": 0.104875,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -93030,11 +93667,18 @@
         "bytes": 1920,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1792,
+          "ns_per_call_iqr": 33.43582589285711,
+          "ns_per_call_median": 1167.131696428571,
+          "ns_per_call_min": 1162.59765625,
+          "ns_per_px": 1.1659807477678572,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 176,
         "dag_cost": 664,
         "dag_cost_input": 32773,
-        "emit_ms": 4.118458,
+        "emit_ms": 1.924209,
         "extent": [
           32,
           32
@@ -93051,7 +93695,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U004D",
-        "optimize_ms": 44.423959,
+        "optimize_ms": 45.470499999999994,
         "oracle": {
           "cross_form_max_abs": 1.7881393432617188e-6,
           "cross_form_max_rel": 0.00001734747234936818,
@@ -93600,11 +94244,18 @@
         "bytes": 1952,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 1997.55859375,
+          "ns_per_call_median": 2495.4833984375,
+          "ns_per_call_min": 2426.7177734375,
+          "ns_per_px": 2.436995506286621,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 255,
         "dag_cost": 719,
         "dag_cost_input": 24607,
-        "emit_ms": 2.107875,
+        "emit_ms": 1.847083,
         "extent": [
           32,
           32
@@ -93621,7 +94272,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U004E",
-        "optimize_ms": 0.08304199999999999,
+        "optimize_ms": 0.077292,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -93690,11 +94341,18 @@
         "bytes": 1248,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 40.888888888888914,
+          "ns_per_call_median": 990.4331597222222,
+          "ns_per_call_min": 950.2313368055557,
+          "ns_per_px": 0.9672198825412326,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 113,
         "dag_cost": 362,
         "dag_cost_input": 24607,
-        "emit_ms": 3.602792,
+        "emit_ms": 1.746292,
         "extent": [
           32,
           32
@@ -93711,7 +94369,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U004E",
-        "optimize_ms": 92.3725,
+        "optimize_ms": 82.932083,
         "oracle": {
           "cross_form_max_abs": 2.384185791015625e-6,
           "cross_form_max_rel": 4.793573228175496e-6,
@@ -94260,11 +94918,18 @@
         "bytes": 28208,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 160,
+          "ns_per_call_iqr": 672.3937499999993,
+          "ns_per_call_median": 13321.6125,
+          "ns_per_call_min": 13265.3625,
+          "ns_per_px": 13.49461669921875,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3655,
         "dag_cost": 14365,
         "dag_cost_input": 132157,
-        "emit_ms": 195.701959,
+        "emit_ms": 34.384792,
         "extent": [
           32,
           32
@@ -94350,11 +95015,18 @@
         "bytes": 15184,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 224,
+          "ns_per_call_iqr": 424.2946428571431,
+          "ns_per_call_median": 9315.107142857143,
+          "ns_per_call_min": 9235.120535714286,
+          "ns_per_px": 9.350927734375,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1482,
         "dag_cost": 6770,
         "dag_cost_input": 132157,
-        "emit_ms": 21.375792,
+        "emit_ms": 12.382,
         "extent": [
           32,
           32
@@ -94371,7 +95043,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U004F",
-        "optimize_ms": 20.495416,
+        "optimize_ms": 20.277625,
         "oracle": {
           "cross_form_max_abs": 4.112720489501953e-6,
           "cross_form_max_rel": 0.000030316402184128353,
@@ -94884,11 +95556,18 @@
         "bytes": 15216,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 234.5390625,
+          "ns_per_call_median": 5794.43359375,
+          "ns_per_call_min": 5701.009765625,
+          "ns_per_px": 5.9390869140625,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1951,
         "dag_cost": 7516,
         "dag_cost_input": 78382,
-        "emit_ms": 58.45175,
+        "emit_ms": 22.536292,
         "extent": [
           32,
           32
@@ -94974,11 +95653,18 @@
         "bytes": 8512,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 137.94140625,
+          "ns_per_call_median": 4645.669921875,
+          "ns_per_call_min": 4426.919921875,
+          "ns_per_px": 4.536787033081055,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 775,
         "dag_cost": 3306,
         "dag_cost_input": 78382,
-        "emit_ms": 11.412624999999998,
+        "emit_ms": 7.921542,
         "extent": [
           32,
           32
@@ -94995,7 +95681,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0050",
-        "optimize_ms": 29.343125,
+        "optimize_ms": 28.414417,
         "oracle": {
           "cross_form_max_abs": 1.7881393432617188e-6,
           "cross_form_max_rel": 2.433467204072362e-6,
@@ -95562,11 +96248,18 @@
         "bytes": 31968,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 224,
+          "ns_per_call_iqr": 811.2008928571449,
+          "ns_per_call_median": 17598.397321428572,
+          "ns_per_call_min": 16845.241071428572,
+          "ns_per_px": 17.347976684570312,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 4221,
         "dag_cost": 16540,
         "dag_cost_input": 160912,
-        "emit_ms": 75.420208,
+        "emit_ms": 42.948959,
         "extent": [
           32,
           32
@@ -95583,7 +96276,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0051",
-        "optimize_ms": 1.232542,
+        "optimize_ms": 1.23925,
         "oracle": {
           "cross_form_max_abs": 1.132488250732422e-6,
           "cross_form_max_rel": 0.0000621274397282088,
@@ -95652,11 +96345,18 @@
         "bytes": 18400,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 176,
+          "ns_per_call_iqr": 160.74431818181802,
+          "ns_per_call_median": 12807.52840909091,
+          "ns_per_call_min": 12486.267045454546,
+          "ns_per_px": 12.507351962002842,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1803,
         "dag_cost": 8212,
         "dag_cost_input": 160912,
-        "emit_ms": 23.646583999999997,
+        "emit_ms": 14.482666,
         "extent": [
           32,
           32
@@ -95673,7 +96373,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0051",
-        "optimize_ms": 22.162833,
+        "optimize_ms": 21.770042,
         "oracle": {
           "cross_form_max_abs": 1.4901161193847656e-6,
           "cross_form_max_rel": 0.0000621274397282088,
@@ -96198,11 +96898,18 @@
         "bytes": 22496,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 480,
+          "ns_per_call_iqr": 212.15416666666624,
+          "ns_per_call_median": 7415.972916666667,
+          "ns_per_call_min": 7376.041666666667,
+          "ns_per_px": 7.507165908813477,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2939,
         "dag_cost": 11390,
         "dag_cost_input": 119560,
-        "emit_ms": 32.26925,
+        "emit_ms": 30.331791,
         "extent": [
           32,
           32
@@ -96219,7 +96926,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0052",
-        "optimize_ms": 0.69925,
+        "optimize_ms": 0.690542,
         "oracle": {
           "cross_form_max_abs": 1.132488250732422e-6,
           "cross_form_max_rel": 0.00013431643538319065,
@@ -96288,11 +96995,18 @@
         "bytes": 12976,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 196.453125,
+          "ns_per_call_median": 6566.8125,
+          "ns_per_call_min": 6387.533203125,
+          "ns_per_px": 6.4647979736328125,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1212,
         "dag_cost": 5467,
         "dag_cost_input": 119560,
-        "emit_ms": 15.501,
+        "emit_ms": 10.862749999999998,
         "extent": [
           32,
           32
@@ -96309,7 +97023,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0052",
-        "optimize_ms": 19.352416,
+        "optimize_ms": 18.0265,
         "oracle": {
           "cross_form_max_abs": 2.562999725341797e-6,
           "cross_form_max_rel": 0.00011310857716479212,
@@ -96834,11 +97548,18 @@
         "bytes": 43024,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 128,
+          "ns_per_call_iqr": 710.28125,
+          "ns_per_call_median": 16427.40625,
+          "ns_per_call_min": 15520.1796875,
+          "ns_per_px": 16.057655334472656,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 5623,
         "dag_cost": 22061,
         "dag_cost_input": 214513,
-        "emit_ms": 74.279,
+        "emit_ms": 53.398541,
         "extent": [
           32,
           32
@@ -96855,7 +97576,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0053",
-        "optimize_ms": 8.3885,
+        "optimize_ms": 2.014208,
         "oracle": {
           "cross_form_max_abs": 2.3245811462402344e-6,
           "cross_form_max_rel": 0.00006859154875906456,
@@ -96924,11 +97645,18 @@
         "bytes": 24032,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 144,
+          "ns_per_call_iqr": 661.4583333333339,
+          "ns_per_call_median": 15151.041666666666,
+          "ns_per_call_min": 14536.75,
+          "ns_per_px": 14.795939127604166,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2453,
         "dag_cost": 11087,
         "dag_cost_input": 214513,
-        "emit_ms": 40.741916,
+        "emit_ms": 20.256125,
         "extent": [
           32,
           32
@@ -96945,7 +97673,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0053",
-        "optimize_ms": 31.952665999999997,
+        "optimize_ms": 24.322959,
         "oracle": {
           "cross_form_max_abs": 2.5033950805664062e-6,
           "cross_form_max_rel": 0.00008002347355224199,
@@ -97470,11 +98198,18 @@
         "bytes": 1440,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 21.842187500000136,
+          "ns_per_call_median": 1714.8109375,
+          "ns_per_call_min": 1708.3984375,
+          "ns_per_px": 1.6746200561523437,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 183,
         "dag_cost": 481,
         "dag_cost_input": 16441,
-        "emit_ms": 2.388792,
+        "emit_ms": 1.411292,
         "extent": [
           32,
           32
@@ -97491,7 +98226,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0054",
-        "optimize_ms": 0.067542,
+        "optimize_ms": 0.055208,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -97560,7 +98295,14 @@
         "bytes": 912,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2560,
+          "ns_per_call_iqr": 48.095703125,
+          "ns_per_call_median": 821.38671875,
+          "ns_per_call_min": 798.8609375,
+          "ns_per_px": 0.8021354675292969,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 79,
         "dag_cost": 230,
         "dag_cost_input": 16441,
@@ -97581,7 +98323,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0054",
-        "optimize_ms": 159.6965,
+        "optimize_ms": 158.892625,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -98130,11 +98872,18 @@
         "bytes": 29472,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 192,
+          "ns_per_call_iqr": 396.703125,
+          "ns_per_call_median": 10925.130208333334,
+          "ns_per_call_min": 10526.473958333334,
+          "ns_per_px": 10.66907246907552,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3815,
         "dag_cost": 14881,
         "dag_cost_input": 148489,
-        "emit_ms": 79.55924999999999,
+        "emit_ms": 42.323625,
         "extent": [
           32,
           32
@@ -98151,7 +98900,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0055",
-        "optimize_ms": 4.390166,
+        "optimize_ms": 1.0295409999999998,
         "oracle": {
           "cross_form_max_abs": 2.5033950805664062e-6,
           "cross_form_max_rel": 0.00001984590130160761,
@@ -98220,11 +98969,18 @@
         "bytes": 16768,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 192,
+          "ns_per_call_iqr": 557.2916666666679,
+          "ns_per_call_median": 9947.697916666666,
+          "ns_per_call_min": 9684.026041666666,
+          "ns_per_px": 9.74664776141827,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1591,
         "dag_cost": 7181,
         "dag_cost_input": 148489,
-        "emit_ms": 14.355083,
+        "emit_ms": 12.851584,
         "extent": [
           32,
           32
@@ -98241,7 +98997,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0055",
-        "optimize_ms": 21.187458,
+        "optimize_ms": 20.735625,
         "oracle": {
           "cross_form_max_abs": 1.3709068298339844e-6,
           "cross_form_max_rel": 0.000010867993569927978,
@@ -98766,7 +99522,14 @@
         "bytes": 1584,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 65.0634765625,
+          "ns_per_call_median": 1935.587890625,
+          "ns_per_call_min": 1919.7998046875,
+          "ns_per_px": 1.950700759887695,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 199,
         "dag_cost": 585,
         "dag_cost_input": 16441,
@@ -98787,7 +99550,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0056",
-        "optimize_ms": 0.066334,
+        "optimize_ms": 0.060291,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -98856,11 +99619,18 @@
         "bytes": 1360,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 14.503472222222172,
+          "ns_per_call_median": 925.8897569444443,
+          "ns_per_call_min": 917.6432291666666,
+          "ns_per_px": 0.9129664103190104,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 110,
         "dag_cost": 416,
         "dag_cost_input": 16441,
-        "emit_ms": 1.864208,
+        "emit_ms": 1.358125,
         "extent": [
           32,
           32
@@ -98877,7 +99647,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0056",
-        "optimize_ms": 152.308625,
+        "optimize_ms": 139.70491700000002,
         "oracle": {
           "cross_form_max_abs": 1.0728836059570312e-6,
           "cross_form_max_rel": 0.00011866619200189868,
@@ -99426,11 +100196,18 @@
         "bytes": 2608,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 36.662109375,
+          "ns_per_call_median": 2488.76953125,
+          "ns_per_call_min": 2467.814453125,
+          "ns_per_px": 2.430438995361328,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 343,
         "dag_cost": 1061,
         "dag_cost_input": 32773,
-        "emit_ms": 2.391375,
+        "emit_ms": 2.544417,
         "extent": [
           32,
           32
@@ -99447,7 +100224,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0057",
-        "optimize_ms": 0.111375,
+        "optimize_ms": 0.098458,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -99516,11 +100293,18 @@
         "bytes": 2352,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1792,
+          "ns_per_call_iqr": 50.50223214285711,
+          "ns_per_call_median": 1205.263950892857,
+          "ns_per_call_min": 1175.595424107143,
+          "ns_per_px": 1.188164302280971,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 206,
         "dag_cost": 834,
         "dag_cost_input": 32773,
-        "emit_ms": 2.052292,
+        "emit_ms": 2.204209,
         "extent": [
           32,
           32
@@ -99537,7 +100321,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0057",
-        "optimize_ms": 61.905709,
+        "optimize_ms": 61.25529100000001,
         "oracle": {
           "cross_form_max_abs": 1.6689300537109375e-6,
           "cross_form_max_rel": 0.00001006202519818596,
@@ -100086,11 +100870,18 @@
         "bytes": 2592,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 33.12109375,
+          "ns_per_call_median": 2249.0234375,
+          "ns_per_call_min": 2207.3974609375,
+          "ns_per_px": 2.1963119506835938,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 343,
         "dag_cost": 1061,
         "dag_cost_input": 32773,
-        "emit_ms": 5.045459,
+        "emit_ms": 2.578334,
         "extent": [
           32,
           32
@@ -100107,7 +100898,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0058",
-        "optimize_ms": 0.433958,
+        "optimize_ms": 0.271125,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -100176,11 +100967,18 @@
         "bytes": 2352,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1792,
+          "ns_per_call_iqr": 38.31808035714289,
+          "ns_per_call_median": 1162.0161830357142,
+          "ns_per_call_min": 1136.6489955357142,
+          "ns_per_px": 1.134781428745815,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 211,
         "dag_cost": 863,
         "dag_cost_input": 32773,
-        "emit_ms": 2.384167,
+        "emit_ms": 2.304208,
         "extent": [
           32,
           32
@@ -100197,7 +100995,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0058",
-        "optimize_ms": 65.78608399999999,
+        "optimize_ms": 62.610333,
         "oracle": {
           "cross_form_max_abs": 2.264976501464844e-6,
           "cross_form_max_rel": 0.00001913461199538755,
@@ -100746,11 +101544,18 @@
         "bytes": 2016,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 38.005859375,
+          "ns_per_call_median": 2098.0224609375,
+          "ns_per_call_min": 2089.640625,
+          "ns_per_px": 2.073486328125,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 263,
         "dag_cost": 771,
         "dag_cost_input": 24607,
-        "emit_ms": 2.4758750000000003,
+        "emit_ms": 2.267,
         "extent": [
           32,
           32
@@ -100767,7 +101572,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0059",
-        "optimize_ms": 0.071125,
+        "optimize_ms": 0.07325000000000001,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -100836,7 +101641,14 @@
         "bytes": 1696,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2048,
+          "ns_per_call_iqr": 55.115234375,
+          "ns_per_call_median": 1035.07470703125,
+          "ns_per_call_min": 1013.529296875,
+          "ns_per_px": 1.010815143585205,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 152,
         "dag_cost": 587,
         "dag_cost_input": 24607,
@@ -100857,7 +101669,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0059",
-        "optimize_ms": 40.14575,
+        "optimize_ms": 39.183625,
         "oracle": {
           "cross_form_max_abs": 1.430511474609375e-6,
           "cross_form_max_rel": 0.00003092942935202845,
@@ -101406,7 +102218,14 @@
         "bytes": 1968,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 43.685156249999864,
+          "ns_per_call_median": 1966.3734375,
+          "ns_per_call_min": 1940.46171875,
+          "ns_per_px": 1.9466876983642576,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 255,
         "dag_cost": 719,
         "dag_cost_input": 24607,
@@ -101427,7 +102246,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U005A",
-        "optimize_ms": 0.071375,
+        "optimize_ms": 0.072833,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -101496,11 +102315,18 @@
         "bytes": 1520,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 3584,
+          "ns_per_call_iqr": 43.4453125,
+          "ns_per_call_median": 1054.22265625,
+          "ns_per_call_min": 1018.4383370535714,
+          "ns_per_px": 1.0303258895874023,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 136,
         "dag_cost": 452,
         "dag_cost_input": 24607,
-        "emit_ms": 1.867041,
+        "emit_ms": 1.825375,
         "extent": [
           32,
           32
@@ -101517,7 +102343,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U005A",
-        "optimize_ms": 106.845208,
+        "optimize_ms": 105.303375,
         "oracle": {
           "cross_form_max_abs": 1.1920928955078125e-6,
           "cross_form_max_rel": 3.3352813847198902e-6,
@@ -102066,11 +102892,18 @@
         "bytes": 1472,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 48.2998046875,
+          "ns_per_call_median": 1901.8955078125,
+          "ns_per_call_min": 1857.91015625,
+          "ns_per_px": 1.960039138793945,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 183,
         "dag_cost": 481,
         "dag_cost_input": 16441,
-        "emit_ms": 1.4534159999999998,
+        "emit_ms": 1.546708,
         "extent": [
           32,
           32
@@ -102156,11 +102989,18 @@
         "bytes": 944,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 8.897569444444457,
+          "ns_per_call_median": 944.7881944444443,
+          "ns_per_call_min": 938.1510416666666,
+          "ns_per_px": 0.9279602898491752,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 83,
         "dag_cost": 237,
         "dag_cost_input": 16441,
-        "emit_ms": 1.818209,
+        "emit_ms": 1.508167,
         "extent": [
           32,
           32
@@ -102177,7 +103017,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U005B",
-        "optimize_ms": 55.853583,
+        "optimize_ms": 54.79025,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -102702,7 +103542,14 @@
         "bytes": 1104,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 27.9296875,
+          "ns_per_call_median": 1536.490625,
+          "ns_per_call_min": 1520.60546875,
+          "ns_per_px": 1.5016663869222004,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 127,
         "dag_cost": 347,
         "dag_cost_input": 8275,
@@ -102723,7 +103570,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U005C",
-        "optimize_ms": 0.032875,
+        "optimize_ms": 0.037417,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -102792,7 +103639,14 @@
         "bytes": 864,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2816,
+          "ns_per_call_iqr": 21.588068181818244,
+          "ns_per_call_median": 721.7535511363636,
+          "ns_per_call_min": 715.3764204545455,
+          "ns_per_px": 0.7214691855690696,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 65,
         "dag_cost": 219,
         "dag_cost_input": 8275,
@@ -102813,7 +103667,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U005C",
-        "optimize_ms": 157.816834,
+        "optimize_ms": 154.91875,
         "oracle": {
           "cross_form_max_abs": 1.5497207641601562e-6,
           "cross_form_max_rel": 0.000019201597572918067,
@@ -103338,11 +104192,18 @@
         "bytes": 1472,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 19.69374999999991,
+          "ns_per_call_median": 1968.68515625,
+          "ns_per_call_min": 1914.909375,
+          "ns_per_px": 1.944422721862793,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 183,
         "dag_cost": 481,
         "dag_cost_input": 16441,
-        "emit_ms": 1.579292,
+        "emit_ms": 1.489208,
         "extent": [
           32,
           32
@@ -103359,7 +104220,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U005D",
-        "optimize_ms": 0.043,
+        "optimize_ms": 0.053208000000000005,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -103428,11 +104289,18 @@
         "bytes": 944,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 14.919704861111086,
+          "ns_per_call_median": 951.0633680555557,
+          "ns_per_call_min": 928.7834201388888,
+          "ns_per_px": 0.9334882100423176,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 85,
         "dag_cost": 247,
         "dag_cost_input": 16441,
-        "emit_ms": 1.431542,
+        "emit_ms": 1.571167,
         "extent": [
           32,
           32
@@ -103449,7 +104317,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U005D",
-        "optimize_ms": 65.793375,
+        "optimize_ms": 63.824458,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -103974,7 +104842,14 @@
         "bytes": 1632,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1792,
+          "ns_per_call_iqr": 39.22544642857156,
+          "ns_per_call_median": 1212.262834821429,
+          "ns_per_call_min": 1194.2896205357142,
+          "ns_per_px": 1.3011975969587053,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 199,
         "dag_cost": 585,
         "dag_cost_input": 16441,
@@ -104064,11 +104939,18 @@
         "bytes": 1376,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 5632,
+          "ns_per_call_iqr": 25.442649147727252,
+          "ns_per_call_median": 705.9437144886364,
+          "ns_per_call_min": 693.0189985795455,
+          "ns_per_px": 0.689398158680309,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 111,
         "dag_cost": 415,
         "dag_cost_input": 16441,
-        "emit_ms": 1.617375,
+        "emit_ms": 1.482,
         "extent": [
           32,
           32
@@ -104085,7 +104967,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U005E",
-        "optimize_ms": 89.827,
+        "optimize_ms": 88.13300000000001,
         "oracle": {
           "cross_form_max_abs": 9.5367431640625e-7,
           "cross_form_max_rel": 6.204066641602237e-6,
@@ -104610,11 +105492,18 @@
         "bytes": 1008,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2048,
+          "ns_per_call_iqr": 46.93603515625,
+          "ns_per_call_median": 1066.203125,
+          "ns_per_call_min": 1019.775390625,
+          "ns_per_px": 1.0412139892578125,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 119,
         "dag_cost": 295,
         "dag_cost_input": 8275,
-        "emit_ms": 0.8861249999999999,
+        "emit_ms": 0.947917,
         "extent": [
           32,
           32
@@ -104631,7 +105520,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U005F",
-        "optimize_ms": 0.031207999999999996,
+        "optimize_ms": 0.03375,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -104700,11 +105589,18 @@
         "bytes": 656,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 3840,
+          "ns_per_call_iqr": 30.349479166666697,
+          "ns_per_call_median": 587.9122395833333,
+          "ns_per_call_min": 570.6921875,
+          "ns_per_px": 0.580878666469029,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 51,
         "dag_cost": 141,
         "dag_cost_input": 8275,
-        "emit_ms": 1.097458,
+        "emit_ms": 1.011125,
         "extent": [
           32,
           32
@@ -105282,11 +106178,18 @@
         "bytes": 1120,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 8.0295138888888,
+          "ns_per_call_median": 948.8207465277778,
+          "ns_per_call_min": 932.4001736111112,
+          "ns_per_px": 0.926582760281033,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 127,
         "dag_cost": 347,
         "dag_cost_input": 8275,
-        "emit_ms": 0.837917,
+        "emit_ms": 0.925208,
         "extent": [
           32,
           32
@@ -105303,7 +106206,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0060",
-        "optimize_ms": 0.0255,
+        "optimize_ms": 0.0415,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -105372,11 +106275,18 @@
         "bytes": 912,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 3840,
+          "ns_per_call_iqr": 11.27369791666672,
+          "ns_per_call_median": 556.846875,
+          "ns_per_call_min": 541.3627604166667,
+          "ns_per_px": 0.5437957763671875,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 67,
         "dag_cost": 219,
         "dag_cost_input": 8275,
-        "emit_ms": 1.183209,
+        "emit_ms": 0.99225,
         "extent": [
           32,
           32
@@ -105393,7 +106303,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0060",
-        "optimize_ms": 164.09525,
+        "optimize_ms": 156.54245799999998,
         "oracle": {
           "cross_form_max_abs": 2.562999725341797e-6,
           "cross_form_max_rel": 0.000033800912624640865,
@@ -105918,11 +106828,18 @@
         "bytes": 40544,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 192,
+          "ns_per_call_iqr": 332.68229166666606,
+          "ns_per_call_median": 11080.291666666666,
+          "ns_per_call_min": 10356.770833333334,
+          "ns_per_px": 10.820597330729166,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 5221,
         "dag_cost": 20428,
         "dag_cost_input": 202090,
-        "emit_ms": 242.286125,
+        "emit_ms": 46.489875,
         "extent": [
           32,
           32
@@ -105939,7 +106856,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0061",
-        "optimize_ms": 1.776333,
+        "optimize_ms": 1.784375,
         "oracle": {
           "cross_form_max_abs": 1.430511474609375e-6,
           "cross_form_max_rel": 0.00005588894865901454,
@@ -106008,11 +106925,18 @@
         "bytes": 21376,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 352,
+          "ns_per_call_iqr": 353.8125,
+          "ns_per_call_median": 11581.204545454546,
+          "ns_per_call_min": 11415.363636363636,
+          "ns_per_px": 11.309770063920457,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2276,
         "dag_cost": 10230,
         "dag_cost_input": 202090,
-        "emit_ms": 19.117166,
+        "emit_ms": 17.481707999999998,
         "extent": [
           32,
           32
@@ -106029,7 +106953,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0061",
-        "optimize_ms": 23.61175,
+        "optimize_ms": 23.591667,
         "oracle": {
           "cross_form_max_abs": 2.3245811462402344e-6,
           "cross_form_max_rel": 0.00009081954157089864,
@@ -106554,11 +107478,18 @@
         "bytes": 29232,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 176,
+          "ns_per_call_iqr": 506.869318181818,
+          "ns_per_call_median": 11614.34659090909,
+          "ns_per_call_min": 11062.5,
+          "ns_per_px": 11.342135342684658,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3767,
         "dag_cost": 14716,
         "dag_cost_input": 144406,
-        "emit_ms": 110.281833,
+        "emit_ms": 34.663917000000005,
         "extent": [
           32,
           32
@@ -106575,7 +107506,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0062",
-        "optimize_ms": 3.629875,
+        "optimize_ms": 1.019583,
         "oracle": {
           "cross_form_max_abs": 1.6689300537109375e-6,
           "cross_form_max_rel": 0.0000796205512017016,
@@ -106644,11 +107575,18 @@
         "bytes": 15920,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 224,
+          "ns_per_call_iqr": 577.5669642857156,
+          "ns_per_call_median": 9260.97767857143,
+          "ns_per_call_min": 9111.97767857143,
+          "ns_per_px": 9.043923514229911,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1617,
         "dag_cost": 7320,
         "dag_cost_input": 144406,
-        "emit_ms": 14.628125,
+        "emit_ms": 13.133584,
         "extent": [
           32,
           32
@@ -107190,11 +108128,18 @@
         "bytes": 29120,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 240,
+          "ns_per_call_iqr": 262.5,
+          "ns_per_call_median": 8473.6125,
+          "ns_per_call_min": 8213.195833333333,
+          "ns_per_px": 8.315362548828125,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3751,
         "dag_cost": 14695,
         "dag_cost_input": 140323,
-        "emit_ms": 73.314458,
+        "emit_ms": 33.487500000000004,
         "extent": [
           32,
           32
@@ -107211,7 +108156,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0063",
-        "optimize_ms": 3.207208,
+        "optimize_ms": 1.031958,
         "oracle": {
           "cross_form_max_abs": 1.8477439880371096e-6,
           "cross_form_max_rel": 2.190047210353186e-6,
@@ -107280,11 +108225,18 @@
         "bytes": 15824,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 256,
+          "ns_per_call_iqr": 364.58203125,
+          "ns_per_call_median": 8144.53125,
+          "ns_per_call_min": 7870.765625,
+          "ns_per_px": 7.953643798828125,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1608,
         "dag_cost": 7303,
         "dag_cost_input": 140323,
-        "emit_ms": 14.67725,
+        "emit_ms": 13.363417,
         "extent": [
           32,
           32
@@ -107826,11 +108778,18 @@
         "bytes": 29216,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 176,
+          "ns_per_call_iqr": 593.511363636364,
+          "ns_per_call_median": 11699.573863636364,
+          "ns_per_call_min": 11434.65909090909,
+          "ns_per_px": 11.425365101207388,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3767,
         "dag_cost": 14716,
         "dag_cost_input": 144406,
-        "emit_ms": 128.612792,
+        "emit_ms": 38.523125,
         "extent": [
           32,
           32
@@ -107847,7 +108806,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0064",
-        "optimize_ms": 2.598833,
+        "optimize_ms": 0.94175,
         "oracle": {
           "cross_form_max_abs": 1.8477439880371096e-6,
           "cross_form_max_rel": 6.71040911598483e-6,
@@ -107916,11 +108875,18 @@
         "bytes": 16032,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 224,
+          "ns_per_call_iqr": 213.54464285714312,
+          "ns_per_call_median": 9693.267857142857,
+          "ns_per_call_min": 9381.69642857143,
+          "ns_per_px": 9.466081891741071,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1621,
         "dag_cost": 7341,
         "dag_cost_input": 144406,
-        "emit_ms": 14.819917,
+        "emit_ms": 12.886667,
         "extent": [
           32,
           32
@@ -107937,7 +108903,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0064",
-        "optimize_ms": 20.998333,
+        "optimize_ms": 20.691375,
         "oracle": {
           "cross_form_max_abs": 1.430511474609375e-6,
           "cross_form_max_rel": 9.716132624365442e-6,
@@ -108462,11 +109428,18 @@
         "bytes": 29760,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 448,
+          "ns_per_call_iqr": 481.02678571428623,
+          "ns_per_call_median": 8850.72544642857,
+          "ns_per_call_min": 8582.216517857143,
+          "ns_per_px": 8.643286568777901,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3819,
         "dag_cost": 14907,
         "dag_cost_input": 148489,
-        "emit_ms": 115.749167,
+        "emit_ms": 36.653375,
         "extent": [
           32,
           32
@@ -108483,7 +109456,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0065",
-        "optimize_ms": 1.138166,
+        "optimize_ms": 1.040708,
         "oracle": {
           "cross_form_max_abs": 4.76837158203125e-7,
           "cross_form_max_rel": 7.135456654955004e-6,
@@ -108552,11 +109525,18 @@
         "bytes": 16784,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 240,
+          "ns_per_call_iqr": 326.21666666666715,
+          "ns_per_call_median": 8500.170833333334,
+          "ns_per_call_min": 8348.4375,
+          "ns_per_px": 8.487105305989584,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1676,
         "dag_cost": 7521,
         "dag_cost_input": 148489,
-        "emit_ms": 15.135375,
+        "emit_ms": 14.381625,
         "extent": [
           32,
           32
@@ -109098,11 +110078,18 @@
         "bytes": 9104,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 89.76171875,
+          "ns_per_call_median": 4226.7265625,
+          "ns_per_call_min": 4182.453125,
+          "ns_per_px": 4.127662658691406,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1179,
         "dag_cost": 4324,
         "dag_cost_input": 61702,
-        "emit_ms": 24.43675,
+        "emit_ms": 11.827042,
         "extent": [
           32,
           32
@@ -109119,7 +110106,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0066",
-        "optimize_ms": 0.396834,
+        "optimize_ms": 0.234458,
         "oracle": {
           "cross_form_max_abs": 1.788139343261719e-7,
           "cross_form_max_rel": 2.414177984467179e-7,
@@ -109188,11 +110175,18 @@
         "bytes": 4992,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 768,
+          "ns_per_call_iqr": 117.67447916666652,
+          "ns_per_call_median": 3277.234375,
+          "ns_per_call_min": 3221.19140625,
+          "ns_per_px": 3.217273712158203,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 474,
         "dag_cost": 1959,
         "dag_cost_input": 61702,
-        "emit_ms": 5.2825,
+        "emit_ms": 5.1985,
         "extent": [
           32,
           32
@@ -109776,11 +110770,18 @@
         "bytes": 43840,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 112,
+          "ns_per_call_iqr": 738.0892857142862,
+          "ns_per_call_median": 17070.678571428572,
+          "ns_per_call_min": 16995.16964285714,
+          "ns_per_px": 17.407730102539062,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 5647,
         "dag_cost": 22102,
         "dag_cost_input": 218596,
-        "emit_ms": 139.104792,
+        "emit_ms": 51.479792,
         "extent": [
           32,
           32
@@ -109797,7 +110798,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0067",
-        "optimize_ms": 37.601166,
+        "optimize_ms": 2.109542,
         "oracle": {
           "cross_form_max_abs": 1.9073486328125e-6,
           "cross_form_max_rel": 8.852826016826744e-6,
@@ -109866,11 +110867,18 @@
         "bytes": 24128,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 144,
+          "ns_per_call_iqr": 475.1111111111113,
+          "ns_per_call_median": 14738.138888888889,
+          "ns_per_call_min": 14416.951388888889,
+          "ns_per_px": 14.58005099826389,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2417,
         "dag_cost": 10942,
         "dag_cost_input": 218596,
-        "emit_ms": 19.41975,
+        "emit_ms": 18.510959,
         "extent": [
           32,
           32
@@ -109887,7 +110895,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0067",
-        "optimize_ms": 23.908416,
+        "optimize_ms": 23.890084,
         "oracle": {
           "cross_form_max_abs": 2.264976501464844e-6,
           "cross_form_max_rel": 4.425813581004967e-6,
@@ -110412,11 +111420,18 @@
         "bytes": 15744,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 249.025390625,
+          "ns_per_call_median": 5965.25,
+          "ns_per_call_min": 5928.384765625,
+          "ns_per_px": 6.093820571899414,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2031,
         "dag_cost": 7774,
         "dag_cost_input": 86548,
-        "emit_ms": 22.640417,
+        "emit_ms": 20.035417,
         "extent": [
           32,
           32
@@ -110433,7 +111448,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0068",
-        "optimize_ms": 0.416583,
+        "optimize_ms": 0.424791,
         "oracle": {
           "cross_form_max_abs": 2.6226043701171875e-6,
           "cross_form_max_rel": 0.00003152318601975357,
@@ -110502,11 +111517,18 @@
         "bytes": 8944,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 115.072265625,
+          "ns_per_call_median": 4780.59765625,
+          "ns_per_call_min": 4627.359375,
+          "ns_per_px": 4.668552398681641,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 807,
         "dag_cost": 3405,
         "dag_cost_input": 86548,
-        "emit_ms": 9.389375,
+        "emit_ms": 8.232958,
         "extent": [
           32,
           32
@@ -110523,7 +111545,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0068",
-        "optimize_ms": 30.259792,
+        "optimize_ms": 28.830417,
         "oracle": {
           "cross_form_max_abs": 2.4437904357910156e-6,
           "cross_form_max_rel": 0.000029373877882043103,
@@ -111078,7 +112100,14 @@
         "bytes": 2096,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 107.0546875,
+          "ns_per_call_median": 2030.802734375,
+          "ns_per_call_min": 1976.64453125,
+          "ns_per_px": 2.030214309692383,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 279,
         "dag_cost": 760,
         "dag_cost_input": 28690,
@@ -111099,7 +112128,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0069",
-        "optimize_ms": 0.097416,
+        "optimize_ms": 0.09525,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -111168,11 +112197,18 @@
         "bytes": 1296,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2048,
+          "ns_per_call_iqr": 32.775390625,
+          "ns_per_call_median": 1074.30029296875,
+          "ns_per_call_min": 1033.58984375,
+          "ns_per_px": 1.049121379852295,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 122,
         "dag_cost": 363,
         "dag_cost_input": 28690,
-        "emit_ms": 2.178417,
+        "emit_ms": 2.0235000000000003,
         "extent": [
           32,
           32
@@ -111189,7 +112225,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0069",
-        "optimize_ms": 76.964875,
+        "optimize_ms": 75.73325,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -111738,7 +112774,14 @@
         "bytes": 8912,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 96.923828125,
+          "ns_per_call_median": 5938.150390625,
+          "ns_per_call_min": 5900.796875,
+          "ns_per_px": 5.966741561889648,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1147,
         "dag_cost": 4231,
         "dag_cost_input": 57619,
@@ -111759,7 +112802,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U006A",
-        "optimize_ms": 0.234833,
+        "optimize_ms": 0.230334,
         "oracle": {
           "cross_form_max_abs": 1.1920928955078125e-7,
           "cross_form_max_rel": 2.2089591406618795e-7,
@@ -111828,11 +112871,18 @@
         "bytes": 4992,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 768,
+          "ns_per_call_iqr": 167.64322916666697,
+          "ns_per_call_median": 3863.28125,
+          "ns_per_call_min": 3747.61328125,
+          "ns_per_px": 3.8208961486816406,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 474,
         "dag_cost": 1964,
         "dag_cost_input": 57619,
-        "emit_ms": 5.536417,
+        "emit_ms": 4.927917000000001,
         "extent": [
           32,
           32
@@ -112392,11 +113442,18 @@
         "bytes": 2528,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 17.2529296875,
+          "ns_per_call_median": 2317.7890625,
+          "ns_per_call_min": 2315.267578125,
+          "ns_per_px": 2.30391788482666,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 331,
         "dag_cost": 983,
         "dag_cost_input": 32773,
-        "emit_ms": 5.899791,
+        "emit_ms": 2.4674169999999997,
         "extent": [
           32,
           32
@@ -112413,7 +113470,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U006B",
-        "optimize_ms": 0.107792,
+        "optimize_ms": 0.09675,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -112482,7 +113539,14 @@
         "bytes": 2208,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1792,
+          "ns_per_call_iqr": 18.99665178571422,
+          "ns_per_call_median": 1289.876674107143,
+          "ns_per_call_min": 1271.6010044642858,
+          "ns_per_px": 1.2611661638532363,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 195,
         "dag_cost": 741,
         "dag_cost_input": 32773,
@@ -112503,7 +113567,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U006B",
-        "optimize_ms": 48.517625,
+        "optimize_ms": 48.237,
         "oracle": {
           "cross_form_max_abs": 1.2516975402832031e-6,
           "cross_form_max_rel": 0.00006693120428359708,
@@ -113052,11 +114116,18 @@
         "bytes": 8432,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 195.4765625,
+          "ns_per_call_median": 4358.560546875,
+          "ns_per_call_min": 4195.068359375,
+          "ns_per_px": 4.284461975097656,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1083,
         "dag_cost": 4045,
         "dag_cost_input": 49453,
-        "emit_ms": 14.641084,
+        "emit_ms": 11.464167000000002,
         "extent": [
           32,
           32
@@ -113073,7 +114144,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U006C",
-        "optimize_ms": 0.463167,
+        "optimize_ms": 0.172959,
         "oracle": {
           "cross_form_max_abs": 5.364418029785156e-7,
           "cross_form_max_rel": 0.000011713427101486434,
@@ -113142,11 +114213,18 @@
         "bytes": 4720,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 768,
+          "ns_per_call_iqr": 38.302083333333485,
+          "ns_per_call_median": 3051.26953125,
+          "ns_per_call_min": 3033.4739583333335,
+          "ns_per_px": 2.981133778889974,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 444,
         "dag_cost": 1867,
         "dag_cost_input": 49453,
-        "emit_ms": 5.268708,
+        "emit_ms": 4.643208,
         "extent": [
           32,
           32
@@ -113163,7 +114241,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U006C",
-        "optimize_ms": 22.93925,
+        "optimize_ms": 22.821,
         "oracle": {
           "cross_form_max_abs": 5.960464477539062e-7,
           "cross_form_max_rel": 1.728619758584806e-6,
@@ -113730,11 +114808,18 @@
         "bytes": 30224,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 178.384765625,
+          "ns_per_call_median": 8071.126953125,
+          "ns_per_call_min": 7959.87890625,
+          "ns_per_px": 7.882859293619791,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3911,
         "dag_cost": 15160,
         "dag_cost_input": 160738,
-        "emit_ms": 133.681667,
+        "emit_ms": 35.309042,
         "extent": [
           32,
           32
@@ -113751,7 +114836,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U006D",
-        "optimize_ms": 6.2572909999999995,
+        "optimize_ms": 1.2375,
         "oracle": {
           "cross_form_max_abs": 2.682209014892578e-6,
           "cross_form_max_rel": 0.000014425175971118877,
@@ -113820,7 +114905,14 @@
         "bytes": 16624,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 240,
+          "ns_per_call_iqr": 122.91666666666606,
+          "ns_per_call_median": 8331.6,
+          "ns_per_call_min": 8003.125,
+          "ns_per_px": 8.190608433314733,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1580,
         "dag_cost": 7105,
         "dag_cost_input": 160738,
@@ -113841,7 +114933,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U006D",
-        "optimize_ms": 21.720792,
+        "optimize_ms": 20.380459,
         "oracle": {
           "cross_form_max_abs": 2.384185791015625e-6,
           "cross_form_max_rel": 0.000023277331952211637,
@@ -114366,11 +115458,18 @@
         "bytes": 15760,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 164.060546875,
+          "ns_per_call_median": 4688.556640625,
+          "ns_per_call_min": 4492.3515625,
+          "ns_per_px": 4.578668594360352,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2031,
         "dag_cost": 7774,
         "dag_cost_input": 86548,
-        "emit_ms": 91.502834,
+        "emit_ms": 19.884375,
         "extent": [
           32,
           32
@@ -114387,7 +115486,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U006E",
-        "optimize_ms": 0.408167,
+        "optimize_ms": 0.405542,
         "oracle": {
           "cross_form_max_abs": 1.3113021850585938e-6,
           "cross_form_max_rel": 0.000010467529722799875,
@@ -114456,11 +115555,18 @@
         "bytes": 8816,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 128.7421875,
+          "ns_per_call_median": 4002.115234375,
+          "ns_per_call_min": 3892.0078125,
+          "ns_per_px": 3.908315658569336,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 802,
         "dag_cost": 3401,
         "dag_cost_input": 86548,
-        "emit_ms": 10.348708,
+        "emit_ms": 9.046833,
         "extent": [
           32,
           32
@@ -114477,7 +115583,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U006E",
-        "optimize_ms": 31.44375,
+        "optimize_ms": 29.346791,
         "oracle": {
           "cross_form_max_abs": 1.5497207641601562e-6,
           "cross_form_max_rel": 5.981445555885643e-6,
@@ -115032,11 +116138,18 @@
         "bytes": 28048,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 240,
+          "ns_per_call_iqr": 424.8249999999989,
+          "ns_per_call_median": 9076.2125,
+          "ns_per_call_min": 8621.529166666667,
+          "ns_per_px": 8.86348876953125,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3655,
         "dag_cost": 14365,
         "dag_cost_input": 132157,
-        "emit_ms": 118.319958,
+        "emit_ms": 36.343582999999995,
         "extent": [
           32,
           32
@@ -115053,7 +116166,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U006F",
-        "optimize_ms": 0.85,
+        "optimize_ms": 0.833625,
         "oracle": {
           "cross_form_max_abs": 1.1920928955078125e-7,
           "cross_form_max_rel": 1.3230348302149403e-6,
@@ -115122,11 +116235,18 @@
         "bytes": 15632,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 480,
+          "ns_per_call_iqr": 310.67708333333303,
+          "ns_per_call_median": 7799.914583333333,
+          "ns_per_call_min": 7664.66875,
+          "ns_per_px": 7.617104085286458,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1419,
         "dag_cost": 6509,
         "dag_cost_input": 132157,
-        "emit_ms": 14.609208,
+        "emit_ms": 12.696292,
         "extent": [
           32,
           32
@@ -115143,7 +116263,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U006F",
-        "optimize_ms": 21.112916,
+        "optimize_ms": 19.512416,
         "oracle": {
           "cross_form_max_abs": 2.5033950805664062e-6,
           "cross_form_max_rel": 7.938208981289641e-6,
@@ -115656,11 +116776,18 @@
         "bytes": 29248,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 176,
+          "ns_per_call_iqr": 632.1079545454559,
+          "ns_per_call_median": 11620.02840909091,
+          "ns_per_call_min": 11458.573863636364,
+          "ns_per_px": 11.517611416903408,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3767,
         "dag_cost": 14716,
         "dag_cost_input": 144406,
-        "emit_ms": 138.166916,
+        "emit_ms": 33.792125,
         "extent": [
           32,
           32
@@ -115746,11 +116873,18 @@
         "bytes": 15968,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 416,
+          "ns_per_call_iqr": 109.37740384615245,
+          "ns_per_call_median": 9563.401442307691,
+          "ns_per_call_min": 9399.139423076924,
+          "ns_per_px": 9.339259221003603,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1617,
         "dag_cost": 7336,
         "dag_cost_input": 144406,
-        "emit_ms": 14.541291,
+        "emit_ms": 14.236958,
         "extent": [
           32,
           32
@@ -115767,7 +116901,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0070",
-        "optimize_ms": 20.903374999999997,
+        "optimize_ms": 20.740875,
         "oracle": {
           "cross_form_max_abs": 1.5497207641601562e-6,
           "cross_form_max_rel": 0.00019139601307382,
@@ -116292,11 +117426,18 @@
         "bytes": 29232,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 176,
+          "ns_per_call_iqr": 13474.909090909096,
+          "ns_per_call_median": 32391.335227272728,
+          "ns_per_call_min": 25048.767045454544,
+          "ns_per_px": 31.632163307883523,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3767,
         "dag_cost": 14716,
         "dag_cost_input": 144406,
-        "emit_ms": 87.773833,
+        "emit_ms": 53.909375,
         "extent": [
           32,
           32
@@ -116313,7 +117454,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0071",
-        "optimize_ms": 1.616667,
+        "optimize_ms": 1.035584,
         "oracle": {
           "cross_form_max_abs": 2.8014183044433594e-6,
           "cross_form_max_rel": 0.00002005149394295563,
@@ -116382,11 +117523,18 @@
         "bytes": 15856,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 416,
+          "ns_per_call_iqr": 136.5192307692305,
+          "ns_per_call_median": 9285.45673076923,
+          "ns_per_call_min": 9175.079326923076,
+          "ns_per_px": 9.1400146484375,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1612,
         "dag_cost": 7325,
         "dag_cost_input": 144406,
-        "emit_ms": 15.390833,
+        "emit_ms": 13.169833,
         "extent": [
           32,
           32
@@ -116403,7 +117551,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0071",
-        "optimize_ms": 27.018,
+        "optimize_ms": 20.998,
         "oracle": {
           "cross_form_max_abs": 3.159046173095703e-6,
           "cross_form_max_rel": 0.000022611259127162735,
@@ -116928,11 +118076,18 @@
         "bytes": 15696,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 361.490234375,
+          "ns_per_call_median": 3926.59375,
+          "ns_per_call_min": 3801.3515625,
+          "ns_per_px": 3.834564208984375,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2015,
         "dag_cost": 7753,
         "dag_cost_input": 82465,
-        "emit_ms": 28.137,
+        "emit_ms": 19.914958,
         "extent": [
           32,
           32
@@ -117018,11 +118173,18 @@
         "bytes": 8800,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 768,
+          "ns_per_call_iqr": 208.0078125,
+          "ns_per_call_median": 3876.41015625,
+          "ns_per_call_min": 3713.26953125,
+          "ns_per_px": 3.78555679321289,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 802,
         "dag_cost": 3386,
         "dag_cost_input": 82465,
-        "emit_ms": 9.618459,
+        "emit_ms": 8.535667,
         "extent": [
           32,
           32
@@ -117039,7 +118201,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0072",
-        "optimize_ms": 30.918083,
+        "optimize_ms": 28.387167,
         "oracle": {
           "cross_form_max_abs": 5.125999450683594e-6,
           "cross_form_max_rel": 5.402217723445148e-6,
@@ -117594,11 +118756,18 @@
         "bytes": 41504,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 384,
+          "ns_per_call_iqr": 290.90625,
+          "ns_per_call_median": 10673.828125,
+          "ns_per_call_min": 10287.979166666666,
+          "ns_per_px": 10.423660278320312,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 5430,
         "dag_cost": 21271,
         "dag_cost_input": 210343,
-        "emit_ms": 107.627417,
+        "emit_ms": 48.827167,
         "extent": [
           32,
           32
@@ -117615,7 +118784,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0073",
-        "optimize_ms": 2.176416,
+        "optimize_ms": 1.937375,
         "oracle": {
           "cross_form_max_abs": 7.748603820800781e-7,
           "cross_form_max_rel": 0.000011350054000064607,
@@ -117684,11 +118853,18 @@
         "bytes": 23728,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 320,
+          "ns_per_call_iqr": 192.578125,
+          "ns_per_call_median": 12003.384375,
+          "ns_per_call_min": 11837.5,
+          "ns_per_px": 11.966824618252842,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2386,
         "dag_cost": 10729,
         "dag_cost_input": 210343,
-        "emit_ms": 18.957708,
+        "emit_ms": 18.152333,
         "extent": [
           32,
           32
@@ -117705,7 +118881,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0073",
-        "optimize_ms": 24.708625,
+        "optimize_ms": 23.480333,
         "oracle": {
           "cross_form_max_abs": 7.748603820800781e-7,
           "cross_form_max_rel": 0.000010476972923136562,
@@ -118230,11 +119406,18 @@
         "bytes": 9072,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 254.884765625,
+          "ns_per_call_median": 4309.162109375,
+          "ns_per_call_min": 4128.662109375,
+          "ns_per_px": 4.208166122436523,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1179,
         "dag_cost": 4324,
         "dag_cost_input": 61702,
-        "emit_ms": 24.317875,
+        "emit_ms": 11.739,
         "extent": [
           32,
           32
@@ -118251,7 +119434,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0074",
-        "optimize_ms": 2.9173340000000003,
+        "optimize_ms": 0.225458,
         "oracle": {
           "cross_form_max_abs": 8.344650268554688e-7,
           "cross_form_max_rel": 5.048004722047846e-6,
@@ -118320,11 +119503,18 @@
         "bytes": 4992,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 768,
+          "ns_per_call_iqr": 85.06901041666652,
+          "ns_per_call_median": 2979.11328125,
+          "ns_per_call_min": 2942.0572916666665,
+          "ns_per_px": 2.97127914428711,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 472,
         "dag_cost": 1960,
         "dag_cost_input": 61702,
-        "emit_ms": 5.203042,
+        "emit_ms": 4.973666,
         "extent": [
           32,
           32
@@ -118341,7 +119531,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0074",
-        "optimize_ms": 26.554792,
+        "optimize_ms": 23.686209,
         "oracle": {
           "cross_form_max_abs": 7.152557373046875e-7,
           "cross_form_max_rel": 3.166905416147206e-6,
@@ -118908,11 +120098,18 @@
         "bytes": 15760,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 126.546875,
+          "ns_per_call_median": 4369.7109375,
+          "ns_per_call_min": 4346.2734375,
+          "ns_per_px": 4.279216766357422,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 2031,
         "dag_cost": 7774,
         "dag_cost_input": 86548,
-        "emit_ms": 133.596792,
+        "emit_ms": 19.011084,
         "extent": [
           32,
           32
@@ -118929,7 +120126,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0075",
-        "optimize_ms": 0.410083,
+        "optimize_ms": 0.385417,
         "oracle": {
           "cross_form_max_abs": 5.364418029785156e-7,
           "cross_form_max_rel": 2.1606947065620538e-6,
@@ -118998,11 +120195,18 @@
         "bytes": 9152,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 44.1083984375,
+          "ns_per_call_median": 4035.359375,
+          "ns_per_call_min": 3997.55859375,
+          "ns_per_px": 3.961959838867187,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 813,
         "dag_cost": 3423,
         "dag_cost_input": 86548,
-        "emit_ms": 10.08875,
+        "emit_ms": 8.2905,
         "extent": [
           32,
           32
@@ -119019,7 +120223,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0075",
-        "optimize_ms": 31.940999999999995,
+        "optimize_ms": 28.109416000000003,
         "oracle": {
           "cross_form_max_abs": 1.1920928955078125e-6,
           "cross_form_max_rel": 2.57899682181625e-6,
@@ -119562,11 +120766,18 @@
         "bytes": 1584,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1536,
+          "ns_per_call_iqr": 28.103515625,
+          "ns_per_call_median": 1409.20703125,
+          "ns_per_call_min": 1382.9479166666667,
+          "ns_per_px": 1.376178741455078,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 199,
         "dag_cost": 585,
         "dag_cost_input": 16441,
-        "emit_ms": 23.473375,
+        "emit_ms": 1.591084,
         "extent": [
           32,
           32
@@ -119583,7 +120794,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0076",
-        "optimize_ms": 0.066417,
+        "optimize_ms": 0.047292,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -119652,7 +120863,14 @@
         "bytes": 1360,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2816,
+          "ns_per_call_iqr": 10.209517045454504,
+          "ns_per_call_median": 759.9431818181819,
+          "ns_per_call_min": 742.8831676136364,
+          "ns_per_px": 0.7421320134943182,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 110,
         "dag_cost": 416,
         "dag_cost_input": 16441,
@@ -119673,7 +120891,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0076",
-        "optimize_ms": 149.502,
+        "optimize_ms": 139.080042,
         "oracle": {
           "cross_form_max_abs": 1.3113021850585938e-6,
           "cross_form_max_rel": 0.00003358296671927998,
@@ -120222,11 +121440,18 @@
         "bytes": 2624,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1024,
+          "ns_per_call_iqr": 40.1201171875,
+          "ns_per_call_median": 2071.2490234375,
+          "ns_per_call_min": 2046.345703125,
+          "ns_per_px": 2.044240951538086,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 343,
         "dag_cost": 1061,
         "dag_cost_input": 32773,
-        "emit_ms": 5.442749999999999,
+        "emit_ms": 2.219875,
         "extent": [
           32,
           32
@@ -120312,11 +121537,18 @@
         "bytes": 2352,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 3584,
+          "ns_per_call_iqr": 52.68805803571422,
+          "ns_per_call_median": 1097.993303571429,
+          "ns_per_call_min": 1061.4536830357142,
+          "ns_per_px": 1.0722590855189733,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 203,
         "dag_cost": 824,
         "dag_cost_input": 32773,
-        "emit_ms": 2.0634170000000003,
+        "emit_ms": 2.138792,
         "extent": [
           32,
           32
@@ -120333,7 +121565,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0077",
-        "optimize_ms": 51.330208,
+        "optimize_ms": 50.236083,
         "oracle": {
           "cross_form_max_abs": 1.0728836059570312e-6,
           "cross_form_max_rel": 4.959800814399294e-6,
@@ -120882,7 +122114,14 @@
         "bytes": 2608,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 44.59609374999991,
+          "ns_per_call_median": 1640.3640625,
+          "ns_per_call_min": 1614.35546875,
+          "ns_per_px": 1.618798828125,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 343,
         "dag_cost": 1061,
         "dag_cost_input": 32773,
@@ -120972,7 +122211,14 @@
         "bytes": 2352,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 31.702256944444457,
+          "ns_per_call_median": 998.1553819444443,
+          "ns_per_call_min": 985.2612847222222,
+          "ns_per_px": 0.9747611151801217,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 211,
         "dag_cost": 863,
         "dag_cost_input": 32773,
@@ -120993,7 +122239,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0078",
-        "optimize_ms": 64.45774999999999,
+        "optimize_ms": 63.541792,
         "oracle": {
           "cross_form_max_abs": 3.2186508178710938e-6,
           "cross_form_max_rel": 6.294491271055947e-6,
@@ -121542,11 +122788,18 @@
         "bytes": 12336,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 52.1640625,
+          "ns_per_call_median": 5421.875,
+          "ns_per_call_min": 5410.07421875,
+          "ns_per_px": 5.41377067565918,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1605,
         "dag_cost": 6132,
         "dag_cost_input": 70042,
-        "emit_ms": 35.440209,
+        "emit_ms": 14.687834,
         "extent": [
           32,
           32
@@ -121563,7 +122816,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U0079",
-        "optimize_ms": 48.209,
+        "optimize_ms": 0.27599999999999997,
         "oracle": {
           "cross_form_max_abs": 2.384185791015625e-7,
           "cross_form_max_rel": 5.722591647305232e-6,
@@ -121632,7 +122885,14 @@
         "bytes": 7296,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 164.796875,
+          "ns_per_call_median": 4045.8984375,
+          "ns_per_call_min": 4040.52734375,
+          "ns_per_px": 3.953218460083008,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 656,
         "dag_cost": 2840,
         "dag_cost_input": 70042,
@@ -121653,7 +122913,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U0079",
-        "optimize_ms": 25.827208,
+        "optimize_ms": 25.818250000000003,
         "oracle": {
           "cross_form_max_abs": 1.3709068298339844e-6,
           "cross_form_max_rel": 0.0000335692505664811,
@@ -122196,11 +123456,18 @@
         "bytes": 1952,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2560,
+          "ns_per_call_iqr": 47.168359375000136,
+          "ns_per_call_median": 1525.6671875,
+          "ns_per_call_min": 1504.9640625,
+          "ns_per_px": 1.5293229420979817,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 255,
         "dag_cost": 719,
         "dag_cost_input": 24607,
-        "emit_ms": 9.442792,
+        "emit_ms": 1.802417,
         "extent": [
           32,
           32
@@ -122217,7 +123484,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U007A",
-        "optimize_ms": 0.164542,
+        "optimize_ms": 0.06920899999999999,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -122286,7 +123553,14 @@
         "bytes": 1504,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2304,
+          "ns_per_call_iqr": 16.728298611111086,
+          "ns_per_call_median": 918.0052083333334,
+          "ns_per_call_min": 902.34375,
+          "ns_per_px": 0.8964894612630209,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 135,
         "dag_cost": 452,
         "dag_cost_input": 24607,
@@ -122307,7 +123581,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U007A",
-        "optimize_ms": 107.000208,
+        "optimize_ms": 105.443333,
         "oracle": {
           "cross_form_max_abs": 1.3709068298339844e-6,
           "cross_form_max_rel": 5.686546200344605e-6,
@@ -122856,11 +124130,18 @@
         "bytes": 30224,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 144,
+          "ns_per_call_iqr": 331.8888888888887,
+          "ns_per_call_median": 13944.444444444443,
+          "ns_per_call_min": 13743.347222222224,
+          "ns_per_px": 13.61762152777778,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3879,
         "dag_cost": 15016,
         "dag_cost_input": 160738,
-        "emit_ms": 164.90016699999998,
+        "emit_ms": 34.092625,
         "extent": [
           32,
           32
@@ -122877,7 +124158,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U007B",
-        "optimize_ms": 1.644292,
+        "optimize_ms": 1.159209,
         "oracle": {
           "cross_form_max_abs": 9.5367431640625e-7,
           "cross_form_max_rel": 1.4431190998977551e-6,
@@ -122946,11 +124227,18 @@
         "bytes": 16912,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 352,
+          "ns_per_call_iqr": 90.08238636363603,
+          "ns_per_call_median": 11137.78409090909,
+          "ns_per_call_min": 10945.076704545454,
+          "ns_per_px": 10.876742276278408,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1698,
         "dag_cost": 7541,
         "dag_cost_input": 160738,
-        "emit_ms": 16.174292,
+        "emit_ms": 13.706083,
         "extent": [
           32,
           32
@@ -122967,7 +124255,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U007B",
-        "optimize_ms": 21.25925,
+        "optimize_ms": 20.950042,
         "oracle": {
           "cross_form_max_abs": 1.5497207641601562e-6,
           "cross_form_max_rel": 9.380274149335408e-6,
@@ -123492,11 +124780,18 @@
         "bytes": 992,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 1280,
+          "ns_per_call_iqr": 57.29140624999991,
+          "ns_per_call_median": 1741.8625,
+          "ns_per_call_min": 1691.24375,
+          "ns_per_px": 1.70103759765625,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 119,
         "dag_cost": 295,
         "dag_cost_input": 8275,
-        "emit_ms": 5.746375,
+        "emit_ms": 1.34825,
         "extent": [
           32,
           32
@@ -123582,11 +124877,18 @@
         "bytes": 640,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 2816,
+          "ns_per_call_iqr": 6.199928977272748,
+          "ns_per_call_median": 760.6239346590909,
+          "ns_per_call_min": 746.1232244318181,
+          "ns_per_px": 0.7427968111905184,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 50,
         "dag_cost": 147,
         "dag_cost_input": 8275,
-        "emit_ms": 0.950542,
+        "emit_ms": 0.968208,
         "extent": [
           32,
           32
@@ -123603,7 +124905,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U007C",
-        "optimize_ms": 41.837625,
+        "optimize_ms": 40.158458,
         "oracle": {
           "cross_form_max_abs": 0.0,
           "cross_form_max_rel": 0.0,
@@ -124152,11 +125454,18 @@
         "bytes": 30144,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 288,
+          "ns_per_call_iqr": 1049.1909722222226,
+          "ns_per_call_median": 14011.142361111111,
+          "ns_per_call_min": 13648.003472222224,
+          "ns_per_px": 13.68275621202257,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3879,
         "dag_cost": 15016,
         "dag_cost_input": 160738,
-        "emit_ms": 48.614666,
+        "emit_ms": 37.02575,
         "extent": [
           32,
           32
@@ -124173,7 +125482,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U007D",
-        "optimize_ms": 24.971542,
+        "optimize_ms": 1.168583,
         "oracle": {
           "cross_form_max_abs": 4.76837158203125e-7,
           "cross_form_max_rel": 1.7051664839296583e-6,
@@ -124242,7 +125551,14 @@
         "bytes": 16736,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 176,
+          "ns_per_call_iqr": 195.306818181818,
+          "ns_per_call_median": 11271.77840909091,
+          "ns_per_call_min": 11193.892045454546,
+          "ns_per_px": 11.007596102627842,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1686,
         "dag_cost": 7522,
         "dag_cost_input": 160738,
@@ -124263,7 +125579,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U007D",
-        "optimize_ms": 21.433833,
+        "optimize_ms": 21.14825,
         "oracle": {
           "cross_form_max_abs": 2.1457672119140625e-6,
           "cross_form_max_rel": 0.000014517969896431035,
@@ -124788,11 +126104,18 @@
         "bytes": 29488,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 194.091796875,
+          "ns_per_call_median": 3989.501953125,
+          "ns_per_call_min": 3909.017578125,
+          "ns_per_px": 3.978330612182617,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 3783,
         "dag_cost": 14839,
         "dag_cost_input": 140323,
-        "emit_ms": 68.383,
+        "emit_ms": 46.01475,
         "extent": [
           32,
           32
@@ -124809,7 +126132,7 @@
         "lanes": 4,
         "mode": "off",
         "name": "glyph32_U007E",
-        "optimize_ms": 0.949417,
+        "optimize_ms": 0.911084,
         "oracle": {
           "cross_form_max_abs": 1.7881393432617188e-6,
           "cross_form_max_rel": 8.178210847360783e-6,
@@ -124878,11 +126201,18 @@
         "bytes": 16240,
         "bytes_identical_to_manifold_compile": true,
         "class": "glyph32",
-        "clock": null,
+        "clock": {
+          "calls_per_sample": 512,
+          "ns_per_call_iqr": 121.41796875,
+          "ns_per_call_median": 6630.697265625,
+          "ns_per_call_min": 6552.572265625,
+          "ns_per_px": 6.475290298461914,
+          "scene_ns_per_px": null
+        },
         "compiled_nodes": 1647,
         "dag_cost": 7426,
         "dag_cost_input": 140323,
-        "emit_ms": 13.935708,
+        "emit_ms": 13.391584,
         "extent": [
           32,
           32
@@ -124899,7 +126229,7 @@
         "lanes": 4,
         "mode": "on",
         "name": "glyph32_U007E",
-        "optimize_ms": 20.589209,
+        "optimize_ms": 20.443625,
         "oracle": {
           "cross_form_max_abs": 2.264976501464844e-6,
           "cross_form_max_rel": 9.76340193921717e-6,
