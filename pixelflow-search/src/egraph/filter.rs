@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 use super::graph::EGraph;
 use super::node::EClassId;
 use super::rewrite::RewriteAction;
-use super::rules::RuleId;
+use super::rules::{Fingerprint, RuleId};
 
 /// One row of the match matrix: every match one rule found in one scan,
 /// each with its binding, in scan order — matched, not yet committed.
@@ -92,6 +92,14 @@ impl MatchRow {
 pub trait ApplicationFilter {
     /// Shrink `row` to the cells that should be applied.
     fn filter(&mut self, graph: &EGraph, row: &mut MatchRow);
+
+    /// A digest of this filter's policy, mixed into
+    /// [`Optimizer::fingerprint`](super::optimizer::Optimizer::fingerprint)
+    /// — the runtime compile cache's key — so two optimizers that differ
+    /// only in their filter cannot serve each other's code. Required rather
+    /// than defaulted: a filter that forgot to name itself would silently
+    /// share the identity's cache entries.
+    fn fingerprint(&self) -> Fingerprint;
 }
 
 /// `M' = M` — the identity on the match matrix: commit everything that
@@ -101,4 +109,10 @@ pub struct KeepAll;
 
 impl ApplicationFilter for KeepAll {
     fn filter(&mut self, _graph: &EGraph, _row: &mut MatchRow) {}
+
+    /// The identity of [`Fingerprint::combine`], so an optimizer under
+    /// `KeepAll` fingerprints exactly as it did before filters existed.
+    fn fingerprint(&self) -> Fingerprint {
+        Fingerprint::from_raw(0)
+    }
 }

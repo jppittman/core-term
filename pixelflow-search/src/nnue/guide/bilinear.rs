@@ -192,7 +192,7 @@ fn pool_template_side(
 /// every other such rule. That is a real limitation of the registered
 /// encoding, so it is returned rather than hidden, and the trainer prints
 /// it.
-fn rule_concats(
+pub(super) fn rule_concats(
     embeddings: &OpEmbeddings,
     rules: &RuleSet,
 ) -> (
@@ -292,7 +292,7 @@ pub struct BilinearCandidateGuide {
 /// [`BilinearTrainer::from_weights`] — a second copy of these three refusals
 /// is a second place for one of them to be forgotten, and the skew test
 /// compares exactly those two constructions.
-fn load_parts(
+pub(super) fn load_parts(
     weights: &BilinearWeights,
     rules: &RuleSet,
 ) -> Result<(OpEmbeddings, SaturationHead), GuideError> {

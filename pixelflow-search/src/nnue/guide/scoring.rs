@@ -539,6 +539,22 @@ impl SaturationHead {
         self.bilinear_score(&mask_features, &candidate.rule_embed)
     }
 
+    /// Multiply-adds [`Self::score_candidate`] performs on a candidate with
+    /// `n_ops` neighborhood ops, counted from the head's dimensions so the
+    /// count moves with the head: the pooled input, the candidate tower, the
+    /// trunk, the candidate projection, the mask MLP's two layers, and the
+    /// bilinear form with its bias lane.
+    #[must_use]
+    pub(crate) fn score_candidate_macs(n_ops: usize) -> u64 {
+        let pool = n_ops * K;
+        let tower = CANDIDATE_INPUT_DIM * HIDDEN_DIM;
+        let trunk = HIDDEN_DIM * HIDDEN_DIM;
+        let proj = HIDDEN_DIM * EMBED_DIM;
+        let mask = MASK_INPUT_DIM * MLP_HIDDEN + MLP_HIDDEN * EMBED_DIM;
+        let bilinear = EMBED_DIM * EMBED_DIM + EMBED_DIM;
+        (pool + tower + trunk + proj + mask + bilinear) as u64
+    }
+
     /// Encode a rule from the embeddings of its two sides.
     ///
     /// 4-way concatenation `[z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS]`

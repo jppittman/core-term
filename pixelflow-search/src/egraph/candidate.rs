@@ -286,7 +286,7 @@ impl CandidateFeatures {
 /// informative for a move-ordering feature (unlike [`ClassContentKey`],
 /// which needs no separate dedup because hash-consing already guarantees
 /// distinct shapes).
-fn neighborhood_ops(egraph: &EGraph, canonical: EClassId) -> Vec<OpKind> {
+pub(crate) fn neighborhood_ops(egraph: &EGraph, canonical: EClassId) -> Vec<OpKind> {
     let mut ops = Vec::new();
     for node in egraph.nodes(canonical) {
         for &child in node.children_slice() {

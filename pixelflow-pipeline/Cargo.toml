@@ -151,6 +151,13 @@ required-features = ["training"]
 bench = false
 
 [[bin]]
+name = "rules_filter"
+path = "src/bin/rules_filter.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
 name = "gen_sh_corpus"
 path = "src/bin/gen_sh_corpus.rs"
 required-features = ["training"]

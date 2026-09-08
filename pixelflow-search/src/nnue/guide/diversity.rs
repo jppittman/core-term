@@ -32,7 +32,7 @@ use super::{CandidateSummary, SaturationGuide};
 /// FNV-1a, 64-bit — a small, dependency-free, well-distributed non-crypto
 /// hash; adequate here because the only property this module needs is
 /// "looks uniform, is deterministic," not collision resistance.
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(super) fn fnv1a64(bytes: &[u8]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET_BASIS;
@@ -47,7 +47,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// `u64` (here, `seed ^ fingerprint`) into a second `u64` that does not
 /// share the first's low-order-bit structure (a raw `fnv1a64` output alone
 /// is fine for hashing but was not designed as its own bit-mixer).
-fn splitmix64(mut x: u64) -> u64 {
+pub(super) fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = x;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);

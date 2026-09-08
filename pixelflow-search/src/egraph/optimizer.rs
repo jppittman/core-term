@@ -509,10 +509,9 @@ impl Optimizer {
     /// rule per round — the same cadence as `rerank` and `guide`, not once
     /// per match — and `KeepAll` is a ZST, so this box does not allocate.
     ///
-    /// A filter that is not `KeepAll` does not yet enter
-    /// [`Self::fingerprint`]; until it does, two optimizers differing only in
-    /// their filter must not share a process with
-    /// [`crate::runtime::optimize_runtime_arena`]'s cache.
+    /// The filter's [`ApplicationFilter::fingerprint`] enters
+    /// [`Self::fingerprint`], so two optimizers differing only in their
+    /// filter key [`crate::runtime::optimize_runtime_arena`]'s cache apart.
     #[must_use]
     pub fn filter(mut self, filter: Box<dyn ApplicationFilter>) -> Self {
         self.filter = filter;
@@ -572,16 +571,18 @@ impl Optimizer {
         self
     }
 
-    /// The digest of this configuration: today the rule set's content and
-    /// order.
+    /// The digest of this configuration: the rule set's content and order,
+    /// mixed with the [`ApplicationFilter`]'s own digest ([`KeepAll`]'s is
+    /// the identity, so production's fingerprint is the rule set's alone).
     ///
     /// A cache that keys on the input expression alone would serve one
     /// configuration's code to another the moment two configurations coexist
     /// in a process — a warm-up compiled at one budget and steady state at
-    /// another, or some kernels reranked and some not.
+    /// another, or some kernels reranked and some not, or one kernel filtered
+    /// and the next not.
     #[must_use]
     pub fn fingerprint(&self) -> Fingerprint {
-        self.rules.fingerprint()
+        self.rules.fingerprint().combine(self.filter.fingerprint())
     }
 
     /// The limits this optimizer's budget resolves to for an input of these
