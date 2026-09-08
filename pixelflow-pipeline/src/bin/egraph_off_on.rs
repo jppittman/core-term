@@ -734,15 +734,50 @@ struct Ctx {
     _buffers: Vec<Arc<Vec<f32>>>,
 }
 
-fn context_for(linked: &ExprArena, case: Option<&CellGridCase>) -> Ctx {
+/// One kernel's own tabulations, by the [`BufferIdentity`] each was seeded
+/// under — `Kernel::buffer_data()` (`bee7813`, "a kernel carries its own
+/// tabulations"). A glyph's winding sum reads a piece table this way: the
+/// data travels with `RealKernel::kernel` itself, with nothing separate a
+/// caller must gather and keep paired with it.
+type Carried = [(pixelflow_ir::arena::BufferIdentity, Arc<[f32]>)];
+
+/// Resolve one declared buffer to real memory: `carried` — the kernel's own
+/// tabulation — first, then `case`'s cell-grid buffers for the one kernel
+/// (the terminal cell grid) that reads externally-owned per-frame memory
+/// instead of a self-contained table. Mirrors `Manifold::bind`'s own
+/// precedence (`pixelflow-core/src/lattice/manifold.rs`): a slot the kernel
+/// carries data for is already spoken for, so a caller-supplied binding is
+/// only ever the fallback. This harness cannot call `Manifold::bind` itself
+/// — it drives its own instrumented `ExecutableCode`, compiled outside
+/// `Manifold::compile` so it can capture guard telemetry and optimize/emit
+/// timings — but the resolution a raw context table needs is the same.
+///
+/// # Panics
+/// If `id` names neither the kernel's own tabulation nor (when given) the
+/// cell-grid case's buffers — a kernel that declares a buffer nothing here
+/// can bind, which is a corpus bug rather than a shape to paper over.
+fn resolve_buffer<'a>(
+    id: pixelflow_ir::arena::BufferIdentity,
+    carried: &'a Carried,
+    case: Option<&'a CellGridCase>,
+) -> &'a [f32] {
+    if let Some((_, data)) = carried.iter().find(|(cid, _)| *cid == id) {
+        return data;
+    }
+    let case = case.unwrap_or_else(|| {
+        panic!("buffer {id:?}: not in the kernel's own tabulation and no cell-grid case was given")
+    });
+    if id == case.cells_id {
+        &case.cells
+    } else {
+        &case.atlas
+    }
+}
+
+fn context_for(linked: &ExprArena, carried: &Carried, case: Option<&CellGridCase>) -> Ctx {
     let mut buffers: Vec<Arc<Vec<f32>>> = Vec::new();
     for decl in linked.buffers() {
-        let case = case.expect("a buffer-bearing kernel without its buffers");
-        let data = if decl.id == case.cells_id {
-            case.cells.clone()
-        } else {
-            case.atlas.clone()
-        };
+        let data = resolve_buffer(decl.id, carried, case);
         assert_eq!(
             data.len(),
             (decl.width * decl.height) as usize,
@@ -750,7 +785,7 @@ fn context_for(linked: &ExprArena, case: Option<&CellGridCase>) -> Ctx {
             decl.width,
             decl.height
         );
-        buffers.push(data);
+        buffers.push(Arc::new(data.to_vec()));
     }
     let uniforms: Vec<f32> = linked.uniforms().iter().map(|u| u.default).collect();
     let mut slots: Vec<*const f32> = buffers.iter().map(|b| b.as_ptr()).collect();
@@ -790,6 +825,8 @@ struct OracleForms<'a> {
     input: (&'a ExprArena, ExprId),
     /// The arena that was emitted.
     linked: (&'a ExprArena, ExprId),
+    /// The kernel's own tabulations — see [`Carried`].
+    carried: &'a Carried,
     case: Option<&'a CellGridCase>,
     packed: bool,
 }
@@ -798,26 +835,20 @@ fn oracle(forms: &OracleForms<'_>, out: &[f32], trips: Trips) -> Oracle {
     let OracleForms {
         input,
         linked,
+        carried,
         case,
         packed,
     } = *forms;
     let bindings_for = |arena: &ExprArena| -> BindingTable<'_> {
-        let table = match case {
-            Some(case) => {
-                let slices: Vec<&[f32]> = arena
-                    .buffers()
-                    .iter()
-                    .map(|d| {
-                        if d.id == case.cells_id {
-                            case.cells.as_slice()
-                        } else {
-                            case.atlas.as_slice()
-                        }
-                    })
-                    .collect();
-                BindingTable::bind(arena, &slices).expect("bind oracle buffers")
-            }
-            None => BindingTable::empty(),
+        let decls = arena.buffers();
+        let table = if decls.is_empty() {
+            BindingTable::empty()
+        } else {
+            let slices: Vec<&[f32]> = decls
+                .iter()
+                .map(|d| resolve_buffer(d.id, carried, case))
+                .collect();
+            BindingTable::bind(arena, &slices).expect("bind oracle buffers")
         };
         table
             .bind_uniforms(arena, &[])
@@ -1114,6 +1145,18 @@ fn run(args: &RunArgs<'_>) {
 
     for (i, rk) in kernels.iter().enumerate() {
         let (arena, root) = rk.kernel.parts();
+        // A glyph's winding sum reads a bound piece table (S1a,
+        // docs/plans/2026-09-09-glyph-as-a-fold-execution.md): its kernel
+        // declares a `Buffer` and carries the table's own data
+        // (`Kernel::buffer_data`, `bee7813`), with no separate binding for
+        // this harness to gather by hand. `context_for`/`oracle` resolve
+        // every declared buffer against this before falling back to the
+        // cell-grid case's externally-owned memory (`resolve_buffer`).
+        let carried: Vec<(pixelflow_ir::arena::BufferIdentity, Arc<[f32]>)> = rk
+            .kernel
+            .buffer_data()
+            .map(|(id, data)| (id, Arc::clone(data)))
+            .collect();
         let shape = LatticeShape::new(rk.extent);
         let trips = Trips::of(rk.extent, LANES as u32);
         let started = Instant::now();
@@ -1130,7 +1173,7 @@ fn run(args: &RunArgs<'_>) {
                 None
             };
 
-        let ctx = context_for(&compiled.linked, rk.cell_grid.as_ref());
+        let ctx = context_for(&compiled.linked, &carried, rk.cell_grid.as_ref());
         let mut buffer = vec![0.0f32; (trips.rows * trips.groups) as usize * LANES];
         run_once(&compiled.result.code, &ctx, trips, &mut buffer);
         let picture_hash = fnv(&buffer);
@@ -1139,6 +1182,7 @@ fn run(args: &RunArgs<'_>) {
             &OracleForms {
                 input: (&legal, legal_root),
                 linked: (&compiled.linked, compiled.root),
+                carried: &carried,
                 case: rk.cell_grid.as_ref(),
                 packed: rk.packed,
             },
