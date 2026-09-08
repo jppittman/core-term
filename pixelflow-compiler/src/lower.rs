@@ -1,22 +1,18 @@
-//! Bridge between macro AST and pixelflow-ir.
+//! Macro AST → `ExprArena`.
 //!
-//! This module handles conversions between:
-//! 1. Macro AST → arena IR
-//! 2. arena IR → runtime construction code
+//! The front end's one lowering step: the surface syntax a user wrote becomes
+//! the IR everything downstream speaks. `let` bindings resolve to the
+//! [`ExprId`] they name, so the arena is a DAG and a shared subexpression is
+//! one node; operators and DSL methods resolve through [`OpKind`], so the op
+//! table is not restated here.
 //!
-//! The IR becomes the canonical representation, with AST only used during parsing.
+//! Emission — arena to the `TokenStream` that rebuilds it — is [`crate::emit`].
 
 use crate::ast::{BinaryOp, Expr, UnaryOp};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
-use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
 use std::collections::HashMap;
 use syn::Lit;
-
-// ============================================================================
-// AST → Arena IR Conversion
-// ============================================================================
 
 /// DSL method calls that denote a fixed composition of primitive ops rather
 /// than a single [`OpKind`] — `(name, arg_count)`, `arg_count` excluding the
@@ -285,109 +281,6 @@ impl Lowering<'_> {
     }
 }
 
-/// Generate runtime arena-construction code from macro AST.
-///
-/// `Dwrt` nodes are emitted as they were built and resolved at bake time, by
-/// the one `LowerDwrt` pass in the runtime pipeline. Resolving them here
-/// instead — which this function used to do — is not an optimization but a
-/// miscompilation under composition: `Kernel::at` warps a kernel by
-/// substituting into its `Var` leaves, so a surviving `Dwrt(f, x)` has the
-/// warp reach its *operand* and differentiates the warped function, which is
-/// the chain rule. A `Dwrt` already resolved to `f'` has no operand left to
-/// warp, and the substitution silently lands in `f'` instead.
-///
-/// See docs/plans/2026-09-08-macro-tier-is-arena-native.md.
-pub fn ast_to_runtime_arena(
-    expr: &Expr,
-    param_indices: &HashMap<String, u8>,
-) -> Result<TokenStream, String> {
-    let mut arena = ExprArena::new();
-    let root = ast_to_arena(expr, param_indices, &mut arena)?;
-    let nodes = arena.nodes_raw();
-    let nary_children = arena.nary_children_raw();
-
-    let node_tokens: Vec<TokenStream> = nodes
-        .iter()
-        .map(|node| match node {
-            pixelflow_ir::arena::ExprNode::Var(i) => {
-                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Var(#i) }
-            }
-            // By bit pattern, not as a decimal literal: `quote`'s `f32`
-            // impl goes through `Literal::f32_suffixed`, which asserts
-            // `is_finite()` — and non-finite constants are ordinary here. A
-            // true comparison mask is all-ones (`OpKind::mask`), which is
-            // `BitAnd`'s monoid identity and therefore `all_over`'s seed, and
-            // the folder now produces those. Bits also roundtrip exactly, with
-            // no decimal-formatting question to get wrong.
-            pixelflow_ir::arena::ExprNode::Const(v) => {
-                let bits = v.to_bits();
-                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Const(f32::from_bits(#bits)) }
-            }
-            pixelflow_ir::arena::ExprNode::Param(i) => {
-                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Param(#i) }
-            }
-            // The `kernel!` macro has no buffer surface yet, so this is
-            // unreachable in practice; fail loud rather than emit a node that
-            // references a buffer table `from_raw` does not reconstruct.
-            pixelflow_ir::arena::ExprNode::Buffer(b) => {
-                panic!(
-                    "kernel! produced ExprNode::Buffer({}) — lattice parameters are not wired \
-                     into the compiler yet (KERNELS_AND_LATTICES.md M4)",
-                    b.0
-                )
-            }
-            // Likewise unreachable: a uniform enters a kernel at the builder
-            // call (`substitute_params`), never from the macro's own arena.
-            pixelflow_ir::arena::ExprNode::Uniform(u) => {
-                panic!(
-                    "kernel! produced ExprNode::Uniform({}) — uniforms are chosen at the \
-                     builder call site, not in the macro body",
-                    u.0
-                )
-            }
-            pixelflow_ir::arena::ExprNode::Unary(op, child) => {
-                let op_code = opkind_to_tokens(*op);
-                let child = child.0;
-                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Unary(#op_code, ::pixelflow_core::__macro::ir::arena::ExprId(#child)) }
-            }
-            pixelflow_ir::arena::ExprNode::Binary(op, a, b) => {
-                let op_code = opkind_to_tokens(*op);
-                let a = a.0;
-                let b = b.0;
-                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Binary(#op_code, ::pixelflow_core::__macro::ir::arena::ExprId(#a), ::pixelflow_core::__macro::ir::arena::ExprId(#b)) }
-            }
-            pixelflow_ir::arena::ExprNode::Ternary(op, a, b, c) => {
-                let op_code = opkind_to_tokens(*op);
-                let a = a.0;
-                let b = b.0;
-                let c = c.0;
-                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Ternary(#op_code, ::pixelflow_core::__macro::ir::arena::ExprId(#a), ::pixelflow_core::__macro::ir::arena::ExprId(#b), ::pixelflow_core::__macro::ir::arena::ExprId(#c)) }
-            }
-            pixelflow_ir::arena::ExprNode::Nary(op, start, len) => {
-                let op_code = opkind_to_tokens(*op);
-                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Nary(#op_code, #start, #len) }
-            }
-        })
-        .collect();
-
-    let child_tokens: Vec<TokenStream> = nary_children
-        .iter()
-        .map(|id| {
-            let id = id.0;
-            quote! { ::pixelflow_core::__macro::ir::arena::ExprId(#id) }
-        })
-        .collect();
-
-    let root = root.0;
-    let tokens = quote! {{
-        let __nodes = vec![#(#node_tokens),*];
-        let __nary_children = vec![#(#child_tokens),*];
-        let __arena = ::pixelflow_core::__macro::ir::arena::ExprArena::from_raw(__nodes, __nary_children);
-        (__arena, ::pixelflow_core::__macro::ir::arena::ExprId(#root))
-    }};
-    Ok(tokens)
-}
-
 /// Push `Dwrt(expr, var)` — the variable index rides as a `Const` operand,
 /// matching the encoding the e-graph `ChainRule` and `lower_dwrt` read.
 fn push_dwrt(arena: &mut ExprArena, expr: ExprId, var: u8) -> ExprId {
@@ -402,19 +295,4 @@ fn extract_f64_from_lit(lit: &Lit) -> Option<f64> {
         Lit::Int(i) => i.base10_parse::<i64>().ok().map(|v| v as f64),
         _ => None,
     }
-}
-
-/// The path naming `kind` in generated code.
-///
-/// One line per op used to live here — 40 of the 50, closing with a
-/// `_ => panic!("Unsupported OpKind for JIT")` that refused ops the arena
-/// holds and codegen emits perfectly well (`Reduce`, the integer-domain ops,
-/// `Gather`). It was the fourth independently-maintained copy of the op
-/// table, and the third one found drifting from it this week.
-///
-/// [`OpKind::variant_name`] is generated by `op_table!`, so the identifier
-/// cannot drift from the enum and a newly added op needs no edit here.
-fn opkind_to_tokens(kind: OpKind) -> TokenStream {
-    let variant = format_ident!("{}", kind.variant_name());
-    quote! { ::pixelflow_core::__macro::ir::OpKind::#variant }
 }

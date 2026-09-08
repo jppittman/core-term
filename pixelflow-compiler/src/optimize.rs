@@ -26,7 +26,7 @@ use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, Expr, IdentExpr, LetStmt, LiteralExpr, MethodCallExpr, Stmt,
     UnaryExpr, UnaryOp,
 };
-use crate::ir_bridge::LIBRARY_METHODS;
+use crate::lower::LIBRARY_METHODS;
 use crate::sema::AnalyzedKernel;
 use pixelflow_ir::OpKind;
 use pixelflow_search::egraph::{
@@ -623,7 +623,7 @@ impl EGraphContext {
                 let arg_count = call.args.len();
 
                 // Primitive ops: one `OpKind` per (name, arity) — resolved
-                // from the same table `ir_bridge`'s arena lowering reads, so
+                // from the same table `lower`'s arena lowering reads, so
                 // the two backends cannot silently drift on which primitive
                 // method names/arities exist.
                 if let Some(op_kind) = OpKind::from_method_call(&method, arg_count) {
@@ -1347,7 +1347,7 @@ mod tests {
     /// would silently change the result from `-c_sq + r²` to `c_sq + r²`.
     #[test]
     fn optimize_wraps_neg_around_subtraction_instead_of_distributing_into_r_squared() {
-        use crate::jit_backend::emit_kernel;
+        use crate::emit::emit_kernel;
 
         // Full pipeline test matching actual kernel! macro
         let input = quote! { |cx: f32, cy: f32, cz: f32, r: f32| {
@@ -1396,7 +1396,7 @@ mod tests {
     /// configuration against an explicitly spelled-out one.
     #[test]
     fn default_path_extraction_is_static_latency_prior() {
-        use crate::jit_backend::emit_kernel;
+        use crate::emit::emit_kernel;
 
         let input = quote! { || {
             let a = X * X;

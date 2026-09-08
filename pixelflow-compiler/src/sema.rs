@@ -21,7 +21,7 @@
 //! The semantic phase produces an `AnalyzedKernel`: the AST, validated.
 
 use crate::ast::{BlockExpr, Expr, KernelDef, LetStmt, MethodCallExpr, Param, Stmt};
-use crate::ir_bridge::LIBRARY_METHODS;
+use crate::lower::LIBRARY_METHODS;
 use crate::symbol::{SymbolKind, SymbolTable};
 use pixelflow_ir::{OpKind, known_method_names};
 use syn::Ident;

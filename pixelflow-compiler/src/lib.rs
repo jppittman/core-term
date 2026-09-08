@@ -16,7 +16,10 @@
 //!     ▼ E-graph optimization (optimize.rs)   — `kernel!` only
 //! Optimized AST
 //!     │
-//!     ▼ Arena lowering (ir_bridge.rs, jit_backend.rs)
+//!     ▼ Arena lowering (lower.rs)
+//! ExprArena
+//!     │
+//!     ▼ Emission (emit.rs)
 //! Rust TokenStream that rebuilds a `Kernel` at load time
 //! ```
 //!
@@ -33,8 +36,8 @@
 //! [`Kernel`]: pixelflow_core::Kernel
 
 mod ast;
-mod ir_bridge;
-mod jit_backend;
+mod emit;
+mod lower;
 mod optimize;
 mod parser;
 mod sema;
@@ -147,7 +150,7 @@ fn front_end(input: TokenStream) -> syn::Result<sema::AnalyzedKernel> {
 
 /// Lower to an arena and emit the code that rebuilds it.
 fn emit(analyzed: &sema::AnalyzedKernel) -> TokenStream {
-    match jit_backend::emit_kernel(analyzed) {
+    match emit::emit_kernel(analyzed) {
         Ok(tokens) => tokens.into(),
         Err(e) => syn::Error::new(proc_macro2::Span::call_site(), e)
             .to_compile_error()
@@ -177,8 +180,8 @@ fn emit(analyzed: &sema::AnalyzedKernel) -> TokenStream {
 /// whoever adds it.
 #[cfg(test)]
 mod every_advertised_method_compiles {
-    use crate::ir_bridge::LIBRARY_METHODS;
-    use crate::{jit_backend, optimize, parser, sema};
+    use crate::lower::LIBRARY_METHODS;
+    use crate::{emit, optimize, parser, sema};
     use pixelflow_ir::{OpKind, known_method_names};
     use proc_macro2::Span;
     use quote::quote;
@@ -208,7 +211,7 @@ mod every_advertised_method_compiles {
             Macro::Kernel => optimize::optimize(analyzed),
             Macro::KernelRaw => analyzed,
         };
-        jit_backend::emit_kernel(&analyzed).map(|_| ())
+        emit::emit_kernel(&analyzed).map(|_| ())
     }
 
     /// Every `(method, arg_count)` the front end accepts: the primitive ops
