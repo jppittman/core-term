@@ -71,59 +71,59 @@ impl From<Slot> for Storage {
 /// Capability: a physical storage location that can be written to by an instruction or transfer.
 pub trait StoreTarget: Copy + core::fmt::Debug {
     /// Convert to the canonical [`Storage`] enum.
-    fn as_storage(self) -> Storage;
+    fn target_storage(self) -> Storage;
 
     /// Extract the register if this target is in-register.
-    fn as_reg(self) -> Option<Reg>;
+    fn target_reg(self) -> Option<Reg>;
 
     /// Extract the stack slot if this target is on-stack.
-    fn as_slot(self) -> Option<Slot>;
+    fn target_slot(self) -> Option<Slot>;
 }
 
 impl StoreTarget for Reg {
     #[inline]
-    fn as_storage(self) -> Storage {
+    fn target_storage(self) -> Storage {
         Storage::Reg(self)
     }
     #[inline]
-    fn as_reg(self) -> Option<Reg> {
+    fn target_reg(self) -> Option<Reg> {
         Some(self)
     }
     #[inline]
-    fn as_slot(self) -> Option<Slot> {
+    fn target_slot(self) -> Option<Slot> {
         None
     }
 }
 
 impl StoreTarget for Slot {
     #[inline]
-    fn as_storage(self) -> Storage {
+    fn target_storage(self) -> Storage {
         Storage::Slot(self)
     }
     #[inline]
-    fn as_reg(self) -> Option<Reg> {
+    fn target_reg(self) -> Option<Reg> {
         None
     }
     #[inline]
-    fn as_slot(self) -> Option<Slot> {
+    fn target_slot(self) -> Option<Slot> {
         Some(self)
     }
 }
 
 impl StoreTarget for Storage {
     #[inline]
-    fn as_storage(self) -> Storage {
+    fn target_storage(self) -> Storage {
         self
     }
     #[inline]
-    fn as_reg(self) -> Option<Reg> {
+    fn target_reg(self) -> Option<Reg> {
         match self {
             Storage::Reg(r) => Some(r),
             Storage::Slot(_) => None,
         }
     }
     #[inline]
-    fn as_slot(self) -> Option<Slot> {
+    fn target_slot(self) -> Option<Slot> {
         match self {
             Storage::Reg(_) => None,
             Storage::Slot(s) => Some(s),
@@ -134,77 +134,77 @@ impl StoreTarget for Storage {
 /// Capability: a location or constant that can be read from as an operand.
 pub trait SourceOperand: Copy + core::fmt::Debug {
     /// Extract the physical storage location if this operand resides in memory or register.
-    fn as_storage(self) -> Option<Storage>;
+    fn source_storage(self) -> Option<Storage>;
 
     /// Extract the register if this operand resides in a register.
-    fn as_reg(self) -> Option<Reg>;
+    fn source_reg(self) -> Option<Reg>;
 
     /// Extract the stack slot if this operand resides on the stack.
-    fn as_slot(self) -> Option<Slot>;
+    fn source_slot(self) -> Option<Slot>;
 
     /// Extract constant bit pattern if this operand is a rematerialized immediate.
-    fn as_const(self) -> Option<u32>;
+    fn source_const(self) -> Option<u32>;
 }
 
 impl SourceOperand for Reg {
     #[inline]
-    fn as_storage(self) -> Option<Storage> {
+    fn source_storage(self) -> Option<Storage> {
         Some(Storage::Reg(self))
     }
     #[inline]
-    fn as_reg(self) -> Option<Reg> {
+    fn source_reg(self) -> Option<Reg> {
         Some(self)
     }
     #[inline]
-    fn as_slot(self) -> Option<Slot> {
+    fn source_slot(self) -> Option<Slot> {
         None
     }
     #[inline]
-    fn as_const(self) -> Option<u32> {
+    fn source_const(self) -> Option<u32> {
         None
     }
 }
 
 impl SourceOperand for Slot {
     #[inline]
-    fn as_storage(self) -> Option<Storage> {
+    fn source_storage(self) -> Option<Storage> {
         Some(Storage::Slot(self))
     }
     #[inline]
-    fn as_reg(self) -> Option<Reg> {
+    fn source_reg(self) -> Option<Reg> {
         None
     }
     #[inline]
-    fn as_slot(self) -> Option<Slot> {
+    fn source_slot(self) -> Option<Slot> {
         Some(self)
     }
     #[inline]
-    fn as_const(self) -> Option<u32> {
+    fn source_const(self) -> Option<u32> {
         None
     }
 }
 
 impl SourceOperand for Storage {
     #[inline]
-    fn as_storage(self) -> Option<Storage> {
+    fn source_storage(self) -> Option<Storage> {
         Some(self)
     }
     #[inline]
-    fn as_reg(self) -> Option<Reg> {
+    fn source_reg(self) -> Option<Reg> {
         match self {
             Storage::Reg(r) => Some(r),
             Storage::Slot(_) => None,
         }
     }
     #[inline]
-    fn as_slot(self) -> Option<Slot> {
+    fn source_slot(self) -> Option<Slot> {
         match self {
             Storage::Reg(_) => None,
             Storage::Slot(s) => Some(s),
         }
     }
     #[inline]
-    fn as_const(self) -> Option<u32> {
+    fn source_const(self) -> Option<u32> {
         None
     }
 }
@@ -269,3 +269,64 @@ impl StackFrame {
         self.vector_bytes
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::emit::Loc;
+
+    #[test]
+    fn storage_capabilities_for_reg_and_slot() {
+        let r = Reg(3);
+        let s = Slot::new(32, 16);
+
+        // StoreTarget
+        assert_eq!(r.target_reg(), Some(Reg(3)));
+        assert_eq!(r.target_slot(), None);
+        assert_eq!(r.target_storage(), Storage::Reg(Reg(3)));
+
+        assert_eq!(s.target_reg(), None);
+        assert_eq!(s.target_slot(), Some(Slot::new(32, 16)));
+        assert_eq!(s.target_storage(), Storage::Slot(Slot::new(32, 16)));
+
+        // SourceOperand
+        assert_eq!(r.source_const(), None);
+        assert_eq!(s.source_const(), None);
+    }
+
+    #[test]
+    fn storage_capabilities_for_loc() {
+        let l_reg = Loc::Reg(Reg(4));
+        let l_slot = Loc::Slot(Slot::new(64, 32));
+        let l_remat = Loc::Remat(0x3F80_0000);
+
+        assert_eq!(l_reg.source_reg(), Some(Reg(4)));
+        assert_eq!(l_reg.source_slot(), None);
+        assert_eq!(l_reg.source_const(), None);
+
+        assert_eq!(l_slot.source_reg(), None);
+        assert_eq!(l_slot.source_slot(), Some(Slot::new(64, 32)));
+        assert_eq!(l_slot.source_const(), None);
+
+        assert_eq!(l_remat.source_reg(), None);
+        assert_eq!(l_remat.source_slot(), None);
+        assert_eq!(l_remat.source_const(), Some(0x3F80_0000));
+        assert_eq!(l_remat.source_storage(), None);
+    }
+
+    #[test]
+    fn stack_frame_allocates_and_reuses_slots() {
+        let mut frame = StackFrame::new(16);
+        let s0 = frame.alloc_slot().unwrap();
+        let s1 = frame.alloc_slot().unwrap();
+        assert_eq!(s0.offset(), 0);
+        assert_eq!(s1.offset(), 16);
+        assert_eq!(frame.frame_size(), 32);
+
+        frame.free_slot(s0);
+        let s2 = frame.alloc_slot().unwrap();
+        assert_eq!(s2.offset(), 0);
+        assert_eq!(frame.frame_size(), 32);
+    }
+}
+

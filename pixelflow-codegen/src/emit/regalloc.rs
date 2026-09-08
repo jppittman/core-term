@@ -1525,7 +1525,7 @@ impl Pass {
 fn guarded_arms(guards: &[SelectGuard], len: usize) -> Vec<Option<(usize, usize)>> {
     let mut arms: Vec<Option<(usize, usize)>> = vec![None; len];
     for guard in guards {
-        for (start, end) in [guard.true_range, guard.false_range] {
+        for (start, end) in guard.ranges.values().copied() {
             if start == end {
                 continue;
             }
@@ -1560,7 +1560,7 @@ fn guard_sites(guards: &[SelectGuard], len: usize) -> Vec<Vec<ValueId>> {
             }
         };
         let mut guarded = false;
-        for (start, end) in [guard.true_range, guard.false_range] {
+        for (start, end) in guard.ranges.values().copied() {
             if start == end {
                 continue;
             }

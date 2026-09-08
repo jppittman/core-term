@@ -3,34 +3,164 @@
 //! Each function emits raw machine code bytes for one instruction (or a small fixed sequence).
 //! These are the "atoms" that compound operations are built from.
 
-use super::{Reg, unimplemented_op};
+use super::{AsmInsn, Gpr, Reg, assemble, unimplemented_op};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use pixelflow_ir::kind::OpKind;
 
+pub mod table;
+pub use table::*;
+
 // =============================================================================
 // Instruction Encoding Helpers
 // =============================================================================
-
-/// Encode a NEON 3-same instruction (binary vector ops).
-/// Format: Vd.4S, Vn.4S, Vm.4S
-#[inline]
-fn encode_3same(opcode: u32, dst: Reg, src1: Reg, src2: Reg) -> u32 {
-    opcode | (dst.0 as u32 & 0x1F) | ((src1.0 as u32 & 0x1F) << 5) | ((src2.0 as u32 & 0x1F) << 16)
-}
-
-/// Encode a NEON 2-reg misc instruction (unary vector ops).
-/// Format: Vd.4S, Vn.4S
-#[inline]
-fn encode_2misc(opcode: u32, dst: Reg, src: Reg) -> u32 {
-    opcode | (dst.0 as u32 & 0x1F) | ((src.0 as u32 & 0x1F) << 5)
-}
 
 /// Write a 32-bit instruction to the code buffer.
 #[inline]
 pub fn emit32(code: &mut Vec<u8>, inst: u32) {
     code.extend_from_slice(&inst.to_le_bytes());
+}
+
+// =============================================================================
+// First-Class AArch64 Instructions
+// =============================================================================
+
+/// A concrete ARM64 instruction.
+///
+/// Denotationally, every single-word ARM64 instruction is a pure `u32` value.
+/// Compound or fallback instructions (like `LdrQ` with large displacements)
+/// are assembled into code via [`AsmInsn::emit_into`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Inst {
+    // Vector floating-point arithmetic (single instruction)
+    Fadd(Reg, Reg, Reg),
+    Fsub(Reg, Reg, Reg),
+    Fmul(Reg, Reg, Reg),
+    Fdiv(Reg, Reg, Reg),
+    Fmla(Reg, Reg, Reg),
+    Fmin(Reg, Reg, Reg),
+    Fmax(Reg, Reg, Reg),
+    Fsqrt(Reg, Reg),
+    Fabs(Reg, Reg),
+    Fneg(Reg, Reg),
+    Not(Reg, Reg),
+    Frintm(Reg, Reg),
+    Frintp(Reg, Reg),
+    Frinta(Reg, Reg),
+    Frsqrte(Reg, Reg),
+    Frsqrts(Reg, Reg, Reg),
+    Frecpe(Reg, Reg),
+    Frecps(Reg, Reg, Reg),
+
+    // Comparisons (result is vector mask)
+    Fcmgt(Reg, Reg, Reg),
+    Fcmge(Reg, Reg, Reg),
+    Fcmeq(Reg, Reg, Reg),
+
+    // Selection
+    Bsl(Reg, Reg, Reg),
+
+    // Memory transfers
+    LdrQ(Reg, Mem),
+    StrQ(Reg, Mem),
+    LdrX(Xr, Mem),
+    LdrS(Reg, Mem),
+    LdrW(Xr, MemIndexed),
+
+    // Integer & lane operations
+    DupLane0(Reg, Reg),
+    Fcvtzs(Reg, Reg),
+    Scvtf(Reg, Reg),
+    AddI32(Reg, Reg, Reg),
+    And(Reg, Reg, Reg),
+    Orr(Reg, Reg, Reg),
+    Mov(Reg, Reg),
+
+    // Select guard masks
+    Uminv(Reg, Reg),
+    Umaxv(Reg, Reg),
+    FmovToGp(Reg),
+
+    // Control & GPR
+    Ret,
+    Raw(u32),
+}
+
+impl Inst {
+    /// Pure encoding of single-word instructions into a 32-bit machine word.
+    #[must_use]
+    #[inline]
+    pub fn encode(self) -> u32 {
+        match self {
+            Inst::Fadd(dst, s1, s2) => Fadd::new(dst, s1, s2).encode(),
+            Inst::Fsub(dst, s1, s2) => Fsub::new(dst, s1, s2).encode(),
+            Inst::Fmul(dst, s1, s2) => Fmul::new(dst, s1, s2).encode(),
+            Inst::Fdiv(dst, s1, s2) => Fdiv::new(dst, s1, s2).encode(),
+            Inst::Fmla(dst, s1, s2) => Fmla::new(dst, s1, s2).encode(),
+            Inst::Fmin(dst, s1, s2) => Fmin::new(dst, s1, s2).encode(),
+            Inst::Fmax(dst, s1, s2) => Fmax::new(dst, s1, s2).encode(),
+            Inst::Fsqrt(dst, src) => Fsqrt::new(dst, src).encode(),
+            Inst::Fabs(dst, src) => Fabs::new(dst, src).encode(),
+            Inst::Fneg(dst, src) => Fneg::new(dst, src).encode(),
+            Inst::Not(dst, src) => Not::new(dst, src).encode(),
+            Inst::Frintm(dst, src) => Frintm::new(dst, src).encode(),
+            Inst::Frintp(dst, src) => Frintp::new(dst, src).encode(),
+            Inst::Frinta(dst, src) => Frinta::new(dst, src).encode(),
+            Inst::Frsqrte(dst, src) => Frsqrte::new(dst, src).encode(),
+            Inst::Frsqrts(dst, s1, s2) => Frsqrts::new(dst, s1, s2).encode(),
+            Inst::Frecpe(dst, src) => Frecpe::new(dst, src).encode(),
+            Inst::Frecps(dst, s1, s2) => Frecps::new(dst, s1, s2).encode(),
+            Inst::Fcmgt(dst, s1, s2) => Fcmgt::new(dst, s1, s2).encode(),
+            Inst::Fcmge(dst, s1, s2) => Fcmge::new(dst, s1, s2).encode(),
+            Inst::Fcmeq(dst, s1, s2) => Fcmeq::new(dst, s1, s2).encode(),
+            Inst::Bsl(mask, if_true, if_false) => Bsl::new(mask, if_true, if_false).encode(),
+            Inst::LdrQ(dst, addr) => {
+                assert!(addr.offset.is_multiple_of(Q_BYTES));
+                0x3DC0_0000 | ((addr.offset / Q_BYTES) << 10) | ((addr.base.0 as u32) << 5) | (dst.0 as u32)
+            }
+            Inst::StrQ(src, addr) => {
+                assert!(addr.offset.is_multiple_of(Q_BYTES));
+                0x3D80_0000 | ((addr.offset / Q_BYTES) << 10) | ((addr.base.0 as u32) << 5) | (src.0 as u32)
+            }
+            Inst::LdrX(dst, addr) => {
+                assert!(addr.offset.is_multiple_of(X_BYTES));
+                0xF940_0000 | ((addr.offset / X_BYTES) << 10) | ((addr.base.0 as u32) << 5) | (dst.0 as u32)
+            }
+            Inst::LdrS(dst, addr) => {
+                assert!(addr.offset.is_multiple_of(S_BYTES));
+                0xBD40_0000 | ((addr.offset / S_BYTES) << 10) | ((addr.base.0 as u32) << 5) | (dst.0 as u32)
+            }
+            Inst::LdrW(dst, addr) => {
+                0xB860_5800 | ((addr.index.0 as u32) << 16) | ((addr.base.0 as u32) << 5) | (dst.0 as u32)
+            }
+            Inst::DupLane0(dst, src) => DupLane0::new(dst, src).encode(),
+            Inst::Fcvtzs(dst, src) => Fcvtzs::new(dst, src).encode(),
+            Inst::Scvtf(dst, src) => Scvtf::new(dst, src).encode(),
+            Inst::AddI32(dst, s1, s2) => AddI32::new(dst, s1, s2).encode(),
+            Inst::And(dst, s1, s2) => And::new(dst, s1, s2).encode(),
+            Inst::Orr(dst, s1, s2) => Orr::new(dst, s1, s2).encode(),
+            Inst::Mov(dst, src) => Orr::new(dst, src, src).encode(),
+            Inst::Uminv(dst, src) => Uminv::new(dst, src).encode(),
+            Inst::Umaxv(dst, src) => Umaxv::new(dst, src).encode(),
+            Inst::FmovToGp(src) => FmovToGp::new(src).encode(),
+            Inst::Ret => Ret.encode(),
+            Inst::Raw(w) => w,
+        }
+    }
+}
+
+impl crate::emit::AsmInsn for Inst {
+    #[inline]
+    fn emit_into(self, code: &mut Vec<u8>) {
+        match self {
+            Inst::LdrQ(dst, addr) => emit_ldr_q(code, dst, addr),
+            Inst::StrQ(src, addr) => emit_str_q(code, src, addr),
+            Inst::LdrS(dst, addr) => emit_ldr_s(code, dst, addr),
+            Inst::Mov(dst, src) => emit_mov(code, dst, src),
+            _ => emit32(code, self.encode()),
+        }
+    }
 }
 
 // =============================================================================
@@ -263,67 +393,67 @@ pub fn emit_add_sp(code: &mut Vec<u8>, size: u32) {
 
 /// FADD Vd.4S, Vn.4S, Vm.4S
 pub fn emit_fadd(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x4E20D400, dst, src1, src2));
+    Inst::Fadd(dst, src1, src2).emit_into(code);
 }
 
 /// FSUB Vd.4S, Vn.4S, Vm.4S
 pub fn emit_fsub(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x4EA0D400, dst, src1, src2));
+    Inst::Fsub(dst, src1, src2).emit_into(code);
 }
 
 /// FMUL Vd.4S, Vn.4S, Vm.4S
 pub fn emit_fmul(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x6E20DC00, dst, src1, src2));
+    Inst::Fmul(dst, src1, src2).emit_into(code);
 }
 
 /// FDIV Vd.4S, Vn.4S, Vm.4S
 pub fn emit_fdiv(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x6E20FC00, dst, src1, src2));
+    Inst::Fdiv(dst, src1, src2).emit_into(code);
 }
 
 /// FMLA Vd.4S, Vn.4S, Vm.4S (fused multiply-add: Vd += Vn * Vm)
 pub fn emit_fmla(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x4E20CC00, dst, src1, src2));
+    Inst::Fmla(dst, src1, src2).emit_into(code);
 }
 
 /// FMIN Vd.4S, Vn.4S, Vm.4S
 pub fn emit_fmin(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x4EA0F400, dst, src1, src2));
+    Inst::Fmin(dst, src1, src2).emit_into(code);
 }
 
 /// FMAX Vd.4S, Vn.4S, Vm.4S
 pub fn emit_fmax(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x4E20F400, dst, src1, src2));
+    Inst::Fmax(dst, src1, src2).emit_into(code);
 }
 
 /// FSQRT Vd.4S, Vn.4S
 pub fn emit_fsqrt(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit32(code, encode_2misc(0x6EA1F800, dst, src));
+    Inst::Fsqrt(dst, src).emit_into(code);
 }
 
 /// FABS Vd.4S, Vn.4S
 pub fn emit_fabs(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit32(code, encode_2misc(0x4EA0F800, dst, src));
+    Inst::Fabs(dst, src).emit_into(code);
 }
 
 /// FNEG Vd.4S, Vn.4S
 pub fn emit_fneg(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit32(code, encode_2misc(0x6EA0F800, dst, src));
+    Inst::Fneg(dst, src).emit_into(code);
 }
 
 /// NOT Vd.16B, Vn.16B (bitwise NOT, 2-register miscellaneous)
 pub fn emit_not(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit32(code, encode_2misc(0x2E205800, dst, src));
+    Inst::Not(dst, src).emit_into(code);
 }
 
 /// FRINTM Vd.4S, Vn.4S (floor)
 pub fn emit_frintm(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit32(code, encode_2misc(0x4E219800, dst, src));
+    Inst::Frintm(dst, src).emit_into(code);
 }
 
 /// FRINTP Vd.4S, Vn.4S (ceil)
 pub fn emit_frintp(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit32(code, encode_2misc(0x4EA18800, dst, src));
+    Inst::Frintp(dst, src).emit_into(code);
 }
 
 // =============================================================================
@@ -332,24 +462,27 @@ pub fn emit_frintp(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 
 /// FRSQRTE + FRSQRTS refinement (~3 instructions for rsqrt)
 pub fn emit_frsqrt(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: Reg) {
-    // est = frsqrte(src)
-    emit32(code, encode_2misc(0x6EA1D800, dst, src));
-    // scratch = est * est
-    emit32(code, encode_3same(0x6E20DC00, scratch, dst, dst));
-    // scratch = frsqrts(src, scratch) = (3 - src * scratch) / 2
-    emit32(code, encode_3same(0x4EA0FC00, scratch, src, scratch));
-    // dst = est * scratch (refined)
-    emit32(code, encode_3same(0x6E20DC00, dst, dst, scratch));
+    assemble(
+        code,
+        [
+            Inst::Frsqrte(dst, src),
+            Inst::Fmul(scratch, dst, dst),
+            Inst::Frsqrts(scratch, src, scratch),
+            Inst::Fmul(dst, dst, scratch),
+        ],
+    );
 }
 
 /// FRECPE + FRECPS refinement (~3 instructions for recip)
 pub fn emit_frecip(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: Reg) {
-    // est = frecpe(src)
-    emit32(code, encode_2misc(0x4EA1D800, dst, src));
-    // scratch = frecps(src, est) = 2 - src * est
-    emit32(code, encode_3same(0x4E20FC00, scratch, src, dst));
-    // dst = est * scratch (refined)
-    emit32(code, encode_3same(0x6E20DC00, dst, dst, scratch));
+    assemble(
+        code,
+        [
+            Inst::Frecpe(dst, src),
+            Inst::Frecps(scratch, src, dst),
+            Inst::Fmul(dst, dst, scratch),
+        ],
+    );
 }
 
 // =============================================================================
@@ -358,17 +491,17 @@ pub fn emit_frecip(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: Reg) {
 
 /// FCMGT Vd.4S, Vn.4S, Vm.4S (greater than)
 pub fn emit_fcmgt(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x6EA0E400, dst, src1, src2));
+    Inst::Fcmgt(dst, src1, src2).emit_into(code);
 }
 
 /// FCMGE Vd.4S, Vn.4S, Vm.4S (greater or equal)
 pub fn emit_fcmge(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x6E20E400, dst, src1, src2));
+    Inst::Fcmge(dst, src1, src2).emit_into(code);
 }
 
 /// FCMEQ Vd.4S, Vn.4S, Vm.4S (equal)
 pub fn emit_fcmeq(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x4E20E400, dst, src1, src2));
+    Inst::Fcmeq(dst, src1, src2).emit_into(code);
 }
 
 // =============================================================================
@@ -377,7 +510,7 @@ pub fn emit_fcmeq(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
 
 /// BSL Vd.16B, Vn.16B, Vm.16B (bitwise select: Vd = (Vd & Vn) | (~Vd & Vm))
 pub fn emit_bsl(code: &mut Vec<u8>, mask: Reg, if_true: Reg, if_false: Reg) {
-    emit32(code, encode_3same(0x6E601C00, mask, if_true, if_false));
+    Inst::Bsl(mask, if_true, if_false).emit_into(code);
 }
 
 // =============================================================================
@@ -659,33 +792,33 @@ fn emit_shl(code: &mut Vec<u8>, dst: Reg, src: Reg, shift: u8) {
 
 /// ADD Vd.4S, Vn.4S, Vm.4S (integer add)
 fn emit_add_i32(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x4EA08400, dst, src1, src2));
+    emit32(code, AddI32::new(dst, src1, src2).encode());
 }
 
 /// AND Vd.16B, Vn.16B, Vm.16B (bitwise AND)
 fn emit_and(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x4E201C00, dst, src1, src2));
+    emit32(code, And::new(dst, src1, src2).encode());
 }
 
 /// ORR Vd.16B, Vn.16B, Vm.16B (bitwise OR)
 fn emit_orr(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit32(code, encode_3same(0x4EA01C00, dst, src1, src2));
+    emit32(code, Orr::new(dst, src1, src2).encode());
 }
 
 /// FCVTZS Vd.4S, Vn.4S (float to signed int, round toward zero)
 pub fn emit_fcvtzs(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit32(code, encode_2misc(0x4EA1B800, dst, src));
+    emit32(code, Fcvtzs::new(dst, src).encode());
 }
 
 /// SCVTF Vd.4S, Vn.4S (signed int to float)
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 fn emit_scvtf(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit32(code, encode_2misc(0x4E21D800, dst, src));
+    emit32(code, Scvtf::new(dst, src).encode());
 }
 
 /// FRINTA Vd.4S, Vn.4S (round to nearest, ties away from zero)
 fn emit_frinta(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit32(code, encode_2misc(0x6E218800, dst, src));
+    emit32(code, Frinta::new(dst, src).encode());
 }
 
 /// MOV Vd.16B, Vn.16B (register copy via ORR)
@@ -1966,7 +2099,7 @@ pub(crate) mod driver {
         }
 
         fn emit_mov(&mut self, code: &mut Vec<u8>, dst: Reg, src: Reg) {
-            super::emit_mov(code, dst, src);
+            super::assemble(code, [super::Inst::Mov(dst, src)]);
         }
 
         fn emit_store(
@@ -1975,7 +2108,7 @@ pub(crate) mod driver {
             src: Reg,
             offset: u32,
         ) -> Result<(), CompileError> {
-            super::emit_str_q(code, src, frame_slot(offset));
+            super::assemble(code, [super::Inst::StrQ(src, frame_slot(offset))]);
             Ok(())
         }
 
@@ -1993,7 +2126,7 @@ pub(crate) mod driver {
                     target
                 }
                 Loc::Slot(slot) => {
-                    super::emit_ldr_q(code, target, frame_slot(slot.offset()));
+                    super::assemble(code, [super::Inst::LdrQ(target, frame_slot(slot.offset()))]);
                     target
                 }
             }
@@ -2066,11 +2199,11 @@ pub(crate) mod driver {
         }
 
         fn slot_store(&mut self, code: &mut Vec<u8>, src: Reg, offset: u32) {
-            super::emit_str_q(code, src, frame_slot(offset));
+            super::assemble(code, [super::Inst::StrQ(src, frame_slot(offset))]);
         }
 
         fn slot_load(&mut self, code: &mut Vec<u8>, dst: Reg, offset: u32) {
-            super::emit_ldr_q(code, dst, frame_slot(offset));
+            super::assemble(code, [super::Inst::LdrQ(dst, frame_slot(offset))]);
         }
 
         fn counter_clear(&mut self, code: &mut Vec<u8>, counter: Counter) {
@@ -2092,13 +2225,15 @@ pub(crate) mod driver {
         }
 
         fn store_result(&mut self, code: &mut Vec<u8>, src: Reg) {
-            super::emit_str_q(
+            super::assemble(
                 code,
-                src,
-                Mem {
-                    base: X1,
-                    offset: 0,
-                },
+                [super::Inst::StrQ(
+                    src,
+                    Mem {
+                        base: X1,
+                        offset: 0,
+                    },
+                )],
             );
         }
 
@@ -2117,7 +2252,7 @@ pub(crate) mod driver {
         }
 
         fn emit_ret(&mut self, code: &mut Vec<u8>) {
-            super::ret(code);
+            super::assemble(code, [super::Inst::Ret]);
         }
     }
 
@@ -2153,7 +2288,7 @@ pub(crate) mod driver {
         for reload in &plan.reloads {
             match reload {
                 Reload::FromStack { target, slot } => {
-                    emit_ldr_q(code, *target, frame_slot(slot.offset()));
+                    assemble(code, [Inst::LdrQ(*target, frame_slot(slot.offset()))]);
                 }
                 Reload::Const { target, val_bits } => {
                     emit_const_load(code, *target, *val_bits, pool);
@@ -2163,7 +2298,7 @@ pub(crate) mod driver {
 
         // 2. Emit setup MOV (for FMLA accumulator or BSL mask)
         if let Some((dst, src)) = plan.setup_mov {
-            super::emit_mov(code, dst, src);
+            assemble(code, [Inst::Mov(dst, src)]);
         }
 
         // 3. Emit main op
@@ -2236,7 +2371,7 @@ pub(crate) mod driver {
             }
             ResolvedOp::FusedMulAdd { dst, a, b } => {
                 // setup_mov already placed c into dst
-                emit_fmla(code, *dst, *a, *b);
+                assemble(code, [Inst::Fmla(*dst, *a, *b)]);
             }
             ResolvedOp::DecomposedMulAdd {
                 dst,
@@ -2246,11 +2381,11 @@ pub(crate) mod driver {
                 c_deferred,
             } => {
                 // FMUL(dst, a, b) — consumes a and b (loaded upfront).
-                emit_fmul(code, *dst, *a, *b);
+                assemble(code, [Inst::Fmul(*dst, *a, *b)]);
                 // Reload c after FMUL (c may reuse tmp_op which held b).
                 emit_deferred(code, *c, c_deferred.as_ref(), pool);
                 // FADD(dst, dst, c)
-                emit_fadd(code, *dst, *dst, *c);
+                assemble(code, [Inst::Fadd(*dst, *dst, *c)]);
             }
             ResolvedOp::Select {
                 dst,
@@ -2258,7 +2393,7 @@ pub(crate) mod driver {
                 if_false,
             } => {
                 // setup_mov already placed mask into dst
-                emit_bsl(code, *dst, *if_true, *if_false);
+                assemble(code, [Inst::Bsl(*dst, *if_true, *if_false)]);
             }
         }
 
@@ -2273,7 +2408,7 @@ pub(crate) mod driver {
     ) {
         match deferred {
             Some(DeferredReload::FromStack(slot)) => {
-                super::emit_ldr_q(code, target, frame_slot(slot.offset()));
+                super::assemble(code, [super::Inst::LdrQ(target, frame_slot(slot.offset()))]);
             }
             Some(DeferredReload::Const(val_bits)) => {
                 emit_const_load(code, target, *val_bits, pool);
@@ -2297,47 +2432,52 @@ pub(crate) mod driver {
 /// the row stride, the scalar half of a gather, and the base of every address
 /// a load or store names. That is the whole list, which is why this stays a
 /// vocabulary rather than an assembler.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Xr(pub u8);
+pub type Xr = Gpr;
+
+/// Constructor function for backwards compatibility with `Xr(u8)`.
+#[inline(always)]
+#[must_use]
+#[allow(non_snake_case)]
+pub const fn Xr(r: u8) -> Gpr {
+    Gpr(r)
+}
 
 /// AAPCS64 registers the emitted kernels use.
 pub mod xr {
-    use super::Xr;
+    use super::Gpr;
 
     /// 1st argument: the context pointer — the array of bound buffer bases a
     /// gather reads its slot from. Read-only for the whole kernel.
-    pub const X0: Xr = Xr(0);
+    pub const X0: Gpr = Gpr(0);
     /// 2nd argument: the output pointer, advanced per batch and per row.
-    pub const X1: Xr = Xr(1);
+    pub const X1: Gpr = Gpr(1);
     /// 3rd argument: group count (the inner bound).
-    pub const X2: Xr = Xr(2);
+    pub const X2: Gpr = Gpr(2);
     /// 4th argument: row count (the outer bound).
-    pub const X3: Xr = Xr(3);
+    pub const X3: Gpr = Gpr(3);
     /// 5th argument: row-skip in bytes.
-    pub const X4: Xr = Xr(4);
+    pub const X4: Gpr = Gpr(4);
     /// Inner (batch) loop counter.
-    pub const X5: Xr = Xr(5);
+    pub const X5: Gpr = Gpr(5);
     /// Outer (row) loop counter.
-    pub const X6: Xr = Xr(6);
+    pub const X6: Gpr = Gpr(6);
     /// IP0, the intra-procedure scratch. The encoder borrows it to hold an
     /// address whose displacement is past a load's 12-bit immediate.
-    pub const X16: Xr = Xr(16);
+    pub const X16: Gpr = Gpr(16);
     /// IP1, the intra-procedure scratch holding the constant-pool anchor.
-    pub const X17: Xr = Xr(17);
+    pub const X17: Gpr = Gpr(17);
     /// The zero register in the positions where `xzr` is meant.
-    pub const XZR: Xr = Xr(31);
+    pub const XZR: Gpr = Gpr(31);
     /// The stack pointer — spill slots are addressed from it.
     ///
     /// Encoded as register 31, the number [`XZR`] also uses. Which of the two
     /// `31` means is decided by the instruction (load/store and `add` read it
     /// as `sp`; most data-processing reads it as `xzr`), so the two constants
     /// exist to say at the call site which one was meant.
-    pub const SP: Xr = Xr(31);
+    pub const SP: Gpr = Gpr(31);
 }
 
-/// A 12-bit unsigned immediate, the width `add`'s immediate form encodes.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Imm12(pub u16);
+pub use table::Imm12;
 
 /// `movz dst, #imm16` — also how `mov dst, xzr` is spelled, as `movz dst, #0`.
 #[inline(always)]
@@ -2366,20 +2506,14 @@ pub trait AddOperand {
 impl AddOperand for Xr {
     #[inline(always)]
     fn add_into(self, code: &mut Vec<u8>, dst: Xr, src: Xr) {
-        emit32(
-            code,
-            0x8B00_0000 | ((self.0 as u32) << 16) | ((src.0 as u32) << 5) | dst.0 as u32,
-        );
+        table::AddI64::new(dst, src, self).emit_into(code);
     }
 }
 
 impl AddOperand for Imm12 {
     #[inline(always)]
     fn add_into(self, code: &mut Vec<u8>, dst: Xr, src: Xr) {
-        emit32(
-            code,
-            0x9100_0000 | ((self.0 as u32) << 10) | ((src.0 as u32) << 5) | dst.0 as u32,
-        );
+        table::AddI64::new(dst, src, self).emit_into(code);
     }
 }
 

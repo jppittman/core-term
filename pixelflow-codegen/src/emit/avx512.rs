@@ -22,7 +22,7 @@
 
 use super::x86_64;
 use super::x86_64::{Disp, Imm32, Mem, NoDisp, gpr};
-use super::{Reg, unimplemented_op};
+use super::{EncodedInst, KReg, Reg, assemble, unimplemented_op};
 use alloc::vec::Vec;
 use pixelflow_ir::OpKind;
 
@@ -110,7 +110,8 @@ impl Evex {
     /// 3-operand register form: `op zmmDST, zmmSRC1, zmmSRC2`, where SRC1 is
     /// the non-destructive EVEX.vvvv source and SRC2 is the ModRM r/m. Any of
     /// `zmm0..zmm31` is valid.
-    fn rrr(self, code: &mut Vec<u8>, dst: u8, src1: u8, src2: u8) {
+    fn rrr(self, dst: u8, src1: u8, src2: u8) -> EncodedInst {
+        let mut inst = EncodedInst::new();
         // EVEX stores the high register bits inverted.
         let r = ((dst >> 3) & 1) ^ 1; // ModRM.reg bit3
         let rp = ((dst >> 4) & 1) ^ 1; // ModRM.reg bit4 (R')
@@ -119,8 +120,9 @@ impl Evex {
         let vvvv = (!src1) & 0x0F;
         let vp = ((src1 >> 4) & 1) ^ 1; // vvvv bit4 (V')
 
-        self.prefix(code, (r << 7) | (x << 6) | (b << 5) | (rp << 4), vvvv, vp);
-        code.push(0xC0 | ((dst & 7) << 3) | (src2 & 7));
+        self.prefix_into(&mut inst, (r << 7) | (x << 6) | (b << 5) | (rp << 4), vvvv, vp);
+        inst.push(0xC0 | ((dst & 7) << 3) | (src2 & 7));
+        inst
     }
 
     /// `op zmmREG, [addr]` — the memory form used for spills, reloads,
@@ -132,27 +134,29 @@ impl Evex {
     /// base's bit 3, addressing r12 and faulting on a garbage pointer.)
     /// The ModRM/SIB/displacement tail is the architecture's, not EVEX's, so
     /// it comes from `x86_64::mem_operand`.
-    fn rm<D: Disp>(self, code: &mut Vec<u8>, reg: u8, addr: Mem<D>) {
+    fn rm<D: Disp>(self, reg: u8, addr: Mem<D>) -> EncodedInst {
+        let mut inst = EncodedInst::new();
         let r = ((reg >> 3) & 1) ^ 1;
         let rp = ((reg >> 4) & 1) ^ 1;
         let b = ((addr.base.0 >> 3) & 1) ^ 1;
         let x = 1u8; // no index -> encoded 1
 
-        self.prefix(code, (r << 7) | (x << 6) | (b << 5) | (rp << 4), 0x0F, 1);
-        x86_64::mem_operand(code, reg, addr);
+        self.prefix_into(&mut inst, (r << 7) | (x << 6) | (b << 5) | (rp << 4), 0x0F, 1);
+        x86_64::mem_operand_into(&mut inst, reg, addr);
+        inst
     }
 
     /// The 4-byte EVEX prefix plus the opcode byte, shared by both forms.
     /// `reg_ext` is the assembled `R X B R'` nibble of P0; `vvvv`/`vp` are the
     /// extra-source fields. Every one of them is already inverted by the
     /// caller, as the encoding requires.
-    fn prefix(self, code: &mut Vec<u8>, reg_ext: u8, vvvv: u8, vp: u8) {
-        code.push(0x62);
-        code.push(reg_ext | (self.map as u8));
-        code.push(((self.w as u8) << 7) | (vvvv << 3) | (1 << 2) | (self.pp as u8));
+    fn prefix_into(self, inst: &mut EncodedInst, reg_ext: u8, vvvv: u8, vp: u8) {
+        inst.push(0x62);
+        inst.push(reg_ext | (self.map as u8));
+        inst.push(((self.w as u8) << 7) | (vvvv << 3) | (1 << 2) | (self.pp as u8));
         // z=0, L'L=10 (512-bit), b(roadcast)=0, V', aaa=0 (no mask).
-        code.push((0b10 << 5) | (vp << 3));
-        code.push(self.opcode);
+        inst.push((0b10 << 5) | (vp << 3));
+        inst.push(self.opcode);
     }
 }
 
@@ -165,41 +169,42 @@ struct EvexImm {
 
 impl EvexImm {
     /// Register form with the imm8 appended.
-    fn rrr(self, code: &mut Vec<u8>, dst: u8, src1: u8, src2: u8) {
-        self.evex.rrr(code, dst, src1, src2);
-        code.push(self.imm);
+    fn rrr(self, dst: u8, src1: u8, src2: u8) -> EncodedInst {
+        let mut inst = self.evex.rrr(dst, src1, src2);
+        inst.push(self.imm);
+        inst
     }
 }
 
 // --- packed-single arithmetic (0F, no prefix, W0) ---
 fn vaddps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    Evex::m0f(0x58).rrr(c, d, s1, s2);
+    assemble(c, [Evex::m0f(0x58).rrr(d, s1, s2)]);
 }
 fn vsubps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    Evex::m0f(0x5C).rrr(c, d, s1, s2);
+    assemble(c, [Evex::m0f(0x5C).rrr(d, s1, s2)]);
 }
 fn vmulps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    Evex::m0f(0x59).rrr(c, d, s1, s2);
+    assemble(c, [Evex::m0f(0x59).rrr(d, s1, s2)]);
 }
 fn vdivps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    Evex::m0f(0x5E).rrr(c, d, s1, s2);
+    assemble(c, [Evex::m0f(0x5E).rrr(d, s1, s2)]);
 }
 fn vminps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    Evex::m0f(0x5D).rrr(c, d, s1, s2);
+    assemble(c, [Evex::m0f(0x5D).rrr(d, s1, s2)]);
 }
 fn vmaxps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    Evex::m0f(0x5F).rrr(c, d, s1, s2);
+    assemble(c, [Evex::m0f(0x5F).rrr(d, s1, s2)]);
 }
 
 // --- bitwise (0F, 66 prefix for the integer-domain forms; use ps forms) ---
 fn vandps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    Evex::m0f(0x54).rrr(c, d, s1, s2);
+    assemble(c, [Evex::m0f(0x54).rrr(d, s1, s2)]);
 }
 fn vorps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    Evex::m0f(0x56).rrr(c, d, s1, s2);
+    assemble(c, [Evex::m0f(0x56).rrr(d, s1, s2)]);
 }
 fn vxorps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    Evex::m0f(0x57).rrr(c, d, s1, s2);
+    assemble(c, [Evex::m0f(0x57).rrr(d, s1, s2)]);
 }
 /// Sentinel for the EVEX `vvvv`/`V'` source field on instructions that have no
 /// second source (2-operand forms): the field must read as *unused*, which the
@@ -226,14 +231,14 @@ pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
 // --- unary (one source; no second source -> UNUSED_VVVV) ---
 /// vsqrtps zmmD, zmmS — EVEX.512.0F.W0 51 /r ; vvvv unused.
 fn vsqrtps(c: &mut Vec<u8>, d: u8, s: u8) {
-    Evex::m0f(0x51).rrr(c, d, UNUSED_VVVV, s);
+    assemble(c, [Evex::m0f(0x51).rrr(d, UNUSED_VVVV, s)]);
 }
 
 /// vrndscaleps zmmD, zmmS, imm8 — EVEX.512.66.0F3A.W0 08 /r ib ; vvvv unused.
 /// (Opcode 08 = packed-single; 09 is packed-double and needs W1.) Round each
 /// lane per `imm8` (see the Floor/Ceil/Round arms for the bit layout).
 fn vrndscaleps(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
-    Evex::m0f3a_66(0x08).imm(imm).rrr(c, d, UNUSED_VVVV, s);
+    assemble(c, [Evex::m0f3a_66(0x08).imm(imm).rrr(d, UNUSED_VVVV, s)]);
 }
 
 /// vrcp14ps zmmD, zmmS — EVEX.512.66.0F38.W0 4C /r ; vvvv unused. AVX-512F's
@@ -241,14 +246,14 @@ fn vrndscaleps(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
 /// error, matching `Recip`'s existing "approximate reciprocal" contract on
 /// every other backend (SSE2's `rcpps`, AVX2's `vrcpps`).
 fn vrcp14ps(c: &mut Vec<u8>, d: u8, s: u8) {
-    Evex::m0f38_66(0x4C).rrr(c, d, UNUSED_VVVV, s);
+    assemble(c, [Evex::m0f38_66(0x4C).rrr(d, UNUSED_VVVV, s)]);
 }
 
 /// vrsqrt14ps zmmD, zmmS — EVEX.512.66.0F38.W0 4E /r ; vvvv unused.
 /// AVX-512F's replacement for AVX's `vrsqrtps`, same accuracy tier as
 /// `vrcp14ps` above.
 fn vrsqrt14ps(c: &mut Vec<u8>, d: u8, s: u8) {
-    Evex::m0f38_66(0x4E).rrr(c, d, UNUSED_VVVV, s);
+    assemble(c, [Evex::m0f38_66(0x4E).rrr(d, UNUSED_VVVV, s)]);
 }
 
 // --- integer-domain primitives (exp/log lowering) ---
@@ -256,29 +261,29 @@ fn vrsqrt14ps(c: &mut Vec<u8>, d: u8, s: u8) {
 
 /// vcvttps2dq zmmD, zmmS — EVEX.512.F3.0F.W0 5B /r ; vvvv unused.
 fn vcvttps2dq(c: &mut Vec<u8>, d: u8, s: u8) {
-    Evex::m0f_f3(0x5B).rrr(c, d, UNUSED_VVVV, s);
+    assemble(c, [Evex::m0f_f3(0x5B).rrr(d, UNUSED_VVVV, s)]);
 }
 
 /// vcvtdq2ps zmmD, zmmS — EVEX.512.0F.W0 5B /r ; vvvv unused.
 fn vcvtdq2ps(c: &mut Vec<u8>, d: u8, s: u8) {
-    Evex::m0f(0x5B).rrr(c, d, UNUSED_VVVV, s);
+    assemble(c, [Evex::m0f(0x5B).rrr(d, UNUSED_VVVV, s)]);
 }
 
 /// vpaddd zmmD, zmmS1, zmmS2 — EVEX.512.66.0F.W0 FE /r.
 fn vpaddd(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
-    Evex::m0f_66(0xFE).rrr(c, d, s1, s2);
+    assemble(c, [Evex::m0f_66(0xFE).rrr(d, s1, s2)]);
 }
 
 /// vpslld zmmD, zmmS, imm8 — EVEX.512.66.0F.W0 72 /6 ib. The shift-by-imm
 /// group encodes the operation in ModRM.reg (/6 = left) and the DESTINATION
 /// in vvvv, with the source in r/m — reg/vvvv swap roles vs. ordinary rrr.
 fn vpslld_imm(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
-    Evex::m0f_66(0x72).imm(imm).rrr(c, 6, d, s);
+    assemble(c, [Evex::m0f_66(0x72).imm(imm).rrr(6, d, s)]);
 }
 
 /// vpsrld zmmD, zmmS, imm8 — EVEX.512.66.0F.W0 72 /2 ib (logical, zero-fill).
 fn vpsrld_imm(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
-    Evex::m0f_66(0x72).imm(imm).rrr(c, 2, d, s);
+    assemble(c, [Evex::m0f_66(0x72).imm(imm).rrr(2, d, s)]);
 }
 
 /// vmovaps zmmDST, zmmSRC — register copy (EVEX.512.0F.W0 28 /r).
@@ -286,7 +291,7 @@ pub fn emit_mov(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     if dst.0 == src.0 {
         return;
     }
-    Evex::m0f(0x28).rrr(code, dst.0, UNUSED_VVVV, src.0);
+    assemble(code, [Evex::m0f(0x28).rrr(dst.0, UNUSED_VVVV, src.0)]);
 }
 
 /// A slot in the allocated spill frame. AVX-512 kernels are leaves with no
@@ -301,14 +306,14 @@ const fn frame_slot(offset: u32) -> Mem<Imm32> {
 /// vmovups zmmDST, [addr] — 512-bit load (EVEX.512.0F.W0 10 /r).
 /// `vmovups` has NO mandatory prefix; `F3 0F 10` would be the *scalar* `vmovss`.
 pub fn emit_load<D: Disp>(code: &mut Vec<u8>, dst: Reg, addr: Mem<D>) {
-    Evex::m0f(0x10).rm(code, dst.0, addr);
+    assemble(code, [Evex::m0f(0x10).rm(dst.0, addr)]);
 }
 
 /// vmovups [addr], zmmSRC — 512-bit store (EVEX.512.0F.W0 11 /r).
 /// `vmovups` has NO mandatory prefix; `F3 0F 11` would be the *scalar* `vmovss`
 /// (which caused the spill-path SIGSEGV: a scalar store to a garbage SIB base).
 pub fn emit_store<D: Disp>(code: &mut Vec<u8>, addr: Mem<D>, src: Reg) {
-    Evex::m0f(0x11).rm(code, src.0, addr);
+    assemble(code, [Evex::m0f(0x11).rm(src.0, addr)]);
 }
 
 /// Where [`emit_const`] stages an f32 before broadcasting it: four bytes of
@@ -331,11 +336,18 @@ const RED_ZONE_CONST: Mem<Imm32> = Mem {
 /// `[rsp .. rsp+frame)`, i.e. above this).
 pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
     let bits = val.to_bits();
+    let mut mov_imm = EncodedInst::new();
     // mov dword [rsp-4], imm32  ->  C7 44 24 FC <imm32>
-    code.extend_from_slice(&[0xC7, 0x44, 0x24, 0xFC]);
-    code.extend_from_slice(&bits.to_le_bytes());
+    mov_imm.extend(&[0xC7, 0x44, 0x24, 0xFC]);
+    mov_imm.extend(&bits.to_le_bytes());
     // vbroadcastss zmm, [rsp-4]
-    Evex::m0f38_66(0x18).rm(code, dst.0, RED_ZONE_CONST);
+    assemble(
+        code,
+        [
+            mov_imm,
+            Evex::m0f38_66(0x18).rm(dst.0, RED_ZONE_CONST),
+        ],
+    );
 }
 
 /// `dst = splat(block[offset])` at 512 bits: `mov rax, [rdi + ctx_slot*8]`
@@ -345,13 +357,15 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
 /// register contract.
 pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad) {
     emit_load_ptr_from_ctx(code, gpr::RAX.0, gpr::RDI.0, i32::from(load.ctx_slot) * 8);
-    Evex::m0f38_66(0x18).rm(
+    assemble(
         code,
-        dst.0,
-        Mem {
-            base: gpr::RAX,
-            disp: Imm32(i32::from(load.offset) * 4),
-        },
+        [Evex::m0f38_66(0x18).rm(
+            dst.0,
+            Mem {
+                base: gpr::RAX,
+                disp: Imm32(i32::from(load.offset) * 4),
+            },
+        )],
     );
 }
 
@@ -403,7 +417,7 @@ const CMP_GT: u8 = 6;
 
 /// Transient k-register used to receive a `vcmpps` result before it is widened
 /// to a vector mask. Never allocated — scratch internal to compare emission.
-const SCRATCH_K: u8 = 1;
+const SCRATCH_K: KReg = KReg(1);
 
 /// Map a comparison `OpKind` to its `vcmpps` predicate imm8.
 fn cmp_pred(op: OpKind) -> Option<u8> {
@@ -434,11 +448,14 @@ pub fn emit_compare(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: R
         unimplemented_op("avx-512", op)
     };
     // vcmpps k1, src1, src2, pred  (k-dest in ModRM.reg)
-    Evex::m0f(0xC2)
-        .imm(pred)
-        .rrr(code, SCRATCH_K, src1.0, src2.0);
     // vpmovm2d dst, k1  (widen mask -> vector)
-    Evex::m0f38_f3(0x38).rrr(code, dst.0, UNUSED_VVVV, SCRATCH_K);
+    assemble(
+        code,
+        [
+            Evex::m0f(0xC2).imm(pred).rrr(SCRATCH_K.0, src1.0, src2.0),
+            Evex::m0f38_f3(0x38).rrr(dst.0, UNUSED_VVVV, SCRATCH_K.0),
+        ],
+    );
 }
 
 /// Emit `dst = mask ? if_true : if_false`, with the vector mask already in
@@ -448,9 +465,14 @@ pub fn emit_compare(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: R
 /// the truth table 0xCA computes `A?B:C` per bit with A=dst(mask), B=if_true,
 /// C=if_false, i.e. a per-lane select for an all-ones/all-zeros mask.
 pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
-    Evex::m0f3a_66(0x25)
-        .imm(0xCA)
-        .rrr(code, dst.0, if_true.0, if_false.0);
+    assemble(
+        code,
+        [
+            Evex::m0f3a_66(0x25)
+                .imm(0xCA)
+                .rrr(dst.0, if_true.0, if_false.0),
+        ],
+    );
 }
 
 /// Set flags from a vector mask for the Select short-circuit guards.
@@ -459,10 +481,15 @@ pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
 /// then sets ZF iff `k1 == 0` (all lanes false) and CF iff `k1 == 0xFFFF` (all
 /// 16 lanes true). The caller follows with `jz` (all-false) or `jc` (all-true).
 pub fn emit_mask_flags(code: &mut Vec<u8>, mask: Reg) {
-    // vptestmd k1, mask, mask  (EVEX.512.66.0F38.W0 27 /r)
-    Evex::m0f38_66(0x27).rrr(code, SCRATCH_K, mask.0, mask.0);
-    // kortestw k1, k1  (VEX.L0.0F.W0 98 /r) -> C5 F8 98 C9
-    code.extend_from_slice(&[0xC5, 0xF8, 0x98, 0xC9]);
+    assemble(
+        code,
+        [
+            // vptestmd k1, mask, mask  (EVEX.512.66.0F38.W0 27 /r)
+            Evex::m0f38_66(0x27).rrr(SCRATCH_K.0, mask.0, mask.0),
+            // kortestw k1, k1  (VEX.L0.0F.W0 98 /r) -> C5 F8 98 C9
+            EncodedInst::from_slice(&[0xC5, 0xF8, 0x98, 0xC9]),
+        ],
+    );
 }
 
 /// Emit `dst = op(src)` for a unary op (Stage-1 subset).
@@ -520,7 +547,7 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, temp: Opti
 pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
     // dst currently = c. We want a*b + c. vfmadd231ps dst, a, b => dst = a*b + dst.
     // 231: EVEX.512.66.0F38.W0 B8 /r.
-    Evex::m0f38_66(0xB8).rrr(code, dst.0, a.0, b.0);
+    assemble(code, [Evex::m0f38_66(0xB8).rrr(dst.0, a.0, b.0)]);
 }
 
 /// Bitwise helpers exposed for completeness / future mask emulation.
@@ -542,7 +569,7 @@ pub fn emit_and(code: &mut Vec<u8>, dst: Reg, s1: Reg, s2: Reg) {
 /// integer in float form, so truncation is lossless and matches the reference
 /// interpreter's `floorf(index) as usize`.
 pub fn emit_cvttps2dq(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    Evex::m0f_f3(0x5B).rrr(code, dst.0, UNUSED_VVVV, src.0);
+    assemble(code, [Evex::m0f_f3(0x5B).rrr(dst.0, UNUSED_VVVV, src.0)]);
 }
 
 /// Set the gather writemask `k1` to all-ones (`mov eax, 0xFFFF; kmovw k1, eax`).
@@ -550,10 +577,15 @@ pub fn emit_cvttps2dq(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 /// A gather requires a non-zero writemask and *clears* the bits it completes, so
 /// this must run before each gather. Clobbers `eax` (caller-saved scratch).
 pub fn emit_set_gather_mask(code: &mut Vec<u8>) {
-    // mov eax, 0x0000FFFF
-    code.extend_from_slice(&[0xB8, 0xFF, 0xFF, 0x00, 0x00]);
-    // kmovw k1, eax  (VEX.L0.0F.W0 92 /r ; ModRM 11 001 000)
-    code.extend_from_slice(&[0xC5, 0xF8, 0x92, 0xC8]);
+    assemble(
+        code,
+        [
+            // mov eax, 0x0000FFFF
+            EncodedInst::from_slice(&[0xB8, 0xFF, 0xFF, 0x00, 0x00]),
+            // kmovw k1, eax  (VEX.L0.0F.W0 92 /r ; ModRM 11 001 000)
+            EncodedInst::from_slice(&[0xC5, 0xF8, 0x92, 0xC8]),
+        ],
+    );
 }
 
 /// `mov dstGPR, [ctxGPR + disp32]` (REX.W 8B /r) — load a 64-bit buffer base
@@ -566,10 +598,12 @@ pub fn emit_load_ptr_from_ctx(code: &mut Vec<u8>, dst_gpr: u8, ctx_gpr: u8, disp
         "emit_load_ptr_from_ctx: GPR8 only"
     );
     // REX.W ; 8B ; mod=10 reg=dst r/m=ctx ; disp32
-    code.push(0x48);
-    code.push(0x8B);
-    code.push(0x80 | ((dst_gpr & 7) << 3) | (ctx_gpr & 7));
-    code.extend_from_slice(&disp.to_le_bytes());
+    let mut inst = EncodedInst::new();
+    inst.push(0x48);
+    inst.push(0x8B);
+    inst.push(0x80 | ((dst_gpr & 7) << 3) | (ctx_gpr & 7));
+    inst.extend(&disp.to_le_bytes());
+    assemble(code, [inst]);
 }
 
 /// `vgatherdps zmmDST{k1}, [baseGPR + zmmINDEX*4]`
@@ -603,15 +637,17 @@ pub fn emit_gather(code: &mut Vec<u8>, dst: Reg, base_gpr: u8, index: Reg) {
     // z=0, L'L=10 (512-bit), b=0, V' = index bit4, aaa=001 (k1).
     let p2 = (0b10 << 5) | (vp << 3) | 0b001;
 
-    code.push(0x62);
-    code.push(p0);
-    code.push(p1);
-    code.push(p2);
-    code.push(0x92);
+    let mut inst = EncodedInst::new();
+    inst.push(0x62);
+    inst.push(p0);
+    inst.push(p1);
+    inst.push(p2);
+    inst.push(0x92);
     // ModRM: mod=00, reg=dst[2:0], r/m=100 (SIB follows).
-    code.push(((d & 7) << 3) | 0b100);
+    inst.push(((d & 7) << 3) | 0b100);
     // SIB: scale=10 (*4), index=idx[2:0], base=base[2:0].
-    code.push((0b10 << 6) | ((idx & 7) << 3) | (base & 7));
+    inst.push((0b10 << 6) | ((idx & 7) << 3) | (base & 7));
+    assemble(code, [inst]);
 }
 
 #[cfg(test)]

@@ -54,6 +54,7 @@ pub mod avx2;
 pub mod avx512;
 #[cfg(test)]
 pub(crate) mod coverage;
+pub mod encoded;
 pub mod executable;
 mod guards;
 pub mod regalloc;
@@ -61,10 +62,12 @@ pub mod storage;
 pub mod traffic;
 pub mod x86_64;
 
+pub use encoded::EncodedInst;
 pub use storage::{Slot, SourceOperand, StackFrame, Storage, StoreTarget};
 
 use pixelflow_ir::kind::OpKind;
 
+pub use guards::SelectArm;
 use guards::analyze_select_guards;
 use traffic::{Counting, EmitTraffic, ScopeTraffic};
 
@@ -72,9 +75,34 @@ use alloc::vec::Vec;
 
 use crate::error::CompileError;
 
-/// Physical register index.
+/// The one contract every backend's instruction types satisfy.
+pub trait AsmInsn: Copy {
+    /// Emit the instruction's encoded bytes into the output buffer.
+    fn emit_into(self, code: &mut Vec<u8>);
+}
+
+/// Free-function fold: assemble a declarative sequence directly into `code`.
+#[inline]
+pub fn assemble<I: AsmInsn>(code: &mut Vec<u8>, insts: impl IntoIterator<Item = I>) {
+    for inst in insts {
+        inst.emit_into(code);
+    }
+}
+
+/// Physical vector register index (v0..v31 on AArch64, xmm/ymm/zmm0..zmm31 on x86).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Reg(pub u8);
+
+/// Canonical alias for vector values allocated to DAG nodes.
+pub type VReg = Reg;
+
+/// Physical 64-bit general-purpose register index (x0..x31 on AArch64, rax..r15 on x86).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Gpr(pub u8);
+
+/// Physical mask/predicate register index (k0..k7 on AVX-512).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KReg(pub u8);
 
 /// Location of a value: either in physical storage (register or stack slot) or rematerialized.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -118,6 +146,69 @@ impl Loc {
         }
     }
 }
+
+impl StoreTarget for Loc {
+    #[inline]
+    fn target_storage(self) -> Storage {
+        match self {
+            Loc::Reg(r) => Storage::Reg(r),
+            Loc::Slot(s) => Storage::Slot(s),
+            Loc::Remat(bits) => panic!("cannot store into rematerialized constant {bits:#x}"),
+        }
+    }
+
+    #[inline]
+    fn target_reg(self) -> Option<Reg> {
+        match self {
+            Loc::Reg(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn target_slot(self) -> Option<Slot> {
+        match self {
+            Loc::Slot(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+impl SourceOperand for Loc {
+    #[inline]
+    fn source_storage(self) -> Option<Storage> {
+        match self {
+            Loc::Reg(r) => Some(Storage::Reg(r)),
+            Loc::Slot(s) => Some(Storage::Slot(s)),
+            Loc::Remat(_) => None,
+        }
+    }
+
+    #[inline]
+    fn source_reg(self) -> Option<Reg> {
+        match self {
+            Loc::Reg(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn source_slot(self) -> Option<Slot> {
+        match self {
+            Loc::Slot(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn source_const(self) -> Option<u32> {
+        match self {
+            Loc::Remat(bits) => Some(bits),
+            _ => None,
+        }
+    }
+}
+
 
 /// Stack addresses for one scope of an allocation.
 ///
@@ -956,29 +1047,23 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
 
     struct PendingBranch {
         guard_idx: usize,
-        arm: u8,
+        arm: SelectArm,
     }
     let mut branch_starts: alloc::vec::Vec<alloc::vec::Vec<PendingBranch>> =
         (0..sched_len).map(|_| alloc::vec::Vec::new()).collect();
     let mut branch_ends: alloc::vec::Vec<alloc::vec::Vec<usize>> =
         (0..sched_len).map(|_| alloc::vec::Vec::new()).collect();
     for (gi, guard) in select_guards.iter().enumerate() {
-        if guard.true_range.0 != guard.true_range.1 {
-            branch_starts[guard.true_range.0].push(PendingBranch {
-                guard_idx: gi,
-                arm: 0,
-            });
-            if guard.true_range.1 < sched_len {
-                branch_ends[guard.true_range.1].push(gi);
-            }
-        }
-        if guard.false_range.0 != guard.false_range.1 {
-            branch_starts[guard.false_range.0].push(PendingBranch {
-                guard_idx: gi,
-                arm: 1,
-            });
-            if guard.false_range.1 < sched_len {
-                branch_ends[guard.false_range.1].push(gi);
+        for arm in SelectArm::ALL {
+            let range = guard.range(arm);
+            if range.0 != range.1 {
+                branch_starts[range.0].push(PendingBranch {
+                    guard_idx: gi,
+                    arm,
+                });
+                if range.1 < sched_len {
+                    branch_ends[range.1].push(gi);
+                }
             }
         }
     }
@@ -1066,7 +1151,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         }
     }
 
-    let mut pending_patches: BTreeMap<(usize, u8), B::Branch> = BTreeMap::new();
+    let mut pending_patches: BTreeMap<(usize, SelectArm), B::Branch> = BTreeMap::new();
 
     for (sched_idx, def) in schedule.iter().enumerate() {
         let (vid, sched_op) = (&def.value, &def.op);
@@ -1085,7 +1170,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         // without a split live range.
         for &gi in &branch_ends[sched_idx] {
             let target = code.len();
-            for arm in 0..2 {
+            for arm in SelectArm::ALL {
                 if let Some(branch) = pending_patches.remove(&(gi, arm)) {
                     backend.patch_branch(&mut code, branch, target);
                 }
@@ -1128,8 +1213,8 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
                 _ => backend.emit_resolve(&mut code, guard.mask_vid, guard_mask(), &locs),
             };
             let branch = match arm {
-                0 => backend.emit_skip_if_all_false(&mut code, mask_reg, guard_temp),
-                _ => backend.emit_skip_if_all_true(&mut code, mask_reg, guard_temp),
+                SelectArm::True => backend.emit_skip_if_all_false(&mut code, mask_reg, guard_temp),
+                SelectArm::False => backend.emit_skip_if_all_true(&mut code, mask_reg, guard_temp),
             };
             pending_patches.insert((guard_idx, arm), branch);
         }
@@ -1148,60 +1233,57 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         // Select with a guard region: emit a uniform-mask short-circuit wrapper.
         if let ScheduledOp::Ternary(OpKind::Select, mask_vid, true_vid, false_vid) = sched_op
             && let Some(guard) = select_guards.iter().find(|g| g.select_idx == sched_idx)
+            && guard.has_guarded_arm()
         {
-            let has_true = guard.true_range.0 != guard.true_range.1;
-            let has_false = guard.false_range.0 != guard.false_range.1;
-            if has_true || has_false {
-                let mask_reg = match location_of(&locs, *mask_vid) {
-                    Loc::Reg(r) => r,
-                    _ => backend.emit_resolve(&mut code, *mask_vid, guard_mask(), &locs),
-                };
-                let dst = dst_loc.reg();
-                let in_reg = |v: regalloc::ValueId| match location_of(&locs, v) {
-                    Loc::Reg(r) => Some(r),
-                    _ => None,
-                };
-                let true_reg = in_reg(*true_vid);
-                let false_reg = in_reg(*false_vid);
+            let mask_reg = match location_of(&locs, *mask_vid) {
+                Loc::Reg(r) => r,
+                _ => backend.emit_resolve(&mut code, *mask_vid, guard_mask(), &locs),
+            };
+            let dst = dst_loc.reg();
+            let in_reg = |v: regalloc::ValueId| match location_of(&locs, v) {
+                Loc::Reg(r) => Some(r),
+                _ => None,
+            };
+            let true_reg = in_reg(*true_vid);
+            let false_reg = in_reg(*false_vid);
 
-                // Both guards read `mask_reg`, which is why the reduction
-                // scratch is a reservation of its own rather than whichever
-                // register the mask was resolved into.
-                let all_false = backend.emit_skip_if_all_false(&mut code, mask_reg, guard_temp);
-                let all_true = backend.emit_skip_if_all_true(&mut code, mask_reg, guard_temp);
+            // Both guards read `mask_reg`, which is why the reduction
+            // scratch is a reservation of its own rather than whichever
+            // register the mask was resolved into.
+            let all_false = backend.emit_skip_if_all_false(&mut code, mask_reg, guard_temp);
+            let all_true = backend.emit_skip_if_all_true(&mut code, mask_reg, guard_temp);
 
-                // Mixed lanes: the real select.
-                backend.emit_plan(&mut code, &plan)?;
-                let skip_end = backend.emit_jump(&mut code);
+            // Mixed lanes: the real select.
+            backend.emit_plan(&mut code, &plan)?;
+            let skip_end = backend.emit_jump(&mut code);
 
-                // All-false: dst <- false arm.
-                let all_false_target = code.len();
-                if let Some(freg) = false_reg {
-                    backend.emit_mov(&mut code, dst, freg);
-                } else {
-                    backend.emit_resolve(&mut code, *false_vid, dst, &locs);
-                }
-                let skip_end2 = backend.emit_jump(&mut code);
-
-                // All-true: dst <- true arm.
-                let all_true_target = code.len();
-                if let Some(treg) = true_reg {
-                    backend.emit_mov(&mut code, dst, treg);
-                } else {
-                    backend.emit_resolve(&mut code, *true_vid, dst, &locs);
-                }
-
-                let end_target = code.len();
-                backend.patch_branch(&mut code, all_false, all_false_target);
-                backend.patch_branch(&mut code, all_true, all_true_target);
-                backend.patch_branch(&mut code, skip_end, end_target);
-                backend.patch_branch(&mut code, skip_end2, end_target);
-
-                if let Some(offset) = store_after_def[sched_idx] {
-                    backend.emit_store(&mut code, dst, offset)?;
-                }
-                continue;
+            // All-false: dst <- false arm.
+            let all_false_target = code.len();
+            if let Some(freg) = false_reg {
+                backend.emit_mov(&mut code, dst, freg);
+            } else {
+                backend.emit_resolve(&mut code, *false_vid, dst, &locs);
             }
+            let skip_end2 = backend.emit_jump(&mut code);
+
+            // All-true: dst <- true arm.
+            let all_true_target = code.len();
+            if let Some(treg) = true_reg {
+                backend.emit_mov(&mut code, dst, treg);
+            } else {
+                backend.emit_resolve(&mut code, *true_vid, dst, &locs);
+            }
+
+            let end_target = code.len();
+            backend.patch_branch(&mut code, all_false, all_false_target);
+            backend.patch_branch(&mut code, all_true, all_true_target);
+            backend.patch_branch(&mut code, skip_end, end_target);
+            backend.patch_branch(&mut code, skip_end2, end_target);
+
+            if let Some(offset) = store_after_def[sched_idx] {
+                backend.emit_store(&mut code, dst, offset)?;
+            }
+            continue;
         }
 
         backend.emit_plan(&mut code, &plan)?;
@@ -3300,9 +3382,7 @@ mod tests {
         fn assert_guard_forms(a: &ExprArena, root: ExprId) {
             let schedule = arena_to_schedule(a, root);
             let guards = analyze_select_guards(&schedule);
-            let guarded = guards
-                .iter()
-                .any(|g| g.true_range.0 != g.true_range.1 || g.false_range.0 != g.false_range.1);
+            let guarded = guards.iter().any(|g| g.has_guarded_arm());
             assert!(
                 guarded,
                 "no Select in this schedule has an arm-exclusive range, so the \
@@ -3398,7 +3478,7 @@ mod tests {
             };
             analyze_select_guards(&schedule)
                 .iter()
-                .map(|g| (g.true_range.1 - g.true_range.0) + (g.false_range.1 - g.false_range.0))
+                .map(|g| g.total_guarded_entries())
                 .collect()
         }
 
@@ -3646,7 +3726,7 @@ mod tests {
             let allocation = regalloc::LinearScan.allocate(schedule, &file);
             let guard = analyze_select_guards(allocation.body().schedule())
                 .into_iter()
-                .find(|g| g.true_range.0 != g.true_range.1)
+                .find(|g| g.is_guarded(SelectArm::True))
                 .expect("the true arm is exclusive and contiguous, so it is guarded");
 
             // Which `ValueId` the arena's `split` became. `X·Y` is the only
@@ -3663,7 +3743,7 @@ mod tests {
                 })
                 .map(|d| d.value)
                 .expect("X·Y is in the schedule");
-            (a, root, split_vid, guard.true_range, allocation)
+            (a, root, split_vid, guard.true_range(), allocation)
         }
 
         /// The value is right after the arm, on the path that skips it.
