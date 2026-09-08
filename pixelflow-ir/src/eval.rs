@@ -417,6 +417,7 @@ pub fn equivalence_tolerance(op: OpKind) -> Tolerance {
         | OpKind::Const
         | OpKind::Buffer
         | OpKind::Uniform
+        | OpKind::Param
         | OpKind::Gather
         | OpKind::RawGather => Tolerance::BitExact,
         // Bit-pattern domain: masks, blends, and the integer primitives.
@@ -2788,19 +2789,17 @@ mod tests {
         let b = BindingTable::empty();
         for op in OpKind::all() {
             // Leaves, memory, the reduction binder, and the two ops that must
-            // be rewritten away carry their own (tested) refusals.
-            if matches!(
-                op,
-                OpKind::Var
-                    | OpKind::Const
-                    | OpKind::Buffer
-                    | OpKind::Uniform
-                    | OpKind::Gather
-                    | OpKind::RawGather
-                    | OpKind::Reduce
-                    | OpKind::Dwrt
-                    | OpKind::Tuple
-            ) {
+            // be rewritten away carry their own (tested) refusals. A leaf is
+            // exactly an op of arity zero, so ask that rather than listing
+            // them: the list was six names, and the seventh leaf added to the
+            // op table did not land in it, arriving here as a nonsense
+            // `push_ternary(Param, ..)` instead.
+            if op.arity() == 0
+                || matches!(
+                    op,
+                    OpKind::Gather | OpKind::RawGather | OpKind::Reduce | OpKind::Dwrt
+                )
+            {
                 continue;
             }
             let arity = op.arity();

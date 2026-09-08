@@ -201,6 +201,20 @@ op_table! {
     /// uniform table. A scalar invariant across the lattice, supplied per
     /// call from a block; never folded, loaded once per call.
     Uniform = 50,
+
+    /// An unbound scalar slot in a `kernel!` builder, before the builder is
+    /// called. A leaf with no value yet — never folded, matched by no rewrite
+    /// rule, derivative zero — which is exactly [`OpKind::Uniform`]'s
+    /// contract, one tier earlier.
+    ///
+    /// Only the macro tier may hold one (`Vocabulary::Templates`); a `Param`
+    /// reaching bake time means a builder was never called, and
+    /// `Vocabulary::Runtime` declines it. Before this existed, the e-graph
+    /// refused `Param` outright and every macro-side caller smuggled one past
+    /// as something else — as `Var(16 + i)`, or as an opaque identifier —
+    /// which is how `Var` reacquired the third meaning CLAUDE.md records as
+    /// retired.
+    Param = 51,
 }
 
 impl OpKind {
@@ -367,7 +381,7 @@ impl OpKind {
     #[must_use]
     pub const fn arity(self) -> usize {
         match self {
-            Self::Var | Self::Const | Self::Tuple | Self::Buffer | Self::Uniform => 0,
+            Self::Var | Self::Const | Self::Tuple | Self::Buffer | Self::Uniform | Self::Param => 0,
 
             Self::Neg
             | Self::Sqrt
@@ -475,6 +489,7 @@ impl OpKind {
             Self::RawGather => "raw_gather",
             Self::Reduce => "reduce",
             Self::Uniform => "uniform",
+            Self::Param => "param",
         }
     }
 
@@ -533,6 +548,7 @@ impl OpKind {
             "raw_gather" => Some(Self::RawGather),
             "reduce" => Some(Self::Reduce),
             "uniform" => Some(Self::Uniform),
+            "param" => Some(Self::Param),
             _ => None,
         }
     }
@@ -610,7 +626,7 @@ impl OpKind {
     #[must_use]
     pub const fn default_cost(self) -> usize {
         match self {
-            Self::Var | Self::Const | Self::Tuple | Self::Buffer | Self::Uniform => 0,
+            Self::Var | Self::Const | Self::Tuple | Self::Buffer | Self::Uniform | Self::Param => 0,
             // Memory read: native gather on AVX2/AVX-512, scalar loads on
             // NEON/SSE2. Priced between an arithmetic op and a transcendental.
             Self::Gather | Self::RawGather => 10,
@@ -738,7 +754,7 @@ impl OpKind {
     pub const fn emit_style(self) -> EmitStyle {
         match self {
             // Special cases handled separately
-            Self::Var | Self::Const | Self::Tuple => EmitStyle::Special,
+            Self::Var | Self::Const | Self::Tuple | Self::Param => EmitStyle::Special,
 
             // Unary prefix: (-a)
             Self::Neg => EmitStyle::UnaryPrefix,
@@ -1588,7 +1604,12 @@ mod algebraic_properties {
     fn match_each_ops_actual_operand_count() {
         for op in OpKind::all() {
             let want = match op {
-                OpKind::Var | OpKind::Const | OpKind::Tuple | OpKind::Buffer | OpKind::Uniform => 0,
+                OpKind::Var
+                | OpKind::Const
+                | OpKind::Tuple
+                | OpKind::Buffer
+                | OpKind::Uniform
+                | OpKind::Param => 0,
 
                 OpKind::Neg
                 | OpKind::Sqrt

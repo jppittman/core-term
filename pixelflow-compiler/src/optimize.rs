@@ -889,6 +889,14 @@ impl EGraphContext {
                 "eclass_to_expr: ENode::Uniform({decl:?}) in the macro tier — \
                  uniforms are chosen at the builder call site"
             ),
+            // This tier builds its e-graph from the AST, where a parameter is
+            // an ordinary identifier carried through as an opaque leaf, so no
+            // `Param` node is ever inserted into it. The arena-native tier
+            // that replaces this file inserts them natively.
+            ENode::Param(i) => panic!(
+                "eclass_to_expr: ENode::Param({i}) in the AST tier — params reach \
+                 this e-graph as opaque identifiers, not as Param leaves"
+            ),
 
             ENode::Op { op, children } => {
                 let name = op.name();

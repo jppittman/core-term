@@ -88,6 +88,7 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
     OpMap::from_fn(|op| match op {
         OpKind::Var => 0,     // free
         OpKind::Const => 0,   // free
+        OpKind::Param => 0,   // free: a leaf, substituted away before codegen
         OpKind::Add => 4,     // measured 4.0 (anchor)
         OpKind::Sub => 4,     // measured 4.0
         OpKind::Mul => 5,     // measured 5.3
@@ -299,7 +300,11 @@ impl CostModel {
             // Buffer is a leaf like Var/Const: the cost of the read lives on
             // the Gather that consumes it. A uniform's load is per call, not
             // per sample.
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => 0,
+            ENode::Var(_)
+            | ENode::Const(_)
+            | ENode::Buffer(_)
+            | ENode::Uniform(_)
+            | ENode::Param(_) => 0,
             // `Dwrt` is the internal autodiff marker. It is rewritten away by
             // the chain rule; a surviving one is the (not-yet-wired) jet
             // fallback. Either way extraction must never choose it, so it is

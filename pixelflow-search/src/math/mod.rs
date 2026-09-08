@@ -208,6 +208,7 @@ mod tests {
             ENode::Var(idx) => arena.push_var(idx),
             ENode::Const(bits) => arena.push_const(f32::from_bits(bits)),
             ENode::Buffer(decl) => panic!("Buffer({decl:?}) reached math tests"),
+            ENode::Param(i) => panic!("Param({i}) reached math tests"),
             ENode::Uniform(decl) => {
                 let slot = arena.declare_uniform(decl);
                 arena.push_uniform(slot)

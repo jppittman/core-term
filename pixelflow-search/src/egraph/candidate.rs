@@ -98,6 +98,7 @@ enum NodeShape {
     Const(u32),
     Buffer(BufferDecl),
     Uniform(UniformDecl),
+    Param(u8),
     Op(OpKind, Vec<u32>),
 }
 
@@ -108,6 +109,7 @@ impl NodeShape {
             ENode::Const(bits) => NodeShape::Const(*bits),
             ENode::Buffer(decl) => NodeShape::Buffer(*decl),
             ENode::Uniform(decl) => NodeShape::Uniform(*decl),
+            ENode::Param(i) => NodeShape::Param(*i),
             ENode::Op { op, children } => NodeShape::Op(
                 op.kind(),
                 children

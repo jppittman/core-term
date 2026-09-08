@@ -906,9 +906,11 @@ fn greedy_trace(egraph: &EGraph, root: EClassId, costs: &CostModel) -> GreedyTra
             for (idx, node) in nodes.iter().enumerate() {
                 let mut saw_cycle = false;
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => {
-                        costs.node_op_cost(node)
-                    }
+                    ENode::Var(_)
+                    | ENode::Const(_)
+                    | ENode::Buffer(_)
+                    | ENode::Uniform(_)
+                    | ENode::Param(_) => costs.node_op_cost(node),
                     ENode::Op { children, .. } => {
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             saw_cycle = true;
