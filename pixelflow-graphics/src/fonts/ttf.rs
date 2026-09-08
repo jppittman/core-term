@@ -7,7 +7,7 @@
 //! quadratic segments in font units, with compound glyphs flattened through
 //! their component transforms. Every scale — the em square, the screen flip,
 //! a component placement — is applied to control points here, on the host,
-//! so that the kernel [`loop_blinn`](super::loop_blinn) builds is built in
+//! so that the kernel [`loop_blinn`] builds is in
 //! the frame it will be evaluated in. Nothing here is a scene graph of Rust
 //! types and nothing here warps a finished kernel.
 

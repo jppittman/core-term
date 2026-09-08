@@ -486,6 +486,71 @@ fn every_printable_glyph_winds_like_the_oracle() {
     }
 }
 
+// ──────────────────────── boundaries, not edges ────────────────────────
+
+/// **An edge a font draws is not necessarily a boundary.** A stroke built
+/// from two overlapping contours, or two overlapping components of a
+/// compound glyph, puts drawn edges *inside* the ink — winding nonzero on
+/// both sides. Coverage must stay saturated across them.
+///
+/// This is the case the ramp-clearance rule in [`judge`] cannot see: it
+/// skips every sample within `RAMP_CLEARANCE` of any drawn segment, and an
+/// interior edge is a drawn segment, so the seam lives exactly in the
+/// region the oracle declines to judge. Measured before the fix: 0.500 at
+/// each interior edge, a half-dark line one pixel wide through solid ink.
+#[test]
+fn an_edge_inside_the_ink_is_not_a_boundary() {
+    let overlap = outline_of(vec![
+        square(0.0, 0.0, 24.0, 30.0, false),
+        square(16.0, 0.0, 40.0, 30.0, false),
+    ]);
+    // Same shape wound the other way, and one contour reversed: the union
+    // is identical, so the interior edges must stay invisible either way.
+    let reversed = outline_of(vec![
+        square(0.0, 0.0, 24.0, 30.0, true),
+        square(16.0, 0.0, 40.0, 30.0, true),
+    ]);
+    let mixed = outline_of(vec![
+        square(0.0, 0.0, 24.0, 30.0, false),
+        square(16.0, 0.0, 40.0, 30.0, true),
+    ]);
+
+    for (name, outline) in [("same direction", &overlap), ("both reversed", &reversed)] {
+        let lattice = Lattice::frame(44, 34);
+        let baked = bake_single(outline, lattice);
+        let at = |x: usize, y: usize| baked[y * 44 + x];
+        for x in [16usize, 24] {
+            let v = at(x, 15);
+            assert!(
+                v > 0.99,
+                "{name}: the drawn edge at x={x} is inside the ink (winding is \
+                 nonzero on both sides), but coverage there is {v} — a seam \
+                 through solid fill"
+            );
+        }
+        // The outer boundary is still a boundary.
+        assert!(at(2, 15) > 0.99, "{name}: interior of the left square");
+        assert!(at(42, 15) < 0.01, "{name}: outside the right square");
+    }
+
+    // The rule is "ask the winding", not "ignore every shared edge": wind the
+    // two squares oppositely and the overlap becomes a hole, which has to be
+    // empty rather than filled.
+    let lattice = Lattice::frame(44, 34);
+    let baked = bake_single(&mixed, lattice);
+    let at = |x: usize, y: usize| baked[y * 44 + x];
+    assert!(
+        at(20, 15) < 0.01,
+        "opposite directions: the overlap is a hole, got {} at its centre",
+        at(20, 15)
+    );
+    assert!(at(8, 15) > 0.99, "opposite directions: left square is ink");
+    assert!(
+        at(32, 15) > 0.99,
+        "opposite directions: right square is ink"
+    );
+}
+
 // ────────────────────────────── support ──────────────────────────────
 
 /// Outside the reported support the kernel is the literal `0.0` — sampled

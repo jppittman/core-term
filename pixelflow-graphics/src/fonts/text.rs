@@ -1,23 +1,28 @@
 //! Text layout, in both encodings of the same function.
 //!
 //! A string is a scan (prefix sum) over character advances with each glyph's
-//! outline placed at its pen position. What differs between [`text`] and
-//! [`text_union`] is not the values *given the same sampling convention* —
-//! they agree to within the compiler's rounding once one is applied — but
-//! *who applies it and who visits what*: [`text_union`] carries the
-//! pixel-center contramap itself (see its own doc), while [`text`] does not
-//! and expects its caller to supply one, same as any other `Kernel`.
+//! outline placed at its pen position. **A laid-out string is one outline**,
+//! and its coverage is the winding number of all those contours together —
+//! the same non-zero rule TrueType already specifies *within* a glyph, which
+//! is what fills a `B` drawn as two overlapping shapes.
 //!
-//! - [`text`] sums the placed glyphs into ONE kernel. Each glyph is cut to
-//!   its own support by a mask, so a guard can skip it where a batch is
-//!   entirely outside — but every pixel still asks every glyph, and the sum
-//!   is the range encoding of the glyphs' extents.
-//! - [`text_union`] puts the extents on the *domain*: the string is one
-//!   outline, and [`loop_blinn::cells`] cuts the frame into a grid of
-//!   disjoint index ranges, each carrying only the segments that reach it.
-//!   Per-pixel cost stops depending on the string's length, and on the
-//!   glyph's segment count too: it depends on how many segments pass near
-//!   the pixel's cell.
+//! That one rule is load-bearing, because coverage is not additive. Summing
+//! per-glyph coverages reaches 2 where two glyphs' ink overlaps, and 2 is
+//! not a coverage; it also makes overlapping glyphs a different function
+//! from overlapping contours, which are the same situation one level apart.
+//! [`text`] used to sum, and did differ from [`text_union`] by a full unit
+//! of coverage on overlapping glyphs.
+//!
+//! So [`text`] and [`text_union`] denote the same function, and differ only
+//! in who visits what:
+//!
+//! - [`text`] is ONE kernel over the whole frame: every pixel asks every
+//!   segment. The range encoding of the glyphs' extents.
+//! - [`text_union`] puts the extents on the *domain*: [`loop_blinn::cells`]
+//!   cuts the frame into disjoint index ranges, each carrying only the
+//!   segments that reach it. Per-pixel cost stops depending on the string's
+//!   length, and on the glyph's segment count too — only on how many
+//!   segments pass near the pixel's own cell.
 
 use super::loop_blinn;
 use super::outline::Outline;
@@ -38,20 +43,26 @@ pub(crate) const TEXT_CELL: [usize; 2] = [16, 8];
 /// glyph space.
 ///
 /// Advance-based (kerning-free) layout: each glyph is scaled to `size` and
-/// placed at the accumulated advance. Antialiasing comes from the glyph
-/// kernels' `Dwrt` ramps at bake.
+/// placed at the accumulated advance, and the placed contours are **one
+/// outline**. Antialiasing comes from the kernel's `Dwrt` ramps at bake.
 ///
-/// This is the denotation — the function a laid-out string *is*. Rendering it
-/// over a whole frame is what [`text_union`] does faster. Like any other
+/// This is the denotation — the function a laid-out string *is*. Rendering
+/// it over a whole frame is what [`text_union`] does faster. Like any other
 /// `Kernel`, it carries no coordinate frame: a caller wanting pixel-center
 /// sampling applies `.at(&(X + 0.5), &(Y + 0.5))` before baking, same as a
 /// raw glyph kernel would.
 #[must_use]
 pub fn text(font: &Font, text_str: &str, size: f32) -> Kernel {
-    let terms: Vec<Kernel> = layout(font, text_str, size)
-        .map(|outline| loop_blinn::glyph(&outline).kernel)
-        .collect();
-    Kernel::sum(&terms)
+    loop_blinn::glyph(&placed_outline(font, text_str, size)).kernel
+}
+
+/// Every glyph of the string, placed at its pen, as one outline.
+fn placed_outline(font: &Font, text_str: &str, size: f32) -> Outline {
+    let mut outline = Outline::default();
+    for placed in layout(font, text_str, size) {
+        outline.append(placed);
+    }
+    outline
 }
 
 /// Lay out the same text as a [`Union`] of disjoint index ranges over
@@ -110,11 +121,7 @@ pub fn text_cells(font: &Font, lattice: Lattice, text_str: &str, size: f32) -> V
     if lattice.is_empty() {
         return Vec::new();
     }
-    let mut outline = Outline::default();
-    for placed in layout(font, text_str, size) {
-        outline.append(placed);
-    }
-    loop_blinn::cells(&outline, lattice, TEXT_CELL)
+    loop_blinn::cells(&placed_outline(font, text_str, size), lattice, TEXT_CELL)
         .into_iter()
         .map(|(range, kernel)| TextCell { range, kernel })
         .collect()
