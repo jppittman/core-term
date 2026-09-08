@@ -1245,10 +1245,18 @@ fn collapse(rows: Vec<KernelRow>) -> BTreeMap<String, KernelRow> {
             let mut em: Vec<f64> = rs.iter().map(|r| r.emit_ms).collect();
             em.sort_by(f64::total_cmp);
             let mut r = rs.swap_remove(0);
-            if let Some(c) = r.clock.as_mut() {
+            // The clock may sit in a later file than the deterministic columns
+            // (a `--no-clock` census merged with clocked passes): take the
+            // first clock any pass carries, then median over all of them.
+            let mut clock = r
+                .clock
+                .take()
+                .or_else(|| rs.iter_mut().find_map(|x| x.clock.take()));
+            if let Some(c) = clock.as_mut() {
                 c.ns_per_px = clocks[clocks.len() / 2];
                 c.scene_ns_per_px = (!scene.is_empty()).then(|| scene[scene.len() / 2]);
             }
+            r.clock = clock;
             r.optimize_ms = opt[opt.len() / 2];
             r.emit_ms = em[em.len() / 2];
             (name, r)
