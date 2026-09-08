@@ -148,7 +148,7 @@ fn dump_arena(arena: &ExprArena, root: ExprId, name: &str, path: &std::path::Pat
             ExprNode::Ternary(k, a, b, c) => {
                 writeln!(out, "T {k:?} {} {} {}", d(&dense, *a), d(&dense, *b), d(&dense, *c))
             }
-            other @ (ExprNode::Param(_) | ExprNode::Nary(..)) => {
+            other @ (ExprNode::Param(_) | ExprNode::Nary(..) | ExprNode::Ref(_)) => {
                 panic!("{name}: production arena contains {other:?}, which optimize_runtime_arena bails on")
             }
         }

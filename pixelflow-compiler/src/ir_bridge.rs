@@ -374,6 +374,16 @@ pub fn ast_to_runtime_arena(
                     u.0
                 )
             }
+            // And a reference is minted by `Kernel::by_ref` at composition
+            // time — a runtime value, and the key it carries names a store
+            // in the *build host's* process, which the compiled program is
+            // not. Emitting one would name nothing.
+            pixelflow_ir::arena::ExprNode::Ref(k) => {
+                panic!(
+                    "kernel! produced ExprNode::Ref({k:?}) — a reference names a kernel \
+                     interned in this process, which the emitted program does not share"
+                )
+            }
             pixelflow_ir::arena::ExprNode::Unary(op, child) => {
                 let op_code = opkind_to_tokens(*op);
                 let child = child.0;
@@ -1156,7 +1166,7 @@ mod production_telemetry {
                 ExprNode::Unary(k, _)
                 | ExprNode::Binary(k, _, _)
                 | ExprNode::Ternary(k, _, _, _) => Some(*k),
-                other @ (ExprNode::Param(_) | ExprNode::Nary(..)) => {
+                other @ (ExprNode::Param(_) | ExprNode::Nary(..) | ExprNode::Ref(_)) => {
                     panic!(
                         "winding-kernel Dwrt arena contains {other:?}, unexpected pre-extraction"
                     )
@@ -1200,6 +1210,9 @@ mod production_telemetry {
                 ExprNode::Buffer(_) => Some(OpKind::Buffer), // ir_bridge.rs:690: Buffer => false unconditionally
                 ExprNode::Uniform(_) => Some(OpKind::Uniform),
                 ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) => None,
+                // A reference has no `OpKind` to report; `egraph::insert`
+                // declines it as `Declined::Ref`, not as an unrepresentable op.
+                ExprNode::Ref(_) => None,
                 ExprNode::Nary(op, _, _) => {
                     (pixelflow_search::egraph::ops::op_from_kind(*op).is_none()).then_some(*op)
                 }

@@ -27,6 +27,7 @@
 //! written down.
 
 use crate::arena::{BufferDecl, UniformDecl};
+use crate::key::KernelKey;
 use crate::kind::OpKind;
 
 /// The children of one node, borrowed where they are contiguous.
@@ -106,6 +107,14 @@ pub enum Shape<'a, R> {
     /// Per-call scalar leaf, carrying its identity and default for the same
     /// reason a buffer carries its declaration.
     Uniform(UniformDecl),
+    /// A kernel named by content — a leaf here, because its body is in the
+    /// [`KernelStore`](crate::store::KernelStore) and not in this term. An
+    /// e-graph insert declines one, for the reason it declines a `Param`:
+    /// there is no value to reason about until something resolves it.
+    ///
+    /// (The `Ref` in [`Ir::Ref`] is unrelated — that is how a representation
+    /// *names* one of its own nodes; this is a name for a whole kernel.)
+    Ref(KernelKey),
     /// An operation over `children`.
     Op(OpKind, Children<'a, R>),
 }

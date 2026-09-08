@@ -36,6 +36,19 @@ pub use variance::{LatticeShape, Variance};
 
 pub mod arena;
 
+/// What it means for two kernels to be the same kernel: the canonical form of
+/// a reachable subgraph, and the fixed-size [`KernelKey`] that digests it.
+pub mod key;
+// Only the key is re-exported at the root: it is a *name* other crates hold
+// (a `Ref` leaf, an e-graph refusal), where `Canonical`/`canonical` are the
+// machinery behind it and one consumer — the compile cache — spells the
+// module out.
+pub use key::KernelKey;
+
+/// The process-global, content-addressed store a `Ref` names into.
+pub mod store;
+pub use store::KernelStore;
+
 /// IR-to-IR transforms: each takes an expression graph and returns another.
 /// Target-blind by construction — nothing here knows which ISA it is feeding.
 pub mod passes;

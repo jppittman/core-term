@@ -9,7 +9,7 @@
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity, ExprNode, UniformDecl, UniformIdentity};
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval::eval_scalar;
-use pixelflow_ir::{Children, ExprArena, Ir, OpKind, Shape};
+use pixelflow_ir::{Children, ExprArena, Ir, Kernel, KernelStore, OpKind, Shape};
 use pixelflow_search::egraph::{Declined, EGraph, Vocabulary, insert, reachable_count};
 use pixelflow_search::runtime::optimize_runtime_arena;
 
@@ -212,6 +212,45 @@ fn unrepresentable_input_declines_rather_than_panicking() {
     assert_eq!(
         insert(&arena, p, &mut eg, Vocabulary::Templates),
         Err(Declined::Param(3))
+    );
+}
+
+/// A reference is declined, not mishandled. `passes::expand_refs` runs before
+/// saturation in every pipeline, so one arriving here is a pipeline-order bug
+/// — and the e-graph must say so rather than insert a leaf it cannot rewrite,
+/// which would silently make an inlining rule look like it had nothing to do.
+#[test]
+fn a_reference_is_declined_by_every_vocabulary() {
+    let named = Kernel::x().mul(&Kernel::constant(3.0)).by_ref();
+    let (arena, root) = named.parts();
+    let key = KernelStore::intern(&Kernel::x().mul(&Kernel::constant(3.0)));
+
+    for vocab in [Vocabulary::Runtime, Vocabulary::Templates] {
+        let mut eg = EGraph::new();
+        assert_eq!(
+            insert(arena, root, &mut eg, vocab),
+            Err(Declined::Ref(key)),
+            "{vocab:?} must decline a reference"
+        );
+    }
+}
+
+/// And the runtime tier as a whole does not decline it: `ExpandRefs` runs
+/// first, so what reaches the e-graph is the referent's body and the kernel
+/// optimizes exactly as the spliced composition does.
+#[test]
+fn the_runtime_pipeline_expands_before_it_saturates() {
+    let body = Kernel::x().mul(&Kernel::constant(0.0)).add(&Kernel::y());
+    let named = body.by_ref();
+    let (arena, root) = named.parts();
+    let optimized = optimize_runtime_arena(arena, root, pixelflow_ir::LatticeShape::POINT)
+        .expect("a named kernel must optimize, not bail");
+    let (opt, opt_root) = &*optimized;
+    // X·0 + Y folds to Y, which it could not do without seeing the body.
+    assert!(
+        matches!(opt.node(*opt_root), ExprNode::Var(1)),
+        "expected the referent's body to be folded to bare Y, got {:?}",
+        opt.node(*opt_root)
     );
 }
 

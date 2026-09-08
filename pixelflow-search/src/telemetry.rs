@@ -229,6 +229,13 @@ fn latency_prior_cost(arena: &ExprArena, root: ExprId) -> usize {
             | ExprNode::Param(_)
             | ExprNode::Buffer(_)
             | ExprNode::Uniform(_) => None,
+            // Not `None`: a reference's cost is its referent's, and pricing
+            // it at zero would put a silently wrong number in a measurement.
+            // Saturation never sees one — `egraph::insert` declines a `Ref`
+            // — so this arena cannot hold one either.
+            ExprNode::Ref(k) => panic!(
+                "latency_prior_cost: {k:?} — a reference has no cost of its own,                  and expand_refs runs before saturation, so one here means this                  arena never went through the pipeline"
+            ),
         };
         if let Some(op) = op {
             total += costs.cost(op);

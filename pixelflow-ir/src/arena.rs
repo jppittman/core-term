@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::kernel::Scalar;
+use crate::key::KernelKey;
 use crate::kind::OpKind;
 
 /// Coordinate axes a lattice has, and so the coordinate `Var` indices: `X = 0`,
@@ -203,6 +204,16 @@ pub enum ExprNode {
     /// is unknown until the call — and constant across the lattice, so it is
     /// loaded once per call rather than once per batch.
     Uniform(UniformId),
+    /// A kernel named by content — *evaluate that kernel here*. The one node
+    /// composition can hold instead of splicing a body in
+    /// (docs/plans/2026-09-09-composition-is-linking.md); the referent lives
+    /// in the [`KernelStore`](crate::store::KernelStore) and
+    /// [`expand_refs`](crate::passes::expand_refs) is what puts it back.
+    ///
+    /// A leaf with an identity of its own, like [`ExprNode::Buffer`]: it has
+    /// no children in *this* arena, and every pass that reads structure must
+    /// either expand it or refuse it — never walk through it.
+    Ref(KernelKey),
     Unary(OpKind, ExprId),
     Binary(OpKind, ExprId, ExprId),
     Ternary(OpKind, ExprId, ExprId, ExprId),
@@ -398,6 +409,37 @@ impl ExprArena {
         None
     }
 
+    /// The first `Var(i)` with `i >= floor` reachable from `root`, if any.
+    ///
+    /// `Var`'s index space is three namespaces stacked in one integer —
+    /// coordinates, then the reserved retired axes, then reduction binders,
+    /// then a binder's under-construction placeholder — so "is this term open
+    /// above `floor`?" is the only question a caller can ask structurally.
+    /// [`retired_axis`](ExprArena::retired_axis) is its sibling for the one
+    /// range that is closed rather than open-ended.
+    ///
+    /// Reachable from `root`, not every node, for
+    /// [`retired_axis`](ExprArena::retired_axis)'s reason: an arena keeps the
+    /// nodes a rebuild replaced, and nothing evaluates those.
+    #[must_use]
+    pub fn free_var_at_or_above(&self, root: ExprId, floor: u8) -> Option<u8> {
+        let mut seen = alloc::vec![false; self.nodes.len()];
+        let mut stack = alloc::vec![root];
+        while let Some(id) = stack.pop() {
+            let idx = id.0 as usize;
+            if core::mem::replace(&mut seen[idx], true) {
+                continue;
+            }
+            if let ExprNode::Var(i) = &self.nodes[idx]
+                && *i >= floor
+            {
+                return Some(*i);
+            }
+            stack.extend(self.children(id));
+        }
+        None
+    }
+
     /// Push a `Const(v)` node.
     pub fn push_const(&mut self, v: f32) -> ExprId {
         self.push_node(ExprNode::Const(v))
@@ -488,6 +530,19 @@ impl ExprArena {
             self.uniforms.len()
         );
         self.push_node(ExprNode::Uniform(id))
+    }
+
+    /// Push a `Ref(key)` leaf — a kernel named by content rather than spliced
+    /// in.
+    ///
+    /// No table declares it and nothing here checks that `key` resolves: the
+    /// referent lives in the process-global
+    /// [`KernelStore`](crate::store::KernelStore), which is the only thing
+    /// that can answer, and [`expand_refs`](crate::passes::expand_refs) is
+    /// where an unknown key is reported. `Kernel::by_ref` is the only
+    /// producer.
+    pub fn push_ref(&mut self, key: KernelKey) -> ExprId {
+        self.push_node(ExprNode::Ref(key))
     }
 
     /// Get the declaration for a uniform slot.
@@ -666,6 +721,13 @@ impl ExprArena {
     ///
     /// Leaf nodes map to: `Var -> OpKind::Var`, `Const/Param -> OpKind::Const`,
     /// `Buffer -> OpKind::Buffer`, `Uniform -> OpKind::Uniform`.
+    ///
+    /// # Panics
+    ///
+    /// Panics on an [`ExprNode::Ref`]. A reference is a *name*, not an
+    /// operation: giving it an `OpKind` would let it into every cost model,
+    /// vocabulary and emitter that dispatches on one, and each of those would
+    /// then price or emit a kernel it cannot see. Expand it first.
     #[inline]
     #[must_use]
     pub fn kind(&self, id: ExprId) -> OpKind {
@@ -674,6 +736,10 @@ impl ExprArena {
             ExprNode::Const(_) | ExprNode::Param(_) => OpKind::Const,
             ExprNode::Buffer(_) => OpKind::Buffer,
             ExprNode::Uniform(_) => OpKind::Uniform,
+            ExprNode::Ref(key) => panic!(
+                "ExprArena::kind: {key:?} is a reference to a kernel, not an \
+                 operation; run passes::expand_refs before asking for a kind"
+            ),
             ExprNode::Unary(op, _) => *op,
             ExprNode::Binary(op, _, _) => *op,
             ExprNode::Ternary(op, _, _, _) => *op,
@@ -690,7 +756,8 @@ impl ExprArena {
             | ExprNode::Const(_)
             | ExprNode::Param(_)
             | ExprNode::Buffer(_)
-            | ExprNode::Uniform(_) => ExprChildren::Zero,
+            | ExprNode::Uniform(_)
+            | ExprNode::Ref(_) => ExprChildren::Zero,
             ExprNode::Unary(_, a) => ExprChildren::One(*a),
             ExprNode::Binary(_, a, b) => ExprChildren::Two(*a, *b),
             ExprNode::Ternary(_, a, b, c) => ExprChildren::Three(*a, *b, *c),
@@ -717,7 +784,8 @@ impl ExprArena {
                 | ExprNode::Const(_)
                 | ExprNode::Param(_)
                 | ExprNode::Buffer(_)
-                | ExprNode::Uniform(_) => {
+                | ExprNode::Uniform(_)
+                | ExprNode::Ref(_) => {
                     max_depth = max_depth.max(d);
                 }
                 ExprNode::Unary(_, a) => {
@@ -760,7 +828,8 @@ impl ExprArena {
                 ExprNode::Const(_)
                 | ExprNode::Param(_)
                 | ExprNode::Buffer(_)
-                | ExprNode::Uniform(_) => {}
+                | ExprNode::Uniform(_)
+                | ExprNode::Ref(_) => {}
                 ExprNode::Unary(_, a) => stack.push(*a),
                 ExprNode::Binary(_, a, b) => {
                     stack.push(*a);
@@ -809,7 +878,8 @@ impl ExprArena {
                 | ExprNode::Const(_)
                 | ExprNode::Param(_)
                 | ExprNode::Buffer(_)
-                | ExprNode::Uniform(_) => {}
+                | ExprNode::Uniform(_)
+                | ExprNode::Ref(_) => {}
                 ExprNode::Unary(_, a) => stack.push(*a),
                 ExprNode::Binary(_, a, b) => {
                     stack.push(*a);
@@ -850,7 +920,8 @@ impl ExprArena {
                 | ExprNode::Const(_)
                 | ExprNode::Param(_)
                 | ExprNode::Buffer(_)
-                | ExprNode::Uniform(_) => {}
+                | ExprNode::Uniform(_)
+                | ExprNode::Ref(_) => {}
                 ExprNode::Unary(_, a) => stack.push(*a),
                 ExprNode::Binary(_, a, b) => {
                     stack.push(*a);
@@ -913,7 +984,8 @@ impl ExprArena {
                         | ExprNode::Const(_)
                         | ExprNode::Param(_)
                         | ExprNode::Buffer(_)
-                        | ExprNode::Uniform(_) => {}
+                        | ExprNode::Uniform(_)
+                        | ExprNode::Ref(_) => {}
                         ExprNode::Unary(_, a) => {
                             work.push(Task::Descend(*a));
                         }
@@ -963,6 +1035,9 @@ impl ExprArena {
                         // in this arena.
                         ExprNode::Buffer(b) => self.push_node(ExprNode::Buffer(b)),
                         ExprNode::Uniform(u) => self.push_node(ExprNode::Uniform(u)),
+                        // A key is arena-independent, so a reference copies
+                        // across as itself.
+                        ExprNode::Ref(k) => self.push_ref(k),
                         ExprNode::Unary(op, a) => {
                             let na = id_map[a.0 as usize]
                                 .expect("substitute_params: child not yet mapped for Unary");
@@ -1055,6 +1130,9 @@ impl ExprArena {
                         ExprNode::Var(i) => self.push_var(i),
                         ExprNode::Const(v) => self.push_const(v),
                         ExprNode::Param(i) => self.push_param(i),
+                        // Content-addressed, so a reference means the same
+                        // kernel in every arena and needs no remapping.
+                        ExprNode::Ref(k) => self.push_ref(k),
                         ExprNode::Buffer(b) => {
                             let slot = match buf_map[b.0 as usize] {
                                 Some(slot) => slot,
@@ -1168,6 +1246,7 @@ impl ExprArena {
                         ExprNode::Param(i) => self.push_param(i),
                         ExprNode::Buffer(b) => self.push_node(ExprNode::Buffer(b)),
                         ExprNode::Uniform(u) => self.push_node(ExprNode::Uniform(u)),
+                        ExprNode::Ref(k) => self.push_ref(k),
                         ExprNode::Unary(op, a) => {
                             let a = m(a);
                             self.push_unary(op, a)
@@ -1272,6 +1351,7 @@ impl ExprArena {
                 ExprNode::Param(i) => out.push_param(*i),
                 ExprNode::Buffer(b) => out.push_buffer(buffer_slot(*b)),
                 ExprNode::Uniform(u) => out.push_uniform(uniform_slot(*u)),
+                ExprNode::Ref(k) => out.push_ref(*k),
                 ExprNode::Unary(op, a) => out.push_unary(*op, m(*a)),
                 ExprNode::Binary(op, a, b) => out.push_binary(*op, m(*a), m(*b)),
                 ExprNode::Ternary(op, a, b, c) => out.push_ternary(*op, m(*a), m(*b), m(*c)),
@@ -1309,6 +1389,7 @@ impl ExprArena {
                     ExprNode::Param(i) => write!(f, "Param({})", i)?,
                     ExprNode::Buffer(b) => write!(f, "Buffer({})", b.0)?,
                     ExprNode::Uniform(u) => write!(f, "Uniform({})", u.0)?,
+                    ExprNode::Ref(k) => write!(f, "Ref({:#018x})", k.bits())?,
                     ExprNode::Unary(op, a) => {
                         stack.push(Task::WriteStr(")"));
                         stack.push(Task::Visit(*a));
@@ -1403,6 +1484,13 @@ impl ExprArena {
                 // Uniform slots likewise: by slot AND declaration.
                 (ExprNode::Uniform(su), ExprNode::Uniform(ou)) => {
                     if su != ou || self.uniforms[su.0 as usize] != other.uniforms[ou.0 as usize] {
+                        return false;
+                    }
+                }
+                // A key IS the content, so comparing keys compares the
+                // kernels named — no arena is needed to say so.
+                (ExprNode::Ref(sk), ExprNode::Ref(ok)) => {
+                    if sk != ok {
                         return false;
                     }
                 }

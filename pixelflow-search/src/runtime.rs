@@ -36,7 +36,7 @@ use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
 use pixelflow_ir::optimize::{Identity, Optimize};
-use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
+use pixelflow_ir::passes::{ExpandReduce, ExpandRefs, LowerDwrt};
 use pixelflow_ir::pipeline;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -155,7 +155,12 @@ fn optimize_runtime_arena_uncached(
     // The tier's pipeline, as a composition rather than three hand-sequenced
     // calls. The order is load-bearing and is now the expression itself:
     //
-    // `LowerDwrt` first, because differentiation manufactures constants (the
+    // `ExpandRefs` first, because every step after it reads structure and a
+    // reference has none to read — its body is in the `KernelStore`, not in
+    // this arena. It is an identity when nothing composed by reference, which
+    // is every kernel production builds today.
+    //
+    // `LowerDwrt` next, because differentiation manufactures constants (the
     // winding kernels' `d = X − f(Y)` gives `DX(d) = 1` and, for a straight
     // edge, a constant `DY(d)` — making the whole gradient magnitude
     // `√(DX²+DY²)` a compile-time number) and `ConstantFold` can only cascade
@@ -170,14 +175,19 @@ fn optimize_runtime_arena_uncached(
     // means exactly what it always meant: the caller compiles its own arena
     // unchanged, unoptimized but correct.
     match saturation_switch() {
-        SaturationSwitch::On => pipeline![LowerDwrt, ExpandReduce, Saturate::runtime(shape)]
-            .optimize(arena, root)
-            .into_changed(),
+        SaturationSwitch::On => pipeline![
+            ExpandRefs,
+            LowerDwrt,
+            ExpandReduce,
+            Saturate::runtime(shape)
+        ]
+        .optimize(arena, root)
+        .into_changed(),
         // The `Identity` path: the same legalizing prefix, no saturation.
         // What `Lattice::bake` would emit if the e-graph did not exist —
         // the "F" column of docs/plans/2026-09-06-egraph-at-production-scale.md
         // §7, measured by docs/results/2026-09-07-egraph-off-vs-on-real-shaders.md.
-        SaturationSwitch::Off => pipeline![LowerDwrt, ExpandReduce, Identity]
+        SaturationSwitch::Off => pipeline![ExpandRefs, LowerDwrt, ExpandReduce, Identity]
             .optimize(arena, root)
             .into_changed(),
     }
@@ -293,6 +303,12 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
                 let decl = *arena.uniform_decl(u);
                 key.extend_from_slice(alloc::format!("{:?}", decl.id).as_bytes());
                 key.extend_from_slice(&decl.default.to_bits().to_le_bytes());
+            }
+            // A reference's key IS its referent's content, digested, so
+            // encoding the key is encoding the kernel it names.
+            &ExprNode::Ref(k) => {
+                key.push(9);
+                key.extend_from_slice(&k.bits().to_le_bytes());
             }
             &ExprNode::Unary(op, a) => {
                 key.push(4);
@@ -2130,7 +2146,7 @@ pub(crate) mod production_telemetry {
                 ExprNode::Unary(k, _)
                 | ExprNode::Binary(k, _, _)
                 | ExprNode::Ternary(k, _, _, _) => Some(*k),
-                other @ (ExprNode::Param(_) | ExprNode::Nary(..)) => {
+                other @ (ExprNode::Param(_) | ExprNode::Nary(..) | ExprNode::Ref(_)) => {
                     panic!("extracted arena contains {other:?}")
                 }
             };

@@ -327,6 +327,20 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
             // prologue — and unknown on the parameter space, which is why it
             // is not a `Const`.
             ExprNode::Uniform(_) => Variance::CONST,
+            // A reference denotes what its referent denotes, sampled at the
+            // same coordinates, so it varies exactly as the referent does.
+            // Resolving is the only way to know that — a key carries a
+            // kernel's identity, not its structure.
+            ExprNode::Ref(key) => crate::store::KernelStore::resolve(*key).map_or(
+                // An unresolvable key is a corrupt graph, which
+                // `passes::expand_refs` reports at the layer that can name
+                // it. Here, refuse to claim an invariance we cannot prove.
+                Variance::ALL,
+                |referent| {
+                    let (ref_arena, ref_root) = referent.parts();
+                    compute_arena_variance(ref_arena)[ref_root.0 as usize]
+                },
+            ),
             ExprNode::Param(_) => {
                 // Parameters are substituted before JIT compilation.
                 // If we see one here, treat conservatively as all-varying.
@@ -731,6 +745,53 @@ mod tests {
         assert_eq!(Variance::COORDS.popcount(), 2);
         assert_eq!(Variance::BINDERS.popcount(), 4);
         assert_eq!(Variance::ALL.popcount(), 8);
+    }
+
+    /// A reference's variance is its referent's — resolved, not guessed. A
+    /// blanket `ALL` would be safe but would stop LICM hoisting anything a
+    /// named kernel feeds; a blanket `CONST` would hoist a Y-varying value
+    /// out of the row loop and render the wrong picture.
+    #[test]
+    fn a_reference_varies_as_its_referent_does() {
+        use crate::arena::ExprArena;
+        use crate::kernel::Kernel;
+
+        // X-only, Y-only, and constant referents: each must come back with
+        // exactly the referent's own free coordinates.
+        let cases = [
+            (Kernel::x().sqrt(), Variance::X),
+            (Kernel::y().neg(), Variance::Y),
+            (Kernel::constant(4.0), Variance::CONST),
+            (
+                Kernel::x().add(&Kernel::y()),
+                Variance::X.union(Variance::Y),
+            ),
+        ];
+        for (referent, expected) in cases {
+            let named = referent.by_ref();
+            let (arena, root) = named.parts();
+            let v = super::compute_arena_variance(arena);
+            assert_eq!(v[root.0 as usize], expected);
+        }
+
+        // And it composes: a reference to an X-only kernel plus Y varies in
+        // both, exactly as the spliced form would.
+        let mixed = Kernel::x().sqrt().by_ref().add(&Kernel::y());
+        let (arena, root) = mixed.parts();
+        let v = super::compute_arena_variance(arena);
+        assert_eq!(v[root.0 as usize], Variance::X.union(Variance::Y));
+
+        // An unresolvable key claims nothing. `KernelKey::of` on a kernel
+        // nobody interned is the honest way to get one: no store entry, so
+        // no referent to read a variance off.
+        let never = Kernel::x().mul(&Kernel::constant(1.0e-27));
+        let (never_arena, never_root) = never.parts();
+        let mut orphaned = ExprArena::new();
+        let orphan = orphaned.push_ref(crate::key::KernelKey::of(never_arena, never_root));
+        assert_eq!(
+            super::compute_arena_variance(&orphaned)[orphan.0 as usize],
+            Variance::ALL
+        );
     }
 
     #[test]

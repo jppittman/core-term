@@ -216,6 +216,10 @@ fn assert_polynomial_only(name: &str, arena: &ExprArena) {
             | ExprNode::Uniform(_) => {
                 continue;
             }
+            ExprNode::Ref(k) => panic!(
+                "bezier entry {name} contains Ref({k:?}) — the family is built from \
+                 arithmetic alone and never composes by reference"
+            ),
             ExprNode::Unary(op, _)
             | ExprNode::Binary(op, _, _)
             | ExprNode::Ternary(op, _, _, _)
@@ -363,6 +367,10 @@ fn main() {
                 | ExprNode::Uniform(_) => {
                     continue;
                 }
+                ExprNode::Ref(k) => panic!(
+                    "bezier entry {name} contains Ref({k:?}) — a name for a kernel \
+                     interned in this process, which a corpus file outlives"
+                ),
                 ExprNode::Unary(op, _)
                 | ExprNode::Binary(op, _, _)
                 | ExprNode::Ternary(op, _, _, _)

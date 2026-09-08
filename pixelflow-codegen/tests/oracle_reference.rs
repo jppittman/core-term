@@ -110,6 +110,10 @@ fn expression_tolerance(arena: &ExprArena, root: ExprId) -> Tolerance {
             ExprNode::Buffer(_) => OpKind::Buffer,
             ExprNode::Uniform(_) => OpKind::Uniform,
             ExprNode::Param(p) => panic!("expression_tolerance: unbound Param({p})"),
+            ExprNode::Ref(k) => panic!(
+                "expression_tolerance: Ref({k:?}) — the referent's ops are not in this \
+                 arena, so its allowance cannot be folded in; expand_refs first"
+            ),
             ExprNode::Unary(op, _)
             | ExprNode::Binary(op, _, _)
             | ExprNode::Ternary(op, _, _, _)

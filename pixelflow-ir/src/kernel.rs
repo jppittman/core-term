@@ -748,10 +748,18 @@ impl Kernel {
     /// substitution: it is already the same value everywhere.
     #[must_use]
     pub fn at(&self, cx: &Kernel, cy: &Kernel) -> Self {
-        let mut arena = self.inner.arena.clone();
+        // A warp substitutes the receiver's *coordinate* variables, and a
+        // `Ref` is opaque to substitution — it has no `Var` to rewrite here,
+        // only a name — so leaving one in place would sample the referent at
+        // the outer coordinates and produce plausible, wrong pixels. Expand
+        // first. Identity (a clone, which this already did) when there is no
+        // reference to expand; when there is, this is the static-linking
+        // direction taken, which is the only direction that exists yet.
+        let (mut arena, self_root) =
+            crate::passes::expand_refs_owned(&self.inner.arena, self.inner.root);
         let x = arena.splice(&cx.inner.arena, cx.inner.root);
         let y = arena.splice(&cy.inner.arena, cy.inner.root);
-        let root = arena.substitute_vars_with(self.inner.root, &[(0, x), (1, y)]);
+        let root = arena.substitute_vars_with(self_root, &[(0, x), (1, y)]);
         let mut buffers = self.inner.buffers.clone();
         merge_buffer_data(&mut buffers, &cx.inner.buffers);
         merge_buffer_data(&mut buffers, &cy.inner.buffers);
@@ -797,6 +805,55 @@ impl Kernel {
     #[must_use]
     pub fn parts(&self) -> (&ExprArena, ExprId) {
         (&self.inner.arena, self.inner.root)
+    }
+
+    // ────────────────────────── linking ───────────────────────────
+
+    /// This kernel as a one-node *reference* to itself: intern it in the
+    /// [`KernelStore`](crate::store::KernelStore) and return the kernel
+    /// `Ref(key)`.
+    ///
+    /// Composition splices — `a.add(&b)` copies `b`'s arena into the result —
+    /// which is static linking with no alternative, and is why a 26-character
+    /// string cost millions of nodes to *construct*. A reference is the other
+    /// option: `k.by_ref()` denotes exactly what `k` denotes, at one node,
+    /// and composes like any other kernel
+    /// (docs/plans/2026-09-09-composition-is-linking.md §1).
+    ///
+    /// The tabulations `k` carries come along, so the data still travels with
+    /// the value; the referent's arena, root and tables are reachable through
+    /// the key. Today every reference is inlined again by
+    /// [`expand_refs`](crate::passes::expand_refs) before anything else sees
+    /// it — the linker only inlines — so this changes what a kernel *costs to
+    /// build*, never what it means.
+    ///
+    /// This is the only way a `Ref` node is produced.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a kernel that is still *open* — one holding a
+    /// [`BinderScope`] placeholder, i.e. the index a `Kernel::over` body is
+    /// being built against. A name for an open term means nothing: the
+    /// referent's value depends on a binding the store cannot carry, and the
+    /// binder's rename cannot reach through a name to substitute it, so what
+    /// expansion would put back is an index nothing binds.
+    #[must_use]
+    pub fn by_ref(&self) -> Self {
+        let open = self
+            .inner
+            .arena
+            .free_var_at_or_above(self.inner.root, PLACEHOLDER_BASE as u8);
+        assert!(
+            open.is_none(),
+            "Kernel::by_ref: this kernel holds Var({}), a reduction binder's \
+             placeholder — it is the body of a `Kernel::over` still under \
+             construction, and an open term has no identity to name it by",
+            open.unwrap_or_default(),
+        );
+        let key = crate::store::KernelStore::intern(self);
+        let mut a = ExprArena::new();
+        let r = a.push_ref(key);
+        Self::wrap(a, r, self.inner.buffers.clone())
     }
 
     // ────────────────────── bound-memory link ──────────────────────

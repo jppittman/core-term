@@ -73,6 +73,38 @@ is load-bearing rather than a convenience: without the code there is nothing
 to name the tabulation *by*, and `BufferIdentity` is the fresh-minted
 placeholder that stands in for the name we threw away.
 
+### 2.1 Corrected in execution: structure identity is not value identity
+
+**Decision 2 as literally stated is wrong, and the store's first test found
+it.** `canonical(...).key` is *deliberately* blind to which memory a slot
+binds — buffers and uniforms are numbered by dense slot, and that blindness
+is precisely what lets a thousand circles over a thousand atlases share one
+compiled region. So two `DiscreteManifold::kernel()`s over two different
+tables have **identical** canonical bytes. A reference store keyed on those
+bytes alone handed back the other kernel, and `Manifold::bind` panicked on
+a slot nothing was bound to.
+
+The compile cache survives that blindness because it returns the link
+*beside* the code (`Linked`) and lets the caller bind. A reference store
+cannot: `resolve` must return the very kernel, tabulations and all.
+
+So there is one canonical walk and **two keys from it**. `jit_cache` keys on
+the shape bytes alone, because it wants *structure* identity — the same
+program for every binding. `KernelKey` digests the shape bytes and both link
+tables, because a reference wants *value* identity — this kernel, over this
+memory. The substance of the decision survives (one walk, one notion of
+"the same"); the letter — "they are not two things" — is exactly one bit
+wrong: they are one thing with two projections.
+
+Also settled in execution: `KernelKey` is 64 bits, because `ExprNode` is
+held to 16 bytes by a static assertion and a 128-bit leaf would grow every
+arena in the process by half. The store keeps the full `Canonical` beside
+each entry and compares it on every intern, so a collision is a loud panic
+rather than a wrong referent. And the hash is hand-rolled (FNV-1a with a
+SplitMix64 finalizer) rather than `DefaultHasher`, whose algorithm is
+explicitly unstable across Rust releases — an identity that moves with the
+toolchain is not an identity.
+
 ## 3. Inlining is an e-graph rule
 
 **Decision (JP, 2026-09-09).** Not a scheduling annotation invented for the

@@ -29,6 +29,12 @@ pub enum Declined {
     /// A macro-parameter slot. Valid only before kernel compilation, so one
     /// here means the term reached the e-graph without being specialized.
     Param(u8),
+    /// A kernel named by content. `passes::expand_refs` runs before saturation
+    /// in every pipeline, so one here is a pipeline-order bug rather than a
+    /// term the e-graph could learn to hold: a reference has no structure to
+    /// rewrite, and inlining it inside saturation is a rule that does not
+    /// exist yet (docs/plans/2026-09-09-composition-is-linking.md §3).
+    Ref(pixelflow_ir::KernelKey),
 }
 
 /// Insert the subgraph reachable from `root` into `egraph`, returning the
@@ -41,8 +47,9 @@ pub enum Declined {
 /// stack.
 ///
 /// `Buffer` and `Uniform` leaves insert as themselves, carrying their
-/// declarations; only `Param` declines, since it has no value until a builder
-/// substitutes it.
+/// declarations; `Param` declines, since it has no value until a builder
+/// substitutes it, and `Ref` declines, since its body is not in this term at
+/// all — `passes::expand_refs` puts it there, and runs first.
 ///
 /// **Reachable-only.** A term representation may hold nodes no longer reached
 /// from `root` — an arena accumulates construction garbage — and inserting
@@ -76,6 +83,7 @@ pub fn insert<I: Ir>(
                     Shape::Var(i) => egraph.add(ENode::Var(i)),
                     Shape::Const(v) => egraph.add(ENode::constant(v)),
                     Shape::Param(i) => return Err(Declined::Param(i)),
+                    Shape::Ref(key) => return Err(Declined::Ref(key)),
                     Shape::Buffer(decl) => egraph.add(ENode::Buffer(decl)),
                     Shape::Uniform(decl) => egraph.add(ENode::Uniform(decl)),
                     Shape::Op(kind, children) => {

@@ -256,6 +256,11 @@ pub fn reachable_subtree(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId)
                          the corpus format does not serialize",
                         u.0
                     ),
+                    ExprNode::Ref(k) => panic!(
+                        "reachable_subtree: expression references Ref({k:?}), which names a \
+                         kernel interned in this process — a corpus outlives the process, so \
+                         the key would read back naming nothing"
+                    ),
                     ExprNode::Unary(op, a) => ExprNode::Unary(*op, map(*a)),
                     ExprNode::Binary(op, a, b) => ExprNode::Binary(*op, map(*a), map(*b)),
                     ExprNode::Ternary(op, a, b, c) => {
@@ -388,6 +393,15 @@ fn write_node(w: &mut impl Write, node: &ExprNode) -> io::Result<()> {
                     "Uniform({}) has no corpus encoding: its declaration is not serialized",
                     u.0
                 ),
+            ));
+        }
+        // A key names an entry in *this* process's `KernelStore`, and a
+        // corpus outlives the process — encoding one would store a name
+        // nothing can resolve on the way back in. Expand refs before writing.
+        ExprNode::Ref(k) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Ref({k:?}) has no corpus encoding: it names a process-local kernel"),
             ));
         }
     }

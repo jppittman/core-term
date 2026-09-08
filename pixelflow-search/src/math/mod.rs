@@ -164,6 +164,7 @@ mod tests {
             ExprNode::Const(val) => egraph.add(ENode::Const(val.to_bits())),
             ExprNode::Param(i) => panic!("Param({i}) reached math tests"),
             ExprNode::Buffer(b) => panic!("Buffer({}) reached math tests", b.0),
+            ExprNode::Ref(k) => panic!("Ref({k:?}) reached math tests"),
             ExprNode::Uniform(u) => egraph.add(ENode::Uniform(*arena.uniform_decl(u))),
             ExprNode::Unary(kind, a) => {
                 let ca = expr_to_egraph(arena, a, egraph);

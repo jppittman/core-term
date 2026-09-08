@@ -270,6 +270,13 @@ pub fn encode(kernel: &CollapseKernel) -> String {
                  macro front-end placeholder, never present in a compiled kernel",
                 kernel.name
             ),
+            // A key names an entry in this process's `KernelStore`, which a
+            // corpus file outlives; expand references before dumping one.
+            ExprNode::Ref(k) => panic!(
+                "{}: corpus kernels must be self-contained, but this one holds Ref({k:?}) — \
+                 a name for a kernel interned in this process only",
+                kernel.name
+            ),
         }
         .expect("fmt");
         dense[idx] = next;

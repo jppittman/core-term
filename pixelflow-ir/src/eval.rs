@@ -61,7 +61,15 @@ pub fn eval_scalar(
     // transcendental-heavy expressions. Nodes under a reduction binder are
     // excluded: their value changes with the binding, so caching them across
     // iterations would return a stale term.
-    let (expanded, root) = crate::passes::expand_transcendentals_owned(arena, root);
+    // References first, for the reason `legalize` expands them first: the
+    // referent's body is not in this arena, so every walk below — the
+    // transcendental expansion, the variance table, the memo indexed by
+    // `ExprId` — would be walking a name. Splicing it in *is* "evaluate that
+    // kernel at these coordinates", and it is the same expansion the compiled
+    // path takes, so oracle and JIT cannot disagree about what a reference
+    // means. Identity (a bare clone) when the arena holds none.
+    let (arena, root) = crate::passes::expand_refs_owned(arena, root);
+    let (expanded, root) = crate::passes::expand_transcendentals_owned(&arena, root);
     let variance = crate::variance::compute_arena_variance(&expanded);
     let n = expanded.len();
     let memo = core::cell::RefCell::new(alloc::vec![None; n]);
@@ -849,9 +857,9 @@ fn uniform_value(arena: &ExprArena, bindings: &BindingTable<'_>, u: UniformId) -
 /// # Panics
 ///
 /// Panics on the node shapes the bound walk does not model: `Param` (substitute
-/// first), a bare `Buffer`, and `Nary`/`Reduce` (a fold rebinds its body per
-/// iteration, so a flat per-node memo cannot represent it — expand the reduce
-/// first).
+/// first), a bare `Buffer`, a `Ref` (expand it first — its body is not in this
+/// arena), and `Nary`/`Reduce` (a fold rebinds its body per iteration, so a
+/// flat per-node memo cannot represent it — expand the reduce first).
 fn value_children(node: &ExprNode) -> ([ExprId; 3], usize) {
     const NONE: ExprId = ExprId(0);
     match node {
@@ -865,6 +873,9 @@ fn value_children(node: &ExprNode) -> ([ExprId; 3], usize) {
         ExprNode::Buffer(b) => panic!(
             "PointCheck: bare Buffer({}) is not a value; read it through Gather",
             b.0
+        ),
+        ExprNode::Ref(key) => panic!(
+            "PointCheck: {key:?} names a kernel whose body is not in this arena;              expand_refs first"
         ),
         ExprNode::Nary(op, _, _) => panic!(
             "PointCheck: Nary({op:?}) — a reduction rebinds its body per iteration, \
@@ -1713,6 +1724,12 @@ impl Env<'_> {
             ExprNode::Buffer(b) => panic!(
                 "eval_scalar: bare Buffer({}) is not a value; read it through Gather",
                 b.0
+            ),
+            // Unreachable precondition: `eval_scalar` expands references
+            // before building this environment, so a survivor means the walk
+            // was entered without that step.
+            ExprNode::Ref(key) => panic!(
+                "eval_scalar: {key:?} survived expand_refs — this environment                  was built without the entry point's expansion"
             ),
             ExprNode::Unary(op, a) => {
                 let x = self.eval(*a);

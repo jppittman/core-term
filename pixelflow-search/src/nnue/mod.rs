@@ -243,6 +243,13 @@ pub fn pattern_match_arena(
                 ExprNode::Uniform(w) if u == w => {}
                 _ => return None,
             },
+            // A reference matches the reference to the same kernel: a key IS
+            // the content, so equal keys are equal terms without resolving
+            // either.
+            ExprNode::Ref(k) => match arena.node(e_id) {
+                ExprNode::Ref(e_k) if k == e_k => {}
+                _ => return None,
+            },
             // Structural match: op must match, push children onto the stack.
             ExprNode::Unary(t_op, t_a) => match arena.node(e_id) {
                 ExprNode::Unary(e_op, e_a) if e_op == t_op => {
@@ -341,6 +348,9 @@ pub fn substitute_template_arena(
             ExprNode::Uniform(u) => panic!(
                 "ExprNode::Uniform({}) in a rewrite template — uniforms are not rewritable",
                 u.0
+            ),
+            ExprNode::Ref(k) => panic!(
+                "ExprNode::Ref({k:?}) in a rewrite template — a reference names a                  kernel this rewrite cannot see; expand_refs first"
             ),
             ExprNode::Unary(op, t_a) => {
                 let a = ExprId(remap[t_a.0 as usize]);
@@ -1088,6 +1098,8 @@ impl BwdGenerator {
             ExprNode::Param(p) => ExprNode::Param(*p),
             ExprNode::Buffer(b) => ExprNode::Buffer(*b),
             ExprNode::Uniform(u) => ExprNode::Uniform(*u),
+            // A leaf whose name is arena-independent: nothing to remap.
+            ExprNode::Ref(k) => ExprNode::Ref(*k),
             ExprNode::Unary(op, a) => ExprNode::Unary(*op, remap[a.0 as usize]),
             ExprNode::Binary(op, a, b) => {
                 ExprNode::Binary(*op, remap[a.0 as usize], remap[b.0 as usize])
@@ -1132,6 +1144,7 @@ impl BwdGenerator {
             ExprNode::Param(p) => arena.push_param(*p),
             ExprNode::Buffer(b) => arena.push_buffer(*b),
             ExprNode::Uniform(u) => arena.push_uniform(*u),
+            ExprNode::Ref(k) => arena.push_ref(*k),
             ExprNode::Unary(op, a) => arena.push_unary(*op, *a),
             ExprNode::Binary(op, a, b) => arena.push_binary(*op, *a, *b),
             ExprNode::Ternary(op, a, b, c) => arena.push_ternary(*op, *a, *b, *c),
