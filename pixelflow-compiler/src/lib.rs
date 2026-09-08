@@ -154,3 +154,104 @@ fn emit(analyzed: &sema::AnalyzedKernel) -> TokenStream {
             .into(),
     }
 }
+
+/// Every method name the front end advertises must survive both macros.
+///
+/// This class of bug shipped once. `sema` accepted `.round()`, `.log10()`
+/// and `.pow()` — ordinary `OpKind`s, so `known_method_names()` returned
+/// them — while arena lowering had no arm for any of the three; and the
+/// mirror-image gap hid `fract`/`hypot`/`clamp`, whose e-graph decomposition
+/// `sema` rejected the names for, leaving it unreachable from either macro.
+/// Both halves are a disagreement *between pipeline stages*, so no test of a
+/// single stage can see them: the stage under test is the one that is right.
+///
+/// Nor can sampling see them. A method is exercised only if some test
+/// happens to write a kernel calling it, and `kernel_macro.rs`'s cases are
+/// hand-picked — every one of those six was already covered at the SIMD
+/// backend, in codegen, and on the `Kernel` value API, and still nobody had
+/// written `X.round()` inside a `kernel!` body.
+///
+/// So run the real pipeline, both macros' versions of it, over the whole
+/// advertised surface. Adding an op to `OpKind::is_dsl_method` or a name to
+/// `LIBRARY_METHODS` without a path through every stage fails here, for
+/// whoever adds it.
+#[cfg(test)]
+mod every_advertised_method_compiles {
+    use crate::ir_bridge::LIBRARY_METHODS;
+    use crate::{jit_backend, optimize, parser, sema};
+    use pixelflow_ir::{OpKind, known_method_names};
+    use proc_macro2::Span;
+    use quote::quote;
+    use syn::Ident;
+
+    /// Which macro's pipeline to run. `kernel!` saturates the e-graph between
+    /// sema and lowering; `kernel_raw!` goes straight across. The difference
+    /// between them is where the `hypot`/`fract` asymmetry lived, so both are
+    /// swept.
+    #[derive(Clone, Copy, Debug)]
+    enum Macro {
+        Kernel,
+        KernelRaw,
+    }
+
+    /// Expand `X.<method>(X, ..)` through `which` macro's own pipeline —
+    /// the same calls [`kernel`] and [`kernel_raw`] make — and report
+    /// whether it yields code.
+    fn expand(which: Macro, method: &str, arg_count: usize) -> Result<(), String> {
+        let name = Ident::new(method, Span::call_site());
+        let args = (0..arg_count).map(|_| quote!(X));
+        let body = quote! { || X.#name(#(#args),*) };
+
+        let def = parser::parse(body).map_err(|e| e.to_string())?;
+        let analyzed = sema::analyze(def).map_err(|e| e.to_string())?;
+        let analyzed = match which {
+            Macro::Kernel => optimize::optimize(analyzed),
+            Macro::KernelRaw => analyzed,
+        };
+        jit_backend::emit_kernel(&analyzed).map(|_| ())
+    }
+
+    /// Every `(method, arg_count)` the front end accepts: the primitive ops
+    /// `sema` validates against, plus the library compositions.
+    fn advertised() -> impl Iterator<Item = (&'static str, usize)> {
+        known_method_names()
+            .map(|name| {
+                let op = OpKind::from_name(name)
+                    .expect("known_method_names() only yields names from_name parses");
+                // Arity counts the receiver as the first operand.
+                (name, op.arity() - 1)
+            })
+            .chain(LIBRARY_METHODS.iter().copied())
+    }
+
+    #[test]
+    fn through_the_kernel_macros_pipeline() {
+        for (method, arg_count) in advertised() {
+            assert_eq!(
+                expand(Macro::Kernel, method, arg_count),
+                Ok(()),
+                "`kernel!(|| X.{method}(..))` is advertised but does not compile"
+            );
+        }
+    }
+
+    #[test]
+    fn through_the_kernel_raw_macros_pipeline() {
+        for (method, arg_count) in advertised() {
+            assert_eq!(
+                expand(Macro::KernelRaw, method, arg_count),
+                Ok(()),
+                "`kernel_raw!(|| X.{method}(..))` is advertised but does not compile"
+            );
+        }
+    }
+
+    /// The converse guard: a name nothing advertises must still be refused,
+    /// so the sweeps above cannot be satisfied by accepting everything.
+    #[test]
+    fn a_name_the_front_end_does_not_advertise_is_still_refused() {
+        assert!(expand(Macro::Kernel, "not_a_real_method", 0).is_err());
+        // A real op at the wrong arity is just as unadvertised.
+        assert!(expand(Macro::Kernel, "sqrt", 2).is_err());
+    }
+}
