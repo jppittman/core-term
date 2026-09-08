@@ -273,7 +273,7 @@ impl StackFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::emit::Loc;
+    use crate::emit::{Binding, Loc};
 
     #[test]
     fn storage_capabilities_for_reg_and_slot() {
@@ -298,8 +298,17 @@ mod tests {
     fn storage_capabilities_for_loc() {
         let l_reg = Loc::Reg(Reg(4));
         let l_slot = Loc::Slot(Slot::new(64, 32));
-        let l_remat = Loc::Remat(0x3F80_0000);
 
+        // StoreTarget is total for Loc: every Loc is a writable physical location.
+        assert_eq!(l_reg.target_storage(), Storage::Reg(Reg(4)));
+        assert_eq!(l_reg.target_reg(), Some(Reg(4)));
+        assert_eq!(l_reg.target_slot(), None);
+
+        assert_eq!(l_slot.target_storage(), Storage::Slot(Slot::new(64, 32)));
+        assert_eq!(l_slot.target_reg(), None);
+        assert_eq!(l_slot.target_slot(), Some(Slot::new(64, 32)));
+
+        // SourceOperand
         assert_eq!(l_reg.source_reg(), Some(Reg(4)));
         assert_eq!(l_reg.source_slot(), None);
         assert_eq!(l_reg.source_const(), None);
@@ -308,10 +317,17 @@ mod tests {
         assert_eq!(l_slot.source_slot(), Some(Slot::new(64, 32)));
         assert_eq!(l_slot.source_const(), None);
 
-        assert_eq!(l_remat.source_reg(), None);
-        assert_eq!(l_remat.source_slot(), None);
-        assert_eq!(l_remat.source_const(), Some(0x3F80_0000));
-        assert_eq!(l_remat.source_storage(), None);
+        // Binding SourceOperand capabilities (including Remat)
+        let b_reg = Binding::from(l_reg);
+        let b_slot = Binding::from(l_slot);
+        let b_remat = Binding::Remat(0x3F80_0000);
+
+        assert_eq!(b_reg.source_reg(), Some(Reg(4)));
+        assert_eq!(b_slot.source_slot(), Some(Slot::new(64, 32)));
+        assert_eq!(b_remat.source_reg(), None);
+        assert_eq!(b_remat.source_slot(), None);
+        assert_eq!(b_remat.source_const(), Some(0x3F80_0000));
+        assert_eq!(b_remat.source_storage(), None);
     }
 
     #[test]

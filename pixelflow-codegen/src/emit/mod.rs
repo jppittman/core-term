@@ -104,16 +104,17 @@ pub struct Gpr(pub u8);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KReg(pub u8);
 
-/// Location of a value: either in physical storage (register or stack slot) or rematerialized.
+/// A physical location where a value resides: in a register or on the stack.
+///
+/// Every variant of `Loc` is a writable, addressable storage location, which
+/// is why `Loc` implements [`StoreTarget`] — the conversion is total.
+/// A rematerialized constant has no location; it is a [`Binding`], not a `Loc`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Loc {
     /// Value is in a register.
     Reg(Reg),
     /// Value is spilled to a stack slot.
     Slot(Slot),
-    /// Value is a constant (these are its `f32` bits): it lives nowhere and is
-    /// re-emitted at each use.
-    Remat(u32),
 }
 
 impl Loc {
@@ -123,49 +124,160 @@ impl Loc {
         match self {
             Loc::Reg(r) => r,
             Loc::Slot(s) => panic!("expected register, got stack slot {}", s.offset()),
-            Loc::Remat(bits) => panic!("expected register, got rematerialized {bits:#x}"),
         }
     }
 
-    /// Physical storage location if in register or on stack.
+    /// Physical storage location.
+    #[must_use]
+    pub fn storage(self) -> Storage {
+        match self {
+            Loc::Reg(r) => Storage::Reg(r),
+            Loc::Slot(s) => Storage::Slot(s),
+        }
+    }
+}
+
+impl From<Reg> for Loc {
+    #[inline]
+    fn from(r: Reg) -> Self {
+        Loc::Reg(r)
+    }
+}
+
+impl From<Slot> for Loc {
+    #[inline]
+    fn from(s: Slot) -> Self {
+        Loc::Slot(s)
+    }
+}
+
+impl StoreTarget for Loc {
+    #[inline]
+    fn target_storage(self) -> Storage {
+        self.storage()
+    }
+    #[inline]
+    fn target_reg(self) -> Option<Reg> {
+        match self {
+            Loc::Reg(r) => Some(r),
+            Loc::Slot(_) => None,
+        }
+    }
+    #[inline]
+    fn target_slot(self) -> Option<Slot> {
+        match self {
+            Loc::Reg(_) => None,
+            Loc::Slot(s) => Some(s),
+        }
+    }
+}
+
+impl SourceOperand for Loc {
+    #[inline]
+    fn source_storage(self) -> Option<Storage> {
+        Some(self.storage())
+    }
+    #[inline]
+    fn source_reg(self) -> Option<Reg> {
+        match self {
+            Loc::Reg(r) => Some(r),
+            Loc::Slot(_) => None,
+        }
+    }
+    #[inline]
+    fn source_slot(self) -> Option<Slot> {
+        match self {
+            Loc::Reg(_) => None,
+            Loc::Slot(s) => Some(s),
+        }
+    }
+    #[inline]
+    fn source_const(self) -> Option<u32> {
+        None
+    }
+}
+
+/// The binding of a value after register allocation: a physical location
+/// or a constant that is rematerialized at every use.
+///
+/// `Binding` is the register allocator's full answer — "where did this value
+/// end up?" — and includes [`Remat`](Binding::Remat) for constants that live
+/// nowhere. For a writable physical location, use [`Loc`] instead.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Binding {
+    /// Value lives in a physical location (register or stack slot).
+    Loc(Loc),
+    /// Value is a constant (these are its `f32` bits): it lives nowhere and is
+    /// re-emitted at each use.
+    Remat(u32),
+}
+
+impl Binding {
+    /// Get the register, panicking if the value is not in one.
+    #[must_use]
+    pub fn reg(self) -> Reg {
+        match self {
+            Binding::Loc(loc) => loc.reg(),
+            Binding::Remat(bits) => panic!("expected register, got rematerialized {bits:#x}"),
+        }
+    }
+
+    /// Physical storage location if not rematerialized.
+    #[must_use]
+    pub fn as_loc(self) -> Option<Loc> {
+        match self {
+            Binding::Loc(loc) => Some(loc),
+            Binding::Remat(_) => None,
+        }
+    }
+
+    /// Physical storage as the canonical enum, if not rematerialized.
     #[must_use]
     pub fn as_storage(self) -> Option<Storage> {
-        match self {
-            Loc::Reg(r) => Some(Storage::Reg(r)),
-            Loc::Slot(s) => Some(Storage::Slot(s)),
-            Loc::Remat(_) => None,
-        }
+        self.as_loc().map(|l| l.storage())
     }
 
     /// Stack slot if spilled to stack.
     #[must_use]
     pub fn as_slot(self) -> Option<Slot> {
         match self {
-            Loc::Slot(s) => Some(s),
+            Binding::Loc(Loc::Slot(s)) => Some(s),
             _ => None,
         }
     }
 }
 
-// NOTE: Loc intentionally does NOT implement StoreTarget.
-// Loc::Remat has no physical storage, so it cannot satisfy the trait's
-// invariant that target_storage() always returns a writable location.
-// Use Reg, Slot, or Storage when a writable destination is required.
+impl From<Loc> for Binding {
+    #[inline]
+    fn from(loc: Loc) -> Self {
+        Binding::Loc(loc)
+    }
+}
 
-impl SourceOperand for Loc {
+impl From<Reg> for Binding {
+    #[inline]
+    fn from(r: Reg) -> Self {
+        Binding::Loc(Loc::Reg(r))
+    }
+}
+
+impl From<Slot> for Binding {
+    #[inline]
+    fn from(s: Slot) -> Self {
+        Binding::Loc(Loc::Slot(s))
+    }
+}
+
+impl SourceOperand for Binding {
     #[inline]
     fn source_storage(self) -> Option<Storage> {
-        match self {
-            Loc::Reg(r) => Some(Storage::Reg(r)),
-            Loc::Slot(s) => Some(Storage::Slot(s)),
-            Loc::Remat(_) => None,
-        }
+        self.as_storage()
     }
 
     #[inline]
     fn source_reg(self) -> Option<Reg> {
         match self {
-            Loc::Reg(r) => Some(r),
+            Binding::Loc(Loc::Reg(r)) => Some(r),
             _ => None,
         }
     }
@@ -173,7 +285,7 @@ impl SourceOperand for Loc {
     #[inline]
     fn source_slot(self) -> Option<Slot> {
         match self {
-            Loc::Slot(s) => Some(s),
+            Binding::Loc(Loc::Slot(s)) => Some(s),
             _ => None,
         }
     }
@@ -181,7 +293,7 @@ impl SourceOperand for Loc {
     #[inline]
     fn source_const(self) -> Option<u32> {
         match self {
-            Loc::Remat(bits) => Some(bits),
+            Binding::Remat(bits) => Some(bits),
             _ => None,
         }
     }
@@ -191,7 +303,7 @@ impl SourceOperand for Loc {
 ///
 /// [`regalloc::Where`] says *that* a value spills; this says *where*. The
 /// two are separate decisions, and this is the arrow between them: it consumes
-/// one scope's [`Allocation`](regalloc::Allocation) and produces the [`Loc`]
+/// one scope's [`Allocation`](regalloc::Allocation) and produces the [`Binding`]
 /// the emitter encodes for every value in it.
 ///
 /// Slots are laid out at the backend's own vector stride, so every offset
@@ -212,7 +324,7 @@ pub struct FrameLayout {
     /// reaches it — at its definition for the values this scope computes.
     /// Total over the scope's schedule; the emitter carries it forward from
     /// here as the placement's later ranges take effect.
-    locs: alloc::vec::Vec<Option<Loc>>,
+    locs: alloc::vec::Vec<Option<Binding>>,
     /// Dense by `ValueId.0`: the address of the value's slot, for every value
     /// this scope ever spills.
     ///
@@ -242,7 +354,7 @@ impl FrameLayout {
             .map(|def| def.value.0 as usize + 1)
             .max()
             .unwrap_or(0);
-        let mut locs: alloc::vec::Vec<Option<Loc>> = alloc::vec![None; len];
+        let mut locs: alloc::vec::Vec<Option<Binding>> = alloc::vec![None; len];
 
         let mut frame = StackFrame::new(vector_bytes);
         let mut slot: alloc::vec::Vec<Option<Slot>> = alloc::vec![None; len];
@@ -269,9 +381,9 @@ impl FrameLayout {
                 slots += 1;
             }
             locs[v.0 as usize] = Some(match allocation.where_at(v, i) {
-                regalloc::Where::Reg(r) => Loc::Reg(r),
-                regalloc::Where::Remat(bits) => Loc::Remat(bits),
-                regalloc::Where::Spilled => Loc::Slot(
+                regalloc::Where::Reg(r) => Binding::from(Reg(r.0)),
+                regalloc::Where::Remat(bits) => Binding::Remat(bits),
+                regalloc::Where::Spilled => Binding::from(
                     slot[v.0 as usize].unwrap_or_else(|| unreachable!("just given a slot")),
                 ),
             });
@@ -296,11 +408,11 @@ impl FrameLayout {
     /// # Panics
     /// If `at` is `Spilled` and `v` has no slot in this frame.
     #[must_use]
-    pub fn loc(&self, v: regalloc::ValueId, at: regalloc::Where) -> Loc {
+    pub fn binding(&self, v: regalloc::ValueId, at: regalloc::Where) -> Binding {
         match at {
-            regalloc::Where::Reg(r) => Loc::Reg(r),
-            regalloc::Where::Remat(bits) => Loc::Remat(bits),
-            regalloc::Where::Spilled => Loc::Slot(self.slot_of(v).unwrap_or_else(|| {
+            regalloc::Where::Reg(r) => Binding::from(Reg(r.0)),
+            regalloc::Where::Remat(bits) => Binding::Remat(bits),
+            regalloc::Where::Spilled => Binding::from(self.slot_of(v).unwrap_or_else(|| {
                 panic!("{v:?} is spilled somewhere in this scope but has no slot")
             })),
         }
@@ -317,17 +429,17 @@ impl FrameLayout {
     /// # Panics
     /// If `v` is not in the allocation this was resolved from.
     #[must_use]
-    pub fn of(&self, v: regalloc::ValueId) -> Loc {
+    pub fn of(&self, v: regalloc::ValueId) -> Binding {
         self.locs
             .get(v.0 as usize)
             .copied()
             .flatten()
-            .unwrap_or_else(|| panic!("{v:?} has no location in this frame"))
+            .unwrap_or_else(|| panic!("{v:?} has no binding in this frame"))
     }
 
-    /// Every value's location, dense by `ValueId.0`, for the hot emit loop.
+    /// Every value's binding, dense by `ValueId.0`, for the hot emit loop.
     #[must_use]
-    pub fn locations(&self) -> &[Option<Loc>] {
+    pub fn bindings(&self) -> &[Option<Binding>] {
         &self.locs
     }
 
@@ -688,7 +800,7 @@ trait IsaBackend {
         code: &mut Vec<u8>,
         vid: regalloc::ValueId,
         target: Reg,
-        locs: &[Option<Loc>],
+        locs: &[Option<Binding>],
     ) -> Reg;
 
     /// Branch taken when `mask_reg` is all-false (skip the true arm).
@@ -1042,13 +1154,13 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         }
     }
 
-    // One dense ValueId -> Loc lookup for the hot loop, carried *forward*: a
+    // One dense ValueId -> Binding lookup for the hot loop, carried *forward*: a
     // placement is a schedule, so the answer changes at program points, and
     // this is that schedule played out. Each range of each value's life
     // becomes one write here at the point it starts — O(total ranges), not a
     // lookup per operand per instruction.
-    let mut locs: alloc::vec::Vec<Option<Loc>> = layout.locations().to_vec();
-    let mut moves: alloc::vec::Vec<alloc::vec::Vec<(regalloc::ValueId, Loc)>> =
+    let mut locs: alloc::vec::Vec<Option<Binding>> = layout.bindings().to_vec();
+    let mut moves: alloc::vec::Vec<alloc::vec::Vec<(regalloc::ValueId, Binding)>> =
         (0..sched_len).map(|_| alloc::vec::Vec::new()).collect();
     // A value that is in a slot anywhere in this scope is stored there right
     // after its definition, from the register the definition wrote. That is
@@ -1067,10 +1179,10 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
             if index <= i {
                 continue; // The definition itself; the instruction writes it.
             }
-            moves[index].push((v, layout.loc(v, at)));
+            moves[index].push((v, layout.binding(v, at)));
         }
         if let Some(slot) = layout.slot_of(v)
-            && matches!(locs[v.0 as usize], Some(Loc::Reg(_)))
+            && matches!(locs[v.0 as usize], Some(Binding::Loc(Loc::Reg(_))))
         {
             // Every definition writes a register, so this is the only place a
             // value reaches its slot — and it is the place that makes the slot
@@ -1107,8 +1219,8 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
             }
             let placement = allocation.placement(vid);
             let at_head = allocation.where_at(vid, 0);
-            let head = layout.loc(vid, at_head);
-            if let Loc::Reg(r) = head
+            let head = layout.binding(vid, at_head);
+            if let Binding::Loc(Loc::Reg(r)) = head
                 && placement.at(regalloc::Point::TAIL) != at_head
             {
                 let from_memory = placement
@@ -1117,7 +1229,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
                     .unwrap_or_else(|| {
                         unreachable!("a value that never leaves a register never changes register")
                     });
-                locs[vid.0 as usize] = Some(layout.loc(vid, from_memory));
+                locs[vid.0 as usize] = Some(layout.binding(vid, from_memory));
                 let got = backend.emit_resolve(&mut code, vid, r, &locs);
                 debug_assert_eq!(got, r, "a value out of a register reloads into the target");
             }
@@ -1156,7 +1268,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         // value comes back into a pool register and stays there, instead of
         // being fetched into a scratch at every read.
         for (v, to) in core::mem::take(&mut moves[sched_idx]) {
-            if let Loc::Reg(r) = to {
+            if let Binding::Loc(Loc::Reg(r)) = to {
                 let src = backend.emit_resolve(&mut code, v, r, &locs);
                 if src != r {
                     backend.emit_mov(&mut code, r, src);
@@ -1183,7 +1295,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
             let (guard_idx, arm) = (pb.guard_idx, pb.arm);
             let guard = &select_guards[guard_idx];
             let mask_reg = match location_of(&locs, guard.mask_vid) {
-                Loc::Reg(r) => r,
+                Binding::Loc(Loc::Reg(r)) => r,
                 _ => backend.emit_resolve(&mut code, guard.mask_vid, guard_mask(), &locs),
             };
             let branch = match arm {
@@ -1210,12 +1322,12 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
             && guard.has_guarded_arm()
         {
             let mask_reg = match location_of(&locs, *mask_vid) {
-                Loc::Reg(r) => r,
+                Binding::Loc(Loc::Reg(r)) => r,
                 _ => backend.emit_resolve(&mut code, *mask_vid, guard_mask(), &locs),
             };
             let dst = dst_loc.reg();
             let in_reg = |v: regalloc::ValueId| match location_of(&locs, v) {
-                Loc::Reg(r) => Some(r),
+                Binding::Loc(Loc::Reg(r)) => Some(r),
                 _ => None,
             };
             let true_reg = in_reg(*true_vid);
@@ -1315,7 +1427,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         .map(|def| def.value)
         .expect("empty schedule");
     let result_reg = match location_of(&locs, root) {
-        Loc::Reg(r) => r,
+        Binding::Loc(Loc::Reg(r)) => r,
         _ => {
             let target = allocation
                 .scratch(sched_len - 1)
@@ -1830,17 +1942,17 @@ impl<'a> HoistCtx<'a> {
 /// is no such register any more.
 pub fn resolve_operands(
     op: &ScheduledOp,
-    dst_loc: Loc,
-    locs: &[Option<Loc>],
+    dst_loc: Binding,
+    locs: &[Option<Binding>],
     scratch: regalloc::Scratch,
 ) -> Result<InstructionPlan, CompileError> {
     let dst = match dst_loc {
-        Loc::Reg(r) => r,
+        Binding::Loc(Loc::Reg(r)) => r,
         // A rematerialized constant: it lives nowhere and is rebuilt at each
         // use, so its definition computes nothing. Emitting a load into a
         // register nobody reads is what the fixed destination register used to
         // buy.
-        Loc::Remat(_) => {
+        Binding::Remat(_) => {
             return Ok(InstructionPlan {
                 reloads: Vec::new(),
                 op: ResolvedOp::Nop,
@@ -1848,7 +1960,7 @@ pub fn resolve_operands(
                 scratch,
             });
         }
-        Loc::Slot(slot) => panic!(
+        Binding::Loc(Loc::Slot(slot)) => panic!(
             "a definition landed in stack slot {} — the allocator owes \
              every definition a register, since there is none outside the pool \
              to compute into",
@@ -1860,15 +1972,15 @@ pub fn resolve_operands(
     let mut setup_mov = None;
 
     // Resolve a value to its register, or plan a reload from stack/constant into `target`.
-    let loc_of = |v: regalloc::ValueId| -> Loc {
+    let loc_of = |v: regalloc::ValueId| -> Binding {
         locs.get(v.0 as usize)
             .copied()
             .flatten()
-            .unwrap_or_else(|| panic!("{v:?} has no location"))
+            .unwrap_or_else(|| panic!("{v:?} has no binding"))
     };
     // "Not in a register" — a rematerialized value needs a reload target just
     // as a spilled one does, so both answer false here.
-    let in_register = |v: &regalloc::ValueId| matches!(loc_of(*v), Loc::Reg(_));
+    let in_register = |v: &regalloc::ValueId| matches!(loc_of(*v), Binding::Loc(Loc::Reg(_)));
 
     // Where each operand comes from, and so which register each reload lands
     // in. The same call the allocator made when it decided how many to
@@ -1897,15 +2009,15 @@ pub fn resolve_operands(
 
     let resolve = |v: regalloc::ValueId, target: Reg, reloads: &mut Vec<Reload>| -> Reg {
         match loc_of(v) {
-            Loc::Reg(reg) => reg,
-            Loc::Remat(bits) => {
+            Binding::Loc(Loc::Reg(reg)) => reg,
+            Binding::Remat(bits) => {
                 reloads.push(Reload::Const {
                     target,
                     val_bits: bits,
                 });
                 target
             }
-            Loc::Slot(slot) => {
+            Binding::Loc(Loc::Slot(slot)) => {
                 reloads.push(Reload::FromStack { target, slot });
                 target
             }
@@ -2009,9 +2121,11 @@ pub fn resolve_operands(
                         let b_reg = operand(1, *b, &mut reloads);
                         // c is deferred — don't add to upfront reloads.
                         let (c_reg, c_deferred) = match loc_of(*c) {
-                            Loc::Reg(reg) => (reg, None),
-                            Loc::Remat(bits) => (target_for(2), Some(DeferredReload::Const(bits))),
-                            Loc::Slot(slot) => {
+                            Binding::Loc(Loc::Reg(reg)) => (reg, None),
+                            Binding::Remat(bits) => {
+                                (target_for(2), Some(DeferredReload::Const(bits)))
+                            }
+                            Binding::Loc(Loc::Slot(slot)) => {
                                 (target_for(2), Some(DeferredReload::FromStack(slot)))
                             }
                         };
@@ -2079,13 +2193,13 @@ pub fn resolve_operands(
 /// Where a value lives, from the dense slice the emit loop carries.
 ///
 /// One lookup, indexed by `ValueId.0`. It replaced three parallel slices whose
-/// disagreement was a runtime check; a [`Loc`] is one answer, so there is
+/// disagreement was a runtime check; a [`Binding`] is one answer, so there is
 /// nothing left to disagree.
-fn location_of(locs: &[Option<Loc>], vid: regalloc::ValueId) -> Loc {
+fn location_of(locs: &[Option<Binding>], vid: regalloc::ValueId) -> Binding {
     locs.get(vid.0 as usize)
         .copied()
         .flatten()
-        .unwrap_or_else(|| panic!("{vid:?} has no location"))
+        .unwrap_or_else(|| panic!("{vid:?} has no binding"))
 }
 
 // =============================================================================
@@ -2762,7 +2876,7 @@ mod tests {
         let a = allocation_of(&[(0, regalloc::Where::Reg(Reg(4)))]);
         let layout = FrameLayout::resolve(a.body(), 16).unwrap();
         assert_eq!(layout.frame_size, 0);
-        assert_eq!(layout.of(regalloc::ValueId(0)), Loc::Reg(Reg(4)));
+        assert_eq!(layout.of(regalloc::ValueId(0)), Loc::Reg(Reg(4)).into());
     }
 
     #[test]
@@ -2770,7 +2884,10 @@ mod tests {
         let a = allocation_of(&[(5, regalloc::Where::Spilled)]);
         let layout = FrameLayout::resolve(a.body(), 16).unwrap();
         assert_eq!(layout.frame_size, 16);
-        assert_eq!(layout.of(regalloc::ValueId(5)), Loc::Slot(Slot::new(0, 16)));
+        assert_eq!(
+            layout.of(regalloc::ValueId(5)),
+            Loc::Slot(Slot::new(0, 16)).into()
+        );
     }
 
     /// Slots are laid out at the backend's own stride, so the offsets a wide
@@ -2792,7 +2909,7 @@ mod tests {
             for (i, off) in expected.iter().enumerate() {
                 assert_eq!(
                     layout.of(regalloc::ValueId(i as u32 + 1)),
-                    Loc::Slot(Slot::new(*off, vector_bytes)),
+                    Loc::Slot(Slot::new(*off, vector_bytes)).into(),
                     "vector_bytes={vector_bytes}"
                 );
             }
@@ -2810,9 +2927,12 @@ mod tests {
         assert_eq!(layout.frame_size, 16, "only the spill takes a slot");
         assert_eq!(
             layout.of(regalloc::ValueId(0)),
-            Loc::Remat(1.0f32.to_bits())
+            Binding::Remat(1.0f32.to_bits())
         );
-        assert_eq!(layout.of(regalloc::ValueId(1)), Loc::Slot(Slot::new(0, 16)));
+        assert_eq!(
+            layout.of(regalloc::ValueId(1)),
+            Loc::Slot(Slot::new(0, 16)).into()
+        );
     }
 
     /// The collapse LICM pins a hoisted value to the slot its prologue wrote,
@@ -2826,10 +2946,13 @@ mod tests {
         let pin = Slot::new(256, 16);
         layout.pin_slot(v, pin);
         assert_eq!(layout.slot_of(v), Some(pin));
-        assert_eq!(layout.loc(v, regalloc::Where::Spilled), Loc::Slot(pin));
         assert_eq!(
-            layout.loc(v, regalloc::Where::Reg(Reg(7))),
-            Loc::Reg(Reg(7)),
+            layout.binding(v, regalloc::Where::Spilled),
+            Loc::Slot(pin).into()
+        );
+        assert_eq!(
+            layout.binding(v, regalloc::Where::Reg(Reg(7))),
+            Loc::Reg(Reg(7)).into(),
             "pinning an address says nothing about where the value is"
         );
     }
@@ -2860,8 +2983,11 @@ mod tests {
     const TEST_SCRATCH: regalloc::Scratch =
         regalloc::Scratch::for_test(None, [Some(RELOAD[0]), Some(RELOAD[1])]);
 
-    /// Dense `ValueId -> Loc`, as the emit loop builds it.
-    fn make_locs(assigned: &[(u32, u8)], spilled: &[(u32, u32)]) -> alloc::vec::Vec<Option<Loc>> {
+    /// Dense `ValueId -> Binding`, as the emit loop builds it.
+    fn make_locs(
+        assigned: &[(u32, u8)],
+        spilled: &[(u32, u32)],
+    ) -> alloc::vec::Vec<Option<Binding>> {
         let len = assigned
             .iter()
             .map(|&(v, _)| v)
@@ -2870,10 +2996,10 @@ mod tests {
             .map_or(0, |m| m as usize + 1);
         let mut locs = alloc::vec![None; len];
         for &(v, r) in assigned {
-            locs[v as usize] = Some(Loc::Reg(Reg(r)));
+            locs[v as usize] = Some(Binding::Loc(Loc::Reg(Reg(r))));
         }
         for &(v, off) in spilled {
-            locs[v as usize] = Some(Loc::Slot(Slot::new(off, 16)));
+            locs[v as usize] = Some(Binding::Loc(Loc::Slot(Slot::new(off, 16))));
         }
         locs
     }
@@ -2883,7 +3009,8 @@ mod tests {
         // left=v4, right=v5, dst=v6 — all in registers
         let locs = make_locs(&[(0, 4), (1, 5), (2, 6)], &[]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), TEST_SCRATCH).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(6)).into(), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         assert!(plan.reloads.is_empty());
         assert_eq!(
@@ -2907,7 +3034,8 @@ mod tests {
         // left spilled at offset 0, right in v5
         let locs = make_locs(&[(1, 5), (2, 6)], &[(0, 0)]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), TEST_SCRATCH).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(6)).into(), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         assert_eq!(plan.reloads.len(), 1);
         assert_eq!(
@@ -2933,7 +3061,8 @@ mod tests {
         // Both spilled: left → dst (temp trick), right → tmp_op
         let locs = make_locs(&[(2, 6)], &[(0, 0), (1, 16)]);
         let op = ScheduledOp::Binary(OpKind::Mul, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), TEST_SCRATCH).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(6)).into(), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         assert_eq!(plan.reloads.len(), 2);
         // left → dst (v6), right → tmp_op (v27)
@@ -2977,7 +3106,7 @@ mod tests {
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
         drop(resolve_operands(
             &op,
-            Loc::Slot(Slot::new(32, 16)),
+            Loc::Slot(Slot::new(32, 16)).into(),
             locs.as_slice(),
             TEST_SCRATCH,
         ));
@@ -2994,7 +3123,7 @@ mod tests {
         let op = ScheduledOp::Const(1.5);
         let plan = resolve_operands(
             &op,
-            Loc::Remat(1.5f32.to_bits()),
+            Binding::Remat(1.5f32.to_bits()),
             locs.as_slice(),
             TEST_SCRATCH,
         )
@@ -3013,7 +3142,8 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), locs.as_slice(), TEST_SCRATCH).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(8)).into(), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         assert!(plan.reloads.is_empty());
         // c=v7 ≠ dst=v8, so setup_mov should copy c → dst
@@ -3039,7 +3169,8 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), locs.as_slice(), TEST_SCRATCH).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(8)).into(), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         // a → dst, b → tmp_op loaded upfront
         assert_eq!(plan.reloads.len(), 2);
@@ -3086,7 +3217,8 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), locs.as_slice(), TEST_SCRATCH).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(8)).into(), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         // Only a and b reloads upfront — c is deferred
         assert_eq!(plan.reloads.len(), 2);
@@ -3106,7 +3238,8 @@ mod tests {
     fn resolve_var_is_nop() {
         let locs = make_locs(&[(0, 0)], &[]);
         let op = ScheduledOp::Var(0);
-        let plan = resolve_operands(&op, Loc::Reg(Reg(0)), locs.as_slice(), TEST_SCRATCH).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(0)).into(), locs.as_slice(), TEST_SCRATCH).unwrap();
         assert_eq!(plan.op, ResolvedOp::Nop);
         assert!(plan.reloads.is_empty());
     }
@@ -3115,7 +3248,8 @@ mod tests {
     fn resolve_const() {
         let locs = make_locs(&[(0, 6)], &[]);
         let op = ScheduledOp::Const(core::f32::consts::PI);
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), TEST_SCRATCH).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(6)).into(), locs.as_slice(), TEST_SCRATCH).unwrap();
         assert_eq!(
             plan.op,
             ResolvedOp::LoadConst {

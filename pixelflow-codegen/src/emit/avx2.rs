@@ -1053,15 +1053,15 @@ pub(crate) mod driver {
             code: &mut Vec<u8>,
             vid: regalloc::ValueId,
             target: Reg,
-            locs: &[Option<Loc>],
+            locs: &[Option<Binding>],
         ) -> Reg {
             match location_of(locs, vid) {
-                Loc::Reg(reg) => reg,
-                Loc::Remat(bits) => {
+                Binding::Loc(Loc::Reg(reg)) => reg,
+                Binding::Remat(bits) => {
                     super::emit_const(code, target, f32::from_bits(bits));
                     target
                 }
-                Loc::Slot(slot) => {
+                Binding::Loc(Loc::Slot(slot)) => {
                     super::emit_load(code, target, frame_slot(slot.offset()));
                     target
                 }

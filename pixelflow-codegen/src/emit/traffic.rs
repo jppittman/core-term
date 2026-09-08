@@ -22,7 +22,7 @@
 //! than a silently dropped term.
 
 use super::regalloc::ValueId;
-use super::{InstructionPlan, IsaBackend, Loc, Reg, Reload};
+use super::{Binding, InstructionPlan, IsaBackend, Loc, Reg, Reload};
 use crate::error::CompileError;
 
 /// Emitted traffic within one scope of the collapse nest.
@@ -186,13 +186,13 @@ impl<B: IsaBackend> IsaBackend for Counting<'_, B> {
         code: &mut Vec<u8>,
         vid: ValueId,
         target: Reg,
-        locs: &[Option<Loc>],
+        locs: &[Option<Binding>],
     ) -> Reg {
         match locs.get(vid.0 as usize).copied().flatten() {
-            Some(Loc::Slot(_)) => self.traffic.loads_kept += 1,
-            Some(Loc::Remat(_)) => self.traffic.remats += 1,
+            Some(Binding::Loc(Loc::Slot(_))) => self.traffic.loads_kept += 1,
+            Some(Binding::Remat(_)) => self.traffic.remats += 1,
             // Already in a register, or not placed at all: nothing is emitted.
-            Some(Loc::Reg(_)) | None => {}
+            Some(Binding::Loc(Loc::Reg(_))) | None => {}
         }
         self.inner.emit_resolve(code, vid, target, locs)
     }
