@@ -1420,19 +1420,22 @@ pub(crate) mod driver {
         fn x86_redzone_disp_negates_the_offset_and_biases_by_the_red_zone_size() {
             assert_eq!(x86_redzone_disp(0), Ok(-16));
             assert_eq!(x86_redzone_disp(16), Ok(-32));
+            // 112 is the largest offset production can reach: `frame_ready`
+            // picks red-zone mode only for `frame_size <= 128`, and
+            // `FrameLayout::resolve` advances by `vector_bytes`, so the last
+            // slot sits at `frame_size - 16`. -(112 + 16) == -128, the last
+            // value disp8 represents.
+            assert_eq!(x86_redzone_disp(112), Ok(-128));
         }
 
-        #[test]
-        fn x86_redzone_disp_refuses_an_offset_that_would_overflow_disp8() {
-            // -(112 + 16) == -128, the last value disp8 still represents.
-            assert_eq!(x86_redzone_disp(112), Ok(-128));
-            assert_eq!(
-                x86_redzone_disp(113),
-                Err(CompileError::Internal(
-                    "x86 spill: red-zone displacement out of range (prologue mode bug)"
-                ))
-            );
-        }
+        // A test that `x86_redzone_disp(113)` returns the internal
+        // out-of-range error stood here, and was removed for the same reason
+        // as the `Vex { w: true }` one below: 113 is not a reachable offset.
+        // Offsets advance in `vector_bytes` steps from 0, so they are all
+        // multiples of 16, and red-zone mode caps them at 112 besides. The
+        // assertion pinned an internal error message rather than any
+        // behaviour a kernel can produce. The reachable boundary it was
+        // wrapped around — 112 — is kept above, where it belongs.
 
         // Two tests characterizing `emit_binary_safe` stood here. They were
         // deleted, not ported: main's #1177/#1183 removed the function along

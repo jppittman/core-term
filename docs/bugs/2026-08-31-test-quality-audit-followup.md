@@ -8,20 +8,29 @@
 > fixed-scratch-register model with an allocator-managed pool. The mutant
 > population is a different one and these tallies do not describe the tree.
 >
-> Two of this pass's tests went with that change, and were **deleted rather
-> than ported**: both characterized `emit_binary_safe`, which no longer
-> exists, in terms of `X86_SCRATCH` — one reserved `Reg(10)` — which is now
-> `scratch: RegSet::range(4, 12)` reached as `plan.scratch.temp(n)`. There
-> is no translation of "stashes `right` into the scratch register" into a
-> world with no such register.
+> **Four of this pass's thirteen tests were deleted rather than ported**,
+> for two different reasons.
 >
-> **The other eleven survive and were re-verified on 2026-09-08** against
-> current `main`: they build, they pass, and every function they target
-> (`Vex::head`, `emit_movups_store`, `emit_load_ptr_from_ctx`,
-> `emit_movmskps_eax`, `emit_cmp_eax_imm8`, `x86_redzone_disp`) still
-> exists. Spot mutation check confirming they still bind rather than passing
-> vacuously: biasing `x86_redzone_disp` by 8 instead of 16 kills 2, and
-> flipping the `movups` store opcode from `0x11` to `0x10` kills 6.
+> Two characterized `emit_binary_safe`, which no longer exists, in terms of
+> `X86_SCRATCH` — one reserved `Reg(10)` — now `scratch: RegSet::range(4, 12)`
+> reached as `plan.scratch.temp(n)`. There is no translation of "stashes
+> `right` into the scratch register" into a world with no such register.
+>
+> Two more pinned **unreachable internal state**, which is not coverage:
+> `Vex { w: true }` (every production construction goes through `Vex::new`,
+> which hardcodes `w: false`), and `x86_redzone_disp(113)`'s internal
+> out-of-range error (offsets advance in `vector_bytes` steps from 0, so
+> they are multiples of 16, and `frame_ready` caps red-zone mode at
+> `frame_size <= 128` besides — 112 is the largest reachable offset, and
+> that assertion is kept).
+>
+> **The remaining nine survive and were re-verified on 2026-09-08** against
+> current `main`: they build, they pass, and all five functions they target
+> (`emit_movups_store`, `emit_load_ptr_from_ctx`, `emit_movmskps_eax`,
+> `emit_cmp_eax_imm8`, `x86_redzone_disp`) still exist. Spot mutation check
+> confirming they still bind rather than passing vacuously: biasing
+> `x86_redzone_disp` by 8 instead of 16 kills 2, and flipping the `movups`
+> store opcode from `0x11` to `0x10` kills 6.
 >
 > That is a spot check, not a sweep. **A full `cargo mutants` re-run against
 > the current file is still owed** before "0 real gaps" is restated anywhere.
