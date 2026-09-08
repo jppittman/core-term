@@ -4,6 +4,17 @@
 **Status:** Landed as PR #1213 (draft at time of writing); see §7 for what the
 execution found that this plan's §1–§4 did not anticipate, including two
 measurements that changed the design after it was written.
+
+**Superseded in part, 2026-09-09.** The title is stale: there is no reference
+point. The formulation is a horizontal ray crossing per chord plus Loop–Blinn's
+sliver, and the `w_poly(O)`/`shadow` decomposition in §"The shape" and §4's
+half-open cones describe a design that was replaced during execution — §7.1's
+adversarial verification was of *that* formulation and no longer bears on the
+code. §3's domain-side extent is gone too: `loop_blinn::cells`, `text_union`
+and `pixelflow-core`'s `Union` were removed, because the crescent fences
+itself (`{v ≥ u²} ∩ {v ≤ u}` is empty outside `u ∈ [0,1]`), so the extent was
+never load-bearing for correctness and was on no path to a screen. What
+remains live in this document is §1, §2, §5, §6 and §7's findings.
 **Author:** JP (direction), Claude (draft and execution)
 **Executes:** §4 of
 [2026-09-06-lattice-is-the-index.md](2026-09-06-lattice-is-the-index.md),
@@ -169,6 +180,26 @@ the e-graph may reassociate.
 - **The winding is never approximated.** Splitting a curve, dropping a
   nearly-flat one, choosing a reference point: none of these may change an
   integer. Only the ramp's distance is a tunable.
+
+  **`FLAT_ENOUGH` violates this, and it is the case this line names.**
+  `Piece::quad` replaces a quadratic straying less than `1/256` from its
+  chord with the chord, which deletes the crescent where the two disagree
+  about the winding — an integer, changed, by dropping a nearly-flat curve.
+  It is sub-texel in the outline's own frame, but `Glyph::bound` takes the
+  kernel to compile, so a contramap may magnify it: a 0.001-unit bulge at
+  1000× is about a pixel wide and the kernel renders the chord. Found by
+  review on 2026-09-09, unfixed.
+
+  The exact fix is to emit a chord only where the sliver is *empty* rather
+  than small — `cross(p0, p1, p2) == 0`, the control point exactly on the
+  chord's line, where dropping it changes nothing. Whether that keeps the
+  optimization is a measurement nobody has taken: control points are `f32`
+  and the em scale is applied to them on the host, so triples that are
+  exactly collinear in font units generally are not after scaling. If the
+  answer is that almost nothing is exactly degenerate, then the cost of the
+  invariant is one sliver and one implicit per quadratic in the font, and
+  *that* number is the thing to decide on — not the `1/256` that currently
+  buys it by breaking the rule.
 - **A distance is not negative.** The chord bound goes below zero on the
   chord of a curve, and unclamped it makes the outside arm `½ − d` exceed
   one. Range is not on the table (CLAUDE.md).
@@ -270,8 +301,16 @@ were about the scanline's own numerics.
 
 ## 8. Non-goals, and what is left open
 
-- **Kerning, shaping, proportional layout.** Unchanged: `text` and
-  `text_union` model advances only.
+- **Kerning, shaping, proportional layout.** Unchanged: `text` models
+  advances only (`text_union` is gone — see the status note).
+- **An open contour is representable.** `Contour::segments` is public and
+  re-exported, so a caller can build a contour whose segments neither
+  connect nor close — one vertical line yields a filled half-plane inside
+  the support rather than a rejection, because winding interprets whatever
+  edges it is given as a closed boundary. The invariant lives in prose. It
+  wants a private field and a constructor that closes or refuses the chain,
+  which is CLAUDE.md's *extend the type* applied to the meaning "these
+  edges close". Found by review on 2026-09-09, unfixed.
 - **Cubic Béziers.** TrueType is quadratic; CFF is later. The decomposition
   in §"The shape" is not specific to quadratics — a cubic's implicit is a
   different `f` on a different hull — but nothing here builds one.
