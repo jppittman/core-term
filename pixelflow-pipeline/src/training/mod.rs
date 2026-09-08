@@ -46,4 +46,7 @@ pub mod guide_bilinear;
 pub mod sh_family;
 
 #[cfg(feature = "training")]
+pub mod bezier_family;
+
+#[cfg(feature = "training")]
 pub mod r2g;

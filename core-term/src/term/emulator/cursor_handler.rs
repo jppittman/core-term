@@ -58,6 +58,14 @@ impl TerminalEmulator {
             .move_to_logical_col(col, &self.current_screen_context());
     }
 
+    /// Moves the cursor to logical row `row` (VPA), leaving the column
+    /// untouched. Mirrors `cursor_to_column` (CHA) on the other axis.
+    pub(super) fn cursor_to_row(&mut self, row: usize) {
+        self.cursor_wrap_next = false;
+        self.cursor_controller
+            .move_to_logical_row(row, &self.current_screen_context());
+    }
+
     pub(super) fn cursor_to_pos(&mut self, row_param: usize, col_param: usize) {
         self.cursor_wrap_next = false;
         self.cursor_controller.move_to_logical(
