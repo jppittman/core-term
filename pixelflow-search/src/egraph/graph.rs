@@ -146,7 +146,58 @@ pub struct EGraph {
     /// once" from "the mask matched eleven times", and must never have to
     /// infer that a mask fired at all.
     replay_mask_skips: usize,
+    /// Global monotonic counter, bumped once per class-content mutation
+    /// (`add`'s memo miss, `union`'s merge) — never reset, never bumped by
+    /// anything that only re-canonicalizes existing content (`nodes()`
+    /// already resolves through `find`, so rewriting a child's stored id to
+    /// its current canonical form during rebuild surfaces nothing a lookup
+    /// couldn't already see). See [`Self::class_is_dirty`].
+    mutation_counter: u64,
+    /// `last_changed[c.index()]` is the [`Self::mutation_counter`] value as
+    /// of the most recent time canonical class `c`'s own node list gained
+    /// content — set at creation in `add` and bumped in `union` when `c`
+    /// survives as the merge's parent. Parallel to `classes`, grown
+    /// alongside it.
+    last_changed: Vec<u64>,
+    /// `rule_last_swept[rule_idx]` is the [`Self::mutation_counter`] value
+    /// captured just BEFORE that rule's most recent *complete* scan of
+    /// `canonical_class_ids()` began. Parallel to `rules`. See
+    /// [`Self::class_is_dirty`] for how it is used and why the value is
+    /// taken from the scan's start, not its end.
+    rule_last_swept: Vec<u64>,
 }
+
+/// [`EGraph::class_is_dirty`] checks this many hops of a class's forward
+/// neighborhood (the class itself, its direct children, and their
+/// children) against a rule's last-swept generation.
+///
+/// This is the audited maximum matching depth across every rule in
+/// [`super::all_rules`] — how many levels beyond the single node handed to
+/// `Rewrite::apply` a rule inspects via `egraph.nodes()` on a child (or
+/// grandchild) e-class. `math/trig.rs`'s `Pythagorean` and
+/// `ReverseAngleAddition` are the only rules that reach a grandchild
+/// (through `extract_trig_arg`/`extract_squared_trig`/`extract_sin_cos_mul`);
+/// every other rule in the production set — all of `math/algebra.rs`,
+/// `math/parity.rs`, `math/exp.rs`, `math/power.rs`, `math/fusion.rs`, and
+/// `egraph/derivative.rs`'s `ChainRule` — is depth 0 or 1. A dirty-tracking
+/// scheme that only propagated 1 hop would be UNSOUND for those two rules:
+/// a class could become newly matchable when a grandchild changes without
+/// its own node list, or its direct children's, changing at all, and a
+/// 1-hop scheme would silently never re-check it — under-saturation that no
+/// correctness test can see, only a comparison against the un-skipped
+/// extraction cost can.
+///
+/// This is a single, uniform, crate-wide constant rather than a per-rule
+/// depth precisely so a future rule cannot silently exceed it the way a
+/// per-rule value could go stale unnoticed: every rule is checked to this
+/// depth regardless of what it actually needs, so a new rule that matches
+/// deeper than this is caught the same way `Pythagorean` would be — by
+/// `docs/plans/2026-09-08-egraph-cpu-memory-profile.md`'s methodology
+/// (compare extracted cost with dirty-tracking on vs. off), not by silent
+/// trust in a number nobody re-audits. Raise it if that audit is ever
+/// redone and finds a deeper rule; do not lower it without redoing the
+/// audit above.
+const DIRTY_TRACKING_MAX_DEPTH: u8 = 2;
 
 /// How far a counterfactual replay's mask reaches: one application, or
 /// every application that would re-derive the same thing.
@@ -273,6 +324,9 @@ impl Clone for EGraph {
             application_cap: self.application_cap,
             replay_mask: self.replay_mask.clone(),
             replay_mask_skips: self.replay_mask_skips,
+            mutation_counter: self.mutation_counter,
+            last_changed: self.last_changed.clone(),
+            rule_last_swept: self.rule_last_swept.clone(),
         }
     }
 }
@@ -419,6 +473,9 @@ impl EGraph {
             application_cap: None,
             replay_mask: None,
             replay_mask_skips: 0,
+            mutation_counter: 0,
+            last_changed: Vec::new(),
+            rule_last_swept: Vec::new(),
         }
     }
 
@@ -427,6 +484,7 @@ impl EGraph {
     /// Rules are owned by the e-graph and shared via Arc when cloned.
     pub fn with_rules(rules: Vec<Box<dyn Rewrite>>) -> Self {
         let ids: Vec<RuleId> = rules.iter().map(|r| RuleId::of(r.as_ref())).collect();
+        let rule_last_swept = vec![0u64; rules.len()];
         Self {
             classes: Vec::new(),
             parent: Vec::new(),
@@ -450,6 +508,9 @@ impl EGraph {
             application_cap: None,
             replay_mask: None,
             replay_mask_skips: 0,
+            mutation_counter: 0,
+            last_changed: Vec::new(),
+            rule_last_swept,
         }
     }
 
@@ -466,6 +527,7 @@ impl EGraph {
         std::sync::Arc::get_mut(&mut self.rule_ids)
             .expect("Cannot add rules after EGraph has been cloned")
             .push(id);
+        self.rule_last_swept.push(0);
     }
 
     /// An e-graph over a rule vector that is already shared.
@@ -493,6 +555,7 @@ impl EGraph {
             rule_ids.len()
         );
         let mut eg = Self::new();
+        eg.rule_last_swept = vec![0; rules.len()];
         eg.rules = rules;
         eg.rule_ids = rule_ids;
         eg
@@ -603,6 +666,8 @@ impl EGraph {
         });
         self.parent.push(id);
         self.queued.push(false);
+        self.mutation_counter += 1;
+        self.last_changed.push(self.mutation_counter);
         self.memo.insert(node, id);
         id
     }
@@ -685,6 +750,10 @@ impl EGraph {
         if self.const_fact[parent.index()].is_none() {
             self.const_fact[parent.index()] = self.const_fact[child.index()];
         }
+        // `parent`'s own node list just changed (gained `child`'s nodes) —
+        // see `class_is_dirty`/`DIRTY_TRACKING_MAX_DEPTH`.
+        self.mutation_counter += 1;
+        self.last_changed[parent.index()] = self.mutation_counter;
         if !self.queued[parent.index()] {
             self.queued[parent.index()] = true;
             self.worklist.push(parent);
@@ -1363,6 +1432,55 @@ impl EGraph {
         self.apply_rule_at_index_timed(rule_idx, max_nodes, None)
     }
 
+    /// Whether `canonical`'s forward neighborhood — itself, its direct
+    /// children, and their children (see [`DIRTY_TRACKING_MAX_DEPTH`]) —
+    /// contains anything that changed since `swept`, a
+    /// [`Self::mutation_counter`] value from some rule's last complete scan.
+    ///
+    /// Reads only `EClassId`s and `last_changed` entries, never clones a
+    /// node vector or calls a rule's `apply` — this is the cheap check
+    /// [`Self::apply_rule_at_index_timed`] uses to decide whether the
+    /// expensive path (clone the class's nodes, run every rule against
+    /// every one) is worth paying for at all. Canonicalizes every id it
+    /// follows: `parent`/`child` fields on a stored node can lag a union
+    /// that happened after the node was written, and `last_changed` is only
+    /// ever indexed by canonical class slots.
+    fn class_is_dirty(&self, canonical: EClassId, swept: u64) -> bool {
+        let canonical = self.find(canonical);
+        if self.last_changed[canonical.index()] > swept {
+            return true;
+        }
+        for node in &self.classes[canonical.index()].nodes {
+            let ENode::Op { children, .. } = node else {
+                continue;
+            };
+            for &child in children {
+                let child = self.find(child);
+                if self.last_changed[child.index()] > swept {
+                    return true;
+                }
+                if DIRTY_TRACKING_MAX_DEPTH < 2 {
+                    continue;
+                }
+                for gnode in &self.classes[child.index()].nodes {
+                    let ENode::Op {
+                        children: gchildren,
+                        ..
+                    } = gnode
+                    else {
+                        continue;
+                    };
+                    for &gchild in gchildren {
+                        if self.last_changed[self.find(gchild).index()] > swept {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Apply a single rule with node budget AND optional wall-clock deadline.
     /// Stops if either budget or deadline is exceeded.
     pub fn apply_rule_at_index_timed(
@@ -1420,6 +1538,18 @@ impl EGraph {
                 .is_some_and(|cap| graph.applications + queued as u64 >= cap)
         };
 
+        // Captured before the scan touches anything: `class_is_dirty` below
+        // compares every candidate class against `swept` (this rule's OWN
+        // last complete-scan baseline, from a previous call), and — only if
+        // this scan itself runs to completion — `rule_last_swept[rule_idx]`
+        // is advanced to `sweep_start` at the end. Taking the *start* value
+        // rather than the counter's value after the scan means a mutation
+        // this very call makes (via the commit loop's unions below) is
+        // correctly seen as new next time this rule runs, without needing
+        // to re-examine it against itself right now.
+        let sweep_start = self.mutation_counter;
+        let swept = self.rule_last_swept[rule_idx];
+
         let canonical_ids = self.canonical_class_ids();
         'scan: for canonical in canonical_ids {
             // Budget check: current graph + pending creates must stay under limit
@@ -1434,6 +1564,13 @@ impl EGraph {
             if allowance_spent(self, updates.len()) {
                 scan = ScanStop::ApplicationBudget;
                 break;
+            }
+            // Nothing within DIRTY_TRACKING_MAX_DEPTH hops of `canonical`
+            // has changed since this rule last swept the whole graph, so
+            // this rule's answer on `canonical` cannot have changed either
+            // — skip straight past the clone and every `apply` call below.
+            if !self.class_is_dirty(canonical, swept) {
+                continue;
             }
 
             let nodes: Vec<ENode> = self.classes[canonical.index()].nodes.clone();
@@ -1472,6 +1609,18 @@ impl EGraph {
                     }
                 }
             }
+        }
+
+        // Only a scan that reached every canonical id without a budget/
+        // deadline break actually looked at everything — advancing the
+        // baseline after a cut-short scan would let a class this call never
+        // got to sit unswept-but-marked-swept, which is exactly the
+        // under-saturation `class_is_dirty` exists to never cause. A
+        // cut-short scan leaves `rule_last_swept[rule_idx]` at its old
+        // value, so next call simply sees more as dirty than strictly
+        // necessary — safe, just less tight.
+        if scan == ScanStop::Completed {
+            self.rule_last_swept[rule_idx] = sweep_start;
         }
 
         // Commit: all actions in the log are within budget.
@@ -2626,6 +2775,94 @@ mod tests {
         AddNeg, Annihilator, Cancellation, Canonicalize, Commutative, Distributive, Identity,
         InverseAnnihilation, Involution, MulRecip,
     };
+
+    /// Soundness regression for saturation's dirty-class tracking
+    /// (`class_is_dirty`, `DIRTY_TRACKING_MAX_DEPTH`). `Pythagorean` is one
+    /// of exactly two production rules that inspects a GRANDCHILD e-class
+    /// (`math/trig.rs`'s `extract_trig_arg`, reached through
+    /// `extract_squared_trig`): `sin²(x) + cos²(x) → 1` only matches once
+    /// the argument of `Mul(p, p)` is *itself* known to be `Sin(x)`, two
+    /// hops below the `Add` node the rule is handed.
+    ///
+    /// Builds `Add(Mul(p, p), Mul(Cos(x), Cos(x)))` where `p` starts as an
+    /// unrelated `Neg(x)` node in its own class — nothing marks it as
+    /// `Sin(x)` yet, so `Pythagorean` cannot fire on the first scan. A later
+    /// `union(p, sin_x)` (standing in for whatever upstream rewrite would
+    /// normally prove `p == sin(x)`) changes `p`'s class content without
+    /// touching `sum`'s or `p_sq`'s own node lists — exactly the shape a
+    /// 1-hop dirty-tracking scheme would miss, and exactly
+    /// `DIRTY_TRACKING_MAX_DEPTH`'s boundary. Asserts a further scan of
+    /// `Pythagorean` still finds and fires the identity.
+    #[test]
+    fn dirty_tracking_still_finds_a_rewrite_two_hops_below_a_changed_grandchild() {
+        use crate::math::trig::Pythagorean;
+
+        let mut egraph = EGraph::with_rules(vec![Pythagorean::new()]);
+        let op = |kind| ops::op_from_kind(kind).expect("op is modelled");
+
+        let x = egraph.add(ENode::Var(0));
+        let sin_x = egraph.add(ENode::Op {
+            op: op(pixelflow_ir::OpKind::Sin),
+            children: vec![x],
+        });
+        let cos_x = egraph.add(ENode::Op {
+            op: op(pixelflow_ir::OpKind::Cos),
+            children: vec![x],
+        });
+        let cos_sq = egraph.add(ENode::Op {
+            op: op(pixelflow_ir::OpKind::Mul),
+            children: vec![cos_x, cos_x],
+        });
+
+        // `p` starts life indistinguishable from any other opaque unary
+        // node — NOT unioned with `sin_x` yet.
+        let p = egraph.add(ENode::Op {
+            op: op(pixelflow_ir::OpKind::Neg),
+            children: vec![x],
+        });
+        let p_sq = egraph.add(ENode::Op {
+            op: op(pixelflow_ir::OpKind::Mul),
+            children: vec![p, p],
+        });
+        let sum = egraph.add(ENode::Op {
+            op: op(pixelflow_ir::OpKind::Add),
+            children: vec![p_sq, cos_sq],
+        });
+
+        // First scan: nothing to find (`p` isn't known to be `sin(x)`).
+        let result = egraph.apply_rule_at_index_budgeted(0, 10_000);
+        assert_eq!(
+            result.changes, 0,
+            "the identity cannot match before p == sin(x) is known"
+        );
+        egraph.rebuild();
+
+        // Now prove p == sin(x) — the grandchild change the rule needs, two
+        // hops below `sum`, with `sum`'s and `p_sq`'s own node lists
+        // untouched.
+        egraph.union(p, sin_x);
+        egraph.rebuild();
+
+        // Second scan of the SAME rule must still see `sum` as worth
+        // checking, even though neither `sum` nor `p_sq` (only their
+        // grandchild `p`) changed.
+        let result = egraph.apply_rule_at_index_budgeted(0, 10_000);
+        assert_eq!(
+            result.changes, 1,
+            "dirty-class tracking must not skip `sum` just because its own \
+             node list (and its direct child p_sq's) never changed — only \
+             the grandchild `p` did, which is exactly Pythagorean's \
+             matching depth"
+        );
+        egraph.rebuild();
+
+        let costs = CostModel::default();
+        let (_, _, cost) = crate::egraph::extract::extract(&egraph, egraph.find(sum), &costs);
+        assert_eq!(
+            cost, 0,
+            "sum's class must now also contain Const(1.0), cost 0"
+        );
+    }
 
     /// Regression test for a `rebuild_budgeted` bug: when canonicalizing the
     /// worklist item `id`'s nodes triggers a union whose surviving parent is
