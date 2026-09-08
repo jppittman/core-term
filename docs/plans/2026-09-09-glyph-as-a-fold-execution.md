@@ -100,15 +100,41 @@ exactly, under a `sum_over`.
 
 ## S1 — the body
 
-*Status.* S1a — the winding as one `sum_over` reading the table — landed.
-S1b — the distance/boundary fold — is unconverted: `coverage` still builds
-a per-piece constant fragment per `prepare`, and reads the winding by
-reference (`winding.by_ref()`), because reading it by value copied the
-`Reduce` per interior piece and made the legalized arena quadratic
-([composition-is-linking](2026-09-09-composition-is-linking.md) §7). That
-also relocates the "expected regression" below: the per-piece distance
-terms are now ~600 of the ~720 legalized nodes per piece, so S1b is the
-next lever on what saturation sees, ahead of anything about linking.
+*Status.* Landed, in two steps. S1a: the winding as one `sum_over` reading
+the table. S1b: the distance as one `min_over` reading the same table
+(`PIECE_ROW_COLS` 13 → 22), its body naming the winding by reference —
+reading it by value copied the `Reduce` per interior piece and made the
+legalized arena quadratic
+([composition-is-linking](2026-09-09-composition-is-linking.md) §7).
+`prepare`, `Prepared`, `Included`, `min_of`, `Linear::kernel` and the
+host-side pruning are gone. Two of the predictions below were wrong and the
+code says so:
+
+- **`may_be_interior` and `chord_winding` stay.** The delete list argued "a
+  piece nothing else covers always separates" — true of the geometry, not
+  of the *test*, which reads the crossing term and so compares `w₋ = w`
+  against itself wherever the sample's row is outside the chord's Y band
+  (every horizontal chord, and most rows of a near-horizontal one). Asked
+  of every piece, it drops those pieces' ramps. It is a correctness gate,
+  and it is now a table column (`COL_BOUNDARY_TEST`: `0.5`, or a threshold
+  no winding reaches) rather than a host branch.
+- **What saturation sees went *up*, not down**: ~500 → ~730 nodes per piece
+  before the e-graph, because a table read is a `Gather` subtree where a
+  constant was one leaf, and `in_pixels` builds its scale five times before
+  CSE. The optimizer's output is a wash per piece (~102 → ~104 nodes) and
+  the emitted arena +42 %, all of it address arithmetic on constant indices.
+
+What it bought is the denotation, and it is large: the arena a glyph builds
+is **5,990 nodes for any outline** — a 26-character string was 1.56 M —
+and construction is flat at ~1 ms (was 196 ms). Through `Glyph::bake`,
+warm, ns/px before → after: `O` 2380 → 415 at 16 px, 784 → 392 at 32 px,
+582 → 990 at 64 px. The first two are the per-bake fixed cost collapsing
+with the arena (the compile cache hashes it every bake); the last is the
+per-term cost below, and it is the regression this section predicted.
+`lower_dwrt` gained the rule it needed — a tabulation whose index does not
+move with the variable is a constant — and a new pin,
+`a_fold_may_name_another_fold`: two folds take the *same* binder slot when
+the inner one is named, which is sound because expansion is inside-out.
 
 **Deliverable:** `glyph()` as one `Kernel::over` body, per-glyph extent.
 
@@ -145,7 +171,13 @@ still *correct* — a gathered coefficient is constant in X and Y — it just is
 not constant-folded.
 
 The fix is ask B (hoist binder-only work out of the pixel loops), not a
-revert.
+revert. Measured after S1b: a regular polygon carries 4 `sqrt` per piece
+where it carried 1 — the capsule's, which is per pixel, and three gradient
+normalisations (`across`, `along`, and the implicit's — the last built for
+a line too, where it folds to 0 at run time). Two of the three are
+pixel-invariant after the unroll (`Variance::CONST` indices), which is
+exactly what ask B hoists; splitting lines from curves into two folds
+would remove the third and is S3's measurement to make.
 
 ### The tests this lands on
 

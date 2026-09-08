@@ -1,9 +1,21 @@
 //! What a laid-out string costs to *build* and to *legalize*, as the string
-//! grows: arena size, reachable nodes, piece count, and the size of the
-//! legalized (reference-linked, derivative-lowered, reduce-unrolled) arena
-//! that reaches the JIT. One line per length. Both columns must stay linear
-//! in the piece count — the measurement behind
+//! grows: arena size, reachable nodes, piece count, and two node counts
+//! downstream. One line per length. Every column must stay linear in the
+//! piece count — the measurement behind
 //! docs/plans/2026-09-09-composition-is-linking.md §7.
+//!
+//! The two downstream columns are different questions and the difference
+//! matters, because the runtime pipeline splits between them:
+//!
+//! - `saturation_sees` is reference-linked, derivative-lowered and
+//!   reduce-unrolled — exactly `pixelflow_search::runtime`'s
+//!   `[LowerDwrt, ExpandReduce, Saturate]` at the moment the e-graph is
+//!   handed the arena. It is the lever on optimization cost.
+//! - `legalized` is the whole of `legalize` on the *unoptimized* arena, so
+//!   it also expands every `Gather` into address arithmetic. Nothing folds
+//!   that here, whereas in the pipeline saturation runs first and CSEs the
+//!   repeated reads — so this column over-counts what the JIT emits, and it
+//!   over-counts more the more the kernel reads a table.
 //!
 //! Run: `cargo run --release -p pixelflow-graphics --example text_kernel_cost`
 
@@ -12,13 +24,13 @@ use std::time::Instant;
 use pixelflow_core::Kernel;
 use pixelflow_graphics::fonts::{text, Font};
 use pixelflow_ir::arena::{ExprArena, ExprId};
-use pixelflow_ir::passes::legalize;
+use pixelflow_ir::passes::{expand_reduce_owned, expand_refs_owned, legalize, lower_dwrt_owned};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
-/// The winding sum's piece table has this many columns per piece
+/// The piece table both folds read has this many columns per piece
 /// (`loop_blinn::PIECE_ROW_COLS`, private to that module).
-const PIECE_ROW_COLS: usize = 13;
+const PIECE_ROW_COLS: usize = 22;
 
 fn reachable(arena: &ExprArena, root: ExprId) -> usize {
     let mut seen = vec![false; arena.len()];
@@ -38,7 +50,10 @@ fn main() {
     let font = Font::parse(FONT_BYTES).expect("parse font");
     let size = 32.0f32;
     let alphabet = "abcdefghijklmnopqrstuvwxyz";
-    println!("chars  construct_us  arena_len  reachable  pieces  legalized_reachable  legalize_us");
+    println!(
+        "chars  construct_us  arena_len  reachable  pieces  saturation_sees  \
+         legalized_reachable  legalize_us"
+    );
     for n in [1usize, 2, 4, 8, 13, 26] {
         let s = &alphabet[..n];
         let t0 = Instant::now();
@@ -54,14 +69,18 @@ fn main() {
             .map(|(_, data)| data.len())
             .sum::<usize>()
             / PIECE_ROW_COLS;
+        let (linked, linked_root) = expand_refs_owned(arena, root);
+        let (differentiated, d_root) = lower_dwrt_owned(&linked, linked_root).expect("lower_dwrt");
+        let (unrolled, u_root) = expand_reduce_owned(&differentiated, d_root);
         let t1 = Instant::now();
         let (legal, legal_root) = legalize(arena, root).expect("legalize");
         let legalize_t = t1.elapsed();
         println!(
-            "{n:>5}  {:>12}  {:>9}  {:>9}  {pieces:>6}  {:>19}  {:>11}",
+            "{n:>5}  {:>12}  {:>9}  {:>9}  {pieces:>6}  {:>15}  {:>19}  {:>11}",
             construct.as_micros(),
             arena.len(),
             reachable(arena, root),
+            reachable(&unrolled, u_root),
             reachable(&legal, legal_root),
             legalize_t.as_micros(),
         );

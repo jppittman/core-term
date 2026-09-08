@@ -577,8 +577,9 @@ impl<'a> Substitution<'a> {
 /// first, so nested derivatives (`DXX` = `Dwrt(Dwrt(e, 0), 0)`) differentiate
 /// an already-`Dwrt`-free subgraph.
 ///
-/// Errors loudly on any op with no derivative rule (bound-memory reads,
-/// integer/bit ops, reductions) rather than silently miscompiling.
+/// Errors loudly on any op with no derivative rule (integer/bit ops,
+/// reductions, and a bound-memory read whose *index* moves with the variable)
+/// rather than silently miscompiling.
 pub fn lower_dwrt(arena: &mut ExprArena, root: ExprId) -> Result<ExprId, &'static str> {
     try_rebuild_arena(arena, root, |arena, node, m| match node {
         ExprNode::Binary(OpKind::Dwrt, expr, var) => {
@@ -647,16 +648,73 @@ fn differentiate(arena: &mut ExprArena, expr: ExprId, var: u8) -> Result<ExprId,
         push_deriv_children(arena.node(id), &mut stack);
     }
 
+    // A tabulation is the one rule that asks about *dependence* rather than
+    // shape, and the variance table is the answer. Computed only where a
+    // tabulation is actually reached — it is a scan of the whole arena, and a
+    // kernel carries one `Dwrt` per antialiased edge, so paying for it
+    // unconditionally is how this pass was quadratic before.
+    //
+    // Computed *before* pass 2 appends: every node `diff_node` asks about is
+    // primal and so predates this point.
+    let reads_memory = marked.iter().any(|id| {
+        matches!(
+            arena.node(*id),
+            ExprNode::Ternary(OpKind::Gather, _, _, _) | ExprNode::Binary(OpKind::RawGather, _, _)
+        )
+    });
+    let table = reads_memory.then(|| crate::variance::compute_arena_variance(arena));
+    let variance = table.as_deref().unwrap_or(&[]);
+
     // Pass 2: bottom-up compute in topological (id) order — the set iterates
     // ascending, and the arena is append-only, so children precede parents.
     let mut memo: BTreeMap<ExprId, ExprId> = BTreeMap::new();
     for id in marked {
-        let d = diff_node(arena, id, var, &memo)?;
+        // Rebuilt per node because `memo` is borrowed here and written below.
+        let rules = Rules {
+            var,
+            memo: &memo,
+            variance,
+        };
+        let d = diff_node(arena, id, &rules)?;
         memo.insert(id, d);
     }
     Ok(*memo
         .get(&expr)
         .expect("derivative of the root was computed"))
+}
+
+/// What a derivative rule needs besides the node itself: the variable being
+/// differentiated against, the children's already-computed derivatives, and —
+/// for a tabulation — whether its index moves with that variable.
+struct Rules<'a> {
+    var: u8,
+    memo: &'a BTreeMap<ExprId, ExprId>,
+    /// Variance for every primal node, or empty when no tabulation is
+    /// reachable and the question is never asked.
+    variance: &'a [Variance],
+}
+
+impl Rules<'_> {
+    /// **A tabulation is a constant wherever its index is.** Reading memory
+    /// does not vary with a coordinate — only the *address* does — so the
+    /// derivative of `Gather(b, i…)` is `0` exactly when no `i` mentions the
+    /// variable, which is the question [`Variance`] already answers.
+    ///
+    /// An index that does move is still refused: differentiating through it
+    /// needs the code the tabulation replaced, and a bound buffer does not
+    /// carry it (docs/plans/2026-09-09-the-graph-differentiates.md §3).
+    fn tabulation(&self, arena: &mut ExprArena, index: &[ExprId]) -> Result<ExprId, &'static str> {
+        let moves = index.iter().any(|id| {
+            !self
+                .variance
+                .get(id.0 as usize)
+                .is_some_and(|v| v.is_invariant_in(self.var))
+        });
+        match moves {
+            true => Err("lower_dwrt: cannot differentiate a bound-memory read"),
+            false => Ok(arena.push_const(0.0)),
+        }
+    }
 }
 
 /// Which children's derivatives the rule for `node` consumes. Must stay in
@@ -711,12 +769,8 @@ fn push_deriv_children(node: &ExprNode, stack: &mut Vec<ExprId>) {
     }
 }
 
-fn diff_node(
-    arena: &mut ExprArena,
-    id: ExprId,
-    var: u8,
-    memo: &BTreeMap<ExprId, ExprId>,
-) -> Result<ExprId, &'static str> {
+fn diff_node(arena: &mut ExprArena, id: ExprId, rules: &Rules) -> Result<ExprId, &'static str> {
+    let Rules { var, memo, .. } = *rules;
     match arena.node(id).clone() {
         ExprNode::Var(i) => Ok(arena.push_const(if i == var { 1.0 } else { 0.0 })),
         // Constants, scalar params (baked before evaluation) and uniforms
@@ -915,7 +969,7 @@ fn diff_node(
                 Ok(arena.push_binary(OpKind::Mul, p, inner))
             }
             OpKind::Dwrt => Err("lower_dwrt: nested Dwrt survived lowering (internal invariant)"),
-            OpKind::RawGather => Err("lower_dwrt: cannot differentiate a bound-memory read"),
+            OpKind::RawGather => rules.tabulation(arena, &[b]),
             OpKind::IAdd | OpKind::Shl | OpKind::Shr | OpKind::BitAnd | OpKind::BitOr => {
                 Err("lower_dwrt: cannot differentiate integer/bit-manipulation ops")
             }
@@ -939,7 +993,7 @@ fn diff_node(
                 let dc = dchild(memo, c);
                 Ok(arena.push_ternary(OpKind::Select, a, db, dc))
             }
-            OpKind::Gather => Err("lower_dwrt: cannot differentiate a bound-memory read"),
+            OpKind::Gather => rules.tabulation(arena, &[b, c]),
             _ => Err("lower_dwrt: no derivative rule for this ternary op"),
         },
 
@@ -2423,8 +2477,10 @@ mod dwrt_tests {
             }
         }
 
-        // A bare Gather (bound-memory read) cannot be differentiated, and
-        // neither can its lowered RawGather form.
+        // A Gather whose index moves with the variable cannot be
+        // differentiated, and neither can its lowered RawGather form. (An
+        // index that does *not* move is a constant — see
+        // `a_tabulation_is_a_constant_wherever_its_index_is`.)
         let mut a = ExprArena::new();
         let b = a.declare_buffer(BufferDecl {
             id: BufferIdentity::mint(),
@@ -2457,6 +2513,83 @@ mod dwrt_tests {
             Err(msg) => assert_eq!(msg, BOUND_MEMORY),
             Ok(_) => panic!("expected {BOUND_MEMORY:?}"),
         }
+    }
+
+    /// **A tabulation is a constant wherever its index is.** A piece table
+    /// read at a reduce binder — the shape `fonts::loop_blinn` builds — has a
+    /// coordinate-free address, so it is a number as far as X is concerned
+    /// and its derivative is 0; a table read at X itself still has no
+    /// derivative here, because differentiating through the address needs the
+    /// code the tabulation replaced.
+    ///
+    /// Both halves, and both spellings (`Gather` and the `RawGather` it
+    /// lowers to), because a rule that answered 0 for the second half would
+    /// be a silent miscompile rather than an error.
+    #[test]
+    fn a_tabulation_is_a_constant_wherever_its_index_is() {
+        use crate::arena::{BufferDecl, BufferIdentity, REDUCE_BINDER_BASE};
+
+        // `index_from(&mut arena)` builds the gather's row index.
+        let table = |index_from: &dyn Fn(&mut ExprArena) -> ExprId| {
+            let mut a = ExprArena::new();
+            let b = a.declare_buffer(BufferDecl {
+                id: BufferIdentity::mint(),
+                width: 4,
+                height: 4,
+            });
+            let col = a.push_const(0.0);
+            let row = index_from(&mut a);
+            let g = a.push_gather(b, col, row);
+            (a, b, col, row, g)
+        };
+
+        // Indexed by the reduce binder: constant in X, so `d/dX` is 0.
+        let (mut a, _, _, _, g) = table(&|a| a.push_var(REDUCE_BINDER_BASE));
+        let x_axis = a.push_const(0.0);
+        let root = a.push_binary(OpKind::Dwrt, g, x_axis);
+        let (lowered, lroot) =
+            lower_dwrt_owned(&a, root).expect("a binder-indexed read is a constant");
+        assert!(
+            matches!(lowered.node(lroot), ExprNode::Const(v) if *v == 0.0),
+            "expected Const(0.0), got {:?}",
+            lowered.node(lroot)
+        );
+
+        // The same read, one pass later: `RawGather` over the lowered address,
+        // still constant in X.
+        let (mut a, _, _, _, g) = table(&|a| a.push_var(REDUCE_BINDER_BASE));
+        let raw = expand_gather(&mut a, g);
+        let x_axis = a.push_const(0.0);
+        let root = a.push_binary(OpKind::Dwrt, raw, x_axis);
+        let (lowered, lroot) =
+            lower_dwrt_owned(&a, root).expect("a binder-indexed read is a constant");
+        assert!(
+            matches!(lowered.node(lroot), ExprNode::Const(v) if *v == 0.0),
+            "expected Const(0.0), got {:?}",
+            lowered.node(lroot)
+        );
+
+        // Indexed by X: the address moves, and there is no rule for that.
+        let (mut a, _, _, _, g) = table(&|a| a.push_var(0));
+        let x_axis = a.push_const(0.0);
+        let root = a.push_binary(OpKind::Dwrt, g, x_axis);
+        match lower_dwrt_owned(&a, root) {
+            Err(msg) => assert_eq!(msg, "lower_dwrt: cannot differentiate a bound-memory read"),
+            Ok(_) => panic!("an X-indexed table read has no derivative here"),
+        }
+
+        // And the derivative is per-variable, not per-node: the same
+        // X-indexed read is a constant in Y.
+        let (mut a, _, _, _, g) = table(&|a| a.push_var(0));
+        let y_axis = a.push_const(1.0);
+        let root = a.push_binary(OpKind::Dwrt, g, y_axis);
+        let (lowered, lroot) =
+            lower_dwrt_owned(&a, root).expect("an X-indexed read is constant in Y");
+        assert!(
+            matches!(lowered.node(lroot), ExprNode::Const(v) if *v == 0.0),
+            "expected Const(0.0), got {:?}",
+            lowered.node(lroot)
+        );
     }
 
     #[test]
@@ -3063,6 +3196,33 @@ mod ref_expansion_tests {
         let named = circle().by_ref();
         let folded = Kernel::sum_over(3, |i| i.mul(&named));
         let direct = Kernel::sum_over(3, |i| i.mul(&circle()));
+        let (f_arena, f_root) = folded.parts();
+        let (expanded, root) = expand_refs_owned(f_arena, f_root);
+        let (unrolled, unrolled_root) = expand_reduce_owned(&expanded, root);
+        assert_same_denotation(&direct, &unrolled, unrolled_root);
+    }
+
+    /// **A fold may name another fold**, and the two take the *same* index
+    /// slot when it does. `Kernel::over` picks the lowest slot no `Reduce` in
+    /// its body already binds, and a `Ref` is a leaf — so a name hides the
+    /// inner binder from that scan, where splicing the referent in would have
+    /// shown it and pushed the outer fold to the next slot.
+    ///
+    /// The shadowing is sound because expansion is inside-out: the referent's
+    /// own binder is substituted away before the outer fold's unroll ever
+    /// looks at it. This pins that, because it is the shape a glyph's
+    /// boundary test builds — a `min` over pieces whose body names the
+    /// winding `sum` over the same pieces — and getting it wrong is a silent
+    /// wrong answer, not a panic.
+    #[test]
+    fn a_fold_may_name_another_fold() {
+        let inner = Kernel::sum_over(3, |j| j.mul(&Kernel::x()));
+        let named = inner.by_ref();
+        let folded = Kernel::min_over(4, |i| i.add(&named).mul(&Kernel::y()));
+        // Spliced rather than named: `Kernel::over` sees the inner `Reduce`
+        // here and hands the outer fold a different slot, so this is the same
+        // denotation built with no shadowing at all.
+        let direct = Kernel::min_over(4, |i| i.add(&inner).mul(&Kernel::y()));
         let (f_arena, f_root) = folded.parts();
         let (expanded, root) = expand_refs_owned(f_arena, f_root);
         let (unrolled, unrolled_root) = expand_reduce_owned(&expanded, root);

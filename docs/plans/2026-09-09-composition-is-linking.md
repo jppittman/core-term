@@ -256,7 +256,11 @@ winding is ~100 and the per-piece distance terms ~600 — `m` *distinct*
 fragments over different constants, which no reference can share. The next
 lever on a glyph's saturation cost is therefore S1b of
 [glyph-as-a-fold-execution](2026-09-09-glyph-as-a-fold-execution.md) — the
-distance fold as a second table-reading reduce — not L4.
+distance fold as a second table-reading reduce — not L4. (S1b landed; its
+status note there records that it did *not* shrink what saturation sees —
+a table read is a subtree where a constant was a leaf — and what it bought
+instead: a 5,990-node arena for any outline, and bakes 2–5× faster at
+terminal sizes.)
 
 L4's case is the one §3 states: a scene that composes many *identical*
 kernels (an atlas of cached glyphs, a repeated primitive), where whether to

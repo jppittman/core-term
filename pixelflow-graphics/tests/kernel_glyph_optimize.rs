@@ -3,16 +3,19 @@
 //! A glyph kernel is the hottest runtime-composed arena in the system (every
 //! bake evaluates every reachable node per pixel), and its cost is dominated
 //! by the antialiasing ramps: every edge function `d` is normalised by
-//! `‖∇d‖ = √(DX(d)² + DY(d)²)`, and for the affine edge functions —
-//! a chord's perpendicular and along-chord distances — both derivatives are
-//! constants, so the whole normalisation is a compile-time number. If the
-//! optimizer does not fold it, every pixel pays a `sqrt` for a value known
-//! at bake time, once per edge.
+//! `‖∇d‖ = √(DX(d)² + DY(d)²)`, once per piece per estimate.
+//!
+//! A glyph is now **two folds over one coefficient table** — a `sum_over`
+//! for the winding and a `min_over` for the distance, each with one fixed
+//! body reading its numbers by column at its own reduce binder. So the two
+//! things worth pinning are that the built arena does not grow with the
+//! outline, and that the optimizer's output grows exactly linearly in the
+//! piece count with a fixed budget per piece.
 //!
 //! These tests count surviving operations through the runtime pipeline
 //! (`optimize_runtime_arena` → `lower_dwrt`) — the exact stages
-//! `Lattice::bake` runs — so a regression in derivative folding or CSE shows
-//! up as a hard number, not a benchmark whisper.
+//! `Lattice::bake` runs — so a regression in derivative lowering or CSE
+//! shows up as a hard number, not a benchmark whisper.
 
 use pixelflow_graphics::fonts::{loop_blinn, Contour, Font, Outline, Segment};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
@@ -91,8 +94,8 @@ fn bake_pipeline(arena: &ExprArena, root: ExprId, shape: [u32; 2]) -> (ExprArena
     lower_dwrt_owned(&a, r).expect("dwrt lowering must succeed on glyph kernels")
 }
 
-/// A closed polygon of `n` straight edges: no curves, so every edge function
-/// is affine and every gradient a constant.
+/// A closed polygon of `n` straight edges: no curves, so every piece's
+/// sliver columns are zero and its implicit is the identity.
 fn polygon(points: &[[f32; 2]]) -> Outline {
     let segments = (0..points.len())
         .map(|i| Segment::Line {
@@ -105,44 +108,94 @@ fn polygon(points: &[[f32; 2]]) -> Outline {
     }
 }
 
-/// Every affine edge function's gradient folds: a polygon's kernel keeps
-/// one `sqrt` per edge — the capsule distance `√(d² + t²)`, which really is
-/// per pixel — and not one more. The three `√(DX² + DY²)` per edge (two
-/// affine normalisations and, for a curve, its implicit's) are the ones that
-/// must vanish.
+/// A regular `n`-gon on a circle of radius 12 centred at (16, 16): every
+/// edge is straight, distinct, and non-degenerate, whatever `n` is.
+fn regular_polygon(n: usize) -> Outline {
+    let points: Vec<[f32; 2]> = (0..n)
+        .map(|i| {
+            let t = std::f32::consts::TAU * i as f32 / n as f32;
+            [16.0 + 12.0 * t.cos(), 16.0 + 12.0 * t.sin()]
+        })
+        .collect();
+    polygon(&points)
+}
+
+/// One `sqrt` per piece for the capsule distance `√(d² + t²)`, and one for
+/// each of the three gradient normalisations a piece's distance needs — the
+/// chord's across and along projections, and the implicit's own `‖∇f‖`.
+const SQRT_PER_PIECE: usize = 4;
+
+/// **A glyph is one body, and the fold says how many times it runs.**
+///
+/// This test used to assert the opposite property: that every affine edge
+/// function's gradient `√(DX² + DY²)` folded to a compile-time constant,
+/// leaving one `sqrt` per edge, the capsule distance. That property is
+/// *given up* deliberately (S1b of
+/// docs/plans/2026-09-09-glyph-as-a-fold-execution.md). An edge function's
+/// coefficients are table reads now, so `‖∇d‖` is a value rather than a
+/// literal and no folding can reach it — and folding it back by
+/// precomputing the magnitude on the host would put the distance in the
+/// outline's units instead of the lattice's, which is wrong under a
+/// magnifying `Kernel::at`.
+///
+/// What replaces it is the property the fold buys, which the per-edge form
+/// could not have stated at all:
+///
+/// - the arena a glyph **builds** is the same size whatever the outline is
+///   — one body per fold, not one fragment per edge, so construction stops
+///   being a function of the piece count;
+/// - the optimizer's output stays **linear** in the piece count with a
+///   fixed budget of [`SQRT_PER_PIECE`] per piece, so a rewrite that
+///   multiplied work per pixel still shows up as a hard number;
+/// - and `Dwrt` is still fully resolved, which now also covers
+///   `passes::lower_dwrt`'s rule that a table read whose index does not move
+///   with the differentiation variable is a constant. Without that rule this
+///   kernel does not lower at all.
 #[test]
-fn affine_edge_gradients_fold_to_constants() {
-    let outline = polygon(&[
-        [2.0, 1.0],
-        [30.0, 4.0],
-        [26.0, 28.0],
-        [3.0, 20.0],
-        [11.0, 9.0],
-    ]);
-    let glyph = loop_blinn::glyph(&outline);
-    let (arena, root) = linked(&glyph.kernel);
+fn a_glyph_is_one_body_and_a_fixed_budget_per_piece() {
+    let (small, large) = (5usize, 11usize);
+    let build = |n: usize| linked(&loop_blinn::glyph(&regular_polygon(n)).kernel);
+    let (few, few_root) = build(small);
+    let (many, many_root) = build(large);
 
-    let raw_sqrt = count_op(&arena, root, OpKind::Sqrt);
-    let raw_dwrt = count_op(&arena, root, OpKind::Dwrt);
-    let raw_total = total_reachable(&arena, root);
-
-    let (opt, opt_root) = bake_pipeline(&arena, root, [32, 32]);
-    let opt_sqrt = count_op(&opt, opt_root, OpKind::Sqrt);
-    let opt_dwrt = count_op(&opt, opt_root, OpKind::Dwrt);
-    let opt_total = total_reachable(&opt, opt_root);
-
-    eprintln!(
-        "pentagon: raw total={raw_total} sqrt={raw_sqrt} dwrt={raw_dwrt} -> \
-         optimized total={opt_total} sqrt={opt_sqrt} dwrt={opt_dwrt}"
+    // The body is one. A different piece count changes the fold's extent
+    // (a `Const`) and the table's height, never the arena's shape.
+    assert_eq!(
+        (
+            total_reachable(&few, few_root),
+            count_op(&few, few_root, OpKind::Sqrt),
+            count_op(&few, few_root, OpKind::Dwrt),
+        ),
+        (
+            total_reachable(&many, many_root),
+            count_op(&many, many_root, OpKind::Sqrt),
+            count_op(&many, many_root, OpKind::Dwrt),
+        ),
+        "a {small}-gon and a {large}-gon must build the same arena: the piece \
+         count is data in a table, not structure in the graph"
     );
 
-    assert_eq!(opt_dwrt, 0, "Dwrt must be fully resolved by bake time");
-    assert!(
-        opt_sqrt <= 5,
-        "a pentagon's kernel needs one sqrt per edge (the capsule distance); \
-         {opt_sqrt} survived, so an affine edge function's gradient — a \
-         compile-time constant — is being computed per pixel"
-    );
+    for (n, arena, root) in [(small, &few, few_root), (large, &many, many_root)] {
+        let (opt, opt_root) = bake_pipeline(arena, root, [32, 32]);
+        let opt_sqrt = count_op(&opt, opt_root, OpKind::Sqrt);
+        let opt_dwrt = count_op(&opt, opt_root, OpKind::Dwrt);
+        eprintln!(
+            "{n}-gon: raw total={} sqrt={} dwrt={} -> optimized total={} sqrt={opt_sqrt} \
+             dwrt={opt_dwrt}",
+            total_reachable(arena, root),
+            count_op(arena, root, OpKind::Sqrt),
+            count_op(arena, root, OpKind::Dwrt),
+            total_reachable(&opt, opt_root),
+        );
+        assert_eq!(opt_dwrt, 0, "Dwrt must be fully resolved by bake time");
+        assert!(
+            opt_sqrt <= SQRT_PER_PIECE * n,
+            "a {n}-gon's unrolled kernel may keep {SQRT_PER_PIECE} sqrt per piece \
+             (the capsule distance and three gradient normalisations); {opt_sqrt} \
+             survived, so something is computing a root per pixel that the one \
+             body does not ask for"
+        );
+    }
 }
 
 /// Every op a glyph kernel contains must be representable in the e-graph —
