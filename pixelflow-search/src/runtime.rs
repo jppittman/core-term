@@ -35,7 +35,7 @@ use crate::saturate_pass::Saturate;
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
-use pixelflow_ir::optimize::Optimize;
+use pixelflow_ir::optimize::{Identity, Optimize};
 use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
 use pixelflow_ir::pipeline;
 use std::collections::HashMap;
@@ -128,6 +128,7 @@ pub fn optimize_runtime_arena(
     // constant today because production names exactly one configuration;
     // keying on it is what keeps that from being load-bearing.
     key.extend_from_slice(&Optimizer::production().fingerprint().to_bytes());
+    key.push(saturation_switch() as u8);
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache
         .lock()
@@ -168,9 +169,61 @@ fn optimize_runtime_arena_uncached(
     // A declining step short-circuits the rest and yields `None` here, which
     // means exactly what it always meant: the caller compiles its own arena
     // unchanged, unoptimized but correct.
-    pipeline![LowerDwrt, ExpandReduce, Saturate::runtime(shape)]
-        .optimize(arena, root)
-        .into_changed()
+    match saturation_switch() {
+        SaturationSwitch::On => pipeline![LowerDwrt, ExpandReduce, Saturate::runtime(shape)]
+            .optimize(arena, root)
+            .into_changed(),
+        // The `Identity` path: the same legalizing prefix, no saturation.
+        // What `Lattice::bake` would emit if the e-graph did not exist —
+        // the "F" column of docs/plans/2026-09-06-egraph-at-production-scale.md
+        // §7, measured by docs/results/2026-09-07-egraph-off-vs-on-real-shaders.md.
+        SaturationSwitch::Off => pipeline![LowerDwrt, ExpandReduce, Identity]
+            .optimize(arena, root)
+            .into_changed(),
+    }
+}
+
+/// Whether the runtime tier saturates at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum SaturationSwitch {
+    Off = 0,
+    On = 1,
+}
+
+/// The one place `PIXELFLOW_SATURATION` is read.
+///
+/// `off` selects the `Identity` path above; `on` or unset selects
+/// saturation; any other value is a hard error. The variable is honoured
+/// only under the `saturation-switch` cargo feature (a measurement build:
+/// `pixelflow-pipeline`'s `egraph_off_on` harness). A build without the
+/// feature panics if the variable is set at all, so an `export
+/// PIXELFLOW_SATURATION=off` left behind in a shell can never quietly ship
+/// unoptimized kernels — the switch is not leavable-on by accident.
+fn saturation_switch() -> SaturationSwitch {
+    static SWITCH: OnceLock<SaturationSwitch> = OnceLock::new();
+    *SWITCH.get_or_init(|| {
+        let var = std::env::var("PIXELFLOW_SATURATION");
+        #[cfg(not(feature = "saturation-switch"))]
+        {
+            assert!(
+                matches!(var, Err(std::env::VarError::NotPresent)),
+                "PIXELFLOW_SATURATION is set ({var:?}) but this build has no \
+                 `saturation-switch` feature (pixelflow-search); the variable is a \
+                 measurement switch and a production build refuses to guess what \
+                 it means. Unset it."
+            );
+            SaturationSwitch::On
+        }
+        #[cfg(feature = "saturation-switch")]
+        match var.as_deref() {
+            Err(std::env::VarError::NotPresent) | Ok("on") => SaturationSwitch::On,
+            Ok("off") => SaturationSwitch::Off,
+            other => panic!(
+                "PIXELFLOW_SATURATION must be `on` or `off` (or unset), got {other:?}"
+            ),
+        }
+    })
 }
 
 /// Canonical serialization of the subgraph reachable from `root`: nodes in
@@ -318,6 +371,22 @@ mod tests {
                 "optimize_runtime_arena changed semantics at ({x},{y},{z},{w}): {want} != {got}"
             );
         }
+    }
+
+    #[test]
+    fn saturation_switch_follows_the_variable() {
+        use super::SaturationSwitch;
+        // Without the feature a set variable is a panic (loud, in the call
+        // below); with it, the mapping is the contract.
+        #[cfg(not(feature = "saturation-switch"))]
+        let expected = SaturationSwitch::On;
+        #[cfg(feature = "saturation-switch")]
+        let expected = match std::env::var("PIXELFLOW_SATURATION").as_deref() {
+            Err(_) | Ok("on") => SaturationSwitch::On,
+            Ok("off") => SaturationSwitch::Off,
+            Ok(other) => panic!("unexpected PIXELFLOW_SATURATION={other:?} in a test process"),
+        };
+        assert_eq!(super::saturation_switch(), expected);
     }
 
     #[test]
