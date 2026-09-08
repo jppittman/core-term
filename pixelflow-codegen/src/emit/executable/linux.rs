@@ -79,11 +79,30 @@ impl CodePage for LinuxCodePage {
     }
 
     fn write(&mut self, code: &[u8]) {
-        debug_assert!(code.len() <= self.capacity);
+        // `assert!`, not `debug_assert!`: this trait is publicly exported and
+        // its methods are safe, so a downstream caller reaches this
+        // `copy_nonoverlapping` from safe code. A debug-only guard compiles
+        // out of release, where the overrun would write past the mapping.
+        assert!(
+            code.len() <= self.capacity,
+            "code buffer ({} bytes) exceeds the mapped page ({} bytes)",
+            code.len(),
+            self.capacity,
+        );
         unsafe { ptr::copy_nonoverlapping(code.as_ptr(), self.ptr, code.len()) };
     }
 
     fn finish(self, len: usize) -> Result<ExecutableCode, CompileError> {
+        // Before anything reads `len` bytes: `sync_instruction_cache` walks
+        // that range, and the `ExecutableCode` this returns hands it to the
+        // safe `as_bytes`, which builds a slice from it. An unchecked `len`
+        // past `capacity` is therefore out-of-bounds through safe code.
+        if len > self.capacity {
+            return Err(CompileError::Internal(
+                "finish: code length exceeds the mapped page",
+            ));
+        }
+
         let rc = unsafe {
             mprotect(
                 self.ptr.cast::<libc::c_void>(),
@@ -116,4 +135,49 @@ impl Drop for LinuxCodePage {
 pub(crate) fn test_sync_empty() {
     let mut byte = 0u8;
     sync_instruction_cache(&raw mut byte, 0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LinuxCodePage;
+    use crate::emit::executable::CodePage;
+
+    /// `CodePage` is publicly exported and every one of its methods is safe, so
+    /// this sequence is reachable from a downstream crate without `unsafe`.
+    /// Before the guard in `finish`, it returned an `ExecutableCode` whose
+    /// `len` exceeded the mapping — and `ExecutableCode::as_bytes` is a safe
+    /// `from_raw_parts` over exactly that `len`.
+    #[test]
+    fn sealing_past_the_mapping_is_refused_rather_than_returning_an_oob_slice() {
+        // `map` records the requested capacity verbatim — mmap rounds up to a
+        // page internally, but `self.capacity` is what was asked for, and that
+        // is the bound `as_bytes` would be trusted with.
+        const REQUESTED: usize = 64;
+
+        assert!(
+            LinuxCodePage::map(REQUESTED)
+                .expect("map")
+                .finish(REQUESTED)
+                .is_ok(),
+            "sealing exactly the requested capacity must still be allowed",
+        );
+        assert!(
+            LinuxCodePage::map(REQUESTED)
+                .expect("map")
+                .finish(REQUESTED + 1)
+                .is_err(),
+            "one byte past the mapping must be refused, not handed to as_bytes",
+        );
+    }
+
+    /// The release-mode half of the same hole: `write` guarded
+    /// `copy_nonoverlapping` with a `debug_assert!`, which is absent from the
+    /// build that ships.
+    #[test]
+    #[should_panic(expected = "exceeds the mapped page")]
+    fn writing_past_the_mapping_panics_rather_than_overrunning_it() {
+        let mut page = LinuxCodePage::map(64).expect("map");
+        let oversized = vec![0x90u8; 65];
+        page.write(&oversized);
+    }
 }
