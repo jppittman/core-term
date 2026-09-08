@@ -1,3 +1,5 @@
+> **Retracted/Superseded (2026-09-07), ledger L053 / L056.** The premise this measurement is framed against — "#1087: 68.4% of real kernels, median 8.66% / p90 13.2% truncation cost" — is the **former 200 ms clock-limited regime**. Under the production budget now shipped, 93% of 207 real kernels stop at `ClassCap` and the median run is 5,422 applications (`docs/results/2026-09-07-corpus-structural-gaps.md`), so the truncation figures below no longer describe what production does. The under-merging *mechanism* this document measures is unaffected and stands; only the regime framing is withdrawn. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark: `docs/plans/2026-09-07-benchmark-correction.md`.
+
 # Missing congruence measurement (issue #1106)
 
 Read-only measurement, no fix. THE FINDING under test: `EGraph::union(x, y)`
