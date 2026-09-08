@@ -286,6 +286,42 @@ locality argument from the measured cost structure. Nothing here requires deleti
 accumulator work — see §6 (out of scope) for why extending it, rather than replacing it, is the
 right sequencing.
 
+### 4.1 Growth is a feature, and it is most of the question
+
+**Direction (JP, 2026-09-09).** State the Guide's question as an economic
+one rather than a ranking one: *is this application going to grow the graph
+and give me nothing, or grow it a little and give me something useful?*
+
+Growth is **computable before firing, cheaply and exactly**, which is what
+makes it a feature rather than a prediction. A rewrite's RHS is a template
+of known size, and the e-graph is hash-consed, so the nodes it would add are
+the RHS nodes that do not already exist. An application whose RHS is
+entirely present adds zero — which is the 90.4% dedup case of §2.2 seen from
+the cost side rather than the identity side, and another reason to build the
+dedup key and the feature as one object.
+
+This costs nothing to add to §4's proposed feature shape (matched
+neighborhood + rule identity + budget state), and it is the term that most
+directly expresses what the budget is for.
+
+**Why it stops being optional.** Every rule in the current set adds one or
+two nodes, so growth barely varies and a policy that ignored it would lose
+little. That changes with
+[2026-09-09-composition-is-linking.md](2026-09-09-composition-is-linking.md),
+which proposes `Ref(k) ⟷ body(k)` — inlining as a rewrite, with the cost
+model choosing between a call and a splice. That rule's growth is *the
+entire referent*, and a rewrite fires eagerly: an ungated inline rule puts
+the inlined form in the e-class whether or not extraction wants it, so the
+graph pays even when the answer is "keep the call."
+
+The magnitude is already measured on the same shape of question. Expanding a
+glyph's reduce before saturation — the same "introduce N copies of a body"
+move — costs 3.8× on `A`, 5.9× on `O`, and **8.7× on `8`** (87,007 →
+758,059 nodes). No rule in the present set has that profile. So
+growth-awareness is not a refinement of the Guide for that rule; it is the
+precondition for the rule being admissible at all, and the linking design
+should be read as blocked on it.
+
 ## 5. Pre-registered Phase 3 experiment
 
 Stated purely at-budget, per §0's framing — no claim about optimality, no wall-clock timing.
