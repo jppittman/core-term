@@ -9,8 +9,10 @@
 //! # built once with the switch: --features pixelflow-search/saturation-switch
 //! PIXELFLOW_SATURATION=off egraph_off_on run --out rows/off.jsonl
 //! PIXELFLOW_SATURATION=on  egraph_off_on run --out rows/on.jsonl
-//!                          egraph_off_on run --out rows/masked.jsonl --mask-select-hoist
-//! egraph_off_on diff --off rows/off.jsonl --on rows/on.jsonl --masked rows/masked.jsonl \
+//!                          egraph_off_on run --out rows/cse.jsonl --variant cse-only
+//!                          egraph_off_on run --out rows/sh.jsonl  --variant with-select-hoist
+//! egraph_off_on diff --off rows/off.jsonl --on rows/on.jsonl --cse-only rows/cse.jsonl \
+//!     --with-select-hoist rows/sh.jsonl \
 //!     --out-prefix docs/results/2026-09-07-egraph-off-vs-on-real-shaders
 //! ```
 //!
@@ -34,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
 use pixelflow_codegen::emit::executable::{ExecutableCode, Point4, TileSlice};
@@ -49,16 +51,19 @@ use pixelflow_graphics::render::scene::{Scene, compile_cell_grid_for};
 use pixelflow_graphics::scene3d::{Hit, Plane, Ray, Rgba, Sphere, checker, sky};
 use pixelflow_ir::optimize::{Optimize, Rewritten};
 use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
-use pixelflow_ir::{BindingTable, ExprArena, ExprId, ExprNode, LatticeShape, eval_scalar, pipeline};
+use pixelflow_ir::{
+    BindingTable, ExprArena, ExprId, ExprNode, LatticeShape, eval_scalar, pipeline,
+};
 use pixelflow_pipeline::collapse_bench::corpus::Trips;
 use pixelflow_pipeline::collapse_bench::row::StaticFeatures;
 use pixelflow_pipeline::collapse_bench::{self, LANES, features_of};
 use pixelflow_pipeline::shader_bench::{SHADERTOY_KERNEL_NAMES, named_shadertoy_kernel};
 use pixelflow_search::Saturate;
 use pixelflow_search::egraph::{
-    CostModel, EpisodeLabels, KeepJournal, Optimizer, Rewrite, RuleSet, Vocabulary, all_rules,
-    insert, reachable_count,
+    Budget, CostModel, EpisodeLabels, KeepJournal, Optimizer, Rewrite, RuleSet, Vocabulary,
+    all_rules, insert, reachable_count,
 };
+use pixelflow_search::math::round2_rules::experimental_rules;
 
 const SCHEMA: &str = "egraph-off-on-v1";
 const SCREEN: [u32; 2] = [1920, 1080];
@@ -68,7 +73,8 @@ const CELL_WIDTH_PT: f32 = 10.0;
 const ATLAS_CAPACITY: usize = 128;
 const DENSITIES: [f32; 2] = [1.0, 2.0];
 const WARM_RANGE: std::ops::RangeInclusive<char> = ' '..='~';
-const BENCH_CHARS: [(&str, char); 3] = [("A_linear", 'A'), ("O_quadratic", 'O'), ("S_complex", 'S')];
+const BENCH_CHARS: [(&str, char); 3] =
+    [("A_linear", 'A'), ("O_quadratic", 'O'), ("S_complex", 'S')];
 const BENCH_PT: f32 = 32.0;
 const BENCH_EXTENT: [u32; 2] = [40, 45];
 const BENCH_WIDE_EXTENT: [u32; 2] = [640, 45];
@@ -79,7 +85,10 @@ const CLOCK_MAX_CALLS: usize = 20_000;
 const SELECT_HOIST_PREFIX: &str = "select-hoist-";
 
 #[derive(Parser)]
-#[command(name = "egraph_off_on", about = "Saturation on vs off on every shipped kernel")]
+#[command(
+    name = "egraph_off_on",
+    about = "Saturation on vs off on every shipped kernel"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -91,10 +100,10 @@ enum Command {
     Run {
         #[arg(long)]
         out: PathBuf,
-        /// Saturate under the production rule set minus the three
-        /// `select-hoist-*` rules (in-harness `Optimizer::production().rules(..)`).
+        /// An in-harness optimizer instead of the production one
+        /// (`PIXELFLOW_SATURATION` must be unset or `on`).
         #[arg(long)]
-        mask_select_hoist: bool,
+        variant: Option<Variant>,
         /// Skip the clock (deterministic columns only).
         #[arg(long)]
         no_clock: bool,
@@ -104,6 +113,12 @@ enum Command {
         /// Only kernels whose name contains this substring.
         #[arg(long)]
         filter: Option<String>,
+        /// Kernels (exact names) to leave out of this run — the emitter
+        /// panics (branch range, frame size) rather than returning an error,
+        /// so a kernel one mode cannot emit is excluded here and reported by
+        /// `diff` as present in one mode only.
+        #[arg(long, num_args = 0..)]
+        skip: Vec<String>,
         #[arg(long)]
         font: Option<PathBuf>,
     },
@@ -113,14 +128,53 @@ enum Command {
         off: Vec<PathBuf>,
         #[arg(long, num_args = 1..)]
         on: Vec<PathBuf>,
+        /// Rows from `--variant with-select-hoist`.
         #[arg(long, num_args = 0..)]
-        masked: Vec<PathBuf>,
+        with_select_hoist: Vec<PathBuf>,
+        /// Rows from `--variant cse-only`.
+        #[arg(long, num_args = 0..)]
+        cse_only: Vec<PathBuf>,
         #[arg(long)]
         out_prefix: PathBuf,
         /// Free-text lines (load, bench_scene numbers) appended verbatim.
         #[arg(long, num_args = 0..)]
         note: Vec<String>,
     },
+}
+
+/// The in-harness optimizers, each `Optimizer::production()` with one
+/// lever moved — the same pipeline `optimize_runtime_arena_uncached` runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Variant {
+    /// Production's 62 rules plus `SelectHoistUnary` (`select-hoist-neg|abs|sqrt`,
+    /// which live in `round2_rules::experimental_rules` and are *not* in
+    /// `all_rules()`): does the rule the demand plan indicts ever match a
+    /// real shader, and what does it do to the guards when it does.
+    WithSelectHoist,
+    /// Zero rewrite rounds: insert, extract. What the e-graph's hash-consing
+    /// alone buys, separated from what the rules buy.
+    CseOnly,
+}
+
+impl Variant {
+    fn label(self) -> &'static str {
+        match self {
+            Variant::WithSelectHoist => "with-select-hoist",
+            Variant::CseOnly => "cse-only",
+        }
+    }
+
+    fn optimizer(self, shape: LatticeShape) -> Optimizer {
+        let base = Optimizer::production().for_lattice(shape);
+        match self {
+            Variant::WithSelectHoist => base.rules(RuleSet::new(with_select_hoist_rules())),
+            Variant::CseOnly => base.budget(Budget::Explicit {
+                iterations: 0,
+                classes: usize::MAX,
+                applications: Some(0),
+            }),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +196,8 @@ struct Oracle {
     same_form_max_abs: f64,
     same_form_max_rel: f64,
     same_form_nan_mismatch: usize,
-    /// Cross form: `eval_scalar` of the arena as constructed vs the JIT of
+    /// Cross form: `eval_scalar` of the arena as constructed (after the
+    /// legalizing prefix, since `eval_scalar` has no `Dwrt`) vs the JIT of
     /// what was compiled from it — what the rewrites moved, at the sample.
     cross_form_max_abs: f64,
     cross_form_max_rel: f64,
@@ -170,7 +225,10 @@ struct Clock {
 struct RuleCount {
     rule: String,
     fired: usize,
+    /// `EpisodeLabels::compute_tight` (`derivation_ancestors_tight`).
     load_bearing: usize,
+    /// `EpisodeLabels::compute_strict`: the application's own e-node was chosen.
+    strict: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -396,11 +454,15 @@ fn real_kernels(font: &Path, filter: Option<&str>) -> Vec<RealKernel> {
             cell_grid: None,
         });
     };
-    let cell_grid;
-
     let shifts = rgba8_shifts();
     let chrome = chrome_color();
-    push("chrome_packed".into(), "chrome", packed_kernel(&chrome, shifts), SCREEN, true);
+    push(
+        "chrome_packed".into(),
+        "chrome",
+        packed_kernel(&chrome, shifts),
+        SCREEN,
+        true,
+    );
     let red = chrome.fold(
         &|channels: &[Kernel; 4]| channels[0].clone(),
         &|mask, a: Kernel, b: Kernel| mask.select(&a, &b),
@@ -417,7 +479,7 @@ fn real_kernels(font: &Path, filter: Option<&str>) -> Vec<RealKernel> {
     let (kernel, case) = cell_grid_case();
     let extent = [case.shape.frame_w, case.shape.frame_h];
     push("cellgrid_80x24_d2".into(), "cellgrid", kernel, extent, true);
-    cell_grid = case;
+    let cell_grid = case;
 
     let data = std::fs::read(font).unwrap_or_else(|e| panic!("read {}: {e}", font.display()));
     let parsed = Font::parse(&data).expect("parse the production font");
@@ -444,9 +506,21 @@ fn real_kernels(font: &Path, filter: Option<&str>) -> Vec<RealKernel> {
         let kernel = parsed
             .glyph_kernel_scaled(ch, BENCH_PT)
             .unwrap_or_else(|| panic!("no glyph for {ch:?}"));
-        push(format!("bench_{label}"), "bench", kernel.clone(), BENCH_EXTENT, false);
+        push(
+            format!("bench_{label}"),
+            "bench",
+            kernel.clone(),
+            BENCH_EXTENT,
+            false,
+        );
         if ch == 'O' {
-            push(format!("bench_{label}_wide"), "bench_wide", kernel, BENCH_WIDE_EXTENT, false);
+            push(
+                format!("bench_{label}_wide"),
+                "bench_wide",
+                kernel,
+                BENCH_WIDE_EXTENT,
+                false,
+            );
         }
     }
 
@@ -461,7 +535,6 @@ fn real_kernels(font: &Path, filter: Option<&str>) -> Vec<RealKernel> {
         );
     }
 
-    let mut out = out;
     out.iter_mut()
         .find(|r| r.class == "cellgrid")
         .expect("cell grid row")
@@ -493,7 +566,10 @@ fn capture_stderr<T>(f: impl FnOnce() -> T) -> (T, String) {
     let file = std::fs::File::create(&path).expect("stderr capture file");
     let saved = unsafe { libc::dup(2) };
     assert!(saved >= 0, "dup(2) failed");
-    assert!(unsafe { libc::dup2(file.as_raw_fd(), 2) } >= 0, "dup2 failed");
+    assert!(
+        unsafe { libc::dup2(file.as_raw_fd(), 2) } >= 0,
+        "dup2 failed"
+    );
     let r = f();
     assert!(unsafe { libc::dup2(saved, 2) } >= 0, "dup2 restore failed");
     unsafe { libc::close(saved) };
@@ -504,13 +580,13 @@ fn capture_stderr<T>(f: impl FnOnce() -> T) -> (T, String) {
 }
 
 fn parse_guard_telemetry(log: &str) -> Option<GuardTelemetry> {
-    let line = log
-        .lines()
-        .filter(|l| l.starts_with("guard-telemetry:"))
-        .last()?;
+    let line = log.lines().rfind(|l| l.starts_with("guard-telemetry:"))?;
     let field = |key: &str| -> u64 {
         let needle = format!("{key}=");
-        let start = line.find(&needle).unwrap_or_else(|| panic!("{key} in {line}")) + needle.len();
+        let start = line
+            .find(&needle)
+            .unwrap_or_else(|| panic!("{key} in {line}"))
+            + needle.len();
         line[start..]
             .split(|c: char| !c.is_ascii_digit())
             .next()
@@ -553,13 +629,16 @@ fn compile_via_production_path(arena: &ExprArena, root: ExprId, shape: LatticeSh
     }
 }
 
-/// The masked variant: the same pipeline `optimize_runtime_arena_uncached`
-/// runs, with `Optimizer::production().rules(..)` minus `select-hoist-*`.
-fn compile_via_masked_pipeline(arena: &ExprArena, root: ExprId, shape: LatticeShape) -> Compiled {
+/// A [`Variant`]: the same pipeline `optimize_runtime_arena_uncached`
+/// runs, with the variant's optimizer in the saturation slot.
+fn compile_via_variant(
+    arena: &ExprArena,
+    root: ExprId,
+    shape: LatticeShape,
+    variant: Variant,
+) -> Compiled {
     let t = Instant::now();
-    let optimizer = Optimizer::production()
-        .for_lattice(shape)
-        .rules(RuleSet::new(masked_rules()));
+    let optimizer = variant.optimizer(shape);
     let rewritten = pipeline![
         LowerDwrt,
         ExpandReduce,
@@ -570,7 +649,7 @@ fn compile_via_masked_pipeline(arena: &ExprArena, root: ExprId, shape: LatticeSh
     let (a, r) = match rewritten {
         Rewritten::Changed(a, r) => (a, r),
         Rewritten::Unchanged => (arena.clone(), root),
-        Rewritten::Declined => panic!("masked pipeline declined a real kernel"),
+        Rewritten::Declined => panic!("variant pipeline declined a real kernel"),
     };
     let (linked, root) = if arena.buffers().is_empty() && arena.uniforms().is_empty() {
         (a, r)
@@ -581,7 +660,7 @@ fn compile_via_masked_pipeline(arena: &ExprArena, root: ExprId, shape: LatticeSh
     let (result, log) = capture_stderr(|| emit::compile(&linked, root));
     let emit_ms = t.elapsed().as_secs_f64() * 1e3;
     Compiled {
-        result: result.expect("masked kernel failed to compile"),
+        result: result.expect("variant kernel failed to compile"),
         linked,
         root,
         optimize_ms,
@@ -590,16 +669,20 @@ fn compile_via_masked_pipeline(arena: &ExprArena, root: ExprId, shape: LatticeSh
     }
 }
 
-fn masked_rules() -> Vec<Box<dyn Rewrite>> {
-    let rules: Vec<Box<dyn Rewrite>> = all_rules()
-        .into_iter()
-        .filter(|r| !r.name().starts_with(SELECT_HOIST_PREFIX))
-        .collect();
-    assert_eq!(
-        all_rules().len() - rules.len(),
-        3,
-        "expected exactly three select-hoist rules to mask"
+fn with_select_hoist_rules() -> Vec<Box<dyn Rewrite>> {
+    let mut rules = all_rules();
+    assert!(
+        !rules
+            .iter()
+            .any(|r| r.name().starts_with(SELECT_HOIST_PREFIX)),
+        "select-hoist is in all_rules() now; the with-select-hoist variant is moot"
     );
+    let hoist: Vec<Box<dyn Rewrite>> = experimental_rules()
+        .into_iter()
+        .filter(|r| r.name().starts_with(SELECT_HOIST_PREFIX))
+        .collect();
+    assert_eq!(hoist.len(), 3, "expected exactly three select-hoist rules");
+    rules.extend(hoist);
     rules
 }
 
@@ -697,14 +780,22 @@ fn fnv(out: &[f32]) -> u64 {
     h
 }
 
-fn oracle(
-    input: (&ExprArena, ExprId),
-    linked: (&ExprArena, ExprId),
-    out: &[f32],
-    trips: Trips,
-    case: Option<&CellGridCase>,
+struct OracleForms<'a> {
+    /// The arena as constructed, legalized (`legalize`).
+    input: (&'a ExprArena, ExprId),
+    /// The arena that was emitted.
+    linked: (&'a ExprArena, ExprId),
+    case: Option<&'a CellGridCase>,
     packed: bool,
-) -> Oracle {
+}
+
+fn oracle(forms: &OracleForms<'_>, out: &[f32], trips: Trips) -> Oracle {
+    let OracleForms {
+        input,
+        linked,
+        case,
+        packed,
+    } = *forms;
     let bindings_for = |arena: &ExprArena| -> BindingTable<'_> {
         let table = match case {
             Some(case) => {
@@ -723,7 +814,9 @@ fn oracle(
             }
             None => BindingTable::empty(),
         };
-        table.bind_uniforms(arena, &[]).expect("bind oracle uniforms")
+        table
+            .bind_uniforms(arena, &[])
+            .expect("bind oracle uniforms")
     };
     let b_in = bindings_for(input.0);
     let b_ln = bindings_for(linked.0);
@@ -756,16 +849,17 @@ fn oracle(
                 o.packed_max_byte_cross = o.packed_max_byte_cross.max(byte_delta(jit, cross));
             }
         } else {
-            let acc = |reference: f32, max_abs: &mut f64, max_rel: &mut f64, nan: &mut usize| {
-                match (jit.is_nan(), reference.is_nan()) {
-                    (true, true) => {}
-                    (true, false) | (false, true) => *nan += 1,
-                    (false, false) => {
-                        let d = f64::from((jit - reference).abs());
-                        *max_abs = max_abs.max(d);
-                        if reference.abs() > 1e-3 {
-                            *max_rel = max_rel.max(d / f64::from(reference.abs()));
-                        }
+            let acc = |reference: f32, max_abs: &mut f64, max_rel: &mut f64, nan: &mut usize| match (
+                jit.is_nan(),
+                reference.is_nan(),
+            ) {
+                (true, true) => {}
+                (true, false) | (false, true) => *nan += 1,
+                (false, false) => {
+                    let d = f64::from((jit - reference).abs());
+                    *max_abs = max_abs.max(d);
+                    if reference.abs() > 1e-3 {
+                        *max_rel = max_rel.max(d / f64::from(reference.abs()));
                     }
                 }
             };
@@ -846,22 +940,28 @@ fn cell_grid_scene_ns_per_px(case: &CellGridCase) -> f64 {
 // The saturation probe: what fired, what was load-bearing
 // ---------------------------------------------------------------------------
 
+/// The legalizing prefix on its own — what both modes run before the
+/// switch (`LowerDwrt`, `ExpandReduce`); `eval_scalar` needs it too.
+fn legalize(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
+    match pipeline![LowerDwrt, ExpandReduce].optimize(arena, root) {
+        Rewritten::Changed(a, r) => (a, r),
+        Rewritten::Unchanged => (arena.clone(), root),
+        Rewritten::Declined => panic!("legalizing prefix declined a real kernel"),
+    }
+}
+
 fn saturation_probe(
     arena: &ExprArena,
     root: ExprId,
     shape: LatticeShape,
-    masked: bool,
+    variant: Option<Variant>,
     production_bytes: &[u8],
 ) -> SatProbe {
-    let (la, lr) = match pipeline![LowerDwrt, ExpandReduce].optimize(arena, root) {
-        Rewritten::Changed(a, r) => (a, r),
-        Rewritten::Unchanged => (arena.clone(), root),
-        Rewritten::Declined => panic!("legalizing prefix declined a real kernel"),
+    let (la, lr) = legalize(arena, root);
+    let optimizer = match variant {
+        Some(v) => v.optimizer(shape),
+        None => Optimizer::production().for_lattice(shape),
     };
-    let mut optimizer = Optimizer::production().for_lattice(shape);
-    if masked {
-        optimizer = optimizer.rules(RuleSet::new(masked_rules()));
-    }
     let mut optimizer = optimizer.observe(Some(Box::new(KeepJournal)));
     let mut egraph = optimizer.egraph();
     let root_class = insert(&la, lr, &mut egraph, Vocabulary::Runtime)
@@ -870,14 +970,17 @@ fn saturation_probe(
     let t = Instant::now();
     let optimized = optimizer.run(&mut egraph, root_class, node_count);
     let wall_ms = t.elapsed().as_secs_f64() * 1e3;
-    let labels = EpisodeLabels::compute(&egraph, root_class, &optimized.choices);
+    let labels = EpisodeLabels::compute_tight(&egraph, root_class, &optimized.choices);
+    let strict = EpisodeLabels::compute_strict(&egraph, root_class, &optimized.choices);
     let rules = optimizer.rule_set();
     let count = |idx: usize| -> RuleCount {
         let s = labels.rule_stats.get(&idx).copied().unwrap_or_default();
+        let t = strict.rule_stats.get(&idx).copied().unwrap_or_default();
         RuleCount {
             rule: rules.label_of(idx).unwrap_or_else(|| format!("#{idx}")),
             fired: s.fired,
             load_bearing: s.load_bearing,
+            strict: t.load_bearing,
         }
     };
     let select_hoist: Vec<RuleCount> = (0..rules.len())
@@ -894,11 +997,16 @@ fn saturation_probe(
         .filter(|(_, s)| s.load_bearing > 0)
         .map(|(&i, _)| count(i))
         .collect();
-    load_bearing_rules.sort_by(|a, b| b.load_bearing.cmp(&a.load_bearing).then(a.rule.cmp(&b.rule)));
+    load_bearing_rules.sort_by(|a, b| {
+        b.load_bearing
+            .cmp(&a.load_bearing)
+            .then(a.rule.cmp(&b.rule))
+    });
 
     // The probe's own extraction, compiled: it must be the production kernel.
     let (pa, pr) = optimized.to_arena(&egraph, root_class);
-    let bytes_identical_to_production = if arena.buffers().is_empty() && arena.uniforms().is_empty() {
+    let bytes_identical_to_production = if arena.buffers().is_empty() && arena.uniforms().is_empty()
+    {
         let compiled = emit::compile(&pa, pr).expect("probe extraction compiles");
         Some(compiled.code.as_bytes() == production_bytes)
     } else {
@@ -922,13 +1030,15 @@ fn saturation_probe(
 // run
 // ---------------------------------------------------------------------------
 
-fn mode_label(masked: bool) -> String {
+fn mode_label(variant: Option<Variant>) -> String {
     let env = std::env::var("PIXELFLOW_SATURATION").unwrap_or_else(|_| "on".to_string());
-    match (masked, env.as_str()) {
-        (true, "on") => "masked".to_string(),
-        (true, other) => panic!("--mask-select-hoist needs PIXELFLOW_SATURATION unset or on, got {other:?}"),
-        (false, "on" | "off") => env,
-        (false, other) => panic!("PIXELFLOW_SATURATION must be on or off, got {other:?}"),
+    match (variant, env.as_str()) {
+        (Some(v), "on") => v.label().to_string(),
+        (Some(_), other) => {
+            panic!("--variant needs PIXELFLOW_SATURATION unset or on, got {other:?}")
+        }
+        (None, "on" | "off") => env,
+        (None, other) => panic!("PIXELFLOW_SATURATION must be on or off, got {other:?}"),
     }
 }
 
@@ -942,23 +1052,45 @@ fn head_sha() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-#[allow(clippy::too_many_lines)]
-fn run(
-    out: &Path,
-    masked: bool,
+struct RunArgs<'a> {
+    out: &'a Path,
+    variant: Option<Variant>,
     no_clock: bool,
     no_probe: bool,
-    filter: Option<&str>,
-    font: Option<&Path>,
-) {
+    filter: Option<&'a str>,
+    skip: &'a [String],
+    font: Option<&'a Path>,
+}
+
+#[allow(clippy::too_many_lines)]
+fn run(args: &RunArgs<'_>) {
+    let RunArgs {
+        out,
+        variant,
+        no_clock,
+        no_probe,
+        filter,
+        skip,
+        font,
+    } = *args;
     assert!(
         std::env::var_os("PIXELFLOW_GUARD_TELEMETRY").is_some(),
         "set PIXELFLOW_GUARD_TELEMETRY=1: the guard columns come from the emitter's own report"
     );
-    let mode = mode_label(masked);
+    let mode = mode_label(variant);
     let default_font = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../pixelflow-graphics/assets/DejaVuSansMono-Fallback.ttf");
-    let kernels = real_kernels(font.unwrap_or(&default_font), filter);
+    let mut kernels = real_kernels(font.unwrap_or(&default_font), filter);
+    for name in skip {
+        let before = kernels.len();
+        kernels.retain(|k| &k.name != name);
+        assert_eq!(
+            kernels.len() + 1,
+            before,
+            "--skip {name}: not a kernel of this corpus"
+        );
+        eprintln!("egraph_off_on: skipping {name}");
+    }
     eprintln!(
         "egraph_off_on: mode={mode} tier={} lanes={} kernels={}",
         collapse_bench::tier(),
@@ -981,32 +1113,32 @@ fn run(
         let trips = Trips::of(rk.extent, LANES as u32);
         let started = Instant::now();
 
-        let compiled = if masked {
-            compile_via_masked_pipeline(arena, root, shape)
-        } else {
-            compile_via_production_path(arena, root, shape)
+        let compiled = match variant {
+            Some(v) => compile_via_variant(arena, root, shape, v),
+            None => compile_via_production_path(arena, root, shape),
         };
-        let bytes_identical_to_manifold_compile = if !masked
-            && arena.buffers().is_empty()
-            && arena.uniforms().is_empty()
-        {
-            let m = pixelflow_core::lattice::manifold::Manifold::compile(&rk.kernel, rk.extent);
-            Some(m.code_bytes() == compiled.result.code.as_bytes())
-        } else {
-            None
-        };
+        let bytes_identical_to_manifold_compile =
+            if variant.is_none() && arena.buffers().is_empty() && arena.uniforms().is_empty() {
+                let m = pixelflow_core::lattice::manifold::Manifold::compile(&rk.kernel, rk.extent);
+                Some(m.code_bytes() == compiled.result.code.as_bytes())
+            } else {
+                None
+            };
 
         let ctx = context_for(&compiled.linked, rk.cell_grid.as_ref());
         let mut buffer = vec![0.0f32; (trips.rows * trips.groups) as usize * LANES];
         run_once(&compiled.result.code, &ctx, trips, &mut buffer);
         let picture_hash = fnv(&buffer);
+        let (legal, legal_root) = legalize(arena, root);
         let oracle = Some(oracle(
-            (arena, root),
-            (&compiled.linked, compiled.root),
+            &OracleForms {
+                input: (&legal, legal_root),
+                linked: (&compiled.linked, compiled.root),
+                case: rk.cell_grid.as_ref(),
+                packed: rk.packed,
+            },
             &buffer,
             trips,
-            rk.cell_grid.as_ref(),
-            rk.packed,
         ));
         let clock = (!no_clock).then(|| {
             let mut c = clock(&compiled.result.code, &ctx, trips, &mut buffer);
@@ -1016,7 +1148,7 @@ fn run(
             c
         });
         let probe = (!no_probe && mode != "off").then(|| {
-            saturation_probe(arena, root, shape, masked, compiled.result.code.as_bytes())
+            saturation_probe(arena, root, shape, variant, compiled.result.code.as_bytes())
         });
 
         let row = KernelRow {
@@ -1071,7 +1203,8 @@ fn run(
 fn read_rows(paths: &[PathBuf]) -> Vec<KernelRow> {
     let mut rows = Vec::new();
     for p in paths {
-        let text = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+        let text =
+            std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             let row: KernelRow = serde_json::from_str(line).expect("parse row");
             assert_eq!(row.schema, SCHEMA, "{}: schema mismatch", p.display());
@@ -1092,9 +1225,15 @@ fn collapse(rows: Vec<KernelRow>) -> BTreeMap<String, KernelRow> {
         .map(|(name, mut rs)| {
             for r in &rs[1..] {
                 assert_eq!(r.bytes, rs[0].bytes, "{name}: bytes differ between passes");
-                assert_eq!(r.picture_hash, rs[0].picture_hash, "{name}: picture differs between passes");
+                assert_eq!(
+                    r.picture_hash, rs[0].picture_hash,
+                    "{name}: picture differs between passes"
+                );
             }
-            let mut clocks: Vec<f64> = rs.iter().filter_map(|r| r.clock.as_ref().map(|c| c.ns_per_px)).collect();
+            let mut clocks: Vec<f64> = rs
+                .iter()
+                .filter_map(|r| r.clock.as_ref().map(|c| c.ns_per_px))
+                .collect();
             clocks.sort_by(f64::total_cmp);
             let mut scene: Vec<f64> = rs
                 .iter()
@@ -1118,99 +1257,171 @@ fn collapse(rows: Vec<KernelRow>) -> BTreeMap<String, KernelRow> {
 }
 
 fn pct(on: f64, off: f64) -> f64 {
-    if off == 0.0 { 0.0 } else { (on / off - 1.0) * 100.0 }
+    if off == 0.0 {
+        0.0
+    } else {
+        (on / off - 1.0) * 100.0
+    }
 }
 
 fn fmt_pct(p: f64) -> String {
     format!("{p:+.1}%")
 }
 
+struct DiffInputs<'a> {
+    off: &'a [PathBuf],
+    on: &'a [PathBuf],
+    with_select_hoist: &'a [PathBuf],
+    cse_only: &'a [PathBuf],
+}
+
+struct Cmp {
+    name: String,
+    class: String,
+    bytes_pct: f64,
+    dag_pct: f64,
+    clock_pct: Option<f64>,
+    off_ns: Option<f64>,
+    on_ns: Option<f64>,
+    off_bytes: u32,
+    on_bytes: u32,
+    off_dag: usize,
+    on_dag: usize,
+    off_mem: u64,
+    on_mem: u64,
+    picture_identical: bool,
+    rules: Vec<RuleCount>,
+    sat_ms: f64,
+    total_on_ms: f64,
+    on_guard: Option<GuardTelemetry>,
+    /// The `with-select-hoist` arm.
+    sh_fired: usize,
+    sh_lb: usize,
+    sh_strict: usize,
+    sh_bytes: Option<u32>,
+    sh_guard: Option<GuardTelemetry>,
+    sh_dag: Option<usize>,
+    /// The `cse-only` arm.
+    cse_bytes: Option<u32>,
+    cse_dag: Option<usize>,
+    cse_nodes: Option<usize>,
+}
+
+fn rules_cell(rules: &[RuleCount]) -> String {
+    let v: Vec<String> = rules
+        .iter()
+        .take(5)
+        .map(|r| format!("`{}` {}/{}/{}", r.rule, r.strict, r.load_bearing, r.fired))
+        .collect();
+    if v.is_empty() {
+        "-".into()
+    } else {
+        v.join(", ")
+    }
+}
+
+fn opt_str<T: std::fmt::Display>(v: Option<T>) -> String {
+    v.map_or("-".into(), |v| v.to_string())
+}
+
+fn opt_f(v: Option<f64>) -> String {
+    v.map_or("-".into(), |v| format!("{v:.2}"))
+}
+
+fn guard_str(g: &Option<GuardTelemetry>) -> String {
+    g.as_ref()
+        .map_or("-".to_string(), |g| format!("{}/{}", g.guarded, g.selects))
+}
+
+fn sched_str(g: &Option<GuardTelemetry>) -> String {
+    g.as_ref()
+        .map_or("-".to_string(), |g| g.schedule.to_string())
+}
+
+fn probe_str(r: &KernelRow) -> String {
+    r.probe.as_ref().map_or("-".into(), |p| {
+        format!(
+            "{} apps / {} it / {} cls / {}",
+            p.applications, p.iterations, p.classes, p.stop
+        )
+    })
+}
+
 #[allow(clippy::too_many_lines)]
-fn diff(off: &[PathBuf], on: &[PathBuf], masked: &[PathBuf], out_prefix: &Path, notes: &[String]) {
-    let off = collapse(read_rows(off));
-    let on = collapse(read_rows(on));
-    let masked = collapse(read_rows(masked));
-    let names: Vec<String> = on.keys().filter(|n| off.contains_key(*n)).cloned().collect();
+fn diff(inputs: &DiffInputs<'_>, out_prefix: &Path, notes: &[String]) {
+    let off = collapse(read_rows(inputs.off));
+    let on = collapse(read_rows(inputs.on));
+    let sh = collapse(read_rows(inputs.with_select_hoist));
+    let cse = collapse(read_rows(inputs.cse_only));
+    let names: Vec<String> = on
+        .keys()
+        .filter(|n| off.contains_key(*n))
+        .cloned()
+        .collect();
     assert!(!names.is_empty(), "no kernel present in both off and on");
+    let on_only: Vec<&KernelRow> = on.values().filter(|r| !off.contains_key(&r.name)).collect();
 
     // ---- CSV -------------------------------------------------------------
     let mut csv = String::from(
-        "kernel,class,extent_w,extent_h,packed,input_nodes,off_nodes,on_nodes,off_dag_cost,on_dag_cost,\
-         off_bytes,on_bytes,off_schedule,on_schedule,off_selects,on_selects,off_guarded,on_guarded,\
+        "kernel,class,extent_w,extent_h,packed,input_nodes,off_nodes,on_nodes,cse_nodes,input_dag_cost,off_dag_cost,on_dag_cost,cse_dag_cost,sh_dag_cost,\
+         off_bytes,on_bytes,cse_bytes,sh_bytes,off_schedule,on_schedule,off_selects,on_selects,off_guarded,on_guarded,sh_guarded,\
          off_spill,on_spill,off_dyn_mem_ops,on_dyn_mem_ops,off_ns_px,on_ns_px,clock_pct,\
-         off_optimize_ms,on_optimize_ms,on_emit_ms,picture_identical,\
+         off_optimize_ms,on_optimize_ms,on_emit_ms,on_applications,on_iterations,on_classes,on_stop,picture_identical,\
          same_form_max_abs_off,same_form_max_abs_on,cross_form_max_abs_on,packed_mismatch_cross_on,\
-         select_hoist_fired,select_hoist_load_bearing,masked_bytes,masked_guarded,masked_ns_px,top_load_bearing_rule\n",
+         select_hoist_fired,select_hoist_load_bearing,select_hoist_strict,top_load_bearing_rule\n",
     );
     let mut json_rows = Vec::new();
-    struct Cmp {
-        name: String,
-        class: String,
-        bytes_pct: f64,
-        dag_pct: f64,
-        clock_pct: Option<f64>,
-        off_ns: Option<f64>,
-        on_ns: Option<f64>,
-        off_bytes: u32,
-        on_bytes: u32,
-        off_dag: usize,
-        on_dag: usize,
-        off_mem: u64,
-        on_mem: u64,
-        picture_identical: bool,
-        rules: Vec<RuleCount>,
-        sh_fired: usize,
-        sh_lb: usize,
-        sat_ms: f64,
-        total_on_ms: f64,
-        on_guard: Option<GuardTelemetry>,
-        masked_guard: Option<GuardTelemetry>,
-        masked_bytes: Option<u32>,
-        masked_ns: Option<f64>,
-    }
     let mut cmps: Vec<Cmp> = Vec::new();
     for name in &names {
         let a = &off[name];
         let b = &on[name];
-        let m = masked.get(name);
+        let h = sh.get(name);
+        let c = cse.get(name);
         let clock_pct = match (a.clock.as_ref(), b.clock.as_ref()) {
             (Some(x), Some(y)) => Some(pct(y.ns_per_px, x.ns_per_px)),
             _ => None,
         };
-        let probe = b.probe.as_ref();
-        let sh_fired: usize = probe.map_or(0, |p| p.select_hoist.iter().map(|r| r.fired).sum());
-        let sh_lb: usize = probe.map_or(0, |p| p.select_hoist.iter().map(|r| r.load_bearing).sum());
-        let rules = probe.map(|p| p.load_bearing_rules.clone()).unwrap_or_default();
+        let hp = h.and_then(|h| h.probe.as_ref());
+        let sh_fired: usize = hp.map_or(0, |p| p.select_hoist.iter().map(|r| r.fired).sum());
+        let sh_lb: usize = hp.map_or(0, |p| p.select_hoist.iter().map(|r| r.load_bearing).sum());
+        let sh_strict: usize = hp.map_or(0, |p| p.select_hoist.iter().map(|r| r.strict).sum());
+        let rules = b
+            .probe
+            .as_ref()
+            .map(|p| p.load_bearing_rules.clone())
+            .unwrap_or_default();
         let top_rule = rules
             .first()
-            .map(|r| format!("{} ({}/{})", r.rule, r.load_bearing, r.fired))
+            .map(|r| format!("{} ({}/{}/{})", r.rule, r.strict, r.load_bearing, r.fired))
             .unwrap_or_else(|| "-".into());
         let g = |g: &Option<GuardTelemetry>, f: fn(&GuardTelemetry) -> u64| g.as_ref().map_or(0, f);
         let o = |o: &Option<Oracle>| o.clone().unwrap_or_default();
+        let pb = b.probe.as_ref();
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{},{:e},{:e},{:e},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2},{:.2},{:.2},{},{},{},{},{},{:e},{:e},{:e},{},{},{},{},{}\n",
             name, b.class, b.extent[0], b.extent[1], b.packed, b.input_nodes, a.compiled_nodes, b.compiled_nodes,
-            a.dag_cost, b.dag_cost, a.bytes, b.bytes,
+            opt_str(c.map(|c| c.compiled_nodes)),
+            b.dag_cost_input, a.dag_cost, b.dag_cost, opt_str(c.map(|c| c.dag_cost)), opt_str(h.map(|h| h.dag_cost)),
+            a.bytes, b.bytes, opt_str(c.map(|c| c.bytes)), opt_str(h.map(|h| h.bytes)),
             g(&a.guard, |g| g.schedule), g(&b.guard, |g| g.schedule),
             g(&a.guard, |g| g.selects), g(&b.guard, |g| g.selects),
-            g(&a.guard, |g| g.guarded), g(&b.guard, |g| g.guarded),
+            g(&a.guard, |g| g.guarded), g(&b.guard, |g| g.guarded), opt_str(h.map(|h| g(&h.guard, |g| g.guarded))),
             a.spill_slots, b.spill_slots, a.statics.dyn_memory_ops, b.statics.dyn_memory_ops,
             a.clock.as_ref().map_or(String::from("-"), |c| format!("{:.3}", c.ns_per_px)),
             b.clock.as_ref().map_or(String::from("-"), |c| format!("{:.3}", c.ns_per_px)),
             clock_pct.map_or(String::from("-"), |p| format!("{p:.1}")),
             a.optimize_ms, b.optimize_ms, b.emit_ms,
+            opt_str(pb.map(|p| p.applications)), opt_str(pb.map(|p| p.iterations)), opt_str(pb.map(|p| p.classes)),
+            pb.map_or("-".into(), |p| p.stop.clone()),
             a.picture_hash == b.picture_hash,
             o(&a.oracle).same_form_max_abs, o(&b.oracle).same_form_max_abs, o(&b.oracle).cross_form_max_abs,
             o(&b.oracle).packed_mismatch_cross,
-            sh_fired, sh_lb,
-            m.map_or(String::from("-"), |m| m.bytes.to_string()),
-            m.map_or(String::from("-"), |m| g(&m.guard, |g| g.guarded).to_string()),
-            m.and_then(|m| m.clock.as_ref()).map_or(String::from("-"), |c| format!("{:.3}", c.ns_per_px)),
+            sh_fired, sh_lb, sh_strict,
             top_rule.replace(',', ";"),
         ));
         json_rows.push(serde_json::json!({
             "kernel": name, "class": b.class, "extent": b.extent, "packed": b.packed,
-            "off": a, "on": b, "masked": m,
+            "off": a, "on": b, "with_select_hoist": h, "cse_only": c,
         }));
         cmps.push(Cmp {
             name: name.clone(),
@@ -1228,14 +1439,18 @@ fn diff(off: &[PathBuf], on: &[PathBuf], masked: &[PathBuf], out_prefix: &Path, 
             on_mem: b.statics.dyn_memory_ops,
             picture_identical: a.picture_hash == b.picture_hash,
             rules,
-            sh_fired,
-            sh_lb,
             sat_ms: b.optimize_ms - a.optimize_ms,
             total_on_ms: b.optimize_ms + b.emit_ms,
             on_guard: b.guard.clone(),
-            masked_guard: m.and_then(|m| m.guard.clone()),
-            masked_bytes: m.map(|m| m.bytes),
-            masked_ns: m.and_then(|m| m.clock.as_ref().map(|c| c.ns_per_px)),
+            sh_fired,
+            sh_lb,
+            sh_strict,
+            sh_bytes: h.map(|h| h.bytes),
+            sh_guard: h.and_then(|h| h.guard.clone()),
+            sh_dag: h.map(|h| h.dag_cost),
+            cse_bytes: c.map(|c| c.bytes),
+            cse_dag: c.map(|c| c.dag_cost),
+            cse_nodes: c.map(|c| c.compiled_nodes),
         });
     }
     std::fs::write(out_prefix.with_extension("csv"), &csv).expect("write csv");
@@ -1258,9 +1473,10 @@ fn diff(off: &[PathBuf], on: &[PathBuf], masked: &[PathBuf], out_prefix: &Path, 
         "The \"F: no e-graph\" column of [`2026-09-06-egraph-at-production-scale.md`](../plans/2026-09-06-egraph-at-production-scale.md) §7, \
          measured. Every kernel is compiled through the production path (`optimize_runtime_arena` → `relink` → `emit::compile`, the three calls \
          `jit_cache::compile` makes; buffer-free kernels are asserted byte-identical to `Manifold::compile`) twice: `PIXELFLOW_SATURATION=off` \
-         runs the `Identity` path (`LowerDwrt`, `ExpandReduce`, no saturation), `on` is production. Deterministic columns are the claim; the clock \
-         (single thread, `call_collapse` over the kernel's own bake extent, median of 7 samples, median across alternating processes) is a sign. \
-         Per-kernel rows: the `.csv`/`.json` beside this file.\n\n",
+         runs the `Identity` path (`LowerDwrt`, `ExpandReduce`, no saturation), `on` is production. Two in-harness arms beside them: `cse-only` \
+         (the production optimizer at zero rewrite rounds — insert, extract — so hash-consing's share is separated from the rules') and \
+         `with-select-hoist` (production's rules plus the three `SelectHoistUnary` rules, which are **not** in `all_rules()`). \
+         Deterministic columns are the claim; the clock, when taken, is a sign. Per-kernel rows: the `.csv`/`.json` beside this file.\n\n",
     );
     for n in notes {
         md.push_str(n);
@@ -1269,214 +1485,387 @@ fn diff(off: &[PathBuf], on: &[PathBuf], masked: &[PathBuf], out_prefix: &Path, 
     md.push('\n');
     md.push_str("## Verdict per shader class\n\n");
     md.push_str("`Δ` is on relative to off; negative is saturation winning. `mem ops` is the trip-weighted dynamic memory-op count (`dyn_memory_ops`). \
-                 Clock deltas under ~10% are noise on this box (load stated above).\n\n");
-    md.push_str("| class | n | Σ bytes off → on | Σ dag_cost off → on | Σ mem ops off → on | median clock Δ | Σ clock off → on (ns/px or ns/bake) | picture identical | verdict |\n|---|---:|---:|---:|---:|---:|---:|---:|---|\n");
+                 `cse` is the zero-round arm: the gap between `off` and `cse` is hash-consing, between `cse` and `on` is the rules.\n\n");
+    md.push_str("| class | n | Σ bytes off → cse → on | Σ dag_cost off → cse → on | Σ mem ops off → on | median clock Δ | picture identical | verdict |\n|---|---:|---:|---:|---:|---:|---:|---|\n");
     let mut json_classes = Vec::new();
     for (class, cs) in &classes {
-        let sb: (u64, u64) = cs.iter().fold((0, 0), |a, c| (a.0 + u64::from(c.off_bytes), a.1 + u64::from(c.on_bytes)));
-        let sd: (usize, usize) = cs.iter().fold((0, 0), |a, c| (a.0 + c.off_dag, a.1 + c.on_dag));
-        let sm: (u64, u64) = cs.iter().fold((0, 0), |a, c| (a.0 + c.off_mem, a.1 + c.on_mem));
+        let sb: (u64, u64) = cs.iter().fold((0, 0), |a, c| {
+            (a.0 + u64::from(c.off_bytes), a.1 + u64::from(c.on_bytes))
+        });
+        let sd: (usize, usize) = cs
+            .iter()
+            .fold((0, 0), |a, c| (a.0 + c.off_dag, a.1 + c.on_dag));
+        let sm: (u64, u64) = cs
+            .iter()
+            .fold((0, 0), |a, c| (a.0 + c.off_mem, a.1 + c.on_mem));
+        let all_cse = cs.iter().all(|c| c.cse_bytes.is_some());
+        let cse_b: u64 = cs.iter().map(|c| u64::from(c.cse_bytes.unwrap_or(0))).sum();
+        let cse_d: usize = cs.iter().map(|c| c.cse_dag.unwrap_or(0)).sum();
         let clocks: Vec<f64> = cs.iter().filter_map(|c| c.clock_pct).collect();
         let mclock = median(clocks);
-        let sum_clock: (f64, f64) = cs.iter().fold((0.0, 0.0), |a, c| {
-            (a.0 + c.off_ns.unwrap_or(0.0), a.1 + c.on_ns.unwrap_or(0.0))
-        });
         let identical = cs.iter().filter(|c| c.picture_identical).count();
         let bytes_pct = pct(sb.1 as f64, sb.0 as f64);
         let dag_pct = pct(sd.1 as f64, sd.0 as f64);
         let verdict = match (bytes_pct, dag_pct, mclock) {
             (b, d, Some(c)) if (b < -2.0 || d < -2.0) && c < -10.0 => "helps (bytes+clock)",
-            (b, d, _) if b < -2.0 || d < -2.0 => "helps (static); clock within noise",
+            (b, d, _) if b < -2.0 || d < -2.0 => "helps (static)",
             (b, d, Some(c)) if (b > 2.0 || d > 2.0) && c > 10.0 => "HURTS (bytes+clock)",
-            (b, d, _) if b > 2.0 || d > 2.0 => "hurts (static); clock within noise",
+            (b, d, _) if b > 2.0 || d > 2.0 => "hurts (static)",
             (_, _, Some(c)) if c < -10.0 => "clock says helps; static flat",
             (_, _, Some(c)) if c > 10.0 => "clock says hurts; static flat",
-            _ => "nothing (|Δ| ≤ 2% static, clock within noise)",
+            _ => "nothing (|Δ| ≤ 2% static)",
+        };
+        let cse_bs = if all_cse {
+            format!("{cse_b}")
+        } else {
+            "-".into()
+        };
+        let cse_ds = if all_cse {
+            format!("{cse_d}")
+        } else {
+            "-".into()
         };
         md.push_str(&format!(
-            "| {class} | {} | {} → {} ({}) | {} → {} ({}) | {} → {} ({}) | {} | {:.2} → {:.2} ({}) | {identical}/{} | {verdict} |\n",
-            cs.len(), sb.0, sb.1, fmt_pct(bytes_pct), sd.0, sd.1, fmt_pct(dag_pct), sm.0, sm.1, fmt_pct(pct(sm.1 as f64, sm.0 as f64)),
-            mclock.map_or("-".into(), fmt_pct), sum_clock.0, sum_clock.1, fmt_pct(pct(sum_clock.1, sum_clock.0)), cs.len()
+            "| {class} | {} | {} → {} → {} ({}) | {} → {} → {} ({}) | {} → {} ({}) | {} | {identical}/{} | {verdict} |\n",
+            cs.len(), sb.0, cse_bs, sb.1, fmt_pct(bytes_pct), sd.0, cse_ds, sd.1, fmt_pct(dag_pct), sm.0, sm.1, fmt_pct(pct(sm.1 as f64, sm.0 as f64)),
+            mclock.map_or("-".into(), fmt_pct), cs.len()
         ));
         json_classes.push(serde_json::json!({
             "class": class, "n": cs.len(), "bytes_off": sb.0, "bytes_on": sb.1, "bytes_pct": bytes_pct,
+            "bytes_cse": all_cse.then_some(cse_b), "dag_cse": all_cse.then_some(cse_d),
             "dag_off": sd.0, "dag_on": sd.1, "dag_pct": dag_pct, "mem_off": sm.0, "mem_on": sm.1,
-            "median_clock_pct": mclock, "sum_clock_off": sum_clock.0, "sum_clock_on": sum_clock.1,
-            "picture_identical": identical, "verdict": verdict,
+            "median_clock_pct": mclock, "picture_identical": identical, "verdict": verdict,
         }));
     }
 
+    // ---- kernels the off path could not emit ------------------------------
+    if !on_only.is_empty() {
+        md.push_str("\n## Kernels with no `off` row: the un-saturated arena does not compile\n\n");
+        md.push_str("Run with `--skip` in `off` mode because the emitter panics on them (the notes above quote the panic). The columns are the `on` row and, where present, the `cse-only` arm.\n\n");
+        md.push_str("| kernel | extent | nodes in → cse → on | dag_cost in → cse → on | bytes cse → on | schedule on | guarded/selects on | spills on | saturation (apps / rounds / classes / stop) | compile on (ms) |\n|---|---|---|---:|---:|---:|---:|---:|---|---:|\n");
+        for b in &on_only {
+            let c = cse.get(&b.name);
+            md.push_str(&format!(
+                "| {} | {}×{} | {} → {} → {} | {} → {} → {} | {} → {} | {} | {} | {} | {} | {:.1} |\n",
+                b.name, b.extent[0], b.extent[1], b.input_nodes, opt_str(c.map(|c| c.compiled_nodes)), b.compiled_nodes,
+                b.dag_cost_input, opt_str(c.map(|c| c.dag_cost)), b.dag_cost, opt_str(c.map(|c| c.bytes)), b.bytes,
+                sched_str(&b.guard), guard_str(&b.guard), b.spill_slots, probe_str(b), b.optimize_ms + b.emit_ms
+            ));
+        }
+    }
+
     // ---- headline kernels ------------------------------------------------
-    md.push_str("\n## The headline kernels\n\n| kernel | extent | nodes in → off → on | bytes off → on | dag_cost off → on | schedule off → on | guarded/selects off → on | spills off → on | mem ops off → on | ns/px off → on | Δ clock | compile off → on (ms; saturation share) |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    md.push_str("\n## The headline kernels\n\n| kernel | extent | nodes in → off → cse → on | bytes off → cse → on | dag_cost off → cse → on | schedule off → on | guarded/selects off → on | spills off → on | mem ops off → on | saturation (apps / rounds / classes / stop) | compile off → on (ms; saturation share) |\n|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|\n");
     for c in &cmps {
-        if !matches!(c.class.as_str(), "chrome" | "chrome_channel" | "psychedelic" | "cellgrid" | "bench" | "bench_wide" | "shader") {
+        if !matches!(
+            c.class.as_str(),
+            "chrome"
+                | "chrome_channel"
+                | "psychedelic"
+                | "cellgrid"
+                | "bench"
+                | "bench_wide"
+                | "shader"
+        ) {
             continue;
         }
         let a = &off[&c.name];
         let b = &on[&c.name];
-        let gs = |g: &Option<GuardTelemetry>| g.as_ref().map_or("-".to_string(), |g| format!("{}/{}", g.guarded, g.selects));
-        let sched = |g: &Option<GuardTelemetry>| g.as_ref().map_or("-".to_string(), |g| g.schedule.to_string());
-        let share = if c.total_on_ms > 0.0 { c.sat_ms / c.total_on_ms * 100.0 } else { 0.0 };
+        let share = if c.total_on_ms > 0.0 {
+            c.sat_ms / c.total_on_ms * 100.0
+        } else {
+            0.0
+        };
         md.push_str(&format!(
-            "| {} | {}×{} | {} → {} → {} | {} → {} ({}) | {} → {} ({}) | {} → {} | {} → {} | {} → {} | {} → {} ({}) | {} → {} | {} | {:.1} → {:.1} ({:.0}%) |\n",
-            c.name, b.extent[0], b.extent[1], b.input_nodes, a.compiled_nodes, b.compiled_nodes,
-            c.off_bytes, c.on_bytes, fmt_pct(c.bytes_pct), c.off_dag, c.on_dag, fmt_pct(c.dag_pct),
-            sched(&a.guard), sched(&b.guard), gs(&a.guard), gs(&b.guard), a.spill_slots, b.spill_slots,
+            "| {} | {}×{} | {} → {} → {} → {} | {} → {} → {} ({}) | {} → {} → {} ({}) | {} → {} | {} → {} | {} → {} | {} → {} ({}) | {} | {:.1} → {:.1} ({:.0}%) |\n",
+            c.name, b.extent[0], b.extent[1], b.input_nodes, a.compiled_nodes, opt_str(c.cse_nodes), b.compiled_nodes,
+            c.off_bytes, opt_str(c.cse_bytes), c.on_bytes, fmt_pct(c.bytes_pct), c.off_dag, opt_str(c.cse_dag), c.on_dag, fmt_pct(c.dag_pct),
+            sched_str(&a.guard), sched_str(&b.guard), guard_str(&a.guard), guard_str(&b.guard), a.spill_slots, b.spill_slots,
             c.off_mem, c.on_mem, fmt_pct(pct(c.on_mem as f64, c.off_mem as f64)),
-            c.off_ns.map_or("-".into(), |v| format!("{v:.2}")), c.on_ns.map_or("-".into(), |v| format!("{v:.2}")),
-            c.clock_pct.map_or("-".into(), fmt_pct),
+            probe_str(b),
             a.optimize_ms + a.emit_ms, c.total_on_ms, share
         ));
     }
 
     // ---- prologue on O@32 -------------------------------------------------
-    if let (Some(n), Some(w)) = (cmps.iter().find(|c| c.name == "bench_O_quadratic"), cmps.iter().find(|c| c.name == "bench_O_quadratic_wide")) {
+    if let (Some(n), Some(w)) = (
+        cmps.iter().find(|c| c.name == "bench_O_quadratic"),
+        cmps.iter().find(|c| c.name == "bench_O_quadratic_wide"),
+    ) && n.off_ns.is_some()
+        && w.off_ns.is_some()
+    {
         let prologue = |narrow: Option<f64>, wide: Option<f64>| -> Option<f64> {
-            let (tn, tw) = (narrow? * f64::from(BENCH_EXTENT[0] * BENCH_EXTENT[1]), wide? * f64::from(BENCH_WIDE_EXTENT[0] * BENCH_WIDE_EXTENT[1]));
+            let (tn, tw) = (
+                narrow? * f64::from(BENCH_EXTENT[0] * BENCH_EXTENT[1]),
+                wide? * f64::from(BENCH_WIDE_EXTENT[0] * BENCH_WIDE_EXTENT[1]),
+            );
             let rows = f64::from(BENCH_EXTENT[1]);
-            let (gn, gw) = (f64::from(BENCH_EXTENT[0]) / LANES as f64, f64::from(BENCH_WIDE_EXTENT[0]) / LANES as f64);
+            let (gn, gw) = (
+                f64::from(BENCH_EXTENT[0]) / LANES as f64,
+                f64::from(BENCH_WIDE_EXTENT[0]) / LANES as f64,
+            );
             let per_row_n = tn / rows;
             let per_row_w = tw / rows;
             let b = (per_row_w - per_row_n) / (gw - gn);
             Some((per_row_n - b * gn) / 1e3)
         };
         md.push_str(&format!(
-            "\n## Row prologue on `O`@32 (from the 40- and 640-wide rows, two-point fit)\n\n| | off | on |\n|---|---:|---:|\n| ns/px at 40×45 | {} | {} |\n| ns/px at 640×45 | {} | {} |\n| per-row prologue (µs) | {} | {} |\n",
-            n.off_ns.map_or("-".into(), |v| format!("{v:.2}")), n.on_ns.map_or("-".into(), |v| format!("{v:.2}")),
-            w.off_ns.map_or("-".into(), |v| format!("{v:.2}")), w.on_ns.map_or("-".into(), |v| format!("{v:.2}")),
-            prologue(n.off_ns, w.off_ns).map_or("-".into(), |v| format!("{v:.2}")),
-            prologue(n.on_ns, w.on_ns).map_or("-".into(), |v| format!("{v:.2}")),
-        ));
+                "\n## Row prologue on `O`@32 (from the 40- and 640-wide rows, two-point fit)\n\n| | off | on |\n|---|---:|---:|\n| ns/px at 40×45 | {} | {} |\n| ns/px at 640×45 | {} | {} |\n| per-row prologue (µs) | {} | {} |\n",
+                opt_f(n.off_ns), opt_f(n.on_ns), opt_f(w.off_ns), opt_f(w.on_ns),
+                opt_f(prologue(n.off_ns, w.off_ns)), opt_f(prologue(n.on_ns, w.on_ns)),
+            ));
     }
 
     // ---- regressions and their rules -------------------------------------
     md.push_str("\n## Where saturation makes the kernel worse, and which rule\n\n");
-    md.push_str("Sorted by bytes Δ; the rule column is the top load-bearing rule of the on-extraction from the provenance journal (`EpisodeLabels::compute` over the production run, `load_bearing/fired`), with the next four after it.\n\n");
-    md.push_str("| kernel | bytes off → on | dag_cost off → on | mem ops Δ | clock Δ | load-bearing rules (lb/fired) |\n|---|---:|---:|---:|---:|---|\n");
-    let mut worse: Vec<&Cmp> = cmps.iter().filter(|c| c.bytes_pct > 0.0 || c.dag_pct > 0.0).collect();
+    md.push_str("Sorted by bytes Δ. Rule column: the on-extraction's rules from the provenance journal, `strict/tight/fired` — strict credits an application only when its own e-node was chosen (`EpisodeLabels::compute_strict`), tight is `derivation_ancestors_tight`.\n\n");
+    md.push_str("| kernel | bytes off → cse → on | dag_cost off → cse → on | mem ops Δ | rules (strict/tight/fired) |\n|---|---:|---:|---:|---|\n");
+    let mut worse: Vec<&Cmp> = cmps
+        .iter()
+        .filter(|c| c.bytes_pct > 0.0 || c.dag_pct > 0.0)
+        .collect();
     worse.sort_by(|a, b| b.bytes_pct.partial_cmp(&a.bytes_pct).unwrap());
     for c in worse.iter().take(15) {
-        let rules: Vec<String> = c.rules.iter().take(5).map(|r| format!("`{}` {}/{}", r.rule, r.load_bearing, r.fired)).collect();
         md.push_str(&format!(
-            "| {} | {} → {} ({}) | {} → {} ({}) | {} | {} | {} |\n",
-            c.name, c.off_bytes, c.on_bytes, fmt_pct(c.bytes_pct), c.off_dag, c.on_dag, fmt_pct(c.dag_pct),
-            fmt_pct(pct(c.on_mem as f64, c.off_mem as f64)), c.clock_pct.map_or("-".into(), fmt_pct),
-            rules.join(", ")
+            "| {} | {} → {} → {} ({}) | {} → {} → {} ({}) | {} | {} |\n",
+            c.name,
+            c.off_bytes,
+            opt_str(c.cse_bytes),
+            c.on_bytes,
+            fmt_pct(c.bytes_pct),
+            c.off_dag,
+            opt_str(c.cse_dag),
+            c.on_dag,
+            fmt_pct(c.dag_pct),
+            fmt_pct(pct(c.on_mem as f64, c.off_mem as f64)),
+            rules_cell(&c.rules)
         ));
     }
     if worse.is_empty() {
-        md.push_str("| (none: no kernel grew in bytes or dag_cost) | | | | | |\n");
+        md.push_str("| (none: no kernel grew in bytes or dag_cost) | | | | |\n");
     }
     let mut better: Vec<&Cmp> = cmps.iter().filter(|c| c.bytes_pct < 0.0).collect();
     better.sort_by(|a, b| a.bytes_pct.partial_cmp(&b.bytes_pct).unwrap());
-    md.push_str("\n### The largest wins, for the same rule attribution\n\n| kernel | bytes off → on | dag_cost off → on | clock Δ | load-bearing rules (lb/fired) |\n|---|---:|---:|---:|---|\n");
+    md.push_str("\n### The largest wins, for the same rule attribution\n\n| kernel | bytes off → cse → on | dag_cost off → cse → on | rules (strict/tight/fired) |\n|---|---:|---:|---|\n");
     for c in better.iter().take(10) {
-        let rules: Vec<String> = c.rules.iter().take(5).map(|r| format!("`{}` {}/{}", r.rule, r.load_bearing, r.fired)).collect();
         md.push_str(&format!(
-            "| {} | {} → {} ({}) | {} → {} ({}) | {} | {} |\n",
-            c.name, c.off_bytes, c.on_bytes, fmt_pct(c.bytes_pct), c.off_dag, c.on_dag, fmt_pct(c.dag_pct),
-            c.clock_pct.map_or("-".into(), fmt_pct), rules.join(", ")
+            "| {} | {} → {} → {} ({}) | {} → {} → {} ({}) | {} |\n",
+            c.name,
+            c.off_bytes,
+            opt_str(c.cse_bytes),
+            c.on_bytes,
+            fmt_pct(c.bytes_pct),
+            c.off_dag,
+            opt_str(c.cse_dag),
+            c.on_dag,
+            fmt_pct(c.dag_pct),
+            rules_cell(&c.rules)
         ));
     }
 
     // ---- rule census -----------------------------------------------------
-    let mut census: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
+    let mut census: BTreeMap<String, (usize, usize, usize, usize)> = BTreeMap::new();
     for c in &cmps {
         for r in &c.rules {
             let e = census.entry(r.rule.clone()).or_default();
             e.0 += r.fired;
             e.1 += r.load_bearing;
-            e.2 += 1;
+            e.2 += r.strict;
+            e.3 += 1;
         }
     }
-    let mut census: Vec<(String, (usize, usize, usize))> = census.into_iter().collect();
-    census.sort_by(|a, b| b.1.1.cmp(&a.1.1));
-    md.push_str("\n## Which rules are load-bearing on real shaders (all kernels, production run)\n\n| rule | kernels where load-bearing | Σ load-bearing | Σ fired |\n|---|---:|---:|---:|\n");
-    for (rule, (fired, lb, n)) in census.iter().take(25) {
-        md.push_str(&format!("| `{rule}` | {n} | {lb} | {fired} |\n"));
+    let mut census: Vec<(String, (usize, usize, usize, usize))> = census.into_iter().collect();
+    census.sort_by_key(|(_, (_, _, strict, _))| std::cmp::Reverse(*strict));
+    md.push_str("\n## Which rules are load-bearing on real shaders (all kernels, production run)\n\n| rule | kernels where load-bearing | Σ strict | Σ tight | Σ fired |\n|---|---:|---:|---:|---:|\n");
+    for (rule, (fired, lb, strict, n)) in census.iter().take(25) {
+        md.push_str(&format!("| `{rule}` | {n} | {strict} | {lb} | {fired} |\n"));
     }
 
     // ---- SelectHoistUnary --------------------------------------------------
     let total_fired: usize = cmps.iter().map(|c| c.sh_fired).sum();
     let total_lb: usize = cmps.iter().map(|c| c.sh_lb).sum();
+    let total_strict: usize = cmps.iter().map(|c| c.sh_strict).sum();
     let fired_in: usize = cmps.iter().filter(|c| c.sh_fired > 0).count();
     let lb_in: usize = cmps.iter().filter(|c| c.sh_lb > 0).count();
+    let measured = cmps.iter().filter(|c| c.sh_bytes.is_some()).count();
     md.push_str(&format!(
         "\n## `SelectHoistUnary` (`select-hoist-neg|abs|sqrt`)\n\n\
-         Fired in **{fired_in} of {}** kernels ({total_fired} applications); load-bearing for the production extraction in **{lb_in}** kernels ({total_lb} applications). \
-         Masked run (`Optimizer::production().rules(RuleSet::new(all_rules() minus the three))`, in-harness, same pipeline): {} kernels measured.\n\n",
-        cmps.len(), cmps.iter().filter(|c| c.masked_bytes.is_some()).count()
+         **Not in production.** The three rules live in `round2_rules::experimental_rules()` and are not part of `all_rules()`, \
+         so they fire zero times in every production compile above by construction. The `with-select-hoist` arm adds them to \
+         production's rules: fired in **{fired_in} of {measured}** measured kernels ({total_fired} applications); tight-load-bearing in \
+         **{lb_in}** ({total_lb}); strict {total_strict}.\n\n",
     ));
-    md.push_str("| kernel | fired | load-bearing | bytes on → masked | guarded/selects on → masked | schedule on → masked | ns/px on → masked |\n|---|---:|---:|---:|---:|---:|---:|\n");
-    let mut sh: Vec<&Cmp> = cmps.iter().filter(|c| c.sh_fired > 0 || c.masked_bytes.is_some_and(|m| m != c.on_bytes)).collect();
-    sh.sort_by(|a, b| b.sh_lb.cmp(&a.sh_lb).then(b.sh_fired.cmp(&a.sh_fired)));
-    let gs = |g: &Option<GuardTelemetry>| g.as_ref().map_or("-".to_string(), |g| format!("{}/{}", g.guarded, g.selects));
-    for c in sh.iter().take(30) {
+    md.push_str("| kernel | fired | tight | strict | bytes on → +hoist | dag_cost on → +hoist | guarded/selects on → +hoist | schedule on → +hoist |\n|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    let mut shv: Vec<&Cmp> = cmps
+        .iter()
+        .filter(|c| c.sh_fired > 0 || c.sh_bytes.is_some_and(|m| m != c.on_bytes))
+        .collect();
+    shv.sort_by(|a, b| b.sh_lb.cmp(&a.sh_lb).then(b.sh_fired.cmp(&a.sh_fired)));
+    for c in shv.iter().take(30) {
         md.push_str(&format!(
-            "| {} | {} | {} | {} → {} | {} → {} | {} → {} | {} → {} |\n",
-            c.name, c.sh_fired, c.sh_lb, c.on_bytes, c.masked_bytes.map_or("-".into(), |v| v.to_string()),
-            gs(&c.on_guard), gs(&c.masked_guard),
-            c.on_guard.as_ref().map_or("-".into(), |g| g.schedule.to_string()),
-            c.masked_guard.as_ref().map_or("-".into(), |g| g.schedule.to_string()),
-            c.on_ns.map_or("-".into(), |v| format!("{v:.2}")), c.masked_ns.map_or("-".into(), |v| format!("{v:.2}")),
+            "| {} | {} | {} | {} | {} → {} | {} → {} | {} → {} | {} → {} |\n",
+            c.name,
+            c.sh_fired,
+            c.sh_lb,
+            c.sh_strict,
+            c.on_bytes,
+            opt_str(c.sh_bytes),
+            c.on_dag,
+            opt_str(c.sh_dag),
+            guard_str(&c.on_guard),
+            guard_str(&c.sh_guard),
+            sched_str(&c.on_guard),
+            sched_str(&c.sh_guard),
         ));
     }
-    if sh.is_empty() {
-        md.push_str("| (never fired on any real shader; masked bytes identical everywhere) | | | | | | |\n");
+    if shv.is_empty() {
+        md.push_str(
+            "| (never fired on any real shader; bytes identical everywhere) | | | | | | | |\n",
+        );
     }
-    let masked_changed = cmps.iter().filter(|c| c.masked_bytes.is_some_and(|m| m != c.on_bytes)).count();
+    let sh_changed = cmps
+        .iter()
+        .filter(|c| c.sh_bytes.is_some_and(|m| m != c.on_bytes))
+        .count();
     let guard_delta: i64 = cmps
         .iter()
-        .filter_map(|c| Some(i64::try_from(c.masked_guard.as_ref()?.guarded).ok()? - i64::try_from(c.on_guard.as_ref()?.guarded).ok()?))
+        .filter_map(|c| {
+            Some(
+                i64::try_from(c.sh_guard.as_ref()?.guarded).ok()?
+                    - i64::try_from(c.on_guard.as_ref()?.guarded).ok()?,
+            )
+        })
         .sum();
-    md.push_str(&format!("\nMasking changed the emitted bytes of **{masked_changed}** kernels; Σ guarded-value delta (masked − on) over all kernels: **{guard_delta:+}**.\n"));
+    md.push_str(&format!("\nAdding the rule changed the emitted bytes of **{sh_changed}** kernels; Σ guarded-value delta (+hoist − on) over all measured kernels: **{guard_delta:+}**.\n"));
 
     // ---- correctness -----------------------------------------------------
-    let same_worst = cmps.iter().filter_map(|c| on[&c.name].oracle.as_ref().map(|o| (c.name.clone(), o.same_form_max_abs, o.same_form_nan_mismatch))).max_by(|a, b| a.1.total_cmp(&b.1));
-    let cross_worst = cmps.iter().filter_map(|c| on[&c.name].oracle.as_ref().map(|o| (c.name.clone(), o.cross_form_max_abs, o.cross_form_nan_mismatch))).max_by(|a, b| a.1.total_cmp(&b.1));
-    let nan_same: usize = cmps.iter().filter_map(|c| on[&c.name].oracle.as_ref()).map(|o| o.same_form_nan_mismatch).sum();
-    let packed_cross: Vec<String> = cmps.iter().filter(|c| on[&c.name].packed).map(|c| {
-        let o = on[&c.name].oracle.clone().unwrap_or_default();
-        format!("{}: same-form {} mismatching of {} sampled pixels (max byte Δ {}), cross-form {} (max byte Δ {})", c.name, o.packed_mismatch_same, o.points, o.packed_max_byte_same, o.packed_mismatch_cross, o.packed_max_byte_cross)
+    let same_worst = cmps
+        .iter()
+        .filter_map(|c| {
+            on[&c.name].oracle.as_ref().map(|o| {
+                (
+                    c.name.clone(),
+                    o.same_form_max_abs,
+                    o.same_form_nan_mismatch,
+                )
+            })
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    let cross_worst = cmps
+        .iter()
+        .filter_map(|c| {
+            on[&c.name].oracle.as_ref().map(|o| {
+                (
+                    c.name.clone(),
+                    o.cross_form_max_abs,
+                    o.cross_form_nan_mismatch,
+                )
+            })
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    let nan_same: usize = cmps
+        .iter()
+        .filter_map(|c| on[&c.name].oracle.as_ref())
+        .map(|o| o.same_form_nan_mismatch)
+        .sum();
+    let nan_same_off: usize = cmps
+        .iter()
+        .filter_map(|c| off[&c.name].oracle.as_ref())
+        .map(|o| o.same_form_nan_mismatch)
+        .sum();
+    let same_worst_off = cmps
+        .iter()
+        .filter_map(|c| {
+            off[&c.name]
+                .oracle
+                .as_ref()
+                .map(|o| (c.name.clone(), o.same_form_max_abs))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    let packed_cross: Vec<String> = on.values().filter(|r| r.packed).map(|r| {
+        let o = r.oracle.clone().unwrap_or_default();
+        format!("`{}`: same-form {} mismatching of {} sampled pixels (max byte Δ {}), cross-form {} (max byte Δ {})", r.name, o.packed_mismatch_same, o.points, o.packed_max_byte_same, o.packed_mismatch_cross, o.packed_max_byte_cross)
     }).collect();
     let identical = cmps.iter().filter(|c| c.picture_identical).count();
     md.push_str(&format!(
         "\n## Correctness\n\n\
-         Same-form: `eval_scalar` of the emitted arena vs the JIT at {ORACLE_POINTS} sampled pixels (a difference here is a JIT bug). Cross-form: `eval_scalar` of the arena as constructed vs the JIT of the on-extraction (what the rewrites moved; divergence at singularities is the algebraic contract, not a defect).\n\n\
-         - same-form NaN mismatches over all kernels (on): **{nan_same}**; worst same-form |Δ| (on): {}\n\
+         Same-form: `eval_scalar` of the emitted arena vs the JIT at {ORACLE_POINTS} sampled pixels (a difference here is a JIT bug). Cross-form: `eval_scalar` of the legalized arena as constructed vs the JIT of the on-extraction (what the rewrites moved; divergence at singularities is the algebraic contract, not a defect).\n\n\
+         - same-form NaN mismatches over all kernels: on **{nan_same}**, off **{nan_same_off}**; worst same-form |Δ|: on {}, off {}\n\
          - worst cross-form |Δ| (on): {}\n\
          - full-extent output bit-identical off vs on: **{identical} of {}** kernels\n\
-         - packed kernels: {}\n",
+         - packed kernels (on): {}\n",
         same_worst.map_or("-".into(), |(n, d, nan)| format!("`{n}` {d:e} ({nan} NaN)")),
+        same_worst_off.map_or("-".into(), |(n, d)| format!("`{n}` {d:e}")),
         cross_worst.map_or("-".into(), |(n, d, nan)| format!("`{n}` {d:e} ({nan} NaN)")),
         cmps.len(),
         packed_cross.join("; "),
     ));
-    let manifold_check: Vec<&str> = names.iter().filter(|n| on[*n].bytes_identical_to_manifold_compile == Some(false) || off[*n].bytes_identical_to_manifold_compile == Some(false)).map(String::as_str).collect();
-    let probe_check: Vec<&str> = names.iter().filter(|n| on[*n].probe.as_ref().is_some_and(|p| p.bytes_identical_to_production == Some(false))).map(String::as_str).collect();
+    let manifold_check: Vec<&str> = on
+        .keys()
+        .filter(|n| {
+            on[*n].bytes_identical_to_manifold_compile == Some(false)
+                || off
+                    .get(*n)
+                    .is_some_and(|r| r.bytes_identical_to_manifold_compile == Some(false))
+        })
+        .map(String::as_str)
+        .collect();
+    let probe_check: Vec<&str> = on
+        .keys()
+        .filter(|n| {
+            on[*n]
+                .probe
+                .as_ref()
+                .is_some_and(|p| p.bytes_identical_to_production == Some(false))
+        })
+        .map(String::as_str)
+        .collect();
     md.push_str(&format!(
         "- instrument = production path: `Manifold::compile` bytes differed for {} kernels {:?}; probe extraction differed from production for {} kernels {:?}\n",
         manifold_check.len(), manifold_check, probe_check.len(), probe_check
     ));
 
     // ---- compile-time share ---------------------------------------------
-    md.push_str("\n## Saturation's share of compile time\n\n| class | Σ compile off (ms) | Σ compile on (ms) | Σ saturation (on − off optimize) | share of on |\n|---|---:|---:|---:|---:|\n");
+    md.push_str("\n## Saturation's share of compile time\n\n`optimize_ms` is `optimize_runtime_arena` (legalize + saturate + extract); `emit_ms` is `emit::compile`. Wall clock at the load stated above — a ratio, not a number.\n\n| class | Σ compile off (ms) | Σ compile on (ms) | Σ saturation (on − off optimize) | share of on |\n|---|---:|---:|---:|---:|\n");
     for (class, cs) in &classes {
-        let off_ms: f64 = cs.iter().map(|c| off[&c.name].optimize_ms + off[&c.name].emit_ms).sum();
+        let off_ms: f64 = cs
+            .iter()
+            .map(|c| off[&c.name].optimize_ms + off[&c.name].emit_ms)
+            .sum();
         let on_ms: f64 = cs.iter().map(|c| c.total_on_ms).sum();
         let sat: f64 = cs.iter().map(|c| c.sat_ms).sum();
-        md.push_str(&format!("| {class} | {off_ms:.1} | {on_ms:.1} | {sat:.1} | {:.0}% |\n", if on_ms > 0.0 { sat / on_ms * 100.0 } else { 0.0 }));
+        md.push_str(&format!(
+            "| {class} | {off_ms:.1} | {on_ms:.1} | {sat:.1} | {:.0}% |\n",
+            if on_ms > 0.0 {
+                sat / on_ms * 100.0
+            } else {
+                0.0
+            }
+        ));
+    }
+    for b in &on_only {
+        md.push_str(&format!(
+            "| {} (on only) | - | {:.1} | {:.1} | - |\n",
+            b.name,
+            b.optimize_ms + b.emit_ms,
+            b.optimize_ms
+        ));
     }
 
     std::fs::write(out_prefix.with_extension("md"), &md).expect("write md");
     let json = serde_json::json!({
         "schema": SCHEMA,
         "classes": json_classes,
-        "select_hoist": { "fired_total": total_fired, "load_bearing_total": total_lb, "kernels_fired": fired_in, "kernels_load_bearing": lb_in, "masked_changed_bytes": masked_changed, "guarded_delta_masked_minus_on": guard_delta },
-        "rule_census": census.iter().map(|(r, (f, lb, n))| serde_json::json!({"rule": r, "fired": f, "load_bearing": lb, "kernels": n})).collect::<Vec<_>>(),
+        "on_only": on_only,
+        "select_hoist": { "in_production": false, "fired_total": total_fired, "tight_total": total_lb, "strict_total": total_strict, "kernels_fired": fired_in, "kernels_tight": lb_in, "changed_bytes": sh_changed, "guarded_delta_hoist_minus_on": guard_delta },
+        "rule_census": census.iter().map(|(r, (f, lb, strict, n))| serde_json::json!({"rule": r, "fired": f, "tight": lb, "strict": strict, "kernels": n})).collect::<Vec<_>>(),
         "kernels": json_rows,
     });
-    std::fs::write(out_prefix.with_extension("json"), serde_json::to_string_pretty(&json).expect("json")).expect("write json");
+    std::fs::write(
+        out_prefix.with_extension("json"),
+        serde_json::to_string_pretty(&json).expect("json"),
+    )
+    .expect("write json");
     print!("{md}");
 }
 
@@ -1484,25 +1873,37 @@ fn main() {
     match Cli::parse().command {
         Command::Run {
             out,
-            mask_select_hoist,
+            variant,
             no_clock,
             no_probe,
             filter,
+            skip,
             font,
-        } => run(
-            &out,
-            mask_select_hoist,
+        } => run(&RunArgs {
+            out: &out,
+            variant,
             no_clock,
             no_probe,
-            filter.as_deref(),
-            font.as_deref(),
-        ),
+            filter: filter.as_deref(),
+            skip: &skip,
+            font: font.as_deref(),
+        }),
         Command::Diff {
             off,
             on,
-            masked,
+            with_select_hoist,
+            cse_only,
             out_prefix,
             note,
-        } => diff(&off, &on, &masked, &out_prefix, &note),
+        } => diff(
+            &DiffInputs {
+                off: &off,
+                on: &on,
+                with_select_hoist: &with_select_hoist,
+                cse_only: &cse_only,
+            },
+            &out_prefix,
+            &note,
+        ),
     }
 }
