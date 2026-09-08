@@ -233,6 +233,20 @@ is a weaker statement than the same PR made yesterday. This does not change
 any disposition above — CI is the gate, per CLAUDE.md — but it is the
 difference between "reviewed and clean" and "not reviewed".
 
+## Stagger the branch updates next time
+
+Bringing eight branches up to date in one burst queued roughly sixteen
+macOS jobs against a scarce runner pool. Every `ubuntu-latest` job drained
+normally; `Test on macos-latest` and the macOS launch check sat unassigned
+for the better part of an hour on the last branch in the queue, which is why
+#1154 finished 15/17 green with two jobs never started rather than merged
+outright.
+
+Nothing failed and nothing was learned by waiting — but the sweep was its own
+bottleneck, and the fix is free: update in small batches, or update the ones
+you actually intend to merge first. Worth doing on the next run of this
+routine.
+
 ## Method note
 
 No journal entry accompanies this document: `docs/results/journal.jsonl` is
