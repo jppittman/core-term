@@ -9,7 +9,7 @@
 //! Transcendental builtins (atan2, atan, asin, acos) use VEX encoding for the
 //! 3-operand form which avoids extra MOV instructions in multi-step sequences.
 
-use super::{Counter, OutStep, Reg, unimplemented_op};
+use super::{Counter, EncodedInst, OutStep, Reg, SourceOperand, assemble, unimplemented_op};
 use alloc::vec::Vec;
 use pixelflow_ir::kind::OpKind;
 
@@ -102,60 +102,115 @@ impl Vex {
     }
 
     /// `op reg, [addr]` — the memory-operand form, for any base and any
+    /// `op reg, [addr]` — the memory-operand form, for any base and any
     /// displacement mode. The prefix is VEX's (L=0); the ModRM/SIB/
     /// displacement tail is the architecture's, so it comes from
     /// [`mem_operand`]. VEX.B extends the *base* here, not an r/m register.
-    fn rm<D: Disp>(self, code: &mut Vec<u8>, reg: Reg, addr: Mem<D>) {
-        self.head(code, reg.0, UNUSED_VVVV, addr.base.0);
-        mem_operand(code, reg.0, addr);
+    fn rm<D: Disp>(self, reg: Reg, addr: Mem<D>) -> EncodedInst {
+        let mut inst = EncodedInst::new();
+        self.head_into(&mut inst, reg.0, UNUSED_VVVV, addr.base.0);
+        mem_operand_into(&mut inst, reg.0, addr);
+        inst
+    }
+
+    /// `op reg, vvvv, [addr]` — 3-operand VEX with memory operand.
+    #[allow(dead_code)]
+    fn rrm<D: Disp>(self, reg: Reg, vvvv: Reg, addr: Mem<D>) -> EncodedInst {
+        let mut inst = EncodedInst::new();
+        self.head_into(&mut inst, reg.0, vvvv.0, addr.base.0);
+        mem_operand_into(&mut inst, reg.0, addr);
+        inst
+    }
+
+    /// Generic 3-operand form: `op reg, vvvv, rm` where `rm` can be a register or stack slot.
+    #[allow(dead_code)]
+    fn rro<S: SourceOperand>(self, reg: Reg, vvvv: Reg, rm: S) -> Option<EncodedInst> {
+        if let Some(r) = rm.source_reg() {
+            return Some(self.rrr(reg, vvvv, r));
+        }
+        let slot = rm.source_slot()?;
+        Some(self.rrm(
+            reg,
+            vvvv,
+            Mem {
+                base: gpr::RSP,
+                disp: Imm32(slot.offset() as i32),
+            },
+        ))
+    }
+
+    /// Generic 2-operand form: `op reg, rm` where `rm` can be a register or stack slot.
+    #[allow(dead_code)]
+    fn ro<S: SourceOperand>(self, reg: Reg, rm: S) -> Option<EncodedInst> {
+        if let Some(r) = rm.source_reg() {
+            return Some(self.rr(reg, r));
+        }
+        let slot = rm.source_slot()?;
+        Some(self.rm(
+            reg,
+            Mem {
+                base: gpr::RSP,
+                disp: Imm32(slot.offset() as i32),
+            },
+        ))
     }
 
     /// Register-register-register form: `op reg, vvvv, rm`.
-    fn rrr(self, code: &mut Vec<u8>, reg: Reg, vvvv: Reg, rm: Reg) {
-        self.head(code, reg.0, vvvv.0, rm.0);
-        code.push(0xC0 | ((reg.0 & 7) << 3) | (rm.0 & 7));
+    fn rrr(self, reg: Reg, vvvv: Reg, rm: Reg) -> EncodedInst {
+        let mut inst = EncodedInst::new();
+        self.head_into(&mut inst, reg.0, vvvv.0, rm.0);
+        inst.push(0xC0 | ((reg.0 & 7) << 3) | (rm.0 & 7));
+        inst
     }
 
     /// Two-operand form: `op reg, rm`, VEX.vvvv unused.
-    fn rr(self, code: &mut Vec<u8>, reg: Reg, rm: Reg) {
-        self.head(code, reg.0, UNUSED_VVVV, rm.0);
-        code.push(0xC0 | ((reg.0 & 7) << 3) | (rm.0 & 7));
+    fn rr(self, reg: Reg, rm: Reg) -> EncodedInst {
+        let mut inst = EncodedInst::new();
+        self.head_into(&mut inst, reg.0, UNUSED_VVVV, rm.0);
+        inst.push(0xC0 | ((reg.0 & 7) << 3) | (rm.0 & 7));
+        inst
     }
 
     /// `/digit` form: `op vvvv, rm, ...` with the opcode extension in
     /// ModRM.reg (the shift-by-immediate group).
-    fn digit_rm(self, code: &mut Vec<u8>, ext: Digit, vvvv: Reg, rm: Reg) {
-        self.head(code, ext.0, vvvv.0, rm.0);
-        code.push(0xC0 | ((ext.0 & 7) << 3) | (rm.0 & 7));
+    fn digit_rm(self, ext: Digit, vvvv: Reg, rm: Reg) -> EncodedInst {
+        let mut inst = EncodedInst::new();
+        self.head_into(&mut inst, ext.0, vvvv.0, rm.0);
+        inst.push(0xC0 | ((ext.0 & 7) << 3) | (rm.0 & 7));
+        inst
     }
 
     /// `op reg, rmGPR` — the r/m operand names a *general* register, the
     /// reverse of the usual direction (`vpextrd`).
-    fn rr_gpr(self, code: &mut Vec<u8>, reg: Reg, rm_gpr: u8) {
+    fn rr_gpr(self, reg: Reg, rm_gpr: u8) -> EncodedInst {
         debug_assert!(rm_gpr < 8, "Vex::rr_gpr: GPR8 only");
-        self.head(code, reg.0, UNUSED_VVVV, rm_gpr);
-        code.push(0xC0 | ((reg.0 & 7) << 3) | (rm_gpr & 7));
+        let mut inst = EncodedInst::new();
+        self.head_into(&mut inst, reg.0, UNUSED_VVVV, rm_gpr);
+        inst.push(0xC0 | ((reg.0 & 7) << 3) | (rm_gpr & 7));
+        inst
     }
 
     /// `op reg, [baseGPR + indexGPR*4]` — SIB, scale 4, no displacement.
-    fn rm_scaled4(self, code: &mut Vec<u8>, reg: Reg, base_gpr: u8, index_gpr: u8) {
+    fn rm_scaled4(self, reg: Reg, base_gpr: u8, index_gpr: u8) -> EncodedInst {
         debug_assert!(base_gpr < 8 && index_gpr < 8, "Vex::rm_scaled4: GPR8 only");
         debug_assert!(base_gpr != 5, "base rbp/r13 would force a disp form");
-        self.head(code, reg.0, UNUSED_VVVV, base_gpr);
-        code.push(((reg.0 & 7) << 3) | 0b100); // mod=00, rm=SIB
-        code.push((0b10 << 6) | ((index_gpr & 7) << 3) | (base_gpr & 7)); // scale=4
+        let mut inst = EncodedInst::new();
+        self.head_into(&mut inst, reg.0, UNUSED_VVVV, base_gpr);
+        inst.push(((reg.0 & 7) << 3) | 0b100); // mod=00, rm=SIB
+        inst.push((0b10 << 6) | ((index_gpr & 7) << 3) | (base_gpr & 7)); // scale=4
+        inst
     }
 
     /// The 3-byte VEX prefix plus the opcode byte, shared by every form
     /// above: `C4 RXB.mmmmm W.vvvv.L.pp opcode`, with L=0 (128-bit).
-    fn head(self, code: &mut Vec<u8>, reg: u8, vvvv: u8, rm: u8) {
+    fn head_into(self, inst: &mut EncodedInst, reg: u8, vvvv: u8, rm: u8) {
         let rbit = if reg >= 8 { 0x00 } else { 0x80 };
         let xbit = 0x40; // X unused: no index register in these forms
         let bbit = if rm >= 8 { 0x00 } else { 0x20 };
-        code.push(0xC4);
-        code.push(rbit | xbit | bbit | self.map as u8);
-        code.push(((self.w as u8) << 7) | ((!vvvv & 0xF) << 3) | self.pp as u8);
-        code.push(self.opcode);
+        inst.push(0xC4);
+        inst.push(rbit | xbit | bbit | self.map as u8);
+        inst.push(((self.w as u8) << 7) | ((!vvvv & 0xF) << 3) | self.pp as u8);
+        inst.push(self.opcode);
     }
 }
 
@@ -168,40 +223,48 @@ struct VexImm {
 
 impl VexImm {
     /// Two-operand form with the imm8 appended.
-    fn rr(self, code: &mut Vec<u8>, reg: Reg, rm: Reg) {
-        self.vex.rr(code, reg, rm);
-        code.push(self.imm);
+    fn rr(self, reg: Reg, rm: Reg) -> EncodedInst {
+        let mut inst = self.vex.rr(reg, rm);
+        inst.push(self.imm);
+        inst
     }
 
     /// Register-register-register form with the imm8 appended.
-    fn rrr(self, code: &mut Vec<u8>, reg: Reg, vvvv: Reg, rm: Reg) {
-        self.vex.rrr(code, reg, vvvv, rm);
-        code.push(self.imm);
+    fn rrr(self, reg: Reg, vvvv: Reg, rm: Reg) -> EncodedInst {
+        let mut inst = self.vex.rrr(reg, vvvv, rm);
+        inst.push(self.imm);
+        inst
     }
 
     /// `/digit` form with the imm8 appended.
-    fn digit_rm(self, code: &mut Vec<u8>, ext: Digit, vvvv: Reg, rm: Reg) {
-        self.vex.digit_rm(code, ext, vvvv, rm);
-        code.push(self.imm);
+    fn digit_rm(self, ext: Digit, vvvv: Reg, rm: Reg) -> EncodedInst {
+        let mut inst = self.vex.digit_rm(ext, vvvv, rm);
+        inst.push(self.imm);
+        inst
     }
 
     /// `op reg, rmGPR, imm8` — see [`Vex::rr_gpr`].
-    fn rr_gpr(self, code: &mut Vec<u8>, reg: Reg, rm_gpr: u8) {
-        self.vex.rr_gpr(code, reg, rm_gpr);
-        code.push(self.imm);
+    fn rr_gpr(self, reg: Reg, rm_gpr: u8) -> EncodedInst {
+        let mut inst = self.vex.rr_gpr(reg, rm_gpr);
+        inst.push(self.imm);
+        inst
     }
 }
 
 /// Emit SSE instruction (legacy encoding, 2-operand: dst op= src)
-fn emit_sse_rr(code: &mut Vec<u8>, opcode: &[u8], dst: Reg, src: Reg) {
-    // REX prefix if needed (for xmm8-xmm15)
+fn sse_rr(opcode: &[u8], dst: Reg, src: Reg) -> EncodedInst {
+    let mut inst = EncodedInst::new();
     let rex = 0x40 | (if dst.0 >= 8 { 0x04 } else { 0 }) | (if src.0 >= 8 { 0x01 } else { 0 });
     if rex != 0x40 {
-        code.push(rex);
+        inst.push(rex);
     }
+    inst.extend(opcode);
+    inst.push(0xC0 | ((dst.0 & 7) << 3) | (src.0 & 7));
+    inst
+}
 
-    code.extend_from_slice(opcode);
-    code.push(0xC0 | ((dst.0 & 7) << 3) | (src.0 & 7));
+fn emit_sse_rr(code: &mut Vec<u8>, opcode: &[u8], dst: Reg, src: Reg) {
+    assemble(code, [sse_rr(opcode, dst, src)]);
 }
 
 // =============================================================================
@@ -215,20 +278,22 @@ pub fn emit_movaps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 
 /// `movups` between `xmm<reg>` and `[addr]`. Load and store are one encoding
 /// a single opcode byte apart, so they share everything below.
-fn movups<D: Disp>(code: &mut Vec<u8>, opcode: u8, reg: Reg, addr: Mem<D>) {
+fn movups<D: Disp>(opcode: u8, reg: Reg, addr: Mem<D>) -> EncodedInst {
+    let mut inst = EncodedInst::new();
     // REX only when an operand needs extending: R for the xmm, B for the base.
     let rex = 0x40 | (u8::from(reg.0 >= 8) << 2) | u8::from(addr.base.0 >= 8);
     if rex != 0x40 {
-        code.push(rex);
+        inst.push(rex);
     }
-    code.push(0x0F);
-    code.push(opcode);
-    mem_operand(code, reg.0, addr);
+    inst.push(0x0F);
+    inst.push(opcode);
+    mem_operand_into(&mut inst, reg.0, addr);
+    inst
 }
 
 /// `movups xmm<dst>, [addr]` — unaligned 128-bit load.
 pub fn emit_movups_load<D: Disp>(code: &mut Vec<u8>, dst: Reg, addr: Mem<D>) {
-    movups(code, 0x10, dst, addr);
+    assemble(code, [movups(0x10, dst, addr)]);
 }
 
 /// `movups [addr], xmm<src>` — unaligned 128-bit store.
@@ -237,7 +302,7 @@ pub fn emit_movups_load<D: Disp>(code: &mut Vec<u8>, dst: Reg, addr: Mem<D>) {
 /// the direction is the operand *order*, and `0F 10` versus `0F 11` is the
 /// only thing the two mnemonics do not share.
 pub fn emit_movups_store<D: Disp>(code: &mut Vec<u8>, addr: Mem<D>, src: Reg) {
-    movups(code, 0x11, src, addr);
+    assemble(code, [movups(0x11, src, addr)]);
 }
 
 // =============================================================================
@@ -318,22 +383,22 @@ pub fn emit_maxps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 
 /// VANDPS dst, src1, src2 — bitwise AND
 fn emit_vandps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    Vex::m0f(0x54).rrr(code, dst, src1, src2);
+    assemble(code, [Vex::m0f(0x54).rrr(dst, src1, src2)]);
 }
 
 /// VANDNPS dst, src1, src2 — bitwise NOT(src1) AND src2
 fn emit_vandnps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    Vex::m0f(0x55).rrr(code, dst, src1, src2);
+    assemble(code, [Vex::m0f(0x55).rrr(dst, src1, src2)]);
 }
 
 /// VORPS dst, src1, src2 — bitwise OR
 fn emit_vorps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    Vex::m0f(0x56).rrr(code, dst, src1, src2);
+    assemble(code, [Vex::m0f(0x56).rrr(dst, src1, src2)]);
 }
 
 /// VXORPS dst, src1, src2 — bitwise XOR
 fn emit_vxorps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    Vex::m0f(0x57).rrr(code, dst, src1, src2);
+    assemble(code, [Vex::m0f(0x57).rrr(dst, src1, src2)]);
 }
 
 // =============================================================================
@@ -417,17 +482,17 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
 
 /// VROUNDPS dst, src, imm8 — round packed f32 (imm: 0=nearest, 1=floor, 2=ceil, 3=trunc).
 fn emit_vroundps(code: &mut Vec<u8>, dst: Reg, src: Reg, imm: u8) {
-    Vex::m0f3a_66(0x08).imm(imm).rr(code, dst, src); // VEX.128.66.0F3A.WIG 08 /r ib
+    assemble(code, [Vex::m0f3a_66(0x08).imm(imm).rr(dst, src)]); // VEX.128.66.0F3A.WIG 08 /r ib
 }
 
 /// VCVTTPS2DQ dst, src — convert packed f32 → i32 with truncation.
 fn emit_vcvttps2dq(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    Vex::m0f_f3(0x5B).rr(code, dst, src); // VEX.128.F3.0F.WIG 5B /r
+    assemble(code, [Vex::m0f_f3(0x5B).rr(dst, src)]); // VEX.128.F3.0F.WIG 5B /r
 }
 
 /// VCVTDQ2PS dst, src — convert packed i32 → f32.
 fn emit_vcvtdq2ps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    Vex::m0f(0x5B).rr(code, dst, src); // VEX.128.0F.WIG 5B /r
+    assemble(code, [Vex::m0f(0x5B).rr(dst, src)]); // VEX.128.0F.WIG 5B /r
 }
 
 // ─────────────────────────── bound-memory gather ────────────────────────────
@@ -458,14 +523,17 @@ fn emit_vpextrd_to_gpr(code: &mut Vec<u8>, dst_gpr: u8, src: Reg, lane: u8) {
     debug_assert!(lane < 4, "vpextrd lane must be 0..4");
     // VEX.128.66.0F3A.W0 16 /r ib — note the *xmm* is the ModRM.reg operand and
     // the GPR is r/m, the reverse of the usual direction.
-    Vex::m0f3a_66(0x16).imm(lane).rr_gpr(code, src, dst_gpr);
+    assemble(code, [Vex::m0f3a_66(0x16).imm(lane).rr_gpr(src, dst_gpr)]);
 }
 
 /// `vmovss xmmDST, [baseGPR + indexGPR*4]` — load one f32 element, zeroing the
 /// upper lanes.
 fn emit_vmovss_load_scaled(code: &mut Vec<u8>, dst: Reg, base_gpr: u8, index_gpr: u8) {
     // VEX.LIG.F3.0F.WIG 10 /r, mod=00 rm=100 (SIB), SIB scale=4.
-    Vex::m0f_f3(0x10).rm_scaled4(code, dst, base_gpr, index_gpr);
+    assemble(
+        code,
+        [Vex::m0f_f3(0x10).rm_scaled4(dst, base_gpr, index_gpr)],
+    );
 }
 
 /// `vinsertps xmmDST, xmmSRC1, xmmSRC2, imm8` — place lane 0 of `src2` into
@@ -474,9 +542,10 @@ fn emit_vinsertps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg, dst_lane: 
     debug_assert!(dst_lane < 4, "vinsertps lane must be 0..4");
     // VEX.128.66.0F3A.WIG 21 /r ib. imm8: [7:6] source lane, [5:4] dest lane,
     // [3:0] zero mask (none).
-    Vex::m0f3a_66(0x21)
-        .imm(dst_lane << 4)
-        .rrr(code, dst, src1, src2);
+    assemble(
+        code,
+        [Vex::m0f3a_66(0x21).imm(dst_lane << 4).rrr(dst, src1, src2)],
+    );
 }
 
 /// Scratch the scalar gather sequence clobbers. The vector pair must be
@@ -513,13 +582,15 @@ pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad)
         gpr::RDI.0,
         i32::from(load.ctx_slot) * PTR_BYTES,
     );
-    Vex::m0f38_66(0x18).rm(
+    assemble(
         code,
-        dst,
-        Mem {
-            base: gpr::RAX,
-            disp: Imm32(i32::from(load.offset) * UNIFORM_BYTES),
-        },
+        [Vex::m0f38_66(0x18).rm(
+            dst,
+            Mem {
+                base: gpr::RAX,
+                disp: Imm32(i32::from(load.offset) * UNIFORM_BYTES),
+            },
+        )],
     );
 }
 
@@ -546,23 +617,25 @@ pub fn emit_gather_scalar(code: &mut Vec<u8>, dst: Reg, idx: Reg, slot: u16, s: 
 
 /// VPADDD dst, src1, src2 — packed i32 add.
 fn emit_vpaddd(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    Vex::m0f_66(0xFE).rrr(code, dst, src1, src2); // VEX.128.66.0F.WIG FE /r
+    assemble(code, [Vex::m0f_66(0xFE).rrr(dst, src1, src2)]); // VEX.128.66.0F.WIG FE /r
 }
 
 /// VPSLLD dst, src, imm8 — packed i32 shift-left-logical by immediate.
 fn emit_vpslld_imm(code: &mut Vec<u8>, dst: Reg, src: Reg, imm: u8) {
     // VEX.128.66.0F.WIG 72 /6 ib ; dst = vvvv, src = rm, /6 in ModRM.reg.
-    Vex::m0f_66(0x72)
-        .imm(imm)
-        .digit_rm(code, Digit(6), dst, src);
+    assemble(
+        code,
+        [Vex::m0f_66(0x72).imm(imm).digit_rm(Digit(6), dst, src)],
+    );
 }
 
 /// VPSRLD dst, src, imm8 — packed i32 shift-right-logical by immediate.
 fn emit_vpsrld_imm(code: &mut Vec<u8>, dst: Reg, src: Reg, imm: u8) {
     // VEX.128.66.0F.WIG 72 /2 ib.
-    Vex::m0f_66(0x72)
-        .imm(imm)
-        .digit_rm(code, Digit(2), dst, src);
+    assemble(
+        code,
+        [Vex::m0f_66(0x72).imm(imm).digit_rm(Digit(2), dst, src)],
+    );
 }
 
 // VCMPPS ordered predicates (subset).
@@ -1167,8 +1240,8 @@ pub(crate) mod driver {
             use super::*;
             for reload in &plan.reloads {
                 match reload {
-                    Reload::FromStack { target, offset } => {
-                        self.spill_load(code, *target, *offset);
+                    Reload::FromStack { target, slot } => {
+                        self.spill_load(code, *target, slot.offset());
                     }
                     Reload::Const { target, val_bits } => {
                         emit_const(code, *target, f32::from_bits(*val_bits));
@@ -1256,8 +1329,8 @@ pub(crate) mod driver {
                     // reloaded into `dst`, and the add's left operand is `dst`.
                     emit_binary(code, OpKind::Mul, *dst, *a, *b);
                     match c_deferred {
-                        Some(DeferredReload::FromStack(off)) => {
-                            self.spill_load(code, *c, *off);
+                        Some(DeferredReload::FromStack(slot)) => {
+                            self.spill_load(code, *c, slot.offset());
                         }
                         Some(DeferredReload::Const(bits)) => {
                             emit_const(code, *c, f32::from_bits(*bits));
@@ -1289,16 +1362,16 @@ pub(crate) mod driver {
             code: &mut Vec<u8>,
             vid: regalloc::ValueId,
             target: Reg,
-            locs: &[Option<Loc>],
+            locs: &[Option<Binding>],
         ) -> Reg {
             match location_of(locs, vid) {
-                Loc::Reg(reg) => reg,
-                Loc::Remat(bits) => {
+                Binding::Loc(Loc::Reg(reg)) => reg,
+                Binding::Remat(bits) => {
                     super::emit_const(code, target, f32::from_bits(bits));
                     target
                 }
-                Loc::Spill(offset) => {
-                    self.spill_load(code, target, offset);
+                Binding::Loc(Loc::Slot(slot)) => {
+                    self.spill_load(code, target, slot.offset());
                     target
                 }
             }
@@ -1545,8 +1618,7 @@ pub(in crate::emit) mod scaffold {
 /// A SIMD language barely touches these — loop counters, pointers, and the
 /// scalar half of a gather — which is why the vocabulary below is nine
 /// instructions rather than an assembler.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Gpr(pub u8);
+pub use super::Gpr;
 
 /// SysV argument and scratch registers the emitted kernels use.
 pub mod gpr {
@@ -1770,6 +1842,8 @@ pub trait Disp: Copy {
     const MOD: u8;
     /// Append the displacement bytes, if the mode has any.
     fn emit(self, code: &mut Vec<u8>);
+    /// Append the displacement bytes into an `EncodedInst`.
+    fn emit_inst(self, inst: &mut EncodedInst);
 }
 
 /// No displacement — the `mod = 00` form, `[base]`.
@@ -1785,6 +1859,8 @@ impl Disp for NoDisp {
     const MOD: u8 = 0x00;
     #[inline(always)]
     fn emit(self, _code: &mut Vec<u8>) {}
+    #[inline(always)]
+    fn emit_inst(self, _inst: &mut EncodedInst) {}
 }
 
 impl Disp for Imm8 {
@@ -1793,6 +1869,10 @@ impl Disp for Imm8 {
     fn emit(self, code: &mut Vec<u8>) {
         code.push(self.0 as u8);
     }
+    #[inline(always)]
+    fn emit_inst(self, inst: &mut EncodedInst) {
+        inst.push(self.0 as u8);
+    }
 }
 
 impl Disp for Imm32 {
@@ -1800,6 +1880,10 @@ impl Disp for Imm32 {
     #[inline(always)]
     fn emit(self, code: &mut Vec<u8>) {
         code.extend_from_slice(&self.0.to_le_bytes());
+    }
+    #[inline(always)]
+    fn emit_inst(self, inst: &mut EncodedInst) {
+        inst.extend(&self.0.to_le_bytes());
     }
 }
 
@@ -1827,21 +1911,18 @@ const RM_RIP_AT_MOD0: u8 = 0b101;
 /// SIB naming the base register alone: scale 1, index `100` (none).
 const SIB_BASE_ONLY: u8 = 0x24;
 
-/// The ModRM byte, a SIB byte when the base needs one, then the displacement —
-/// the tail every memory-operand instruction shares, whatever prefix (legacy,
-/// VEX or EVEX) precedes it. `reg` is the ModRM.reg field: a vector register
-/// for the transfers here, an opcode extension elsewhere.
-pub(in crate::emit) fn mem_operand<D: Disp>(code: &mut Vec<u8>, reg: u8, addr: Mem<D>) {
+/// Write the ModRM/SIB/disp tail into an `EncodedInst`.
+pub(in crate::emit) fn mem_operand_into<D: Disp>(inst: &mut EncodedInst, reg: u8, addr: Mem<D>) {
     let rm = addr.base.0 & 7;
     debug_assert!(
         D::MOD != NoDisp::MOD || rm != RM_RIP_AT_MOD0,
         "[rbp]/[r13] has no mod=00 form: that encoding is RIP-relative"
     );
-    code.push(D::MOD | ((reg & 7) << 3) | rm);
+    inst.push(D::MOD | ((reg & 7) << 3) | rm);
     if rm == RM_SIB {
-        code.push(SIB_BASE_ONLY);
+        inst.push(SIB_BASE_ONLY);
     }
-    addr.disp.emit(code);
+    addr.disp.emit_inst(inst);
 }
 
 #[cfg(test)]
