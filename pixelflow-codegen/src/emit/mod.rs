@@ -57,8 +57,11 @@ pub(crate) mod coverage;
 pub mod executable;
 mod guards;
 pub mod regalloc;
+pub mod storage;
 pub mod traffic;
 pub mod x86_64;
+
+pub use storage::{Slot, SourceOperand, StackFrame, Storage, StoreTarget};
 
 use pixelflow_ir::kind::OpKind;
 
@@ -73,13 +76,13 @@ use crate::error::CompileError;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Reg(pub u8);
 
-/// Location of a value: either in a register or spilled to stack.
+/// Location of a value: either in physical storage (register or stack slot) or rematerialized.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Loc {
     /// Value is in a register.
     Reg(Reg),
-    /// Value is spilled to stack at this byte offset from SP.
-    Spill(u32),
+    /// Value is spilled to a stack slot.
+    Slot(Slot),
     /// Value is a constant (these are its `f32` bits): it lives nowhere and is
     /// re-emitted at each use.
     Remat(u32),
@@ -91,8 +94,27 @@ impl Loc {
     pub fn reg(self) -> Reg {
         match self {
             Loc::Reg(r) => r,
-            Loc::Spill(off) => panic!("expected register, got spill slot {off}"),
+            Loc::Slot(s) => panic!("expected register, got stack slot {}", s.offset()),
             Loc::Remat(bits) => panic!("expected register, got rematerialized {bits:#x}"),
+        }
+    }
+
+    /// Physical storage location if in register or on stack.
+    #[must_use]
+    pub fn as_storage(self) -> Option<Storage> {
+        match self {
+            Loc::Reg(r) => Some(Storage::Reg(r)),
+            Loc::Slot(s) => Some(Storage::Slot(s)),
+            Loc::Remat(_) => None,
+        }
+    }
+
+    /// Stack slot if spilled to stack.
+    #[must_use]
+    pub fn as_slot(self) -> Option<Slot> {
+        match self {
+            Loc::Slot(s) => Some(s),
+            _ => None,
         }
     }
 }
@@ -130,7 +152,7 @@ pub struct FrameLayout {
     /// hold a register for part of this scope and its slot for the rest, so
     /// *that* it needs an address is a property of its whole life here, not of
     /// the one point its definition sits at.
-    slot: alloc::vec::Vec<Option<u32>>,
+    slot: alloc::vec::Vec<Option<Slot>>,
     /// Total frame size in bytes, a whole number of slots.
     pub frame_size: u32,
     /// How many values this frame gives a slot to.
@@ -146,9 +168,6 @@ impl FrameLayout {
         allocation: regalloc::Allocation<'_>,
         vector_bytes: u32,
     ) -> Result<Self, CompileError> {
-        // 2MB max frame — generous but prevents runaway allocations.
-        const MAX_FRAME: u32 = 2 * 1024 * 1024;
-
         let schedule = allocation.schedule();
         let len = schedule
             .iter()
@@ -157,8 +176,8 @@ impl FrameLayout {
             .unwrap_or(0);
         let mut locs: alloc::vec::Vec<Option<Loc>> = alloc::vec![None; len];
 
-        let mut slot: alloc::vec::Vec<Option<u32>> = alloc::vec![None; len];
-        let mut offset = 0u32;
+        let mut frame = StackFrame::new(vector_bytes);
+        let mut slot: alloc::vec::Vec<Option<Slot>> = alloc::vec![None; len];
         let mut slots = 0u32;
         for (i, def) in schedule.iter().enumerate() {
             // A value an enclosing region parked is read here from its hoist
@@ -177,19 +196,14 @@ impl FrameLayout {
                     .transitions(v)
                     .any(|(_, at)| at == regalloc::Where::Spilled);
             if spills_here {
-                if offset > MAX_FRAME - vector_bytes {
-                    return Err(CompileError::BudgetExceeded(
-                        "spill frame overflow: exceeds 2MB stack limit",
-                    ));
-                }
-                slot[v.0 as usize] = Some(offset);
-                offset += vector_bytes;
+                let s = frame.alloc_slot()?;
+                slot[v.0 as usize] = Some(s);
                 slots += 1;
             }
             locs[v.0 as usize] = Some(match allocation.where_at(v, i) {
                 regalloc::Where::Reg(r) => Loc::Reg(r),
                 regalloc::Where::Remat(bits) => Loc::Remat(bits),
-                regalloc::Where::Spilled => Loc::Spill(
+                regalloc::Where::Spilled => Loc::Slot(
                     slot[v.0 as usize].unwrap_or_else(|| unreachable!("just given a slot")),
                 ),
             });
@@ -198,9 +212,7 @@ impl FrameLayout {
         Ok(Self {
             locs,
             slot,
-            // Already a whole number of slots, and a slot is at least the
-            // 16 bytes both ABIs align SP to.
-            frame_size: offset,
+            frame_size: frame.frame_size(),
             slots,
         })
     }
@@ -220,15 +232,15 @@ impl FrameLayout {
         match at {
             regalloc::Where::Reg(r) => Loc::Reg(r),
             regalloc::Where::Remat(bits) => Loc::Remat(bits),
-            regalloc::Where::Spilled => Loc::Spill(self.slot_of(v).unwrap_or_else(|| {
+            regalloc::Where::Spilled => Loc::Slot(self.slot_of(v).unwrap_or_else(|| {
                 panic!("{v:?} is spilled somewhere in this scope but has no slot")
             })),
         }
     }
 
-    /// The address of `v`'s slot, if it has one here.
+    /// The slot of `v`, if it has one here.
     #[must_use]
-    pub fn slot_of(&self, v: regalloc::ValueId) -> Option<u32> {
+    pub fn slot_of(&self, v: regalloc::ValueId) -> Option<Slot> {
         self.slot.get(v.0 as usize).copied().flatten()
     }
 
@@ -251,19 +263,19 @@ impl FrameLayout {
         &self.locs
     }
 
-    /// Give `v` an address this frame did not lay out.
+    /// Give `v` a slot this frame did not lay out.
     ///
     /// The collapse-loop LICM parks a hoisted value in a slot the enclosing
     /// prologue wrote, which outlives every region's frame — so a scope inside
     /// reads and writes *that* address rather than one of its own. Only the
     /// address is pinned: where the value is at each point remains the
     /// placement's answer.
-    pub fn pin_slot(&mut self, v: regalloc::ValueId, offset: u32) {
+    pub fn pin_slot(&mut self, v: regalloc::ValueId, slot: Slot) {
         let idx = v.0 as usize;
         if idx >= self.slot.len() {
             self.slot.resize(idx + 1, None);
         }
-        self.slot[idx] = Some(offset);
+        self.slot[idx] = Some(slot);
     }
 }
 
@@ -342,8 +354,8 @@ pub struct UniformLoad {
 /// A deferred reload: value loaded mid-instruction (after a partial computation).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeferredReload {
-    /// Load from stack at the given SP offset.
-    FromStack(u32),
+    /// Load from stack slot.
+    FromStack(Slot),
     /// Rematerialize a constant.
     Const(u32),
 }
@@ -353,8 +365,8 @@ pub enum DeferredReload {
 /// Either reload from stack (spilled) or rematerialize a constant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reload {
-    /// Load from stack at the given SP offset.
-    FromStack { target: Reg, offset: u32 },
+    /// Load from stack slot.
+    FromStack { target: Reg, slot: Slot },
     /// Rematerialize a constant (emit FMOV immediate).
     Const { target: Reg, val_bits: u32 },
 }
@@ -922,7 +934,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
     // register, at each point, is the placement's answer.
     if let Some(hoisted) = hoist.preloaded() {
         for (vid, &offset) in hoisted {
-            layout.pin_slot(*vid, offset);
+            layout.pin_slot(*vid, Slot::new(offset, file.vector_bytes));
         }
     }
 
@@ -998,13 +1010,13 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
             }
             moves[index].push((v, layout.loc(v, at)));
         }
-        if let Some(offset) = layout.slot_of(v)
+        if let Some(slot) = layout.slot_of(v)
             && matches!(locs[v.0 as usize], Some(Loc::Reg(_)))
         {
             // Every definition writes a register, so this is the only place a
             // value reaches its slot — and it is the place that makes the slot
             // valid on both sides of every guard.
-            store_after_def[i] = Some(offset);
+            store_after_def[i] = Some(slot.offset());
         }
     }
 
@@ -1780,10 +1792,11 @@ pub fn resolve_operands(
                 scratch,
             });
         }
-        Loc::Spill(offset) => panic!(
-            "a definition landed in stack slot {offset} — the allocator owes \
+        Loc::Slot(slot) => panic!(
+            "a definition landed in stack slot {} — the allocator owes \
              every definition a register, since there is none outside the pool \
-             to compute into"
+             to compute into",
+            slot.offset()
         ),
     };
 
@@ -1836,8 +1849,8 @@ pub fn resolve_operands(
                 });
                 target
             }
-            Loc::Spill(offset) => {
-                reloads.push(Reload::FromStack { target, offset });
+            Loc::Slot(slot) => {
+                reloads.push(Reload::FromStack { target, slot });
                 target
             }
         }
@@ -1942,8 +1955,8 @@ pub fn resolve_operands(
                         let (c_reg, c_deferred) = match loc_of(*c) {
                             Loc::Reg(reg) => (reg, None),
                             Loc::Remat(bits) => (target_for(2), Some(DeferredReload::Const(bits))),
-                            Loc::Spill(offset) => {
-                                (target_for(2), Some(DeferredReload::FromStack(offset)))
+                            Loc::Slot(slot) => {
+                                (target_for(2), Some(DeferredReload::FromStack(slot)))
                             }
                         };
                         ResolvedOp::DecomposedMulAdd {
@@ -2701,7 +2714,7 @@ mod tests {
         let a = allocation_of(&[(5, regalloc::Where::Spilled)]);
         let layout = FrameLayout::resolve(a.body(), 16).unwrap();
         assert_eq!(layout.frame_size, 16);
-        assert_eq!(layout.of(regalloc::ValueId(5)), Loc::Spill(0));
+        assert_eq!(layout.of(regalloc::ValueId(5)), Loc::Slot(Slot::new(0, 16)));
     }
 
     /// Slots are laid out at the backend's own stride, so the offsets a wide
@@ -2723,7 +2736,7 @@ mod tests {
             for (i, off) in expected.iter().enumerate() {
                 assert_eq!(
                     layout.of(regalloc::ValueId(i as u32 + 1)),
-                    Loc::Spill(*off),
+                    Loc::Slot(Slot::new(*off, vector_bytes)),
                     "vector_bytes={vector_bytes}"
                 );
             }
@@ -2743,7 +2756,7 @@ mod tests {
             layout.of(regalloc::ValueId(0)),
             Loc::Remat(1.0f32.to_bits())
         );
-        assert_eq!(layout.of(regalloc::ValueId(1)), Loc::Spill(0));
+        assert_eq!(layout.of(regalloc::ValueId(1)), Loc::Slot(Slot::new(0, 16)));
     }
 
     /// The collapse LICM pins a hoisted value to the slot its prologue wrote,
@@ -2754,9 +2767,10 @@ mod tests {
         let mut layout = FrameLayout::resolve(a.body(), 16).unwrap();
         let v = regalloc::ValueId(0);
         assert_eq!(layout.slot_of(v), None, "a resident value needs no slot");
-        layout.pin_slot(v, 256);
-        assert_eq!(layout.slot_of(v), Some(256));
-        assert_eq!(layout.loc(v, regalloc::Where::Spilled), Loc::Spill(256));
+        let pin = Slot::new(256, 16);
+        layout.pin_slot(v, pin);
+        assert_eq!(layout.slot_of(v), Some(pin));
+        assert_eq!(layout.loc(v, regalloc::Where::Spilled), Loc::Slot(pin));
         assert_eq!(
             layout.loc(v, regalloc::Where::Reg(Reg(7))),
             Loc::Reg(Reg(7)),
@@ -2803,7 +2817,7 @@ mod tests {
             locs[v as usize] = Some(Loc::Reg(Reg(r)));
         }
         for &(v, off) in spilled {
-            locs[v as usize] = Some(Loc::Spill(off));
+            locs[v as usize] = Some(Loc::Slot(Slot::new(off, 16)));
         }
         locs
     }
@@ -2844,7 +2858,7 @@ mod tests {
             plan.reloads[0],
             Reload::FromStack {
                 target: Reg(6),
-                offset: 0
+                slot: Slot::new(0, 16),
             }
         );
         assert_eq!(
@@ -2871,14 +2885,14 @@ mod tests {
             plan.reloads[0],
             Reload::FromStack {
                 target: Reg(6),
-                offset: 0
+                slot: Slot::new(0, 16),
             }
         );
         assert_eq!(
             plan.reloads[1],
             Reload::FromStack {
                 target: RELOAD[0],
-                offset: 16
+                slot: Slot::new(16, 16),
             }
         );
         assert_eq!(
@@ -2907,7 +2921,7 @@ mod tests {
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
         drop(resolve_operands(
             &op,
-            Loc::Spill(32),
+            Loc::Slot(Slot::new(32, 16)),
             locs.as_slice(),
             TEST_SCRATCH,
         ));
@@ -2977,14 +2991,14 @@ mod tests {
             plan.reloads[0],
             Reload::FromStack {
                 target: Reg(8),
-                offset: 0
+                slot: Slot::new(0, 16),
             }
         );
         assert_eq!(
             plan.reloads[1],
             Reload::FromStack {
                 target: RELOAD[0],
-                offset: 16
+                slot: Slot::new(16, 16),
             }
         );
         // c is in a register, no deferred reload needed
@@ -3023,7 +3037,10 @@ mod tests {
         match &plan.op {
             ResolvedOp::DecomposedMulAdd { c, c_deferred, .. } => {
                 assert_eq!(*c, RELOAD[1]); // its own reservation, deferred past the FMUL
-                assert_eq!(*c_deferred, Some(DeferredReload::FromStack(32)));
+                assert_eq!(
+                    *c_deferred,
+                    Some(DeferredReload::FromStack(Slot::new(32, 16)))
+                );
             }
             other => panic!("expected DecomposedMulAdd, got {:?}", other),
         }
@@ -5266,7 +5283,7 @@ mod tests {
                 ("c in a register", None),
                 (
                     "c reloaded from the stack",
-                    Some(DeferredReload::FromStack(32)),
+                    Some(DeferredReload::FromStack(Slot::new(32, 16))),
                 ),
                 (
                     "c rematerialized",
@@ -5551,7 +5568,7 @@ mod tests {
                 // the tail rather than by a per-backend length.
                 let (mul, add) = undeferred.split_at(undeferred.len() - tail_len(name));
                 for deferred in [
-                    DeferredReload::FromStack(32),
+                    DeferredReload::FromStack(Slot::new(32, 16)),
                     DeferredReload::Const(1.0f32.to_bits()),
                 ] {
                     let got = encode(backend, decomposed(Some(deferred.clone())));

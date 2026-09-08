@@ -914,8 +914,8 @@ pub(crate) mod driver {
 
         fn reload(code: &mut Vec<u8>, reload: &Reload) {
             match reload {
-                Reload::FromStack { target, offset } => {
-                    super::emit_load(code, *target, frame_slot(*offset));
+                Reload::FromStack { target, slot } => {
+                    super::emit_load(code, *target, frame_slot(slot.offset()));
                 }
                 Reload::Const { target, val_bits } => {
                     super::emit_const(code, *target, f32::from_bits(*val_bits));
@@ -1010,8 +1010,8 @@ pub(crate) mod driver {
                     // dst = a*b, reload c (after the multiply if deferred), dst += c.
                     super::emit_binary(code, OpKind::Mul, *dst, *a, *b);
                     match c_deferred {
-                        Some(DeferredReload::FromStack(off)) => {
-                            super::emit_load(code, *c, frame_slot(*off));
+                        Some(DeferredReload::FromStack(slot)) => {
+                            super::emit_load(code, *c, frame_slot(slot.offset()));
                         }
                         Some(DeferredReload::Const(bits)) => {
                             super::emit_const(code, *c, f32::from_bits(*bits));
@@ -1059,8 +1059,8 @@ pub(crate) mod driver {
                     super::emit_const(code, target, f32::from_bits(bits));
                     target
                 }
-                Loc::Spill(offset) => {
-                    super::emit_load(code, target, frame_slot(offset));
+                Loc::Slot(slot) => {
+                    super::emit_load(code, target, frame_slot(slot.offset()));
                     target
                 }
             }

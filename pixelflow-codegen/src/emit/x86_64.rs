@@ -1059,8 +1059,8 @@ pub(crate) mod driver {
             use super::*;
             for reload in &plan.reloads {
                 match reload {
-                    Reload::FromStack { target, offset } => {
-                        self.spill_load(code, *target, *offset);
+                    Reload::FromStack { target, slot } => {
+                        self.spill_load(code, *target, slot.offset());
                     }
                     Reload::Const { target, val_bits } => {
                         emit_const(code, *target, f32::from_bits(*val_bits));
@@ -1148,8 +1148,8 @@ pub(crate) mod driver {
                     // reloaded into `dst`, and the add's left operand is `dst`.
                     emit_binary(code, OpKind::Mul, *dst, *a, *b);
                     match c_deferred {
-                        Some(DeferredReload::FromStack(off)) => {
-                            self.spill_load(code, *c, *off);
+                        Some(DeferredReload::FromStack(slot)) => {
+                            self.spill_load(code, *c, slot.offset());
                         }
                         Some(DeferredReload::Const(bits)) => {
                             emit_const(code, *c, f32::from_bits(*bits));
@@ -1189,8 +1189,8 @@ pub(crate) mod driver {
                     super::emit_const(code, target, f32::from_bits(bits));
                     target
                 }
-                Loc::Spill(offset) => {
-                    self.spill_load(code, target, offset);
+                Loc::Slot(slot) => {
+                    self.spill_load(code, target, slot.offset());
                     target
                 }
             }

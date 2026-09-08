@@ -189,7 +189,7 @@ impl<B: IsaBackend> IsaBackend for Counting<'_, B> {
         locs: &[Option<Loc>],
     ) -> Reg {
         match locs.get(vid.0 as usize).copied().flatten() {
-            Some(Loc::Spill(_)) => self.traffic.loads_kept += 1,
+            Some(Loc::Slot(_)) => self.traffic.loads_kept += 1,
             Some(Loc::Remat(_)) => self.traffic.remats += 1,
             // Already in a register, or not placed at all: nothing is emitted.
             Some(Loc::Reg(_)) | None => {}

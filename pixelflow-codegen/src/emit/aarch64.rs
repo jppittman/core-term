@@ -1992,8 +1992,8 @@ pub(crate) mod driver {
                     emit_const_load(code, target, bits, &self.pool);
                     target
                 }
-                Loc::Spill(offset) => {
-                    super::emit_ldr_q(code, target, frame_slot(offset));
+                Loc::Slot(slot) => {
+                    super::emit_ldr_q(code, target, frame_slot(slot.offset()));
                     target
                 }
             }
@@ -2152,8 +2152,8 @@ pub(crate) mod driver {
         // 1. Emit reloads (from stack or rematerialized constants)
         for reload in &plan.reloads {
             match reload {
-                Reload::FromStack { target, offset } => {
-                    emit_ldr_q(code, *target, frame_slot(*offset));
+                Reload::FromStack { target, slot } => {
+                    emit_ldr_q(code, *target, frame_slot(slot.offset()));
                 }
                 Reload::Const { target, val_bits } => {
                     emit_const_load(code, *target, *val_bits, pool);
@@ -2272,8 +2272,8 @@ pub(crate) mod driver {
         pool: &ConstPool,
     ) {
         match deferred {
-            Some(DeferredReload::FromStack(offset)) => {
-                super::emit_ldr_q(code, target, frame_slot(*offset));
+            Some(DeferredReload::FromStack(slot)) => {
+                super::emit_ldr_q(code, target, frame_slot(slot.offset()));
             }
             Some(DeferredReload::Const(val_bits)) => {
                 emit_const_load(code, target, *val_bits, pool);
