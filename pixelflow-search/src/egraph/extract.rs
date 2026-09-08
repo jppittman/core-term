@@ -1730,7 +1730,8 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
 /// ties going to the tree pass. So the returned DAG cost can only be lower
 /// than the pre-#1116 extractor's, never higher — no-regression is structural
 /// rather than empirical, at the price of a second DP pass over a graph
-/// extraction walks once per compile.
+/// extraction walks once per compile — **below [`SHARED_DAG_PASS_CLASS_LIMIT`]**;
+/// see that constant's doc comment for what changes above it.
 pub fn extract_dag_scoped<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
@@ -1744,25 +1745,42 @@ pub fn extract_dag_scoped<C: CostFunction>(
         costs,
         shape,
     );
-    let shared = repaired_and_costed(
-        egraph,
-        root,
-        shared_dag_dp_pass(egraph, root, costs, shape),
-        costs,
-        shape,
-    );
-    // Only the winner is assembled: the reference counts and the emission
-    // schedule describe a term, and one of these two is not going to be one.
-    assemble(
-        egraph,
-        root,
+    // `shared_dag_dp_pass` is O(live_classes^2) in time and memory (its own
+    // doc comment). Below this limit that is the ~12.5 MB the codebase's own
+    // production preset already budgets for (10,000 classes,
+    // `saturate.rs::SaturationConfig::compatibility`) — comfortably above
+    // every shipped tier (`classical`'s cap is 5,000) so this never fires on
+    // a kernel that ships today. Above it — reachable only by a caller
+    // deliberately raising the class cap past what any production preset
+    // uses, e.g. the research experiment in
+    // docs/plans/2026-09-06-egraph-at-production-scale.md §3 that made a
+    // 60,000-class compile 30x slower — the pass is skipped and extraction
+    // falls back to the tree objective alone. That is never a *wrong*
+    // extraction (the tree pass is a real, if less sharing-aware, cost
+    // function), only a potentially more expensive one; the two-objective
+    // no-regression property above holds exactly below this limit and is
+    // simply not attempted above it, rather than being violated.
+    let num_classes = egraph.num_classes();
+    if num_classes <= SHARED_DAG_PASS_CLASS_LIMIT {
+        let shared = repaired_and_costed(
+            egraph,
+            root,
+            shared_dag_dp_pass(egraph, root, costs, shape),
+            costs,
+            shape,
+        );
+        // Only the winner is assembled: the reference counts and the
+        // emission schedule describe a term, and one of these two is not
+        // going to be one.
         if shared.cost.dag < tree.cost.dag {
-            shared
-        } else {
-            tree
-        },
-    )
+            return assemble(egraph, root, shared);
+        }
+    }
+    assemble(egraph, root, tree)
 }
+
+/// See [`extract_dag_scoped`]'s gate on [`shared_dag_dp_pass`].
+pub const SHARED_DAG_PASS_CLASS_LIMIT: usize = 10_000;
 
 /// A repaired choice map and the cost of the term it names.
 struct CostedChoices {
@@ -2313,6 +2331,47 @@ mod tests {
             OpKind::Add,
             "over a frame the fused form pays for Z at every sample"
         );
+    }
+
+    /// Above [`SHARED_DAG_PASS_CLASS_LIMIT`], `extract_dag_scoped` falls
+    /// back to the tree-only objective rather than paying the O(n^2)
+    /// `shared_dag_dp_pass` bitset — see that constant's doc comment.
+    ///
+    /// A chain of `SHARED_DAG_PASS_CLASS_LIMIT + 50` distinct-const `Add`
+    /// nodes gives exactly that many classes with no saturation (each
+    /// `add()` is a fresh, non-folding node), so `num_classes()` crosses the
+    /// limit deterministically and cheaply — this is a shape test, not a
+    /// cost-model test, so a long non-sharing chain is the right fixture:
+    /// it has nothing for the shared pass to find anyway, which is exactly
+    /// what makes "was it skipped" checkable by comparing against the
+    /// tree-only arm directly.
+    #[test]
+    fn extract_dag_scoped_skips_the_shared_pass_above_the_class_limit() {
+        let mut egraph = EGraph::new();
+        let mut cur = egraph.add(ENode::Var(0));
+        for i in 0..(SHARED_DAG_PASS_CLASS_LIMIT + 50) {
+            let c = egraph.add(ENode::constant(i as f32 + 1.0));
+            cur = egraph.add(ENode::Op {
+                op: crate::egraph::ops::op_from_kind(pixelflow_ir::OpKind::Add)
+                    .expect("Add is modelled"),
+                children: vec![cur, c],
+            });
+        }
+        egraph.rebuild();
+        assert!(
+            egraph.num_classes() > SHARED_DAG_PASS_CLASS_LIMIT,
+            "fixture must actually cross the gate to test it"
+        );
+
+        let costs = CostModel::latency_prior();
+        let scoped = extract_dag_scoped(&egraph, cur, &costs, LatticeShape::POINT);
+        let tree_only = extract_dag_tree_arm(&egraph, cur, &costs, LatticeShape::POINT);
+        assert_eq!(
+            scoped.dag_cost, tree_only.dag_cost,
+            "above the limit, extract_dag_scoped must equal the tree-only arm \
+             exactly — the shared pass was skipped, not merely outscored"
+        );
+        assert_eq!(scoped.choices, tree_only.choices);
     }
 
     #[test]
