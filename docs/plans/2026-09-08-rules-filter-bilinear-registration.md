@@ -184,3 +184,27 @@ bytes column, which this registration does not claim.
   minted on a synthetic corpus in tree units and are retracted in the
   claims ledger.
 - The synthetic corpus is not run. A generated kernel is never a headline.
+
+## 9. Results against the rule (appended 2026-09-08, after the run)
+
+docs/results/2026-09-08-rules-filter-bilinear.md. **NULL on every family.**
+At B/2, ρ = 0.25, family-held-out: median `dag_cost` ratio 1.000 (glyph16),
+1.000 (bench), 1.042 (psychedelic), 1.049 (cellgrid), 1.054 (shader) —
+none ≤ 0.95 (clause 1 fails everywhere); bytes ≤ 1.00 on every family but
+none of that matters without clause 1; a control sits inside the bilinear
+arm's band on every multi-kernel family. ρ = 0.5: null (best 0.998). In-family
+upper bound: null. HELD-OUT opened once with the all-DEV model:
+NotoSansMono-Bold 1.000 (bytes 1.043), chrome 1.156 / 1.005 — sign never
+< 1. Intrinsic: bilinear beats the per-rule prior on every held-out fold
+(tight AUC 0.879 / 0.663 / 0.625 vs 0.717 / 0.580 / 0.576). Inference:
+≈ 12.9 k multiply-adds per scored cell, ≈ 15 M per round per glyph kernel,
+10–23 % of the filtered run's wall at load ≈ 10. Disposition:
+`Optimizer::production()` stays on `KeepAll`; no weights shipped.
+
+One protocol addition was made *during* the run and is recorded rather than
+hidden: the smoke run showed a training-calibrated threshold keeps a
+different fraction of a held-out family than ρ, so a second control —
+`UniformRandom` at the bilinear arm's *realized* keep-rate at the same
+budget, run after it — was added beside the nominal-ρ one. It is the
+control §3's "same keep-rate" means; the nominal one is still reported.
+Neither changes the decision rule or any threshold.
