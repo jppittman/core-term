@@ -586,7 +586,8 @@ fn a_step_os_continuation_resumes_without_an_external_wake() {
     let mut builder = ActorBuilder::<u32, Infallible, Infallible>::new(4, None);
     let handle = builder.add_producer();
     let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
-    let mut thread = builder.build_dedicated_thread(OsKick { kicked: false }, OsKickWiring { tx: tx_out });
+    let mut thread =
+        builder.build_dedicated_thread(OsKick { kicked: false }, OsKickWiring { tx: tx_out });
     drop(handle);
 
     thread.run();

@@ -322,7 +322,6 @@ impl NixPty {
         log::trace!("NixPty: Set FD {} to non-blocking", raw_fd);
         Ok(())
     }
-
 }
 
 impl Drop for NixPty {
