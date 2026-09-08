@@ -65,6 +65,25 @@ macro_rules! op_table {
             pub(crate) const fn from_index(idx: usize) -> Option<Self> {
                 match idx { $( $code => Some(Self::$name), )+ _ => None }
             }
+
+            /// This op's Rust variant identifier — [`OpKind::MulAdd`]'s is
+            /// `"MulAdd"`.
+            ///
+            /// Distinct from [`OpKind::name`], which is the DSL spelling
+            /// (`"mul_add"`). A code generator wants the identifier: emitting
+            /// the path `OpKind::#variant` is checked by the compiler at the
+            /// expansion's use site, where emitting a `from_name` call would
+            /// defer a typo to a runtime `expect` inside generated code.
+            ///
+            /// Generated from the table like everything else here, so an op
+            /// cannot be added without one — which is the point. The
+            /// hand-written match this replaced lived in
+            /// `pixelflow-compiler`, covered 40 of the 50 ops, and closed
+            /// with `_ => panic!("Unsupported OpKind for JIT")`.
+            #[must_use]
+            pub const fn variant_name(self) -> &'static str {
+                match self { $( Self::$name => stringify!($name), )+ }
+            }
         }
     };
 }
