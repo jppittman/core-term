@@ -195,13 +195,17 @@ enough to threaten the pass's time budget.
 
 ## Recommended next steps (not done here)
 
-1. `pixelflow-codegen/src/emit/` has six more files never mutation-tested
-   at this granularity: `executable.rs`, `regalloc.rs`, `avx2.rs`,
-   `avx512.rs`, `aarch64.rs` (the NEON counterpart to this pass's
+1. `pixelflow-codegen/src/emit/` has four more files never mutation-tested
+   at this granularity: `executable.rs`, `regalloc.rs`,
+   `aarch64.rs` (the NEON counterpart to this pass's
    `x86_64.rs` — likely has the same "byte-exact vs. execution-only" gap
    pattern, now doubly worth checking against its own integration-test
    coverage first per the methodology note above), and `mod.rs` (huge —
    needs splitting into several scoped mutants runs).
+   **`avx2.rs` and `avx512.rs` came off this list on 2026-09-08:** #1199
+   ran the pass over both and recorded zero real gaps in
+   `docs/bugs/2026-09-07-test-quality-audit-followup.md`. Leaving them here
+   would send the next scheduled pass back over finished work.
 2. `pixelflow-core/src/backend/x86.rs`'s AVX2/AVX-512 (`F32x8`/`F32x16`/
    `U32x8`/`U32x16`/`Mask8`/`Mask16`) impls and `arm.rs`'s NEON impls —
    flagged since 2026-08-26 as never unit-tested under a build that

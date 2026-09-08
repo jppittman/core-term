@@ -899,18 +899,16 @@ mod tests {
     // OR and XOR of operands that can never share a set bit compute the same
     // byte for every input. That is a real equivalent, not a gap.
 
-    #[test]
-    fn vex_head_sets_the_w_bit_for_a_rex_w_encoded_instruction() {
-        let mut code = Vec::new();
-        let vex = Vex {
-            map: Map::M0F,
-            pp: Pp::None,
-            w: true,
-            opcode: 0x11,
-        };
-        vex.rr(&mut code, Reg(0), Reg(0));
-        assert_eq!(code, vec![0xC4, 0xE1, 0xF8, 0x11, 0xC0]);
-    }
+    // A test of `Vex { w: true }` stood here and was removed: `Vex::new` is
+    // the only construction on any production path and hardcodes `w: false`,
+    // so the assertion pinned a state no emitted kernel can reach. Mutation
+    // coverage of unreachable internal state is not coverage.
+    //
+    // The subtraction that follows from it is deliberately NOT taken here,
+    // to keep this a test-only change: `Vex::w` is dead as written (read
+    // once, at the `(self.w as u8) << 7` in the 3-byte head, and never set),
+    // so it could go, with the bit hardcoded to 0. That is an encoder change
+    // and wants its own CL.
 
     /// `emit_movups_store_base` (a raw `[base]`-only store, no displacement)
     /// no longer exists as its own function post-refactor — it is
