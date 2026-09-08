@@ -58,17 +58,37 @@ correctness one.** `Select(m, a, b)` is defined at *every* index in the
 extent. A derived range bounds where `m` can be nonzero, so outside it the
 select's value is `b` — not nothing. Narrowing the loop and stopping there
 would leave the complement holding whatever the destination was
-initialized to, which is the value only when `b` happens to equal it. So
-the lowering emits two disjoint programs: the select over the region, and
-`b` specialized over the complement. The saving is that `b` alone is
-usually a constant, so the complement is a fill rather than an evaluation
-— and when it equals the destination's initialization it costs nothing at
-all.
+initialized to, which is the value only when `b` happens to equal it.
 
-That is exactly what `IndexRange::paint_complement` already does, and why
-this plan derives that machinery rather than deleting it: L3 and L4 wrote
-the split by hand because the compiler could not derive the region, not
-because the split was the wrong shape.
+So the lowering emits two disjoint programs, and what the complement gets
+is **the whole root kernel specialized with `m ≡ false`** — not the
+select's false arm. The select is usually not the root: `Select(m, a, b) +
+c` must produce `b + c` over the complement, and dropping the `+ c` would
+silently delete every consumer downstream of the select. This is the normal
+case rather than a corner one — `text()` is a `Kernel::sum` over glyphs, so
+every glyph's select is nested under an addition. Substitute the mask as
+false, constant-fold, and emit what remains; for a root select that reduces
+to `b`, and for a nested one it keeps the continuation.
+
+The saving is that the specialized residue is usually a constant, so the
+complement is a fill rather than an evaluation — and when it equals the
+destination's initialization it costs nothing at all.
+
+**The existing complement painter is not general enough for this.**
+`IndexRange::paint_complement` asserts its claim is a *leading*
+sub-rectangle (`claim.x0 == self.x0 && claim.y0 == self.y0`) and fills only
+the right and bottom remainder. That is exactly right for an
+origin-anchored restriction of a frame band, which is why L3 and L4 could
+use it — and it is why nobody noticed the general case was missing. A
+circle's bounding box is an *interior* rectangle, whose complement is up to
+four rectangles; handing it to this helper hits the assertion. So D2 either
+represents a complement as a set of rectangles or grows a painter that
+takes an arbitrary contained one.
+
+That is the useful finding in this direction: L3 and L4 wrote the split by
+hand because the compiler could not derive the region, and the machinery
+they wrote is shaped by the one case they each needed. The split is the
+right shape; the leading-rectangle restriction is an artifact.
 
 ### Why this was invisible
 
@@ -90,8 +110,16 @@ let disc = kernel!(|cx: f32, cy: f32, r: f32| {
     let dy = Y - cy;
     (dx * dx + dy * dy).lt(r * r)
 });
-disc.select(&fg, &bg)
+// N params gives a builder; fold the arguments in to get a `Kernel`.
+let mask: Kernel = disc(cx, cy, r);
+mask.select(&fg, &bg)
 ```
+
+Which tier this lands in is a property of that last step, not of the source
+above it. Folded in as `f32` constants, the range is compile-time and bakes
+into the loop nest. Written instead against `Uniform` handles the same mask
+is bind-time, because `Manifold::compile` sees only the extent. The example
+below is the constant case; §3 covers both.
 
 The mask is a circle. It is not a rectangle and never will be. But it
 **implies** one:
@@ -137,7 +165,18 @@ Two tiers, and the split matters because of when the answer is available:
   support, the circle above.
 - **Bind-time.** The mask depends on a uniform. The range cannot be
   compiled in, because `Manifold::compile` sees only the extent and the
-  block is bound later. It is computed when the block is written.
+  block is bound later.
+
+  "Computed when the block is written" is not sufficient, because a block
+  is not the only way a uniform gets a value: `Manifold::bind` populates
+  every uniform from its declared default (`uniforms:
+  Arc::clone(&self.defaults)`), and `with_uniforms` is optional. A caller
+  that binds and never writes a block still has concrete values and
+  deserves the range they imply. So the range is derived wherever the
+  values become concrete — from the defaults at `bind`, and recomputed when
+  a block moves them — rather than only on the `with_uniforms` path, which
+  would leave the common case at the full extent while holding the numbers
+  that would have narrowed it.
 
 L4 already hit this and named it: the cell grid's range "is a function of
 its per-frame metric, not of the shape it was compiled at," which is why
@@ -150,9 +189,17 @@ than being deferred.
 A cheap exact path, then a general sound one:
 
 1. **Symbolic, for axis-aligned literals.** `X < c`, `Y >= c`, and
-   conjunctions and disjunctions of them read directly off the DAG. This
-   covers `in_grid`, a glyph's support, and every range L3 and L4 write by
-   hand today. Exact, no search.
+   conjunctions and disjunctions of them read directly off the DAG. Exact,
+   no search. This covers `in_grid` and L4's cell grid.
+
+   It does **not** cover a glyph's support, and the plan should not claim
+   it does. A compound glyph applies a full 2×2 affine to each child
+   (`ttf.rs`, the `0x80` flag reads all four of `m[0..4]`, so rotation and
+   skew are on the table) and is a `Kernel::sum` of the transformed
+   children. An affine turns the unit-square tests into inequalities mixing
+   X and Y, which this path cannot read. So glyph supports wait for the
+   interval tier at D4 — or D1 grows affine predicates and unions, which is
+   a larger D1 than this plan schedules. Either way it is not D1's gate.
 2. **Interval evaluation, for everything else.** Evaluate the mask in
    interval arithmetic over a candidate rectangle. If the result interval
    is provably all-zero, the rectangle is excluded. Bisect to tighten.
@@ -188,8 +235,15 @@ exactly the masks that combine geometry with an atlas — the glyph case.
 The derivation weakens away the buffer-dependent operand and keeps every
 coordinate-only consequence; a conjunction's range is the intersection of
 its conjuncts' ranges, and an unbounded conjunct contributes the full
-extent rather than poisoning the result. Only a mask with *no*
-coordinate-only consequence falls to lowering 3, which is what happens
+extent rather than poisoning the result.
+
+**No coordinate-only consequence rules out lowering 1; it does not select
+lowering 3.** The lowerings are tried in order, and row uniformity is the
+second question, not a consequence of the first: a mask built only from
+uniforms has no coordinate-only range at all and is uniform over every row
+— frame-uniform, in fact — so it is the best case for lowering 2, and
+routing it to a blend would run both arms at every pixel. Only a mask that
+answers no to both questions falls to lowering 3, which is what happens
 today.
 
 ## 4. Why demand stays an optimization, not a semantics
@@ -236,6 +290,15 @@ superseded plan §2, which stands unchanged and becomes load-bearing here.
   per-region code. "Region known statically → domain split" done properly
   *means* emitting, per region, only the values demanded there. That is
   per-region compilation; it is not a separate capability.
+
+  This one needs a piece the others do not: **overlapping ranges must be
+  partitioned into disjoint programs.** Glyph supports overlap, so a set of
+  derived ranges is not a set of regions until something cuts them. L3
+  sidestepped this by cutting at pen positions and asking which supports
+  reach each cell — a rule about text, not about masks. The general rule
+  (cut on the arrangement of range boundaries; each cell gets the root
+  specialized against the masks live there) belongs to D2 and is why
+  `text_union` is the last of the four to go, not the first.
 - **L4's border stops being hand-written, not deleted.** `grid_range` +
   `intersect` + `paint_complement` *is* lowering 1 applied to
   `in_grid.select(blended, default_bg)` — the select L4 spelled out by
@@ -255,7 +318,19 @@ Its §1–§2 are the analysis this design needs once regions exist:
   to `true` on overflow) is how you determine which values a region serves
   once you have regions. It is the machinery of lowering 2.
 - The **producer-superset invariant** (`demand(u) ⊇ demand(v)` for every
-  producer edge) and the sort that follows from it.
+  producer edge) — **for unconditional edges only**, which is a correction
+  to the superseded plan rather than an import of it. A select's arm edge
+  runs the other way: `a` is demanded where the select is demanded *and*
+  `m` holds, so `demand(a) = demand(S) ∧ m ⊆ demand(S)`, and for a root
+  select that is `m ⊉ true`. The invariant is about a value feeding several
+  consumers (its demand is their union, hence a superset of each); an arm
+  edge intersects with the arm's polarity instead.
+
+  The consequence matters for D5: **predicate strength is not an
+  ordering.** Sorting weakest-first would place a select before the arm
+  that produces its input, so the schedule is the existing topological
+  order, with demand used to *group* nodes into guarded regions within it —
+  never to reorder across a producer edge.
 - **A guard is a region of equal demand**, with `MISPREDICT_PENALTY_CYCLES`
   unchanged as the one profitability bound.
 - **Scope projection** — dropping an X-dependent literal in the row
@@ -278,7 +353,8 @@ the framing this plan replaces.
 The replacement gate is compositional and needs no baseline:
 
 - `text()` as a select chain produces what `text_union` produces today,
-  and `text_union` can be deleted.
+  and `text_union` can be deleted — the one item here that needs range
+  partitioning as well as range derivation.
 - L4's border falls out of `in_grid.select(..)` without the caller writing
   `grid_range`/`paint_complement` — the complement fill is still emitted,
   it is just derived.
@@ -298,18 +374,30 @@ checked directly: collapse the mask over the full extent and assert every
 nonzero index falls inside the derived range. That is the property the
 lowering actually depends on, it fails for the right reason, and it does
 not care whether any hand-written range is correct. The **usefulness**
-check is the comparison against `grid_range`, a glyph's `Support`, and the
-column cuts `text_cells` computes — a derived range that contains the mask
-but equals the full extent is sound and worthless, and this is what
-catches that.
+check is the comparison against `grid_range` — a derived range that
+contains the mask but equals the full extent is sound and worthless, and
+this is what catches that.
 
-Checking only the agreement would make D1 a change-detector against three
-answers whose correctness is assumed; #1187 is the standing reminder that a
+`grid_range` is the only hand-written range D1 compares against, and the
+other two candidates are dropped for different reasons. A glyph's
+`Support` is out of the symbolic tier's reach (§3). And **`text_cells` is
+not an answer to the mask-range question at all**: it cuts at glyph *pen*
+positions, then includes in each cell every glyph whose independently
+computed support reaches it (`fonts/text.rs`). Its cuts are a partition of
+columns by ownership, its supports overlap, and neither edge is where a
+mask stops being nonzero — so there is no equality to expect. Reproducing
+or replacing `text_cells` needs a *partitioning* rule that turns
+overlapping derived ranges into disjoint programs, which is a separate
+question this plan should state rather than smuggle into a range gate.
+
+Checking only the agreement would make D1 a change-detector against answers
+whose correctness is assumed; #1187 is the standing reminder that a
 hand-written answer in this area can be wrong. Production behaviour is
 unchanged either way.
 
 **D2 — lowering 1, compile-time.** Emit the split: the select over the
-derived range, the false arm over the complement. Gate: `text()` as a
+derived range, the root specialized at `m ≡ false` over the complement,
+with a complement painter that takes an interior rectangle. Gate: `text()` as a
 select chain matches `text_union()` bit-for-bit and does not regress
 `pixelflow_text_sizes`; `glyph_atlas_golden` unmoved. A differential check
 over the whole extent — split versus unsplit — is what proves the
