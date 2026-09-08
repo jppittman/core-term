@@ -190,28 +190,26 @@ pub fn run_anytime_curve(
         "anytime: checkpoint grid must be strictly increasing, got {grid:?}"
     );
 
-    // `EGraph::add_arena` inserts every node of `arena`, not just the
-    // subtree reachable from `root` (it requires topological order from 0,
-    // not reachability). An append-only `ExprArena` that has been rewritten
-    // in place carries abandoned nodes, and saturating them would spend this
-    // curve's application budget rewriting an expression nobody asked about
-    // — making the curve a function of the arena's allocation history rather
-    // than of the expression. Callers compact first
-    // (`pixelflow_pipeline::training::corpus::reachable_subtree`, which
-    // `write_corpus` applies to every stored entry); this makes that a
-    // checked precondition instead of an unwritten one.
-    let node_count = arena.nodes_raw().len();
-    let reachable = reachable_node_count(arena, root);
-    assert_eq!(
-        reachable, node_count,
-        "anytime: arena holds {node_count} nodes but only {reachable} are reachable from root \
-         {root:?} — compact the reachable subtree before running a curve, or the budget is \
-         spent on nodes that are not part of this expression",
-    );
+    // An append-only `ExprArena` that has been rewritten in place carries
+    // abandoned nodes, and saturating them would spend this curve's
+    // application budget rewriting an expression nobody asked about — making
+    // the curve a function of the arena's allocation history rather than of
+    // the expression. This used to be a precondition callers had to meet by
+    // compacting first, asserted here, because `EGraph::add_arena` inserted
+    // every node of `arena` rather than the subtree reachable from `root`.
+    // `egraph::insert` is reachable-only, so the property now holds by
+    // construction and the budget is keyed on exactly what was inserted.
+    let node_count = reachable_node_count(arena, root);
 
     let env = optimizer.limits_for(node_count);
     let mut egraph = optimizer.egraph();
-    let root_class = egraph.add_arena(arena, root);
+    let root_class = crate::egraph::insert(
+        arena,
+        root,
+        &mut egraph,
+        crate::egraph::Vocabulary::Templates,
+    )
+    .expect("anytime: arena must be e-graph representable");
 
     let mut checkpoints: Vec<AnytimeCheckpoint> = Vec::with_capacity(grid.len());
     let mut sweeps_total = 0usize;

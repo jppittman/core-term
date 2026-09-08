@@ -2,7 +2,7 @@
 
 use super::ops::Op;
 use alloc::vec::Vec;
-use pixelflow_ir::arena::BufferDecl;
+use pixelflow_ir::arena::{BufferDecl, UniformDecl};
 
 /// Identifier for an equivalence class in the e-graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -36,6 +36,11 @@ pub enum ENode {
     /// hash-consing CSE this leaf exists for. Extraction redeclares the decl
     /// into the output arena.
     Buffer(BufferDecl),
+    /// Per-call scalar leaf: a uniform declaration, hash-consed by identity
+    /// for the same reason as [`ENode::Buffer`]. No rule matches it as a
+    /// `Const`, so it is never folded; its gain in the e-graph is CSE of the
+    /// arithmetic that depends on it alone.
+    Uniform(UniformDecl),
     /// Operation with children
     Op {
         op: &'static dyn Op,
@@ -73,7 +78,7 @@ impl ENode {
     /// Get children of this node.
     pub fn children(&self) -> Vec<EClassId> {
         match self {
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => vec![],
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => vec![],
             ENode::Op { children, .. } => children.clone(),
         }
     }
@@ -100,6 +105,8 @@ impl PartialEq for ENode {
             // extent corruption. Splice already asserts decls agree, so in a
             // well-formed graph this is equivalent to identity equality.
             (ENode::Buffer(a), ENode::Buffer(b)) => a == b,
+            // Identity and default, bitwise (`UniformDecl`'s own equality).
+            (ENode::Uniform(a), ENode::Uniform(b)) => a == b,
             (
                 ENode::Op {
                     op: op1,
@@ -134,6 +141,10 @@ impl core::hash::Hash for ENode {
             }
             ENode::Buffer(decl) => {
                 3u8.hash(state);
+                decl.hash(state);
+            }
+            ENode::Uniform(decl) => {
+                4u8.hash(state);
                 decl.hash(state);
             }
             ENode::Op { op, children } => {

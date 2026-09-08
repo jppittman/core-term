@@ -18,7 +18,7 @@
 //! `pixelflow-core`: floor each index, clamp to `[0, extent - 1]`, read
 //! row-major. The round-trip test asserts that equivalence.
 
-use crate::arena::{ExprArena, ExprId, ExprNode};
+use crate::arena::{ExprArena, ExprId, ExprNode, UniformId};
 use crate::binding::BindingTable;
 use crate::kind::OpKind;
 // `alloc`, not `std`: the oracle must stay buildable with the `std` feature
@@ -28,7 +28,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 /// Evaluate the subtree rooted at `root` at scalar coordinates `vars`
-/// (`[X, Y, Z, W]`), reading bound buffers through `bindings`.
+/// (`[X, Y]`), reading bound buffers through `bindings`.
 ///
 /// # Panics
 ///
@@ -39,7 +39,7 @@ use alloc::vec::Vec;
 pub fn eval_scalar(
     arena: &ExprArena,
     root: ExprId,
-    vars: &[f32; 4],
+    vars: &[f32; crate::arena::COORD_AXES],
     bindings: &BindingTable<'_>,
 ) -> f32 {
     // A transcendental in this language IS the expansion the compiler emits, so
@@ -373,10 +373,11 @@ pub fn trunc_input_is_divergent(v: f32) -> bool {
 ///   instruction is IEEE-exact and identical to the oracle's scalar op, but an
 ///   extracted/rewritten form may associate differently, so a few ulps of
 ///   headroom (`rel 1e-5`) rather than bit equality.
-/// - **`MulAdd`**: one rounding on FMA targets, two in the oracle (`x*y + z`,
-///   matching `OpKind::eval_ternary` and SSE2). Away from catastrophic
-///   cancellation — which `fold_is_platform_specific` flags — they differ by
-///   at most an ulp.
+/// - **`MulAdd`**: one rounding in the oracle (`libm::fmaf`, matching
+///   `OpKind::eval_ternary` and every FMA target); two where a target
+///   multiplies then adds. Away from catastrophic cancellation they differ
+///   by at most an ulp, and [`PointCheck`]'s radius carries the product's
+///   rounding so the cancelling inputs are bounded rather than skipped.
 /// - **`Recip`/`Rsqrt`**: hardware *estimates*. The loosest backend is
 ///   SSE2/AVX2 `rcpps`/`vrcpps` at ~12 bits (max relative error `1.5·2⁻¹²`
 ///   ≈ 3.7e-4); `vrcp14ps` is ~14 bits and aarch64's `FRECPE`+`FRECPS`
@@ -412,9 +413,12 @@ pub fn equivalence_tolerance(op: OpKind) -> Tolerance {
 
     match op {
         // Leaves and loads: values pass through untouched.
-        OpKind::Var | OpKind::Const | OpKind::Buffer | OpKind::Gather | OpKind::RawGather => {
-            Tolerance::BitExact
-        }
+        OpKind::Var
+        | OpKind::Const
+        | OpKind::Buffer
+        | OpKind::Uniform
+        | OpKind::Gather
+        | OpKind::RawGather => Tolerance::BitExact,
         // Bit-pattern domain: masks, blends, and the integer primitives.
         OpKind::Lt
         | OpKind::Le
@@ -831,6 +835,13 @@ fn radius_of(lo: f32, hi: f32, value: f32) -> f32 {
     (hi - value).max(value - lo).max(0.0)
 }
 
+/// What a uniform evaluates to: the block's value for its slot, or the
+/// declared default when the table binds none — the same rule a bake without
+/// a block follows, so the oracle and the JIT agree on it by construction.
+fn uniform_value(arena: &ExprArena, bindings: &BindingTable<'_>, u: UniformId) -> f32 {
+    bindings.uniform(u).unwrap_or(arena.uniform_decl(u).default)
+}
+
 /// The children whose *values* feed a node. Identical to `ExprArena::children`
 /// except that a `Buffer` leaf — which is a name, not a value — is dropped from
 /// `Gather`/`RawGather`, exactly as [`eval_scalar`] handles them.
@@ -844,7 +855,7 @@ fn radius_of(lo: f32, hi: f32, value: f32) -> f32 {
 fn value_children(node: &ExprNode) -> ([ExprId; 3], usize) {
     const NONE: ExprId = ExprId(0);
     match node {
-        ExprNode::Var(_) | ExprNode::Const(_) => ([NONE; 3], 0),
+        ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Uniform(_) => ([NONE; 3], 0),
         ExprNode::Unary(_, a) => ([*a, NONE, NONE], 1),
         ExprNode::Binary(OpKind::RawGather, _, idx) => ([*idx, NONE, NONE], 1),
         ExprNode::Binary(_, a, b) => ([*a, *b, NONE], 2),
@@ -911,7 +922,11 @@ impl DifferentialCheck {
     /// Panics on the shapes [`value_children`] refuses (`Param`, bare `Buffer`,
     /// `Nary`), and on an op with no scalar evaluation (lower it first).
     #[must_use]
-    pub fn at(&self, vars: &[f32; 4], bindings: &BindingTable<'_>) -> PointCheck {
+    pub fn at(
+        &self,
+        vars: &[f32; crate::arena::COORD_AXES],
+        bindings: &BindingTable<'_>,
+    ) -> PointCheck {
         enum Task {
             Visit(ExprId),
             Emit(ExprId),
@@ -957,7 +972,7 @@ impl DifferentialCheck {
     fn node_bound(
         &self,
         id: ExprId,
-        vars: &[f32; 4],
+        vars: &[f32; crate::arena::COORD_AXES],
         bindings: &BindingTable<'_>,
         bounds: &[Option<NodeBound>],
     ) -> NodeBound {
@@ -969,12 +984,18 @@ impl DifferentialCheck {
             ExprNode::Var(i) => {
                 let i = *i as usize;
                 assert!(
-                    i < 4,
-                    "PointCheck: Var({i}) — a reduction index outside a Reduce"
+                    i < crate::arena::COORD_AXES,
+                    "PointCheck: Var({i}) — {}",
+                    if crate::arena::RETIRED_COORD_AXES.contains(&(i as u8)) {
+                        "a retired coordinate axis; a per-call scalar is a Uniform"
+                    } else {
+                        "a reduction index outside a Reduce"
+                    }
                 );
                 NodeBound::exact(vars[i])
             }
             ExprNode::Const(v) => NodeBound::exact(*v),
+            ExprNode::Uniform(u) => NodeBound::exact(uniform_value(arena, bindings, *u)),
             ExprNode::Binary(OpKind::RawGather, buf, idx) => {
                 self.gather_bound(*buf, &[child(*idx)], bindings, GatherKind::Raw)
             }
@@ -1330,7 +1351,8 @@ fn ternary_bound_pinned(op: OpKind, a: NodeBound, b: NodeBound, c: NodeBound) ->
     let radius = match op {
         // One rounding fused, two split (CLAUDE.md's MulAdd row): the two
         // answers differ by at most the rounding of the product, so that gap is
-        // part of the bound even when every input is exact.
+        // part of the bound even when every input is exact. This is the whole
+        // policy for MulAdd — it is a tolerance, never a divergence.
         OpKind::MulAdd => {
             a.value.abs() * b.radius
                 + b.value.abs() * a.radius
@@ -1640,14 +1662,17 @@ pub enum MaskVerdict {
 
 /// The immutable evaluation environment threaded through the recursion: the
 /// arena, the coordinate values, the buffer bindings, and the current binding
-/// of each reduction index (`Var(4..8)`). Grouping them keeps the recursive
+/// of each reduction index (`Var(REDUCE_BINDER_BASE..)`). Grouping them keeps
+/// the recursive
 /// helpers to a single `ExprId` argument.
 #[derive(Clone, Copy)]
 struct Env<'a> {
     arena: &'a ExprArena,
-    vars: &'a [f32; 4],
+    vars: &'a [f32; crate::arena::COORD_AXES],
     bindings: &'a BindingTable<'a>,
-    /// Values bound to reduction indices `Var(4)..Var(8)` by enclosing folds.
+    /// Values bound to the reduction indices from
+    /// [`REDUCE_BINDER_BASE`](crate::arena::REDUCE_BINDER_BASE) by enclosing
+    /// folds.
     reduce_vars: [f32; 4],
     variance: &'a [crate::variance::Variance],
     memo: &'a core::cell::RefCell<alloc::vec::Vec<Option<f32>>>,
@@ -1665,14 +1690,25 @@ impl Env<'_> {
         let val = match self.arena.node(id) {
             ExprNode::Var(i) => {
                 let i = *i as usize;
-                // 0..4 are coordinates; 4..8 are reduction indices.
-                if i < 4 {
+                // Three ranges, and the middle one holds nothing: coordinates
+                // below COORD_AXES, then the reserved retired axes, then the
+                // binders from REDUCE_BINDER_BASE. Reading a retired index as
+                // a binder is off the end of the coordinates and short of the
+                // slots, so say so rather than subtract past zero.
+                assert!(
+                    !crate::arena::RETIRED_COORD_AXES.contains(&(i as u8)),
+                    "eval_scalar: Var({i}) was a retired coordinate axis; a \
+                     lattice has {} axes and a per-call scalar is a Uniform",
+                    crate::arena::COORD_AXES
+                );
+                if i < crate::arena::COORD_AXES {
                     self.vars[i]
                 } else {
-                    self.reduce_vars[i - 4]
+                    self.reduce_vars[i - crate::arena::REDUCE_BINDER_BASE as usize]
                 }
             }
             ExprNode::Const(v) => *v,
+            ExprNode::Uniform(u) => uniform_value(self.arena, self.bindings, *u),
             ExprNode::Param(p) => panic!("eval_scalar: Param({p}) — substitute params first"),
             ExprNode::Buffer(b) => panic!(
                 "eval_scalar: bare Buffer({}) is not a value; read it through Gather",
@@ -1765,11 +1801,13 @@ impl Env<'_> {
             .expect("reduce combiner must be a valid OpKind index");
         let var_idx = self.const_of(reduce_var, "reduce var index") as usize;
         let n = self.const_of(extent, "reduce extent") as usize;
+        let base = crate::arena::REDUCE_BINDER_BASE as usize;
+        let slots = base + self.reduce_vars.len();
         assert!(
-            (4..8).contains(&var_idx),
-            "reduce index Var({var_idx}) out of range (must be 4..8)"
+            (base..slots).contains(&var_idx),
+            "reduce index Var({var_idx}) out of range (must be {base}..{slots})"
         );
-        let slot = var_idx - 4;
+        let slot = var_idx - base;
 
         let mut acc = op
             .monoid_identity()
@@ -1800,6 +1838,13 @@ mod tests {
     use super::*;
     use crate::arena::BufferDecl;
     use alloc::vec;
+
+    /// A lattice-invariant leaf holding `default` — what a scalar that used
+    /// to ride a retired axis is now.
+    fn uniform_leaf(arena: &mut ExprArena, default: f32) -> ExprId {
+        let slot = arena.declare_uniform(crate::Uniform::new(default).decl());
+        arena.push_uniform(slot)
+    }
 
     /// Reference re-implementation of `DiscreteManifold::eval`'s index math, so
     /// the test asserts equivalence against an independent expression of the
@@ -1840,7 +1885,7 @@ mod tests {
             (1.9, 0.9),     // floor to (1,0)
         ];
         for (cx, cy) in coords {
-            let got = eval_scalar(&arena, gather, &[cx, cy, 0.0, 0.0], &bindings);
+            let got = eval_scalar(&arena, gather, &[cx, cy], &bindings);
             let want = discrete_eval(&buf, width, height, cx, cy);
             assert_eq!(got, want, "gather at ({cx}, {cy})");
         }
@@ -1903,7 +1948,7 @@ mod tests {
         // Sweep coords including fractional and out-of-range values.
         for xi in [-2.0f32, 0.0, 0.7, 1.0, 2.0, 3.0, 10.0] {
             for yi in [-1.0f32, 0.0, 0.4, 1.0, 2.0, 3.0, 8.0] {
-                let vars = [xi, yi, 0.0, 0.0];
+                let vars = [xi, yi];
                 let hi = eval_scalar(&arena, gather, &vars, &bindings);
                 let lo = eval_scalar(&lowered_arena, lowered_root, &vars, &lowered_bindings);
                 assert_eq!(hi, lo, "gather vs lowered at ({xi}, {yi})");
@@ -1931,7 +1976,7 @@ mod tests {
 
         let bindings = BindingTable::bind(&arena, &[buf.as_slice()]).unwrap();
         // X = 2 -> buffer[2] = 7 -> 7*2 + 1 = 15
-        let got = eval_scalar(&arena, root, &[2.0, 0.0, 0.0, 0.0], &bindings);
+        let got = eval_scalar(&arena, root, &[2.0, 0.0], &bindings);
         assert_eq!(got, 15.0);
     }
 
@@ -1946,7 +1991,7 @@ mod tests {
         let root = arena.push_reduce(OpKind::Add, 4, 4, sq);
 
         let bindings = BindingTable::empty();
-        assert_eq!(eval_scalar(&arena, root, &[0.0; 4], &bindings), 30.0);
+        assert_eq!(eval_scalar(&arena, root, &[0.0; 2], &bindings), 30.0);
     }
 
     #[test]
@@ -1956,14 +2001,14 @@ mod tests {
         let i = arena.push_var(4);
         let max_root = arena.push_reduce(OpKind::Max, 4, 4, i);
         let bindings = BindingTable::empty();
-        assert_eq!(eval_scalar(&arena, max_root, &[0.0; 4], &bindings), 3.0);
+        assert_eq!(eval_scalar(&arena, max_root, &[0.0; 2], &bindings), 3.0);
 
         let one = arena.push_const(1.0);
         let ip1 = arena.push_binary(OpKind::Add, i, one);
         // product over i=1..4 of (i+1): i=1->2, 2->3, 3->4  => start at i=0 -> 1
         // Reduce over 0..4 of (i+1) = 1*2*3*4 = 24.
         let mul_root = arena.push_reduce(OpKind::Mul, 4, 4, ip1);
-        assert_eq!(eval_scalar(&arena, mul_root, &[0.0; 4], &bindings), 24.0);
+        assert_eq!(eval_scalar(&arena, mul_root, &[0.0; 2], &bindings), 24.0);
     }
 
     #[test]
@@ -1975,7 +2020,7 @@ mod tests {
             let mut arena = ExprArena::new();
             let body = arena.push_var(4);
             let root = arena.push_reduce(combiner, 4, 0, body);
-            eval_scalar(&arena, root, &[0.0; 4], &BindingTable::empty())
+            eval_scalar(&arena, root, &[0.0; 2], &BindingTable::empty())
         }
 
         assert_eq!(empty_reduce(OpKind::Add), 0.0);
@@ -2015,8 +2060,8 @@ mod tests {
         }
         let b = BindingTable::empty();
         for xv in [-2.0f32, 0.0, 3.5, 10.0] {
-            let want = eval_scalar(&arena, root, &[xv, 0.0, 0.0, 0.0], &b);
-            let got = eval_scalar(&lowered, lroot, &[xv, 0.0, 0.0, 0.0], &b);
+            let want = eval_scalar(&arena, root, &[xv, 0.0], &b);
+            let got = eval_scalar(&lowered, lroot, &[xv, 0.0], &b);
             assert_eq!(want, got, "reduce lowering at X={xv}");
             // Σ_{i=0}^{4}(X+i) = 5X + 10.
             assert_eq!(want, 5.0 * xv + 10.0);
@@ -2049,7 +2094,7 @@ mod tests {
 
         let bindings = BindingTable::bind(&arena, &[w.as_slice(), inp.as_slice()]).unwrap();
         // 2*10 + 3*20 + 4*30 = 20 + 60 + 120 = 200.
-        assert_eq!(eval_scalar(&arena, root, &[0.0; 4], &bindings), 200.0);
+        assert_eq!(eval_scalar(&arena, root, &[0.0; 2], &bindings), 200.0);
     }
 
     const ALL_ONES: f32 = f32::from_bits(u32::MAX);
@@ -2182,7 +2227,7 @@ mod tests {
         let root = arena.push_binary(OpKind::Lt, x, y);
         let b = BindingTable::empty();
         for (xv, yv, verdict) in [(1.0f32, 2.0f32, true), (2.0, 1.0, false)] {
-            let lane = eval_scalar(&arena, root, &[xv, yv, 0.0, 0.0], &b);
+            let lane = eval_scalar(&arena, root, &[xv, yv], &b);
             assert!(is_valid_mask(lane.to_bits()));
             assert_eq!(lane.to_bits() == u32::MAX, verdict);
             assert_eq!(compare_mask_root(lane, lane), MaskComparison::Agree);
@@ -2244,7 +2289,7 @@ mod tests {
         let mut arena = ExprArena::new();
         let root = recip_pow2(&mut arena, 4);
         let check = DifferentialCheck::new(&arena, root);
-        let point = check.at(&[-1.0, 0.0, 0.0, 0.0], &BindingTable::empty());
+        let point = check.at(&[-1.0, 0.0], &BindingTable::empty());
 
         assert_eq!(point.value(), 1.0);
         assert!(!point.is_platform_divergent());
@@ -2279,7 +2324,7 @@ mod tests {
             let mut arena = ExprArena::new();
             let root = recip_pow2(&mut arena, k);
             let bound = DifferentialCheck::new(&arena, root)
-                .at(&[-1.0, 0.0, 0.0, 0.0], &BindingTable::empty())
+                .at(&[-1.0, 0.0], &BindingTable::empty())
                 .error_bound();
             assert!(bound > prev, "k={k}: {bound} must exceed {prev}");
             prev = bound;
@@ -2309,7 +2354,7 @@ mod tests {
 
         // Small argument: the estimate's width never gets multiplied up, so the
         // point stays usable and a wrong answer is still caught.
-        let near = check.at(&[1.0, 0.911, 0.0, 0.0], &b);
+        let near = check.at(&[1.0, 0.911], &b);
         assert!(!near.is_platform_divergent());
         assert!(
             near.is_well_conditioned(),
@@ -2324,7 +2369,7 @@ mod tests {
         // Stay under 2^20 — past the domain the answer is NaN by construction
         // (see `sin_past_its_domain_is_exactly_nan_not_amplified`), which is a
         // different property and would mask this one.
-        let far = check.at(&[1.0, 1000.0, 0.0, 0.0], &b);
+        let far = check.at(&[1.0, 1000.0], &b);
         assert!(
             far.relative_error_bound() > 1.0,
             "rel bound {} at argument ~1e6",
@@ -2349,7 +2394,7 @@ mod tests {
         let b = BindingTable::empty();
 
         // y = 9110 puts the argument at ~8.3e7, far past 2^20.
-        let beyond = check.at(&[1.0, 9110.0, 0.0, 0.0], &b);
+        let beyond = check.at(&[1.0, 9110.0], &b);
         assert!(
             beyond.value().is_nan(),
             "expected the guarded NaN, got {}",
@@ -2380,7 +2425,7 @@ mod tests {
 
         // x = k = 1: recip(1) is 1 to within the estimate's width, so both
         // verdicts are legal and both conversions are legal answers.
-        let at = check.at(&[1.0, 1.0, 0.0, 0.0], &BindingTable::empty());
+        let at = check.at(&[1.0, 1.0], &BindingTable::empty());
         assert!(at.mask_is_indeterminate());
         assert_eq!(at.value(), 0.0, "lt(1,1) is false, and int_to_float(0) = 0");
         assert_eq!(at.verdict(0.0), PointVerdict::Accept);
@@ -2399,7 +2444,7 @@ mod tests {
 
         // Away from the threshold nothing is excused: recip(0.5) = 2 is a whole
         // unit clear of 1, so the mask — and its conversion — are pinned.
-        let clear = check.at(&[0.5, 1.0, 0.0, 0.0], &BindingTable::empty());
+        let clear = check.at(&[0.5, 1.0], &BindingTable::empty());
         assert!(!clear.mask_is_indeterminate());
         assert_eq!(clear.value(), 0.0, "2 < 1 is false");
         assert_eq!(clear.error_bound(), 0.0);
@@ -2423,8 +2468,7 @@ mod tests {
         let one = arena.push_const(1.0);
         let root = arena.push_binary(OpKind::Add, one, converted);
 
-        let point =
-            DifferentialCheck::new(&arena, root).at(&[1.0, 1.0, 0.0, 0.0], &BindingTable::empty());
+        let point = DifferentialCheck::new(&arena, root).at(&[1.0, 1.0], &BindingTable::empty());
         assert_eq!(point.value(), 1.0);
         assert_eq!(point.verdict(1.0), PointVerdict::Accept);
         assert_eq!(point.verdict(0.0), PointVerdict::Accept);
@@ -2445,7 +2489,7 @@ mod tests {
         let root = arena.push_unary(OpKind::IntToFloat, cmp);
         let check = DifferentialCheck::new(&arena, root);
 
-        let point = check.at(&[0.5, 0.7, 0.0, 0.0], &BindingTable::empty());
+        let point = check.at(&[0.5, 0.7], &BindingTable::empty());
         assert!(!point.mask_is_indeterminate());
         assert_eq!(point.value(), -1.0, "0.5 < 0.7 is all-ones, which is -1");
         assert_eq!(point.error_bound(), 0.0);
@@ -2462,8 +2506,9 @@ mod tests {
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
         let k = arena.push_var(1);
-        let a = arena.push_var(2);
-        let b = arena.push_var(3);
+        // Two lattice-invariant leaves — the shape Z and W used to have.
+        let a = uniform_leaf(&mut arena, 1.0);
+        let b = uniform_leaf(&mut arena, 2.0);
         let r = arena.push_unary(OpKind::Recip, x);
         let cond = arena.push_binary(OpKind::Lt, r, k);
         let branch = arena.push_binary(OpKind::Lt, a, b);
@@ -2474,7 +2519,7 @@ mod tests {
         assert!(check.root_is_mask_valued());
         // cond straddles; the true branch is all-ones, the false branch zero,
         // so the two resolutions disagree and either lane is legal.
-        let point = check.at(&[1.0, 1.0, 1.0, 2.0], &BindingTable::empty());
+        let point = check.at(&[1.0, 1.0], &BindingTable::empty());
         assert!(point.mask_is_indeterminate());
         assert_eq!(
             point.classify_mask_root(ALL_ONES),
@@ -2504,7 +2549,7 @@ mod tests {
         let root = arena.push_binary(OpKind::Mul, x, small);
         let check = DifferentialCheck::new(&arena, root);
         for xv in [1.0f32, -3.5, 1e3, 1e-3] {
-            let point = check.at(&[xv, 0.0, 0.0, 0.0], &BindingTable::empty());
+            let point = check.at(&[xv, 0.0], &BindingTable::empty());
             assert_eq!(point.error_bound(), 0.0);
             assert!(point.is_well_conditioned(), "x={xv}");
             assert_eq!(point.verdict(xv * 1e-4), PointVerdict::Accept);
@@ -2523,8 +2568,7 @@ mod tests {
         let r = arena.push_unary(OpKind::Recip, x);
         let one = arena.push_const(1.0);
         let root = arena.push_binary(OpKind::Sub, r, one);
-        let point =
-            DifferentialCheck::new(&arena, root).at(&[1.0, 0.0, 0.0, 0.0], &BindingTable::empty());
+        let point = DifferentialCheck::new(&arena, root).at(&[1.0, 0.0], &BindingTable::empty());
         assert_eq!(point.value(), 0.0);
         assert!(point.error_bound() > 1e-4);
         assert_eq!(point.relative_error_bound(), f32::INFINITY);
@@ -2547,7 +2591,7 @@ mod tests {
         let check = DifferentialCheck::new(&arena, root);
         let b = BindingTable::empty();
         for xv in [-2.0f32, -0.25, 0.0, 1.0, 7.5] {
-            let point = check.at(&[xv, 0.0, 0.0, 0.0], &b);
+            let point = check.at(&[xv, 0.0], &b);
             assert!(!point.is_platform_divergent(), "x={xv}");
             assert_eq!(point.value(), xv);
             assert_eq!(point.verdict(xv), PointVerdict::Accept);
@@ -2557,7 +2601,7 @@ mod tests {
         // branches, a condition that is true.
         let taken = arena.push_binary(OpKind::Le, x, x);
         let reached = arena.push_ternary(OpKind::Select, taken, rounded, x);
-        let point = DifferentialCheck::new(&arena, reached).at(&[1.0, 0.0, 0.0, 0.0], &b);
+        let point = DifferentialCheck::new(&arena, reached).at(&[1.0, 0.0], &b);
         assert!(point.is_platform_divergent());
     }
 
@@ -2573,7 +2617,7 @@ mod tests {
         let check = DifferentialCheck::new(&arena, root);
         assert!(check.root_is_mask_valued());
 
-        let point = check.at(&[0.5, 0.7, 0.0, 0.0], &BindingTable::empty());
+        let point = check.at(&[0.5, 0.7], &BindingTable::empty());
         assert!(!point.mask_is_indeterminate());
         assert_eq!(point.classify_mask_root(ALL_ONES), MaskVerdict::Agree);
         assert_eq!(point.classify_mask_root(0.0), MaskVerdict::Miscompile);
@@ -2595,8 +2639,7 @@ mod tests {
         let y = arena.push_var(1);
         let r = arena.push_unary(OpKind::Recip, x);
         let root = arena.push_binary(OpKind::Lt, r, y);
-        let point =
-            DifferentialCheck::new(&arena, root).at(&[1.0, 1.0, 0.0, 0.0], &BindingTable::empty());
+        let point = DifferentialCheck::new(&arena, root).at(&[1.0, 1.0], &BindingTable::empty());
 
         assert!(point.mask_is_indeterminate());
         assert!(!point.is_well_conditioned());
@@ -2623,8 +2666,8 @@ mod tests {
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
         let y = arena.push_var(1);
-        let z = arena.push_var(2);
-        let w = arena.push_var(3);
+        let z = uniform_leaf(&mut arena, 9.0);
+        let w = uniform_leaf(&mut arena, 0.0);
         let cond = arena.push_binary(OpKind::Lt, w, x);
         let sum = arena.push_binary(OpKind::Add, x, y);
         let cmp = arena.push_binary(OpKind::Lt, sum, z);
@@ -2649,7 +2692,7 @@ mod tests {
         // And the end-to-end consequence: the mask path now gates the root, so
         // the broken pattern is caught instead of waved through.
         let point = DifferentialCheck::new(&arena, masked).at(
-            &[1.0, 2.0, 9.0, 0.0], // cond true, x+y = 3 < 9 => all-ones
+            &[1.0, 2.0], // cond true, x+y = 3 < 9 => all-ones
             &BindingTable::empty(),
         );
         assert!(point.root_is_mask_valued());
@@ -2671,7 +2714,7 @@ mod tests {
         let y = arena.push_var(1);
         let root = arena.push_binary(OpKind::Lt, x, y);
         let _unreachable = DifferentialCheck::new(&arena, root)
-            .at(&[0.0; 4], &BindingTable::empty())
+            .at(&[0.0; 2], &BindingTable::empty())
             .verdict(0.0);
     }
 
@@ -2683,7 +2726,7 @@ mod tests {
         let y = arena.push_var(1);
         let root = arena.push_binary(OpKind::Add, x, y);
         let _unreachable = DifferentialCheck::new(&arena, root)
-            .at(&[0.0; 4], &BindingTable::empty())
+            .at(&[0.0; 2], &BindingTable::empty())
             .classify_mask_root(0.0);
     }
 
@@ -2705,7 +2748,7 @@ mod tests {
         let b = BindingTable::empty();
         for xv in [0.5f32, -2.0, 7.25] {
             for yv in [0.1f32, -1.75, 3.0] {
-                let vars = [xv, yv, 0.0, 0.0];
+                let vars = [xv, yv];
                 let point = check.at(&vars, &b);
                 assert_eq!(
                     point.value().to_bits(),
@@ -2751,6 +2794,7 @@ mod tests {
                 OpKind::Var
                     | OpKind::Const
                     | OpKind::Buffer
+                    | OpKind::Uniform
                     | OpKind::Gather
                     | OpKind::RawGather
                     | OpKind::Reduce
@@ -2769,7 +2813,7 @@ mod tests {
                 2 => arena.push_binary(op, inexact, inexact),
                 _ => arena.push_ternary(op, inexact, inexact, inexact),
             };
-            let point = DifferentialCheck::new(&arena, root).at(&[2.0, 2.0, 2.0, 2.0], &b);
+            let point = DifferentialCheck::new(&arena, root).at(&[2.0, 2.0], &b);
             assert!(point.error_bound() >= 0.0, "{op:?}");
         }
     }
@@ -2784,8 +2828,7 @@ mod tests {
         for _ in 0..60 {
             e = arena.push_binary(OpKind::Add, e, e);
         }
-        let point =
-            DifferentialCheck::new(&arena, e).at(&[2.0, 0.0, 0.0, 0.0], &BindingTable::empty());
+        let point = DifferentialCheck::new(&arena, e).at(&[2.0, 0.0], &BindingTable::empty());
         assert_eq!(point.value(), 0.5 * (1u64 << 60) as f32);
         assert!(point.error_bound() > 0.0);
     }

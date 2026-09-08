@@ -947,3 +947,329 @@ quickly.
 > the cost of a spill, at minimum — measured before any policy is built on
 > it. That is a cost-model program, not an allocator change, and it is what
 > `docs/plans/2026-09-01-schedule-cost-model-denotation.md` is for.
+
+> **Landed 2026-09-05 — `reload` leaves the register file, and class C is
+> closed.** The two fixed reload registers were the last hand-chosen
+> registers in the workspace. What made them dissolvable is what #1150
+> established: eviction splits a live range rather than rewriting one, so a
+> value in a register when its reader is *allocated* is in a register when
+> its reader is *emitted*. Residency is final, and a reload target can be a
+> per-instruction reservation exactly as `temps_for` temps already are.
+>
+> Each of `reload`'s four roles, and what replaced it:
+>
+> 1. *Transient operand target* (`reload[1]`): one reservation per operand
+>    that is non-resident at its reader, `Scratch::reloads`, chosen by **one
+>    function** — `emit::operand_sources(op, resident)` — that the allocator
+>    calls to count and the emitter calls to name, so the two cannot drift.
+>    `arm_reload` turned out to be this and was unified away. The
+>    dst-as-target rule is kept and stated (a `Select`'s mask, an FMA's
+>    addend, a two-operand binary's left reload straight into `dst`), which
+>    is why two reload slots suffice for three operands.
+> 2. *Destination of a value spilled at its own definition* (`reload[0]`):
+>    every definition that emits an instruction holds a pool register at its
+>    definition — a value that would have lost the contest takes the loser's
+>    register, stores (rule 3), and its `Reg` span ends at the next point.
+>    `resolve_operands` now panics on a spilled destination, and
+>    `InstructionPlan::store` is deleted from all four backends. The one
+>    definition that emits nothing is a rematerialized `Const`, whose
+>    `Where` at its def is `Remat` — previously a wasted `LoadConst`.
+> 3. *Guard scratch* (`guard_scratch = reload[0]`): reserved on the
+>    instruction a guard is emitted before — `guard_mask` when the mask is
+>    non-resident there, `guard_temp` when the backend asks
+>    (`RegisterFile::guard_temps`: 1 on aarch64, 0 on x86).
+>    `emit_skip_if_all_*` takes `Option<Reg>`.
+> 4. *Park and result resolves*: the park path is resident by construction
+>    (a hoist root is non-leaf, so its definition just wrote a register) and
+>    reads it directly; the scope result needs a reservation only when the
+>    whole body was hoisted and its root is read from a park.
+>
+> `MIN_SCRATCH` is 7, derived where it is defined as the widest single
+> demand: AVX2's gather at a guarded arm's head (4 temps + 1 operand + 1
+> guard + 1 dst). Pools: SSE2 10→12, AVX2 10→12, AVX-512 26→28, aarch64
+> 18→20 — each now exactly the registers the ABI leaves unassigned minus
+> the callee-saved ones.
+>
+> **The guarded-arm residue is gone, and here is why.** At any instruction
+> the pool holds ≥ `MIN_SCRATCH`, the instruction claims at most that many
+> roles, and every other slot is free or holds a value that can be split.
+> The store for a spilled value goes at its definition, and a guard only
+> skips a definition by skipping every read of it, so the slot is valid on
+> every path that reads the value, inside an arm as outside. Nothing is
+> unevictable; no reservation can fail. Pinned by
+> `a_reservation_inside_a_nested_guarded_arm_always_has_a_register`
+> (nested guarded `Select`s at `MIN_SCRATCH`/+1/+3, widths × depths, all
+> nine mask combinations, against the scalar oracle).
+>
+> Measured against `main`, SSE2 (282 kernels through the graphics suite's
+> real bakes; `anchored` is a wavefront, since the e-graph reorders
+> independent chains and their pressure evaporates):
+>
+> | | bytes | frame slots | memory ops | dynamic memory ops |
+> |---|---|---|---|---|
+> | graphics corpus | −6.5% | 6 237 → 3 261 | −12.0% | −13.1% |
+> | anchored 12×40 / 16×64 | −9.2% / −9.6% | 125→114 / 446→410 | −8.8% / −7.5% | same |
+> | wide 16 / 32 | −1.2% / −1.3% | = | 12→11 / 28→27 | −8.3% / −3.6% |
+>
+> AVX-512: corpus bytes −3.7%, slots 1 083 → 861, traffic flat; anchored
+> 16×64 memory ops −25%. Nothing regresses on any metric on either tier.
+> Wall clock (`font_rendering`, release, median of 7): SSE2 −0.1% / −7.8% /
+> −2.0% on the three glyphs, AVX-512 within the run-to-run spread. The
+> plan's −10 to −20% bytes prediction was not reached (−9.6% at best):
+> that figure came from the prototype whose pool grew from a *smaller*
+> floor, and `MIN_SCRATCH` 6→7 spends one of the two registers back.
+>
+> Two things the brief for this had wrong, both found by checking rather
+> than reading: the park path needed no reservation, and `live_in` had to
+> reach the scan — a parked root's residency is the *enclosing* scope's
+> answer, while its body-schedule entry is a `Const(0.0)` placeholder the
+> old scan called "resident" (the same trap the 2026-09-04 notes record).
+>
+> With this, every register a kernel uses is chosen by the allocator.
+> Class A closed 2026-09-03, class C here, class D's invariant half
+> 2026-09-03; class B (`RegClass`) and class D's coordinate half remain
+> declared, not dissolved.
+
+> **Built and measured 2026-09-05 — the cost model the previous block asked
+> for, and what it turned out to be missing: rematerialization.** The
+> carry-budget block ends with a condition — *"a cost model whose prediction
+> tracks the `font_rendering` wall clock across tiers … measured before any
+> policy is built on it"* — so the next thing built is the measurement, not a
+> policy. Measured against the five allocations that existed when this was
+> written; `main` below is #1150, and the class-C landing directly above
+> postdates the sweep (see the last paragraph).
+>
+> **The harness.** `pixelflow-pipeline`'s `collapse_cost` (the crate's
+> `collapse_bench` module) in three subcommands. `capture` writes a corpus
+> **fixture** — `(arena, root, extent)` per kernel, one text file each, the
+> arena dumpers' node encoding plus the shape — so every allocation is
+> measured on byte-identical input rather than on whatever each build's kernel
+> construction happened to produce. `bench` compiles each entry exactly as
+> `Lattice::bake` does (`optimize_runtime_arena` at the kernel's own shape,
+> then `emit::compile`), times `call_collapse` into a buffer allocated once,
+> and writes one JSONL row per (kernel, pass) carrying the emitted code's
+> static features beside the clock. `analyze` scores closed-form predictors
+> over those rows. Compilation, saturation included, is outside the timer; so
+> is the scalar tail `bake` walks after the vector groups, which is not this
+> kernel.
+>
+> The static half is `pixelflow-codegen`'s new `emit::traffic`: a counting
+> decorator over the private `IsaBackend` seam, so every byte the driver emits
+> is counted by construction and a new emission path is counted the day it is
+> written rather than the day someone remembers to add an increment. It counts
+> **per scope** — frame prologue, row prologue, body, scaffold — because a body
+> instruction runs `rows × groups` times and a prologue instruction once, and
+> that weighting is the entire question. Nothing in the emitter or the
+> allocator reads it.
+>
+> ```text
+> collapse_cost capture --out <dir>                       # once, any build
+> collapse_cost bench   --corpus <dir> --out <rows.jsonl> \
+>     --git-ref <variant> --git-sha <sha> --passes 1      # per variant x tier
+> collapse_cost analyze --rows <rows...> --out report.md  # once, over all of them
+> ```
+>
+> **The corpus: 208 kernels with shapes.** 190 atlas glyph bakes (printable
+> ASCII at both display densities, `[16,16]` and `[32,32]`), the three
+> characters and the `[40,45]` lattice `font_rendering` itself bakes, and 15
+> synthetic kernels in three families — `wide{n}` (balanced tree, transient
+> pressure only), `anchored{w}x{d}` (`w` live ranges crossing a `d`-deep
+> chain), and `invariant{n}` at a hot `[256,256]` and a cold `[64,2]` shape,
+> the same static code with the trip count changed. Five allocations × two
+> tiers × 7 interleaved passes = 14 560 rows. The five builds are round-robined
+> rather than run in blocks, so a machine that slows down mid-sweep slows every
+> variant's later passes equally.
+>
+> **A/A floor**, pass-to-pass interquartile spread of the same build: median
+> **1.42%** on AVX-512, **1.14%** on SSE2 (p95 11.5% / 15.2% — the tail is
+> small kernels on a contended four-core host). A comparison counts as resolved
+> when two allocations differ by more than the mean of their own spreads.
+>
+> **What the harness says the five allocations cost** — geomean of the
+> per-kernel ratio to `main` (#1150, the incumbent):
+>
+> | tier | family | main | prespill | onepool | peakbudget (3′) | tripcount (3″) |
+> |---|---|---:|---:|---:|---:|---:|
+> | AVX-512 | all 208 | 1.000 | 1.061 | 2.235 | 1.058 | 1.058 |
+> | AVX-512 | `font_rendering` glyphs | 1.000 | 1.148 | 3.603 | **1.096** | **1.106** |
+> | AVX-512 | atlas glyphs 16px | 1.000 | 1.066 | 2.319 | 1.069 | 1.070 |
+> | AVX-512 | invariants, hot shape | 1.000 | 0.998 | 1.302 | 0.977 | 0.972 |
+> | SSE2 | all 208 | 1.000 | 1.070 | 1.424 | **0.957** | **0.961** |
+> | SSE2 | `font_rendering` glyphs | 1.000 | 1.093 | 1.464 | 1.009 | 1.013 |
+> | SSE2 | atlas glyphs 16px | 1.000 | 1.078 | 1.443 | 0.953 | 0.955 |
+> | SSE2 | invariants, hot shape | 1.000 | 0.999 | 1.182 | 0.966 | 0.990 |
+>
+> **The contradiction reproduces, on a different measurement.** The 3′/3″
+> allocations are 5.8% slower than `main` on AVX-512 and 4% *faster* on SSE2,
+> and on the `font_rendering` glyph shapes specifically they are +9.6% / +10.6%
+> on AVX-512 against +0.9% / +1.3% on SSE2 — the same sign split the previous
+> block reported at +13–18%, arrived at by timing the collapse call rather than
+> `Lattice::bake`. The measurement was not the problem.
+>
+> **What they differ by**, summed over the corpus and trip-weighted:
+>
+> | tier | allocation | dyn mem ops | dyn **remats** | mem + remats | code bytes | measured |
+> |---|---|---:|---:|---:|---:|---:|
+> | AVX-512 | main | 1 247 492 | 335 478 | **1 582 970** | 2 441 516 | 1.000 |
+> | AVX-512 | tripcount | 1 067 257 | 1 025 251 | 2 092 508 | 2 952 145 | 1.058 |
+> | AVX-512 | peakbudget | 1 068 457 | 1 034 467 | 2 102 924 | 2 959 769 | 1.058 |
+> | AVX-512 | prespill | 1 291 300 | 978 892 | 2 270 192 | 2 942 194 | 1.061 |
+> | AVX-512 | onepool | 5 672 876 | 2 333 427 | 8 006 303 | 5 606 542 | 2.235 |
+> | SSE2 | peakbudget | 3 745 706 | 2 808 348 | **6 554 054** | 3 843 141 | 0.957 |
+> | SSE2 | tripcount | 3 745 706 | 2 808 348 | 6 554 054 | 3 843 141 | 0.961 |
+> | SSE2 | main | 4 426 109 | 3 454 348 | 7 880 457 | 3 991 144 | 1.000 |
+> | SSE2 | prespill | 4 380 039 | 5 312 449 | 9 692 488 | 4 281 020 | 1.070 |
+> | SSE2 | onepool | 12 046 959 | 5 193 104 | 17 240 063 | 5 661 858 | 1.424 |
+>
+> Read the AVX-512 half down the `dyn mem ops` column and it orders the
+> allocations **backwards**: it ranks 3″ (1.07M) as the cheapest and `main`
+> (1.25M) fourth, and `main` is the fastest of the four. Read it down
+> `mem + remats` and the order is exactly the measured one on **both** tiers.
+> 3″ bought its 14% fewer memory operations on AVX-512 by **tripling
+> rematerializations** — 335k → 1 025k — and a rematerialization is not a
+> memory operation, so the quantity it optimized could not see what it was
+> spending. That is the residual, and it is not subtle: it is 3× on the metric
+> that was excluded.
+>
+> **Predictor scores.** Spearman ρ across kernels, pooled over allocations, and
+> — the score that matters — how often the predictor gets the **sign** of the
+> delta between two allocations of the same kernel right:
+>
+> | predictor | ρ AVX-512 | ρ SSE2 | sign AVX-512 | sign SSE2 |
+> |---|---:|---:|---:|---:|
+> | `dyn_mem_ops` (the rejected policies' objective) | 0.825 | 0.796 | 72.5% (n=1230) | 77.6% (n=1597) |
+> | `dyn_mem_ops` × vector width | 0.825 | 0.796 | 72.5% | 77.6% |
+> | `dyn_sched_ops` (trip-weighted DAG ops) | 0.960 | 0.979 | **no opinion** | **no opinion** |
+> | **`dyn_traffic` = mem ops + remats** | 0.826 | 0.806 | **99.1%** | **97.9%** |
+> | `dyn_emitted_ops` (+ sched ops) | 0.979 | 0.979 | 99.1% | 97.9% |
+> | `dyn_bytes` (trip-weighted code bytes) | 0.978 | 0.973 | 97.9% | 97.9% |
+> | `dyn_bytes` × L1i overflow | 0.979 | 0.973 | 97.9% | 97.9% |
+> | `static_mem_ops` (no trip weighting) | 0.752 | 0.677 | 72.4% | 81.5% |
+> | `static_bytes` | 0.764 | 0.712 | 97.6% | 97.7% |
+>
+> **`dyn_traffic` — loads + stores + rematerializations, each weighted by its
+> scope's trip count — is the predictor that tracks both tiers**, and it is one
+> term away from the quantity three policies were built on. Adding
+> rematerialization to the metric is the whole difference: `dyn_emitted_ops`
+> scores identically on the sign test because the term it adds (scheduled ops)
+> is a constant per kernel, and `dyn_ops_plus_3mem` scores identically to
+> `dyn_mem_ops` for the same reason.
+>
+> **Where the aggregate hides the finding, and the per-pair table that shows
+> it.** One allocation being 2.2× slower everywhere is predicted correctly by
+> anything monotone in code size, so an aggregate over all ten pairs of
+> allocations is carried by the easy comparison. Broken out per pair, on
+> AVX-512:
+>
+> | pair | n | `dyn_mem_ops` | `dyn_traffic` | `dyn_bytes` |
+> |---|---:|---:|---:|---:|
+> | main → onepool | 183 | 100% | 100% | 100% |
+> | main → peakbudget | 135 | **28%** | **100%** | 96% |
+> | main → tripcount | 134 | **27%** | **100%** | 96% |
+> | main → prespill | 100 | 100% | 97% | 97% |
+> | peakbudget → prespill | 119 | **32%** | 97% | 95% |
+> | prespill → tripcount | 123 | **33%** | 98% | 97% |
+>
+> On exactly the comparisons this month's allocator work turned on,
+> the memory-op metric is not uninformative — it is **anti-correlated**, right
+> about a quarter of the time. A coin would have done better. That is what
+> "three principled replacements each lost to a fitted constant" looks like
+> when the objective is measured against the clock instead of against itself.
+>
+> **Two smaller results, both negative.**
+>
+> 1. **Pricing a spill by vector width buys almost nothing.** Within a tier the
+>    width is a constant, so `dyn_mem_ops × vector_bytes` cannot change any
+>    ranking; pooled across tiers it moves ρ from 0.785 to 0.808 and changes no
+>    sign. "A 64-byte spill is not a 16-byte one" is true and is not the
+>    explanation.
+> 2. **An L1i budget term changes nothing.** `dyn_bytes × (1 + overflow of
+>    32 KB)` scores identically to `dyn_bytes` on both tiers. The 42 KB kernels
+>    are real, but code size is already priced by the trip weighting, and the
+>    cliff adds no separation.
+>
+> **What is wrong with the brief this work was given.** It listed the candidate
+> predictors "in order of simplicity: dynamic memory ops; dynamic memory ops ×
+> vector bytes; trip-weighted instruction count; trip-weighted bytes; code
+> bytes against an L1i budget" — and the winner is not on that list. Every
+> candidate on it treats *memory* as the thing to count, because that is the
+> vocabulary the allocator's own metric established; the term that decides is
+> the one the allocator's metric was defined to exclude. The generalisable
+> version: when a metric has been optimized against and lost, the missing term
+> is likely to be something that metric's own definition ruled out of scope,
+> so the candidate list should be built from *what the emitter emits* rather
+> than from variations on the losing quantity. `emit::traffic` counts remats
+> apart from loads and stores for exactly this reason — it does not assume
+> which of them costs.
+>
+> Also wrong, though harmlessly: "trip-weighted instruction count" is not a
+> predictor of allocation at all. The allocator does not change the DAG's
+> scheduled-operation count — only the traffic around it — so that candidate
+> predicts a delta of exactly zero on every comparison and has no opinion to be
+> right or wrong about. It is in the table as `dyn_sched_ops` to record that.
+>
+> **The `bench` profile does not change the picture, and the harness can say
+> why rather than assert it.** `main` was built at `--profile bench` (LTO,
+> codegen-units=1) on both tiers and re-measured against its `release` build:
+> **every one of the 208 kernels emits byte-identical code on both tiers** —
+> every static feature agrees, row for row — and the clock differs by 0.25%
+> (AVX-512) and 0.41% (SSE2) corpus-wide, inside the A/A floor. That is what
+> should be expected: the profile changes how the *emitter* is compiled, not
+> what it emits, and the timed region is the emitted kernel. Every row records
+> its profile, so this stays checkable rather than assumed.
+>
+> **What did not get measured.** Only the two x86 tiers this host runs
+> natively; aarch64/NEON is where a rematerialization *is* a memory operation
+> (the constant pool), so the `dyn_traffic` term that carries this result is
+> exactly the term most likely to behave differently there, and re-measuring it
+> is the first thing to do. And the synthetic `wide` and `anchored` families
+> turned out not to spill at all once `optimize_runtime_arena` has rescheduled
+> them — they contribute low-pressure points, the glyph corpus does the
+> pressure work, and that is worth fixing before those two families are leaned
+> on for anything.
+>
+>
+> **Added after the rebase onto #1158 — a sixth allocation, and the first
+> out-of-sample check.** The sweep above measured the five allocations that
+> existed when it ran. #1158 (`reload` leaves the register file; every tier's
+> pool grows by two) landed on top of it, so the same harness was run again on
+> just that pair, 4 interleaved passes per tier:
+>
+> | tier | allocation | dyn mem ops | dyn remats | mem + remats | code bytes | measured |
+> |---|---|---:|---:|---:|---:|---:|
+> | AVX-512 | #1150 | 1 247 492 | 335 478 | 1 582 970 | 2 441 516 | 1.000 |
+> | AVX-512 | **#1158** | 1 203 850 | 225 159 | **1 429 009** | 2 350 963 | **0.990** |
+> | SSE2 | #1150 | 4 426 109 | 3 454 348 | 7 880 457 | 3 991 144 | 1.000 |
+> | SSE2 | **#1158** | 3 956 377 | 2 749 489 | **6 705 866** | 3 736 784 | **0.963** |
+>
+> `mem + remats` falls on both tiers and so does the clock: −1.0% on AVX-512,
+> −3.7% on SSE2. Two registers back is worth more on the narrow tier, which is
+> the shape #1150's own table would predict. The #1150 static totals reproduce
+> the sweep's `main` row **exactly**, digit for digit, which is the check that
+> the counting change the rebase required did not move any number reported
+> above.
+>
+> **What this pair does *not* settle.** It is not a discriminating comparison
+> between the two predictors, because both metrics move the same way: memory
+> ops and rematerializations both fall, on both tiers, so `dyn_mem_ops` and
+> `dyn_traffic` mostly agree. Where they disagree the deltas are tiny — the
+> median per-kernel move is **1.92%** on AVX-512 against a 1.31% A/A spread,
+> and only 69 of 208 kernels move by more than 3% — so the AVX-512 sign scores
+> (`dyn_mem_ops` 91%, `dyn_traffic` 70%, n = 43 and 93) are being read off
+> comparisons at the measurement floor and should not be ranked. On SSE2, where
+> the pair does resolve (median move 4.96%, 136 of 208 kernels past 3%),
+> `dyn_traffic` leads at 85% against 81%.
+>
+> The discriminating comparisons remain the ones in the tables above, where one
+> metric falls while the other rises — and the conclusion those reached is
+> unchanged.
+>
+> **What this licenses.** The `pool − MIN_SCRATCH` constant still stands: none
+> of the four alternatives measured against #1150 is faster than it on both
+> tiers, and #1158 keeps the constant while giving the pool two more
+> registers. What has changed is that there is now a static quantity whose
+> sign agrees with the clock 98–99% of the time on both tiers, measured before
+> any policy was built on it — which is the precondition the carry-budget block
+> set. The next policy is allowed to be built now, and the thing it should
+> minimise is `Σ scopes (loads + stores + remats) × trips`, with the harness
+> re-run to check rather than the metric trusted.

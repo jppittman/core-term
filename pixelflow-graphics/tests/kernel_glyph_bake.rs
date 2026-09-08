@@ -16,15 +16,16 @@ fn coverage(segments: &[Kernel]) -> Kernel {
     Kernel::sum(segments).abs().min(&Kernel::constant(1.0))
 }
 
-/// Sample a baked coverage field at texel `(i, j)` of a unit-spaced lattice
-/// whose origin is at `(0.5, 0.5)` — i.e. the sample coordinate is `(i, j)`
-/// plus the origin. Extent is a plain square.
+/// Sample a baked coverage field at texel `(i, j)` of a plain square lattice,
+/// sampled at pixel centers — i.e. the sample coordinate is `(i, j)` plus
+/// `(½, ½)`, applied as a contramap since the lattice carries no coordinate
+/// frame of its own.
 fn bake_square(cov: &Kernel, n: u32) -> Vec<f32> {
-    let lattice = Lattice {
-        extent: [n, n, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
-    };
-    lattice.bake(cov).buffer().to_vec()
+    let centered = cov.at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    );
+    Lattice { extent: [n, n] }.bake(&centered).buffer().to_vec()
 }
 
 #[test]
@@ -73,7 +74,7 @@ fn triangle_coverage_bakes_from_line_kernels() {
 }
 
 #[test]
-fn quad_leaf_bakes_as_kernel_value() {
+fn quad_leaf_bakes_as_a_kernel_value() {
     // A single quadratic Bezier bulging right: P0=(4,2) P1=(12,8) P2=(4,14).
     // Smoke-proof that AnalyticalQuad::kernel() lowers, composes, and bakes —
     // the curve branch (non-degenerate ay) exercises the analytical root solver

@@ -87,7 +87,7 @@ Rendering uses immutable snapshots for thread-safe communication:
 ### Rendering Pipeline
 
 ```
-Terminal Grid → Glyph Cache → Color Manifolds → PixelFlow Rasterizer
+Terminal Grid → Glyph Atlas → Cell-Grid Channel Kernels → collapse per stripe
 ```
 
 The surface module bridges terminal state to PixelFlow manifolds.

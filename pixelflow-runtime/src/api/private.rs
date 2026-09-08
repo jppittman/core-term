@@ -106,11 +106,11 @@ impl From<DisplayEvent>
 /// (`ActorHandle<Infallible, Infallible, Infallible>`) and a positional tuple would let them be
 /// silently transposed.
 ///
-/// The rasterizer's own live handle is deliberately **not** here. `RasterizerHandle` is not
+/// The renderer's own live handle is deliberately **not** here. `RendererHandle` is not
 /// `Clone`, and its lanes are single-producer SPSC, so it cannot be shared between the
 /// coordinator (which needs it continuously, for every render) and the engine (which would only
 /// ever touch it once, at shutdown) without breaking that invariant. The coordinator keeps sole
-/// ownership; the rasterizer's own scheduler halts gracefully once that handle drops with the
+/// ownership; the renderer's own scheduler halts gracefully once that handle drops with the
 /// green host — the same disconnect-triggered shutdown the forwarder already relies on one hop
 /// downstream (`engine_troupe.rs`'s `RasterizerForwarder`).
 #[derive(Debug)]

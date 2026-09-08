@@ -224,9 +224,11 @@ fn latency_prior_cost(arena: &ExprArena, root: ExprId) -> usize {
             | ExprNode::Binary(op, _, _)
             | ExprNode::Ternary(op, _, _, _)
             | ExprNode::Nary(op, _, _) => Some(*op),
-            ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => {
-                None
-            }
+            ExprNode::Var(_)
+            | ExprNode::Const(_)
+            | ExprNode::Param(_)
+            | ExprNode::Buffer(_)
+            | ExprNode::Uniform(_) => None,
         };
         if let Some(op) = op {
             total += costs.cost(op);

@@ -7,7 +7,7 @@
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Entry point for xtask.
@@ -91,6 +91,40 @@ fn parse_u32_flag(args: &[String], flag: &str) -> Option<u32> {
     args.get(idx + 1)?.parse().ok()
 }
 
+/// The directory cargo builds into, as cargo itself resolves it: the
+/// `CARGO_TARGET_DIR` override if one is set, else whatever `cargo metadata`
+/// reports (which honours `.cargo/config.toml`'s `build.target-dir`). Spelled
+/// once, here, so that renaming the directory in config cannot strand a path
+/// in this file — that is exactly how `target/release/core-term` and
+/// `target/isa-matrix` were found hardcoded when the directory moved to
+/// `target.noindex`.
+fn cargo_target_dir(workspace_root: &Path) -> PathBuf {
+    if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        return PathBuf::from(dir);
+    }
+    let out = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(workspace_root)
+        .output()
+        .expect("cargo metadata must run");
+    assert!(
+        out.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json = String::from_utf8(out.stdout).expect("cargo metadata is UTF-8");
+    let key = "\"target_directory\":\"";
+    let start = json
+        .find(key)
+        .expect("cargo metadata output has no target_directory field")
+        + key.len();
+    let end = start
+        + json[start..]
+            .find('"')
+            .expect("unterminated target_directory");
+    PathBuf::from(json[start..end].replace("\\/", "/"))
+}
+
 /// Find the workspace root by looking for Cargo.toml with [workspace]
 fn find_workspace_root() -> PathBuf {
     let mut current = env::current_dir().expect("Failed to get current directory");
@@ -155,7 +189,7 @@ fn build_and_bundle(extra_args: &[String]) -> (PathBuf, PathBuf) {
     }
 
     // Copy binary to bundle (build.rs creates the bundle structure)
-    let binary_src = workspace_root.join("target/release/core-term");
+    let binary_src = cargo_target_dir(&workspace_root).join("release/core-term");
     let binary_dest = workspace_root.join("CoreTerm.app/Contents/MacOS/CoreTerm");
 
     if !binary_src.exists() {
@@ -607,8 +641,10 @@ enum IsaExecutionMode {
     BuildOnly,
     /// Compile, lint, and execute the *ISA-sensitive* tests for whichever
     /// levels this host's CPU can run. Presubmit's path: see
-    /// [`IsaExecutionMode::test_args`] for what that set is and why running it
-    /// is nearly free once the lint has built it.
+    /// `IsaExecutionMode::test_args` for what that set is and why running it
+    /// is nearly free once the lint has built it. (Plain code span, not an
+    /// intra-doc link: that method is `#[cfg(target_arch = "x86_64")]`, so a
+    /// link would be broken on every other rustdoc target.)
     Smoke,
     /// Compile, lint, and execute the whole workspace's tests for whichever
     /// levels this host's CPU can run. Postsubmit's job, once a change has
@@ -638,9 +674,19 @@ impl IsaExecutionMode {
     /// invisible there because SSE2 reserves one more scratch register per
     /// `MulAdd` and so allocates a different schedule.
     ///
+    /// `pixelflow-pipeline` is here for a narrower reason: it does not emit
+    /// machine code, but it *reads the vector width as a constant*. `LANES`
+    /// is `JIT_VECTOR_BYTES / 4`, so its measurement harness computes
+    /// different numbers at 4, 8 and 16 lanes, and its plausibility floor is
+    /// an assertion over one of them. That made it per-level in behavior
+    /// while looking per-level in nothing else, and a floor test that
+    /// restated the formula as a literal passed at SSE2 and failed at both
+    /// FMA levels for eight days of postsubmit before anything presubmit
+    /// could see it.
+    ///
     /// Every other crate in the workspace consumes the same kernels through
-    /// the same interface at every level, so running it three times re-runs
-    /// identical work.
+    /// the same interface at every level, and reads no per-level constant, so
+    /// running it three times re-runs identical work.
     ///
     /// The economics are why this belongs presubmit at all: building the test
     /// binaries already happened for `--no-run` and clippy, so the marginal
@@ -649,14 +695,22 @@ impl IsaExecutionMode {
     /// that). That is the difference between a check that fits in a PR's wait
     /// and one that does not.
     /// What a `PASS` from this mode covers, for the summary line.
+    ///
+    /// Called only from the `#[cfg(target_arch = "x86_64")]` half of
+    /// `isa_matrix` — there is no ISA level to matrix on any other
+    /// architecture (see that function's doc comment) — so this is dead
+    /// code, correctly, everywhere else. Same treatment as
+    /// [`host_has_feature`] and [`LevelResult`] below, for the same reason.
+    #[cfg(target_arch = "x86_64")]
     fn scope(&self) -> &'static str {
         match self {
             Self::BuildOnly => "none",
-            Self::Smoke => "smoke: codegen+ir+core",
+            Self::Smoke => "smoke: codegen+ir+core+pipeline",
             Self::BuildAndTest => "workspace",
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn test_args(&self) -> Option<&'static [&'static str]> {
         match self {
             Self::BuildOnly => None,
@@ -668,6 +722,8 @@ impl IsaExecutionMode {
                 "pixelflow-ir",
                 "-p",
                 "pixelflow-core",
+                "-p",
+                "pixelflow-pipeline",
                 "--no-fail-fast",
             ]),
             Self::BuildAndTest => Some(&["test", "--workspace", "--no-fail-fast"]),
@@ -747,8 +803,8 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
             // full workspace build EACH — three levels filled this container's
             // disk the first time it ran for real. One dedicated dir, wiped per
             // level: peak disk is a single artifact set, and the developer's
-            // own target/ (their incremental cache) is never touched.
-            let matrix_target = workspace_root.join("target/isa-matrix");
+            // own build dir (their incremental cache) is never touched.
+            let matrix_target = cargo_target_dir(&workspace_root).join("isa-matrix");
             if matrix_target.exists() {
                 if let Err(e) = std::fs::remove_dir_all(&matrix_target) {
                     panic!(
@@ -919,12 +975,11 @@ fn run_with_rustflags(
         .args(&args[split..])
         .env("RUSTFLAGS", rustflags)
         .env("CARGO_TARGET_DIR", target_dir)
-        // Deep-Manifold tests recurse near the stack limit by design (see
-        // CLAUDE.md's dev-profile note), and 8-/16-lane builds have
-        // proportionally larger frames. This raises the floor for libtest's
-        // own threads; worker threads that set `stack_size` explicitly are
-        // NOT covered by it and must size themselves (see
-        // `rasterizer::parallel::STACK_SIZE`).
+        // Deeply nested kernel construction recurses near the stack limit,
+        // and 8-/16-lane builds have proportionally larger frames. This
+        // raises the floor for libtest's own threads; worker threads that set
+        // `stack_size` explicitly are NOT covered by it and must size
+        // themselves.
         .env("RUST_MIN_STACK", "16777216")
         .status()
         .map(|s| s.success())

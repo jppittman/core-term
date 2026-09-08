@@ -16,21 +16,21 @@ use log::{trace, warn};
 
 impl TerminalEmulator {
     pub(super) fn set_g_level(&mut self, g_level: usize) {
-        if g_level < self.active_charsets.len() {
-            self.active_charset_g_level = g_level;
-            trace!("Switched to G{} character set mapping.", g_level);
-        } else {
+        if g_level >= self.active_charsets.len() {
             warn!("Attempted to set invalid G-level: {}", g_level);
+            return;
         }
+        self.active_charset_g_level = g_level;
+        trace!("Switched to G{} character set mapping.", g_level);
     }
 
     pub(super) fn designate_character_set(&mut self, g_set_index: usize, charset: CharacterSet) {
-        if g_set_index < self.active_charsets.len() {
-            self.active_charsets[g_set_index] = charset;
-            trace!("Designated G{} to {:?}", g_set_index, charset);
-        } else {
+        if g_set_index >= self.active_charsets.len() {
             warn!("Invalid G-set index for designate charset: {}", g_set_index);
+            return;
         }
+        self.active_charsets[g_set_index] = charset;
+        trace!("Designated G{} to {:?}", g_set_index, charset);
     }
 
     pub(super) fn handle_sgr_attributes(&mut self, attributes_vec: Vec<Attribute>) {

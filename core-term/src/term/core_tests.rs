@@ -1225,6 +1225,49 @@ fn it_should_clamp_cursor_at_last_col_on_csi_cha_if_move_is_too_far() {
     );
 }
 
+// --- Vertical Position Absolute (VPA) ---
+#[test]
+fn it_should_move_cursor_to_row_n_on_csi_vpa_preserving_column() {
+    // Regression test: VPA must move only the row. It previously reset the
+    // column to 0 by parsing 'd' as `CursorPosition(row, 1)`.
+    let mut term = create_test_emulator(10, 5);
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(1, 7),
+    ))); // Cursor to (0,6)
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::LinePositionAbsolute(4),
+    ))); // VPA 4 (1-based, so row 3): column must stay at 6.
+    assert_screen_state(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        &[
+            "          ",
+            "          ",
+            "          ",
+            "          ",
+            "          ",
+        ],
+        Some((3, 6)),
+    );
+}
+
+#[test]
+fn it_should_clamp_cursor_at_last_row_on_csi_vpa_if_move_is_too_far() {
+    let mut term = create_test_emulator(10, 3);
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorPosition(1, 5),
+    ))); // Cursor to (0,4)
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::LinePositionAbsolute(20),
+    ))); // Past the last row; clamps to row 2, column stays at 4.
+    assert_screen_state(
+        &term.get_render_snapshot().expect("Snapshot was None"),
+        &["          ", "          ", "          "],
+        Some((2, 4)),
+    );
+}
+
 // --- Cursor Position (CUP) ---
 #[test]
 fn it_should_move_cursor_to_row_n_col_m_on_csi_cup() {
@@ -1609,6 +1652,36 @@ fn it_should_scroll_up_within_scrolling_region_on_csi_s() {
     assert_screen_state(
         &snapshot2,
         &["ABCAB", "     ", "     ", "DEFDE"],
+        Some((0, 0)),
+    );
+}
+
+#[test]
+fn it_should_scroll_up_within_scrolling_region_with_omitted_bottom_defaulting_to_last_line() {
+    // DECSTBM's bottom parameter defaults to the last screen line when
+    // omitted (`CSI 2r` == `CSI 2;4r` on a 4-row screen), which the CSI
+    // layer represents with the sentinel `bottom: 0`. Regression test for a
+    // bug where `0` was treated as a literal row instead of "last line",
+    // making the region invalid and silently falling back to the full
+    // screen — so row 0 (outside the requested region) would incorrectly
+    // scroll too.
+    let mut term = create_test_emulator(5, 4); // L0, L1, L2, L3
+    setup_ed_el_screen(&mut term, 5, 4);
+    // Screen: L0:ABCAB, L1:BCDBC, L2:CDECD, L3:DEFDE
+    // Set scrolling region to row 2 through the last line (0-indexed rows 1-3).
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetScrollingRegion { top: 2, bottom: 0 },
+    )));
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::ScrollUp(
+        1,
+    ))));
+    let snapshot = term.get_render_snapshot().expect("Snapshot was None");
+    // L0 must stay untouched: it is outside the [2, last] region.
+    // Region L1-L3 scrolls: L2("CDECD") becomes L1, L3("DEFDE") becomes L2, new L3 is blank.
+    assert_screen_state(
+        &snapshot,
+        &["ABCAB", "CDECD", "DEFDE", "     "],
         Some((0, 0)),
     );
 }

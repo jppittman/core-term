@@ -95,9 +95,10 @@ tooling.
 Both compiler tiers (the `kernel!` macros and runtime-built kernels) choose the policy through
 one seam, `egraph::env_extraction_policy()`, which returns the latency prior. A learned
 extraction head sat behind that seam from 2026-07 to 2026-09 and was closed as an honest
-negative — the static table tied it and every lever made it worse
-([`docs/paper/2026-08-egraph-nnue-parity.md`](../docs/paper/2026-08-egraph-nnue-parity.md)).
-It is deleted, not disabled.
+negative — the static table tied it and every lever made it worse (the workshop paper on
+branch `claude/workshop-writeup`, PR #1072, closed without merging — not in this tree; see
+[`docs/plans/2026-09-01-schedule-cost-model-denotation.md`](../docs/plans/2026-09-01-schedule-cost-model-denotation.md)
+for the citations and numbers in-repo). It is deleted, not disabled.
 
 Extraction selects an expression from an already-built e-graph. It should not be confused
 with a learned policy that decides which rewrite applications to admit during saturation.

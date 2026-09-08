@@ -570,7 +570,7 @@ mod tests {
     use super::*;
     use pixelflow_ir::{BindingTable, eval_scalar};
 
-    fn eval_at(arena: &ExprArena, root: ExprId, vars: &[f32; 4]) -> f32 {
+    fn eval_at(arena: &ExprArena, root: ExprId, vars: &[f32; 2]) -> f32 {
         eval_scalar(arena, root, vars, &BindingTable::empty())
     }
 
@@ -584,7 +584,7 @@ mod tests {
         let root = y_l_m(&mut arena, basis, 1, 0, Form::Direct);
 
         // theta=0 => cos(theta)=1 => Y_1^0 = sqrt(3/4pi).
-        let got = eval_at(&arena, root, &[0.0, 0.3, 0.0, 0.0]);
+        let got = eval_at(&arena, root, &[0.0, 0.3]);
         let want = (3.0 / (4.0 * std::f32::consts::PI)).sqrt();
         assert!((got - want).abs() < 1e-5, "got {got}, want {want}");
     }
@@ -597,7 +597,7 @@ mod tests {
             let (arena, root) = draw(&mut draw_rng);
             for theta in [-2.0f32, -0.5, 0.0, 0.5, 2.0] {
                 for phi in [-2.0f32, -0.5, 0.0, 0.5, 2.0] {
-                    let v = eval_at(&arena, root, &[theta, phi, 0.0, 0.0]);
+                    let v = eval_at(&arena, root, &[theta, phi]);
                     assert!(
                         v.is_finite(),
                         "draw {i} produced non-finite {v} at theta={theta}, phi={phi}"
@@ -649,7 +649,7 @@ mod tests {
                     let mut arena = ExprArena::new();
                     let basis = TrigBasis::build(&mut arena);
                     let root = band_energy(&mut arena, basis, l, form);
-                    let got = eval_at(&arena, root, &[theta, phi_val, 0.0, 0.0]);
+                    let got = eval_at(&arena, root, &[theta, phi_val]);
                     assert!(
                         (f64::from(got) - want).abs() < 1e-3,
                         "l={l} form={form:?} theta={theta} phi={phi_val}: got {got}, want {want}"

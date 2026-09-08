@@ -524,12 +524,8 @@ mod tests {
         let recip = arena.push_unary(pixelflow_ir::OpKind::Sqrt, prod);
         let root = arena.push_binary(pixelflow_ir::OpKind::Add, recip, sum);
 
-        let samples: Vec<[f32; 4]> = alloc::vec![
-            [0.5, 1.5, 0.0, 0.0],
-            [2.0, 3.0, 0.0, 0.0],
-            [-1.25, 4.5, 0.0, 0.0],
-            [7.0, 0.25, 0.0, 0.0],
-        ];
+        let samples: Vec<[f32; 2]> =
+            alloc::vec![[0.5, 1.5], [2.0, 3.0], [-1.25, 4.5], [7.0, 0.25],];
         let want: Vec<f32> = samples
             .iter()
             .map(|c| eval_scalar(&arena, root, c, &BindingTable::empty()))
@@ -551,7 +547,9 @@ mod tests {
                 .guide(Some(guide))
                 .no_ceiling();
             let mut eg = opt.egraph();
-            let root_class = eg.add_arena(&arena, root);
+            let root_class =
+                crate::egraph::insert(&arena, root, &mut eg, crate::egraph::Vocabulary::Templates)
+                    .expect("insert into e-graph");
             let out = opt.run(&mut eg, root_class, arena.nodes_raw().len());
             let (got_arena, got_root) = out.to_arena(&eg, root_class);
             for (c, expected) in samples.iter().zip(&want) {

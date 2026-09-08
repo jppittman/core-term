@@ -57,7 +57,7 @@
 //! iteration/sweep counter and never wall-clock.
 
 use pixelflow_ir::OpKind;
-use pixelflow_ir::arena::BufferDecl;
+use pixelflow_ir::arena::{BufferDecl, UniformDecl};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
@@ -97,6 +97,7 @@ enum NodeShape {
     Var(u8),
     Const(u32),
     Buffer(BufferDecl),
+    Uniform(UniformDecl),
     Op(OpKind, Vec<u32>),
 }
 
@@ -106,6 +107,7 @@ impl NodeShape {
             ENode::Var(v) => NodeShape::Var(*v),
             ENode::Const(bits) => NodeShape::Const(*bits),
             ENode::Buffer(decl) => NodeShape::Buffer(*decl),
+            ENode::Uniform(decl) => NodeShape::Uniform(*decl),
             ENode::Op { op, children } => NodeShape::Op(
                 op.kind(),
                 children
@@ -440,7 +442,13 @@ mod tests {
         let root = arena.push_binary(pixelflow_ir::OpKind::Mul, sum, sum);
 
         let mut egraph = EGraph::with_rules(crate::egraph::all_rules());
-        let root_class = egraph.add_arena(&arena, root);
+        let root_class = crate::egraph::insert(
+            &arena,
+            root,
+            &mut egraph,
+            crate::egraph::Vocabulary::Templates,
+        )
+        .expect("insert into e-graph");
         egraph.saturate_budgeted(30, 5_000, None);
 
         // The denominator is the run's own application count, read off the

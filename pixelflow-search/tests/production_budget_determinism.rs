@@ -175,7 +175,13 @@ fn saturation_is_deterministic_under_cpu_contention() {
     for _ in 0..6 {
         let mut optimizer = Optimizer::production();
         let mut eg = optimizer.egraph();
-        let root_class = eg.add_arena(&arena, root);
+        let root_class = pixelflow_search::egraph::insert(
+            &arena,
+            root,
+            &mut eg,
+            pixelflow_search::egraph::Vocabulary::Templates,
+        )
+        .expect("insert into e-graph");
         let optimized = optimizer.run(&mut eg, root_class, arena.len());
         let stop_reason = optimized.stats.stop;
         let (out, out_root) = optimized.to_arena(&eg, root_class);

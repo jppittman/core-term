@@ -6,6 +6,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # sccache env vars (RUSTC_WRAPPER, CARGO_INCREMENTAL, SCCACHE_GHA_ENABLED)
+  # are set per-job below, not here: `dependency-advisories` runs
+  # cargo-deny-action inside its own Docker container, which doesn't have
+  # sccache installed, and `RUSTC_WRAPPER=sccache` set workflow-wide broke
+  # its internal `cargo metadata` (rustc version probe tries to exec a
+  # wrapper that doesn't exist in that container). Job-level scoping keeps
+  # it opt-in to exactly the jobs that install sccache via
+  # mozilla-actions/sccache-action.
 
 # Cancel superseded runs on the same ref so a hung job doesn't linger.
 concurrency:
@@ -13,6 +21,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A CL that touches only docs/ and Markdown cannot change what any build or
+  # test job would report, so those jobs are skipped for it -- as a job-level
+  # `if`, not a workflow-level `paths-ignore`: a job skipped by `if` reports
+  # "skipped", which satisfies a required status check, while a workflow that
+  # never runs leaves the required checks pending and blocks the merge. The
+  # three metadata jobs below run on every CL regardless; they take seconds.
+  change-scope:
+    name: Change scope
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+    steps:
+      - name: Checkout code and CL history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify the CL by what it touches
+        id: scope
+        env:
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+          HEAD_COMMIT: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/ci-change-scope.sh "$BASE_COMMIT" "$HEAD_COMMIT"
+
   cl-metadata:
     name: CL metadata
     runs-on: ubuntu-latest
@@ -49,6 +81,22 @@ jobs:
       - name: Check every declared display driver cfg has recorded CI coverage
         run: bash scripts/check-driver-cfg-coverage.sh
 
+  # Cargo auto-discovers `src/bin/*.rs`, and an auto-discovered target carries
+  # no `required-features` -- so a research bin reading a feature-gated module
+  # builds for its author and breaks only under `--no-default-features`. That
+  # is how `corpus_gaps` landed on main red: the Feature matrix caught it, but
+  # ~90s and 40 workspace checks in. The missing `[[bin]]` entry is a property
+  # of two adjacent files, so this checks it with a grep instead of a build.
+  bin-declarations:
+    name: Bin target declarations
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check every src/bin target is declared in its Cargo.toml
+        run: bash scripts/check-bin-declarations.sh
+
   # pixelflow-search's `provenance-journal` feature (the rule-provenance
   # journal: origins, application log, union journal, `derivation_ancestors`,
   # the hindsight labeler) must never reach a downstream `kernel!` consumer's
@@ -71,6 +119,8 @@ jobs:
 
   dependency-advisories:
     name: Dependency advisories
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -87,7 +137,13 @@ jobs:
 
   feature-matrix:
     name: Feature matrix
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -105,16 +161,19 @@ jobs:
         with:
           tool: cargo-hack
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-feature-matrix-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-feature-matrix-
+            cargo-registry-
 
       # Checks every crate against each of its own features in isolation
       # (cargo-hack --each-feature), not just workspace --all-features.
@@ -127,6 +186,8 @@ jobs:
 
   fmt:
     name: Rustfmt
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -142,7 +203,13 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -157,23 +224,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-clippy-
+            cargo-registry-
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   cross-target-abi:
     name: Cross-target ABI (aarch64)
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -183,33 +259,50 @@ jobs:
         with:
           targets: aarch64-unknown-linux-gnu
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-aarch64-
+            cargo-registry-
 
-      # This integration target expands the public `kernel!` macro in a
-      # consumer crate. A host-only proc-macro check would miss generated code
-      # that disagrees with the second supported architecture's JIT ABI.
-      - name: Type-check default and arena kernel routing on aarch64
+      # Every `cfg(target_arch = "aarch64")` block in the tree, type-checked.
+      #
+      # This used to be one test target in one crate (`pixelflow-compiler`'s
+      # `bake_vs_scalar_truth`, still covered below by `--all-targets`). That
+      # is too narrow: an aarch64-only file in *another* crate is invisible to
+      # every x86 job — `cargo test`, `clippy --all-targets` and all three
+      # `isa-matrix` levels are x86 targets, so such a file compiles to
+      # nothing for them — and it reached the macOS runner instead, minutes
+      # later. `pixelflow-core/tests/naked_scale.rs` shipped a type error that
+      # way. A cross `check` costs no execution and no qemu: measured at 40s
+      # from an empty target directory.
+      #
+      # Package-scoped rather than `--workspace` on purpose: pixelflow-runtime's
+      # build script probes for X11 through pkg-config, which refuses to answer
+      # when cross-compiling, so a workspace-wide check fails in the build
+      # script before it type-checks a single line. These are the crates whose
+      # output is architecture-specific; runtime and core-term carry no
+      # aarch64-only code. Do not "simplify" this to `--workspace`.
+      - name: Type-check every aarch64 block
         shell: bash
         run: |
-          cargo check -p pixelflow-compiler \
-            --test kernel_routing_parity \
-            --target aarch64-unknown-linux-gnu
-          cargo check -p pixelflow-compiler \
-            --test kernel_routing_parity \
-            --features arena-backend \
-            --target aarch64-unknown-linux-gnu
+          cargo check --target aarch64-unknown-linux-gnu --all-targets \
+            -p pixelflow-core -p pixelflow-codegen -p pixelflow-ir \
+            -p pixelflow-search -p pixelflow-graphics -p pixelflow-pipeline \
+            -p pixelflow-compiler
 
   test:
     name: Test on ${{ matrix.os }}
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ${{ matrix.os }}
     # Backstop for non-test hangs (compile / doctests). The precise
     # "no test over 10 minutes" policy is enforced per-test by nextest below.
@@ -221,12 +314,19 @@ jobs:
         # Test on multiple operating systems
         os: [ubuntu-latest, macos-latest]
 
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Install X11 dependencies (Linux)
         if: runner.os == 'Linux'
@@ -239,17 +339,34 @@ jobs:
         with:
           tool: nextest
 
-      # Caching dependencies speeds up subsequent runs.
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-registry-
+
+      # The dedicated `clippy` job below only ever runs on ubuntu-latest
+      # (x86_64), and `cross-target-abi`'s aarch64 leg runs `cargo check`
+      # (no `-D warnings`, and it skips xtask) rather than clippy. So an
+      # aarch64-only lint -- e.g. a `#[cfg(target_arch = "x86_64")]` block
+      # leaving a method dead-code everywhere else -- had no CI job that
+      # could ever see it; it surfaced only on a contributor's own
+      # Apple-Silicon checkout. `macos-latest` is already an aarch64 runner
+      # and this job already builds the workspace here, so a clippy pass
+      # is the cheap way to close that: no new job, no new runner minutes
+      # beyond the lint itself.
+      - name: Run Clippy (macOS/aarch64 coverage)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       # Compile tests first so the run step below is (mostly) pure execution.
       - name: Build tests
@@ -269,8 +386,14 @@ jobs:
 
   behavior-contracts:
     name: Behavior contracts
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -283,39 +406,40 @@ jobs:
         with:
           tool: nextest
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-behavior-contracts-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-behavior-contracts-
+            cargo-registry-
 
       # These are named public-behavior contracts, not an incidental subset of
       # the workspace suite. nextest's explicit `--no-tests fail` makes deleting
       # or renaming them a hard failure instead of a green zero-test run.
-      - name: Check default and arena kernel routing parity
+      # Each bakes a `kernel!` body over a one-point lattice and compares it to
+      # scalar f32 computed in the test — an oracle outside the compiler, not a
+      # second implementation of the same definitions.
+      - name: Check baked kernels against scalar truth
         shell: bash
         run: |
           set -euo pipefail
           tests=(
-            projection_kernels_stay_on_field_domain_semantics
-            routed_abs_recip_matches_truth
-            routed_arithmetic_matches_truth
-            routed_params_match_truth
-            routed_piecewise_matches_truth
+            abs_recip_matches_scalar_truth
+            arithmetic_matches_scalar_truth
+            params_match_scalar_truth
+            piecewise_matches_scalar_truth
+            projections_are_the_symbolic_derivative
           )
           for test_name in "${tests[@]}"; do
             cargo nextest run -p pixelflow-compiler \
-              --test kernel_routing_parity \
-              -E "test(=$test_name)" \
-              --no-tests fail
-            cargo nextest run -p pixelflow-compiler \
-              --test kernel_routing_parity \
-              --features arena-backend \
+              --test bake_vs_scalar_truth \
               -E "test(=$test_name)" \
               --no-tests fail
           done
@@ -344,7 +468,7 @@ jobs:
           tests=(
             color_chrome_sphere
             floor_only
-            mullet_vs_3channel_comparison
+            four_channels_share_one_geometry
           )
           for test_name in "${tests[@]}"; do
             cargo nextest run -p pixelflow-graphics \
@@ -373,6 +497,8 @@ jobs:
 
   isa-matrix:
     name: ISA matrix (SSE2/AVX2/AVX-512)
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     # Build+lint every supported ISA level, then RUN the two crates whose
     # output is per-level machine code (`--smoke`). Building the test binaries
@@ -387,6 +513,10 @@ jobs:
     # workspace per level (see postsubmit-flake-detection.yaml) -- this catches
     # the level-specific miscompiles early, not all of them.
     timeout-minutes: 25
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -401,16 +531,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-isa-matrix-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-isa-matrix-
+            cargo-registry-
 
       # .cargo/config.toml sets no target-cpu/target-feature, so the jobs
       # above only ever exercise whichever ISA level SSE2-baseline codegen
@@ -440,9 +573,15 @@ jobs:
     # same policy as the WASM status job: keep the signal, don't gate merges
     # on an unproven check. Flip to blocking once it has a green history.
     name: macOS launch stability (informational, non-blocking)
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     continue-on-error: true
     runs-on: macos-latest
     timeout-minutes: 30
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -457,16 +596,19 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-launch-stability-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-launch-stability-
+            cargo-registry-
 
       - name: Launch the bundled app repeatedly and check for crash reports
         run: cargo run -p xtask --release -- launch-stability-check
@@ -505,9 +647,15 @@ jobs:
   # proves it -- and so nobody has to rediscover this by hand.
   wasm32-status:
     name: WASM target status (informational, non-blocking)
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 15
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -517,16 +665,19 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-wasm32-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-wasm32-
+            cargo-registry-
 
       # Reported separately (not one `cargo check --workspace`) so the log
       # says exactly which crates build for wasm32 today and which don't,
@@ -577,8 +728,14 @@ jobs:
   # Making pixelflow-search genuinely no_std is separate, larger work.
   no-std:
     name: pixelflow-ir no_std + pixelflow-search std-feature-off builds
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -586,16 +743,19 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # ratchet:mozilla-actions/sccache-action@v0.0.11
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-nostd-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-nostd-
+            cargo-registry-
 
       # `-D warnings` because an unused `alloc` import is exactly the shape of
       # the regression this job exists to catch.

@@ -338,6 +338,23 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
     Evex::m0f38_66(0x18).rm(code, dst.0, RED_ZONE_CONST);
 }
 
+/// `dst = splat(block[offset])` at 512 bits: `mov rax, [rdi + ctx_slot*8]`
+/// then `vbroadcastss zmm<dst>, [rax + 4*offset]` (EVEX.512.66.0F38.W0 18
+/// /r). A full `disp32`, as [`emit_const`]'s is, so EVEX's compressed-`disp8`
+/// scaling never enters into it. See `x86_64::emit_uniform_load` for the
+/// register contract.
+pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad) {
+    emit_load_ptr_from_ctx(code, gpr::RAX.0, gpr::RDI.0, i32::from(load.ctx_slot) * 8);
+    Evex::m0f38_66(0x18).rm(
+        code,
+        dst.0,
+        Mem {
+            base: gpr::RAX,
+            disp: Imm32(i32::from(load.offset) * 4),
+        },
+    );
+}
+
 // =============================================================================
 // Stack frame (real frame; zmm spills are 64 bytes)
 // =============================================================================
@@ -864,12 +881,12 @@ pub(crate) mod driver {
     /// Identical register *roles* to SSE2 — the shared driver depends on that —
     /// at four times the width, so only `vector_bytes` differs.
     const AVX512_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
-        // zmm4-10, zmm15 and zmm17-31: AVX-512 has thirty-two registers and
-        // the pool was six of them, because a contiguous range could not reach
-        // past the reload pair and the gather's scratch.
-        scratch: regalloc::RegSet::range(4, 7)
-            .union(regalloc::RegSet::range(17, 15))
-            .union(regalloc::RegSet::of(&[Reg(13), Reg(14), Reg(15), Reg(16)])),
+        // zmm4-31: twenty-eight of thirty-two, which is every register the ABI
+        // does not use for an argument. The pool was *six* when this work
+        // started, because a contiguous range could not reach past the reload
+        // pair and the gather's scratch — sixteen registers were untouched by
+        // anything at all.
+        scratch: regalloc::RegSet::range(4, 28),
         // Nothing. Every register this backend's encodings destroy is now a
         // per-instruction reservation: zmm15 for a sign-flip's mask, zmm14 and
         // zmm16 for the gather's destination and truncated indices. All three
@@ -962,6 +979,9 @@ pub(crate) mod driver {
                     super::emit_gather(code, gather_dst, RAX, idx_int);
                     super::emit_mov(code, *dst, gather_dst);
                 }
+                ResolvedOp::Uniform { dst, load } => {
+                    super::emit_uniform_load(code, *dst, *load);
+                }
                 ResolvedOp::Binary {
                     op,
                     dst,
@@ -1009,9 +1029,6 @@ pub(crate) mod driver {
                     super::emit_select(code, *dst, *if_true, *if_false);
                 }
             }
-            if let Some(store) = &plan.store {
-                super::emit_store(code, frame_slot(store.offset), store.src);
-            }
             Ok(())
         }
 
@@ -1058,7 +1075,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Reg,
+            _scratch: Option<Reg>,
         ) -> usize {
             super::emit_mask_flags(code, mask_reg);
             x86_64::je(code).field() // ZF set when k1 == 0 (all false)
@@ -1069,7 +1086,7 @@ pub(crate) mod driver {
             &mut self,
             code: &mut Vec<u8>,
             mask_reg: Reg,
-            _scratch: Reg,
+            _scratch: Option<Reg>,
         ) -> usize {
             super::emit_mask_flags(code, mask_reg);
             x86_64::jc(code).field() // CF set when k1 == 0xFFFF (all true)

@@ -105,16 +105,24 @@ impl ExecutableCode {
     }
 }
 
-/// A coordinate point in 4-dimensional space `(X, Y, Z, W)`.
+/// The base coordinate a collapse call starts from.
+///
+/// Four wide because the ABI is: a lattice has two axes, so `z` and `w` are
+/// dead weight passed as zero and read by nothing — an arena that names
+/// `Var(2)` or `Var(3)` is refused by
+/// [`compile`](crate::emit::compile) before it can become a kernel.
+/// Narrowing this narrows the emitted scaffold too, which moves every
+/// kernel's bytes, so it is L2's step
+/// (docs/plans/2026-09-06-lattice-is-the-index.md).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Point4<T> {
-    /// X coordinate (1st manifold dimension).
+    /// X coordinate (1st lattice axis).
     pub x: T,
-    /// Y coordinate (2nd manifold dimension).
+    /// Y coordinate (2nd lattice axis).
     pub y: T,
-    /// Z coordinate (3rd manifold dimension).
+    /// Retired: the Z axis. Passed, never read.
     pub z: T,
-    /// W coordinate (4th manifold dimension).
+    /// Retired: the W axis. Passed, never read.
     pub w: T,
 }
 
@@ -529,11 +537,15 @@ pub type KernelFn = extern "C" fn(
 /// no per-row or per-batch Rust↔JIT boundary. X is an induction value reset at
 /// each row: the kernel starts
 /// from the caller's lane-sequential `x0` and adds the batch width (16.0)
-/// per group; Y starts at `y0` and advances by 1.0 per row; Z/W are invariant.
+/// per group; Y starts at `y0` and advances by 1.0 per row. The remaining two
+/// base coordinates are the retired axes: passed, never read.
 ///
 /// SysV argument registers: `rdi` = context (array of buffer base pointers,
-/// one per declared buffer — pass a dangling-free null-less array or anything
-/// when the arena declares none; a buffer-free kernel never reads it),
+/// one per declared buffer in slot order, followed by the uniform block's
+/// base pointer when the arena declares a uniform — `f32` values in
+/// uniform-slot order, read once per call — pass a dangling-free null-less
+/// array or anything when the arena declares neither; such a kernel never
+/// reads it),
 /// `rsi` = `out` (output, written 64 bytes at a time; must hold at least
 /// `groups * 16` f32s per row), `rdx` = `groups`, `rcx` = `rows`, `r8` =
 /// bytes to skip after each row's final full group, `zmm0..3` = x0/y0/z/w.

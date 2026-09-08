@@ -28,11 +28,11 @@
 
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, KernelDef, LetStmt, LiteralExpr,
-    MethodCallExpr, Param, ParamKind, Stmt, StructDecl, TupleExpr, UnaryExpr, UnaryOp,
+    MethodCallExpr, Param, Stmt, TupleExpr, UnaryExpr, UnaryOp,
 };
 use proc_macro2::{Span, TokenStream};
 use syn::parse::{Parse, ParseStream};
-use syn::{Pat, Token, Type, Visibility};
+use syn::{Pat, Token, Type};
 
 /// Parse kernel input from token stream.
 pub fn parse(input: TokenStream) -> syn::Result<KernelDef> {
@@ -41,9 +41,6 @@ pub fn parse(input: TokenStream) -> syn::Result<KernelDef> {
 
 impl Parse for KernelDef {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        // Try to parse optional struct declaration: [visibility] struct Name =
-        let struct_decl = parse_struct_decl(input)?;
-
         // Parse: |param: Type, ...| body
         input.parse::<Token![|]>()?;
 
@@ -60,14 +57,10 @@ impl Parse for KernelDef {
                 // Parse type
                 let ty: Type = input.parse()?;
 
-                // Detect `kernel` keyword as manifold parameter marker
-                let kind = if is_kernel_keyword(&ty) {
-                    ParamKind::Manifold
-                } else {
-                    ParamKind::Scalar(Box::new(ty))
-                };
-
-                params.push(Param { name: ident, kind });
+                params.push(Param {
+                    name: ident,
+                    ty: Box::new(ty),
+                });
 
                 // Check for comma or end of params
                 if input.peek(Token![,]) {
@@ -84,104 +77,11 @@ impl Parse for KernelDef {
 
         input.parse::<Token![|]>()?;
 
-        // Parse optional domain and return types:
-        // - `DomainType -> OutputType` (both)
-        // - `-> OutputType` (just output)
-        // - (nothing) (neither)
-        let (domain_ty, return_ty) = parse_type_annotations(input)?;
-
         // Parse the body expression
         let syn_expr: syn::Expr = input.parse()?;
         let body = convert_expr(syn_expr)?;
 
-        Ok(KernelDef {
-            struct_decl,
-            params,
-            domain_ty,
-            return_ty,
-            body,
-        })
-    }
-}
-
-/// Try to parse an optional struct declaration.
-///
-/// Grammar: [visibility] 'struct' IDENT '='
-///
-/// Returns None if the input doesn't start with a struct declaration.
-fn parse_struct_decl(input: ParseStream) -> syn::Result<Option<StructDecl>> {
-    // Check if we're looking at a struct declaration
-    // This could be: `pub struct Foo =`, `pub(crate) struct Foo =`, or `struct Foo =`
-
-    // First, try to peek ahead to see if there's a `struct` keyword
-    // We need to handle visibility first since it can consume tokens
-
-    // Use a fork to speculatively parse
-    let fork = input.fork();
-
-    // Try to parse visibility (this handles pub, pub(crate), etc.)
-    let visibility: Visibility = fork.parse()?;
-
-    // Check for `struct` keyword
-    if fork.peek(Token![struct]) {
-        // Commit to parsing the struct declaration
-        input.parse::<Visibility>()?; // consume visibility in real stream
-        input.parse::<Token![struct]>()?;
-
-        let name: syn::Ident = input.parse()?;
-        input.parse::<Token![=]>()?;
-
-        Ok(Some(StructDecl { visibility, name }))
-    } else {
-        // Not a struct declaration, leave input unchanged
-        Ok(None)
-    }
-}
-
-/// Parse optional domain and return type annotations.
-///
-/// Grammar:
-/// - `DomainType -> OutputType` → (Some(domain), Some(output))
-/// - `-> OutputType` → (None, Some(output))
-/// - (nothing) → (None, None)
-///
-/// This allows syntax like `Field -> Discrete` where Field is the domain
-/// type (used for coordinates) and Discrete is the output type.
-fn parse_type_annotations(input: ParseStream) -> syn::Result<(Option<Type>, Option<Type>)> {
-    // Check if we have `->` directly (no domain type)
-    if input.peek(Token![->]) {
-        input.parse::<Token![->]>()?;
-        let output_ty = input.parse::<Type>()?;
-        return Ok((None, Some(output_ty)));
-    }
-
-    // Try to parse a type followed by `->`
-    // Use a fork to speculatively check if this is `Type ->`
-    let fork = input.fork();
-
-    // Try to parse a type
-    if let Ok(_ty) = fork.parse::<Type>() {
-        // Check if followed by `->`
-        if fork.peek(Token![->]) {
-            // Yes! This is `DomainType -> OutputType`
-            // Consume from the real stream
-            let domain_ty = input.parse::<Type>()?;
-            input.parse::<Token![->]>()?;
-            let output_ty = input.parse::<Type>()?;
-            return Ok((Some(domain_ty), Some(output_ty)));
-        }
-    }
-
-    // No type annotations
-    Ok((None, None))
-}
-
-/// Check if a type is the `kernel` keyword (manifold parameter marker).
-fn is_kernel_keyword(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        type_path.path.is_ident("kernel")
-    } else {
-        false
+        Ok(KernelDef { params, body })
     }
 }
 
@@ -206,7 +106,6 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
         syn::Expr::Lit(expr_lit) => Ok(Expr::Literal(LiteralExpr {
             span: expr_lit.lit.span(),
             lit: expr_lit.lit,
-            var_index: None,
         })),
 
         syn::Expr::Binary(expr_binary) => {
@@ -495,82 +394,22 @@ mod tests {
         }
     }
 
+    /// A parameter's declared type is a scalar type and nothing else: the
+    /// `kernel` keyword that used to mark a manifold-typed slot is gone with
+    /// the tier that spliced one, and kernels compose as `Kernel` values.
     #[test]
-    fn parse_return_type() {
-        let input = quote! { |cx: f32| -> Jet3 X - cx };
-        let kernel = parse(input).unwrap();
-        assert_eq!(kernel.params.len(), 1);
-        assert!(kernel.return_ty.is_some());
-        // Verify the return type is "Jet3"
-        let ty = kernel.return_ty.unwrap();
-        if let syn::Type::Path(type_path) = ty {
-            assert_eq!(type_path.path.segments[0].ident.to_string(), "Jet3");
-        } else {
-            panic!("expected path type");
-        }
-    }
-
-    #[test]
-    fn parse_no_return_type() {
-        let input = quote! { |cx: f32| X - cx };
-        let kernel = parse(input).unwrap();
-        assert!(kernel.return_ty.is_none());
-        assert!(kernel.domain_ty.is_none());
-    }
-
-    #[test]
-    fn parse_domain_and_output_type() {
-        // Field -> Discrete syntax: Field is domain, Discrete is output
-        let input = quote! { |cx: f32| Field -> Discrete X - cx };
-        let kernel = parse(input).unwrap();
-        assert_eq!(kernel.params.len(), 1);
-
-        // Verify domain type is "Field"
-        let domain = kernel.domain_ty.expect("expected domain type");
-        if let syn::Type::Path(type_path) = domain {
-            assert_eq!(type_path.path.segments[0].ident.to_string(), "Field");
-        } else {
-            panic!("expected path type for domain");
-        }
-
-        // Verify output type is "Discrete"
-        let output = kernel.return_ty.expect("expected return type");
-        if let syn::Type::Path(type_path) = output {
-            assert_eq!(type_path.path.segments[0].ident.to_string(), "Discrete");
-        } else {
-            panic!("expected path type for output");
-        }
-    }
-
-    #[test]
-    fn parse_manifold_param() {
-        // `kernel` keyword marks a manifold parameter
-        let input = quote! { |inner: kernel, r: f32| inner - r };
+    fn parse_scalar_params_keep_their_declared_types() {
+        let input = quote! { |cx: f32, n: i32| X * cx + n };
         let kernel = parse(input).unwrap();
         assert_eq!(kernel.params.len(), 2);
-
-        // First param should be Manifold
-        assert!(
-            matches!(kernel.params[0].kind, ParamKind::Manifold),
-            "expected inner to be Manifold param"
-        );
-        assert_eq!(kernel.params[0].name.to_string(), "inner");
-
-        // Second param should be Scalar(f32)
-        assert!(
-            matches!(kernel.params[1].kind, ParamKind::Scalar(_)),
-            "expected r to be Scalar param"
-        );
-        assert_eq!(kernel.params[1].name.to_string(), "r");
-    }
-
-    #[test]
-    fn parse_multiple_manifold_params() {
-        let input = quote! { |a: kernel, b: kernel| a + b };
-        let kernel = parse(input).unwrap();
-        assert_eq!(kernel.params.len(), 2);
-        assert!(matches!(kernel.params[0].kind, ParamKind::Manifold));
-        assert!(matches!(kernel.params[1].kind, ParamKind::Manifold));
+        assert_eq!(kernel.params[0].name.to_string(), "cx");
+        assert_eq!(kernel.params[1].name.to_string(), "n");
+        for (param, want) in kernel.params.iter().zip(["f32", "i32"]) {
+            let syn::Type::Path(path) = &*param.ty else {
+                panic!("expected a path type for {}", param.name);
+            };
+            assert_eq!(path.path.segments[0].ident.to_string(), want);
+        }
     }
 
     #[test]
@@ -637,35 +476,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_domain_with_block() {
-        // This is the syntax that's failing
+    fn parse_block_body_with_a_scalar_param() {
         let input = quote! {
-            |x: f32| Field -> Discrete {
+            |x: f32| {
                 let a = X + x;
                 a
             }
         };
         let kernel = parse(input).unwrap();
+        assert_eq!(kernel.params.len(), 1);
 
-        eprintln!("Domain: {:?}", kernel.domain_ty);
-        eprintln!("Return: {:?}", kernel.return_ty);
-        eprintln!("Body: {:?}", kernel.body);
-
-        // Verify domain is Field
-        assert!(kernel.domain_ty.is_some(), "expected domain type");
-
-        // Verify return is Discrete
-        assert!(kernel.return_ty.is_some(), "expected return type");
-
-        // The body should be a block with let binding
         match kernel.body {
             Expr::Block(block) => {
-                eprintln!("Block stmts: {:?}", block.stmts);
-                eprintln!("Block expr: {:?}", block.expr);
                 assert_eq!(block.stmts.len(), 1, "expected 1 let statement");
                 assert!(block.expr.is_some(), "expected final expression");
             }
-            other => panic!("expected block expression, got {:?}", other),
+            other => panic!("expected block expression, got {other:?}"),
         }
     }
 }

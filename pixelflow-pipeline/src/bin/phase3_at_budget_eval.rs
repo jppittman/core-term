@@ -429,7 +429,11 @@ const POLY_OPS: &[OpKind] = &[
 /// (`Var`/`Const`/`Param`/`Buffer` — excluded from the stratification rule).
 fn non_leaf_op(node: &ExprNode) -> Option<OpKind> {
     match node {
-        ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => None,
+        ExprNode::Var(_)
+        | ExprNode::Const(_)
+        | ExprNode::Param(_)
+        | ExprNode::Buffer(_)
+        | ExprNode::Uniform(_) => None,
         ExprNode::Unary(op, _)
         | ExprNode::Binary(op, _, _)
         | ExprNode::Ternary(op, _, _, _)
@@ -1216,7 +1220,13 @@ fn production_probe(arena: &ExprArena, root: ExprId, costs: &CostModel) -> Produ
     let mut optimizer = Optimizer::production().cost(costs.clone());
     let limits = optimizer.limits_for(node_count);
     let mut egraph = optimizer.egraph();
-    let root_class = egraph.add_arena(arena, root);
+    let root_class = pixelflow_search::egraph::insert(
+        arena,
+        root,
+        &mut egraph,
+        pixelflow_search::egraph::Vocabulary::Templates,
+    )
+    .expect("insert into e-graph");
     let out = optimizer.run(&mut egraph, root_class, node_count);
     ProductionRow {
         node_count_reachable: node_count,

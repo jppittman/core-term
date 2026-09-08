@@ -8,14 +8,12 @@
 //! occupies — is a field of that struct and appears nowhere else. Backends
 //! declare one `const` and the allocator is architecture-independent.
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use pixelflow_ir::kind::OpKind;
-
-use super::guards::analyze_select_guards;
-use super::{Reg, ScheduledOp};
+use super::guards::{SelectGuard, analyze_select_guards};
+use super::{Reg, ScheduledOp, operand_sources, reloads_wanted};
 
 /// A value in the program (SSA-style).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -42,16 +40,18 @@ pub struct Def {
 /// register inside the allocatable window, say — into a build error rather
 /// than a miscompile that shows up as wrong pixels.
 ///
-/// The register file is described once and consulted everywhere: the emitter
-/// reads `reload` for its spill choreography and `vector_bytes` for its frame
-/// arithmetic, so there is no second copy of any of it to drift.
+/// The register file is described once and consulted everywhere, and it now
+/// says only what a target *is*: which registers carry the inputs, which the
+/// allocator may hand out, how many an encoding or a guard destroys, and how
+/// wide a spilled register is. Nothing in it is a register held back for a
+/// need some other file knows about.
 /// A set of registers from one file, as a bitmask over register numbers.
 ///
 /// The allocatable pool used to be a base plus a count — a contiguous run. On
-/// every real target the free registers are *not* contiguous: on SSE2 `xmm14`
-/// and `xmm15` sit above the reload pair, and on AVX-512 fifteen free
-/// registers sit above it with the gather's scratch in between. A range can only ever name whichever free registers happen to be
-/// adjacent, so it silently rounded the pool down to a fraction of the machine.
+/// every real target the free registers were *not* contiguous: registers held
+/// back by hand sat in the middle of the range. A range can only ever name
+/// whichever free registers happen to be adjacent, so it silently rounded the
+/// pool down to a fraction of the machine.
 ///
 /// A set says the true thing: these registers, whichever they are.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -161,17 +161,25 @@ pub struct RegisterFile {
 
     /// Every register the allocator may hand out.
     ///
-    /// Everything outside it — inputs, callee-saved registers, the reload
-    /// registers, the backend's own `fixed` scratch — is off limits by
-    /// construction, and [`RegisterFile::checked`] proves the separation.
+    /// Everything outside it — inputs, callee-saved registers, the backend's
+    /// own `fixed` scratch — is off limits by construction, and
+    /// [`RegisterFile::checked`] proves the separation.
     pub scratch: RegSet,
 
-    /// Fixed registers, outside the pool, that spilled operands reload into.
+    /// How many registers a `Select` short-circuit guard destroys while
+    /// reducing its mask to a branch condition.
     ///
-    /// Two suffice: every backend reads all of an instruction's sources before
-    /// writing its destination, so a spilled destination register doubles as
-    /// the temporary for one operand.
-    pub reload: [Reg; 2],
+    /// One on aarch64, where `UMAXV`/`UMINV` write a scalar into a vector
+    /// register before it can reach a general one; zero on the x86 tiers,
+    /// whose guards go through `movmskps`/`kortest` and the flags. It is a
+    /// count rather than a flag because it is the same kind of statement as
+    /// [`RegisterFile::temps_for`] — how many registers an emission destroys —
+    /// and a count is what the allocator reserves against.
+    ///
+    /// A guard is emitted *between* instructions, at the head of a guarded arm
+    /// and at the `Select` that owns it, so this is reserved on those
+    /// instructions and nowhere else.
+    pub guard_temps: u8,
 
     /// Registers the backend's own instruction emission clobbers, outside the
     /// allocator's knowledge: an ISA-level temp for a two-operand form, a
@@ -233,18 +241,10 @@ impl RegisterFile {
             i += 1;
         }
 
-        let mut i = 0;
-        while i < self.reload.len() {
-            assert!(
-                !self.scratch.contains(self.reload[i]),
-                "a reload register is inside the allocatable pool: reloading \
-                 a spilled operand would clobber another live value"
-            );
-            i += 1;
-        }
         assert!(
-            self.reload[0].0 != self.reload[1].0,
-            "the two reload registers are the same register"
+            self.guard_temps as usize <= 1,
+            "a backend's Select guard asked for more scratch than `Scratch` \
+             reserves for one"
         );
 
         assert!(
@@ -262,14 +262,6 @@ impl RegisterFile {
                 "a fixed backend scratch register is inside the allocatable \
                  pool: emitting an instruction would clobber a live value"
             );
-            let mut k = 0;
-            while k < self.reload.len() {
-                assert!(
-                    self.fixed[i].0 != self.reload[k].0,
-                    "a fixed backend scratch register aliases a reload register"
-                );
-                k += 1;
-            }
             let mut k = 0;
             while k < self.inputs.len() {
                 assert!(
@@ -292,14 +284,40 @@ impl RegisterFile {
     /// registers the encoder destroys mid-instruction, each of which must be a
     /// register, and one that is neither the destination nor any operand.
     ///
-    /// Six, set by the widest single demand rather than by the widest op. A
-    /// ternary is three operands plus one temp; AVX2's gather is one operand
-    /// plus [`Scratch::MAX_TEMPS`] — four, since it assembles two 128-bit
-    /// halves — and both leave room for the destination.
+    /// **Seven**, and it is a computation rather than a constant. Every
+    /// register one instruction needs at once is now the allocator's, so the
+    /// floor is the maximum over ops and backends of
+    ///
+    /// ```text
+    ///   temps(op)                    // RegisterFile::temps_for, 0..=MAX_TEMPS
+    /// + operands(op)                 // each one either resident or reloaded
+    /// + guard                        // a guarded arm's mask, plus guard_temps
+    /// + result                       // the scope's tail materialization
+    /// + 1                            // the destination
+    /// ```
+    ///
+    /// where an operand costs one register whether it is *resident* (holding a
+    /// pool register) or *reloaded* (holding one of this instruction's reload
+    /// reservations) — which is why the count is over operands rather than
+    /// over spilled operands, and why the dst-as-reload-target rule below
+    /// lowers instantaneous pressure without lowering this floor.
+    ///
+    /// | worst instruction | temps | operands | guard | result | dst | total |
+    /// |---|---|---|---|---|---|---|
+    /// | AVX2 gather at a guarded arm's head | 4 | 1 | 1 | 0 | 1 | **7** |
+    /// | AVX2 gather anywhere else | 4 | 1 | 0 | 0 | 1 | 6 |
+    /// | aarch64 `Select` at a guarded arm's head | 0 | 3 | 2 | 0 | 1 | 6 |
+    /// | SSE2 `Select` at a guarded arm's head | 1 | 3 | 1 | 0 | 1 | 6 |
+    ///
+    /// The `result` column is 0 everywhere because it is reserved only for a
+    /// body whose root was hoisted out entirely — a placeholder that emits
+    /// nothing, has no operands, no temps and no destination.
     ///
     /// Below this, shrinking the pool stops producing more spilling and starts
-    /// producing an instruction with nowhere to put its scratch.
-    pub const MIN_SCRATCH: u8 = Scratch::MAX_TEMPS as u8 + 2;
+    /// producing an instruction with nowhere to put its scratch: every *value*
+    /// survives a small pool by going to memory, and scratch the encoder
+    /// destroys mid-instruction has no such escape.
+    pub const MIN_SCRATCH: u8 = Scratch::MAX_TEMPS as u8 + 3;
 
     /// Cap the scratch pool at a smaller budget, leaving every other region
     /// where it is.
@@ -553,22 +571,44 @@ pub struct Scratch {
     /// what the roles below exist to avoid.
     temps: [Option<Reg>; Scratch::MAX_TEMPS],
 
-    /// A third register to reload an operand into.
+    /// Registers this instruction's operands are reloaded into, for the
+    /// operands that are not in one at this point.
     ///
-    /// `Select` is the one instruction that can need three reload targets at
-    /// once. Its mask has to end up in `dst`, so a spilled mask consumes the
-    /// destination, and the two arms then need a target each; [`RegisterFile`]
-    /// carries two. The third used to be `select_reload`, a register held out
-    /// of *every* kernel's pool for the sake of the rare kernel that reaches
-    /// this.
+    /// Private, and read through [`Scratch::reload`], because *which* operand
+    /// takes which of these is not positional guesswork: it is
+    /// [`operand_sources`](super::operand_sources), the one function both the
+    /// allocator (counting reservations) and the emitter (naming registers)
+    /// call. A second copy of that mapping would be a convention spanning two
+    /// files, and it is precisely the convention that has to hold
+    /// register-for-register.
     ///
-    /// Reserved for every `Select` rather than only the ones that turn out to
-    /// need it, because a value resident when its reader is allocated can still
-    /// be evicted by a later instruction — `Placement` is one answer per value
-    /// for its whole life — so residency read at this point is not yet final.
-    /// Over-reserving costs one register at a `Select`; the register it
-    /// replaces cost one everywhere.
-    pub arm_reload: Option<Reg>,
+    /// This is where `arm_reload` went. A `Select`'s second spilled arm is not
+    /// a role of its own — it is operand 2 with nowhere to be — and the same
+    /// was true of `RegisterFile::reload[1]`, which served every other operand
+    /// of every other instruction from outside the pool.
+    reloads: [Option<Reg>; Scratch::MAX_RELOADS],
+
+    /// A register to reload a short-circuit guard's mask into, when the mask
+    /// is not in one where the guard is emitted.
+    ///
+    /// One suffices however many guards begin here: each resolves its mask and
+    /// branches immediately, so the register is dead again before the next
+    /// one needs it.
+    pub guard_mask: Option<Reg>,
+
+    /// A register the guard's mask reduction destroys — see
+    /// [`RegisterFile::guard_temps`]. `None` on the tiers whose guards go
+    /// through the flags.
+    pub guard_temp: Option<Reg>,
+
+    /// A register to materialize this scope's result into, reserved on the
+    /// scope's last instruction.
+    ///
+    /// The result is usually the last instruction's own destination and this
+    /// goes unused. It is not always: a body whose root was hoisted out
+    /// entirely reads that root from its park, and the scaffold needs it in a
+    /// register to store.
+    pub result: Option<Reg>,
 }
 
 impl Scratch {
@@ -579,6 +619,14 @@ impl Scratch {
     /// each to carry the high half while the low one is built.
     pub const MAX_TEMPS: usize = 4;
 
+    /// The most reload targets any one instruction asks for.
+    ///
+    /// Two. Three operands is the widest op, and the one that must reach the
+    /// destination anyway — a `Select`'s mask, an FMA's addend, a two-operand
+    /// binary's left — is reloaded straight into it rather than into a
+    /// reservation.
+    pub const MAX_RELOADS: usize = 2;
+
     /// A `Scratch` with the registers a test wants to hand an encoder.
     ///
     /// The allocator is what fills these in production; a test that exercises
@@ -586,12 +634,21 @@ impl Scratch {
     /// registers the encoder may destroy.
     #[cfg(test)]
     #[must_use]
-    pub const fn for_test(temps: Option<[Reg; Self::MAX_TEMPS]>, arm_reload: Option<Reg>) -> Self {
+    pub const fn for_test(
+        temps: Option<[Reg; Self::MAX_TEMPS]>,
+        reloads: [Option<Reg>; Self::MAX_RELOADS],
+    ) -> Self {
         let temps = match temps {
             Some([a, b, c, d]) => [Some(a), Some(b), Some(c), Some(d)],
             None => [None; Self::MAX_TEMPS],
         };
-        Self { temps, arm_reload }
+        Self {
+            temps,
+            reloads,
+            guard_mask: None,
+            guard_temp: None,
+            result: None,
+        }
     }
 
     /// The `i`'th register this instruction's encoding asked for.
@@ -601,6 +658,15 @@ impl Scratch {
     #[must_use]
     pub fn temp(&self, i: usize) -> Option<Reg> {
         self.temps.get(i).copied().flatten()
+    }
+
+    /// The `i`'th reload target this instruction reserved.
+    ///
+    /// `i` is [`operand_sources`](super::operand_sources)' numbering, which is
+    /// operand order over the operands that need one.
+    #[must_use]
+    pub fn reload(&self, i: usize) -> Option<Reg> {
+        self.reloads.get(i).copied().flatten()
     }
 }
 
@@ -976,7 +1042,12 @@ impl RegisterAllocator for LinearScan {
         // Roots of the regions already handled: values an inner scope reads
         // from a park rather than computing, so its scan's answer for them is
         // a placeholder's and must not overwrite the park.
-        let mut parked: BTreeSet<ValueId> = BTreeSet::new();
+        // Where each of them lives for the whole of every scope inside: the
+        // register carrying it, or its park slot. A scan inside reads this
+        // rather than choosing, which is what lets it tell a resident operand
+        // from one it has to reload — the question every reservation now turns
+        // on.
+        let mut parked: BTreeMap<ValueId, Where> = BTreeMap::new();
         let mut regions: Vec<ScopeCode> = Vec::with_capacity(nest.regions.len());
         let region_count = nest.regions.len();
 
@@ -992,7 +1063,7 @@ impl RegisterAllocator for LinearScan {
         for (index, region) in nest.regions.into_iter().enumerate() {
             let scope = Scope::Region(index);
             let scoped = file.inside(carried);
-            let scan = self.scan(region.schedule, &scoped);
+            let scan = self.scan(region.schedule, &scoped, &parked);
 
             // Carry the roots the body reads most, while the body keeps a
             // pool it can still allocate in. Every carry costs one register
@@ -1021,7 +1092,10 @@ impl RegisterAllocator for LinearScan {
             let mut used: Vec<Reg> = scan.registers().collect();
             for scratch in &scan.scratch {
                 used.extend(scratch.temps.iter().flatten().copied());
-                used.extend(scratch.arm_reload);
+                used.extend(scratch.reloads.iter().flatten().copied());
+                used.extend(scratch.guard_mask);
+                used.extend(scratch.guard_temp);
+                used.extend(scratch.result);
             }
             let free = scoped.scratch.without(RegSet::of(&used));
             let mut available = free.iter();
@@ -1046,23 +1120,24 @@ impl RegisterAllocator for LinearScan {
                 Scope::Body
             };
             for root in &region.roots {
+                let at = match carries.get(root) {
+                    Some(reg) => Where::Reg(*reg),
+                    None => Where::Spilled,
+                };
                 let park = Span {
                     from: Point {
                         scope: inside,
                         index: 0,
                     },
-                    at: match carries.get(root) {
-                        Some(reg) => Where::Reg(*reg),
-                        None => Where::Spilled,
-                    },
+                    at,
                 };
                 let in_region = placements[root.0 as usize]
                     .take()
                     .unwrap_or_else(|| unreachable!("a region computes its own roots"));
                 placements[root.0 as usize] = Some(in_region.then(park));
+                parked.insert(*root, at);
             }
 
-            parked.extend(region.roots.iter().copied());
             regions.push(ScopeCode {
                 schedule: scan.schedule,
                 scratch: scan.scratch,
@@ -1070,7 +1145,7 @@ impl RegisterAllocator for LinearScan {
             });
         }
 
-        let body = self.scan(nest.body, &file.inside(carried));
+        let body = self.scan(nest.body, &file.inside(carried), &parked);
         record(&mut placements, Scope::Body, &body, &parked);
 
         NestAllocation {
@@ -1097,13 +1172,13 @@ fn record(
     placements: &mut Vec<Option<Placement>>,
     scope: Scope,
     scan: &Scan,
-    parked: &BTreeSet<ValueId>,
+    parked: &BTreeMap<ValueId, Where>,
 ) {
     if placements.len() < scan.ranges.len() {
         placements.resize(scan.ranges.len(), None);
     }
     for (key, ranges) in scan.ranges.iter().enumerate() {
-        if parked.contains(&ValueId(key as u32)) {
+        if parked.contains_key(&ValueId(key as u32)) {
             continue;
         }
         for &(index, at) in ranges {
@@ -1172,6 +1247,37 @@ struct EvictionRank {
     nearest: core::cmp::Reverse<usize>,
 }
 
+/// The pool slots one instruction has already claimed, in the order it claimed
+/// them.
+///
+/// Sized by the roles an instruction can fill at once — its encoding's temps,
+/// its operand reloads, a guard's mask and scratch, and the scope's result —
+/// which is the same list [`RegisterFile::MIN_SCRATCH`] is derived from.
+struct Reservations {
+    slots: [Option<usize>; Self::ROLES],
+    filled: usize,
+}
+
+impl Reservations {
+    const ROLES: usize = Scratch::MAX_TEMPS + Scratch::MAX_RELOADS + 3;
+
+    fn new() -> Self {
+        Self {
+            slots: [None; Self::ROLES],
+            filled: 0,
+        }
+    }
+
+    fn push(&mut self, slot: usize) {
+        self.slots[self.filled] = Some(slot);
+        self.filled += 1;
+    }
+
+    fn holds(&self, slot: usize) -> bool {
+        self.slots[..self.filled].contains(&Some(slot))
+    }
+}
+
 /// The forward pass's state: who owns which pool register, where every value
 /// is at the point reached, and what each life has been cut into so far.
 ///
@@ -1196,6 +1302,14 @@ struct Pass {
     /// Where each value is defined, or `usize::MAX` for one this scope reads
     /// without computing.
     defined_at: Vec<usize>,
+    /// Dense by `ValueId.0`: a value an enclosing scope computed and left
+    /// somewhere fixed for the whole of this one.
+    ///
+    /// Its entry in this schedule is a placeholder that emits nothing, and its
+    /// location is the enclosing scope's answer, not this scan's — so it takes
+    /// no register here and its residency is read from the park rather than
+    /// from the placeholder.
+    live_in: Vec<bool>,
     /// Read positions per value, ascending, with a cursor that only advances —
     /// so the pass costs one step per read rather than a search per eviction.
     reads: Vec<Vec<usize>>,
@@ -1203,7 +1317,12 @@ struct Pass {
 }
 
 impl Pass {
-    fn new(dag: &[Def], file: &RegisterFile, vec_len: usize) -> Self {
+    fn new(
+        dag: &[Def],
+        file: &RegisterFile,
+        vec_len: usize,
+        live_in: &BTreeMap<ValueId, Where>,
+    ) -> Self {
         let mut reads: Vec<Vec<usize>> = vec![Vec::new(); vec_len];
         let mut const_bits: Vec<Option<u32>> = vec![None; vec_len];
         let mut defined_at: Vec<usize> = vec![usize::MAX; vec_len];
@@ -1219,17 +1338,50 @@ impl Pass {
                 }
             }
         }
+        let mut at: Vec<Option<Where>> = vec![None; vec_len];
+        let mut is_live_in = vec![false; vec_len];
+        for (v, park) in live_in {
+            let k = v.0 as usize;
+            if k >= vec_len {
+                continue; // Parked by an enclosing scope; not read here.
+            }
+            // The enclosing scope's answer, from the first point of this one.
+            // Its placeholder is neither a definition (it emits nothing) nor a
+            // constant (its op says `Const(0.0)`, which is not the value).
+            at[k] = Some(*park);
+            const_bits[k] = None;
+            is_live_in[k] = true;
+        }
         Self {
             pool: file.scratch().collect(),
             owner: vec![None; file.scratch.len() as usize],
-            at: vec![None; vec_len],
+            at,
             ranges: vec![Vec::new(); vec_len],
             const_bits,
             in_slot: vec![false; vec_len],
             defined_at,
+            live_in: is_live_in,
             reads,
             cursor: vec![0; vec_len],
         }
+    }
+
+    /// Whether `v` is in a register at the point this pass has reached.
+    fn is_resident(&self, v: ValueId) -> bool {
+        matches!(self.at[v.0 as usize], Some(Where::Reg(_)))
+    }
+
+    /// Claim one more pool register for this instruction's own use.
+    ///
+    /// Disjoint from every register the instruction reads (`live`, its
+    /// operands and its guards' masks), from every role it has already filled,
+    /// and — because the destination is claimed last, against the same two
+    /// exclusions — from the destination.
+    fn reserve(&mut self, index: usize, taken: &mut Reservations, live: &[ValueId]) -> Reg {
+        let open = self.without_operands(taken, live);
+        let slot = self.claim(index, &open);
+        taken.push(slot);
+        self.pool[slot]
     }
 
     /// The next read of `v` at or after `from`.
@@ -1315,17 +1467,15 @@ impl Pass {
     /// destination that takes an operand's register only makes that operand
     /// non-resident *here*, and `resolve_operands` reads it back from the slot
     /// its definition wrote. [`EvictionRank`] is what keeps that a last resort.
-    fn open(&self, taken: &[Option<usize>]) -> Vec<usize> {
-        (0..self.owner.len())
-            .filter(|k| !taken.contains(&Some(*k)))
-            .collect()
+    fn open(&self, taken: &Reservations) -> Vec<usize> {
+        (0..self.owner.len()).filter(|k| !taken.holds(*k)).collect()
     }
 
     /// Pool slots an instruction may destroy *before* reading its operands —
     /// which is what scratch is, and what a kept reload must not displace,
     /// both being wanted in a register at this same point. Sharing one with an
     /// operand would feed the instruction its own temp.
-    fn without_operands(&self, taken: &[Option<usize>], reads: &[ValueId]) -> Vec<usize> {
+    fn without_operands(&self, taken: &Reservations, reads: &[ValueId]) -> Vec<usize> {
         self.open(taken)
             .into_iter()
             .filter(|k| self.owner[*k].is_none_or(|v| !reads.contains(&v)))
@@ -1372,9 +1522,9 @@ impl Pass {
 /// The narrowest and not the outermost: ending a kept reload at the inner arm's
 /// end is safe under the outer one too, since every read between the two ends
 /// is inside the outer arm and so is skipped along with the load it would name.
-fn guarded_arms(dag: &[Def]) -> Vec<Option<(usize, usize)>> {
-    let mut arms: Vec<Option<(usize, usize)>> = vec![None; dag.len()];
-    for guard in analyze_select_guards(dag) {
+fn guarded_arms(guards: &[SelectGuard], len: usize) -> Vec<Option<(usize, usize)>> {
+    let mut arms: Vec<Option<(usize, usize)>> = vec![None; len];
+    for guard in guards {
         for (start, end) in [guard.true_range, guard.false_range] {
             if start == end {
                 continue;
@@ -1389,9 +1539,48 @@ fn guarded_arms(dag: &[Def]) -> Vec<Option<(usize, usize)>> {
     arms
 }
 
+/// For each schedule index, the masks a short-circuit branch reads *there*.
+///
+/// A guard is emitted before the first instruction of each non-empty arm, and
+/// again at the `Select` itself for the uniform-mask wrapper. Those are the
+/// only points that need a mask in a register outside an instruction's own
+/// operands, and they are the points the allocator reserves
+/// [`Scratch::guard_mask`] and [`Scratch::guard_temp`] on.
+///
+/// Several guards can begin at one index (nested `Select`s); one reservation
+/// covers them all, because each resolves its mask and branches before the
+/// next one runs.
+fn guard_sites(guards: &[SelectGuard], len: usize) -> Vec<Vec<ValueId>> {
+    let mut sites: Vec<Vec<ValueId>> = (0..len).map(|_| Vec::new()).collect();
+    for guard in guards {
+        let mut at = |i: usize| {
+            let site = &mut sites[i];
+            if !site.contains(&guard.mask_vid) {
+                site.push(guard.mask_vid);
+            }
+        };
+        let mut guarded = false;
+        for (start, end) in [guard.true_range, guard.false_range] {
+            if start == end {
+                continue;
+            }
+            guarded = true;
+            at(start);
+        }
+        if guarded {
+            at(guard.select_idx);
+        }
+    }
+    sites
+}
+
 impl LinearScan {
     /// One region, scanned straight through.
-    fn scan(&self, dag: Vec<Def>, file: &RegisterFile) -> Scan {
+    ///
+    /// `live_in` is where each value an enclosing scope parked lives for the
+    /// whole of this one — the answer this scan must read rather than choose,
+    /// because that scope already chose it.
+    fn scan(&self, dag: Vec<Def>, file: &RegisterFile, live_in: &BTreeMap<ValueId, Where>) -> Scan {
         let vec_len = dag
             .iter()
             .map(|def| def.value.0 as usize + 1)
@@ -1407,7 +1596,7 @@ impl LinearScan {
             };
         }
 
-        let mut pass = Pass::new(&dag, file, vec_len);
+        let mut pass = Pass::new(&dag, file, vec_len, live_in);
 
         // The arms a `Select` guard may skip. A register range that begins at a
         // read inside one, for a value defined outside it, must end there too:
@@ -1415,11 +1604,24 @@ impl LinearScan {
         // skipped path never ran the load. Eviction inside an arm needs no such
         // rule — the value's slot was written at its definition, which every
         // path reaching any of its readers ran.
-        let arms = guarded_arms(&dag);
+        let guards = analyze_select_guards(&dag);
+        let arms = guarded_arms(&guards, dag.len());
+        let sites = guard_sites(&guards, dag.len());
         let mut reverts: Vec<Vec<(ValueId, Where, usize)>> =
+            (0..dag.len()).map(|_| Vec::new()).collect();
+        // Pool slots a definition held for its own instruction and no longer:
+        // see the destination below. Indexed by the point the range ends at.
+        let mut demotions: Vec<Vec<(ValueId, usize)>> =
             (0..dag.len()).map(|_| Vec::new()).collect();
 
         for (i, def) in dag.iter().enumerate() {
+            for (v, slot) in core::mem::take(&mut demotions[i]) {
+                if pass.owner[slot] == Some(v) {
+                    pass.owner[slot] = None;
+                    let to = pass.out_of_register(v);
+                    pass.place(v, i, to);
+                }
+            }
             for (v, back, slot) in core::mem::take(&mut reverts[i]) {
                 if pass.owner[slot] == Some(v) {
                     pass.owner[slot] = None;
@@ -1434,12 +1636,23 @@ impl LinearScan {
                     reads.push(operand);
                 }
             }
+            // What this instruction reads, its guards included. A guard runs
+            // *before* the instruction and reads a mask that is nobody's
+            // operand there, so without this a temp could take the register
+            // the branch is about to test.
+            let mut live_here = reads.clone();
+            for mask in &sites[i] {
+                if !live_here.contains(mask) {
+                    live_here.push(*mask);
+                }
+            }
 
             // Scratch, reserved before anything else this instruction wants:
             // the encoder writes it while every operand is still live and
             // before the destination is written, so it may share a register
             // with neither.
-            let mut taken: [Option<usize>; Scratch::MAX_TEMPS + 1] = [None; Scratch::MAX_TEMPS + 1];
+            let mut taken = Reservations::new();
+
             let wanted = (file.temps_for)(&def.op) as usize;
             assert!(
                 wanted <= Scratch::MAX_TEMPS,
@@ -1448,24 +1661,7 @@ impl LinearScan {
                 Scratch::MAX_TEMPS
             );
             for role in 0..wanted {
-                let open = pass.without_operands(&taken, &reads);
-                let slot = pass.claim(i, &open);
-                taken[role] = Some(slot);
-                scratch_for[i].temps[role] = Some(pass.pool[slot]);
-            }
-            if matches!(def.op, ScheduledOp::Ternary(OpKind::Select, ..)) {
-                let open = pass.without_operands(&taken, &reads);
-                let slot = pass.claim(i, &open);
-                taken[Scratch::MAX_TEMPS] = Some(slot);
-                scratch_for[i].arm_reload = Some(pass.pool[slot]);
-            }
-
-            // Coordinate inputs are pinned to the registers the ABI delivers
-            // them in. The scratch pool excludes those registers, so a pinned
-            // value never competes for one.
-            if let ScheduledOp::Var(k) = def.op {
-                pass.place(def.value, i, Where::Reg(input_register(file, k)));
-                continue;
+                scratch_for[i].temps[role] = Some(pass.reserve(i, &mut taken, &live_here));
             }
 
             // A read of a value that is not in a register: bring it back into
@@ -1484,7 +1680,13 @@ impl LinearScan {
                 if !matches!(pass.at[operand.0 as usize], Some(Where::Spilled)) {
                     continue;
                 }
-                let open = pass.without_operands(&taken, &reads);
+                // A parked root's location belongs to the scope that computed
+                // it; keeping it here would be this scan recording a range for
+                // a value it does not place.
+                if pass.live_in[operand.0 as usize] {
+                    continue;
+                }
+                let open = pass.without_operands(&taken, &live_here);
                 if open.is_empty() {
                     break;
                 }
@@ -1508,11 +1710,69 @@ impl LinearScan {
                 }
             }
 
-            // The destination. A free register if there is one, and otherwise
-            // the cheapest eviction — where the value being defined is itself a
-            // candidate, in which case it is computed into a reload register
-            // and stored, exactly as an evicted one is.
-            let open = pass.open(&taken);
+            // A guard's own two registers, on the instruction it is emitted
+            // before. The mask needs one only when it is not in a register
+            // here — which the kept reloads above may just have changed.
+            if !sites[i].is_empty() {
+                if sites[i].iter().any(|m| !pass.is_resident(*m)) {
+                    scratch_for[i].guard_mask = Some(pass.reserve(i, &mut taken, &live_here));
+                }
+                for _ in 0..file.guard_temps {
+                    scratch_for[i].guard_temp = Some(pass.reserve(i, &mut taken, &live_here));
+                }
+            }
+
+            // One register per operand this instruction has to reload, named
+            // by the same function the emitter reads. Residency is final here:
+            // eviction splits a range rather than rewriting one, so an operand
+            // in a register now is in a register when this instruction is
+            // emitted, and the destination below cannot take it back.
+            let mut resident = [true; 3];
+            for (k, operand) in operands(&def.op).enumerate() {
+                resident[k] = pass.is_resident(operand);
+            }
+            let sources = operand_sources(&def.op, resident);
+            for role in 0..reloads_wanted(sources) {
+                scratch_for[i].reloads[role] = Some(pass.reserve(i, &mut taken, &live_here));
+            }
+
+            // The scope's result is materialized after its last instruction,
+            // and it needs a register of its own in exactly one case: the
+            // whole body was hoisted out, so its root is read from a park
+            // rather than computed. Every other root is the last
+            // instruction's own destination, which is a register.
+            if i + 1 == dag.len()
+                && pass.live_in[def.value.0 as usize]
+                && !pass.is_resident(def.value)
+            {
+                scratch_for[i].result = Some(pass.reserve(i, &mut taken, &live_here));
+            }
+
+            // A placeholder for a value an enclosing scope parked: it emits
+            // nothing, so it writes no register and gets no range here.
+            if pass.live_in[def.value.0 as usize] {
+                continue;
+            }
+
+            // Coordinate inputs are pinned to the registers the ABI delivers
+            // them in. The scratch pool excludes those registers, so a pinned
+            // value never competes for one.
+            if let ScheduledOp::Var(k) = def.op {
+                pass.place(def.value, i, Where::Reg(input_register(file, k)));
+                continue;
+            }
+
+            // **The destination always gets a register.** A definition is the
+            // one write in an instruction, and there is no register outside the
+            // pool left to write to — so the loser of the contest below is the
+            // *occupant*, and the value being defined loses only the right to
+            // *keep* what it was given. That is `Where(v, def(v)) == Reg(_)`,
+            // which is what dissolves the fixed destination register.
+            //
+            // A rematerialized constant is the exception, and it is not one in
+            // spirit: its definition emits nothing at all, so it needs nothing
+            // to write to.
+            let open = pass.without_operands(&taken, &live_here);
             if let Some(free) = open.iter().copied().find(|k| pass.owner[*k].is_none()) {
                 pass.occupy(def.value, free, i);
                 continue;
@@ -1525,9 +1785,10 @@ impl LinearScan {
                 )
             });
             let occupant = pass.owner[slot].unwrap_or_else(|| unreachable!("a loser holds one"));
-            // Which of the two goes to memory, by the rule that chose the slot:
-            // the new value's own rank against the occupant's. A definition has
-            // written nothing yet, so its slot is never the cheap kind.
+            // Whether the new value keeps the register past this instruction,
+            // by the rule that chose the slot: its own rank against the
+            // occupant's. A definition has written nothing yet, so its slot is
+            // never the cheap kind.
             let new_rank = EvictionRank {
                 // A definition is a write; nothing reads it here.
                 needed_now: false,
@@ -1540,12 +1801,22 @@ impl LinearScan {
                     pass.next_read(def.value, i).map_or(usize::MAX, |r| r - i),
                 ),
             };
-            if new_rank <= pass.rank(occupant, i) {
-                let to = pass.out_of_register(def.value);
-                pass.place(def.value, i, to);
-            } else {
-                pass.split_out(slot, i);
-                pass.occupy(def.value, slot, i);
+            let keeps = new_rank > pass.rank(occupant, i);
+            if !keeps && pass.const_bits[def.value.0 as usize].is_some() {
+                // Nothing to write: the definition of a rematerialized constant
+                // emits no instruction, so it takes no register and evicts no
+                // one. Reserving one for it would cost a live value its
+                // register to hold a value the emitter never computes.
+                pass.place(def.value, i, pass.out_of_register(def.value));
+                continue;
+            }
+            pass.split_out(slot, i);
+            pass.occupy(def.value, slot, i);
+            if !keeps && i + 1 < dag.len() {
+                // Given a register to be written into and stored from — the
+                // store goes right after the definition, as it does for any
+                // value with a slot — and not to keep.
+                demotions[i + 1].push((def.value, slot));
             }
         }
 
@@ -1591,10 +1862,10 @@ pub fn no_temps(_op: &ScheduledOp) -> u8 {
     0
 }
 
-/// The values an operation reads.
-fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
+/// The values an operation reads, in operand order.
+pub(crate) fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
     let (a, b, c) = match sop {
-        ScheduledOp::Var(_) | ScheduledOp::Const(_) => (None, None, None),
+        ScheduledOp::Var(_) | ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => (None, None, None),
         ScheduledOp::Unary(_, a) | ScheduledOp::ShiftImm(_, a, _) | ScheduledOp::Gather(a, _) => {
             (Some(*a), None, None)
         }
@@ -1615,8 +1886,8 @@ mod tests {
         fixed: &[],
         inputs: [Reg(0), Reg(1), Reg(2), Reg(3)],
         scratch: RegSet::range(4, RegisterFile::MIN_SCRATCH),
-        reload: [Reg(11), Reg(12)],
         temps_for: no_temps,
+        guard_temps: 0,
         vector_bytes: 16,
     }
     .checked();
@@ -1842,42 +2113,87 @@ mod tests {
         assert_ne!(Where::Reg(temp), at(&a, ValueId(1)));
     }
 
-    /// A `Select` gets its own third reload target, disjoint from its operands,
-    /// its destination and its encoding temp — the four registers the
-    /// instruction can be using at once.
+    /// A `Select` with spilled arms gets a reload target each, disjoint from
+    /// its operands, its destination and its encoding temp — the registers the
+    /// instruction is using at once.
+    ///
+    /// The second of them used to be `select_reload`, then `arm_reload`; it is
+    /// operand 2's entry in `Scratch::reload` now, chosen by the same
+    /// `operand_sources` the emitter reads.
     #[test]
-    fn a_select_reserves_a_third_reload_target() {
-        let schedule = vec![
+    fn a_select_reserves_a_target_for_each_arm_it_has_to_reload() {
+        // The mask and both arms are computed first and read last, with enough
+        // filler between them to push them out of a pool sized at the floor —
+        // which is what makes this a test about reload targets rather than
+        // about a `Select` whose operands all happen to be resident.
+        let width = u32::from(RegisterFile::MIN_SCRATCH) + 1;
+        let mut schedule = vec![
             def(0, ScheduledOp::Var(0)),
             def(1, ScheduledOp::Var(1)),
             def(2, ScheduledOp::Binary(OpKind::Lt, ValueId(0), ValueId(1))),
             def(3, ScheduledOp::Binary(OpKind::Add, ValueId(0), ValueId(1))),
             def(4, ScheduledOp::Binary(OpKind::Sub, ValueId(0), ValueId(1))),
-            def(
-                5,
-                ScheduledOp::Ternary(OpKind::Select, ValueId(2), ValueId(3), ValueId(4)),
-            ),
         ];
-        let a = LinearScan.allocate(schedule, &TEMP_FILE);
-        let s = a.body().scratch(5);
-
-        let arm = s.arm_reload.expect("a `Select` always reserves one");
-        assert!(TEMP_FILE.scratch.contains(arm), "{arm:?} is not the pool's");
-        for v in [ValueId(2), ValueId(3), ValueId(4), ValueId(5)] {
-            assert_ne!(
-                Where::Reg(arm),
-                at(&a, v),
-                "{arm:?} is still holding {v:?} when the Select reloads into it"
-            );
+        for i in 0..width {
+            schedule.push(def(
+                10 + i,
+                ScheduledOp::Binary(OpKind::Mul, ValueId(0), ValueId(1)),
+            ));
         }
-        assert_ne!(Some(arm), s.temp(0), "the two roles must be two registers");
+        let mut acc = ValueId(10);
+        for i in 1..width {
+            schedule.push(def(
+                100 + i,
+                ScheduledOp::Binary(OpKind::Add, acc, ValueId(10 + i)),
+            ));
+            acc = ValueId(100 + i);
+        }
+        let select = 200;
+        schedule.push(def(
+            select,
+            ScheduledOp::Ternary(OpKind::Select, ValueId(2), ValueId(3), ValueId(4)),
+        ));
+        let at_select = schedule.len() - 1;
+        let a = LinearScan.allocate(schedule, &TEMP_FILE);
+        let s = a.body().scratch(at_select);
+
+        // The reservation answers the question it is for: how many of this
+        // instruction's operands are not in a register where it runs.
+        let resident = [
+            matches!(a.body().where_at(ValueId(2), at_select), Where::Reg(_)),
+            matches!(a.body().where_at(ValueId(3), at_select), Where::Reg(_)),
+            matches!(a.body().where_at(ValueId(4), at_select), Where::Reg(_)),
+        ];
+        let op = ScheduledOp::Ternary(OpKind::Select, ValueId(2), ValueId(3), ValueId(4));
+        let wanted = reloads_wanted(operand_sources(&op, resident));
+        assert!(wanted > 0, "no arm spilled, so nothing here is reserved");
+        for role in 0..wanted {
+            let arm = s
+                .reload(role)
+                .unwrap_or_else(|| panic!("reload target {role} was not reserved"));
+            assert!(TEMP_FILE.scratch.contains(arm), "{arm:?} is not the pool's");
+            for v in [ValueId(2), ValueId(3), ValueId(4), ValueId(select)] {
+                assert_ne!(
+                    Where::Reg(arm),
+                    a.body().where_at(v, at_select),
+                    "{arm:?} is still holding {v:?} when the Select reloads into it"
+                );
+            }
+            assert_ne!(Some(arm), s.temp(0), "the two roles must be two registers");
+            for other in 0..role {
+                assert_ne!(Some(arm), s.reload(other), "two operands, one register");
+            }
+        }
+        assert_eq!(s.reload(wanted), None, "nothing reserved past the demand");
     }
 
-    /// Only a `Select` asks: every other shape leaves the register alone.
+    /// Nothing is reserved for an operand that is already in a register.
     #[test]
-    fn nothing_but_a_select_reserves_an_arm_reload() {
+    fn a_resident_operand_reserves_no_reload_target() {
         let a = LinearScan.allocate(add_xy(), &TEMP_FILE);
-        assert_eq!(a.body().scratch(2).arm_reload, None);
+        let s = a.body().scratch(2);
+        assert_eq!(s.reload(0), None);
+        assert_eq!(s.reload(1), None);
     }
 
     /// A pool shrunk below what an encoding needs is not a smaller budget, it
@@ -1935,20 +2251,25 @@ mod tests {
         assert!(reused, "{temp:?} went back to the pool after the `Neg`");
     }
 
-    /// Six values live at once cannot fit a four-register pool.
+    /// More values live at once than the pool holds.
+    ///
+    /// Sized from `MIN_SCRATCH`, not from a literal: `TEST_FILE`'s pool *is*
+    /// the floor, and a width written in as a number stops being pressure the
+    /// moment the floor moves.
     #[test]
     fn pressure_beyond_the_pool_spills() {
+        let width = u32::from(RegisterFile::MIN_SCRATCH) + 1;
         let mut schedule = vec![def(0, ScheduledOp::Var(0))];
-        for i in 1..=6u32 {
+        for i in 1..=width {
             schedule.push(def(i, ScheduledOp::Unary(OpKind::Neg, ValueId(0))));
         }
         let mut acc = ValueId(1);
-        for i in 2..=6u32 {
+        for i in 2..=width {
             schedule.push(def(
-                6 + i,
+                width + i,
                 ScheduledOp::Binary(OpKind::Add, acc, ValueId(i)),
             ));
-            acc = ValueId(6 + i);
+            acc = ValueId(width + i);
         }
         let a = alloc(schedule);
         assert!(spill_count(&a) > 0);
@@ -1978,21 +2299,22 @@ mod tests {
     /// the load beats a store plus a reload.
     #[test]
     fn constants_are_rematerialized_rather_than_spilled() {
+        let width = u32::from(RegisterFile::MIN_SCRATCH) + 1;
         let mut schedule = vec![def(0, ScheduledOp::Var(0))];
-        for i in 1..=6u32 {
+        for i in 1..=width {
             schedule.push(def(i, ScheduledOp::Const(i as f32)));
         }
         let mut acc = ValueId(1);
-        for i in 2..=6u32 {
+        for i in 2..=width {
             schedule.push(def(
-                6 + i,
+                width + i,
                 ScheduledOp::Binary(OpKind::Add, acc, ValueId(i)),
             ));
-            acc = ValueId(6 + i);
+            acc = ValueId(width + i);
         }
         let a = alloc(schedule);
 
-        let remat: Vec<(ValueId, u32)> = (1..=6u32)
+        let remat: Vec<(ValueId, u32)> = (1..=width)
             .flat_map(|i| {
                 ever(&a, ValueId(i))
                     .into_iter()
@@ -2100,13 +2422,12 @@ mod tests {
     /// directly.
     ///
     /// `dst op= right` corrupts `right` when `dst == right` and `dst != left`.
-    /// That assignment is unrepresentable here: a destination takes a slot
-    /// with no live owner, or evicts one — and an evicted value's placement
-    /// becomes `Spilled` for its whole life, so it is read back from memory
-    /// rather than from the register the destination took. The backend needs
-    /// no stashing temp to route around a case that cannot arise, which is
-    /// what `emit_binary_safe` used to be and what held xmm10 out of every
-    /// kernel's pool.
+    /// That assignment is unrepresentable here: a destination is drawn from
+    /// the slots this instruction has not claimed for a scratch role *and*
+    /// that no value it reads is living in, so it can only take a slot whose
+    /// occupant is dead or evicted here. The backend needs no stashing temp to
+    /// route around a case that cannot arise, which is what `emit_binary_safe`
+    /// used to be and what held xmm10 out of every kernel's pool.
     #[test]
     fn a_destination_never_lands_on_a_resident_operand() {
         // Wide enough to evict: `width` values all live at once over a pool of
@@ -2144,7 +2465,7 @@ mod tests {
                 // At the instruction's own point: that is where a destination
                 // and its operands would collide.
                 let Where::Reg(dst) = body.where_at(d.value, i) else {
-                    continue; // Spilled: the destination is `reload[0]`, not the pool's.
+                    continue; // A rematerialized constant: its definition emits nothing.
                 };
                 for operand in operands(&d.op) {
                     let at = body.where_at(operand, i);
@@ -2228,7 +2549,10 @@ mod tests {
         for i in 0..body.schedule().len() {
             let s = body.scratch(i);
             inside.extend((0..Scratch::MAX_TEMPS).filter_map(|k| s.temp(k)));
-            inside.extend(s.arm_reload);
+            inside.extend((0..Scratch::MAX_RELOADS).filter_map(|k| s.reload(k)));
+            inside.extend(s.guard_mask);
+            inside.extend(s.guard_temp);
+            inside.extend(s.result);
         }
 
         for (vid, carry) in &carries {
@@ -2315,18 +2639,6 @@ mod tests {
         );
     }
 
-    /// `checked()` is the isolation's teeth: a file whose reload register sits
-    /// inside the allocatable pool would let a reload clobber a live value.
-    #[test]
-    #[should_panic(expected = "reload register is inside the allocatable pool")]
-    fn a_reload_register_inside_the_pool_is_refused() {
-        let _refused = RegisterFile {
-            scratch: RegSet::range(4, 8), // swallows Reg(11)
-            ..TEST_FILE
-        }
-        .checked();
-    }
-
     /// The same teeth for a backend's own scratch: `fixed` is declared so this
     /// is a const-eval failure rather than an argument in a comment.
     #[test]
@@ -2344,15 +2656,15 @@ mod tests {
     #[test]
     fn the_pool_may_straddle_a_reserved_register() {
         let straddling = RegisterFile {
-            scratch: RegSet::of(&[Reg(4), Reg(5), Reg(6), Reg(7), Reg(14), Reg(15)]),
+            scratch: RegSet::of(&[Reg(4), Reg(5), Reg(6), Reg(7), Reg(8), Reg(14), Reg(15)]),
             ..TEST_FILE
         }
         .checked();
-        assert_eq!(straddling.scratch.len(), 6);
+        assert_eq!(straddling.scratch.len(), RegisterFile::MIN_SCRATCH);
         let regs: alloc::vec::Vec<Reg> = straddling.scratch.iter().collect();
         assert_eq!(
             regs,
-            alloc::vec![Reg(4), Reg(5), Reg(6), Reg(7), Reg(14), Reg(15)]
+            alloc::vec![Reg(4), Reg(5), Reg(6), Reg(7), Reg(8), Reg(14), Reg(15)]
         );
     }
 

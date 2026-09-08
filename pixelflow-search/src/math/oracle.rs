@@ -38,11 +38,17 @@ use pixelflow_ir::binding::BindingTable;
 use crate::egraph::Rewrite;
 
 /// A metavariable count too high for this oracle to check: `eval_scalar`
-/// reads `Var(i)` for `i < 4` as a coordinate and `4..8` as a reduction
-/// index outside any `Reduce` context (a panic). A composed rule with more
-/// than 4 free metavariables cannot be validated this way and is reported
-/// separately, never silently accepted.
+/// reads `Var(i)` for `i < COORD_AXES` as a coordinate and `4..8` as a
+/// reduction index outside any `Reduce` context (a panic). Metavariables
+/// between the two are bound as *uniforms* here — a value that is the same
+/// at every sample is exactly what a metavariable standing for an arbitrary
+/// subterm needs to be — so the oracle still checks a four-metavariable
+/// rule; past four it cannot, and reports so rather than silently accepting.
 pub(crate) const MAX_ORACLE_METAVARS: u8 = 4;
+
+/// Coordinate axes a lattice has: metavariables below this many are sampled
+/// as coordinates, the rest as uniforms.
+const COORD_AXES: u8 = pixelflow_ir::arena::COORD_AXES as u8;
 
 /// Relative/absolute tolerance for "these are the same real value computed
 /// two different ways" — looser than same-expansion bit-parity (see module
@@ -63,7 +69,7 @@ pub(crate) struct OracleVerdict {
     /// Points where LHS and RHS agreed within tolerance.
     pub agree: usize,
     /// Well-conditioned points where they did not — a hard failure.
-    pub disagree_well_conditioned: Vec<[f32; 4]>,
+    pub disagree_well_conditioned: Vec<[f32; 2]>,
     /// Points too close to a singularity/cancellation to judge — recorded
     /// as metadata, never scored against the rule.
     pub ill_conditioned: usize,
@@ -142,7 +148,7 @@ fn collect_metavars(arena: &ExprArena, id: pixelflow_ir::ExprId, out: &mut BTree
         ExprNode::Var(mv) => {
             out.insert(*mv);
         }
-        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => {}
+        ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Uniform(_) => {}
         _ => {
             for c in arena.children(id) {
                 collect_metavars(arena, c, out);
@@ -227,15 +233,41 @@ pub(crate) fn cross_form_oracle(
         return None;
     }
 
-    let bindings = BindingTable::empty();
+    // A metavariable stands for an arbitrary subterm, so what it must be here
+    // is an independently sampled value — not necessarily a coordinate. Only
+    // the first two can be coordinates; the rest become the kernel arguments
+    // they would be in a real program, sampled per point through the block.
+    let args: Vec<(u8, pixelflow_ir::Uniform)> = vars
+        .iter()
+        .copied()
+        .filter(|&v| v >= COORD_AXES)
+        .map(|v| (v, pixelflow_ir::Uniform::new(0.0)))
+        .collect();
+    let subs: Vec<(u8, pixelflow_ir::ExprId)> = args
+        .iter()
+        .map(|&(v, u)| {
+            let slot = arena.declare_uniform(u.decl());
+            (v, arena.push_uniform(slot))
+        })
+        .collect();
+    let lhs = arena.substitute_vars_with(lhs, &subs);
+    let rhs = arena.substitute_vars_with(rhs, &subs);
+
     let mut rng = SplitMix64(seed ^ 0xD1B5_4A32_9C1E_77F1);
     let mut verdict = OracleVerdict::default();
 
     for _ in 0..points {
-        let mut point = [0.0f32; 4];
-        for &v in &vars {
+        let mut point = [0.0f32; pixelflow_ir::arena::COORD_AXES];
+        for &v in vars.iter().filter(|&&v| v < COORD_AXES) {
             point[v as usize] = rng.next_f32(4.0);
         }
+        let values: Vec<_> = args
+            .iter()
+            .map(|&(_, u)| (u.identity(), rng.next_f32(4.0)))
+            .collect();
+        let bindings = BindingTable::empty()
+            .bind_uniforms(&arena, &values)
+            .expect("every argument was declared just above");
         let got = pixelflow_ir::eval_scalar(&arena, lhs, &point, &bindings);
         let want = pixelflow_ir::eval_scalar(&arena, rhs, &point, &bindings);
         match compare(got, want) {

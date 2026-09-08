@@ -56,7 +56,13 @@ fn optimize(arena: &ExprArena, root: ExprId, tag: &str) -> (ExprArena, ExprId) {
         applications: None,
     });
     let mut eg = optimizer.egraph();
-    let root_class = eg.add_arena(arena, root);
+    let root_class = pixelflow_search::egraph::insert(
+        arena,
+        root,
+        &mut eg,
+        pixelflow_search::egraph::Vocabulary::Templates,
+    )
+    .expect("insert into e-graph");
     let classes_before = eg.num_classes();
 
     let optimized = optimizer.run(&mut eg, root_class, arena.len());

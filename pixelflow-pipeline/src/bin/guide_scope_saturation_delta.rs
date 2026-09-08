@@ -531,7 +531,13 @@ fn main() {
 
     for (i, (_name, arena, root)) in entries.iter().enumerate() {
         let mut egraph = EGraph::with_rules(all_rules());
-        let root_class = egraph.add_arena(arena, *root);
+        let root_class = pixelflow_search::egraph::insert(
+            arena,
+            *root,
+            &mut egraph,
+            pixelflow_search::egraph::Vocabulary::Templates,
+        )
+        .expect("insert into e-graph");
         let _ = root_class; // root only needed to seed the graph; saturation is whole-graph.
 
         let (seed_canon, seed_edges) = snapshot_graph(&egraph);

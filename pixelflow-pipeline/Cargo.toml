@@ -29,7 +29,11 @@ pixelflow-ir = { path = "../pixelflow-ir" }
 # pixelflow-search without the feature.
 pixelflow-search = { path = "../pixelflow-search", features = ["provenance-journal"] }
 pixelflow-core = { path = "../pixelflow-core" }
-pixelflow-compiler = { path = "../pixelflow-compiler" }
+# The collapse-cost corpus is led by the glyph kernels core-term bakes, and
+# `collapse_cost capture` builds them through the same `Font`/`GlyphAtlas`
+# production does — so the fixture is production's kernels, not a restatement
+# of their arithmetic.
+pixelflow-graphics = { path = "../pixelflow-graphics" }
 libm = "0.2.15"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -40,17 +44,13 @@ pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
-pixelflow-compiler = { path = "../pixelflow-compiler" }
 pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
 
-[[bench]]
-name = "nnue_training_suite"
-harness = false
-
-[[bench]]
-name = "macro_bench"
-harness = false
-
+[[bin]]
+name = "collapse_cost"
+path = "src/bin/collapse_cost.rs"
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
 
 [[bin]]
 name = "bench_jit_corpus"
@@ -245,4 +245,22 @@ bench = false
 name = "phase3_bisect_eval"
 path = "src/bin/phase3_bisect_eval.rs"
 required-features = ["training"]
+bench = false
+
+[[bin]]
+name = "egraph_off_on"
+path = "src/bin/egraph_off_on.rs"
+# Needs `pixelflow-ir/oracle` (`eval_scalar`) and, at run time, the
+# `pixelflow-search/saturation-switch` measurement feature for the `off` mode.
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "corpus_gaps"
+path = "src/bin/corpus_gaps.rs"
+# Reads `training::{bezier_family, sh_family}` for the SYNTHETIC half of the
+# inventory, so it cannot build without the module that defines them.
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false

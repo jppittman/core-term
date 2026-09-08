@@ -1,19 +1,22 @@
 //! Fuzz tests for optimization correctness.
 //!
-//! These tests verify that the kernel! macro's optimizations preserve
-//! numerical semantics within floating-point epsilon tolerance.
+//! The optimizer must preserve meaning: `kernel!` saturates an e-graph and
+//! extracts a form the source never wrote, and the only thing making that
+//! sound is that the new form computes the same number. So the property is
+//! checked against an oracle outside the compiler entirely — scalar `f32`
+//! arithmetic in Rust, not the IR's own `eval_scalar`, which shares its
+//! definitions with the thing under test.
 //!
 //! Strategy:
 //! 1. Define kernel expressions that exercise various optimizations
-//! 2. Define hand-written reference implementations (no macro magic)
+//! 2. Evaluate each at one point with `Lattice::eval_at` — the one evaluation
+//!    entry there is
 //! 3. Use proptest to generate random inputs
-//! 4. Assert kernel output matches reference within epsilon
+//! 4. Assert the baked value matches scalar `f32` within epsilon
 
 use pixelflow_compiler::kernel;
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Kernel, Lattice};
 use proptest::prelude::*;
-
-type Field4 = (Field, Field, Field, Field);
 
 /// Maximum relative error tolerance for floating-point comparisons.
 /// We use a relatively loose epsilon because the optimizer is free to rewrite
@@ -26,37 +29,9 @@ const EPSILON: f32 = 5e-4;
 /// Absolute tolerance for values near zero where relative error explodes.
 const ABS_EPSILON: f32 = 1e-6;
 
-fn field4(x: f32, y: f32, z: f32, w: f32) -> Field4 {
-    (
-        Field::from(x),
-        Field::from(y),
-        Field::from(z),
-        Field::from(w),
-    )
-}
-
-/// Extract first lane from Field for comparison.
-fn field_val(f: Field) -> f32 {
-    // Field is SIMD, all lanes have same value for broadcast inputs
-    // Use the Debug representation to extract value
-    let debug = format!("{:?}", f);
-    // Parse "Field(F32x16([1.0, 1.0, ...]))" or similar
-    let Some(start) = debug.find('[') else {
-        panic!("Failed to parse Field value from: {}", debug);
-    };
-
-    if let Some(end) = debug.find(',') {
-        if let Ok(v) = debug[start + 1..end].trim().parse::<f32>() {
-            return v;
-        }
-    }
-    // Single value case
-    if let Some(end) = debug.find(']') {
-        if let Ok(v) = debug[start + 1..end].trim().parse::<f32>() {
-            return v;
-        }
-    }
-    panic!("Failed to parse Field value from: {}", debug);
+/// Evaluate a kernel at one point.
+fn bake(k: &Kernel, x: f32, y: f32) -> f32 {
+    Lattice::eval_at(k, x, y)
 }
 
 /// Check if two f32 values are approximately equal.
@@ -95,11 +70,10 @@ proptest! {
         let sub_kernel = kernel!(|| X - Y);
         let mul_kernel = kernel!(|| X * Y);
 
-        let p = field4(x, y, 0.0, 0.0);
 
-        let add_result = field_val(add_kernel().eval(p));
-        let sub_result = field_val(sub_kernel().eval(p));
-        let mul_result = field_val(mul_kernel().eval(p));
+        let add_result = bake(&add_kernel, x, y);
+        let sub_result = bake(&sub_kernel, x, y);
+        let mul_result = bake(&mul_kernel, x, y);
 
         prop_assert!(approx_eq(add_result, x + y),
             "add: kernel={} ref={}", add_result, x + y);
@@ -113,9 +87,8 @@ proptest! {
     #[test]
     fn fuzz_division(x in -100.0f32..100.0, y in prop::num::f32::NORMAL.prop_filter("non-zero", |v| v.abs() > 0.001)) {
         let div_kernel = kernel!(|| X / Y);
-        let p = field4(x, y, 0.0, 0.0);
 
-        let kernel_result = field_val(div_kernel().eval(p));
+        let kernel_result = bake(&div_kernel, x, y);
         let reference = x / y;
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -126,9 +99,8 @@ proptest! {
     #[test]
     fn fuzz_sqrt(x in 0.001f32..1000.0) {
         let sqrt_kernel = kernel!(|| X.sqrt());
-        let p = field4(x, 0.0, 0.0, 0.0);
 
-        let kernel_result = field_val(sqrt_kernel().eval(p));
+        let kernel_result = bake(&sqrt_kernel, x, 0.0);
         let reference = x.sqrt();
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -139,9 +111,8 @@ proptest! {
     #[test]
     fn fuzz_sqrt_of_sum(x in 0.001f32..100.0, y in 0.001f32..100.0) {
         let kernel = kernel!(|| (X + Y).sqrt());
-        let p = field4(x, y, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, y);
         let reference = (x + y).sqrt();
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -151,10 +122,10 @@ proptest! {
     /// Test FMA fusion: a*b + c should give same result as unfused.
     #[test]
     fn fuzz_fma_pattern(a in -100.0f32..100.0, b in -100.0f32..100.0, c in -100.0f32..100.0) {
-        let fma_kernel = kernel!(|| X * Y + Z);
-        let p = field4(a, b, c, 0.0);
+        // The addend is a parameter, not a third axis: a lattice has two.
+        let fma_kernel = kernel!(|c: f32| X * Y + c)(c);
 
-        let kernel_result = field_val(fma_kernel().eval(p));
+        let kernel_result = bake(&fma_kernel, a, b);
         // Reference: unfused multiply-add (may differ by 1 ULP due to FMA)
         let reference = a * b + c;
 
@@ -166,9 +137,8 @@ proptest! {
     #[test]
     fn fuzz_add_zero_identity(x in -1000.0f32..1000.0) {
         let kernel = kernel!(|| X + 0.0);
-        let p = field4(x, 0.0, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, 0.0);
 
         prop_assert!(approx_eq(kernel_result, x),
             "x+0: kernel={} ref={}", kernel_result, x);
@@ -178,9 +148,8 @@ proptest! {
     #[test]
     fn fuzz_mul_one_identity(x in -1000.0f32..1000.0) {
         let kernel = kernel!(|| X * 1.0);
-        let p = field4(x, 0.0, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, 0.0);
 
         prop_assert!(approx_eq(kernel_result, x),
             "x*1: kernel={} ref={}", kernel_result, x);
@@ -190,9 +159,8 @@ proptest! {
     #[test]
     fn fuzz_mul_zero_propagation(x in -1000.0f32..1000.0) {
         let kernel = kernel!(|| X * 0.0);
-        let p = field4(x, 0.0, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, 0.0);
 
         // Note: x * 0.0 can be -0.0 for negative x, but we treat 0.0 == -0.0
         prop_assert!(approx_eq(kernel_result, 0.0),
@@ -203,9 +171,8 @@ proptest! {
     #[test]
     fn fuzz_abs(x in -1000.0f32..1000.0) {
         let kernel = kernel!(|| X.abs());
-        let p = field4(x, 0.0, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, 0.0);
         let reference = x.abs();
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -216,9 +183,8 @@ proptest! {
     #[test]
     fn fuzz_floor(x in -1000.0f32..1000.0) {
         let kernel = kernel!(|| X.floor());
-        let p = field4(x, 0.0, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, 0.0);
         let reference = x.floor();
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -229,9 +195,8 @@ proptest! {
     #[test]
     fn fuzz_neg(x in -1000.0f32..1000.0) {
         let kernel = kernel!(|| (-X));
-        let p = field4(x, 0.0, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, 0.0);
         let reference = -x;
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -242,9 +207,8 @@ proptest! {
     #[test]
     fn fuzz_distance_2d(x in -100.0f32..100.0, y in -100.0f32..100.0) {
         let kernel = kernel!(|| (X * X + Y * Y).sqrt());
-        let p = field4(x, y, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, y);
         let reference = (x * x + y * y).sqrt();
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -254,10 +218,9 @@ proptest! {
     /// Test chained operations: (x + y) * z - w.
     #[test]
     fn fuzz_chained_ops(x in -50.0f32..50.0, y in -50.0f32..50.0, z in -50.0f32..50.0, w in -50.0f32..50.0) {
-        let kernel = kernel!(|| (X + Y) * Z - W);
-        let p = field4(x, y, z, w);
+        let kernel = kernel!(|z: f32, w: f32| (X + Y) * z - w)(z, w);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, y);
         let reference = (x + y) * z - w;
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -269,9 +232,8 @@ proptest! {
     fn fuzz_scalar_param(x in -100.0f32..100.0, param in -100.0f32..100.0) {
         let kernel_factory = kernel!(|offset: f32| X + offset);
         let kernel = kernel_factory(param);
-        let p = field4(x, 0.0, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel.eval(p));
+        let kernel_result = bake(&kernel, x, 0.0);
         let reference = x + param;
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -283,9 +245,8 @@ proptest! {
     fn fuzz_method_after_binop(x in 0.001f32..100.0, offset in 0.001f32..100.0) {
         let kernel_factory = kernel!(|val: f32| (X + val).sqrt());
         let kernel = kernel_factory(offset);
-        let p = field4(x, 0.0, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel.eval(p));
+        let kernel_result = bake(&kernel, x, 0.0);
         let reference = (x + offset).sqrt();
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -297,9 +258,8 @@ proptest! {
     #[test]
     fn fuzz_chained_methods(x in 0.001f32..100.0, y in 0.001f32..100.0) {
         let kernel = kernel!(|| (X + Y).sqrt().abs());
-        let p = field4(x, y, 0.0, 0.0);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, y);
         let reference = (x + y).sqrt().abs();
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -309,10 +269,9 @@ proptest! {
     /// Test nested binary ops with methods.
     #[test]
     fn fuzz_nested_binop_methods(x in 0.001f32..50.0, y in 0.001f32..50.0, z in 0.001f32..50.0) {
-        let kernel = kernel!(|| (X * Y).sqrt() + Z);
-        let p = field4(x, y, z, 0.0);
+        let kernel = kernel!(|z: f32| (X * Y).sqrt() + z)(z);
 
-        let kernel_result = field_val(kernel().eval(p));
+        let kernel_result = bake(&kernel, x, y);
         let reference = (x * y).sqrt() + z;
 
         prop_assert!(approx_eq(kernel_result, reference),
@@ -330,7 +289,7 @@ fn regression_sqrt_with_param() {
     let kernel_factory = kernel!(|val: f32| (X + val).sqrt());
     let kernel = kernel_factory(7.0);
 
-    let result = field_val(kernel.eval(field4(9.0, 0.0, 0.0, 0.0)));
+    let result = bake(&kernel, 9.0, 0.0);
     let expected = (9.0_f32 + 7.0).sqrt(); // sqrt(16) = 4
 
     assert!(
@@ -347,7 +306,7 @@ fn regression_mul_then_method() {
     let kernel = kernel!(|| (X * Y).abs());
 
     // Test with negative values where the bug would be visible
-    let result = field_val(kernel().eval(field4(-3.0, 4.0, 0.0, 0.0)));
+    let result = bake(&kernel, -3.0, 4.0);
     let expected = (-3.0_f32 * 4.0).abs(); // |-12| = 12
 
     assert!(
@@ -363,7 +322,7 @@ fn regression_sub_then_method() {
     // (X - Y).floor() should not become X - Y.floor()
     let kernel = kernel!(|| (X - Y).floor());
 
-    let result = field_val(kernel().eval(field4(5.7, 2.3, 0.0, 0.0)));
+    let result = bake(&kernel, 5.7, 2.3);
     let expected = (5.7_f32 - 2.3).floor(); // floor(3.4) = 3
 
     assert!(

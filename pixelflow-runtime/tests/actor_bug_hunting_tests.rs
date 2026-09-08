@@ -13,7 +13,7 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
     SendError, ShutdownMode, SystemStatus,
 };
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -257,57 +257,10 @@ fn actor_panic_does_not_corrupt_state() {
     assert!(panicked, "Actor should have panicked");
 }
 
-// ============================================================================
-// Starvation of lower priority lanes
-// Can control messages completely starve data messages?
-// ============================================================================
-
-#[test]
-fn continuous_control_eventually_processes_data() {
-    let (tx, mut rx) = ActorScheduler::new(10, 100);
-    let data_received = Arc::new(AtomicBool::new(false));
-    let data_received_clone = data_received.clone();
-
-    let handle = thread::spawn(move || {
-        struct StarvationTracker(Arc<AtomicBool>);
-        impl Actor<String, String, String> for StarvationTracker {
-            fn handle_data(&mut self, _: String) -> HandlerResult {
-                self.0.store(true, Ordering::SeqCst);
-                Ok(())
-            }
-            fn handle_control(&mut self, _: String) -> HandlerResult {
-                // No delay - we're testing priority, not processing time
-                Ok(())
-            }
-            fn handle_management(&mut self, _: String) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                Ok(ActorStatus::Idle)
-            }
-        }
-        rx.run(&mut StarvationTracker(data_received_clone));
-    });
-
-    // Send one data message
-    tx.send(Message::Data("important".to_string())).unwrap();
-
-    // Then flood with control messages (reduced count for faster test)
-    for i in 0..100 {
-        tx.send(Message::Control(format!("{}", i))).unwrap();
-    }
-
-    // Wait for processing - quick since no delays
-    thread::sleep(Duration::from_millis(100));
-    drop(tx);
-    handle.join().unwrap();
-
-    // Note: Due to priority, data may never be processed if control keeps coming
-    // This test documents the behavior - it's expected that control has priority
-    // But we want to verify the system doesn't deadlock
-
-    // The test passes if it completes without hanging
-}
+// Starvation of lower priority lanes had a test here — one data message, a flood of 100
+// control messages, and a closing comment reading "The test passes if it completes without
+// hanging". It had no assertion at all, and the thing it meant to check is covered with one
+// in `actor_model_tests.rs::no_starvation_with_continuous_high_priority`.
 
 // ============================================================================
 // ActorStatus::Busy causes CPU spin
@@ -479,31 +432,10 @@ fn single_sender_fifo_ordering_maintained() {
     }
 }
 
-// ============================================================================
-// Very large message count overflow
-// Can frame numbers or counters overflow?
-// ============================================================================
-
-#[test]
-fn large_frame_numbers_dont_overflow() {
-    use pixelflow_runtime::vsync_actor::RenderedResponse;
-
-    // Test with u64 max values
-    let response = RenderedResponse {
-        frame_number: u64::MAX,
-        rendered_at: Instant::now(),
-    };
-
-    assert_eq!(response.frame_number, u64::MAX);
-
-    // Test wrapping behavior
-    let response2 = RenderedResponse {
-        frame_number: u64::MAX.wrapping_add(1),
-        rendered_at: Instant::now(),
-    };
-
-    assert_eq!(response2.frame_number, 0, "Wrapping should work correctly");
-}
+// Two tests in this file asserted `u64::MAX.wrapping_add(1) == 0` and that `Instant::elapsed`
+// saturates rather than panicking on a future instant, each routed through a
+// `RenderedResponse` struct literal to look like coverage. They are properties of the standard
+// library, true regardless of anything in this repository, so no change here could fail them.
 
 // ============================================================================
 // Rapid channel creation/destruction
@@ -657,29 +589,6 @@ fn doorbell_saturation_does_not_lose_messages() {
         5000,
         "All messages should be processed despite doorbell saturation"
     );
-}
-
-// ============================================================================
-// Time-based operations near epoch
-// What happens with time calculations near boundaries?
-// ============================================================================
-
-#[test]
-fn instant_arithmetic_is_safe() {
-    use pixelflow_runtime::vsync_actor::RenderedResponse;
-
-    let now = Instant::now();
-    let later = now + Duration::from_secs(1);
-
-    let response = RenderedResponse {
-        frame_number: 0,
-        rendered_at: later,
-    };
-
-    // Should be able to calculate elapsed without panic
-    let elapsed = response.rendered_at.elapsed();
-    // elapsed might be 0 or small negative (which panics on sub), but elapsed() handles it
-    assert!(elapsed < Duration::from_secs(2));
 }
 
 // ============================================================================

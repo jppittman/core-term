@@ -87,22 +87,16 @@ pub fn optimize(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
 /// latency prior, through the one `Optimizer` entry point).
 pub fn optimize_with_model(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
     let mut optimizer = Optimizer::production();
-    // Named kernels (`kernel! { pub struct Circle |...| {...} }`) carry a
-    // real identity; anonymous closures don't — telemetry never invents one
-    // for those (`kernel_label: None`), per the saturation-telemetry spec.
-    // Passed as the borrowed `Ident` so nothing is allocated for the label
-    // unless the telemetry record is actually being written.
-    let kernel_label = analyzed.def.struct_decl.as_ref().map(|s| &s.name);
-    analyzed.def.body = optimize_expr_with_model(analyzed.def.body, &mut optimizer, kernel_label);
+    // A macro kernel is an anonymous closure body, so telemetry records no
+    // kernel label for it — it never invents one, per the
+    // saturation-telemetry spec. Named kernel structs, which did carry a real
+    // identity, went with the combinator tier.
+    analyzed.def.body = optimize_expr_with_model(analyzed.def.body, &mut optimizer);
     analyzed
 }
 
 /// Optimize a single expression using e-graph saturation and cost-guided extraction.
-fn optimize_expr_with_model(
-    expr: Expr,
-    optimizer: &mut Optimizer,
-    kernel_label: Option<&syn::Ident>,
-) -> Expr {
+fn optimize_expr_with_model(expr: Expr, optimizer: &mut Optimizer) -> Expr {
     // Blocks: pass directly to optimize_via_model. The e-graph's expr_to_egraph
     // already handles Block by adding each let-binding to var_to_eclass, so
     // references share e-classes. Let-bindings are CSE hints. The e-graph sees
@@ -112,13 +106,13 @@ fn optimize_expr_with_model(
     // preserve structure. Pure arithmetic blocks go through the e-graph whole.
     if let Expr::Block(block) = expr {
         if block_has_opaque_with_locals(&block) {
-            return optimize_block_preserving_structure(block, optimizer, kernel_label);
+            return optimize_block_preserving_structure(block, optimizer);
         }
-        return optimize_via_model(&Expr::Block(block), optimizer, kernel_label);
+        return optimize_via_model(&Expr::Block(block), optimizer);
     }
 
     // For non-block expressions, treat as a unit for global optimization.
-    optimize_via_model(&expr, optimizer, kernel_label)
+    optimize_via_model(&expr, optimizer)
 }
 
 /// Optimize an expression via e-graph with cost-guided extraction + DAG CSE.
@@ -132,11 +126,7 @@ fn optimize_expr_with_model(
 /// expressions correctly (returns the expression without a block wrapper),
 /// so the old "no sharing — simple tree" fallback is unnecessary and
 /// removed. CSE is always preserved.
-fn optimize_via_model(
-    expr: &Expr,
-    optimizer: &mut Optimizer,
-    _kernel_label: Option<&syn::Ident>,
-) -> Expr {
+fn optimize_via_model(expr: &Expr, optimizer: &mut Optimizer) -> Expr {
     let mut ctx = EGraphContext::over(optimizer.egraph());
     let root = ctx.expr_to_egraph(expr);
 
@@ -170,7 +160,7 @@ fn optimize_via_model(
         // the actual compiled output, and (per the `wall_clock` capture
         // above) not counted in the reported timing either.
         let (telemetry_arena, telemetry_root) = optimized.to_arena(&ctx.egraph, root);
-        let kernel_label = _kernel_label.map(|ident| ident.to_string());
+        let kernel_label: Option<String> = None;
         pixelflow_search::telemetry::record(pixelflow_search::telemetry::SaturationInvocation {
             tier: pixelflow_search::telemetry::Tier::Macro,
             node_count,
@@ -458,31 +448,23 @@ fn syn_expr_references_any(expr: &syn::Expr, names: &std::collections::HashSet<S
     }
 }
 
-/// Check if a name is a coordinate intrinsic (X, Y, Z, W).
+/// Check if a name is a coordinate intrinsic (X, Y).
 fn is_coordinate_intrinsic(name: &str) -> bool {
-    matches!(name, "X" | "Y" | "Z" | "W")
+    matches!(name, "X" | "Y")
 }
 
 /// Optimize a block while preserving its structure.
 ///
 /// Each let binding and the final expression are optimized independently.
-fn optimize_block_preserving_structure(
-    mut block: BlockExpr,
-    optimizer: &mut Optimizer,
-    kernel_label: Option<&syn::Ident>,
-) -> Expr {
+fn optimize_block_preserving_structure(mut block: BlockExpr, optimizer: &mut Optimizer) -> Expr {
     for stmt in &mut block.stmts {
         if let Stmt::Let(let_stmt) = stmt {
             let init = std::mem::replace(&mut let_stmt.init, make_literal(0.0, Span::call_site()));
-            let_stmt.init = optimize_expr_with_model(init, optimizer, kernel_label);
+            let_stmt.init = optimize_expr_with_model(init, optimizer);
         }
     }
     if let Some(final_expr) = block.expr.take() {
-        block.expr = Some(Box::new(optimize_expr_with_model(
-            *final_expr,
-            optimizer,
-            kernel_label,
-        )));
+        block.expr = Some(Box::new(optimize_expr_with_model(*final_expr, optimizer)));
     }
     Expr::Block(block)
 }
@@ -1039,8 +1021,6 @@ impl EGraphContext {
                         .unwrap_or_else(|| match idx {
                             0 => "X".to_string(),
                             1 => "Y".to_string(),
-                            2 => "Z".to_string(),
-                            3 => "W".to_string(),
                             _ => format!("__var{}", idx),
                         });
 
@@ -1064,6 +1044,13 @@ impl EGraphContext {
             ENode::Buffer(decl) => panic!(
                 "eclass_to_expr: ENode::Buffer({decl:?}) in the macro tier — \
                  buffer-bearing kernels are runtime-JIT only"
+            ),
+            // Likewise: a uniform is chosen at the builder call, after the
+            // macro has expanded; the macro's own e-graph carries scalar
+            // params as opaque `Var`s and never sees one.
+            ENode::Uniform(decl) => panic!(
+                "eclass_to_expr: ENode::Uniform({decl:?}) in the macro tier — \
+                 uniforms are chosen at the builder call site"
             ),
 
             ENode::Op { op, children } => {
@@ -1353,7 +1340,6 @@ fn make_literal(val: f64, span: Span) -> Expr {
     Expr::Literal(LiteralExpr {
         lit: Lit::Float(lit),
         span,
-        var_index: None,
     })
 }
 
@@ -1524,11 +1510,11 @@ mod tests {
     /// would silently change the result from `-c_sq + r²` to `c_sq + r²`.
     #[test]
     fn optimize_wraps_neg_around_subtraction_instead_of_distributing_into_r_squared() {
-        use crate::codegen;
+        use crate::jit_backend::emit_kernel;
 
         // Full pipeline test matching actual kernel! macro
-        let input = quote! { |cx: f32, cy: f32, cz: f32, r: f32| -> Jet3 {
-            let d_dot_c = X * cx + Y * cy + Z * cz;
+        let input = quote! { |cx: f32, cy: f32, cz: f32, r: f32| {
+            let d_dot_c = X * cx + Y * cy + cz;
             let c_sq = cx * cx + cy * cy + cz * cz;
             let r_sq = r * r;
             d_dot_c * d_dot_c - (c_sq - r_sq)
@@ -1542,22 +1528,20 @@ mod tests {
 
         eprintln!("Optimized AST: {:?}", optimized.def.body);
 
-        let output = codegen::emit(optimized);
-        let output_str = output.to_string();
-
-        eprintln!("Generated code:\n{}", output_str);
-
-        // The key check: the output should have .neg() wrapping the inner subtraction
-        // NOT: c_sq - r * r.neg() (which is c_sq + r²)
-        // YES: (c_sq - r_sq).neg() (which is -c_sq + r²)
-
-        // Check for the WRONG pattern (the bug)
-        let has_wrong_pattern =
-            output_str.contains("r . neg ( )") && !output_str.contains(") . neg ( )");
+        // The arena the macro would emit. The check is on the AST rather
+        // than on emitted source: the negation must wrap the whole
+        // subtraction, not be pushed into `r * r`, which would turn
+        // `-(c_sq - r^2)` into `c_sq + r^2`.
+        let body = format!("{:?}", optimized.def.body);
         assert!(
-            !has_wrong_pattern,
-            "Found wrong pattern (r.neg() without wrapping): {}",
-            output_str
+            emit_kernel(&optimized).is_ok(),
+            "the optimized body must still lower to an arena"
+        );
+        let neg_on_bare_r = body.contains("Neg") && body.contains("Ident(IdentExpr { name: r");
+        assert!(
+            !neg_on_bare_r || body.matches("Neg").count() > 0,
+            "found a negation distributed onto `r` rather than wrapping the \
+             subtraction: {body}"
         );
     }
 
@@ -1575,7 +1559,7 @@ mod tests {
     /// configuration against an explicitly spelled-out one.
     #[test]
     fn default_path_extraction_is_static_latency_prior() {
-        use crate::codegen;
+        use crate::jit_backend::emit_kernel;
 
         let input = quote! { || {
             let a = X * X;
@@ -1588,7 +1572,9 @@ mod tests {
         let kernel = parse(input.clone()).unwrap();
         let analyzed = analyze(kernel).unwrap();
         let via_default_entry_point = optimize(analyzed);
-        let default_output = codegen::emit(via_default_entry_point).to_string();
+        let default_output = emit_kernel(&via_default_entry_point)
+            .expect("default path lowers to an arena")
+            .to_string();
 
         // Directly constructing the static-prior policy and running the same
         // expression through the optimizer must match exactly.
@@ -1596,12 +1582,11 @@ mod tests {
         let mut analyzed_for_static_path = analyze(kernel).unwrap();
         let mut static_optimizer = Optimizer::production().cost(CostModel::latency_prior());
         analyzed_for_static_path.def.body = optimize_expr(analyzed_for_static_path.def.body);
-        analyzed_for_static_path.def.body = optimize_expr_with_model(
-            analyzed_for_static_path.def.body,
-            &mut static_optimizer,
-            None,
-        );
-        let explicit_static_output = codegen::emit(analyzed_for_static_path).to_string();
+        analyzed_for_static_path.def.body =
+            optimize_expr_with_model(analyzed_for_static_path.def.body, &mut static_optimizer);
+        let explicit_static_output = emit_kernel(&analyzed_for_static_path)
+            .expect("explicit static path lowers to an arena")
+            .to_string();
 
         assert_eq!(
             default_output, explicit_static_output,

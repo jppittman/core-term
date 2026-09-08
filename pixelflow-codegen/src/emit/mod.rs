@@ -10,16 +10,20 @@
 //!
 //! All four backends run that same allocator behind the same driver
 //! ([`IsaBackend`]). What a backend contributes is its `RegisterFile` — input
-//! registers, scratch window, reload registers, vector width — and its
-//! instruction encodings. Nothing else about a target reaches the allocation,
-//! framing, or control-flow logic.
+//! registers, the allocatable pool, how many registers its encodings and its
+//! guards destroy, vector width — and its instruction encodings. Nothing else
+//! about a target reaches the allocation, framing, or control-flow logic.
 //!
 //! ## Spilling
 //!
 //! Values the scratch pool cannot hold go to stack slots, laid out by
 //! [`FrameLayout`] at the backend's vector stride:
-//! - Spilled values stored to `[SP, #offset]`
-//! - Reloaded into `RegisterFile::reload` before use
+//! - A value with a slot is stored to it right after its **definition**, which
+//!   every path that reads the value has run — including through a `Select`
+//!   guard, which can only skip a definition by skipping every read of it.
+//! - Reloaded into a register the allocator reserved *for that instruction*
+//!   ([`regalloc::Scratch`]); there is no register outside the pool for this,
+//!   and every definition holds a pool register at its own definition.
 //! - `EmitCtx::max_regs` caps the pool below the target's own count, which is
 //!   how register pressure vs. spill tradeoffs are exercised deliberately
 
@@ -53,11 +57,13 @@ pub(crate) mod coverage;
 pub mod executable;
 mod guards;
 pub mod regalloc;
+pub mod traffic;
 pub mod x86_64;
 
 use pixelflow_ir::kind::OpKind;
 
 use guards::analyze_select_guards;
+use traffic::{Counting, EmitTraffic, ScopeTraffic};
 
 use alloc::vec::Vec;
 
@@ -310,6 +316,27 @@ pub enum ResolvedOp {
     /// halves, SSE2 and NEON as four scalar loads. The buffer base pointer is
     /// loaded from the context struct (rdi) at `slot * 8`.
     Gather { dst: Reg, idx: Reg, slot: u16 },
+    /// Uniform broadcast: `dst = splat(block[offset])`. The block's base
+    /// pointer is loaded from the context struct at `ctx_slot * 8` — the
+    /// entry after the last buffer — and the scalar at `4 * offset` is
+    /// broadcast to every lane: `vbroadcastss` on every x86 tier, `ldr s` +
+    /// `dup` on NEON. Its variance is `CONST`, so it lands in the per-call
+    /// prologue.
+    Uniform { dst: Reg, load: UniformLoad },
+}
+
+/// Where one uniform lives, relative to the context the kernel is called with.
+///
+/// Two immediates, both fixed at compile time: which context entry holds the
+/// block (always the one past the kernel's buffer slots, so a kernel with no
+/// uniforms has no such entry and its context is exactly what it was), and
+/// the uniform's dense offset within the block, assigned by the link step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UniformLoad {
+    /// Index into the context array of the block's base pointer.
+    pub ctx_slot: u16,
+    /// Index of the value within the block, in `f32`s.
+    pub offset: u16,
 }
 
 /// A deferred reload: value loaded mid-instruction (after a partial computation).
@@ -332,14 +359,11 @@ pub enum Reload {
     Const { target: Reg, val_bits: u32 },
 }
 
-/// Store instruction: spill computed value to stack.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Store {
-    pub src: Reg,
-    pub offset: u32,
-}
-
-/// Fully resolved instruction with reloads and optional store.
+/// Fully resolved instruction: what to reload, and what to compute.
+///
+/// No store. A destination is always a register now, so the one place a value
+/// reaches its slot is the emit loop's store-after-definition — which is what
+/// makes the slot valid on every path a `Select` guard can take.
 #[derive(Clone, Debug)]
 pub struct InstructionPlan {
     /// Reloads to emit before the main op.
@@ -348,8 +372,6 @@ pub struct InstructionPlan {
     pub op: ResolvedOp,
     /// Optional MOV to set up accumulator/mask before main op.
     pub setup_mov: Option<(Reg, Reg)>,
-    /// Store to emit after the main op (if dst is spilled).
-    pub store: Option<Store>,
     /// The registers the encoding may destroy for the length of this
     /// instruction.
     ///
@@ -359,6 +381,85 @@ pub struct InstructionPlan {
     /// at the next instruction. An encoding that needs scratch must read this
     /// rather than a `const`, because there is no register reserved for it.
     pub scratch: regalloc::Scratch,
+}
+
+/// Where one operand of an instruction is read from.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum OperandSource {
+    /// Already in a register; the location table says which.
+    Resident,
+    /// Not in a register, and reloaded into the **destination**.
+    ///
+    /// Sound because every backend here reads all of an instruction's sources
+    /// before writing its destination, and free because these are the operands
+    /// an encoding needs in the destination anyway: a `Select`'s mask, an
+    /// FMA's addend, and a two-operand binary's left, which `dst op= right`
+    /// consumes from the destination by definition.
+    Destination,
+    /// Not in a register, and reloaded into the `k`'th register the allocator
+    /// reserved for this instruction ([`regalloc::Scratch::reload`]).
+    Reload(usize),
+}
+
+/// Where each operand of `op` is read from, given which of them are in a
+/// register at this point.
+///
+/// **One statement, read twice.** The allocator counts the [`Reload`]s to
+/// reserve; the emitter names the register each one lands in. A second copy
+/// would be a convention between two files that has to agree
+/// register-for-register — the shape this change exists to remove — so it is
+/// one function, and residency is final by the time either calls it (eviction
+/// splits a live range rather than rewriting one, so a value in a register
+/// when its reader is allocated is in a register when its reader is emitted).
+///
+/// `resident[k]` for an operand this op does not have is ignored.
+///
+/// [`Reload`]: OperandSource::Reload
+#[must_use]
+pub fn operand_sources(op: &ScheduledOp, resident: [bool; 3]) -> [OperandSource; 3] {
+    // The operand an encoding wants in the destination, if any. `MulAdd`'s
+    // answer depends on which form the emitter will choose, and it chooses by
+    // residency — the decomposed `FMUL`/`FADD` when both multiplicands need
+    // reloading, the fused form otherwise — which is the same question this
+    // one is answering.
+    let into_dst = match op {
+        ScheduledOp::Binary(..) => Some(0),
+        ScheduledOp::Ternary(OpKind::MulAdd, ..) if !resident[0] && !resident[1] => Some(0),
+        ScheduledOp::Ternary(OpKind::MulAdd, ..) => Some(2),
+        ScheduledOp::Ternary(OpKind::Select, ..) => Some(0),
+        _ => None,
+    };
+    let arity = match op {
+        ScheduledOp::Var(_) | ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => 0,
+        ScheduledOp::Unary(..) | ScheduledOp::ShiftImm(..) | ScheduledOp::Gather(..) => 1,
+        ScheduledOp::Binary(..) => 2,
+        ScheduledOp::Ternary(..) => 3,
+    };
+
+    let mut sources = [OperandSource::Resident; 3];
+    let mut next = 0;
+    for (k, source) in sources.iter_mut().enumerate().take(arity) {
+        if resident[k] {
+            continue;
+        }
+        if into_dst == Some(k) {
+            *source = OperandSource::Destination;
+            continue;
+        }
+        *source = OperandSource::Reload(next);
+        next += 1;
+    }
+    sources
+}
+
+/// How many reload registers [`operand_sources`] asked this instruction to
+/// reserve.
+#[must_use]
+pub fn reloads_wanted(sources: [OperandSource; 3]) -> usize {
+    sources
+        .iter()
+        .filter(|s| matches!(s, OperandSource::Reload(_)))
+        .count()
 }
 
 /// The temp an encoding declared in [`regalloc::RegisterFile::temps_for`].
@@ -451,6 +552,10 @@ pub struct CompileResult {
     /// once-per-call prologue (0 for per-batch kernels, and for collapse
     /// kernels with nothing to hoist).
     pub hoisted_values: u32,
+    /// What was emitted, per scope of the collapse nest — the static half of
+    /// a cost model's inputs. Counted, never optimized: see
+    /// [`traffic`](self::traffic).
+    pub traffic: EmitTraffic,
 }
 
 /// The architecture seam for the shared driver.
@@ -508,15 +613,17 @@ trait IsaBackend {
 
     /// Branch taken when `mask_reg` is all-false (skip the true arm).
     ///
-    /// `scratch` is a vector register the backend may destroy. Only aarch64
-    /// needs one — reducing a mask with `UMAXV`/`UMINV` writes a scalar into a
-    /// vector register before it can reach a GP register — so the x86 tiers,
-    /// whose guards go through `movmskps`/`kortest` and the flags, ignore it.
+    /// `scratch` is a vector register the backend may destroy, present exactly
+    /// when its [`RegisterFile::guard_temps`](regalloc::RegisterFile::guard_temps)
+    /// asked for one. Only aarch64 does — reducing a mask with `UMAXV`/`UMINV`
+    /// writes a scalar into a vector register before it can reach a GP
+    /// register — so the x86 tiers, whose guards go through
+    /// `movmskps`/`kortest` and the flags, receive `None` and want nothing.
     fn emit_skip_if_all_false(
         &mut self,
         code: &mut Vec<u8>,
         mask_reg: Reg,
-        scratch: Reg,
+        scratch: Option<Reg>,
     ) -> Self::Branch;
     /// Branch taken when `mask_reg` is all-true (skip the false arm). See
     /// [`IsaBackend::emit_skip_if_all_false`] for `scratch`.
@@ -524,7 +631,7 @@ trait IsaBackend {
         &mut self,
         code: &mut Vec<u8>,
         mask_reg: Reg,
-        scratch: Reg,
+        scratch: Option<Reg>,
     ) -> Self::Branch;
     /// Unconditional jump.
     fn emit_jump(&mut self, code: &mut Vec<u8>) -> Self::Branch;
@@ -597,14 +704,21 @@ trait IsaBackend {
     /// complete [`KernelFn`](executable::KernelFn): the
     /// caller's lane-sequential X is an induction value stepped by the batch
     /// width in the inner loop and reset for each row; Y advances by 1.0 in
-    /// the outer loop; Z/W are loop-invariant. Each batch's result is stored
-    /// straight to the output pointer. The body's branches are self-relative,
-    /// so inlining it inside the loop is sound.
+    /// the outer loop. Each batch's result is stored straight to the output
+    /// pointer. The body's branches are self-relative, so inlining it inside
+    /// the loop is sound.
     ///
     /// Coordinate state lives in stack slots above the body's spill frame:
     /// the ABI's vector registers are caller-saved scratch to the body, so
-    /// each iteration reloads X/Y/Z/W into the input registers from the
-    /// slots and the X slot alone is stepped.
+    /// each iteration reloads the input registers from the slots and the X
+    /// slot alone is stepped.
+    ///
+    /// The scaffold moves [`INPUT_COORDS`] of them and a body reads two: the
+    /// ABI still carries the base coordinates that were Z and W, the caller
+    /// passes zero in both, and no arena that became a `Kernel` can name
+    /// them. Dropping them changes this scaffold's own stores and loads, and
+    /// so every kernel's bytes — L2's step, not L1's
+    /// (docs/plans/2026-09-06-lattice-is-the-index.md).
     ///
     /// The two LICM tiers in [`CollapseBody`] park their results in vector
     /// slots directly above the coordinate slots reserved here.
@@ -730,10 +844,15 @@ enum OutStep {
     RowSkip,
 }
 
-/// Coordinate slots the scaffold reserves above the body's frame: X/Y/Z/W as
-/// the body expects to find them, plus a copy of the row's starting X.
+/// Coordinate slots the scaffold reserves above the body's frame: the four
+/// the ABI passes, plus a copy of the row's starting X.
 const COORD_SLOTS: u32 = 5;
 /// The leading slots that are reloaded into the ABI's input registers.
+///
+/// Four, of which a body reads two: a lattice has X and Y, and the last two
+/// base coordinates are passed as zero and named by nothing that reaches the
+/// emitter. See [`IsaBackend::emit_collapse_loop`] for why they are still
+/// moved.
 const INPUT_COORDS: u32 = 4;
 const SLOT_X: u32 = 0;
 const SLOT_Y: u32 = 1;
@@ -745,7 +864,8 @@ const SCAFFOLD_HEADROOM: usize = 160;
 const BYTES_PER_LANE: u32 = 4;
 
 /// The register a coordinate slot is passed and reloaded in. Every ABI here
-/// puts X/Y/Z/W in the first four vector registers, in that order.
+/// puts the four base coordinates in the first four vector registers, in
+/// that order; only the first two are ever read.
 const fn coord_reg(slot: u32) -> Reg {
     Reg(slot as u8)
 }
@@ -881,8 +1001,9 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         if let Some(offset) = layout.slot_of(v)
             && matches!(locs[v.0 as usize], Some(Loc::Reg(_)))
         {
-            // Defined into a register and spilled later: the plan's own store
-            // fires only for a destination that is *already* in its slot.
+            // Every definition writes a register, so this is the only place a
+            // value reaches its slot — and it is the place that makes the slot
+            // valid on both sides of every guard.
             store_after_def[i] = Some(offset);
         }
     }
@@ -973,14 +1094,30 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
             locs[v.0 as usize] = Some(to);
         }
 
+        // The registers this instruction's own guards may use: the allocator
+        // reserved them here because a guard runs *between* instructions, at
+        // a point the schedule does contain — the head of the arm it skips,
+        // and the `Select` that owns it.
+        let scratch = allocation.scratch(sched_idx);
+        let guard_mask = || {
+            scratch.guard_mask.expect(
+                "a guard's mask is not in a register and the allocator \
+                 reserved nothing to reload it into",
+            )
+        };
+        let guard_temp = scratch.guard_temp;
+
         // Guard branches that begin before this instruction.
         for pb in &branch_starts[sched_idx] {
             let (guard_idx, arm) = (pb.guard_idx, pb.arm);
             let guard = &select_guards[guard_idx];
-            let mask_reg = backend.emit_resolve(&mut code, guard.mask_vid, file.reload[1], &locs);
+            let mask_reg = match location_of(&locs, guard.mask_vid) {
+                Loc::Reg(r) => r,
+                _ => backend.emit_resolve(&mut code, guard.mask_vid, guard_mask(), &locs),
+            };
             let branch = match arm {
-                0 => backend.emit_skip_if_all_false(&mut code, mask_reg, guard_scratch(&file)),
-                _ => backend.emit_skip_if_all_true(&mut code, mask_reg, guard_scratch(&file)),
+                0 => backend.emit_skip_if_all_false(&mut code, mask_reg, guard_temp),
+                _ => backend.emit_skip_if_all_true(&mut code, mask_reg, guard_temp),
             };
             pending_patches.insert((guard_idx, arm), branch);
         }
@@ -994,13 +1131,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         }
 
         let dst_loc = location_of(&locs, *vid);
-        let plan = resolve_operands(
-            sched_op,
-            dst_loc,
-            &locs,
-            &file,
-            allocation.scratch(sched_idx),
-        )?;
+        let plan = resolve_operands(sched_op, dst_loc, &locs, scratch)?;
 
         // Select with a guard region: emit a uniform-mask short-circuit wrapper.
         if let ScheduledOp::Ternary(OpKind::Select, mask_vid, true_vid, false_vid) = sched_op
@@ -1009,11 +1140,11 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
             let has_true = guard.true_range.0 != guard.true_range.1;
             let has_false = guard.false_range.0 != guard.false_range.1;
             if has_true || has_false {
-                let mask_reg = backend.emit_resolve(&mut code, *mask_vid, file.reload[1], &locs);
-                let dst = match dst_loc {
+                let mask_reg = match location_of(&locs, *mask_vid) {
                     Loc::Reg(r) => r,
-                    Loc::Spill(_) | Loc::Remat(_) => file.reload[0],
+                    _ => backend.emit_resolve(&mut code, *mask_vid, guard_mask(), &locs),
                 };
+                let dst = dst_loc.reg();
                 let in_reg = |v: regalloc::ValueId| match location_of(&locs, v) {
                     Loc::Reg(r) => Some(r),
                     _ => None,
@@ -1021,12 +1152,11 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
                 let true_reg = in_reg(*true_vid);
                 let false_reg = in_reg(*false_vid);
 
-                // Both guards read `mask_reg`, so the scratch must not be
-                // `reload[1]` — where a spilled mask was just resolved to.
-                let all_false =
-                    backend.emit_skip_if_all_false(&mut code, mask_reg, guard_scratch(&file));
-                let all_true =
-                    backend.emit_skip_if_all_true(&mut code, mask_reg, guard_scratch(&file));
+                // Both guards read `mask_reg`, which is why the reduction
+                // scratch is a reservation of its own rather than whichever
+                // register the mask was resolved into.
+                let all_false = backend.emit_skip_if_all_false(&mut code, mask_reg, guard_temp);
+                let all_true = backend.emit_skip_if_all_true(&mut code, mask_reg, guard_temp);
 
                 // Mixed lanes: the real select.
                 backend.emit_plan(&mut code, &plan)?;
@@ -1055,9 +1185,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
                 backend.patch_branch(&mut code, skip_end, end_target);
                 backend.patch_branch(&mut code, skip_end2, end_target);
 
-                if let Loc::Spill(offset) = dst_loc {
-                    backend.emit_store(&mut code, dst, offset)?;
-                } else if let Some(offset) = store_after_def[sched_idx] {
+                if let Some(offset) = store_after_def[sched_idx] {
                     backend.emit_store(&mut code, dst, offset)?;
                 }
                 continue;
@@ -1077,7 +1205,11 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         if let Some(hoisted) = hoist.parked()
             && let Some(&offset) = hoisted.get(vid)
         {
-            let r = backend.emit_resolve(&mut code, *vid, file.reload[1], &locs);
+            // Resident by construction: a hoist root is a computed value, not
+            // a leaf (`plan_collapse_hoist` refuses to hoist one), so its own
+            // definition — the instruction just emitted — wrote it into a
+            // register. There is nothing to resolve.
+            let r = dst_loc.reg();
             // The slot is written unless nothing inside will ever read it —
             // which is exactly the case where the value holds one register at
             // every point of every scope within. Read off the placement, not
@@ -1106,11 +1238,24 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         pending_patches.len()
     );
 
+    // The scope's result, in a register for the scaffold to store. Usually the
+    // last instruction's own destination; not when the body's root was hoisted
+    // out entirely and is read from its park, which is what the allocator
+    // reserved a target on the last instruction for.
     let root = schedule
         .last()
         .map(|def| def.value)
         .expect("empty schedule");
-    let result_reg = backend.emit_resolve(&mut code, root, file.reload[1], &locs);
+    let result_reg = match location_of(&locs, root) {
+        Loc::Reg(r) => r,
+        _ => {
+            let target = allocation
+                .scratch(sched_len - 1)
+                .result
+                .expect("the allocator reserves a result target on every scope's last instruction");
+            backend.emit_resolve(&mut code, root, target, &locs)
+        }
+    };
 
     Ok((code, result_reg, frame_size, real_spill_count))
 }
@@ -1142,6 +1287,11 @@ pub enum ScheduledOp {
     /// leaf is folded out to the `slot` immediate (like `ShiftImm`'s count) so it
     /// never becomes a scheduled value. The index is the one real input.
     Gather(regalloc::ValueId, u16),
+    /// Per-call scalar, broadcast from the block: a definition with no
+    /// operands — like `Const`, but not a leaf to the hoisting partition,
+    /// since the load is an instruction worth doing once per call rather
+    /// than once per batch.
+    Uniform(UniformLoad),
 }
 
 // =============================================================================
@@ -1251,6 +1401,16 @@ fn arena_to_schedule(
             // placeholder occupying its ValueId slot, exactly as ShiftImm leaves
             // its folded shift-count Const as a dead schedule entry.
             ExprNode::Buffer(_) => ScheduledOp::Const(0.0),
+            // The block pointer sits in the context entry after the buffer
+            // slots; the value's offset is its slot index — the link step
+            // (`jit_cache`) renumbers the table into dense first-occurrence
+            // order before anything reaches here, and a caller compiling an
+            // arena directly gets the table order it declared.
+            ExprNode::Uniform(u) => ScheduledOp::Uniform(UniformLoad {
+                ctx_slot: u16::try_from(arena.buffers().len())
+                    .expect("buffer table index fits the context slot immediate"),
+                offset: u.0,
+            }),
             ExprNode::Unary(op, child) => ScheduledOp::Unary(*op, map_child(child)),
             // Shl/Shr fold their Const shift-count operand into an immediate, so
             // the count never becomes a scheduled value (matching the imm-only
@@ -1319,7 +1479,9 @@ fn schedule_variance(schedule: &[regalloc::Def]) -> Vec<pixelflow_ir::variance::
         v[i] = match op {
             ScheduledOp::Var(idx) if *idx < 8 => Variance::from_var(*idx),
             ScheduledOp::Var(_) => Variance::ALL,
-            ScheduledOp::Const(_) => Variance::CONST,
+            // Invariant across the lattice; unknown until the call. The
+            // `CONST` here is what carries it into the per-call prologue.
+            ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => Variance::CONST,
             ScheduledOp::Unary(_, a)
             | ScheduledOp::ShiftImm(_, a, _)
             // A gather reads from a bound buffer, whose contents are fixed for
@@ -1356,7 +1518,9 @@ struct HoistPlan {
 /// computed from one — are never hoisted: hoisting moves a value out of any
 /// select-guard arm it sits in, and while speculating arithmetic is free,
 /// keeping memory reads exactly where the per-batch kernel had them costs
-/// nothing today (winding kernels are gather-free).
+/// nothing today (winding kernels are gather-free). A `Uniform` load is the
+/// one memory read that *is* hoisted: it is invariant for the whole call, it
+/// cannot fault, and loading it once is the entire point of the leaf.
 ///
 /// Returns `None` when nothing qualifies, leaving the caller on the plain
 /// un-hoisted path.
@@ -1374,7 +1538,9 @@ fn plan_collapse_hoist(
 
     let operands = |op: &ScheduledOp| -> alloc::vec::Vec<ValueId> {
         match op {
-            ScheduledOp::Var(_) | ScheduledOp::Const(_) => alloc::vec![],
+            ScheduledOp::Var(_) | ScheduledOp::Const(_) | ScheduledOp::Uniform(_) => {
+                alloc::vec![]
+            }
             ScheduledOp::Unary(_, a)
             | ScheduledOp::ShiftImm(_, a, _)
             | ScheduledOp::Gather(a, _) => {
@@ -1576,28 +1742,6 @@ impl<'a> HoistCtx<'a> {
     }
 }
 
-/// The register a Select short-circuit guard may destroy while reducing its
-/// mask, for the one backend that needs one (see
-/// [`IsaBackend::emit_skip_if_all_false`]).
-///
-/// It is `reload[0]`, and that is a reuse rather than a new reservation.
-/// Both reload registers are *per-instruction* — `reload[0]` is the
-/// destination when a def is spilled, `reload[1]` the operand temp — so
-/// between two instructions neither holds anything live. A guard is emitted
-/// exactly there: before the first instruction of an arm, or before the
-/// `Select`'s own plan. `reload[1]` is excluded because the mask may have
-/// just been resolved into it and both guards read the mask; `reload[0]` at
-/// that point is dead in every case, including a spilled `Select` whose
-/// destination *is* `reload[0]` — that destination is written by the plan the
-/// guards branch around, after them, never before.
-///
-/// aarch64 held a whole register (`GUARD_SCRATCH`, v28) out of every kernel's
-/// pool for this, for an instant of use in the kernels that have a guarded
-/// `Select` at all.
-fn guard_scratch(file: &regalloc::RegisterFile) -> Reg {
-    file.reload[0]
-}
-
 /// Resolve a scheduled operation into a concrete instruction plan.
 ///
 /// This is a PURE FUNCTION: no mutation, no side effects, no code emission.
@@ -1605,28 +1749,42 @@ fn guard_scratch(file: &regalloc::RegisterFile) -> Reg {
 /// spill slots, it computes exactly which registers to use and what
 /// reload/store instructions are needed.
 ///
-/// The target's two reload registers ([`regalloc::RegisterFile::reload`]) are
-/// used as:
-///   - `reload[0]`: destination when dst is spilled, also temporary
-///   - `reload[1]`: operand reload, never aliases dst
+/// Every register here is the allocator's. The destination is the register it
+/// gave this definition — every definition that emits an instruction has one —
+/// and each operand not already in a register is reloaded into the register
+/// [`operand_sources`] names for it, which is either the destination (safe:
+/// every backend reads all of an instruction's sources before writing it) or
+/// one of this instruction's own reservations.
 ///
-/// The "dst-as-temporary" trick: every backend here reads all of an
-/// instruction's sources before writing its destination, so loading a spilled
-/// operand into dst is safe for binary ops.
+/// # Panics
+/// If the destination is in a stack slot. A definition writes a register or
+/// nothing at all; a spilled destination was the fixed `reload[0]`, and there
+/// is no such register any more.
 pub fn resolve_operands(
     op: &ScheduledOp,
     dst_loc: Loc,
     locs: &[Option<Loc>],
-    file: &regalloc::RegisterFile,
     scratch: regalloc::Scratch,
 ) -> Result<InstructionPlan, CompileError> {
-    let tmp_op = file.reload[1]; // always safe for operand reload
-
-    // Compute destination: a real register, or reload[0] if the value has
-    // none. A rematerialized def writes there and is never read back.
     let dst = match dst_loc {
         Loc::Reg(r) => r,
-        Loc::Spill(_) | Loc::Remat(_) => file.reload[0],
+        // A rematerialized constant: it lives nowhere and is rebuilt at each
+        // use, so its definition computes nothing. Emitting a load into a
+        // register nobody reads is what the fixed destination register used to
+        // buy.
+        Loc::Remat(_) => {
+            return Ok(InstructionPlan {
+                reloads: Vec::new(),
+                op: ResolvedOp::Nop,
+                setup_mov: None,
+                scratch,
+            });
+        }
+        Loc::Spill(offset) => panic!(
+            "a definition landed in stack slot {offset} — the allocator owes \
+             every definition a register, since there is none outside the pool \
+             to compute into"
+        ),
     };
 
     let mut reloads = Vec::new();
@@ -1640,8 +1798,34 @@ pub fn resolve_operands(
             .unwrap_or_else(|| panic!("{v:?} has no location"))
     };
     // "Not in a register" — a rematerialized value needs a reload target just
-    // as a spilled one does, so both answer true here.
+    // as a spilled one does, so both answer false here.
     let in_register = |v: &regalloc::ValueId| matches!(loc_of(*v), Loc::Reg(_));
+
+    // Where each operand comes from, and so which register each reload lands
+    // in. The same call the allocator made when it decided how many to
+    // reserve — residency is final between the two, so the two answers are the
+    // same answer.
+    let mut resident = [true; 3];
+    for (k, operand) in regalloc::operands(op).enumerate() {
+        resident[k] = in_register(&operand);
+    }
+    let sources = operand_sources(op, resident);
+    // The register operand `k` is reloaded into. Resident operands never ask.
+    let target_for = |k: usize| -> Reg {
+        match sources[k] {
+            OperandSource::Resident => {
+                unreachable!("a resident operand is read where it is, not reloaded")
+            }
+            OperandSource::Destination => dst,
+            OperandSource::Reload(slot) => scratch.reload(slot).unwrap_or_else(|| {
+                panic!(
+                    "operand {k} needs reload register {slot}, which the \
+                     allocator did not reserve"
+                )
+            }),
+        }
+    };
+
     let resolve = |v: regalloc::ValueId, target: Reg, reloads: &mut Vec<Reload>| -> Reg {
         match loc_of(v) {
             Loc::Reg(reg) => reg,
@@ -1658,6 +1842,16 @@ pub fn resolve_operands(
             }
         }
     };
+    // Operand `k`, from wherever it is: its own register, or the one
+    // [`operand_sources`] reserved for it.
+    let operand = |k: usize, v: regalloc::ValueId, reloads: &mut Vec<Reload>| -> Reg {
+        match sources[k] {
+            OperandSource::Resident => loc_of(v).reg(),
+            OperandSource::Destination | OperandSource::Reload(_) => {
+                resolve(v, target_for(k), reloads)
+            }
+        }
+    };
 
     let resolved_op = match op {
         ScheduledOp::Var(_) => {
@@ -1669,7 +1863,7 @@ pub fn resolve_operands(
             val_bits: val.to_bits(),
         },
         ScheduledOp::Unary(op_kind, child) => {
-            let src = resolve(*child, tmp_op, &mut reloads);
+            let src = operand(0, *child, &mut reloads);
             ResolvedOp::Unary {
                 op: *op_kind,
                 dst,
@@ -1677,7 +1871,7 @@ pub fn resolve_operands(
             }
         }
         ScheduledOp::ShiftImm(op_kind, child, amount) => {
-            let src = resolve(*child, tmp_op, &mut reloads);
+            let src = operand(0, *child, &mut reloads);
             ResolvedOp::ShiftImm {
                 op: *op_kind,
                 dst,
@@ -1686,48 +1880,32 @@ pub fn resolve_operands(
             }
         }
         ScheduledOp::Gather(child, slot) => {
-            let idx = resolve(*child, tmp_op, &mut reloads);
+            let idx = operand(0, *child, &mut reloads);
             ResolvedOp::Gather {
                 dst,
                 idx,
                 slot: *slot,
             }
         }
+        ScheduledOp::Uniform(load) => ResolvedOp::Uniform { dst, load: *load },
         ScheduledOp::Binary(op_kind, left, right) => {
-            let l_spilled = !in_register(left);
-            let r_spilled = !in_register(right);
-
-            let (l_reg, r_reg) = match (l_spilled, r_spilled) {
-                (false, false) => (loc_of(*left).reg(), loc_of(*right).reg()),
-                (true, false) => {
-                    let l = resolve(*left, tmp_op, &mut reloads);
-                    (l, loc_of(*right).reg())
-                }
-                (false, true) => {
-                    let r = resolve(*right, tmp_op, &mut reloads);
-                    (loc_of(*left).reg(), r)
-                }
-                (true, true) => {
-                    // Both spilled. Left → dst (temporary), right → tmp_op.
-                    let l = resolve(*left, dst, &mut reloads);
-                    let r = resolve(*right, tmp_op, &mut reloads);
-                    (l, r)
-                }
-            };
+            // `left` goes to `dst` when it needs reloading — the two-operand
+            // form consumes it from there anyway — and `right` to a
+            // reservation.
+            let l_reg = operand(0, *left, &mut reloads);
+            let r_reg = operand(1, *right, &mut reloads);
             // The two-operand invariant, stated where the registers are
             // chosen rather than defended in the one backend that has no
             // three-operand form. SSE2's `mulps dst, src` computes
             // `dst <- left; dst op= right`, which corrupts `right` when
             // `dst == right` and `dst != left`.
             //
-            // That assignment cannot arise. `dst` is a pool register or
-            // `reload[0]`; `right` is a pool register, an input register,
-            // `reload[1]`, or — when both operands are spilled — `dst`, in
-            // which case `left` is `dst` too. The pool excludes the inputs and
-            // both reload targets, and the allocator never gives a destination
-            // a pool slot a value live at this instruction still owns: it
-            // takes an unowned slot, or evicts one, and an evicted value reads
-            // back as `Spilled` here and reloads elsewhere.
+            // That assignment cannot arise. `dst` is a pool register the
+            // allocator gave this definition, disjoint by construction from
+            // every register this instruction reads: `right` is either a pool
+            // register a live operand holds — which a destination never takes
+            // — an input register, or one of this instruction's own reload
+            // reservations, which the destination is excluded from.
             //
             // So `left` may alias `dst` and the backends may write the
             // destructive form directly — but if the allocator ever stops
@@ -1754,15 +1932,19 @@ pub fn resolve_operands(
                     // MulAdd(a, b, c) = a*b + c.
                     if a_spilled && b_spilled {
                         // Decompose: FMUL(dst, a, b) then FADD(dst, dst, c).
-                        // a → dst (temp), b → tmp_op loaded upfront.
-                        // c is loaded AFTER FMUL (may reuse tmp_op).
-                        let a_reg = resolve(*a, dst, &mut reloads);
-                        let b_reg = resolve(*b, tmp_op, &mut reloads);
+                        // `a` lands in `dst`, which the multiply consumes it
+                        // from; `b` and `c` each take a reservation of their
+                        // own, so deferring `c` past the multiply no longer
+                        // depends on `b` having been consumed by then.
+                        let a_reg = operand(0, *a, &mut reloads);
+                        let b_reg = operand(1, *b, &mut reloads);
                         // c is deferred — don't add to upfront reloads.
                         let (c_reg, c_deferred) = match loc_of(*c) {
                             Loc::Reg(reg) => (reg, None),
-                            Loc::Remat(bits) => (tmp_op, Some(DeferredReload::Const(bits))),
-                            Loc::Spill(offset) => (tmp_op, Some(DeferredReload::FromStack(offset))),
+                            Loc::Remat(bits) => (target_for(2), Some(DeferredReload::Const(bits))),
+                            Loc::Spill(offset) => {
+                                (target_for(2), Some(DeferredReload::FromStack(offset)))
+                            }
                         };
                         ResolvedOp::DecomposedMulAdd {
                             dst,
@@ -1772,14 +1954,14 @@ pub fn resolve_operands(
                             c_deferred,
                         }
                     } else {
-                        // FMLA path: dst += a * b, so dst must hold c first.
-                        // At most 1 of {a, b} is spilled → tmp_op handles it.
-                        let c_reg = resolve(*c, dst, &mut reloads);
+                        // FMLA path: dst += a * b, so dst must hold c first —
+                        // which is where `operand_sources` sends a spilled `c`.
+                        let c_reg = operand(2, *c, &mut reloads);
                         if dst.0 != c_reg.0 {
                             setup_mov = Some((dst, c_reg));
                         }
-                        let a_reg = resolve(*a, tmp_op, &mut reloads);
-                        let b_reg = resolve(*b, tmp_op, &mut reloads);
+                        let a_reg = operand(0, *a, &mut reloads);
+                        let b_reg = operand(1, *b, &mut reloads);
                         ResolvedOp::FusedMulAdd {
                             dst,
                             a: a_reg,
@@ -1791,36 +1973,21 @@ pub fn resolve_operands(
                     // BSL/blend is a 3-input RMW: the mask must end up in `dst`,
                     // and if_true / if_false each need their own live register.
                     //
-                    // Reload a spilled mask STRAIGHT into `dst` — never via
-                    // tmp_op. Reloads all emit before `setup_mov`, so routing the
-                    // mask through tmp_op while a spilled branch also reloads
-                    // into tmp_op would overwrite the mask before it reaches
-                    // `dst`. Going straight to `dst` also frees tmp_op and
-                    // reload[0] as two independent slots for the branches.
-                    let c_spilled = !in_register(c);
-                    let a_reg = resolve(*a, dst, &mut reloads);
+                    // A spilled mask reloads STRAIGHT into `dst`, which is what
+                    // `operand_sources` says for operand 0 here. Every reload
+                    // emits before `setup_mov`, so routing the mask through a
+                    // register a spilled arm also reloads into would overwrite
+                    // it before it reached `dst`; one reservation per arm is
+                    // why that cannot happen. Both arms spilled at once used
+                    // to need a third fixed register (`select_reload`), held
+                    // out of every kernel's pool for the rare kernel reaching
+                    // it.
+                    let a_reg = operand(0, *a, &mut reloads);
                     if dst.0 != a_reg.0 {
                         setup_mov = Some((dst, a_reg));
                     }
-                    let b_reg = resolve(*b, tmp_op, &mut reloads);
-                    let c_reg = if b_spilled && c_spilled {
-                        // Both branches spilled → two DISTINCT reload targets.
-                        // tmp_op (reload[1]) holds if_true; if_false takes the
-                        // allocator's `arm_reload`, which it picked disjoint
-                        // from this instruction's operands, its destination and
-                        // its temp.
-                        //
-                        // This used to read `reload[0]`, or `select_reload`
-                        // when the result was itself spilled and had taken
-                        // `reload[0]` for the mask — a three-way case analysis
-                        // over two fixed registers, one of which every kernel
-                        // paid for so that the rare kernel reaching here had
-                        // somewhere to put its second arm.
-                        resolve(*c, declared_temp(scratch.arm_reload), &mut reloads)
-                    } else {
-                        // At most one branch spilled → tmp_op suffices for it.
-                        resolve(*c, tmp_op, &mut reloads)
-                    };
+                    let b_reg = operand(1, *b, &mut reloads);
+                    let c_reg = operand(2, *c, &mut reloads);
                     ResolvedOp::Select {
                         dst,
                         if_true: b_reg,
@@ -1832,18 +1999,10 @@ pub fn resolve_operands(
         }
     };
 
-    // Store result if destination is spilled.
-    let store = if let Loc::Spill(offset) = dst_loc {
-        Some(Store { src: dst, offset })
-    } else {
-        None
-    };
-
     Ok(InstructionPlan {
         reloads,
         op: resolved_op,
         setup_mov,
-        store,
         scratch,
     })
 }
@@ -1909,15 +2068,45 @@ type Native = x86_64::driver::X86Backend;
 /// reductions / gathers / transcendentals already lowered) is wrapped in the
 /// build width's
 /// [`IsaBackend::emit_collapse_loop`] scaffold: X steps by the batch width and
-/// resets per row, Y steps by 1.0, Z/W stay invariant, gathers read buffer
-/// bases from the context register, and each batch stores straight to `out`.
+/// resets per row, Y steps by 1.0, the two dead base coordinates stay as the
+/// caller passed them, gathers read buffer bases from the context register,
+/// and each batch stores straight to `out`.
 /// Matches the
 /// [`KernelFn`](executable::KernelFn) ABI
 /// `(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)`.
+///
+/// The context is one base pointer per declared buffer, in the arena's slot
+/// order, followed — only when the arena declares a uniform — by the uniform
+/// block's base pointer: `f32` values in the arena's uniform-slot order, read
+/// once per call in the frame prologue.
+///
+/// # Panics
+///
+/// Panics if the arena names a retired coordinate axis (`Var(2)`/`Var(3)`,
+/// the old Z and W). This is the boundary the check belongs on, because it
+/// is the *only* one every route to machine code passes through — the
+/// shape-keyed cache is one caller, and the benchmark harnesses, the corpus
+/// tools and several tests come straight here. It is also the *diagnostic*
+/// place: a panic naming `Var(2)` at the first `cargo test` is worth far
+/// more than what the alternative produces, which is a silent numeric
+/// disagreement between this kernel and the scalar oracle, surfacing on
+/// whichever machine happens to run the comparison.
+///
+/// A retired axis reaching here is not merely unread. The scaffold passes
+/// zero in those two lanes, and `Variance::from_var(2)` sits outside both
+/// `COORDS` and `BINDERS` — so the node reads as frame-uniform and LICM
+/// lifts it into the per-call prologue. Plausible pixels, computed once,
+/// from a lane that means nothing.
 pub fn compile(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
 ) -> Result<CompileResult, CompileError> {
+    assert!(
+        arena.retired_axis(root).is_none(),
+        "emit::compile: the arena names Var({:?}), a coordinate axis a \
+         lattice no longer has; a per-call scalar is a Uniform",
+        arena.retired_axis(root)
+    );
     EmitCtx::default().compile(arena, root)
 }
 
@@ -1939,7 +2128,12 @@ fn compile_via_backend<B: IsaBackend>(
     // `partition_by_scope` asks one question per binder; the two regions it
     // returns are the per-call and per-row prologues the scaffold frames.
     const COLLAPSE_BINDERS: [u8; 2] = [0, 1];
-    let scoped = partition_by_scope(schedule, &variance, &COLLAPSE_BINDERS);
+    let mut scoped = partition_by_scope(schedule, &variance, &COLLAPSE_BINDERS);
+    // The body is the only scope whose selects are guarded (the prologues run
+    // once, so a branch buys nothing there), and it is the schedule the guard
+    // analysis will read — so this is where an arm's entries are worth
+    // gathering into one run. A no-op unless it buys a branch.
+    scoped.body = guards::cluster_select_arms(scoped.body);
 
     // One allocation pass over the whole nest. Each region's frame is a
     // function of its own allocation, so the shared frame below is read off
@@ -1955,11 +2149,16 @@ fn compile_via_backend<B: IsaBackend>(
     let body_alloc = nest.body();
     let (frame_roots, row_roots) = (frame_alloc.roots(), row_alloc.roots());
 
+    // Every byte below is emitted through this decorator, so the counts it
+    // hands back cover the whole function by construction (see `traffic`).
+    let mut counting = Counting::new(backend);
+
     if frame_roots.is_empty() && row_roots.is_empty() {
         // Nothing loop-invariant worth hoisting: the plain loop nest.
         let (body, result_reg, frame_size, spill_count) =
-            emit_dag_body_hoisted(body_alloc, backend, HoistCtx::None, None)?;
-        let code = backend.emit_collapse_loop(&CollapseBody {
+            emit_dag_body_hoisted(body_alloc, &mut counting, HoistCtx::None, None)?;
+        let body_traffic = counting.take(body.len() as u32);
+        let code = counting.emit_collapse_loop(&CollapseBody {
             frame_hoist: &[],
             row_hoist: &[],
             batch: &body,
@@ -1967,18 +2166,29 @@ fn compile_via_backend<B: IsaBackend>(
             frame_size,
             hoist_slots: 0,
         });
+        let scaffold = counting.take(code.len() as u32 - body.len() as u32);
         let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
         return Ok(CompileResult {
             code: exec,
             spill_count,
             spill_bytes: frame_size,
-            max_regs: backend.register_file().scratch.len(),
+            max_regs: file.scratch.len(),
             hoisted_values: 0,
+            traffic: EmitTraffic {
+                frame: ScopeTraffic::default(),
+                row: ScopeTraffic::default(),
+                body: body_traffic,
+                scaffold,
+                vector_bytes: file.vector_bytes,
+                pool: file.scratch.len(),
+                carried: 0,
+            },
         });
     };
 
     // The two prologues and the loop body share one stack frame: spill slots
-    // in [0, m), the scaffold's five coordinate slots (X/Y/Z/W plus row-start
+    // in [0, m), the scaffold's five coordinate slots (four base coordinates
+    // plus row-start
     // X) at [m, m + 5·vector_bytes), and hoist slots above those. `m` is the
     // max of the three frames — each region is only live while its own code
     // runs, but the hoist slots outlive all of them. Allocation and frame
@@ -2023,7 +2233,7 @@ fn compile_via_backend<B: IsaBackend>(
     } else {
         let (code, _, _, spills) = emit_dag_body_hoisted(
             frame_alloc,
-            backend,
+            &mut counting,
             HoistCtx::Prologue {
                 preloaded: None,
                 parked: &frame_map,
@@ -2032,12 +2242,13 @@ fn compile_via_backend<B: IsaBackend>(
         )?;
         (code, spills)
     };
+    let frame_traffic = counting.take(frame_code.len() as u32);
     let (row_code, row_spills) = if row_alloc.schedule().is_empty() {
         (Vec::new(), 0)
     } else {
         let (code, _, _, spills) = emit_dag_body_hoisted(
             row_alloc,
-            backend,
+            &mut counting,
             HoistCtx::Prologue {
                 preloaded: if frame_map.is_empty() {
                     None
@@ -2050,15 +2261,17 @@ fn compile_via_backend<B: IsaBackend>(
         )?;
         (code, spills)
     };
+    let row_traffic = counting.take(row_code.len() as u32);
     let (body, result_reg, _, body_spills) = emit_dag_body_hoisted(
         body_alloc,
-        backend,
+        &mut counting,
         HoistCtx::Body { slots: &hoist_map },
         Some(m),
     )?;
+    let body_traffic = counting.take(body.len() as u32);
 
     let hoisted_values = (frame_roots.len() + row_roots.len()) as u32;
-    let code = backend.emit_collapse_loop(&CollapseBody {
+    let code = counting.emit_collapse_loop(&CollapseBody {
         frame_hoist: &frame_code,
         row_hoist: &row_code,
         batch: &body,
@@ -2066,6 +2279,19 @@ fn compile_via_backend<B: IsaBackend>(
         frame_size: m,
         hoist_slots: hoisted_values,
     });
+    let emitted = (frame_code.len() + row_code.len() + body.len()) as u32;
+    let scaffold = counting.take(code.len() as u32 - emitted);
+    // A parked root that holds a register at the head of the scopes inside it
+    // is carried rather than reloaded per iteration — read off the placement,
+    // which is where the answer lives.
+    let carried = [(frame_alloc, frame_roots), (row_alloc, row_roots)]
+        .into_iter()
+        .flat_map(|(alloc, roots)| {
+            roots
+                .iter()
+                .filter(move |vid| alloc.carried(**vid).is_some())
+        })
+        .count() as u32;
     let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
     Ok(CompileResult {
         code: exec,
@@ -2073,6 +2299,15 @@ fn compile_via_backend<B: IsaBackend>(
         spill_bytes: m,
         max_regs: file.scratch.len(),
         hoisted_values,
+        traffic: EmitTraffic {
+            frame: frame_traffic,
+            row: row_traffic,
+            body: body_traffic,
+            scaffold,
+            vector_bytes: file.vector_bytes,
+            pool: file.scratch.len(),
+            carried,
+        },
     })
 }
 
@@ -2229,14 +2464,29 @@ mod tests {
     ///
     /// Before the backends stopped being `#[cfg]`-gated into existence, three
     /// of these four could not even be *named* here.
+    ///
+    /// The arena reads a uniform, so each backend's `ResolvedOp::Uniform`
+    /// dispatch arm — not only the encoder behind it — is what emits here.
     #[test]
     fn every_backend_emits_from_this_host() {
-        use pixelflow_ir::arena::ExprArena;
+        use pixelflow_ir::arena::{ExprArena, UniformDecl, UniformIdentity};
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let y = a.push_var(1);
-        let root = a.push_binary(OpKind::Add, a.clone().push_var(0).max(x).min(x), y);
+        let u = a.declare_uniform(UniformDecl {
+            id: UniformIdentity::mint(),
+            default: 1.0,
+        });
+        let u = a.push_uniform(u);
+        let scaled = a.push_binary(OpKind::Mul, y, u);
+        let root = a.push_binary(OpKind::Add, a.clone().push_var(0).max(x).min(x), scaled);
         let (a, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
+        assert!(
+            arena_to_schedule(&a, root)
+                .iter()
+                .any(|d| matches!(d.op, ScheduledOp::Uniform(_))),
+            "the schedule must carry the uniform load for the backends to dispatch on"
+        );
 
         let ctx = EmitCtx::default();
         let mut neon = aarch64::driver::Aarch64Backend::new(ctx.clone());
@@ -2518,26 +2768,27 @@ mod tests {
     // resolve_operands unit tests — the spill logic that was buggy
     // =========================================================================
 
-    /// Helper: build minimal assignment + spill maps for resolve_operands tests.
-    /// The register file these `resolve_operands` tests are written against:
-    /// reload[1] is the operand temp, reload[0] the spilled destination.
+    /// Helper: build minimal assignment + spill maps for resolve_operands
+    /// tests. Every register an instruction may use is handed to it in
+    /// `TEST_SCRATCH`, exactly as the allocator hands one its reservations.
     const TEST_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         fixed: &[],
         inputs: INPUT_REGS,
-        scratch: regalloc::RegSet::range(4, 6),
-        reload: [Reg(11), Reg(12)],
+        scratch: regalloc::RegSet::range(4, regalloc::RegisterFile::MIN_SCRATCH),
         temps_for: regalloc::no_temps,
+        guard_temps: 0,
         vector_bytes: 16,
     }
     .checked();
 
+    /// The two reload registers these `resolve_operands` tests hand the
+    /// instruction, standing in for the allocator's per-instruction
+    /// reservations.
+    const RELOAD: [Reg; 2] = [Reg(11), Reg(12)];
+
     /// The scratch these `resolve_operands` tests are written against.
-    ///
-    /// `arm_reload` is `Reg(13)` — the register that used to be
-    /// `RegisterFile::select_reload`, so the all-spilled `Select` case below
-    /// still names the register it always did, now as a per-instruction
-    /// reservation rather than a field of the file.
-    const TEST_SCRATCH: regalloc::Scratch = regalloc::Scratch::for_test(None, Some(Reg(13)));
+    const TEST_SCRATCH: regalloc::Scratch =
+        regalloc::Scratch::for_test(None, [Some(RELOAD[0]), Some(RELOAD[1])]);
 
     /// Dense `ValueId -> Loc`, as the emit loop builds it.
     fn make_locs(assigned: &[(u32, u8)], spilled: &[(u32, u32)]) -> alloc::vec::Vec<Option<Loc>> {
@@ -2562,17 +2813,9 @@ mod tests {
         // left=v4, right=v5, dst=v6 — all in registers
         let locs = make_locs(&[(0, 4), (1, 5), (2, 6)], &[]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(
-            &op,
-            Loc::Reg(Reg(6)),
-            locs.as_slice(),
-            &TEST_FILE,
-            TEST_SCRATCH,
-        )
-        .unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         assert!(plan.reloads.is_empty());
-        assert!(plan.store.is_none());
         assert_eq!(
             plan.op,
             ResolvedOp::Binary {
@@ -2584,25 +2827,23 @@ mod tests {
         );
     }
 
+    /// A spilled left operand goes straight to the destination.
+    ///
+    /// `dst op= right` consumes the left operand from `dst` anyway, so this
+    /// costs no reservation at all — which is why a binary never needs two,
+    /// however many of its operands are in memory.
     #[test]
     fn resolve_binary_left_spilled() {
         // left spilled at offset 0, right in v5
         let locs = make_locs(&[(1, 5), (2, 6)], &[(0, 0)]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(
-            &op,
-            Loc::Reg(Reg(6)),
-            locs.as_slice(),
-            &TEST_FILE,
-            TEST_SCRATCH,
-        )
-        .unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         assert_eq!(plan.reloads.len(), 1);
         assert_eq!(
             plan.reloads[0],
             Reload::FromStack {
-                target: TEST_FILE.reload[1],
+                target: Reg(6),
                 offset: 0
             }
         );
@@ -2611,7 +2852,7 @@ mod tests {
             ResolvedOp::Binary {
                 op: OpKind::Add,
                 dst: Reg(6),
-                left: TEST_FILE.reload[1],
+                left: Reg(6),
                 right: Reg(5)
             }
         );
@@ -2622,14 +2863,7 @@ mod tests {
         // Both spilled: left → dst (temp trick), right → tmp_op
         let locs = make_locs(&[(2, 6)], &[(0, 0), (1, 16)]);
         let op = ScheduledOp::Binary(OpKind::Mul, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(
-            &op,
-            Loc::Reg(Reg(6)),
-            locs.as_slice(),
-            &TEST_FILE,
-            TEST_SCRATCH,
-        )
-        .unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         assert_eq!(plan.reloads.len(), 2);
         // left → dst (v6), right → tmp_op (v27)
@@ -2643,7 +2877,7 @@ mod tests {
         assert_eq!(
             plan.reloads[1],
             Reload::FromStack {
-                target: TEST_FILE.reload[1],
+                target: RELOAD[0],
                 offset: 16
             }
         );
@@ -2653,42 +2887,50 @@ mod tests {
                 op: OpKind::Mul,
                 dst: Reg(6),
                 left: Reg(6),
-                right: TEST_FILE.reload[1]
+                right: RELOAD[0]
             }
         );
     }
 
+    /// A definition writes a register or nothing at all.
+    ///
+    /// The spilled destination was the whole job of `reload[0]`: a value that
+    /// lost its register at its own definition was computed into a register
+    /// outside the pool and stored from there. Every definition holds a pool
+    /// register now, so a `Loc::Spill` destination is not a case to handle but
+    /// an allocator that broke its contract — and this is where that shows up
+    /// as a panic rather than as a register two values share.
     #[test]
-    fn resolve_dst_spilled_generates_store() {
-        // dst is spilled → compute into TEST_FILE.reload[0], then store
+    #[should_panic(expected = "a definition landed in stack slot")]
+    fn a_spilled_destination_is_not_a_thing_the_allocator_can_produce() {
         let locs = make_locs(&[(0, 4), (1, 5)], &[(2, 32)]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(
+        drop(resolve_operands(
             &op,
             Loc::Spill(32),
             locs.as_slice(),
-            &TEST_FILE,
+            TEST_SCRATCH,
+        ));
+    }
+
+    /// A rematerialized constant's definition emits nothing.
+    ///
+    /// It lives nowhere and is rebuilt at each use, so computing it once into
+    /// a register nobody reads is pure waste — which is what a fixed
+    /// destination register made invisible.
+    #[test]
+    fn a_rematerialized_definition_emits_nothing() {
+        let locs = make_locs(&[], &[]);
+        let op = ScheduledOp::Const(1.5);
+        let plan = resolve_operands(
+            &op,
+            Loc::Remat(1.5f32.to_bits()),
+            locs.as_slice(),
             TEST_SCRATCH,
         )
         .unwrap();
-
-        // dst should be TEST_FILE.reload[0] since result is spilled
-        assert_eq!(
-            plan.op,
-            ResolvedOp::Binary {
-                op: OpKind::Add,
-                dst: TEST_FILE.reload[0],
-                left: Reg(4),
-                right: Reg(5)
-            }
-        );
-        assert_eq!(
-            plan.store,
-            Some(Store {
-                src: TEST_FILE.reload[0],
-                offset: 32
-            })
-        );
+        assert_eq!(plan.op, ResolvedOp::Nop);
+        assert!(plan.reloads.is_empty());
     }
 
     #[test]
@@ -2701,14 +2943,7 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(
-            &op,
-            Loc::Reg(Reg(8)),
-            locs.as_slice(),
-            &TEST_FILE,
-            TEST_SCRATCH,
-        )
-        .unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         assert!(plan.reloads.is_empty());
         // c=v7 ≠ dst=v8, so setup_mov should copy c → dst
@@ -2734,14 +2969,7 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(
-            &op,
-            Loc::Reg(Reg(8)),
-            locs.as_slice(),
-            &TEST_FILE,
-            TEST_SCRATCH,
-        )
-        .unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         // a → dst, b → tmp_op loaded upfront
         assert_eq!(plan.reloads.len(), 2);
@@ -2755,7 +2983,7 @@ mod tests {
         assert_eq!(
             plan.reloads[1],
             Reload::FromStack {
-                target: TEST_FILE.reload[1],
+                target: RELOAD[0],
                 offset: 16
             }
         );
@@ -2770,7 +2998,7 @@ mod tests {
             } => {
                 assert_eq!(*dst, Reg(8));
                 assert_eq!(*a, Reg(8));
-                assert_eq!(*b, TEST_FILE.reload[1]);
+                assert_eq!(*b, RELOAD[0]);
                 assert_eq!(*c, Reg(7));
                 assert_eq!(*c_deferred, None);
             }
@@ -2788,20 +3016,13 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(
-            &op,
-            Loc::Reg(Reg(8)),
-            locs.as_slice(),
-            &TEST_FILE,
-            TEST_SCRATCH,
-        )
-        .unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), locs.as_slice(), TEST_SCRATCH).unwrap();
 
         // Only a and b reloads upfront — c is deferred
         assert_eq!(plan.reloads.len(), 2);
         match &plan.op {
             ResolvedOp::DecomposedMulAdd { c, c_deferred, .. } => {
-                assert_eq!(*c, TEST_FILE.reload[1]); // will be reloaded into tmp_op
+                assert_eq!(*c, RELOAD[1]); // its own reservation, deferred past the FMUL
                 assert_eq!(*c_deferred, Some(DeferredReload::FromStack(32)));
             }
             other => panic!("expected DecomposedMulAdd, got {:?}", other),
@@ -2812,31 +3033,16 @@ mod tests {
     fn resolve_var_is_nop() {
         let locs = make_locs(&[(0, 0)], &[]);
         let op = ScheduledOp::Var(0);
-        let plan = resolve_operands(
-            &op,
-            Loc::Reg(Reg(0)),
-            locs.as_slice(),
-            &TEST_FILE,
-            TEST_SCRATCH,
-        )
-        .unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(0)), locs.as_slice(), TEST_SCRATCH).unwrap();
         assert_eq!(plan.op, ResolvedOp::Nop);
         assert!(plan.reloads.is_empty());
-        assert!(plan.store.is_none());
     }
 
     #[test]
     fn resolve_const() {
         let locs = make_locs(&[(0, 6)], &[]);
         let op = ScheduledOp::Const(core::f32::consts::PI);
-        let plan = resolve_operands(
-            &op,
-            Loc::Reg(Reg(6)),
-            locs.as_slice(),
-            &TEST_FILE,
-            TEST_SCRATCH,
-        )
-        .unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), locs.as_slice(), TEST_SCRATCH).unwrap();
         assert_eq!(
             plan.op,
             ResolvedOp::LoadConst {
@@ -2948,8 +3154,8 @@ mod tests {
 
     /// `Σᵢ (X+i)·(Y+i)` for i in 1..=10, summed as a balanced tree: ten
     /// products are live at once, so any pool must spill. Every leaf depends on
-    /// X or Y — a Z/W subtree would be loop-invariant, hoisted out of the
-    /// collapse body, and leave nothing to spill.
+    /// X or Y — a uniform-only subtree would be loop-invariant, hoisted out
+    /// of the collapse body, and leave nothing to spill.
     ///
     /// The pressure comes from the live ranges rather than from the budget.
     /// This used to be `(X+Y)·(X−Y) + (X·Y)·(X+1)` under `max_regs(2)`, which
@@ -3020,8 +3226,25 @@ mod tests {
         use super::*;
         use pixelflow_ir::arena::{ExprArena, ExprId};
 
-        /// `(X > 0) ? B³ : 3B` over a shared `B = X·Y` — arms that are
-        /// exclusive *and* contiguous in the schedule.
+        /// Padding that makes an arm worth a branch, and what it adds.
+        ///
+        /// A guard is refused for an arm whose work costs less than the
+        /// mispredict penalty it risks, which is right and which means a
+        /// fixture's arms have to be arms worth guarding — a two-op arm is
+        /// not one. Three adds of distinct constants are 12 latency-prior
+        /// cycles, and every point below stays exact in `f32`.
+        const PADDING: f32 = 6.0;
+
+        fn worth_a_branch(a: &mut ExprArena, arm: ExprId) -> ExprId {
+            (1..=3u32).fold(arm, |acc, i| {
+                let c = a.push_const(i as f32);
+                a.push_binary(OpKind::Add, acc, c)
+            })
+        }
+
+        /// `(X > 0) ? B³ : 3B` (plus [`PADDING`] on each arm) over a shared
+        /// `B = X·Y` — arms that are exclusive *and* contiguous in the
+        /// schedule.
         ///
         /// Both properties are needed and the second is easy to lose: a guard
         /// skips a whole index range, so every index in it must belong to that
@@ -3038,8 +3261,10 @@ mod tests {
             let cond = a.push_binary(OpKind::Gt, x, zero);
             let bb = a.push_binary(OpKind::Mul, base, base);
             let bbb = a.push_binary(OpKind::Mul, bb, base);
+            let bbb = worth_a_branch(a, bbb);
             let b2 = a.push_binary(OpKind::Add, base, base);
             let b3 = a.push_binary(OpKind::Add, b2, base);
+            let b3 = worth_a_branch(a, b3);
             let sel = a.push_ternary(OpKind::Select, cond, bbb, b3);
             // Live ACROSS the select and read after it. Without something in
             // this role the select is the root, nothing downstream reads a
@@ -3068,6 +3293,163 @@ mod tests {
             );
         }
 
+        /// A select whose true arm contains a select, with entries belonging
+        /// to the root sitting inside both arms — so NEITHER level is
+        /// guardable as scheduled, and both become guardable once
+        /// [`guards::cluster_select_arms`] gathers each arm into one run.
+        ///
+        /// Nesting is the case that can go wrong quietly: an inner select's
+        /// arms lie inside an outer arm, so partitioning the outside moves the
+        /// inside with it. If that broke an inner guard the kernel would still
+        /// be correct and merely slower, which no value test would catch —
+        /// hence the assertion on the analysis as well as on the arithmetic.
+        ///
+        /// The two "intruders" are read by the root, so they are shared with
+        /// the world outside the arms and can never be skipped; they are what
+        /// makes the arms non-contiguous to begin with.
+        fn nested_guarded_selects(a: &mut ExprArena) -> (ExprId, ExprId, ExprId) {
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let zero = a.push_const(0.0);
+            let base = a.push_binary(OpKind::Mul, x, y);
+            let outer_cond = a.push_binary(OpKind::Gt, x, zero);
+            let inner_cond = a.push_binary(OpKind::Gt, y, zero);
+
+            // Inner true arm, split around an entry the root reads.
+            let t1 = a.push_binary(OpKind::Mul, base, base);
+            let across_inner = a.push_binary(OpKind::Add, x, y);
+            let t2 = a.push_binary(OpKind::Mul, t1, base);
+            let one = a.push_const(1.0);
+            let t3 = a.push_binary(OpKind::Add, t2, one);
+
+            // Inner false arm.
+            let f1 = a.push_binary(OpKind::Add, base, base);
+            let two = a.push_const(2.0);
+            let f2 = a.push_binary(OpKind::Add, f1, two);
+
+            let (t3, f2) = (worth_a_branch(a, t3), worth_a_branch(a, f2));
+            let inner = a.push_ternary(OpKind::Select, inner_cond, t3, f2);
+
+            // The rest of the outer true arm, split around a second one.
+            let three = a.push_const(3.0);
+            let o1 = a.push_binary(OpKind::Add, inner, three);
+            let four = a.push_const(4.0);
+            let across_outer = a.push_binary(OpKind::Mul, x, four);
+            let five = a.push_const(5.0);
+            let o2 = a.push_binary(OpKind::Mul, o1, five);
+
+            // Outer false arm.
+            let six = a.push_const(6.0);
+            let p1 = a.push_binary(OpKind::Add, base, six);
+            let seven = a.push_const(7.0);
+            let p2 = a.push_binary(OpKind::Mul, p1, seven);
+
+            let (o2, p2) = (worth_a_branch(a, o2), worth_a_branch(a, p2));
+            let outer = a.push_ternary(OpKind::Select, outer_cond, o2, p2);
+            let carried = a.push_binary(OpKind::Add, across_inner, across_outer);
+            let root = a.push_binary(OpKind::Add, outer, carried);
+            (root, outer, inner)
+        }
+
+        /// What `nested_guarded_selects` computes, in scalar `f32` and with no
+        /// guard anywhere — every operation exact at the points below.
+        fn nested_expected(x: f32, y: f32) -> f32 {
+            let base = x * y;
+            let inner = PADDING
+                + if y > 0.0 {
+                    base * base * base + 1.0
+                } else {
+                    base + base + 2.0
+                };
+            let outer = PADDING
+                + if x > 0.0 {
+                    (inner + 3.0) * 5.0
+                } else {
+                    (base + 6.0) * 7.0
+                };
+            outer + (x + y) + x * 4.0
+        }
+
+        /// How many entries each select has under a guard, by schedule
+        /// position, for a schedule built the way `compile` builds it.
+        fn guarded_entries(a: &ExprArena, root: ExprId, cluster: bool) -> alloc::vec::Vec<usize> {
+            let schedule = arena_to_schedule(a, root);
+            let schedule = if cluster {
+                guards::cluster_select_arms(schedule)
+            } else {
+                schedule
+            };
+            analyze_select_guards(&schedule)
+                .iter()
+                .map(|g| (g.true_range.1 - g.true_range.0) + (g.false_range.1 - g.false_range.0))
+                .collect()
+        }
+
+        /// Both levels of a nested select are guarded once the schedule is
+        /// clustered, and neither was before — the reordering is the whole
+        /// difference.
+        #[test]
+        fn clustering_guards_both_levels_of_a_nested_select() {
+            let mut a = ExprArena::new();
+            let (root, _outer, _inner) = nested_guarded_selects(&mut a);
+
+            let before = guarded_entries(&a, root, false);
+            let after = guarded_entries(&a, root, true);
+            assert!(
+                before.iter().sum::<usize>() < after.iter().sum::<usize>(),
+                "clustering bought nothing: {before:?} -> {after:?}"
+            );
+            assert_eq!(
+                after.len(),
+                2,
+                "both the outer and the inner select must earn a guard, got {after:?}"
+            );
+            assert!(
+                after.iter().all(|&entries| entries > 0),
+                "a guard with an empty range is not a guard: {after:?}"
+            );
+        }
+
+        /// The clustered kernel's answer, against the same expression
+        /// evaluated in scalar `f32` with no guards: uniform masks (which take
+        /// the branches) and mixed lanes (which fall through to the blend),
+        /// exactly equal — every operation here is exact at these points, so
+        /// there is no tolerance to hide a wrong branch in.
+        #[test]
+        fn a_nested_guarded_select_agrees_lane_for_lane() {
+            let mut a = ExprArena::new();
+            let (root, _outer, _inner) = nested_guarded_selects(&mut a);
+            let result = compile(&a, root).expect("nested guarded select compile");
+
+            // One point at a time: all four combinations of the two masks,
+            // each of which takes a pair of branches.
+            for &(x, y) in &[(3.0f32, 4.0f32), (3.0, -4.0), (-3.0, 4.0), (-3.0, -4.0)] {
+                let got = eval_point(&result.code, x, y, 0.0, 0.0);
+                assert_eq!(
+                    got,
+                    nested_expected(x, y),
+                    "nested guarded select at ({x}, {y})"
+                );
+            }
+
+            // Mixed lanes: both masks vary within the batch, so neither guard
+            // fires and the blend has to produce every lane.
+            let xs: [f32; LANES] = core::array::from_fn(|i| if i % 2 == 0 { 3.0 } else { -3.0 });
+            let ys: [f32; LANES] = core::array::from_fn(|i| if i % 3 == 0 { 4.0 } else { -4.0 });
+            let got = eval_batch(
+                &result.code,
+                &[],
+                executable::Point4::new(xs, ys, [0.0; LANES], [0.0; LANES]),
+            );
+            for lane in 0..LANES {
+                assert_eq!(
+                    got[lane],
+                    nested_expected(xs[lane], ys[lane]),
+                    "lane {lane} of a mixed-mask batch"
+                );
+            }
+        }
+
         /// Uniform masks take the all-true and all-false branches; a mixed
         /// mask falls through to the blend. All three must agree with the
         /// arithmetic.
@@ -3085,7 +3467,7 @@ mod tests {
                 (-0.25, 2.0),
             ] {
                 let b = x * y;
-                let want = if x > 0.0 { b * b * b } else { 3.0 * b } + (x - y);
+                let want = if x > 0.0 { b * b * b } else { 3.0 * b } + PADDING + (x - y);
                 let got = eval_point(&result.code, x, y, 0.0, 0.0);
                 assert!(
                     (got - want).abs() <= 1e-3,
@@ -3096,11 +3478,11 @@ mod tests {
 
         /// The same, with the mask itself spilled.
         ///
-        /// This is the case the guard's scratch register has to be right for:
-        /// a spilled mask is resolved into `reload[1]`, *both* guards then read
-        /// it, and the reduction needs to land somewhere else. On aarch64 that
-        /// used to be a register held out of every kernel's pool; it is
-        /// `reload[0]` now, which is dead between instructions.
+        /// This is the case the guard's two reservations exist for: a spilled
+        /// mask is resolved into `Scratch::guard_mask`, *both* guards then read
+        /// it, and the reduction has to land somewhere else
+        /// (`Scratch::guard_temp`). On aarch64 both used to be registers held
+        /// out of every kernel's pool.
         ///
         /// Getting the mask to be the value that spills takes care, and the
         /// test asserts it rather than assuming: eviction is Belady, so the
@@ -3136,8 +3518,10 @@ mod tests {
             let base = a.push_binary(OpKind::Mul, mid, y);
             let bb = a.push_binary(OpKind::Mul, base, base);
             let bbb = a.push_binary(OpKind::Mul, bb, base);
+            let bbb = worth_a_branch(&mut a, bbb);
             let b2 = a.push_binary(OpKind::Add, base, base);
             let b3 = a.push_binary(OpKind::Add, b2, base);
+            let b3 = worth_a_branch(&mut a, b3);
             let sel = a.push_ternary(OpKind::Select, cond, bbb, b3);
             let carried = a.push_binary(OpKind::Sub, x, y);
             let root = a.push_binary(OpKind::Add, sel, carried);
@@ -3167,7 +3551,7 @@ mod tests {
             for &(px, py) in &[(3.0f32, 2.0f32), (-2.0, 0.5), (0.5, -1.0)] {
                 let m: f32 = (1..=8).map(|i| px + i as f32).sum();
                 let b = m * py;
-                let want = if px > 0.0 { b * b * b } else { 3.0 * b } + (px - py);
+                let want = if px > 0.0 { b * b * b } else { 3.0 * b } + PADDING + (px - py);
                 let got = eval_point(&result.code, px, py, 0.0, 0.0);
                 assert!(
                     (got - want).abs() <= 1e-2 * want.abs().max(1.0),
@@ -3227,8 +3611,10 @@ mod tests {
             let t1 = a.push_binary(OpKind::Mul, base, split);
             let t2 = a.push_binary(OpKind::Add, t1, split);
             let t3 = a.push_binary(OpKind::Mul, t2, base);
+            let t3 = worth_a_branch(&mut a, t3);
             let f1 = a.push_binary(OpKind::Add, base, base);
             let f2 = a.push_binary(OpKind::Add, f1, base);
+            let f2 = worth_a_branch(&mut a, f2);
             let sel = a.push_ternary(OpKind::Select, cond, t3, f2);
             // Read after the arm, which is what makes the confinement rule
             // load-bearing: on the skipped path this must not name the
@@ -3296,7 +3682,7 @@ mod tests {
                 } else {
                     (b + b) + b
                 };
-                let want = arm_value + v + (px - py);
+                let want = arm_value + PADDING + v + (px - py);
                 let got = eval_point(&result.code, px, py, 0.0, 0.0);
                 assert!(
                     (got - want).abs() <= 1e-2 * want.abs().max(1.0),
@@ -3337,7 +3723,7 @@ mod tests {
         }
     }
 
-    /// Run an arena kernel at `x` (Y/Z/W = 0) and return lane 0. The
+    /// Run an arena kernel at `x` (Y = 0) and return lane 0. The
     /// builtin-parity tests below use it. Gated off `+avx512f` (those builtins
     /// aren't in the AVX-512 op set yet anyway).
     #[cfg(all(
@@ -3874,6 +4260,22 @@ mod tests {
     ))]
     mod sched {
         use super::*;
+
+        /// One batch of a kernel whose single argument is bound to `u` — the
+        /// lattice-invariant third input a test used to spell `Var(2)`.
+        fn eval_point_with_arg(code: &executable::ExecutableCode, x: f32, y: f32, u: f32) -> f32 {
+            let block = [u];
+            let ctx: [*const f32; 1] = [block.as_ptr()];
+            let o = executable::Point4::new([x; LANES], [y; LANES], [0.0; LANES], [0.0; LANES]);
+            eval_batch(code, &ctx, o)[0]
+        }
+
+        /// Declare one argument in `a` and return its leaf.
+        fn arg_leaf(a: &mut ExprArena, default: f32) -> pixelflow_ir::ExprId {
+            let slot = a.declare_uniform(pixelflow_ir::Uniform::new(default).decl());
+            a.push_uniform(slot)
+        }
+
         use pixelflow_ir::arena::ExprArena;
 
         fn run(res: &CompileResult, x: f32, y: f32, z: f32, w: f32) -> f32 {
@@ -3896,11 +4298,12 @@ mod tests {
         /// itself; only the ground-truth comparison was load-bearing.
         #[test]
         fn sched_no_spill_is_correct() {
-            // f = sqrt(X*X + Y*Y) - Z, plus a non-commutative `X - Y*Z` shape.
+            // f = sqrt(X*X + Y*Y) - Y*U, a non-commutative shape whose third
+            // input is the kernel's argument rather than a third coordinate.
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
+            let z = arg_leaf(&mut a, 0.0);
             let xx = a.push_binary(OpKind::Mul, x, x);
             let yy = a.push_binary(OpKind::Mul, y, y);
             let sum = a.push_binary(OpKind::Add, xx, yy);
@@ -3912,9 +4315,9 @@ mod tests {
             let sched = compile(&a, root).expect("compile");
             assert_eq!(sched.spill_count, 0, "should fit without spilling");
 
-            for &(px, py, pz, pw) in PTS {
+            for &(px, py, pz, _pw) in PTS {
                 let want = (px * px + py * py).sqrt() - py * pz;
-                let got = run(&sched, px, py, pz, pw);
+                let got = eval_point_with_arg(&sched.code, px, py, pz);
                 assert!((got - want).abs() <= 1e-4, "got {got} want {want}");
             }
         }
@@ -3967,32 +4370,35 @@ mod tests {
         }
 
         /// Exercises the shared driver's Select short-circuit guard path on x86
-        /// (MOVMSKPS all-true/all-false branches): `(X > 0) ? Y*Y*Y : Z+Z+Z`,
+        /// (MOVMSKPS all-true/all-false branches): `(X > 0) ? Y*Y*Y : X+X+X`,
         /// with arm-exclusive subexpressions so a guard region forms. Uniform
         /// inputs take the all-true / all-false branches.
+        ///
+        /// Both arms are per-*lane*, which is what makes them arms: an arm of
+        /// the kernel's arguments alone would be lattice-invariant and hoist
+        /// out of the body entirely, leaving nothing for a guard to skip.
         #[test]
         fn sched_select_guards() {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
             let zero = a.push_const(0.0);
             let cond = a.push_binary(OpKind::Gt, x, zero); // X > 0 -> mask
             let yy = a.push_binary(OpKind::Mul, y, y);
             let yyy = a.push_binary(OpKind::Mul, yy, y); // true arm: Y^3
-            let zz = a.push_binary(OpKind::Add, z, z);
-            let zzz = a.push_binary(OpKind::Add, zz, z); // false arm: 3Z
+            let zz = a.push_binary(OpKind::Add, x, x);
+            let zzz = a.push_binary(OpKind::Add, zz, x); // false arm: 3X
             let root = a.push_ternary(OpKind::Select, cond, yyy, zzz);
 
             let sched = compile(&a, root).expect("scheduled compile");
 
-            // x>0 -> all-true -> Y^3 ; x<=0 -> all-false -> 3Z.
-            for &(px, py, pz, _pw) in PTS {
-                let want = if px > 0.0 { py * py * py } else { 3.0 * pz };
-                let got = run(&sched, px, py, pz, 0.0);
+            // x>0 -> all-true -> Y^3 ; x<=0 -> all-false -> 3X.
+            for &(px, py, _pz, _pw) in PTS {
+                let want = if px > 0.0 { py * py * py } else { 3.0 * px };
+                let got = run(&sched, px, py, 0.0, 0.0);
                 assert!(
                     (got - want).abs() <= 1e-3,
-                    "select: ({px},{py},{pz}) got {got} want {want}"
+                    "select: ({px},{py}) got {got} want {want}"
                 );
             }
         }
@@ -4056,12 +4462,8 @@ mod tests {
                 cy.copy_from_slice(&ys[batch * 4..batch * 4 + 4]);
                 let got = run4_ctx(&res, &ctx, cx, cy);
                 for i in 0..4 {
-                    let want = pixelflow_ir::eval::eval_scalar(
-                        arena,
-                        root,
-                        &[cx[i], cy[i], 0.0, 0.0],
-                        &bindings,
-                    );
+                    let want =
+                        pixelflow_ir::eval::eval_scalar(arena, root, &[cx[i], cy[i]], &bindings);
                     assert_eq!(
                         got[i], want,
                         "{tag} batch {batch} lane {i} (x={}, y={})",
@@ -4268,12 +4670,7 @@ mod tests {
 
             let bindings = pixelflow_ir::binding::BindingTable::bind(arena, buffers).unwrap();
             for (i, &g) in got.iter().enumerate() {
-                let want = pixelflow_ir::eval::eval_scalar(
-                    arena,
-                    root,
-                    &[xs[i], ys[i], 0.0, 0.0],
-                    &bindings,
-                );
+                let want = pixelflow_ir::eval::eval_scalar(arena, root, &[xs[i], ys[i]], &bindings);
                 assert_eq!(g, want, "{tag} lane {i} (x={}, y={})", xs[i], ys[i]);
             }
         }
@@ -4412,7 +4809,7 @@ mod tests {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
+            let z = a.push_binary(OpKind::Mul, y, x);
             let xx = a.push_binary(OpKind::Mul, x, x);
             let yy = a.push_binary(OpKind::Mul, y, y);
             let sum = a.push_binary(OpKind::Add, xx, yy);
@@ -4425,7 +4822,7 @@ mod tests {
             let (xs, ys, zs) = lanes();
             check(
                 run16(&res, xs, ys, zs),
-                |i| (xs[i] * xs[i] + ys[i] * ys[i]).sqrt() - zs[i],
+                |i| (xs[i] * xs[i] + ys[i] * ys[i]).sqrt() - ys[i] * xs[i],
                 "norm-z",
             );
         }
@@ -4507,13 +4904,12 @@ mod tests {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
             let zero = a.push_const(0.0);
             let cond = a.push_binary(OpKind::Gt, x, zero);
             let yy = a.push_binary(OpKind::Mul, y, y);
             let yyy = a.push_binary(OpKind::Mul, yy, y);
-            let zz = a.push_binary(OpKind::Add, z, z);
-            let zzz = a.push_binary(OpKind::Add, zz, z);
+            let zz = a.push_binary(OpKind::Add, x, x);
+            let zzz = a.push_binary(OpKind::Add, zz, x);
             let root = a.push_ternary(OpKind::Select, cond, yyy, zzz);
 
             let res = compile(&a, root).expect("avx512 compile");
@@ -4527,7 +4923,12 @@ mod tests {
                 |i| ys[i] * ys[i] * ys[i],
                 "guard-true",
             );
-            check(run16(&res, allneg, ys, zs), |i| 3.0 * zs[i], "guard-false");
+            let _unused_third_input = zs;
+            check(
+                run16(&res, allneg, ys, zs),
+                |_| 3.0 * allneg[0],
+                "guard-false",
+            );
 
             let mixed = core::array::from_fn::<f32, 16, _>(|i| if i % 2 == 0 { 1.0 } else { -1.0 });
             check(
@@ -4536,7 +4937,7 @@ mod tests {
                     if mixed[i] > 0.0 {
                         ys[i] * ys[i] * ys[i]
                     } else {
-                        3.0 * zs[i]
+                        3.0 * mixed[i]
                     }
                 },
                 "guard-mixed",
@@ -4594,6 +4995,173 @@ mod tests {
     // this same test starts running and will fail loudly, by name, for every
     // op `avx512::emit_unary`/`emit_binary`/`emit_plan` doesn't yet cover —
     // rather than waiting for an unrelated test to trip over the gap.
+    mod uniforms {
+        use super::*;
+        use pixelflow_ir::arena::{UniformDecl, UniformIdentity};
+
+        fn decl(default: f32) -> UniformDecl {
+            UniformDecl {
+                id: UniformIdentity::mint(),
+                default,
+            }
+        }
+
+        /// `x + u·u`: the uniform's load and the product that depends on it
+        /// alone are per-call work. Asserted on the partition — which region
+        /// holds them — not on timing.
+        #[test]
+        fn a_uniform_and_what_depends_on_it_alone_land_in_the_frame_prologue() {
+            let mut a = ExprArena::new();
+            let u = a.declare_uniform(decl(3.0));
+            let x = a.push_var(0);
+            let uu = a.push_uniform(u);
+            let sq = a.push_binary(OpKind::Mul, uu, uu);
+            let root = a.push_binary(OpKind::Add, x, sq);
+
+            let (arena, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
+            let schedule = arena_to_schedule(&arena, root);
+            let variance = schedule_variance(&schedule);
+            let scoped = partition_by_scope(schedule, &variance, &[0u8, 1]);
+
+            let frame = &scoped.regions[0];
+            assert!(
+                frame
+                    .schedule
+                    .iter()
+                    .any(|d| matches!(d.op, ScheduledOp::Uniform(_))),
+                "the broadcast load is once per call"
+            );
+            assert!(
+                frame
+                    .schedule
+                    .iter()
+                    .any(|d| matches!(d.op, ScheduledOp::Binary(OpKind::Mul, ..))),
+                "and so is u·u"
+            );
+            assert_eq!(frame.roots.len(), 1, "the product is the one parked value");
+            assert!(
+                !scoped
+                    .body
+                    .iter()
+                    .any(|d| matches!(d.op, ScheduledOp::Uniform(_))),
+                "the body reads the parked product, never the block"
+            );
+            assert!(
+                scoped.regions[1].schedule.is_empty(),
+                "nothing about a uniform is per row"
+            );
+        }
+
+        /// `x + u₀ + 2·u₁`, compiled once and run under two blocks: the
+        /// values come from the block at the call, and the uniform-only
+        /// product was hoisted.
+        #[test]
+        fn a_block_is_read_at_the_call_not_at_compile() {
+            let mut a = ExprArena::new();
+            let u0 = a.declare_uniform(decl(0.0));
+            let u1 = a.declare_uniform(decl(0.0));
+            let x = a.push_var(0);
+            let r0 = a.push_uniform(u0);
+            let r1 = a.push_uniform(u1);
+            let two = a.push_const(2.0);
+            let scaled = a.push_binary(OpKind::Mul, r1, two);
+            let sum = a.push_binary(OpKind::Add, x, r0);
+            let root = a.push_binary(OpKind::Add, sum, scaled);
+            let res = compile(&a, root).expect("compile");
+            assert!(res.hoisted_values >= 1, "2·u₁ is per call");
+
+            let xs: [f32; LANES] = core::array::from_fn(|i| i as f32);
+            for block in [[1.0f32, 10.0], [-2.5, 0.25]] {
+                let ctx = [block.as_ptr()];
+                let out = eval_batch(
+                    &res.code,
+                    &ctx,
+                    executable::Point4::new(xs, [0.0; LANES], [0.0; LANES], [0.0; LANES]),
+                );
+                for (i, got) in out.iter().enumerate() {
+                    assert_eq!(
+                        *got,
+                        i as f32 + block[0] + 2.0 * block[1],
+                        "lane {i} under {block:?}"
+                    );
+                }
+            }
+        }
+
+        /// The block's pointer is the context entry after the buffer slots:
+        /// a kernel over one buffer reads its block from `ctx[1]`.
+        #[test]
+        fn the_block_pointer_follows_the_buffer_slots() {
+            use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
+            let data = [10.0f32, 20.0, 30.0, 40.0];
+            let mut a = ExprArena::new();
+            let buf = a.declare_buffer(BufferDecl {
+                id: BufferIdentity::mint(),
+                width: 4,
+                height: 1,
+            });
+            let u = a.declare_uniform(decl(0.0));
+            let x = a.push_var(0);
+            let zero = a.push_const(0.0);
+            let g = a.push_gather(buf, x, zero);
+            let r = a.push_uniform(u);
+            let root = a.push_binary(OpKind::Add, g, r);
+            let res = compile(&a, root).expect("compile");
+
+            let block = [0.5f32];
+            let ctx = [data.as_ptr(), block.as_ptr()];
+            let xs: [f32; LANES] = core::array::from_fn(|i| i as f32);
+            let out = eval_batch(
+                &res.code,
+                &ctx,
+                executable::Point4::new(xs, [0.0; LANES], [0.0; LANES], [0.0; LANES]),
+            );
+            for (i, got) in out.iter().enumerate() {
+                assert_eq!(*got, data[i.min(3)] + 0.5, "lane {i}");
+            }
+        }
+
+        /// The bytes, per backend, for `ctx_slot = 2, offset = 3, dst = 5`.
+        /// Checked against `llvm-mc --disassemble` (LLVM 18):
+        /// `movq 16(%rdi), %rax` then `vbroadcastss 12(%rax), %xmm5` /
+        /// `%ymm5` / `%zmm5`; `ldr x9, [x0, #16]`, `ldr s5, [x9, #12]`,
+        /// `dup v5.4s, v5.s[0]`.
+        #[test]
+        fn every_backend_encodes_the_broadcast_load() {
+            let load = UniformLoad {
+                ctx_slot: 2,
+                offset: 3,
+            };
+            const MOV_RAX_CTX2: [u8; 7] = [0x48, 0x8B, 0x87, 0x10, 0, 0, 0];
+
+            let mut sse = Vec::new();
+            x86_64::emit_uniform_load(&mut sse, Reg(5), load);
+            assert_eq!(&sse[..7], &MOV_RAX_CTX2);
+            assert_eq!(&sse[7..], &[0xC4, 0xE2, 0x79, 0x18, 0xA8, 0x0C, 0, 0, 0]);
+
+            let mut avx2 = Vec::new();
+            avx2::emit_uniform_load(&mut avx2, Reg(5), load);
+            assert_eq!(&avx2[..7], &MOV_RAX_CTX2);
+            assert_eq!(&avx2[7..], &[0xC4, 0xE2, 0x7D, 0x18, 0xA8, 0x0C, 0, 0, 0]);
+
+            let mut avx512 = Vec::new();
+            avx512::emit_uniform_load(&mut avx512, Reg(5), load);
+            assert_eq!(&avx512[..7], &MOV_RAX_CTX2);
+            assert_eq!(
+                &avx512[7..],
+                &[0x62, 0xF2, 0x7D, 0x48, 0x18, 0xA8, 0x0C, 0, 0, 0]
+            );
+
+            let mut neon = Vec::new();
+            aarch64::emit_uniform_load(&mut neon, Reg(5), load);
+            let words: Vec<u32> = neon
+                .chunks(4)
+                .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+                .collect();
+            assert_eq!(words, [0xF940_0809, 0xBD40_0D25, 0x4E04_04A5]);
+        }
+    }
+
     mod backend_op_coverage {
         use super::super::coverage::*;
         use super::*;
@@ -4612,14 +5180,13 @@ mod tests {
                 reloads: alloc::vec::Vec::new(),
                 op,
                 setup_mov: None,
-                store: None,
                 // Every shape below uses registers 4-7, so these stand in for
                 // whatever scratch the allocator would hand an encoding that
                 // asks for some. A backend that wants scratch and finds none
                 // panics, which `try_emit` would report as a missing op.
                 scratch: regalloc::Scratch::for_test(
                     Some([Reg(15), Reg(14), Reg(13), Reg(12)]),
-                    Some(Reg(11)),
+                    [Some(Reg(11)), Some(Reg(10))],
                 ),
             };
             let mut code = alloc::vec::Vec::new();
@@ -4822,8 +5389,7 @@ mod tests {
                 reloads: alloc::vec::Vec::new(),
                 op,
                 setup_mov: None,
-                store: None,
-                scratch: regalloc::Scratch::for_test(temps, None),
+                scratch: regalloc::Scratch::for_test(temps, [None, None]),
             }
         }
 
@@ -5044,7 +5610,7 @@ mod tests {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let z = a.push_var(2);
+            let z = a.push_binary(OpKind::Add, y, x);
             let root = a.push_ternary(OpKind::MulAdd, x, y, z);
             let (a, root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
 
