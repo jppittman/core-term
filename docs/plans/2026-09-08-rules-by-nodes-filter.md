@@ -161,13 +161,38 @@ is a ZST, so its `Box` does not allocate; the seam adds no per-round
 allocation (the row *is* the scan's existing `updates` vector, moved into
 `MatchRow` and back).
 
+## Identity, measured
+
+Pre-change baseline: the harness at `e57760c0` (loop untouched, plus the
+`code_fnv` column) — `egraph_off_on run --no-clock --no-probe`, all 210
+shipped kernels (95 glyphs × 2 tiles, 3 bench + 1 wide, 12 shaders,
+psychedelic, cellgrid, chrome ×2), release, aarch64. Post-change: the same
+run at `b531fd80`. **210 of 210 rows identical on every deterministic
+column** — machine-code FNV, bytes, dag_cost, compiled nodes, spills,
+hoisted values, schedule/guard telemetry, statics, picture hash, oracle.
+The fast pin (12 shaders, release goldens) passes in both `dev` and
+`release`, and the pre-seam tree in `dev` produces the same numbers as the
+seam tree in `dev` on all 16 originally pinned kernels (the four glyph
+bakes differ between `dev` and `release` in **both** trees — a
+`-fp-contract` effect on the glyph constants at construction, a finding for
+its own change, not this one's).
+
 ## Cost of the seam at Identity
 
 Deterministic: zero additional allocations per round (the row is the
 existing vector, moved), and one `RuleId::of` (a label hash) per non-empty
-row where there was one per match; one indirect call per non-empty row with
-an empty body. Clock: Σ glyph bake time, taken at load < 8, must be inside
-noise — recorded in the PR.
+row where there was one per *match*; one indirect call per non-empty row
+with an empty body. Counted with a counting global allocator over one
+production run of each of the 12 shader ports: 3,410,337 allocations
+before, 3,292,560 after (−3.5 %, −2.07 MB), applications identical on every
+kernel.
+
+Clock (aarch64, load 6.7–7.8, alternated pre/post/pre/post, one process per
+arm, Σ `optimize_ms` over the 190 glyph bakes): round 1 11,314 → 11,171 ms
+(−1.26 %), round 2 11,340 → 11,190 ms (−1.32 %); per-kernel post/pre median
+0.98, p10 0.96, p90 1.01; pre-vs-pre and post-vs-post noise floor ±0.2 %.
+The sign agrees with the allocation count and is small: the seam costs
+nothing and returns the per-match label hashes.
 
 ## Phase 2 (not this change)
 
