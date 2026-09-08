@@ -65,9 +65,12 @@ impl Tier {
 pub struct SaturationInvocation<'a> {
     /// Which tier invoked saturation.
     pub tier: Tier,
-    /// Size of the input, as passed to `config_for_node_count` to select the
-    /// budget triple.
+    /// Size of the input, as passed to `config_for_input` to select the
+    /// tier.
     pub node_count: usize,
+    /// E-classes the input inserted to before any rewrite — what sized the
+    /// classical class cap.
+    pub inserted_classes: usize,
     /// Which objective chose the extracted term, and what the sharing-aware
     /// pass cost — so a record above any budget can never be read as if it
     /// were on the production objective.
@@ -115,7 +118,8 @@ pub struct SaturationInvocation<'a> {
 pub fn record(inv: SaturationInvocation<'_>) {
     let cost = latency_prior_cost(inv.extracted_arena, inv.extracted_root);
     let line = format!(
-        "{{\"tier\":\"{tier}\",\"node_count\":{node_count},\"max_iterations\":{max_iterations},\
+        "{{\"tier\":\"{tier}\",\"node_count\":{node_count},\"inserted_classes\":{inserted_classes},\
+         \"max_iterations\":{max_iterations},\
          \"max_classes\":{max_classes},\"max_applications\":{max_applications},\
          \"stop_reason\":\"{stop_reason}\",\"iterations\":{iterations},\
          \"classes_at_stop\":{classes_at_stop},\"application_count\":{application_count},\
@@ -125,6 +129,7 @@ pub fn record(inv: SaturationInvocation<'_>) {
          \"wall_clock_us\":{wall_clock_us},\"kernel_label\":{kernel_label}}}",
         tier = inv.tier.as_json_str(),
         node_count = inv.node_count,
+        inserted_classes = inv.inserted_classes,
         max_iterations = inv.stats.limits.iterations,
         max_classes = inv.stats.limits.classes,
         max_applications = json_opt_u64(inv.stats.limits.applications),

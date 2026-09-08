@@ -137,10 +137,24 @@ enum Command {
         /// tier's (the 2026-09-08 class-cap sweep), keeping each kernel's
         /// own tier's round cap; the application cap is `--app-cap`, or the
         /// plan's 40 per class when omitted.
-        #[arg(long, conflicts_with = "variant")]
+        #[arg(long, conflicts_with_all = ["variant", "classes_per_node"])]
         class_cap: Option<usize>,
-        /// The application budget beside `--class-cap`.
-        #[arg(long, requires = "class_cap")]
+        /// A class cap proportional to the kernel: this many classes per
+        /// legalized reachable node, clamped to `[--cap-floor, --cap-ceiling]`.
+        #[arg(long, conflicts_with = "variant", requires_all = ["cap_floor", "cap_ceiling"])]
+        classes_per_node: Option<usize>,
+        /// A class cap proportional to what the e-graph holds after
+        /// insertion: this many classes per hash-consed input class,
+        /// clamped to `[--cap-floor, --cap-ceiling]`.
+        #[arg(long, conflicts_with_all = ["variant", "classes_per_node"], requires_all = ["cap_floor", "cap_ceiling"])]
+        classes_per_inserted: Option<usize>,
+        #[arg(long)]
+        cap_floor: Option<usize>,
+        #[arg(long)]
+        cap_ceiling: Option<usize>,
+        /// The application budget beside a cap arm; the plan's 40 per class
+        /// of the resolved cap when omitted.
+        #[arg(long)]
         app_cap: Option<u64>,
     },
     /// Aggregate `run --class-cap` rows across caps into the sweep documents.
@@ -208,24 +222,89 @@ impl Variant {
     }
 }
 
+/// How one arm of the sweep sizes a kernel's class cap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CapRule {
+    /// One cap for every kernel.
+    Flat(usize),
+    /// `classes_per_node × node_count`, clamped — the cap the input's own
+    /// size asks for, so a kernel the flat cap clips in its first round
+    /// gets room and a kernel it never clipped keeps today's budget.
+    PerNode {
+        classes_per_node: usize,
+        floor: usize,
+        ceiling: usize,
+    },
+    /// `classes_per_inserted × inserted_classes`, clamped: the same idea
+    /// keyed on the hash-consed input the e-graph actually holds, which is
+    /// what separates a glyph (2.3 arena nodes per class) from the chrome
+    /// scene (840: a 390k-node tree that hash-conses to 465 classes).
+    PerInserted {
+        classes_per_inserted: usize,
+        floor: usize,
+        ceiling: usize,
+    },
+}
+
+/// The two sizes a cap rule can key on.
+#[derive(Clone, Copy, Debug)]
+struct InputSizes {
+    /// Legalized reachable arena nodes — production's tier key.
+    nodes: usize,
+    /// E-classes after insertion, before any rewrite.
+    inserted: usize,
+}
+
 /// One arm of the class-cap sweep: production's optimizer with the
 /// kernel's own tier's rounds and these two budget dimensions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CapArm {
-    classes: usize,
-    applications: u64,
+    rule: CapRule,
+    /// `None`: the plan's ratio of the resolved cap.
+    applications: Option<u64>,
 }
 
 impl CapArm {
-    fn new(classes: usize, applications: Option<u64>) -> Self {
-        Self {
-            classes,
-            applications: applications.unwrap_or(classes as u64 * APPLICATIONS_PER_CLASS),
+    fn label(self) -> String {
+        let apps = match self.applications {
+            Some(a) => a.to_string(),
+            None => format!("{APPLICATIONS_PER_CLASS}x"),
+        };
+        match self.rule {
+            CapRule::Flat(c) => format!("cap{c}-app{apps}"),
+            CapRule::PerNode {
+                classes_per_node,
+                floor,
+                ceiling,
+            } => format!("capx{classes_per_node}-{floor}-{ceiling}-app{apps}"),
+            CapRule::PerInserted {
+                classes_per_inserted,
+                floor,
+                ceiling,
+            } => format!("caph{classes_per_inserted}-{floor}-{ceiling}-app{apps}"),
         }
     }
 
-    fn label(self) -> String {
-        format!("cap{}-app{}", self.classes, self.applications)
+    /// The (class cap, application cap) this arm holds a kernel of these
+    /// sizes to.
+    fn resolve(self, sizes: InputSizes) -> (usize, u64) {
+        let classes = match self.rule {
+            CapRule::Flat(c) => c,
+            CapRule::PerNode {
+                classes_per_node,
+                floor,
+                ceiling,
+            } => (classes_per_node * sizes.nodes).clamp(floor, ceiling),
+            CapRule::PerInserted {
+                classes_per_inserted,
+                floor,
+                ceiling,
+            } => (classes_per_inserted * sizes.inserted).clamp(floor, ceiling),
+        };
+        let applications = self
+            .applications
+            .unwrap_or(classes as u64 * APPLICATIONS_PER_CLASS);
+        (classes, applications)
     }
 
     /// `node_count` is the legalized reachable count production keys its
@@ -233,14 +312,15 @@ impl CapArm {
     /// the tier's round cap where production has it, so a blitz-tier space
     /// glyph is not held to classical's 100 rounds — though at every arm,
     /// the baseline included, its class cap is above its own tier's 500.
-    fn optimizer(self, shape: LatticeShape, node_count: usize) -> Optimizer {
-        let tier: SaturationConfig = config_for_node_count(node_count);
+    fn optimizer(self, shape: LatticeShape, sizes: InputSizes) -> Optimizer {
+        let tier: SaturationConfig = config_for_node_count(sizes.nodes);
+        let (classes, applications) = self.resolve(sizes);
         Optimizer::production()
             .for_lattice(shape)
             .budget(Budget::Explicit {
                 iterations: tier.max_iterations,
-                classes: self.classes,
-                applications: Some(self.applications),
+                classes,
+                applications: Some(applications),
             })
     }
 }
@@ -255,6 +335,9 @@ impl CapArm {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct SatTelemetry {
     node_count: usize,
+    /// `None` on rows written before the optimizer reported it.
+    #[serde(default)]
+    inserted_classes: Option<usize>,
     max_iterations: usize,
     max_classes: usize,
     max_applications: Option<u64>,
@@ -371,12 +454,17 @@ struct KernelRow {
     /// rows written before the column existed.
     #[serde(default)]
     peak_alloc_bytes: Option<u64>,
-    /// The `--class-cap` arm this row was taken under; `None` for
-    /// production's own tier.
+    /// The class and application caps this kernel was held to under a
+    /// `--class-cap` / `--classes-per-node` arm (the arm itself is `mode`);
+    /// `None` for production's own tier.
     #[serde(default)]
     class_cap: Option<usize>,
     #[serde(default)]
     app_cap: Option<u64>,
+    /// E-classes the legalized input inserts to, before any rewrite — the
+    /// hash-consed size; `None` on rows written before the column existed.
+    #[serde(default)]
+    inserted_classes: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1244,12 +1332,19 @@ fn run(args: &RunArgs<'_>) {
         let trips = Trips::of(rk.extent, LANES as u32);
         let started = Instant::now();
 
+        let sizes = {
+            let (la, lr) = legalize(arena, root);
+            let mut egraph = Optimizer::production().egraph();
+            insert(&la, lr, &mut egraph, Vocabulary::Runtime)
+                .unwrap_or_else(|_| panic!("{}: not e-graph representable", rk.name));
+            InputSizes {
+                nodes: reachable_count(&la, lr),
+                inserted: egraph.num_classes(),
+            }
+        };
         let in_harness_optimizer = |shape: LatticeShape| match (variant, cap) {
             (Some(v), None) => Some(v.optimizer(shape)),
-            (None, Some(c)) => {
-                let (la, lr) = legalize(arena, root);
-                Some(c.optimizer(shape, reachable_count(&la, lr)))
-            }
+            (None, Some(c)) => Some(c.optimizer(shape, sizes)),
             (None, None) => None,
             (Some(_), Some(_)) => unreachable!("mode_label rejects both arms at once"),
         };
@@ -1258,10 +1353,17 @@ fn run(args: &RunArgs<'_>) {
             None => compile_via_production_path(arena, root, shape),
         };
         if mode != "off" {
-            assert!(
-                compiled.sat.is_some(),
-                "{}: saturation ran but left no telemetry record — build the harness with \
-                 --features pixelflow-search/saturation-telemetry",
+            let sat = compiled.sat.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "{}: saturation ran but left no telemetry record — build the harness with \
+                     --features pixelflow-search/saturation-telemetry",
+                    rk.name
+                )
+            });
+            assert_eq!(
+                sat.inserted_classes,
+                Some(sizes.inserted),
+                "{}: the optimizer's inserted class count and the harness's own insertion disagree",
                 rk.name
             );
         }
@@ -1331,8 +1433,9 @@ fn run(args: &RunArgs<'_>) {
             probe,
             sat: compiled.sat,
             peak_alloc_bytes: Some(compiled.peak_alloc_bytes),
-            class_cap: cap.map(|c| c.classes),
-            app_cap: cap.map(|c| c.applications),
+            class_cap: cap.map(|c| c.resolve(sizes).0),
+            app_cap: cap.map(|c| c.resolve(sizes).1),
+            inserted_classes: Some(sizes.inserted),
         };
         let line = serde_json::to_string(&row).expect("serialize row");
         writeln!(sink, "{line}").expect("append row");
@@ -2037,11 +2140,16 @@ fn diff(inputs: &DiffInputs<'_>, out_prefix: &Path, notes: &[String]) {
 // cap-sweep: the class-cap sweep across arms
 // ---------------------------------------------------------------------------
 
-/// One `(class cap, application cap, class)` cell of the sweep.
+/// One `(arm, class)` cell of the sweep.
 #[derive(Serialize, Default, Clone, Debug)]
 struct CapCell {
-    class_cap: usize,
-    app_cap: u64,
+    /// The arm's label (`mode`): `cap<N>-app<M>` or `capx<R>-<floor>-<ceiling>-app<M>`.
+    arm: String,
+    /// The class caps the arm resolved to over this cell's kernels.
+    class_cap_min: usize,
+    class_cap_max: usize,
+    app_cap_min: u64,
+    app_cap_max: u64,
     class: String,
     n: usize,
     /// Stop reasons, as the telemetry names them.
@@ -2084,7 +2192,7 @@ fn median_of<T: Copy + Into<f64>>(v: &mut [T]) -> f64 {
     }
 }
 
-fn cap_cell(class_cap: usize, app_cap: u64, class: &str, rows: &[&KernelRow]) -> CapCell {
+fn cap_cell(arm: &str, class: &str, rows: &[&KernelRow]) -> CapCell {
     fn sat(r: &KernelRow) -> &SatTelemetry {
         r.sat.as_ref().unwrap_or_else(|| {
             panic!(
@@ -2094,8 +2202,9 @@ fn cap_cell(class_cap: usize, app_cap: u64, class: &str, rows: &[&KernelRow]) ->
         })
     }
     let mut cell = CapCell {
-        class_cap,
-        app_cap,
+        arm: arm.to_string(),
+        class_cap_min: usize::MAX,
+        app_cap_min: u64::MAX,
         class: class.to_string(),
         n: rows.len(),
         ..CapCell::default()
@@ -2105,6 +2214,11 @@ fn cap_cell(class_cap: usize, app_cap: u64, class: &str, rows: &[&KernelRow]) ->
     let mut classes = Vec::new();
     for r in rows {
         let s = sat(r);
+        let (c, a) = (r.class_cap.expect("cap row"), r.app_cap.expect("cap row"));
+        cell.class_cap_min = cell.class_cap_min.min(c);
+        cell.class_cap_max = cell.class_cap_max.max(c);
+        cell.app_cap_min = cell.app_cap_min.min(a);
+        cell.app_cap_max = cell.app_cap_max.max(a);
         *cell.stops.entry(s.stop_reason.clone()).or_default() += 1;
         if s.stop_reason == "class_cap" && s.iterations <= 1 {
             cell.class_cap_in_round_1 += 1;
@@ -2158,6 +2272,14 @@ fn stops_str(stops: &BTreeMap<String, usize>, n: usize) -> String {
         .join(", ")
 }
 
+fn range_str<T: PartialEq + std::fmt::Display>(lo: T, hi: T) -> String {
+    if lo == hi {
+        lo.to_string()
+    } else {
+        format!("{lo}–{hi}")
+    }
+}
+
 fn signed_pct(now: f64, base: f64) -> String {
     if base == 0.0 {
         return "-".to_string();
@@ -2169,34 +2291,50 @@ fn signed_pct(now: f64, base: f64) -> String {
 fn cap_sweep(paths: &[PathBuf], out_prefix: &Path, notes: &[String]) {
     let rows = read_rows(paths);
     assert!(!rows.is_empty(), "no rows");
-    // (class cap, app cap, class) -> rows; a kernel appears once per arm.
-    let mut cells: BTreeMap<(usize, u64, String), Vec<&KernelRow>> = BTreeMap::new();
+    // (arm, class) -> rows; a kernel appears once per arm. Arms are ordered
+    // by the smallest cap they resolved to, then by label.
+    let mut cells: BTreeMap<(usize, String, String), Vec<&KernelRow>> = BTreeMap::new();
+    let mut arm_min_cap: BTreeMap<&str, usize> = BTreeMap::new();
     for r in &rows {
-        let (Some(c), Some(a)) = (r.class_cap, r.app_cap) else {
-            panic!("{}: not a --class-cap row (mode {})", r.name, r.mode);
+        let Some(c) = r.class_cap else {
+            panic!("{}: not a cap-arm row (mode {})", r.name, r.mode);
         };
-        let bucket = cells.entry((c, a, r.class.clone())).or_default();
+        let e = arm_min_cap.entry(r.mode.as_str()).or_insert(c);
+        *e = (*e).min(c);
+    }
+    for r in &rows {
+        let key = (
+            arm_min_cap[r.mode.as_str()],
+            r.mode.clone(),
+            r.class.clone(),
+        );
+        let bucket = cells.entry(key).or_default();
         assert!(
             !bucket.iter().any(|x| x.name == r.name),
-            "{}: two rows in arm cap{c}-app{a} — merge or dedupe the inputs",
-            r.name
+            "{}: two rows in arm {} — merge or dedupe the inputs",
+            r.name,
+            r.mode
         );
         bucket.push(r);
     }
     let cells: Vec<CapCell> = cells
         .iter()
-        .map(|((c, a, class), rs)| cap_cell(*c, *a, class, rs))
+        .map(|((_, arm, class), rs)| cap_cell(arm, class, rs))
         .collect();
-    let baseline_cap = cells.iter().map(|c| c.class_cap).min().expect("cells");
+    let baseline_arm = "cap5000-app200000";
+    assert!(
+        cells.iter().any(|c| c.arm == baseline_arm),
+        "the baseline arm {baseline_arm} (production's classical cap) is not among the rows"
+    );
     let baseline = |class: &str| -> Option<&CapCell> {
         cells
             .iter()
-            .find(|c| c.class_cap == baseline_cap && c.class == class)
+            .find(|c| c.arm == baseline_arm && c.class == class)
     };
 
     // Per-kernel CSV: every deterministic column, one line per (arm, kernel).
     let mut csv = String::from(
-        "kernel,class,class_cap,app_cap,tier_nodes,stop,iterations,applications,classes_at_stop,live_classes,\
+        "kernel,class,arm,class_cap,app_cap,tier_nodes,inserted_classes,stop,iterations,applications,classes_at_stop,live_classes,\
          objective,shared_pass_bytes,input_nodes,compiled_nodes,bytes,dag_cost,schedule,selects,guarded,exclusive,\
          spill_slots,hoisted,same_form_nan_mismatch,same_form_max_abs,packed_mismatch_same,optimize_ms,emit_ms,\
          sat_wall_ms,peak_alloc_mb,git_sha\n",
@@ -2206,12 +2344,14 @@ fn cap_sweep(paths: &[PathBuf], out_prefix: &Path, notes: &[String]) {
         let g = |f: fn(&GuardTelemetry) -> u64| r.guard.as_ref().map_or(0, f);
         let o = r.oracle.as_ref();
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{:.2},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{:.2},{}\n",
             r.name,
             r.class,
+            r.mode,
             r.class_cap.expect("cap row"),
             r.app_cap.expect("cap row"),
             s.node_count,
+            opt_str(r.inserted_classes),
             s.stop_reason,
             s.iterations,
             s.application_count,
@@ -2260,15 +2400,16 @@ fn cap_sweep(paths: &[PathBuf], out_prefix: &Path, notes: &[String]) {
     }
     md.push_str("\n## Per family, per arm\n\n");
     md.push_str(
-        "| class | cap | apps | n | stop | cap in round 1 | rounds med / max | apps med / max | classes med / max | live max | objective | Σ nodes | Σ bytes (vs base) | Σ dag_cost (vs base) | Σ guarded/schedule | Σ spills | oracle NaN / max abs | Σ compile ms | peak MB |\n|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+        "| class | arm | cap (min–max) | apps (min–max) | n | stop | cap in round 1 | rounds med / max | apps med / max | classes med / max | live max | objective | Σ nodes | Σ bytes (vs base) | Σ dag_cost (vs base) | Σ guarded/schedule | Σ spills | oracle NaN / max abs | Σ compile ms | peak MB |\n|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
     for c in &cells {
         let base = baseline(&c.class);
         md.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} / {} | {} / {} | {} / {} | {} | {} | {} | {} ({}) | {} ({}) | {}/{} | {} | {} / {:.3e} | {:.0} | {:.1} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} / {} | {} / {} | {} / {} | {} | {} | {} | {} ({}) | {} ({}) | {}/{} | {} | {} / {:.3e} | {:.0} | {:.1} |\n",
             c.class,
-            c.class_cap,
-            c.app_cap,
+            c.arm,
+            range_str(c.class_cap_min, c.class_cap_max),
+            range_str(c.app_cap_min, c.app_cap_max),
             c.n,
             stops_str(&c.stops, c.n),
             c.class_cap_in_round_1,
@@ -2308,28 +2449,21 @@ fn cap_sweep(paths: &[PathBuf], out_prefix: &Path, notes: &[String]) {
     );
     let by_name_at_base: BTreeMap<&str, &KernelRow> = rows
         .iter()
-        .filter(|r| r.class_cap == Some(baseline_cap))
+        .filter(|r| r.mode == baseline_arm)
         .map(|r| (r.name.as_str(), r))
         .collect();
-    let mut arms: Vec<(usize, u64)> = rows
-        .iter()
-        .map(|r| (r.class_cap.expect("cap"), r.app_cap.expect("app")))
-        .collect();
+    let mut arms: Vec<(usize, &str)> = arm_min_cap.iter().map(|(a, c)| (*c, *a)).collect();
     arms.sort_unstable();
-    arms.dedup();
     let mut moved_json = Vec::new();
-    for (cap, app) in arms {
-        if cap == baseline_cap {
+    for (_, arm) in arms {
+        if arm == baseline_arm {
             continue;
         }
         let mut better = 0usize;
         let mut worse = 0usize;
         let mut same = 0usize;
         let mut lines = Vec::new();
-        for r in rows
-            .iter()
-            .filter(|r| r.class_cap == Some(cap) && r.app_cap == Some(app))
-        {
+        for r in rows.iter().filter(|r| r.mode == arm) {
             let Some(b) = by_name_at_base.get(r.name.as_str()) else {
                 continue;
             };
@@ -2353,7 +2487,7 @@ fn cap_sweep(paths: &[PathBuf], out_prefix: &Path, notes: &[String]) {
         }
         lines.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)).then(a.0.cmp(&b.0)));
         md.push_str(&format!(
-            "### cap {cap} / apps {app}: {better} better, {worse} worse, {same} unchanged\n\n"
+            "### {arm}: {better} better, {worse} worse, {same} unchanged\n\n"
         ));
         if !lines.is_empty() {
             md.push_str("| kernel | Δ bytes | Δ dag_cost |\n|---|---:|---:|\n");
@@ -2363,14 +2497,14 @@ fn cap_sweep(paths: &[PathBuf], out_prefix: &Path, notes: &[String]) {
             md.push('\n');
         }
         moved_json.push(serde_json::json!({
-            "class_cap": cap, "app_cap": app, "better": better, "worse": worse, "same": same,
+            "arm": arm, "better": better, "worse": worse, "same": same,
             "moved": lines.iter().map(|(n, db, dd)| serde_json::json!({"kernel": n, "d_bytes": db, "d_dag_cost": dd})).collect::<Vec<_>>(),
         }));
     }
 
     let json = serde_json::json!({
         "schema": "class-cap-sweep-v1",
-        "baseline_cap": baseline_cap,
+        "baseline_arm": baseline_arm,
         "notes": notes,
         "cells": cells,
         "movement": moved_json,
@@ -2395,11 +2529,41 @@ fn main() {
             skip,
             font,
             class_cap,
+            classes_per_node,
+            classes_per_inserted,
+            cap_floor,
+            cap_ceiling,
             app_cap,
         } => run(&RunArgs {
             out: &out,
             variant,
-            cap: class_cap.map(|c| CapArm::new(c, app_cap)),
+            cap: match (class_cap, classes_per_node, classes_per_inserted) {
+                (Some(c), None, None) => Some(CapArm {
+                    rule: CapRule::Flat(c),
+                    applications: app_cap,
+                }),
+                (None, Some(r), None) => Some(CapArm {
+                    rule: CapRule::PerNode {
+                        classes_per_node: r,
+                        floor: cap_floor.expect("clap: requires cap_floor"),
+                        ceiling: cap_ceiling.expect("clap: requires cap_ceiling"),
+                    },
+                    applications: app_cap,
+                }),
+                (None, None, Some(r)) => Some(CapArm {
+                    rule: CapRule::PerInserted {
+                        classes_per_inserted: r,
+                        floor: cap_floor.expect("clap: requires cap_floor"),
+                        ceiling: cap_ceiling.expect("clap: requires cap_ceiling"),
+                    },
+                    applications: app_cap,
+                }),
+                (None, None, None) => {
+                    assert!(app_cap.is_none(), "--app-cap needs a cap arm");
+                    None
+                }
+                _ => unreachable!("clap: conflicts_with"),
+            },
             no_clock,
             no_probe,
             filter: filter.as_deref(),

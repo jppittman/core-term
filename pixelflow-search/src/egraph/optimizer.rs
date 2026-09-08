@@ -60,6 +60,7 @@ use super::node::EClassId;
 #[cfg(feature = "provenance-journal")]
 use super::provenance::ApplicationRecord;
 use super::rules::{Fingerprint, RuleSet};
+use super::saturate::InputSize;
 use crate::nnue::guide::SaturationGuide;
 
 /// A sink for what saturation did.
@@ -127,10 +128,11 @@ impl Observer for KeepJournal {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Budget {
     /// What production does: iteration and class caps chosen from the
-    /// input's node count, exactly as
-    /// [`config_for_node_count`](super::saturate::config_for_node_count)
-    /// picks them (≤10 nodes → 20 rounds / 500 classes; 11–50 → 50 / 2 000;
-    /// 51+ → 100 / 5 000).
+    /// input's sizes, exactly as
+    /// [`config_for_input`](super::saturate::config_for_input) picks them
+    /// (≤10 nodes → 20 rounds / 500 classes; 11–50 → 50 / 2 000; 51+ →
+    /// 100 rounds and a class cap of 10 per inserted class, clamped to
+    /// 5 000..=50 000).
     Production,
     /// A fixed number of rule applications, with production's round and
     /// class caps as backstops. The budget the research arms compare under,
@@ -162,13 +164,13 @@ pub struct Limits {
 impl Budget {
     /// Resolve to concrete limits.
     ///
-    /// `node_count` is the same rough size measure the presets have always
-    /// keyed on — AST node count for the macro tier, reachable-arena node
-    /// count for the runtime tier — and is ignored by the variants that name
-    /// their limits.
+    /// `input` is the same rough size measure the presets have always keyed
+    /// on — AST node count for the macro tier, reachable-arena node count
+    /// for the runtime tier — with the inserted class count beside it for
+    /// the classical cap; ignored by the variants that name their limits.
     #[must_use]
-    pub fn limits(self, node_count: usize) -> Limits {
-        let preset = super::saturate::config_for_node_count(node_count);
+    pub fn limits(self, input: InputSize) -> Limits {
+        let preset = super::saturate::config_for_input(input);
         match self {
             Self::Production => Limits {
                 iterations: preset.max_iterations,
@@ -548,13 +550,12 @@ impl Optimizer {
         self.rules.fingerprint()
     }
 
-    /// The limits this optimizer's budget resolves to for an input of
-    /// `node_count` nodes — the *environment* an
-    /// [`anytime`](super::anytime) curve holds fixed while it varies only
-    /// the application dimension.
+    /// The limits this optimizer's budget resolves to for an input of these
+    /// sizes — the *environment* an [`anytime`](super::anytime) curve holds
+    /// fixed while it varies only the application dimension.
     #[must_use]
-    pub fn limits_for(&self, node_count: usize) -> Limits {
-        self.budget.limits(node_count)
+    pub fn limits_for(&self, input: InputSize) -> Limits {
+        self.budget.limits(input)
     }
 
     /// How many distinct candidate keys the carried guided episode has
@@ -587,7 +588,10 @@ impl Optimizer {
     /// Saturate `egraph` from `root` under this configuration, and extract.
     ///
     /// `node_count` is the rough size measure [`Budget::Production`] picks
-    /// its preset from — the same one the presets have always keyed on.
+    /// its tier from — the same one the presets have always keyed on. The
+    /// classical class cap is sized from `egraph`'s class count on entry:
+    /// the input has been inserted and nothing rewritten yet, so that count
+    /// is the hash-consed input ([`InputSize::classes`]).
     ///
     /// # Panics
     ///
@@ -596,19 +600,23 @@ impl Optimizer {
     /// assertion about the budget, and a silently truncated optimization that
     /// reports success is the failure mode this API exists to remove.
     pub fn run(&mut self, egraph: &mut EGraph, root: EClassId, node_count: usize) -> Optimized {
-        self.run_bounded(egraph, root, self.budget.limits(node_count), node_count)
+        let input = InputSize {
+            nodes: node_count,
+            classes: egraph.num_classes(),
+        };
+        self.run_bounded(egraph, root, self.budget.limits(input), input)
     }
 
     /// [`Self::run`] with the limits named outright — the seam
     /// [`super::anytime`] steps a curve on, where each step's budget is the
-    /// *gap* to the next checkpoint and `node_count` is only still needed to
+    /// *gap* to the next checkpoint and `input` is only still needed to
     /// name the tier the ceiling belongs to.
     pub(crate) fn run_bounded(
         &mut self,
         egraph: &mut EGraph,
         root: EClassId,
         limits: Limits,
-        node_count: usize,
+        input: InputSize,
     ) -> Optimized {
         let started = std::time::Instant::now();
 
@@ -623,7 +631,7 @@ impl Optimizer {
 
         // Name and budget from one lookup, so the panic below cannot name a
         // tier other than the one whose ceiling it is asserting.
-        let (tier, tier_config) = super::saturate::tier_for_node_count(node_count);
+        let (tier, tier_config) = super::saturate::tier_for_input(input);
         let ceiling = match self.hard_ceiling {
             HardCeiling::None => None,
             HardCeiling::Fixed(d) => Some(d),
@@ -639,13 +647,16 @@ impl Optimizer {
             assert!(
                 elapsed <= ceiling,
                 "Optimizer::run exceeded its safety ceiling: {elapsed:?} > {ceiling:?} \
-                 (tier {tier}, {node_count} nodes, {applications} applications reached, \
+                 (tier {tier}, {nodes} nodes / {classes} inserted classes, {applications} \
+                 applications reached, \
                  stop: {stop:?}). A ceiling is an assertion about the budget, not a budget \
                  dimension — either the budget is wrong for this input or the machine is \
                  unusually slow. Override with PIXELFLOW_SATURATION_CEILING_MS (milliseconds; \
                  `0` or `off` disables it) only for diagnosis — it can change whether this \
                  panics, never which kernel is emitted.",
                 stop = saturation.stop,
+                nodes = input.nodes,
+                classes = input.classes,
             );
         }
 

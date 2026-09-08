@@ -85,8 +85,10 @@ pub use provenance::{
 pub use rewrite::{Rewrite, RewriteAction, TemplateArena};
 pub use rules::{Fingerprint, RuleId, RuleSet, rule_label};
 pub use saturate::{
-    SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
-    saturate_with_budget, saturate_with_full_budget,
+    APPLICATIONS_PER_CLASS, CLASSICAL_CLASS_CEILING, CLASSICAL_CLASS_FLOOR,
+    CLASSICAL_CLASSES_PER_INSERTED_CLASS, InputSize, SaturationConfig, SaturationResult,
+    achievable_cost_within_budget, config_for_input, config_for_node_count, saturate_with_budget,
+    saturate_with_full_budget,
 };
 pub use template::TemplateRewrite;
 
