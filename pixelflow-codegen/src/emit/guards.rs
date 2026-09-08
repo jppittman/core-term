@@ -895,8 +895,8 @@ mod tests {
         assert_eq!(guards.len(), 1);
         assert_eq!(guards[0].select_idx, 3);
         assert_eq!(guards[0].mask_vid, ValueId(0));
-        assert_eq!(guards[0].true_range, (1, 3));
-        assert_eq!(guards[0].false_range, (3, 3));
+        assert_eq!(guards[0].true_range(), (1, 3));
+        assert_eq!(guards[0].false_range(), (3, 3));
     }
 
     /// Symmetric to the above: the false arm alone is exclusive.
@@ -916,8 +916,8 @@ mod tests {
 
         assert_eq!(guards.len(), 1);
         assert_eq!(guards[0].select_idx, 3);
-        assert_eq!(guards[0].true_range, (3, 3));
-        assert_eq!(guards[0].false_range, (1, 3));
+        assert_eq!(guards[0].true_range(), (3, 3));
+        assert_eq!(guards[0].false_range(), (1, 3));
     }
 
     /// An operand reachable only through a value the schedule never defines
@@ -941,7 +941,7 @@ mod tests {
 
         assert_eq!(guards.len(), 1);
         assert_eq!(guards[0].select_idx, 2);
-        assert_eq!(guards[0].false_range, (1, 2));
+        assert_eq!(guards[0].false_range(), (1, 2));
     }
 
     /// The cost gate is `<=`, and this pins that boundary rather than a value
