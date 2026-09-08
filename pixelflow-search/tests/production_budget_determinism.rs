@@ -187,9 +187,10 @@ fn the_classical_cap_grows_with_the_inserted_input() {
     // saturation loop clamps every cap to.
     let big = SaturationConfig::classical_for(usize::MAX);
     assert_eq!(big.max_classes, CLASSICAL_CLASS_CEILING);
-    // Compile-time asserted beside the constants; restated here so the test
-    // names the ceiling the rule is calibrated for.
-    assert!(CLASSICAL_CLASS_CEILING_CALIBRATED <= HARD_CLASS_LIMIT);
+    // `CLASSICAL_CLASS_CEILING_CALIBRATED <= HARD_CLASS_LIMIT` is asserted at
+    // compile time beside the constants; what a run can check is that the
+    // clamp honours the hard limit at the top.
+    assert!(big.max_classes <= HARD_CLASS_LIMIT);
     // The three named presets are the same derivation at their caps.
     for preset in [
         SaturationConfig::blitz(),
