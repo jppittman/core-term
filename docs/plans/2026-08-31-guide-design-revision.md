@@ -322,6 +322,36 @@ growth-awareness is not a refinement of the Guide for that rule; it is the
 precondition for the rule being admissible at all, and the linking design
 should be read as blocked on it.
 
+### 4.2 Measured: spending the whole budget is not monotone in extracted cost
+
+Growth is now computed exactly before firing (`EGraph::predicted_growth`,
+asserted equal to the measured delta on every application under growth
+telemetry — 10,819 real applications, zero mismatches). Wiring it into the
+scan-time estimator in place of the flat 0/1/3 guess did what the guess was
+preventing: saturation ran to its cap where it had stopped short
+(`circle_sdf` 1218 → 2000 classes, `redundant` 428 → 500).
+
+And on the shipped-kernel corpus (`egraph_off_on`, 16 kernels that run),
+**that made 4 kernels extract worse** — `mandelbrot_distance` 518 → 556
+(+7.3%), `smooth_min_scene` 134 → 142 (+6.0%), `chrome_packed` and
+`plasma` by a point — against 4 better (`julia_set` 717 → 689, `metaballs`
+155 → 140, `domain_warp_fbm`, `chrome_R`) and 8 unchanged, with 4–16× the
+saturation wall clock on the ones that regressed.
+
+So the guess was **regularizing by accident**: its conservatism stopped
+saturation before the graph grew into a shape where extraction — greedy with
+swap-refinement, not exhaustive — found a worse optimum. The estimator is
+therefore left on the guess (recorded in `apply_rules_at_index` beside it),
+and `predicted_growth` stays as a proven quantity for the thing that can use
+it honestly: *this* is the Guide's question. Whether a given application is
+worth its growth is not answerable by "how much" alone; it needs "for what",
+and a policy that has both is the difference between exhausting a budget and
+spending one.
+
+Two consequences for Phase 3 below: the per-candidate feature set of §4
+gains an exact growth term at no cost; and "budget exhausted" must not be
+read as success in any experiment here — extracted cost is the only score.
+
 ## 5. Pre-registered Phase 3 experiment
 
 Stated purely at-budget, per §0's framing — no claim about optimality, no wall-clock timing.
