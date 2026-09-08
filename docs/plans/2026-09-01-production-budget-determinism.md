@@ -1,14 +1,17 @@
 # Production saturation budgets denominated in rule applications (2026-09-01)
 
-> **Revised 2026-09-08 — the classical class cap is sized by the input.** The numbers
-> below were calibrated at a flat classical cap of 5,000 classes. The class-cap sweep
-> (`docs/results/2026-09-08-class-cap-sweep.md`) showed that cap is smaller than what
-> 44 of the 95 DejaVu glyphs *insert*: their first rewrite round hits it before it
-> completes, so the rules never run on them. The classical cap is now
-> `clamp(8 × inserted_classes, 5,000, 50,000)` and the application budget and safety
-> ceiling scale with it at this document's own ratios. See "Revision: the classical
-> cap grows with the inserted input" at the end; everything else here stands, with
-> the flat 5,000 read as the classical **floor**.
+> **Revised 2026-09-08 — the classical class cap is sized by the input, and the raise
+> is pinned off.** The numbers below were calibrated at a flat classical cap of 5,000
+> classes. The class-cap sweep (`docs/results/2026-09-08-class-cap-sweep.md`) showed that
+> cap is smaller than what 44 of the 95 DejaVu glyphs *insert*: their first rewrite
+> round hits it before it completes, so the rules never run on them. The classical cap
+> is now `clamp(8 × inserted_classes, CLASSICAL_CLASS_FLOOR, CLASSICAL_CLASS_CEILING)`
+> with the application budget and safety ceiling scaling with it at this document's own
+> ratios — **and the ceiling is pinned at the floor**, because raising `'8'` off the
+> floor re-fuses its quadratic solver and puts the waist smear the FreeType oracle found
+> back on screen at 13–21 px. See "Revision: the classical cap grows with the inserted
+> input" at the end; everything else here stands, with the flat 5,000 read as the
+> classical **floor**.
 
 **Calibration only. No code in this commit.** This document fixes the constants and
 names; the implementation is a separate change.
@@ -347,7 +350,7 @@ kernels (`ref_apps` at `ClassCap`, 1 round) describe the cap, not the kernels.
 
 | dimension | classical, before | **classical, now** | how |
 |---|---:|---:|---|
-| class cap | 5,000 | **`clamp(8 × inserted_classes, 5,000, 50,000)`** | `SaturationConfig::classical_for(inserted)` via `config_for_input(InputSize { nodes, classes })`; `Optimizer::run` reads `egraph.num_classes()` on entry, which is the inserted count |
+| class cap | 5,000 | **`clamp(8 × inserted_classes, 5,000, CLASSICAL_CLASS_CEILING)`**, the ceiling **pinned at 5,000** (calibrated: 50,000) | `SaturationConfig::classical_for(inserted)` via `config_for_input(InputSize { nodes, classes })`; `Optimizer::run` reads `egraph.num_classes()` on entry, which is the inserted count |
 | application budget | 200,000 | **40 × the resolved cap** (200,000 at the floor, 2,000,000 at the ceiling) | `APPLICATIONS_PER_CLASS`, this document's ratio, now derived at every cap rather than copied at three |
 | safety ceiling | 300 s | **1.5 ms × the application budget** (300 s at the floor, 50 min at the ceiling) | `SAFETY_CEILING_PER_APPLICATION`: the 1 application/ms floor throughput above, rounded up by half, which reproduces 30 s / 120 s / 300 s at the three presets |
 | iteration cap | 100 | 100 | unchanged |
@@ -397,7 +400,24 @@ ratio of applications to classes at stop stays under 2 at every cap, and the 40-
 budget remains the tail's deterministic terminator, not an operating point. The
 safety ceiling never fired.
 
-### What it costs, and what it buys
+### Why the ceiling is pinned at the floor
+
+With the ceiling at 50,000 the rule raises `'8'` (3,405 inserted classes) to 27,240, the
+extractor prefers a different fusion of its quadratic solver, and `disc >= 0` at the
+waist's tangency — exact zero at a shared extremum, decided by one rounding of
+`Y·slope + c` against two — lands on the other side: a half-covered smear along the waist
+at 13, 15, 17, 19 and 21 px, 15 texels where FreeType has no ink within a texel
+(`freetype_oracle.rs`, the optimized arm added by this change), 37 texels where the
+optimized arena differs from the raw one by ~0.5 (`kernel_glyph_optimize`). The
+production tiles (16 and 32 px) are clean (cross-form |Δ| ≤ 6.4e-6). This is the `'8'`
+defect that the raw-arm oracle found and that deleting the second optimizer removed
+(docs/plans/2026-09-08-macro-tier-is-arena-native.md), back by the route the oracle's own
+comment predicted. The knife edge belongs to the glyph kernel (`quad_tangency_winding.rs`)
+and the fix does too; until it lands, `CLASSICAL_CLASS_CEILING = CLASSICAL_CLASS_FLOOR`
+and the rule is inert. The enable is one constant (`CLASSICAL_CLASS_CEILING_CALIBRATED`),
+and the optimized-arm oracle is the gate that says whether it may be flipped.
+
+### What it costs, and what it buys (measured with the ceiling at 50,000)
 
 Against the flat 5,000 on the DEV corpus (deterministic columns; `2026-09-08-class-cap-sweep.md`):
 
@@ -412,7 +432,8 @@ Against the flat 5,000 on the DEV corpus (deterministic columns; `2026-09-08-cla
 
 The +5% bound this document's successor put on the glyph warm is exceeded by a factor of
 ~60. The raise was directed anyway ("the cap is smaller than the input; the rules never
-run"); it is stated at the top of the PR rather than hidden in a ratio.
+run"); it is stated at the top of the PR rather than hidden in a ratio — and it is not
+what blocked the raise; the `'8'` waist is.
 
 ### The reading the sweep gives the research question
 

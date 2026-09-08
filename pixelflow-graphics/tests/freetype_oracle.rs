@@ -119,8 +119,35 @@ fn font_path() -> String {
     )
 }
 
+/// Which arena the check evaluates.
+#[derive(Clone, Copy)]
+enum Arm {
+    /// The raw lowered arena: the IR interpreter's reading of the glyph with
+    /// no optimizer between it and the outlines.
+    Raw,
+    /// The arena production bakes: `optimize_runtime_arena` at the bake's
+    /// lattice. The one that reaches pixels.
+    Optimized,
+}
+
+/// The raw arm. See the module docs for what this bounds.
 #[test]
 fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
+    check(Arm::Raw, KNOWN_ORPHAN_TEXELS, TEXELS_WE_MISS);
+}
+
+/// The optimized arm — the arena a bake actually compiles, at the bake's
+/// lattice. `kernel_glyph_optimize` ties the optimized arena to the raw one
+/// texel for texel; this ties it to an independent rasterizer directly, so a
+/// fusion choice that lands the quadratic solver's `disc >= 0` on the wrong
+/// side of a tangency (the `'8'` waist) is caught here whether or not the
+/// raw arena happened to land on the same side.
+#[test]
+fn our_optimized_ink_is_never_more_than_a_texel_from_freetype_s() {
+    check(Arm::Optimized, KNOWN_ORPHAN_TEXELS, TEXELS_WE_MISS);
+}
+
+fn check(arm: Arm, known_orphans: usize, texels_we_miss: u32) {
     let path = font_path();
     let bytes = std::fs::read(&path).expect("font bytes");
     let ours = Font::parse(&bytes).expect("parse");
@@ -186,7 +213,16 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
 
             let kernel = ours.glyph_kernel_scaled(ch, size as f32).expect("glyph");
             let (arena, root) = kernel.parts();
-            let (lowered, r) = lower_dwrt_owned(arena, root).expect("lower");
+            let (lowered, r) = match arm {
+                Arm::Raw => lower_dwrt_owned(arena, root).expect("lower"),
+                Arm::Optimized => {
+                    let shape = pixelflow_ir::LatticeShape::new([extent as u32, extent as u32]);
+                    let optimized =
+                        pixelflow_search::runtime::optimize_runtime_arena(arena, root, shape)
+                            .expect("glyph arenas must optimize");
+                    (optimized.0.clone(), optimized.1)
+                }
+            };
 
             let inked: Vec<bool> = (0..extent * extent)
                 .map(|n| reference(n % extent, n / extent) > REFERENCE_INKED)
@@ -269,9 +305,9 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
          {ink_reference:.1}) — the outlines are not being filled the same way"
     );
     assert_eq!(
-        we_miss, TEXELS_WE_MISS,
+        we_miss, texels_we_miss,
         "FreeType inks {we_miss} texels we leave blank, pinned at \
-         {TEXELS_WE_MISS} — up means the no-vertical-antialiasing defect has \
+         {texels_we_miss} — up means the no-vertical-antialiasing defect has \
          spread, down means it has been fixed and this number wants lowering"
     );
 
@@ -287,9 +323,9 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
     );
     assert_eq!(
         orphans.len(),
-        KNOWN_ORPHAN_TEXELS,
+        known_orphans,
         "we put ink where an independent rasterizer finds none — expected the \
-         {KNOWN_ORPHAN_TEXELS} known `'8'` texels, got {}:\n{}",
+         {known_orphans} known `'8'` texels, got {}:\n{}",
         orphans.len(),
         orphans.join("\n")
     );

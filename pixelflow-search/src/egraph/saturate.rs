@@ -226,16 +226,35 @@ pub const CLASSICAL_CLASSES_PER_INSERTED_CLASS: usize = 8;
 /// more (the shaders, the cell grid, the scene kernels).
 pub const CLASSICAL_CLASS_FLOOR: usize = 5_000;
 
-/// The classical cap's ceiling: memory protection. A 50,000-class e-graph
-/// peaks near 25 MB of live heap on the sweep's glyphs and the extraction
-/// pass's reach sets stay under 2 MB there; the largest DEV glyph (U+0040,
-/// 5,226 inserted classes) reaches it exactly.
-pub const CLASSICAL_CLASS_CEILING: usize = 50_000;
+/// The classical cap's ceiling — **pinned at the floor, which switches the
+/// input-sized cap off.**
+///
+/// The rule is calibrated and measured (8 per inserted class, ceiling 50,000:
+/// `docs/results/2026-09-08-class-cap-sweep.md`, −16.7% Σ `dag_cost` on the
+/// 44 DEJaVu glyphs it raises, none dearer) and it is blocked by a rendering
+/// defect it exposes: raising `'8'` off the floor changes which fusion the
+/// extractor picks for its quadratic solver, `disc >= 0` at the waist's
+/// tangency lands on the other side of exact zero, and a half-covered smear
+/// appears along the waist at 13–21 px where FreeType has no ink
+/// (`pixelflow-graphics/tests/freetype_oracle.rs`, the optimized arm — the
+/// `'8'` defect the raw arm's oracle found in 2026-09, back by the route its
+/// own comment predicted). The knife edge is the glyph kernel's
+/// (`quad_tangency_winding.rs`), not the optimizer's, and it has to be fixed
+/// there first. When it is, this constant becomes 50,000 — a 50,000-class
+/// e-graph peaks near 25 MB of live heap on the sweep's glyphs and the
+/// extraction pass's reach sets stay under 2 MB there — and nothing else
+/// changes.
+pub const CLASSICAL_CLASS_CEILING: usize = CLASSICAL_CLASS_FLOOR;
+
+/// What [`CLASSICAL_CLASS_CEILING`] becomes when the `'8'` tangency is fixed:
+/// the ceiling the sweep calibrated the rule under.
+pub const CLASSICAL_CLASS_CEILING_CALIBRATED: usize = 50_000;
 
 // The saturation loop clamps every cap to `HARD_CLASS_LIMIT`; a ceiling above
 // it would be a cap that silently never applies.
-const _: () = assert!(CLASSICAL_CLASS_CEILING <= super::graph::HARD_CLASS_LIMIT);
-const _: () = assert!(CLASSICAL_CLASS_FLOOR < CLASSICAL_CLASS_CEILING);
+const _: () = assert!(CLASSICAL_CLASS_CEILING_CALIBRATED <= super::graph::HARD_CLASS_LIMIT);
+const _: () = assert!(CLASSICAL_CLASS_FLOOR <= CLASSICAL_CLASS_CEILING);
+const _: () = assert!(CLASSICAL_CLASS_CEILING <= CLASSICAL_CLASS_CEILING_CALIBRATED);
 
 impl SaturationConfig {
     /// A tier from its two free dimensions: the application budget and the
@@ -276,7 +295,8 @@ impl SaturationConfig {
     /// inserts to: [`CLASSICAL_CLASSES_PER_INSERTED_CLASS`] per inserted
     /// class, never below [`Self::classical`]'s floor nor above
     /// [`CLASSICAL_CLASS_CEILING`]. The application budget and the safety
-    /// ceiling scale with it.
+    /// ceiling scale with it. **Inert while the ceiling is pinned at the
+    /// floor** — see [`CLASSICAL_CLASS_CEILING`] for what blocks it.
     ///
     /// Why the inserted class count and not the node count the tier is
     /// keyed on: a `Kernel` built by composition re-expands its shared

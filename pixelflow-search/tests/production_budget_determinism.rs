@@ -6,9 +6,9 @@
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_search::egraph::{
-    APPLICATIONS_PER_CLASS, Budget, CLASSICAL_CLASS_CEILING, CLASSICAL_CLASS_FLOOR,
-    CLASSICAL_CLASSES_PER_INSERTED_CLASS, HARD_CLASS_LIMIT, InputSize, Optimizer, SaturationConfig,
-    config_for_node_count,
+    APPLICATIONS_PER_CLASS, Budget, CLASSICAL_CLASS_CEILING, CLASSICAL_CLASS_CEILING_CALIBRATED,
+    CLASSICAL_CLASS_FLOOR, CLASSICAL_CLASSES_PER_INSERTED_CLASS, HARD_CLASS_LIMIT, InputSize,
+    Optimizer, SaturationConfig, config_for_node_count,
 };
 
 /// A mid-sized expression with sharing and several rule families in reach —
@@ -149,7 +149,9 @@ fn class_and_iteration_caps_are_pinned() {
 /// with the application budget and the safety ceiling scaling with it at
 /// the calibration doc's own ratios (40 applications per class; 1.5 ms per
 /// application, which is the doc's 30 s / 120 s / 300 s at the three
-/// presets).
+/// presets). **The ceiling is pinned at the floor** until the `'8'` tangency
+/// the raise exposes is fixed (`CLASSICAL_CLASS_CEILING`'s doc), so today
+/// every classical input resolves to the floor.
 #[test]
 fn the_classical_cap_grows_with_the_inserted_input() {
     let per_class = CLASSICAL_CLASSES_PER_INSERTED_CLASS;
@@ -157,10 +159,21 @@ fn the_classical_cap_grows_with_the_inserted_input() {
     let small = SaturationConfig::classical_for(CLASSICAL_CLASS_FLOOR / per_class / 2);
     assert_eq!(small.max_classes, CLASSICAL_CLASS_FLOOR);
     assert_eq!(small, SaturationConfig::classical());
-    // In range, proportional.
-    let inserted = 3_405; // glyph16:U+0038, the sweep's worked example
+    // Pinned: glyph16:U+0038 (3,405 inserted classes, the sweep's worked
+    // example) gets the floor, not 8 × 3,405. Flipping the ceiling to
+    // `CLASSICAL_CLASS_CEILING_CALIBRATED` is what un-pins it.
+    let inserted = 3_405;
     let mid = SaturationConfig::classical_for(inserted);
-    assert_eq!(mid.max_classes, inserted * per_class);
+    assert_eq!(
+        CLASSICAL_CLASS_CEILING, CLASSICAL_CLASS_FLOOR,
+        "the input-sized cap is un-pinned: lower the `'8'` orphan pin in \
+         freetype_oracle.rs's optimized arm first, then update this test"
+    );
+    assert_eq!(mid.max_classes, CLASSICAL_CLASS_FLOOR);
+    assert!(
+        inserted * per_class <= CLASSICAL_CLASS_CEILING_CALIBRATED,
+        "the worked example must sit inside the calibrated range"
+    );
     assert_eq!(mid.max_iterations, 100);
     assert_eq!(
         mid.max_applications,
@@ -174,9 +187,9 @@ fn the_classical_cap_grows_with_the_inserted_input() {
     // saturation loop clamps every cap to.
     let big = SaturationConfig::classical_for(usize::MAX);
     assert_eq!(big.max_classes, CLASSICAL_CLASS_CEILING);
-    // `CLASSICAL_CLASS_FLOOR < CLASSICAL_CLASS_CEILING <= HARD_CLASS_LIMIT`
-    // is asserted at compile time beside the constants (`saturate.rs`).
-    assert!(big.max_classes <= HARD_CLASS_LIMIT);
+    // Compile-time asserted beside the constants; restated here so the test
+    // names the ceiling the rule is calibrated for.
+    assert!(CLASSICAL_CLASS_CEILING_CALIBRATED <= HARD_CLASS_LIMIT);
     // The three named presets are the same derivation at their caps.
     for preset in [
         SaturationConfig::blitz(),
@@ -207,7 +220,11 @@ fn production_limits_key_on_both_sizes() {
         classes: 3_405,
     };
     let limits = Budget::Production.limits(big_input);
-    assert_eq!(limits.classes, 3_405 * CLASSICAL_CLASSES_PER_INSERTED_CLASS);
+    assert_eq!(
+        limits.classes,
+        (3_405 * CLASSICAL_CLASSES_PER_INSERTED_CLASS)
+            .clamp(CLASSICAL_CLASS_FLOOR, CLASSICAL_CLASS_CEILING)
+    );
     assert_eq!(
         limits.applications,
         Some(limits.classes as u64 * APPLICATIONS_PER_CLASS)
