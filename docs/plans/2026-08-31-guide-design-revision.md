@@ -338,19 +338,25 @@ And on the shipped-kernel corpus (`egraph_off_on`, 16 kernels that run),
 155 → 140, `domain_warp_fbm`, `chrome_R`) and 8 unchanged, with 4–16× the
 saturation wall clock on the ones that regressed.
 
-So the guess was **regularizing by accident**: its conservatism stopped
-saturation before the graph grew into a shape where extraction — greedy with
-swap-refinement, not exhaustive — found a worse optimum. The estimator is
-therefore left on the guess (recorded in `apply_rules_at_index` beside it),
-and `predicted_growth` stays as a proven quantity for the thing that can use
-it honestly: *this* is the Guide's question. Whether a given application is
-worth its growth is not answerable by "how much" alone; it needs "for what",
-and a policy that has both is the difference between exhausting a budget and
-spending one.
+**Decision (JP, 2026-09-09): more saturation is better, and this is the
+extractor's bug.** The first reading of that table — that the guess was
+regularizing by accident and should be kept — is withdrawn. A richer
+equivalence class cannot make the true optimum worse; a superset of forms
+contains everything the subset did. So an extractor that returns a *worse*
+DAG when given *more* choices is not being led astray by the graph, it is
+not monotone in what it is given, and that is a defect in extraction —
+greedy with swap-refinement, not exact — with a concrete reproducer:
+`mandelbrot_distance` 518 → 556 and `smooth_min_scene` 134 → 142 on the
+same kernel with a superset graph.
 
-Two consequences for Phase 3 below: the per-candidate feature set of §4
-gains an exact growth term at no cost; and "budget exhausted" must not be
-read as success in any experiment here — extracted cost is the only score.
+Therefore the estimator now spends the budget it is given
+(`action_cost = predicted_growth`), the four regressions are filed against
+the extractor rather than absorbed by saturating less, and the exact growth
+term stays available to the Guide as a feature. Two consequences for Phase 3
+below: the per-candidate feature set of §4 gains an exact growth term at no
+cost; and "budget exhausted" must not be read as success in any experiment
+here — extracted cost is the only score, and where it moves the wrong way on
+a richer graph, the extractor is what is being measured.
 
 ## 5. Pre-registered Phase 3 experiment
 
