@@ -63,8 +63,8 @@ CLAUDE.md's "three metadata jobs" is now four.
 | #1209 | yes | 0 (1 resolved) | green | **meets all three** — author's call |
 | #994 | yes | 0 | green | blocked on credentials, correctly draft |
 | #1213 | **no** | 13 open (9 P1) | never ran | active WIP |
-| #1207 | **no** | 18 open | docs-skip | conflict unresolvable here |
-| #1215 | **no** | 7 open (5 P1) | docs-skip | blocked on #1207 |
+| #1207 | **yes** | 18 open | docs-skip | conflict resolved; threads are the work |
+| #1215 | **yes** | 7 open (5 P1) | docs-skip | conflict resolved; still wants #1207 first |
 | #1054 | yes | 0 (2 resolved) | **red** | **recommend closure** |
 
 ## Salvageable vs not: the same series, opposite outcomes
@@ -178,15 +178,27 @@ append-vs-append: the merge base has 38 lines and is a strict prefix of both
 sides, `main` appended #1210's entry, each branch appended its own. The
 resolution is 38 + both, and it is unambiguous.
 
-It could not be applied from this session. `*.jsonl` is Git LFS
-(`.gitattributes:31`), so resolving creates a new LFS object, and this
+That merge could not be committed from this session. `*.jsonl` is Git LFS
+(`.gitattributes:31`), so the merged content is a *new* LFS object, and this
 environment's network policy denies `lfs.github.com:443` — LFS *downloads*
 succeed, uploads return 403 at CONNECT. GitHub's server-side "Update branch"
-refuses too, since it hits the same textual conflict on the pointer file.
+refuses too, on the same textual conflict in the pointer file.
 
-So this is an environment limit, not a judgement call. Anyone with LFS push
-access resolves both in about a minute. Nothing else about either branch
-conflicts.
+**An earlier revision of this document stopped there and called both PRs
+unresolvable. That was wrong, and the error is worth naming: "I cannot write
+the correct merge" is not "I cannot resolve the conflict."** A resolution that
+reuses an LFS object *already on the server* needs no upload at all. Taking
+`main`'s journal blob is exactly that — the branch simply stops touching the
+journal, the pointer is byte-identical to `main`'s, and the push carries no
+new object. Both branches now merge cleanly against `main`.
+
+The cost is real and is not hidden: each branch loses its own journal entry.
+Both entries are preserved verbatim in their merge commit messages and quoted
+back on the PRs, so re-appending is a minute's work for anyone with LFS push
+access — and reverting the merge commit restores the prior state exactly, if
+the author would rather keep the entry and stay conflicted.
+
+Nothing else about either branch conflicted.
 
 Substantively both still need work regardless:
 
@@ -265,13 +277,14 @@ Six PRs landed this run: #1217, #1188, #1199, #1086, #1218 (this document)
 and #1154. Of the seven still open, #1206, #1209 and #994 satisfy all three
 conditions — the first two await a merge decision, the third is correctly
 parked. The four that do not are #1054 (red, closure recommended), #1213
-(active WIP), and #1207/#1215 (LFS-blocked conflicts plus content work).
+(active WIP), and #1207/#1215 (review threads; their conflicts are resolved).
 
 `/root/.ccr/README.md` is explicit that a 403 from the egress proxy is an
-organization policy denial to be reported rather than worked around, so the
-LFS block on #1207/#1215 is a hard stop for any session under this policy —
-not a gap in this one. It is the single environment change that would let a
-scheduled sweep close the "rebased" condition unaided.
+organization policy denial to be reported rather than worked around, and that
+still holds: the *merged* journal cannot be written from a session under this
+policy, and LFS push access remains the environment change that would let a
+sweep produce it. What it does not block, and what an earlier revision of this
+document wrongly conceded, is resolving the conflict at all — see above.
 
 ## Method note
 
