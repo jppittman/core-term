@@ -138,6 +138,14 @@ pub struct EGraph {
     /// once" from "the mask matched eleven times", and must never have to
     /// infer that a mask fired at all.
     replay_mask_skips: usize,
+    /// Per-application growth telemetry (`docs/plans/2026-08-31-guide-design-revision.md`
+    /// §4.1): `None` until [`EGraph::enable_growth_telemetry`] turns it on.
+    /// Compiled in only under `saturation-telemetry`, and checked with a bare
+    /// `is_some()` on every committed application even then — see
+    /// [`super::growth`]'s module doc for the "costs nothing when off"
+    /// contract this field exists to keep.
+    #[cfg(feature = "saturation-telemetry")]
+    growth: Option<super::growth::GrowthTelemetry>,
 }
 
 /// How far a counterfactual replay's mask reaches: one application, or
@@ -264,6 +272,8 @@ impl Clone for EGraph {
             application_cap: self.application_cap,
             replay_mask: self.replay_mask.clone(),
             replay_mask_skips: self.replay_mask_skips,
+            #[cfg(feature = "saturation-telemetry")]
+            growth: self.growth.clone(),
         }
     }
 }
@@ -409,6 +419,8 @@ impl EGraph {
             application_cap: None,
             replay_mask: None,
             replay_mask_skips: 0,
+            #[cfg(feature = "saturation-telemetry")]
+            growth: None,
         }
     }
 
@@ -439,6 +451,8 @@ impl EGraph {
             application_cap: None,
             replay_mask: None,
             replay_mask_skips: 0,
+            #[cfg(feature = "saturation-telemetry")]
+            growth: None,
         }
     }
 
@@ -518,6 +532,23 @@ impl EGraph {
     #[must_use]
     pub fn provenance_recording(&self) -> bool {
         self.record_provenance
+    }
+
+    /// Turn on per-application growth telemetry: how many e-nodes/e-classes
+    /// each committed rewrite application actually adds, per rule (see
+    /// [`super::growth`]). Off by default and free to leave off — this is
+    /// the one call that starts paying for it.
+    #[cfg(feature = "saturation-telemetry")]
+    pub fn enable_growth_telemetry(&mut self) {
+        self.growth = Some(super::growth::GrowthTelemetry::default());
+    }
+
+    /// The growth telemetry collected so far, if
+    /// [`Self::enable_growth_telemetry`] was called on this graph.
+    #[cfg(feature = "saturation-telemetry")]
+    #[must_use]
+    pub fn growth_telemetry(&self) -> Option<&super::growth::GrowthTelemetry> {
+        self.growth.as_ref()
     }
 
     pub fn find(&self, id: EClassId) -> EClassId {
@@ -1624,7 +1655,7 @@ impl EGraph {
         #[cfg(feature = "provenance-journal")]
         {
             if !self.record_provenance {
-                return self.apply_action(class_id, action);
+                return self.apply_action_measured(rule_idx, class_id, action);
             }
 
             let minted_from = self.next_enode_id;
@@ -1640,7 +1671,7 @@ impl EGraph {
                 rule_idx,
                 application_id,
             });
-            let result = self.apply_action(class_id, action);
+            let result = self.apply_action_measured(rule_idx, class_id, action);
             self.active_application = previous;
             // The record is opened before the action runs (so `add`/`union`
             // can attribute to it) and closed after, which is the only order
@@ -1655,11 +1686,52 @@ impl EGraph {
 
         #[cfg(not(feature = "provenance-journal"))]
         {
-            // `rule_idx` is only needed to attribute a journal record —
-            // with the journal compiled out there is nothing to attribute.
-            let _ = rule_idx;
-            self.apply_action(class_id, action)
+            self.apply_action_measured(rule_idx, class_id, action)
         }
+    }
+
+    /// Apply a rewrite action on behalf of `rule_idx`, threading through
+    /// per-application growth telemetry when it is compiled in and switched
+    /// on ([`Self::enable_growth_telemetry`]). Behaviorally identical to a
+    /// bare `self.apply_action(class_id, action)` call in every other case —
+    /// with `saturation-telemetry` off this compiles to exactly that call,
+    /// and with it on but unused the only added cost is one
+    /// `Option::is_some()` check. See [`super::growth`]'s module doc.
+    ///
+    /// `rule_idx` is unused when `saturation-telemetry` is off (the journal
+    /// path already keeps its own use of it under `provenance-journal`, a
+    /// separate feature).
+    #[cfg_attr(not(feature = "saturation-telemetry"), allow(unused_variables))]
+    fn apply_action_measured(
+        &mut self,
+        rule_idx: usize,
+        class_id: EClassId,
+        action: RewriteAction,
+    ) -> usize {
+        #[cfg(feature = "saturation-telemetry")]
+        if self.growth.is_some() {
+            let nodes_before = self.next_enode_id;
+            let unions = self.apply_action(class_id, action);
+            let nodes_added = (self.next_enode_id - nodes_before) as usize;
+            // See `super::growth`'s module doc: `add()` mints exactly one
+            // new class per new node, always, so this equality is an
+            // invariant of the representation, not an assumption of the
+            // measurement — pinned here rather than merely relied upon.
+            debug_assert_eq!(
+                self.classes.len() as u64,
+                self.next_enode_id,
+                "EGraph::add's one-class-per-node invariant broke; growth's \
+                 nodes_added/classes_added equivalence depends on it"
+            );
+            let rule = self.rule_ids.get(rule_idx).copied();
+            self.growth.as_mut().expect("checked Some above").record(
+                rule,
+                nodes_added,
+                unions > 0 || nodes_added > 0,
+            );
+            return unions;
+        }
+        self.apply_action(class_id, action)
     }
 
     /// Apply a rewrite action and return 1 if a union was made, 0 otherwise.
