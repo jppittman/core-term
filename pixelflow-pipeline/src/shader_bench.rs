@@ -945,9 +945,112 @@ pub const SHADERTOY_KERNEL_NAMES: [&str; 12] = [
     "torus_slice",
 ];
 
+// ============================================================================
+// The five original named production kernels (FINAL tier). They predate the
+// ShaderToy set — `pixelflow-search/examples/rule_report.rs` carries the
+// same five — and were duplicated into `gen_bench_corpus` until the
+// structural-gap inventory (`corpus_gaps`) needed them too; one definition
+// here now serves every harness.
+// ============================================================================
+
+/// The five original named production kernels, in manifest order.
+pub const NAMED_KERNEL_NAMES: [&str; 5] = ["swirl", "circle_sdf", "poly", "redundant", "normalize"];
+
+/// sin(sqrt(x*x + y*y) * freq) * amp + bias — the swirl shader core.
+fn swirl() -> (ExprArena, ExprId) {
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let xx = a.push_binary(OpKind::Mul, x, x);
+    let yy = a.push_binary(OpKind::Mul, y, y);
+    let d = a.push_binary(OpKind::Add, xx, yy);
+    let s = a.push_unary(OpKind::Sqrt, d);
+    let kf = a.push_const(3.0);
+    let sf = a.push_binary(OpKind::Mul, s, kf);
+    let sn = a.push_unary(OpKind::Sin, sf);
+    let ka = a.push_const(0.5);
+    let prod = a.push_binary(OpKind::Mul, sn, ka);
+    let kb = a.push_const(0.5);
+    let out = a.push_binary(OpKind::Add, prod, kb);
+    (a, out)
+}
+
+/// Circle SDF: sqrt((x-cx)^2 + (y-cy)^2) - r.
+fn circle_sdf() -> (ExprArena, ExprId) {
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let cx = a.push_const(0.3);
+    let cy = a.push_const(-0.2);
+    let dx = a.push_binary(OpKind::Sub, x, cx);
+    let dy = a.push_binary(OpKind::Sub, y, cy);
+    let dx2 = a.push_binary(OpKind::Mul, dx, dx);
+    let dy2 = a.push_binary(OpKind::Mul, dy, dy);
+    let sum = a.push_binary(OpKind::Add, dx2, dy2);
+    let dist = a.push_unary(OpKind::Sqrt, sum);
+    let r = a.push_const(0.5);
+    let out = a.push_binary(OpKind::Sub, dist, r);
+    (a, out)
+}
+
+/// FMA-bait polynomial: a*x*x + b*x + c (Horner-able, fusion-able).
+fn poly() -> (ExprArena, ExprId) {
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let ka = a.push_const(2.0);
+    let kb = a.push_const(-3.0);
+    let kc = a.push_const(1.0);
+    let xx = a.push_binary(OpKind::Mul, x, x);
+    let ax2 = a.push_binary(OpKind::Mul, ka, xx);
+    let bx = a.push_binary(OpKind::Mul, kb, x);
+    let s1 = a.push_binary(OpKind::Add, ax2, bx);
+    let out = a.push_binary(OpKind::Add, s1, kc);
+    (a, out)
+}
+
+/// Redundancy bait: (x+y)*(x+y) + 2*(x+y) — CSE + distribution territory.
+fn redundant() -> (ExprArena, ExprId) {
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let s = a.push_binary(OpKind::Add, x, y);
+    let s2 = a.push_binary(OpKind::Mul, s, s);
+    let two = a.push_const(2.0);
+    let ts = a.push_binary(OpKind::Mul, two, s);
+    let out = a.push_binary(OpKind::Add, s2, ts);
+    (a, out)
+}
+
+/// Division/sqrt bait: x / sqrt(x*x + y*y) (normalize — rsqrt rewrites).
+fn normalize() -> (ExprArena, ExprId) {
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let xx = a.push_binary(OpKind::Mul, x, x);
+    let yy = a.push_binary(OpKind::Mul, y, y);
+    let d = a.push_binary(OpKind::Add, xx, yy);
+    let s = a.push_unary(OpKind::Sqrt, d);
+    let out = a.push_binary(OpKind::Div, x, s);
+    (a, out)
+}
+
+/// Resolve any manifest kernel name — one of [`NAMED_KERNEL_NAMES`] or of
+/// [`SHADERTOY_KERNEL_NAMES`] — to its arena builder.
+#[must_use]
+pub fn named_kernel(name: &str) -> Option<(ExprArena, ExprId)> {
+    match name {
+        "swirl" => Some(swirl()),
+        "circle_sdf" => Some(circle_sdf()),
+        "poly" => Some(poly()),
+        "redundant" => Some(redundant()),
+        "normalize" => Some(normalize()),
+        _ => named_shadertoy_kernel(name),
+    }
+}
+
 /// Resolve a name from [`SHADERTOY_KERNEL_NAMES`] to its arena builder.
-/// `gen_bench_corpus`'s `named_kernel` falls back to this for any name it
-/// does not itself know.
+/// [`named_kernel`] falls back to this for any name outside the five
+/// original production kernels.
 #[must_use]
 pub fn named_shadertoy_kernel(name: &str) -> Option<(ExprArena, ExprId)> {
     match name {
@@ -980,6 +1083,19 @@ mod tests {
             );
         }
         assert!(named_shadertoy_kernel("does_not_exist").is_none());
+    }
+
+    #[test]
+    fn every_named_production_kernel_resolves() {
+        for name in NAMED_KERNEL_NAMES {
+            assert!(named_kernel(name).is_some(), "{name} must resolve");
+            assert!(
+                named_shadertoy_kernel(name).is_none(),
+                "{name} is not a ShaderToy port"
+            );
+        }
+        assert!(named_kernel("julia_set").is_some());
+        assert!(named_kernel("does_not_exist").is_none());
     }
 
     #[test]

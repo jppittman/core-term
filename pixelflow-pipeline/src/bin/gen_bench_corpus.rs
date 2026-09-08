@@ -57,6 +57,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
+use pixelflow_pipeline::shader_bench::{NAMED_KERNEL_NAMES, named_kernel};
 use pixelflow_pipeline::training::corpus::write_corpus;
 use pixelflow_pipeline::training::quarantine::Quarantine;
 use pixelflow_pipeline::training::split::{Family, SplitManifest, Tier};
@@ -380,104 +381,6 @@ impl<K: Eq + Hash> DedupLedger<K> {
              probe before registering",
             previous
         );
-    }
-}
-
-// ============================================================================
-// Named production kernels (FINAL tier) — verbatim from
-// pixelflow-search/examples/rule_report.rs.
-// ============================================================================
-
-/// sin(sqrt(x*x + y*y) * freq) * amp + bias — the swirl shader core.
-fn swirl() -> (ExprArena, ExprId) {
-    let mut a = ExprArena::new();
-    let x = a.push_var(0);
-    let y = a.push_var(1);
-    let xx = a.push_binary(OpKind::Mul, x, x);
-    let yy = a.push_binary(OpKind::Mul, y, y);
-    let d = a.push_binary(OpKind::Add, xx, yy);
-    let s = a.push_unary(OpKind::Sqrt, d);
-    let kf = a.push_const(3.0);
-    let sf = a.push_binary(OpKind::Mul, s, kf);
-    let sn = a.push_unary(OpKind::Sin, sf);
-    let ka = a.push_const(0.5);
-    let prod = a.push_binary(OpKind::Mul, sn, ka);
-    let kb = a.push_const(0.5);
-    let out = a.push_binary(OpKind::Add, prod, kb);
-    (a, out)
-}
-
-/// Circle SDF: sqrt((x-cx)^2 + (y-cy)^2) - r.
-fn circle_sdf() -> (ExprArena, ExprId) {
-    let mut a = ExprArena::new();
-    let x = a.push_var(0);
-    let y = a.push_var(1);
-    let cx = a.push_const(0.3);
-    let cy = a.push_const(-0.2);
-    let dx = a.push_binary(OpKind::Sub, x, cx);
-    let dy = a.push_binary(OpKind::Sub, y, cy);
-    let dx2 = a.push_binary(OpKind::Mul, dx, dx);
-    let dy2 = a.push_binary(OpKind::Mul, dy, dy);
-    let sum = a.push_binary(OpKind::Add, dx2, dy2);
-    let dist = a.push_unary(OpKind::Sqrt, sum);
-    let r = a.push_const(0.5);
-    let out = a.push_binary(OpKind::Sub, dist, r);
-    (a, out)
-}
-
-/// FMA-bait polynomial: a*x*x + b*x + c (Horner-able, fusion-able).
-fn poly() -> (ExprArena, ExprId) {
-    let mut a = ExprArena::new();
-    let x = a.push_var(0);
-    let ka = a.push_const(2.0);
-    let kb = a.push_const(-3.0);
-    let kc = a.push_const(1.0);
-    let xx = a.push_binary(OpKind::Mul, x, x);
-    let ax2 = a.push_binary(OpKind::Mul, ka, xx);
-    let bx = a.push_binary(OpKind::Mul, kb, x);
-    let s1 = a.push_binary(OpKind::Add, ax2, bx);
-    let out = a.push_binary(OpKind::Add, s1, kc);
-    (a, out)
-}
-
-/// Redundancy bait: (x+y)*(x+y) + 2*(x+y) — CSE + distribution territory.
-fn redundant() -> (ExprArena, ExprId) {
-    let mut a = ExprArena::new();
-    let x = a.push_var(0);
-    let y = a.push_var(1);
-    let s = a.push_binary(OpKind::Add, x, y);
-    let s2 = a.push_binary(OpKind::Mul, s, s);
-    let two = a.push_const(2.0);
-    let ts = a.push_binary(OpKind::Mul, two, s);
-    let out = a.push_binary(OpKind::Add, s2, ts);
-    (a, out)
-}
-
-/// Division/sqrt bait: x / sqrt(x*x + y*y) (normalize — rsqrt rewrites).
-fn normalize() -> (ExprArena, ExprId) {
-    let mut a = ExprArena::new();
-    let x = a.push_var(0);
-    let y = a.push_var(1);
-    let xx = a.push_binary(OpKind::Mul, x, x);
-    let yy = a.push_binary(OpKind::Mul, y, y);
-    let d = a.push_binary(OpKind::Add, xx, yy);
-    let s = a.push_unary(OpKind::Sqrt, d);
-    let out = a.push_binary(OpKind::Div, x, s);
-    (a, out)
-}
-
-/// Resolve a manifest kernel name to its arena builder. Falls back to the
-/// withheld ShaderToy benchmark set
-/// ([`pixelflow_pipeline::shader_bench::SHADERTOY_KERNEL_NAMES`]) for any
-/// name not among the five original production kernels above.
-fn named_kernel(name: &str) -> Option<(ExprArena, ExprId)> {
-    match name {
-        "swirl" => Some(swirl()),
-        "circle_sdf" => Some(circle_sdf()),
-        "poly" => Some(poly()),
-        "redundant" => Some(redundant()),
-        "normalize" => Some(normalize()),
-        _ => pixelflow_pipeline::shader_bench::named_shadertoy_kernel(name),
     }
 }
 
@@ -1200,7 +1103,7 @@ mod tests {
     /// The five original production kernels plus the withheld ShaderToy set
     /// — every name `named_kernel` must resolve.
     fn all_named_kernels() -> Vec<&'static str> {
-        ["swirl", "circle_sdf", "poly", "redundant", "normalize"]
+        NAMED_KERNEL_NAMES
             .into_iter()
             .chain(pixelflow_pipeline::shader_bench::SHADERTOY_KERNEL_NAMES)
             .collect()
