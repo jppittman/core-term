@@ -22,7 +22,6 @@ pub mod factored;
 pub mod guide;
 
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use libm::fabsf;
 use pixelflow_ir::kind::OpMap;
@@ -39,133 +38,8 @@ pub use factored::{CostEdge, EdgeTrace, OpEmbeddings, PeSlot};
 /// junkification below — unrelated to `nnue::guide`'s rule encoding.
 pub use factored::{ArenaRuleTemplates, EMBED_DIM, MLP_HIDDEN, RuleTemplates};
 
-// Note: ExprGenConfig, ExprGenerator, BwdGenConfig, and BwdGenerator are already
-// public structs defined in this module - no re-export needed.
-
-/// Configuration for random expression generation.
-#[derive(Clone, Debug)]
-pub struct ExprGenConfig {
-    /// Maximum depth of generated expressions.
-    pub max_depth: usize,
-    /// Probability of generating a leaf (var or const) vs operation.
-    pub leaf_prob: f32,
-    /// Number of variables available (0-3 for X,Y,Z,W).
-    pub num_vars: usize,
-    /// Whether to include fused operations.
-    pub include_fused: bool,
-}
-
-impl Default for ExprGenConfig {
-    fn default() -> Self {
-        Self {
-            max_depth: 8,
-            leaf_prob: 0.2,
-            num_vars: 4,
-            include_fused: true,
-        }
-    }
-}
-
-/// Random expression generator for training data.
-///
-/// This is like Stockfish's position generator for self-play training data.
-/// Op selection is driven by `OpKind::is_seed_op()` + `OpKind::arity()` so
-/// adding a new variant to `OpKind` automatically includes it here.
-pub struct ExprGenerator {
-    /// Configuration.
-    pub config: ExprGenConfig,
-    /// Random state (simple LCG for no_std compatibility).
-    state: u64,
-    /// Cached seed ops, built once from OpKind.
-    seed_ops: Vec<OpKind>,
-}
-
-impl ExprGenerator {
-    /// Op weights derived from ShaderToy corpus analysis.
-    /// Real shaders are dominated by arithmetic (+, -, *, /), with moderate
-    /// use of abs/sin/cos/clamp and rare use of exotic ops like atan2/rsqrt.
-    /// Uniform weighting produces unrealistic expressions that the NNUE can't
-    /// transfer to real workloads.
-    fn shader_weight(op: OpKind) -> u32 {
-        match op {
-            // Arithmetic: ~70% of real shader ops
-            OpKind::Mul => 50,
-            OpKind::Add => 30,
-            OpKind::Sub => 20,
-            OpKind::Div => 10,
-            OpKind::Neg => 10,
-            // Common shader ops: ~20%
-            OpKind::Abs => 12,
-            OpKind::Sin => 8,
-            OpKind::Cos => 8,
-            OpKind::Max => 6,
-            OpKind::Min => 4,
-            OpKind::Pow => 4,
-            OpKind::Floor => 3,
-            OpKind::Sqrt => 4,
-            OpKind::Exp => 3,
-            // Rare but valid: ~10%
-            OpKind::Rsqrt => 2,
-            OpKind::Recip => 2,
-            OpKind::Ln => 2,
-            OpKind::Log2 => 1,
-            OpKind::Log10 => 1,
-            OpKind::Exp2 => 1,
-            OpKind::Tan => 1,
-            OpKind::Atan => 1,
-            OpKind::Atan2 => 1,
-            OpKind::Asin => 1,
-            OpKind::Acos => 1,
-            OpKind::Ceil => 1,
-            OpKind::Round => 1,
-            _ => 0,
-        }
-    }
-
-    /// Create a new generator with the given seed.
-    #[must_use]
-    pub fn new(seed: u64, config: ExprGenConfig) -> Self {
-        // Build weighted op table: each op appears proportional to its shader weight
-        let mut seed_ops = Vec::new();
-        for op in OpKind::all() {
-            if op.is_seed_op() {
-                let w = Self::shader_weight(op).max(1);
-                for _ in 0..w {
-                    seed_ops.push(op);
-                }
-            }
-        }
-        assert!(
-            !seed_ops.is_empty(),
-            "No seed ops found in OpKind — is_seed_op() is broken"
-        );
-        assert!(
-            config.num_vars <= 4,
-            "num_vars={} exceeds INPUT_REGS limit of 4",
-            config.num_vars
-        );
-        Self {
-            config,
-            state: seed,
-            seed_ops,
-        }
-    }
-
-    /// Generate a random f32 in [0, 1).
-    fn rand_f32(&mut self) -> f32 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        (self.state >> 33) as f32 / (1u64 << 31) as f32
-    }
-
-    /// Generate a random usize in [0, max).
-    fn rand_usize(&mut self, max: usize) -> usize {
-        if max == 0 {
-            return 0;
-        }
-        let val = (self.rand_f32() * max as f32) as usize;
-        if val >= max { max - 1 } else { val }
-    }
-}
+// Note: BwdGenConfig and BwdGenerator are already public structs defined in
+// this module - no re-export needed.
 
 // ============================================================================
 // Rewrite Rules (as "Moves")
@@ -1100,7 +974,7 @@ impl BwdGenerator {
             ),
             ExprNode::Nary(op, start, len) => {
                 // Read the original children and remap them.
-                let children: Vec<ExprId> = arena
+                let _children: Vec<ExprId> = arena
                     .nary_children_slice(*start, *len)
                     .iter()
                     .map(|child| remap[child.0 as usize])
@@ -1151,7 +1025,6 @@ impl BwdGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libm::fabsf;
 
     // ========================================================================
     // Pattern Match + Substitute Tests
