@@ -215,6 +215,24 @@ on five Apple credentials that do not exist as repository secrets, and its
 signing and notarization steps have never executed. Not stale — nothing in the
 tree competes with it — just parked. Leave it.
 
+## The review bot is out of quota
+
+Mid-sweep, `chatgpt-codex-connector[bot]` posted on #1217:
+
+> You have reached your Codex usage limits for code reviews.
+
+Every one of the 60-odd review threads across these PRs — and all 38 still
+open — was filed by that bot; no human review is unaddressed anywhere in the
+set. So while it is out of quota, **"no unresolved review comments" is
+satisfied for the wrong reason** on anything pushed from here: #1154's repair
+and #1218 both have zero threads, and neither has actually been reviewed.
+
+Worth reading the two conditions separately from now on. A green,
+thread-free PR pushed today has been checked by CI and by nothing else, which
+is a weaker statement than the same PR made yesterday. This does not change
+any disposition above — CI is the gate, per CLAUDE.md — but it is the
+difference between "reviewed and clean" and "not reviewed".
+
 ## Method note
 
 No journal entry accompanies this document: `docs/results/journal.jsonl` is
