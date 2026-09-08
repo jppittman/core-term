@@ -1,10 +1,17 @@
 //! # PixelFlow IR
 //!
-//! The shared Intermediate Representation (IR) and backend abstraction.
+//! The shared Intermediate Representation (IR).
 //!
 //! - **Traits**: `Op` trait defines behavior, `EmitStyle` for codegen.
 //! - **Ops**: Unit structs (`Add`, `Mul`) implement `Op`.
-//! - **Backend**: SIMD execution traits.
+//!
+//! A SIMD backend abstraction (`Backend`/`SimdOps`) lived here, then moved to
+//! `pixelflow-core` on 2026-08-02 (it was not IR and not codegen — it lived
+//! beside `Field`, which it backed). It backed a per-batch "combinator"
+//! evaluation tier that the JIT superseded; both the tier and the abstraction
+//! are gone (docs/plans/2026-09-06-kernel-with-a-lattice.md). `Field` now
+//! reaches its two remaining constructors as inherent methods on
+//! `pixelflow-core`'s own `pub(crate)` lane types, with no trait at all.
 
 // NOTE: `no_std` support (disabling the `std` feature) is currently
 // incomplete: `cargo check -p pixelflow-ir --no-default-features` fails with

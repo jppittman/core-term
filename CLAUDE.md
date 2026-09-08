@@ -174,7 +174,7 @@ Cargo workspace with 13 member crates:
 |-------|---------|
 | `pixelflow-core` | Lattices, the compiled `Manifold`, `collapse`, and the cell grid. Backends: x86-64 (SSE2 baseline, AVX2/AVX-512 opt-in via `target-feature`) and aarch64 (NEON) only — no portable/scalar fallback for other architectures. Edition 2024. |
 | `pixelflow-compiler` | Proc-macro front end: `kernel!` and `kernel_raw!`, parser, sema, e-graph optimization, arena lowering. Edition 2024. |
-| `pixelflow-ir` | Shared IR. `ExprArena` (sole IR), OpKind enum, backend execution traits, the `Kernel` value/AST. |
+| `pixelflow-ir` | Shared IR. `ExprArena` (sole IR), OpKind enum, the `Kernel` value/AST. |
 | `pixelflow-codegen` | Expression graphs to machine code: per-ISA emitters (x86-64, aarch64), register allocation, executable memory, the JIT compile cache (`jit_cache`, `CompiledKernel`). Runs the optimizer itself, so a compiled kernel is never obtained unoptimized. |
 | `pixelflow-graphics` | Font loading (TTF, SDF), colors (`Rgba8`, `Color`), the packed frame program, analytic 3-D scenes. |
 | `pixelflow-ml` | Graphics ML experiments (harmonic attention, SH feature maps). Not part of the compiler cost model. |

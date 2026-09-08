@@ -49,8 +49,6 @@
 //!
 //! - **[`lattice`]** — the lattice, the compiled manifold, the collapsed
 //!   buffer, and the cell grid the terminal renders through
-//! - **[`backend`]** — the SIMD abstraction the emitted code's ABI is
-//!   denominated in
 //!
 //! ## Execution notes
 //!
@@ -73,8 +71,9 @@ extern crate std;
 // Modules
 // ============================================================================
 
-/// SIMD backend abstractions.
-pub mod backend;
+/// SIMD backend: the concrete lane types `Field` is built on. Not public —
+/// nothing outside this crate should be able to name a lane or a width.
+pub(crate) mod backend;
 
 /// Lattice: representable functor for kernel evaluation.
 pub mod lattice;
@@ -125,8 +124,6 @@ pub mod __macro {
 // Field: the collapse ABI's vector, and nothing more
 // ============================================================================
 
-use backend::{Backend, SimdOps};
-
 // Backend selection is governed by `target_feature` alone — the flag that
 // actually decides what the compiler may emit — and `-C target-cpu=native` sets
 // it, so nothing extra is needed to pick up the build box's own width.
@@ -143,14 +140,14 @@ use backend::{Backend, SimdOps};
 // handled where it belongs: `cargo xtask isa-matrix` builds every ISA level
 // unconditionally and gates only running on `host_has_feature`.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-type NativeSimd = <backend::x86::Avx512 as Backend>::F32;
+type NativeSimd = backend::x86::F32x16;
 
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
     not(target_feature = "avx512f")
 ))]
-type NativeSimd = <backend::x86::Avx2 as Backend>::F32;
+type NativeSimd = backend::x86::F32x8;
 
 // Fallback to SSE2 (always available on x86_64)
 #[cfg(all(
@@ -158,10 +155,10 @@ type NativeSimd = <backend::x86::Avx2 as Backend>::F32;
     not(target_feature = "avx512f"),
     not(target_feature = "avx2")
 ))]
-type NativeSimd = <backend::x86::Sse2 as Backend>::F32;
+type NativeSimd = backend::x86::F32x4;
 
 #[cfg(target_arch = "aarch64")]
-type NativeSimd = <backend::arm::Neon as Backend>::F32;
+type NativeSimd = backend::arm::F32x4;
 
 // No scalar fallback: the JIT (`Manifold::compile`, and therefore
 // `Lattice::bake`) exists only on x86-64 and aarch64, and there is no
