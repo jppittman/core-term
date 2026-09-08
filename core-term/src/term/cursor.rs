@@ -339,6 +339,23 @@ impl CursorController {
         self.cursor.logical_x = min(new_x, max_x_for_positioning);
     }
 
+    /// Moves the cursor to a specific logical row `new_y` (VPA), leaving the
+    /// logical column unchanged. `new_y` is clamped exactly as `move_to_logical`
+    /// clamps its row argument (bottom of the scrolling region under origin
+    /// mode, otherwise the bottom of the screen).
+    ///
+    /// # Arguments
+    /// * `new_y`: The target logical row.
+    /// * `context`: A reference to the current `ScreenContext` for boundary checking.
+    pub fn move_to_logical_row(&mut self, new_y: usize, context: &ScreenContext) {
+        let max_y_logical = if context.origin_mode_active {
+            context.scroll_bot.saturating_sub(context.scroll_top)
+        } else {
+            context.height.saturating_sub(1)
+        };
+        self.cursor.logical_y = min(new_y, max_y_logical);
+    }
+
     /// Moves the cursor to the start of the current logical line (column 0).
     /// The logical row remains unchanged.
     pub fn carriage_return(&mut self) {

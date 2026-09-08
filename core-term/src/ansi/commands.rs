@@ -241,6 +241,8 @@ pub enum CsiCommand {
     CursorNextLine(u16),
     /// Move cursor to `(row, col)`. Parameters are 1-based.
     CursorPosition(u16, u16),
+    /// Move cursor to line `n` (VPA), preserving the current column. 1-based.
+    LinePositionAbsolute(u16),
     /// Move cursor to beginning of line `n` lines up.
     CursorPrevLine(u16),
     /// Move cursor up by `n`.
@@ -643,10 +645,9 @@ impl AnsiCommand {
                 let col = param_or_1(1);
                 Some(AnsiCommand::Csi(CsiCommand::CursorPosition(row, col)))
             }
-            (false, b"", b'd') => Some(AnsiCommand::Csi(CsiCommand::CursorPosition(
-                // VPA
-                param_or_1(0), // Row
-                1,             // Column is implicitly 1
+            (false, b"", b'd') => Some(AnsiCommand::Csi(CsiCommand::LinePositionAbsolute(
+                // VPA: moves only the row, leaving the column untouched.
+                param_or_1(0),
             ))),
             (false, b"", b'J') => {
                 Some(AnsiCommand::Csi(CsiCommand::EraseInDisplay(param_or(0, 0))))
