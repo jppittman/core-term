@@ -1,31 +1,31 @@
 # The claims ledger: what the research arm said, and what real shaders said back
 
-**Date:** 2026-09-07. **Companion:** `2026-09-07-claims-ledger.csv` (88 rows, one per quantitative claim since the self-play era; columns `id, group, claim, minted, corpus, instrument, metric_units, kind, real_check, verdict, note`).
+**Date:** 2026-09-07. **Companion:** `2026-09-07-claims-ledger.csv` (92 rows, one per quantitative claim since the self-play era; columns `id, group, claim, minted, corpus, instrument, metric_units, kind, real_check, verdict, note`).
 **Why this exists (JP, 2026-09-07):** *"This isn't an egraph for fonts project. It's an egraph for shaders project, and we have an app with shaders and the moment we pointed it at the real shaders it sucked. ... We need to act like when our research hit the real world, it shit the bed, so we need to go back and correct."* This is the first artifact of that review: every claim, its corpus, its units, its instrument, and its verdict against a shipped shader.
 
 ## 1. The verdict
 
 | verdict | rows | meaning |
 |---|---:|---|
-| **HELD** | 37 | stands on a real shader in correct units, or is a fact about the method that survives every re-unit |
-| **FAILED** | 6 | tested on a real shader and contradicted |
-| **UNITS INVALID** | 14 | priced in tree cost (`ExtractedDAG::total_cost` before #1192) — the kernel pays DAG cost; the number is in the wrong units even where the corpus was real |
-| **INSTRUMENT DEFECT** | 17 | the instrument that produced it was later shown wrong: 41.67× then 4× timebase, null-context gathers, tile-vs-scanline inversion, overhead-biased ratio, cross-population Spearman, unreproducible artifacts, hash-against-prose gates |
-| **NEVER TESTED ON REAL** | 14 | minted on a generated corpus and never taken on a shipped kernel |
+| **HELD** | 39 | stands on a real shader in correct units, or is a fact about the method that survives every re-unit |
+| **FAILED** | 7 | tested on a real shader and contradicted |
+| **UNITS INVALID** | 15 | priced in tree cost (`ExtractedDAG::total_cost` before #1192) — the kernel pays DAG cost; the number is in the wrong units even where the corpus was real |
+| **INSTRUMENT DEFECT** | 18 | the instrument that produced it was later shown wrong: 41.67× then 4× timebase, null-context gathers, tile-vs-scanline inversion, overhead-biased ratio, cross-population Spearman, unreproducible artifacts, hash-against-prose gates |
+| **NEVER TESTED ON REAL** | 13 | minted on a generated corpus and never taken on a shipped kernel |
 
-**51 of 88 do not stand.** Of the 37 that do, **17** are measurements taken on real shaders (`verdict=HELD` and `kind=real`), 8 are findings that an instrument or method was broken (`kind=n/a`), and 12 are synthetic-corpus results that survive re-unit. Every figure in this section is a `verdict`/`kind` count over the companion CSV and should be recomputed from it rather than restated — an earlier revision said 21/8/6, which double-counted synthetic rows as real-shader measurements, and a second said 35 / 16-8-11 before the 2026-09-08 verdict corrections below. **No claim that an optimizer improvement helps a shipped shader survives**, with two exceptions: sharing-aware extraction (#1192, L067: 55/206 improved, 0 worse, chrome schedule 401→385 entries) and the schedule-side S3b win (L073), which is codegen, not the e-graph.
+**53 of 92 do not stand.** Of the 39 that do, **20** are measurements taken on real shaders (`verdict=HELD` and `kind=real`), 8 are findings that an instrument or method was broken (`kind=n/a`), and 11 are synthetic-corpus results that survive re-unit. Every figure in this section is a `verdict`/`kind` count over the companion CSV and should be recomputed from it rather than restated — an earlier revision said 21/8/6, which double-counted synthetic rows as real-shader measurements, a second said 35 / 16-8-11, and a third said 37 / 17-8-12 before the 2026-09-08 decisions-doc verdict corrections and four new rows below. **No claim that an optimizer improvement helps a shipped shader survives**, with two exceptions: sharing-aware extraction (#1192, L067: 55/206 improved, 0 worse, chrome schedule 401→385 entries) and the schedule-side S3b win (L073), which is codegen, not the e-graph.
 
-By group, the failure is concentrated where the headlines were: the extraction-head/paper rows (16) are **10** defect-or-untested (6 INSTRUMENT DEFECT + 4 NEVER TESTED ON REAL); Phase 3 Round 1/1b/2/R2G/bilinear (20) are **10** units-invalid-or-failed (8 UNITS INVALID + 2 FAILED). The self-play era (8) is **5** timebase-defective or unrecorded, not all of it — L001–L003 are HELD, and they are findings *about* the method (the loop closes byte-exact; the extraction head was dead in production; the RL half cannot learn) rather than claims it produced.
+By group, the failure is concentrated where the headlines were: the extraction-head/paper rows (16) are **9** defect-or-untested (6 INSTRUMENT DEFECT + 3 NEVER TESTED ON REAL — L020 moved from NEVER TESTED ON REAL to FAILED on 2026-09-08, so it no longer counts here); Phase 3 Round 1/1b/2/R2G/bilinear (20) are **10** units-invalid-or-failed (9 UNITS INVALID + 1 FAILED — L047 moved from NEVER TESTED ON REAL to UNITS INVALID). The self-play era (8) is **5** timebase-defective or unrecorded, not all of it — L001–L003 are HELD, and they are findings *about* the method (the loop closes byte-exact; the extraction head was dead in production; the RL half cannot learn) rather than claims it produced.
 
-The lattice programme's rows (17, real shaders) are **11** HELD. The six that are not divide two ways: L074–L077 are findings *about* instruments rather than claims that fell, and L078 and L082 are FAILED. (L081 was NEVER TESTED ON REAL and is now HELD — it is measured on shipped `O`/`S` glyph kernels, so that verdict was unavailable to it by this document's own definition.)
+The lattice programme's rows (18, real shaders) are **11** HELD. The seven that are not divide two ways: L074–L077 and L089 are findings *about* instruments rather than claims that fell, and L078 and L082 are FAILED. (L081 was NEVER TESTED ON REAL and is now HELD — it is measured on shipped `O`/`S` glyph kernels, so that verdict was unavailable to it by this document's own definition. L089 is the serialized-critical-path half of L083, split out 2026-09-08 — see §7 Revisions.)
 
 ## 2. The five ways the method failed, each with the rows that show it
 
-1. **Units.** Every cost number before #1192 is a tree cost. The kernel pays DAG cost; `julia_set` is 1.4e7 tree against 716 DAG. Fourteen rows are in the wrong units outright (L033–L035, L038, L042, L044–L046, L054, L057–L061), and the Guide's registered constants (B=100/200, Y=16.3%/9.0%) were derived from them and "port as-is, not re-derivable" (L034). The bisect (L049) is the load-bearing correction: the sh family's 0.90 in tree is 1.10 in DAG — every guided arm *loses* on trig kernels, and guides trained on tree labels steer toward unshared terms.
-2. **Regime.** The Guide programme was registered at B=100–200 applications. Real kernels fired a median 8,446 before production stopped (L056), and 68.4% stopped on the class cap (L053) — the 200 ms clock-limited regime. Under the budget now shipped it is a median **5,422** applications with **93%** stopping on the cap (`2026-09-07-corpus-structural-gaps.md`), so the registered B=100 is **54×** below production, not 85×. Every quality-at-budget claim (L033–L035, L087) is about a regime production never runs in.
-3. **Instrument.** The bench timebase was wrong by 41.67× before 2026-07-20 (L010) and by 4× again after #1071 (L065); the latency prior was measured with a null context pointer so `Gather` has never been priced; labels were minted in tile mode, and Horner-vs-Estrin (L083) shows tile/latency ordering *inverts* against the scanline production loop. The paper's "parity" ratio is `(n+c)/(s+c)`, biased toward 1 (L013); its calibration Spearman is cross-population (L017); three of its rounds rest on artifacts not in the repository (L014, L015, L023). the corpus predictors do not survive being read per predictor (L075): `dyn_memory_ops` ranks at ρ=0.825/0.796 with aggregate sign accuracy 72.5%/77.6%, the ≈0.98 ranks belong to `dyn_emitted_ops`/`dyn_bytes`, and 27% is the AVX-512 sign score for the single `main → tripcount` pair — an earlier revision combined the 0.98 of one with the 27% of another and quoted a statistic nobody measured; it reported +40% on a change whose clock moved −7% (L074).
-4. **Corpus.** Fourteen rows were never taken on a real shader, including the single most-quoted number in the program — "extraction with the static table is worth ~2× over not extracting" (L020) — for which the raw-versus-optimized delta on a shipped kernel *does not exist*. Where real shaders were finally used, synthetic headlines collapsed: rule order 86× → 0.97× and *reversed* on the psychedelic shader (L043/L057); the class-cap A/Bs that improved tree cost on glyphs were contradicted by the clock on chrome, where 12× more classes made the kernel 15% slower (L072 vs L054/L058/L059). One row (L005) is a claim with no corpus, no number, and a deleted harness.
-5. **Provenance.** Four rows carry their own banner that they predate a fix that "changes every number below" and were never re-run (L028, L031, L036, L041) — an earlier revision said five and named these four. L028 is the weakest of them and is arguably no longer an instance at all: it *was* re-run, twice (rho 0.02 corrected to 0.35, then 0.186 on a second draw), which is why its verdict moved to HELD on 2026-09-08. Left in the list pending a decision on whether a row that carries the banner but was subsequently re-run still counts; the paper's FINAL tier was never opened (L026), and its 12 ShaderToy ports were then consumed for a rule-order decision, so it no longer holds out ordering claims.
+1. **Units.** Every cost number before #1192 is a tree cost. The kernel pays DAG cost; `julia_set` is 1.4e7 tree against 716 DAG. Fifteen rows are in the wrong units outright (L033–L035, L038, L042, L044–L047, L054, L057–L061), and the Guide's registered constants (B=100/200, Y=16.3%/9.0%) were derived from them and "port as-is, not re-derivable" (L034). The bisect (L049) is the load-bearing correction: the sh family's 0.90 in tree is 1.10 in DAG — every guided arm *loses* on trig kernels, and guides trained on tree labels steer toward unshared terms.
+2. **Regime.** The Guide programme was registered at B=100–200 applications. Real kernels fired a median 8,446 before production stopped (L056), and 68.4% stopped on the class cap (L053) — the 200 ms clock-limited regime. Under the budget now shipped it is a median **5,422** applications with **93%** stopping on the cap (L090, L091; `2026-09-07-corpus-structural-gaps.md`), so the registered B=100 is **54×** below production, not 85×. Every quality-at-budget claim (L033–L035, L087) is about a regime production never runs in.
+3. **Instrument.** The bench timebase was wrong by 41.67× before 2026-07-20 (L010) and by 4× again after #1071 (L065); the latency prior was measured with a null context pointer so `Gather` has never been priced; labels were minted in tile mode, and Horner-vs-Estrin's serialized-critical-path reading (L089) shows tile/latency ordering *inverts* against the scanline production loop, which is why the scanline reading is kept separately at L083. The paper's "parity" ratio is `(n+c)/(s+c)`, biased toward 1 (L013); its calibration Spearman is cross-population (L017); three of its rounds rest on artifacts not in the repository (L014, L015, L023). the corpus predictors do not survive being read per predictor (L075): `dyn_memory_ops` ranks at ρ=0.825/0.796 with aggregate sign accuracy 72.5%/77.6%, the ≈0.98 ranks belong to `dyn_emitted_ops`/`dyn_bytes`, and 27% is the AVX-512 sign score for the single `main → tripcount` pair — an earlier revision combined the 0.98 of one with the 27% of another and quoted a statistic nobody measured; it reported +40% on a change whose clock moved −7% (L074).
+4. **Corpus.** Thirteen rows were never taken on a real shader. The single most-quoted number in the program — "extraction with the static table is worth ~2× over not extracting" (L020) — has now been taken on one: F landed (`2026-09-07-egraph-off-vs-on-real-shaders.md`) and **FAILS it on attribution** — the real aggregate win is ≈1.6×, not 2×, and 41 of its 44 points of byte reduction is hash-consing at insertion, not extraction with the static table, which moves dag_cost by only ≈−4.8% on the pre-hash-consed ports. Where real shaders were finally used, synthetic headlines collapsed: rule order 86× → 0.97× and *reversed* on the psychedelic shader (L043/L057); the class-cap A/Bs that improved tree cost on glyphs were contradicted by the clock on chrome, where 12× more classes made the kernel 15% slower (L072 vs L054/L058/L059); scenes and shaders enter the e-graph small and the rules themselves do most of the expansion to the cap (L092). One row (L005) is a claim with no corpus, no number, and a deleted harness.
+5. **Provenance.** Three rows carry their own banner that they predate a fix that "changes every number below" and were never re-run (L031, L036, L041) — earlier revisions said five, then four, before L028 was found to have in fact been re-run twice (0.35, then 0.186 on a second synthetic draw) and moved out of this list. Both of L028's re-runs are synthetic, so by this ledger's own definition its verdict is NEVER TESTED ON REAL, not HELD, and INSTRUMENT DEFECT was the wrong original label for it either way — the instrument was noisy, not broken (2026-09-08). The paper's FINAL tier was never opened (L026), and its 12 ShaderToy ports were then consumed for a rule-order decision, so it no longer holds out ordering claims.
 
 ## 3. What stands on real shaders, in correct units
 
@@ -63,7 +63,7 @@ Each of these gets a dated "Retracted/Superseded" block at the top of its result
 
 Cheapest and most load-bearing first. Each on the corrected corpus (real shaders, family-split held-out), deterministic columns as the claim, clock as a sign, decision rule pre-committed before the run.
 
-1. **F — the e-graph on vs off, on every shipped shader** (L020). The most-quoted number in the program and it has never been taken. *Running.*
+1. **F — the e-graph on vs off, on every shipped shader** (L020). The most-quoted number in the program. *Complete* (2026-09-08): `docs/results/2026-09-07-egraph-off-vs-on-real-shaders.md` — glyph32 clock on/off median 0.63, Σ −19–21%, bytes −44%. Real, and ≈1.6×, not the claimed ~2× — and it is hash-consing at insertion, not extraction with the table: the cse-only arm carries −41% of the −44%, rules-beyond-CSE move it only ≈−4%; on the pre-hash-consed `shader_bench` ports, extraction with the table is worth −0.5% bytes / −4.8% dag_cost. L020 is now FAILED, on attribution.
 2. **Rule order on real kernels in DAG units** (L057). Dumps exist; deterministic; the direction (≈3%, not 86×) is expected to hold and the magnitude to move.
 3. **Class-cap cost and the live-cap A/B in DAG units on real kernels** (L054, L059), against the chrome clock. Until this is done, "more classes" carries a measured contradiction.
 4. **The latency prior, on a fixed instrument**: the 4× timebase, a real context so `Gather` is priced, scanline mode not tile (L065, L083). Then re-measure; #1157 changed trig after the last one.
@@ -74,8 +74,57 @@ Cheapest and most load-bearing first. Each on the corrected corpus (real shaders
 
 ## 6. Rules the ledger imposes on the program
 
-- **The synthetic corpus is never a headline.** Coverage and stress only. A claim *about what an optimizer change is worth* must name a shipped shader or it is NEVER TESTED ON REAL by definition. The rule is scoped to that class deliberately: it does not reach rows whose subject is a code property, a budget constant, or an instrument's own behaviour, which is why 12 synthetic-corpus rows are HELD (L019 and L083–L085 among them, `real_check = n/a`). Stated absolutely, the rule would contradict §1's own split and no consumer could reproduce the 37/51.
+- **The synthetic corpus is never a headline.** Coverage and stress only. A claim *about what an optimizer change is worth* must name a shipped shader or it is NEVER TESTED ON REAL by definition. The rule is scoped to that class deliberately: it does not reach rows whose subject is a code property, a budget constant, or an instrument's own behaviour, which is why 11 synthetic-corpus rows are HELD (L019 and L083–L085 among them, `real_check = n/a`). Stated absolutely, the rule would contradict §1's own split and no consumer could reproduce the 39/53.
 - **Units in the row.** `dag_cost` or the clock; a tree cost is not a cost.
 - **Regime in the row.** Applications at production's actual stop, not a registered budget.
 - **The instrument is a claim too.** Timebase, context, loop shape (scanline), and the oracle (external or same-form) are stated beside every number.
 - **Artifacts in the repository.** A number whose per-kernel rows are uncommitted is a note, not a result.
+
+## 7. Revisions (2026-09-08)
+
+Applied from `docs/results/2026-09-08-open-thread-decisions.md`, which recorded the twelve
+recommendations JP handed back decisions on. Each change below cites the decision it applies;
+the CSV carries the full before/after reasoning in each row's `note`.
+
+1. **L081** — kept HELD (was already corrected from NEVER TESTED ON REAL by the prior sweep);
+   the unmerged-implementation caveat stays in `note`. No change needed (decision #1).
+2. **L047** — reclassified NEVER TESTED ON REAL → **UNITS INVALID**. The 1.09–1.11× bilinear
+   deltas are `dag_cost` of TREE-objective extractions minted before #1192; the compared terms
+   no longer exist, independent of the corpus (decision #2).
+3. **L083** — un-narrowed and actually split. It now carries only the scanline/production
+   conclusion (HELD, unchanged verdict). The serialized-critical-path 1.2–4.0× number moves to
+   a new row, **L089** (INSTRUMENT DEFECT): AVX-512 latency rows below degree 16 are
+   chaining-overhead dominated per the source report's own warning; SSE2/AVX2 serialized rows
+   are readable (decision #3).
+4. **L072** — verdict unchanged (HELD); `note` already read as an out-of-domain counterexample
+   rather than a contradiction, so no further edit was needed (decision #4).
+5. **L028** — reclassified HELD → **NEVER TESTED ON REAL**. This ledger has five verdicts and no
+   sixth for "noisy": both re-runs are on a synthetic 800-kernel draw and neither ever touched a
+   shipped kernel. Claim restated as a range, ρ ≈ 0.19–0.35 across two draws of 800 (sampling
+   variance); INSTRUMENT DEFECT was the wrong original label — noisy, not wrong (decision #5).
+6. **L078** — `minted` corrected to a file+line citation:
+   `docs/plans/2026-09-06-kernel-with-a-lattice.md:780–781` (the S4b-1 landed section), which
+   reads "`collapse_bench` never goes through it \[`JitManifold`\] — it calls `emit::compile`
+   directly." The sentence exists and is about `JitManifold`'s rename, not the optimizer; the
+   row's own verdict (FAILED, read literally) and its code-verified `real_check` are unchanged
+   (decision #6).
+7. **L020** — reclassified NEVER TESTED ON REAL → **FAILED, on attribution**. F is complete
+   (`docs/results/2026-09-07-egraph-off-vs-on-real-shaders.md`): real aggregate improvement is
+   ≈1.6×, not the claimed ~2×, and 41 of 44 points of byte reduction is hash-consing at
+   insertion, not extraction with the static table (which moves dag_cost ≈−4.8% on
+   pre-hash-consed ports). §5 item 1 now reads Complete with these numbers; §2's "most-quoted
+   number" sentence is rewritten to match (decision #7).
+8. **L053 / L056** — `note` marks both historical: the 200 ms-timeout regime, pre-#1118 (already
+   applied by the prior sweep). Two new rows added: **L090** (93% ClassCap, median 2 iterations,
+   current `Budget::Production`, HELD) and **L091** (median 5,422 applications = 54× the
+   registered B=100, HELD) — both sourced from `docs/results/2026-09-07-corpus-structural-gaps.md`.
+   Every "85×" dependent on the retired regime already read "54× ... not 85×" going into this
+   revision. One further row added, **L092** (HELD, real): scenes/shaders enter the e-graph
+   small and the rules expand them 10–40× to the class cap in 2–5 iterations, superseding
+   `docs/plans/2026-09-06-egraph-at-production-scale.md` §2's "~4,900 classes after
+   hash-consing" framing — the dated Superseded banner for that sentence is added in #1215's
+   worktree, which already carries retraction blocks on plan docs (decision #8).
+
+**Verdict histogram, before → after:** HELD 37→39, FAILED 6→7, UNITS INVALID 14→15, INSTRUMENT
+DEFECT 17→18, NEVER TESTED ON REAL 14→13, total rows 88→92. Headline: **53 of 92 do not stand**
+(was 51 of 88).
