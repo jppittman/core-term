@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn binary_and_unary_from_abstract_operands() {
-        let dst = Loc::Reg(Reg(0));
+        let dst = Reg(0);
         let lhs = Loc::Reg(Reg(1));
         let rhs = Loc::Reg(Reg(2));
 

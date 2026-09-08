@@ -147,32 +147,10 @@ impl Loc {
     }
 }
 
-impl StoreTarget for Loc {
-    #[inline]
-    fn target_storage(self) -> Storage {
-        match self {
-            Loc::Reg(r) => Storage::Reg(r),
-            Loc::Slot(s) => Storage::Slot(s),
-            Loc::Remat(bits) => panic!("cannot store into rematerialized constant {bits:#x}"),
-        }
-    }
-
-    #[inline]
-    fn target_reg(self) -> Option<Reg> {
-        match self {
-            Loc::Reg(r) => Some(r),
-            _ => None,
-        }
-    }
-
-    #[inline]
-    fn target_slot(self) -> Option<Slot> {
-        match self {
-            Loc::Slot(s) => Some(s),
-            _ => None,
-        }
-    }
-}
+// NOTE: Loc intentionally does NOT implement StoreTarget.
+// Loc::Remat has no physical storage, so it cannot satisfy the trait's
+// invariant that target_storage() always returns a writable location.
+// Use Reg, Slot, or Storage when a writable destination is required.
 
 impl SourceOperand for Loc {
     #[inline]
