@@ -930,6 +930,105 @@ mod tests {
         }
     }
 
+    /// The two shape-A scene kernels, dumped the way production compiles
+    /// them: `bench_scene_chrome`'s chrome sphere and `bench_scene_psychedelic`'s
+    /// shader, each as the ONE packed kernel `PackedManifold::compile` hands
+    /// the optimizer (four channels packed inside, selects on packed words —
+    /// S3b), at the gate's 1920×1080 frame. The constructions are the gate
+    /// examples' (`pixelflow-runtime/examples/bench_scene_{chrome,psychedelic}.rs`)
+    /// restated here because `packed_kernel` is private to this crate and the
+    /// gates live in the runtime; a drift between the two would show up as a
+    /// node-count difference against the gate's own printout (416,420 for
+    /// chrome under `node_count_subtree`).
+    ///
+    /// Written for the structural-gap inventory
+    /// (`docs/results/2026-09-07-corpus-structural-gaps.md`): the 206-dump
+    /// corpus had the psychedelic shader only as a single-channel,
+    /// hand-transcribed sum and had no chrome kernel at all.
+    #[test]
+    #[ignore = "telemetry dumper: PIXELFLOW_TELEMETRY_DIR=<dir> cargo test -p pixelflow-graphics --release -- --ignored dump_production_scene_arenas"]
+    fn dump_production_scene_arenas() {
+        use crate::scene3d::{checker, sky, Hit, Plane, Ray, Rgba, Sphere};
+        use pixelflow_core::{Kernel, Uniform};
+
+        let dir = std::path::PathBuf::from(
+            std::env::var("PIXELFLOW_TELEMETRY_DIR").expect("PIXELFLOW_TELEMETRY_DIR must be set"),
+        );
+        std::fs::create_dir_all(&dir).expect("create dump dir");
+        const WIDTH: f32 = 1920.0;
+        const HEIGHT: f32 = 1080.0;
+        let k = Kernel::constant;
+
+        // ── chrome (bench_scene_chrome) ──
+        const CENTER: (f32, f32, f32) = (0.0, 0.0, 4.0);
+        const RADIUS: f32 = 1.0;
+        const FLOOR: f32 = -1.0;
+        let ray = Ray::through_screen(WIDTH, HEIGHT);
+        let sphere: Hit = Sphere::new([k(CENTER.0), k(CENTER.1), k(CENTER.2)], k(RADIUS)).hit(&ray);
+        let world = |ray: &Ray| -> Rgba {
+            let floor = Plane::at_height(k(FLOOR)).hit(ray);
+            floor.select(
+                &checker(&floor.point()[0], &floor.point()[2], &floor.footprint()),
+                &sky(ray),
+            )
+        };
+        let mirrored = ray.reflected(sphere.normal());
+        let chrome = sphere.select(&world(&mirrored), &world(&ray));
+
+        // ── psychedelic (bench_scene_psychedelic) ──
+        let psych_channel = |y_weight: f32, clock: Uniform| -> Kernel {
+            let scale = 2.0 / HEIGHT;
+            let x = Kernel::x().sub(&k(WIDTH * 0.5)).mul(&k(scale));
+            let y = k(HEIGHT * 0.5).sub(&Kernel::y()).mul(&k(scale));
+            let time = clock.kernel().add(&k(1.3));
+            let r_sq = x.mul(&x).add(&y.mul(&y));
+            let radial = r_sq.sub(&k(0.7)).abs();
+            let swirl_scale = k(1.0).sub(&radial).mul(&k(5.0));
+            let vx = x.mul(&swirl_scale);
+            let vy = y.mul(&swirl_scale);
+            let phase = time.mul(&k(0.5));
+            let sin_w03 = time.mul(&k(0.3)).sin();
+            let sin_w20 = time.mul(&k(2.0)).sin();
+            let vxp = vx.add(&phase);
+            let swirl = vxp
+                .sin()
+                .add(&k(1.0))
+                .mul(&vxp.sub(&vy.add(&phase.mul(&k(0.7)))).abs())
+                .mul(&k(0.2))
+                .add(&k(0.001));
+            let pulse = k(1.0).add(&sin_w20.mul(&k(0.1)));
+            let radial_factor = radial.mul(&k(-4.0)).mul(&pulse).exp();
+            let raw = y
+                .mul(&k(y_weight))
+                .add(&sin_w03.mul(&k(0.2)))
+                .exp()
+                .mul(&radial_factor)
+                .div(&swirl);
+            raw.div(&raw.abs().add(&k(1.0))).add(&k(1.0)).mul(&k(0.5))
+        };
+        let clock = Uniform::new(0.0);
+        let psychedelic = Rgba::from([
+            psych_channel(1.0, clock),
+            psych_channel(-1.0, clock),
+            psych_channel(-2.0, clock),
+            k(1.0),
+        ]);
+
+        for (label, color) in [("chrome", &chrome), ("psychedelic", &psychedelic)] {
+            let kernel = packed_kernel(color, RGBA_SHIFTS);
+            let (arena, root) = kernel.parts();
+            let name = format!("scene:{label}");
+            let path = dir.join(format!("scene_{label}.arena"));
+            dump_arena(arena, root, &name, &path);
+            println!(
+                "{name}: {} reachable nodes, {} tree nodes -> {}",
+                reachable_nodes(arena, root),
+                arena.node_count_subtree(root),
+                path.display()
+            );
+        }
+    }
+
     /// Text dump of the subgraph reachable from `root`: nodes in ascending
     /// original id order (children precede parents), ids remapped dense,
     /// constants as bit patterns, buffer identities as dense ordinals. The
@@ -967,6 +1066,13 @@ mod tests {
                 }
             };
             writeln!(out, "buf {ord} {} {}", decl.width, decl.height).expect("fmt");
+        }
+        // Arguments, in slot order, with the default each slot holds — so a
+        // loader can redeclare them and `Un <slot>` below names a real slot.
+        // (Earlier dumps had `Un` lines and no declarations; nothing that
+        // read them could rebuild the uniform table.)
+        for decl in arena.uniforms() {
+            writeln!(out, "uni {}", decl.default.to_bits()).expect("fmt");
         }
         let mut dense: Vec<u32> = vec![u32::MAX; len];
         let mut next = 0u32;

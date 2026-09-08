@@ -374,9 +374,22 @@ plan's form. JP's decision on 2026-09-07 was to build the general demand
 predicate on the DAG rather than merge the per-select special case first;
 that became its own plan,
 [2026-09-07-demand-is-a-dag-property.md](2026-09-07-demand-is-a-dag-property.md),
-whose amendment records what happened to the gate PR along the way. G1 (§4)
-was not scheduled when this section was written; it was executed on
-2026-09-08 (§9.6).
+whose amendment records what happened to the gate PR along the way. That
+plan is in turn superseded by
+[2026-09-08-one-conditional-three-lowerings.md](2026-09-08-one-conditional-three-lowerings.md),
+which also refines §5 above: guards and index ranges are one thing because
+they are two lowerings of one `Select`, and `Union`/`IndexRange` are what
+the compiler should derive rather than what a caller writes.
+
+G1 (§4) was not scheduled when this section was written; it was executed on
+2026-09-08 (§9.6). On 2026-09-09 `Union` was **deleted** — which is that
+refinement's conclusion arrived at from the other end. G1 was said to depend
+on L3 because `u² − v` outside its control triangle is wrong rather than
+slow, so the crescent needed a domain-side fence. It does not:
+`{v ≥ u²} ∩ {v ≤ u}` is empty outside `u ∈ [0, 1]`, so two comparisons fence
+it with no domain at all. With correctness no longer resting on it, `Union`
+was a sum whose terms a caller declared disjoint — `place` panics on overlap,
+so it could never say anything `+` could not — and it reached no screen.
 
 The stage-by-stage findings below are corrections and additions to what the
 draft above predicted — read them alongside the sections they amend, not as
