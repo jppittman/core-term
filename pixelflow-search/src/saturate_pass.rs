@@ -87,6 +87,7 @@ impl Optimize for Saturate {
         crate::telemetry::record(crate::telemetry::SaturationInvocation {
             tier: self.tier,
             node_count,
+            extraction: optimized.extraction,
             stats: &optimized.stats,
             union_count: optimized.stats.unions,
             extracted_arena: &extracted,

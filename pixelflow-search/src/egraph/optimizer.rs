@@ -50,7 +50,10 @@ use alloc::vec::Vec;
 use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
 use super::cost::CostModel;
-use super::extract::{ChoiceCost, Extraction, IncrementalExtractor, Reranker, choices_to_arena};
+use super::extract::{
+    ChoiceCost, Extraction, ExtractionObjective, ExtractionReport, IncrementalExtractor, Reranker,
+    choices_to_arena,
+};
 use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
 use super::guided::GuidedEpisode;
 use super::node::EClassId;
@@ -230,6 +233,10 @@ pub struct Optimized {
     /// [`Reranker`], whose search has its own scale and never produced this
     /// number before.
     pub cost: ChoiceCost,
+    /// Which objective chose [`Self::choices`], and what the sharing-aware
+    /// pass cost — [`ExtractionObjective::External`] under a [`Reranker`].
+    /// A cost quoted without this is a cost from an unknown extractor.
+    pub extraction: ExtractionReport,
     /// What the run did.
     pub stats: OptimizerStats,
 }
@@ -653,7 +660,7 @@ impl Optimizer {
         // own table is read before `repair_choices_well_founded` rewrites
         // picks and so can name a different term (#1111), and the reranker's
         // search score is on its own scale entirely.
-        let (choices, cost) = match self.rerank.as_ref() {
+        let (choices, cost, extraction) = match self.rerank.as_ref() {
             Some(reranker) => {
                 let choices = IncrementalExtractor::new(reranker.as_ref(), RERANK_TOP_K)
                     .extract_choices_only(egraph, root)
@@ -661,18 +668,19 @@ impl Optimizer {
                     .into_choices();
                 let cost =
                     super::extract::cost_of_choices(egraph, root, &choices, &self.cost, self.shape);
-                (choices, cost)
+                (choices, cost, ExtractionReport::external())
             }
             None => {
                 let dag = super::extract::extract_dag_scoped(egraph, root, &self.cost, self.shape);
                 let cost = dag.cost();
-                (dag.choices, cost)
+                (dag.choices, cost, dag.report)
             }
         };
 
         Optimized {
             choices,
             cost,
+            extraction,
             stats: OptimizerStats {
                 stop: saturation.stop,
                 iterations: saturation.iterations,

@@ -45,7 +45,7 @@
 use std::io::Write as _;
 use std::time::Duration;
 
-use crate::egraph::{CostModel, OptimizerStats, SaturationStop};
+use crate::egraph::{CostModel, ExtractionReport, OptimizerStats, SaturationStop};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
 pub use crate::tier::Tier;
@@ -68,6 +68,10 @@ pub struct SaturationInvocation<'a> {
     /// Size of the input, as passed to `config_for_node_count` to select the
     /// budget triple.
     pub node_count: usize,
+    /// Which objective chose the extracted term, and what the sharing-aware
+    /// pass cost — so a record above any budget can never be read as if it
+    /// were on the production objective.
+    pub extraction: ExtractionReport,
     /// What [`crate::egraph::Optimizer::run`] reported: the deterministic
     /// limits the run was held to, the rounds and applications it used, the
     /// e-class count it stopped at, and — the field this feature exists to
@@ -116,6 +120,8 @@ pub fn record(inv: SaturationInvocation<'_>) {
          \"stop_reason\":\"{stop_reason}\",\"iterations\":{iterations},\
          \"classes_at_stop\":{classes_at_stop},\"application_count\":{application_count},\
          \"union_count\":{union_count},\"extracted_latency_prior_cost\":{cost},\
+         \"extraction_objective\":\"{objective}\",\"live_classes\":{live_classes},\
+         \"shared_pass_bytes\":{shared_pass_bytes},\
          \"wall_clock_us\":{wall_clock_us},\"kernel_label\":{kernel_label}}}",
         tier = inv.tier.as_json_str(),
         node_count = inv.node_count,
@@ -128,6 +134,9 @@ pub fn record(inv: SaturationInvocation<'_>) {
         application_count = inv.stats.applications,
         union_count = inv.union_count,
         cost = cost,
+        objective = inv.extraction.objective.as_str(),
+        live_classes = json_opt_usize(inv.extraction.shared_pass.map(|p| p.live_classes)),
+        shared_pass_bytes = json_opt_usize(inv.extraction.shared_pass.map(|p| p.reach_bytes)),
         wall_clock_us = inv.wall_clock.as_micros(),
         kernel_label = json_opt_str(inv.kernel_label),
     );
@@ -141,6 +150,15 @@ fn stop_str(stop: SaturationStop) -> &'static str {
         SaturationStop::IterationCeiling => "iteration_ceiling",
         SaturationStop::Timeout => "timeout",
         SaturationStop::ApplicationBudget => "application_budget",
+    }
+}
+
+/// `null` when no sharing-aware pass ran (an external extractor), rather
+/// than a zero that would read as a measurement.
+fn json_opt_usize(v: Option<usize>) -> String {
+    match v {
+        Some(n) => n.to_string(),
+        None => "null".to_string(),
     }
 }
 

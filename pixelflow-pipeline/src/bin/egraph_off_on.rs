@@ -54,13 +54,14 @@ use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
 use pixelflow_ir::{
     BindingTable, ExprArena, ExprId, ExprNode, LatticeShape, eval_scalar, pipeline,
 };
+use pixelflow_pipeline::alloc_probe::{self, CountingAlloc};
 use pixelflow_pipeline::collapse_bench::corpus::Trips;
 use pixelflow_pipeline::collapse_bench::row::StaticFeatures;
 use pixelflow_pipeline::collapse_bench::{self, LANES, features_of};
 use pixelflow_pipeline::shader_bench::{SHADERTOY_KERNEL_NAMES, named_shadertoy_kernel};
 use pixelflow_search::egraph::{
-    Budget, CostModel, EpisodeLabels, KeepJournal, Optimizer, Rewrite, RuleSet, Vocabulary,
-    all_rules, insert, reachable_count,
+    Budget, CostModel, EpisodeLabels, KeepJournal, Optimizer, Rewrite, RuleSet, SaturationConfig,
+    Vocabulary, all_rules, config_for_node_count, insert, reachable_count,
 };
 use pixelflow_search::math::round2_rules::experimental_rules;
 use pixelflow_search::{Saturate, Tier};
@@ -83,6 +84,17 @@ const CLOCK_SAMPLES: usize = 7;
 const CLOCK_MIN_SAMPLE_NS: u64 = 2_000_000;
 const CLOCK_MAX_CALLS: usize = 20_000;
 const SELECT_HOIST_PREFIX: &str = "select-hoist-";
+/// The runtime tier's telemetry record, as `pixelflow_search::telemetry`
+/// prints it to stderr when `PIXELFLOW_SATURATION_TELEMETRY` is unset.
+const SAT_TELEMETRY_PREFIX: &str = "{\"tier\":\"runtime\"";
+/// `docs/plans/2026-09-01-production-budget-determinism.md`: the
+/// application budget is 40 per e-class of the class cap.
+const APPLICATIONS_PER_CLASS: u64 = 40;
+
+/// Peak heap growth per compile (`alloc_probe`), the e-graph's own
+/// transient allocation — the number the class-cap sweep buys memory with.
+#[global_allocator]
+static GLOBAL: CountingAlloc = CountingAlloc;
 
 #[derive(Parser)]
 #[command(
@@ -121,6 +133,25 @@ enum Command {
         skip: Vec<String>,
         #[arg(long)]
         font: Option<PathBuf>,
+        /// Hold saturation to this e-class cap instead of the production
+        /// tier's (the 2026-09-08 class-cap sweep), keeping each kernel's
+        /// own tier's round cap; the application cap is `--app-cap`, or the
+        /// plan's 40 per class when omitted.
+        #[arg(long, conflicts_with = "variant")]
+        class_cap: Option<usize>,
+        /// The application budget beside `--class-cap`.
+        #[arg(long, requires = "class_cap")]
+        app_cap: Option<u64>,
+    },
+    /// Aggregate `run --class-cap` rows across caps into the sweep documents.
+    CapSweep {
+        #[arg(long, num_args = 1..)]
+        rows: Vec<PathBuf>,
+        #[arg(long)]
+        out_prefix: PathBuf,
+        /// Free-text lines (load, ceiling overrides) appended verbatim.
+        #[arg(long, num_args = 0..)]
+        note: Vec<String>,
     },
     /// Diff runs into the results documents.
     Diff {
@@ -177,9 +208,67 @@ impl Variant {
     }
 }
 
+/// One arm of the class-cap sweep: production's optimizer with the
+/// kernel's own tier's rounds and these two budget dimensions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CapArm {
+    classes: usize,
+    applications: u64,
+}
+
+impl CapArm {
+    fn new(classes: usize, applications: Option<u64>) -> Self {
+        Self {
+            classes,
+            applications: applications.unwrap_or(classes as u64 * APPLICATIONS_PER_CLASS),
+        }
+    }
+
+    fn label(self) -> String {
+        format!("cap{}-app{}", self.classes, self.applications)
+    }
+
+    /// `node_count` is the legalized reachable count production keys its
+    /// tier on: the arm moves the class and application caps and leaves
+    /// the tier's round cap where production has it, so a blitz-tier space
+    /// glyph is not held to classical's 100 rounds — though at every arm,
+    /// the baseline included, its class cap is above its own tier's 500.
+    fn optimizer(self, shape: LatticeShape, node_count: usize) -> Optimizer {
+        let tier: SaturationConfig = config_for_node_count(node_count);
+        Optimizer::production()
+            .for_lattice(shape)
+            .budget(Budget::Explicit {
+                iterations: tier.max_iterations,
+                classes: self.classes,
+                applications: Some(self.applications),
+            })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Rows
 // ---------------------------------------------------------------------------
+
+/// The `saturation-telemetry` record the runtime tier printed for this
+/// compile, parsed back — the stop reason, counts and extraction objective
+/// of the saturation the production path actually ran.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct SatTelemetry {
+    node_count: usize,
+    max_iterations: usize,
+    max_classes: usize,
+    max_applications: Option<u64>,
+    stop_reason: String,
+    iterations: usize,
+    classes_at_stop: usize,
+    application_count: u64,
+    union_count: usize,
+    extracted_latency_prior_cost: u64,
+    extraction_objective: String,
+    live_classes: Option<usize>,
+    shared_pass_bytes: Option<usize>,
+    wall_clock_us: u64,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct GuardTelemetry {
@@ -274,6 +363,20 @@ struct KernelRow {
     oracle: Option<Oracle>,
     clock: Option<Clock>,
     probe: Option<SatProbe>,
+    /// `None` on rows written before the telemetry column existed, and on
+    /// `off` rows (no saturation ran).
+    #[serde(default)]
+    sat: Option<SatTelemetry>,
+    /// Peak net heap growth over optimize + emit (`alloc_probe`); `None` on
+    /// rows written before the column existed.
+    #[serde(default)]
+    peak_alloc_bytes: Option<u64>,
+    /// The `--class-cap` arm this row was taken under; `None` for
+    /// production's own tier.
+    #[serde(default)]
+    class_cap: Option<usize>,
+    #[serde(default)]
+    app_cap: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +659,8 @@ struct Compiled {
     optimize_ms: f64,
     emit_ms: f64,
     guard: Option<GuardTelemetry>,
+    sat: Option<SatTelemetry>,
+    peak_alloc_bytes: u64,
 }
 
 /// Redirect fd 2 into a file around `f` so `PIXELFLOW_GUARD_TELEMETRY`'s
@@ -602,18 +707,42 @@ fn parse_guard_telemetry(log: &str) -> Option<GuardTelemetry> {
     })
 }
 
-fn compile_via_production_path(arena: &ExprArena, root: ExprId, shape: LatticeShape) -> Compiled {
-    let t = Instant::now();
-    let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root, shape);
-    let optimize_ms = t.elapsed().as_secs_f64() * 1e3;
-    let (a, r) = optimized
-        .as_deref()
-        .map(|(a, r)| (a, *r))
-        .unwrap_or((arena, root));
-    let (linked, root) = if arena.buffers().is_empty() && arena.uniforms().is_empty() {
-        (a.clone(), r)
+/// The runtime tier's telemetry line, if the capture saw one. `on` modes
+/// must see exactly one: the harness is built with
+/// `pixelflow-search/saturation-telemetry`, and a compile that saturated
+/// without leaving its record is a compile whose stop reason is unknown.
+fn parse_sat_telemetry(log: &str) -> Option<SatTelemetry> {
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|l| l.starts_with(SAT_TELEMETRY_PREFIX))
+        .collect();
+    match lines.as_slice() {
+        [] => None,
+        [line] => {
+            Some(serde_json::from_str(line).unwrap_or_else(|e| {
+                panic!("saturation-telemetry record does not parse: {e}\n{line}")
+            }))
+        }
+        many => panic!(
+            "one compile left {} saturation-telemetry records; expected one:\n{}",
+            many.len(),
+            many.join("\n")
+        ),
+    }
+}
+
+/// Link `a`/`r` back onto the input's buffer and uniform tables, emit, and
+/// gather the emitter's and the optimizer's stderr reports into a row.
+fn emit_and_report(
+    input: &ExprArena,
+    (a, r): (ExprArena, ExprId),
+    optimize_ms: f64,
+    optimize_log: &str,
+) -> Compiled {
+    let (linked, root) = if input.buffers().is_empty() && input.uniforms().is_empty() {
+        (a, r)
     } else {
-        a.relink(r, arena.buffers(), arena.uniforms())
+        a.relink(r, input.buffers(), input.uniforms())
     };
     let t = Instant::now();
     let (result, log) = capture_stderr(|| emit::compile(&linked, root));
@@ -626,47 +755,45 @@ fn compile_via_production_path(arena: &ExprArena, root: ExprId, shape: LatticeSh
         optimize_ms,
         emit_ms,
         guard: parse_guard_telemetry(&log),
+        sat: parse_sat_telemetry(optimize_log),
+        peak_alloc_bytes: alloc_probe::peak_bytes() as u64,
     }
 }
 
-/// A [`Variant`]: the same pipeline `optimize_runtime_arena_uncached`
-/// runs, with the variant's optimizer in the saturation slot.
-fn compile_via_variant(
-    arena: &ExprArena,
-    root: ExprId,
-    shape: LatticeShape,
-    variant: Variant,
-) -> Compiled {
+fn compile_via_production_path(arena: &ExprArena, root: ExprId, shape: LatticeShape) -> Compiled {
+    alloc_probe::reset();
     let t = Instant::now();
-    let optimizer = variant.optimizer(shape);
-    let rewritten = pipeline![
-        LowerDwrt,
-        ExpandReduce,
-        Saturate::with(optimizer, Vocabulary::Runtime, Tier::Runtime)
-    ]
-    .optimize(arena, root);
+    let (optimized, log) =
+        capture_stderr(|| pixelflow_search::runtime::optimize_runtime_arena(arena, root, shape));
+    let optimize_ms = t.elapsed().as_secs_f64() * 1e3;
+    let (a, r) = optimized
+        .as_deref()
+        .map(|(a, r)| (a.clone(), *r))
+        .unwrap_or((arena.clone(), root));
+    emit_and_report(arena, (a, r), optimize_ms, &log)
+}
+
+/// An in-harness optimizer (a [`Variant`] or a [`CapArm`]): the same
+/// pipeline `optimize_runtime_arena_uncached` runs, with that optimizer in
+/// the saturation slot.
+fn compile_via_optimizer(arena: &ExprArena, root: ExprId, optimizer: Optimizer) -> Compiled {
+    alloc_probe::reset();
+    let t = Instant::now();
+    let (rewritten, log) = capture_stderr(|| {
+        pipeline![
+            LowerDwrt,
+            ExpandReduce,
+            Saturate::with(optimizer, Vocabulary::Runtime, Tier::Runtime)
+        ]
+        .optimize(arena, root)
+    });
     let optimize_ms = t.elapsed().as_secs_f64() * 1e3;
     let (a, r) = match rewritten {
         Rewritten::Changed(a, r) => (a, r),
         Rewritten::Unchanged => (arena.clone(), root),
-        Rewritten::Declined => panic!("variant pipeline declined a real kernel"),
+        Rewritten::Declined => panic!("in-harness pipeline declined a real kernel"),
     };
-    let (linked, root) = if arena.buffers().is_empty() && arena.uniforms().is_empty() {
-        (a, r)
-    } else {
-        a.relink(r, arena.buffers(), arena.uniforms())
-    };
-    let t = Instant::now();
-    let (result, log) = capture_stderr(|| emit::compile(&linked, root));
-    let emit_ms = t.elapsed().as_secs_f64() * 1e3;
-    Compiled {
-        result: result.expect("variant kernel failed to compile"),
-        linked,
-        root,
-        optimize_ms,
-        emit_ms,
-        guard: parse_guard_telemetry(&log),
-    }
+    emit_and_report(arena, (a, r), optimize_ms, &log)
 }
 
 fn with_select_hoist_rules() -> Vec<Box<dyn Rewrite>> {
@@ -953,15 +1080,10 @@ fn legalize(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
 fn saturation_probe(
     arena: &ExprArena,
     root: ExprId,
-    shape: LatticeShape,
-    variant: Option<Variant>,
+    optimizer: Optimizer,
     production_bytes: &[u8],
 ) -> SatProbe {
     let (la, lr) = legalize(arena, root);
-    let optimizer = match variant {
-        Some(v) => v.optimizer(shape),
-        None => Optimizer::production().for_lattice(shape),
-    };
     let mut optimizer = optimizer.observe(Some(Box::new(KeepJournal)));
     let mut egraph = optimizer.egraph();
     let root_class = insert(&la, lr, &mut egraph, Vocabulary::Runtime)
@@ -1030,15 +1152,17 @@ fn saturation_probe(
 // run
 // ---------------------------------------------------------------------------
 
-fn mode_label(variant: Option<Variant>) -> String {
+fn mode_label(variant: Option<Variant>, cap: Option<CapArm>) -> String {
     let env = std::env::var("PIXELFLOW_SATURATION").unwrap_or_else(|_| "on".to_string());
-    match (variant, env.as_str()) {
-        (Some(v), "on") => v.label().to_string(),
-        (Some(_), other) => {
-            panic!("--variant needs PIXELFLOW_SATURATION unset or on, got {other:?}")
+    match (variant, cap, env.as_str()) {
+        (Some(_), Some(_), _) => panic!("--variant and --class-cap are separate arms"),
+        (Some(v), None, "on") => v.label().to_string(),
+        (None, Some(c), "on") => c.label(),
+        (Some(_), None, other) | (None, Some(_), other) => {
+            panic!("an in-harness arm needs PIXELFLOW_SATURATION unset or on, got {other:?}")
         }
-        (None, "on" | "off") => env,
-        (None, other) => panic!("PIXELFLOW_SATURATION must be on or off, got {other:?}"),
+        (None, None, "on" | "off") => env,
+        (None, None, other) => panic!("PIXELFLOW_SATURATION must be on or off, got {other:?}"),
     }
 }
 
@@ -1055,6 +1179,7 @@ fn head_sha() -> String {
 struct RunArgs<'a> {
     out: &'a Path,
     variant: Option<Variant>,
+    cap: Option<CapArm>,
     no_clock: bool,
     no_probe: bool,
     filter: Option<&'a str>,
@@ -1067,6 +1192,7 @@ fn run(args: &RunArgs<'_>) {
     let RunArgs {
         out,
         variant,
+        cap,
         no_clock,
         no_probe,
         filter,
@@ -1077,7 +1203,12 @@ fn run(args: &RunArgs<'_>) {
         std::env::var_os("PIXELFLOW_GUARD_TELEMETRY").is_some(),
         "set PIXELFLOW_GUARD_TELEMETRY=1: the guard columns come from the emitter's own report"
     );
-    let mode = mode_label(variant);
+    assert!(
+        std::env::var_os("PIXELFLOW_SATURATION_TELEMETRY").is_none(),
+        "unset PIXELFLOW_SATURATION_TELEMETRY: the saturation columns are read back from the \
+         record the optimizer prints to stderr, and a file sink would take them away"
+    );
+    let mode = mode_label(variant, cap);
     let default_font = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../pixelflow-graphics/assets/DejaVuSansMono-Fallback.ttf");
     let mut kernels = real_kernels(font.unwrap_or(&default_font), filter);
@@ -1113,17 +1244,36 @@ fn run(args: &RunArgs<'_>) {
         let trips = Trips::of(rk.extent, LANES as u32);
         let started = Instant::now();
 
-        let compiled = match variant {
-            Some(v) => compile_via_variant(arena, root, shape, v),
+        let in_harness_optimizer = |shape: LatticeShape| match (variant, cap) {
+            (Some(v), None) => Some(v.optimizer(shape)),
+            (None, Some(c)) => {
+                let (la, lr) = legalize(arena, root);
+                Some(c.optimizer(shape, reachable_count(&la, lr)))
+            }
+            (None, None) => None,
+            (Some(_), Some(_)) => unreachable!("mode_label rejects both arms at once"),
+        };
+        let compiled = match in_harness_optimizer(shape) {
+            Some(optimizer) => compile_via_optimizer(arena, root, optimizer),
             None => compile_via_production_path(arena, root, shape),
         };
-        let bytes_identical_to_manifold_compile =
-            if variant.is_none() && arena.buffers().is_empty() && arena.uniforms().is_empty() {
-                let m = pixelflow_core::lattice::manifold::Manifold::compile(&rk.kernel, rk.extent);
-                Some(m.code_bytes() == compiled.result.code.as_bytes())
-            } else {
-                None
-            };
+        if mode != "off" {
+            assert!(
+                compiled.sat.is_some(),
+                "{}: saturation ran but left no telemetry record — build the harness with \
+                 --features pixelflow-search/saturation-telemetry",
+                rk.name
+            );
+        }
+        let bytes_identical_to_manifold_compile = if in_harness_optimizer(shape).is_none()
+            && arena.buffers().is_empty()
+            && arena.uniforms().is_empty()
+        {
+            let m = pixelflow_core::lattice::manifold::Manifold::compile(&rk.kernel, rk.extent);
+            Some(m.code_bytes() == compiled.result.code.as_bytes())
+        } else {
+            None
+        };
 
         let ctx = context_for(&compiled.linked, rk.cell_grid.as_ref());
         let mut buffer = vec![0.0f32; (trips.rows * trips.groups) as usize * LANES];
@@ -1148,7 +1298,9 @@ fn run(args: &RunArgs<'_>) {
             c
         });
         let probe = (!no_probe && mode != "off").then(|| {
-            saturation_probe(arena, root, shape, variant, compiled.result.code.as_bytes())
+            let optimizer = in_harness_optimizer(shape)
+                .unwrap_or_else(|| Optimizer::production().for_lattice(shape));
+            saturation_probe(arena, root, optimizer, compiled.result.code.as_bytes())
         });
 
         let row = KernelRow {
@@ -1177,6 +1329,10 @@ fn run(args: &RunArgs<'_>) {
             oracle,
             clock,
             probe,
+            sat: compiled.sat,
+            peak_alloc_bytes: Some(compiled.peak_alloc_bytes),
+            class_cap: cap.map(|c| c.classes),
+            app_cap: cap.map(|c| c.applications),
         };
         let line = serde_json::to_string(&row).expect("serialize row");
         writeln!(sink, "{line}").expect("append row");
@@ -1877,6 +2033,357 @@ fn diff(inputs: &DiffInputs<'_>, out_prefix: &Path, notes: &[String]) {
     print!("{md}");
 }
 
+// ---------------------------------------------------------------------------
+// cap-sweep: the class-cap sweep across arms
+// ---------------------------------------------------------------------------
+
+/// One `(class cap, application cap, class)` cell of the sweep.
+#[derive(Serialize, Default, Clone, Debug)]
+struct CapCell {
+    class_cap: usize,
+    app_cap: u64,
+    class: String,
+    n: usize,
+    /// Stop reasons, as the telemetry names them.
+    stops: BTreeMap<String, usize>,
+    /// Rows that stopped on the class cap in their first round — the cap
+    /// clipping the input before any rule ran.
+    class_cap_in_round_1: usize,
+    iterations_median: f64,
+    iterations_max: usize,
+    applications_median: f64,
+    applications_max: u64,
+    classes_at_stop_median: f64,
+    classes_at_stop_max: usize,
+    live_classes_max: usize,
+    shared_pass_bytes_max: usize,
+    objectives: BTreeMap<String, usize>,
+    sum_compiled_nodes: usize,
+    sum_bytes: u64,
+    sum_dag_cost: usize,
+    sum_schedule: u64,
+    sum_guarded: u64,
+    sum_selects: u64,
+    sum_spills: u64,
+    sum_optimize_ms: f64,
+    sum_emit_ms: f64,
+    peak_alloc_mb_max: f64,
+    same_form_nan_mismatch: usize,
+    same_form_max_abs: f64,
+    packed_mismatch_same: usize,
+}
+
+fn median_of<T: Copy + Into<f64>>(v: &mut [T]) -> f64 {
+    assert!(!v.is_empty(), "median of nothing");
+    v.sort_by(|a, b| (*a).into().partial_cmp(&(*b).into()).expect("finite"));
+    let n = v.len();
+    if n % 2 == 1 {
+        v[n / 2].into()
+    } else {
+        (v[n / 2 - 1].into() + v[n / 2].into()) / 2.0
+    }
+}
+
+fn cap_cell(class_cap: usize, app_cap: u64, class: &str, rows: &[&KernelRow]) -> CapCell {
+    fn sat(r: &KernelRow) -> &SatTelemetry {
+        r.sat.as_ref().unwrap_or_else(|| {
+            panic!(
+                "{}: a cap-sweep row without its saturation telemetry",
+                r.name
+            )
+        })
+    }
+    let mut cell = CapCell {
+        class_cap,
+        app_cap,
+        class: class.to_string(),
+        n: rows.len(),
+        ..CapCell::default()
+    };
+    let mut iterations = Vec::new();
+    let mut applications = Vec::new();
+    let mut classes = Vec::new();
+    for r in rows {
+        let s = sat(r);
+        *cell.stops.entry(s.stop_reason.clone()).or_default() += 1;
+        if s.stop_reason == "class_cap" && s.iterations <= 1 {
+            cell.class_cap_in_round_1 += 1;
+        }
+        iterations.push(s.iterations as u32);
+        applications.push(s.application_count as f64);
+        classes.push(s.classes_at_stop as u32);
+        cell.iterations_max = cell.iterations_max.max(s.iterations);
+        cell.applications_max = cell.applications_max.max(s.application_count);
+        cell.classes_at_stop_max = cell.classes_at_stop_max.max(s.classes_at_stop);
+        cell.live_classes_max = cell.live_classes_max.max(s.live_classes.unwrap_or(0));
+        cell.shared_pass_bytes_max = cell
+            .shared_pass_bytes_max
+            .max(s.shared_pass_bytes.unwrap_or(0));
+        *cell
+            .objectives
+            .entry(s.extraction_objective.clone())
+            .or_default() += 1;
+        cell.sum_compiled_nodes += r.compiled_nodes;
+        cell.sum_bytes += u64::from(r.bytes);
+        cell.sum_dag_cost += r.dag_cost;
+        if let Some(g) = &r.guard {
+            cell.sum_schedule += g.schedule;
+            cell.sum_guarded += g.guarded;
+            cell.sum_selects += g.selects;
+        }
+        cell.sum_spills += u64::from(r.spill_slots);
+        cell.sum_optimize_ms += r.optimize_ms;
+        cell.sum_emit_ms += r.emit_ms;
+        let peak = r
+            .peak_alloc_bytes
+            .unwrap_or_else(|| panic!("{}: a cap-sweep row without its peak", r.name));
+        cell.peak_alloc_mb_max = cell.peak_alloc_mb_max.max(peak as f64 / 1e6);
+        if let Some(o) = &r.oracle {
+            cell.same_form_nan_mismatch += o.same_form_nan_mismatch;
+            cell.same_form_max_abs = cell.same_form_max_abs.max(o.same_form_max_abs);
+            cell.packed_mismatch_same += o.packed_mismatch_same;
+        }
+    }
+    cell.iterations_median = median_of(&mut iterations);
+    cell.applications_median = median_of(&mut applications);
+    cell.classes_at_stop_median = median_of(&mut classes);
+    cell
+}
+
+fn stops_str(stops: &BTreeMap<String, usize>, n: usize) -> String {
+    stops
+        .iter()
+        .map(|(k, v)| format!("{k} {v}/{n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn signed_pct(now: f64, base: f64) -> String {
+    if base == 0.0 {
+        return "-".to_string();
+    }
+    format!("{:+.1}%", (now - base) / base * 100.0)
+}
+
+#[allow(clippy::too_many_lines)]
+fn cap_sweep(paths: &[PathBuf], out_prefix: &Path, notes: &[String]) {
+    let rows = read_rows(paths);
+    assert!(!rows.is_empty(), "no rows");
+    // (class cap, app cap, class) -> rows; a kernel appears once per arm.
+    let mut cells: BTreeMap<(usize, u64, String), Vec<&KernelRow>> = BTreeMap::new();
+    for r in &rows {
+        let (Some(c), Some(a)) = (r.class_cap, r.app_cap) else {
+            panic!("{}: not a --class-cap row (mode {})", r.name, r.mode);
+        };
+        let bucket = cells.entry((c, a, r.class.clone())).or_default();
+        assert!(
+            !bucket.iter().any(|x| x.name == r.name),
+            "{}: two rows in arm cap{c}-app{a} — merge or dedupe the inputs",
+            r.name
+        );
+        bucket.push(r);
+    }
+    let cells: Vec<CapCell> = cells
+        .iter()
+        .map(|((c, a, class), rs)| cap_cell(*c, *a, class, rs))
+        .collect();
+    let baseline_cap = cells.iter().map(|c| c.class_cap).min().expect("cells");
+    let baseline = |class: &str| -> Option<&CapCell> {
+        cells
+            .iter()
+            .find(|c| c.class_cap == baseline_cap && c.class == class)
+    };
+
+    // Per-kernel CSV: every deterministic column, one line per (arm, kernel).
+    let mut csv = String::from(
+        "kernel,class,class_cap,app_cap,tier_nodes,stop,iterations,applications,classes_at_stop,live_classes,\
+         objective,shared_pass_bytes,input_nodes,compiled_nodes,bytes,dag_cost,schedule,selects,guarded,exclusive,\
+         spill_slots,hoisted,same_form_nan_mismatch,same_form_max_abs,packed_mismatch_same,optimize_ms,emit_ms,\
+         sat_wall_ms,peak_alloc_mb,git_sha\n",
+    );
+    for r in &rows {
+        let s = r.sat.as_ref().expect("checked above");
+        let g = |f: fn(&GuardTelemetry) -> u64| r.guard.as_ref().map_or(0, f);
+        let o = r.oracle.as_ref();
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.3},{:.3},{:.3},{:.2},{}\n",
+            r.name,
+            r.class,
+            r.class_cap.expect("cap row"),
+            r.app_cap.expect("cap row"),
+            s.node_count,
+            s.stop_reason,
+            s.iterations,
+            s.application_count,
+            s.classes_at_stop,
+            opt_str(s.live_classes),
+            s.extraction_objective,
+            opt_str(s.shared_pass_bytes),
+            r.input_nodes,
+            r.compiled_nodes,
+            r.bytes,
+            r.dag_cost,
+            g(|g| g.schedule),
+            g(|g| g.selects),
+            g(|g| g.guarded),
+            g(|g| g.exclusive),
+            r.spill_slots,
+            r.hoisted,
+            opt_str(o.map(|o| o.same_form_nan_mismatch)),
+            opt_str(o.map(|o| o.same_form_max_abs)),
+            opt_str(o.map(|o| o.packed_mismatch_same)),
+            r.optimize_ms,
+            r.emit_ms,
+            s.wall_clock_us as f64 / 1e3,
+            r.peak_alloc_bytes.expect("cap row") as f64 / 1e6,
+            r.git_sha,
+        ));
+    }
+    std::fs::write(out_prefix.with_extension("csv"), csv).expect("write csv");
+
+    let mut md = String::new();
+    md.push_str("# The class-cap sweep\n\n");
+    md.push_str(
+        "Every row is one kernel compiled through the production path's three calls with the \
+         production optimizer held to `--class-cap N --app-cap M` (classical's 100 rounds; \
+         `Budget::Explicit`). Saturation columns are the optimizer's own `saturation-telemetry` \
+         record for that compile, read back from stderr; `objective` is which extraction \
+         objective produced the term (`shared` / `tree_cheaper` both ran the sharing-aware pass; \
+         `tree_only` means it was abandoned at `SHARED_DAG_PASS_BYTE_BUDGET`). Deterministic \
+         columns are the claim; `compile ms` is `optimize_ms + emit_ms` under the counting \
+         allocator and is a sign at the stated load; `peak MB` is the peak net heap growth of the \
+         compile (`alloc_probe`).\n\n",
+    );
+    for n in notes {
+        md.push_str(n);
+        md.push('\n');
+    }
+    md.push_str("\n## Per family, per arm\n\n");
+    md.push_str(
+        "| class | cap | apps | n | stop | cap in round 1 | rounds med / max | apps med / max | classes med / max | live max | objective | Σ nodes | Σ bytes (vs base) | Σ dag_cost (vs base) | Σ guarded/schedule | Σ spills | oracle NaN / max abs | Σ compile ms | peak MB |\n|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+    );
+    for c in &cells {
+        let base = baseline(&c.class);
+        md.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {} / {} | {} / {} | {} / {} | {} | {} | {} | {} ({}) | {} ({}) | {}/{} | {} | {} / {:.3e} | {:.0} | {:.1} |\n",
+            c.class,
+            c.class_cap,
+            c.app_cap,
+            c.n,
+            stops_str(&c.stops, c.n),
+            c.class_cap_in_round_1,
+            c.iterations_median,
+            c.iterations_max,
+            c.applications_median,
+            c.applications_max,
+            c.classes_at_stop_median,
+            c.classes_at_stop_max,
+            c.live_classes_max,
+            stops_str(&c.objectives, c.n),
+            c.sum_compiled_nodes,
+            c.sum_bytes,
+            base.map_or("-".into(), |b| signed_pct(c.sum_bytes as f64, b.sum_bytes as f64)),
+            c.sum_dag_cost,
+            base.map_or("-".into(), |b| signed_pct(
+                c.sum_dag_cost as f64,
+                b.sum_dag_cost as f64
+            )),
+            c.sum_guarded,
+            c.sum_schedule,
+            c.sum_spills,
+            c.same_form_nan_mismatch,
+            c.same_form_max_abs,
+            c.sum_optimize_ms + c.sum_emit_ms,
+            c.peak_alloc_mb_max,
+        ));
+    }
+
+    // Per-kernel movement against the baseline cap, per arm: which kernels
+    // got better or worse in bytes / dag_cost, and by how much.
+    md.push_str("\n## Kernels that moved against the baseline cap\n\n");
+    md.push_str(
+        "For each arm, the kernels whose emitted bytes or `dag_cost` differ from the same kernel \
+         at the baseline (smallest) cap and the same application arm where one exists, else \
+         the baseline's only arm. `+` is worse.\n\n",
+    );
+    let by_name_at_base: BTreeMap<&str, &KernelRow> = rows
+        .iter()
+        .filter(|r| r.class_cap == Some(baseline_cap))
+        .map(|r| (r.name.as_str(), r))
+        .collect();
+    let mut arms: Vec<(usize, u64)> = rows
+        .iter()
+        .map(|r| (r.class_cap.expect("cap"), r.app_cap.expect("app")))
+        .collect();
+    arms.sort_unstable();
+    arms.dedup();
+    let mut moved_json = Vec::new();
+    for (cap, app) in arms {
+        if cap == baseline_cap {
+            continue;
+        }
+        let mut better = 0usize;
+        let mut worse = 0usize;
+        let mut same = 0usize;
+        let mut lines = Vec::new();
+        for r in rows
+            .iter()
+            .filter(|r| r.class_cap == Some(cap) && r.app_cap == Some(app))
+        {
+            let Some(b) = by_name_at_base.get(r.name.as_str()) else {
+                continue;
+            };
+            let db = i64::from(r.bytes) - i64::from(b.bytes);
+            let dd = r.dag_cost as i64 - b.dag_cost as i64;
+            match (db.signum() + dd.signum()).signum() {
+                0 if db == 0 && dd == 0 => same += 1,
+                0 => {
+                    worse += 1;
+                    lines.push((r.name.clone(), db, dd));
+                }
+                1 => {
+                    worse += 1;
+                    lines.push((r.name.clone(), db, dd));
+                }
+                _ => {
+                    better += 1;
+                    lines.push((r.name.clone(), db, dd));
+                }
+            }
+        }
+        lines.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)).then(a.0.cmp(&b.0)));
+        md.push_str(&format!(
+            "### cap {cap} / apps {app}: {better} better, {worse} worse, {same} unchanged\n\n"
+        ));
+        if !lines.is_empty() {
+            md.push_str("| kernel | Δ bytes | Δ dag_cost |\n|---|---:|---:|\n");
+            for (name, db, dd) in &lines {
+                md.push_str(&format!("| {name} | {db:+} | {dd:+} |\n"));
+            }
+            md.push('\n');
+        }
+        moved_json.push(serde_json::json!({
+            "class_cap": cap, "app_cap": app, "better": better, "worse": worse, "same": same,
+            "moved": lines.iter().map(|(n, db, dd)| serde_json::json!({"kernel": n, "d_bytes": db, "d_dag_cost": dd})).collect::<Vec<_>>(),
+        }));
+    }
+
+    let json = serde_json::json!({
+        "schema": "class-cap-sweep-v1",
+        "baseline_cap": baseline_cap,
+        "notes": notes,
+        "cells": cells,
+        "movement": moved_json,
+    });
+    std::fs::write(
+        out_prefix.with_extension("json"),
+        serde_json::to_string_pretty(&json).expect("json"),
+    )
+    .expect("write json");
+    std::fs::write(out_prefix.with_extension("md"), &md).expect("write md");
+    print!("{md}");
+}
+
 fn main() {
     match Cli::parse().command {
         Command::Run {
@@ -1887,15 +2394,23 @@ fn main() {
             filter,
             skip,
             font,
+            class_cap,
+            app_cap,
         } => run(&RunArgs {
             out: &out,
             variant,
+            cap: class_cap.map(|c| CapArm::new(c, app_cap)),
             no_clock,
             no_probe,
             filter: filter.as_deref(),
             skip: &skip,
             font: font.as_deref(),
         }),
+        Command::CapSweep {
+            rows,
+            out_prefix,
+            note,
+        } => cap_sweep(&rows, &out_prefix, &note),
         Command::Diff {
             off,
             on,
