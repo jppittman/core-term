@@ -34,6 +34,8 @@ enum Pp {
 enum Map {
     /// `0F`
     M0F = 1,
+    /// `0F38`
+    M0F38 = 2,
     /// `0F3A`
     M0F3A = 3,
 }
@@ -88,11 +90,24 @@ impl Vex {
     const fn m0f3a_66(opcode: u8) -> Self {
         Self::new(Map::M0F3A, Pp::P66, opcode)
     }
+    /// Map `0F38`, `66` — the broadcast family.
+    const fn m0f38_66(opcode: u8) -> Self {
+        Self::new(Map::M0F38, Pp::P66, opcode)
+    }
 
     /// Attach an imm8 (rounding mode, shift count, lane index); the returned
     /// value emits it after the instruction.
     const fn imm(self, imm: u8) -> VexImm {
         VexImm { vex: self, imm }
+    }
+
+    /// `op reg, [addr]` — the memory-operand form, for any base and any
+    /// displacement mode. The prefix is VEX's (L=0); the ModRM/SIB/
+    /// displacement tail is the architecture's, so it comes from
+    /// [`mem_operand`]. VEX.B extends the *base* here, not an r/m register.
+    fn rm<D: Disp>(self, code: &mut Vec<u8>, reg: Reg, addr: Mem<D>) {
+        self.head(code, reg.0, UNUSED_VVVV, addr.base.0);
+        mem_operand(code, reg.0, addr);
     }
 
     /// Register-register-register form: `op reg, vvvv, rm`.
@@ -481,6 +496,33 @@ pub struct GatherScratch {
     pub value: Reg,
 }
 
+/// Bytes per pointer in the context array.
+const PTR_BYTES: i32 = 8;
+/// Bytes per value in the uniform block.
+const UNIFORM_BYTES: i32 = 4;
+
+/// `dst = splat(block[offset])` — one uniform, broadcast to every lane:
+/// `mov rax, [rdi + ctx_slot*8]` to fetch the block's base out of the
+/// context, then `vbroadcastss xmm<dst>, [rax + 4*offset]`
+/// (VEX.128.66.0F38.W0 18 /r). `rax` is the scratch the gather already
+/// claims; `rdi` is the context, read-only for the whole kernel.
+pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad) {
+    emit_load_ptr_from_ctx(
+        code,
+        gpr::RAX.0,
+        gpr::RDI.0,
+        i32::from(load.ctx_slot) * PTR_BYTES,
+    );
+    Vex::m0f38_66(0x18).rm(
+        code,
+        dst,
+        Mem {
+            base: gpr::RAX,
+            disp: Imm32(i32::from(load.offset) * UNIFORM_BYTES),
+        },
+    );
+}
+
 /// `dst = base[idx_lane]` for each lane — the whole gather sequence.
 ///
 /// `idx` holds the *float* indices (the lowering already clamped them in
@@ -556,27 +598,14 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     emit_vroundps(code, dst, src, 0); // round to nearest (even)
 }
 
-/// Fixed scratch outside the allocatable range / reload regs: used for the
-/// binary two-operand hazard and as the select blend temp. The AVX2 and
-/// AVX-512 backends spell the same role `UNARY_SCRATCH`.
-const X86_SCRATCH: Reg = Reg(10);
-
-/// The gather's truncated-index lanes and loaded-value register.
-///
-/// `GATHER_IDX` was `xmm13` — the same register as `select_reload`, safe only
-/// because a gather and a `Select`'s operand reload never occur in one
-/// instruction. Declared in `SSE2_FILE.fixed` now, so `RegisterFile::checked`
-/// proves the separation instead of a comment asserting it.
-pub(crate) const GATHER_IDX: Reg = Reg(15);
-pub(crate) const GATHER_VALUE: Reg = Reg(14);
-
 /// `dst = mask ? if_true : if_false` (bit-select; mask already in `dst`, same
-/// convention as AVX2/AVX-512). The blend temp is this backend's fixed
-/// scratch, which the register file keeps outside the allocatable range —
-/// so it is the encoder's to spend, not a parameter for the caller to get
-/// right.
-pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
-    let tmp = X86_SCRATCH;
+/// convention as AVX2/AVX-512).
+///
+/// `tmp` is the allocator's temp for this instruction, which it picks disjoint
+/// from the destination and every operand — the `debug_assert` restates that
+/// here, where the blend would otherwise read back its own scratch.
+pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg, tmp: Option<Reg>) {
+    let tmp = super::declared_temp(tmp);
     debug_assert!(tmp.0 != dst.0 && tmp.0 != if_true.0 && tmp.0 != if_false.0);
     emit_vandps(code, tmp, dst, if_true); // tmp = mask & if_true
     emit_vandnps(code, dst, dst, if_false); // dst = ~mask & if_false
@@ -587,8 +616,35 @@ pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
 // High-level dispatch
 // =============================================================================
 
-/// Emit unary operation
-pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: Reg) {
+/// How many registers this backend's encodings need beyond their operands.
+///
+/// On more ops than the VEX/EVEX tiers, because SSE2's two-operand form has
+/// no non-destructive spelling: `Neg`/`Abs` build a sign mask, the select
+/// blends through a temporary, and `MulAdd` — which this tier has no
+/// instruction for — multiplies into one before adding.
+pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
+    use super::ScheduledOp;
+    match op {
+        ScheduledOp::Unary(OpKind::Neg | OpKind::Abs, _) => 1,
+        ScheduledOp::Ternary(OpKind::Select, ..) => 1,
+        // `FusedMulAdd` here is a `movaps`/`mulps`/`addps` stand-in: the
+        // product needs somewhere to live that is neither `dst` (which already
+        // holds the addend) nor an operand. The decomposed form needs none,
+        // but which of the two a node gets is decided at emit time by whether
+        // its multiplicands are resident, so the demand is stated for both.
+        ScheduledOp::Ternary(OpKind::MulAdd, ..) => 1,
+        // The gather truncates the float indices into one vector register and
+        // loads each element through another.
+        ScheduledOp::Gather(..) => 2,
+        _ => 0,
+    }
+}
+
+/// `dst = op(src)`.
+///
+/// `temp` is the allocator's temp for this instruction; only `Neg` and `Abs`
+/// use it, to hold the sign mask they XOR or AND with.
+pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, temp: Option<Reg>) {
     match op {
         OpKind::Sqrt => emit_sqrtps(code, dst, src),
         OpKind::Rsqrt => {
@@ -599,14 +655,14 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: R
 
         // Negation: flip the sign bit (dst = src XOR 0x80000000).
         OpKind::Neg => {
-            let mask = scratch;
+            let mask = super::declared_temp(temp);
             emit_f32_const(code, mask, f32::from_bits(0x8000_0000));
             emit_vxorps(code, dst, src, mask);
         }
 
         // Absolute value: clear the sign bit (dst = src AND 0x7FFFFFFF).
         OpKind::Abs => {
-            let mask = scratch;
+            let mask = super::declared_temp(temp);
             emit_f32_const(code, mask, f32::from_bits(0x7FFF_FFFF));
             emit_vandps(code, dst, src, mask);
         }
@@ -874,23 +930,31 @@ pub(crate) mod driver {
 
     /// The SSE2 register file (xmm, 128-bit).
     ///
-    /// SysV has no callee-saved XMM registers, so every register past the inputs
-    /// is fair game; the pool stops at xmm9 to leave xmm10 as the two-operand
-    /// hazard/select temp, xmm11-12 for reloads, and xmm13-15 for builtins.
+    /// SysV has no callee-saved XMM registers, so every register past the
+    /// inputs is fair game — and every one of them is now the allocator's.
     pub(crate) const SSE2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
-        // xmm4-9. Every other xmm is spoken for: inputs 0-3, X86_SCRATCH,
-        // the reload pair, select_reload, and the gather's two registers.
-        // A sixteen-register file with no slack — which the accounting below
-        // now states rather than leaves implicit.
-        scratch: regalloc::RegSet::range(4, 6),
-        reload: [Reg(11), Reg(12)],
-        // xmm13: builtin scratch, unused by `emit_select` (whose internal temp is
-        // X86_SCRATCH/xmm10) and by the reload path (movups / RIP-relative consts
-        // touch no scratch).
-        select_reload: Reg(13),
-        // xmm10: the two-operand form's temp and the Select blend's temp.
-        fixed: &[super::X86_SCRATCH, super::GATHER_VALUE, super::GATHER_IDX],
+        // xmm4-15: twelve of sixteen, which is every register the ABI does
+        // not use for an argument. xmm11 and xmm12 are the last two to join —
+        // they were `reload`, held out of every kernel's pool so that a
+        // spilled operand had somewhere to land and a spilled destination had
+        // somewhere to be computed. Both are per-instruction reservations now
+        // (`Scratch::reload`), as xmm13 (`select_reload`), xmm14/15 (the
+        // gather's) and xmm10 (the sign mask, the select blend, the `MulAdd`
+        // stand-in's product) became before them.
+        scratch: regalloc::RegSet::range(4, 12),
+        // Nothing. This was the last backend holding a register for its own
+        // encodings, and the one that held it for a *register* rather than an
+        // op: `emit_binary_safe` stashed `right` whenever the allocator chose
+        // `dst == right` for a non-commutative binary. It never does — see the
+        // invariant `resolve_operands` states — so the case was not a demand
+        // to reserve for but a fallback for something that cannot happen, and
+        // the three real demands are `temps_for` answers.
+        fixed: &[],
+        temps_for: super::temps_for,
+        // A guard reduces its mask with `movmskps` into the flags, which costs
+        // no vector register at all.
+        guard_temps: 0,
         vector_bytes: 16,
     }
     .checked();
@@ -918,30 +982,6 @@ pub(crate) mod driver {
             ));
         }
         Ok(disp as i8)
-    }
-
-    /// `dst = left op right` honoring SSE's two-operand form for *any* register
-    /// assignment from the allocator.
-    ///
-    /// `emit_binary` computes `dst <- left; dst op= right`, which corrupts `right`
-    /// when `dst == right` and `dst != left`. The allocator may assign `dst ==
-    /// right`, so handle it: swap for commutative ops, otherwise stash `right` in
-    /// the fixed scratch.
-    fn emit_binary_safe(code: &mut Vec<u8>, op: OpKind, dst: Reg, left: Reg, right: Reg) {
-        use super::*;
-        let commutative = matches!(
-            op,
-            OpKind::Add | OpKind::Mul | OpKind::Min | OpKind::Max | OpKind::Eq | OpKind::Ne
-        );
-        if dst == left || dst != right {
-            emit_binary(code, op, dst, left, right);
-        } else if commutative {
-            emit_binary(code, op, dst, right, left);
-        } else {
-            emit_movaps(code, X86_SCRATCH, right);
-            emit_movaps(code, dst, left);
-            emit_binary(code, op, dst, dst, X86_SCRATCH);
-        }
     }
 
     /// x86-64 implementation of the shared driver's leaf operations.
@@ -1036,7 +1076,7 @@ pub(crate) mod driver {
                     emit_const(code, *dst, f32::from_bits(*val_bits));
                 }
                 ResolvedOp::Unary { op, dst, src } => {
-                    emit_unary(code, *op, *dst, *src, X86_SCRATCH);
+                    emit_unary(code, *op, *dst, *src, plan.scratch.temp(0));
                 }
                 ResolvedOp::ShiftImm {
                     op,
@@ -1052,8 +1092,6 @@ pub(crate) mod driver {
                     // base pointers) is caller-provided in rdi and never touched by
                     // arithmetic/const emission, so it survives to here; rax/rcx
                     // are caller-saved and unused by the rest of the body.
-                    // Both vector scratch registers are outside the allocatable
-                    // range and the reload pair (see X86_SCRATCH).
                     super::emit_gather_scalar(
                         code,
                         *dst,
@@ -1063,33 +1101,38 @@ pub(crate) mod driver {
                             base_gpr: 0,  // rax
                             index_gpr: 1, // rcx
                             ctx_gpr: 7,   // rdi
-                            idx_lanes: super::GATHER_IDX,
-                            value: super::GATHER_VALUE,
+                            idx_lanes: crate::emit::declared_temp(plan.scratch.temp(0)),
+                            value: crate::emit::declared_temp(plan.scratch.temp(1)),
                         },
                     );
+                }
+                ResolvedOp::Uniform { dst, load } => {
+                    super::emit_uniform_load(code, *dst, *load);
                 }
                 ResolvedOp::Binary {
                     op,
                     dst,
                     left,
                     right,
-                } => emit_binary_safe(code, *op, *dst, *left, *right),
+                } => emit_binary(code, *op, *dst, *left, *right),
                 ResolvedOp::Select {
                     dst,
                     if_true,
                     if_false,
                 } => {
                     // setup_mov already placed the mask in `dst`; blend in place.
-                    emit_select(code, *dst, *if_true, *if_false);
+                    emit_select(code, *dst, *if_true, *if_false, plan.scratch.temp(0));
                 }
                 ResolvedOp::FusedMulAdd { dst, a, b } => {
                     // No hardware FMA assumed: `dst` already holds c (setup_mov);
-                    // compute a*b in the fixed scratch, then add. a,b are never
-                    // X86_SCRATCH (allocator/reload regs), and `a` is copied out
-                    // before any write, so c==a / c==b are handled.
-                    emit_movaps(code, X86_SCRATCH, *a);
-                    emit_binary(code, OpKind::Mul, X86_SCRATCH, X86_SCRATCH, *b);
-                    emit_binary(code, OpKind::Add, *dst, *dst, X86_SCRATCH);
+                    // compute a*b in this instruction's temp, then add. The
+                    // temp is disjoint from `a`, `b` and `dst` by construction,
+                    // and `a` is copied out before any write, so c==a / c==b
+                    // are handled.
+                    let product = crate::emit::declared_temp(plan.scratch.temp(0));
+                    emit_movaps(code, product, *a);
+                    emit_binary(code, OpKind::Mul, product, product, *b);
+                    emit_binary(code, OpKind::Add, *dst, *dst, product);
                 }
                 ResolvedOp::DecomposedMulAdd {
                     dst,
@@ -1099,7 +1142,11 @@ pub(crate) mod driver {
                     c_deferred,
                 } => {
                     // dst = a*b, reload c (after the multiply, if deferred), dst += c.
-                    emit_binary_safe(code, OpKind::Mul, *dst, *a, *b);
+                    // Both destructive two-operand forms are safe by the
+                    // invariant `resolve_operands` states: this shape is only
+                    // chosen when both multiplicands are spilled, so `a` was
+                    // reloaded into `dst`, and the add's left operand is `dst`.
+                    emit_binary(code, OpKind::Mul, *dst, *a, *b);
                     match c_deferred {
                         Some(DeferredReload::FromStack(off)) => {
                             self.spill_load(code, *c, *off);
@@ -1109,11 +1156,8 @@ pub(crate) mod driver {
                         }
                         None => {}
                     }
-                    emit_binary_safe(code, OpKind::Add, *dst, *dst, *c);
+                    emit_binary(code, OpKind::Add, *dst, *dst, *c);
                 }
-            }
-            if let Some(store) = &plan.store {
-                self.spill_store(code, store.src, store.offset);
             }
             Ok(())
         }
@@ -1152,13 +1196,27 @@ pub(crate) mod driver {
             }
         }
 
-        fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        /// `_scratch` is unused: this tier's guard reduces the mask with
+        /// `movmskps`/`kortest` into the flags, needing no vector register.
+        fn emit_skip_if_all_false(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            _scratch: Option<Reg>,
+        ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_test_eax(code);
             super::je(code).field() // ZF set when eax == 0 (all lanes false)
         }
 
-        fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        /// `_scratch` is unused: this tier's guard reduces the mask with
+        /// `movmskps`/`kortest` into the flags, needing no vector register.
+        fn emit_skip_if_all_true(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            _scratch: Option<Reg>,
+        ) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_cmp_eax_imm8(code, 0x0F);
             super::je(code).field() // ZF set when eax == 0xF (all lanes true)
@@ -1347,6 +1405,10 @@ pub mod gpr {
     pub const RDX: Gpr = Gpr(2);
     /// 2nd integer argument: the output pointer, advanced per batch.
     pub const RSI: Gpr = Gpr(6);
+    /// 1st integer argument: the context pointer — the array of bound buffer
+    /// bases and the uniform block a gather or a uniform load reads its
+    /// slot from. Read-only for the whole kernel.
+    pub const RDI: Gpr = Gpr(7);
     /// The stack pointer.
     pub const RSP: Gpr = Gpr(4);
     /// 5th integer argument: row-skip in bytes.

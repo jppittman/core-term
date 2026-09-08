@@ -93,8 +93,16 @@ pub struct SaturationInvocation<'a> {
     /// another machine; a wall-clock ceiling exists on the optimizer but
     /// panics rather than truncating, so it can never be a stop reason.
     pub stats: &'a OptimizerStats,
-    /// Class merges journalled during the run
-    /// (`Provenance::union_count`) — never inferred from the stats above.
+    /// Class merges saturation performed
+    /// ([`OptimizerStats::unions`], itself `SaturationStats::total_unions`) —
+    /// counted unconditionally, so this feature never needs
+    /// `provenance-journal` to compile. Was sourced from
+    /// `Provenance::union_count()` (the journal) as an independent
+    /// cross-check; that made the always-on `saturation-telemetry` feature
+    /// transitively require the journal, which
+    /// docs/plans/2026-09-01-production-budget-determinism.md rules out —
+    /// `pixelflow-compiler` and `core-term` must be able to enable
+    /// `saturation-telemetry` without pulling `provenance-journal` in.
     pub union_count: usize,
     /// The arena and root this invocation extracted, so [`record`] can cost
     /// it under the static latency-prior model independently of whatever
@@ -216,9 +224,11 @@ fn latency_prior_cost(arena: &ExprArena, root: ExprId) -> usize {
             | ExprNode::Binary(op, _, _)
             | ExprNode::Ternary(op, _, _, _)
             | ExprNode::Nary(op, _, _) => Some(*op),
-            ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => {
-                None
-            }
+            ExprNode::Var(_)
+            | ExprNode::Const(_)
+            | ExprNode::Param(_)
+            | ExprNode::Buffer(_)
+            | ExprNode::Uniform(_) => None,
         };
         if let Some(op) = op {
             total += costs.cost(op);

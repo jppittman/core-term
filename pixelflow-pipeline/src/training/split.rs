@@ -198,6 +198,17 @@ pub struct SplitManifest {
     /// Names of the real production kernels in FINAL (resolved to arena
     /// builders by the corpus build; an unknown name is a build-time panic).
     pub final_kernels: Vec<String>,
+    /// Named DEV-only out-of-distribution families
+    /// (`[dev] families = [...]`), entered the same way `final_kernels`
+    /// enters FINAL: a mechanically real generator built once per name, not
+    /// a `(band, seed)` draw stream from the shared `BwdGenerator`
+    /// (docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md
+    /// §3, "Out-of-distribution families"). Optional — a manifest that
+    /// declares none parses with an empty list. `families` is accepted only
+    /// under `[dev]`; the key is unknown (and therefore rejected) under
+    /// `[train]` or `[final]`, and a name may not repeat within the list or
+    /// collide with a `[final]` kernel name.
+    pub dev_families: Vec<String>,
 }
 
 impl SplitManifest {
@@ -217,6 +228,7 @@ impl SplitManifest {
             dev: raw.tier("dev")?,
             final_tier: raw.tier("final")?,
             final_kernels: raw.final_kernels()?,
+            dev_families: raw.dev_families()?,
         };
         manifest.validate()?;
         Ok(manifest)
@@ -308,6 +320,27 @@ impl SplitManifest {
             }
         }
 
+        // dev_families: no name repeats within the list, and no name
+        // collides with a [final] kernel — both are "named entry" pathways
+        // outside the band/seed system, so a shared name would be ambiguous
+        // about which generator/tier it identifies.
+        let mut seen_families = HashSet::new();
+        for name in &self.dev_families {
+            if !seen_families.insert(name.as_str()) {
+                return Err(SplitError::new(format!(
+                    "section [dev] lists family \"{name}\" twice"
+                )));
+            }
+        }
+        for name in &self.dev_families {
+            if seen_kernels.contains(name.as_str()) {
+                return Err(SplitError::new(format!(
+                    "\"{name}\" is both a [dev] family and a [final] kernel — cross-tier \
+                     duplicate: a named entry must belong to exactly one tier"
+                )));
+            }
+        }
+
         // Cross-tier disjointness: a family claimable by two tiers is
         // leakage by construction.
         for (i, &a) in Tier::ALL.iter().enumerate() {
@@ -345,6 +378,7 @@ struct RawSection {
     bands: Option<Vec<usize>>,
     seeds: Option<Vec<SeedRange>>,
     kernels: Option<Vec<String>>,
+    families: Option<Vec<String>>,
 }
 
 struct RawManifest {
@@ -390,6 +424,14 @@ impl RawManifest {
             .kernels
             .clone()
             .ok_or_else(|| SplitError::new("section [final] is missing `kernels`"))
+    }
+
+    /// `[dev] families`, or an empty list when the manifest declares none —
+    /// unlike `kernels`, this key is optional: most manifests (every test
+    /// fixture, and every manifest predating round 1b) name no OOD family
+    /// at all.
+    fn dev_families(&self) -> Result<Vec<String>, SplitError> {
+        Ok(self.dev.families.clone().unwrap_or_default())
     }
 }
 
@@ -482,6 +524,18 @@ fn parse_sections(text: &str) -> Result<RawManifest, SplitError> {
                 section.kernels = Some(
                     parse_string_list(value)
                         .map_err(|e| SplitError::at_line(lineno, format!("kernels: {e}")))?,
+                );
+            }
+            "families" if section_name == "dev" => {
+                if section.families.is_some() {
+                    return Err(SplitError::at_line(
+                        lineno,
+                        "duplicate key `families` in [dev]".to_string(),
+                    ));
+                }
+                section.families = Some(
+                    parse_string_list(value)
+                        .map_err(|e| SplitError::at_line(lineno, format!("families: {e}")))?,
                 );
             }
             other => {
@@ -1169,5 +1223,137 @@ kernels = ["swirl"]
     fn tier_ordering_reflects_sacredness() {
         assert!(Tier::Train < Tier::Dev);
         assert!(Tier::Dev < Tier::Final);
+    }
+
+    // ── [dev] families (round 1b, plan §6 step 1) ───────────────────────────
+
+    #[test]
+    fn manifest_without_families_key_parses_with_an_empty_list() {
+        let m = SplitManifest::parse(VALID).expect("families is optional");
+        assert!(m.dev_families.is_empty());
+    }
+
+    #[test]
+    fn dev_families_key_parses() {
+        let text = r#"
+[train]
+bands = [0]
+seeds = [[0, 7]]
+[dev]
+bands = [1]
+seeds = [[0, 7]]
+families = ["sh", "bezier"]
+[final]
+bands = [2]
+seeds = [[0, 0]]
+kernels = ["swirl"]
+"#;
+        let m = SplitManifest::parse(text).expect("valid dev families must parse");
+        assert_eq!(m.dev_families, vec!["sh", "bezier"]);
+    }
+
+    #[test]
+    fn families_key_under_train_is_rejected() {
+        let text = r#"
+[train]
+bands = [0]
+seeds = [[0, 7]]
+families = ["sh"]
+[dev]
+bands = [1]
+seeds = [[0, 7]]
+[final]
+bands = [2]
+seeds = [[0, 0]]
+kernels = ["swirl"]
+"#;
+        let err = SplitManifest::parse(text).expect_err("families under [train] must be rejected");
+        assert!(err.to_string().contains("unknown key"), "got: {err}");
+    }
+
+    #[test]
+    fn families_key_under_final_is_rejected() {
+        let text = r#"
+[train]
+bands = [0]
+seeds = [[0, 7]]
+[dev]
+bands = [1]
+seeds = [[0, 7]]
+[final]
+bands = [2]
+seeds = [[0, 0]]
+kernels = ["swirl"]
+families = ["sh"]
+"#;
+        let err = SplitManifest::parse(text).expect_err("families under [final] must be rejected");
+        assert!(err.to_string().contains("unknown key"), "got: {err}");
+    }
+
+    #[test]
+    fn duplicate_dev_family_is_rejected() {
+        let text = r#"
+[train]
+bands = [0]
+seeds = [[0, 7]]
+[dev]
+bands = [1]
+seeds = [[0, 7]]
+families = ["sh", "sh"]
+[final]
+bands = [2]
+seeds = [[0, 0]]
+kernels = ["swirl"]
+"#;
+        let err = SplitManifest::parse(text).expect_err("duplicate family must be rejected");
+        assert!(
+            err.to_string().contains("family \"sh\" twice"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn dev_family_colliding_with_a_final_kernel_name_is_rejected() {
+        let text = r#"
+[train]
+bands = [0]
+seeds = [[0, 7]]
+[dev]
+bands = [1]
+seeds = [[0, 7]]
+families = ["swirl"]
+[final]
+bands = [2]
+seeds = [[0, 0]]
+kernels = ["swirl"]
+"#;
+        let err = SplitManifest::parse(text)
+            .expect_err("a dev family sharing a name with a final kernel must be rejected");
+        assert!(
+            err.to_string().contains("cross-tier duplicate"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn checked_in_manifest_registers_the_sh_ood_family() {
+        let text = include_str!("../../corpus_split.toml");
+        let m = SplitManifest::parse(text).expect("checked-in manifest must be valid");
+        assert!(
+            m.dev_families.contains(&"sh".to_string()),
+            "round 1b registers `sh` as a DEV-only OOD family: {:?}",
+            m.dev_families
+        );
+    }
+
+    #[test]
+    fn checked_in_manifest_registers_the_bezier_ood_family() {
+        let text = include_str!("../../corpus_split.toml");
+        let m = SplitManifest::parse(text).expect("checked-in manifest must be valid");
+        assert!(
+            m.dev_families.contains(&"bezier".to_string()),
+            "round 1b registers `bezier` as the polynomial-only DEV-only OOD control family: {:?}",
+            m.dev_families
+        );
     }
 }

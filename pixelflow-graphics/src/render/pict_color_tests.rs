@@ -12,9 +12,9 @@
 //!
 //! 2. **Render-pipeline cross-check** — treat `(R, G, B)` as factors and, for
 //!    each generated color, compare the two independent implementations of
-//!    "what pixel is this color": the direct `u32::from(Color)` pack and the
-//!    full pull-based manifold render through the SIMD backend
-//!    (`materialize_discrete`). They must agree bit-for-bit.
+//!    "what pixel is this color": the direct `u32::from(Color)` scalar pack
+//!    and the JIT pack inside a compiled scene, which shifts and ors integer
+//!    lanes in the kernel. They must agree bit-for-bit.
 //!
 //! Color packing is a natural fit for combinatorial testing: channel order and
 //! endianness bugs are exactly the kind of 2-way interaction PICT targets, and
@@ -22,20 +22,23 @@
 //! enumerate.
 
 use super::color::{Bgra8, Color, Rgba8};
+use super::frame::Frame;
 use super::pict::pairwise;
 use super::pixel::Pixel;
-use pixelflow_core::{materialize_discrete, PARALLELISM};
+use super::scene::constant_scene_for;
 
 /// Representative channel values: the byte-range boundaries plus the midpoint
 /// split (127/128) where rounding and sign handling tend to break.
 const LEVELS: [u8; 8] = [0, 1, 64, 127, 128, 191, 254, 255];
 
-/// Render a color through the full pull-based manifold pipeline and return the
-/// first lane's packed pixel (RGBA byte order: `0xAABBGGRR`).
+/// Render a color through the full compiled-scene pipeline — four constant
+/// channel kernels, packed to `Rgba8`'s byte lanes by the kernel itself — and
+/// return the first pixel's packed word (RGBA byte order: `0xAABBGGRR`).
 fn render_color(color: Color) -> u32 {
-    let mut out = vec![0u32; PARALLELISM];
-    materialize_discrete(&color, 0.0, 0.0, &mut out);
-    out[0]
+    let (r, g, b, a) = color.to_f32_rgba();
+    let mut frame = Frame::<Rgba8>::new(4, 1);
+    constant_scene_for::<Rgba8>([r, g, b, a], [4, 1]).render(&mut frame, 1);
+    frame.data[0].0
 }
 
 fn channels(packed: u32) -> (u8, u8, u8, u8) {

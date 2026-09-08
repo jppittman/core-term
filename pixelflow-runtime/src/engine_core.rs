@@ -1,6 +1,6 @@
 //! `EngineCore` — the pure decision logic behind `EngineHandler` (`engine_troupe.rs`).
 //!
-//! Mirrors the `VsyncCore`/`RasterCore`/`CoordinatorCore` split: a `step_*` call takes a message
+//! Mirrors the `VsyncCore`/`RenderCore`/`CoordinatorCore` split: a `step_*` call takes a message
 //! and **returns** what to emit, so the app/vsync/driver relays left once rendering moved to its
 //! own node (`coordinator_node.rs`, step 5c of
 //! `docs/designs/pixelflow-runtime-engine-mesh-migration.md`) are table-testable with no
@@ -9,7 +9,7 @@
 //!
 //! # What left
 //!
-//! The render coordinator (`RenderCoordinator`, `frame_number`, and the `rasterizer`/
+//! The render coordinator (`RenderCoordinator`, `frame_number`, and the `renderer`/
 //! `driver_data`/`vsync_data` ports that used to carry its decisions) is gone from here
 //! entirely — it runs as its own `Node` now, on the same green-host thread as vsync. What
 //! remains is a single relay port, `coordinator`: every input that used to drive `self.render`
@@ -37,11 +37,11 @@ pub(crate) struct EngineOut {
     pub(crate) driver_mgmt: Option<DisplayMgmt>,
     pub(crate) vsync_control: Option<VsyncCommand>,
     /// → the render coordinator's data lane (`coordinator_node.rs`). Replaces the old
-    /// `rasterizer`/`driver_data`/`vsync_data` ports outright: this type relays a decision, the
+    /// `renderer`/`driver_data`/`vsync_data` ports outright: this type relays a decision, the
     /// coordinator makes it and owns the ports those decisions used to ride.
     pub(crate) coordinator: Option<CoordinatorData>,
     /// Run the shutdown cascade: the green host (vsync + the coordinator node it also runs),
-    /// the rasterizer forwarder, app-drop, driver, self.
+    /// the renderer forwarder, app-drop, driver, self.
     pub(crate) quit: bool,
 }
 
@@ -332,14 +332,16 @@ mod tests {
 
     use super::*;
     use crate::display::messages::{Generation, Surface, Window, WindowMeta};
-    use crate::platform::ColorCube;
     use std::time::{Duration, Instant};
+
+    /// The lattice the fixture scene is compiled for. These tests never bake
+    /// it — they assert which port fired, not what reached a buffer — so it
+    /// only has to be a legal frame; the windows they grant are this size.
+    const FIXTURE_FRAME: [u32; 2] = [100, 100];
 
     /// A constant black scene — these tests care about which port fires, not what is drawn.
     fn manifold() -> pixelflow_graphics::render::scene::Scene {
-        pixelflow_graphics::render::scene::Scene::Surface(std::sync::Arc::new(
-            ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32),
-        ))
+        crate::testing::black_scene(FIXTURE_FRAME)
     }
 
     fn surface(width_px: u32, height_px: u32) -> Surface {

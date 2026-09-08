@@ -82,8 +82,4 @@ default = []
 [dev-dependencies]
 anyhow = "1.0"
 env_logger = "0.11"
-pixelflow-compiler = { path = "../pixelflow-compiler" }
-# The kernel macros expand into code that constructs IR values, so any crate
-# invoking them names the IR crate directly. Tests and examples only, here.
-pixelflow-ir = { path = "../pixelflow-ir" }
 pixelflow-codegen = { path = "../pixelflow-codegen" }

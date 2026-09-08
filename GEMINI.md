@@ -8,8 +8,8 @@
 
 ### Core Philosophy
 1.  **Pull-based Rendering:** Pixels are sampled, not pushed. The system asks "what color is this pixel?", eliminating overdraw and complex rasterization state.
-2.  **SIMD as Algebra:** The `Field` type wraps SIMD vectors (AVX-512, SSE2, NEON) transparently. Users write algebraic equations, and the compiler emits optimal vectorized assembly.
-3.  **Manifold Abstraction:** Everything is a `Manifold`—a domain-generic function `Manifold<P> { fn eval(&self, p: P) -> Output }` from a coordinate domain `P` to a value (e.g. `(Field, Field)` for 2D, so a kernel never pays for dimensions it doesn't use). Composing manifolds creates complex scenes that are compiled into fused kernels. **Writing manifolds by hand is a legacy pattern** — the intended way to write PixelFlow code is the `kernel!` macro, which compiles expressions through an e-graph optimizer and codegen pipeline.
+2.  **SIMD as Algebra:** `Field` — one SIMD batch (AVX-512, SSE2, NEON) — is `pub(crate)` inside `pixelflow-core` and is never named outside it. Users write algebraic equations as `Kernel` values; the compiler owns the loop nest and emits vectorized assembly.
+3.  **The Kernel/Lattice Abstraction:** A `Kernel` is an immutable handle to an `ExprArena` fragment — the language's one runtime value, JIT-first from the start. `Manifold::compile` specializes a `Kernel` at a lattice's shape, and `Lattice::collapse` is the one verb that produces numbers. There is no type-level combinator tier to write by hand any more — that tier (manifolds as zero-sized expression templates evaluated one SIMD batch at a time) was retired by [A Kernel with a Lattice](docs/plans/2026-09-06-kernel-with-a-lattice.md). The intended way to write PixelFlow code is the `kernel!` macro, which compiles expressions through an e-graph optimizer and codegen pipeline.
 4.  **Zero Allocations:** The rendering loop is designed to have zero heap allocations per frame.
 
 ## Workspace Structure
@@ -17,9 +17,10 @@
 The project is a Rust workspace with the following key members:
 
 *   **`core-term`**: The terminal emulator application. (First consumer)
-*   **`pixelflow-core`**: Pure algebra, `Field`, `Manifold` traits. `no_std`, SIMD backend implementations.
+*   **`pixelflow-core`**: Lattices, the compiled `Manifold`, `collapse`, and the cell grid. `no_std`, SIMD backend implementations (`Field` is `pub(crate)`, never named outside this crate).
 *   **`pixelflow-compiler`**: Proc-macro compiler for the `kernel!` macro (lexer, parser, sema, codegen).
-*   **`pixelflow-ir`**: Shared IR (`ExprArena`, `OpKind`, backend execution traits).
+*   **`pixelflow-ir`**: Shared IR (`ExprArena`, `OpKind`, backend execution traits, the `Kernel` value/AST).
+*   **`pixelflow-codegen`**: Per-ISA emitters (x86-64, aarch64), register allocation, executable memory, and the JIT compile cache — expression graphs to machine code.
 *   **`pixelflow-search`**: E-graph optimization — rewrite rules, saturation, cost-model extraction.
 *   **`pixelflow-pipeline`**: Cost-model tooling (JIT bench harness, corpus generation, extraction benchmarks).
 *   **`pixelflow-graphics`**: Rendering logic, colors, fonts, rasterization.

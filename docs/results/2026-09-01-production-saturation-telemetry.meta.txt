@@ -1,0 +1,5 @@
+kernels	193
+ref_mult	4
+kernel_ceiling_s	1200
+load_start	load averages: 6.95 7.80 8.35
+load_end	load averages: 6.31 6.81 8.88

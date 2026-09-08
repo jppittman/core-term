@@ -3,13 +3,20 @@
 //! Run with: cargo bench -p pixelflow-graphics
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use pixelflow_core::Lattice;
-use pixelflow_graphics::fonts::{text, CachedText, Font, GlyphCache};
-use pixelflow_graphics::render::color::{Grayscale, Rgba8};
-use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_core::{Kernel, Lattice, Manifold};
+use pixelflow_graphics::fonts::{text, text_union, CachedText, Font, GlyphCache};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
+
+/// `text`/`text_union` return convention-agnostic kernels (raw glyph space);
+/// the pixel-center convention is a contramap the caller applies, same as a
+/// raw glyph kernel would.
+fn pixel_centered(k: &Kernel) -> Kernel {
+    k.at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    )
+}
 
 // ============================================================================
 // PixelFlow Kernel Rendering Benchmarks
@@ -24,11 +31,8 @@ fn bench_pixelflow_single_char(c: &mut Criterion) {
     // measure the tabulation (the per-frame cost).
     for (label, ch) in [("A_linear", 'A'), ("O_quadratic", 'O'), ("S_complex", 'S')] {
         group.bench_function(label, |b| {
-            let kernel = text(&font, &ch.to_string(), 32.0);
-            let lattice = Lattice {
-                extent: [40, 45, 1, 1],
-                origin: [0.5, 0.5, 0.0, 0.0],
-            };
+            let kernel = pixel_centered(&text(&font, &ch.to_string(), 32.0));
+            let lattice = Lattice::frame(40, 45);
 
             b.iter(|| black_box(lattice.bake(black_box(&kernel))));
         });
@@ -37,21 +41,39 @@ fn bench_pixelflow_single_char(c: &mut Criterion) {
     group.finish();
 }
 
+/// Long enough that `take(n)` is `n` characters for every length benchmarked.
+/// It used to be the 26-letter alphabet, so `text_sizes/50` rendered 26
+/// characters over a 50-character frame and its curve was not the flattening
+/// it appeared to be.
+const SPECIMEN: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\
+                        0123456789 The quick brown fox jumps over the lazy dog";
+
 fn bench_pixelflow_text_sizes(c: &mut Criterion) {
     let mut group = c.benchmark_group("pixelflow_text_sizes");
     let font = Font::parse(FONT_DATA).unwrap();
 
     for length in [5, 10, 26, 50] {
-        let text_str: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".chars().take(length).collect();
+        let text_str: String = SPECIMEN.chars().take(length).collect();
+        assert_eq!(
+            text_str.chars().count(),
+            length,
+            "the specimen is shorter than the length this case claims to render"
+        );
+        let lattice = Lattice::frame(length * 15, 24);
 
-        group.bench_with_input(BenchmarkId::from_parameter(length), &length, |b, _| {
-            let kernel = text(&font, &text_str, 16.0);
-            let lattice = Lattice {
-                extent: [(length as u32) * 15, 24, 1, 1],
-                origin: [0.5, 0.5, 0.0, 0.0],
-            };
-
+        // The range encoding: one kernel, every pixel evaluating every glyph.
+        group.bench_with_input(BenchmarkId::new("sum", length), &length, |b, _| {
+            let kernel = pixel_centered(&text(&font, &text_str, 16.0));
             b.iter(|| black_box(lattice.bake(black_box(&kernel))));
+        });
+
+        // The domain encoding: one program per cell, each collapsed only over
+        // the columns its glyphs can reach. `compile` is hoisted for the same
+        // reason `cached_HELLO` hoists its own — the measurement is the
+        // collapse, and the sum row leaves its compile to the global cache.
+        group.bench_with_input(BenchmarkId::new("union", length), &length, |b, _| {
+            let program = text_union(&font, lattice, &text_str, 16.0).compile();
+            b.iter(|| black_box(program.collapse()));
         });
     }
 
@@ -65,27 +87,27 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
     // Uncached: compose the text kernel and bake it (compile is cached across
     // iterations; construction + tabulation dominate).
     group.bench_function("uncached_HELLO", |b| {
-        let lattice = Lattice {
-            extent: [100, 30, 1, 1],
-            origin: [0.5, 0.5, 0.0, 0.0],
-        };
+        let lattice = Lattice::frame(100, 30);
         b.iter(|| {
-            let kernel = text(&font, "HELLO", 20.0);
+            let kernel = pixel_centered(&text(&font, "HELLO", 20.0));
             black_box(lattice.bake(&kernel));
         });
     });
 
-    // Cached: CachedText composes baked glyph samplers and rasterizes as an
-    // ordinary manifold.
+    // Cached: `CachedText` composes already-baked glyph samplers into one
+    // kernel over their coverage buffers, so what is timed here is the
+    // gather, against the uncached row's curve solve over the same lattice.
+    // The compile and the bind are hoisted out of the loop for the same
+    // reason the uncached row leaves its compile to the global cache: the
+    // measurement is the collapse.
     group.bench_function("cached_HELLO", |b| {
         let mut cache = GlyphCache::new();
         let cached = CachedText::new(&font, &mut cache, "HELLO", 20.0, 1.0);
-        let colored = Grayscale(cached);
+        let lattice = Lattice::frame(100, 30);
+        let centered = pixel_centered(&cached.kernel());
+        let bound = Manifold::compile(&centered, lattice.extent).bind(&cached.bindings());
 
-        b.iter(|| {
-            let mut frame = Frame::<Rgba8>::new(100, 30);
-            rasterize(black_box(&colored), black_box(&mut frame), 1);
-        });
+        b.iter(|| black_box(lattice.collapse(black_box(&bound))));
     });
 
     // Measure cache warm-up overhead (bakes one fused kernel per glyph).
@@ -144,8 +166,8 @@ fn bench_freetype_text(c: &mut Criterion) {
     let face = library.new_memory_face(FONT_DATA.to_vec(), 0).unwrap();
     face.set_char_size(0, 16 * 64, 96, 96).unwrap();
 
-    for length in [5, 10, 26] {
-        let text_str: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".chars().take(length).collect();
+    for length in [5, 10, 26, 50] {
+        let text_str: String = SPECIMEN.chars().take(length).collect();
 
         group.bench_with_input(BenchmarkId::from_parameter(length), &length, |b, _| {
             b.iter(|| {

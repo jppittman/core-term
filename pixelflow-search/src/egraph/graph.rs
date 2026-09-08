@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use super::cost::{CostFunction, CostModel};
 use super::node::{EClassId, ENode};
 use super::ops::{self, Op};
-use super::provenance::{ApplicationRecord, ENodeId, Origin, Provenance, UnionEvent};
+#[cfg(feature = "provenance-journal")]
+use super::provenance::{ApplicationRecord, Origin, UnionEvent};
+use super::provenance::{ENodeId, Provenance};
 use super::rewrite::{Rewrite, RewriteAction};
 use super::rules::RuleId;
 use pixelflow_ir::kind::OpKind;
@@ -17,8 +19,17 @@ pub struct RewriteTarget {
     pub rule_idx: usize,
     /// The e-class to apply the rule to
     pub class_id: EClassId,
-    /// The node within the e-class that the rule should try to match
-    pub node_idx: usize,
+    /// The node the rule should try to match, named by its stable
+    /// [`ENodeId`] rather than by a position in the class's node vector.
+    ///
+    /// A position goes stale: a caller that enumerates a round's matches
+    /// and then applies them one at a time can rebuild the class between
+    /// enumeration and application, and `rebuild`'s take/canonicalize/extend
+    /// cycle renumbers it. Re-fetching a stale *index* silently applies the
+    /// rule to whichever node inherited that slot, credited to the original
+    /// candidate's score and dedup key. Re-resolving a stale *tag* finds
+    /// either the same node or nothing at all.
+    pub tag: ENodeId,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -35,6 +46,7 @@ pub(crate) struct EClass {
 /// responsible for e-nodes/unions created by `add()`/`union()`. Set for the
 /// duration of `apply_action_from_rule`, `None` otherwise (e.g. during
 /// `rebuild_budgeted`'s congruence-closure unions, or seed insertion).
+#[cfg(feature = "provenance-journal")]
 #[derive(Clone, Copy, Debug)]
 struct ActiveApplication {
     rule_idx: usize,
@@ -55,6 +67,18 @@ pub struct EGraph {
     /// A name-keyed map collapsed all four `Commutative` instances into one
     /// bucket, so every per-rule report built on it was wrong by aggregation.
     pub match_counts: HashMap<RuleId, usize>,
+    /// Cumulative rule-match ATTEMPTS across this e-graph's whole lifetime —
+    /// every node checked against a rule, matched or not, summed from
+    /// [`ApplyResult::evals`] at the one site every rule-application path
+    /// funnels through.
+    ///
+    /// This is "raw matches enumerated"
+    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1): the
+    /// Guide-cost-flatness precondition needs it denominated per
+    /// application, and per application needs it cumulative across the
+    /// resumed budget calls an anytime curve makes, the same way
+    /// [`Self::application_count`] is.
+    total_evals: usize,
     /// Global monotonic counter minting `ENodeId`s in `add()`.
     next_enode_id: u64,
     /// Saturation-iteration counter, advanced once per `saturate_with_limits`
@@ -64,6 +88,7 @@ pub struct EGraph {
     provenance: Provenance,
     /// Which rewrite application (if any) is currently executing — read by
     /// `add()`/`union()` to attribute newly created nodes/unions.
+    #[cfg(feature = "provenance-journal")]
     active_application: Option<ActiveApplication>,
     /// The constant each class is known to equal, as f32 bits, indexed by
     /// class id — maintained independently of `EClass::nodes` on purpose.
@@ -82,7 +107,7 @@ pub struct EGraph {
     ///
     /// Independent of the provenance log on purpose: an application budget
     /// must be enforceable whether or not anyone is observing, and reading
-    /// the budget off `provenance().application_count()` would make
+    /// the budget off `provenance().recorded_count()` would make
     /// recording a load-bearing part of saturation rather than an
     /// observation of it.
     applications: u64,
@@ -92,10 +117,121 @@ pub struct EGraph {
     /// [`super::optimizer::Optimizer`] turns it on exactly when an
     /// [`Observer`](super::optimizer::Observer) is attached. Defaults to
     /// `true`, so every direct `EGraph` caller keeps what it had.
+    #[cfg(feature = "provenance-journal")]
     record_provenance: bool,
     /// Application ceiling for the current run, or `None`. Set for the
     /// duration of [`EGraph::saturate_budgeted`].
     application_cap: Option<u64>,
+    /// Counterfactual-replay mask (docs/plans/2026-09-01-guide-return-to-go.md
+    /// §4.1): when `Some`, the application that would otherwise be assigned
+    /// this ordinal is skipped entirely by `apply_action_from_rule` — not
+    /// counted, not recorded, not applied — and the ordinal it would have
+    /// consumed is left for whatever candidate comes next in the same scan
+    /// order. Installed only by
+    /// [`Optimizer::mask`](super::optimizer::Optimizer::mask), so every
+    /// other path is unaffected.
+    replay_mask: Option<ApplicationMask>,
+    /// How many applications the most recent masked run actually skipped.
+    /// Reset when a mask is installed and read back by
+    /// [`EGraph::last_replay_mask_skips`] — a caller reporting a
+    /// confluence-aware Δ must be able to distinguish "the mask matched
+    /// once" from "the mask matched eleven times", and must never have to
+    /// infer that a mask fired at all.
+    replay_mask_skips: usize,
+}
+
+/// How far a counterfactual replay's mask reaches: one application, or
+/// every application that would re-derive the same thing.
+///
+/// Leave-one-out ([`MaskScope::Single`]) answers "what did THIS firing
+/// contribute", but an e-graph is confluent enough that a masked node is
+/// often re-derived a few applications later by the same rule matching the
+/// same class content again — so a `Δ = 0` under `Single` can mean either
+/// "this application did not matter" or "this application mattered and
+/// something else silently restored it". [`MaskScope::AllMatchingCandidate`]
+/// separates those two: it masks the seed AND every later application
+/// sharing its [`CandidateKey`](super::candidate::CandidateKey) — the same
+/// key the guided loop dedups on — so no re-derivation by that route can put
+/// the node back. The gap between the two Δs is this program's measurement
+/// of leave-one-out's confluence blindness
+/// (docs/plans/2026-09-01-guide-return-to-go.md §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaskScope {
+    /// Skip only the application that would be assigned `skip_ordinal`.
+    Single,
+    /// Skip that application and every later one with the same
+    /// [`CandidateKey`](super::candidate::CandidateKey), for the rest of the
+    /// run.
+    AllMatchingCandidate,
+}
+
+/// Names the application to skip in a counterfactual replay, and how far the
+/// skip reaches — see [`Optimizer::mask`](super::optimizer::Optimizer::mask)
+/// and docs/plans/2026-09-01-guide-return-to-go.md §4.1.
+///
+/// `skip_ordinal` counts in [`EGraph::application_count`]'s currency, the
+/// unconditional budget denominator — the same numbering
+/// [`ApplicationId`](super::provenance::ApplicationId) uses for a run that
+/// recorded from the start, so a harness can take an ordinal off the journal
+/// and hand it straight back. Replay is deterministic and identical to the
+/// original run up to the point of divergence, so replaying the same
+/// expression through the same configuration and masking the ordinal that
+/// was `a` in the original trajectory reproduces `τ \ a` exactly (§4.1's
+/// `Δ_a = R(τ\a,B) − R(τ,B)`).
+///
+/// Under [`MaskScope::AllMatchingCandidate`] the key to keep masking is not
+/// supplied by the caller — it is READ off the live graph at the moment the
+/// seed ordinal comes up, which is the only moment it is exactly the key the
+/// original trajectory's application `a` matched. A caller-supplied key
+/// would be a second computation of the same thing against a different graph
+/// state, i.e. the drift this codebase's one-constructor rule exists to
+/// prevent.
+#[derive(Clone, Debug)]
+pub struct ApplicationMask {
+    /// Ordinal of the seed application to skip.
+    pub skip_ordinal: u64,
+    /// How far the skip reaches.
+    pub scope: MaskScope,
+    /// The seed's `(rule, class content)`, captured when `skip_ordinal` came
+    /// up. `None` until then, and always `None` under [`MaskScope::Single`],
+    /// which never needs it.
+    captured: Option<super::candidate::CandidateKey>,
+}
+
+impl ApplicationMask {
+    /// §4.1's leave-one-out mask: skip exactly this ordinal.
+    #[must_use]
+    pub fn leave_one_out(skip_ordinal: u64) -> Self {
+        Self {
+            skip_ordinal,
+            scope: MaskScope::Single,
+            captured: None,
+        }
+    }
+
+    /// The confluence-aware mask: skip this ordinal and every later
+    /// application sharing its
+    /// [`CandidateKey`](super::candidate::CandidateKey).
+    #[must_use]
+    pub fn all_matching_candidate(skip_ordinal: u64) -> Self {
+        Self {
+            skip_ordinal,
+            scope: MaskScope::AllMatchingCandidate,
+            captured: None,
+        }
+    }
+}
+
+/// What [`EGraph::mask_decision`] concluded about the application about to
+/// be committed. Three distinct skips, not one boolean: the leave-one-out
+/// mask must be consumed after it fires, the confluence-aware seed must
+/// capture its key as it fires, and a later re-derivation must do neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MaskDecision {
+    Proceed,
+    Skip,
+    SkipAndCapture,
+    SkipAndConsume,
 }
 
 impl Default for EGraph {
@@ -114,15 +250,20 @@ impl Clone for EGraph {
             rules: self.rules.clone(), // Arc clone - cheap, shares rules
             rule_ids: self.rule_ids.clone(),
             match_counts: self.match_counts.clone(),
+            total_evals: self.total_evals,
             next_enode_id: self.next_enode_id,
             step: self.step,
             provenance: self.provenance.clone(),
+            #[cfg(feature = "provenance-journal")]
             active_application: self.active_application,
             const_fact: self.const_fact.clone(),
             refused_const_unions: self.refused_const_unions.clone(),
             applications: self.applications,
+            #[cfg(feature = "provenance-journal")]
             record_provenance: self.record_provenance,
             application_cap: self.application_cap,
+            replay_mask: self.replay_mask.clone(),
+            replay_mask_skips: self.replay_mask_skips,
         }
     }
 }
@@ -254,15 +395,20 @@ impl EGraph {
             rules: std::sync::Arc::new(Vec::new()),
             rule_ids: std::sync::Arc::new(Vec::new()),
             match_counts: HashMap::new(),
+            total_evals: 0,
             next_enode_id: 0,
             step: 0,
             provenance: Provenance::new(),
+            #[cfg(feature = "provenance-journal")]
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
             applications: 0,
+            #[cfg(feature = "provenance-journal")]
             record_provenance: true,
             application_cap: None,
+            replay_mask: None,
+            replay_mask_skips: 0,
         }
     }
 
@@ -279,15 +425,20 @@ impl EGraph {
             rules: std::sync::Arc::new(rules),
             rule_ids: std::sync::Arc::new(ids),
             match_counts: HashMap::new(),
+            total_evals: 0,
             next_enode_id: 0,
             step: 0,
             provenance: Provenance::new(),
+            #[cfg(feature = "provenance-journal")]
             active_application: None,
             const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
             applications: 0,
+            #[cfg(feature = "provenance-journal")]
             record_provenance: true,
             application_cap: None,
+            replay_mask: None,
+            replay_mask_skips: 0,
         }
     }
 
@@ -357,11 +508,13 @@ impl EGraph {
     /// Off, the graph still counts applications and still enforces an
     /// application budget; it just does not build the log. Turning recording
     /// off does not erase what is already recorded.
+    #[cfg(feature = "provenance-journal")]
     pub fn set_provenance_recording(&mut self, on: bool) {
         self.record_provenance = on;
     }
 
     /// Whether provenance is being recorded.
+    #[cfg(feature = "provenance-journal")]
     #[must_use]
     pub fn provenance_recording(&self) -> bool {
         self.record_provenance
@@ -390,7 +543,7 @@ impl EGraph {
 
     fn canonicalize_node(&self, node: &mut ENode) {
         match node {
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {}
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => {}
             ENode::Op { children, .. } => {
                 for child in children {
                     *child = self.find(*child);
@@ -424,11 +577,14 @@ impl EGraph {
         let id = EClassId(self.classes.len() as u32);
         let enode_id = ENodeId(self.next_enode_id);
         self.next_enode_id += 1;
-        let origin = match self.active_application {
-            Some(active) => Origin::Rule(active.application_id),
-            None => Origin::Seed,
-        };
-        self.provenance.record_origin(enode_id, origin);
+        #[cfg(feature = "provenance-journal")]
+        {
+            let origin = match self.active_application {
+                Some(active) => Origin::Rule(active.application_id),
+                None => Origin::Seed,
+            };
+            self.provenance.record_origin(enode_id, origin);
+        }
         self.const_fact.push(node.as_f32().map(f32::to_bits));
         self.classes.push(EClass {
             nodes: vec![node.clone()],
@@ -518,8 +674,10 @@ impl EGraph {
             self.const_fact[parent.index()] = self.const_fact[child.index()];
         }
         self.worklist.push(parent);
+        #[cfg(feature = "provenance-journal")]
         self.provenance.record_union(UnionEvent {
             rule_idx: self.active_application.map(|a| a.rule_idx),
+            application_id: self.active_application.map(|a| a.application_id),
             step: self.step,
             class_a: parent,
             class_b: child,
@@ -603,14 +761,20 @@ impl EGraph {
                 if let Some(&existing) = self.memo.get(&node) {
                     let existing = self.find(existing);
                     if existing != id {
-                        // `union` may pick either `id` or `existing` as the
-                        // surviving parent. If `id` survives, `union`'s
-                        // extend() appends `existing`'s nodes (and tags)
-                        // directly onto `self.classes[id.index()]` — which we
-                        // just emptied via mem::take above. We MUST extend
-                        // (not overwrite) below, or those appended
-                        // nodes/tags are silently dropped when we write
-                        // `new_nodes`/`new_tags` back. This is a rebuild-time
+                        // `union` keeps `min(id, existing)`, so this call
+                        // can go either way, and the write-back at the
+                        // bottom of the loop has to survive both:
+                        //   - `id` survives: `union`'s extend() appends
+                        //     `existing`'s nodes (and tags) directly onto
+                        //     `self.classes[id.index()]`, which mem::take
+                        //     just emptied — so the write-back must EXTEND,
+                        //     not overwrite, or those are dropped.
+                        //   - `existing` survives: `id` is merged away and
+                        //     `classes[id.index()]` stops being reachable
+                        //     through `find` — so the write-back must target
+                        //     `self.find(id)`, or everything still in
+                        //     `new_nodes` is orphaned.
+                        // This is a rebuild-time
                         // congruence-closure union, not a rule firing, so it
                         // carries no rule_idx in the provenance journal
                         // (`active_application` is whatever the caller left
@@ -639,11 +803,25 @@ impl EGraph {
                 new_nodes.push(node);
                 new_tags.push(tag);
             }
-            // Extend, not assign: a mid-loop union() above may have already
-            // pushed nodes/tags onto classes[id.index()] (see comment above).
-            // Overwriting here would silently discard them.
-            self.classes[id.index()].nodes.extend(new_nodes);
-            self.classes[id.index()].tags.extend(new_tags);
+            // Write back to the class `id` CANONICALIZES TO, not to `id`.
+            // A mid-loop union() above picks `min(id, existing)` as the
+            // surviving parent, so when `existing.0 < id.0` it is `id` that
+            // was merged away — and `classes[id.index()]` is then a slot
+            // `find` no longer routes to. Every node written there is
+            // orphaned: `nodes()`/`tags()` canonicalize first, so nothing
+            // can read them again. That is lost extraction alternatives
+            // (under-merging: sound, since the surviving class still holds
+            // only provably-equal terms) but lost *silently*, which this
+            // project forbids.
+            //
+            // And extend, never assign: in the mirror case, where `id`
+            // survives, union()'s extend() has already appended `existing`'s
+            // nodes and tags onto this very vector (which mem::take emptied
+            // above), and an assignment would clobber them. `find(id) == id`
+            // there, so one write-back handles both directions.
+            let dest = self.find(id);
+            self.classes[dest.index()].nodes.extend(new_nodes);
+            self.classes[dest.index()].tags.extend(new_tags);
         }
         self.worklist.len()
     }
@@ -688,6 +866,7 @@ impl EGraph {
     /// chosen `(EClassId, ENodeId)` pairs (typically the nodes an extraction
     /// pass selected). See [`super::provenance::derivation_ancestors`] for
     /// the exact over-approximation made.
+    #[cfg(feature = "provenance-journal")]
     pub fn derivation_ancestors(
         &self,
         chosen_nodes: &[(EClassId, ENodeId)],
@@ -709,9 +888,57 @@ impl EGraph {
         )
     }
 
+    /// The tightened counterpart to [`EGraph::derivation_ancestors`] — see
+    /// [`super::provenance::derivation_ancestors_tight`] for exactly which
+    /// over-approximation axes are narrowed and why the result is still safe
+    /// (a subset of `derivation_ancestors`'s result, a superset of the
+    /// strict node-on-path bound). Additive: does not change what
+    /// `derivation_ancestors` computes, so both can be run on the same
+    /// episode for comparison.
+    #[cfg(feature = "provenance-journal")]
+    pub fn derivation_ancestors_tight(
+        &self,
+        chosen_nodes: &[(EClassId, ENodeId)],
+    ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
+        self.derivation_ancestors_tight_from(chosen_nodes, chosen_nodes)
+    }
+
+    /// [`EGraph::derivation_ancestors_tight`] for a walk that starts from a
+    /// SUBSET of the extraction — one application's chosen output node, say
+    /// — while still pruning with the extraction's complete choice map. See
+    /// [`super::provenance::derivation_ancestors_tight`] for why passing
+    /// only the seeds as the choice map degrades the walk back to the loose
+    /// bound for every class it descends into.
+    #[cfg(feature = "provenance-journal")]
+    pub fn derivation_ancestors_tight_from(
+        &self,
+        seeds: &[(EClassId, ENodeId)],
+        chosen_nodes: &[(EClassId, ENodeId)],
+    ) -> std::collections::BTreeSet<super::provenance::ApplicationId> {
+        let tags_of = |class: EClassId| -> Vec<ENodeId> { self.tags(class).to_vec() };
+        let children_of = |tag: ENodeId| -> Vec<EClassId> {
+            for class in self.classes.iter() {
+                if let Some(idx) = class.tags.iter().position(|&t| t == tag) {
+                    return class.nodes[idx].children();
+                }
+            }
+            Vec::new()
+        };
+        let canonical_of = |class: EClassId| -> EClassId { self.find(class) };
+        super::provenance::derivation_ancestors_tight(
+            &tags_of,
+            &children_of,
+            &canonical_of,
+            &self.provenance,
+            seeds,
+            chosen_nodes,
+        )
+    }
+
     /// Render a human-readable derivation trace for the given ancestry set
     /// (from [`EGraph::derivation_ancestors`]), resolving rule names via
     /// this e-graph's rule list.
+    #[cfg(feature = "provenance-journal")]
     pub fn format_derivation_trace(
         &self,
         ancestors: &std::collections::BTreeSet<super::provenance::ApplicationId>,
@@ -772,6 +999,7 @@ impl EGraph {
             ENode::Var(_) => pixelflow_ir::OpKind::Var,
             ENode::Const(_) => pixelflow_ir::OpKind::Const,
             ENode::Buffer(_) => pixelflow_ir::OpKind::Buffer,
+            ENode::Uniform(_) => pixelflow_ir::OpKind::Uniform,
             ENode::Op { op, .. } => op.kind(),
         }
     }
@@ -791,146 +1019,6 @@ impl EGraph {
         out
     }
 
-    /// Add an arena-based DAG expression to the e-graph, preserving sharing.
-    ///
-    /// Each `ExprId` in the arena maps to exactly one `EClassId`. Because the
-    /// arena is topologically ordered (children always precede parents), a single
-    /// linear scan suffices — no recursion, no stack overflow.
-    ///
-    /// Returns the `EClassId` of the root node.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `root` is not a valid index in `arena`, or if any child
-    /// `ExprId` referenced by an interior node has not been processed yet
-    /// (which would indicate a malformed arena that violates topological order).
-    /// Also panics if an `ExprNode::Param` node is encountered, since Param
-    /// nodes are not valid after kernel compilation.
-    pub fn add_arena(
-        &mut self,
-        arena: &pixelflow_ir::ExprArena,
-        root: pixelflow_ir::ExprId,
-    ) -> EClassId {
-        use pixelflow_ir::arena::ExprNode;
-
-        let n = arena.len();
-        assert!(
-            (root.0 as usize) < n,
-            "add_arena: root {:?} out of bounds (arena has {} nodes)",
-            root,
-            n,
-        );
-
-        // Map from arena ExprId index → EClassId. None = not yet processed.
-        let mut id_map: Vec<Option<EClassId>> = vec![None; n];
-
-        for idx in 0..n {
-            let eid = pixelflow_ir::ExprId(idx as u32);
-            let eclass = match arena.node(eid) {
-                ExprNode::Var(v) => self.add(ENode::Var(*v)),
-                ExprNode::Const(v) => self.add(ENode::constant(*v)),
-                ExprNode::Param(i) => {
-                    panic!("add_arena: ExprNode::Param({i}) not valid after kernel compilation")
-                }
-                // The leaf carries the full decl (identity + extents), so
-                // hash-consing merges buffer references across arenas iff they
-                // name the same memory — see `ENode::Buffer`.
-                ExprNode::Buffer(b) => self.add(ENode::Buffer(*arena.buffer_decl(*b))),
-                ExprNode::Unary(op, child) => {
-                    let child_id = id_map[child.0 as usize].unwrap_or_else(|| {
-                        panic!(
-                            "add_arena: Unary node at idx={idx} references child {:?} which has not been processed (arena not topologically ordered)",
-                            child
-                        )
-                    });
-                    let static_op = ops::op_from_kind(*op)
-                        .unwrap_or_else(|| panic!("add_arena: no static Op for OpKind {:?}", op));
-                    self.add(ENode::Op {
-                        op: static_op,
-                        children: vec![child_id],
-                    })
-                }
-                ExprNode::Binary(op, left, right) => {
-                    let left_id = id_map[left.0 as usize].unwrap_or_else(|| {
-                        panic!(
-                            "add_arena: Binary node at idx={idx} references left child {:?} which has not been processed",
-                            left
-                        )
-                    });
-                    let right_id = id_map[right.0 as usize].unwrap_or_else(|| {
-                        panic!(
-                            "add_arena: Binary node at idx={idx} references right child {:?} which has not been processed",
-                            right
-                        )
-                    });
-                    let static_op = ops::op_from_kind(*op)
-                        .unwrap_or_else(|| panic!("add_arena: no static Op for OpKind {:?}", op));
-                    self.add(ENode::Op {
-                        op: static_op,
-                        children: vec![left_id, right_id],
-                    })
-                }
-                ExprNode::Ternary(op, a, b, c) => {
-                    let a_id = id_map[a.0 as usize].unwrap_or_else(|| {
-                        panic!(
-                            "add_arena: Ternary node at idx={idx} references child a={:?} which has not been processed",
-                            a
-                        )
-                    });
-                    let b_id = id_map[b.0 as usize].unwrap_or_else(|| {
-                        panic!(
-                            "add_arena: Ternary node at idx={idx} references child b={:?} which has not been processed",
-                            b
-                        )
-                    });
-                    let c_id = id_map[c.0 as usize].unwrap_or_else(|| {
-                        panic!(
-                            "add_arena: Ternary node at idx={idx} references child c={:?} which has not been processed",
-                            c
-                        )
-                    });
-                    // Gather is deliberately absent from `op_from_kind` (no
-                    // rewrite rule may name it) but representable as opaque
-                    // structure — resolve it directly.
-                    let static_op: &'static dyn crate::egraph::ops::Op = match *op {
-                        pixelflow_ir::OpKind::Gather => &ops::Gather,
-                        other => ops::op_from_kind(other).unwrap_or_else(|| {
-                            panic!("add_arena: no static Op for OpKind {other:?}")
-                        }),
-                    };
-                    self.add(ENode::Op {
-                        op: static_op,
-                        children: vec![a_id, b_id, c_id],
-                    })
-                }
-                ExprNode::Nary(op, start, len) => {
-                    let children_slice = arena.nary_children_slice(*start, *len);
-                    let child_ids: Vec<EClassId> = children_slice
-                        .iter()
-                        .enumerate()
-                        .map(|(ci, c)| {
-                            id_map[c.0 as usize].unwrap_or_else(|| {
-                                panic!(
-                                    "add_arena: Nary node at idx={idx} references child[{ci}]={:?} which has not been processed",
-                                    c
-                                )
-                            })
-                        })
-                        .collect();
-                    let static_op = ops::op_from_kind(*op)
-                        .unwrap_or_else(|| panic!("add_arena: no static Op for OpKind {:?}", op));
-                    self.add(ENode::Op {
-                        op: static_op,
-                        children: child_ids,
-                    })
-                }
-            };
-            id_map[idx] = Some(eclass);
-        }
-
-        id_map[root.0 as usize].expect("add_arena: root EClassId missing after full traversal")
-    }
-
     /// Get a rule by index.
     pub fn rule(&self, idx: usize) -> Option<&dyn Rewrite> {
         self.rules.get(idx).map(|r| r.as_ref())
@@ -947,13 +1035,14 @@ impl EGraph {
             for class_id in self.class_ids() {
                 let nodes = &self.classes[class_id.index()].nodes;
 
+                let tags = &self.classes[class_id.index()].tags;
                 for (node_idx, node) in nodes.iter().enumerate() {
                     // Check if rule matches this node
                     if rule.apply(self, class_id, node).is_some() {
                         matches.push(RewriteTarget {
                             rule_idx,
                             class_id,
-                            node_idx,
+                            tag: tags[node_idx],
                         });
                     }
                 }
@@ -978,12 +1067,7 @@ impl EGraph {
     /// is the silent failure this ceiling exists to prevent. No production
     /// path calls this, and the production caps are two orders of
     /// magnitude below the limit.
-    pub fn apply_single_rule(
-        &mut self,
-        rule_idx: usize,
-        class_id: EClassId,
-        node_idx: usize,
-    ) -> bool {
+    pub fn apply_single_rule(&mut self, rule_idx: usize, class_id: EClassId, tag: ENodeId) -> bool {
         assert!(
             self.classes.len() < HARD_CLASS_LIMIT,
             "apply_single_rule: e-graph is at the hard class limit \
@@ -997,12 +1081,15 @@ impl EGraph {
         };
 
         let class_id = self.find(class_id);
-        let nodes = self.classes[class_id.index()].nodes.clone();
-        let Some(node) = nodes.get(node_idx) else {
+        // Resolve the stable tag against the class as it stands NOW — a
+        // rebuild since the caller enumerated this target either left the
+        // node in place or removed it, and `None` is the honest answer for
+        // the second case. See `RewriteTarget::tag`.
+        let Some(node) = self.node_for_tag(class_id, tag).cloned() else {
             return false;
         };
 
-        let Some(action) = rule.apply(self, class_id, node) else {
+        let Some(action) = rule.apply(self, class_id, &node) else {
             return false;
         };
 
@@ -1386,10 +1473,84 @@ impl EGraph {
             scan = ScanStop::Deadline;
         }
 
+        self.total_evals += evals;
         ApplyResult {
             changes: unions,
             evals,
             scan,
+        }
+    }
+
+    /// Cumulative rule-match attempts across this e-graph's whole lifetime
+    /// (see the `total_evals` field doc) — the raw-matches-enumerated
+    /// counter §7.1's Guide-overhead-flatness measurement denominates.
+    #[must_use]
+    pub const fn total_evals(&self) -> usize {
+        self.total_evals
+    }
+
+    /// How many applications the most recent installed mask skipped. `0`
+    /// when no mask was installed, or when the mask's ordinal was never
+    /// reached — a caller reporting Δ reads this rather than assuming.
+    #[must_use]
+    pub const fn last_replay_mask_skips(&self) -> usize {
+        self.replay_mask_skips
+    }
+
+    /// Install (or clear) the counterfactual-replay mask, resetting the skip
+    /// counter. Crate-private on purpose: the mask is a *policy*, in exactly
+    /// the sense a `Reranker` and an `Observer` are, and it reaches the graph
+    /// through [`Optimizer::mask`](super::optimizer::Optimizer::mask) rather
+    /// than through a second public saturation entry point.
+    pub(crate) fn set_replay_mask(&mut self, mask: Option<ApplicationMask>) {
+        self.replay_mask = mask;
+        self.replay_mask_skips = 0;
+    }
+
+    /// Decide what the installed replay mask (if any) says about the
+    /// application about to be committed. Split out of
+    /// `apply_action_from_rule` because the `AllMatchingCandidate` arm needs
+    /// to READ the graph (`ClassContentKey::of`) while the mask is borrowed,
+    /// and then WRITE the mask — two borrows that cannot overlap.
+    fn mask_decision(&self, rule_idx: usize, class_id: EClassId) -> MaskDecision {
+        let Some(mask) = &self.replay_mask else {
+            return MaskDecision::Proceed;
+        };
+        // The counter is incremented right after this returns `Proceed`, so
+        // its value right now IS the ordinal about to be consumed.
+        let at_seed = mask.skip_ordinal == self.applications;
+        match (mask.scope, &mask.captured) {
+            // Leave-one-out: fire exactly once, then consume the mask.
+            (MaskScope::Single, _) => {
+                if at_seed {
+                    MaskDecision::SkipAndConsume
+                } else {
+                    MaskDecision::Proceed
+                }
+            }
+            // Confluence-aware, before the seed: nothing to compare against
+            // yet, so only the seed ordinal itself is masked — and masking
+            // it is what captures the key.
+            (MaskScope::AllMatchingCandidate, None) => {
+                if at_seed {
+                    MaskDecision::SkipAndCapture
+                } else {
+                    MaskDecision::Proceed
+                }
+            }
+            // Confluence-aware, after the seed: mask every re-derivation by
+            // the same (rule, canonical matched-class content).
+            (MaskScope::AllMatchingCandidate, Some(key)) => {
+                let same_rule = self.rule_ids.get(rule_idx).copied() == Some(key.rule);
+                if same_rule
+                    && key.content
+                        == super::candidate::ClassContentKey::of(self, self.find(class_id))
+                {
+                    MaskDecision::Skip
+                } else {
+                    MaskDecision::Proceed
+                }
+            }
         }
     }
 
@@ -1416,38 +1577,89 @@ impl EGraph {
         class_id: EClassId,
         action: RewriteAction,
     ) -> usize {
+        // Counterfactual replay (docs/plans/2026-09-01-guide-return-to-go.md
+        // §4.1): a masked application is not counted, not recorded and not
+        // applied, so everything downstream — the rest of this scan, the
+        // rest of this sweep, later sweeps — proceeds exactly as it would
+        // against a graph that simply never received it, and the ordinal it
+        // would have consumed goes to the next candidate. Checked BEFORE the
+        // counter, which is what makes that last clause true. Which
+        // applications are masked is `mask_decision`'s call; see
+        // [`MaskScope`].
+        match self.mask_decision(rule_idx, class_id) {
+            MaskDecision::Proceed => {}
+            MaskDecision::Skip => {
+                self.replay_mask_skips += 1;
+                return 0;
+            }
+            MaskDecision::SkipAndCapture => {
+                let key = super::candidate::CandidateKey {
+                    rule: self.rule_ids.get(rule_idx).copied().unwrap_or_else(|| {
+                        panic!(
+                            "replay mask: rule_idx {rule_idx} has no id in this graph's rule \
+                             table — a mask names an application, and an application names a rule"
+                        )
+                    }),
+                    content: super::candidate::ClassContentKey::of(self, self.find(class_id)),
+                };
+                let mask = self
+                    .replay_mask
+                    .as_mut()
+                    .expect("mask_decision returned SkipAndCapture with no mask installed");
+                mask.captured = Some(key);
+                self.replay_mask_skips += 1;
+                return 0;
+            }
+            MaskDecision::SkipAndConsume => {
+                self.replay_mask = None;
+                self.replay_mask_skips += 1;
+                return 0;
+            }
+        }
+
         // Counted unconditionally: the budget must not depend on whether
         // anyone is watching.
         self.applications += 1;
 
-        if !self.record_provenance {
-            return self.apply_action(class_id, action);
+        #[cfg(feature = "provenance-journal")]
+        {
+            if !self.record_provenance {
+                return self.apply_action(class_id, action);
+            }
+
+            let minted_from = self.next_enode_id;
+            let application_id = self.provenance.record_application(ApplicationRecord {
+                rule: self.rule_ids.get(rule_idx).copied(),
+                rule_idx,
+                step: self.step,
+                match_root: class_id,
+                minted: minted_from..minted_from,
+                unions: 0,
+            });
+            let previous = self.active_application.replace(ActiveApplication {
+                rule_idx,
+                application_id,
+            });
+            let result = self.apply_action(class_id, action);
+            self.active_application = previous;
+            // The record is opened before the action runs (so `add`/`union`
+            // can attribute to it) and closed after, which is the only order
+            // in which "what did this application mint" is answerable.
+            self.provenance.complete_application(
+                application_id,
+                minted_from..self.next_enode_id,
+                result,
+            );
+            return result;
         }
 
-        let minted_from = self.next_enode_id;
-        let application_id = self.provenance.record_application(ApplicationRecord {
-            rule: self.rule_ids.get(rule_idx).copied(),
-            rule_idx,
-            step: self.step,
-            match_root: class_id,
-            minted: minted_from..minted_from,
-            unions: 0,
-        });
-        let previous = self.active_application.replace(ActiveApplication {
-            rule_idx,
-            application_id,
-        });
-        let result = self.apply_action(class_id, action);
-        self.active_application = previous;
-        // The record is opened before the action runs (so `add`/`union` can
-        // attribute to it) and closed after, which is the only order in
-        // which "what did this application mint" is answerable.
-        self.provenance.complete_application(
-            application_id,
-            minted_from..self.next_enode_id,
-            result,
-        );
-        result
+        #[cfg(not(feature = "provenance-journal"))]
+        {
+            // `rule_idx` is only needed to attribute a journal record —
+            // with the journal compiled out there is nothing to attribute.
+            let _ = rule_idx;
+            self.apply_action(class_id, action)
+        }
     }
 
     /// Apply a rewrite action and return 1 if a union was made, 0 otherwise.
@@ -1471,9 +1683,85 @@ impl EGraph {
         usize::from(self.find(a) == self.find(b))
     }
 
+    /// Materialize `template`'s subtree at `id` into this e-graph, bottom-up,
+    /// reading each metavariable leaf from `bindings` rather than creating a
+    /// node for it — the same convention every hand-written multi-node
+    /// [`RewriteAction`] uses (`Distribute`, `Canonicalize`, …), just driven
+    /// by a runtime pattern instead of a fixed shape. `self.add` is what
+    /// attributes every node created here to the active application's
+    /// provenance, so this must only ever be called from inside
+    /// `apply_action` (i.e. under `apply_action_from_rule`).
+    ///
+    /// # Panics
+    ///
+    /// On a `Param`/`Buffer` node (a rewrite RHS template must never contain
+    /// either), on an `OpKind` with no static [`Op`] (an arena/op-table
+    /// drift, not a runtime condition), or on a metavariable with no
+    /// binding.
+    fn instantiate_template(
+        &mut self,
+        template: &pixelflow_ir::ExprArena,
+        id: pixelflow_ir::ExprId,
+        bindings: &[EClassId],
+    ) -> EClassId {
+        use pixelflow_ir::arena::ExprNode;
+
+        match template.node(id) {
+            ExprNode::Var(mv) => {
+                let mv = *mv as usize;
+                assert!(
+                    mv < bindings.len(),
+                    "instantiate_template: metavariable {mv} has no binding \
+                     ({} supplied) — a TemplateRewrite construction bug, since \
+                     apply() refuses to instantiate a binding it cannot fill",
+                    bindings.len()
+                );
+                bindings[mv]
+            }
+            ExprNode::Const(v) => self.add(ENode::constant(*v)),
+            ExprNode::Param(p) => {
+                panic!("instantiate_template: Param({p}) in a rewrite RHS template")
+            }
+            ExprNode::Buffer(b) => {
+                panic!(
+                    "instantiate_template: Buffer({}) in a rewrite RHS template",
+                    b.0
+                )
+            }
+            ExprNode::Uniform(u) => {
+                panic!(
+                    "instantiate_template: Uniform({}) in a rewrite RHS template",
+                    u.0
+                )
+            }
+            _ => {
+                let kind = template.kind(id);
+                let static_op = ops::op_from_kind(kind).unwrap_or_else(|| {
+                    panic!("instantiate_template: no static Op for OpKind {kind:?}")
+                });
+                let children: Vec<EClassId> = template
+                    .children(id)
+                    .map(|c| self.instantiate_template(template, c, bindings))
+                    .collect();
+                self.add(ENode::Op {
+                    op: static_op,
+                    children,
+                })
+            }
+        }
+    }
+
     fn apply_action(&mut self, class_id: EClassId, action: RewriteAction) -> usize {
         match action {
             RewriteAction::Union(target_id) => self.union_counted(class_id, target_id),
+            RewriteAction::Instantiate {
+                template,
+                root,
+                bindings,
+            } => {
+                let result_id = self.instantiate_template(&template.0, root, &bindings);
+                self.union_counted(class_id, result_id)
+            }
             RewriteAction::Create(new_node) => {
                 let new_id = self.add(new_node);
                 self.union_counted(class_id, new_id)
@@ -1894,6 +2182,8 @@ impl EGraph {
             ENode::Buffer(decl) => {
                 panic!("build_derivative: Dwrt applied to a Buffer leaf ({decl:?})")
             }
+            // Invariant across the lattice: ∂u/∂x = 0, as for a constant.
+            ENode::Uniform(_) => return self.add(ENode::constant(0.0)),
             ENode::Op { op, children } => (*op, children.clone()),
         };
 
@@ -2431,6 +2721,146 @@ mod tests {
         );
     }
 
+    /// The mirror of the test above, and the case its fix left open: when
+    /// canonicalizing the worklist item `id`'s nodes triggers a union whose
+    /// surviving parent is the OTHER class, `id` itself becomes
+    /// non-canonical — and the write-back at the bottom of the loop targets
+    /// `classes[id.index()]`, a slot `find` no longer routes to. Every node
+    /// `id` still held is orphaned: `EGraph::nodes(id)` canonicalizes first,
+    /// so nothing can ever read them again.
+    ///
+    /// Lost e-nodes are lost extraction alternatives (under-merging, not
+    /// unsoundness — every remaining class still holds only provably-equal
+    /// terms), but they are lost *silently*, which this project forbids.
+    /// The fix writes back to `self.find(id)`, extending rather than
+    /// assigning because `union` may already have moved nodes there.
+    ///
+    /// Trigger recipe — the same shape as the test above with the two `Neg`
+    /// classes created in the opposite order, which is all it takes to flip
+    /// which side `union`'s `min(a, b)` keeps:
+    /// - `nb = Neg(b)` (class 3) is created BEFORE `nc = Neg(c)` (class 4),
+    ///   so `memo[Neg([1])] -> 3` and `3 < 4`.
+    /// - `union(nc, marker)` gives class 4 a structurally unique `Var(9)`
+    ///   and enqueues it for rebuild.
+    /// - `union(b, c)` merges class 2 into class 1, so canonicalizing
+    ///   `Neg([2])` during class 4's rebuild rewrites it to `Neg([1])`.
+    /// - `memo` maps `Neg([1])` to class 3, and `existing (3) < id (4)`, so
+    ///   `union(4, 3)` keeps **3** — `id` is merged away mid-loop.
+    /// - The write-back then appends `Var(9)` to class 4, which `find` now
+    ///   routes past. `nodes(find(nc))` never sees it again.
+    #[test]
+    fn rebuild_budgeted_does_not_orphan_nodes_when_current_class_is_merged_away() {
+        let mut eg = EGraph::new();
+
+        let a = eg.add(ENode::Var(0)); // class 0 (keeps the ids spaced out)
+        let b = eg.add(ENode::Var(1)); // class 1
+        let c = eg.add(ENode::Var(2)); // class 2
+        let nb = eg.add(ENode::Op {
+            op: &ops::Neg,
+            children: vec![b],
+        }); // class 3: memo Neg([1]) -> 3
+        let nc = eg.add(ENode::Op {
+            op: &ops::Neg,
+            children: vec![c],
+        }); // class 4: memo Neg([2]) -> 4
+        let marker = eg.add(ENode::Var(9)); // class 5: a node unique to nc's class
+
+        assert_eq!(nb.index(), 3, "test assumes nb is class 3");
+        assert_eq!(nc.index(), 4, "test assumes nc is class 4");
+
+        // Give nc's class a node with no structural twin anywhere else
+        // (`Var(9)`), so its loss is directly observable, and enqueue nc for
+        // rebuild. nc (4) < marker (5), so nc survives as parent here.
+        eg.union(nc, marker);
+        assert_eq!(eg.pending_rebuilds(), 1);
+
+        // Merge c into b. b (1) < c (2), so b survives. This is what makes
+        // `Neg([2])` canonicalize to `Neg([1])` during nc's rebuild.
+        eg.union(b, c);
+
+        eg.rebuild();
+
+        // nb (3) is the surviving parent: `union(4, 3)` keeps the lower id.
+        let surviving = eg.find(nc);
+        assert_eq!(
+            surviving,
+            eg.find(nb),
+            "nc and nb should have been unioned via the canonicalization collision"
+        );
+        assert_eq!(
+            surviving, nb,
+            "test assumes `existing` (nb, class 3) is the surviving parent, \
+             i.e. the `existing.0 < id.0` branch"
+        );
+
+        // The critical assertion: `Var(9)` lived in nc's class when nc was
+        // merged away mid-loop, so it must still be reachable through the
+        // surviving class. The orphaning bug writes it back to class 4,
+        // which `find` routes past — `nodes()` canonicalizes, so it is
+        // unreachable from every public entry point from then on.
+        let nodes = eg.nodes(surviving);
+        assert!(
+            nodes.iter().any(|n| matches!(n, ENode::Var(9))),
+            "expected Var(9) (nc's unique marker) to still be reachable via \
+             nodes(find(nc)); the write-back targeted the merged-away slot \
+             classes[{}] instead of classes[{}]. Got: {nodes:?}",
+            nc.index(),
+            surviving.index()
+        );
+
+        // Tags must stay zipped with nodes through the redirected write-back.
+        assert_eq!(
+            eg.nodes(surviving).len(),
+            eg.tags(surviving).len(),
+            "EClass.nodes and EClass.tags must never desync"
+        );
+
+        // Nothing else got orphaned on the way. Stated as the law the public
+        // API actually owes a caller — **every id `add` ever handed out still
+        // resolves to a class containing its node** — rather than by reading
+        // the merged-away slot directly: a shadow copy is unreachable by
+        // definition, so the only honest way to catch one is to check that
+        // everything reachable is still there.
+        let holds = |eg: &EGraph, id: EClassId, want: &ENode| -> bool {
+            eg.nodes(eg.find(id)).iter().any(|n| n == want)
+        };
+        let neg_b = ENode::Op {
+            op: &ops::Neg,
+            children: vec![eg.find(b)],
+        };
+        for (id, want) in [
+            (a, ENode::Var(0)),
+            (b, ENode::Var(1)),
+            (c, ENode::Var(2)),
+            (marker, ENode::Var(9)),
+            (nb, neg_b.clone()),
+            (nc, neg_b.clone()),
+        ] {
+            assert!(
+                holds(&eg, id, &want),
+                "id {} no longer resolves to a class holding {want:?}",
+                id.index()
+            );
+        }
+
+        // And the graph must be at rest: a second rebuild is a no-op. The
+        // orphaning bug leaves the worklist naming a class whose nodes went
+        // somewhere else, so "reachable" was not yet a fixpoint — a state
+        // that can look correct until something rebuilds again.
+        let before: Vec<ENode> = eg.nodes(surviving).to_vec();
+        eg.rebuild();
+        assert_eq!(
+            eg.find(nc),
+            surviving,
+            "a second rebuild must not move the surviving class"
+        );
+        assert_eq!(
+            eg.nodes(eg.find(nc)),
+            before.as_slice(),
+            "rebuild must be idempotent once the worklist is drained"
+        );
+    }
+
     /// Create an e-graph with standard algebraic rules for testing.
     fn egraph_with_rules() -> EGraph {
         let rules: Vec<Box<dyn Rewrite>> = vec![
@@ -2785,18 +3215,18 @@ mod tests {
                 );
             }
         }
-        assert_eq!(eg.provenance().application_count(), 0);
+        assert_eq!(eg.provenance().recorded_count(), 0);
         assert_eq!(eg.provenance().union_count(), 0);
 
         let target = find_target(&eg, "commutative");
         assert_eq!(target.class_id, eg.find(sum));
 
-        let applied = eg.apply_single_rule(target.rule_idx, target.class_id, target.node_idx);
+        let applied = eg.apply_single_rule(target.rule_idx, target.class_id, target.tag);
         assert!(applied, "commutative rule should have applied to x + y");
 
         // Hand-derivation: exactly one application recorded, for the
         // "commutative" rule, matched against `sum`'s class.
-        assert_eq!(eg.provenance().application_count(), 1);
+        assert_eq!(eg.provenance().recorded_count(), 1);
         let record = eg.provenance().application(ApplicationId(0)).unwrap();
         assert_eq!(record.rule_idx, target.rule_idx);
         assert_eq!(record.match_root, eg.find(sum));
@@ -2851,7 +3281,7 @@ mod tests {
 
         // Rule A: commute the inner sum (x + y) -> (y + x).
         let target_a = find_target_in_class(&eg, "commutative", eg.find(inner));
-        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.node_idx));
+        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.tag));
         let app_a = ApplicationId(0);
 
         // Rule B: commute the outer sum ((x+y)+z) -> (z + (x+y)). After
@@ -2859,9 +3289,9 @@ mod tests {
         // still match "commutative" — so we must specifically target
         // outer's class rather than take the first "commutative" match.
         let target_b = find_target_in_class(&eg, "commutative", eg.find(outer));
-        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.node_idx));
+        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.tag));
         let app_b = ApplicationId(1);
-        assert_eq!(eg.provenance().application_count(), 2);
+        assert_eq!(eg.provenance().recorded_count(), 2);
 
         // Find B's produced node: the rule-created node in outer's class
         // whose origin is app_b.
@@ -2982,7 +3412,7 @@ mod tests {
             "provenance overhead: saturation took {:?}; origins={} applications={} unions={} classes={}",
             elapsed,
             eg.provenance().origin_count(),
-            eg.provenance().application_count(),
+            eg.provenance().recorded_count(),
             eg.provenance().union_count(),
             eg.num_classes(),
         );
@@ -3301,5 +3731,123 @@ impl Drop for EGraphBatch<'_> {
         if self.any_changes {
             self.graph.rebuild();
         }
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+    use crate::egraph::optimizer::{Budget, Optimizer};
+
+    /// A `(x*x + y*y).sqrt()`-shaped arena under the full rule set — a real
+    /// sweep where idempotent re-fires (`commutative`/`associative`)
+    /// dominate, which is exactly the regime
+    /// [`MaskScope::AllMatchingCandidate`] exists to see through.
+    fn mask_fixture() -> (Optimizer, EGraph, EClassId) {
+        let mut arena = pixelflow_ir::ExprArena::new();
+        let x = arena.push_var(0);
+        let y = arena.push_var(1);
+        let xx = arena.push_binary(pixelflow_ir::OpKind::Mul, x, x);
+        let yy = arena.push_binary(pixelflow_ir::OpKind::Mul, y, y);
+        let sum = arena.push_binary(pixelflow_ir::OpKind::Add, xx, yy);
+        let dist = arena.push_unary(pixelflow_ir::OpKind::Sqrt, sum);
+        let doubled = arena.push_binary(pixelflow_ir::OpKind::Add, dist, dist);
+        let root = arena.push_binary(pixelflow_ir::OpKind::Sub, doubled, doubled);
+        let opt = Optimizer::production()
+            .budget(Budget::Applications(MASK_BUDGET))
+            .no_ceiling();
+        let mut eg = opt.egraph();
+        let root_class =
+            crate::egraph::insert(&arena, root, &mut eg, crate::egraph::Vocabulary::Templates)
+                .expect("insert into e-graph");
+        (opt, eg, root_class)
+    }
+
+    const MASK_BUDGET: u64 = 60;
+    const NODES: usize = 8;
+
+    /// The leave-one-out mask is consumed after it fires: exactly one skip,
+    /// no matter how many later applications look like it.
+    #[test]
+    fn leave_one_out_mask_skips_exactly_one_application() {
+        let (opt, mut eg, root) = mask_fixture();
+        let mut opt = opt.mask(Some(ApplicationMask::leave_one_out(0)));
+        opt.run(&mut eg, root, NODES);
+        assert_eq!(
+            eg.last_replay_mask_skips(),
+            1,
+            "MaskScope::Single must fire exactly once"
+        );
+    }
+
+    /// The confluence-aware mask keeps firing: it skips the seed and every
+    /// later application of the same (rule, canonical matched-class
+    /// content). Under rules that re-match their own installed output, that
+    /// is strictly more than one.
+    #[test]
+    fn all_matching_candidate_mask_skips_every_re_derivation() {
+        let (opt, mut eg, root) = mask_fixture();
+        let mut opt = opt.mask(Some(ApplicationMask::all_matching_candidate(0)));
+        opt.run(&mut eg, root, NODES);
+        assert!(
+            eg.last_replay_mask_skips() > 1,
+            "MaskScope::AllMatchingCandidate must keep masking re-derivations of the seed \
+             candidate, got {} skip(s)",
+            eg.last_replay_mask_skips()
+        );
+    }
+
+    /// A mask whose ordinal is never reached leaves no trace: zero skips,
+    /// and — because nothing was withheld — the same run an unmasked
+    /// optimizer produces, down to the extracted term.
+    #[test]
+    fn a_mask_whose_ordinal_never_fires_changes_nothing() {
+        let (mut plain_opt, mut plain_eg, plain_root) = mask_fixture();
+        let plain = plain_opt.run(&mut plain_eg, plain_root, NODES);
+
+        let (opt, mut eg, root) = mask_fixture();
+        let mut opt = opt.mask(Some(ApplicationMask::leave_one_out(u64::MAX)));
+        let masked = opt.run(&mut eg, root, NODES);
+
+        assert_eq!(eg.last_replay_mask_skips(), 0);
+        assert_eq!(plain.stats.applications, masked.stats.applications);
+        assert_eq!(plain.stats.unions, masked.stats.unions);
+        assert_eq!(plain.choices, masked.choices);
+    }
+
+    /// The whole point of a counterfactual: withholding a real application
+    /// must actually withhold it, and the run must be a different run.
+    ///
+    /// A skipped ordinal is not *burned* — it is left for the next candidate
+    /// in the same scan order — so the mask does not by itself shorten the
+    /// budget. It can still end the run sooner, and on this fixture it does:
+    /// withholding a whole candidate class removes the work that would have
+    /// kept the sweep productive, and the masked run quiesces well inside
+    /// the 60-application budget while the unmasked one spends all of it.
+    /// That is the counterfactual working, so the assertion is the honest
+    /// one — the graphs differ — not an equality that happens to hold on a
+    /// luckier fixture.
+    #[test]
+    fn withholding_a_real_application_changes_the_run() {
+        let (mut plain_opt, mut plain_eg, plain_root) = mask_fixture();
+        let plain = plain_opt.run(&mut plain_eg, plain_root, NODES);
+
+        let (opt, mut eg, root) = mask_fixture();
+        let mut opt = opt.mask(Some(ApplicationMask::all_matching_candidate(0)));
+        let masked = opt.run(&mut eg, root, NODES);
+
+        assert!(eg.last_replay_mask_skips() > 0, "the seed must have fired");
+        assert!(
+            masked.stats.applications <= plain.stats.applications,
+            "a mask can only withhold work, never manufacture it: {} vs {}",
+            masked.stats.applications,
+            plain.stats.applications
+        );
+        assert_ne!(
+            (plain.stats.unions, plain.stats.classes),
+            (masked.stats.unions, masked.stats.classes),
+            "withholding a candidate and every re-derivation of it must change what the \
+             run built — otherwise Δ is measuring nothing"
+        );
     }
 }

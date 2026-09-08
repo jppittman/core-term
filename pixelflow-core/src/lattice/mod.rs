@@ -1,85 +1,50 @@
-//! # Lattice: Representable Functor for Manifold Evaluation
+//! # Lattice: Representable Functor for Kernel Evaluation
 //!
-//! A Lattice is a finite box domain that collapses a Manifold into a discrete
-//! buffer. This is the `tabulate`/`index` pair from representable functors:
+//! A Lattice is a finite box domain that tabulates a [`Manifold`] — a
+//! [`Kernel`] compiled at that domain's shape — into a discrete buffer. This
+//! is the `tabulate`/`index` pair from representable functors:
 //!
-//! - **`collapse`** = `tabulate`: `(Rep -> a) -> F a` -- evaluate at every point
-//! - **`DiscreteManifold::eval`** = `index`: `F a -> Rep -> a` -- read back by coordinate
-//! - **Isomorphism**: `index(collapse(f, domain), i) = f(coord(i))` (up to discretization)
+//! - **[`Lattice::collapse`]** = `tabulate`: `(Rep -> a) -> F a` -- the manifold at every point
+//! - **[`DiscreteManifold::kernel`]** = `index`: `F a -> Rep -> a` -- a gather
+//!   that reads the buffer back by coordinate, composable into any kernel
+//! - **Isomorphism**: `index(collapse(m), i) = m(coord(i))` (up to discretization)
 //!
 //! Nothing computes until a Lattice demands it. A single-point evaluation is
-//! just `Lattice::point` -- the degenerate case with all coordinates fixed.
+//! not a lattice at all -- it is [`Lattice::eval_at`], a different operation
+//! with a different signature: it answers one value, not a domain to
+//! tabulate.
 //!
 //! There is one `Lattice` type, not one per shape. An axis with extent 1 is
-//! fixed at its origin; an axis with extent > 1 is a loop dimension. The
-//! constructors (`frame`, `scanline`, `point`, `index`, `index2`) are sugar
-//! for common shapes -- the shape is data, not a type. Extents only need to
-//! be static at JIT-compile time, which is when the kernel is specialized.
+//! fixed; an axis with extent > 1 is a loop dimension. The constructors
+//! (`frame`, `index2`, `index`) are sugar for common shapes -- the shape is
+//! data, not a type. Extents only need to be static at JIT-compile time,
+//! which is when the kernel is specialized. A coordinate frame is never part
+//! of the shape: pixel-center sampling, a placed glyph, a DPI scale are all
+//! contramaps on the kernel (`Kernel::at`), composed before the lattice ever
+//! sees a coordinate.
 //!
-//! The naive implementations here iterate and call `manifold.eval()` per-batch.
-//! The JIT-backed fast path will override `collapse` later, reading the DAG,
-//! computing variance, and emitting nested loops with hoisting.
+//! A sub-lattice is an index range, and a **[`union::Union`]** is a sum of
+//! them: disjoint ranges, each with the kernel sampled on it, collapsing into
+//! one buffer. That is the domain-side encoding of an extent, the counterpart
+//! to a `select` mask on the range side.
+//!
+//! A kernel with a lattice is the evaluation API:
+//!
+//! ```text
+//! kernel ──compile(shape)──▶ manifold ──bind(buffers)──▶ bound ──collapse──▶ buffer
+//! ```
+//!
+//! One kernel is compiled for the whole domain and the loop nest lives inside
+//! the emitted code, so the compiler owns the hoisting and the register
+//! allocation across all of it. [`Lattice::bake`] is that line for a kernel
+//! that reads no memory. Reductions are a binder in the kernel
+//! (`Kernel::over` and friends), not a fold the lattice performs.
+//!
+//! [`Kernel`]: pixelflow_ir::Kernel
+//! [`Manifold`]: crate::Manifold
 
-use crate::numeric::Numeric;
-use crate::{Field, Manifold, PARALLELISM};
 use alloc::vec;
 use alloc::vec::Vec;
-
-// ============================================================================
-// ReduceOp: Binary operators for fold/reduction
-// ============================================================================
-
-/// Binary operators for reduction over a lattice domain.
-///
-/// Each variant carries a monoid: an identity element and an associative binary op.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ReduceOp {
-    /// Additive monoid: identity = 0, op = +
-    Add,
-    /// Multiplicative monoid: identity = 1, op = *
-    Mul,
-    /// Min monoid: identity = +inf, op = min
-    Min,
-    /// Max monoid: identity = -inf, op = max
-    Max,
-}
-
-impl ReduceOp {
-    /// The identity element for this monoid, broadcast to all SIMD lanes.
-    #[inline(always)]
-    pub(crate) fn identity(self) -> Field {
-        match self {
-            ReduceOp::Add => Field::from(0.0),
-            ReduceOp::Mul => Field::from(1.0),
-            ReduceOp::Min => Field::from(f32::INFINITY),
-            ReduceOp::Max => Field::from(f32::NEG_INFINITY),
-        }
-    }
-
-    /// Apply the binary operation: `acc = acc op val`.
-    #[inline(always)]
-    pub(crate) fn apply(self, acc: Field, val: Field) -> Field {
-        match self {
-            ReduceOp::Add => acc.raw_add(val),
-            ReduceOp::Mul => acc.raw_mul(val),
-            ReduceOp::Min => acc.min(val),
-            ReduceOp::Max => acc.max(val),
-        }
-    }
-
-    /// Fold all SIMD lanes of `acc` into a single scalar.
-    #[inline]
-    pub(crate) fn horizontal(self, acc: Field) -> f32 {
-        let mut lanes = [0.0f32; PARALLELISM];
-        acc.store(&mut lanes);
-        match self {
-            ReduceOp::Add => lanes.iter().sum(),
-            ReduceOp::Mul => lanes.iter().product(),
-            ReduceOp::Min => lanes.iter().copied().fold(f32::INFINITY, f32::min),
-            ReduceOp::Max => lanes.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-        }
-    }
-}
 
 // ============================================================================
 // DiscreteManifold: The result of collapsing a lattice
@@ -154,93 +119,48 @@ impl DiscreteManifold {
     }
 }
 
-// Mark as a ManifoldExpr so ManifoldExt methods (`.at()`, etc.) work on it.
-impl crate::ext::ManifoldExpr for DiscreteManifold {}
-
-/// `index`: read by coordinate. This IS the representable functor's index.
-///
-/// Given Field coordinates (x, y, z, w), converts x and y to integer indices
-/// via nearest-neighbor (floor + clamp), looks up the buffer value, and
-/// returns it as a Field.
-impl Manifold<(Field, Field, Field, Field)> for DiscreteManifold {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, p: (Field, Field, Field, Field)) -> Field {
-        let (x, y, _, _) = p;
-
-        // If the buffer is empty, there's nothing to look up.
-        // Fail loud: this is a programming error, not a recoverable condition.
-        assert!(
-            !self.buffer.is_empty(),
-            "DiscreteManifold::eval called on empty buffer ({}x{})",
-            self.width,
-            self.height,
-        );
-
-        let zero = Field::from(0.0);
-        let max_x = Field::from((self.width.saturating_sub(1)) as f32);
-        let max_y = Field::from((self.height.saturating_sub(1)) as f32);
-
-        // Nearest-neighbor: floor then clamp to valid range.
-        let xi = x.floor().max(zero).min(max_x);
-        let yi = y.floor().max(zero).min(max_y);
-
-        // Linear index = floor(y) * width + floor(x)
-        let w_field = Field::from(self.width as f32);
-        let indices = yi.raw_mul(w_field).raw_add(xi);
-
-        Field::gather(&self.buffer, indices)
-    }
-}
-
 // ============================================================================
-// Lattice: a finite box domain over the four coordinate axes
+// Lattice: a finite box domain over the two coordinate axes
 // ============================================================================
 
-/// A finite box domain over the four coordinate axes (X, Y, Z, W).
+/// A finite box domain over the two coordinate axes (X, Y): the indices
+/// `[0, extent[0]) × [0, extent[1])` and nothing else.
 ///
 /// `extent[i]` is the number of samples along axis `i`; an axis with extent 1
-/// is fixed at `origin[i]`. `origin[i]` is the coordinate of index 0 on each
-/// axis. Iteration is row-major with X innermost (SIMD lanes ride X).
+/// is a fixed point, extent > 1 a loop dimension. Iteration is row-major with
+/// X innermost (SIMD lanes ride X).
 ///
-/// The shape is data, not a type: a frame, a scanline, a point, and a tensor
-/// index range are all the same `Lattice` with different extents. The JIT
-/// specializes on the extents at kernel-compile time.
+/// The shape is data, not a type: a frame, a tensor index range, and a sub-
+/// lattice ([`IndexRange`](crate::IndexRange)) are all the same `Lattice`
+/// shape with different extents. The JIT specializes on the extents at
+/// kernel-compile time.
+///
+/// A `Lattice` is the index, and nothing else — it carries no coordinate
+/// frame. It used to: an `origin` field let two lattices of the same extent
+/// disagree about where their samples fell, which broke the representable
+/// functor's law (`index(collapse(f)) = f`) on paper even though the emitted
+/// code already treated the origin as a runtime argument. Where an origin
+/// used to go, a contramap does instead — pixel-center sampling is
+/// `f ∘ (+½)`, a placed glyph is `f ∘ (−pos)` — composed on the *kernel*
+/// with [`Kernel::at`](pixelflow_ir::Kernel::at) before it ever reaches a
+/// lattice (docs/plans/2026-09-06-lattice-is-the-index.md). There were also
+/// four axes; Z and W left the same way, one stage earlier, because an axis
+/// that never varies is a [`Uniform`](pixelflow_ir::Uniform), not an axis.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Lattice {
-    /// Samples per axis: `[x, y, z, w]`. Extent 1 = fixed axis.
-    pub extent: [u32; 4],
-    /// Coordinate of index 0 on each axis.
-    pub origin: [f32; 4],
+    /// Samples per axis: `[x, y]`. Extent 1 = fixed axis.
+    pub extent: [u32; AXES],
 }
 
+/// Coordinate axes a lattice has.
+pub const AXES: usize = pixelflow_ir::arena::COORD_AXES;
+
 impl Lattice {
-    /// A 2D pixel frame: X varies per pixel, Y per scanline; Z is the fixed
-    /// frame time, W is fixed at 0.
+    /// A 2D pixel frame: X varies per pixel, Y per scanline.
     #[must_use]
-    pub fn frame(width: usize, height: usize, z: f32) -> Self {
+    pub fn frame(width: usize, height: usize) -> Self {
         Self {
-            extent: [width as u32, height as u32, 1, 1],
-            origin: [0.0, 0.0, z, 0.0],
-        }
-    }
-
-    /// A 1D scanline: only X varies; Y, Z, W are fixed.
-    #[must_use]
-    pub fn scanline(width: usize, y: f32, z: f32, w: f32) -> Self {
-        Self {
-            extent: [width as u32, 1, 1, 1],
-            origin: [0.0, y, z, w],
-        }
-    }
-
-    /// A single point: all coordinates fixed. The degenerate (0-loop) case.
-    #[must_use]
-    pub fn point(x: f32, y: f32, z: f32, w: f32) -> Self {
-        Self {
-            extent: [1, 1, 1, 1],
-            origin: [x, y, z, w],
+            extent: [width as u32, height as u32],
         }
     }
 
@@ -248,8 +168,7 @@ impl Lattice {
     #[must_use]
     pub fn index(len: usize) -> Self {
         Self {
-            extent: [len as u32, 1, 1, 1],
-            origin: [0.0; 4],
+            extent: [len as u32, 1],
         }
     }
 
@@ -258,9 +177,56 @@ impl Lattice {
     #[must_use]
     pub fn index2(width: usize, height: usize) -> Self {
         Self {
-            extent: [width as u32, height as u32, 1, 1],
-            origin: [0.0; 4],
+            extent: [width as u32, height as u32],
         }
+    }
+
+    /// Collapse one row of `kernel`: X loops across `width`, Y is fixed at
+    /// row `y0` — the row-range special case of an
+    /// [`IndexRange`](crate::IndexRange), compiled at exactly that range's
+    /// own extent (`[width, 1]`) rather than a taller frame's, since nothing
+    /// above `y0` is ever asked about.
+    ///
+    /// Not a `Lattice` constructor: a fixed row is a coordinate, and a
+    /// coordinate has nowhere to live on a domain that is only an index. A
+    /// caller that wants an arbitrary (possibly fractional) fixed Y wants a
+    /// contramap instead — `kernel.at(&Kernel::x(), &Kernel::constant(y))`
+    /// baked with [`Lattice::frame`], the same move `eval_at` makes for a
+    /// point.
+    ///
+    /// # Panics
+    ///
+    /// Whatever [`IndexRange::bake`](crate::IndexRange::bake) panics for.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[must_use]
+    pub fn scanline(kernel: &pixelflow_ir::Kernel, width: usize, y0: usize) -> DiscreteManifold {
+        if width == 0 {
+            return DiscreteManifold::new(Vec::new(), 0, 1);
+        }
+        union::IndexRange::new(0, y0, width, 1).bake(kernel)
+    }
+
+    /// Evaluate `kernel` at one coordinate: the degenerate case with both
+    /// axes fixed. Not a domain with a one-point extent and a weird origin —
+    /// a different operation, answering a single value rather than
+    /// tabulating a buffer, compiled once at `[1, 1]` and shared by the
+    /// global compile cache across every coordinate this kernel is evaluated
+    /// at (the coordinate is a collapse-time argument, never part of the
+    /// compiled shape).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `kernel` **declares a buffer** — compile and bind it
+    /// yourself, then call
+    /// [`BoundManifold::eval_at`](crate::BoundManifold::eval_at). Also
+    /// panics if this build's `Field` width is not the JIT's, or if
+    /// compilation fails.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[must_use]
+    pub fn eval_at(kernel: &pixelflow_ir::Kernel, x: f32, y: f32) -> f32 {
+        manifold::Manifold::compile(kernel, [1, 1])
+            .bind(&[])
+            .eval_at(x, y)
     }
 
     // ───────────────────── domain queries ──────────────────────
@@ -277,7 +243,7 @@ impl Lattice {
         self.len() == 0
     }
 
-    /// Bitmask of loop axes (extent > 1): bit 0 = X, 1 = Y, 2 = Z, 3 = W.
+    /// Bitmask of loop axes (extent > 1): bit 0 = X, 1 = Y.
     /// Fixed axes are constants from the kernel's point of view.
     #[must_use]
     pub fn loop_mask(&self) -> u8 {
@@ -296,374 +262,92 @@ impl Lattice {
     ///
     /// Panics if `index >= self.len()`.
     #[must_use]
-    pub fn coord(&self, index: usize) -> (f32, f32, f32, f32) {
+    pub fn coord(&self, index: usize) -> (f32, f32) {
         assert!(
             index < self.len(),
             "Lattice::coord index {} out of bounds (len = {})",
             index,
             self.len(),
         );
-        let [ex, ey, ez, _] = self.extent.map(|e| e as usize);
+        let [ex, _] = self.extent.map(|e| e as usize);
         let x = index % ex;
-        let rest = index / ex;
-        let y = rest % ey;
-        let rest = rest / ey;
-        let z = rest % ez;
-        let w = rest / ez;
-        (
-            self.origin[0] + x as f32,
-            self.origin[1] + y as f32,
-            self.origin[2] + z as f32,
-            self.origin[3] + w as f32,
-        )
+        let y = index / ex;
+        (x as f32, y as f32)
     }
 
-    // ───────────────────── collapse (tabulate) ──────────────────────
+    // ─────────────────────── collapse ────────────────────────
 
-    /// Collapse: evaluate the manifold at every point in the domain.
-    /// Returns a discrete manifold (buffer lookup) with `width = extent[0]`
-    /// and `height` = the product of the remaining extents.
+    /// **Tabulate a bound manifold over this domain**: the one verb, and the
+    /// only way a compiled kernel becomes a buffer of numbers.
     ///
-    /// This is `tabulate`: `(Rep -> a) -> F a`.
-    pub fn collapse<M>(&self, manifold: &M) -> DiscreteManifold
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
-        let mut buffer = vec![0.0f32; self.len()];
-        let mut packed = [0.0f32; PARALLELISM];
-        let step = Field::from(PARALLELISM as f32);
-
-        let mut row = 0usize;
-        for w in 0..ew {
-            let w_field = Field::from(self.origin[3] + w as f32);
-            for z in 0..ez {
-                let z_field = Field::from(self.origin[2] + z as f32);
-                for y in 0..ey {
-                    let y_field = Field::from(self.origin[1] + y as f32);
-                    let row_offset = row * ex;
-                    let mut x = 0usize;
-                    let mut x_field = Field::sequential(self.origin[0]);
-
-                    // SIMD hot path: full batches of PARALLELISM points.
-                    while x + PARALLELISM <= ex {
-                        let result = manifold.eval((x_field, y_field, z_field, w_field));
-                        result.store(&mut packed);
-                        buffer[row_offset + x..row_offset + x + PARALLELISM]
-                            .copy_from_slice(&packed);
-                        x += PARALLELISM;
-                        x_field = x_field.raw_add(step);
-                    }
-
-                    // SIMD tail: evaluate the last partial batch.
-                    if x < ex {
-                        let result = manifold.eval((x_field, y_field, z_field, w_field));
-                        result.store(&mut packed);
-                        let tail_len = ex - x;
-                        buffer[row_offset + x..row_offset + ex]
-                            .copy_from_slice(&packed[..tail_len]);
-                    }
-                    row += 1;
-                }
-            }
-        }
-
-        DiscreteManifold::new(buffer, ex, ey * ez * ew)
-    }
-
-    /// Bake a [`Kernel`](pixelflow_ir::Kernel) — the front-end value — over the
-    /// domain: JIT-compile it once (through the global cache) and tabulate. The
-    /// JIT-first path: no combinator manifold, no `Lower`, just the arena the
-    /// `Kernel` already carries. Its `Dwrt` derivatives are resolved by the
-    /// compiler during codegen. Falls back to nothing — a `Kernel` is always
-    /// an arena, always compilable — except when this build's `Field` width is
-    /// not the JIT's, where it panics rather than silently mis-tabulating.
+    /// The manifold must have been compiled at this lattice's extents
+    /// ([`Manifold::compile`](crate::Manifold::compile)) and had every buffer
+    /// slot it declared bound ([`Manifold::bind`](crate::Manifold::bind)).
+    /// Samples are taken at the index itself on every axis — a plain
+    /// coordinate frame is nowhere to be found.
     ///
-    /// Runtime-composed kernels (`Kernel::over`/`.at()`/arithmetic) never run
-    /// through the `kernel!`/`kernel_jit!` macros' e-graph saturation. They do
-    /// not need to be optimized here either: the compile entry runs the
-    /// optimizer itself, so there is no arena shape that reaches a backend
-    /// unoptimized and no caller that has to remember to ask.
+    /// The X/Y loop nest lives *inside* the emitted code, so the whole domain
+    /// is one call rather than one `extern "C"` call per row or SIMD batch.
+    /// The result is a [`DiscreteManifold`] of `extent[0]` columns and
+    /// `extent[1]` rows — the buffer that IS a manifold, which closes
+    /// `index(collapse(f)) = f`.
     ///
-    /// The compiled form is the collapse kernel: the X/Y loop nest lives
-    /// *inside* the emitted code, so each Z/W plane's full-width region is one
-    /// call rather than one `extern "C"` call per row or SIMD batch. Scalar
-    /// tails remain explicit one-batch calls into scratch storage.
+    /// An empty domain collapses to an empty buffer without calling anything.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[must_use]
-    pub fn bake(&self, kernel: &pixelflow_ir::Kernel) -> DiscreteManifold {
-        assert_eq!(
-            core::mem::size_of::<Field>(),
-            pixelflow_codegen::JIT_VECTOR_BYTES,
-            "Lattice::bake: Field width does not match the JIT's emitted width"
-        );
-        let (arena, root) = kernel.parts();
-        let jit = pixelflow_codegen::jit_cache::compile(
-            arena,
-            root,
-            pixelflow_ir::LatticeShape::new(self.extent),
-        )
-        .expect("kernel failed to compile");
-
-        let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
+    pub fn collapse(&self, manifold: &manifold::BoundManifold) -> DiscreteManifold {
+        let [ex, ey] = self.extent.map(|e| e as usize);
         let mut buffer = vec![0.0f32; self.len()];
-        let full_groups = ex / PARALLELISM;
-        let tail = ex % PARALLELISM;
-        // Nothing here binds memory, so the context register must never be
-        // read. A kernel composed with a sampler (`BilinearSampler::kernel`)
-        // does declare buffers, and its gathers would load base pointers out
-        // of this null — refuse it here rather than fault in emitted code.
-        assert!(
-            arena.buffers().is_empty(),
-            "Lattice::bake: kernel declares {} buffer(s), but bake binds none. \
-             Bake a buffer-free kernel, or evaluate the sampler through a path \
-             that binds its memory.",
-            arena.buffers().len()
-        );
-        let ctx = core::ptr::null();
-        let x0 = Field::sequential(self.origin[0]);
-        let x_tail = Field::sequential(self.origin[0] + (full_groups * PARALLELISM) as f32);
-
-        let mut row = 0usize;
-        for w in 0..ew {
-            let w_field = Field::from(self.origin[3] + w as f32);
-            for z in 0..ez {
-                let z_field = Field::from(self.origin[2] + z as f32);
-                let plane_offset = row * ex;
-                if full_groups > 0 && ey > 0 {
-                    let y0 = Field::from(self.origin[1]);
-                    // SAFETY: bake checked size_of::<Field>() == the JIT's
-                    // emitted width. The 2D collapse writes `full_groups`
-                    // batches per row, then skips the scalar tail bytes before
-                    // advancing Y; `ey` rows fit in this Z/W plane.
-                    unsafe {
-                        jit.call_collapse(
-                            ctx,
-                            pixelflow_codegen::TileSlice::new(
-                                buffer[plane_offset..].as_mut_ptr(),
-                                full_groups,
-                                ey,
-                                tail * core::mem::size_of::<f32>(),
-                            ),
-                            pixelflow_codegen::Point4::new(x0, y0, z_field, w_field),
-                        );
-                    }
-                }
-                for y in 0..ey {
-                    let y_field = Field::from(self.origin[1] + y as f32);
-                    let row_offset = row * ex;
-                    if tail > 0 {
-                        let mut scratch = [0.0f32; PARALLELISM];
-                        // SAFETY: as above; scratch holds one whole batch.
-                        unsafe {
-                            jit.call_collapse(
-                                ctx,
-                                pixelflow_codegen::TileSlice::single(scratch.as_mut_ptr()),
-                                pixelflow_codegen::Point4::new(x_tail, y_field, z_field, w_field),
-                            );
-                        }
-                        buffer[row_offset + full_groups * PARALLELISM..row_offset + ex]
-                            .copy_from_slice(&scratch[..tail]);
-                    }
-                    row += 1;
-                }
-            }
+        if !self.is_empty() {
+            let band = manifold::PlaneRegion::at_index(ex, ey, 0, 0);
+            manifold.collapse_rows(band, &mut buffer, ex);
         }
-
-        DiscreteManifold::new(buffer, ex, ey * ez * ew)
+        DiscreteManifold::new(buffer, ex, ey)
     }
 
-    /// Fold all points of the lattice into a per-lane SIMD accumulator.
+    /// Compile a [`Kernel`](pixelflow_ir::Kernel) at this lattice's shape, bind
+    /// nothing, and collapse it: `collapse(compile(k).bind(&[]))` in one line,
+    /// for the buffer-free case that is most of the tree. Every uniform
+    /// argument the kernel has is bound at its default; bit for bit the same
+    /// bake as a block holding those defaults.
     ///
-    /// Each SIMD lane folds an independent stripe of X; the lanes are NOT
-    /// combined. Use [`Lattice::collapse_scalar`] when you want one number
-    /// for the whole domain.
-    pub fn collapse_with<M>(&self, op: ReduceOp, manifold: &M) -> Field
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        self.fold_lanes(op, manifold)
-    }
-
-    /// Fold all points of the lattice into a single scalar using `op`.
-    ///
-    /// This is the full horizontal reduction: SIMD lanes are folded together
-    /// at the end. Use this for index-space semantics (dot products, losses).
-    pub fn collapse_scalar<M>(&self, op: ReduceOp, manifold: &M) -> f32
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        op.horizontal(self.fold_lanes(op, manifold))
-    }
-
-    /// Shared lane-wise fold over the whole domain (tail lanes masked to the
-    /// monoid identity so they do not contribute).
-    fn fold_lanes<M>(&self, op: ReduceOp, manifold: &M) -> Field
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
-        let mut acc = op.identity();
-        let step = Field::from(PARALLELISM as f32);
-
-        for w in 0..ew {
-            let w_field = Field::from(self.origin[3] + w as f32);
-            for z in 0..ez {
-                let z_field = Field::from(self.origin[2] + z as f32);
-                for y in 0..ey {
-                    let y_field = Field::from(self.origin[1] + y as f32);
-                    let mut x = 0usize;
-                    let mut x_field = Field::sequential(self.origin[0]);
-
-                    while x + PARALLELISM <= ex {
-                        let result = manifold.eval((x_field, y_field, z_field, w_field));
-                        acc = op.apply(acc, result);
-                        x += PARALLELISM;
-                        x_field = x_field.raw_add(step);
-                    }
-
-                    // Tail: only the valid lanes contribute; out-of-bounds
-                    // lanes get the identity element so the fold is unaffected.
-                    if x < ex {
-                        let result = manifold.eval((x_field, y_field, z_field, w_field));
-                        let tail_len = ex - x;
-                        let lane_indices = Field::sequential(0.0);
-                        let threshold = Field::from(tail_len as f32);
-                        let mask = lane_indices.lt(threshold);
-                        let masked = Field::select_raw(mask, result, op.identity());
-                        acc = op.apply(acc, masked);
-                    }
-                }
-            }
-        }
-
-        acc
-    }
-
-    // ───────────────────── partial reduction (matmul primitive) ─────────────
-
-    /// Reduce one axis of a 2D (X/Y) lattice, returning a 1D `DiscreteManifold`.
-    ///
-    /// The surviving dimension is remapped to X in the output (height = 1).
-    ///
-    /// - `axis = 0`: reduce over X, keep Y. Output `[j]` = fold over `i` of `m(i, j)`.
-    /// - `axis = 1`: reduce over Y, keep X. Output `[i]` = fold over `j` of `m(i, j)`.
-    ///
-    /// This is the matmul primitive: `collapse_axis(0, Add, W * input)` computes
-    /// `output[j] = sum_i W(i,j) * input(i)`.
+    /// Compilation goes through the global cache, and the compile entry runs
+    /// the optimizer itself, so a runtime-composed kernel
+    /// (`Kernel::over`/`.at()`/arithmetic) — which never sees the
+    /// `kernel!` macro's e-graph saturation — still reaches the
+    /// backend optimized, with no caller having to remember to ask. `Dwrt`
+    /// derivatives are resolved during codegen.
     ///
     /// # Panics
     ///
-    /// Panics if `axis` is not 0 or 1, or if the Z/W axes are not fixed.
-    pub fn collapse_axis<M>(&self, axis: usize, op: ReduceOp, manifold: &M) -> DiscreteManifold
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        assert!(
-            self.extent[2] <= 1 && self.extent[3] <= 1,
-            "Lattice::collapse_axis requires fixed Z and W axes (extents {:?})",
-            self.extent,
-        );
-        match axis {
-            0 => self.collapse_axis0(op, manifold),
-            1 => self.collapse_axis1(op, manifold),
-            _ => panic!(
-                "Lattice::collapse_axis: axis {} out of range (must be 0 or 1)",
-                axis
-            ),
+    /// Panics if the kernel **declares a buffer**: binding nothing leaves that
+    /// slot empty, and [`Manifold::bind`](crate::Manifold::bind) refuses it by
+    /// name rather than letting the gathers load a base pointer out of an
+    /// unbound context. Compile such a kernel yourself and bind its memory.
+    /// Also panics if this build's `Field` width is not the JIT's, or if
+    /// compilation fails.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[must_use]
+    pub fn bake(&self, kernel: &pixelflow_ir::Kernel) -> DiscreteManifold {
+        if self.is_empty() {
+            // No samples, so no code: there is no lattice for the JIT to
+            // specialize to, and `Manifold::compile` refuses the degenerate
+            // extent rather than emitting a loop that runs zero times.
+            let [ex, ey] = self.extent.map(|e| e as usize);
+            return DiscreteManifold::new(Vec::new(), ex, ey);
         }
-    }
-
-    /// Reduce over X, produce one value per Y. Output indexed by X (height=1).
-    fn collapse_axis0<M>(&self, op: ReduceOp, manifold: &M) -> DiscreteManifold
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        let ex = self.extent[0] as usize;
-        let out_len = self.extent[1] as usize;
-        let mut out_buffer = vec![0.0f32; out_len];
-
-        let z_field = Field::from(self.origin[2]);
-        let w_field = Field::from(self.origin[3]);
-        let step = Field::from(PARALLELISM as f32);
-
-        for (j, out) in out_buffer.iter_mut().enumerate() {
-            let y_field = Field::from(self.origin[1] + j as f32);
-            let mut acc = op.identity();
-
-            let mut i = 0usize;
-            let mut x_field = Field::sequential(self.origin[0]);
-
-            while i + PARALLELISM <= ex {
-                let val = manifold.eval((x_field, y_field, z_field, w_field));
-                acc = op.apply(acc, val);
-                i += PARALLELISM;
-                x_field = x_field.raw_add(step);
-            }
-
-            if i < ex {
-                let val = manifold.eval((x_field, y_field, z_field, w_field));
-                let tail_len = ex - i;
-                let lane_indices = Field::sequential(0.0);
-                let threshold = Field::from(tail_len as f32);
-                let mask = lane_indices.lt(threshold);
-                let masked = Field::select_raw(mask, val, op.identity());
-                acc = op.apply(acc, masked);
-            }
-
-            *out = op.horizontal(acc);
-        }
-
-        DiscreteManifold::new(out_buffer, out_len, 1)
-    }
-
-    /// Reduce over Y, produce one value per X. Output indexed by X (height=1).
-    fn collapse_axis1<M>(&self, op: ReduceOp, manifold: &M) -> DiscreteManifold
-    where
-        M: Manifold<(Field, Field, Field, Field), Output = Field>,
-    {
-        let ey = self.extent[1] as usize;
-        let out_len = self.extent[0] as usize;
-        let mut out_buffer = vec![0.0f32; out_len];
-
-        let z_field = Field::from(self.origin[2]);
-        let w_field = Field::from(self.origin[3]);
-
-        for (i, out) in out_buffer.iter_mut().enumerate() {
-            let x_field = Field::from(self.origin[0] + i as f32);
-            let mut acc = op.identity();
-
-            for j in 0..ey {
-                let y_field = Field::from(self.origin[1] + j as f32);
-                let val = manifold.eval((x_field, y_field, z_field, w_field));
-                acc = op.apply(acc, val);
-            }
-
-            // All SIMD lanes are uniform (scalar broadcast over a fixed X index).
-            // A cross-lane reduction would be wrong here: for Add it would multiply
-            // the result by PARALLELISM, for Mul it would raise to the PARALLELISM-th
-            // power, etc. Lane 0 is always correct when all lanes carry the same value.
-            let mut packed = [0.0f32; PARALLELISM];
-            acc.store(&mut packed);
-            #[cfg(debug_assertions)]
-            for k in 1..PARALLELISM {
-                debug_assert!(
-                    (packed[k] - packed[0]).abs() < 1e-4,
-                    "collapse_axis1: lane {} ({}) differs from lane 0 ({}) — manifold must be lane-uniform",
-                    k,
-                    packed[k],
-                    packed[0],
-                );
-            }
-            *out = packed[0];
-        }
-
-        DiscreteManifold::new(out_buffer, out_len, 1)
+        self.collapse(&manifold::Manifold::compile(kernel, self.extent).bind(&[]))
     }
 }
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub mod cell_grid;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub mod manifold;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub mod union;
 
 #[cfg(test)]
 mod tests;
@@ -673,15 +357,14 @@ mod tests;
 // ============================================================================
 
 /// Bilinear read-back of a [`DiscreteManifold`]: the smooth companion to its
-/// nearest-neighbor `eval`.
+/// nearest-neighbour [`DiscreteManifold::kernel`].
 ///
-/// Where the discrete manifold snaps a continuous coordinate to the containing
-/// lattice cell, the sampler reads the four surrounding integer-grid texels
-/// and blends them with the fractional coordinate weights. The blend is a
-/// bound-memory kernel — four `Gather`s plus the weight arithmetic in one
-/// arena — JIT-compiled once at construction and bound to the buffer at each
-/// call, so the read-back goes through the same backend as everything else
-/// rather than through a combinator tree.
+/// Where the discrete manifold's gather snaps a continuous coordinate to the
+/// containing lattice cell, the sampler reads the four surrounding
+/// integer-grid texels and blends them with the fractional coordinate
+/// weights. The blend is a bound-memory kernel — four `Gather`s plus the
+/// weight arithmetic in one arena — that a caller composes into a larger
+/// kernel ([`Self::kernel`]) and compiles at the shape it will collapse over.
 ///
 /// # Coordinate convention
 ///
@@ -703,7 +386,6 @@ mod tests;
 #[derive(Clone)]
 pub struct BilinearSampler {
     tex: DiscreteManifold,
-    jit: alloc::sync::Arc<pixelflow_codegen::JitManifold>,
 }
 
 /// The 4-tap bilinear blend over one declared buffer, as an arena fragment:
@@ -764,7 +446,7 @@ impl BilinearSampler {
 
     /// The 4-tap blend over a buffer of these extents, as a composable
     /// fragment — read it at *computed* coordinates inside a larger kernel
-    /// with `.at(&u, &v, &z, &w)` instead of only at the caller's own.
+    /// with `.at(&u, &v)` instead of only at the caller's own.
     ///
     /// Takes extents rather than a sampler because extents are all the IR
     /// carries; the data binds later. So a program can compose against a
@@ -808,7 +490,7 @@ impl BilinearSampler {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 impl DiscreteManifold {
     /// A nearest-neighbour read of a buffer of these extents, as a composable
-    /// fragment — `.at(&idx, &row, &z, &w)` reads at *computed* indices.
+    /// fragment — `.at(&idx, &row)` reads at *computed* indices.
     ///
     /// One `Gather`, which already carries [`Self::eval`]'s semantics: floor,
     /// clamp to the declared extents, index row-major. Takes extents rather
@@ -836,6 +518,24 @@ impl DiscreteManifold {
         pixelflow_ir::Kernel::from_parts(a, root)
     }
 
+    /// This buffer paired with the identity [`Self::kernel`] declared, ready
+    /// for [`Manifold::bind`](crate::Manifold::bind).
+    ///
+    /// A kernel over a buffer names its memory by identity and nothing else,
+    /// so the two halves have to travel together to reach a collapse; this is
+    /// the other half. The buffer is copied into the `Arc` a bound manifold
+    /// holds — once per bind, not once per band — because a collapsed lattice
+    /// owns its samples outright.
+    #[must_use]
+    pub fn binding(
+        &self,
+    ) -> (
+        pixelflow_ir::arena::BufferIdentity,
+        alloc::sync::Arc<Vec<f32>>,
+    ) {
+        (self.id, alloc::sync::Arc::new(self.buffer.clone()))
+    }
+
     /// This buffer's nearest-neighbour read as a composable fragment. See
     /// [`Self::kernel_for`].
     ///
@@ -851,13 +551,19 @@ impl DiscreteManifold {
         )
     }
 
-    /// Wrap this buffer in a [`BilinearSampler`], JIT-compiling the 4-tap
-    /// blend kernel bound to it.
+    /// Wrap this buffer in a [`BilinearSampler`].
+    ///
+    /// Nothing is compiled here. The sampler carries the buffer and the shape
+    /// of its 4-tap blend; a consumer composes [`BilinearSampler::kernel`]
+    /// into the kernel it is building and compiles that once, at the shape it
+    /// will collapse over. (This used to JIT the blend at a point shape,
+    /// because the sampler was read one SIMD batch at a time through a
+    /// per-batch `eval` — a compile per glyph for a call that no longer
+    /// exists.)
     ///
     /// # Panics
     ///
-    /// Panics on an empty buffer, when an extent exceeds `u32`, or when this
-    /// build's `Field` width does not match the JIT's emitted width.
+    /// Panics on an empty buffer, or when an extent exceeds `u32`.
     #[must_use]
     pub fn bilinear(self) -> BilinearSampler {
         assert!(
@@ -866,41 +572,8 @@ impl DiscreteManifold {
             self.width,
             self.height,
         );
-        assert_eq!(
-            core::mem::size_of::<Field>(),
-            pixelflow_codegen::JIT_VECTOR_BYTES,
-            "DiscreteManifold::bilinear: Field width does not match the JIT's emitted width"
-        );
-        let width = u32::try_from(self.width).expect("buffer width exceeds u32");
-        let height = u32::try_from(self.height).expect("buffer height exceeds u32");
-        let (arena, root) = bilinear_arena(self.id, width, height);
-        // Bound-memory arenas are uncacheable (the code bakes buffer slot
-        // metadata); compile recognizes that and compiles fresh.
-        // Sampled one batch at a time through `Manifold::eval`: a point shape.
-        let jit =
-            pixelflow_codegen::jit_cache::compile(&arena, root, pixelflow_ir::LatticeShape::POINT)
-                .expect("bilinear sampler failed to compile");
-        BilinearSampler { tex: self, jit }
-    }
-}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-impl crate::ext::ManifoldExpr for BilinearSampler {}
-
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-impl Manifold<(Field, Field, Field, Field)> for BilinearSampler {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, (x, y, z, w): (Field, Field, Field, Field)) -> Field {
-        let ctx = [self.tex.buffer.as_ptr()];
-        // SAFETY: `bilinear` checked size_of::<Field>() == JIT_VECTOR_BYTES;
-        // the kernel was compiled from an arena declaring exactly one buffer
-        // whose decl matches `tex`'s extents, and `ctx` binds that buffer's
-        // live base pointer for the duration of the call.
-        unsafe {
-            self.jit
-                .call_bound(ctx.as_ptr(), pixelflow_codegen::Point4::new(x, y, z, w))
-        }
+        let _ = u32::try_from(self.width).expect("buffer width exceeds u32");
+        let _ = u32::try_from(self.height).expect("buffer height exceeds u32");
+        BilinearSampler { tex: self }
     }
 }

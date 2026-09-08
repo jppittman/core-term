@@ -17,11 +17,14 @@
 //! the baked buffer. Texels therefore store *antialiased* coverage — no
 //! post-hoc filtering of hard 0/1 samples.
 //!
+//! Both sides are `Kernel`s, and the morphism is between how they get their
+//! numbers: the analytic glyph computes them, the cached one reads them.
+//!
 //! ```text
 //!            cache_at(size)
 //!     Glyph ──────────────► CachedGlyph
 //!       │                        │
-//!       │ Manifold<I>           │ Manifold<Field>
+//!       │ Kernel                 │ Kernel over a bound buffer
 //!       ▼                        ▼
 //!     coverage                 coverage
 //! ```
@@ -32,8 +35,10 @@
 //! manifold evaluated at `(i + 0.5, j + 0.5)` (see `render/rasterizer`).
 //! The bake follows the same convention: texel `(i, j)` of the coverage
 //! lattice stores the glyph's coverage at continuous coordinate
-//! `(i + 0.5, j + 0.5)` (the lattice origin is `(0.5, 0.5)`).
-//! `CachedGlyph::eval` shifts incoming coordinates by −0.5 into the
+//! `(i + 0.5, j + 0.5)` — a contramap on the kernel before it is baked
+//! over a plain index lattice, since a lattice carries no coordinate frame
+//! of its own to shift by.
+//! [`CachedGlyph::kernel`] shifts incoming coordinates by −0.5 into the
 //! sampler's integer texel grid, so a query at a pixel center returns
 //! the stored texel exactly — the cached glyph reproduces the analytical
 //! antialiased glyph (`Antialiased::new(glyph)`) at pixel centers with no
@@ -55,25 +60,15 @@
 //! let uncached = font.glyph_scaled('A', 17.3);
 //! ```
 
-use pixelflow_core::{
-    At, BilinearSampler, DiscreteManifold, Field, Kernel, Lattice, Manifold, ManifoldExt, Select,
-    W, X, Y, Z,
-};
+use pixelflow_core::{BilinearSampler, DiscreteManifold, Kernel, Lattice};
+use pixelflow_ir::arena::BufferIdentity;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// The standard 4D Field domain type.
-type Field4 = (Field, Field, Field, Field);
-
 use super::ttf::Font;
-
-/// Offset of a texel's sampling point from its integer index.
-///
-/// Texel `(i, j)` stores coverage at continuous coordinate
-/// `(i + TEXEL_CENTER, j + TEXEL_CENTER)`, matching the rasterizer's
-/// pixel-center convention. The bake adds this offset (lattice origin);
-/// `CachedGlyph::eval` subtracts it before bilinear sampling.
-const TEXEL_CENTER: f32 = 0.5;
+// `PIXEL_CENTER` is this crate's shared rasterizer convention (`fonts/mod.rs`)
+// — see the "Coordinate convention" section above for what it means here.
+use super::PIXEL_CENTER;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CachedGlyph: The Morphism
@@ -81,8 +76,8 @@ const TEXEL_CENTER: f32 = 0.5;
 
 /// A glyph baked to a coverage lattice.
 ///
-/// This is the output of the caching morphism: a glyph that evaluates from
-/// memory rather than computing winding numbers. The lattice stores f32
+/// This is the output of the caching morphism: a glyph whose kernel reads
+/// coverage from memory rather than computing winding numbers. The lattice stores f32
 /// *antialiased* coverage values (0.0 to 1.0) — no u8 quantization roundtrip
 /// — sampled back via SIMD gather with bilinear interpolation.
 ///
@@ -102,7 +97,7 @@ pub struct CachedGlyph {
     /// Point-space height (the baked lattice holds `height × density` texels).
     height: usize,
     /// Sample density the lattice was baked at, in texels per point.
-    /// Queries stay in point space; `eval` contramaps by this factor.
+    /// Queries stay in point space; the kernel contramaps by this factor.
     density: f32,
 }
 
@@ -148,11 +143,18 @@ impl CachedGlyph {
             "invalid bake density: {density}"
         );
         let px = px_extent(size, density);
+        // Texel-center convention: texel (i, j) holds coverage at
+        // (i + PIXEL_CENTER, j + PIXEL_CENTER). Used to be the bake
+        // lattice's own origin; a contramap on the kernel now that a
+        // lattice is a pure index.
+        let centered = kernel.at(
+            &Kernel::x().add(&Kernel::constant(PIXEL_CENTER)),
+            &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
+        );
         let lattice = Lattice {
-            extent: [px as u32, px as u32, 1, 1],
-            origin: [TEXEL_CENTER, TEXEL_CENTER, 0.0, 0.0],
+            extent: [px as u32, px as u32],
         };
-        let baked = lattice.bake(kernel);
+        let baked = lattice.bake(&centered);
 
         Self {
             sampler: Arc::new(baked.bilinear()),
@@ -163,35 +165,50 @@ impl CachedGlyph {
     }
 }
 
-impl Manifold<Field4> for CachedGlyph {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, p: Field4) -> Field {
-        // Contramap the point-space query into the sampler's texel grid:
-        // point p lands on baked pixel p·density, and texel (i, j) holds
-        // coverage at pixel center (i + 0.5, j + 0.5), so the composed
-        // embedding is p·density − 0.5. At integer densities this maps a
-        // density-matched sample grid exactly onto texel centers, so the
-        // bilinear read degenerates to lossless lookup.
-        let sampled = At {
-            inner: &*self.sampler,
-            x: X * self.density - TEXEL_CENTER,
-            y: Y * self.density - TEXEL_CENTER,
-            z: Z,
-            w: W,
+impl CachedGlyph {
+    /// This glyph's coverage in point space, as a [`Kernel`]: the baked texels
+    /// read through the bilinear blend, masked to the glyph's own extent.
+    ///
+    /// The kernel declares the coverage buffer as a slot, so it reaches
+    /// numbers the way any kernel over bound memory does — compiled at a
+    /// lattice's shape, [`Self::binding`] bound into it, collapsed. It
+    /// composes like any other kernel too: `.at(..)` reads it at computed
+    /// coordinates, which is how [`CachedText`] places it.
+    ///
+    /// Two things happen here and nowhere else. The query is contramapped into
+    /// the sampler's texel grid: point `p` lands on baked pixel `p·density`,
+    /// and texel `(i, j)` holds coverage at pixel center `(i + ½, j + ½)`, so
+    /// the composed embedding is `p·density − ½` — at integer densities a
+    /// density-matched sample grid lands exactly on texel centers and the
+    /// bilinear read degenerates to a lossless lookup. And the result is
+    /// masked to the point-space extent, because a gather clamps out-of-range
+    /// indices to the edge texel, which would smear a nonzero boundary
+    /// coverage (a descender reaching the em-box bottom) out to infinity.
+    /// Outside the bake there is no data — coverage is zero.
+    #[must_use]
+    pub fn kernel(&self) -> Kernel {
+        let texel = |axis: &Kernel| {
+            axis.mul(&Kernel::constant(self.density))
+                .sub(&Kernel::constant(PIXEL_CENTER))
         };
-        // Bound to the point-space extent: `DiscreteManifold` clamps
-        // out-of-range indices to the edge texel, which would smear nonzero
-        // boundary coverage (e.g. a descender reaching the em-box bottom) to
-        // infinity. Outside the bake there is no data — coverage is zero.
-        let in_bounds = X.ge(0.0) & X.le(self.width as f32) & Y.ge(0.0) & Y.le(self.height as f32);
-        Select {
-            cond: in_bounds,
-            if_true: sampled,
-            if_false: 0.0f32,
-        }
-        .eval(p)
+        let sampled = self
+            .sampler
+            .kernel()
+            .at(&texel(&Kernel::x()), &texel(&Kernel::y()));
+        let zero = Kernel::constant(0.0);
+        let in_bounds = Kernel::x()
+            .ge(&zero)
+            .and(&Kernel::x().le(&Kernel::constant(self.width as f32)))
+            .and(&Kernel::y().ge(&zero))
+            .and(&Kernel::y().le(&Kernel::constant(self.height as f32)));
+        in_bounds.select(&sampled, &zero)
+    }
+
+    /// The coverage buffer paired with the identity [`Self::kernel`] declared,
+    /// for [`Manifold::bind`](pixelflow_core::Manifold::bind).
+    #[must_use]
+    pub fn binding(&self) -> (BufferIdentity, Arc<Vec<f32>>) {
+        self.coverage().binding()
     }
 }
 
@@ -199,14 +216,20 @@ impl Manifold<Field4> for CachedGlyph {
 // GlyphCache: The Functor
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Quantization granularity for size buckets: multiples of 4 pixels, for
+/// SIMD-friendly dimensions.
+const SIZE_BUCKET_GRANULARITY: usize = 4;
+
+/// Smallest size bucket a glyph can round down into.
+const MIN_SIZE_BUCKET: usize = 8;
+
 /// Size bucket for cache keys.
 ///
 /// Quantizes sizes to reduce cache entries while maintaining quality.
-/// Uses multiples of 4 pixels for SIMD-friendly dimensions.
 fn size_bucket(size: f32) -> usize {
-    // Round up to next multiple of 4, minimum 8
-    let bucket = ((size / 4.0).ceil() as usize) * 4;
-    bucket.max(8)
+    let granularity = SIZE_BUCKET_GRANULARITY as f32;
+    let bucket = ((size / granularity).ceil() as usize) * SIZE_BUCKET_GRANULARITY;
+    bucket.max(MIN_SIZE_BUCKET)
 }
 
 /// Quantization granularity for density buckets: eighth-of-a-texel steps.
@@ -394,9 +417,9 @@ pub struct CachedText {
 }
 
 /// One laid-out glyph: a baked sampler plus its pen translation and the
-/// bucket→request scale. Runtime composition of opaque baked textures — the
-/// one place composition legitimately stays in `Manifold` land (the samplers
-/// enter the language as bound buffers, not expressions).
+/// bucket→request scale. The samplers enter the language as bound buffers
+/// rather than as expressions, so placing one is a contramap of its kernel
+/// and a run is their sum.
 #[derive(Clone)]
 struct PlacedGlyph {
     glyph: CachedGlyph,
@@ -451,21 +474,39 @@ impl CachedText {
     }
 }
 
-impl Manifold<Field4> for CachedText {
-    type Output = Field;
+impl CachedText {
+    /// The whole run's coverage as one [`Kernel`]: every glyph's kernel read
+    /// at its own pen position, summed.
+    ///
+    /// Composition is `Kernel::at` and `Kernel::sum` — the same two moves the
+    /// layout above already makes, now in the language rather than in a Rust
+    /// loop over `eval`, so the run compiles as one kernel with each glyph's
+    /// coverage a declared slot.
+    #[must_use]
+    pub fn kernel(&self) -> Kernel {
+        let placed: Vec<Kernel> = self
+            .glyphs
+            .iter()
+            .map(|pg| {
+                let scale = Kernel::constant(pg.inv_scale);
+                pg.glyph.kernel().at(
+                    &Kernel::x().sub(&Kernel::constant(pg.dx)).mul(&scale),
+                    &Kernel::y().mul(&scale),
+                )
+            })
+            .collect();
+        Kernel::sum(&placed)
+    }
 
-    #[inline(always)]
-    fn eval(&self, p: Field4) -> Field {
-        let (x, y, z, w) = p;
-        let mut acc = Field::from(0.0);
-        for pg in &self.glyphs {
-            let s = Field::from(pg.inv_scale);
-            let u = ((x - Field::from(pg.dx)) * s).eval(p);
-            let v = (y * s).eval(p);
-            let cov = pg.glyph.eval((u, v, z, w));
-            acc = (acc + cov).eval(p);
-        }
-        acc
+    /// Every glyph's coverage buffer paired with the identity its kernel
+    /// declared, for [`Manifold::bind`](pixelflow_core::Manifold::bind).
+    ///
+    /// One entry per placed glyph, repeats included: a run that draws the same
+    /// character twice reads one buffer through one identity, and `bind`
+    /// matches slots to it by that identity rather than by position.
+    #[must_use]
+    pub fn bindings(&self) -> Vec<(BufferIdentity, Arc<Vec<f32>>)> {
+        self.glyphs.iter().map(|pg| pg.glyph.binding()).collect()
     }
 }
 
@@ -476,18 +517,45 @@ impl Manifold<Field4> for CachedText {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_core::ManifoldCompat;
+    use pixelflow_core::Manifold;
 
     // Use the fallback font, which is committed directly (not Git-LFS) so the
     // tests run without `git lfs pull`. NotoSansMono is an LFS pointer.
     const FONT_DATA: &[u8] = include_bytes!("../../assets/DejaVuSansMono-Fallback.ttf");
 
-    /// Evaluate a coverage manifold at a single point via public lattice API.
-    fn sample<M>(m: &M, x: f32, y: f32) -> f32
-    where
-        M: Manifold<Field4, Output = Field>,
-    {
-        Lattice::point(x, y, 0.0, 0.0).collapse(m).into_buffer()[0]
+    /// A coverage kernel tabulated over `lattice`: compile at its shape, bind
+    /// the buffers the kernel declared, collapse. The whole evaluation API.
+    fn collapse(
+        kernel: &Kernel,
+        buffers: &[(BufferIdentity, Arc<Vec<f32>>)],
+        lattice: Lattice,
+    ) -> Vec<f32> {
+        let bound = Manifold::compile(kernel, lattice.extent).bind(buffers);
+        lattice.collapse(&bound).into_buffer()
+    }
+
+    /// One glyph's coverage over `lattice`.
+    fn glyph_grid(g: &CachedGlyph, lattice: Lattice) -> Vec<f32> {
+        collapse(&g.kernel(), &[g.binding()], lattice)
+    }
+
+    /// One glyph's coverage over a `size × size` point-space grid, sampled at
+    /// pixel centers — the rasterizer's own convention, applied as a
+    /// contramap since the lattice it bakes over is a pure index.
+    fn glyph_grid_at_pixel_centers(g: &CachedGlyph, size: usize) -> Vec<f32> {
+        let centered = g.kernel().at(
+            &Kernel::x().add(&Kernel::constant(0.5)),
+            &Kernel::y().add(&Kernel::constant(0.5)),
+        );
+        collapse(&centered, &[g.binding()], Lattice::frame(size, size))
+    }
+
+    /// One glyph's coverage at a single point — not a lattice at all now,
+    /// since a lattice carries no coordinate; a bound manifold answers a
+    /// point directly.
+    fn sample(g: &CachedGlyph, x: f32, y: f32) -> f32 {
+        let bound = Manifold::compile(&g.kernel(), [1, 1]).bind(&[g.binding()]);
+        bound.eval_at(x, y)
     }
 
     /// Center of mass of a row-major coverage grid.
@@ -582,7 +650,7 @@ mod tests {
         // must reproduce the analytical coverage kernel to f32 tolerance.
         //
         // The reference is the interpreter, not a second bake. This used to
-        // compare against `Lattice::point(x, y, ..).bake(&kernel)`, which was
+        // compare against `Lattice::point(x, y).bake(&kernel)`, which was
         // bit-exact while every lattice compiled identically. Extraction is
         // now priced against the lattice a kernel runs over, so a point and a
         // 32×32 frame are two compilations of the same function: over a frame
@@ -610,7 +678,7 @@ mod tests {
             let reference = pixelflow_ir::eval_scalar(
                 &lowered,
                 lowered_root,
-                &[x, y, 0.0, 0.0],
+                &[x, y],
                 &pixelflow_ir::BindingTable::empty(),
             );
             let baked = sample(&cached, x, y);
@@ -632,23 +700,19 @@ mod tests {
         let kernel = font.glyph_kernel_scaled('A', size as f32).unwrap();
 
         // Direct analytical tabulation at pixel centers (the rasterizer's
-        // sampling convention).
-        let direct = Lattice {
-            extent: [size as u32, size as u32, 1, 1],
-            origin: [0.5, 0.5, 0.0, 0.0],
-        }
-        .bake(&kernel);
+        // sampling convention), as a contramap over a plain index lattice.
+        let centered = kernel.at(
+            &Kernel::x().add(&Kernel::constant(0.5)),
+            &Kernel::y().add(&Kernel::constant(0.5)),
+        );
+        let direct = Lattice::frame(size, size).bake(&centered);
         let (dx, dy) = center_of_mass(direct.buffer(), size);
 
         // Cached glyph sampled at pixel centers through the full
         // bake -> bilinear -> half-pixel-shift chain.
         let cached = CachedGlyph::from_kernel(&kernel, size, 1.0);
-        let resampled = Lattice {
-            extent: [size as u32, size as u32, 1, 1],
-            origin: [0.5, 0.5, 0.0, 0.0],
-        }
-        .collapse(&cached);
-        let (cx, cy) = center_of_mass(resampled.buffer(), size);
+        let resampled = glyph_grid_at_pixel_centers(&cached, size);
+        let (cx, cy) = center_of_mass(&resampled, size);
 
         assert!(
             (dx - cx).abs() < 0.05 && (dy - cy).abs() < 0.05,
@@ -720,30 +784,24 @@ mod tests {
     }
 
     #[test]
-    fn cached_glyph_eval() {
-        use pixelflow_core::Field;
-
+    fn a_cached_glyph_collapses_over_its_own_extent() {
         let font = Font::parse(FONT_DATA).unwrap();
         let glyph = font.glyph_kernel_scaled('A', 32.0).unwrap();
         let cached = CachedGlyph::from_kernel(&glyph, 32, 1.0);
 
-        // Evaluate coverage at multiple coordinates - should not panic
-        for x in [2.0, 8.0, 16.0, 24.0] {
-            for y in [2.0, 8.0, 16.0, 24.0] {
-                let _coverage = cached.eval_raw(
-                    Field::from(x),
-                    Field::from(y),
-                    Field::from(0.0),
-                    Field::from(0.0),
-                );
-            }
-        }
+        // One kernel, one buffer slot, one compile at the grid's shape: the
+        // whole point-space extent comes back in one collapse, in [0, 1].
+        let grid = glyph_grid(&cached, Lattice::frame(32, 32));
+        assert_eq!(grid.len(), 32 * 32);
+        assert!(
+            grid.iter().all(|v| (0.0..=1.0).contains(v)),
+            "sampled coverage left [0, 1]"
+        );
+        assert!(grid.iter().sum::<f32>() > 10.0, "glyph 'A' sampled blank");
     }
 
     #[test]
-    fn cached_text_creation() {
-        use pixelflow_core::Field;
-
+    fn a_run_collapses_as_one_kernel_over_its_glyphs_buffers() {
         let font = Font::parse(FONT_DATA).unwrap();
         let mut cache = GlyphCache::new();
 
@@ -752,17 +810,16 @@ mod tests {
         // Should have cached glyphs for H, e, l, o (l appears twice)
         assert_eq!(cache.len(), 4);
 
-        // Evaluate text at multiple coordinates - should not panic
-        for x in [0.0, 5.0, 10.0, 20.0] {
-            for y in [5.0, 10.0, 15.0] {
-                let _coverage = text.eval_raw(
-                    Field::from(x),
-                    Field::from(y),
-                    Field::from(0.0),
-                    Field::from(0.0),
-                );
-            }
-        }
+        // The run is ONE kernel — every glyph placed by `Kernel::at` and
+        // summed — over the four distinct coverage buffers its glyphs bake,
+        // repeats sharing one identity. Collapsing it draws the whole line.
+        let lattice = Lattice::frame(48, 16);
+        let line = collapse(&text.kernel(), &text.bindings(), lattice);
+        assert_eq!(line.len(), 48 * 16);
+        assert!(
+            line.iter().sum::<f32>() > 10.0,
+            "the run collapsed to no ink at all"
+        );
     }
 
     #[test]
@@ -798,15 +855,9 @@ mod tests {
 
         // Ink sits in the same place: centers of mass over the same
         // point-space grid agree to well under a point.
-        let grid = |g: &CachedGlyph| {
-            Lattice {
-                extent: [16, 16, 1, 1],
-                origin: [0.5, 0.5, 0.0, 0.0],
-            }
-            .collapse(g)
-        };
-        let (x1, y1) = center_of_mass(grid(&d1).buffer(), 16);
-        let (x2, y2) = center_of_mass(grid(&d2).buffer(), 16);
+        let grid = |g: &CachedGlyph| glyph_grid_at_pixel_centers(g, 16);
+        let (x1, y1) = center_of_mass(&grid(&d1), 16);
+        let (x2, y2) = center_of_mass(&grid(&d2), 16);
         assert!(
             (x1 - x2).abs() < 0.25 && (y1 - y2).abs() < 0.25,
             "density moved the glyph: d1 ({x1}, {y1}) vs d2 ({x2}, {y2})"

@@ -8,15 +8,8 @@ license = "Apache-2.0"
 
 [lib]
 proc-macro = true
-# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
-bench = false
 
 [features]
-# P3 transition scaffolding (docs/plans/2026-07-20-kernel-unification.md):
-# route eligible `kernel!` bodies through the arena/JIT backend instead of the
-# combinator emitter. Not the default until the parity suite and font goldens
-# say so — see the routing note in `kernel`.
-arena-backend = []
 # Forwards to `pixelflow-search/saturation-telemetry`: the macro-tier
 # `optimize()` entry (`src/optimize.rs`) emits one JSONL saturation record
 # per e-graph pass when this is on. See `pixelflow-search/src/telemetry.rs`
@@ -34,8 +27,3 @@ pixelflow-codegen = { path = "../pixelflow-codegen" }
 [dev-dependencies]
 pixelflow-core = { path = "../pixelflow-core" }
 pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
-criterion = "0.5"
-
-[[bench]]
-name = "macro_bench"
-harness = false

@@ -1,0 +1,1098 @@
+{
+  "n_rows": 208,
+  "n_by_band": {
+    "classical": 208
+  },
+  "skipped_names": [],
+  "tiers": [
+    {
+      "band": "classical",
+      "b": 100,
+      "n": 208,
+      "y_registered": 0.163,
+      "l_registered_pct": 48.47,
+      "ratio_threshold": 0.837,
+      "gap_threshold_pct": 24.235,
+      "unguided_regret_at_b_pct": {
+        "n": 208,
+        "q1": 58.321354139715254,
+        "median": 106.29802743387705,
+        "q3": 36320.50246594385,
+        "p90": 69646.90201276095,
+        "max": 264387.0894677237,
+        "inf_count": 0
+      },
+      "unguided_regret_at_4b_pct": {
+        "n": 208,
+        "q1": 0.2896852231872276,
+        "median": 36.89525739761156,
+        "q3": 85.79828830446357,
+        "p90": 29341.551269448242,
+        "max": 145020.980794782,
+        "inf_count": 0
+      },
+      "unguided_truncation_loss_pct": {
+        "n": 208,
+        "q1": 0.15804151270415684,
+        "median": 42.81757147892886,
+        "q3": 17276.914404380164,
+        "p90": 47441.26828588531,
+        "max": 247121.70077628794,
+        "inf_count": 0
+      },
+      "arms": [
+        {
+          "arm": "control",
+          "ratio_vs_unguided_at_b": {
+            "n": 208,
+            "q1": 0.0029711857507135975,
+            "median": 0.5519133688066392,
+            "q3": 0.6912856381940209,
+            "p90": 0.7942544572701986,
+            "max": 497.2900422150484,
+            "inf_count": 0
+          },
+          "improved": 202,
+          "unchanged": 0,
+          "worse": 6,
+          "gap_vs_unguided_at_4b_pct": {
+            "n": 208,
+            "q1": -33.48466911717817,
+            "median": -12.450262398460046,
+            "q3": 0.28596043523253595,
+            "p90": 1.2315817583744395,
+            "max": 33162.890365448504,
+            "inf_count": 0
+          },
+          "regret_pct": {
+            "n": 208,
+            "q1": 0.5668473311551647,
+            "median": 2.1733624325508427,
+            "q3": 9.859434033908602,
+            "p90": 29.59726007132503,
+            "max": 67605.95600676819,
+            "inf_count": 0
+          },
+          "gap_closed_frac": {
+            "n": 195,
+            "q1": 0.999969923099209,
+            "median": 1.000893073390976,
+            "q3": 75.52848837209302,
+            "p90": 530.5749999999999,
+            "max": 1000523.9166666666,
+            "inf_count": 0
+          },
+          "structural_share_pooled": 0.2216826923076923,
+          "strict_precision_pooled": 0.296875,
+          "rounds_to_b": {
+            "n": 208,
+            "q1": 3.0,
+            "median": 3.0,
+            "q3": 3.0,
+            "p90": 4.0,
+            "max": 4.0,
+            "inf_count": 0
+          },
+          "app_actual_at_b": {
+            "n": 208,
+            "q1": 100.0,
+            "median": 100.0,
+            "q3": 100.0,
+            "p90": 100.0,
+            "max": 100.0,
+            "inf_count": 0
+          },
+          "ended_before_b": 0,
+          "reaches_empirical_best": 101,
+          "vs_production_better": 20,
+          "vs_production_equal": 20,
+          "vs_production_worse": 168,
+          "ended_at_apps": {
+            "n": 208,
+            "q1": 265.25,
+            "median": 501.0,
+            "q3": 800.0,
+            "p90": 800.0,
+            "max": 800.0,
+            "inf_count": 0
+          },
+          "burned_key_share": {
+            "n": 138,
+            "q1": 0.0,
+            "median": 0.0,
+            "q3": 0.0,
+            "p90": 0.0,
+            "max": 0.0,
+            "inf_count": 0
+          }
+        },
+        {
+          "arm": "linear",
+          "ratio_vs_unguided_at_b": {
+            "n": 208,
+            "q1": 0.002921344337674319,
+            "median": 0.5207103501472568,
+            "q3": 0.6697141597466212,
+            "p90": 0.751147250686663,
+            "max": 497.2900422150484,
+            "inf_count": 0
+          },
+          "improved": 200,
+          "unchanged": 0,
+          "worse": 8,
+          "gap_vs_unguided_at_4b_pct": {
+            "n": 208,
+            "q1": -36.79118052693946,
+            "median": -18.89479262970298,
+            "q3": 0.3147291976764083,
+            "p90": 1.527365025359352,
+            "max": 40749.06275468622,
+            "inf_count": 0
+          },
+          "regret_pct": {
+            "n": 208,
+            "q1": 0.4498440783640366,
+            "median": 1.4252346077311637,
+            "q3": 5.853510230393559,
+            "p90": 19.468084829820896,
+            "max": 111872.5772619214,
+            "inf_count": 0
+          },
+          "gap_closed_frac": {
+            "n": 195,
+            "q1": 0.9999641298782536,
+            "median": 1.0017314408522877,
+            "q3": 104.42760180995475,
+            "p90": 1873.5437956204375,
+            "max": 1000524.9166666666,
+            "inf_count": 0
+          },
+          "structural_share_pooled": 0.2864903846153846,
+          "strict_precision_pooled": 0.3033173076923077,
+          "rounds_to_b": {
+            "n": 208,
+            "q1": 3.0,
+            "median": 3.0,
+            "q3": 3.0,
+            "p90": 4.0,
+            "max": 4.0,
+            "inf_count": 0
+          },
+          "app_actual_at_b": {
+            "n": 208,
+            "q1": 100.0,
+            "median": 100.0,
+            "q3": 100.0,
+            "p90": 100.0,
+            "max": 100.0,
+            "inf_count": 0
+          },
+          "ended_before_b": 0,
+          "reaches_empirical_best": 107,
+          "vs_production_better": 29,
+          "vs_production_equal": 14,
+          "vs_production_worse": 165,
+          "ended_at_apps": {
+            "n": 208,
+            "q1": 268.25,
+            "median": 498.5,
+            "q3": 800.0,
+            "p90": 800.0,
+            "max": 800.0,
+            "inf_count": 0
+          },
+          "burned_key_share": {
+            "n": 136,
+            "q1": 0.0,
+            "median": 0.0,
+            "q3": 0.0,
+            "p90": 0.0,
+            "max": 0.0,
+            "inf_count": 0
+          }
+        }
+      ],
+      "y_clause_holds": {
+        "control": true,
+        "linear": true
+      },
+      "approach_clause_holds": {
+        "control": true,
+        "linear": true
+      },
+      "beats_unguided_at_all": {
+        "control": true,
+        "linear": true
+      },
+      "linear_beats_control": true,
+      "unguided_structural_share_pooled": 0.616469057258531,
+      "unguided_strict_precision_pooled": 0.020206766917293232,
+      "linear_lt_control": 92,
+      "linear_eq_control": 24,
+      "linear_gt_control": 92,
+      "round1b": {
+        "dev_reference_median": {
+          "control": 0.5655,
+          "linear": 0.5366
+        },
+        "d_arm": {
+          "control": -0.013586631193360788,
+          "linear": -0.015889649852743215
+        },
+        "margin_m": 0.06,
+        "d_diff_control_minus_linear": 0.0023030186593824276,
+        "both_arms_d_le_zero": true,
+        "both_arms_d_le_margin": true,
+        "verdict": "H_null"
+      }
+    },
+    {
+      "band": "classical",
+      "b": 200,
+      "n": 208,
+      "y_registered": 0.09,
+      "l_registered_pct": 21.92,
+      "ratio_threshold": 0.91,
+      "gap_threshold_pct": 10.96,
+      "unguided_regret_at_b_pct": {
+        "n": 208,
+        "q1": 48.72846982679627,
+        "median": 80.39426810423348,
+        "q3": 26019.35455385063,
+        "p90": 60647.557568549106,
+        "max": 264387.0894677237,
+        "inf_count": 0
+      },
+      "unguided_regret_at_4b_pct": {
+        "n": 208,
+        "q1": 0.0,
+        "median": 0.19152036041305495,
+        "q3": 29.46421250435886,
+        "p90": 25402.54595971295,
+        "max": 111872.35351699062,
+        "inf_count": 0
+      },
+      "unguided_truncation_loss_pct": {
+        "n": 208,
+        "q1": 10.263442540319872,
+        "median": 57.310372231780846,
+        "q3": 169.95784312398047,
+        "p90": 38114.83856782312,
+        "max": 263392.40315908234,
+        "inf_count": 0
+      },
+      "arms": [
+        {
+          "arm": "control",
+          "ratio_vs_unguided_at_b": {
+            "n": 208,
+            "q1": 0.014640551300140154,
+            "median": 0.6026984256209786,
+            "q3": 0.7090649531001267,
+            "p90": 0.9956858357844487,
+            "max": 178.88657957244655,
+            "inf_count": 0
+          },
+          "improved": 197,
+          "unchanged": 4,
+          "worse": 7,
+          "gap_vs_unguided_at_4b_pct": {
+            "n": 208,
+            "q1": -0.24009920549677166,
+            "median": 0.0,
+            "q3": 0.34731943954131006,
+            "p90": 3.6432420552726863,
+            "max": 38527.04475308642,
+            "inf_count": 0
+          },
+          "regret_pct": {
+            "n": 208,
+            "q1": 0.09096296439050477,
+            "median": 0.5586274452331133,
+            "q3": 4.608289878044296,
+            "p90": 4192.753686875429,
+            "max": 67605.95600676819,
+            "inf_count": 0
+          },
+          "gap_closed_frac": {
+            "n": 189,
+            "q1": 0.995291902071563,
+            "median": 0.9999973358190142,
+            "q3": 1.0000099976305616,
+            "p90": 4.025235042735117,
+            "max": 429325.28571428574,
+            "inf_count": 0
+          },
+          "structural_share_pooled": 0.3671447582433831,
+          "strict_precision_pooled": 0.17011681206565135,
+          "rounds_to_b": {
+            "n": 208,
+            "q1": 4.0,
+            "median": 4.0,
+            "q3": 5.25,
+            "p90": 8.0,
+            "max": 10.0,
+            "inf_count": 0
+          },
+          "app_actual_at_b": {
+            "n": 208,
+            "q1": 200.0,
+            "median": 200.0,
+            "q3": 200.0,
+            "p90": 200.0,
+            "max": 200.0,
+            "inf_count": 0
+          },
+          "ended_before_b": 28,
+          "reaches_empirical_best": 101,
+          "vs_production_better": 18,
+          "vs_production_equal": 47,
+          "vs_production_worse": 143,
+          "ended_at_apps": {
+            "n": 208,
+            "q1": 265.25,
+            "median": 501.0,
+            "q3": 800.0,
+            "p90": 800.0,
+            "max": 800.0,
+            "inf_count": 0
+          },
+          "burned_key_share": {
+            "n": 138,
+            "q1": 0.0,
+            "median": 0.0,
+            "q3": 0.0,
+            "p90": 0.0,
+            "max": 0.0,
+            "inf_count": 0
+          }
+        },
+        {
+          "arm": "linear",
+          "ratio_vs_unguided_at_b": {
+            "n": 208,
+            "q1": 0.09825326322346521,
+            "median": 0.6004342380167894,
+            "q3": 0.7189698095563116,
+            "p90": 0.998525434649011,
+            "max": 453.1138009049774,
+            "inf_count": 0
+          },
+          "improved": 193,
+          "unchanged": 4,
+          "worse": 11,
+          "gap_vs_unguided_at_4b_pct": {
+            "n": 208,
+            "q1": -0.13674224918205508,
+            "median": 0.0,
+            "q3": 0.28423938667199555,
+            "p90": 0.8847063544752097,
+            "max": 72123.69275153264,
+            "inf_count": 0
+          },
+          "regret_pct": {
+            "n": 208,
+            "q1": 0.0,
+            "median": 0.4002754783319906,
+            "q3": 2.9878277507192,
+            "p90": 15360.962757557243,
+            "max": 72123.69275153264,
+            "inf_count": 0
+          },
+          "gap_closed_frac": {
+            "n": 189,
+            "q1": 0.9960998439937597,
+            "median": 1.0,
+            "q3": 1.0,
+            "p90": 3.9963247863248603,
+            "max": 429363.0,
+            "inf_count": 0
+          },
+          "structural_share_pooled": 0.4178924583066857,
+          "strict_precision_pooled": 0.16827372460274512,
+          "rounds_to_b": {
+            "n": 208,
+            "q1": 4.0,
+            "median": 5.0,
+            "q3": 5.0,
+            "p90": 7.0,
+            "max": 9.0,
+            "inf_count": 0
+          },
+          "app_actual_at_b": {
+            "n": 208,
+            "q1": 200.0,
+            "median": 200.0,
+            "q3": 200.0,
+            "p90": 200.0,
+            "max": 200.0,
+            "inf_count": 0
+          },
+          "ended_before_b": 28,
+          "reaches_empirical_best": 107,
+          "vs_production_better": 16,
+          "vs_production_equal": 58,
+          "vs_production_worse": 134,
+          "ended_at_apps": {
+            "n": 208,
+            "q1": 268.25,
+            "median": 498.5,
+            "q3": 800.0,
+            "p90": 800.0,
+            "max": 800.0,
+            "inf_count": 0
+          },
+          "burned_key_share": {
+            "n": 136,
+            "q1": 0.0,
+            "median": 0.0,
+            "q3": 0.0,
+            "p90": 0.0,
+            "max": 0.0,
+            "inf_count": 0
+          }
+        }
+      ],
+      "y_clause_holds": {
+        "control": true,
+        "linear": true
+      },
+      "approach_clause_holds": {
+        "control": true,
+        "linear": true
+      },
+      "beats_unguided_at_all": {
+        "control": true,
+        "linear": true
+      },
+      "linear_beats_control": true,
+      "unguided_structural_share_pooled": 0.6303597727750894,
+      "unguided_strict_precision_pooled": 0.025163054912686725,
+      "linear_lt_control": 64,
+      "linear_eq_control": 90,
+      "linear_gt_control": 54,
+      "round1b": {
+        "dev_reference_median": {
+          "control": 0.6991,
+          "linear": 0.6959
+        },
+        "d_arm": {
+          "control": -0.09640157437902142,
+          "linear": -0.09546576198321055
+        },
+        "margin_m": 0.07,
+        "d_diff_control_minus_linear": -0.0009358123958108644,
+        "both_arms_d_le_zero": true,
+        "both_arms_d_le_margin": true,
+        "verdict": "H_null"
+      }
+    }
+  ],
+  "production": [
+    {
+      "band": "classical",
+      "n": 208,
+      "n_probe_none": 0,
+      "stops": {
+        "quiesced": 194,
+        "timeout": 14
+      },
+      "effective_b": {
+        "n": 208,
+        "q1": 1029.75,
+        "median": 3816.0,
+        "q3": 14656.75,
+        "p90": 27399.80000000001,
+        "max": 85941.0,
+        "inf_count": 0
+      },
+      "share_apps_ge": {
+        "100": 1.0,
+        "200": 1.0,
+        "400": 0.9615384615384616,
+        "800": 0.8076923076923077,
+        "1600": 0.6634615384615384
+      },
+      "ratio_vs_unguided_at_100": {
+        "n": 208,
+        "q1": 0.003528740928300865,
+        "median": 0.5208665300494031,
+        "q3": 0.6703800564458468,
+        "p90": 0.9978048153644659,
+        "max": 497.2900422150484,
+        "inf_count": 0
+      },
+      "ratio_vs_unguided_at_200": {
+        "n": 208,
+        "q1": 0.31682378748804596,
+        "median": 0.5947914183355416,
+        "q3": 0.7178482147388059,
+        "p90": 0.999621351326572,
+        "max": 211.77175524031335,
+        "inf_count": 0
+      },
+      "ratio_vs_unguided_at_4b_800": {
+        "n": 208,
+        "q1": 0.9823799415567794,
+        "median": 1.0,
+        "q3": 1.0,
+        "p90": 1.0,
+        "max": 330.1503300330033,
+        "inf_count": 0
+      },
+      "regret_vs_best_pct": {
+        "n": 208,
+        "q1": 0.0,
+        "median": 0.0,
+        "q3": 0.0,
+        "p90": 20240.4818365737,
+        "max": 75103.26699211415,
+        "inf_count": 0
+      },
+      "equivalent_checkpoint_hist": {
+        "0": 4,
+        "25": 16,
+        "200": 6,
+        "400": 43,
+        "800": 51,
+        "1600": 44,
+        "3200": 22,
+        "6400": 7,
+        "12800": 11,
+        "25600": 4
+      },
+      "app_bracket_hist": {
+        "400": 8,
+        "800": 30,
+        "1600": 27,
+        "3200": 29,
+        "6400": 25,
+        "12800": 24,
+        "25600": 31,
+        "51200": 16,
+        "102400": 5,
+        "18446744073709551615": 13
+      },
+      "iterations": {
+        "n": 208,
+        "q1": 5.0,
+        "median": 6.0,
+        "q3": 9.0,
+        "p90": 10.0,
+        "max": 20.0,
+        "inf_count": 0
+      },
+      "classes_after": {
+        "n": 208,
+        "q1": 277.5,
+        "median": 607.0,
+        "q3": 1909.75,
+        "p90": 4534.0,
+        "max": 4999.0,
+        "inf_count": 0
+      }
+    }
+  ],
+  "enabler": [
+    {
+      "band": "classical",
+      "n": 208,
+      "unguided_strict_positive_total": 7681,
+      "numeric_total": 6546,
+      "numeric_structurally_enabled": 5470,
+      "numeric_direct_child_structural": 530,
+      "numeric_present_in": {
+        "control": 5398,
+        "linear": 5407
+      },
+      "enabled_present_in": {
+        "control": 4325,
+        "linear": 4334
+      },
+      "structural_share_at_b": {
+        "control": {
+          "100": 0.2216826923076923,
+          "200": 0.3671447582433831
+        },
+        "linear": {
+          "100": 0.2864903846153846,
+          "200": 0.4178924583066857
+        },
+        "unguided": {
+          "100": 0.616469057258531,
+          "200": 0.6303597727750894
+        }
+      },
+      "top_rules_at_100": {
+        "control": [
+          [
+            "even-negation",
+            7832
+          ],
+          [
+            "commutative",
+            2956
+          ],
+          [
+            "power-sqrt",
+            2174
+          ],
+          [
+            "power-recip",
+            1497
+          ],
+          [
+            "constant-fold",
+            1425
+          ],
+          [
+            "involution",
+            1356
+          ],
+          [
+            "fma-fusion",
+            929
+          ],
+          [
+            "power-rsqrt",
+            581
+          ]
+        ],
+        "linear": [
+          [
+            "even-negation",
+            7566
+          ],
+          [
+            "commutative",
+            2602
+          ],
+          [
+            "fma-fusion",
+            2128
+          ],
+          [
+            "power-sqrt",
+            1871
+          ],
+          [
+            "constant-fold",
+            1247
+          ],
+          [
+            "power-recip",
+            1236
+          ],
+          [
+            "associative",
+            688
+          ],
+          [
+            "involution",
+            670
+          ]
+        ],
+        "unguided": [
+          [
+            "commutative",
+            17054
+          ],
+          [
+            "involution",
+            5920
+          ],
+          [
+            "constant-fold",
+            3885
+          ],
+          [
+            "canonicalize",
+            756
+          ],
+          [
+            "inverse-annihilation",
+            49
+          ]
+        ]
+      },
+      "seen_keys_per_application": {
+        "control": {
+          "n": 208,
+          "q1": 1.0,
+          "median": 1.0,
+          "q3": 1.0,
+          "p90": 1.0,
+          "max": 1.0,
+          "inf_count": 0
+        },
+        "linear": {
+          "n": 208,
+          "q1": 1.0,
+          "median": 1.0,
+          "q3": 1.0,
+          "p90": 1.0,
+          "max": 1.0,
+          "inf_count": 0
+        }
+      }
+    }
+  ],
+  "strata": null,
+  "rule_firing": [
+    {
+      "set": "classical",
+      "n": 208,
+      "n_with_rule_index": 208,
+      "arms": {
+        "control": {
+          "20": {
+            "rule_name": "doubling",
+            "fired_at_100": 58,
+            "strict_at_100": 10,
+            "fired_at_200": 255,
+            "strict_at_200": 36,
+            "fired_full": 1366,
+            "strict_full": 44,
+            "exprs_with_firing_full": 149
+          },
+          "30": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 47,
+            "strict_at_100": 5,
+            "fired_at_200": 161,
+            "strict_at_200": 8,
+            "fired_full": 388,
+            "strict_full": 8,
+            "exprs_with_firing_full": 84
+          },
+          "31": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 23,
+            "strict_at_100": 6,
+            "fired_at_200": 104,
+            "strict_at_200": 7,
+            "fired_full": 245,
+            "strict_full": 8,
+            "exprs_with_firing_full": 54
+          },
+          "32": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 0,
+            "strict_full": 0,
+            "exprs_with_firing_full": 0
+          },
+          "33": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 0,
+            "strict_full": 0,
+            "exprs_with_firing_full": 0
+          },
+          "34": {
+            "rule_name": "even-negation",
+            "fired_at_100": 602,
+            "strict_at_100": 316,
+            "fired_at_200": 1078,
+            "strict_at_200": 345,
+            "fired_full": 1330,
+            "strict_full": 345,
+            "exprs_with_firing_full": 179
+          },
+          "36": {
+            "rule_name": "sin-angle-addition",
+            "fired_at_100": 10,
+            "strict_at_100": 0,
+            "fired_at_200": 42,
+            "strict_at_200": 0,
+            "fired_full": 210,
+            "strict_full": 1,
+            "exprs_with_firing_full": 50
+          },
+          "37": {
+            "rule_name": "cos-angle-addition",
+            "fired_at_100": 15,
+            "strict_at_100": 0,
+            "fired_at_200": 73,
+            "strict_at_200": 2,
+            "fired_full": 319,
+            "strict_full": 4,
+            "exprs_with_firing_full": 51
+          },
+          "38": {
+            "rule_name": "reverse-angle-addition",
+            "fired_at_100": 12,
+            "strict_at_100": 10,
+            "fired_at_200": 40,
+            "strict_at_200": 17,
+            "fired_full": 155,
+            "strict_full": 19,
+            "exprs_with_firing_full": 50
+          },
+          "39": {
+            "rule_name": "half-angle-product",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 17,
+            "strict_full": 0,
+            "exprs_with_firing_full": 4
+          },
+          "40": {
+            "rule_name": "pythagorean",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 0,
+            "strict_full": 0,
+            "exprs_with_firing_full": 0
+          }
+        },
+        "linear": {
+          "20": {
+            "rule_name": "doubling",
+            "fired_at_100": 312,
+            "strict_at_100": 34,
+            "fired_at_200": 391,
+            "strict_at_200": 34,
+            "fired_full": 1386,
+            "strict_full": 41,
+            "exprs_with_firing_full": 150
+          },
+          "30": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 56,
+            "strict_at_100": 6,
+            "fired_at_200": 157,
+            "strict_at_200": 8,
+            "fired_full": 372,
+            "strict_full": 8,
+            "exprs_with_firing_full": 84
+          },
+          "31": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 20,
+            "strict_at_100": 6,
+            "fired_at_200": 91,
+            "strict_at_200": 8,
+            "fired_full": 229,
+            "strict_full": 8,
+            "exprs_with_firing_full": 54
+          },
+          "32": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 0,
+            "strict_full": 0,
+            "exprs_with_firing_full": 0
+          },
+          "33": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 0,
+            "strict_full": 0,
+            "exprs_with_firing_full": 0
+          },
+          "34": {
+            "rule_name": "even-negation",
+            "fired_at_100": 823,
+            "strict_at_100": 343,
+            "fired_at_200": 1126,
+            "strict_at_200": 344,
+            "fired_full": 1389,
+            "strict_full": 344,
+            "exprs_with_firing_full": 179
+          },
+          "36": {
+            "rule_name": "sin-angle-addition",
+            "fired_at_100": 38,
+            "strict_at_100": 1,
+            "fired_at_200": 69,
+            "strict_at_200": 1,
+            "fired_full": 227,
+            "strict_full": 2,
+            "exprs_with_firing_full": 50
+          },
+          "37": {
+            "rule_name": "cos-angle-addition",
+            "fired_at_100": 38,
+            "strict_at_100": 0,
+            "fired_at_200": 84,
+            "strict_at_200": 2,
+            "fired_full": 309,
+            "strict_full": 4,
+            "exprs_with_firing_full": 50
+          },
+          "38": {
+            "rule_name": "reverse-angle-addition",
+            "fired_at_100": 50,
+            "strict_at_100": 18,
+            "fired_at_200": 69,
+            "strict_at_200": 18,
+            "fired_full": 174,
+            "strict_full": 19,
+            "exprs_with_firing_full": 49
+          },
+          "39": {
+            "rule_name": "half-angle-product",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 16,
+            "strict_full": 0,
+            "exprs_with_firing_full": 4
+          },
+          "40": {
+            "rule_name": "pythagorean",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 0,
+            "strict_full": 0,
+            "exprs_with_firing_full": 0
+          }
+        },
+        "unguided": {
+          "20": {
+            "rule_name": "doubling",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 7,
+            "strict_at_200": 1,
+            "fired_full": 24132,
+            "strict_full": 55,
+            "exprs_with_firing_full": 153
+          },
+          "30": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 13,
+            "strict_at_200": 2,
+            "fired_full": 1391,
+            "strict_full": 10,
+            "exprs_with_firing_full": 86
+          },
+          "31": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 10,
+            "strict_at_200": 1,
+            "fired_full": 635,
+            "strict_full": 8,
+            "exprs_with_firing_full": 54
+          },
+          "32": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 0,
+            "strict_full": 0,
+            "exprs_with_firing_full": 0
+          },
+          "33": {
+            "rule_name": "odd-negation",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 0,
+            "strict_full": 0,
+            "exprs_with_firing_full": 0
+          },
+          "34": {
+            "rule_name": "even-negation",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 68,
+            "strict_at_200": 31,
+            "fired_full": 5035,
+            "strict_full": 341,
+            "exprs_with_firing_full": 179
+          },
+          "36": {
+            "rule_name": "sin-angle-addition",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 2,
+            "strict_at_200": 0,
+            "fired_full": 1696,
+            "strict_full": 2,
+            "exprs_with_firing_full": 53
+          },
+          "37": {
+            "rule_name": "cos-angle-addition",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 1,
+            "strict_at_200": 0,
+            "fired_full": 1556,
+            "strict_full": 4,
+            "exprs_with_firing_full": 55
+          },
+          "38": {
+            "rule_name": "reverse-angle-addition",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 2,
+            "strict_at_200": 0,
+            "fired_full": 3571,
+            "strict_full": 18,
+            "exprs_with_firing_full": 53
+          },
+          "39": {
+            "rule_name": "half-angle-product",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 2436,
+            "strict_full": 0,
+            "exprs_with_firing_full": 15
+          },
+          "40": {
+            "rule_name": "pythagorean",
+            "fired_at_100": 0,
+            "strict_at_100": 0,
+            "fired_at_200": 0,
+            "strict_at_200": 0,
+            "fired_full": 137,
+            "strict_full": 0,
+            "exprs_with_firing_full": 3
+          }
+        }
+      }
+    }
+  ],
+  "context": {
+    "arms": "[\"unguided\", \"control\", \"linear\"]",
+    "checkpoint": "pixelflow-pipeline/data/guide_checkpoint_r2g_regime_v1.json",
+    "claim_guide": "LinearReturnGuide[return-mse]",
+    "corpus": "pixelflow-pipeline/data/corpus_dev.bin",
+    "guided_grid": "[25, 50, 100, 200, 400, 800] (unguided: [25, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200, 102400, 204800])",
+    "load_at_end": "4:55  up 51 days, 19:28, 2 users, load averages: 8.18 9.41 7.93",
+    "load_at_start": "4:54  up 51 days, 19:27, 2 users, load averages: 10.44 9.93 8.03",
+    "source_rev": "cf8814a8b4e83ca117bf69be2be44a3f6ddc449e",
+    "structural_rules": "[\"commutative\", \"associative\", \"reverse-associative\", \"distribute\", \"fma-fusion\", \"identity\"]",
+    "train_guide_report": "docs/results/2026-09-01-train-guide-report.json"
+  }
+}

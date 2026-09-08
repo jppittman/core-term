@@ -1,10 +1,17 @@
 //! # PixelFlow IR
 //!
-//! The shared Intermediate Representation (IR) and backend abstraction.
+//! The shared Intermediate Representation (IR).
 //!
 //! - **Traits**: `Op` trait defines behavior, `EmitStyle` for codegen.
 //! - **Ops**: Unit structs (`Add`, `Mul`) implement `Op`.
-//! - **Backend**: SIMD execution traits.
+//!
+//! A SIMD backend abstraction (`Backend`/`SimdOps`) lived here, then moved to
+//! `pixelflow-core` on 2026-08-02 (it was not IR and not codegen — it lived
+//! beside `Field`, which it backed). It backed a per-batch "combinator"
+//! evaluation tier that the JIT superseded; both the tier and the abstraction
+//! are gone (docs/plans/2026-09-06-kernel-with-a-lattice.md). `Field` now
+//! reaches its two remaining constructors as inherent methods on
+//! `pixelflow-core`'s own `pub(crate)` lane types, with no trait at all.
 
 // NOTE: `no_std` support (disabling the `std` feature) is currently
 // incomplete: `cargo check -p pixelflow-ir --no-default-features` fails with
@@ -34,8 +41,17 @@ pub mod arena;
 pub mod passes;
 pub use arena::{ExprArena, ExprId, ExprNode};
 
-pub mod lower;
-pub use lower::{Lower, LowerEnv};
+/// The term language the e-graph speaks: destructure a node, rebuild a node.
+/// Naming it is what makes an optimizer expressible as an endomorphism on the
+/// IR rather than as a hand-rolled conversion per tier.
+pub mod term;
+mod term_arena;
+pub use term::{Children, Ir, Shape};
+
+/// Optimization as an endomorphism on the IR — including the identity, which
+/// is what `kernel_raw!` means and what a measurement's control arm needs.
+pub mod optimize;
+pub use optimize::{Identity, Optimize, Rewritten, Then};
 
 pub mod binding;
 pub use binding::{BindError, BindingTable};
@@ -53,7 +69,7 @@ pub use eval::{
 };
 
 pub mod kernel;
-pub use kernel::{Kernel, Monoid};
+pub use kernel::{Bits, Kernel, Monoid, Scalar, Uniform};
 
 pub use kind::OpKind;
 pub use kind::known_method_names;

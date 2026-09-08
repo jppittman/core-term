@@ -241,8 +241,10 @@ impl<'g> Extraction<'g> {
 // ============================================================================
 //
 // The extraction-head program that used to drive this search with a trained
-// NNUE tied the static table on schedule-free kernels
-// (docs/paper/2026-08-egraph-nnue-parity.md) — but JP's ruling on the
+// NNUE tied the static table on schedule-free kernels (workshop paper on
+// branch `claude/workshop-writeup`, PR #1072, closed without merging — not
+// in this tree; see docs/plans/2026-09-01-schedule-cost-model-denotation.md)
+// — but JP's ruling on the
 // program's SHAPE was narrower than "delete everything it touched":
 // "I don't think what we have was the correct shape. I think it's right as
 // an idea. [...] Egraph extraction is the place where code gen's schedule
@@ -838,6 +840,12 @@ fn repair_choices_well_founded(egraph: &EGraph, root: EClassId, choices: &mut [O
 ///
 /// Uses dynamic programming: cost(class) = min over all nodes in class.
 ///
+/// The third return value is the **tree** cost of the arena returned
+/// alongside it — every child summed at every use, sharing never priced,
+/// which is the objective the DP minimizes. The arena itself is a DAG and
+/// the emitted kernel pays each distinct node once; for that number use
+/// [`extract_dag`] and read [`ExtractedDAG::dag_cost`].
+///
 /// # Type Parameter
 ///
 /// The cost function can be any type implementing `CostFunction`:
@@ -900,7 +908,7 @@ pub fn extract<C: CostFunction>(
 
             for (idx, node) in nodes.iter().enumerate() {
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
+                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => {
                         costs.node_cost(node, None)
                     }
                     ENode::Op { children, .. } => {
@@ -939,11 +947,21 @@ pub fn extract<C: CostFunction>(
         }
     }
 
-    let total_cost = best_cost[egraph.find(root).0 as usize].unwrap_or(usize::MAX);
-
     // Seals `best_node` into an `Extraction`, repairing any mutual cycles
     // the DP recorded before the tree is built.
     let extraction = Extraction::from_dp(egraph, root, best_node);
+    // Costed from the repaired choices, so the returned number is the cost of
+    // the returned arena. Reading `best_cost[root]` here (as this did before
+    // #1111) reports the pre-repair DP total, which names a different term
+    // whenever the repair rewrote a pick.
+    let total_cost = cost_of_choices(
+        egraph,
+        root,
+        extraction.choices(),
+        costs,
+        LatticeShape::POINT,
+    )
+    .tree;
     let (arena, root_id) = choices_to_arena(&extraction);
     (arena, root_id, total_cost)
 }
@@ -995,15 +1013,23 @@ pub fn compute_ref_counts(egraph: &EGraph, root: EClassId, choices: &[Option<usi
     counts
 }
 
-/// Build an `ExtractedDAG` from NNUE extraction choices + reference counts.
+/// Build an `ExtractedDAG` from extraction choices + reference counts.
 ///
-/// Bridges the NNUE hill-climbing extractor (which produces per-e-class choices)
-/// with DAG codegen (which needs `ExtractedDAG` with sharing info for let-bindings).
+/// Bridges an extractor that produces per-e-class choices with DAG codegen
+/// (which needs `ExtractedDAG`'s sharing info for let-bindings).
+///
+/// `cost` is passed in rather than recomputed because this function has no
+/// cost model: the caller that made these choices is the one that knows what
+/// they were priced against. It must be [`cost_of_choices`] of *these*
+/// choices — [`Optimized::cost`](super::Optimized::cost) is exactly that.
+/// Fabricating a zero here (as this did before #1111) puts a number in
+/// [`ExtractedDAG::total_cost`] that describes nothing.
 pub fn build_extracted_dag_from_choices(
     egraph: &EGraph,
     root: EClassId,
     choices: &[Option<usize>],
     ref_counts: &[u32],
+    cost: ChoiceCost,
 ) -> ExtractedDAG {
     let canonical_root = egraph.find(root);
 
@@ -1063,7 +1089,8 @@ pub fn build_extracted_dag_from_choices(
         shared,
         schedule,
         choices: choices.to_vec(),
-        total_cost: 0,
+        total_cost: cost.tree,
+        dag_cost: cost.dag,
     }
 }
 
@@ -1197,7 +1224,7 @@ fn pin_shift_counts(
 pub fn choices_to_arena(
     extraction: &Extraction<'_>,
 ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
-    use pixelflow_ir::{ExprArena, ExprId};
+    use pixelflow_ir::{Children, ExprArena, ExprId, Ir, Shape};
 
     let egraph = extraction.egraph();
     let root = extraction.root();
@@ -1228,16 +1255,6 @@ pub fn choices_to_arena(
     // SIGKILLed at 2.7GB inside this loop). A cyclic choice set is an
     // extractor bug and must be reported as one, loudly, with the class id.
     let mut color: Vec<u8> = alloc::vec![0; num_classes];
-    // Buffer identity → declared slot in the output arena. Distinct e-classes
-    // can carry the same identity only if their decls differ, which is a
-    // corrupt graph (one memory, two extents) — assert, never alias silently.
-    let mut buffer_slots: alloc::collections::BTreeMap<
-        pixelflow_ir::arena::BufferIdentity,
-        (
-            pixelflow_ir::arena::BufferId,
-            pixelflow_ir::arena::BufferDecl,
-        ),
-    > = alloc::collections::BTreeMap::new();
     let mut result_stack: Vec<ExprId> = Vec::new();
     let mut task_stack: Vec<Task> = alloc::vec![Task::Visit(root)];
 
@@ -1282,39 +1299,36 @@ pub fn choices_to_arena(
 
                 match node {
                     ENode::Var(var_idx) => {
-                        let expr_id = arena.push_var(*var_idx);
+                        let expr_id = arena.embed(Shape::Var(*var_idx));
                         if idx < id_map.len() {
                             id_map[idx] = Some(expr_id);
                         }
                         result_stack.push(expr_id);
                     }
                     ENode::Const(bits) => {
-                        let expr_id = arena.push_const(f32::from_bits(*bits));
+                        let expr_id = arena.embed(Shape::Const(f32::from_bits(*bits)));
                         if idx < id_map.len() {
                             id_map[idx] = Some(expr_id);
                         }
                         result_stack.push(expr_id);
                     }
                     ENode::Buffer(decl) => {
-                        // One slot per distinct identity: e-classes already
-                        // dedupe equal decls, so a repeat identity here means
-                        // two decls disagreeing on extents.
-                        let buf_id = match buffer_slots.get(&decl.id) {
-                            Some(&(buf_id, prior)) => {
-                                assert!(
-                                    prior == *decl,
-                                    "choices_to_arena: BufferIdentity declared twice with \
-                                     different extents ({prior:?} vs {decl:?})"
-                                );
-                                buf_id
-                            }
-                            None => {
-                                let buf_id = arena.declare_buffer(*decl);
-                                buffer_slots.insert(decl.id, (buf_id, *decl));
-                                buf_id
-                            }
-                        };
-                        let expr_id = arena.push_buffer(buf_id);
+                        // One slot per distinct identity, and the assertion
+                        // that a repeat identity agrees on extents, both live
+                        // in `ExprArena`'s `embed`: declaring a buffer is what
+                        // the destination representation does, not what the
+                        // walk over the e-graph does.
+                        let expr_id = arena.embed(Shape::Buffer(*decl));
+                        if idx < id_map.len() {
+                            id_map[idx] = Some(expr_id);
+                        }
+                        result_stack.push(expr_id);
+                    }
+                    ENode::Uniform(decl) => {
+                        // Same rule: the decl (identity and default) is
+                        // redeclared by the destination arena, one slot per
+                        // identity.
+                        let expr_id = arena.embed(Shape::Uniform(*decl));
                         if idx < id_map.len() {
                             id_map[idx] = Some(expr_id);
                         }
@@ -1381,15 +1395,12 @@ pub fn choices_to_arena(
                 });
                 let child_ids: Vec<pixelflow_ir::ExprId> = result_stack.drain(start..).collect();
 
-                let op_kind = op.kind();
-
-                let expr_id = match arity {
-                    0 => arena.push_const(0.0), // Degenerate zero-arity Op — treat as 0.
-                    1 => arena.push_unary(op_kind, child_ids[0]),
-                    2 => arena.push_binary(op_kind, child_ids[0], child_ids[1]),
-                    3 => arena.push_ternary(op_kind, child_ids[0], child_ids[1], child_ids[2]),
-                    _ => arena.push_nary(op_kind, &child_ids),
-                };
+                // Arity dispatch is the destination's business: `embed` picks
+                // the unary/binary/ternary/n-ary node. A zero-arity `Op` is
+                // malformed and `embed` says so — where this used to
+                // materialise it as the constant 0, which is a wrong answer
+                // wearing a right answer's clothes.
+                let expr_id = arena.embed(Shape::Op(op.kind(), Children::Many(&child_ids)));
 
                 if idx < id_map.len() {
                     id_map[idx] = Some(expr_id);
@@ -1438,8 +1449,29 @@ pub struct ExtractedDAG {
     /// Best node choice per e-class (indexed by canonical e-class ID).
     pub choices: Vec<Option<usize>>,
 
-    /// Total cost of the extracted expression.
+    /// **Tree** cost of the term in [`Self::choices`]: every child summed at
+    /// every use, so sharing is never priced. This is the objective the
+    /// extraction DP minimizes, and it is *not* what the emitted kernel pays
+    /// — see [`Self::dag_cost`], which is the number a caller asking "what
+    /// will this kernel cost?" wants. On `shader:julia_set` the two are
+    /// ~1.4e7 and 716 (`docs/results/2026-09-02-extraction-gap.md`).
+    ///
+    /// Read from the *repaired* choices, so it describes the term this
+    /// struct returns (#1111). Before that fix it was the pre-repair DP
+    /// total, which named a different term on 132 of 302 measured kernels.
     pub total_cost: usize,
+
+    /// **DAG** cost of the term in [`Self::choices`]: each distinct chosen
+    /// e-class priced once, which is what the emitted kernel pays.
+    /// [`choices_to_arena`] materializes one arena node per reachable
+    /// e-class and codegen let-binds the shared ones, so under
+    /// [`LatticeShape::POINT`] this equals the latency-prior cost of that
+    /// arena — the property every measurement in this repo assumes when it
+    /// re-costs the materialized arena instead of reading a field here.
+    ///
+    /// The DP does not minimize this (#1116); it is the honest price of what
+    /// the DP happened to choose.
+    pub dag_cost: usize,
 }
 
 impl ExtractedDAG {
@@ -1460,6 +1492,15 @@ impl ExtractedDAG {
     /// Get the index of the best node for an e-class.
     pub fn best_node_idx(&self, class: EClassId) -> Option<usize> {
         self.choices.get(class.0 as usize).and_then(|o| *o)
+    }
+
+    /// The two reported costs as the pair they are.
+    #[must_use]
+    pub fn cost(&self) -> ChoiceCost {
+        ChoiceCost {
+            tree: self.total_cost,
+            dag: self.dag_cost,
+        }
     }
 }
 
@@ -1495,7 +1536,7 @@ fn node_variance(
         ENode::Var(v) => var_variance(*v),
         // A buffer's contents are fixed for the kernel's lifetime; a read of
         // one varies with its index, which is the `Gather`'s other child.
-        ENode::Const(_) | ENode::Buffer(_) => Variance::CONST,
+        ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => Variance::CONST,
         ENode::Op { children, .. } => children.iter().fold(Variance::CONST, |acc, &child| {
             let c = egraph.find(child);
             if c == canonical {
@@ -1503,6 +1544,143 @@ fn node_variance(
             }
             acc.union(best_var[c.0 as usize])
         }),
+    }
+}
+
+/// The cost of one *settled* extraction, in both of the shapes that matter.
+///
+/// The two numbers differ by exactly how much sharing the choice function
+/// induces, and the gap is not cosmetic: on `shader:julia_set` the tree cost
+/// is ~1.4e7 against a DAG cost of 716, a 20,000x sharing ratio
+/// (`docs/results/2026-09-02-extraction-gap.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChoiceCost {
+    /// Every child summed at every use — **sharing is never priced**, so a
+    /// subterm reached ten times is paid ten times. This is the objective
+    /// [`extract_dag_scoped`]'s DP minimizes, which is why it is reported:
+    /// comparing the DP against a reference means comparing this number.
+    pub tree: usize,
+
+    /// Each distinct chosen e-class priced **once** — what the emitted kernel
+    /// actually pays, since [`choices_to_arena`] materializes exactly one
+    /// arena node per reachable e-class and codegen let-binds the shared ones.
+    ///
+    /// A caller asking "what will this kernel cost?" wants this number.
+    pub dag: usize,
+}
+
+/// Cost the term named by `choices`, under `costs`, weighted by `shape`.
+///
+/// This costs *the choice function it is given* — nothing is minimized here,
+/// no node is reconsidered. Pass a settled, well-founded choice map (the
+/// output of [`repair_choices_well_founded`], or [`Extraction::choices`]);
+/// costing the raw DP table instead is exactly the #1111 bug this exists to
+/// close, so a cyclic map panics rather than returning a number for a term
+/// that cannot be materialized.
+///
+/// Weighting matches [`extract_dag_scoped`]: a node's op cost is multiplied
+/// by [`LatticeShape::evals`] of the variance of the *chosen* form below it,
+/// so a Z-only subexpression is priced once per frame and an X-dependent one
+/// once per sample. Leaves are free ([`CostModel::node_op_cost`]), so under
+/// [`LatticeShape::POINT`] `ChoiceCost::dag` equals the latency-prior cost of
+/// the arena `choices_to_arena` builds from the same map.
+///
+/// # Panics
+///
+/// If a reachable e-class has no recorded choice, if a recorded index is out
+/// of bounds, or if the choice graph is cyclic — all three are broken
+/// invariants of the producing extractor, not recoverable states.
+pub fn cost_of_choices<C: CostFunction>(
+    egraph: &EGraph,
+    root: EClassId,
+    choices: &[Option<usize>],
+    costs: &C,
+    shape: LatticeShape,
+) -> ChoiceCost {
+    let chosen = |canonical: EClassId| -> &ENode {
+        let idx = canonical.0 as usize;
+        let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or_else(|| {
+            panic!(
+                "cost_of_choices: e-class {} is reachable from root {} but has no recorded \
+                 choice — cost a settled choice map (post-repair), never a partial one",
+                idx, root.0
+            )
+        });
+        let nodes = egraph.nodes(canonical);
+        assert!(
+            node_idx < nodes.len(),
+            "cost_of_choices: node_idx {} out of bounds ({}) for e-class {}",
+            node_idx,
+            nodes.len(),
+            idx
+        );
+        &nodes[node_idx]
+    };
+
+    let num_classes = egraph.num_classes();
+    let mut tree: Vec<Option<usize>> = alloc::vec![None; num_classes];
+    let mut var: Vec<Variance> = alloc::vec![Variance::CONST; num_classes];
+    // 0 = unvisited, 1 = on the current path, 2 = costed.
+    let mut color: Vec<u8> = alloc::vec![0u8; num_classes];
+    let mut dag = 0usize;
+
+    let root_canonical = egraph.find(root);
+    let mut stack: Vec<(EClassId, bool)> = alloc::vec![(root_canonical, false)];
+
+    while let Some((class, children_done)) = stack.pop() {
+        let canonical = egraph.find(class);
+        let idx = canonical.0 as usize;
+
+        if !children_done {
+            if color[idx] == 2 {
+                continue;
+            }
+            assert!(
+                color[idx] != 1,
+                "cost_of_choices: the choice graph is CYCLIC — e-class {} is reached again \
+                 through its own chosen descendants (root {}). A cyclic map names no term, \
+                 so it has no cost; repair it before costing it",
+                idx,
+                root.0
+            );
+            color[idx] = 1;
+            stack.push((canonical, true));
+            if let ENode::Op { children, .. } = chosen(canonical) {
+                for &child in children {
+                    stack.push((child, false));
+                }
+            }
+            continue;
+        }
+
+        color[idx] = 2;
+        let node = chosen(canonical);
+        let node_var = node_variance(egraph, node, &var, canonical);
+        let weight = shape.evals(node_var);
+        // Saturating throughout: `Dwrt` is priced `usize::MAX / 4` and a tree
+        // cost is exponential in the sharing it refuses to price, so both
+        // sums reach the ceiling on real inputs.
+        let own = usize::try_from((costs.node_cost(node, None) as u64).saturating_mul(weight))
+            .unwrap_or(usize::MAX);
+        let children_cost = match node {
+            ENode::Op { children, .. } => children
+                .iter()
+                .map(|&child| {
+                    let c = egraph.find(child).0 as usize;
+                    tree[c].expect("post-order visits every child before its parent")
+                })
+                .fold(0usize, usize::saturating_add),
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => 0,
+        };
+        tree[idx] = Some(own.saturating_add(children_cost));
+        var[idx] = node_var;
+        dag = dag.saturating_add(own);
+    }
+
+    ChoiceCost {
+        tree: tree[root_canonical.0 as usize]
+            .expect("the root is costed by the walk that starts at it"),
+        dag,
     }
 }
 
@@ -1527,20 +1705,192 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
 ///
 /// [`LatticeShape::POINT`] weights everything by one, so `extract_dag`'s
 /// behavior is unchanged.
+///
+/// # The objective (#1116)
+///
+/// The DP this used to be summed each child's `best_cost`, which is a
+/// **tree** cost: a class used ten times was charged ten times in the
+/// objective and emitted once in the kernel, so the thing minimized was not
+/// the thing paid. On `shader:julia_set` the two numbers were ~1.4e7 and 716.
+///
+/// The fix is to carry, alongside each class's cost, **the set of classes
+/// its chosen sub-DAG contains**, and to price that set — each member once.
+/// A parent unions its children's sets, so a class two siblings both reach is
+/// paid for once, and `Mul(a, a)` pays for `a` once. At every class the number
+/// being minimized is then the true DAG cost of the sub-DAG rooted there, and
+/// at the root it is exactly [`ExtractedDAG::dag_cost`]: the objective and the
+/// price are the same quantity. See [`shared_dag_dp_pass`].
+///
+/// It remains an approximation of the extraction optimum, which is NP-hard —
+/// the choice is still made greedily bottom-up, so a locally dear class that
+/// would have paid for itself upstream is still passed over. What it is not is
+/// an approximation of the *objective*: nothing here charges for sharing.
+///
+/// Both objectives are run and **the cheaper term by true `dag_cost` wins**,
+/// ties going to the tree pass. So the returned DAG cost can only be lower
+/// than the pre-#1116 extractor's, never higher — no-regression is structural
+/// rather than empirical, at the price of a second DP pass over a graph
+/// extraction walks once per compile.
 pub fn extract_dag_scoped<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
     costs: &C,
     shape: LatticeShape,
 ) -> ExtractedDAG {
-    use alloc::collections::BTreeSet;
+    let tree = repaired_and_costed(
+        egraph,
+        root,
+        tree_dp_pass(egraph, root, costs, shape),
+        costs,
+        shape,
+    );
+    let shared = repaired_and_costed(
+        egraph,
+        root,
+        shared_dag_dp_pass(egraph, root, costs, shape),
+        costs,
+        shape,
+    );
+    // Only the winner is assembled: the reference counts and the emission
+    // schedule describe a term, and one of these two is not going to be one.
+    assemble(
+        egraph,
+        root,
+        if shared.cost.dag < tree.cost.dag {
+            shared
+        } else {
+            tree
+        },
+    )
+}
 
-    // Above any weighted cost a real program can reach, so a self-reference
-    // never looks cheaper than an expensive-but-legitimate form. (A flat
-    // 1_000_000 was safely above every *unweighted* cost; weighting by a
-    // frame's sample count clears that by orders of magnitude.)
-    const CYCLE_COST: usize = usize::MAX / 4;
+/// A repaired choice map and the cost of the term it names.
+struct CostedChoices {
+    choices: Vec<Option<usize>>,
+    cost: ChoiceCost,
+}
 
+/// The two terms [`extract_dag_scoped`] chooses between: `(tree, shared)`.
+///
+/// `tree` is the pre-#1116 extractor, arithmetic for arithmetic, and exists
+/// so the A/B that justifies the sharing-aware objective can be run against
+/// the thing it replaced rather than against a remembered number.
+pub(crate) fn extract_dag_objectives<C: CostFunction>(
+    egraph: &EGraph,
+    root: EClassId,
+    costs: &C,
+    shape: LatticeShape,
+) -> (ExtractedDAG, ExtractedDAG) {
+    (
+        extract_dag_tree_arm(egraph, root, costs, shape),
+        extract_dag_shared_arm(egraph, root, costs, shape),
+    )
+}
+
+/// The tree-cost arm on its own — the pre-#1116 extractor, and the control
+/// the objective A/B and its cost measurement are run against.
+pub(crate) fn extract_dag_tree_arm<C: CostFunction>(
+    egraph: &EGraph,
+    root: EClassId,
+    costs: &C,
+    shape: LatticeShape,
+) -> ExtractedDAG {
+    let costed = repaired_and_costed(
+        egraph,
+        root,
+        tree_dp_pass(egraph, root, costs, shape),
+        costs,
+        shape,
+    );
+    assemble(egraph, root, costed)
+}
+
+/// The sharing-aware arm on its own (#1116).
+pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
+    egraph: &EGraph,
+    root: EClassId,
+    costs: &C,
+    shape: LatticeShape,
+) -> ExtractedDAG {
+    let costed = repaired_and_costed(
+        egraph,
+        root,
+        shared_dag_dp_pass(egraph, root, costs, shape),
+        costs,
+        shape,
+    );
+    assemble(egraph, root, costed)
+}
+
+/// Repair a raw DP choice map and cost the term it names.
+fn repaired_and_costed<C: CostFunction>(
+    egraph: &EGraph,
+    root: EClassId,
+    mut choices: Vec<Option<usize>>,
+    costs: &C,
+    shape: LatticeShape,
+) -> CostedChoices {
+    // Repair any mutual cycles in the choice graph before anything reads it.
+    repair_choices_well_founded(egraph, root, &mut choices);
+
+    // Cost the choices we are about to RETURN, not the DP table that produced
+    // them: the repair can switch a class to a different node, and reading the
+    // DP's own total here (as this did before #1111) reported the cost of a
+    // term that is not the one returned — measurably so, on 132 of 302
+    // kernels. The recomputed number is also free of the `CYCLE_COST`
+    // inflation, since the repaired map is well-founded and holds no
+    // self-referential pick.
+    let cost = cost_of_choices(egraph, root, &choices, costs, shape);
+    CostedChoices { choices, cost }
+}
+
+/// Build the sharing and emission schedule around a settled choice map.
+fn assemble(egraph: &EGraph, root: EClassId, costed: CostedChoices) -> ExtractedDAG {
+    let CostedChoices { choices, cost } = costed;
+    let mut ref_counts: Vec<usize> = alloc::vec![0; egraph.num_classes()];
+    count_refs_recursive(egraph, root, &choices, &mut ref_counts);
+
+    let shared: Vec<(EClassId, usize)> = ref_counts
+        .iter()
+        .enumerate()
+        .filter(|(_, count)| **count > 1)
+        .map(|(idx, count)| (EClassId(idx as u32), *count))
+        .collect();
+
+    let schedule = toposort_dag(egraph, root, &choices, &shared);
+
+    ExtractedDAG {
+        root: egraph.find(root),
+        shared,
+        schedule,
+        choices,
+        total_cost: cost.tree,
+        dag_cost: cost.dag,
+    }
+}
+
+// Above any weighted cost a real program can reach, so a self-reference never
+// looks cheaper than an expensive-but-legitimate form. (A flat 1_000_000 was
+// safely above every *unweighted* cost; weighting by a frame's sample count
+// clears that by orders of magnitude.)
+const CYCLE_COST: usize = usize::MAX / 4;
+
+/// One node's weighted own cost under `shape`.
+fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize {
+    usize::try_from((costs.node_cost(node, None) as u64).saturating_mul(weight))
+        .unwrap_or(usize::MAX)
+}
+
+/// The pre-#1116 DP: cheapest node per class where a child costs its whole
+/// subtree, at every use. Kept exactly as it was, as the control arm of the
+/// objective A/B and as the floor [`extract_dag_scoped`] never returns worse
+/// than.
+fn tree_dp_pass<C: CostFunction>(
+    egraph: &EGraph,
+    root: EClassId,
+    costs: &C,
+    shape: LatticeShape,
+) -> Vec<Option<usize>> {
     let num_classes = egraph.num_classes();
     let mut best_cost: Vec<Option<usize>> = alloc::vec![None; num_classes];
     let mut best_node: Vec<Option<usize>> = alloc::vec![None; num_classes];
@@ -1551,14 +1901,220 @@ pub fn extract_dag_scoped<C: CostFunction>(
     // child's form worth choosing over another's.
     let mut best_var: Vec<Variance> = alloc::vec![Variance::CONST; num_classes];
 
-    // Phase 1: Compute best node per e-class (same as regular extraction)
-    let mut stack: Vec<(EClassId, bool)> = vec![(root, false)];
+    for canonical in post_order(egraph, root) {
+        let nodes = egraph.nodes(canonical);
+        let mut min_cost = usize::MAX;
+        let mut min_idx = 0;
+        let mut min_var = Variance::CONST;
+
+        for (idx, node) in nodes.iter().enumerate() {
+            let node_var = node_variance(egraph, node, &best_var, canonical);
+            let weight = shape.evals(node_var);
+            let this_node_cost = match node {
+                ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => {
+                    weighted_own(costs, node, weight)
+                }
+                ENode::Op { children, .. } => {
+                    if children.iter().any(|&c| egraph.find(c) == canonical) {
+                        CYCLE_COST
+                    } else {
+                        // Saturating fold, not `.sum()`: a child's own
+                        // `best_cost` can already sit at a prohibitive
+                        // sentinel (`Dwrt`'s `usize::MAX / 4` from
+                        // `CostModel::node_op_cost`, or this function's own
+                        // `CYCLE_COST`), so a node with several such children
+                        // overflows a plain `usize` sum.
+                        let children_cost: usize = children
+                            .iter()
+                            .map(|&child| {
+                                let c = egraph.find(child);
+                                best_cost[c.0 as usize].unwrap_or(CYCLE_COST)
+                            })
+                            .fold(0usize, usize::saturating_add);
+                        weighted_own(costs, node, weight).saturating_add(children_cost)
+                    }
+                }
+            };
+
+            if this_node_cost < min_cost {
+                min_cost = this_node_cost;
+                min_idx = idx;
+                min_var = node_var;
+            }
+        }
+
+        best_cost[canonical.0 as usize] = Some(min_cost);
+        best_node[canonical.0 as usize] = Some(min_idx);
+        best_var[canonical.0 as usize] = min_var;
+    }
+
+    best_node
+}
+
+/// The sharing-aware DP (#1116): cheapest node per class where the cost of a
+/// candidate is the cost of **the set of classes its sub-DAG contains**, each
+/// member priced once.
+///
+/// Same skeleton as [`tree_dp_pass`]; the only change is what a candidate
+/// costs. Each class carries a bitset of the classes its chosen sub-DAG
+/// reaches, and a candidate unions its children's bitsets, adding a class's
+/// own cost the first time that class enters the union. Two siblings that
+/// both reach `sin(X)` therefore pay for it once, which is what the emitted
+/// kernel does: `choices_to_arena` materializes one node per reachable class
+/// and codegen let-binds the shared ones.
+///
+/// Space is one bit per REACHABLE class per reachable class. A production
+/// preset caps the e-graph at 10,000 classes (`saturate.rs`), so the ceiling
+/// is ~12.5 MB; a median production glyph reaches 1,755 of them and uses
+/// ~385 KB, allocated once per extraction and dropped at the end of it.
+fn shared_dag_dp_pass<C: CostFunction>(
+    egraph: &EGraph,
+    root: EClassId,
+    costs: &C,
+    shape: LatticeShape,
+) -> Vec<Option<usize>> {
+    const BITS: usize = usize::BITS as usize;
+
+    let num_classes = egraph.num_classes();
+    let order = post_order(egraph, root);
+
+    // Index the bitsets by position in `order`, not by e-class id: the sets
+    // only ever hold classes the root reaches, and on a saturated glyph that
+    // is a third of the e-graph (1,352 of 4,703 on `glyph16:U+0021`). Sizing
+    // them by `num_classes` would pay for the rest of the graph in every
+    // union.
+    let live = order.len();
+    let words = live.div_ceil(BITS);
+    let mut compact: Vec<u32> = alloc::vec![u32::MAX; num_classes];
+    for (i, c) in order.iter().enumerate() {
+        compact[c.0 as usize] = i as u32;
+    }
+
+    let mut best_cost: Vec<Option<usize>> = alloc::vec![None; num_classes];
+    let mut best_node: Vec<Option<usize>> = alloc::vec![None; num_classes];
+    let mut best_var: Vec<Variance> = alloc::vec![Variance::CONST; num_classes];
+    // The weighted own cost of each live class's chosen node — what a union
+    // pays when that class first enters it. Indexed by compact id.
+    let mut best_own: Vec<usize> = alloc::vec![0; live];
+    // `reach[i * words .. (i + 1) * words]` is the set of classes the chosen
+    // sub-DAG at the `i`th live class contains, itself included.
+    let mut reach: Vec<usize> = alloc::vec![0; live.saturating_mul(words)];
+    let mut scratch: Vec<usize> = alloc::vec![0; words];
+
+    for canonical in order.iter().copied() {
+        let me = compact[canonical.0 as usize] as usize;
+        let nodes = egraph.nodes(canonical);
+        let mut min_cost = usize::MAX;
+        let mut min_idx = 0;
+        let mut min_var = Variance::CONST;
+        let mut min_own = 0usize;
+
+        for (idx, node) in nodes.iter().enumerate() {
+            let node_var = node_variance(egraph, node, &best_var, canonical);
+            let weight = shape.evals(node_var);
+            let own = weighted_own(costs, node, weight);
+            let this_node_cost = match node {
+                ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => own,
+                ENode::Op { children, .. } => {
+                    if children.iter().any(|&c| egraph.find(c) == canonical) {
+                        CYCLE_COST
+                    } else {
+                        scratch.fill(0);
+                        let mut below = 0usize;
+                        let mut unresolved = false;
+                        for &child in children.iter() {
+                            let c = egraph.find(child).0 as usize;
+                            if best_cost[c].is_none() {
+                                // A class still on the DFS stack: the same
+                                // cycle the tree pass prices at the sentinel.
+                                unresolved = true;
+                                break;
+                            }
+                            let ci = compact[c];
+                            assert!(
+                                ci != u32::MAX,
+                                "shared_dag_dp_pass: e-class {c} is a costed child but was \
+                                 not enumerated by post_order — the two traversals have \
+                                 drifted"
+                            );
+                            let base = ci as usize * words;
+                            for w in 0..words {
+                                let fresh = reach[base + w] & !scratch[w];
+                                if fresh == 0 {
+                                    continue;
+                                }
+                                scratch[w] |= fresh;
+                                let mut bits = fresh;
+                                while bits != 0 {
+                                    let bit = bits.trailing_zeros() as usize;
+                                    bits &= bits - 1;
+                                    below = below.saturating_add(best_own[w * BITS + bit]);
+                                }
+                            }
+                        }
+                        if unresolved {
+                            CYCLE_COST
+                        } else {
+                            own.saturating_add(below)
+                        }
+                    }
+                }
+            };
+
+            if this_node_cost < min_cost {
+                min_cost = this_node_cost;
+                min_idx = idx;
+                min_var = node_var;
+                min_own = own;
+            }
+        }
+
+        // Rebuild the winner's reach set. Recomputing it costs one more union
+        // over the winning node's children and saves keeping a full bitset
+        // per candidate alive through the loop above.
+        let base = me * words;
+        reach[base..base + words].fill(0);
+        if let ENode::Op { children, .. } = &nodes[min_idx] {
+            if min_cost != CYCLE_COST {
+                for &child in children.iter() {
+                    let ci = compact[egraph.find(child).0 as usize] as usize;
+                    let cbase = ci * words;
+                    for w in 0..words {
+                        reach[base + w] |= reach[cbase + w];
+                    }
+                }
+            }
+        }
+        reach[base + me / BITS] |= 1usize << (me % BITS);
+
+        best_cost[canonical.0 as usize] = Some(min_cost);
+        best_node[canonical.0 as usize] = Some(min_idx);
+        best_var[canonical.0 as usize] = min_var;
+        best_own[me] = min_own;
+    }
+
+    best_node
+}
+
+/// The classes reachable from `root`, children before parents.
+///
+/// A class whose own descendants reach it back appears before them — the
+/// e-graphs saturation produces are cyclic (commutativity alone is enough),
+/// and the DP prices such a class at the cycle sentinel exactly as it always
+/// has. Shared by both DP passes so their traversal, and therefore which
+/// classes end up cycle-priced, cannot drift apart.
+fn post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
+    use alloc::collections::BTreeSet;
+
+    let mut order: Vec<EClassId> = Vec::new();
+    let mut settled: BTreeSet<u32> = BTreeSet::new();
     let mut on_stack: BTreeSet<u32> = BTreeSet::new();
+    let mut stack: Vec<(EClassId, bool)> = vec![(root, false)];
 
     while let Some((class, children_done)) = stack.pop() {
         let canonical = egraph.find(class);
 
-        if best_cost[canonical.0 as usize].is_some() {
+        if settled.contains(&canonical.0) {
             continue;
         }
 
@@ -1573,7 +2129,7 @@ pub fn extract_dag_scoped<C: CostFunction>(
                 if let ENode::Op { children, .. } = node {
                     for &child in children {
                         let child_canonical = egraph.find(child);
-                        if best_cost[child_canonical.0 as usize].is_none() {
+                        if !settled.contains(&child_canonical.0) {
                             stack.push((child, false));
                         }
                     }
@@ -1581,85 +2137,12 @@ pub fn extract_dag_scoped<C: CostFunction>(
             }
         } else {
             on_stack.remove(&canonical.0);
-
-            let nodes = egraph.nodes(canonical);
-            let mut min_cost = usize::MAX;
-            let mut min_idx = 0;
-            let mut min_var = Variance::CONST;
-
-            for (idx, node) in nodes.iter().enumerate() {
-                let node_var = node_variance(egraph, node, &best_var, canonical);
-                let weight = shape.evals(node_var);
-                let scaled = |op_cost: usize| -> usize {
-                    usize::try_from((op_cost as u64).saturating_mul(weight)).unwrap_or(usize::MAX)
-                };
-                let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
-                        scaled(costs.node_cost(node, None))
-                    }
-                    ENode::Op { children, .. } => {
-                        if children.iter().any(|&c| egraph.find(c) == canonical) {
-                            CYCLE_COST
-                        } else {
-                            let op_cost = scaled(costs.node_cost(node, None));
-                            // Saturating fold, not `.sum()`: a child's own
-                            // `best_cost` can already sit at a prohibitive
-                            // sentinel (`Dwrt`'s `usize::MAX / 4` from
-                            // `CostModel::node_op_cost`, or this function's
-                            // own `CYCLE_COST`), so a node with several such
-                            // children overflows a plain `usize` sum.
-                            let children_cost: usize = children
-                                .iter()
-                                .map(|&child| {
-                                    let c = egraph.find(child);
-                                    best_cost[c.0 as usize].unwrap_or(CYCLE_COST)
-                                })
-                                .fold(0usize, usize::saturating_add);
-                            op_cost.saturating_add(children_cost)
-                        }
-                    }
-                };
-
-                if this_node_cost < min_cost {
-                    min_cost = this_node_cost;
-                    min_idx = idx;
-                    min_var = node_var;
-                }
-            }
-
-            best_cost[canonical.0 as usize] = Some(min_cost);
-            best_node[canonical.0 as usize] = Some(min_idx);
-            best_var[canonical.0 as usize] = min_var;
+            settled.insert(canonical.0);
+            order.push(canonical);
         }
     }
 
-    let total_cost = best_cost[egraph.find(root).0 as usize].unwrap_or(usize::MAX);
-
-    // Repair any mutual cycles in the choice graph before counting refs.
-    repair_choices_well_founded(egraph, root, &mut best_node);
-
-    // Phase 2: Count references to each e-class in the extracted DAG
-    let mut ref_counts: Vec<usize> = alloc::vec![0; num_classes];
-    count_refs_recursive(egraph, root, &best_node, &mut ref_counts);
-
-    // Phase 3: Identify shared e-classes (count > 1)
-    let shared: Vec<(EClassId, usize)> = ref_counts
-        .iter()
-        .enumerate()
-        .filter(|(_, count)| **count > 1)
-        .map(|(idx, count)| (EClassId(idx as u32), *count))
-        .collect();
-
-    // Phase 4: Topological sort for emission order
-    let schedule = toposort_dag(egraph, root, &best_node, &shared);
-
-    ExtractedDAG {
-        root: egraph.find(root),
-        shared,
-        schedule,
-        choices: best_node,
-        total_cost,
-    }
+    order
 }
 
 /// Count references to each e-class in the extracted expression.
@@ -1812,7 +2295,7 @@ mod tests {
             "with no lattice the fused form is one instruction against two"
         );
         assert_eq!(
-            chosen(LatticeShape::new([256, 256, 1, 1])),
+            chosen(LatticeShape::new([256, 256])),
             OpKind::Add,
             "over a frame the fused form pays for Z at every sample"
         );
@@ -2635,5 +3118,352 @@ mod tests {
         let (extracted_arena, extracted_root, _cost) = extract(&egraph, add, &CostModel::default());
         assert_eq!(arena.len(), extracted_arena.len());
         assert_eq!(root_id, extracted_root);
+    }
+
+    // ========================================================================
+    // The reported cost describes the returned term (#1111)
+    // ========================================================================
+
+    /// Latency-prior DAG cost of a materialized arena: every reachable
+    /// operation priced once, leaves free — the independent statement of
+    /// what [`ExtractedDAG::dag_cost`] claims, computed from the arena
+    /// instead of from the choices. Deliberately a second implementation:
+    /// the point of `dag_cost_equals_the_materialized_arenas_cost` is that
+    /// two walks over two representations agree.
+    fn arena_dag_cost(
+        arena: &pixelflow_ir::ExprArena,
+        root: pixelflow_ir::ExprId,
+        costs: &CostModel,
+    ) -> usize {
+        use pixelflow_ir::arena::ExprNode;
+        let mut seen = alloc::vec![false; arena.nodes_raw().len()];
+        let mut stack = alloc::vec![root];
+        let mut total = 0usize;
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut seen[id.0 as usize], true) {
+                continue;
+            }
+            let kind = match arena.node(id) {
+                ExprNode::Var(_)
+                | ExprNode::Const(_)
+                | ExprNode::Buffer(_)
+                | ExprNode::Uniform(_) => None,
+                ExprNode::Unary(k, _)
+                | ExprNode::Binary(k, _, _)
+                | ExprNode::Ternary(k, _, _, _) => Some(*k),
+                other => panic!("unexpected extracted node {other:?}"),
+            };
+            if let Some(k) = kind {
+                total = total.saturating_add(costs.cost(k));
+            }
+            stack.extend(arena.children(id));
+        }
+        total
+    }
+
+    /// `sin(X) * sin(X) + sin(X)` — one `Sin` reached three times, so the
+    /// tree and DAG costs of the same term are genuinely different numbers.
+    /// One e-class, two forms: `sin(X) * sin(X)`, which reuses one `Sin`,
+    /// and `ln(X)`, which reuses nothing. The tree objective charges the
+    /// `Sin` twice and picks `ln`; the emitted kernel would then compute a
+    /// `Ln` where a `Mul` over an already-live `Sin` was cheaper.
+    ///
+    /// This is #1116 in four e-nodes.
+    fn sharing_vs_flat_egraph() -> (EGraph, EClassId) {
+        let mut egraph = EGraph::new();
+        let x = egraph.add(ENode::Var(0));
+        let s = egraph.add(ENode::Op {
+            op: &super::super::ops::Sin,
+            children: alloc::vec![x],
+        });
+        let squared = egraph.add(ENode::Op {
+            op: &super::super::ops::Mul,
+            children: alloc::vec![s, s],
+        });
+        let flat = egraph.add(ENode::Op {
+            op: &super::super::ops::Ln,
+            children: alloc::vec![x],
+        });
+        egraph.union(squared, flat);
+        egraph.rebuild();
+        let root = egraph.find(squared);
+        (egraph, root)
+    }
+
+    #[test]
+    fn the_sharing_objective_picks_the_form_that_reuses_a_subterm() {
+        let (egraph, root) = sharing_vs_flat_egraph();
+        let costs = CostModel::latency_prior();
+
+        let sin = costs.cost(pixelflow_ir::OpKind::Sin);
+        let mul = costs.cost(pixelflow_ir::OpKind::Mul);
+        let ln = costs.cost(pixelflow_ir::OpKind::Ln);
+        // The fixture only says anything if `ln` sits strictly between the
+        // DAG price of the shared form and its tree price. Assert that here
+        // rather than let a cost-table refresh quietly defuse the test.
+        assert!(
+            mul + sin < ln && ln < mul + sin + sin,
+            "fixture defused by the cost table: mul {mul} + sin {sin} vs ln {ln}"
+        );
+
+        let (tree, shared) = extract_dag_objectives(&egraph, root, &costs, LatticeShape::POINT);
+        assert_eq!(
+            tree.dag_cost, ln,
+            "the tree objective charges the shared Sin twice and takes the Ln"
+        );
+        assert_eq!(
+            shared.dag_cost,
+            mul + sin,
+            "the sharing objective prices the Sin once and takes the Mul"
+        );
+        assert_eq!(
+            extract_dag(&egraph, root, &costs).dag_cost,
+            mul + sin,
+            "extract_dag returns the cheaper of the two by DAG cost"
+        );
+    }
+
+    /// The no-regression property `extract_dag_scoped` is built on: it
+    /// returns the cheaper of the two objectives by true DAG cost, so it can
+    /// never be worse than the extractor it replaced.
+    #[test]
+    fn extract_dag_is_never_worse_than_the_tree_objective_it_replaced() {
+        let costs = CostModel::latency_prior();
+        for (label, (egraph, root)) in [
+            ("shared_sin", shared_sin_egraph()),
+            ("sharing_vs_flat", sharing_vs_flat_egraph()),
+        ] {
+            let (tree, _) = extract_dag_objectives(&egraph, root, &costs, LatticeShape::POINT);
+            let chosen = extract_dag(&egraph, root, &costs);
+            assert!(
+                chosen.dag_cost <= tree.dag_cost,
+                "{label}: extract_dag returned {} against the tree arm's {}",
+                chosen.dag_cost,
+                tree.dag_cost
+            );
+        }
+    }
+
+    /// With nothing shared, the two objectives are the same function, so the
+    /// sharing pass must not perturb an unshared kernel at all.
+    #[test]
+    fn the_two_objectives_agree_when_nothing_is_shared() {
+        let mut egraph = EGraph::new();
+        let x = egraph.add(ENode::Var(0));
+        let a = egraph.add(ENode::Op {
+            op: &super::super::ops::Sin,
+            children: alloc::vec![x],
+        });
+        let b = egraph.add(ENode::Op {
+            op: &super::super::ops::Sqrt,
+            children: alloc::vec![a],
+        });
+        egraph.rebuild();
+        let costs = CostModel::latency_prior();
+        let (tree, shared) = extract_dag_objectives(&egraph, b, &costs, LatticeShape::POINT);
+        assert_eq!(tree.dag_cost, shared.dag_cost);
+        assert_eq!(tree.total_cost, shared.total_cost);
+        assert_eq!(tree.choices, shared.choices);
+    }
+
+    fn shared_sin_egraph() -> (EGraph, EClassId) {
+        let mut egraph = EGraph::new();
+        let x = egraph.add(ENode::Var(0));
+        let s = egraph.add(ENode::Op {
+            op: &super::super::ops::Sin,
+            children: alloc::vec![x],
+        });
+        let sq = egraph.add(ENode::Op {
+            op: &super::super::ops::Mul,
+            children: alloc::vec![s, s],
+        });
+        let root = egraph.add(ENode::Op {
+            op: &super::super::ops::Add,
+            children: alloc::vec![sq, s],
+        });
+        egraph.rebuild();
+        (egraph, root)
+    }
+
+    /// The property every measurement in this repo assumes when it re-costs
+    /// the materialized arena rather than reading the extraction's own field
+    /// (`runtime.rs`'s `arena_cost`, `ir_bridge.rs`'s namesake, #1101's
+    /// harness): `dag_cost` IS that number, so the workaround and the field
+    /// agree.
+    #[test]
+    fn dag_cost_equals_the_materialized_arenas_cost() {
+        let (egraph, root) = shared_sin_egraph();
+        let costs = CostModel::latency_prior();
+        let dag = extract_dag(&egraph, root, &costs);
+
+        let extraction = Extraction::from_dp(&egraph, root, dag.choices.clone());
+        let (arena, arena_root) = choices_to_arena(&extraction);
+
+        assert_eq!(
+            dag.dag_cost,
+            arena_dag_cost(&arena, arena_root, &costs),
+            "ExtractedDAG::dag_cost must equal the latency-prior cost of the arena \
+             choices_to_arena builds from the same choices"
+        );
+    }
+
+    /// The two reported numbers are not two spellings of one quantity: the
+    /// DP minimizes tree cost, the kernel pays DAG cost, and on a term with
+    /// any sharing they differ. (`shader:julia_set` is the extreme: ~1.4e7
+    /// against 716 — `docs/results/2026-09-02-extraction-gap.md`.)
+    #[test]
+    fn tree_cost_prices_a_shared_subterm_once_per_use_and_dag_cost_once() {
+        let (egraph, root) = shared_sin_egraph();
+        let costs = CostModel::latency_prior();
+        let dag = extract_dag(&egraph, root, &costs);
+
+        let sin = costs.cost(pixelflow_ir::OpKind::Sin);
+        let mul = costs.cost(pixelflow_ir::OpKind::Mul);
+        let add = costs.cost(pixelflow_ir::OpKind::Add);
+        assert!(sin > 0, "the fixture needs a Sin that costs something");
+
+        assert_eq!(
+            dag.dag_cost,
+            sin + mul + add,
+            "the DAG cost pays the one shared Sin once"
+        );
+        assert_eq!(
+            dag.total_cost,
+            3 * sin + mul + add,
+            "the tree cost pays it at each of its three uses"
+        );
+    }
+
+    /// A cost function that prices `Sin` above `extract_dag_scoped`'s
+    /// `CYCLE_COST` sentinel (`usize::MAX / 4`), so a class holding a
+    /// self-referential node alongside a `Sin` records the *self-reference*
+    /// as its DP minimum. That is the state `repair_choices_well_founded`
+    /// exists to rewrite, and the only way to reach it with an off-the-shelf
+    /// table would be a lattice big enough to saturate the weighting — this
+    /// says the same thing in one line.
+    struct SinAboveTheCycleSentinel;
+
+    impl CostFunction for SinAboveTheCycleSentinel {
+        fn node_cost(&self, node: &ENode, _parent: Option<pixelflow_ir::OpKind>) -> usize {
+            match node {
+                ENode::Op { op, .. } if op.kind() == pixelflow_ir::OpKind::Sin => usize::MAX / 2,
+                ENode::Op { .. } => 1,
+                ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => 0,
+            }
+        }
+    }
+
+    /// `sin(X)` unioned with `neg(sin(X))`, so one class holds both `Sin(x)`
+    /// and a `Neg` whose child is that same class. Returns
+    /// (egraph, the merged class, index of `Sin` in it, index of `Neg`).
+    fn self_referential_pick_egraph() -> (EGraph, EClassId, usize, usize) {
+        let mut egraph = EGraph::new();
+        let x = egraph.add(ENode::Var(0));
+        let s = egraph.add(ENode::Op {
+            op: &super::super::ops::Sin,
+            children: alloc::vec![x],
+        });
+        let n = egraph.add(ENode::Op {
+            op: &super::super::ops::Neg,
+            children: alloc::vec![s],
+        });
+        let merged = egraph.union(s, n);
+        egraph.rebuild();
+
+        let canonical = egraph.find(merged);
+        let nodes = egraph.nodes(canonical);
+        let sin_idx = nodes
+            .iter()
+            .position(
+                |nd| matches!(nd, ENode::Op { op, .. } if op.kind() == pixelflow_ir::OpKind::Sin),
+            )
+            .expect("merged class holds Sin(x)");
+        let neg_idx = nodes
+            .iter()
+            .position(
+                |nd| matches!(nd, ENode::Op { op, .. } if op.kind() == pixelflow_ir::OpKind::Neg),
+            )
+            .expect("merged class holds Neg(merged)");
+        (egraph, canonical, sin_idx, neg_idx)
+    }
+
+    /// #1111, the regression this fix exists for: when the repair rewrites a
+    /// choice, the reported cost must be the cost of the term that comes
+    /// back — not the DP's pre-repair number for a term nobody receives.
+    ///
+    /// Here the DP's minimum for the merged class is the self-referential
+    /// `Neg`, priced at `CYCLE_COST` (`usize::MAX / 4`); the repair rewrites
+    /// it to the only admissible node, `Sin`, priced at `usize::MAX / 2`.
+    /// Reading `best_cost[root]` (what this did before) reports
+    /// `usize::MAX / 4` for a returned term that costs twice that.
+    #[test]
+    fn reported_cost_follows_the_choice_the_repair_rewrote() {
+        let (egraph, merged, sin_idx, neg_idx) = self_referential_pick_egraph();
+        assert_ne!(sin_idx, neg_idx);
+
+        // What the DP records before the repair: the self-referential Neg,
+        // which names no term at all.
+        let mut pre_repair: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
+        pre_repair[merged.0 as usize] = Some(neg_idx);
+        assert!(
+            choices_have_cycle_from(&egraph, merged, &pre_repair),
+            "the fixture must actually put the DP in the state the repair fixes"
+        );
+
+        let costs = SinAboveTheCycleSentinel;
+        let sin_node = &egraph.nodes(merged)[sin_idx];
+        assert!(
+            costs.node_cost(sin_node, None) > usize::MAX / 4,
+            "the premise: only a Sin priced above CYCLE_COST makes the DP prefer the              self-reference, which is what puts the repair on the path at all"
+        );
+
+        let dag = extract_dag(&egraph, merged, &costs);
+
+        assert_eq!(
+            dag.choices[merged.0 as usize],
+            Some(sin_idx),
+            "the repair must have rewritten the self-referential pick"
+        );
+        assert_eq!(
+            dag.total_cost,
+            usize::MAX / 2,
+            "the reported tree cost must be Sin's, the node actually returned"
+        );
+        assert_eq!(
+            dag.dag_cost,
+            usize::MAX / 2,
+            "and so must the DAG cost — one op, reached once"
+        );
+        assert_ne!(
+            dag.total_cost,
+            usize::MAX / 4,
+            "the pre-repair CYCLE_COST total describes a term that was thrown away"
+        );
+
+        // The whole term still materializes, and still costs what was said.
+        let extraction = Extraction::from_dp(&egraph, merged, dag.choices.clone());
+        let (arena, arena_root) = choices_to_arena(&extraction);
+        assert!(matches!(
+            arena.node(arena_root),
+            pixelflow_ir::arena::ExprNode::Unary(pixelflow_ir::OpKind::Sin, _)
+        ));
+    }
+
+    /// `cost_of_choices` costs the map it is handed and nothing else — a
+    /// cyclic map names no term, so it must be an accusation rather than a
+    /// number. (Costing the DP's raw table is exactly the #1111 bug.)
+    #[test]
+    #[should_panic(expected = "CYCLIC")]
+    fn cost_of_choices_refuses_a_cyclic_choice_map() {
+        let (egraph, merged, _sin_idx, neg_idx) = self_referential_pick_egraph();
+        let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
+        choices[merged.0 as usize] = Some(neg_idx);
+        let _ = cost_of_choices(
+            &egraph,
+            merged,
+            &choices,
+            &CostModel::latency_prior(),
+            LatticeShape::POINT,
+        );
     }
 }

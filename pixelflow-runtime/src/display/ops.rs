@@ -19,7 +19,7 @@ pub enum DriverEmit {
 
 /// Output word for a [`PlatformOps`] step.
 ///
-/// One `Out` per step, matching `VsyncCoreOut`/`RasterCoreOut` — the struct's *fields* are the
+/// One `Out` per step, matching `VsyncCoreOut`/`RenderCoreOut` — the struct's *fields* are the
 /// ports, so a step never returns "sometimes a value, sometimes a list." `handle_os` is the reason
 /// this field is a `Vec` rather than an `Option`: draining the OS event queue yields N events.
 ///

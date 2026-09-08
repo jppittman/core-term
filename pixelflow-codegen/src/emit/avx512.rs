@@ -209,10 +209,19 @@ fn vxorps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
 /// `#UD` / SIGILL).
 const UNUSED_VVVV: u8 = 0;
 
-/// Scratch register for unary mask materialization (neg/abs). zmm15 is outside
-/// the backend's allocatable range (zmm4-9), reload regs (zmm11-12), and inputs
-/// (zmm0-3), so it is always free here. Lets neg/abs handle `dst == src`.
-const UNARY_SCRATCH: Reg = Reg(15);
+/// How many registers this backend's encodings need beyond their operands.
+///
+/// Only the `Neg`/`Abs` sign mask: EVEX is non-destructive and `vpternlogd`
+/// blends a select with no temporary.
+pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
+    use super::ScheduledOp;
+    match op {
+        ScheduledOp::Unary(OpKind::Neg | OpKind::Abs, _) => 1,
+        // The gather's truncated-index lanes and its destination.
+        ScheduledOp::Gather(..) => 2,
+        _ => 0,
+    }
+}
 
 // --- unary (one source; no second source -> UNUSED_VVVV) ---
 /// vsqrtps zmmD, zmmS — EVEX.512.0F.W0 51 /r ; vvvv unused.
@@ -327,6 +336,23 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
     code.extend_from_slice(&bits.to_le_bytes());
     // vbroadcastss zmm, [rsp-4]
     Evex::m0f38_66(0x18).rm(code, dst.0, RED_ZONE_CONST);
+}
+
+/// `dst = splat(block[offset])` at 512 bits: `mov rax, [rdi + ctx_slot*8]`
+/// then `vbroadcastss zmm<dst>, [rax + 4*offset]` (EVEX.512.66.0F38.W0 18
+/// /r). A full `disp32`, as [`emit_const`]'s is, so EVEX's compressed-`disp8`
+/// scaling never enters into it. See `x86_64::emit_uniform_load` for the
+/// register contract.
+pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad) {
+    emit_load_ptr_from_ctx(code, gpr::RAX.0, gpr::RDI.0, i32::from(load.ctx_slot) * 8);
+    Evex::m0f38_66(0x18).rm(
+        code,
+        dst.0,
+        Mem {
+            base: gpr::RAX,
+            disp: Imm32(i32::from(load.offset) * 4),
+        },
+    );
 }
 
 // =============================================================================
@@ -451,20 +477,26 @@ pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount
     }
 }
 
-pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) {
+/// `dst = op(src)`.
+///
+/// `temp` is the allocator's temp for this instruction; only `Neg` and `Abs`
+/// use it, to hold the sign mask.
+pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, temp: Option<Reg>) {
     match op {
         OpKind::Sqrt => vsqrtps(code, dst.0, src.0),
         OpKind::Neg => {
-            // dst = src XOR (-0.0 broadcast). Build the mask in a scratch reg,
-            // not dst: dst may alias src, and writing the mask into dst first
-            // would clobber the source before the xor reads it.
-            emit_const(code, UNARY_SCRATCH, f32::from_bits(0x8000_0000));
-            vxorps(code, dst.0, src.0, UNARY_SCRATCH.0);
+            // dst = src XOR (-0.0 broadcast). Build the mask in the temp, not
+            // dst: dst may alias src, and writing the mask into dst first would
+            // clobber the source before the xor reads it.
+            let mask = super::declared_temp(temp);
+            emit_const(code, mask, f32::from_bits(0x8000_0000));
+            vxorps(code, dst.0, src.0, mask.0);
         }
         OpKind::Abs => {
             // dst = src AND (0x7FFFFFFF broadcast). Same aliasing concern.
-            emit_const(code, UNARY_SCRATCH, f32::from_bits(0x7FFF_FFFF));
-            vandps(code, dst.0, src.0, UNARY_SCRATCH.0);
+            let mask = super::declared_temp(temp);
+            emit_const(code, mask, f32::from_bits(0x7FFF_FFFF));
+            vandps(code, dst.0, src.0, mask.0);
         }
         // Rounding: a single EVEX instruction (vrndscaleps), no polynomial.
         // imm8 bit layout: bits[7:4] = scale (0 = integer), bits[3:0] = rounding
@@ -645,6 +677,9 @@ mod tests {
 
         const X: Reg = Reg(0);
         const Y: Reg = Reg(1);
+        /// Standing in for the allocator's instruction temp: any register
+        /// disjoint from the operands each case uses.
+        const TEMP: Reg = Reg(15);
         const Z: Reg = Reg(2);
 
         /// One row of the binary-op table: the op and its scalar reference.
@@ -681,7 +716,7 @@ mod tests {
         fn sqrt_op() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Sqrt, X, Y); // Y > 0
+            emit_unary(&mut c, OpKind::Sqrt, X, Y, None); // Y > 0
             check(run(&c, xs, ys, zs), |i| ys[i].sqrt(), "sqrt");
         }
 
@@ -689,10 +724,10 @@ mod tests {
         fn neg_abs() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Neg, X, X);
+            emit_unary(&mut c, OpKind::Neg, X, X, Some(TEMP));
             check(run(&c, xs, ys, zs), |i| -xs[i], "neg");
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Abs, X, X);
+            emit_unary(&mut c, OpKind::Abs, X, X, Some(TEMP));
             check(run(&c, xs, ys, zs), |i| xs[i].abs(), "abs");
         }
 
@@ -846,16 +881,20 @@ pub(crate) mod driver {
     /// Identical register *roles* to SSE2 — the shared driver depends on that —
     /// at four times the width, so only `vector_bytes` differs.
     const AVX512_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
-        // zmm13: outside the allocatable range and the reload pair; `vpternlogd`
-        // consumes its three operands with no temp.
-        // zmm4-10 plus zmm17-31: AVX-512 has thirty-two registers and the
-        // pool was six of them, because a contiguous range could not reach
-        // past the reload pair and the gather's scratch.
-        scratch: regalloc::RegSet::range(4, 7).union(regalloc::RegSet::range(17, 15)),
-        select_reload: Reg(13),
-        // zmm15: `emit_unary`'s sign-mask temp. zmm14/zmm16: the gather's
-        // destination and truncated-index registers.
-        fixed: &[super::UNARY_SCRATCH, Reg(14), Reg(16)],
+        // zmm4-31: twenty-eight of thirty-two, which is every register the ABI
+        // does not use for an argument. The pool was *six* when this work
+        // started, because a contiguous range could not reach past the reload
+        // pair and the gather's scratch — sixteen registers were untouched by
+        // anything at all.
+        scratch: regalloc::RegSet::range(4, 28),
+        // Nothing. Every register this backend's encodings destroy is now a
+        // per-instruction reservation: zmm15 for a sign-flip's mask, zmm14 and
+        // zmm16 for the gather's destination and truncated indices. All three
+        // are in the pool above, borrowed only across the one instruction that
+        // needs them. The select needs none — `vpternlogd` consumes its three
+        // operands.
+        fixed: &[],
+        temps_for: super::temps_for,
         vector_bytes: 64,
         ..SSE2_FILE
     }
@@ -913,7 +952,7 @@ pub(crate) mod driver {
                     super::emit_const(code, *dst, f32::from_bits(*val_bits));
                 }
                 ResolvedOp::Unary { op, dst, src } => {
-                    super::emit_unary(code, *op, *dst, *src);
+                    super::emit_unary(code, *op, *dst, *src, plan.scratch.temp(0));
                 }
                 ResolvedOp::ShiftImm {
                     op,
@@ -929,16 +968,19 @@ pub(crate) mod driver {
                     // never touches rdi, so it survives to here. Both are
                     // declared in AVX512_FILE.fixed, so `RegisterFile::checked`
                     // proves they miss the pool, the reload pair and
-                    // `select_reload`.
-                    const IDX_INT: Reg = Reg(16);
-                    const GATHER_DST: Reg = Reg(14);
+                    // the allocator's `arm_reload`.
+                    let idx_int = crate::emit::declared_temp(plan.scratch.temp(0));
+                    let gather_dst = crate::emit::declared_temp(plan.scratch.temp(1));
                     const RAX: u8 = 0;
                     const RDI: u8 = 7;
-                    super::emit_cvttps2dq(code, IDX_INT, *idx); // float idx -> int32 lanes
+                    super::emit_cvttps2dq(code, idx_int, *idx); // float idx -> int32 lanes
                     super::emit_set_gather_mask(code); // k1 = 0xFFFF (clobbers rax)
                     super::emit_load_ptr_from_ctx(code, RAX, RDI, (*slot as i32) * 8);
-                    super::emit_gather(code, GATHER_DST, RAX, IDX_INT);
-                    super::emit_mov(code, *dst, GATHER_DST);
+                    super::emit_gather(code, gather_dst, RAX, idx_int);
+                    super::emit_mov(code, *dst, gather_dst);
+                }
+                ResolvedOp::Uniform { dst, load } => {
+                    super::emit_uniform_load(code, *dst, *load);
                 }
                 ResolvedOp::Binary {
                     op,
@@ -987,9 +1029,6 @@ pub(crate) mod driver {
                     super::emit_select(code, *dst, *if_true, *if_false);
                 }
             }
-            if let Some(store) = &plan.store {
-                super::emit_store(code, frame_slot(store.offset), store.src);
-            }
             Ok(())
         }
 
@@ -1030,11 +1069,25 @@ pub(crate) mod driver {
         // Select short-circuit guards: reduce the vector mask to flags (vptestmd +
         // kortestw) and branch. jz = all-false (skip true arm); jc = all-true (skip
         // false arm). Mirrors the SSE2 MOVMSKPS guards, k-register-based.
-        fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        /// `_scratch` is unused: this tier's guard reduces the mask with
+        /// `movmskps`/`kortest` into the flags, needing no vector register.
+        fn emit_skip_if_all_false(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            _scratch: Option<Reg>,
+        ) -> usize {
             super::emit_mask_flags(code, mask_reg);
             x86_64::je(code).field() // ZF set when k1 == 0 (all false)
         }
-        fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        /// `_scratch` is unused: this tier's guard reduces the mask with
+        /// `movmskps`/`kortest` into the flags, needing no vector register.
+        fn emit_skip_if_all_true(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            _scratch: Option<Reg>,
+        ) -> usize {
             super::emit_mask_flags(code, mask_reg);
             x86_64::jc(code).field() // CF set when k1 == 0xFFFF (all true)
         }

@@ -50,11 +50,14 @@ use alloc::vec::Vec;
 use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
 use super::cost::CostModel;
-use super::extract::{Extraction, IncrementalExtractor, Reranker, choices_to_arena};
-use super::graph::{EGraph, SaturationStop};
+use super::extract::{ChoiceCost, Extraction, IncrementalExtractor, Reranker, choices_to_arena};
+use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
+use super::guided::GuidedEpisode;
 use super::node::EClassId;
+#[cfg(feature = "provenance-journal")]
 use super::provenance::ApplicationRecord;
 use super::rules::{Fingerprint, RuleSet};
+use crate::nnue::guide::SaturationGuide;
 
 /// A sink for what saturation did.
 ///
@@ -73,10 +76,36 @@ use super::rules::{Fingerprint, RuleSet};
 /// only after its action has run, so the two deliveries carry identical
 /// content; delivering at the end keeps the observer out of the rewrite
 /// dispatch path entirely.
+#[cfg(feature = "provenance-journal")]
 pub trait Observer {
     /// One rewrite application: which rule fired, in which round, what it
     /// minted, and whether anything actually changed.
     fn on_application(&mut self, record: &ApplicationRecord);
+}
+
+/// The observer for a caller that wants the journal **kept on the graph**
+/// rather than streamed: it consumes nothing, and its presence is what turns
+/// recording on.
+///
+/// The hindsight-label harnesses (`EpisodeLabels::compute_strict`,
+/// `derivation_ancestors`, the return-to-go minter) read the whole journal
+/// off [`EGraph::provenance`] after the run — as a graph, in an order the
+/// stream cannot give them. Each writing its own do-nothing `Observer` would
+/// be several copies of the same four lines, and the thing they actually
+/// mean — "record; I will read it later" — deserves a name.
+///
+/// Note that [`Optimizer::run`] replays the journal to its observer at the
+/// end of **every** call, so a resumed sequence of budgeted runs delivers
+/// earlier records again. That is harmless here (this observer consumes
+/// nothing) and is exactly why a harness reading the journal wants this
+/// rather than a counting observer.
+#[cfg(feature = "provenance-journal")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct KeepJournal;
+
+#[cfg(feature = "provenance-journal")]
+impl Observer for KeepJournal {
+    fn on_application(&mut self, _record: &ApplicationRecord) {}
 }
 
 /// What stops saturation.
@@ -141,7 +170,11 @@ impl Budget {
             Self::Production => Limits {
                 iterations: preset.max_iterations,
                 classes: preset.max_classes,
-                applications: None,
+                // Deterministic replacement for the wall clock this used to
+                // carry (docs/plans/2026-09-01-production-budget-determinism.md):
+                // calibrated per tier so it binds strictly after the class
+                // cap or quiescence on every kernel measured 2026-09-01.
+                applications: Some(preset.max_applications),
             },
             Self::Applications(n) => Limits {
                 iterations: preset.max_iterations,
@@ -190,6 +223,13 @@ pub struct OptimizerStats {
 pub struct Optimized {
     /// One node index per canonical e-class, well-founded from the root.
     pub choices: Vec<Option<usize>>,
+    /// What [`Self::choices`] costs, in both the shape the extraction DP
+    /// minimizes ([`ChoiceCost::tree`]) and the shape the emitted kernel pays
+    /// ([`ChoiceCost::dag`]). Read from the settled choices, so it describes
+    /// the term [`Self::to_arena`] materializes — including under a
+    /// [`Reranker`], whose search has its own scale and never produced this
+    /// number before.
+    pub cost: ChoiceCost,
     /// What the run did.
     pub stats: OptimizerStats,
 }
@@ -226,8 +266,94 @@ pub struct Optimizer {
     cost: CostModel,
     shape: LatticeShape,
     rerank: Option<Box<dyn Reranker>>,
+    guide: Option<Box<dyn SaturationGuide>>,
+    mask: Option<ApplicationMask>,
+    /// The guided episode's carried state — dedup set, feature constant,
+    /// rule-embedding cache — created on the first guided [`Self::run`] and
+    /// reused by later ones, so a caller stepping an anytime curve through
+    /// several application budgets on ONE e-graph sees one continuous guided
+    /// run. `None` whenever `guide` is `None`.
+    episode: Option<GuidedEpisode>,
+    #[cfg(feature = "provenance-journal")]
     observer: Option<Box<dyn Observer>>,
-    hard_ceiling: Option<core::time::Duration>,
+    hard_ceiling: HardCeiling,
+}
+
+/// [`Optimizer::hard_ceiling`]'s resolved policy.
+///
+/// A fixed [`core::time::Duration`] isn't enough on its own:
+/// [`Optimizer::production`]'s default ceiling must scale with the tier
+/// [`Budget::Production`] resolves to (blitz/rapid/classical carry different
+/// `safety_ceiling`s), which is only known once `node_count` reaches
+/// [`Optimizer::run`] — not at construction time, when
+/// `.hard_ceiling(d)`'s fixed override *is* already known. `None` stays a
+/// third state (rather than `Fixed` with a sentinel) for non-production
+/// configurations that want no assertion at all.
+#[derive(Clone, Copy, Debug)]
+enum HardCeiling {
+    /// No wall-clock assertion.
+    None,
+    /// A caller-chosen duration, regardless of tier. Set by
+    /// [`Optimizer::hard_ceiling`]; exempt from
+    /// `PIXELFLOW_SATURATION_CEILING_MS` — a measurement harness that asks
+    /// for a specific ceiling gets exactly that ceiling.
+    Fixed(core::time::Duration),
+    /// [`SaturationConfig::safety_ceiling`](super::saturate::SaturationConfig::safety_ceiling)
+    /// for the tier `node_count` resolves to, subject to
+    /// `PIXELFLOW_SATURATION_CEILING_MS`. [`Optimizer::production`]'s
+    /// default.
+    Tiered,
+}
+
+/// The three things `PIXELFLOW_SATURATION_CEILING_MS` can ask for. See
+/// [`tiered_ceiling_override`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CeilingOverride {
+    /// The variable is unset: use the tier's own `safety_ceiling`.
+    UseTierDefault,
+    /// A positive millisecond count: this ceiling, at every tier.
+    Fixed(core::time::Duration),
+    /// `0` or `off`: no ceiling at all.
+    Disabled,
+}
+
+/// `PIXELFLOW_SATURATION_CEILING_MS`, read fresh on every call (cheap — one
+/// env lookup) rather than cached once: a diagnostic override a test can
+/// flip between runs in-process would otherwise need the process restarted
+/// to take effect. Read at the same two places `PIXELFLOW_NNUE_WEIGHTS` is:
+/// proc-macro expansion time for the macro tier, process start (in practice,
+/// per-call — this crate has no init hook) for the runtime tier.
+///
+/// | value | effect |
+/// |---|---|
+/// | unset | the tier default |
+/// | a positive integer | that many milliseconds, at every tier |
+/// | `0` or `off` (case-insensitive) | ceiling disabled |
+/// | anything else | panic, quoting the offending value — no silent failures |
+///
+/// This variable can only change *whether [`Optimizer::run`] panics*, never
+/// what it computes: it is read after saturation and extraction have already
+/// produced their result, purely to decide whether to assert on the elapsed
+/// time. That is the property that makes it safe to leave permanently
+/// available rather than a debug-only cfg.
+fn tiered_ceiling_override() -> CeilingOverride {
+    const VAR: &str = "PIXELFLOW_SATURATION_CEILING_MS";
+    let Ok(raw) = std::env::var(VAR) else {
+        return CeilingOverride::UseTierDefault;
+    };
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("off") {
+        return CeilingOverride::Disabled;
+    }
+    match trimmed.parse::<u64>() {
+        Ok(0) => CeilingOverride::Disabled,
+        Ok(ms) => CeilingOverride::Fixed(core::time::Duration::from_millis(ms)),
+        Err(_) => panic!(
+            "{VAR}={raw:?} is not unset, a positive integer, `0`, or `off`. This variable can \
+             only change whether a saturation run's safety ceiling panics, never which kernel \
+             it produces — so an unparsable value fails loudly rather than picking a default."
+        ),
+    }
 }
 
 /// How many alternatives per e-class the reranking search evaluates. Matches
@@ -246,8 +372,16 @@ impl Optimizer {
             cost: CostModel::latency_prior(),
             shape: LatticeShape::POINT,
             rerank: None,
+            guide: None,
+            mask: None,
+            episode: None,
+            #[cfg(feature = "provenance-journal")]
             observer: None,
-            hard_ceiling: None,
+            // The tier's own `SaturationConfig::safety_ceiling`, resolved
+            // from `node_count` at `run()` time — every production call site
+            // gets a fail-loud ceiling without having to remember to ask for
+            // one. See `HardCeiling::Tiered`.
+            hard_ceiling: HardCeiling::Tiered,
         }
     }
 
@@ -292,21 +426,90 @@ impl Optimizer {
         self
     }
 
+    /// Order the rewrite candidates saturation applies.
+    ///
+    /// A [`SaturationGuide`](crate::nnue::guide::SaturationGuide) supplies
+    /// **order only** — it never constructs a rewrite action, never unions,
+    /// never sees a mutable e-graph. That is what makes law **L4** (see this
+    /// module's docs) hold without a numeric-equivalence suite: every
+    /// ordering leaves the graph holding a subset of the equalities an
+    /// exhaustive run would hold, and every node of the root's class denotes
+    /// the root's function, so the extracted term means the same thing under
+    /// any guide. A guide owes a *quality* measurement, not a correctness
+    /// argument.
+    ///
+    /// [`Self::production`] leaves this `None` and takes the unguided sweep,
+    /// byte for byte. `Budget::Applications` is the budget a guided arm
+    /// should be compared under: an application count is the one currency
+    /// that means the same thing to every ordering policy.
+    ///
+    /// Setting a guide resets the carried episode state, so one optimizer
+    /// can be re-pointed at a fresh guide without inheriting the previous
+    /// one's dedup set.
+    #[must_use]
+    pub fn guide(mut self, guide: Option<Box<dyn SaturationGuide>>) -> Self {
+        self.guide = guide;
+        self.episode = None;
+        self
+    }
+
+    /// Withhold one named rewrite application (and, under
+    /// [`MaskScope::AllMatchingCandidate`](super::graph::MaskScope::AllMatchingCandidate),
+    /// every later application that would re-derive the same thing), so a
+    /// harness can measure what that application was worth:
+    /// `Δ_a = R(τ\a,B) − R(τ,B)`
+    /// (docs/plans/2026-09-01-guide-return-to-go.md §4.1).
+    ///
+    /// A field, not a second saturation entry point, for the same reason
+    /// [`Self::rerank`] and [`Self::guide`] are fields: withholding an
+    /// application is a *policy* over the same one loop, and #1085/#1108
+    /// exist to keep there being one loop. Like every other lever it is
+    /// covered by L4 — a withheld application can only leave the graph
+    /// holding fewer equalities, never different ones.
+    ///
+    /// Read [`EGraph::last_replay_mask_skips`] afterwards rather than
+    /// assuming the mask fired: under the confluence-aware scope it can fire
+    /// many times, and if its ordinal was never reached it fires not at all.
+    #[must_use]
+    pub fn mask(mut self, mask: Option<ApplicationMask>) -> Self {
+        self.mask = mask;
+        self
+    }
+
     /// Record what saturation did, and hand it to `observer` when the run
     /// ends. Production passes `None` and nothing is recorded.
+    #[cfg(feature = "provenance-journal")]
     #[must_use]
     pub fn observe(mut self, observer: Option<Box<dyn Observer>>) -> Self {
         self.observer = observer;
         self
     }
 
-    /// A fail-loud wall-clock ceiling. **Not** a budget dimension: exceeding
-    /// it is a bug in the budget, so it panics rather than silently
-    /// truncating and reporting success, which is what the old `hard_timeout`
-    /// did. Default: none.
+    /// A fail-loud wall-clock ceiling, fixed regardless of tier. **Not** a
+    /// budget dimension: exceeding it is a bug in the budget, so it panics
+    /// rather than silently truncating and reporting success, which is what
+    /// the old `hard_timeout` did.
+    ///
+    /// [`Optimizer::production`]'s default is *not* "none" — it is
+    /// [`config_for_node_count`](super::saturate::config_for_node_count)'s
+    /// tier-appropriate `safety_ceiling`, resolved once `node_count` is
+    /// known. Call this only to override that with a fixed value regardless
+    /// of tier (measurement harnesses that vary the budget independently of
+    /// input size); the override is exempt from
+    /// `PIXELFLOW_SATURATION_CEILING_MS`, which affects only the tiered
+    /// default.
     #[must_use]
     pub fn hard_ceiling(mut self, d: core::time::Duration) -> Self {
-        self.hard_ceiling = Some(d);
+        self.hard_ceiling = HardCeiling::Fixed(d);
+        self
+    }
+
+    /// Disable the wall-clock ceiling assertion entirely. Exists for
+    /// configurations (research budgets sweeping deliberately extreme
+    /// inputs) that want no ceiling at all rather than a very generous one.
+    #[must_use]
+    pub fn no_ceiling(mut self) -> Self {
+        self.hard_ceiling = HardCeiling::None;
         self
     }
 
@@ -338,6 +541,28 @@ impl Optimizer {
         self.rules.fingerprint()
     }
 
+    /// The limits this optimizer's budget resolves to for an input of
+    /// `node_count` nodes — the *environment* an
+    /// [`anytime`](super::anytime) curve holds fixed while it varies only
+    /// the application dimension.
+    #[must_use]
+    pub fn limits_for(&self, node_count: usize) -> Limits {
+        self.budget.limits(node_count)
+    }
+
+    /// How many distinct candidate keys the carried guided episode has
+    /// resolved so far, or `None` when no guide is set.
+    ///
+    /// The guided loop's own unit of work: a key is scored once per episode
+    /// and never again, so this is "candidates this Guide was actually asked
+    /// to rank" — the denominator a Guide-overhead measurement needs, and
+    /// not derivable from the application count (a key can be scored and
+    /// then fail to fire).
+    #[must_use]
+    pub fn guided_keys_seen(&self) -> Option<usize> {
+        self.episode.as_ref().map(GuidedEpisode::seen_key_count)
+    }
+
     /// The rule set, for a caller that has to name a rule this run applied.
     #[must_use]
     pub fn rule_set(&self) -> &RuleSet {
@@ -364,43 +589,90 @@ impl Optimizer {
     /// assertion about the budget, and a silently truncated optimization that
     /// reports success is the failure mode this API exists to remove.
     pub fn run(&mut self, egraph: &mut EGraph, root: EClassId, node_count: usize) -> Optimized {
-        let limits = self.budget.limits(node_count);
+        self.run_bounded(egraph, root, self.budget.limits(node_count), node_count)
+    }
+
+    /// [`Self::run`] with the limits named outright — the seam
+    /// [`super::anytime`] steps a curve on, where each step's budget is the
+    /// *gap* to the next checkpoint and `node_count` is only still needed to
+    /// name the tier the ceiling belongs to.
+    pub(crate) fn run_bounded(
+        &mut self,
+        egraph: &mut EGraph,
+        root: EClassId,
+        limits: Limits,
+        node_count: usize,
+    ) -> Optimized {
         let started = std::time::Instant::now();
 
+        #[cfg(feature = "provenance-journal")]
         egraph.set_provenance_recording(self.observer.is_some());
-        let saturation =
-            egraph.saturate_budgeted(limits.iterations, limits.classes, limits.applications);
+        // A fresh clone per run: the confluence-aware scope mutates its
+        // captured key as the run goes, and one optimizer replaying two
+        // expressions must not carry the first one's capture into the
+        // second.
+        egraph.set_replay_mask(self.mask.clone());
+        let saturation = self.saturate(egraph, limits);
 
-        if let Some(ceiling) = self.hard_ceiling {
+        // Name and budget from one lookup, so the panic below cannot name a
+        // tier other than the one whose ceiling it is asserting.
+        let (tier, tier_config) = super::saturate::tier_for_node_count(node_count);
+        let ceiling = match self.hard_ceiling {
+            HardCeiling::None => None,
+            HardCeiling::Fixed(d) => Some(d),
+            HardCeiling::Tiered => match tiered_ceiling_override() {
+                CeilingOverride::UseTierDefault => Some(tier_config.safety_ceiling),
+                CeilingOverride::Fixed(d) => Some(d),
+                CeilingOverride::Disabled => None,
+            },
+        };
+        if let Some(ceiling) = ceiling {
             let elapsed = started.elapsed();
+            let applications = egraph.application_count();
             assert!(
                 elapsed <= ceiling,
-                "Optimizer::run exceeded its hard ceiling: {elapsed:?} > {ceiling:?} \
-                 under {limits:?} (stop: {:?}). A ceiling is an assertion about the \
-                 budget, not a budget dimension — either the budget is wrong for this \
-                 input or the ceiling is.",
-                saturation.stop
+                "Optimizer::run exceeded its safety ceiling: {elapsed:?} > {ceiling:?} \
+                 (tier {tier}, {node_count} nodes, {applications} applications reached, \
+                 stop: {stop:?}). A ceiling is an assertion about the budget, not a budget \
+                 dimension — either the budget is wrong for this input or the machine is \
+                 unusually slow. Override with PIXELFLOW_SATURATION_CEILING_MS (milliseconds; \
+                 `0` or `off` disables it) only for diagnosis — it can change whether this \
+                 panics, never which kernel is emitted.",
+                stop = saturation.stop,
             );
         }
 
+        #[cfg(feature = "provenance-journal")]
         if let Some(observer) = self.observer.as_mut() {
             for (_id, record) in egraph.provenance().applications() {
                 observer.on_application(record);
             }
         }
 
-        let choices = match self.rerank.as_ref() {
-            Some(reranker) => IncrementalExtractor::new(reranker.as_ref(), RERANK_TOP_K)
-                .extract_choices_only(egraph, root)
-                .1
-                .into_choices(),
+        // Both arms report the cost of the choices they RETURN — the DP's
+        // own table is read before `repair_choices_well_founded` rewrites
+        // picks and so can name a different term (#1111), and the reranker's
+        // search score is on its own scale entirely.
+        let (choices, cost) = match self.rerank.as_ref() {
+            Some(reranker) => {
+                let choices = IncrementalExtractor::new(reranker.as_ref(), RERANK_TOP_K)
+                    .extract_choices_only(egraph, root)
+                    .1
+                    .into_choices();
+                let cost =
+                    super::extract::cost_of_choices(egraph, root, &choices, &self.cost, self.shape);
+                (choices, cost)
+            }
             None => {
-                super::extract::extract_dag_scoped(egraph, root, &self.cost, self.shape).choices
+                let dag = super::extract::extract_dag_scoped(egraph, root, &self.cost, self.shape);
+                let cost = dag.cost();
+                (dag.choices, cost)
             }
         };
 
         Optimized {
             choices,
+            cost,
             stats: OptimizerStats {
                 stop: saturation.stop,
                 iterations: saturation.iterations,
@@ -410,6 +682,32 @@ impl Optimizer {
                 limits,
             },
         }
+    }
+}
+
+impl Optimizer {
+    /// The one place this type decides *how* saturation runs: the unguided
+    /// sweep, or the guided ordering when a
+    /// [`SaturationGuide`](crate::nnue::guide::SaturationGuide) is set.
+    ///
+    /// Both arms are held to the same [`Limits`] and report the same
+    /// [`SaturationStats`], and neither can report
+    /// [`SaturationStop::Timeout`] — the guided loop takes no clock either.
+    /// Every mutation the guided arm makes goes through
+    /// `EGraph::apply_single_rule`, i.e. through the same
+    /// `apply_action_from_rule` the sweep uses, which is what keeps the
+    /// application counter (the budget's denominator) meaning one thing.
+    fn saturate(&mut self, egraph: &mut EGraph, limits: Limits) -> SaturationStats {
+        let Some(guide) = self.guide.as_ref() else {
+            return egraph.saturate_budgeted(
+                limits.iterations,
+                limits.classes,
+                limits.applications,
+            );
+        };
+        self.episode
+            .get_or_insert_with(GuidedEpisode::default)
+            .advance(egraph, guide.as_ref(), limits)
     }
 }
 

@@ -1,7 +1,15 @@
 //! Graphics integration for pixelflow-ml.
 //!
-//! This module provides harmonic attention and SH feature maps that integrate
-//! with pixelflow-core's Field and ShCoeffs types.
+//! This module provides harmonic attention and SH feature maps. A feature map
+//! is a [`Kernel`] transformer -- the language's own value, an arena fragment --
+//! so a feature map composes into a larger kernel and reaches numbers the one
+//! way anything does: compiled at a lattice's shape, then collapsed.
+//!
+//! The SH coefficient vector and its normalization table live here rather than
+//! in pixelflow-core. They are scalar data for this experiment, and the
+//! `Field`-typed spherical-harmonic combinators they used to sit beside went
+//! with the per-batch tier (docs/plans/2026-09-06-kernel-with-a-lattice.md,
+//! S4b-2).
 //!
 //! ## Linear Attention IS Harmonic Global Illumination
 //!
@@ -9,7 +17,72 @@
 //! compress infinite/quadratic interactions into finite/linear operations.
 
 use alloc::vec::Vec;
-use pixelflow_core::{Field, ManifoldExt, SH_NORM, ShCoeffs};
+use pixelflow_core::Kernel;
+
+// ============================================================================
+// Spherical harmonic coefficients (scalar data)
+// ============================================================================
+
+/// Normalization constants for real spherical harmonics up to band 3:
+/// `K_lm = sqrt((2l+1)/(4pi) * (l-|m|)!/(l+|m|)!)`.
+pub const SH_NORM: [[f32; 7]; 4] = [
+    // l=0
+    [0.282_094_8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    // l=1
+    [0.488_602_5, 0.488_602_5, 0.0, 0.0, 0.0, 0.0, 0.0],
+    // l=2
+    [0.315_391_57, 1.092_548_4, 0.546_274_2, 0.0, 0.0, 0.0, 0.0],
+    // l=3
+    [
+        0.373_176_33,
+        0.457_045_8,
+        1.445_305_8,
+        0.590_043_6,
+        0.0,
+        0.0,
+        0.0,
+    ],
+];
+
+/// Spherical harmonic coefficient vector for the band with `NUM_COEFFS` =
+/// (L+1) squared coefficients: the compressed representation that makes
+/// irradiance O(n).
+#[derive(Clone, Debug)]
+pub struct ShCoeffs<const NUM_COEFFS: usize> {
+    /// Coefficients indexed as `[l*l + l + m]` for l in [0, L], m in [-l, l].
+    pub coeffs: [f32; NUM_COEFFS],
+}
+
+impl<const NUM_COEFFS: usize> ShCoeffs<NUM_COEFFS> {
+    /// Create zero coefficients.
+    #[must_use]
+    pub const fn zero() -> Self {
+        Self {
+            coeffs: [0.0; NUM_COEFFS],
+        }
+    }
+
+    /// Coefficient index for `(l, m)`.
+    #[inline(always)]
+    #[must_use]
+    pub const fn index(l: usize, m: i32) -> usize {
+        (l * l) + l + (m as usize)
+    }
+
+    /// Dot product with another SH vector -- the integral over the sphere.
+    #[inline(always)]
+    #[must_use]
+    pub fn dot(&self, other: &Self) -> f32 {
+        let mut sum = 0.0;
+        for i in 0..NUM_COEFFS {
+            sum += self.coeffs[i] * other.coeffs[i];
+        }
+        sum
+    }
+}
+
+/// Second-order SH coefficients (9 coefficients, diffuse lighting).
+pub type Sh2 = ShCoeffs<9>;
 
 // ============================================================================
 // Feature Maps: The Bridge Between Attention and SH
@@ -25,7 +98,7 @@ use pixelflow_core::{Field, ManifoldExt, SH_NORM, ShCoeffs};
 /// - SH basis: Directly computes irradiance-like attention
 pub trait FeatureMap: Send + Sync {
     /// Apply the feature map to a value.
-    fn apply(&self, x: Field) -> Field;
+    fn apply(&self, x: &Kernel) -> Kernel;
 
     /// Feature dimension (number of output features).
     fn dim(&self) -> usize;
@@ -41,12 +114,10 @@ pub struct EluFeature;
 
 impl FeatureMap for EluFeature {
     #[inline(always)]
-    fn apply(&self, x: Field) -> Field {
+    fn apply(&self, x: &Kernel) -> Kernel {
         // ELU(x) + 1 = max(0, x) + exp(min(0, x))
-        let zero = Field::from(0.0);
-        let pos_part = x.max(zero);
-        let neg_part = x.min(zero).exp();
-        (pos_part + neg_part).constant()
+        let zero = Kernel::constant(0.0);
+        x.max(&zero).add(&x.min(&zero).exp())
     }
 
     fn dim(&self) -> usize {
@@ -159,7 +230,7 @@ impl<const NUM_COEFFS: usize> HarmonicAttention<NUM_COEFFS> {
 }
 
 // ============================================================================
-// SH Feature Projection Manifold
+// SH Feature Projection
 // ============================================================================
 
 /// Projects coordinates into spherical harmonic feature space.
@@ -169,36 +240,34 @@ impl<const NUM_COEFFS: usize> HarmonicAttention<NUM_COEFFS> {
 pub struct ShFeatureMap<const NUM_COEFFS: usize>;
 
 impl ShFeatureMap<9> {
-    /// Evaluate the SH feature map at a direction.
+    /// The SH feature map at a direction, as nine kernels.
     ///
-    /// Returns the 9-coefficient SH vector for band 2.
-    #[inline(always)]
+    /// The direction is normalized inside the kernel, so a caller may hand in
+    /// the coordinate kernels (`Kernel::x()` and friends) or any computed
+    /// direction. The nine share one normalization -- hash-consing folds the
+    /// repeated subexpression before the backend ever sees it.
     #[must_use]
-    pub fn project(x: Field, y: Field, z: Field) -> [Field; 9] {
-        let _zero = Field::from(0.0);
+    pub fn project(x: &Kernel, y: &Kernel, z: &Kernel) -> [Kernel; 9] {
+        let k = Kernel::constant;
 
-        // Normalize direction - collapse intermediate AST
-        let r = (x * x + y * y + z * z).sqrt().constant();
-        let inv_r = (Field::from(1.0) / r).constant();
-        let nx = (x * inv_r).constant();
-        let ny = (y * inv_r).constant();
-        let nz = (z * inv_r).constant();
+        let inv_r = x.mul(x).add(&y.mul(y)).add(&z.mul(z)).rsqrt();
+        let nx = x.mul(&inv_r);
+        let ny = y.mul(&inv_r);
+        let nz = z.mul(&inv_r);
 
-        // Compute all 9 SH basis functions - collapse each
         [
             // l=0
-            Field::from(SH_NORM[0][0]),
+            k(SH_NORM[0][0]),
             // l=1
-            (Field::from(SH_NORM[1][1]) * ny).constant(),
-            (Field::from(SH_NORM[1][0]) * nz).constant(),
-            (Field::from(SH_NORM[1][1]) * nx).constant(),
+            k(SH_NORM[1][1]).mul(&ny),
+            k(SH_NORM[1][0]).mul(&nz),
+            k(SH_NORM[1][1]).mul(&nx),
             // l=2
-            (Field::from(SH_NORM[2][2]) * nx * ny).constant(),
-            (Field::from(SH_NORM[2][1]) * ny * nz).constant(),
-            (Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)))
-                .constant(),
-            (Field::from(SH_NORM[2][1]) * nx * nz).constant(),
-            (Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny)).constant(),
+            k(SH_NORM[2][2]).mul(&nx).mul(&ny),
+            k(SH_NORM[2][1]).mul(&ny).mul(&nz),
+            k(SH_NORM[2][0]).mul(&k(3.0).mul(&nz).mul(&nz).sub(&k(1.0))),
+            k(SH_NORM[2][1]).mul(&nx).mul(&nz),
+            k(SH_NORM[2][2]).mul(&nx.mul(&nx).sub(&ny.mul(&ny))),
         ]
     }
 }
@@ -294,13 +363,26 @@ impl HarmonicAttentionIsGlobalIllumination {
 mod tests {
     use super::*;
     use alloc::vec;
-    use pixelflow_core::Sh2;
+    use pixelflow_core::Lattice;
+
+    /// A kernel at one point.
+    fn at(k: &Kernel, x: f32, y: f32) -> f32 {
+        Lattice::eval_at(k, x, y)
+    }
+
+    fn close(got: f32, want: f32) -> bool {
+        (got - want).abs() <= 1e-3 + 1e-3 * want.abs()
+    }
 
     #[test]
     fn elu_feature_positive() {
-        let f = EluFeature;
-        let result = f.apply(Field::from(0.0));
-        let _ = result;
+        // ELU(x) + 1 is positive everywhere: max(0, x) + exp(min(0, x)).
+        let phi = EluFeature.apply(&Kernel::x());
+        for x in [-4.0_f32, -1.0, 0.0, 1.0, 4.0] {
+            let (got, want) = (at(&phi, x, 0.0), x.max(0.0) + x.min(0.0).exp());
+            assert!(close(got, want), "elu({x}): got {got}, want {want}");
+            assert!(got > 0.0, "elu({x}) = {got} is not positive");
+        }
     }
 
     #[test]
@@ -351,9 +433,28 @@ mod tests {
 
     #[test]
     fn sh_feature_map_projects_direction() {
-        let result =
-            ShFeatureMap::<9>::project(Field::from(0.0), Field::from(0.0), Field::from(1.0));
-        assert_eq!(result.len(), 9);
+        // Along +z only the m=0 members survive, at the band constants
+        // themselves (the l=2 one carries 3*nz^2 - 1 = 2). The direction's
+        // third component is a value, not a coordinate: a lattice has two
+        // axes, and this projection is a function of a direction it is
+        // handed rather than of where it is sampled.
+        let basis = ShFeatureMap::<9>::project(&Kernel::x(), &Kernel::y(), &Kernel::constant(1.0));
+        assert_eq!(basis.len(), 9);
+        let want = [
+            SH_NORM[0][0],
+            0.0,
+            SH_NORM[1][0],
+            0.0,
+            0.0,
+            0.0,
+            SH_NORM[2][0] * 2.0,
+            0.0,
+            0.0,
+        ];
+        for (i, (k, w)) in basis.iter().zip(want.iter()).enumerate() {
+            let got = at(k, 0.0, 0.0);
+            assert!(close(got, *w), "basis[{i}]: got {got}, want {w}");
+        }
     }
 
     #[test]

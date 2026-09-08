@@ -1,0 +1,2202 @@
+{
+ "registration": "docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md",
+ "round1_dev_reference_median": {
+  "100": {
+   "control": 0.5655,
+   "linear": 0.5366
+  },
+  "200": {
+   "control": 0.6991,
+   "linear": 0.6959
+  }
+ },
+ "margin_m": {
+  "100": 0.06,
+  "200": 0.07
+ },
+ "min_n_for_verdict": 30,
+ "checkpoint": "pixelflow-pipeline/data/guide_checkpoint_strict_v1.json (Round 1, unchanged)",
+ "sets": [
+  {
+   "set": "dev",
+   "corpus": "pixelflow-pipeline/data/corpus_dev.bin (all 334 DEV classical; rerun of Round 1 with rule-index histograms)",
+   "source_rev": "14125f105fed58dc61791c0ad8a098b71de8a0ac",
+   "n_by_band": {
+    "classical": 334
+   },
+   "strata_population": {
+    "transcendental-heavy": 47,
+    "trig-heavy": 287
+   },
+   "tiers": [
+    {
+     "set": "dev",
+     "stratum": "all",
+     "B": 100,
+     "n": 334,
+     "unguided": {
+      "regret_at_b_median_pct": 96.17069129755129,
+      "regret_at_4b_median_pct": 1.1003761709418252,
+      "truncation_loss_median_pct": 51.66348638911912,
+      "structural_share_pooled": 0.5893271461716937,
+      "strict_precision_pooled": 0.02124801563072414
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.007166807696042161,
+       "ratio_median": 0.5654513057744772,
+       "ratio_q3": 0.7005399874194508,
+       "ratio_p90": 0.8409460375357694,
+       "improved": 321,
+       "unchanged": 4,
+       "worse": 9,
+       "regret_median_pct": 0.6422663422244954,
+       "regret_q3_pct": 5.632265863177246,
+       "regret_p90_pct": 24.678459302254723,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.2787858285151925,
+       "strict_precision_pooled": 0.22478164595891253,
+       "reaches_empirical_best": 189,
+       "ended_before_b": 41,
+       "ended_at_apps_median": 294.0,
+       "vs_production_better_equal_worse": [
+        23,
+        102,
+        209
+       ],
+       "D": -4.869422552278291e-05
+      },
+      "linear": {
+       "ratio_q1": 0.004117136113117188,
+       "ratio_median": 0.5365665011440534,
+       "ratio_q3": 0.6809203680761291,
+       "ratio_p90": 0.7970934058964732,
+       "improved": 323,
+       "unchanged": 4,
+       "worse": 7,
+       "regret_median_pct": 0.37886505524077996,
+       "regret_q3_pct": 1.9736299588836816,
+       "regret_p90_pct": 10.202824340664064,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.32162129016433655,
+       "strict_precision_pooled": 0.22372455236693647,
+       "reaches_empirical_best": 199,
+       "ended_before_b": 39,
+       "ended_at_apps_median": 293.0,
+       "vs_production_better_equal_worse": [
+        36,
+        106,
+        192
+       ],
+       "D": -3.349885594661206e-05
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      131,
+      134,
+      69
+     ],
+     "round1b": {
+      "D_control": -4.869422552278291e-05,
+      "D_linear": -3.349885594661206e-05,
+      "D_control_minus_D_linear": -1.5195369576170847e-05,
+      "M_B": 0.06,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": true,
+      "poly_prediction_binding_D_le_M_both": true
+     }
+    },
+    {
+     "set": "dev",
+     "stratum": "all",
+     "B": 200,
+     "n": 334,
+     "unguided": {
+      "regret_at_b_median_pct": 51.453557094249796,
+      "regret_at_4b_median_pct": 0.0,
+      "truncation_loss_median_pct": 16.891649536479214,
+      "structural_share_pooled": 0.5964151252250778,
+      "strict_precision_pooled": 0.029628417089540022
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.5222274805419045,
+       "ratio_median": 0.699146650282352,
+       "ratio_q3": 1.0,
+       "ratio_p90": 1.0,
+       "improved": 245,
+       "unchanged": 71,
+       "worse": 18,
+       "regret_median_pct": 0.2000652565393235,
+       "regret_q3_pct": 2.8495643790043,
+       "regret_p90_pct": 16.491250617894213,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.40316491426152,
+       "strict_precision_pooled": 0.14224472514289746,
+       "reaches_empirical_best": 189,
+       "ended_before_b": 126,
+       "ended_at_apps_median": 294.0,
+       "vs_production_better_equal_worse": [
+        20,
+        138,
+        176
+       ],
+       "D": 4.665028235195656e-05
+      },
+      "linear": {
+       "ratio_q1": 0.5115237071531549,
+       "ratio_median": 0.6958548727267235,
+       "ratio_q3": 1.0,
+       "ratio_p90": 1.0,
+       "improved": 245,
+       "unchanged": 71,
+       "worse": 18,
+       "regret_median_pct": 0.07790787285944877,
+       "regret_q3_pct": 0.4420049778532388,
+       "regret_p90_pct": 5.785482330467996,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.4301147160250545,
+       "strict_precision_pooled": 0.14599901470898727,
+       "reaches_empirical_best": 199,
+       "ended_before_b": 128,
+       "ended_at_apps_median": 293.0,
+       "vs_production_better_equal_worse": [
+        28,
+        150,
+        156
+       ],
+       "D": -4.5127273276435176e-05
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      114,
+      202,
+      18
+     ],
+     "round1b": {
+      "D_control": 4.665028235195656e-05,
+      "D_linear": -4.5127273276435176e-05,
+      "D_control_minus_D_linear": 9.177755562839174e-05,
+      "M_B": 0.07,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": true
+     }
+    }
+   ],
+   "strata": [
+    {
+     "set": "dev",
+     "stratum": "transcendental-heavy",
+     "B": 100,
+     "n": 47,
+     "unguided": {
+      "regret_at_b_median_pct": 98.03126809496237,
+      "regret_at_4b_median_pct": 0.0,
+      "truncation_loss_median_pct": 86.93009118541033,
+      "structural_share_pooled": 0.5081543357199682,
+      "strict_precision_pooled": 0.024463007159904536
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.3627194141113693,
+       "ratio_median": 0.5088819226750261,
+       "ratio_q3": 0.6401178719535736,
+       "ratio_p90": 0.8642847374255461,
+       "improved": 44,
+       "unchanged": 2,
+       "worse": 1,
+       "regret_median_pct": 0.0,
+       "regret_q3_pct": 0.4104756589408507,
+       "regret_p90_pct": 1.8542624803068146,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.36437718277066355,
+       "strict_precision_pooled": 0.10244470314318975,
+       "reaches_empirical_best": 36,
+       "ended_before_b": 16,
+       "ended_at_apps_median": 116.0,
+       "vs_production_better_equal_worse": [
+        2,
+        32,
+        13
+       ],
+       "D": -0.056618077324973926
+      },
+      "linear": {
+       "ratio_q1": 0.3765883076504779,
+       "ratio_median": 0.5197486535008977,
+       "ratio_q3": 0.6684803146347635,
+       "ratio_p90": 0.9231800831273481,
+       "improved": 44,
+       "unchanged": 2,
+       "worse": 1,
+       "regret_median_pct": 0.0,
+       "regret_q3_pct": 0.7143101477618683,
+       "regret_p90_pct": 3.83312627562339,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.4091959334565619,
+       "strict_precision_pooled": 0.10258780036968576,
+       "reaches_empirical_best": 35,
+       "ended_before_b": 15,
+       "ended_at_apps_median": 114.0,
+       "vs_production_better_equal_worse": [
+        1,
+        30,
+        16
+       ],
+       "D": -0.01685134649910225
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      4,
+      34,
+      9
+     ],
+     "round1b": {
+      "D_control": -0.056618077324973926,
+      "D_linear": -0.01685134649910225,
+      "D_control_minus_D_linear": -0.03976673082587168,
+      "M_B": 0.06,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": true,
+      "poly_prediction_binding_D_le_M_both": true
+     }
+    },
+    {
+     "set": "dev",
+     "stratum": "transcendental-heavy",
+     "B": 200,
+     "n": 47,
+     "unguided": {
+      "regret_at_b_median_pct": 1.3207547169811322,
+      "regret_at_4b_median_pct": 0.0,
+      "truncation_loss_median_pct": 0.0,
+      "structural_share_pooled": 0.5197023684762104,
+      "strict_precision_pooled": 0.03322154684552505
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.835126412049489,
+       "ratio_median": 1.0,
+       "ratio_q3": 1.0,
+       "ratio_p90": 1.0,
+       "improved": 23,
+       "unchanged": 23,
+       "worse": 1,
+       "regret_median_pct": 0.0,
+       "regret_q3_pct": 0.19572044207595796,
+       "regret_p90_pct": 1.1091612824161379,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.4753550543024227,
+       "strict_precision_pooled": 0.07602339181286549,
+       "reaches_empirical_best": 36,
+       "ended_before_b": 34,
+       "ended_at_apps_median": 116.0,
+       "vs_production_better_equal_worse": [
+        1,
+        37,
+        9
+       ],
+       "D": 0.30089999999999995
+      },
+      "linear": {
+       "ratio_q1": 0.835126412049489,
+       "ratio_median": 1.0,
+       "ratio_q3": 1.0,
+       "ratio_p90": 1.0,
+       "improved": 23,
+       "unchanged": 23,
+       "worse": 1,
+       "regret_median_pct": 0.0,
+       "regret_q3_pct": 0.19572044207595796,
+       "regret_p90_pct": 0.9654625198365592,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.48266710897329573,
+       "strict_precision_pooled": 0.07563443357107315,
+       "reaches_empirical_best": 35,
+       "ended_before_b": 34,
+       "ended_at_apps_median": 114.0,
+       "vs_production_better_equal_worse": [
+        1,
+        37,
+        9
+       ],
+       "D": 0.30410000000000004
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      1,
+      46,
+      0
+     ],
+     "round1b": {
+      "D_control": 0.30089999999999995,
+      "D_linear": 0.30410000000000004,
+      "D_control_minus_D_linear": -0.0032000000000000917,
+      "M_B": 0.07,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": false
+     }
+    },
+    {
+     "set": "dev",
+     "stratum": "trig-heavy",
+     "B": 100,
+     "n": 287,
+     "unguided": {
+      "regret_at_b_median_pct": 95.20661157024793,
+      "regret_at_4b_median_pct": 4.459524963645177,
+      "truncation_loss_median_pct": 49.21061471279812,
+      "structural_share_pooled": 0.6006904808308043,
+      "strict_precision_pooled": 0.020797950831082775
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.004758780695529229,
+       "ratio_median": 0.570088587806149,
+       "ratio_q3": 0.7029585647693468,
+       "ratio_p90": 0.818593031156661,
+       "improved": 277,
+       "unchanged": 2,
+       "worse": 8,
+       "regret_median_pct": 0.885337939969769,
+       "regret_q3_pct": 7.160185418969785,
+       "regret_p90_pct": 26.298737060041415,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.26575954076751357,
+       "strict_precision_pooled": 0.24340030473760674,
+       "reaches_empirical_best": 153,
+       "ended_before_b": 25,
+       "ended_at_apps_median": 332.0,
+       "vs_production_better_equal_worse": [
+        21,
+        70,
+        196
+       ],
+       "D": 0.004588587806149014
+      },
+      "linear": {
+       "ratio_q1": 0.0035498151905656904,
+       "ratio_median": 0.5399282920469362,
+       "ratio_q3": 0.681967793569356,
+       "ratio_p90": 0.7769202639614643,
+       "improved": 279,
+       "unchanged": 2,
+       "worse": 6,
+       "regret_median_pct": 0.4451864218141347,
+       "regret_q3_pct": 2.099351007081144,
+       "regret_p90_pct": 10.842327408208337,
+       "gap_vs_unguided_at_4b_median_pct": -0.3459010722933241,
+       "structural_share_pooled": 0.30822256787330315,
+       "strict_precision_pooled": 0.24225820135746606,
+       "reaches_empirical_best": 164,
+       "ended_before_b": 24,
+       "ended_at_apps_median": 337.0,
+       "vs_production_better_equal_worse": [
+        35,
+        76,
+        176
+       ],
+       "D": 0.0033282920469361876
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      127,
+      100,
+      60
+     ],
+     "round1b": {
+      "D_control": 0.004588587806149014,
+      "D_linear": 0.0033282920469361876,
+      "D_control_minus_D_linear": 0.001260295759212826,
+      "M_B": 0.06,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": true
+     }
+    },
+    {
+     "set": "dev",
+     "stratum": "trig-heavy",
+     "B": 200,
+     "n": 287,
+     "unguided": {
+      "regret_at_b_median_pct": 57.72554002541296,
+      "regret_at_4b_median_pct": 0.0,
+      "truncation_loss_median_pct": 37.60703363914374,
+      "structural_share_pooled": 0.6078944892262335,
+      "strict_precision_pooled": 0.029090738010852178
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.47628861791112914,
+       "ratio_median": 0.6724254361283062,
+       "ratio_q3": 0.9986363914743157,
+       "ratio_p90": 1.0,
+       "improved": 222,
+       "unchanged": 48,
+       "worse": 17,
+       "regret_median_pct": 0.27374760470845877,
+       "regret_q3_pct": 3.6847670817746208,
+       "regret_p90_pct": 17.060487420727778,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.3946428923647409,
+       "strict_precision_pooled": 0.15006213140298624,
+       "reaches_empirical_best": 153,
+       "ended_before_b": 92,
+       "ended_at_apps_median": 332.0,
+       "vs_production_better_equal_worse": [
+        19,
+        101,
+        167
+       ],
+       "D": -0.026674563871693868
+      },
+      "linear": {
+       "ratio_q1": 0.3959563721953482,
+       "ratio_median": 0.6654440369011893,
+       "ratio_q3": 0.9980560692224445,
+       "ratio_p90": 1.0,
+       "improved": 222,
+       "unchanged": 48,
+       "worse": 17,
+       "regret_median_pct": 0.10708548991611637,
+       "regret_q3_pct": 0.5086614755310236,
+       "regret_p90_pct": 6.418041995213762,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.4238785994055937,
+       "strict_precision_pooled": 0.15434881020331845,
+       "reaches_empirical_best": 164,
+       "ended_before_b": 94,
+       "ended_at_apps_median": 337.0,
+       "vs_production_better_equal_worse": [
+        27,
+        113,
+        147
+       ],
+       "D": -0.030455963098810712
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      113,
+      156,
+      18
+     ],
+     "round1b": {
+      "D_control": -0.026674563871693868,
+      "D_linear": -0.030455963098810712,
+      "D_control_minus_D_linear": 0.003781399227116844,
+      "M_B": 0.07,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": true,
+      "poly_prediction_binding_D_le_M_both": true
+     }
+    }
+   ],
+   "trig_rule_firing": {
+    "n": 334,
+    "n_with_rule_index": 334,
+    "arms": {
+     "control": {
+      "20": {
+       "rule_name": "doubling",
+       "fired_at_100": 162,
+       "strict_at_100": 17,
+       "fired_at_200": 414,
+       "strict_at_200": 44,
+       "fired_full": 1796,
+       "strict_full": 54,
+       "exprs_with_firing_full": 197
+      },
+      "30": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 128,
+       "strict_at_100": 9,
+       "fired_at_200": 249,
+       "strict_at_200": 12,
+       "fired_full": 492,
+       "strict_full": 12,
+       "exprs_with_firing_full": 106
+      },
+      "31": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 50,
+       "strict_at_100": 8,
+       "fired_at_200": 139,
+       "strict_at_200": 9,
+       "fired_full": 283,
+       "strict_full": 10,
+       "exprs_with_firing_full": 63
+      },
+      "32": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "33": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "34": {
+       "rule_name": "even-negation",
+       "fired_at_100": 892,
+       "strict_at_100": 371,
+       "fired_at_200": 1392,
+       "strict_at_200": 400,
+       "fired_full": 1659,
+       "strict_full": 400,
+       "exprs_with_firing_full": 257
+      },
+      "36": {
+       "rule_name": "sin-angle-addition",
+       "fired_at_100": 28,
+       "strict_at_100": 0,
+       "fired_at_200": 72,
+       "strict_at_200": 0,
+       "fired_full": 278,
+       "strict_full": 1,
+       "exprs_with_firing_full": 61
+      },
+      "37": {
+       "rule_name": "cos-angle-addition",
+       "fired_at_100": 51,
+       "strict_at_100": 1,
+       "fired_at_200": 133,
+       "strict_at_200": 3,
+       "fired_full": 412,
+       "strict_full": 5,
+       "exprs_with_firing_full": 65
+      },
+      "38": {
+       "rule_name": "reverse-angle-addition",
+       "fired_at_100": 26,
+       "strict_at_100": 11,
+       "fired_at_200": 63,
+       "strict_at_200": 18,
+       "fired_full": 197,
+       "strict_full": 20,
+       "exprs_with_firing_full": 61
+      },
+      "39": {
+       "rule_name": "half-angle-product",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 23,
+       "strict_full": 0,
+       "exprs_with_firing_full": 6
+      },
+      "40": {
+       "rule_name": "pythagorean",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      }
+     },
+     "linear": {
+      "20": {
+       "rule_name": "doubling",
+       "fired_at_100": 355,
+       "strict_at_100": 32,
+       "fired_at_200": 564,
+       "strict_at_200": 43,
+       "fired_full": 1835,
+       "strict_full": 50,
+       "exprs_with_firing_full": 196
+      },
+      "30": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 68,
+       "strict_at_100": 7,
+       "fired_at_200": 194,
+       "strict_at_200": 10,
+       "fired_full": 462,
+       "strict_full": 12,
+       "exprs_with_firing_full": 106
+      },
+      "31": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 27,
+       "strict_at_100": 5,
+       "fired_at_200": 96,
+       "strict_at_200": 8,
+       "fired_full": 253,
+       "strict_full": 10,
+       "exprs_with_firing_full": 62
+      },
+      "32": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "33": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "34": {
+       "rule_name": "even-negation",
+       "fired_at_100": 1135,
+       "strict_at_100": 395,
+       "fired_at_200": 1490,
+       "strict_at_200": 399,
+       "fired_full": 1764,
+       "strict_full": 400,
+       "exprs_with_firing_full": 257
+      },
+      "36": {
+       "rule_name": "sin-angle-addition",
+       "fired_at_100": 31,
+       "strict_at_100": 0,
+       "fired_at_200": 76,
+       "strict_at_200": 0,
+       "fired_full": 286,
+       "strict_full": 1,
+       "exprs_with_firing_full": 61
+      },
+      "37": {
+       "rule_name": "cos-angle-addition",
+       "fired_at_100": 48,
+       "strict_at_100": 1,
+       "fired_at_200": 129,
+       "strict_at_200": 3,
+       "fired_full": 401,
+       "strict_full": 4,
+       "exprs_with_firing_full": 65
+      },
+      "38": {
+       "rule_name": "reverse-angle-addition",
+       "fired_at_100": 36,
+       "strict_at_100": 16,
+       "fired_at_200": 76,
+       "strict_at_200": 19,
+       "fired_full": 209,
+       "strict_full": 20,
+       "exprs_with_firing_full": 61
+      },
+      "39": {
+       "rule_name": "half-angle-product",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 23,
+       "strict_full": 0,
+       "exprs_with_firing_full": 7
+      },
+      "40": {
+       "rule_name": "pythagorean",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      }
+     },
+     "unguided": {
+      "20": {
+       "rule_name": "doubling",
+       "fired_at_100": 8,
+       "strict_at_100": 0,
+       "fired_at_200": 27,
+       "strict_at_200": 1,
+       "fired_full": 31203,
+       "strict_full": 66,
+       "exprs_with_firing_full": 202
+      },
+      "30": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 11,
+       "strict_at_100": 3,
+       "fired_at_200": 42,
+       "strict_at_200": 5,
+       "fired_full": 1685,
+       "strict_full": 14,
+       "exprs_with_firing_full": 108
+      },
+      "31": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 5,
+       "strict_at_100": 1,
+       "fired_at_200": 25,
+       "strict_at_200": 2,
+       "fired_full": 706,
+       "strict_full": 9,
+       "exprs_with_firing_full": 63
+      },
+      "32": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "33": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "34": {
+       "rule_name": "even-negation",
+       "fired_at_100": 99,
+       "strict_at_100": 30,
+       "fired_at_200": 306,
+       "strict_at_200": 78,
+       "fired_full": 6039,
+       "strict_full": 396,
+       "exprs_with_firing_full": 257
+      },
+      "36": {
+       "rule_name": "sin-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 9,
+       "strict_at_200": 0,
+       "fired_full": 1953,
+       "strict_full": 2,
+       "exprs_with_firing_full": 64
+      },
+      "37": {
+       "rule_name": "cos-angle-addition",
+       "fired_at_100": 1,
+       "strict_at_100": 0,
+       "fired_at_200": 14,
+       "strict_at_200": 0,
+       "fired_full": 1766,
+       "strict_full": 5,
+       "exprs_with_firing_full": 69
+      },
+      "38": {
+       "rule_name": "reverse-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 11,
+       "strict_at_200": 1,
+       "fired_full": 5714,
+       "strict_full": 19,
+       "exprs_with_firing_full": 64
+      },
+      "39": {
+       "rule_name": "half-angle-product",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 3171,
+       "strict_full": 0,
+       "exprs_with_firing_full": 17
+      },
+      "40": {
+       "rule_name": "pythagorean",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 225,
+       "strict_full": 0,
+       "exprs_with_firing_full": 5
+      }
+     }
+    }
+   },
+   "production": {
+    "n": 334,
+    "stops": {
+     "quiesced": 316,
+     "timeout": 18
+    },
+    "effective_b_median": 1671.0,
+    "effective_b_q1": 399.75,
+    "effective_b_q3": 9441.0,
+    "ratio_vs_unguided_at_800_median": 1.0
+   }
+  },
+  {
+   "set": "sh",
+   "corpus": "pixelflow-pipeline/data/corpus_dev_ood.bin, --name-prefix dev_sh_",
+   "source_rev": "14125f105fed58dc61791c0ad8a098b71de8a0ac",
+   "n_by_band": {
+    "classical": 95
+   },
+   "strata_population": {
+    "trig-heavy": 95
+   },
+   "tiers": [
+    {
+     "set": "sh",
+     "stratum": "all",
+     "B": 100,
+     "n": 95,
+     "unguided": {
+      "regret_at_b_median_pct": 20.484753713838938,
+      "regret_at_4b_median_pct": 17.365269461077844,
+      "truncation_loss_median_pct": 0.17513134851138354,
+      "structural_share_pooled": 0.9060380202663093,
+      "strict_precision_pooled": 0.010719370236998576
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.8917448956833802,
+       "ratio_median": 0.9027898866608544,
+       "ratio_q3": 0.921240333434346,
+       "ratio_p90": 0.965325935696276,
+       "improved": 95,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 7.923627684964201,
+       "regret_q3_pct": 17.407291110144037,
+       "regret_p90_pct": 33.168558607905425,
+       "gap_vs_unguided_at_4b_median_pct": -7.880794701986756,
+       "structural_share_pooled": 0.7433684210526316,
+       "strict_precision_pooled": 0.15410526315789475,
+       "reaches_empirical_best": 6,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        3,
+        1,
+        91
+       ],
+       "D": 0.33728988666085435
+      },
+      "linear": {
+       "ratio_q1": 0.8917448956833802,
+       "ratio_median": 0.9038972542072631,
+       "ratio_q3": 0.9181430634643615,
+       "ratio_p90": 0.939042084000456,
+       "improved": 95,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 7.971360381861575,
+       "regret_q3_pct": 17.337618605213613,
+       "regret_p90_pct": 31.41960122568853,
+       "gap_vs_unguided_at_4b_median_pct": -7.915993537964459,
+       "structural_share_pooled": 0.7636842105263157,
+       "strict_precision_pooled": 0.14663157894736842,
+       "reaches_empirical_best": 6,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        3,
+        1,
+        91
+       ],
+       "D": 0.3672972542072631
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      30,
+      43,
+      22
+     ],
+     "round1b": {
+      "D_control": 0.33728988666085435,
+      "D_linear": 0.3672972542072631,
+      "D_control_minus_D_linear": -0.03000736754640876,
+      "M_B": 0.06,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": false
+     }
+    },
+    {
+     "set": "sh",
+     "stratum": "all",
+     "B": 200,
+     "n": 95,
+     "unguided": {
+      "regret_at_b_median_pct": 20.32838154808444,
+      "regret_at_4b_median_pct": 15.745976511526752,
+      "truncation_loss_median_pct": 2.2381378692927485,
+      "structural_share_pooled": 0.9129954890104617,
+      "strict_precision_pooled": 0.013005086860543238
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.8794871089323788,
+       "ratio_median": 0.8939883645765999,
+       "ratio_q3": 0.9143717933154114,
+       "ratio_p90": 0.9370390720876878,
+       "improved": 95,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 6.702057067020571,
+       "regret_q3_pct": 16.5048083755744,
+       "regret_p90_pct": 31.340757598881694,
+       "gap_vs_unguided_at_4b_median_pct": -6.448814343551186,
+       "structural_share_pooled": 0.7802894264286468,
+       "strict_precision_pooled": 0.101985845568818,
+       "reaches_empirical_best": 6,
+       "ended_before_b": 1,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        3,
+        1,
+        91
+       ],
+       "D": 0.19488836457659986
+      },
+      "linear": {
+       "ratio_q1": 0.8820274374732275,
+       "ratio_median": 0.8959156785243741,
+       "ratio_q3": 0.9161102811140878,
+       "ratio_p90": 0.9378413932740894,
+       "improved": 95,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 6.796556411418214,
+       "regret_q3_pct": 16.623313049008253,
+       "regret_p90_pct": 31.340757598881694,
+       "gap_vs_unguided_at_4b_median_pct": -5.856353591160221,
+       "structural_share_pooled": 0.7912024079843692,
+       "strict_precision_pooled": 0.09906532185668268,
+       "reaches_empirical_best": 6,
+       "ended_before_b": 1,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        3,
+        1,
+        91
+       ],
+       "D": 0.20001567852437419
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      3,
+      55,
+      37
+     ],
+     "round1b": {
+      "D_control": 0.19488836457659986,
+      "D_linear": 0.20001567852437419,
+      "D_control_minus_D_linear": -0.005127313947774326,
+      "M_B": 0.07,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": false
+     }
+    }
+   ],
+   "strata": [
+    {
+     "set": "sh",
+     "stratum": "trig-heavy",
+     "B": 100,
+     "n": 95,
+     "unguided": {
+      "regret_at_b_median_pct": 20.484753713838938,
+      "regret_at_4b_median_pct": 17.365269461077844,
+      "truncation_loss_median_pct": 0.17513134851138354,
+      "structural_share_pooled": 0.9060380202663093,
+      "strict_precision_pooled": 0.010719370236998576
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.8917448956833802,
+       "ratio_median": 0.9027898866608544,
+       "ratio_q3": 0.921240333434346,
+       "ratio_p90": 0.965325935696276,
+       "improved": 95,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 7.923627684964201,
+       "regret_q3_pct": 17.407291110144037,
+       "regret_p90_pct": 33.168558607905425,
+       "gap_vs_unguided_at_4b_median_pct": -7.880794701986756,
+       "structural_share_pooled": 0.7433684210526316,
+       "strict_precision_pooled": 0.15410526315789475,
+       "reaches_empirical_best": 6,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        3,
+        1,
+        91
+       ],
+       "D": 0.33728988666085435
+      },
+      "linear": {
+       "ratio_q1": 0.8917448956833802,
+       "ratio_median": 0.9038972542072631,
+       "ratio_q3": 0.9181430634643615,
+       "ratio_p90": 0.939042084000456,
+       "improved": 95,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 7.971360381861575,
+       "regret_q3_pct": 17.337618605213613,
+       "regret_p90_pct": 31.41960122568853,
+       "gap_vs_unguided_at_4b_median_pct": -7.915993537964459,
+       "structural_share_pooled": 0.7636842105263157,
+       "strict_precision_pooled": 0.14663157894736842,
+       "reaches_empirical_best": 6,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        3,
+        1,
+        91
+       ],
+       "D": 0.3672972542072631
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      30,
+      43,
+      22
+     ],
+     "round1b": {
+      "D_control": 0.33728988666085435,
+      "D_linear": 0.3672972542072631,
+      "D_control_minus_D_linear": -0.03000736754640876,
+      "M_B": 0.06,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": false
+     }
+    },
+    {
+     "set": "sh",
+     "stratum": "trig-heavy",
+     "B": 200,
+     "n": 95,
+     "unguided": {
+      "regret_at_b_median_pct": 20.32838154808444,
+      "regret_at_4b_median_pct": 15.745976511526752,
+      "truncation_loss_median_pct": 2.2381378692927485,
+      "structural_share_pooled": 0.9129954890104617,
+      "strict_precision_pooled": 0.013005086860543238
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.8794871089323788,
+       "ratio_median": 0.8939883645765999,
+       "ratio_q3": 0.9143717933154114,
+       "ratio_p90": 0.9370390720876878,
+       "improved": 95,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 6.702057067020571,
+       "regret_q3_pct": 16.5048083755744,
+       "regret_p90_pct": 31.340757598881694,
+       "gap_vs_unguided_at_4b_median_pct": -6.448814343551186,
+       "structural_share_pooled": 0.7802894264286468,
+       "strict_precision_pooled": 0.101985845568818,
+       "reaches_empirical_best": 6,
+       "ended_before_b": 1,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        3,
+        1,
+        91
+       ],
+       "D": 0.19488836457659986
+      },
+      "linear": {
+       "ratio_q1": 0.8820274374732275,
+       "ratio_median": 0.8959156785243741,
+       "ratio_q3": 0.9161102811140878,
+       "ratio_p90": 0.9378413932740894,
+       "improved": 95,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 6.796556411418214,
+       "regret_q3_pct": 16.623313049008253,
+       "regret_p90_pct": 31.340757598881694,
+       "gap_vs_unguided_at_4b_median_pct": -5.856353591160221,
+       "structural_share_pooled": 0.7912024079843692,
+       "strict_precision_pooled": 0.09906532185668268,
+       "reaches_empirical_best": 6,
+       "ended_before_b": 1,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        3,
+        1,
+        91
+       ],
+       "D": 0.20001567852437419
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      3,
+      55,
+      37
+     ],
+     "round1b": {
+      "D_control": 0.19488836457659986,
+      "D_linear": 0.20001567852437419,
+      "D_control_minus_D_linear": -0.005127313947774326,
+      "M_B": 0.07,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": false
+     }
+    }
+   ],
+   "trig_rule_firing": {
+    "n": 95,
+    "n_with_rule_index": 95,
+    "arms": {
+     "control": {
+      "20": {
+       "rule_name": "doubling",
+       "fired_at_100": 286,
+       "strict_at_100": 0,
+       "fired_at_200": 588,
+       "strict_at_200": 0,
+       "fired_full": 3003,
+       "strict_full": 0,
+       "exprs_with_firing_full": 93
+      },
+      "30": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "31": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "32": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "33": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "34": {
+       "rule_name": "even-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "36": {
+       "rule_name": "sin-angle-addition",
+       "fired_at_100": 257,
+       "strict_at_100": 0,
+       "fired_at_200": 371,
+       "strict_at_200": 0,
+       "fired_full": 779,
+       "strict_full": 0,
+       "exprs_with_firing_full": 93
+      },
+      "37": {
+       "rule_name": "cos-angle-addition",
+       "fired_at_100": 22,
+       "strict_at_100": 0,
+       "fired_at_200": 48,
+       "strict_at_200": 0,
+       "fired_full": 202,
+       "strict_full": 0,
+       "exprs_with_firing_full": 48
+      },
+      "38": {
+       "rule_name": "reverse-angle-addition",
+       "fired_at_100": 134,
+       "strict_at_100": 0,
+       "fired_at_200": 271,
+       "strict_at_200": 0,
+       "fired_full": 662,
+       "strict_full": 0,
+       "exprs_with_firing_full": 93
+      },
+      "39": {
+       "rule_name": "half-angle-product",
+       "fired_at_100": 393,
+       "strict_at_100": 127,
+       "fired_at_200": 538,
+       "strict_at_200": 133,
+       "fired_full": 1050,
+       "strict_full": 134,
+       "exprs_with_firing_full": 93
+      },
+      "40": {
+       "rule_name": "pythagorean",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      }
+     },
+     "linear": {
+      "20": {
+       "rule_name": "doubling",
+       "fired_at_100": 295,
+       "strict_at_100": 0,
+       "fired_at_200": 575,
+       "strict_at_200": 0,
+       "fired_full": 2875,
+       "strict_full": 0,
+       "exprs_with_firing_full": 93
+      },
+      "30": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "31": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "32": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "33": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "34": {
+       "rule_name": "even-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "36": {
+       "rule_name": "sin-angle-addition",
+       "fired_at_100": 219,
+       "strict_at_100": 0,
+       "fired_at_200": 332,
+       "strict_at_200": 0,
+       "fired_full": 733,
+       "strict_full": 0,
+       "exprs_with_firing_full": 92
+      },
+      "37": {
+       "rule_name": "cos-angle-addition",
+       "fired_at_100": 22,
+       "strict_at_100": 0,
+       "fired_at_200": 37,
+       "strict_at_200": 0,
+       "fired_full": 176,
+       "strict_full": 0,
+       "exprs_with_firing_full": 48
+      },
+      "38": {
+       "rule_name": "reverse-angle-addition",
+       "fired_at_100": 91,
+       "strict_at_100": 0,
+       "fired_at_200": 226,
+       "strict_at_200": 0,
+       "fired_full": 619,
+       "strict_full": 0,
+       "exprs_with_firing_full": 92
+      },
+      "39": {
+       "rule_name": "half-angle-product",
+       "fired_at_100": 360,
+       "strict_at_100": 134,
+       "fired_at_200": 496,
+       "strict_at_200": 134,
+       "fired_full": 985,
+       "strict_full": 134,
+       "exprs_with_firing_full": 93
+      },
+      "40": {
+       "rule_name": "pythagorean",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      }
+     },
+     "unguided": {
+      "20": {
+       "rule_name": "doubling",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 7,
+       "strict_at_200": 0,
+       "fired_full": 37314,
+       "strict_full": 0,
+       "exprs_with_firing_full": 94
+      },
+      "30": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "31": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "32": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "33": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "34": {
+       "rule_name": "even-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "36": {
+       "rule_name": "sin-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 1025,
+       "strict_full": 0,
+       "exprs_with_firing_full": 94
+      },
+      "37": {
+       "rule_name": "cos-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 307,
+       "strict_full": 0,
+       "exprs_with_firing_full": 51
+      },
+      "38": {
+       "rule_name": "reverse-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 1134,
+       "strict_full": 50,
+       "exprs_with_firing_full": 94
+      },
+      "39": {
+       "rule_name": "half-angle-product",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 3275,
+       "strict_full": 72,
+       "exprs_with_firing_full": 94
+      },
+      "40": {
+       "rule_name": "pythagorean",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 231,
+       "strict_full": 0,
+       "exprs_with_firing_full": 19
+      }
+     }
+    }
+   },
+   "production": {
+    "n": 95,
+    "stops": {
+     "quiesced": 95
+    },
+    "effective_b_median": 10997.0,
+    "effective_b_q1": 9811.5,
+    "effective_b_q3": 12422.5,
+    "ratio_vs_unguided_at_800_median": 0.8766519823788547
+   }
+  },
+  {
+   "set": "bezier",
+   "corpus": "pixelflow-pipeline/data/corpus_dev_ood.bin, --name-prefix dev_bezier_",
+   "source_rev": "14125f105fed58dc61791c0ad8a098b71de8a0ac",
+   "n_by_band": {
+    "classical": 80
+   },
+   "strata_population": {
+    "polynomial-only": 80
+   },
+   "tiers": [
+    {
+     "set": "bezier",
+     "stratum": "all",
+     "B": 100,
+     "n": 80,
+     "unguided": {
+      "regret_at_b_median_pct": 29.553264604810998,
+      "regret_at_4b_median_pct": 22.68041237113402,
+      "truncation_loss_median_pct": 5.602240896358544,
+      "structural_share_pooled": 0.7083912346338856,
+      "strict_precision_pooled": 0.017103153393907
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.9098143236074271,
+       "ratio_median": 0.9098143236074271,
+       "ratio_q3": 0.9485881783699249,
+       "ratio_p90": 0.9961464354527938,
+       "improved": 80,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 17.869415807560138,
+       "regret_q3_pct": 35.064935064935064,
+       "regret_p90_pct": 54.54545454545454,
+       "gap_vs_unguided_at_4b_median_pct": -2.643171806167401,
+       "structural_share_pooled": 0.7495,
+       "strict_precision_pooled": 0.0815,
+       "reaches_empirical_best": 0,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        0,
+        0,
+        80
+       ],
+       "D": 0.3443143236074271
+      },
+      "linear": {
+       "ratio_q1": 0.9098143236074271,
+       "ratio_median": 0.9098143236074271,
+       "ratio_q3": 0.9485881783699249,
+       "ratio_p90": 0.9961464354527938,
+       "improved": 80,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 17.869415807560138,
+       "regret_q3_pct": 35.064935064935064,
+       "regret_p90_pct": 47.55244755244755,
+       "gap_vs_unguided_at_4b_median_pct": -3.9215686274509802,
+       "structural_share_pooled": 0.7595,
+       "strict_precision_pooled": 0.093375,
+       "reaches_empirical_best": 0,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        0,
+        0,
+        80
+       ],
+       "D": 0.3732143236074271
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      15,
+      65,
+      0
+     ],
+     "round1b": {
+      "D_control": 0.3443143236074271,
+      "D_linear": 0.3732143236074271,
+      "D_control_minus_D_linear": -0.028900000000000037,
+      "M_B": 0.06,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": false
+     }
+    },
+    {
+     "set": "bezier",
+     "stratum": "all",
+     "B": 200,
+     "n": 80,
+     "unguided": {
+      "regret_at_b_median_pct": 29.553264604810998,
+      "regret_at_4b_median_pct": 4.123711340206185,
+      "truncation_loss_median_pct": 9.852216748768473,
+      "structural_share_pooled": 0.7678415380133994,
+      "strict_precision_pooled": 0.012234197494902418
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.9098143236074271,
+       "ratio_median": 0.9098143236074271,
+       "ratio_q3": 0.9801762114537445,
+       "ratio_p90": 1.0,
+       "improved": 60,
+       "unchanged": 20,
+       "worse": 0,
+       "regret_median_pct": 17.869415807560138,
+       "regret_q3_pct": 30.519480519480517,
+       "regret_p90_pct": 54.54545454545454,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.825875,
+       "strict_precision_pooled": 0.0490625,
+       "reaches_empirical_best": 0,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        0,
+        0,
+        80
+       ],
+       "D": 0.21071432360742703
+      },
+      "linear": {
+       "ratio_q1": 0.8567639257294429,
+       "ratio_median": 0.8854625550660793,
+       "ratio_q3": 0.9260089686098655,
+       "ratio_p90": 1.0,
+       "improved": 60,
+       "unchanged": 20,
+       "worse": 0,
+       "regret_median_pct": 10.996563573883162,
+       "regret_q3_pct": 30.519480519480517,
+       "regret_p90_pct": 40.55944055944056,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.8216875,
+       "strict_precision_pooled": 0.0466875,
+       "reaches_empirical_best": 0,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        0,
+        0,
+        80
+       ],
+       "D": 0.18956255506607933
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      41,
+      39,
+      0
+     ],
+     "round1b": {
+      "D_control": 0.21071432360742703,
+      "D_linear": 0.18956255506607933,
+      "D_control_minus_D_linear": 0.021151768541347704,
+      "M_B": 0.07,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": false
+     }
+    }
+   ],
+   "strata": [
+    {
+     "set": "bezier",
+     "stratum": "polynomial-only",
+     "B": 100,
+     "n": 80,
+     "unguided": {
+      "regret_at_b_median_pct": 29.553264604810998,
+      "regret_at_4b_median_pct": 22.68041237113402,
+      "truncation_loss_median_pct": 5.602240896358544,
+      "structural_share_pooled": 0.7083912346338856,
+      "strict_precision_pooled": 0.017103153393907
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.9098143236074271,
+       "ratio_median": 0.9098143236074271,
+       "ratio_q3": 0.9485881783699249,
+       "ratio_p90": 0.9961464354527938,
+       "improved": 80,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 17.869415807560138,
+       "regret_q3_pct": 35.064935064935064,
+       "regret_p90_pct": 54.54545454545454,
+       "gap_vs_unguided_at_4b_median_pct": -2.643171806167401,
+       "structural_share_pooled": 0.7495,
+       "strict_precision_pooled": 0.0815,
+       "reaches_empirical_best": 0,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        0,
+        0,
+        80
+       ],
+       "D": 0.3443143236074271
+      },
+      "linear": {
+       "ratio_q1": 0.9098143236074271,
+       "ratio_median": 0.9098143236074271,
+       "ratio_q3": 0.9485881783699249,
+       "ratio_p90": 0.9961464354527938,
+       "improved": 80,
+       "unchanged": 0,
+       "worse": 0,
+       "regret_median_pct": 17.869415807560138,
+       "regret_q3_pct": 35.064935064935064,
+       "regret_p90_pct": 47.55244755244755,
+       "gap_vs_unguided_at_4b_median_pct": -3.9215686274509802,
+       "structural_share_pooled": 0.7595,
+       "strict_precision_pooled": 0.093375,
+       "reaches_empirical_best": 0,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        0,
+        0,
+        80
+       ],
+       "D": 0.3732143236074271
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      15,
+      65,
+      0
+     ],
+     "round1b": {
+      "D_control": 0.3443143236074271,
+      "D_linear": 0.3732143236074271,
+      "D_control_minus_D_linear": -0.028900000000000037,
+      "M_B": 0.06,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": false
+     }
+    },
+    {
+     "set": "bezier",
+     "stratum": "polynomial-only",
+     "B": 200,
+     "n": 80,
+     "unguided": {
+      "regret_at_b_median_pct": 29.553264604810998,
+      "regret_at_4b_median_pct": 4.123711340206185,
+      "truncation_loss_median_pct": 9.852216748768473,
+      "structural_share_pooled": 0.7678415380133994,
+      "strict_precision_pooled": 0.012234197494902418
+     },
+     "arms": {
+      "control": {
+       "ratio_q1": 0.9098143236074271,
+       "ratio_median": 0.9098143236074271,
+       "ratio_q3": 0.9801762114537445,
+       "ratio_p90": 1.0,
+       "improved": 60,
+       "unchanged": 20,
+       "worse": 0,
+       "regret_median_pct": 17.869415807560138,
+       "regret_q3_pct": 30.519480519480517,
+       "regret_p90_pct": 54.54545454545454,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.825875,
+       "strict_precision_pooled": 0.0490625,
+       "reaches_empirical_best": 0,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        0,
+        0,
+        80
+       ],
+       "D": 0.21071432360742703
+      },
+      "linear": {
+       "ratio_q1": 0.8567639257294429,
+       "ratio_median": 0.8854625550660793,
+       "ratio_q3": 0.9260089686098655,
+       "ratio_p90": 1.0,
+       "improved": 60,
+       "unchanged": 20,
+       "worse": 0,
+       "regret_median_pct": 10.996563573883162,
+       "regret_q3_pct": 30.519480519480517,
+       "regret_p90_pct": 40.55944055944056,
+       "gap_vs_unguided_at_4b_median_pct": 0.0,
+       "structural_share_pooled": 0.8216875,
+       "strict_precision_pooled": 0.0466875,
+       "reaches_empirical_best": 0,
+       "ended_before_b": 0,
+       "ended_at_apps_median": 800.0,
+       "vs_production_better_equal_worse": [
+        0,
+        0,
+        80
+       ],
+       "D": 0.18956255506607933
+      }
+     },
+     "linear_lt_eq_gt_control": [
+      41,
+      39,
+      0
+     ],
+     "round1b": {
+      "D_control": 0.21071432360742703,
+      "D_linear": 0.18956255506607933,
+      "D_control_minus_D_linear": 0.021151768541347704,
+      "M_B": 0.07,
+      "verdict": "H_null",
+      "poly_prediction_point_D_le_0_both": false,
+      "poly_prediction_binding_D_le_M_both": false
+     }
+    }
+   ],
+   "trig_rule_firing": {
+    "n": 80,
+    "n_with_rule_index": 80,
+    "arms": {
+     "control": {
+      "20": {
+       "rule_name": "doubling",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 360,
+       "strict_full": 0,
+       "exprs_with_firing_full": 20
+      },
+      "30": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "31": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "32": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "33": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "34": {
+       "rule_name": "even-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "36": {
+       "rule_name": "sin-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "37": {
+       "rule_name": "cos-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "38": {
+       "rule_name": "reverse-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "39": {
+       "rule_name": "half-angle-product",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "40": {
+       "rule_name": "pythagorean",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      }
+     },
+     "linear": {
+      "20": {
+       "rule_name": "doubling",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 360,
+       "strict_full": 0,
+       "exprs_with_firing_full": 20
+      },
+      "30": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "31": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "32": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "33": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "34": {
+       "rule_name": "even-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "36": {
+       "rule_name": "sin-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "37": {
+       "rule_name": "cos-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "38": {
+       "rule_name": "reverse-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "39": {
+       "rule_name": "half-angle-product",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "40": {
+       "rule_name": "pythagorean",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      }
+     },
+     "unguided": {
+      "20": {
+       "rule_name": "doubling",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 1480,
+       "strict_full": 0,
+       "exprs_with_firing_full": 20
+      },
+      "30": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "31": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "32": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "33": {
+       "rule_name": "odd-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "34": {
+       "rule_name": "even-negation",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "36": {
+       "rule_name": "sin-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "37": {
+       "rule_name": "cos-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "38": {
+       "rule_name": "reverse-angle-addition",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "39": {
+       "rule_name": "half-angle-product",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      },
+      "40": {
+       "rule_name": "pythagorean",
+       "fired_at_100": 0,
+       "strict_at_100": 0,
+       "fired_at_200": 0,
+       "strict_at_200": 0,
+       "fired_full": 0,
+       "strict_full": 0,
+       "exprs_with_firing_full": 0
+      }
+     }
+    }
+   },
+   "production": {
+    "n": 80,
+    "stops": {
+     "quiesced": 80
+    },
+    "effective_b_median": 11197.0,
+    "effective_b_q1": 11197.0,
+    "effective_b_q3": 18007.0,
+    "ratio_vs_unguided_at_800_median": 0.6501650165016502
+   }
+  }
+ ]
+}

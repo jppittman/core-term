@@ -9,13 +9,13 @@
 //! (the `Sqrt<Add<Mul<X,X>,...>>` trees) - that's what the generated code produces.
 //!
 //! The compiler's job is to transform this source AST into Rust code that
-//! constructs the appropriate PixelFlow type trees at runtime.
+//! rebuilds the corresponding arena fragment at load time.
 //!
 //! ## AST Structure
 //!
 //! ```text
 //! KernelDef
-//!   ├── params: [(name, type), ...]    // Closure parameters
+//!   ├── params: [(name, type), ...]    // Closure parameters (scalars)
 //!   └── body: Expr                     // The kernel expression
 //!
 //! Expr
@@ -29,55 +29,29 @@
 //! ```
 
 use proc_macro2::Span;
-use syn::{Ident, Type, Visibility};
-
-/// Optional struct declaration for named kernels.
-///
-/// When present, the kernel emits a named struct instead of an anonymous one.
-/// Example: `kernel! pub struct Circle = |cx: f32, cy: f32, r: f32| -> Field { ... }`
-#[derive(Debug, Clone)]
-pub struct StructDecl {
-    /// Visibility (pub, pub(crate), or inherited).
-    pub visibility: Visibility,
-    /// The struct name.
-    pub name: Ident,
-}
+use syn::{Ident, Type};
 
 /// A complete kernel definition.
 #[derive(Debug, Clone)]
 pub struct KernelDef {
-    /// Optional struct declaration for named kernels.
-    /// If None, an anonymous closure-based kernel is emitted.
-    pub struct_decl: Option<StructDecl>,
     /// Parameters captured from the closure syntax.
     pub params: Vec<Param>,
-    /// Optional domain type annotation (e.g., `Field` in `Field -> Discrete`).
-    /// When specified separately from return type, allows non-Coordinate output types.
-    pub domain_ty: Option<Type>,
-    /// Optional return type annotation (e.g., `-> Jet3` or `-> Discrete`).
-    pub return_ty: Option<Type>,
     /// The kernel body expression.
     pub body: Expr,
 }
 
-/// Parameter kind - scalar (f32/i32) or manifold (generic).
-#[derive(Debug, Clone)]
-pub enum ParamKind {
-    /// Scalar parameter - use Let/Var binding with concrete type.
-    /// Example: `r: f32` → struct field, bound via Let::new(self.r, ...)
-    Scalar(Box<Type>),
-    /// Manifold parameter - generic type with trait bounds.
-    /// Example: `inner: kernel` → generic M0, evaluated then bound via Let
-    Manifold,
-}
-
-/// A captured parameter.
+/// A captured scalar parameter.
+///
+/// There is one parameter kind, because there is one thing a parameter can
+/// be: a number folded into the arena when the builder runs. Kernels compose
+/// as `Kernel` values (`Kernel::at`/`sum`/`select`/arithmetic), not by
+/// splicing a manifold through a macro slot.
 #[derive(Debug, Clone)]
 pub struct Param {
     /// Parameter name.
     pub name: Ident,
-    /// Parameter kind (scalar with type, or manifold).
-    pub kind: ParamKind,
+    /// The declared scalar type (`f32`, `i32`).
+    pub ty: Box<Type>,
 }
 
 /// An expression in the kernel body.
@@ -118,6 +92,8 @@ pub enum Expr {
 #[derive(Debug, Clone)]
 pub struct TupleExpr {
     pub elems: Vec<Expr>,
+    // Kept for AST-node uniformity; not all node types' spans are read today.
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -134,14 +110,9 @@ pub struct IdentExpr {
 #[derive(Debug, Clone)]
 pub struct LiteralExpr {
     pub lit: syn::Lit,
+    // Kept for AST-node uniformity; not all node types' spans are read today.
+    #[allow(dead_code)]
     pub span: Span,
-    /// Binding index assigned by the [`annotate`](crate::annotate::annotate) pass.
-    ///
-    /// `None` at parse time. After annotation, `Some(idx)` means this literal is
-    /// emitted as `Var::<N{idx}>::new()` (bound via `Let`); `None` literals are
-    /// emitted directly. Carrying this on the single `Expr` AST removes the need
-    /// for a parallel annotated tree.
-    pub var_index: Option<usize>,
 }
 
 /// Binary operators we recognize.
@@ -197,6 +168,8 @@ pub struct MethodCallExpr {
     pub method: Ident,
     /// Method arguments (empty for sqrt, one arg for max, etc.).
     pub args: Vec<Expr>,
+    // Kept for AST-node uniformity; not all node types' spans are read today.
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -207,6 +180,8 @@ pub struct CallExpr {
     pub func: Ident,
     /// Function arguments.
     pub args: Vec<Expr>,
+    // Kept for AST-node uniformity; not all node types' spans are read today.
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -225,6 +200,8 @@ pub struct LetStmt {
     pub name: Ident,
     pub ty: Option<Type>,
     pub init: Expr,
+    // Kept for AST-node uniformity; not all node types' spans are read today.
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -234,6 +211,8 @@ pub struct BlockExpr {
     pub stmts: Vec<Stmt>,
     /// The final expression (if any).
     pub expr: Option<Box<Expr>>,
+    // Kept for AST-node uniformity; not all node types' spans are read today.
+    #[allow(dead_code)]
     pub span: Span,
 }
 
