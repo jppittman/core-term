@@ -120,7 +120,12 @@ impl Evex {
         let vvvv = (!src1) & 0x0F;
         let vp = ((src1 >> 4) & 1) ^ 1; // vvvv bit4 (V')
 
-        self.prefix_into(&mut inst, (r << 7) | (x << 6) | (b << 5) | (rp << 4), vvvv, vp);
+        self.prefix_into(
+            &mut inst,
+            (r << 7) | (x << 6) | (b << 5) | (rp << 4),
+            vvvv,
+            vp,
+        );
         inst.push(0xC0 | ((dst & 7) << 3) | (src2 & 7));
         inst
     }
@@ -141,7 +146,12 @@ impl Evex {
         let b = ((addr.base.0 >> 3) & 1) ^ 1;
         let x = 1u8; // no index -> encoded 1
 
-        self.prefix_into(&mut inst, (r << 7) | (x << 6) | (b << 5) | (rp << 4), 0x0F, 1);
+        self.prefix_into(
+            &mut inst,
+            (r << 7) | (x << 6) | (b << 5) | (rp << 4),
+            0x0F,
+            1,
+        );
         x86_64::mem_operand_into(&mut inst, reg, addr);
         inst
     }
@@ -343,10 +353,7 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
     // vbroadcastss zmm, [rsp-4]
     assemble(
         code,
-        [
-            mov_imm,
-            Evex::m0f38_66(0x18).rm(dst.0, RED_ZONE_CONST),
-        ],
+        [mov_imm, Evex::m0f38_66(0x18).rm(dst.0, RED_ZONE_CONST)],
     );
 }
 
@@ -467,11 +474,9 @@ pub fn emit_compare(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: R
 pub fn emit_select(code: &mut Vec<u8>, dst: Reg, if_true: Reg, if_false: Reg) {
     assemble(
         code,
-        [
-            Evex::m0f3a_66(0x25)
-                .imm(0xCA)
-                .rrr(dst.0, if_true.0, if_false.0),
-        ],
+        [Evex::m0f3a_66(0x25)
+            .imm(0xCA)
+            .rrr(dst.0, if_true.0, if_false.0)],
     );
 }
 

@@ -329,4 +329,3 @@ mod tests {
         assert_eq!(frame.frame_size(), 32);
     }
 }
-

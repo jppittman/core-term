@@ -1,8 +1,8 @@
 //! Mock code page implementation for testing without OS page permissions.
 
-use alloc::vec::Vec;
-use crate::error::CompileError;
 use super::{CodePage, ExecutableCode};
+use crate::error::CompileError;
+use alloc::vec::Vec;
 
 /// An in-memory code page for testing.
 #[derive(Clone, Debug)]

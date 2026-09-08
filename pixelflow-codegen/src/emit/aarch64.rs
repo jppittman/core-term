@@ -117,22 +117,37 @@ impl Inst {
             Inst::Bsl(mask, if_true, if_false) => Bsl::new(mask, if_true, if_false).encode(),
             Inst::LdrQ(dst, addr) => {
                 assert!(addr.offset.is_multiple_of(Q_BYTES));
-                0x3DC0_0000 | ((addr.offset / Q_BYTES) << 10) | ((addr.base.0 as u32) << 5) | (dst.0 as u32)
+                0x3DC0_0000
+                    | ((addr.offset / Q_BYTES) << 10)
+                    | ((addr.base.0 as u32) << 5)
+                    | (dst.0 as u32)
             }
             Inst::StrQ(src, addr) => {
                 assert!(addr.offset.is_multiple_of(Q_BYTES));
-                0x3D80_0000 | ((addr.offset / Q_BYTES) << 10) | ((addr.base.0 as u32) << 5) | (src.0 as u32)
+                0x3D80_0000
+                    | ((addr.offset / Q_BYTES) << 10)
+                    | ((addr.base.0 as u32) << 5)
+                    | (src.0 as u32)
             }
             Inst::LdrX(dst, addr) => {
                 assert!(addr.offset.is_multiple_of(X_BYTES));
-                0xF940_0000 | ((addr.offset / X_BYTES) << 10) | ((addr.base.0 as u32) << 5) | (dst.0 as u32)
+                0xF940_0000
+                    | ((addr.offset / X_BYTES) << 10)
+                    | ((addr.base.0 as u32) << 5)
+                    | (dst.0 as u32)
             }
             Inst::LdrS(dst, addr) => {
                 assert!(addr.offset.is_multiple_of(S_BYTES));
-                0xBD40_0000 | ((addr.offset / S_BYTES) << 10) | ((addr.base.0 as u32) << 5) | (dst.0 as u32)
+                0xBD40_0000
+                    | ((addr.offset / S_BYTES) << 10)
+                    | ((addr.base.0 as u32) << 5)
+                    | (dst.0 as u32)
             }
             Inst::LdrW(dst, addr) => {
-                0xB860_5800 | ((addr.index.0 as u32) << 16) | ((addr.base.0 as u32) << 5) | (dst.0 as u32)
+                0xB860_5800
+                    | ((addr.index.0 as u32) << 16)
+                    | ((addr.base.0 as u32) << 5)
+                    | (dst.0 as u32)
             }
             Inst::DupLane0(dst, src) => DupLane0::new(dst, src).encode(),
             Inst::Fcvtzs(dst, src) => Fcvtzs::new(dst, src).encode(),

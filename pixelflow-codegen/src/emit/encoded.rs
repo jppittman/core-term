@@ -132,5 +132,3 @@ impl Default for EncodedInst {
         Self::new()
     }
 }
-
-

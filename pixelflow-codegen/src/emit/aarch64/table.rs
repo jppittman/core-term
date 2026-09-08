@@ -230,7 +230,6 @@ impl AsmInsn for Bsl<Reg, Reg, Reg> {
     }
 }
 
-
 /// Broadcast a lane of a vector register across all lanes: `DUP Vd.4S, Vn.s[0]`
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct DupLane0 {
@@ -349,7 +348,7 @@ pub type Orr = Binary<0x4EA0_1C00>;
 
 // Conversions
 pub type Fcvtzs = Unary<0x4EA1_B800>; // float -> signed int32
-pub type Scvtf = Unary<0x4E21_D800>;  // signed int32 -> float
+pub type Scvtf = Unary<0x4E21_D800>; // signed int32 -> float
 
 // Reductions (V → S)
 pub type Uminv = Reduce<0x6EB1_A800>;
@@ -390,4 +389,3 @@ mod tests {
         );
     }
 }
-

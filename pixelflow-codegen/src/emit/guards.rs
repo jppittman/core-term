@@ -62,7 +62,10 @@ impl<T> ArmPair<T> {
     /// Construct a pair from true-arm and false-arm values.
     #[inline]
     pub const fn new(true_arm: T, false_arm: T) -> Self {
-        Self { true_arm, false_arm }
+        Self {
+            true_arm,
+            false_arm,
+        }
     }
 
     /// Access the value for `arm`.
@@ -302,7 +305,9 @@ impl SelectArms {
         let refused = |cycles: usize, range: (usize, usize)| {
             cycles > MISPREDICT_PENALTY_CYCLES && range.0 == range.1
         };
-        SelectArm::ALL.iter().any(|&arm| refused(self.cycles[arm], self.range(arm)))
+        SelectArm::ALL
+            .iter()
+            .any(|&arm| refused(self.cycles[arm], self.range(arm)))
     }
 }
 
@@ -660,9 +665,7 @@ fn partition_around(schedule: &[Def], select: &SelectArms) -> Vec<Def> {
     let in_any_arm = |i: &usize| {
         select.indices[SelectArm::True].contains(i) || select.indices[SelectArm::False].contains(i)
     };
-    let stays_before = |i: &usize| {
-        (select.cone.contains(i) || !sink_past_select) && !in_any_arm(i)
-    };
+    let stays_before = |i: &usize| (select.cone.contains(i) || !sink_past_select) && !in_any_arm(i);
 
     let mut out = Vec::with_capacity(schedule.len());
     out.extend_from_slice(&schedule[..start]);
@@ -820,8 +823,14 @@ impl Telemetry {
         let Some(stats) = self.stats.as_ref() else {
             return;
         };
-        let covered: usize = stats.iter().map(|s| s.guarded.true_arm + s.guarded.false_arm).sum();
-        let offered: usize = stats.iter().map(|s| s.exclusive.true_arm + s.exclusive.false_arm).sum();
+        let covered: usize = stats
+            .iter()
+            .map(|s| s.guarded.true_arm + s.guarded.false_arm)
+            .sum();
+        let offered: usize = stats
+            .iter()
+            .map(|s| s.exclusive.true_arm + s.exclusive.false_arm)
+            .sum();
         std::eprintln!(
             "guard-telemetry: schedule={sched_len} selects={} guarded={covered} \
              exclusive={offered} per_select={:?}",

@@ -9,7 +9,7 @@
 //! Transcendental builtins (atan2, atan, asin, acos) use VEX encoding for the
 //! 3-operand form which avoids extra MOV instructions in multi-step sequences.
 
-use super::{assemble, Counter, EncodedInst, OutStep, Reg, SourceOperand, unimplemented_op};
+use super::{Counter, EncodedInst, OutStep, Reg, SourceOperand, assemble, unimplemented_op};
 use alloc::vec::Vec;
 use pixelflow_ir::kind::OpKind;
 
@@ -530,7 +530,10 @@ fn emit_vpextrd_to_gpr(code: &mut Vec<u8>, dst_gpr: u8, src: Reg, lane: u8) {
 /// upper lanes.
 fn emit_vmovss_load_scaled(code: &mut Vec<u8>, dst: Reg, base_gpr: u8, index_gpr: u8) {
     // VEX.LIG.F3.0F.WIG 10 /r, mod=00 rm=100 (SIB), SIB scale=4.
-    assemble(code, [Vex::m0f_f3(0x10).rm_scaled4(dst, base_gpr, index_gpr)]);
+    assemble(
+        code,
+        [Vex::m0f_f3(0x10).rm_scaled4(dst, base_gpr, index_gpr)],
+    );
 }
 
 /// `vinsertps xmmDST, xmmSRC1, xmmSRC2, imm8` — place lane 0 of `src2` into
@@ -541,9 +544,7 @@ fn emit_vinsertps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg, dst_lane: 
     // [3:0] zero mask (none).
     assemble(
         code,
-        [Vex::m0f3a_66(0x21)
-            .imm(dst_lane << 4)
-            .rrr(dst, src1, src2)],
+        [Vex::m0f3a_66(0x21).imm(dst_lane << 4).rrr(dst, src1, src2)],
     );
 }
 
@@ -624,9 +625,7 @@ fn emit_vpslld_imm(code: &mut Vec<u8>, dst: Reg, src: Reg, imm: u8) {
     // VEX.128.66.0F.WIG 72 /6 ib ; dst = vvvv, src = rm, /6 in ModRM.reg.
     assemble(
         code,
-        [Vex::m0f_66(0x72)
-            .imm(imm)
-            .digit_rm(Digit(6), dst, src)],
+        [Vex::m0f_66(0x72).imm(imm).digit_rm(Digit(6), dst, src)],
     );
 }
 
@@ -635,9 +634,7 @@ fn emit_vpsrld_imm(code: &mut Vec<u8>, dst: Reg, src: Reg, imm: u8) {
     // VEX.128.66.0F.WIG 72 /2 ib.
     assemble(
         code,
-        [Vex::m0f_66(0x72)
-            .imm(imm)
-            .digit_rm(Digit(2), dst, src)],
+        [Vex::m0f_66(0x72).imm(imm).digit_rm(Digit(2), dst, src)],
     );
 }
 
@@ -1772,8 +1769,6 @@ pub(in crate::emit) fn mem_operand_into<D: Disp>(inst: &mut EncodedInst, reg: u8
     }
     addr.disp.emit_inst(inst);
 }
-
-
 
 #[cfg(test)]
 mod gpr_tests {

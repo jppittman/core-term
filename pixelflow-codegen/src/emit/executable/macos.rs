@@ -4,12 +4,12 @@
 
 use core::ptr;
 use libc::{
-    MAP_ANON, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE, _SC_PAGESIZE, mmap, mprotect, munmap,
+    _SC_PAGESIZE, MAP_ANON, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE, mmap, mprotect, munmap,
     sysconf,
 };
 
-use crate::error::CompileError;
 use super::{CodePage, ExecutableCode};
+use crate::error::CompileError;
 
 /// A mapped, writable code page on macOS.
 pub struct MacOsCodePage {

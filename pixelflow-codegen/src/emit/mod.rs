@@ -209,7 +209,6 @@ impl SourceOperand for Loc {
     }
 }
 
-
 /// Stack addresses for one scope of an allocation.
 ///
 /// [`regalloc::Where`] says *that* a value spills; this says *where*. The
@@ -1057,10 +1056,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         for arm in SelectArm::ALL {
             let range = guard.range(arm);
             if range.0 != range.1 {
-                branch_starts[range.0].push(PendingBranch {
-                    guard_idx: gi,
-                    arm,
-                });
+                branch_starts[range.0].push(PendingBranch { guard_idx: gi, arm });
                 if range.1 < sched_len {
                     branch_ends[range.1].push(gi);
                 }
