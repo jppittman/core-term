@@ -25,6 +25,17 @@
 //! taken around the committed action — not a prediction from the template,
 //! which would be a second, unvalidated computation of the same fact.
 //!
+//! That measured delta is now also the oracle for a *budget-time* estimator:
+//! [`EGraph::predicted_growth`](super::graph::EGraph::predicted_growth) walks
+//! the same node shape [`EGraph::apply_action`](super::graph::EGraph::apply_action)
+//! builds — literally the same code, via the crate-private `NodeSink`
+//! abstraction in `graph.rs` — against the memo instead of against a real
+//! insert, so it never becomes the second, drifting spelling this doc used to
+//! warn against. `EGraph::apply_action_measured` asserts the two agree,
+//! unconditionally, on every application recorded while telemetry is on —
+//! not `debug_assert!`, because a divergence here is exactly the finding this
+//! module exists to surface.
+//!
 //! # Nodes added and classes added are the same number here
 //!
 //! [`EGraph::add`](super::graph::EGraph::add) mints exactly one new e-class
