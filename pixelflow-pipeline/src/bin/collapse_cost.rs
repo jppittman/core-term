@@ -186,12 +186,16 @@ fn capture(out: &std::path::Path, font: Option<&std::path::Path>) {
                 missing += 1;
                 continue;
             };
+            // Linked: the winding sum is composed by reference, and the
+            // corpus holds the arena the optimizer sees — the referent
+            // spliced in, declaring the table it reads.
             let (arena, root) = glyph.kernel.parts();
-            let buffer_data = buffer_data_for(arena, &glyph);
+            let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
+            let buffer_data = buffer_data_for(&arena, &glyph);
             kernels.push(CollapseKernel {
                 name: format!("glyph{tile}_U{:04X}", ch as u32),
                 family: format!("glyph{tile}"),
-                arena: arena.clone(),
+                arena,
                 root,
                 extent: [tile, tile],
                 buffer_data,
@@ -203,11 +207,12 @@ fn capture(out: &std::path::Path, font: Option<&std::path::Path>) {
             .glyph_kernel_scaled(ch, BENCH_PT)
             .unwrap_or_else(|| panic!("the font has no glyph for {ch:?}"));
         let (arena, root) = glyph.kernel.parts();
-        let buffer_data = buffer_data_for(arena, &glyph);
+        let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
+        let buffer_data = buffer_data_for(&arena, &glyph);
         kernels.push(CollapseKernel {
             name: format!("bench_{label}"),
             family: "bench".to_string(),
-            arena: arena.clone(),
+            arena,
             root,
             extent: BENCH_EXTENT,
             buffer_data,

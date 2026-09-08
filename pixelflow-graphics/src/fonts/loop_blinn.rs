@@ -287,7 +287,14 @@ pub fn glyph(outline: &Outline) -> Glyph {
         })
         .collect();
     let prepared = prepare(&included);
-    let coverage = coverage(winding, &prepared);
+    // By reference: `coverage` reads the winding once per boundary piece,
+    // and composition splices, so passing the sum itself copied its `Reduce`
+    // node per piece and `expand_reduce` unrolled every copy — the
+    // legalized arena was quadratic in the piece count (measured: 16k, 37k,
+    // 58k nodes per piece at 40, 73, 132 pieces). A name is one node however
+    // often it is used, and expansion shares its referent
+    // (`passes::expand_refs`), so the sum is unrolled once.
+    let coverage = coverage(winding.by_ref(), &prepared);
 
     let support = Support::around(bounds);
     let [x0, y0, x1, y1] = support.bounds();
@@ -1016,11 +1023,10 @@ fn coverage(winding: Kernel, prepared: &[Prepared]) -> Kernel {
     // differ by one and so are never both zero. The piece separates ink
     // from no-ink exactly when one of them is zero.
     //
-    // Only the pieces that other contours' ink actually covers pay for it.
-    // The test references the whole winding sum, and every `Kernel`
-    // combinator copies its arena, so asking it of every piece makes a
-    // long string's kernel quadratic — measured at 6 GB and climbing before
-    // this early-out existed.
+    // A piece nothing else covers always separates, so the test is asked
+    // only of the pieces other contours' ink may cover. (It reads the whole
+    // winding, which is why [`glyph`] passes the sum by reference: a spliced
+    // copy per piece was quadratic.)
     let mut distances = vec![constant(RAMP_REACH)];
     for p in prepared {
         let Some(d) = &p.d else { continue };

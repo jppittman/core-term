@@ -51,9 +51,7 @@ use pixelflow_graphics::render::scene::{Scene, compile_cell_grid_for};
 use pixelflow_graphics::scene3d::{Hit, Plane, Ray, Rgba, Sphere, checker, sky};
 use pixelflow_ir::optimize::{Optimize, Rewritten};
 use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
-use pixelflow_ir::{
-    BindingTable, ExprArena, ExprId, ExprNode, LatticeShape, eval_scalar, pipeline,
-};
+use pixelflow_ir::{BindingTable, Evaluator, ExprArena, ExprId, ExprNode, LatticeShape, pipeline};
 use pixelflow_pipeline::collapse_bench::corpus::Trips;
 use pixelflow_pipeline::collapse_bench::row::StaticFeatures;
 use pixelflow_pipeline::collapse_bench::{self, LANES, features_of};
@@ -861,11 +859,13 @@ fn oracle(forms: &OracleForms<'_>, out: &[f32], trips: Trips) -> Oracle {
     let stride = (pixels / ORACLE_POINTS).max(1);
     let mut o = Oracle::default();
     let mut px = 0usize;
+    let same_form = Evaluator::new(linked.0, linked.1);
+    let cross_form = Evaluator::new(input.0, input.1);
     while px < pixels && o.points < ORACLE_POINTS {
         let (x, y) = ((px % width) as f32 + 0.5, (px / width) as f32 + 0.5);
         let jit = out[px];
-        let same = eval_scalar(linked.0, linked.1, &[x, y], &b_ln);
-        let cross = eval_scalar(input.0, input.1, &[x, y], &b_in);
+        let same = same_form.eval(&[x, y], &b_ln);
+        let cross = cross_form.eval(&[x, y], &b_in);
         if packed {
             let byte_delta = |a: f32, b: f32| -> u32 {
                 a.to_bits()
@@ -1144,7 +1144,12 @@ fn run(args: &RunArgs<'_>) {
     let git_sha = head_sha();
 
     for (i, rk) in kernels.iter().enumerate() {
+        // Linked: a glyph composes its winding sum by reference, and this
+        // harness measures the arena the optimizer sees — which is the
+        // referent spliced in, not a one-node name for it.
         let (arena, root) = rk.kernel.parts();
+        let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
+        let arena = &arena;
         // A glyph's winding sum reads a bound piece table (S1a,
         // docs/plans/2026-09-09-glyph-as-a-fold-execution.md): its kernel
         // declares a `Buffer` and carries the table's own data

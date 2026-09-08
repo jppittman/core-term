@@ -1,8 +1,10 @@
 # Composition is linking, and the linker only inlines
 
 **Date:** 2026-09-09
-**Status:** Denotation. No code, and deliberately not a plan yet — §5 names
-two costs that decide whether this is affordable, and neither is measured.
+**Status:** L1–L3 executed — the reference, the store, shared expansion,
+and one composition site converted and measured (§2.1, §7). §5's first cost
+has its gate; the inlining rule (L4) waits on a kernel that composes
+identical referents, because §7 found the glyph is not one.
 **Author:** JP (the framing and both design decisions), Claude (draft)
 **Supersedes the framing of:**
 [2026-09-09-the-graph-differentiates.md](2026-09-09-the-graph-differentiates.md)
@@ -167,6 +169,13 @@ shape of question: expanding a glyph's reduce before saturation costs 3.8×
 on `A`, 5.9× on `O`, and 8.7× on `8` (87,007 → 758,059 nodes). Inlining is
 that, at every composition boundary.
 
+*Status.* The gate exists now: growth per rule application is predicted
+exactly before the application is made (`EGraph::predicted_growth`,
+asserted equal to the measured delta on 10,819 applications), and the
+budget is spent against it. What is not yet built is the rule itself. And
+§7 changes what the rule is *for*: those reduce numbers were quadratic
+copies, not the unroll.
+
 ### 5.2 A surviving reference needs a calling convention
 
 Codegen emits one flat function per kernel. If extraction *keeps* a `Ref`,
@@ -186,3 +195,78 @@ prefers a call.
 - The data travelling with the value, so a consumer never carries a binding
   beside a kernel. That is right under either linkage model and is the one
   piece of the previous plan's §4 that can land on its own.
+
+## 7. L3, executed: where a reference paid, and what that decides
+
+L3 was scoped as "use `by_ref` at the composition sites that blew up —
+`text()`'s per-glyph merge, `Kernel::sum`'s fold, `min_of`." None of them
+was where the cost was. `text()` merges *outlines* and calls `glyph()` once,
+so a string is one reduce over one table and construction was already
+linear: 12 ms for a glyph, 199 ms for 26 characters, unchanged by anything
+below.
+
+The cost was inside `glyph()`. `coverage()` asks, per piece that another
+contour's ink may cover, whether that piece separates ink from no-ink —
+`|w − own|` against `|w − own + dir|` — and each question reads the *whole
+winding sum*. Composition splices, so a glyph with `m` such pieces held `m`
+copies of the `Reduce` node, and `expand_reduce` unrolled every copy:
+`m · n · body` nodes, quadratic in the piece count. Measured on
+`text()` at 32 px, legalized arena reachable from the root:
+
+| chars | pieces | by value | by reference |
+|---|---|---|---|
+| 1 | 40 | 654,823 | 30,535 |
+| 2 | 73 | 2,712,515 | 58,339 |
+| 4 | 132 | 7,640,375 | 105,111 |
+| 8 | 252 | — | 194,045 |
+| 26 | 613 | — | 442,089 |
+
+By value the per-piece cost climbs 16k → 37k → 58k; by reference it is
+~720 at every size. (`pixelflow-graphics/examples/text_kernel_cost.rs` is
+the ruler.)
+
+Two changes, and the second is the one that generalizes:
+
+- `glyph()` hands `coverage` the winding **by reference**. One node, however
+  many questions are asked of it.
+- **Two uses of one name are one node.** `expand_refs` splices a referent
+  once per key and points every later `Ref` at that subgraph. Without this
+  the linker pastes `m` copies back in and the quadratic returns through
+  the front door — a name that expanded per use would buy nothing over a
+  splice. Pinned by `every_use_of_a_name_shares_one_referent`.
+
+The same ruler then found the legalize *time* still quadratic with the node
+count linear, in two passes that have nothing to do with references:
+`differentiate` allocated and scanned an arena-sized table per `Dwrt` (a
+glyph holds a few per antialiased edge), and `expand_reduce`'s substitution
+allocated an arena-sized memo per unrolled term — and `None` for
+`Option<ExprId>` is not the zero pattern, so each was written in full. Both
+are keyed or body-sized now. Legalize of the 26-character string: 86 s →
+1.15 s, linear (20 ms for one glyph, 40 pieces). The CI timeouts on
+`kernel_glyph_optimize` (>600 s → 0.7 s) and `loop_blinn_winding` were the
+quadratic copies reaching saturation.
+
+### What this decides for L4
+
+The construction-side case for a reference is fully delivered by L3 plus
+shared expansion, and it needed no e-graph. So L4 does not buy *that*.
+
+What reaches saturation is now ~720 nodes per piece, of which the unrolled
+winding is ~100 and the per-piece distance terms ~600 — `m` *distinct*
+fragments over different constants, which no reference can share. The next
+lever on a glyph's saturation cost is therefore S1b of
+[glyph-as-a-fold-execution](2026-09-09-glyph-as-a-fold-execution.md) — the
+distance fold as a second table-reading reduce — not L4.
+
+L4's case is the one §3 states: a scene that composes many *identical*
+kernels (an atlas of cached glyphs, a repeated primitive), where whether to
+inline is a real choice with a real cost on each side. The growth gate it
+needs exists (§5.1); the rule waits on a kernel that composes that way.
+
+One wart, recorded rather than fixed: "the linker only inlines" holds for
+every compile path, but `Kernel::parts()` hands out the *unlinked*
+fragment, and five measurement consumers that took it straight into
+`lower_dwrt_owned` or `arena.buffers()` each had to learn to link first
+(a name has no derivative and declares no buffer). That is the right
+division today — `parts()` is the fragment, and the pipeline's first step is
+the link — but it is five copies of one line.

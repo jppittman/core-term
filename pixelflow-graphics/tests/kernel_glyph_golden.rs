@@ -11,8 +11,8 @@
 use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::Font;
 use pixelflow_ir::binding::BindingTable;
-use pixelflow_ir::eval_scalar;
 use pixelflow_ir::passes::lower_dwrt_owned;
+use pixelflow_ir::Evaluator;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
@@ -72,11 +72,12 @@ fn golden_for(ch: char, size: usize) {
         .collect();
     let table = BindingTable::bind(&lowered, &data).expect("bind the winding table");
 
+    let oracle = Evaluator::new(&lowered, lroot);
     let mut ink = 0.0f32;
     for j in 0..size {
         for i in 0..size {
             let (x, y) = (i as f32, j as f32);
-            let want = eval_scalar(&lowered, lroot, &[x, y], &table);
+            let want = oracle.eval(&[x, y], &table);
             let jit = got[j * size + i];
             assert!(
                 jit.is_finite(),

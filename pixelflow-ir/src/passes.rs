@@ -43,6 +43,7 @@
 use crate::arena::{ExprArena, ExprId, ExprNode};
 use crate::kind::OpKind;
 use crate::variance::Variance;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 /// Run every legalization pass, in the one order they compose in.
@@ -206,14 +207,28 @@ fn copy_node(arena: &mut ExprArena, node: &ExprNode, m: &dyn Fn(ExprId) -> ExprI
 /// by construction — a key names content that already existed when the key
 /// was minted, so nothing can reference itself.
 ///
+/// **Two uses of one name are one node.** That is what a name is for: the
+/// referent is spliced once per key, and every later `Ref` to that key
+/// points at the same subgraph. A kernel referenced `m` times therefore
+/// costs one copy of its body rather than `m` — and a reduction inside it
+/// is unrolled once by [`expand_reduce`], not `m` times. Splicing per use
+/// would give back exactly what composition by value costs (measured on a
+/// glyph whose winding sum is read once per boundary piece: 16k, 37k, 58k
+/// legalized nodes *per piece* at 40, 73, 132 pieces — quadratic).
+///
 /// # Panics
 ///
 /// Panics if a key names no interned kernel. The only producer of a `Ref` is
 /// `Kernel::by_ref`, which interns before it names, so an unresolvable key is
 /// a corrupt graph rather than a condition to recover from.
 pub fn expand_refs(arena: &mut ExprArena, root: ExprId) -> ExprId {
+    let mut spliced: BTreeMap<crate::key::KernelKey, ExprId> = BTreeMap::new();
     rebuild_arena(arena, root, |arena, node, _m| match node {
-        ExprNode::Ref(key) => Some(splice_referent(arena, *key)),
+        ExprNode::Ref(key) => Some(
+            *spliced
+                .entry(*key)
+                .or_insert_with(|| splice_referent(arena, *key)),
+        ),
         _ => None,
     })
 }
@@ -436,7 +451,7 @@ fn unroll_reduce(
 
     // acc = body[var:=0]; then acc = combiner(acc, body[var:=k]) for k in 1..N.
     let term = |arena: &mut ExprArena, k: usize| {
-        Substitution::new(arena, var_idx, k as f32, &variance).apply(arena, body)
+        Substitution::new(body, var_idx, k as f32, &variance).apply(arena, body)
     };
     let mut acc = term(arena, 0);
     for k in 1..n {
@@ -468,16 +483,24 @@ struct Substitution<'a> {
     /// Variance for every node the body can reach, indexed by `ExprId`.
     variance: &'a [Variance],
     /// Rebuilt nodes, so a shared subtree is rebuilt once and stays shared.
+    ///
+    /// Sized to the body, not the arena: children are pushed before their
+    /// parent, so nothing the body reaches has an id above the body's own.
+    /// One table per term is unavoidable (each term substitutes a different
+    /// value), but an arena-sized one is written in full on allocation —
+    /// `None` here is not the zero pattern — and the arena grows with every
+    /// term appended, so the unroll wrote O(terms × arena) bytes to produce
+    /// O(terms × body) nodes.
     memo: Vec<Option<ExprId>>,
 }
 
 impl<'a> Substitution<'a> {
-    fn new(arena: &ExprArena, var: u8, value: f32, variance: &'a [Variance]) -> Self {
+    fn new(body: ExprId, var: u8, value: f32, variance: &'a [Variance]) -> Self {
         Self {
             var,
             value,
             variance,
-            memo: alloc::vec![None; arena.nodes_raw().len()],
+            memo: alloc::vec![None; body.0 as usize + 1],
         }
     }
 
@@ -607,29 +630,33 @@ pub fn lower_dwrt_owned(
 /// comparison operands are never differentiated), walking an explicit stack;
 /// (2) compute marked derivatives in ascending id order — the arena is
 /// append-only, so children always precede parents.
+///
+/// Both passes touch only what `expr` reaches, and the tables are keyed
+/// rather than arena-sized: a kernel holds one `Dwrt` per antialiased edge,
+/// and an arena-sized table per `Dwrt` — scanned in pass 2, and zeroed on
+/// allocation — made lowering quadratic in the arena while its output stayed
+/// linear (measured on a 613-piece text run: 86 s, of a 1.5 M-node arena).
 fn differentiate(arena: &mut ExprArena, expr: ExprId, var: u8) -> Result<ExprId, &'static str> {
-    let entry_len = arena.nodes_raw().len();
-
     // Pass 1: mark derivative-needed nodes.
-    let mut need = alloc::vec![false; entry_len];
+    let mut marked: BTreeSet<ExprId> = BTreeSet::new();
     let mut stack: Vec<ExprId> = alloc::vec![expr];
     while let Some(id) = stack.pop() {
-        if core::mem::replace(&mut need[id.0 as usize], true) {
+        if !marked.insert(id) {
             continue;
         }
         push_deriv_children(arena.node(id), &mut stack);
     }
 
-    // Pass 2: bottom-up compute in topological (id) order.
-    let mut memo: Vec<Option<ExprId>> = alloc::vec![None; entry_len];
-    for idx in 0..entry_len {
-        if !need[idx] {
-            continue;
-        }
-        let d = diff_node(arena, ExprId(idx as u32), var, &memo)?;
-        memo[idx] = Some(d);
+    // Pass 2: bottom-up compute in topological (id) order — the set iterates
+    // ascending, and the arena is append-only, so children precede parents.
+    let mut memo: BTreeMap<ExprId, ExprId> = BTreeMap::new();
+    for id in marked {
+        let d = diff_node(arena, id, var, &memo)?;
+        memo.insert(id, d);
     }
-    Ok(memo[expr.0 as usize].expect("derivative of the root was computed"))
+    Ok(*memo
+        .get(&expr)
+        .expect("derivative of the root was computed"))
 }
 
 /// Which children's derivatives the rule for `node` consumes. Must stay in
@@ -688,7 +715,7 @@ fn diff_node(
     arena: &mut ExprArena,
     id: ExprId,
     var: u8,
-    memo: &[Option<ExprId>],
+    memo: &BTreeMap<ExprId, ExprId>,
 ) -> Result<ExprId, &'static str> {
     match arena.node(id).clone() {
         ExprNode::Var(i) => Ok(arena.push_const(if i == var { 1.0 } else { 0.0 })),
@@ -925,8 +952,10 @@ fn diff_node(
 /// Read a child's already-computed derivative. Pass 1 marks exactly the
 /// children each rule consumes and pass 2 runs bottom-up, so the entry is
 /// always populated when the parent's rule fires.
-fn dchild(memo: &[Option<ExprId>], child: ExprId) -> ExprId {
-    memo[child.0 as usize].expect("child derivative marked and computed before parent")
+fn dchild(memo: &BTreeMap<ExprId, ExprId>, child: ExprId) -> ExprId {
+    *memo
+        .get(&child)
+        .expect("child derivative marked and computed before parent")
 }
 
 /// `√(1 − u²)` — shared by the asin/acos rules.
@@ -2748,18 +2777,23 @@ mod ref_expansion_tests {
     /// a rebuild leaves what it replaced behind as garbage, so the expanded
     /// arena still holds the reference node it expanded — nothing reaches it.
     fn reaches_ref(arena: &ExprArena, root: ExprId) -> bool {
+        count_reachable(arena, root, |n| matches!(n, ExprNode::Ref(_))) > 0
+    }
+
+    /// How many nodes reachable from `root` satisfy `pred` — each counted
+    /// once, however many parents share it.
+    fn count_reachable(arena: &ExprArena, root: ExprId, pred: impl Fn(&ExprNode) -> bool) -> usize {
         let mut seen = alloc::vec![false; arena.nodes_raw().len()];
         let mut stack = alloc::vec![root];
+        let mut count = 0;
         while let Some(id) = stack.pop() {
             if core::mem::replace(&mut seen[id.0 as usize], true) {
                 continue;
             }
-            if matches!(arena.node(id), ExprNode::Ref(_)) {
-                return true;
-            }
+            count += usize::from(pred(arena.node(id)));
             stack.extend(arena.children(id));
         }
-        false
+        count
     }
 
     /// The two kernels denote the same function over [`SPREAD`].
@@ -2901,6 +2935,46 @@ mod ref_expansion_tests {
         };
         assert!(!reaches_ref(&out, out_root));
         assert_same_denotation(&circle(), &out, out_root);
+    }
+
+    /// Two uses of one name are one node. The referent is spliced once and
+    /// shared, so a reduction named three times is unrolled once; composed
+    /// by value it is copied and unrolled three times, which is where a
+    /// glyph's kernel went quadratic in its piece count.
+    #[test]
+    fn every_use_of_a_name_shares_one_referent() {
+        let is_reduce = |n: &ExprNode| matches!(n, ExprNode::Nary(OpKind::Reduce, ..));
+        let folded = Kernel::sum_over(4, |i| i.mul(&Kernel::x()));
+        let named = folded.by_ref();
+        let uses = named.add(&named).mul(&named);
+        let direct = folded.add(&folded).mul(&folded);
+        let (d_arena, d_root) = direct.parts();
+        assert_eq!(
+            count_reachable(d_arena, d_root, is_reduce),
+            3,
+            "by value, every use is its own copy"
+        );
+
+        let (u_arena, u_root) = uses.parts();
+        let (expanded, root) = expand_refs_owned(u_arena, u_root);
+        assert!(!reaches_ref(&expanded, root));
+        assert_eq!(
+            count_reachable(&expanded, root, is_reduce),
+            1,
+            "by name, every use reaches the one referent"
+        );
+        assert_same_denotation(&direct, &expanded, root);
+
+        // And the fold pays for one body: fewer nodes after the unroll than
+        // the by-value composition, which unrolls each of its three copies.
+        let (unrolled, unrolled_root) = expand_reduce_owned(&expanded, root);
+        let (d_unrolled, d_unrolled_root) = expand_reduce_owned(d_arena, d_root);
+        let shared = count_reachable(&unrolled, unrolled_root, |_| true);
+        let copied = count_reachable(&d_unrolled, d_unrolled_root, |_| true);
+        assert!(
+            shared < copied,
+            "one shared unroll ({shared} nodes) must be smaller than three ({copied})"
+        );
     }
 
     /// `legalize` runs this first, so a reference never reaches the pass that

@@ -76,7 +76,7 @@ pub use binding::{BindError, BindingTable};
 pub mod eval;
 #[cfg(any(test, feature = "oracle"))]
 pub use eval::{
-    DifferentialCheck, MaskComparison, MaskVerdict, PointCheck, PointVerdict, Tolerance,
+    DifferentialCheck, Evaluator, MaskComparison, MaskVerdict, PointCheck, PointVerdict, Tolerance,
     compare_mask_root, equivalence_tolerance, eval_scalar, is_mask_valued, is_valid_mask,
     op_is_divergent_at, trunc_input_is_divergent,
 };

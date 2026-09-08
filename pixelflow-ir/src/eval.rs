@@ -68,20 +68,73 @@ pub fn eval_scalar(
     // kernel at these coordinates", and it is the same expansion the compiled
     // path takes, so oracle and JIT cannot disagree about what a reference
     // means. Identity (a bare clone) when the arena holds none.
-    let (arena, root) = crate::passes::expand_refs_owned(arena, root);
-    let (expanded, root) = crate::passes::expand_transcendentals_owned(&arena, root);
-    let variance = crate::variance::compute_arena_variance(&expanded);
-    let n = expanded.len();
-    let memo = core::cell::RefCell::new(alloc::vec![None; n]);
-    Env {
-        arena: &expanded,
-        vars,
-        bindings,
-        reduce_vars: [0.0; 4],
-        variance: &variance,
-        memo: &memo,
+    //
+    // All of that preparation is O(arena) and none of it depends on the
+    // point. A caller evaluating many points prepares once with
+    // [`Evaluator`]; this entry is that, for one point.
+    Evaluator::new(arena, root).eval(vars, bindings)
+}
+
+/// [`eval_scalar`]'s arena, prepared once, for evaluation at many points.
+///
+/// Everything `eval_scalar` does before it reads a node — link references,
+/// expand transcendentals, compute the variance table, size the memo — is
+/// O(arena) and independent of the point, while the evaluation itself is
+/// O(reachable). Paying the preparation per point made a sweep over a
+/// lattice cost O(texels × arena): on a 32 px glyph's raw arena it was 30×
+/// slower than the same sweep over the (compact) optimized arena, which is
+/// the difference between an oracle that runs in a second and one that hits
+/// a CI timeout. Prepare once, evaluate per point.
+///
+/// The memo is reset between points by the entries the point touched, not by
+/// the arena's length, so a point costs what it reaches and nothing more.
+pub struct Evaluator {
+    arena: ExprArena,
+    root: ExprId,
+    variance: alloc::vec::Vec<crate::variance::Variance>,
+    memo: core::cell::RefCell<alloc::vec::Vec<Option<f32>>>,
+    /// Memo entries written while evaluating the current point.
+    touched: core::cell::RefCell<alloc::vec::Vec<ExprId>>,
+}
+
+impl Evaluator {
+    /// Prepare `arena` for evaluation from `root`: the same lowering
+    /// [`eval_scalar`] applies, done once.
+    #[must_use]
+    pub fn new(arena: &ExprArena, root: ExprId) -> Self {
+        let (arena, root) = crate::passes::expand_refs_owned(arena, root);
+        let (arena, root) = crate::passes::expand_transcendentals_owned(&arena, root);
+        let variance = crate::variance::compute_arena_variance(&arena);
+        let n = arena.len();
+        Self {
+            arena,
+            root,
+            variance,
+            memo: core::cell::RefCell::new(alloc::vec![None; n]),
+            touched: core::cell::RefCell::new(alloc::vec::Vec::new()),
+        }
     }
-    .eval(root)
+
+    /// The root's value at `vars`, exactly as [`eval_scalar`] would compute
+    /// it on the same arena.
+    #[must_use]
+    pub fn eval(&self, vars: &[f32; crate::arena::COORD_AXES], bindings: &BindingTable<'_>) -> f32 {
+        let value = Env {
+            arena: &self.arena,
+            vars,
+            bindings,
+            reduce_vars: [0.0; 4],
+            variance: &self.variance,
+            memo: &self.memo,
+            touched: &self.touched,
+        }
+        .eval(self.root);
+        let mut memo = self.memo.borrow_mut();
+        for id in self.touched.borrow_mut().drain(..) {
+            memo[id.0 as usize] = None;
+        }
+        value
+    }
 }
 
 /// How closely a JIT-computed lane must match [`eval_scalar`]'s answer for the
@@ -1687,6 +1740,9 @@ struct Env<'a> {
     reduce_vars: [f32; 4],
     variance: &'a [crate::variance::Variance],
     memo: &'a core::cell::RefCell<alloc::vec::Vec<Option<f32>>>,
+    /// Every memo entry this point wrote, so [`Evaluator`] can clear them
+    /// without touching the rest of the arena.
+    touched: &'a core::cell::RefCell<alloc::vec::Vec<ExprId>>,
 }
 
 impl Env<'_> {
@@ -1768,6 +1824,7 @@ impl Env<'_> {
         };
         if is_memoizable {
             self.memo.borrow_mut()[id.0 as usize] = Some(val);
+            self.touched.borrow_mut().push(id);
         }
         val
     }

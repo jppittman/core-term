@@ -100,6 +100,16 @@ exactly, under a `sum_over`.
 
 ## S1 — the body
 
+*Status.* S1a — the winding as one `sum_over` reading the table — landed.
+S1b — the distance/boundary fold — is unconverted: `coverage` still builds
+a per-piece constant fragment per `prepare`, and reads the winding by
+reference (`winding.by_ref()`), because reading it by value copied the
+`Reduce` per interior piece and made the legalized arena quadratic
+([composition-is-linking](2026-09-09-composition-is-linking.md) §7). That
+also relocates the "expected regression" below: the per-piece distance
+terms are now ~600 of the ~720 legalized nodes per piece, so S1b is the
+next lever on what saturation sees, ahead of anything about linking.
+
 **Deliverable:** `glyph()` as one `Kernel::over` body, per-glyph extent.
 
 Per-glyph extent (`n` = that glyph's piece count), not font-wide. That gets

@@ -664,10 +664,12 @@ mod tests {
         let glyph = font.glyph_kernel_scaled('A', 32.0).unwrap();
         let cached = CachedGlyph::from_kernel(&glyph, 32, 1.0);
         let (arena, root) = glyph.kernel.parts();
-        // `Dwrt` (the antialiasing gradient) has no scalar evaluation until
-        // it is lowered, exactly as the compile entries lower it.
+        // Link first — the winding sum is composed by reference — then
+        // lower: `Dwrt` (the antialiasing gradient) has no scalar evaluation
+        // until it is lowered, exactly as the compile entries lower it.
+        let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
         let (lowered, lowered_root) =
-            pixelflow_ir::passes::lower_dwrt_owned(arena, root).expect("glyph kernel lowers");
+            pixelflow_ir::passes::lower_dwrt_owned(&arena, root).expect("glyph kernel lowers");
         // `glyph.kernel`'s winding sum reads a piece table that travels with
         // the kernel itself (`Kernel::with_buffer_data`); the oracle needs
         // it bound too — `lower_dwrt` restructures the Dwrt subtrees only,

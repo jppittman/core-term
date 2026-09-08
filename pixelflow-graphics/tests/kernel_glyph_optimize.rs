@@ -16,10 +16,19 @@
 
 use pixelflow_graphics::fonts::{loop_blinn, Contour, Font, Outline, Segment};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
-use pixelflow_ir::passes::lower_dwrt_owned;
-use pixelflow_ir::OpKind;
+use pixelflow_ir::passes::{expand_refs_owned, lower_dwrt_owned};
+use pixelflow_ir::{Kernel, OpKind};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
+
+/// A glyph kernel's arena with its references linked. The winding sum is
+/// composed by reference, and a name has no derivative, declares no buffer,
+/// and counts as one node — so every count and every lowering below starts
+/// from the linked arena, as the pipeline's own first step does.
+fn linked(kernel: &Kernel) -> (ExprArena, ExprId) {
+    let (arena, root) = kernel.parts();
+    expand_refs_owned(arena, root)
+}
 
 /// Count reachable nodes matching `pred` from `root`.
 fn count_reachable(arena: &ExprArena, root: ExprId, pred: impl Fn(&ExprNode) -> bool) -> usize {
@@ -111,13 +120,13 @@ fn affine_edge_gradients_fold_to_constants() {
         [11.0, 9.0],
     ]);
     let glyph = loop_blinn::glyph(&outline);
-    let (arena, root) = glyph.kernel.parts();
+    let (arena, root) = linked(&glyph.kernel);
 
-    let raw_sqrt = count_op(arena, root, OpKind::Sqrt);
-    let raw_dwrt = count_op(arena, root, OpKind::Dwrt);
-    let raw_total = total_reachable(arena, root);
+    let raw_sqrt = count_op(&arena, root, OpKind::Sqrt);
+    let raw_dwrt = count_op(&arena, root, OpKind::Dwrt);
+    let raw_total = total_reachable(&arena, root);
 
-    let (opt, opt_root) = bake_pipeline(arena, root, [32, 32]);
+    let (opt, opt_root) = bake_pipeline(&arena, root, [32, 32]);
     let opt_sqrt = count_op(&opt, opt_root, OpKind::Sqrt);
     let opt_dwrt = count_op(&opt, opt_root, OpKind::Dwrt);
     let opt_total = total_reachable(&opt, opt_root);
@@ -144,8 +153,8 @@ fn affine_edge_gradients_fold_to_constants() {
 fn lowered_glyph_ops_are_all_egraph_representable() {
     let font = Font::parse(FONT_DATA).unwrap();
     let glyph = font.glyph_kernel_scaled('g', 16.0).expect("glyph");
-    let (arena, root) = glyph.kernel.parts();
-    let (lowered, lroot) = lower_dwrt_owned(arena, root).expect("lower");
+    let (arena, root) = linked(&glyph.kernel);
+    let (lowered, lroot) = lower_dwrt_owned(&arena, root).expect("lower");
     let mut missing = std::collections::BTreeSet::new();
     let len = lowered.nodes_raw().len();
     let mut seen = vec![false; len];
@@ -200,7 +209,7 @@ const SIZES: [u32; 10] = [7, 9, 11, 13, 15, 17, 19, 21, 23, 32];
 #[test]
 fn optimized_glyph_matches_raw_within_reassociation_noise() {
     use pixelflow_ir::binding::BindingTable;
-    use pixelflow_ir::eval_scalar;
+    use pixelflow_ir::Evaluator;
 
     /// Reassociation and FMA fusion re-round a long winding sum at the 1e-4
     /// scale; an unsound rewrite moves coverage by O(1).
@@ -214,8 +223,8 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
             let glyph = font
                 .glyph_kernel_scaled(ch, size as f32)
                 .expect("glyph kernel");
-            let (arena, root) = glyph.kernel.parts();
-            let (raw, raw_root) = lower_dwrt_owned(arena, root).expect("lower raw");
+            let (arena, root) = linked(&glyph.kernel);
+            let (raw, raw_root) = lower_dwrt_owned(&arena, root).expect("lower raw");
             // `glyph.kernel`'s winding sum reads a piece table that travels
             // with the kernel itself; both `eval_scalar` oracles below need
             // it bound, not empty — `lower_dwrt`/`optimize_runtime_arena`
@@ -240,7 +249,7 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
             // that reaches pixels.
             let extent = size + size / 2;
             let optimized = pixelflow_search::runtime::optimize_runtime_arena(
-                arena,
+                &arena,
                 root,
                 pixelflow_ir::LatticeShape::new([extent, extent]),
             )
@@ -248,11 +257,15 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
             let (opt, opt_root) = (&optimized.0, optimized.1);
             let opt_table = BindingTable::bind(opt, &data).expect("bind winding table (opt)");
 
+            // Prepared once per arena: the raw arena is large and un-unrolled,
+            // and preparing it per texel was this test's whole cost.
+            let raw_eval = Evaluator::new(&raw, raw_root);
+            let opt_eval = Evaluator::new(opt, opt_root);
             for j in 0..extent as usize {
                 for i in 0..extent as usize {
                     let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
-                    let want = eval_scalar(&raw, raw_root, &[x, y], &raw_table);
-                    let got = eval_scalar(opt, opt_root, &[x, y], &opt_table);
+                    let want = raw_eval.eval(&[x, y], &raw_table);
+                    let got = opt_eval.eval(&[x, y], &opt_table);
                     // Before the comparison, not folded into it: `NaN >= x` is
                     // false, so a threshold test *accepts* a non-finite
                     // coverage silently. A collector has to say so itself.

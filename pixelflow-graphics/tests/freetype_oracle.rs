@@ -55,7 +55,10 @@
 
 use freetype as ft;
 use pixelflow_graphics::fonts::Font;
-use pixelflow_ir::{eval_scalar, passes::lower_dwrt_owned, BindingTable};
+use pixelflow_ir::{
+    passes::{expand_refs_owned, lower_dwrt_owned},
+    BindingTable, Evaluator,
+};
 
 /// Device samples per texel edge when rasterizing the reference.
 const SUPERSAMPLE: i64 = 16;
@@ -205,7 +208,10 @@ fn compare_against_freetype(glyphs: &[char], sizes: &[u32], texels_we_miss: u32)
 
             let ours_glyph = ours.glyph_kernel_scaled(ch, size as f32).expect("glyph");
             let (arena, root) = ours_glyph.kernel.parts();
-            let (lowered, r) = lower_dwrt_owned(arena, root).expect("lower");
+            // Link before lowering: the winding sum is composed by reference,
+            // and a name has no derivative and declares no buffer.
+            let (arena, root) = expand_refs_owned(arena, root);
+            let (lowered, r) = lower_dwrt_owned(&arena, root).expect("lower");
             // `ours_glyph.kernel`'s winding sum reads a piece table that
             // travels with the kernel itself, so the oracle's own binding
             // table must carry it rather than evaluate empty —
@@ -234,11 +240,10 @@ fn compare_against_freetype(glyphs: &[char], sizes: &[u32], texels_we_miss: u32)
             let reference_grid: Vec<f32> = (0..extent * extent)
                 .map(|n| reference(n % extent, n / extent))
                 .collect();
+            let oracle = Evaluator::new(&lowered, r);
             let ours_grid: Vec<f32> = (0..extent * extent)
                 .map(|n| {
-                    eval_scalar(
-                        &lowered,
-                        r,
+                    oracle.eval(
                         &[(n % extent) as f32 + 0.5, (n / extent) as f32 + 0.5],
                         &ours_table,
                     )
