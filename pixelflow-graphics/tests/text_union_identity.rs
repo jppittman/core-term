@@ -40,7 +40,7 @@
 //! cargo test -p pixelflow-graphics --test text_union_identity -- --ignored
 //! ```
 
-use pixelflow_core::{DiscreteManifold, IndexRange, Kernel, Lattice, Manifold, Union};
+use pixelflow_core::{DiscreteManifold, IndexRange, Kernel, Lattice, Union};
 use pixelflow_graphics::fonts::{text, text_cells, text_union, Font, Glyph, TextCell};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
@@ -96,8 +96,7 @@ fn pixel_centered(k: &Kernel) -> Kernel {
 /// `Kernel::sum_over`, unlike `text_union`/`text_cells`'s `cells`-derived
 /// kernels, which still declare no buffer) over `lattice`.
 fn bake(lattice: Lattice, kernel: &Kernel, glyph: &Glyph) -> DiscreteManifold {
-    let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
-    lattice.collapse(&Manifold::compile(kernel, lattice.extent).bind(&bindings))
+    glyph.bake(kernel, lattice)
 }
 
 /// One cell of the decomposition, baked on its own: the range's own extent,

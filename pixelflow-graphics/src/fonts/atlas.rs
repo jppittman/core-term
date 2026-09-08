@@ -26,7 +26,7 @@
 
 use crate::fonts::ttf::Font;
 use crate::fonts::PIXEL_CENTER;
-use pixelflow_core::{Kernel, Lattice, Manifold};
+use pixelflow_core::{Kernel, Lattice};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -188,12 +188,10 @@ impl GlyphAtlas {
                 let lattice = Lattice { extent: [n, n] };
                 // `glyph.kernel` now declares the winding table `glyph`
                 // built as a bound slot (S1a), so a bare `Lattice::bake`
-                // (which binds nothing) would panic on it — bind the table
-                // explicitly instead. `Manifold::bind` tolerates an empty
-                // slice, so a glyph with no outline (no binding) bakes the
-                // same as before.
-                let bindings: Vec<_> = glyph.binding.into_iter().collect();
-                lattice.collapse(&Manifold::compile(&centered, lattice.extent).bind(&bindings))
+                // (which binds nothing) would panic on it — `Glyph::bake`
+                // binds it from `glyph` itself, tolerating a glyph with no
+                // outline (no binding) the same as before.
+                glyph.bake(&centered, lattice)
             });
         let Some(baked) = baked else {
             self.slots.insert(ch, None);

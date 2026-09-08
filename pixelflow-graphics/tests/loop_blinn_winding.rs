@@ -16,7 +16,7 @@
 //! antialiasing ramp's shape is pinned by `font_antialiasing.rs`, and where
 //! the ink is against a second rasterizer by `freetype_oracle.rs`.
 
-use pixelflow_core::{Kernel, Lattice, Manifold, Union};
+use pixelflow_core::{Kernel, Lattice, Union};
 use pixelflow_graphics::fonts::{loop_blinn, Contour, Font, Outline, Segment};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
@@ -179,10 +179,7 @@ fn pixel_centered(k: &Kernel) -> Kernel {
 fn bake_single(outline: &Outline, lattice: Lattice) -> Vec<f32> {
     let glyph = loop_blinn::glyph(outline);
     let kernel = pixel_centered(&glyph.kernel);
-    let bindings: Vec<_> = glyph.binding.into_iter().collect();
-    lattice
-        .collapse(&Manifold::compile(&kernel, lattice.extent).bind(&bindings))
-        .into_buffer()
+    glyph.bake(&kernel, lattice).into_buffer()
 }
 
 /// Bake the union-of-cells form over `lattice`.
@@ -593,8 +590,7 @@ fn a_glyph_is_exactly_zero_outside_its_support() {
                 .collect();
             // `Lattice::eval_at` binds nothing, so — unlike before S1a — it
             // cannot serve this kernel's winding table; bind it explicitly.
-            let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
-            let bound = Manifold::compile(&glyph.kernel, [1, 1]).bind(&bindings);
+            let bound = glyph.bound(&glyph.kernel, [1, 1]);
             for [x, y] in probes {
                 let v = bound.eval_at(x, y);
                 assert_eq!(

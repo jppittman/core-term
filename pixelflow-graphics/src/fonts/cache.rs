@@ -60,7 +60,7 @@
 //! let uncached = font.glyph_scaled('A', 17.3);
 //! ```
 
-use pixelflow_core::{BilinearSampler, DiscreteManifold, Kernel, Lattice, Manifold};
+use pixelflow_core::{BilinearSampler, DiscreteManifold, Kernel, Lattice};
 use pixelflow_ir::arena::BufferIdentity;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -162,12 +162,10 @@ impl CachedGlyph {
         let lattice = Lattice {
             extent: [px as u32, px as u32],
         };
-        // Bind the winding table the kernel declares (S1a); `bind`
-        // tolerates an empty slice, so a glyph with no outline (no
-        // binding) bakes the same as before.
-        let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
-        let bound = Manifold::compile(&centered, lattice.extent).bind(&bindings);
-        let baked = lattice.collapse(&bound);
+        // `Glyph::bake` binds the winding table the kernel declares (S1a)
+        // from `glyph` itself, so a glyph with no outline (no binding)
+        // bakes the same as before.
+        let baked = glyph.bake(&centered, lattice);
 
         Self {
             sampler: Arc::new(baked.bilinear()),
@@ -696,8 +694,7 @@ mod tests {
             .map(|(_, d)| d.as_slice())
             .into_iter()
             .collect();
-        let table =
-            pixelflow_ir::BindingTable::bind(&lowered, &data).expect("bind winding table");
+        let table = pixelflow_ir::BindingTable::bind(&lowered, &data).expect("bind winding table");
 
         for &(i, j) in &[(4usize, 4usize), (10, 16), (16, 8), (16, 20), (24, 28)] {
             let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
@@ -729,9 +726,7 @@ mod tests {
             &Kernel::y().add(&Kernel::constant(0.5)),
         );
         let lattice = Lattice::frame(size, size);
-        let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
-        let direct =
-            lattice.collapse(&Manifold::compile(&centered, lattice.extent).bind(&bindings));
+        let direct = glyph.bake(&centered, lattice);
         let (dx, dy) = center_of_mass(direct.buffer(), size);
 
         // Cached glyph sampled at pixel centers through the full

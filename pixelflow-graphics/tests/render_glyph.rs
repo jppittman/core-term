@@ -1,6 +1,6 @@
 //! Tests for the TTF parser and glyph kernel rendering.
 
-use pixelflow_core::{Kernel, Lattice, Manifold};
+use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::Font;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
@@ -30,8 +30,7 @@ fn parse_font_and_get_glyph() {
         &Kernel::y().add(&Kernel::constant(0.5)),
     );
     let lattice = Lattice::frame(64, 64);
-    let bindings: Vec<_> = glyph_a.binding.into_iter().collect();
-    let baked = lattice.collapse(&Manifold::compile(&centered, lattice.extent).bind(&bindings));
+    let baked = glyph_a.bake(&centered, lattice);
     let buf = baked.buffer();
     assert_eq!(buf.len(), 64 * 64);
     let ink: f32 = buf.iter().sum();

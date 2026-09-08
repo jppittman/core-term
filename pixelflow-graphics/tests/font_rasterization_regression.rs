@@ -5,7 +5,7 @@
 //! - Missing Y-offset for ascent in scaled glyphs
 //! - Whole-pipeline blank output
 
-use pixelflow_core::{Kernel, Lattice, Manifold};
+use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::{loop_blinn, text, Contour, Font, Glyph, Outline, Segment};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
@@ -15,20 +15,14 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf"
 /// bound piece table — S1a of
 /// docs/plans/2026-09-09-glyph-as-a-fold-execution.md).
 fn sample(glyph: &Glyph, x: f32, y: f32) -> f32 {
-    let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
-    Manifold::compile(&glyph.kernel, [1, 1])
-        .bind(&bindings)
-        .eval_at(x, y)
+    glyph.bound(&glyph.kernel, [1, 1]).eval_at(x, y)
 }
 
 /// Bake `kernel` (derived from `glyph` by a coordinate contramap, so it
 /// declares the same winding table) over a `width x height` frame.
 fn bake(width: u32, height: u32, kernel: &Kernel, glyph: &Glyph) -> Vec<f32> {
     let lattice = Lattice::frame(width as usize, height as usize);
-    let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
-    lattice
-        .collapse(&Manifold::compile(kernel, lattice.extent).bind(&bindings))
-        .into_buffer()
+    glyph.bake(kernel, lattice).into_buffer()
 }
 
 // =============================================================================

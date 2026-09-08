@@ -8,7 +8,7 @@
 //! mask-ordering hole and the unsorted Clamp decomposition (see
 //! pixelflow-ir/tests/spill_pressure.rs for the distilled regressions).
 
-use pixelflow_core::{Kernel, Lattice, Manifold};
+use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::Font;
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
@@ -30,9 +30,7 @@ fn golden_for(ch: char, size: usize) {
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );
-    let bindings: Vec<_> = glyph.binding.clone().into_iter().collect();
-    let baked = Lattice { extent: [n, n] }
-        .collapse(&Manifold::compile(&centered, [n, n]).bind(&bindings));
+    let baked = glyph.bake(&centered, Lattice { extent: [n, n] });
     let got = baked.buffer();
     assert_eq!(got.len(), size * size);
 

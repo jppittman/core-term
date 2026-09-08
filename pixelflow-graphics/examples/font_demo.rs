@@ -8,7 +8,7 @@
 //!
 //! Run: `cargo run -p pixelflow-graphics --example font_demo -- out.png`
 
-use pixelflow_core::{Kernel, Lattice, Manifold};
+use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::{text, Font};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
@@ -35,8 +35,7 @@ fn main() {
     // The winding sum reads a bound piece table (S1a), so bind it rather
     // than a bare `Lattice::bake`.
     let lattice = Lattice::frame(width as usize, height as usize);
-    let bindings: Vec<_> = glyph.binding.into_iter().collect();
-    let baked = lattice.collapse(&Manifold::compile(&kernel, lattice.extent).bind(&bindings));
+    let baked = glyph.bake(&kernel, lattice);
 
     let coverage = baked.buffer();
     println!(
