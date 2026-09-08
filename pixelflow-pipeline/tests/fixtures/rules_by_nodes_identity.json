@@ -1,6 +1,7 @@
 [
   {
     "name": "shader_cosine_palette",
+    "arch": "aarch64",
     "input_nodes": 40,
     "extracted_nodes": 26,
     "dag_cost": 18418436,
@@ -15,6 +16,7 @@
   },
   {
     "name": "shader_smooth_min_scene",
+    "arch": "aarch64",
     "input_nodes": 43,
     "extracted_nodes": 37,
     "dag_cost": 6427664,
@@ -29,6 +31,7 @@
   },
   {
     "name": "shader_mandelbrot_distance",
+    "arch": "aarch64",
     "input_nodes": 152,
     "extracted_nodes": 96,
     "dag_cost": 32707328,
@@ -43,6 +46,7 @@
   },
   {
     "name": "shader_star_sdf",
+    "arch": "aarch64",
     "input_nodes": 66,
     "extracted_nodes": 58,
     "dag_cost": 10554112,
@@ -57,6 +61,7 @@
   },
   {
     "name": "shader_gyroid_slice",
+    "arch": "aarch64",
     "input_nodes": 40,
     "extracted_nodes": 33,
     "dag_cost": 21444647,
@@ -71,6 +76,7 @@
   },
   {
     "name": "shader_plasma",
+    "arch": "aarch64",
     "input_nodes": 37,
     "extracted_nodes": 29,
     "dag_cost": 17260544,
@@ -85,6 +91,7 @@
   },
   {
     "name": "shader_domain_warp_fbm",
+    "arch": "aarch64",
     "input_nodes": 84,
     "extracted_nodes": 63,
     "dag_cost": 27664132,
@@ -99,6 +106,7 @@
   },
   {
     "name": "shader_kaleidoscope_fold",
+    "arch": "aarch64",
     "input_nodes": 46,
     "extracted_nodes": 40,
     "dag_cost": 34933520,
@@ -113,6 +121,7 @@
   },
   {
     "name": "shader_metaballs",
+    "arch": "aarch64",
     "input_nodes": 62,
     "extracted_nodes": 50,
     "dag_cost": 8264960,
@@ -127,6 +136,7 @@
   },
   {
     "name": "shader_julia_set",
+    "arch": "aarch64",
     "input_nodes": 122,
     "extracted_nodes": 123,
     "dag_cost": 45226752,
@@ -141,6 +151,7 @@
   },
   {
     "name": "shader_smoothstep_vignette",
+    "arch": "aarch64",
     "input_nodes": 64,
     "extracted_nodes": 49,
     "dag_cost": 7867199,
@@ -155,6 +166,7 @@
   },
   {
     "name": "shader_torus_slice",
+    "arch": "aarch64",
     "input_nodes": 38,
     "extracted_nodes": 31,
     "dag_cost": 6884110,
@@ -166,61 +178,5 @@
     "applications": 4527,
     "unions": 1119,
     "classes": 1297
-  },
-  {
-    "name": "glyph16_U004F",
-    "input_nodes": 3863,
-    "extracted_nodes": 1685,
-    "dag_cost": 366336,
-    "tree_cost": 1964711,
-    "bytes": 15456,
-    "code_fnv": 13325027533694114843,
-    "stop": "ClassCap",
-    "iterations": 1,
-    "applications": 3153,
-    "unions": 2348,
-    "classes": 4991
-  },
-  {
-    "name": "glyph16_U0053",
-    "input_nodes": 5943,
-    "extracted_nodes": 2623,
-    "dag_cost": 611816,
-    "tree_cost": 2449822,
-    "bytes": 23920,
-    "code_fnv": 6925249772597300684,
-    "stop": "ClassCap",
-    "iterations": 1,
-    "applications": 2225,
-    "unions": 2056,
-    "classes": 5000
-  },
-  {
-    "name": "glyph32_U004F",
-    "input_nodes": 3863,
-    "extracted_nodes": 1685,
-    "dag_cost": 1261872,
-    "tree_cost": 4598407,
-    "bytes": 15456,
-    "code_fnv": 3749619995268939979,
-    "stop": "ClassCap",
-    "iterations": 1,
-    "applications": 3153,
-    "unions": 2348,
-    "classes": 4991
-  },
-  {
-    "name": "glyph32_U0053",
-    "input_nodes": 5943,
-    "extracted_nodes": 2623,
-    "dag_cost": 2136248,
-    "tree_cost": 6283102,
-    "bytes": 23920,
-    "code_fnv": 10699005177950112028,
-    "stop": "ClassCap",
-    "iterations": 1,
-    "applications": 2225,
-    "unions": 2056,
-    "classes": 5000
   }
 ]
