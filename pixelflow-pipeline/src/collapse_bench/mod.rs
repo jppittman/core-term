@@ -159,6 +159,11 @@ struct Sentinel {
     buffer: Vec<f32>,
     trips: Trips,
     bytes: u32,
+    /// Kept so [`Sentinel::measure`] can bind its context the same way
+    /// [`CollapseSession::measure`] binds any other kernel's — empty for
+    /// this arena today, but a special-cased hardcoded slot count would be
+    /// a second definition of the layout `compile_as_baked` already emits.
+    arena: ExprArena,
 }
 
 impl CollapseSession {
@@ -184,6 +189,7 @@ impl CollapseSession {
             code: result.code,
             buffer: output_buffer(trips),
             trips,
+            arena,
         };
         // Burn in before calibrating: the first milliseconds of a process run
         // at whatever clock the machine happened to be at.
@@ -239,7 +245,9 @@ impl CollapseSession {
         let trips = Trips::of(kernel.extent, LANES as u32);
         let result = compile_as_baked(&kernel.arena, kernel.root, kernel.extent);
         let mut buffer = output_buffer(trips);
-        let timing = time_kernel(&result.code, &mut buffer, trips);
+        let (buffers, uniforms) = dummy_context(&kernel.arena);
+        let slots = context_slots(&buffers, &uniforms);
+        let timing = time_kernel(&result.code, &mut buffer, trips, slots.as_ptr());
         let drift = self.context().normalization();
         Row {
             schema: row::SCHEMA.to_string(),
@@ -310,6 +318,42 @@ fn output_buffer(trips: Trips) -> Vec<f32> {
     vec![0.0f32; (trips.rows * trips.groups) as usize * LANES]
 }
 
+/// Zero-filled memory for every buffer slot `arena` declares, sized to the
+/// slot's own extent, plus the uniform block (one `f32` per declared
+/// argument, at its default; a single `CORPUS_ARG` slot when the arena
+/// declares none, so a kernel with no argument still reads a real block
+/// rather than one omitted array entry away from a null deref).
+///
+/// Collapse cost is a function of the arena's *shape*: a gather costs the
+/// same wherever it lands, so a corpus kernel's buffers are bound to zeros
+/// rather than any production table — nothing downstream needs the real
+/// pixels back.
+fn dummy_context(arena: &ExprArena) -> (Vec<Vec<f32>>, Vec<f32>) {
+    let buffers: Vec<Vec<f32>> = arena
+        .buffers()
+        .iter()
+        .map(|decl| vec![0.0f32; decl.width as usize * decl.height as usize])
+        .collect();
+    let uniforms: Vec<f32> = if arena.uniforms().is_empty() {
+        vec![corpus::CORPUS_ARG]
+    } else {
+        arena.uniforms().iter().map(|u| u.default).collect()
+    };
+    (buffers, uniforms)
+}
+
+/// The context pointer table `dummy_context`'s memory is bound through: one
+/// base pointer per buffer slot, then the uniform block's — exactly the
+/// layout `compile_as_baked`'s emitted code reads (an `ExprNode::Uniform`'s
+/// context slot is `arena.buffers().len()`, the entry right after the last
+/// buffer). Borrows `buffers`/`uniforms`, so the returned pointers are valid
+/// exactly as long as they are.
+fn context_slots(buffers: &[Vec<f32>], uniforms: &[f32]) -> Vec<*const f32> {
+    let mut slots: Vec<*const f32> = buffers.iter().map(Vec::as_ptr).collect();
+    slots.push(uniforms.as_ptr());
+    slots
+}
+
 /// What one kernel's timed samples came to, all ns per call.
 struct Timing {
     median: f64,
@@ -318,10 +362,15 @@ struct Timing {
     calls: usize,
 }
 
-fn time_kernel(code: &ExecutableCode, buffer: &mut [f32], trips: Trips) -> Timing {
+fn time_kernel(
+    code: &ExecutableCode,
+    buffer: &mut [f32],
+    trips: Trips,
+    ctx: *const *const f32,
+) -> Timing {
     let mut calls = 1usize;
     loop {
-        let elapsed = run_calls(code, buffer, trips, WARMUP_CALLS.max(calls));
+        let elapsed = run_calls(code, buffer, trips, WARMUP_CALLS.max(calls), ctx);
         if elapsed >= MIN_SAMPLE_NS || calls >= MAX_CALLS_PER_SAMPLE {
             break;
         }
@@ -332,7 +381,7 @@ fn time_kernel(code: &ExecutableCode, buffer: &mut [f32], trips: Trips) -> Timin
     }
 
     let mut per_call: Vec<f64> = (0..SAMPLES)
-        .map(|_| run_calls(code, buffer, trips, calls) as f64 / calls as f64)
+        .map(|_| run_calls(code, buffer, trips, calls, ctx) as f64 / calls as f64)
         .collect();
     per_call.sort_by(f64::total_cmp);
     Timing {
@@ -343,19 +392,18 @@ fn time_kernel(code: &ExecutableCode, buffer: &mut [f32], trips: Trips) -> Timin
     }
 }
 
-fn run_calls(code: &ExecutableCode, buffer: &mut [f32], trips: Trips, calls: usize) -> u64 {
+fn run_calls(
+    code: &ExecutableCode,
+    buffer: &mut [f32],
+    trips: Trips,
+    calls: usize,
+    ctx: *const *const f32,
+) -> u64 {
     let mut x0 = [0.0f32; LANES];
     for (i, lane) in x0.iter_mut().enumerate() {
         *lane = 0.5 + i as f32;
     }
     let origin = Point4::new(x0, [0.5f32; LANES], [0.0f32; LANES], [0.0f32; LANES]);
-    // A real one-slot context, always — the corpus declares no buffer, so
-    // slot 0 is the uniform block. Passing it unconditionally costs a
-    // pointer and retires the "the null is never dereferenced" reasoning
-    // that a kernel with an argument would have falsified.
-    let block = [corpus::CORPUS_ARG];
-    let slots: [*const f32; 1] = [block.as_ptr()];
-    let ctx: *const *const f32 = slots.as_ptr();
     let tile = TileSlice::contiguous(
         buffer.as_mut_ptr(),
         trips.groups as usize,
@@ -365,8 +413,9 @@ fn run_calls(code: &ExecutableCode, buffer: &mut [f32], trips: Trips, calls: usi
     for _ in 0..calls {
         // SAFETY: the kernel was compiled for this shape, the tile is exactly
         // `rows × groups × LANES` floats of the buffer allocated for it, and
-        // `ctx` points at a live one-slot table holding the uniform block
-        // the `invariant` family reads.
+        // `ctx` points at a live table (built by `context_slots`) with one
+        // base pointer per buffer slot the kernel declared plus the uniform
+        // block, in the order the kernel was compiled expecting.
         unsafe {
             code.call_collapse(ctx, tile, origin);
         }
@@ -377,7 +426,9 @@ fn run_calls(code: &ExecutableCode, buffer: &mut [f32], trips: Trips, calls: usi
 
 impl Sentinel {
     fn measure(&mut self) -> f64 {
-        time_kernel(&self.code, &mut self.buffer, self.trips).median
+        let (buffers, uniforms) = dummy_context(&self.arena);
+        let slots = context_slots(&buffers, &uniforms);
+        time_kernel(&self.code, &mut self.buffer, self.trips, slots.as_ptr()).median
     }
 }
 
