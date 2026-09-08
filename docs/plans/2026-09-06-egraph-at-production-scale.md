@@ -1,3 +1,15 @@
+> **Superseded (2026-09-08), ledger L092.** §2's framing that hash-consing alone lands the
+> ~4,900 classes "within 90 of the cap" and that "almost the whole budget is spent
+> representing the input" was pre-#1146 telemetry on chrome alone. `docs/results/2026-09-07-corpus-structural-gaps.csv`
+> and the completed off-vs-on measurement (`docs/results/2026-09-07-egraph-off-vs-on-real-shaders.md`)
+> now show scenes and shaders enter the e-graph small (chrome 465, psychedelic 112, mandelbrot
+> 128, julia 110 hash-consed nodes) and the RULES do most of the expanding — 10–40× to the
+> class cap in 2–5 iterations — while glyphs alone bind the cap in one iteration on
+> hash-consing. The rest of §2's chrome measurements (arena nodes, compile time, stop reason,
+> extracted schedule, emitted bytes, runtime) stand; only the input-vs-rules attribution is
+> withdrawn. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207, row
+> L092); the corrected benchmark: `docs/plans/2026-09-07-benchmark-correction.md`.
+
 # The e-graph at production scale: the chrome scene as the case to optimize around
 
 **Audience:** the research arm. **Status:** a use case and a set of measured facts,
