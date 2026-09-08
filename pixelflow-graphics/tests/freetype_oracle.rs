@@ -72,8 +72,30 @@ const REFERENCE_INKED: f32 = 0.25;
 /// of them first, and none of that was visible until they were in here. The
 /// large sizes are in for the same reason — the failures they exposed lived
 /// at 38-48 px, outside every earlier sweep.
+///
+/// **It does not all run presubmit**, and the split is a cost measurement,
+/// not a judgement about which cases matter. This suite evaluates the *raw
+/// lowered* arena through `eval_scalar` — no JIT — and CI runs a debug
+/// build, where that is orders of magnitude slower than the compiled
+/// kernel. The full sweep is 99 glyph-size pairs and timed out at nextest's
+/// ten-minute cap. The subset keeps `'8'` at the sizes its defect lived at,
+/// a large size where the ramp reaches furthest, and each historically
+/// fragile glyph; the rest runs under `--ignored`, the same shape
+/// `text_union_identity` uses for the same reason:
+///
+/// ```text
+/// cargo test -p pixelflow-graphics --all-features --test freetype_oracle -- --ignored
+/// ```
 const GLYPHS: [char; 9] = ['8', 'O', 'S', 'g', 'e', 'A', '{', '}', 'f'];
 const SIZES: [u32; 11] = [7, 11, 13, 15, 17, 19, 21, 32, 38, 40, 48];
+
+/// Presubmit: `'8'` (the defect's home) plus one curved, one straight, and
+/// the three glyphs every failed fix broke first, at three sizes. The large
+/// sizes stay in the full sweep only — cost, measured: the subset with 48 px
+/// took 303 s in a debug build against a 600 s cap, and 48 px alone is more
+/// than half of that (the sample count is quadratic in the size).
+const GLYPHS_FAST: [char; 6] = ['8', 'O', 'A', '{', '}', 'f'];
+const SIZES_FAST: [u32; 3] = [7, 19, 32];
 /// How far the total ink we lay down may stray from the reference's. Measured
 /// at 0.19% over the corpus below, so this is roughly 10x headroom — loose enough never to fire on an antialiasing difference, tight
 /// enough that dropping or duplicating whole strokes cannot hide behind it.
@@ -92,7 +114,10 @@ const KNOWN_ORPHAN_TEXELS: usize = 0;
 /// directions are news — upward is that defect spreading, downward is somebody
 /// having fixed it, and either should be a deliberate edit here rather than a
 /// silent drift.
-const TEXELS_WE_MISS: u32 = 3;
+const TEXELS_WE_MISS_FULL: u32 = 3;
+/// The same count over [`GLYPHS_FAST`]/[`SIZES_FAST`], measured separately:
+/// a subset of the corpus is a different number, not a smaller one.
+const TEXELS_WE_MISS_FAST: u32 = 3;
 
 fn font_path() -> String {
     format!(
@@ -103,6 +128,18 @@ fn font_path() -> String {
 
 #[test]
 fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
+    compare_against_freetype(&GLYPHS_FAST, &SIZES_FAST, TEXELS_WE_MISS_FAST);
+}
+
+/// The full corpus. `#[ignore]`d because it interprets the raw arena — see
+/// [`GLYPHS`] for the measurement behind the split.
+#[test]
+#[ignore = "the full corpus: cargo test -p pixelflow-graphics --all-features --test freetype_oracle -- --ignored"]
+fn our_ink_matches_freetype_over_the_full_corpus() {
+    compare_against_freetype(&GLYPHS, &SIZES, TEXELS_WE_MISS_FULL);
+}
+
+fn compare_against_freetype(glyphs: &[char], sizes: &[u32], texels_we_miss: u32) {
     let path = font_path();
     let bytes = std::fs::read(&path).expect("font bytes");
     let ours = Font::parse(&bytes).expect("parse");
@@ -127,8 +164,8 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
     let mut ink_ours = 0.0f64;
     let mut ink_reference = 0.0f64;
 
-    for ch in GLYPHS {
-        for size in SIZES {
+    for &ch in glyphs {
+        for &size in sizes {
             let scale = size as f32 / (ascender + descender.abs());
             let ascent_px = ascender * scale;
             let extent = (size + size / 2) as i64;
@@ -170,8 +207,29 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
             let (arena, root) = kernel.parts();
             let (lowered, r) = lower_dwrt_owned(arena, root).expect("lower");
 
-            let inked: Vec<bool> = (0..extent * extent)
-                .map(|n| reference(n % extent, n / extent) > REFERENCE_INKED)
+            // Both grids once per (glyph, size), not per probe. `reference`
+            // is a 16x16 supersample block and `eval_scalar` walks the whole
+            // arena, and each was being called up to ten times per texel by
+            // the neighbourhood tests below — which timed this suite out at
+            // nextest's ten-minute cap on a debug build once the arenas grew.
+            let reference_grid: Vec<f32> = (0..extent * extent)
+                .map(|n| reference(n % extent, n / extent))
+                .collect();
+            let ours_grid: Vec<f32> = (0..extent * extent)
+                .map(|n| {
+                    eval_scalar(
+                        &lowered,
+                        r,
+                        &[(n % extent) as f32 + 0.5, (n / extent) as f32 + 0.5],
+                        &BindingTable::empty(),
+                    )
+                })
+                .collect();
+            let reference = |i: i64, j: i64| reference_grid[(j * extent + i) as usize];
+            let ours = |i: i64, j: i64| ours_grid[(j * extent + i) as usize];
+            let inked: Vec<bool> = reference_grid
+                .iter()
+                .map(|&v| v > REFERENCE_INKED)
                 .collect();
             let corroborated = |i: i64, j: i64| {
                 (-1..=1).any(|dj| {
@@ -188,12 +246,7 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
 
             for j in 0..extent {
                 for i in 0..extent {
-                    let cov = eval_scalar(
-                        &lowered,
-                        r,
-                        &[i as f32 + 0.5, j as f32 + 0.5],
-                        &BindingTable::empty(),
-                    );
+                    let cov = ours(i, j);
                     assert!(
                         cov.is_finite(),
                         "{ch}@{size} texel ({i},{j}): coverage is {cov}"
@@ -208,12 +261,7 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
                                     && b >= 0
                                     && a < extent
                                     && b < extent
-                                    && eval_scalar(
-                                        &lowered,
-                                        r,
-                                        &[a as f32 + 0.5, b as f32 + 0.5],
-                                        &BindingTable::empty(),
-                                    ) > OURS_INKED
+                                    && ours(a, b) > OURS_INKED
                             })
                         });
                         if !ours_near {
@@ -251,10 +299,10 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
          {ink_reference:.1}) — the outlines are not being filled the same way"
     );
     assert_eq!(
-        we_miss, TEXELS_WE_MISS,
+        we_miss, texels_we_miss,
         "FreeType inks {we_miss} texels we leave blank, pinned at \
-         {TEXELS_WE_MISS} — up means the no-vertical-antialiasing defect has \
-         spread, down means it has been fixed and this number wants lowering"
+         {texels_we_miss} — up means a defect has spread, down means the \
+         ramp has improved and this number wants lowering"
     );
 
     // Pinned, not asserted empty. These four texels are a REAL, live rendering

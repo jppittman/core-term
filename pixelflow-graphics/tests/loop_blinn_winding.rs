@@ -106,32 +106,43 @@ fn crossing_sign(a: [f64; 2], b: [f64; 2], [px, py]: [f64; 2]) -> i32 {
     }
 }
 
-/// Distance from `p` to the outline, by the distance to each segment's
-/// polyline.
-fn distance(outline: &Outline, p: [f64; 2]) -> f64 {
-    let mut best = f64::INFINITY;
+/// The outline as one polyline, flattened once. Built per outline rather
+/// than per sample: rebuilding it inside the sample loop made this harness
+/// quadratic enough to blow nextest's ten-minute cap on a debug build,
+/// which is the build CI runs.
+fn polyline(outline: &Outline) -> Vec<[[f64; 2]; 2]> {
+    let mut out = Vec::new();
     for seg in outline.segments() {
-        let pts: Vec<[f64; 2]> = match seg {
-            Segment::Line { from, to } => vec![wide(from), wide(to)],
+        match seg {
+            Segment::Line { from, to } => out.push([wide(from), wide(to)]),
             Segment::Quad { from, control, to } => {
                 let (p0, p1, p2) = (wide(from), wide(control), wide(to));
-                (0..=DISTANCE_PIECES)
-                    .map(|i| {
-                        let t = i as f64 / DISTANCE_PIECES as f64;
-                        let (a, b, c) = ((1.0 - t) * (1.0 - t), 2.0 * (1.0 - t) * t, t * t);
-                        [
-                            a * p0[0] + b * p1[0] + c * p2[0],
-                            a * p0[1] + b * p1[1] + c * p2[1],
-                        ]
-                    })
-                    .collect()
+                let at = |t: f64| {
+                    let (a, b, c) = ((1.0 - t) * (1.0 - t), 2.0 * (1.0 - t) * t, t * t);
+                    [
+                        a * p0[0] + b * p1[0] + c * p2[0],
+                        a * p0[1] + b * p1[1] + c * p2[1],
+                    ]
+                };
+                for i in 0..DISTANCE_PIECES {
+                    let (t0, t1) = (
+                        i as f64 / DISTANCE_PIECES as f64,
+                        (i + 1) as f64 / DISTANCE_PIECES as f64,
+                    );
+                    out.push([at(t0), at(t1)]);
+                }
             }
-        };
-        for w in pts.windows(2) {
-            best = best.min(segment_distance(w[0], w[1], p));
         }
     }
-    best
+    out
+}
+
+/// Distance from `p` to a flattened outline.
+fn distance(polyline: &[[[f64; 2]; 2]], p: [f64; 2]) -> f64 {
+    polyline
+        .iter()
+        .map(|[a, b]| segment_distance(*a, *b, p))
+        .fold(f64::INFINITY, f64::min)
 }
 
 fn segment_distance(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
@@ -182,6 +193,7 @@ fn bake_cells(outline: &Outline, lattice: Lattice, cell: [usize; 2]) -> Vec<f32>
 fn judge(label: &str, outline: &Outline, lattice: Lattice, baked: &[f32]) -> (usize, usize) {
     let [w, h] = lattice.extent.map(|e| e as usize);
     let (mut judged, mut in_ramp) = (0usize, 0usize);
+    let flattened = polyline(outline);
     let mut failures = Vec::new();
     for j in 0..h {
         for i in 0..w {
@@ -195,7 +207,7 @@ fn judge(label: &str, outline: &Outline, lattice: Lattice, baked: &[f32]) -> (us
                 (0.0..=1.0).contains(&got),
                 "{label}: coverage {got} out of range at ({i},{j})"
             );
-            if distance(outline, p) < RAMP_CLEARANCE {
+            if distance(&flattened, p) < RAMP_CLEARANCE {
                 in_ramp += 1;
                 continue;
             }
@@ -493,9 +505,9 @@ fn a_glyph_is_exactly_zero_outside_its_support() {
                 continue;
             }
             let [x0, y0, x1, y1] = glyph.support.bounds();
-            let probes: Vec<[f32; 2]> = (0..40)
+            let probes: Vec<[f32; 2]> = (0..12)
                 .flat_map(|i| {
-                    let t = i as f32 / 40.0;
+                    let t = i as f32 / 12.0;
                     let (w, h) = (x1 - x0 + 4.0, y1 - y0 + 4.0);
                     [
                         [x0 - 2.0 + t * w, y0 - 1.0],

@@ -341,12 +341,33 @@ fn the_union_agrees_with_the_sum_to_within_the_compiler() {
     the_union_only_moves_a_sample_by_scheduling_noise(&font, &CORPUS_FAST, &SIZES_FAST);
 }
 
-/// A one-glyph string has one cell that takes every glyph there is, so the
-/// union's kernel *is* the sum's and there is nothing left for the compiler to
-/// schedule differently. The agreement is then exact, which is the sanity
-/// check on (4)'s threshold: it is not hiding a constant offset.
+/// The sanity check on (4)'s threshold: that it is not hiding a constant
+/// offset. A single glyph, so there is no *layout* left to disagree about —
+/// whatever remains is the compiler alone, and it must be far below the
+/// coverage step (4) allows.
+///
+/// This used to assert **exact** equality, on the premise that a one-glyph
+/// string has one cell taking every glyph, so the union's kernel *is* the
+/// sum's. That premise died with the scanline: cells are now a fixed grid
+/// over the frame rather than cuts at the pen positions, so even one glyph
+/// is decomposed into several cells, each pruned to the segments that reach
+/// it and each with its own reference point. Different arenas at different
+/// extents round differently, which is (4)'s whole subject. Measured worst
+/// over this corpus: 1.8e-6, three orders of magnitude below one step.
 #[test]
-fn a_cell_that_takes_every_glyph_agrees_exactly() {
+fn one_glyph_leaves_only_the_compiler_to_disagree() {
+    /// A quarter of `COVERAGE_STEP`, set from the measurement across this
+    /// whole corpus rather than from one case: `W`@16 diverges by 1.8e-6 and
+    /// `@`@48 by 1.23e-4, because a larger glyph is cut into more cells and
+    /// carries larger coordinates, so its rounding is larger too. A first
+    /// draft of this bound was 1e-4, taken from the 16 px case alone, and
+    /// the 48 px case is what corrected it.
+    ///
+    /// Still an order of magnitude tighter than the sibling gate, and three
+    /// orders below the half unit of coverage a genuinely dropped segment
+    /// would move — which is the distinction being drawn.
+    const SCHEDULING_NOISE: f32 = COVERAGE_STEP / 4.0;
+
     let font = Font::parse(FONT_DATA).expect("font");
     for text_str in ["W", "@", "{"] {
         for size in [16.0f32, 48.0] {
@@ -357,10 +378,11 @@ fn a_cell_that_takes_every_glyph_agrees_exactly() {
                     .buffer(),
                 text_union(&font, lattice, text_str, size).bake().buffer(),
             );
-            assert_eq!(
-                differing, 0,
-                "{text_str:?} at {size}: {differing} samples differ by up to {worst:e} \
-                 with only one glyph to schedule"
+            assert!(
+                worst < SCHEDULING_NOISE,
+                "{text_str:?} at {size}: {differing} samples differ by up to \
+                 {worst:e} with only one glyph to lay out — that is not a \
+                 schedule"
             );
         }
     }
