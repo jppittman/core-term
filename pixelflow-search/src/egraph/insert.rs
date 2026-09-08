@@ -26,8 +26,13 @@ use super::ops::Vocabulary;
 pub enum Declined {
     /// An op this [`Vocabulary`] may not hold.
     Op(pixelflow_ir::OpKind),
-    /// A macro-parameter slot. Valid only before kernel compilation, so one
-    /// here means the term reached the e-graph without being specialized.
+    /// A macro-parameter slot, under a [`Vocabulary`] that may not hold one.
+    ///
+    /// Only [`Vocabulary::Runtime`] declines it: a `Param` at bake time means
+    /// a builder was never called, and the term reached compilation without
+    /// being specialized. The macro tier holds params natively as
+    /// [`ENode::Param`](super::node::ENode::Param), because an unbound slot
+    /// is what a builder *is*.
     Param(u8),
     /// A kernel named by content. `passes::expand_refs` runs before saturation
     /// in every pipeline, so one here is a pipeline-order bug rather than a
@@ -47,9 +52,14 @@ pub enum Declined {
 /// stack.
 ///
 /// `Buffer` and `Uniform` leaves insert as themselves, carrying their
-/// declarations; `Param` declines, since it has no value until a builder
-/// substitutes it, and `Ref` declines, since its body is not in this term at
-/// all — `passes::expand_refs` puts it there, and runs first.
+/// declarations, and under [`Vocabulary::Templates`] so does `Param`. Under
+/// [`Vocabulary::Runtime`] a `Param` declines: by bake time a builder should
+/// have substituted it, so one surviving is a term that was never
+/// specialized. Which vocabulary may hold which leaf is the job `Vocabulary`
+/// exists for, and saying it there is what stopped the macro tier from
+/// smuggling params past this gate disguised as `Var`s. A `Ref` declines
+/// under either, since its body is not in this term at all —
+/// `passes::expand_refs` puts it there, and runs first.
 ///
 /// **Reachable-only.** A term representation may hold nodes no longer reached
 /// from `root` — an arena accumulates construction garbage — and inserting
@@ -82,7 +92,10 @@ pub fn insert<I: Ir>(
                 let class = match term.project(r) {
                     Shape::Var(i) => egraph.add(ENode::Var(i)),
                     Shape::Const(v) => egraph.add(ENode::constant(v)),
-                    Shape::Param(i) => return Err(Declined::Param(i)),
+                    Shape::Param(i) => match vocab {
+                        Vocabulary::Templates => egraph.add(ENode::Param(i)),
+                        Vocabulary::Runtime => return Err(Declined::Param(i)),
+                    },
                     Shape::Ref(key) => return Err(Declined::Ref(key)),
                     Shape::Buffer(decl) => egraph.add(ENode::Buffer(decl)),
                     Shape::Uniform(decl) => egraph.add(ENode::Uniform(decl)),

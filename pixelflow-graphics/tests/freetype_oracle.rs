@@ -103,10 +103,20 @@ const SIZES_FAST: [u32; 3] = [7, 19, 32];
 /// at 0.19% over the corpus below, so this is roughly 10x headroom — loose enough never to fire on an antialiasing difference, tight
 /// enough that dropping or duplicating whole strokes cannot hide behind it.
 const INK_RATIO_TOLERANCE: f64 = 0.02;
-/// Texels we ink where FreeType finds none, over the corpus below. The `'8'`
-/// waist smear, and nothing else: `main` counts a crossing that does not
-/// exist. **Pinned, not zero** — this PR proves the defect and does not fix
-/// it. See the module docs for the five approaches that failed.
+/// Texels we ink where FreeType finds none, over the corpus below. **Zero**,
+/// and asserted as zero.
+///
+/// It was 4 — the `'8'` waist smear, a spurious half-covered blot outside the
+/// glyph, from counting a crossing that does not exist. Two things removed
+/// it independently, and both hold here. On `main`, deleting a *second
+/// optimizer* (docs/plans/2026-09-08-macro-tier-is-arena-native.md): the
+/// macro tier used to saturate the glyph's fragments before the runtime
+/// tier saw them, and the compounded fusion choices landed on the wrong side
+/// of the quadratic solver's `disc >= 0` knife edge at a tangency. On this
+/// branch, the knife edge itself is gone: a Loop–Blinn crossing is the sign
+/// of `u² − v`, never a root solve, so the defect is not expressible
+/// (docs/plans/2026-09-08-loop-blinn-glyph.md). What this assertion is for
+/// now is any *new* route to ink where an independent rasterizer finds none.
 const KNOWN_ORPHAN_TEXELS: usize = 0;
 
 /// Texels FreeType inks and we do not, over the pairs below — **pinned**, not
@@ -129,20 +139,77 @@ fn font_path() -> String {
     )
 }
 
-#[test]
-fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
-    compare_against_freetype(&GLYPHS_FAST, &SIZES_FAST, TEXELS_WE_MISS_FAST);
+/// Which arena the check evaluates.
+#[derive(Clone, Copy)]
+enum Arm {
+    /// The raw lowered arena: the IR interpreter's reading of the glyph with
+    /// no optimizer between it and the outlines.
+    Raw,
+    /// The arena production bakes: `optimize_runtime_arena` at the bake's
+    /// lattice. The one that reaches pixels.
+    Optimized,
 }
 
-/// The full corpus. `#[ignore]`d because it interprets the raw arena — see
-/// [`GLYPHS`] for the measurement behind the split.
+/// The glyphs and sizes one run covers, and the reverse-direction count
+/// pinned for exactly that set — a subset of the corpus is a different
+/// number, not a smaller one.
+struct Corpus {
+    glyphs: &'static [char],
+    sizes: &'static [u32],
+    texels_we_miss: u32,
+}
+
+/// Presubmit. See [`GLYPHS_FAST`] for the cost measurement behind the split.
+const FAST: Corpus = Corpus {
+    glyphs: &GLYPHS_FAST,
+    sizes: &SIZES_FAST,
+    texels_we_miss: TEXELS_WE_MISS_FAST,
+};
+
+/// The whole corpus, under `--ignored`.
+const FULL: Corpus = Corpus {
+    glyphs: &GLYPHS,
+    sizes: &SIZES,
+    texels_we_miss: TEXELS_WE_MISS_FULL,
+};
+
+/// The raw arm. See the module docs for what this bounds.
+#[test]
+fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
+    compare_against_freetype(Arm::Raw, &FAST);
+}
+
+/// The optimized arm — the arena a bake actually compiles, at the bake's
+/// lattice. `kernel_glyph_optimize` ties the optimized arena to the raw one
+/// texel for texel; this ties it to an independent rasterizer directly, so a
+/// rewrite that moves ink is caught here whether or not the raw arena
+/// happened to agree with it.
+#[test]
+fn our_optimized_ink_is_never_more_than_a_texel_from_freetype_s() {
+    compare_against_freetype(Arm::Optimized, &FAST);
+}
+
+/// The full corpus, both arms. `#[ignore]`d because it interprets the whole
+/// arena per texel — see [`GLYPHS`] for the measurement behind the split.
 #[test]
 #[ignore = "the full corpus: cargo test -p pixelflow-graphics --all-features --test freetype_oracle -- --ignored"]
 fn our_ink_matches_freetype_over_the_full_corpus() {
-    compare_against_freetype(&GLYPHS, &SIZES, TEXELS_WE_MISS_FULL);
+    compare_against_freetype(Arm::Raw, &FULL);
 }
 
-fn compare_against_freetype(glyphs: &[char], sizes: &[u32], texels_we_miss: u32) {
+#[test]
+#[ignore = "the full corpus: cargo test -p pixelflow-graphics --all-features --test freetype_oracle -- --ignored"]
+fn our_optimized_ink_matches_freetype_over_the_full_corpus() {
+    compare_against_freetype(Arm::Optimized, &FULL);
+}
+
+fn compare_against_freetype(arm: Arm, corpus: &Corpus) {
+    let Corpus {
+        glyphs,
+        sizes,
+        texels_we_miss,
+    } = *corpus;
+    let known_orphans = KNOWN_ORPHAN_TEXELS;
     let path = font_path();
     let bytes = std::fs::read(&path).expect("font bytes");
     let ours = Font::parse(&bytes).expect("parse");
@@ -208,16 +275,26 @@ fn compare_against_freetype(glyphs: &[char], sizes: &[u32], texels_we_miss: u32)
 
             let ours_glyph = ours.glyph_kernel_scaled(ch, size as f32).expect("glyph");
             let (arena, root) = ours_glyph.kernel.parts();
-            // Link before lowering: the winding sum is composed by reference,
-            // and a name has no derivative and declares no buffer.
+            // Link before anything reads structure: the folds name the
+            // winding by reference, and a name has no derivative and
+            // declares no buffer.
             let (arena, root) = expand_refs_owned(arena, root);
-            let (lowered, r) = lower_dwrt_owned(&arena, root).expect("lower");
-            // `ours_glyph.kernel`'s winding sum reads a piece table that
-            // travels with the kernel itself, so the oracle's own binding
-            // table must carry it rather than evaluate empty —
-            // `lower_dwrt` restructures the Dwrt subtrees only, never the
-            // buffer declarations, so `lowered` declares the same slot(s),
-            // in the same order, `ours_glyph.kernel` carries data for.
+            let (lowered, r) = match arm {
+                Arm::Raw => lower_dwrt_owned(&arena, root).expect("lower"),
+                Arm::Optimized => {
+                    let shape = pixelflow_ir::LatticeShape::new([extent as u32, extent as u32]);
+                    let optimized =
+                        pixelflow_search::runtime::optimize_runtime_arena(&arena, root, shape)
+                            .expect("glyph arenas must optimize");
+                    (optimized.0.clone(), optimized.1)
+                }
+            };
+            // The folds read a piece table that travels with the kernel
+            // itself, so the oracle's own binding table must carry it rather
+            // than evaluate empty — neither lowering nor optimization touches
+            // the buffer declarations, so `lowered` declares the same
+            // slot(s), in the same order, `ours_glyph.kernel` carries data
+            // for.
             let ours_data: Vec<&[f32]> = lowered
                 .buffers()
                 .iter()
@@ -329,18 +406,16 @@ fn compare_against_freetype(glyphs: &[char], sizes: &[u32], texels_we_miss: u32)
          ramp has improved and this number wants lowering"
     );
 
-    // Pinned, not asserted empty. These four texels are a REAL, live rendering
-    // defect on `main` — a spurious half-covered smear outside `'8'` at the
-    // waist — and this PR proves it and does not fix it. Pinning makes it
-    // countable: it cannot grow unnoticed, a new orphan anywhere else in the
-    // corpus fails here, and whoever fixes it has to come and lower the
-    // number, which is the moment to delete the pin rather than the moment to
-    // wonder why a test broke.
+    // Asserted empty, which it was not until 2026-09-08 — see
+    // `KNOWN_ORPHAN_TEXELS`. Ink where an independent rasterizer finds none is
+    // a rendering defect with no tolerance to hide behind, and this is the one
+    // check in the suite that can say so: every comparison of this code to
+    // itself agreed with the bug for as long as it existed.
     assert_eq!(
         orphans.len(),
-        KNOWN_ORPHAN_TEXELS,
+        known_orphans,
         "we put ink where an independent rasterizer finds none — expected the \
-         {KNOWN_ORPHAN_TEXELS} known `'8'` texels, got {}:\n{}",
+         {known_orphans} known `'8'` texels, got {}:\n{}",
         orphans.len(),
         orphans.join("\n")
     );

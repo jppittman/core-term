@@ -226,12 +226,15 @@ pub fn op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
         // runtime tier resolve `Gather` directly via the crate-private
         // `Gather` op above. `RawGather` and `Reduce` are lowered
         // before/after the e-graph and never appear in one.
-        // `Uniform` likewise: a leaf the e-graph holds as `ENode::Uniform`,
-        // never as an op a rule could match — which is exactly what keeps
-        // `ConstantFold` from ever seeing one.
-        OpKind::Buffer | OpKind::Gather | OpKind::RawGather | OpKind::Reduce | OpKind::Uniform => {
-            None
-        }
+        // `Uniform` and `Param` likewise: leaves the e-graph holds as
+        // `ENode::Uniform`/`ENode::Param`, never as an op a rule could match —
+        // which is exactly what keeps `ConstantFold` from ever seeing one.
+        OpKind::Buffer
+        | OpKind::Gather
+        | OpKind::RawGather
+        | OpKind::Reduce
+        | OpKind::Uniform
+        | OpKind::Param => None,
     }
 }
 

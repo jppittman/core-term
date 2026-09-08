@@ -648,7 +648,11 @@ impl EGraph {
 
     fn canonicalize_node(&self, node: &mut ENode) {
         match node {
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => {}
+            ENode::Var(_)
+            | ENode::Const(_)
+            | ENode::Buffer(_)
+            | ENode::Uniform(_)
+            | ENode::Param(_) => {}
             ENode::Op { children, .. } => {
                 for child in children {
                     *child = self.find(*child);
@@ -1119,6 +1123,7 @@ impl EGraph {
             ENode::Const(_) => pixelflow_ir::OpKind::Const,
             ENode::Buffer(_) => pixelflow_ir::OpKind::Buffer,
             ENode::Uniform(_) => pixelflow_ir::OpKind::Uniform,
+            ENode::Param(_) => pixelflow_ir::OpKind::Param,
             ENode::Op { op, .. } => op.kind(),
         }
     }
@@ -2872,6 +2877,9 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
         }
         // Invariant across the lattice: ∂u/∂x = 0, as for a constant.
         ENode::Uniform(_) => return sink.make(ENode::constant(0.0)),
+        // Likewise ∂p/∂x = 0: a builder's scalar is one number for the
+        // whole lattice, whichever number it turns out to be.
+        ENode::Param(_) => return sink.make(ENode::constant(0.0)),
         ENode::Op { op, children } => (*op, children.clone()),
     };
 

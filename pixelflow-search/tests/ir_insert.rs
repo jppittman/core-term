@@ -205,13 +205,38 @@ fn unrepresentable_input_declines_rather_than_panicking() {
         insert(&arena, masked, &mut eg, Vocabulary::Templates),
         Err(Declined::Op(OpKind::BitAnd))
     );
+}
 
+/// A `Param` is holdable or not *according to the vocabulary*, which is the
+/// question `Vocabulary` exists to answer.
+///
+/// `Templates` is the macro tier, where a builder's scalar is legitimately
+/// unbound — an unbound slot is what a builder is — so it inserts as the
+/// opaque leaf `ENode::Param`, alongside `Buffer` and `Uniform`. `Runtime` is
+/// bake time, by which a builder must have substituted it, so one surviving
+/// there means the term was never specialized and is declined.
+///
+/// Both halves are asserted here because the interesting property is the
+/// *difference*: `insert` used to decline `Param` under every vocabulary, and
+/// each macro-side caller then smuggled params past it as something else — as
+/// `Var(16 + i)`, as an opaque synthetic identifier. A test that only checked
+/// the `Runtime` half would pass just as well against that blanket refusal.
+#[test]
+fn a_param_is_held_by_the_macro_vocabulary_and_declined_by_the_runtime_one() {
     let mut arena = ExprArena::new();
     let p = arena.push_param(3);
-    let mut eg = EGraph::new();
+
+    let mut templates = EGraph::new();
+    assert!(
+        insert(&arena, p, &mut templates, Vocabulary::Templates).is_ok(),
+        "the macro tier must hold an unbound builder slot"
+    );
+
+    let mut runtime = EGraph::new();
     assert_eq!(
-        insert(&arena, p, &mut eg, Vocabulary::Templates),
-        Err(Declined::Param(3))
+        insert(&arena, p, &mut runtime, Vocabulary::Runtime),
+        Err(Declined::Param(3)),
+        "a Param at bake time means a builder was never called"
     );
 }
 

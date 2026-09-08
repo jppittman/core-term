@@ -2,8 +2,6 @@
 //!
 //! This module handles the mmap/mprotect dance to create executable code at runtime.
 
-use core::ptr;
-
 use crate::error::CompileError;
 
 /// A region of executable memory containing JIT-compiled code.
@@ -28,18 +26,7 @@ impl ExecutableCode {
     /// for the current architecture.
     #[cfg(unix)]
     pub unsafe fn from_code(code: &[u8]) -> Result<Self, CompileError> {
-        if code.is_empty() {
-            return Err(CompileError::EmptyCodeBuffer);
-        }
-
-        let page_size = page_size();
-        let capacity = (code.len() + page_size - 1) & !(page_size - 1);
-
-        let mut pages = CodePages::map(capacity)?;
-        pages.write(code);
-        // Any `?` above unmapped the page through `Drop`; from here the
-        // mapping's ownership moves into the returned `ExecutableCode`.
-        pages.finish(code.len())
+        NativeCodePage::from_code(code)
     }
 
     /// Get a function pointer to the compiled code.
@@ -287,206 +274,62 @@ impl Drop for ExecutableCode {
     }
 }
 
-/// Get the system page size.
-///
-/// Asked of the machine rather than assumed from the OS: it is 4 KiB on
-/// x86-64 and 16 KiB on Apple Silicon, which is a property of the hardware
-/// the process is running on, not of the platform it was built for. This used
-/// to hardcode 16384 whenever `target_os = "macos"`, which over-allocated on
-/// Intel Macs.
-#[cfg(unix)]
-fn page_size() -> usize {
-    // SAFETY: `sysconf` with a valid name has no preconditions.
-    let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    // A negative return means the name was not recognised, which cannot
-    // happen for `_SC_PAGESIZE`; fall back to the smallest size anything here
-    // runs on rather than wrapping into a huge allocation.
-    if n > 0 { n as usize } else { 4096 }
-}
-
 // =============================================================================
-// Page preparation
+// Page preparation & platform abstraction
 // =============================================================================
 
-/// A mapped, writable code page that is not yet executable.
-///
-/// The W^X transition happens exactly once, in [`CodePages::finish`], which is
-/// the only way to reach an [`ExecutableCode`] — so "flip the permissions and
-/// make the writes fetchable" cannot be forgotten or done twice. Anything that
-/// leaves this scope without calling it (an early return, a `?`, a panic)
-/// reaches `Drop`, which unmaps the page, so a writable mapping cannot leak.
-/// The hand-written `munmap` on the old `mprotect` failure path is gone with
-/// it, along with the obligation on every future error path to remember one.
-#[cfg(unix)]
-struct CodePages {
-    ptr: *mut u8,
-    capacity: usize,
-}
+/// The lifecycle of a writable JIT code page transitioning to executable memory.
+pub trait CodePage: Sized {
+    /// Get the system page size for this platform.
+    fn page_size() -> usize;
 
-#[cfg(unix)]
-impl CodePages {
-    /// Map `capacity` bytes readable and writable.
-    fn map(capacity: usize) -> Result<Self, CompileError> {
-        use libc::{MAP_ANON, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap};
+    /// Map a writable page of at least `capacity` bytes.
+    fn map(capacity: usize) -> Result<Self, CompileError>;
 
-        // SAFETY: a null hint with a non-zero length and no backing fd is the
-        // ordinary anonymous-mapping call.
-        let ptr = unsafe {
-            mmap(
-                ptr::null_mut(),
-                capacity,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANON,
-                -1,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            return Err(CompileError::Mmap);
-        }
-        Ok(Self {
-            ptr: ptr.cast::<u8>(),
-            capacity,
-        })
-    }
+    /// Copy code into the page.
+    fn write(&mut self, code: &[u8]);
 
-    /// Copy `code` to the start of the page.
-    fn write(&mut self, code: &[u8]) {
-        debug_assert!(code.len() <= self.capacity);
-        // SAFETY: the mapping is writable and at least `code.len()` long.
-        unsafe { ptr::copy_nonoverlapping(code.as_ptr(), self.ptr, code.len()) };
-    }
+    /// Seal the page to Read+Execute, synchronize instruction caches,
+    /// and return the executable handle.
+    fn finish(self, len: usize) -> Result<ExecutableCode, CompileError>;
 
-    /// Flip to read-execute, make the written bytes visible to instruction
-    /// fetch, and hand the mapping to an [`ExecutableCode`].
-    fn finish(self, len: usize) -> Result<ExecutableCode, CompileError> {
-        use libc::{PROT_EXEC, PROT_READ, mprotect};
-
-        // SAFETY: `self` owns this mapping and `capacity` is its length.
-        let rc = unsafe {
-            mprotect(
-                self.ptr.cast::<libc::c_void>(),
-                self.capacity,
-                PROT_READ | PROT_EXEC,
-            )
-        };
-        if rc != 0 {
-            // `self` is still live, so `Drop` unmaps on the way out.
-            return Err(CompileError::Mprotect);
+    /// Compile a code buffer into executable memory.
+    fn from_code(code: &[u8]) -> Result<ExecutableCode, CompileError> {
+        if code.is_empty() {
+            return Err(CompileError::EmptyCodeBuffer);
         }
 
-        sync_instruction_cache(self.ptr, len);
+        let page_size = Self::page_size();
+        let capacity = (code.len() + page_size - 1) & !(page_size - 1);
 
-        // The mapping now belongs to the returned value; suppress our `Drop`.
-        let me = core::mem::ManuallyDrop::new(self);
-        Ok(ExecutableCode {
-            ptr: me.ptr,
-            len,
-            capacity: me.capacity,
-        })
+        let mut page = Self::map(capacity)?;
+        page.write(code);
+        page.finish(code.len())
     }
 }
 
-#[cfg(unix)]
-impl Drop for CodePages {
-    fn drop(&mut self) {
-        // SAFETY: we own this mapping and have not released it.
-        unsafe { libc::munmap(self.ptr.cast::<libc::c_void>(), self.capacity) };
-    }
-}
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::MacOsCodePage;
+#[cfg(target_os = "macos")]
+pub type NativeCodePage = macos::MacOsCodePage;
 
-// =============================================================================
-// Instruction-cache coherence
-// =============================================================================
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::LinuxCodePage;
+#[cfg(target_os = "linux")]
+pub type NativeCodePage = linux::LinuxCodePage;
 
-/// Make the bytes written to `[ptr, ptr + len)` visible to instruction fetch.
-///
-/// This is an **architectural** property, not an OS one, and that distinction
-/// is the whole point of the function. aarch64's instruction cache is not
-/// coherent with its data cache, so code just written through a data store can
-/// be stale — or invisible — to the fetch unit until the range is cleaned and
-/// invalidated. x86-64's instruction cache is coherent and needs nothing.
-///
-/// It used to be gated on `target_os = "macos"`, with a comment attributing
-/// the requirement to Apple Silicon. Apple Silicon is aarch64, so the code was
-/// right about the machine and wrong about the axis: **Linux aarch64 skipped
-/// the maintenance its architecture requires.** Nothing caught it, because the
-/// only place aarch64 code is *executed* in CI is macOS — the aarch64 job only
-/// type-checks — which is the same blind spot that produced the glyph-ink
-/// regression and cost this crate a red CI run in #1055.
-///
-/// The risk is not theoretical: [`jit_cache`](crate::jit_cache) recompiles, so
-/// mappings get recycled, and a stale I-cache line at a reused address is
-/// exactly the failure this prevents.
-#[cfg(not(target_arch = "aarch64"))]
+pub mod mock;
+pub use mock::MockCodePage;
+
+/// Get the system page size for the native target.
+#[must_use]
 #[inline]
-fn sync_instruction_cache(_ptr: *mut u8, _len: usize) {}
-
-/// aarch64 on Apple platforms: libc exposes the maintenance sequence, and it
-/// is the entry point Apple supports.
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[inline]
-fn sync_instruction_cache(ptr: *mut u8, len: usize) {
-    unsafe extern "C" {
-        fn sys_icache_invalidate(start: *mut core::ffi::c_void, size: usize);
-    }
-    // SAFETY: the range was just written by this process and is mapped.
-    unsafe { sys_icache_invalidate(ptr.cast::<core::ffi::c_void>(), len) };
-}
-
-/// aarch64 elsewhere (Linux): issue the maintenance ourselves.
-///
-/// The sequence is the architecturally specified one for self-modifying code:
-/// clean the data cache to the point of unification so the stores are visible
-/// to fetch, then invalidate any instruction-cache lines already holding the
-/// same addresses, with the barriers that order the two against the
-/// subsequent branch into the code.
-///
-/// Written as inline assembly rather than a call to `__clear_cache` on
-/// purpose: an `extern` would only fail at link time, and nothing in CI links
-/// for this target — the aarch64 job type-checks. Assembly is settled during
-/// codegen, which `cargo build -p pixelflow-codegen --lib --target
-/// aarch64-unknown-linux-gnu` does reach (an rlib needs no linker), so this
-/// form is one the available checks can actually verify.
-#[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
-fn sync_instruction_cache(ptr: *mut u8, len: usize) {
-    use core::arch::asm;
-
-    if len == 0 {
-        return;
-    }
-    let start = ptr as usize;
-    let end = start + len;
-
-    // CTR_EL0 reports the minimum line sizes as log2 of a count of 4-byte
-    // words: D-cache in bits [19:16], I-cache in bits [3:0].
-    let ctr: u64;
-    // SAFETY: CTR_EL0 is readable from EL0 and the read has no side effects.
-    unsafe {
-        asm!("mrs {ctr}, ctr_el0", ctr = out(reg) ctr, options(nomem, nostack, preserves_flags))
-    };
-    let dline = 4usize << ((ctr >> 16) & 0xF);
-    let iline = 4usize << (ctr & 0xF);
-
-    // Clean D-cache lines covering the range to the point of unification.
-    let mut addr = start & !(dline - 1);
-    while addr < end {
-        // SAFETY: `dc cvau` is permitted at EL0 and only affects cache state.
-        unsafe { asm!("dc cvau, {addr}", addr = in(reg) addr, options(nostack, preserves_flags)) };
-        addr += dline;
-    }
-    // SAFETY: a barrier; no memory operands.
-    unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
-
-    // Invalidate I-cache lines covering the same range.
-    let mut addr = start & !(iline - 1);
-    while addr < end {
-        // SAFETY: `ic ivau` is permitted at EL0 and only affects cache state.
-        unsafe { asm!("ic ivau, {addr}", addr = in(reg) addr, options(nostack, preserves_flags)) };
-        addr += iline;
-    }
-    // SAFETY: barriers ordering the maintenance before any later fetch.
-    unsafe { asm!("dsb ish", "isb", options(nostack, preserves_flags)) };
+pub fn page_size() -> usize {
+    NativeCodePage::page_size()
 }
 
 // =============================================================================
@@ -687,8 +530,18 @@ mod page_tests {
     /// memory — the aarch64 path computes a loop bound from it.
     #[test]
     fn syncing_an_empty_range_is_a_no_op() {
-        let mut byte = 0u8;
-        sync_instruction_cache(&raw mut byte, 0);
+        #[cfg(target_os = "macos")]
+        macos::test_sync_empty();
+        #[cfg(target_os = "linux")]
+        linux::test_sync_empty();
+    }
+
+    #[test]
+    fn mock_code_page_exercises_lifecycle() {
+        let code = host_ret();
+        let exec = MockCodePage::from_code(&code).expect("mock map + flip");
+        assert_eq!(exec.len(), code.len());
+        assert_eq!(exec.as_bytes(), code.as_slice());
     }
 }
 

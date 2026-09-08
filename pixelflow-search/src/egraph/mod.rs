@@ -69,8 +69,9 @@ pub use cost::{CostFunction, CostModel};
 pub use deps::{Deps, DepsAnalysis};
 pub use derivative::{ChainRule, derivative_rules};
 pub use extract::{
-    ChoiceCost, ExtractedDAG, Extraction, build_extracted_dag_from_choices, choices_to_arena,
-    compute_ref_counts, cost_of_choices, extract, extract_dag,
+    ChoiceCost, ExtractedDAG, Extraction, ExtractionObjective, ExtractionReport,
+    SHARED_DAG_PASS_BYTE_BUDGET, SharedPassStats, build_extracted_dag_from_choices,
+    choices_to_arena, compute_ref_counts, cost_of_choices, extract, extract_dag,
 };
 pub use graph::{
     ApplicationMask, ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, MaskScope, RewriteTarget,
@@ -94,7 +95,9 @@ pub use provenance::{
 pub use rewrite::{Rewrite, RewriteAction, TemplateArena};
 pub use rules::{Fingerprint, RuleId, RuleSet, rule_label};
 pub use saturate::{
-    SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
+    APPLICATIONS_PER_CLASS, CLASSICAL_CLASS_CEILING, CLASSICAL_CLASS_CEILING_CALIBRATED,
+    CLASSICAL_CLASS_FLOOR, CLASSICAL_CLASSES_PER_INSERTED_CLASS, InputSize, SaturationConfig,
+    SaturationResult, achievable_cost_within_budget, config_for_input, config_for_node_count,
     saturate_with_budget, saturate_with_full_budget,
 };
 pub use template::TemplateRewrite;

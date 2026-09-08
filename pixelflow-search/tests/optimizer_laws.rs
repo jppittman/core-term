@@ -544,3 +544,279 @@ fn observation_is_optional_and_does_not_move_the_budget() {
         "attaching an observer must not change what is extracted"
     );
 }
+
+// ---------------------------------------------------------------------------
+// L5 — every `Optimize` preserves denotation
+// ---------------------------------------------------------------------------
+//
+// L4 above varies policy and budget over one `Optimizer` against one fixture.
+// This section varies the *implementation*: `Optimize` is the trait the
+// compiler pipeline is actually built from, and `Rewritten::Changed` is
+// documented as "A new term, denoting what the input denoted" — a law that
+// until now was stated only in that doc comment.
+//
+// It matters more than it looks, because a pipeline composes these: `Then`
+// short-circuits on decline, so a composition can produce a term neither half
+// would have produced alone. `Declined` and `Unchanged` pass trivially —
+// optimization is never required for correctness — so what is asserted is
+// only ever "if you rewrote it, it still means the same thing".
+//
+// Structure is deliberately not asserted. An optimizer may return a
+// completely different term; that is the job. Reassociation and one-versus-two
+// roundings move the last bits by design, so the bound is the same relative
+// tolerance L4 uses.
+
+use pixelflow_ir::Kernel;
+use pixelflow_ir::optimize::{Identity, Optimize, Rewritten, Then};
+use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
+use pixelflow_search::Tier;
+use pixelflow_search::egraph::ops::Vocabulary;
+use pixelflow_search::saturate_pass::Saturate;
+
+/// `eval` for terms with no uniform to bind — the corpus below is built
+/// through the public `Kernel` API, which mints none.
+fn eval_plain(arena: &ExprArena, root: ExprId, vars: &[f32; 2]) -> f32 {
+    pixelflow_ir::eval_scalar(arena, root, vars, &BindingTable::empty())
+}
+
+/// L5's own sample points, strictly inside the corpus's domain.
+///
+/// [`POINTS`] ranges over negatives, and this corpus contains `sqrt` and `ln`,
+/// which CLAUDE.md gives a *documented domain* and which return NaN outside
+/// it. Measured on `sqrt(x).ln().exp()` at `x = -1.5`: unoptimized evaluates
+/// to 8.5e37 (the saturating `exp` ceiling), optimized to NaN. Neither is a
+/// miscompile — outside a function's domain the language promises nothing to
+/// preserve — but it does mean **L5 holds in-domain and only in-domain**,
+/// which is implied by that section of CLAUDE.md and had not been written
+/// down. Sampling the positive quadrant is what makes the law statable.
+const IN_DOMAIN_POINTS: [[f32; 2]; 6] = [
+    [0.5, 0.25],
+    [1.0, 2.0],
+    [2.75, 0.125],
+    [0.0625, 3.5],
+    [7.0, 0.75],
+    [0.001, 1.5],
+];
+
+/// Terms built through the public `Kernel` composition API, so the corpus is
+/// what composition really produces rather than what a test author would
+/// hand-assemble.
+///
+/// No `Dwrt` term appears: `eval_scalar` refuses one outright ("no scalar eval
+/// for binary Dwrt — lower it first"), so the *input* side of the comparison
+/// would not evaluate and the law could not be stated. What a derivative
+/// denotes is pinned by `pixelflow-compiler/tests/derivative_under_warp.rs`
+/// and by `passes.rs`'s own `dwrt_tests`.
+fn denotation_corpus() -> Vec<(&'static str, Kernel)> {
+    let x = Kernel::x();
+    let y = Kernel::y();
+    let k = Kernel::constant;
+
+    vec![
+        ("x", x.clone()),
+        ("x + y", x.add(&y)),
+        // Non-commutative, non-associative, in both operand orders. An
+        // optimizer that wrongly commutes `Sub` or `Div` is sign-flipped or
+        // reciprocal, and nothing symmetric would notice.
+        ("x - y", x.sub(&y)),
+        ("y - x", y.sub(&x)),
+        ("x / y", x.div(&y)),
+        ("y / x", y.div(&x)),
+        ("(x - y) - 1", x.sub(&y).sub(&k(1.0))),
+        ("1 - (x - y)", k(1.0).sub(&x.sub(&y))),
+        // Difference of squares: a reassociation target where a wrong
+        // commutation survives as a plausible-looking number.
+        ("(x - y) * (x + y)", x.sub(&y).mul(&x.add(&y))),
+        ("(x - y).abs()", x.sub(&y).abs()),
+        ("x.min(y)", x.min(&y)),
+        ("x.max(y)", x.max(&y)),
+        // FMA fusion candidates: one rounding after, two before.
+        ("x * y + 1", x.mul(&y).add(&k(1.0))),
+        ("x * y - 1", x.mul(&y).sub(&k(1.0))),
+        // Identity, annihilator, and all-constant folds.
+        ("x + 0", x.add(&k(0.0))),
+        ("x * 1", x.mul(&k(1.0))),
+        ("x * 0", x.mul(&k(0.0))),
+        ("2 * 3 + 4", k(2.0).mul(&k(3.0)).add(&k(4.0))),
+        ("(x*x + y*y).sqrt()", x.mul(&x).add(&y.mul(&y)).sqrt()),
+        // 1/sqrt(v) -> rsqrt is a real rewrite with a real precision delta.
+        ("1 / x.sqrt()", k(1.0).div(&x.sqrt())),
+        // Sharing: the same subterm reached twice must stay one value.
+        ("sin(x) + sin(x)", x.sin().add(&x.sin())),
+        ("sqrt(x).ln().exp()", x.sqrt().ln().exp()),
+        ("select(x < y, x, y)", x.lt(&y).select(&x, &y)),
+        // Composition under a warp — the shape the font path builds.
+        ("(x*x).at(2x, y)", x.mul(&x).at(&x.mul(&k(2.0)), &y)),
+    ]
+}
+
+/// Assert L5 for one implementation. Returns how many corpus terms it
+/// actually rewrote, so a caller can tell "preserved denotation" apart from
+/// "did nothing at all".
+fn assert_preserves_denotation(label: &str, opt: &mut dyn Optimize) -> usize {
+    let mut changed = 0;
+
+    for (name, kernel) in denotation_corpus() {
+        let (arena, root) = kernel.parts();
+
+        let (out, out_root) = match opt.optimize(arena, root) {
+            // A declined term compiles unoptimized; nothing to compare.
+            Rewritten::Declined | Rewritten::Unchanged => continue,
+            Rewritten::Changed(a, r) => {
+                changed += 1;
+                (a, r)
+            }
+        };
+
+        for point in &IN_DOMAIN_POINTS {
+            let want = eval_plain(arena, root, point);
+            let got = eval_plain(&out, out_root, point);
+
+            // NaN counts as agreeing with NaN: an optimizer is not required to
+            // invent a value where the input had none.
+            let agrees = (want.is_nan() && got.is_nan())
+                || got == want
+                || (got - want).abs() <= 1e-4 * want.abs().max(1.0);
+
+            assert!(
+                agrees,
+                "{label} changed what `{name}` denotes at {point:?}: \
+                 {got} != {want}"
+            );
+        }
+    }
+
+    changed
+}
+
+#[test]
+fn the_identity_optimizer_rewrites_nothing() {
+    // Vacuous by construction, and that is the point: it pins the control arm
+    // every measurement of an optimizer is read against.
+    assert_eq!(assert_preserves_denotation("Identity", &mut Identity), 0);
+}
+
+/// A pass that *eliminates* a construct cannot be checked against its own
+/// input: `eval_scalar` refuses a `Dwrt` or a `Reduce` outright, so the
+/// "before" side of `assert_preserves_denotation` does not evaluate and every
+/// such term is skipped. Which is why `LowerDwrt` and `ExpandReduce` needed
+/// their own harness, and why the two tests they had were worthless before
+/// they got one — measured, not supposed: the corpus contains no `Dwrt` and
+/// no `Reduce`, so both passes returned `Unchanged` for all 24 terms and the
+/// assertions ran **zero** times. They would have passed against a pass that
+/// miscompiled every input.
+///
+/// The way to state a law about a construct you cannot evaluate is an
+/// *independent oracle*: write the answer out separately, in ops the
+/// evaluator does have, and require the pass to agree with it. The oracle is
+/// hand-written calculus and arithmetic here, never something the pass under
+/// test produced — an oracle derived from the subject checks nothing, which is
+/// the same trap the `sin` range-reduction bug lived in (CLAUDE.md, "Precision
+/// is on the table; range is not": the JIT and its oracle shared an expansion,
+/// agreed bit-for-bit on garbage, and every same-form test passed).
+fn assert_lowers_to_oracle(label: &str, opt: &mut dyn Optimize, subject: &Kernel, oracle: &Kernel) {
+    let (arena, root) = subject.parts();
+    let (out, out_root) = match opt.optimize(arena, root) {
+        Rewritten::Changed(a, r) => (a, r),
+        // Not a skip. A pass whose whole job is to eliminate a construct has
+        // failed if it leaves one standing.
+        other => panic!("{label} must rewrite a term carrying its construct, got {other:?}"),
+    };
+
+    let (oracle_arena, oracle_root) = oracle.parts();
+    for point in &IN_DOMAIN_POINTS {
+        let want = eval_plain(oracle_arena, oracle_root, point);
+        let got = eval_plain(&out, out_root, point);
+        let agrees =
+            (want.is_nan() && got.is_nan()) || (got - want).abs() <= 1e-4 * want.abs().max(1.0);
+        assert!(
+            agrees,
+            "{label} disagrees with the hand-written oracle at {point:?}: {got} != {want}"
+        );
+    }
+}
+
+/// `LowerDwrt` against derivatives written out by hand.
+#[test]
+fn lowering_dwrt_agrees_with_hand_written_derivatives() {
+    let x = Kernel::x();
+    let y = Kernel::y();
+
+    // d/dx (x·x) = 2x
+    assert_lowers_to_oracle(
+        "LowerDwrt d/dx(x²)",
+        &mut LowerDwrt,
+        &x.mul(&x).dx(),
+        &Kernel::constant(2.0).mul(&x),
+    );
+
+    // d/dy (x·y + y) = x + 1
+    assert_lowers_to_oracle(
+        "LowerDwrt d/dy(xy + y)",
+        &mut LowerDwrt,
+        &x.mul(&y).add(&y).dy(),
+        &x.add(&Kernel::constant(1.0)),
+    );
+
+    // d/dx √(x² + y²) = x / √(x² + y²) — the glyph gradient's shape, and the
+    // one case here whose derivative is not a polynomial.
+    let r = x.mul(&x).add(&y.mul(&y)).sqrt();
+    assert_lowers_to_oracle("LowerDwrt d/dx(hypot)", &mut LowerDwrt, &r.dx(), &x.div(&r));
+}
+
+/// `ExpandReduce` against sums written out term by term.
+#[test]
+fn expanding_reduce_agrees_with_hand_written_sums() {
+    let x = Kernel::x();
+    let k = Kernel::constant;
+
+    // Σ_{i<4} i = 0 + 1 + 2 + 3 = 6, independent of the sample point.
+    assert_lowers_to_oracle(
+        "ExpandReduce Σi",
+        &mut ExpandReduce,
+        &Kernel::sum_over(4, |i| i.clone()),
+        &k(6.0),
+    );
+
+    // Σ_{i<3} (x + i) = 3x + 3
+    assert_lowers_to_oracle(
+        "ExpandReduce Σ(x+i)",
+        &mut ExpandReduce,
+        &Kernel::sum_over(3, |i| x.add(i)),
+        &k(3.0).mul(&x).add(&k(3.0)),
+    );
+}
+
+#[test]
+fn saturating_preserves_denotation_under_each_vocabulary() {
+    // `Templates` is the macro and `Dwrt`-expansion tiers' vocabulary;
+    // `Runtime` adds the mask and integer-domain ops.
+    // The tier only decides where a telemetry record is written, which is a
+    // side channel this law says nothing about; each vocabulary is paired
+    // with the tier that actually uses it so the pairing cannot read as
+    // arbitrary.
+    for (vocab, tier) in [
+        (Vocabulary::Templates, Tier::Macro),
+        (Vocabulary::Runtime, Tier::Runtime),
+    ] {
+        let mut sat = Saturate::with(Optimizer::production(), vocab, tier);
+        let changed = assert_preserves_denotation(&format!("Saturate<{vocab:?}>"), &mut sat);
+        assert!(
+            changed > 0,
+            "saturation under {vocab:?} rewrote nothing across the whole \
+             corpus — either the corpus stopped containing anything \
+             optimizable, or the optimizer silently became a no-op"
+        );
+    }
+}
+
+#[test]
+fn a_composed_pipeline_preserves_denotation() {
+    // `Then` short-circuits on decline, which is the one place a composition
+    // can produce a term neither half would have produced alone.
+    let mut pipeline = Then(
+        LowerDwrt,
+        Saturate::with(Optimizer::production(), Vocabulary::Templates, Tier::Macro),
+    );
+    assert_preserves_denotation("Then(LowerDwrt, Saturate)", &mut pipeline);
+}

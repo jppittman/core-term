@@ -341,6 +341,14 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
 
     // Reported together rather than at the first hit: which texels sit on a
     // knife edge is the diagnostic, and one texel does not show it.
+    //
+    // Both saturation and the interpreter are deterministic (CLAUDE.md: a
+    // kernel cannot be built differently on two machines), so this is stable
+    // across targets. If a platform reports a divergence, that is a finding
+    // about determinism or about a rewrite, never a flaky test. (There used
+    // to be 29 known divergent texels, all on the `'8'` waist, where the
+    // scanline's `disc >= 0` was a knife edge at a tangency; Loop–Blinn has
+    // no discriminant, so the assertion is emptiness.)
     assert!(
         divergences.is_empty(),
         "optimization changed coverage at {} texels:\n{}",
