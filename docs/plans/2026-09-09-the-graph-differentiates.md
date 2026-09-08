@@ -97,67 +97,165 @@ reaches codegen. An error on one path, a panic on the other.
 that `scale` is built from coefficients read out of the piece table. That
 puts a `Gather` under a `Dwrt`, and nothing can lower it.
 
-The answer is trivially zero: the index is `(constant_column, binder)` and
-mentions no coordinate, so the read is constant in X and Y. Nothing checks.
-The rule to add is *a gather whose index does not mention a coordinate
-differentiates to zero*, and per §1 it belongs in the graph, not as a fourth
-special case in `lower_dwrt`.
 
-## 4. What `Gather` is, and the criterion for when it is cruft
+**The remedy first drafted here was wrong** and is recorded because the way
+it was wrong is the point. It proposed a rule — *a gather whose index does
+not mention a coordinate differentiates to zero* — which is true, and is a
+special case invented to replace information that had been thrown away.
+Materializing is what destroyed the derivative. See §5.
 
-Not cruft in principle: `Lattice`/`DiscreteManifold` are a representable
-functor whose law is `index(collapse(f)) = f`, `collapse` is the introducer,
-and `Gather` is `index`. A buffer that can be written and never read is not
-a manifold.
+## 4. Memory-backing is opaque to the consumer. That is a law.
 
-Two things have accreted onto it.
+**A consumer of a `Kernel` cannot observe whether evaluating it runs
+arithmetic or reads a table.**
 
-**Its semantics are the hardware's.** `Gather` means floor-then-clamp-to-edge
-(`passes.rs:261`, `eval.rs:1758`). The law says nothing about what happens
-off the lattice; the instruction does, so every caller inherits the
-instruction's answer. `fonts/cache.rs` masks the result to the glyph's
-extent for exactly this reason — a clamped read would smear a descender's
-boundary coverage out to infinity — which is a caller paying for an
-addressing mode it did not choose.
+This codebase already states the same law once, about a different
+implementation detail. From CLAUDE.md: *"SIMD is an implementation detail.
+`Field` — one SIMD batch, the collapse ABI's vector — is `pub(crate)` in
+pixelflow-core, and nothing outside that crate can name it, a lane, or a
+width."* Memory-backing is that law's second instance, and it has not been
+enforced.
 
-**It is doing two jobs.** The test that separates them: *could the program
-have computed this content itself?*
+So `Gather` does not survive as an op in the algebra — not for memoized
+computation, and **not for genuinely external data either**. An image, the
+terminal's cell contents, a font's bytes: each enters *as a kernel*, and a
+caller adds it to a circle with `+` without learning that anything is backed
+by anything. `Gather` becomes something the emitter does, like a register
+spill. Nobody writes a spill into their expression.
 
-| | example | verdict |
-|---|---|---|
-| **No** | terminal cell contents, an image, the bytes of a font file | a genuine leaf; binding is real and `Gather` is the right eliminator |
-| **Yes** | the glyph cache, the atlas, S1a's piece table | a **materialization decision** written into the expression |
+An earlier draft of this section proposed a criterion — *could the program
+have computed this content?* — to sort legitimate leaves from
+materialization decisions. The law makes the sort unnecessary: neither kind
+is nameable. That criterion was the last place this document still treated
+memory-backing as something the language expresses.
 
-The second kind is the same move as `Union`. `Union` is the host encoding
-*demand* in the domain; `Gather`-as-memoization is the host encoding
-*materialization* in the expression. Both are scheduling decisions made by
-hand because the compiler does not make them, and both cost identically:
-opaque to the e-graph, no rewrite may name them, no derivative rule fires,
-`MAX_BOUND_BUFFERS = 4`, indices exact only below 2²⁴ because they travel
-through `f32`, plus binding tables, identities, and the API surface each one
-forces on its callers.
+What stops being consumer-facing:
 
-That reading sharpens §3. `Dwrt` over a *genuine* leaf needs the rule.
-`Dwrt` over a *materialized* `.at()` needed nothing — the derivative of the
-kernel that got tabulated was available all along, and materializing before
-differentiating destroyed it.
+| gone | why it existed |
+|---|---|
+| `Gather`, `Buffer` as nameable ops | the algebra was not closed over manifolds |
+| `BufferIdentity`, `Manifold::bind` | a kernel held a *name*, and the data travelled separately |
+| `MAX_BOUND_BUFFERS = 4` | a limit on how many names one program may mention |
+| `Glyph { kernel, binding }` | there was never a second thing to carry |
+| `Union::place` panicking on a summand with a slot | a summand could not declare one |
+| the collapse corpus carrying buffer contents | fixtures held a name, so the numbers had to be shipped beside it |
 
-**The way out is not a vector of uniforms.** It is that *materialize here*
-should be a schedule annotation the compiler derives, exactly as demand
-should be, leaving `Gather` in the language only for content that came from
-outside the program.
+The `width × height ≤ 2^24` bound stops being a language constraint and
+becomes the emitter's problem, where it can be solved rather than
+documented.
+
+### The history this restores
+
+In the expression-template era a `Field` **was** a manifold, and so was a
+baked buffer, and so was an expression. `circle + square` and
+`circle + baked_glyph` were the same operation, because the algebra was
+closed over manifolds and reading memory was not an op — it was just being
+one.
+
+The JIT-first move (docs/plans/2026-07-20-kernel-unification.md) was made
+for real reasons and is not in question. What it dropped is closure: a
+`Kernel` became a value holding a *promise*, and `Gather` plus the binding
+tables are the scar tissue over that wound. Every separate gap fought on
+2026-09-09 — threading `binding` through 88 call sites, `Union::compile`
+binding `&[]`, the corpus, `MAX_BOUND_BUFFERS`, `Dwrt` having no rule, e-graph
+opacity — is that one gap seen six times.
+
+## 5. The kernel keeps its code, `pub(crate)`
+
+A `Kernel` retains the arena that defines it. The library remembers; the
+consumer cannot reach in.
+
+That is what makes §4 a fix rather than a hiding place. With the code
+retained, `index(collapse(f)) = f` stops being a law in a doc comment and
+becomes a **rewrite rule the e-graph can apply in both directions**:
+
+```
+Gather(collapse(f), p)  →  f(p)        read through the table to its meaning
+f(p)  →  Gather(collapse(f), p)        materialize — a scheduling decision
+```
+
+Which direction to take is a schedule choice, which is where it belonged.
+
+And §3 dissolves rather than being fixed. `Dwrt` over a tabulation is not a
+missing rule; it is not a question. You never differentiate memory — you
+differentiate the code the memory caches. The special case §3 first proposed
+exists only because materializing threw the code away and something had to
+be invented to stand in for it.
+
+Two costs to settle before believing this:
+
+- **Lifetime.** A kernel reading a baked buffer keeps the defining arena
+  alive. For an atlas that is every glyph's outline retained behind every
+  sample. Probably fine — arenas are small beside the buffers — but it
+  changes what holding a `Kernel` costs.
+- **Cache identity.** Two tabulations with identical data but different
+  code, or identical code baked at different shapes, must key correctly.
+  Today `jit_cache` keys on arena structure plus shape, with a `Buffer`
+  contributing its slot and extents; if the code comes along, that key has
+  to decide whether it identifies the reader or the read.
+
+## 6. Providing a range requires providing a select
+
+**Decision (JP, 2026-09-09), recorded with its own hesitation intact: the
+API for bounding a kernel to a range should *require* the value outside it.**
+
+Today an out-of-range read answers with floor-then-clamp-to-edge
+(`passes.rs:261`, `eval.rs:1758`) — the instruction's answer, not the
+denotation's. `fonts/cache.rs` writes the repair by hand and its doc says
+why: a clamped read smears a descender's boundary coverage out to infinity.
+That repair is a `Select` the caller had to remember. Requiring it at
+construction is the same expression, moved to where it cannot be forgotten:
+
+```text
+bounded(range, inside, outside)  ≡  in(range).select(inside, outside)
+```
+
+Three things follow, and they are the argument:
+
+- **Totality is structural.** A bounded kernel is total by construction.
+  There is no undefined region, no convention, and nothing for a consumer
+  to remember — which is CLAUDE.md's *when you extend a type's meaning,
+  extend its type*, applied to the meaning "defined only here".
+- **Clamping is a guess, and it is usually wrong.** The library cannot know
+  what lies outside; the caller can. `cache.rs` is the existing proof that
+  the hardware's guess needed overriding.
+- **It makes the out-of-range case visible to the compiler.** A clamp is
+  invisible and unremovable. A select is a `Select`, so demand analysis can
+  see the region, guard it, or eliminate it where the range is statically
+  known. The construct that costs an instruction is the one the optimizer
+  can remove; the free one is the one it cannot.
+
+Where it is shaky, honestly:
+
+- Most callers want zero outside, so it is boilerplate at every site. A
+  named constructor for the common case answers this without weakening the
+  requirement.
+- It spends a select where the hardware offered a clamp for free. That is
+  the trade above — visible and removable against invisible and permanent —
+  and it should be *measured* on the atlas rather than argued.
+
+Under §4 this is also what an off-lattice sample of a tabulated kernel
+means: not the edge texel, and not a cache miss that recomputes, but
+whatever the caller said was out there when they bounded it.
 
 ## Order
 
-3 → 2 → 1. Each is independently landable with a test that proves it.
+3 → 2 → 1 was the original order and **§3's remedy is withdrawn**; what
+remains of §3 is a live blocker on S1b with no local fix. The order is now:
 
-- **§3** is the smallest and is what S1b is currently blocked on.
-- **§2** unblocks moving `ExpandReduce` after saturation, and should be
-  measured by glyph compile time, which is the number §2 predicts falls by
-  roughly the piece count.
-- **§1** is then deleting `LowerDwrt` from the runtime pipeline and letting
-  the rules do the job they were built for, with `legalize` still present as
-  the fallback it was meant to be.
+- **§4 + §5 together.** They are one change: the boundary that hides
+  memory-backing, and the retained code that makes hiding it sound rather
+  than lossy. Neither works alone — a hidden buffer whose code is gone still
+  cannot be differentiated.
+- **§6** rides with them, because the out-of-range answer has to come from
+  somewhere the moment clamping stops being observable.
+- **§2** (`Reduce` representable, so saturation stops seeing N copies)
+  is independent and can land any time; it is worth ~the piece count in
+  glyph compile time.
+- **§1** (delete `LowerDwrt` from the runtime pipeline) is last and is
+  mostly a deletion once §5 means the graph can differentiate through a
+  tabulation.
 
-§4 is not scheduled and is not a refactor to start; it is the criterion to
-apply when the next buffer is proposed.
+S1b stays blocked until §4/§5 land. That is a real cost and it is the
+honest one: the alternative was the special-case rule in §3, which would
+have unblocked S1b by entrenching the thing that caused the block.
