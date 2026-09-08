@@ -246,3 +246,21 @@ name = "phase3_bisect_eval"
 path = "src/bin/phase3_bisect_eval.rs"
 required-features = ["training"]
 bench = false
+
+[[bin]]
+name = "egraph_off_on"
+path = "src/bin/egraph_off_on.rs"
+# Needs `pixelflow-ir/oracle` (`eval_scalar`) and, at run time, the
+# `pixelflow-search/saturation-switch` measurement feature for the `off` mode.
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "corpus_gaps"
+path = "src/bin/corpus_gaps.rs"
+# Reads `training::{bezier_family, sh_family}` for the SYNTHETIC half of the
+# inventory, so it cannot build without the module that defines them.
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
