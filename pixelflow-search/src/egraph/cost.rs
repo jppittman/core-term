@@ -51,7 +51,18 @@ use pixelflow_ir::kind::OpMap;
 /// `compile` (so transcendentals are timed in their
 /// `expand_transcendentals` lowered form — the form this table is actually
 /// pricing) and timed under `BenchMode::Latency`; the per-stage slope cancels
-/// call overhead exactly. Units are normalized so `Add = 4` (the table's
+/// call overhead exactly.
+///
+/// **The transcendental entries are stale as of the Horner fusion.**
+/// `passes::horner_step` now emits one `MulAdd` where it emitted `Mul` + `Add`,
+/// so every polynomial expansion lost ~5 ops (`sin`: 5 mul + 5 add → 5
+/// `MulAdd`) and each affected entry below now prices a lowering that no longer
+/// exists. Extraction is *unaffected* — the e-graph runs before that lowering
+/// and reads `Sin` as one node with the cost named here, so nothing it chooses
+/// has changed (`optimizer_equivalence` digests identically) — but the numbers
+/// are now upper bounds, which biases extraction mildly *against*
+/// transcendentals. Re-deriving them is a measurement, not a guess: rerun
+/// `pixelflow-pipeline/examples/measure_latency_prior.rs` per its protocol. Units are normalized so `Add = 4` (the table's
 /// historical unit; measured FADD slope 0.87ns/stage ≈ 3 real cycles at
 /// ~3.4GHz). Two independent runs agreed within 3% on every corrected entry.
 /// Protocol: `pixelflow-pipeline/examples/measure_latency_prior.rs`.
@@ -125,6 +136,9 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
         OpKind::Gather => 10,    // memory read
         OpKind::RawGather => 10, // primitive memory read
         OpKind::Reduce => 0,     // lowered (unrolled) before costing
+        // A leaf like Buffer: its one broadcast load lands in the per-call
+        // prologue, which the per-sample cost model does not see.
+        OpKind::Uniform => 0,
     })
 }
 
@@ -283,8 +297,9 @@ impl CostModel {
     pub fn node_op_cost(&self, node: &ENode) -> usize {
         match node {
             // Buffer is a leaf like Var/Const: the cost of the read lives on
-            // the Gather that consumes it.
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => 0,
+            // the Gather that consumes it. A uniform's load is per call, not
+            // per sample.
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) => 0,
             // `Dwrt` is the internal autodiff marker. It is rewritten away by
             // the chain rule; a surviving one is the (not-yet-wired) jet
             // fallback. Either way extraction must never choose it, so it is

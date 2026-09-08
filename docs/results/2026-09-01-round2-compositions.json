@@ -1,0 +1,1975 @@
+{
+ "seed": "0x5EED2",
+ "pool_total": 3339,
+ "pool_oracle_gate": {
+  "kept": 2935,
+  "dropped": 9,
+  "untestable": 395,
+  "min_agreement_rate": 0.6,
+  "points_per_rule": 256,
+  "oracle_seed": "0xC0FF_EE42"
+ },
+ "grid": {
+  "comp:93": 31,
+  "comp:124": 62,
+  "comp:186": 124,
+  "comp:248": 186
+ },
+ "prefix_census": {
+  "comp:93": {
+   "kept": 27,
+   "dropped": 1,
+   "untestable": 3
+  },
+  "comp:124": {
+   "kept": 56,
+   "dropped": 1,
+   "untestable": 5
+  },
+  "comp:186": {
+   "kept": 102,
+   "dropped": 2,
+   "untestable": 20
+  },
+  "comp:248": {
+   "kept": 154,
+   "dropped": 2,
+   "untestable": 30
+  }
+ },
+ "prefix": [
+  {
+   "pool_idx": 0,
+   "name": "identity\u2218sin-angle-addition@[]",
+   "a_idx": 14,
+   "b_idx": 36,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 1,
+   "name": "associative\u2218even-negation@[1, 1]",
+   "a_idx": 22,
+   "b_idx": 35,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 2,
+   "name": "identity\u2218odd-negation@[]",
+   "a_idx": 14,
+   "b_idx": 32,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 3,
+   "name": "associative\u2218half-angle-product@[1, 1]",
+   "a_idx": 22,
+   "b_idx": 39,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 4,
+   "name": "halving\u2218associative@[1]",
+   "a_idx": 21,
+   "b_idx": 24,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 5,
+   "name": "halving\u2218reverse-associative@[1]",
+   "a_idx": 21,
+   "b_idx": 29,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 6,
+   "name": "cos-angle-addition\u2218odd-negation@[1, 0, 0]",
+   "a_idx": 37,
+   "b_idx": 33,
+   "position": [
+    1,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 7,
+   "name": "cos-angle-addition\u2218commutative@[0, 1, 0]",
+   "a_idx": 37,
+   "b_idx": 12,
+   "position": [
+    0,
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 8,
+   "name": "reverse-associative\u2218sin-angle-addition@[1]",
+   "a_idx": 28,
+   "b_idx": 36,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 9,
+   "name": "identity\u2218reverse-associative@[]",
+   "a_idx": 13,
+   "b_idx": 27,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 10,
+   "name": "cos-angle-addition\u2218identity@[0, 1, 0]",
+   "a_idx": 37,
+   "b_idx": 13,
+   "position": [
+    0,
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 11,
+   "name": "diff-of-squares\u2218sin-angle-addition@[0, 0]",
+   "a_idx": 58,
+   "b_idx": 36,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 12,
+   "name": "identity\u2218sin-angle-addition@[]",
+   "a_idx": 13,
+   "b_idx": 36,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 13,
+   "name": "exp-homomorphism\u2218exp-homomorphism@[0, 0]",
+   "a_idx": 45,
+   "b_idx": 45,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "dropped"
+  },
+  {
+   "pool_idx": 14,
+   "name": "fma-fusion\u2218reverse-associative@[2]",
+   "a_idx": 59,
+   "b_idx": 26,
+   "position": [
+    2
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 15,
+   "name": "fma-fusion\u2218fma-fusion@[2]",
+   "a_idx": 59,
+   "b_idx": 59,
+   "position": [
+    2
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 16,
+   "name": "commutative\u2218half-angle-product@[1]",
+   "a_idx": 12,
+   "b_idx": 39,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 17,
+   "name": "cos-angle-addition\u2218commutative@[1, 0, 0]",
+   "a_idx": 37,
+   "b_idx": 9,
+   "position": [
+    1,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 18,
+   "name": "associative\u2218even-negation@[0]",
+   "a_idx": 22,
+   "b_idx": 34,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 19,
+   "name": "reverse-associative\u2218diff-of-squares@[1]",
+   "a_idx": 29,
+   "b_idx": 58,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 20,
+   "name": "cos-angle-addition\u2218associative@[1, 1, 0]",
+   "a_idx": 37,
+   "b_idx": 22,
+   "position": [
+    1,
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 21,
+   "name": "reverse-angle-addition\u2218cancellation@[0, 0]",
+   "a_idx": 38,
+   "b_idx": 6,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 22,
+   "name": "reverse-associative\u2218exp-homomorphism@[1]",
+   "a_idx": 26,
+   "b_idx": 45,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 23,
+   "name": "commutative\u2218idempotent@[0]",
+   "a_idx": 11,
+   "b_idx": 16,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 24,
+   "name": "canonicalize\u2218canonicalize@[0]",
+   "a_idx": 0,
+   "b_idx": 0,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 25,
+   "name": "reverse-associative\u2218reverse-associative@[0, 0]",
+   "a_idx": 28,
+   "b_idx": 26,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 26,
+   "name": "fma-fusion\u2218sin-angle-addition@[1]",
+   "a_idx": 59,
+   "b_idx": 36,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 27,
+   "name": "distribute\u2218sin-angle-addition@[0, 1]",
+   "a_idx": 18,
+   "b_idx": 36,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 28,
+   "name": "cancellation\u2218odd-negation@[]",
+   "a_idx": 2,
+   "b_idx": 31,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 29,
+   "name": "odd-negation\u2218commutative@[0, 0]",
+   "a_idx": 31,
+   "b_idx": 9,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 30,
+   "name": "associative\u2218half-angle-product@[1]",
+   "a_idx": 23,
+   "b_idx": 39,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 31,
+   "name": "associative\u2218fma-fusion@[1, 1]",
+   "a_idx": 25,
+   "b_idx": 59,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 32,
+   "name": "reverse-associative\u2218commutative@[0]",
+   "a_idx": 26,
+   "b_idx": 9,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 33,
+   "name": "diff-of-squares\u2218odd-negation@[0, 0]",
+   "a_idx": 58,
+   "b_idx": 32,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 34,
+   "name": "factor\u2218odd-negation@[0]",
+   "a_idx": 19,
+   "b_idx": 30,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 35,
+   "name": "halving\u2218canonicalize@[1]",
+   "a_idx": 21,
+   "b_idx": 0,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 36,
+   "name": "diff-of-squares\u2218involution@[0, 1]",
+   "a_idx": 58,
+   "b_idx": 1,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 37,
+   "name": "associative\u2218diff-of-squares@[0]",
+   "a_idx": 25,
+   "b_idx": 58,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 38,
+   "name": "odd-negation\u2218fma-fusion@[0, 0]",
+   "a_idx": 30,
+   "b_idx": 59,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 39,
+   "name": "odd-negation\u2218even-negation@[0, 0]",
+   "a_idx": 30,
+   "b_idx": 35,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 40,
+   "name": "associative\u2218halving@[1, 1]",
+   "a_idx": 22,
+   "b_idx": 21,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 41,
+   "name": "odd-negation\u2218half-angle-product@[0, 0]",
+   "a_idx": 31,
+   "b_idx": 39,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 42,
+   "name": "cos-angle-addition\u2218idempotent@[1, 1, 0]",
+   "a_idx": 37,
+   "b_idx": 17,
+   "position": [
+    1,
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 43,
+   "name": "commutative\u2218half-angle-product@[1]",
+   "a_idx": 11,
+   "b_idx": 39,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 44,
+   "name": "reverse-associative\u2218commutative@[0, 1]",
+   "a_idx": 26,
+   "b_idx": 10,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 45,
+   "name": "odd-negation\u2218factor@[0, 0]",
+   "a_idx": 33,
+   "b_idx": 19,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 46,
+   "name": "sin-angle-addition\u2218odd-negation@[1, 1, 0]",
+   "a_idx": 36,
+   "b_idx": 30,
+   "position": [
+    1,
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 47,
+   "name": "reverse-associative\u2218cos-angle-addition@[0, 0]",
+   "a_idx": 29,
+   "b_idx": 37,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 48,
+   "name": "commutative\u2218cancellation@[0]",
+   "a_idx": 10,
+   "b_idx": 2,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 49,
+   "name": "cos-angle-addition\u2218diff-of-squares@[]",
+   "a_idx": 37,
+   "b_idx": 58,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 50,
+   "name": "reverse-associative\u2218diff-of-squares@[0, 1]",
+   "a_idx": 27,
+   "b_idx": 58,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 51,
+   "name": "diff-of-squares\u2218associative@[1, 1]",
+   "a_idx": 58,
+   "b_idx": 23,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 52,
+   "name": "half-angle-product\u2218cancellation@[0, 0, 0]",
+   "a_idx": 39,
+   "b_idx": 2,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 53,
+   "name": "identity\u2218half-angle-product@[]",
+   "a_idx": 14,
+   "b_idx": 39,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 54,
+   "name": "factor\u2218idempotent@[1, 0]",
+   "a_idx": 19,
+   "b_idx": 16,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 55,
+   "name": "diff-of-squares\u2218idempotent@[1, 0]",
+   "a_idx": 58,
+   "b_idx": 17,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 56,
+   "name": "commutative\u2218cancellation@[1]",
+   "a_idx": 12,
+   "b_idx": 6,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 57,
+   "name": "reverse-associative\u2218factor@[1]",
+   "a_idx": 29,
+   "b_idx": 19,
+   "position": [
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 58,
+   "name": "odd-negation\u2218fma-fusion@[0, 0]",
+   "a_idx": 33,
+   "b_idx": 59,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 59,
+   "name": "cos-angle-addition\u2218commutative@[0, 0, 0]",
+   "a_idx": 37,
+   "b_idx": 12,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 60,
+   "name": "half-angle-product\u2218sin-angle-addition@[0, 0, 0]",
+   "a_idx": 39,
+   "b_idx": 36,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 61,
+   "name": "reverse-associative\u2218half-angle-product@[0]",
+   "a_idx": 27,
+   "b_idx": 39,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 62,
+   "name": "idempotent\u2218half-angle-product@[]",
+   "a_idx": 16,
+   "b_idx": 39,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 63,
+   "name": "reverse-associative\u2218commutative@[1]",
+   "a_idx": 28,
+   "b_idx": 11,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 64,
+   "name": "distribute\u2218halving@[1]",
+   "a_idx": 18,
+   "b_idx": 21,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 65,
+   "name": "diff-of-squares\u2218commutative@[1, 0]",
+   "a_idx": 58,
+   "b_idx": 10,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 66,
+   "name": "cancellation\u2218reverse-associative@[]",
+   "a_idx": 2,
+   "b_idx": 26,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 67,
+   "name": "sin-angle-addition\u2218odd-negation@[0, 0, 0]",
+   "a_idx": 36,
+   "b_idx": 32,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 68,
+   "name": "cos-angle-addition\u2218reverse-associative@[1, 0, 0]",
+   "a_idx": 37,
+   "b_idx": 27,
+   "position": [
+    1,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 69,
+   "name": "reverse-associative\u2218factor@[0, 0]",
+   "a_idx": 28,
+   "b_idx": 19,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 70,
+   "name": "factor\u2218cancellation@[1, 1]",
+   "a_idx": 19,
+   "b_idx": 6,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 71,
+   "name": "commutative\u2218reverse-angle-addition@[0]",
+   "a_idx": 11,
+   "b_idx": 38,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 72,
+   "name": "distribute\u2218distribute@[1, 0]",
+   "a_idx": 18,
+   "b_idx": 18,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 73,
+   "name": "reverse-associative\u2218commutative@[1]",
+   "a_idx": 28,
+   "b_idx": 12,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 74,
+   "name": "cos-angle-addition\u2218cancellation@[1, 0, 0]",
+   "a_idx": 37,
+   "b_idx": 6,
+   "position": [
+    1,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 75,
+   "name": "distribute\u2218involution@[0, 0]",
+   "a_idx": 18,
+   "b_idx": 1,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 76,
+   "name": "associative\u2218associative@[0]",
+   "a_idx": 22,
+   "b_idx": 24,
+   "position": [
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 77,
+   "name": "distribute\u2218factor@[1, 1]",
+   "a_idx": 18,
+   "b_idx": 19,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 78,
+   "name": "reverse-associative\u2218reverse-angle-addition@[0, 1]",
+   "a_idx": 29,
+   "b_idx": 38,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 79,
+   "name": "fma-fusion\u2218diff-of-squares@[1]",
+   "a_idx": 59,
+   "b_idx": 58,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 80,
+   "name": "reverse-associative\u2218associative@[1]",
+   "a_idx": 29,
+   "b_idx": 24,
+   "position": [
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 81,
+   "name": "cancellation\u2218reverse-associative@[]",
+   "a_idx": 2,
+   "b_idx": 29,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 82,
+   "name": "commutative\u2218commutative@[0]",
+   "a_idx": 11,
+   "b_idx": 10,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 83,
+   "name": "associative\u2218sin-angle-addition@[1, 1]",
+   "a_idx": 22,
+   "b_idx": 36,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 84,
+   "name": "reverse-associative\u2218even-negation@[0, 1]",
+   "a_idx": 26,
+   "b_idx": 34,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 85,
+   "name": "sin-angle-addition\u2218reverse-associative@[0, 0, 0]",
+   "a_idx": 36,
+   "b_idx": 27,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 86,
+   "name": "reverse-associative\u2218reverse-associative@[0, 0]",
+   "a_idx": 28,
+   "b_idx": 27,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 87,
+   "name": "reverse-associative\u2218half-angle-product@[1]",
+   "a_idx": 27,
+   "b_idx": 39,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 88,
+   "name": "reverse-associative\u2218associative@[0, 1]",
+   "a_idx": 28,
+   "b_idx": 23,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 89,
+   "name": "associative\u2218idempotent@[1, 0]",
+   "a_idx": 24,
+   "b_idx": 16,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 90,
+   "name": "reverse-angle-addition\u2218inverse-annihilation@[0, 0]",
+   "a_idx": 38,
+   "b_idx": 3,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 91,
+   "name": "associative\u2218diff-of-squares@[1, 0]",
+   "a_idx": 23,
+   "b_idx": 58,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 92,
+   "name": "associative\u2218associative@[1, 1]",
+   "a_idx": 23,
+   "b_idx": 25,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 93,
+   "name": "associative\u2218reverse-associative@[1, 1]",
+   "a_idx": 24,
+   "b_idx": 29,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 94,
+   "name": "fma-fusion\u2218reverse-associative@[0]",
+   "a_idx": 59,
+   "b_idx": 27,
+   "position": [
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 95,
+   "name": "odd-negation\u2218odd-negation@[0, 0]",
+   "a_idx": 30,
+   "b_idx": 33,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 96,
+   "name": "odd-negation\u2218pythagorean@[0, 0]",
+   "a_idx": 32,
+   "b_idx": 40,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 97,
+   "name": "distribute\u2218even-negation@[0, 0]",
+   "a_idx": 18,
+   "b_idx": 35,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 98,
+   "name": "diff-of-squares\u2218even-negation@[1, 1]",
+   "a_idx": 58,
+   "b_idx": 34,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 99,
+   "name": "commutative\u2218cancellation@[1]",
+   "a_idx": 9,
+   "b_idx": 2,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 100,
+   "name": "reverse-associative\u2218reverse-associative@[1]",
+   "a_idx": 26,
+   "b_idx": 27,
+   "position": [
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 101,
+   "name": "reverse-associative\u2218annihilator@[1]",
+   "a_idx": 27,
+   "b_idx": 15,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 102,
+   "name": "even-negation\u2218associative@[0]",
+   "a_idx": 34,
+   "b_idx": 22,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 103,
+   "name": "reverse-associative\u2218idempotent@[0, 0]",
+   "a_idx": 27,
+   "b_idx": 16,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 104,
+   "name": "commutative\u2218commutative@[1]",
+   "a_idx": 12,
+   "b_idx": 12,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 105,
+   "name": "odd-negation\u2218sin-angle-addition@[0, 0]",
+   "a_idx": 33,
+   "b_idx": 36,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 106,
+   "name": "associative\u2218fma-fusion@[1, 1]",
+   "a_idx": 22,
+   "b_idx": 59,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 107,
+   "name": "distribute\u2218half-angle-product@[0, 0]",
+   "a_idx": 18,
+   "b_idx": 39,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 108,
+   "name": "cancellation\u2218involution@[]",
+   "a_idx": 6,
+   "b_idx": 1,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 109,
+   "name": "reverse-associative\u2218fma-fusion@[1]",
+   "a_idx": 27,
+   "b_idx": 59,
+   "position": [
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 110,
+   "name": "sin-angle-addition\u2218identity@[0, 0, 0]",
+   "a_idx": 36,
+   "b_idx": 14,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 111,
+   "name": "cos-angle-addition\u2218halving@[0, 1, 0]",
+   "a_idx": 37,
+   "b_idx": 21,
+   "position": [
+    0,
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 112,
+   "name": "commutative\u2218annihilator@[1]",
+   "a_idx": 12,
+   "b_idx": 15,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 113,
+   "name": "reverse-angle-addition\u2218associative@[0, 0]",
+   "a_idx": 38,
+   "b_idx": 22,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 114,
+   "name": "reverse-angle-addition\u2218exp-homomorphism@[0, 0]",
+   "a_idx": 38,
+   "b_idx": 45,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "dropped"
+  },
+  {
+   "pool_idx": 115,
+   "name": "halving\u2218even-negation@[0]",
+   "a_idx": 21,
+   "b_idx": 35,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 116,
+   "name": "associative\u2218associative@[0]",
+   "a_idx": 22,
+   "b_idx": 22,
+   "position": [
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 117,
+   "name": "half-angle-product\u2218odd-negation@[0, 0, 1]",
+   "a_idx": 39,
+   "b_idx": 30,
+   "position": [
+    0,
+    0,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 118,
+   "name": "cos-angle-addition\u2218odd-negation@[1, 1, 0]",
+   "a_idx": 37,
+   "b_idx": 30,
+   "position": [
+    1,
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 119,
+   "name": "commutative\u2218associative@[1]",
+   "a_idx": 11,
+   "b_idx": 22,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 120,
+   "name": "cancellation\u2218commutative@[]",
+   "a_idx": 6,
+   "b_idx": 12,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 121,
+   "name": "reverse-angle-addition\u2218involution@[0, 1]",
+   "a_idx": 38,
+   "b_idx": 1,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 122,
+   "name": "reverse-associative\u2218reverse-associative@[0, 1]",
+   "a_idx": 29,
+   "b_idx": 28,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 123,
+   "name": "sin-angle-addition\u2218odd-negation@[0, 0, 0]",
+   "a_idx": 36,
+   "b_idx": 33,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 124,
+   "name": "reverse-associative\u2218commutative@[0, 1]",
+   "a_idx": 28,
+   "b_idx": 12,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 125,
+   "name": "associative\u2218exp-homomorphism@[1, 0]",
+   "a_idx": 24,
+   "b_idx": 45,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 126,
+   "name": "distribute\u2218reverse-associative@[0, 1]",
+   "a_idx": 18,
+   "b_idx": 29,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 127,
+   "name": "associative\u2218pythagorean@[1]",
+   "a_idx": 22,
+   "b_idx": 40,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 128,
+   "name": "idempotent\u2218idempotent@[]",
+   "a_idx": 16,
+   "b_idx": 16,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 129,
+   "name": "factor\u2218exp-homomorphism@[1, 1]",
+   "a_idx": 19,
+   "b_idx": 45,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 130,
+   "name": "diff-of-squares\u2218odd-negation@[0, 1]",
+   "a_idx": 58,
+   "b_idx": 30,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 131,
+   "name": "reverse-angle-addition\u2218associative@[0, 0]",
+   "a_idx": 38,
+   "b_idx": 24,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 132,
+   "name": "associative\u2218sin-angle-addition@[0]",
+   "a_idx": 22,
+   "b_idx": 36,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 133,
+   "name": "doubling\u2218associative@[1]",
+   "a_idx": 20,
+   "b_idx": 24,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 134,
+   "name": "associative\u2218associative@[1, 1]",
+   "a_idx": 22,
+   "b_idx": 25,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 135,
+   "name": "associative\u2218distribute@[1]",
+   "a_idx": 23,
+   "b_idx": 18,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 136,
+   "name": "doubling\u2218sin-angle-addition@[1]",
+   "a_idx": 20,
+   "b_idx": 36,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 137,
+   "name": "fma-fusion\u2218reverse-associative@[0]",
+   "a_idx": 59,
+   "b_idx": 28,
+   "position": [
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 138,
+   "name": "distribute\u2218fma-fusion@[]",
+   "a_idx": 18,
+   "b_idx": 59,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 139,
+   "name": "distribute\u2218commutative@[1, 1]",
+   "a_idx": 18,
+   "b_idx": 9,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 140,
+   "name": "reverse-associative\u2218reverse-associative@[]",
+   "a_idx": 29,
+   "b_idx": 29,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 141,
+   "name": "sin-angle-addition\u2218commutative@[1, 1, 0]",
+   "a_idx": 36,
+   "b_idx": 11,
+   "position": [
+    1,
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 142,
+   "name": "halving\u2218reverse-associative@[0]",
+   "a_idx": 21,
+   "b_idx": 26,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 143,
+   "name": "associative\u2218doubling@[0]",
+   "a_idx": 23,
+   "b_idx": 20,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 144,
+   "name": "reverse-associative\u2218associative@[0, 0]",
+   "a_idx": 26,
+   "b_idx": 22,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 145,
+   "name": "reverse-associative\u2218associative@[1]",
+   "a_idx": 29,
+   "b_idx": 22,
+   "position": [
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 146,
+   "name": "associative\u2218cancellation@[1, 1]",
+   "a_idx": 25,
+   "b_idx": 2,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 147,
+   "name": "halving\u2218idempotent@[1]",
+   "a_idx": 21,
+   "b_idx": 16,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 148,
+   "name": "associative\u2218commutative@[0]",
+   "a_idx": 22,
+   "b_idx": 10,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 149,
+   "name": "doubling\u2218identity@[]",
+   "a_idx": 20,
+   "b_idx": 14,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 150,
+   "name": "associative\u2218associative@[0]",
+   "a_idx": 23,
+   "b_idx": 22,
+   "position": [
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 151,
+   "name": "commutative\u2218pythagorean@[1]",
+   "a_idx": 10,
+   "b_idx": 40,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 152,
+   "name": "associative\u2218reverse-associative@[1, 1]",
+   "a_idx": 23,
+   "b_idx": 26,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 153,
+   "name": "even-negation\u2218doubling@[0]",
+   "a_idx": 35,
+   "b_idx": 20,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 154,
+   "name": "distribute\u2218cancellation@[0, 0]",
+   "a_idx": 18,
+   "b_idx": 6,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 155,
+   "name": "half-angle-product\u2218associative@[0, 0, 0]",
+   "a_idx": 39,
+   "b_idx": 22,
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 156,
+   "name": "associative\u2218halving@[0]",
+   "a_idx": 23,
+   "b_idx": 21,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 157,
+   "name": "exp-homomorphism\u2218reverse-associative@[1, 0]",
+   "a_idx": 45,
+   "b_idx": 26,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 158,
+   "name": "odd-negation\u2218half-angle-product@[0, 0]",
+   "a_idx": 32,
+   "b_idx": 39,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 159,
+   "name": "associative\u2218cancellation@[1, 0]",
+   "a_idx": 24,
+   "b_idx": 2,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 160,
+   "name": "even-negation\u2218odd-negation@[0]",
+   "a_idx": 35,
+   "b_idx": 31,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 161,
+   "name": "distribute\u2218idempotent@[1, 0]",
+   "a_idx": 18,
+   "b_idx": 16,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 162,
+   "name": "distribute\u2218identity@[1]",
+   "a_idx": 18,
+   "b_idx": 14,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 163,
+   "name": "sin-angle-addition\u2218commutative@[]",
+   "a_idx": 36,
+   "b_idx": 9,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 164,
+   "name": "halving\u2218sin-angle-addition@[1]",
+   "a_idx": 21,
+   "b_idx": 36,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 165,
+   "name": "distribute\u2218half-angle-product@[1]",
+   "a_idx": 18,
+   "b_idx": 39,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 166,
+   "name": "associative\u2218factor@[1, 1]",
+   "a_idx": 22,
+   "b_idx": 19,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 167,
+   "name": "associative\u2218inverse-annihilation@[1]",
+   "a_idx": 22,
+   "b_idx": 3,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 168,
+   "name": "commutative\u2218commutative@[0]",
+   "a_idx": 9,
+   "b_idx": 10,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 169,
+   "name": "involution\u2218associative@[]",
+   "a_idx": 1,
+   "b_idx": 22,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 170,
+   "name": "odd-negation\u2218doubling@[0, 0]",
+   "a_idx": 31,
+   "b_idx": 20,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 171,
+   "name": "cancellation\u2218odd-negation@[]",
+   "a_idx": 2,
+   "b_idx": 33,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 172,
+   "name": "reverse-associative\u2218associative@[0, 1]",
+   "a_idx": 26,
+   "b_idx": 22,
+   "position": [
+    0,
+    1
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 173,
+   "name": "diff-of-squares\u2218reverse-angle-addition@[0, 0]",
+   "a_idx": 58,
+   "b_idx": 38,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 174,
+   "name": "reverse-angle-addition\u2218reverse-associative@[0, 0]",
+   "a_idx": 38,
+   "b_idx": 29,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 175,
+   "name": "idempotent\u2218commutative@[]",
+   "a_idx": 16,
+   "b_idx": 11,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 176,
+   "name": "commutative\u2218diff-of-squares@[0]",
+   "a_idx": 12,
+   "b_idx": 58,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 177,
+   "name": "associative\u2218commutative@[1, 1]",
+   "a_idx": 22,
+   "b_idx": 10,
+   "position": [
+    1,
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 178,
+   "name": "reverse-associative\u2218commutative@[0, 0]",
+   "a_idx": 28,
+   "b_idx": 10,
+   "position": [
+    0,
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 179,
+   "name": "factor\u2218associative@[1, 0]",
+   "a_idx": 19,
+   "b_idx": 23,
+   "position": [
+    1,
+    0
+   ],
+   "oracle": "untestable"
+  },
+  {
+   "pool_idx": 180,
+   "name": "idempotent\u2218odd-negation@[]",
+   "a_idx": 17,
+   "b_idx": 30,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 181,
+   "name": "identity\u2218cos-angle-addition@[]",
+   "a_idx": 13,
+   "b_idx": 37,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 182,
+   "name": "commutative\u2218inverse-annihilation@[1]",
+   "a_idx": 12,
+   "b_idx": 3,
+   "position": [
+    1
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 183,
+   "name": "even-negation\u2218halving@[0]",
+   "a_idx": 34,
+   "b_idx": 21,
+   "position": [
+    0
+   ],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 184,
+   "name": "cancellation\u2218reverse-angle-addition@[]",
+   "a_idx": 2,
+   "b_idx": 38,
+   "position": [],
+   "oracle": "kept"
+  },
+  {
+   "pool_idx": 185,
+   "name": "sin-angle-addition\u2218associative@[1, 0, 0]",
+   "a_idx": 36,
+   "b_idx": 22,
+   "position": [
+    1,
+    0,
+    0
+   ],
+   "oracle": "kept"
+  }
+ ]
+}

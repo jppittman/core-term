@@ -14,8 +14,9 @@
 //! docs/plans/2026-07-07-guided-saturation-redesign.md. The supervised
 //! extraction-head trainer that replaced it (value-head backward pass,
 //! budget-bounded episodes, the bootstrap binary) was closed as an honest
-//! negative — docs/paper/2026-08-egraph-nnue-parity.md — and deleted on
-//! 2026-09-01; its history is in VCS.
+//! negative — workshop paper on branch `claude/workshop-writeup`, PR #1072,
+//! closed without merging (see docs/plans/2026-09-01-schedule-cost-model-denotation.md)
+//! — and deleted on 2026-09-01; its history is in VCS.
 
 #[cfg(feature = "training")]
 pub mod factored;
@@ -34,3 +35,18 @@ pub mod structural;
 
 #[cfg(feature = "training")]
 pub mod quarantine;
+
+#[cfg(feature = "training")]
+pub mod guide_linear;
+
+#[cfg(feature = "training")]
+pub mod guide_bilinear;
+
+#[cfg(feature = "training")]
+pub mod sh_family;
+
+#[cfg(feature = "training")]
+pub mod bezier_family;
+
+#[cfg(feature = "training")]
+pub mod r2g;

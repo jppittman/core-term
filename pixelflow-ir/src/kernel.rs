@@ -16,7 +16,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::arena::{ExprArena, ExprId, ExprNode};
+use crate::arena::{ExprArena, ExprId, ExprNode, UniformDecl, UniformIdentity};
 use crate::kind::OpKind;
 
 /// One bit per placeholder index, set while that index is claimed by a binder
@@ -27,8 +27,8 @@ use crate::kind::OpKind;
 /// 0 while B still holds 1, and the next claim hands out 1 again.
 static PLACEHOLDERS_IN_USE: AtomicU64 = AtomicU64::new(0);
 
-/// Placeholder indices sit above the coordinate (`0..4`) and reduction index
-/// (`4..8`) spaces. A `Kernel` never contains the compiler's manifold-param
+/// Placeholder indices sit above the retired coordinate space (`0..4`, of
+/// which only X and Y are live) and the reduction index space (`4..8`). A `Kernel` never contains the compiler's manifold-param
 /// slots (the value-producing macro path rejects manifold params outright), so
 /// everything from 8 up is free.
 const PLACEHOLDER_BASE: u32 = 8;
@@ -89,6 +89,7 @@ impl Drop for BinderScope {
 ///
 /// Panics when all four slots are live, i.e. a fifth nested reduction.
 fn lowest_free_index_slot(arena: &ExprArena) -> u8 {
+    const BINDER_BASE: usize = crate::arena::REDUCE_BINDER_BASE as usize;
     let mut used = [false; 4];
     for node in arena.nodes_raw() {
         let ExprNode::Nary(OpKind::Reduce, start, len) = node else {
@@ -96,16 +97,29 @@ fn lowest_free_index_slot(arena: &ExprArena) -> u8 {
         };
         let children = arena.nary_children_slice(*start, *len);
         // Child 1 is the bound index, stored as a `Const` slot number.
+        // `checked_sub`, not `- BASE`: a slot number below the base is a
+        // retired axis or a coordinate, and subtracting past zero would wrap
+        // in release, make `get_mut` return `None`, and leave a live binder's
+        // bit unmarked — so this would hand out an index already in use and
+        // two nested reductions would silently share a slot.
         if let Some(ExprNode::Const(v)) = children.get(1).map(|id| arena.node(*id))
-            && let Some(bit) = used.get_mut(*v as usize - 4)
+            && let Some(slot) = (*v as usize).checked_sub(BINDER_BASE)
+            && let Some(bit) = used.get_mut(slot)
         {
             *bit = true;
         }
     }
     used.iter()
         .position(|u| !u)
-        .map(|i| i as u8 + 4)
-        .expect("more than 4 live nested reductions: the index space is 4..8")
+        .map(|i| i as u8 + crate::arena::REDUCE_BINDER_BASE)
+        .unwrap_or_else(|| {
+            panic!(
+                "more than {} live nested reductions: the index space is {}..{}",
+                used.len(),
+                BINDER_BASE,
+                BINDER_BASE + used.len()
+            )
+        })
 }
 
 /// The algebra a reduction folds under: an associative combining operation
@@ -149,6 +163,89 @@ impl Monoid {
     }
 }
 
+/// A named scalar argument of a kernel: the JIT tier's spelling of a
+/// builder's struct field.
+///
+/// Creating one mints an identity; the handle is the only way to set the
+/// value later, so a kernel's arguments are exactly the handles its author
+/// kept. It composes as a leaf ([`Uniform::kernel`]) or stands in for a
+/// builder's scalar parameter ([`Scalar`]); either way the value is invariant
+/// across the lattice and unknown until the call, so the compiler hoists
+/// everything that depends only on it into the per-call prologue and never
+/// folds it.
+///
+/// Two handles from two `new` calls are two arguments, even with equal
+/// defaults; one handle read from twenty places is one argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Uniform {
+    decl: UniformDecl,
+}
+
+impl Uniform {
+    /// A new argument, holding `default` until a block binds it.
+    #[must_use]
+    pub fn new(default: f32) -> Self {
+        Self {
+            decl: UniformDecl {
+                id: UniformIdentity::mint(),
+                default,
+            },
+        }
+    }
+
+    /// The declaration this handle carries into every arena that reads it.
+    #[must_use]
+    pub fn decl(self) -> UniformDecl {
+        self.decl
+    }
+
+    /// Which argument this is.
+    #[must_use]
+    pub fn identity(self) -> UniformIdentity {
+        self.decl.id
+    }
+
+    /// The value the kernel holds for this argument when nothing binds it.
+    #[must_use]
+    pub fn default_value(self) -> f32 {
+        self.decl.default
+    }
+
+    /// The leaf, as a fragment: composes like any [`Kernel`].
+    #[must_use]
+    pub fn kernel(self) -> Kernel {
+        let mut a = ExprArena::new();
+        let slot = a.declare_uniform(self.decl);
+        let r = a.push_uniform(slot);
+        Kernel::wrap(a, r)
+    }
+}
+
+/// What a builder accepts for a scalar parameter. The *type* decides whether
+/// the value is folded into the fragment as a constant or declared as a
+/// uniform slot: an `f32` folds, so every call site that passes one keeps its
+/// meaning, and a [`Uniform`] handle makes the parameter an argument of the
+/// compiled kernel instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Scalar {
+    /// Folded in: part of the kernel.
+    Const(f32),
+    /// Bound per call: an argument of the kernel.
+    Uniform(Uniform),
+}
+
+impl From<f32> for Scalar {
+    fn from(v: f32) -> Self {
+        Self::Const(v)
+    }
+}
+
+impl From<Uniform> for Scalar {
+    fn from(u: Uniform) -> Self {
+        Self::Uniform(u)
+    }
+}
+
 /// A composed expression fragment: the front-end value.
 #[derive(Clone)]
 pub struct Kernel {
@@ -179,17 +276,6 @@ impl Kernel {
     pub fn y() -> Self {
         Self::coord(1)
     }
-    /// The Z coordinate.
-    #[must_use]
-    pub fn z() -> Self {
-        Self::coord(2)
-    }
-    /// The W coordinate.
-    #[must_use]
-    pub fn w() -> Self {
-        Self::coord(3)
-    }
-
     fn coord(i: u8) -> Self {
         let mut a = ExprArena::new();
         let r = a.push_var(i);
@@ -205,8 +291,31 @@ impl Kernel {
     }
 
     /// Adopt an already-built fragment — the `kernel!` macro's entry point.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the arena names a retired coordinate axis (`Var(2)` or
+    /// `Var(3)`, the old Z and W). A lattice has
+    /// [`COORD_AXES`](crate::arena::COORD_AXES) axes; a scalar that is the
+    /// same at every sample is a [`Uniform`], not an axis of extent 1. This
+    /// is where the refusal lives because `Var` is also a reduction binder's
+    /// index and a rewrite rule's metavariable, and a `Kernel` is the one
+    /// thing that becomes machine code.
     #[must_use]
     pub fn from_parts(arena: ExprArena, root: ExprId) -> Self {
+        assert!(
+            arena.retired_axis(root).is_none(),
+            "Kernel::from_parts: the arena names Var({}), which was the {} \
+             coordinate; a lattice has {} axes and a per-call scalar is a \
+             Uniform (docs/plans/2026-09-06-lattice-is-the-index.md)",
+            arena.retired_axis(root).unwrap_or_default(),
+            if arena.retired_axis(root) == Some(2) {
+                "Z"
+            } else {
+                "W"
+            },
+            crate::arena::COORD_AXES,
+        );
         Self::wrap(arena, root)
     }
 
@@ -577,24 +686,36 @@ impl Kernel {
     }
 
     /// Sample `self` at warped coordinates — contramap / `.at()`. Each of
-    /// `cx..cw` is itself a kernel of the outer coordinates; the inner's
-    /// `X/Y/Z/W` are substituted by them.
+    /// `cx`, `cy` is itself a kernel of the outer coordinates; the inner's
+    /// `X`/`Y` are substituted by them.
+    ///
+    /// Two coordinates, because a lattice has two axes. A scalar that was a
+    /// third or fourth coordinate is a [`Uniform`], and it needs no
+    /// substitution: it is already the same value everywhere.
     #[must_use]
-    pub fn at(&self, cx: &Kernel, cy: &Kernel, cz: &Kernel, cw: &Kernel) -> Self {
+    pub fn at(&self, cx: &Kernel, cy: &Kernel) -> Self {
         let mut arena = self.inner.arena.clone();
         let x = arena.splice(&cx.inner.arena, cx.inner.root);
         let y = arena.splice(&cy.inner.arena, cy.inner.root);
-        let z = arena.splice(&cz.inner.arena, cz.inner.root);
-        let w = arena.splice(&cw.inner.arena, cw.inner.root);
-        let root = arena.substitute_vars_with(self.inner.root, &[(0, x), (1, y), (2, z), (3, w)]);
+        let root = arena.substitute_vars_with(self.inner.root, &[(0, x), (1, y)]);
         Self::wrap(arena, root)
     }
 
-    /// The derivative `∂self/∂var` (0=X, 1=Y, 2=Z), resolved symbolically at
+    /// The derivative `∂self/∂var` (0=X, 1=Y), resolved symbolically at
     /// compile time. The building block of screen-space antialiasing: no jet
     /// domain, just an expression the calculus differentiates.
+    ///
+    /// # Panics
+    ///
+    /// Panics unless `var` names a coordinate axis.
     #[must_use]
     pub fn dwrt(&self, var: u8) -> Self {
+        assert!(
+            (var as usize) < crate::arena::COORD_AXES,
+            "Kernel::dwrt: no axis {var}; a lattice has {} \
+             (0 = X, 1 = Y)",
+            crate::arena::COORD_AXES
+        );
         let mut arena = self.inner.arena.clone();
         let v = arena.push_const(f32::from(var));
         let root = arena.push_binary(OpKind::Dwrt, self.inner.root, v);
@@ -677,6 +798,27 @@ impl Bits {
         }
     }
 
+    /// `mask ? if_true : if_false` — a choice between two lane patterns.
+    ///
+    /// The same IR node as [`Kernel::select`], because there was never a
+    /// second one to write: `Select` is a bitwise blend on every backend
+    /// (`andps`/`andnps`/`orps`, `vpternlogd 0xCA`, `BSL`), so a choice
+    /// between patterns is the instruction that already exists. What is new
+    /// is the type, and it is the whole point — a colour packed into a word
+    /// can now be chosen as ONE value rather than a channel at a time.
+    ///
+    /// An associated function, not a method, and the mask stays a [`Kernel`]:
+    /// a comparison mask is a bit pattern that still travels as a `Kernel`
+    /// (see this type's docs), so `mask.select(..)` is already taken and means
+    /// a choice between *numbers*. Naming the domain of the arms — which is
+    /// the domain of the result — is what says which of the two this is.
+    #[must_use]
+    pub fn select(mask: &Kernel, if_true: &Self, if_false: &Self) -> Self {
+        Self {
+            inner: mask.select(&if_true.inner, &if_false.inner),
+        }
+    }
+
     /// Reinterpret as a [`Kernel`] for storage or as a kernel root.
     ///
     /// The lanes still hold a bit pattern; this is the deliberate, named exit
@@ -696,7 +838,7 @@ mod tests {
 
     fn eval(k: &Kernel, x: f32, y: f32) -> f32 {
         let (arena, root) = k.parts();
-        eval_scalar(arena, root, &[x, y, 0.0, 0.0], &BindingTable::empty())
+        eval_scalar(arena, root, &[x, y], &BindingTable::empty())
     }
 
     #[test]
@@ -742,8 +884,6 @@ mod tests {
         let warped = body.at(
             &Kernel::x().add(&Kernel::constant(1.0)),
             &Kernel::y().mul(&Kernel::constant(2.0)),
-            &Kernel::z(),
-            &Kernel::w(),
         );
         assert_eq!(eval(&warped, 3.0, 4.0), 4.0 * 8.0);
     }
@@ -758,6 +898,31 @@ mod tests {
         assert_eq!(eval(&packed, 2.9, 3.7).to_bits(), 0x0302);
     }
 
+    /// A choice between two packed words is the same blend, one word at a
+    /// time: selecting the words is bit-exact with selecting each byte before
+    /// it is packed. That equality is what lets a colour be one `Select`.
+    #[test]
+    fn selecting_packed_words_is_selecting_the_bytes() {
+        let pack = |lo: &Kernel, hi: &Kernel| hi.trunc_to_int().shl(8).or(&lo.trunc_to_int());
+        let mask = Kernel::x().lt(&Kernel::constant(4.0));
+        let (a_lo, a_hi) = (Kernel::constant(2.0), Kernel::constant(3.0));
+        let (b_lo, b_hi) = (Kernel::constant(9.0), Kernel::constant(7.0));
+
+        let on_words = Bits::select(&mask, &pack(&a_lo, &a_hi), &pack(&b_lo, &b_hi));
+        let on_bytes = pack(&mask.select(&a_lo, &b_lo), &mask.select(&a_hi, &b_hi));
+
+        for (x, want) in [(1.0, 0x0302), (9.0, 0x0709)] {
+            assert_eq!(
+                eval(&on_words.clone().into_kernel(), x, 0.0).to_bits(),
+                want
+            );
+            assert_eq!(
+                eval(&on_bytes.clone().into_kernel(), x, 0.0).to_bits(),
+                want
+            );
+        }
+    }
+
     /// The count is still checked at runtime; the OPERAND no longer needs
     /// checking, because `Kernel::x().shl(32)` does not compile at all now —
     /// `shl` exists only on [`Bits`], which only `trunc_to_int` produces.
@@ -765,6 +930,82 @@ mod tests {
     #[should_panic(expected = "32-bit lane")]
     fn shl_past_the_lane_is_refused() {
         let _refused = Kernel::x().trunc_to_int().shl(32);
+    }
+
+    /// A handle composes like any kernel, one instance is one slot however
+    /// many times it is read, two instances are two, and `dwrt` of it is 0.
+    #[test]
+    fn a_uniform_is_one_argument_however_often_it_is_read() {
+        use crate::passes::lower_dwrt_owned;
+        let cx = Uniform::new(1.0);
+        let r = Uniform::new(2.0);
+        // (x - cx)² + r·r — cx read twice, r read twice, from separate kernels.
+        let dx = Kernel::x().sub(&cx.kernel());
+        let k = dx
+            .mul(&Kernel::x().sub(&cx.kernel()))
+            .add(&r.kernel().mul(&r.kernel()));
+        let (arena, root) = k.parts();
+        assert_eq!(arena.uniforms(), &[cx.decl(), r.decl()]);
+        assert_eq!(eval(&k, 3.0, 0.0), 4.0 + 4.0);
+        let bound = BindingTable::empty()
+            .bind_uniforms(arena, &[(cx.identity(), 0.0), (r.identity(), 1.0)])
+            .expect("both are arguments");
+        assert_eq!(eval_scalar(arena, root, &[3.0, 0.0], &bound), 10.0);
+
+        // ∂/∂x = 2(x − cx): the uniform differentiates to zero.
+        let (out, oroot) = lower_dwrt_owned(arena, root).expect("calculus");
+        let _ = oroot;
+        let ddx = k.dx();
+        let (da, dr) = ddx.parts();
+        let (out2, oroot2) = lower_dwrt_owned(da, dr).expect("calculus");
+        assert_eq!(
+            eval_scalar(&out2, oroot2, &[3.0, 0.0], &BindingTable::empty()),
+            4.0
+        );
+        assert_eq!(out.uniforms(), arena.uniforms());
+    }
+
+    /// A hand-built arena that names the retired Z axis is refused where it
+    /// would become a kernel. `Var` still carries reduction indices and the
+    /// rewrite tier's pattern metavariables, so the arena cannot refuse the
+    /// node itself; this is the boundary where it means a coordinate.
+    #[test]
+    #[should_panic(expected = "which was the Z coordinate")]
+    fn an_arena_naming_a_retired_axis_is_not_a_kernel() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let z = a.push_var(2);
+        let root = a.push_binary(OpKind::Add, x, z);
+        let _refused = Kernel::from_parts(a, root);
+    }
+
+    /// And the same for W, so neither index is quietly readmitted.
+    #[test]
+    #[should_panic(expected = "which was the W coordinate")]
+    fn the_fourth_axis_is_refused_too() {
+        let mut a = ExprArena::new();
+        let w = a.push_var(3);
+        let _refused = Kernel::from_parts(a, w);
+    }
+
+    /// A reduction binder's index sits in the same `Var` space and is not a
+    /// coordinate — the guard must not catch it.
+    #[test]
+    fn a_reduction_binder_is_not_a_retired_axis() {
+        let k = Kernel::sum_over(4, |i| i.add(&Kernel::x()));
+        assert_eq!(eval(&k, 1.0, 0.0), 6.0 + 4.0);
+    }
+
+    #[test]
+    fn scalar_is_chosen_by_type() {
+        let u = Uniform::new(0.0);
+        assert!(matches!(Scalar::from(1.5), Scalar::Const(v) if v == 1.5));
+        assert!(matches!(Scalar::from(u), Scalar::Uniform(h) if h == u));
+        assert_ne!(
+            Uniform::new(0.0),
+            Uniform::new(0.0),
+            "two instances are two arguments"
+        );
     }
 
     #[test]
@@ -777,7 +1018,7 @@ mod tests {
         let ddx = dist.dx();
         let (arena, root) = ddx.parts();
         let (out, oroot) = lower_dwrt_owned(arena, root).expect("calculus");
-        let got = eval_scalar(&out, oroot, &[3.0, 4.0, 0.0, 0.0], &BindingTable::empty());
+        let got = eval_scalar(&out, oroot, &[3.0, 4.0], &BindingTable::empty());
         assert!((got - 0.6).abs() < 1e-5);
     }
 }

@@ -401,7 +401,115 @@ the seam is deleted whole.
 `docs/paper/2026-08-egraph-nnue-parity.md` is not on this branch (it lives on
 `claude/workshop-writeup`, PR #1072). When it is amended, its future-work
 must read: **closed for extraction over expressions; reopens as a residual
-schedule-cost model when codegen has schedules to choose** — with §9's four
+schedule-cost model when codegen has schedules to choose** — with the paper's own §9 and its four
 "if revisited" items (re-run 2b, predict the residual over the DP, top-k
 rerank, relaxation as a training mechanism) pointed at §2 of this document,
 which is their denotation.
+
+---
+
+## 9. What `analytic` has to be fitted to (added 2026-09-05)
+
+§2.1 defines `analytic(E) = Σ cycles(op) · trips(level(op))` and §2.2 lists
+register pressure, footprint and cross-level reloads as the interactions
+`residual` exists to absorb. Both halves are claims about what predicts time,
+and until 2026-09-05 neither had been checked against a clock at a real shape.
+It now has been, one layer down — over allocations of a fixed schedule rather
+than over schedules — and the measurement is the thing any future version of
+this document must be fitted to.
+
+**The harness.** `pixelflow-pipeline`'s `collapse_cost` binary and its
+`collapse_bench` module (see
+`2026-09-01-register-allocation-escape-hatches.md`, the 2026-09-05 block, for
+the full tables). It captures a corpus of kernels **with the shapes they are
+baked at** as a fixture, compiles each exactly as `Lattice::bake` does, times
+the emitted collapse kernel, and records the emitted code's static features
+**per scope** of the collapse nest — so a trip count can weight them — as one
+JSONL row per (kernel, allocation, tier, pass). `analyze` scores closed-form
+predictors against those rows on two things: rank correlation across kernels,
+and the **sign of the delta between two builds of the same kernel**, which is
+the decision a cost model is actually asked to make.
+
+That second score is the reusable part of the method here. Five allocations ×
+two tiers × 208 kernels found predictors that rank kernels at ρ = 0.98 and get
+the *direction* of a paired difference right 27% of the time — worse than a
+coin — because ranking is dominated by how big a kernel is and the decision is
+not. §5.3's Round-1 lesson ("report B/A and B/C, never a Spearman on a fixed
+distribution as the headline") is the same statement about the layer above;
+this is a worked instance with numbers, and the paired sign test is what makes
+it visible cheaply, before an end-to-end arm is worth running.
+
+**What it found, and what that means for `analytic`.** The quantity three
+register-allocator policies were built to minimise — dynamic memory operations
+per call — is *anti-correlated* with time on the comparisons those policies
+turned on. The term that fixes it is **rematerialization**: a value the
+allocator rebuilds instead of reloading is not a memory operation and was
+therefore invisible to the metric, while being 3× larger under the policy that
+lost. `Σ scopes (loads + stores + remats) × trips` gets the sign right 99.1%
+(AVX-512) / 97.9% (SSE2).
+
+Three consequences for §2:
+
+1. **`trips` is load-bearing and already measurable.** Weighting by the scope's
+   trip count is what separates a 98% predictor from a 78% one on the same
+   counts (`static_mem_ops` against `dyn_traffic`), and `LatticeShape` already
+   reaches the compiler — it is the emitter it does not reach. §2.1's `trips`
+   is not a modelling assumption to be validated later; it is the largest
+   single term measured so far.
+2. **The footprint row of §2.2's interaction table is understated.** It says
+   "spill slots and hoist slots are memory". The measurement says the cost of
+   the (k+1)-th hoisted value is *not* only its memory traffic — an allocator
+   that avoids the slot by rebuilding the value pays a different, larger price
+   — so a pressure term written in loads and stores will mis-price exactly the
+   trade it exists to price. Whatever `analytic` charges for pressure has to
+   charge for rematerialization too.
+3. **The candidate list has to come from what the emitter emits.** Every
+   predictor tried before this one was a variation on the losing quantity, and
+   the winner was not reachable from that vocabulary. `emit::traffic` counts
+   loads, kept loads, stores and rematerializations apart from each other for
+   this reason: it does not assume which of them costs, so the next such
+   question is answered by the data rather than by the metric that was already
+   chosen.
+
+**What the predictor cannot see, and the first term `residual` is for (added
+2026-09-06).** `Σ (loads + stores + remats) × trips` weights every schedule
+entry as if it executes, so it is blind by construction to control flow inside
+the collapse body — and the emitter has some: a `Select` whose arm is exclusive
+to it is skipped, per batch, when the mask is uniform. S3b of
+[the lattice plan](2026-09-06-kernel-with-a-lattice.md) made that fire on a
+scene (642 of 401 body entries under a guard, ranges nested) and the harness
+scored the change at **+40.8% (SSE2) / +32.1% (AVX-512)** trip-weighted memory
+operations while the clock it was validated against moved **−7.2% / −8.3%**.
+Both halves of that are real: a guard forces values live across the branch into
+slots, which the metric counts in full, and it removes a whole range from most
+batches, which the metric cannot count at all.
+
+That is not a defect to patch with a branch-probability guess. It names the
+first concrete **profile-dependent** term the learned residual of §2.2 exists
+for: **mask coherence** — how often a mask is uniform across a batch, and how
+predictable that is. It is a property of the *data* a kernel runs on, invisible
+to any static analysis of the expression, and it is exactly what decides
+whether the same guard is a 3× win (a sphere's silhouette: uniformly false in
+97% of batches) or a 3× loss (a glyph's coverage: varying per lane almost
+everywhere). Codegen ships without it by bounding the downside instead —
+refusing a guard whose arm costs less than a mispredict — which is sound and
+leaves the whole upside unclaimed. Claiming it needs a measured coherence per
+mask, per shape, which is a residual over the analytic table and nothing the
+table can hold.
+
+Two method notes it also settles, cheaply: `analytic` will have to carry a
+`trips`-like weight that a *branch* can reduce, or the two regimes will
+disagree in sign the moment codegen chooses control flow; and the harness's
+per-kernel wall clock is not trustworthy below ~10% on a shared host — two runs
+of byte-identical machine code measured 4× apart on the smallest glyph kernels,
+against an A/A floor inside each run of ~1%, so the corpus's aggregate is the
+number to read and a per-kernel ratio is not.
+
+**The trigger this does not satisfy.** §5.2 opens the reranker work when an
+e-graph over a production kernel admits ≥2 extractions with distinct *level*
+assignments and a measured oracle beats the analytic DP. Nothing here creates
+a level alternative — the five variants share one schedule and differ only in
+allocation — so §5.1's "nothing to learn yet" stands unchanged. What has
+changed is that when levels do become choices, the instrument that says whether
+a level assignment was a good one already exists, and it measures at the shape
+rather than at a fixed 64-tuple input buffer the way `BenchSession` does.

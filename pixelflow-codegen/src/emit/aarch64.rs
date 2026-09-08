@@ -156,6 +156,61 @@ pub fn emit_ldr_x(code: &mut Vec<u8>, dst: Xr, addr: Mem) {
     );
 }
 
+/// Bytes moved by an `s` (32-bit scalar SIMD&FP) access.
+const S_BYTES: u32 = 4;
+
+/// `ldr s<dst>, [addr]` — load one `f32` into lane 0 of a vector register,
+/// zeroing the other lanes. The offset scales by 4; past the 12-bit
+/// immediate it goes through IP0 like a deep spill slot.
+pub fn emit_ldr_s(code: &mut Vec<u8>, dst: Reg, addr: Mem) {
+    assert!(
+        addr.offset.is_multiple_of(S_BYTES),
+        "32-bit access offset {} is not 4-byte aligned",
+        addr.offset
+    );
+    let addr = if addr.offset / S_BYTES > MAX_IMM12 {
+        address_in_ip0(code, addr)
+    } else {
+        addr
+    };
+    emit32(
+        code,
+        0xBD40_0000
+            | ((addr.offset / S_BYTES) << 10)
+            | ((addr.base.0 as u32) << 5)
+            | (dst.0 as u32),
+    );
+}
+
+/// `dup v<dst>.4s, v<src>.s[0]` — broadcast lane 0 to every lane.
+pub fn emit_dup_lane0(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, 0x4E04_0400 | ((src.0 as u32) << 5) | (dst.0 as u32));
+}
+
+/// `dst = splat(block[offset])`: `ldr x9, [x0, #ctx_slot*8]` fetches the
+/// block's base out of the context, `ldr s<dst>, [x9, #offset*4]` the value,
+/// and `dup` spreads it. `x9` is the base scratch the gather already claims.
+pub fn emit_uniform_load(code: &mut Vec<u8>, dst: Reg, load: super::UniformLoad) {
+    const BASE_GPR: Xr = Xr(9);
+    emit_ldr_x(
+        code,
+        BASE_GPR,
+        Mem {
+            base: xr::X0,
+            offset: u32::from(load.ctx_slot) * X_BYTES,
+        },
+    );
+    emit_ldr_s(
+        code,
+        dst,
+        Mem {
+            base: BASE_GPR,
+            offset: u32::from(load.offset) * S_BYTES,
+        },
+    );
+    emit_dup_lane0(code, dst, dst);
+}
+
 /// `ldr w<dst>, [base, w<index>, uxtw #2]` — load one 32-bit element at
 /// `base + index * 4` into the 32-bit view of a general register.
 ///
@@ -653,15 +708,35 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 // Compound Operations (emit full instruction sequences)
 // =============================================================================
 
+/// How many registers this backend's encodings need beyond their operands.
+///
+/// Only the reciprocal estimates: `FRECPE`/`FRSQRTE` are estimates, and the
+/// Newton-Raphson step that refines them needs somewhere to hold the
+/// correction. `Neg` and `Abs` are single instructions here (`FNEG`, `FABS`),
+/// unlike the x86 backends where they materialize a sign mask, and `BSL`
+/// blends a select from its three operands.
+pub(crate) fn temps_for(op: &super::ScheduledOp) -> u8 {
+    use super::ScheduledOp;
+    match op {
+        ScheduledOp::Unary(OpKind::Rsqrt | OpKind::Recip, _) => 1,
+        // The gather's truncated-index lanes.
+        ScheduledOp::Gather(..) => 1,
+        _ => 0,
+    }
+}
+
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
-/// Emit unary operation - dispatches to appropriate instruction(s)
-pub(crate) fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: Reg) {
+/// `dst = op(src)`.
+///
+/// `temp` is the allocator's temp for this instruction; only the reciprocal
+/// estimates use it, to hold the Newton-Raphson correction.
+pub(crate) fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, temp: Option<Reg>) {
     match op {
         OpKind::Neg => emit_fneg(code, dst, src),
         OpKind::Abs => emit_fabs(code, dst, src),
         OpKind::Sqrt => emit_fsqrt(code, dst, src),
-        OpKind::Rsqrt => emit_frsqrt(code, dst, src, scratch),
-        OpKind::Recip => emit_frecip(code, dst, src, scratch),
+        OpKind::Rsqrt => emit_frsqrt(code, dst, src, super::declared_temp(temp)),
+        OpKind::Recip => emit_frecip(code, dst, src, super::declared_temp(temp)),
         OpKind::Floor => emit_frintm(code, dst, src),
         OpKind::Ceil => emit_frintp(code, dst, src),
         OpKind::Round => emit_round_builtin(code, dst, src),
@@ -1738,13 +1813,6 @@ pub(crate) mod driver {
         Hs(super::Cond19),
     }
 
-    /// The one vector register `emit_unary` may clobber.
-    ///
-    /// Outside the allocatable pool, the reload pair and `select_reload`, so
-    /// `RegisterFile::checked` can prove the disjointness rather than a comment
-    /// asserting it.
-    const UNARY_SCRATCH: Reg = Reg(29);
-
     /// aarch64 implementation of the shared driver's leaf operations.
     ///
     /// Mechanically wraps the existing aarch64 encoders + constant pool, so the
@@ -1759,26 +1827,50 @@ pub(crate) mod driver {
     ///
     ///   v0-v3:   inputs (X, Y, Z, W)
     ///   v8-v15:  callee-saved, never allocatable
-    ///   v16-v25: allocatable scratch
-    ///   v26-v27: reload
-    ///   v28-v31: fixed-purpose scratch (select guard reduction, imm construction)
+    ///   v4-v7, v16-v31: allocatable scratch — everything else
     const AARCH64_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
-        // v16-v25 plus v4-v7 and v31. AAPCS64 callee-saves the low 64 bits of
-        // v8-v15 and these are leaf kernels with no prologue that preserves
-        // them, so v8-v15 stay out; v4-v7 are unused argument registers.
-        scratch: regalloc::RegSet::range(16, 10)
-            .union(regalloc::RegSet::range(4, 4))
-            .union(regalloc::RegSet::of(&[Reg(31)])),
-        reload: [Reg(26), Reg(27)],
-        // v28: fixed-purpose scratch outside the allocatable range; BSL reads its
-        // three operands directly and never touches it.
-        select_reload: Reg(28),
-        // v29: `emit_unary`'s temp. v30: the gather's truncated-index register.
-        fixed: &[UNARY_SCRATCH, Reg(30)],
+        // v4-v7 and v16-v31: twenty of thirty-two. AAPCS64 callee-saves the
+        // low 64 bits of v8-v15 and these are leaf kernels with no prologue
+        // that preserves them, so v8-v15 stay out; v4-v7 are unused argument
+        // registers.
+        //
+        // v26/v27 are the last two to join: they were `reload`, held out of
+        // every kernel's pool for a spilled operand and a spilled destination.
+        // v28 came before them, holding the `UMAXV`/`UMINV` the Select
+        // short-circuit guards reduce a mask into. Both needs arise at points
+        // the schedule contains, so both are reservations the allocator makes
+        // on an instruction (`Scratch::reload`, `guard_temps`).
+        scratch: regalloc::RegSet::range(16, 16).union(regalloc::RegSet::range(4, 4)),
+        // Nothing. v30 is the gather's truncated-index register, a `temps_for`
+        // answer since the gathers landed; v29 used to be `UNARY_SCRATCH`,
+        // reserved whole-kernel so a reciprocal estimate could borrow it. The
+        // select needs none either: `BSL` reads its three operands directly,
+        // and `FNEG`/`FABS` are single instructions.
+        fixed: &[],
+        temps_for: super::temps_for,
+        // `UMAXV`/`UMINV` reduce the mask into a vector register before
+        // `FMOV` can move it to a general one. It used to be v28, held out of
+        // every kernel's pool; it is now a reservation on the instruction the
+        // guard is emitted before.
+        guard_temps: 1,
         vector_bytes: 16,
     }
     .checked();
+
+    /// The register a guard reduces its mask into.
+    ///
+    /// `UMAXV`/`UMINV` write a scalar into a vector register, so this tier's
+    /// guard needs one that is neither the mask nor anything live — which is
+    /// what `RegisterFile::guard_temps` asks the allocator for, and what makes
+    /// the two assertions here statements about the allocator rather than
+    /// about a hand-picked constant.
+    fn guard_scratch(scratch: Option<Reg>, mask_reg: Reg) -> Reg {
+        let scratch = scratch
+            .expect("aarch64's guard declares `guard_temps: 1`; the allocator owes it a register");
+        debug_assert_ne!(scratch, mask_reg, "the reduce would destroy its own input");
+        scratch
+    }
 
     pub(crate) struct Aarch64Backend {
         pool: ConstPool,
@@ -1907,15 +1999,28 @@ pub(crate) mod driver {
             }
         }
 
-        fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> Aarch64Branch {
-            let scratch = Reg(28);
+        /// `scratch` is this instruction's own reservation, live for these two
+        /// instructions only — the allocator makes it because this backend's
+        /// `guard_temps` asks for one.
+        fn emit_skip_if_all_false(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            scratch: Option<Reg>,
+        ) -> Aarch64Branch {
+            let scratch = guard_scratch(scratch, mask_reg);
             super::emit_umaxv(code, scratch, mask_reg); // max lane; 0 => all-false
             super::emit_fmov_to_gp(code, scratch);
             Aarch64Branch::Cbz(super::emit_cbz_w16(code))
         }
 
-        fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> Aarch64Branch {
-            let scratch = Reg(28);
+        fn emit_skip_if_all_true(
+            &mut self,
+            code: &mut Vec<u8>,
+            mask_reg: Reg,
+            scratch: Option<Reg>,
+        ) -> Aarch64Branch {
+            let scratch = guard_scratch(scratch, mask_reg);
             super::emit_uminv(code, scratch, mask_reg); // min lane; 0xFFFFFFFF => all-true
             super::emit_fmov_to_gp(code, scratch);
             // MVN W16, W16 -> 0 iff all-true, which the cbz below tests.
@@ -2068,7 +2173,7 @@ pub(crate) mod driver {
                 emit_const_load(code, *dst, *val_bits, pool);
             }
             ResolvedOp::Unary { op, dst, src } => {
-                emit_unary(code, *op, *dst, *src, UNARY_SCRATCH);
+                emit_unary(code, *op, *dst, *src, plan.scratch.temp(0));
             }
             ResolvedOp::ShiftImm {
                 op,
@@ -2086,16 +2191,16 @@ pub(crate) mod driver {
                 // arithmetic/const emit, so it survives to here.
                 // v30 is declared in `AARCH64_FILE.fixed`, so
                 // `RegisterFile::checked` proves it misses the pool, the reload
-                // pair and `select_reload` (v28) rather than a comment claiming
+                // pair and the guard scratch (v28) rather than a comment claiming
                 // it; x9-x11 are caller-saved GPR scratch clear of the branch
                 // guard (w16) and the const-pool anchor (x17).
-                const IDX_INT: Reg = Reg(30);
+                let idx_int = crate::emit::declared_temp(plan.scratch.temp(0));
                 const BASE_GPR: Xr = Xr(9);
                 const IDX_GPR: Xr = Xr(10);
                 const VAL_GPR: Xr = Xr(11);
                 /// Bytes per pointer in the context array.
                 const PTR_BYTES: u32 = 8;
-                emit_fcvtzs(code, IDX_INT, *idx); // float idx -> int32 lanes
+                emit_fcvtzs(code, idx_int, *idx); // float idx -> int32 lanes
                 emit_ldr_x(
                     code,
                     BASE_GPR,
@@ -2107,13 +2212,16 @@ pub(crate) mod driver {
                 emit_gather(
                     code,
                     *dst,
-                    IDX_INT,
+                    idx_int,
                     super::GatherGprs {
                         base: BASE_GPR,
                         idx: IDX_GPR,
                         val: VAL_GPR,
                     },
                 );
+            }
+            ResolvedOp::Uniform { dst, load } => {
+                super::emit_uniform_load(code, *dst, *load);
             }
             ResolvedOp::Binary {
                 op,
@@ -2152,11 +2260,6 @@ pub(crate) mod driver {
                 // setup_mov already placed mask into dst
                 emit_bsl(code, *dst, *if_true, *if_false);
             }
-        }
-
-        // 4. Emit store
-        if let Some(store) = &plan.store {
-            emit_str_q(code, store.src, frame_slot(store.offset));
         }
 
         Ok(())

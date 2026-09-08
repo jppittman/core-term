@@ -1,0 +1,1961 @@
+{
+  "context": {
+    "arms": [
+      "unguided",
+      "control",
+      "linear",
+      "bilinear"
+    ],
+    "bilinear_checkpoint": "pixelflow-pipeline/data/guide_checkpoint_bilinear_v1.json",
+    "budget": "recorded rule applications; no wall clock in any metric",
+    "cost": "ExtractedDAG::dag_cost (ChoiceCost::dag, #1117) under CostModel::latency_prior()",
+    "deviation_from_registration_4": "The registration's frozen `LinearCandidateGuide` arm (guide_checkpoint_strict_v1.json) is off-vocabulary on this branch and is refused by LinearWeights::check_vocabulary; the additive arm that ran is the same-recipe model retrained on the same re-minted dataset as the bilinear arm. Recorded, not worked around.",
+    "frozen_linear_arm_status": "REFUSED, not deployed: guide checkpoint pixelflow-pipeline/data/guide_checkpoint_strict_v1.json: missing field `rule_fingerprint` at line 258 column 1",
+    "frozen_linear_checkpoint": "pixelflow-pipeline/data/guide_checkpoint_strict_v1.json",
+    "grid": [
+      25,
+      50,
+      100,
+      200,
+      400,
+      800
+    ],
+    "inherited": [
+      "docs/plans/2026-09-01-phase3-registration.md",
+      "docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md"
+    ],
+    "linear_checkpoint": "pixelflow-pipeline/data/guide_checkpoint_strict_remint.json",
+    "registration": "docs/plans/2026-09-02-bilinear-guide-registration.md",
+    "source_rev": "b0bcc898932850746c21b7d89c33f0034a3f4d2e",
+    "train_guide_report": "docs/results/2026-09-01-train-guide-report.json",
+    "uptime_at_end": "19:02  up 52 days,  9:35, 2 users, load averages: 4.83 6.49 5.82",
+    "uptime_at_start": "19:02  up 52 days,  9:35, 2 users, load averages: 4.83 6.49 5.82"
+  },
+  "set_counts": {
+    "bezier": 80,
+    "dev": 334,
+    "sh": 100
+  },
+  "tiers": [
+    {
+      "set": "dev",
+      "b": 100,
+      "n": 334,
+      "arms": [
+        {
+          "arm": "control",
+          "ratio_vs_unguided_at_b": {
+            "n": 334,
+            "min": 0.2623115577889447,
+            "q1": 0.5735177580077406,
+            "median": 0.6680319619323161,
+            "q3": 0.7419624892790475,
+            "p90": 0.800519801704355,
+            "max": 1.0046349942062573,
+            "mean": 0.6582974432759309
+          },
+          "regret_pct": {
+            "n": 334,
+            "min": 0.0,
+            "q1": 0.31328415041650065,
+            "median": 1.2631634932453994,
+            "q3": 3.3041968890384235,
+            "p90": 8.758702244270207,
+            "max": 38.42848373235114,
+            "mean": 3.1689309082762085
+          },
+          "reaches_best": 71,
+          "improved": 327,
+          "unchanged": 5,
+          "worse": 2
+        },
+        {
+          "arm": "linear",
+          "ratio_vs_unguided_at_b": {
+            "n": 334,
+            "min": 0.2623115577889447,
+            "q1": 0.5669378650725718,
+            "median": 0.6530372207286548,
+            "q3": 0.7270462483278185,
+            "p90": 0.7866626554990448,
+            "max": 1.0011587485515643,
+            "mean": 0.6463831210161193
+          },
+          "regret_pct": {
+            "n": 334,
+            "min": 0.0,
+            "q1": 0.0,
+            "median": 0.3842995901066746,
+            "q3": 1.093714992476295,
+            "p90": 4.101317116287175,
+            "max": 21.963070942662778,
+            "mean": 1.1969302536955488
+          },
+          "reaches_best": 95,
+          "improved": 327,
+          "unchanged": 6,
+          "worse": 1
+        },
+        {
+          "arm": "bilinear",
+          "ratio_vs_unguided_at_b": {
+            "n": 334,
+            "min": 0.2623115577889447,
+            "q1": 0.5842514678702309,
+            "median": 0.6745595408561615,
+            "q3": 0.7682319116547391,
+            "p90": 0.9754771639843409,
+            "max": 1.0196987253765932,
+            "mean": 0.6913599211040564
+          },
+          "regret_pct": {
+            "n": 334,
+            "min": 0.0,
+            "q1": 0.2849197416873368,
+            "median": 1.0492364820377982,
+            "q3": 11.326574039226047,
+            "p90": 29.650259536674493,
+            "max": 67.73357719859777,
+            "mean": 8.407946128759045
+          },
+          "reaches_best": 66,
+          "improved": 326,
+          "unchanged": 5,
+          "worse": 3
+        }
+      ],
+      "head_to_head": {
+        "bilinear_lt_linear": 26,
+        "bilinear_eq_linear": 78,
+        "bilinear_gt_linear": 230
+      },
+      "m_arm": {
+        "bilinear": 0.6745595408561615,
+        "control": 0.6680319619323161,
+        "linear": 0.6530372207286548
+      },
+      "d_arm": {
+        "bilinear": 0.0,
+        "control": 0.0,
+        "linear": 0.0
+      },
+      "m_dev_reference": {
+        "bilinear": 0.6745595408561615,
+        "control": 0.6680319619323161,
+        "linear": 0.6530372207286548
+      },
+      "margin_m": 0.06,
+      "d_linear_minus_d_bilinear": 0.0
+    },
+    {
+      "set": "sh",
+      "b": 100,
+      "n": 100,
+      "arms": [
+        {
+          "arm": "control",
+          "ratio_vs_unguided_at_b": {
+            "n": 100,
+            "min": 0.9485924112607099,
+            "q1": 1.0262719621130953,
+            "median": 1.097768484755294,
+            "q3": 1.1844098883572567,
+            "p90": 1.2567849686847599,
+            "max": 1.332535885167464,
+            "mean": 1.1058200371246818
+          },
+          "regret_pct": {
+            "n": 100,
+            "min": 0.0,
+            "q1": 8.323727145335647,
+            "median": 12.332510739420528,
+            "q3": 23.96195520336379,
+            "p90": 29.470529422967054,
+            "max": 36.51960784313725,
+            "mean": 15.579039495078415
+          },
+          "reaches_best": 6,
+          "improved": 17,
+          "unchanged": 0,
+          "worse": 83
+        },
+        {
+          "arm": "linear",
+          "ratio_vs_unguided_at_b": {
+            "n": 100,
+            "min": 0.9013888888888889,
+            "q1": 1.0310384211977166,
+            "median": 1.1062799076165988,
+            "q3": 1.2070485557327664,
+            "p90": 1.3268289619659641,
+            "max": 1.3646055437100213,
+            "mean": 1.124189286904375
+          },
+          "regret_pct": {
+            "n": 100,
+            "min": 0.0,
+            "q1": 9.625819529762508,
+            "median": 14.687422514257378,
+            "q3": 26.849040635394104,
+            "p90": 35.559522413267345,
+            "max": 42.857142857142854,
+            "mean": 17.3911056875505
+          },
+          "reaches_best": 14,
+          "improved": 17,
+          "unchanged": 0,
+          "worse": 83
+        },
+        {
+          "arm": "bilinear",
+          "ratio_vs_unguided_at_b": {
+            "n": 100,
+            "min": 0.9547123623011016,
+            "q1": 1.0496479117879054,
+            "median": 1.1043968566031106,
+            "q3": 1.209610843206128,
+            "p90": 1.2672792865191604,
+            "max": 1.3421052631578947,
+            "mean": 1.121953632907823
+          },
+          "regret_pct": {
+            "n": 100,
+            "min": 0.0,
+            "q1": 10.063790664780763,
+            "median": 13.372948500282966,
+            "q3": 25.61148595469441,
+            "p90": 30.58426966292135,
+            "max": 37.5,
+            "mean": 17.28026399543312
+          },
+          "reaches_best": 2,
+          "improved": 5,
+          "unchanged": 0,
+          "worse": 95
+        }
+      ],
+      "head_to_head": {
+        "bilinear_lt_linear": 67,
+        "bilinear_eq_linear": 1,
+        "bilinear_gt_linear": 32
+      },
+      "m_arm": {
+        "bilinear": 1.1043968566031106,
+        "control": 1.097768484755294,
+        "linear": 1.1062799076165988
+      },
+      "d_arm": {
+        "bilinear": 0.42983731574694906,
+        "control": 0.4297365228229779,
+        "linear": 0.453242686887944
+      },
+      "m_dev_reference": {
+        "bilinear": 0.6745595408561615,
+        "control": 0.6680319619323161,
+        "linear": 0.6530372207286548
+      },
+      "margin_m": 0.06,
+      "d_linear_minus_d_bilinear": 0.023405371140994946
+    },
+    {
+      "set": "bezier",
+      "b": 100,
+      "n": 80,
+      "arms": [
+        {
+          "arm": "control",
+          "ratio_vs_unguided_at_b": {
+            "n": 80,
+            "min": 0.7285714285714285,
+            "q1": 0.797752808988764,
+            "median": 0.797752808988764,
+            "q3": 0.856922525107604,
+            "p90": 0.9764705882352941,
+            "max": 0.9764705882352941,
+            "mean": 0.8340493308860959
+          },
+          "regret_pct": {
+            "n": 80,
+            "min": 0.0,
+            "q1": 0.0,
+            "median": 7.575757575757576,
+            "q3": 7.575757575757576,
+            "p90": 8.064516129032258,
+            "max": 8.064516129032258,
+            "mean": 4.377443792766372
+          },
+          "reaches_best": 35,
+          "improved": 80,
+          "unchanged": 0,
+          "worse": 0
+        },
+        {
+          "arm": "linear",
+          "ratio_vs_unguided_at_b": {
+            "n": 80,
+            "min": 0.7285714285714285,
+            "q1": 0.797752808988764,
+            "median": 0.797752808988764,
+            "q3": 0.856922525107604,
+            "p90": 0.9764705882352941,
+            "max": 0.9764705882352941,
+            "mean": 0.8340493308860959
+          },
+          "regret_pct": {
+            "n": 80,
+            "min": 0.0,
+            "q1": 0.0,
+            "median": 7.575757575757576,
+            "q3": 7.575757575757576,
+            "p90": 8.064516129032258,
+            "max": 8.064516129032258,
+            "mean": 4.377443792766372
+          },
+          "reaches_best": 35,
+          "improved": 80,
+          "unchanged": 0,
+          "worse": 0
+        },
+        {
+          "arm": "bilinear",
+          "ratio_vs_unguided_at_b": {
+            "n": 80,
+            "min": 0.797752808988764,
+            "q1": 0.797752808988764,
+            "median": 0.8,
+            "q3": 0.856922525107604,
+            "p90": 0.9764705882352941,
+            "max": 0.9764705882352941,
+            "mean": 0.847442188028953
+          },
+          "regret_pct": {
+            "n": 80,
+            "min": 0.0,
+            "q1": 5.681818181818182,
+            "median": 7.575757575757576,
+            "q3": 8.064516129032258,
+            "p90": 9.803921568627452,
+            "max": 9.803921568627452,
+            "mean": 6.215679086884021
+          },
+          "reaches_best": 20,
+          "improved": 80,
+          "unchanged": 0,
+          "worse": 0
+        }
+      ],
+      "head_to_head": {
+        "bilinear_lt_linear": 0,
+        "bilinear_eq_linear": 65,
+        "bilinear_gt_linear": 15
+      },
+      "m_arm": {
+        "bilinear": 0.8,
+        "control": 0.797752808988764,
+        "linear": 0.797752808988764
+      },
+      "d_arm": {
+        "bilinear": 0.1254404591438385,
+        "control": 0.12972084705644793,
+        "linear": 0.14471558826010922
+      },
+      "m_dev_reference": {
+        "bilinear": 0.6745595408561615,
+        "control": 0.6680319619323161,
+        "linear": 0.6530372207286548
+      },
+      "margin_m": 0.06,
+      "d_linear_minus_d_bilinear": 0.019275129116270717
+    },
+    {
+      "set": "dev",
+      "b": 200,
+      "n": 334,
+      "arms": [
+        {
+          "arm": "control",
+          "ratio_vs_unguided_at_b": {
+            "n": 334,
+            "min": 0.4501796798431885,
+            "q1": 0.694606083791929,
+            "median": 0.8061322297835938,
+            "q3": 1.0,
+            "p90": 1.0,
+            "max": 1.2742175856929956,
+            "mean": 0.8300060740979017
+          },
+          "regret_pct": {
+            "n": 334,
+            "min": 0.0,
+            "q1": 0.0,
+            "median": 0.2871357586110549,
+            "q3": 2.008467874158517,
+            "p90": 7.134731595244569,
+            "max": 27.70534550195567,
+            "mean": 2.1943731975844165
+          },
+          "reaches_best": 145,
+          "improved": 231,
+          "unchanged": 92,
+          "worse": 11
+        },
+        {
+          "arm": "linear",
+          "ratio_vs_unguided_at_b": {
+            "n": 334,
+            "min": 0.4462558717877867,
+            "q1": 0.6740928428428428,
+            "median": 0.8003319932533994,
+            "q3": 1.0,
+            "p90": 1.0,
+            "max": 1.5603576751117734,
+            "mean": 0.8221601878980871
+          },
+          "regret_pct": {
+            "n": 334,
+            "min": 0.0,
+            "q1": 0.0,
+            "median": 0.0,
+            "q3": 0.27620870049741697,
+            "p90": 0.7154592557124912,
+            "max": 56.03576751117735,
+            "mean": 0.9246264026173434
+          },
+          "reaches_best": 181,
+          "improved": 241,
+          "unchanged": 80,
+          "worse": 13
+        },
+        {
+          "arm": "bilinear",
+          "ratio_vs_unguided_at_b": {
+            "n": 334,
+            "min": 0.4462558717877867,
+            "q1": 0.6742085835835836,
+            "median": 0.8169847015414491,
+            "q3": 1.0,
+            "p90": 1.0,
+            "max": 1.108155002891845,
+            "mean": 0.8224512826825563
+          },
+          "regret_pct": {
+            "n": 334,
+            "min": 0.0,
+            "q1": 0.0,
+            "median": 0.17752439532599185,
+            "q3": 0.6849049169491479,
+            "p90": 1.9470839941292721,
+            "max": 29.86666666666667,
+            "mean": 1.0459704519843294
+          },
+          "reaches_best": 141,
+          "improved": 240,
+          "unchanged": 77,
+          "worse": 17
+        }
+      ],
+      "head_to_head": {
+        "bilinear_lt_linear": 35,
+        "bilinear_eq_linear": 152,
+        "bilinear_gt_linear": 147
+      },
+      "m_arm": {
+        "bilinear": 0.8169847015414491,
+        "control": 0.8061322297835938,
+        "linear": 0.8003319932533994
+      },
+      "d_arm": {
+        "bilinear": 0.0,
+        "control": 0.0,
+        "linear": 0.0
+      },
+      "m_dev_reference": {
+        "bilinear": 0.8169847015414491,
+        "control": 0.8061322297835938,
+        "linear": 0.8003319932533994
+      },
+      "margin_m": 0.07,
+      "d_linear_minus_d_bilinear": 0.0
+    },
+    {
+      "set": "sh",
+      "b": 200,
+      "n": 100,
+      "arms": [
+        {
+          "arm": "control",
+          "ratio_vs_unguided_at_b": {
+            "n": 100,
+            "min": 0.9497549019607843,
+            "q1": 1.0194074665963722,
+            "median": 1.0920502736648685,
+            "q3": 1.1844098883572567,
+            "p90": 1.2573086840277448,
+            "max": 1.332535885167464,
+            "mean": 1.105340773665991
+          },
+          "regret_pct": {
+            "n": 100,
+            "min": 0.0,
+            "q1": 8.272556349276778,
+            "median": 11.942988204456094,
+            "q3": 23.96195520336379,
+            "p90": 29.19491525423729,
+            "max": 36.51960784313725,
+            "mean": 15.479137435920482
+          },
+          "reaches_best": 5,
+          "improved": 17,
+          "unchanged": 0,
+          "worse": 83
+        },
+        {
+          "arm": "linear",
+          "ratio_vs_unguided_at_b": {
+            "n": 100,
+            "min": 1.0061946902654868,
+            "q1": 1.098352543668688,
+            "median": 1.1233530350397292,
+            "q3": 1.234917606724176,
+            "p90": 1.3268289619659641,
+            "max": 1.3646055437100213,
+            "mean": 1.15921264671253
+          },
+          "regret_pct": {
+            "n": 100,
+            "min": 3.6827195467422094,
+            "q1": 13.058845299777943,
+            "median": 18.09859735245125,
+            "q3": 30.383965204529048,
+            "p90": 35.559522413267345,
+            "max": 42.857142857142854,
+            "mean": 21.13498966294721
+          },
+          "reaches_best": 0,
+          "improved": 0,
+          "unchanged": 0,
+          "worse": 100
+        },
+        {
+          "arm": "bilinear",
+          "ratio_vs_unguided_at_b": {
+            "n": 100,
+            "min": 0.9558823529411765,
+            "q1": 1.0374729743642541,
+            "median": 1.1054960644334615,
+            "q3": 1.209610843206128,
+            "p90": 1.2672792865191604,
+            "max": 1.3421052631578947,
+            "mean": 1.119308804060763
+          },
+          "regret_pct": {
+            "n": 100,
+            "min": 0.0,
+            "q1": 9.552941176470588,
+            "median": 13.175218407776548,
+            "q3": 25.61148595469441,
+            "p90": 30.58426966292135,
+            "max": 37.5,
+            "mean": 16.937033314572624
+          },
+          "reaches_best": 1,
+          "improved": 11,
+          "unchanged": 1,
+          "worse": 88
+        }
+      ],
+      "head_to_head": {
+        "bilinear_lt_linear": 79,
+        "bilinear_eq_linear": 3,
+        "bilinear_gt_linear": 18
+      },
+      "m_arm": {
+        "bilinear": 1.1054960644334615,
+        "control": 1.0920502736648685,
+        "linear": 1.1233530350397292
+      },
+      "d_arm": {
+        "bilinear": 0.2885113628920124,
+        "control": 0.28591804388127473,
+        "linear": 0.32302104178632973
+      },
+      "m_dev_reference": {
+        "bilinear": 0.8169847015414491,
+        "control": 0.8061322297835938,
+        "linear": 0.8003319932533994
+      },
+      "margin_m": 0.07,
+      "d_linear_minus_d_bilinear": 0.03450967889431733
+    },
+    {
+      "set": "bezier",
+      "b": 200,
+      "n": 80,
+      "arms": [
+        {
+          "arm": "control",
+          "ratio_vs_unguided_at_b": {
+            "n": 80,
+            "min": 0.7846153846153846,
+            "q1": 0.7857142857142857,
+            "median": 0.7857142857142857,
+            "q3": 0.9025974025974026,
+            "p90": 1.0,
+            "max": 1.0,
+            "mean": 0.859128371628372
+          },
+          "regret_pct": {
+            "n": 80,
+            "min": 0.0,
+            "q1": 0.0,
+            "median": 0.0,
+            "q3": 0.0,
+            "p90": 8.064516129032258,
+            "max": 8.064516129032258,
+            "mean": 1.9153225806451613
+          },
+          "reaches_best": 61,
+          "improved": 60,
+          "unchanged": 20,
+          "worse": 0
+        },
+        {
+          "arm": "linear",
+          "ratio_vs_unguided_at_b": {
+            "n": 80,
+            "min": 0.7857142857142857,
+            "q1": 0.7857142857142857,
+            "median": 0.8701298701298701,
+            "q3": 0.9423076923076923,
+            "p90": 1.0,
+            "max": 1.0,
+            "mean": 0.8850899100899096
+          },
+          "regret_pct": {
+            "n": 80,
+            "min": 0.0,
+            "q1": 0.0,
+            "median": 0.0,
+            "q3": 8.064516129032258,
+            "p90": 17.647058823529413,
+            "max": 17.647058823529413,
+            "mean": 5.224146110056924
+          },
+          "reaches_best": 46,
+          "improved": 60,
+          "unchanged": 20,
+          "worse": 0
+        },
+        {
+          "arm": "bilinear",
+          "ratio_vs_unguided_at_b": {
+            "n": 80,
+            "min": 0.8452380952380952,
+            "q1": 0.8452380952380952,
+            "median": 0.8615384615384616,
+            "q3": 0.9025974025974026,
+            "p90": 1.0,
+            "max": 1.0,
+            "mean": 0.8928966866466871
+          },
+          "regret_pct": {
+            "n": 80,
+            "min": 0.0,
+            "q1": 5.681818181818182,
+            "median": 7.575757575757576,
+            "q3": 8.064516129032258,
+            "p90": 9.803921568627452,
+            "max": 9.803921568627452,
+            "mean": 6.215679086884021
+          },
+          "reaches_best": 20,
+          "improved": 60,
+          "unchanged": 20,
+          "worse": 0
+        }
+      ],
+      "head_to_head": {
+        "bilinear_lt_linear": 15,
+        "bilinear_eq_linear": 39,
+        "bilinear_gt_linear": 26
+      },
+      "m_arm": {
+        "bilinear": 0.8615384615384616,
+        "control": 0.7857142857142857,
+        "linear": 0.8701298701298701
+      },
+      "d_arm": {
+        "bilinear": 0.0445537599970125,
+        "control": -0.02041794406930808,
+        "linear": 0.06979787687647065
+      },
+      "m_dev_reference": {
+        "bilinear": 0.8169847015414491,
+        "control": 0.8061322297835938,
+        "linear": 0.8003319932533994
+      },
+      "margin_m": 0.07,
+      "d_linear_minus_d_bilinear": 0.025244116879458156
+    }
+  ],
+  "swing": [
+    {
+      "b": 100,
+      "max_family_swing": 0.027404273211944163,
+      "per_family": {
+        "f00": 0.012757013539951845,
+        "f01": 0.017113109383385172,
+        "f02": 0.027404273211944163,
+        "f03": 0.011721407052253885,
+        "f04": 0.006079160371349368,
+        "f05": 0.0029354490325986804,
+        "f06": 0.0031636782416286646,
+        "f07": 0.015587122579119983
+      },
+      "margin_m": 0.06,
+      "powered": true
+    },
+    {
+      "b": 200,
+      "max_family_swing": 0.021536894752750446,
+      "per_family": {
+        "f00": 0.008117024332675804,
+        "f01": 0.01625797144594443,
+        "f02": 0.012827308285038308,
+        "f03": 0.0017849613205676018,
+        "f04": 0.016652708288049656,
+        "f05": 0.0068583889932406494,
+        "f06": 0.01517652445439166,
+        "f07": 0.021536894752750446
+      },
+      "margin_m": 0.07,
+      "powered": true
+    }
+  ],
+  "verdicts": [
+    {
+      "b": 100,
+      "sh_gap": 0.023405371140994946,
+      "c1_sh_gap_exceeds_m": false,
+      "bezier_gap": 0.019275129116270717,
+      "c2_bezier_within_m": true,
+      "c3_dev_not_wrecked": true,
+      "m_bilinear_dev": 0.6745595408561615,
+      "m_linear_dev": 0.6530372207286548,
+      "c4_powered_and_n30": true,
+      "verdict": "H_form-null",
+      "sentence": "B=100: H_form-null — D_linear − D_bilinear on `sh` is +0.0234, inside M_100=0.06; the rule-by-context interaction buys nothing under domain shift, so the functional form was not the bottleneck."
+    },
+    {
+      "b": 200,
+      "sh_gap": 0.03450967889431733,
+      "c1_sh_gap_exceeds_m": false,
+      "bezier_gap": 0.025244116879458156,
+      "c2_bezier_within_m": true,
+      "c3_dev_not_wrecked": true,
+      "m_bilinear_dev": 0.8169847015414491,
+      "m_linear_dev": 0.8003319932533994,
+      "c4_powered_and_n30": true,
+      "verdict": "H_form-null",
+      "sentence": "B=200: H_form-null — D_linear − D_bilinear on `sh` is +0.0345, inside M_200=0.07; the rule-by-context interaction buys nothing under domain shift, so the functional form was not the bottleneck."
+    }
+  ],
+  "rank_tables": [
+    {
+      "set": "dev",
+      "model": "bilinear",
+      "n_contexts": 334,
+      "distinct_orders": 173,
+      "mean_rank": {
+        "cos-angle-addition": 7.514970059880239,
+        "half-angle-product": 13.491017964071856,
+        "pythagorean": 2.6317365269461077,
+        "sin-angle-addition": 11.74251497005988
+      },
+      "best_rank": {
+        "cos-angle-addition": 2,
+        "half-angle-product": 7,
+        "pythagorean": 2,
+        "sin-angle-addition": 4
+      },
+      "mean_score_spread": 42.23826219935617
+    },
+    {
+      "set": "dev",
+      "model": "linear",
+      "n_contexts": 334,
+      "distinct_orders": 1,
+      "mean_rank": {
+        "cos-angle-addition": 18.0,
+        "half-angle-product": 26.0,
+        "pythagorean": 38.0,
+        "sin-angle-addition": 40.0
+      },
+      "best_rank": {
+        "cos-angle-addition": 18,
+        "half-angle-product": 26,
+        "pythagorean": 38,
+        "sin-angle-addition": 40
+      },
+      "mean_score_spread": 9.382962954972319
+    },
+    {
+      "set": "sh",
+      "model": "bilinear",
+      "n_contexts": 100,
+      "distinct_orders": 48,
+      "mean_rank": {
+        "cos-angle-addition": 2.87,
+        "half-angle-product": 9.5,
+        "pythagorean": 4.51,
+        "sin-angle-addition": 6.52
+      },
+      "best_rank": {
+        "cos-angle-addition": 2,
+        "half-angle-product": 6,
+        "pythagorean": 3,
+        "sin-angle-addition": 4
+      },
+      "mean_score_spread": 53.68670253753662
+    },
+    {
+      "set": "sh",
+      "model": "linear",
+      "n_contexts": 100,
+      "distinct_orders": 1,
+      "mean_rank": {
+        "cos-angle-addition": 18.0,
+        "half-angle-product": 26.0,
+        "pythagorean": 38.0,
+        "sin-angle-addition": 40.0
+      },
+      "best_rank": {
+        "cos-angle-addition": 18,
+        "half-angle-product": 26,
+        "pythagorean": 38,
+        "sin-angle-addition": 40
+      },
+      "mean_score_spread": 9.382962474822998
+    },
+    {
+      "set": "bezier",
+      "model": "bilinear",
+      "n_contexts": 80,
+      "distinct_orders": 3,
+      "mean_rank": {
+        "cos-angle-addition": 2.0,
+        "half-angle-product": 7.0,
+        "pythagorean": 8.0,
+        "sin-angle-addition": 4.0
+      },
+      "best_rank": {
+        "cos-angle-addition": 2,
+        "half-angle-product": 7,
+        "pythagorean": 8,
+        "sin-angle-addition": 4
+      },
+      "mean_score_spread": 76.89791078567505
+    },
+    {
+      "set": "bezier",
+      "model": "linear",
+      "n_contexts": 80,
+      "distinct_orders": 1,
+      "mean_rank": {
+        "cos-angle-addition": 18.0,
+        "half-angle-product": 26.0,
+        "pythagorean": 38.0,
+        "sin-angle-addition": 40.0
+      },
+      "best_rank": {
+        "cos-angle-addition": 18,
+        "half-angle-product": 26,
+        "pythagorean": 38,
+        "sin-angle-addition": 40
+      },
+      "mean_score_spread": 9.382962453365327
+    }
+  ],
+  "trig_firing": [
+    {
+      "set": "dev",
+      "arm": "unguided",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 2,
+        "doubling": 4,
+        "even-negation(Cos)": 42,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 7,
+        "odd-negation(Tan)": 5,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 2,
+        "doubling": 11,
+        "even-negation(Cos)": 126,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 15,
+        "odd-negation(Tan)": 9,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 31,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 3,
+        "odd-negation(Tan)": 1,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 334
+    },
+    {
+      "set": "dev",
+      "arm": "unguided",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 14,
+        "doubling": 18,
+        "even-negation(Cos)": 147,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 42,
+        "odd-negation(Tan)": 27,
+        "pythagorean": 0,
+        "reverse-angle-addition": 9,
+        "sin-angle-addition": 10
+      },
+      "fired_total": {
+        "cos-angle-addition": 18,
+        "doubling": 40,
+        "even-negation(Cos)": 425,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 64,
+        "odd-negation(Tan)": 42,
+        "pythagorean": 0,
+        "reverse-angle-addition": 11,
+        "sin-angle-addition": 11
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 125,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 6,
+        "odd-negation(Tan)": 4,
+        "pythagorean": 0,
+        "reverse-angle-addition": 1,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 334
+    },
+    {
+      "set": "dev",
+      "arm": "control",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 29,
+        "doubling": 139,
+        "even-negation(Cos)": 92,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 23,
+        "odd-negation(Tan)": 15,
+        "pythagorean": 0,
+        "reverse-angle-addition": 26,
+        "sin-angle-addition": 26
+      },
+      "fired_total": {
+        "cos-angle-addition": 54,
+        "doubling": 339,
+        "even-negation(Cos)": 210,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 28,
+        "odd-negation(Tan)": 19,
+        "pythagorean": 0,
+        "reverse-angle-addition": 42,
+        "sin-angle-addition": 38
+      },
+      "strict_positive": {
+        "cos-angle-addition": 4,
+        "doubling": 40,
+        "even-negation(Cos)": 69,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 5,
+        "odd-negation(Tan)": 1,
+        "pythagorean": 0,
+        "reverse-angle-addition": 19,
+        "sin-angle-addition": 1
+      },
+      "n_exprs": 334
+    },
+    {
+      "set": "dev",
+      "arm": "control",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 41,
+        "doubling": 145,
+        "even-negation(Cos)": 149,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 50,
+        "odd-negation(Tan)": 27,
+        "pythagorean": 0,
+        "reverse-angle-addition": 37,
+        "sin-angle-addition": 40
+      },
+      "fired_total": {
+        "cos-angle-addition": 115,
+        "doubling": 508,
+        "even-negation(Cos)": 544,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 118,
+        "odd-negation(Tan)": 66,
+        "pythagorean": 0,
+        "reverse-angle-addition": 119,
+        "sin-angle-addition": 101
+      },
+      "strict_positive": {
+        "cos-angle-addition": 5,
+        "doubling": 41,
+        "even-negation(Cos)": 127,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 6,
+        "odd-negation(Tan)": 4,
+        "pythagorean": 0,
+        "reverse-angle-addition": 20,
+        "sin-angle-addition": 1
+      },
+      "n_exprs": 334
+    },
+    {
+      "set": "dev",
+      "arm": "linear",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 23,
+        "doubling": 86,
+        "even-negation(Cos)": 256,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 22,
+        "odd-negation(Tan)": 12,
+        "pythagorean": 0,
+        "reverse-angle-addition": 11,
+        "sin-angle-addition": 11
+      },
+      "fired_total": {
+        "cos-angle-addition": 30,
+        "doubling": 136,
+        "even-negation(Cos)": 1476,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 37,
+        "odd-negation(Tan)": 19,
+        "pythagorean": 0,
+        "reverse-angle-addition": 11,
+        "sin-angle-addition": 16
+      },
+      "strict_positive": {
+        "cos-angle-addition": 2,
+        "doubling": 18,
+        "even-negation(Cos)": 395,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 10,
+        "odd-negation(Tan)": 5,
+        "pythagorean": 0,
+        "reverse-angle-addition": 7,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 334
+    },
+    {
+      "set": "dev",
+      "arm": "linear",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 46,
+        "doubling": 136,
+        "even-negation(Cos)": 256,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 47,
+        "odd-negation(Tan)": 32,
+        "pythagorean": 0,
+        "reverse-angle-addition": 24,
+        "sin-angle-addition": 26
+      },
+      "fired_total": {
+        "cos-angle-addition": 102,
+        "doubling": 350,
+        "even-negation(Cos)": 2131,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 108,
+        "odd-negation(Tan)": 57,
+        "pythagorean": 0,
+        "reverse-angle-addition": 49,
+        "sin-angle-addition": 48
+      },
+      "strict_positive": {
+        "cos-angle-addition": 2,
+        "doubling": 31,
+        "even-negation(Cos)": 399,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 16,
+        "odd-negation(Tan)": 8,
+        "pythagorean": 0,
+        "reverse-angle-addition": 13,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 334
+    },
+    {
+      "set": "dev",
+      "arm": "bilinear",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 33,
+        "doubling": 79,
+        "even-negation(Cos)": 239,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 43,
+        "odd-negation(Tan)": 17,
+        "pythagorean": 0,
+        "reverse-angle-addition": 21,
+        "sin-angle-addition": 20
+      },
+      "fired_total": {
+        "cos-angle-addition": 66,
+        "doubling": 113,
+        "even-negation(Cos)": 1273,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 80,
+        "odd-negation(Tan)": 28,
+        "pythagorean": 0,
+        "reverse-angle-addition": 23,
+        "sin-angle-addition": 35
+      },
+      "strict_positive": {
+        "cos-angle-addition": 2,
+        "doubling": 16,
+        "even-negation(Cos)": 329,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 14,
+        "odd-negation(Tan)": 5,
+        "pythagorean": 0,
+        "reverse-angle-addition": 10,
+        "sin-angle-addition": 1
+      },
+      "n_exprs": 334
+    },
+    {
+      "set": "dev",
+      "arm": "bilinear",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 48,
+        "doubling": 136,
+        "even-negation(Cos)": 256,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 69,
+        "odd-negation(Tan)": 42,
+        "pythagorean": 0,
+        "reverse-angle-addition": 34,
+        "sin-angle-addition": 31
+      },
+      "fired_total": {
+        "cos-angle-addition": 121,
+        "doubling": 335,
+        "even-negation(Cos)": 1892,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 189,
+        "odd-negation(Tan)": 82,
+        "pythagorean": 0,
+        "reverse-angle-addition": 87,
+        "sin-angle-addition": 71
+      },
+      "strict_positive": {
+        "cos-angle-addition": 4,
+        "doubling": 35,
+        "even-negation(Cos)": 398,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 16,
+        "odd-negation(Tan)": 9,
+        "pythagorean": 0,
+        "reverse-angle-addition": 19,
+        "sin-angle-addition": 1
+      },
+      "n_exprs": 334
+    },
+    {
+      "set": "sh",
+      "arm": "unguided",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 100
+    },
+    {
+      "set": "sh",
+      "arm": "unguided",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 0,
+        "doubling": 3,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 0,
+        "doubling": 7,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 100
+    },
+    {
+      "set": "sh",
+      "arm": "control",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 53,
+        "doubling": 98,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 97,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 86,
+        "sin-angle-addition": 97
+      },
+      "fired_total": {
+        "cos-angle-addition": 106,
+        "doubling": 483,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 506,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 184,
+        "sin-angle-addition": 281
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 146,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 100
+    },
+    {
+      "set": "sh",
+      "arm": "control",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 53,
+        "doubling": 98,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 97,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 97,
+        "sin-angle-addition": 97
+      },
+      "fired_total": {
+        "cos-angle-addition": 169,
+        "doubling": 823,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 897,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 437,
+        "sin-angle-addition": 471
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 146,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 100
+    },
+    {
+      "set": "sh",
+      "arm": "linear",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 4,
+        "doubling": 36,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 80,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 2,
+        "sin-angle-addition": 14
+      },
+      "fired_total": {
+        "cos-angle-addition": 7,
+        "doubling": 118,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 173,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 2,
+        "sin-angle-addition": 18
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 115,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 100
+    },
+    {
+      "set": "sh",
+      "arm": "linear",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 4,
+        "doubling": 81,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 97,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 15,
+        "sin-angle-addition": 62
+      },
+      "fired_total": {
+        "cos-angle-addition": 11,
+        "doubling": 196,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 275,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 21,
+        "sin-angle-addition": 109
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 149,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 100
+    },
+    {
+      "set": "sh",
+      "arm": "bilinear",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 36,
+        "doubling": 98,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 97,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 97,
+        "sin-angle-addition": 97
+      },
+      "fired_total": {
+        "cos-angle-addition": 72,
+        "doubling": 338,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 569,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 235,
+        "sin-angle-addition": 333
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 149,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 100
+    },
+    {
+      "set": "sh",
+      "arm": "bilinear",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 53,
+        "doubling": 98,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 97,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 97,
+        "sin-angle-addition": 97
+      },
+      "fired_total": {
+        "cos-angle-addition": 92,
+        "doubling": 993,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 777,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 516,
+        "sin-angle-addition": 342
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 149,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 100
+    },
+    {
+      "set": "bezier",
+      "arm": "unguided",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 80
+    },
+    {
+      "set": "bezier",
+      "arm": "unguided",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 80
+    },
+    {
+      "set": "bezier",
+      "arm": "control",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 80
+    },
+    {
+      "set": "bezier",
+      "arm": "control",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 80
+    },
+    {
+      "set": "bezier",
+      "arm": "linear",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 80
+    },
+    {
+      "set": "bezier",
+      "arm": "linear",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 80
+    },
+    {
+      "set": "bezier",
+      "arm": "bilinear",
+      "b": 100,
+      "fired_exprs": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 80
+    },
+    {
+      "set": "bezier",
+      "arm": "bilinear",
+      "b": 200,
+      "fired_exprs": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "fired_total": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "strict_positive": {
+        "cos-angle-addition": 0,
+        "doubling": 0,
+        "even-negation(Cos)": 0,
+        "half-angle-product": 0,
+        "odd-negation(Asin)": 0,
+        "odd-negation(Atan)": 0,
+        "odd-negation(Sin)": 0,
+        "odd-negation(Tan)": 0,
+        "pythagorean": 0,
+        "reverse-angle-addition": 0,
+        "sin-angle-addition": 0
+      },
+      "n_exprs": 80
+    }
+  ]
+}

@@ -133,7 +133,7 @@ const SATURATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60)
 /// leaving a third private copy behind.
 fn saturation_budget() -> SaturationConfig {
     SaturationConfig {
-        hard_timeout: SATURATE_TIMEOUT,
+        safety_ceiling: SATURATE_TIMEOUT,
         ..SaturationConfig::compatibility(100)
     }
 }
@@ -151,6 +151,8 @@ struct ExprMeasurement {
     total_applications: usize,
     labeler_load_bearing: usize,
     strict_load_bearing: usize,
+    /// Latency-prior **DAG** cost of the extracted term — each distinct
+    /// chosen e-class priced once, which is what the emitted kernel pays.
     extracted_cost: usize,
     /// See module docs' "Quiescence diagnostic" section: `true` means the
     /// run stopped before exhausting either the iteration or class-count
@@ -329,14 +331,20 @@ fn main() {
 
     for (i, (name, arena, root)) in entries.iter().enumerate() {
         let mut egraph = EGraph::with_rules(all_rules());
-        let root_class = egraph.add_arena(arena, *root);
+        let root_class = pixelflow_search::egraph::insert(
+            arena,
+            *root,
+            &mut egraph,
+            pixelflow_search::egraph::Vocabulary::Templates,
+        )
+        .expect("insert into e-graph");
         let budget = saturation_budget();
         let saturate_started = std::time::Instant::now();
         let sat_stats = budget.run(&mut egraph);
         let saturate_elapsed = saturate_started.elapsed();
         let hit_iteration_cap = sat_stats.iterations >= budget.max_iterations;
         let hit_class_cap = egraph.num_classes() > budget.max_classes;
-        let hit_safety_timeout = saturate_elapsed >= budget.hard_timeout;
+        let hit_safety_timeout = saturate_elapsed >= budget.safety_ceiling;
         assert!(
             !hit_safety_timeout,
             "guide_headroom: expression '{name}' ran {saturate_elapsed:?}, hitting the \
@@ -359,7 +367,7 @@ fn main() {
             }
         }
 
-        let total_applications = egraph.provenance().application_count();
+        let total_applications = egraph.provenance().recorded_count();
         let labeler_lb = labels.load_bearing.len();
         let strict_lb = strict_set.len();
 
@@ -392,7 +400,9 @@ fn main() {
             total_applications,
             labeler_load_bearing: labeler_lb,
             strict_load_bearing: strict_lb,
-            extracted_cost: extraction.total_cost,
+            // The DAG cost — what the emitted kernel pays — not the DP's
+            // tree cost, which prices a shared subterm once per use (#1111).
+            extracted_cost: extraction.dag_cost,
             quiesced_before_cap,
             saturation_iterations: sat_stats.iterations,
             exceeded_production_deadline,

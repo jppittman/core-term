@@ -34,6 +34,33 @@
 //! acceptable, documented cost of a conservative label; under-crediting
 //! would silently corrupt the Guide's training signal, which is not
 //! acceptable.
+//!
+//! # Tightened variant
+//!
+//! [`EpisodeLabels::compute_tight`] is the same pipeline built on
+//! [`super::provenance::derivation_ancestors_tight`] instead of
+//! `derivation_ancestors` — a narrower, still-safe over-approximation (see
+//! that function's doc comment for exactly which axes are narrowed). It
+//! exists **alongside** `compute`, not in place of it
+//! (`docs/plans/2026-08-31-guide-design-revision.md` §3, option 3): both can
+//! be run on the same episode so the tightened labels can be compared
+//! directly against the original ones, and `compute`'s existing behavior and
+//! tests are untouched.
+//!
+//! # Strict variant (no over-approximation at all)
+//!
+//! [`EpisodeLabels::compute_strict`] is the third point on the same
+//! over-approximation spectrum (loose `compute` > tight `compute_tight` >
+//! `compute_strict`): an application counts only if its output e-node is
+//! *literally* one of the chosen nodes — no ancestry walk, no
+//! child-class/union-event credit at all. This is `guide_headroom`'s
+//! pre-existing "strict lower bound" measurement
+//! (`docs/results/2026-08-30-guide-headroom.md` §2.1), lifted here so the
+//! label-minting pipeline and `guide_headroom` share one computation instead
+//! of the harness re-deriving it against the public API.
+//! Sound-by-construction (never over-credits), but blind to enabling credit
+//! — see the design doc §3 for why that is an accepted, documented cost of a
+//! cold-start label source, not a bug.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -41,7 +68,7 @@ use super::cost::CostModel;
 use super::extract::{self, ExtractedDAG};
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::provenance::{ApplicationId, ENodeId};
+use super::provenance::{ApplicationId, ENodeId, Origin};
 use super::rewrite::Rewrite;
 use super::saturate::SaturationConfig;
 
@@ -102,7 +129,7 @@ pub struct EpisodeLabels {
     /// note.
     pub load_bearing: BTreeSet<ApplicationId>,
     /// Binary label for every application recorded in the episode's
-    /// provenance log (`labels.len() == provenance.application_count()`).
+    /// provenance log (`labels.len() == provenance.recorded_count()`).
     pub labels: BTreeMap<ApplicationId, Label>,
     /// Per-rule aggregates, keyed by `rule_idx` (index into the e-graph's
     /// rule list at episode time).
@@ -127,7 +154,48 @@ impl EpisodeLabels {
     pub fn compute(egraph: &EGraph, root: EClassId, choices: &[Option<usize>]) -> Self {
         let chosen_nodes = chosen_tagged_nodes(egraph, root, choices);
         let load_bearing = egraph.derivation_ancestors(&chosen_nodes);
+        Self::from_load_bearing(egraph, load_bearing)
+    }
 
+    /// The tightened counterpart to [`Self::compute`] — identical pipeline,
+    /// built on [`EGraph::derivation_ancestors_tight`] instead of
+    /// [`EGraph::derivation_ancestors`]. See the module doc's "Tightened
+    /// variant" section: this exists alongside `compute` so both can be
+    /// computed on the same episode for direct comparison, and does not
+    /// change what `compute` returns.
+    ///
+    /// # Panics
+    ///
+    /// Same contract as [`Self::compute`] — a missing/out-of-range `choices`
+    /// entry for a class reachable via the chosen extraction is an extractor
+    /// bug, surfaced loudly rather than papered over.
+    #[must_use]
+    pub fn compute_tight(egraph: &EGraph, root: EClassId, choices: &[Option<usize>]) -> Self {
+        let chosen_nodes = chosen_tagged_nodes(egraph, root, choices);
+        let load_bearing = egraph.derivation_ancestors_tight(&chosen_nodes);
+        Self::from_load_bearing(egraph, load_bearing)
+    }
+
+    /// The strict lower bound — see the module doc's "Strict variant"
+    /// section. No ancestry walk: an application is credited iff its own
+    /// output e-node is one of `chosen_nodes`.
+    ///
+    /// # Panics
+    ///
+    /// Same contract as [`Self::compute`].
+    #[must_use]
+    pub fn compute_strict(egraph: &EGraph, root: EClassId, choices: &[Option<usize>]) -> Self {
+        let chosen_nodes = chosen_tagged_nodes(egraph, root, choices);
+        let load_bearing = strict_load_bearing(egraph, &chosen_nodes);
+        Self::from_load_bearing(egraph, load_bearing)
+    }
+
+    /// Shared tail of `compute`/`compute_tight`/`compute_strict`: given the
+    /// already-computed load-bearing set (from whichever bound the caller
+    /// chose), build the flat per-application label map and the per-rule
+    /// aggregates. One tail, so the three bounds cannot disagree about
+    /// anything except which applications they credit.
+    fn from_load_bearing(egraph: &EGraph, load_bearing: BTreeSet<ApplicationId>) -> Self {
         let mut labels = BTreeMap::new();
         let mut rule_stats: BTreeMap<usize, RuleStats> = BTreeMap::new();
 
@@ -204,6 +272,31 @@ impl EpisodeLabels {
         }
         out
     }
+}
+
+/// The strict bound itself: an application is credited iff its output
+/// e-node is literally one of `chosen_nodes` — the direct creating
+/// application of each node the winning extraction actually selected, and
+/// nothing else. No traversal beyond `chosen_nodes`, unlike
+/// `derivation_ancestors`/`derivation_ancestors_tight`.
+///
+/// `ApplicationRecord::minted` (#1118) names the same relation from the
+/// other side — which nodes an application created — but reading it would
+/// mean scanning every application against every chosen node, where the
+/// origin map answers each chosen node in one lookup. The record's
+/// `changed()`/`unions` do not enter into it either: the strict bound asks
+/// what an application PRODUCED, not whether it merged anything.
+fn strict_load_bearing(
+    egraph: &EGraph,
+    chosen_nodes: &[(EClassId, ENodeId)],
+) -> BTreeSet<ApplicationId> {
+    let mut result = BTreeSet::new();
+    for &(_, tag) in chosen_nodes {
+        if let Some(Origin::Rule(app_id)) = egraph.provenance().origin(tag) {
+            result.insert(app_id);
+        }
+    }
+    result
 }
 
 /// Walk the chosen extraction from `root`, following only the chosen node's
@@ -290,7 +383,13 @@ pub fn run_episode(
     rules: Vec<Box<dyn Rewrite>>,
 ) -> EpisodeResult {
     let mut egraph = EGraph::with_rules(rules);
-    let root_class = egraph.add_arena(arena, root);
+    let root_class = crate::egraph::insert(
+        arena,
+        root,
+        &mut egraph,
+        crate::egraph::Vocabulary::Templates,
+    )
+    .expect("insert into e-graph");
     SaturationConfig::compatibility(100).run(&mut egraph);
 
     let costs = CostModel::latency_prior();
@@ -348,7 +447,7 @@ mod tests {
             .into_iter()
             .find(|t| t.class_id == eg.find(sum))
             .expect("commutative should match x + y");
-        assert!(eg.apply_single_rule(target.rule_idx, target.class_id, target.node_idx));
+        assert!(eg.apply_single_rule(target.rule_idx, target.class_id, target.tag));
         let app_load_bearing = ApplicationId(0);
 
         // Disjoint side: z + w, commuted too, but never referenced by the
@@ -367,10 +466,10 @@ mod tests {
         assert!(eg.apply_single_rule(
             other_target.rule_idx,
             other_target.class_id,
-            other_target.node_idx
+            other_target.tag
         ));
         let app_wasted = ApplicationId(1);
-        assert_eq!(eg.provenance().application_count(), 2);
+        assert_eq!(eg.provenance().recorded_count(), 2);
 
         // Build the chosen extraction by hand: root = sum's class, choosing
         // the rule-created (commuted) node for `sum`, and node 0 (the only
@@ -430,7 +529,7 @@ mod tests {
             .into_iter()
             .find(|t| t.class_id == eg.find(inner))
             .expect("commutative should match x + y");
-        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.node_idx));
+        assert!(eg.apply_single_rule(target_a.rule_idx, target_a.class_id, target_a.tag));
         let app_a = ApplicationId(0);
 
         // Rule B: commute the outer sum. `inner`'s class now holds two
@@ -441,9 +540,9 @@ mod tests {
             .into_iter()
             .find(|t| t.class_id == eg.find(outer))
             .expect("commutative should match (x + y) + z");
-        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.node_idx));
+        assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.tag));
         let app_b = ApplicationId(1);
-        assert_eq!(eg.provenance().application_count(), 2);
+        assert_eq!(eg.provenance().recorded_count(), 2);
 
         let outer_class = eg.find(outer);
         let inner_class = eg.find(inner);
@@ -509,7 +608,7 @@ mod tests {
             .map(|s| s.load_bearing)
             .sum();
 
-        assert_eq!(total_fired, result.egraph.provenance().application_count());
+        assert_eq!(total_fired, result.egraph.provenance().recorded_count());
         assert_eq!(total_fired, result.labels.labels.len());
         assert_eq!(
             total_load_bearing,
@@ -532,5 +631,112 @@ mod tests {
         // Report renders without panicking and lists every rule that fired.
         let report = result.labels.format_rule_report(&result.egraph);
         assert_eq!(report.lines().count(), 1 + result.labels.rule_stats.len());
+    }
+
+    /// The strict bound agrees with the loose bound on a single-hop case
+    /// (the one application directly produces the chosen node — no
+    /// congruence-closure or child-class over-approximation for the two to
+    /// diverge on), and is never a superset of it.
+    #[test]
+    fn strict_bound_agrees_on_single_hop_and_is_never_a_superset() {
+        let mut eg = egraph_with_commutative();
+
+        let x = eg.add(ENode::Var(0));
+        let y = eg.add(ENode::Var(1));
+        let sum = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, y],
+        });
+        let target = eg
+            .find_rewrite_matches()
+            .into_iter()
+            .find(|t| t.class_id == eg.find(sum))
+            .expect("commutative should match x + y");
+        assert!(eg.apply_single_rule(target.rule_idx, target.class_id, target.tag));
+        let app0 = ApplicationId(0);
+
+        let sum_class = eg.find(sum);
+        let commuted_tag = tag_created_by(&eg, sum_class, app0);
+        let commuted_idx = eg
+            .tags(sum_class)
+            .iter()
+            .position(|&t| t == commuted_tag)
+            .expect("the commuted node is in the class it was created in");
+
+        let mut choices: Vec<Option<usize>> = vec![None; eg.num_classes()];
+        choices[eg.find(x).index()] = Some(0);
+        choices[eg.find(y).index()] = Some(0);
+        choices[sum_class.index()] = Some(commuted_idx);
+
+        let loose = EpisodeLabels::compute(&eg, sum_class, &choices);
+        let strict = EpisodeLabels::compute_strict(&eg, sum_class, &choices);
+
+        assert_eq!(strict.load_bearing, BTreeSet::from([app0]));
+        assert!(strict.load_bearing.is_subset(&loose.load_bearing));
+    }
+
+    /// The three bounds are ordered — strict ⊆ tight ⊆ loose — on a real
+    /// saturation episode, and all three produce the same well-formed
+    /// aggregates. The ordering is the whole reason the spectrum exists: a
+    /// measurement that reported the tight bound while silently computing
+    /// the loose one would look exactly like a tighter bound.
+    #[test]
+    fn the_three_bounds_are_ordered_and_all_well_formed() {
+        use pixelflow_ir::ExprArena;
+
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        let y = arena.push_var(1);
+        let sum = arena.push_binary(pixelflow_ir::OpKind::Add, x, y);
+        let doubled = arena.push_binary(pixelflow_ir::OpKind::Mul, sum, sum);
+        let root = arena.push_binary(pixelflow_ir::OpKind::Sub, doubled, doubled);
+
+        let mut egraph = EGraph::with_rules(crate::egraph::all_rules());
+        let root_class = crate::egraph::insert(
+            &arena,
+            root,
+            &mut egraph,
+            crate::egraph::Vocabulary::Templates,
+        )
+        .expect("insert into e-graph");
+        egraph.saturate_budgeted(30, 2_000, None);
+
+        let costs = CostModel::latency_prior();
+        let extraction = extract::extract_dag(&egraph, root_class, &costs);
+        let loose = EpisodeLabels::compute(&egraph, extraction.root, &extraction.choices);
+        let tight = EpisodeLabels::compute_tight(&egraph, extraction.root, &extraction.choices);
+        let strict = EpisodeLabels::compute_strict(&egraph, extraction.root, &extraction.choices);
+
+        for (name, labels) in [("loose", &loose), ("tight", &tight), ("strict", &strict)] {
+            let total_fired: usize = labels.rule_stats.values().map(|s| s.fired).sum();
+            let total_lb: usize = labels.rule_stats.values().map(|s| s.load_bearing).sum();
+            assert_eq!(total_fired, egraph.provenance().recorded_count(), "{name}");
+            assert_eq!(total_fired, labels.labels.len(), "{name}");
+            assert_eq!(
+                total_lb,
+                labels
+                    .labels
+                    .values()
+                    .filter(|&&l| l == Label::LoadBearing)
+                    .count(),
+                "{name}"
+            );
+            for stats in labels.rule_stats.values() {
+                assert_eq!(stats.fired, stats.load_bearing + stats.wasted(), "{name}");
+            }
+        }
+
+        assert!(
+            strict.load_bearing.is_subset(&tight.load_bearing),
+            "strict ({}) must be a subset of tight ({})",
+            strict.load_bearing.len(),
+            tight.load_bearing.len()
+        );
+        assert!(
+            tight.load_bearing.is_subset(&loose.load_bearing),
+            "tight ({}) must be a subset of loose ({})",
+            tight.load_bearing.len(),
+            loose.load_bearing.len()
+        );
     }
 }

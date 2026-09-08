@@ -1,36 +1,28 @@
 # PixelFlow Graphics
 
 `pixelflow-graphics` turns PixelFlow programs into pixels. It contains color and pixel types,
-TTF outline compilation, glyph and text caching, framebuffer rasterization, and experimental
-2D/3D scene components.
+TTF outline compilation, glyph and text caching, the packed frame program, and analytic 3-D
+scene constructors.
 
-The crate currently spans two representation layers:
+Everything here is one representation: `Kernel` values, compiled at a frame's shape and
+collapsed one call per stripe. **Colour is four channel kernels and a byte order** — red,
+green, blue, alpha in `[0, 1]`, and the pack that turns them into a `u32` pixel is *inside*
+the compiled kernel (`×255`, clamp, truncate, shift, or, all of it IR). The byte order comes
+from the frame's own pixel format (`Pixel::packed_shifts`), so the format a kernel packs for
+is the format the frame stores, by construction.
 
-- The font pipeline is arena-native: outlines become fused `Kernel` values, symbolic
-  derivatives provide coverage antialiasing, and `Lattice::bake` compiles and caches the
-  result.
-- Existing color, cached-image, and 3D composition code uses `Manifold` combinators. This is
-  still a supported execution substrate while the workspace completes its JIT-first
-  migration.
-
-That boundary is intentional and visible; consumers should not manipulate `ExprArena`
-directly.
+Consumers should not manipulate `ExprArena` directly.
 
 ## Pipeline
 
 ```text
-             continuous programs
-         ┌──────────┴───────────┐
-         │                      │
-   coverage Kernel       color/scene Manifold
-         │                      │
-    JIT + Lattice          SIMD evaluation
-         │                      │
-         └──────────┬───────────┘
-                    ▼
-             sampled pixels
-                    ▼
-       Frame<Rgba8> / Frame<Bgra8>
+   four channel kernels in [0, 1]        Frame<P>
+            │                               ▲
+            │  compile_packed_for::<P>      │
+            ▼                               │
+     PackedManifold  ──bind(buffers)──▶  PackedFrame
+                                            │
+                             Scene::render: one collapse call per stripe
 ```
 
 The principal modules are:
@@ -38,9 +30,8 @@ The principal modules are:
 | Module | Role |
 |---|---|
 | `fonts` | TTF parsing, glyph coverage kernels, text layout, and baked glyph caches |
-| `render` | Semantic colors, pixel formats, frames, and rasterization |
-| `scene3d` | Ray/surface/material experiments over derivative-carrying manifolds |
-| `shapes`, `transform`, `image`, `mesh` | Additional graphics primitives and composition utilities |
+| `render` | Semantic colors, pixel formats, frames, the packed program, and the render actor |
+| `scene3d` | Ray/surface/material constructors: a 3-D scene as four channel kernels |
 
 ## Fonts: TTF outlines as kernels
 
@@ -92,52 +83,60 @@ Supported outline coverage currently targets TrueType quadratic glyphs, cmap for
 
 The render module separates semantic color from platform pixel layout:
 
-- `Color` and `NamedColor` represent ANSI, indexed, and RGB choices.
-- `ColorCube`, `Grayscale`, and related manifolds map continuous values to packed color.
-- `Rgba8` and `Bgra8` define framebuffer byte layout.
+- `Color` and `NamedColor` represent ANSI, indexed, and RGB choices. They are **data**, not
+  manifolds; `Color::to_f32_rgba` is the bridge into the four channels.
+- `Rgba8` and `Bgra8` define framebuffer byte layout, and `Pixel::packed_shifts` is the
+  single statement of it.
 - `Frame<P>` owns a row-major pixel buffer.
 
-`render::rasterize` pulls a color manifold at pixel coordinates into a frame and can divide
-the work across threads:
+A scene is four channel kernels compiled at the frame's shape with the pack inside, rendered
+one collapse call per stripe with work stealing:
 
 ```rust
-use pixelflow_graphics::render::{rasterize, Frame, Rgba8};
+use pixelflow_graphics::render::scene::{compile_packed_for, Scene};
+use pixelflow_graphics::render::{Frame, Rgba8};
 
 let mut frame = Frame::<Rgba8>::new(800, 600);
-rasterize(&color_manifold, &mut frame, 4);
+let scene = Scene::Packed(compile_packed_for::<Rgba8>(&color, [800, 600]).bind(&[]));
+scene.render(&mut frame, 4);
 ```
 
 The exact SIMD width and platform pixel alias are backend details. Consumers should use the
 pixel types rather than assume a byte order or lane count.
 
-## Ray tracing and the “mullet”
+## Ray tracing: a scene is four channel kernels
 
-`scene3d` is an application of the polymorphic `Manifold` layer rather than the complete
-architecture of this crate. Its useful three-stage pattern is:
+`scene3d` builds a 3-D scene as `Kernel` values of the screen coordinate, in
+three stages:
 
-1. Evaluate geometry over `Jet3` ray coordinates to obtain hit distance and derivatives.
-2. Warp the ray coordinate to the hit point (`P = ray × t`).
-3. Evaluate the material at the hit point and the background at the ray direction, selecting
-   according to hit validity.
+1. `Ray::through_screen` turns the pixel coordinate into a unit direction. The
+   observer is fixed at the origin, so a ray *is* a direction and a reflected
+   ray is another direction from the same origin.
+2. `Sphere::hit` / `Plane::hit` solve for `t` in closed form — a quadratic and
+   a division; there is no march — and return the hit point, the outward
+   normal, and the mask saying whether the ray met the surface at all.
+3. A material (`checker`, `sky`, `Rgba::opaque_gray`) is four channel kernels
+   in `[0, 1]`; `Hit::select` chooses material or background per channel, and
+   nesting those selects is occlusion.
 
-The geometry is the expensive front; color is the discrete back—hence the internal “mullet”
-name.
+Antialiasing is `Kernel::dx()`/`dy()`: `Hit::footprint` is the screen-space
+size of a pixel on the surface, differentiated symbolically through the screen
+mapping, the intersection and the reflection. There is no jet domain and no
+curvature heuristic.
 
-`Reflect` and `ColorReflect` reconstruct a normal from the tangent frame carried by the warped
-coordinate derivatives. The cross product of the two screen-space tangent directions produces
-the surface normal used for Householder reflection. This remains a compact demonstration of
-automatic differentiation carrying geometric information through composition.
-
-This path still uses jets and combinator manifolds. It should not be read as evidence that all
-graphics consumers have moved to arena-backed `Kernel` values.
+The four channels are compiled together (`render::scene::compile_packed_for`),
+so the geometry they share is emitted once — the "mullet" saving the jet tier
+got from carrying colour as an opaque `Discrete` is now the compiler's, and is
+pinned by `scene3d_test::four_channels_share_one_geometry`.
 
 ## Materialization boundaries
 
 PixelFlow distinguishes composition from storage:
 
 - Compose analytical font work as `Kernel` values, then bake at a glyph or text-cache boundary.
-- Compose cached glyphs, images, and platform-backed values as ordinary manifolds.
-- Rasterize the final color manifold into a `Frame<P>` at the application boundary.
+- Read cached glyphs and images back into the language as gathers over their bound buffers.
+- Compile the four channel kernels at the frame's shape and collapse them into a `Frame<P>`
+  at the application boundary.
 
 Intermediate storage is allowed when it is the requested representation—a glyph cache or a
 framebuffer—not hidden as an accidental compiler fallback.
@@ -153,10 +152,12 @@ targets on the hardware and revision being evaluated.
 cargo test -p pixelflow-graphics
 cargo bench -p pixelflow-graphics
 cargo bench -p pixelflow-graphics --bench font_rendering
-cargo bench -p pixelflow-graphics --bench kernel_bench
+cargo bench -p pixelflow-graphics --bench frame_bake
 ```
 
-The current compiler migration is tracked in
+The retirement of the per-batch tier this crate used to render through is recorded in
+[`2026-09-06-kernel-with-a-lattice.md`](../docs/plans/2026-09-06-kernel-with-a-lattice.md);
+the earlier language unification is
 [`2026-07-20-kernel-unification.md`](../docs/plans/2026-07-20-kernel-unification.md).
 
 ## License

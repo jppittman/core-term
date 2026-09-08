@@ -16,6 +16,13 @@ pixelflow-ir = { path = "../pixelflow-ir", default-features = false, features = 
 # Rewrite-soundness tests check a rule's two sides numerically against the
 # language's own semantics; `oracle` is what exposes that walker.
 pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
+# Self-dependency so this crate's own `tests/`, `examples/`, and `#[cfg(test)]`
+# code see the provenance journal (origins, application log, union journal,
+# `derivation_ancestors`, the hindsight labeler). Nothing else turns the
+# feature on for THIS crate's own lib target, which is what keeps a
+# production `cargo build -p pixelflow-search` free of it — see
+# `provenance-journal`'s doc comment below.
+pixelflow-search = { path = ".", features = ["provenance-journal"] }
 
 [features]
 # Feature-flagged saturation telemetry: one JSONL record per production
@@ -27,3 +34,28 @@ pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
 # (`#[cfg(feature = "saturation-telemetry")] pub mod telemetry;`), so there
 # is nothing in the binary to reference either way.
 saturation-telemetry = []
+# The rule-provenance journal: `Provenance::origins`/`applications`/`unions`,
+# `derivation_ancestors`, `Optimizer::observe`/`Observer`, and the hindsight
+# labeler (`egraph::labeler`) that reads them. Default OFF —
+# docs/plans/2026-09-01-production-budget-determinism.md: recording had no
+# production consumer and a production compile built and discarded a median
+# 8,446-application log per kernel for nothing. `EGraph::applications`/
+# `application_count()` (the saturation budget's denominator) are
+# unconditional and never gated by this feature — an application budget must
+# be enforceable whether or not anyone is watching.
+#
+# Enabled by `pixelflow-pipeline` (the labeler and guided-saturation
+# harnesses need it) and by this crate's own dev-dependency on itself above
+# (so `cargo test -p pixelflow-search` covers the journal). MUST NOT reach
+# `pixelflow-compiler`, `pixelflow-codegen`, `pixelflow-runtime`, or
+# `core-term` — pinned by `scripts/check-provenance-journal-scope.sh` in CI.
+provenance-journal = []
+# `PIXELFLOW_SATURATION=on|off`, read in exactly one place
+# (`runtime::saturation_switch`): `off` compiles runtime kernels through the
+# `Identity` path — the legalizing prefix (`LowerDwrt`, `ExpandReduce`) with
+# no saturation — so the raw-versus-optimized delta on a shipped kernel can be
+# measured through the real `Lattice::bake` path. Default OFF; without the
+# feature a *set* variable is a panic, never a silent no-op, so a stray export
+# cannot ship unoptimized kernels. Enabled only by `pixelflow-pipeline`'s
+# `egraph_off_on` harness build (`--features pixelflow-search/saturation-switch`).
+saturation-switch = []

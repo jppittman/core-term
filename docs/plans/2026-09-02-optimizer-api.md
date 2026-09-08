@@ -291,10 +291,20 @@ reasons.
    and is never revisited. On the cyclic e-graphs that saturation *always*
    produces (commutativity alone makes cycles), the result is a heuristic
    whose quality depends on visit order.
-3. **The reported cost need not be the returned term's cost.** `total_cost` is
-   read at :1541; `repair_choices_well_founded` then *mutates* `best_node` at
-   :1544. Nothing recomputes. A caller comparing `total_cost` across arms may
-   be comparing numbers that belong to terms it did not receive.
+3. ~~**The reported cost need not be the returned term's cost.**~~ **FIXED
+   (#1111).** `total_cost` was read before `repair_choices_well_founded`
+   mutated `best_node`, so a caller comparing `total_cost` across arms could
+   be comparing numbers belonging to terms it did not receive — measured in
+   #1115 as differing from the returned term on **132 of 302** kernels. Both
+   reported numbers are now computed from the *repaired* choices by
+   `cost_of_choices`, and there are two of them, because (1) above means one
+   number cannot answer both questions a caller has:
+   `ExtractedDAG::total_cost` is the **tree** cost the DP minimizes, and
+   `ExtractedDAG::dag_cost` is the **DAG** cost the emitted kernel pays. A
+   caller asking "what will this kernel cost?" wants the second (on
+   `shader:julia_set`: ~1.4e7 against 716). `Optimized::cost` carries the same
+   pair, so `Optimizer::run` no longer discards it. (1) and (2) are unchanged
+   and remain #1116's business.
 
 Plus a type smell that the API should not inherit: `Dwrt` is priced
 `usize::MAX / 4` (`cost.rs:292`) — a sentinel wearing a cost's type, kept from

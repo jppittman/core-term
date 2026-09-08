@@ -36,6 +36,13 @@
 //! matter, but must never omit one that does. See its doc comment for the
 //! exact over-approximation made and why it is safe.
 //!
+//! [`derivation_ancestors_tight`] is a second, narrower walk over the same
+//! records (`docs/plans/2026-08-31-guide-design-revision.md` §3, option 3):
+//! it exists **alongside** `derivation_ancestors`, not in place of it, so both
+//! can be computed on the same episode and compared. It narrows all three
+//! named over-approximation axes but does not eliminate them — see its doc
+//! comment for exactly what changed and what didn't.
+//!
 //! # Overhead
 //!
 //! Every hook (`record_origin`, `record_application`, `record_union`) is an
@@ -49,7 +56,10 @@
 //! larger provenance log for simpler, drift-proof bookkeeping (see that
 //! function's doc comment).
 
-use std::collections::{BTreeSet, HashMap};
+#[cfg(feature = "provenance-journal")]
+use std::collections::BTreeSet;
+#[cfg(feature = "provenance-journal")]
+use std::collections::HashMap;
 
 use super::node::EClassId;
 
@@ -82,6 +92,7 @@ impl ApplicationId {
 }
 
 /// Where an e-node came from.
+#[cfg(feature = "provenance-journal")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     /// Inserted directly (e.g. via `add_arena` before saturation, or any
@@ -97,6 +108,7 @@ pub enum Origin {
 /// `saturate_with_limits` loop iteration — coarser than per-rule-application
 /// but cheap (a single counter) and sufficient to order firings into
 /// generations for the derivation trace.
+#[cfg(feature = "provenance-journal")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApplicationRecord {
     /// Which rule fired, by stable identity.
@@ -127,6 +139,7 @@ pub struct ApplicationRecord {
     pub unions: usize,
 }
 
+#[cfg(feature = "provenance-journal")]
 impl ApplicationRecord {
     /// Whether this application changed the graph's partition.
     ///
@@ -152,11 +165,25 @@ impl ApplicationRecord {
 /// `rule_idx: None` marks unions performed by congruence closure during
 /// rebuild (i.e. `rebuild_budgeted` discovering two nodes are now equal
 /// after canonicalization) rather than by a rewrite rule directly.
+#[cfg(feature = "provenance-journal")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnionEvent {
     /// The rule that caused this union, if any (`None` for congruence
     /// closure unions found during rebuild).
     pub rule_idx: Option<usize>,
+    /// The exact firing that caused this union, if any — `Some` iff
+    /// `rule_idx` is `Some` (both come from the same `active_application`
+    /// read at the `EGraph::union` call site; `None` for congruence-closure
+    /// unions found during rebuild, which have no active rule application).
+    ///
+    /// Purely additive: recorded because the information is already in hand
+    /// at zero extra cost, and exists to let [`derivation_ancestors_tight`]
+    /// credit the *one* application that actually caused a union instead of
+    /// `derivation_ancestors`'s `rule_idx` + `step <=` superset match. Does
+    /// not change what `rule_idx` means or how the existing (loose)
+    /// `derivation_ancestors` uses this event — that function never reads
+    /// this field.
+    pub application_id: Option<ApplicationId>,
     /// Saturation-iteration counter at the time of the union.
     pub step: usize,
     /// One of the two canonical class ids being merged (pre-merge).
@@ -173,10 +200,13 @@ pub struct UnionEvent {
 #[derive(Clone, Debug, Default)]
 pub struct Provenance {
     /// `ENodeId -> Origin`, one entry per node ever created.
+    #[cfg(feature = "provenance-journal")]
     origins: HashMap<ENodeId, Origin>,
     /// Log of every rewrite firing, indexed by `ApplicationId`.
+    #[cfg(feature = "provenance-journal")]
     applications: Vec<ApplicationRecord>,
     /// Append-only journal of class merges (rule-driven and congruence).
+    #[cfg(feature = "provenance-journal")]
     unions: Vec<UnionEvent>,
 }
 
@@ -188,11 +218,13 @@ impl Provenance {
 
     /// Record the origin of a freshly created e-node. Called once per
     /// `EGraph::add` memo miss.
+    #[cfg(feature = "provenance-journal")]
     pub(crate) fn record_origin(&mut self, id: ENodeId, origin: Origin) {
         self.origins.insert(id, origin);
     }
 
     /// Record a rewrite firing, returning its `ApplicationId`.
+    #[cfg(feature = "provenance-journal")]
     pub(crate) fn record_application(&mut self, record: ApplicationRecord) -> ApplicationId {
         let id = ApplicationId(self.applications.len() as u64);
         self.applications.push(record);
@@ -201,6 +233,7 @@ impl Provenance {
 
     /// Close a record opened by [`Self::record_application`], now that the
     /// action has run and what it minted and merged is known.
+    #[cfg(feature = "provenance-journal")]
     pub(crate) fn complete_application(
         &mut self,
         id: ApplicationId,
@@ -216,36 +249,50 @@ impl Provenance {
     }
 
     /// Record a class-level merge.
+    #[cfg(feature = "provenance-journal")]
     pub(crate) fn record_union(&mut self, event: UnionEvent) {
         self.unions.push(event);
     }
 
     /// Look up the origin of a node, if known.
+    #[cfg(feature = "provenance-journal")]
     pub fn origin(&self, id: ENodeId) -> Option<Origin> {
         self.origins.get(&id).copied()
     }
 
     /// Look up an application record by id.
+    #[cfg(feature = "provenance-journal")]
     pub fn application(&self, id: ApplicationId) -> Option<&ApplicationRecord> {
         self.applications.get(id.0 as usize)
     }
 
-    /// Number of application records (rewrite firings) recorded.
-    pub fn application_count(&self) -> usize {
+    /// Number of application records (rewrite firings) recorded — the
+    /// journal's *length*.
+    ///
+    /// Distinct from [`super::graph::EGraph::application_count`] (identical
+    /// name, different type, unconditional): the two agree only because the
+    /// journal records every application when it is being kept at all. This
+    /// one is named `recorded_count` rather than `application_count` so the
+    /// two are never mistaken for the same quantity at a call site.
+    #[cfg(feature = "provenance-journal")]
+    pub fn recorded_count(&self) -> usize {
         self.applications.len()
     }
 
     /// Number of union events recorded.
+    #[cfg(feature = "provenance-journal")]
     pub fn union_count(&self) -> usize {
         self.unions.len()
     }
 
     /// Number of e-node origins recorded.
+    #[cfg(feature = "provenance-journal")]
     pub fn origin_count(&self) -> usize {
         self.origins.len()
     }
 
     /// All union events (in chronological order).
+    #[cfg(feature = "provenance-journal")]
     pub fn union_events(&self) -> &[UnionEvent] {
         &self.unions
     }
@@ -258,6 +305,7 @@ impl Provenance {
     /// guided-saturation scoping measurements (`derivation_ancestors`'s
     /// over-approximation looseness, docs/plans/2026-07-07-guided-saturation-redesign.md
     /// lines 88-90): purely additive, no existing behavior touched.
+    #[cfg(feature = "provenance-journal")]
     pub fn origins(&self) -> impl Iterator<Item = (ENodeId, Origin)> + '_ {
         self.origins.iter().map(|(&id, &origin)| (id, origin))
     }
@@ -265,6 +313,7 @@ impl Provenance {
     /// Iterate every recorded application, in firing order, paired with its
     /// `ApplicationId`. The counterpart to indexed lookup via [`Self::application`]
     /// for callers (e.g. the hindsight labeler) that need to walk the whole log.
+    #[cfg(feature = "provenance-journal")]
     pub fn applications(&self) -> impl Iterator<Item = (ApplicationId, &ApplicationRecord)> {
         self.applications
             .iter()
@@ -307,6 +356,7 @@ impl Provenance {
 ///
 /// `chosen_nodes`: the `(EClassId, ENodeId)` pairs whose ancestry to trace —
 /// typically the nodes extraction selected for the final expression.
+#[cfg(feature = "provenance-journal")]
 pub fn derivation_ancestors(
     tags_of: &impl Fn(EClassId) -> Vec<ENodeId>,
     children_of: &impl Fn(ENodeId) -> Vec<EClassId>,
@@ -409,6 +459,225 @@ pub fn derivation_ancestors(
     result
 }
 
+/// A second, narrower ancestry walk over the same provenance records as
+/// [`derivation_ancestors`] — additive, not a replacement. Both functions are
+/// meant to be run on the *same* episode so their outputs can be compared
+/// directly; this one changes only what gets *credited*, not what
+/// `Provenance` records or how `derivation_ancestors` computes its own
+/// (unchanged) result.
+///
+/// # What's tightened, and what isn't
+///
+/// `derivation_ancestors`'s doc comment names three over-approximation axes.
+/// This function narrows all three, but by construction rather than by a
+/// true minimality/necessity proof (which would require replaying the
+/// episode to ask "does removing application X still leave the chosen node
+/// reachable" — out of scope for a "narrow, don't redesign" follow-up):
+///
+/// 1. **Child *nodes*, not child classes, wherever the choice is known.**
+///    `chosen_nodes` is expected to be a *complete* per-class map — exactly
+///    what `labeler::chosen_tagged_nodes` already builds by
+///    recursively walking every class the winning extraction actually
+///    visits, one entry per class. Given that map, whenever this walk
+///    reaches a class it already has a known choice for (via
+///    `children_of`'s class result, or via a union event's far side — see
+///    axis 3 below), it follows *only* that one node instead of pulling
+///    every node [`Provenance`] ever tagged into the class. For a class with
+///    no known choice (the two hand-derivable unit tests below only supply a
+///    partial map, on purpose, to exercise this path) it falls back to the
+///    same "every tagged node" behavior `derivation_ancestors` always uses —
+///    still safe, just not tightened for that class.
+/// 2. **The exact firing, not every same-rule firing.** A [`UnionEvent`]'s
+///    `application_id` (recorded for real at `EGraph::union`'s
+///    call site, from the same `active_application` state that already
+///    supplies `rule_idx` — see the field's doc comment) names the *one*
+///    application that caused that merge. This walk credits exactly that
+///    application; `derivation_ancestors` still credits every application
+///    sharing the event's `rule_idx` with `step <= event.step`, unchanged.
+/// 3. **Fixed-point pruning, as a consequence of #1, not a separate proof.**
+///    Because a known-choice class only ever contributes its one node (#1),
+///    the reachable set this walk explores is a strict subset of what
+///    `derivation_ancestors` explores from the same input — it terminates on
+///    a tighter fixed point without an explicit "was this merge necessary"
+///    analysis. Union events are still walked outward from every visited
+///    class exactly as `derivation_ancestors` does (a `Union`-shaped
+///    `RewriteAction` creates no node of its
+///    own, so union-event crediting is the *only* way such an application
+///    can ever be labeled load-bearing at all — dropping it would violate
+///    the safety property, not just tighten it).
+///
+/// # Safety (still an over-approximation, never omits a true ancestor)
+///
+/// Every application `derivation_ancestors` would credit via a node whose
+/// class has a known choice is still credited here — the known-choice node
+/// *is* the node that walk would eventually reach through that class's tags,
+/// since `chosen_nodes` (as `labeler::chosen_tagged_nodes` builds it) always
+/// includes the actually-extracted node. Every application credited via a
+/// union event here is credited under a strictly narrower (exact-application)
+/// condition than `derivation_ancestors`'s (same-`rule_idx`-and-earlier)
+/// condition, which only shrinks the credited set for congruence-driven and
+/// unrelated same-rule events, never a true one. Classes with no known choice
+/// fall back to the identical unpruned behavior. So this function's result is
+/// always a subset of `derivation_ancestors`'s result on the same inputs
+/// (enforced at measurement time by an assertion analogous to
+/// `guide_headroom`'s existing `strict_lb <= labeler_lb` check) and always a
+/// superset of the strict bound
+/// (every node directly on the chosen path is, by definition, in a
+/// known-choice class, so #1 alone reduces to the strict node-level walk for
+/// it; the only additions beyond strict are exact-application union credits,
+/// which strict does not attempt at all).
+///
+/// # Panics
+///
+/// Panics if `chosen_nodes` names the same `EClassId` twice with two
+/// *different* `ENodeId`s — a caller contract violation (the map is supposed
+/// to name one chosen node per class), not a condition to paper over by
+/// picking one arbitrarily.
+/// `seeds` are the nodes the walk STARTS from; `chosen_nodes` is the
+/// extraction's complete class -> chosen-node map that axis 1 prunes with.
+/// They are different things: asking for one application's output's ancestry
+/// means one seed, but the pruning still needs every class's choice, or each
+/// class the walk descends into has no entry and falls back to the unpruned
+/// "all tags" behavior — silently returning the loose bound under the tight
+/// bound's name. [`EGraph::derivation_ancestors_tight`] passes the same
+/// slice for both, which is right when the seeds ARE the whole extraction.
+#[cfg(feature = "provenance-journal")]
+pub fn derivation_ancestors_tight(
+    tags_of: &impl Fn(EClassId) -> Vec<ENodeId>,
+    children_of: &impl Fn(ENodeId) -> Vec<EClassId>,
+    canonical_of: &impl Fn(EClassId) -> EClassId,
+    provenance: &Provenance,
+    seeds: &[(EClassId, ENodeId)],
+    chosen_nodes: &[(EClassId, ENodeId)],
+) -> BTreeSet<ApplicationId> {
+    let mut chosen_map: HashMap<EClassId, ENodeId> = HashMap::new();
+    for &(class, node) in chosen_nodes {
+        let class = canonical_of(class);
+        match chosen_map.entry(class) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(node);
+            }
+            std::collections::hash_map::Entry::Occupied(e) => {
+                assert_eq!(
+                    *e.get(),
+                    node,
+                    "derivation_ancestors_tight: class {class:?} was given two different \
+                     chosen nodes ({:?} and {node:?}) — `chosen_nodes` must name at most one \
+                     node per class",
+                    e.get()
+                );
+            }
+        }
+    }
+
+    // Axis 1: known-choice short-circuit. Falls back to `tags_of` (identical
+    // to `derivation_ancestors`) for a class with no recorded choice.
+    //
+    // Every class id reaching this map is canonicalized first (see the
+    // `canonical_of` calls below). `chosen_map` is keyed by FINAL canonical
+    // ids, while a `UnionEvent` endpoint and an `ApplicationRecord`'s
+    // `match_root` are the ids as they were WHEN RECORDED — historical
+    // losers of later unions. Looking one of those up raw always misses, and
+    // the miss silently degrades the tightened walk back to
+    // `derivation_ancestors`'s "every tag in the class" behavior for exactly
+    // the classes a merge touched, over-crediting applications while still
+    // reporting itself as the tight bound.
+    let nodes_to_follow = |class: EClassId| -> Vec<ENodeId> {
+        match chosen_map.get(&class) {
+            Some(&node) => vec![node],
+            None => tags_of(class),
+        }
+    };
+
+    let mut result = BTreeSet::new();
+    let mut visited_classes: BTreeSet<EClassId> = BTreeSet::new();
+    let mut visited_nodes: BTreeSet<ENodeId> = BTreeSet::new();
+    let mut class_stack: Vec<EClassId> = Vec::new();
+    let mut node_stack: Vec<ENodeId> = seeds.iter().map(|&(_, n)| n).collect();
+    for &(class, _) in seeds {
+        let class = canonical_of(class);
+        if visited_classes.insert(class) {
+            class_stack.push(class);
+        }
+    }
+
+    // Follow one node's own creation + structural children — identical logic
+    // to `derivation_ancestors`'s node walk (axis 1 only changes *which*
+    // nodes get pushed onto `node_stack` in the first place, via
+    // `nodes_to_follow` below).
+    let follow_node = |node: ENodeId,
+                       result: &mut BTreeSet<ApplicationId>,
+                       visited_nodes: &mut BTreeSet<ENodeId>,
+                       visited_classes: &mut BTreeSet<EClassId>,
+                       class_stack: &mut Vec<EClassId>| {
+        if !visited_nodes.insert(node) {
+            return;
+        }
+        if let Some(Origin::Rule(app_id)) = provenance.origin(node) {
+            result.insert(app_id);
+            if let Some(record) = provenance.application(app_id) {
+                let root = canonical_of(record.match_root);
+                if visited_classes.insert(root) {
+                    class_stack.push(root);
+                }
+            }
+        }
+        for child_class in children_of(node) {
+            let child_class = canonical_of(child_class);
+            if visited_classes.insert(child_class) {
+                class_stack.push(child_class);
+            }
+        }
+    };
+
+    while let Some(node) = node_stack.pop() {
+        follow_node(
+            node,
+            &mut result,
+            &mut visited_nodes,
+            &mut visited_classes,
+            &mut class_stack,
+        );
+    }
+
+    while let Some(class) = class_stack.pop() {
+        for node in nodes_to_follow(class) {
+            if !visited_nodes.contains(&node) {
+                node_stack.push(node);
+            }
+        }
+        while let Some(node) = node_stack.pop() {
+            follow_node(
+                node,
+                &mut result,
+                &mut visited_nodes,
+                &mut visited_classes,
+                &mut class_stack,
+            );
+        }
+
+        for event in provenance.union_events() {
+            if canonical_of(event.class_a) == class || canonical_of(event.class_b) == class {
+                // Axis 2: credit the exact firing, not every same-rule_idx
+                // application at or before this event's step.
+                if let Some(app_id) = event.application_id {
+                    result.insert(app_id);
+                }
+                let other = canonical_of(if event.class_a == class {
+                    event.class_b
+                } else {
+                    event.class_a
+                });
+                if visited_classes.insert(other) {
+                    class_stack.push(other);
+                }
+            }
+        }
+    }
+
+    result
+}
+
 /// Render a human-readable derivation trace: one line per application,
 /// ordered by `step` then `ApplicationId`, in the form:
 ///
@@ -421,6 +690,7 @@ pub fn derivation_ancestors(
 /// (e.g. the rule list changed since the trace was recorded) fall back to
 /// printing the raw index — this function never panics or silently drops a
 /// line for a resolution failure.
+#[cfg(feature = "provenance-journal")]
 pub fn format_derivation_trace(
     provenance: &Provenance,
     ancestors: &BTreeSet<ApplicationId>,
@@ -483,7 +753,7 @@ mod tests {
         let a1 = p.record_application(app(1, 1, EClassId(1)));
         assert_eq!(a0.as_u64(), 0);
         assert_eq!(a1.as_u64(), 1);
-        assert_eq!(p.application_count(), 2);
+        assert_eq!(p.recorded_count(), 2);
     }
 
     #[test]

@@ -241,6 +241,8 @@ pub enum CsiCommand {
     CursorNextLine(u16),
     /// Move cursor to `(row, col)`. Parameters are 1-based.
     CursorPosition(u16, u16),
+    /// Move cursor to line `n` (VPA), preserving the current column. 1-based.
+    LinePositionAbsolute(u16),
     /// Move cursor to beginning of line `n` lines up.
     CursorPrevLine(u16),
     /// Move cursor up by `n`.
@@ -427,23 +429,21 @@ impl AnsiCommand {
 
     /// Parses an escape sequence with an intermediate character.
     pub(crate) fn from_esc_intermediate(intermediate: char, final_char: char) -> Option<Self> {
-        if ['(', ')', '*', '+'].contains(&intermediate) {
-            if Self::is_valid_charset_designator(final_char) {
-                Some(AnsiCommand::Esc(EscCommand::SelectCharacterSet(
-                    intermediate,
-                    final_char,
-                )))
-            } else {
-                warn!(
-                    "Invalid charset designator '{}' (0x{:02X}) for ESC {} sequence. \
-                     Valid range is 0x30-0x7E ('0'-'~').",
-                    final_char, final_char as u32, intermediate
-                );
-                None
-            }
-        } else {
-            None
+        if !['(', ')', '*', '+'].contains(&intermediate) {
+            return None;
         }
+        if !Self::is_valid_charset_designator(final_char) {
+            warn!(
+                "Invalid charset designator '{}' (0x{:02X}) for ESC {} sequence. \
+                 Valid range is 0x30-0x7E ('0'-'~').",
+                final_char, final_char as u32, intermediate
+            );
+            return None;
+        }
+        Some(AnsiCommand::Esc(EscCommand::SelectCharacterSet(
+            intermediate,
+            final_char,
+        )))
     }
 
     /// Parses SGR parameters into a list of `Attribute`s.
@@ -645,10 +645,9 @@ impl AnsiCommand {
                 let col = param_or_1(1);
                 Some(AnsiCommand::Csi(CsiCommand::CursorPosition(row, col)))
             }
-            (false, b"", b'd') => Some(AnsiCommand::Csi(CsiCommand::CursorPosition(
-                // VPA
-                param_or_1(0), // Row
-                1,             // Column is implicitly 1
+            (false, b"", b'd') => Some(AnsiCommand::Csi(CsiCommand::LinePositionAbsolute(
+                // VPA: moves only the row, leaving the column untouched.
+                param_or_1(0),
             ))),
             (false, b"", b'J') => {
                 Some(AnsiCommand::Csi(CsiCommand::EraseInDisplay(param_or(0, 0))))

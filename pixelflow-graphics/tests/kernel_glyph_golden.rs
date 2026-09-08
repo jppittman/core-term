@@ -22,28 +22,31 @@ fn golden_for(ch: char, size: usize) {
         .glyph_kernel_scaled(ch, size as f32)
         .unwrap_or_else(|| panic!("glyph {ch:?} not found"));
 
-    // JIT: bake over the texel-center lattice.
+    // JIT: bake over the texel-center convention, a contramap over a plain
+    // index lattice.
     let n = size as u32;
-    let baked = Lattice {
-        extent: [n, n, 1, 1],
-        origin: [0.5, 0.5, 0.0, 0.0],
-    }
-    .bake(&kernel);
+    let centered = kernel.at(
+        &Kernel::x().add(&Kernel::constant(0.5)),
+        &Kernel::y().add(&Kernel::constant(0.5)),
+    );
+    let baked = Lattice { extent: [n, n] }.bake(&centered);
     let got = baked.buffer();
     assert_eq!(got.len(), size * size);
 
-    // Reference: the interpreter on the same arena the JIT compiles. Bake
-    // runs the runtime e-graph tier (`optimize_runtime_arena`, which lowers
-    // Dwrt itself) before compiling, so the oracle interprets that same
-    // optimized arena — this golden pins the COMPILER (JIT vs interpreter on
-    // one program), while optimization soundness (optimized vs raw, within
+    // Reference: the interpreter on the same arena the JIT compiles —
+    // `centered`, texel-center contramap included, so the two sides are
+    // asked about literal texel indices and the golden pins the COMPILER
+    // (JIT vs interpreter on one program), not the contramap arithmetic.
+    // Bake runs the runtime e-graph tier (`optimize_runtime_arena`, which
+    // lowers Dwrt itself) before compiling, so the oracle interprets that
+    // same optimized arena; optimization soundness (optimized vs raw, within
     // float-reassociation tolerance) is pinned separately by
     // tests/kernel_glyph_optimize.rs.
-    let (arena, root) = kernel.parts();
+    let (arena, root) = centered.parts();
     let optimized = pixelflow_search::runtime::optimize_runtime_arena(
         arena,
         root,
-        pixelflow_ir::LatticeShape::new([size as u32, size as u32, 1, 1]),
+        pixelflow_ir::LatticeShape::new([size as u32, size as u32]),
     );
     let (lowered, lroot) = match optimized.as_deref() {
         Some((a, r)) => (a.clone(), *r),
@@ -53,8 +56,8 @@ fn golden_for(ch: char, size: usize) {
     let mut ink = 0.0f32;
     for j in 0..size {
         for i in 0..size {
-            let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
-            let want = eval_scalar(&lowered, lroot, &[x, y, 0.0, 0.0], &BindingTable::empty());
+            let (x, y) = (i as f32, j as f32);
+            let want = eval_scalar(&lowered, lroot, &[x, y], &BindingTable::empty());
             let jit = got[j * size + i];
             assert!(
                 jit.is_finite(),

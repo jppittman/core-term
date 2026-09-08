@@ -6,6 +6,8 @@
 //! # Module Structure
 //!
 //! - [`node`]: Core data structures (EClassId, Op, ENode)
+//! - [`candidate`]: Candidate-local features and the dedup key a guided
+//!   saturation loop orders by
 //! - [`cost`]: Cost model for extraction
 //! - [`rewrite`]: Rewrite rule infrastructure
 //! - [`extract`]: Expression tree extraction, including DAG-aware extraction
@@ -15,7 +17,6 @@
 //!   [`saturate::SaturationConfig`] presets both tiers drive it with
 //! - [`graph`]: The EGraph itself
 //! - [`deps`]: Dependency analysis for uniform hoisting
-//! - [`codegen`]: Code generation from extracted expressions (tree & DAG)
 //!
 //! Mathematical rewrite rules are now in the [`crate::math`] module.
 //!
@@ -24,12 +25,19 @@
 //! front door — insert an [`pixelflow_ir::arena::ExprArena`] directly, no AST
 //! involved.
 
-pub mod codegen;
+pub mod anytime;
+pub mod candidate;
 pub(crate) mod cost;
 pub mod deps;
 pub mod derivative;
 pub(crate) mod extract;
 mod graph;
+mod guided;
+pub mod insert;
+// The hindsight labeler reads the provenance journal directly
+// (`derivation_ancestors`, `Origin`, `Provenance::recorded_count`) — it has
+// nothing to compute without it.
+#[cfg(feature = "provenance-journal")]
 mod labeler;
 mod node;
 pub mod ops;
@@ -39,33 +47,47 @@ pub mod rewrite;
 pub mod rule_order;
 pub mod rules;
 pub mod saturate;
+pub mod template;
 
 // Re-export public API
+pub use anytime::{
+    APP_CHECKPOINT_GRID, AnytimeCheckpoint, AnytimeCurve, AnytimeCurveOutput, run_anytime_curve,
+};
+pub use candidate::{
+    CandidateFeatures, CandidateKey, ClassContentKey, Firing,
+    REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
+};
 pub use cost::{CostFunction, CostModel};
 pub use deps::{Deps, DepsAnalysis};
 pub use derivative::{ChainRule, derivative_rules};
 pub use extract::{
-    ExtractedDAG, Extraction, build_extracted_dag_from_choices, choices_to_arena,
-    compute_ref_counts, extract, extract_dag,
+    ChoiceCost, ExtractedDAG, Extraction, build_extracted_dag_from_choices, choices_to_arena,
+    compute_ref_counts, cost_of_choices, extract, extract_dag,
 };
 pub use graph::{
-    ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, RewriteTarget, SaturationStats,
-    SaturationStop, ScanStop,
+    ApplicationMask, ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, MaskScope, RewriteTarget,
+    SaturationStats, SaturationStop, ScanStop,
 };
+pub use insert::{Declined, insert, reachable_count};
+#[cfg(feature = "provenance-journal")]
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode};
-pub use ops::Op;
-pub use optimizer::{Budget, Limits, Observer, Optimized, Optimizer, OptimizerStats};
+pub use ops::{Op, Vocabulary};
+pub use optimizer::{Budget, Limits, Optimized, Optimizer, OptimizerStats};
+#[cfg(feature = "provenance-journal")]
+pub use optimizer::{KeepJournal, Observer};
+pub use provenance::{ApplicationId, ENodeId, Provenance};
+#[cfg(feature = "provenance-journal")]
 pub use provenance::{
-    ApplicationId, ApplicationRecord, ENodeId, Origin, Provenance, UnionEvent,
-    derivation_ancestors, format_derivation_trace,
+    ApplicationRecord, Origin, UnionEvent, derivation_ancestors, format_derivation_trace,
 };
-pub use rewrite::{Rewrite, RewriteAction};
+pub use rewrite::{Rewrite, RewriteAction, TemplateArena};
 pub use rules::{Fingerprint, RuleId, RuleSet, rule_label};
 pub use saturate::{
     SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
     saturate_with_budget, saturate_with_full_budget,
 };
+pub use template::TemplateRewrite;
 
 // Re-export rule types from math module for backward compatibility
 pub use crate::math::{

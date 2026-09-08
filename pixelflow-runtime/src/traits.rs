@@ -1,6 +1,12 @@
+//! Engine/app event and action vocabulary.
+//!
+//! The `Application<P>` trait that used to live here — one `render` method
+//! returning `Option<Box<dyn Manifold<Output = Discrete>>>` — had no
+//! implementor in the tree and was shadowed by [`api::public::Application`]
+//! (`crate::api::public`), which is the one the engine actually calls. It went
+//! with the per-batch lane in S4a.
+
 use crate::input::{CursorIcon, KeySymbol, Modifiers, MouseButton};
-use pixelflow_core::{Discrete, Manifold};
-use pixelflow_graphics::render::color::Pixel;
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
@@ -64,25 +70,4 @@ pub struct AppState {
     pub width_px: u32,
     /// Logical height in pixels (already scaled by engine)
     pub height_px: u32,
-}
-
-/// The Application trait defines the interface between the engine and the app.
-///
-/// Generic over pixel format `P` for platform-specific rendering:
-/// - `Rgba` for Cocoa (macOS), Web
-/// - `Bgra` for X11 (Linux)
-pub trait Application<P: Pixel> {
-    /// THE DATA PLANE
-    /// The Hot Path: Produce a frame based on current state.
-    /// Returns a composed manifold that will be materialized into the framebuffer.
-    /// One vtable call per manifold, then pure SIMD execution.
-    fn render(
-        &mut self,
-        state: &AppState,
-    ) -> Option<Box<dyn Manifold<Output = Discrete> + Send + Sync>>;
-
-    /// THE CONTROL PLANE
-    /// The Control Path: Process input or wake signals.
-    /// Returns an Action to command the Host (e.g., "Set Title", "Quit").
-    fn on_event(&mut self, event: EngineEvent) -> AppAction;
 }
