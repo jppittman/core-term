@@ -1,101 +1,10 @@
 //! Proc macros for actor-scheduler troupe system.
 //!
 //! This crate provides two macros:
-//! - `#[actor_impl]` - Transforms an impl block into an Actor trait impl
 //! - `troupe!` - Generates a Troupe struct with Directory, ExposedHandles, and lifecycle methods
+//! - `ports!` - Generates an actor's output word and its wiring
 
 use proc_macro::{Delimiter, TokenStream, TokenTree};
-
-/// Transforms an impl block into an Actor trait implementation.
-///
-/// # Example
-///
-/// ```ignore
-/// #[actor_impl]
-/// impl EngineActor<'_> {
-///     type Data = EngineData;
-///     type Control = EngineControl;
-///     type Management = EngineManagement;
-///
-///     fn new(dir: &Directory) -> Self { Self { dir } }
-///     fn handle_data(&mut self, msg: Self::Data) { }
-///     fn handle_control(&mut self, msg: Self::Control) { }
-///     fn handle_management(&mut self, msg: Self::Management) { }
-/// }
-/// ```
-///
-/// Generates:
-///
-/// ```ignore
-/// impl<__Dir> TroupeActor<__Dir> for EngineActor
-/// {
-///     // ... body
-/// }
-/// ```
-#[proc_macro_attribute]
-pub fn actor_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut tokens = item.into_iter().peekable();
-
-    // Find type name after `impl`
-    let mut type_name: Option<String> = None;
-
-    while let Some(tok) = tokens.next() {
-        match tok {
-            TokenTree::Ident(id) if id.to_string() == "impl" => {
-                // Look for the type name, skipping any lifetime
-                while let Some(tok) = tokens.next() {
-                    match tok {
-                        TokenTree::Ident(id) => {
-                            type_name = Some(id.to_string());
-                            break;
-                        }
-                        TokenTree::Punct(p) if p.as_char() == '<' => {
-                            // Skip <'_> or <'a>
-                            let mut depth = 1;
-                            while depth > 0 {
-                                match tokens.next() {
-                                    Some(TokenTree::Punct(p)) if p.as_char() == '<' => depth += 1,
-                                    Some(TokenTree::Punct(p)) if p.as_char() == '>' => depth -= 1,
-                                    None => panic!("unexpected end in lifetime"),
-                                    _ => {}
-                                }
-                            }
-                        }
-                        _ => continue,
-                    }
-                }
-                break;
-            }
-            _ => continue,
-        }
-    }
-
-    let type_name = type_name.expect("#[actor_impl] must be on impl block with type name");
-
-    // Find body brace
-    let mut body: Option<String> = None;
-    for tok in tokens {
-        if let TokenTree::Group(g) = tok
-            && g.delimiter() == Delimiter::Brace
-        {
-            body = Some(g.stream().to_string());
-            break;
-        }
-    }
-
-    let body = body.expect("no impl body found");
-
-    format!(
-        r#"
-        impl<__Dir> ::actor_scheduler::TroupeActor<__Dir> for {type_name}
-        {{
-            {body}
-        }}
-        "#
-    )
-    .parse()
-    .expect("failed to parse generated impl")
-}
 
 /// Actor attributes parsed from bracket syntax
 #[derive(Default)]

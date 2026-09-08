@@ -174,7 +174,7 @@ Cargo workspace with 13 member crates:
 |-------|---------|
 | `pixelflow-core` | Lattices, the compiled `Manifold`, `collapse`, and the cell grid. Backends: x86-64 (SSE2 baseline, AVX2/AVX-512 opt-in via `target-feature`) and aarch64 (NEON) only — no portable/scalar fallback for other architectures. Edition 2024. |
 | `pixelflow-compiler` | Proc-macro front end: `kernel!` and `kernel_raw!`, parser, sema, e-graph optimization, arena lowering. Edition 2024. |
-| `pixelflow-ir` | Shared IR. `ExprArena` (sole IR), OpKind enum, backend execution traits, the `Kernel` value/AST. |
+| `pixelflow-ir` | Shared IR. `ExprArena` (sole IR), OpKind enum, the `Kernel` value/AST. |
 | `pixelflow-codegen` | Expression graphs to machine code: per-ISA emitters (x86-64, aarch64), register allocation, executable memory, the JIT compile cache (`jit_cache`, `CompiledKernel`). Runs the optimizer itself, so a compiled kernel is never obtained unoptimized. |
 | `pixelflow-graphics` | Font loading (TTF, SDF), colors (`Rgba8`, `Color`), the packed frame program, analytic 3-D scenes. |
 | `pixelflow-ml` | Graphics ML experiments (harmonic attention, SH feature maps). Not part of the compiler cost model. |
@@ -373,16 +373,32 @@ Priority: AVX-512 > SSE2 (x86-64), NEON (aarch64) — no scalar fallback for oth
   one, and not any IEEE rounding mode) is the worked counter-example, and
   "Floating point at the edges" above is the long version.
 
-  Note *what* is branchless: the **denotation**, not the instruction stream.
-  `Select` is the worked example of the difference. The operation blends —
-  every lane, always — and codegen *also* emits a short-circuit branch that
-  skips computing an arm no lane selected (`emit/guards.rs`, bought only where
-  the arm outcosts `MISPREDICT_PENALTY_CYCLES`, since mask coherence is a
-  property of the data that no static analysis can know). That branch is not a
-  case: it can change the work done, never the value. Which is the payoff of
-  folding rather than an exception to it — once the meaning carries one case,
-  the compiler is free to put branches back for speed, because nothing
-  downstream has to know they exist.
+  Note *what* is branchless, because `Select` is not the example it looks like.
+  The **instruction stream** is branchless: a bitwise blend, every lane, always.
+  The **denotation is a conditional** — `Select(m, a, b)` *means* `if m then a
+  else b`, and that is two cases, not one. Both arms stay live and everything
+  downstream carries both. By this section's own taxonomy `Select` is
+  **dispatch**, not a fold. It is the cheapest dispatch the hardware sells and
+  worth reaching for on those grounds, but it collapses no case and must not be
+  read as if it did.
+
+  Codegen may then put a real branch back: a short-circuit skipping an arm no
+  lane selected (`emit/guards.rs`, bought only where the arm outcosts
+  `MISPREDICT_PENALTY_CYCLES`, since mask coherence is a property of the data
+  that no static analysis can know). That branch changes the work done, never
+  the value — sound precisely *because* the meaning already carried the case.
+  It is not smuggling a condition in; it is spending one the language always
+  had.
+
+  The distinction is load-bearing, and getting it backwards has already cost.
+  If a select's meaning carries one case, then "which values does this arm
+  serve" is an artifact of codegen, and the place to compute it is next to the
+  emitter, per select. That is where it was built, and it did not survive
+  contact. If the meaning carries two, an arm's condition is a fact about the
+  DAG, the region a value is observed over is a property to be *read* rather
+  than reconstructed, and `Union`'s explicit ranges and a select's implicit
+  mask are the same thing at different levels of static knowledge. See
+  docs/plans/2026-09-07-demand-is-a-dag-property.md.
 - **New implementation of an existing category → trait first** - Before
   adding a second way of doing something the codebase already does one way,
   check whether that category is already a trait. If it is, implement the new
