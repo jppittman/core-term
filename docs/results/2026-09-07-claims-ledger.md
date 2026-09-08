@@ -52,7 +52,7 @@ Each of these gets a dated "Retracted/Superseded" block at the top of its result
 | L042, L043 | Round 2 v2/v3 — |R| effect; order dominates 86× | order confound; 86× is ~3% on real and reverses on psychedelic |
 | L044–L047 | R2G dataset gate, R2G Guide, regime-restricted R2G, bilinear H_form-null | tree-cost deltas; bilinear must be re-taken under #1192 |
 | L054, L058–L061 | class-cap cost 8.66%; ghost recovery 2.35%; live cap +2.03%; cap-break; congruence −0.07% | tree-DP costs on real kernels; sign contradicted by the chrome clock |
-| L004, L006, L007 | self-play era ns numbers | 41.67× timebase; corpus unrecorded |
+| L004, L006, L007 | self-play era ns numbers | corpus unrecorded; the 08-05 audit's H1/H2/H3. **Not the 41.67× timebase**: all three are ratios (L004 `ns ratio`, L006 `speedup`, L007 1.0669/0.6676/31×), and `2026-07-20-jit-compile-cost.md:29-33` states that a uniform scale factor leaves ratios and orderings unaffected. The verdicts stand on the other grounds |
 | L013–L017 | the paper's parity rounds and calibration | overhead-biased ratio, cross-population ρ, unreproducible artifacts, confounded init |
 | L028, L031, L036, L041 | headroom ρ, oracle-filtered curves, linear-vs-lookup AUC, tightened labeler | own banner: predates fixes, never re-run |
 | L065 | latency-prior remeasure absolute numbers | 4× optimistic; table shift was sound but #1157 moved trig again — re-measure |
