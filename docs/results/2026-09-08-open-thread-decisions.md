@@ -198,3 +198,47 @@ That is the same shape as the fifteen already fixed, and it suggests the
 useful gate is not more review but the one field these documents lack:
 **which tree a row was verified against.** With it, #7, #8 and #12 would have
 announced themselves the moment `main` moved.
+
+---
+
+## Addendum (2026-09-08, later the same day): the six threads the first pass missed
+
+The table above was written against #1215's review as it stood at 16:17. A
+later round added six more threads, and the original document's claim to have
+covered "every open thread" was true when written and false within the hour —
+which is the fifth failure mode again, in a document *about* that failure mode.
+They are assessed here on the same terms.
+
+All six are on `docs/plans/2026-09-07-benchmark-correction.md`. None is a
+research judgement in the sense the first twelve were: each is the plan
+disagreeing with its own stated gap, its own §B.2, or a lesson already recorded
+in CLAUDE.md. I recommend accepting all six.
+
+| # | thread | recommendation |
+|---|---|---|
+| 13 | chrome consumed by item 1 | **Accept.** §E item 1 clocks "chrome, psychedelic, cell grid and `O`@32"; §B.2 says any post-freeze opening permanently promotes chrome to DEV and owes a replacement held-out member. As written, the *baseline* run spends the scene reserved for the publication run. Cheapest fix: drop chrome from item 1 and clock the three DEV members — item 3 already says "the DEV scene and `O`@32", so item 1 need only match its sibling's wording. Naming a replacement held-out scene instead is also sound but costs a new frozen artifact |
+| 14 | axis 5 closes without checking op frequencies | **Accept.** The gap column is stated in frequencies (transcendental-bearing 4% real vs 88% synthetic; `MulAdd` 15.9 / `Select` 7.4 / compares 10.9 / `Dwrt` 6.5 / `Sqrt` 4.5 / `Div` 3.3 against `Neg` 16.3 / `Abs` 7.9 / `Pow` 5.0 / `Div` 0.15), and the acceptance column checks rule-firing plus one seam. A corpus can hold the entire stated skew and still close the axis. Add the frequencies themselves: transcendental-bearing rate and the six named per-op shares each inside real [p10, p90], which is the form axes 1, 3 and 7 already use |
+| 15 | retractions not propagated to downstream copies | **Accept, scoped.** All three checked against `main` rather than taken from the finding, and all three stand (only the path was off — the third is in `docs/results/`, not `docs/plans/`): `plans/2026-07-07-guided-saturation-redesign.md` still presents ρ ≈ 0.35 as a live finding; `plans/2026-09-01-phase3-round2-registration-v3.md` still carries "Production quick-win, in one sentence" with 96.58% → 1.12% at B=100; `results/2026-09-02-missing-congruence.md` still opens on "68.4% of real kernels, median 8.66% / p90 13.2% truncation cost" as the premise under test — the very regime figure thread #8 above marks historical. None of the three carries a retraction banner. Full transitive propagation is unbounded, so bound it: banner those three, then give the ledger a *cited-by* column so the next retraction knows its blast radius. Better still, and in the spirit of §B.5 — make it a check: a retracted row's ID appearing in a doc with no retraction banner is grep-detectable, and CLAUDE.md's rule is that a gap in CI is a check to write rather than a caveat to attach |
+| 16 | axis 1 closes without select prevalence | **Accept.** Same shape as #14 and cheaper. The gap states "kernels with a select 95% vs 0%"; the acceptance checks three medians. 51% select-heavy plus 49% select-free satisfies every median while half the corpus cannot exercise a select guard at all. Add: fraction of kernels containing at least one select ≥ 0.9 |
+| 17 | item 6 never compares bilinear against linear | **Accept.** Item 6 exists to revalidate L047, which *is* the functional-form question, and it inherits item 5's guided-vs-unguided rule — so a bilinear head materially worse than the linear one passes by beating unguided. Add a head-to-head: bilinear ≤ linear `dag_cost` on every DEV family, pre-committed, on top of item 5's bar. Note this is the same underlying question as #2 above: L047's verdict cannot be settled until the units are known, and its re-take cannot be settled until the arms are compared to each other |
+| 18 | shader oracle is same-form only | **Accept, and this is the strongest of the six.** The listed oracles for `shader_bench` are same-form `eval_scalar` plus a range bound. A rewrite that changes the function to a different in-range value passes both. This is not a hypothetical: CLAUDE.md records it as the reason the `sin` range-reduction bug survived — "the JIT and the `eval_scalar` oracle run the *same* expansion, so they agreed bit-for-bit on the garbage and every same-form equivalence test passed", with the out-of-range outputs slipping under the `>1e30` filter. A same-form check cannot see a shared-definition bug; only an external bound can. The plan already knows this, and applied it one table up: this very PR restricted the cell grid's byte-identity oracle to the `off`/`cse` arms and gave the FMA-bearing arms a tolerance. Do the same for shaders — compare optimized against the `off` form under a stated numerical contract, keeping the same-form check beside it |
+
+### What the six have in common
+
+Five of the six are an **acceptance rule that does not test the gap its own row
+states** (#14, #16), a **decision rule that cannot answer the question its item
+exists to ask** (#13, #17), or **an oracle the repository has already been
+burned by** (#18). Only #15 is about work not done rather than a rule written
+too weakly.
+
+That is a sharper version of the pattern in the first twelve. There the trouble
+was a row disagreeing with a *file elsewhere in the tree*; here it is a row
+disagreeing with **the paragraph above it**. A plan that pre-commits decision
+rules — which is this plan's whole method, and the right method — has to have
+those rules read against the gaps they close, because a pre-committed rule that
+does not bind is worse than none: it will be cited as evidence the axis was
+checked.
+
+**None of these six needs a measurement to settle.** Each is decidable by
+reading the document against itself, which is why they are recommendations
+rather than open questions.
