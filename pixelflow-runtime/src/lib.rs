@@ -8,7 +8,6 @@ pub mod display;
 pub(crate) mod engine_core;
 pub mod engine_troupe;
 pub mod error;
-pub mod frame;
 pub mod input;
 pub mod pixel;
 pub mod platform;
@@ -25,21 +24,14 @@ pub use error::RuntimeError;
 /// Actor model primitives (message passing, scheduling, priority lanes)
 pub use actor_scheduler as actor;
 
-// Convenience re-exports at crate root (for backward compatibility)
-pub use actor_scheduler::{Actor, ActorHandle, ActorScheduler, Message, SendError, WakeHandler};
-
 // Make private API available throughout crate (not exported)
 #[allow(unused_imports)]
 use api::private::*;
 
-// Legacy re-exports (these should be moved to api::public or removed)
-// TODO: Clean up - EngineActorHandle/Scheduler are used by legacy platform code
-pub use config::{EngineConfig, PerformanceConfig, WindowConfig};
-pub use display::messages::{DisplayControl, DisplayMgmt};
+pub use config::{EngineConfig, WindowConfig};
 
-// DEPRECATED: // Export Troupe as EngineTroupe for backward compat
+// `Troupe` is the engine's actor-scheduler wiring; `EngineTroupe` is the name callers use.
 pub use engine_troupe::Troupe as EngineTroupe;
-pub use frame::{create_frame_channel, create_recycle_channel, EngineHandle, FramePacket};
 
 #[cfg(all(use_web_display, target_arch = "wasm32"))]
 use wasm_bindgen::prelude::*;
@@ -74,15 +66,3 @@ pub fn pixelflow_dispatch_event(
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to write event: {}", e)))?;
     Ok(())
 }
-// /// * `app` - The application logic implementing `Application`.
-// /// * `engine_handle` - Handle for app to send responses back to engine (renders, actions).
-// /// * `config` - Engine configuration.
-// pub fn run(
-//     app: impl Application + Send + 'static,
-//     engine_handle: api::private::EngineActorHandle,
-//     scheduler: api::private::EngineActorScheduler,
-//     config: EngineConfig,
-// ) -> anyhow::Result<()> {
-//     let platform = EnginePlatform::new(app, engine_handle, scheduler, config)?;
-//     platform.run()
-// }

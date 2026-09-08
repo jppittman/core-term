@@ -121,13 +121,13 @@ These points are particularly relevant when working with or generating code usin
         }
         ```
 
-    **Branchless is the limit of this rule.** A fold reduces the live cases; branchless removes them from runtime entirely, because one expression is correct for every input. It is what pixelflow itself is built out of — `Select` is a bitwise blend on every backend, a comparison yields an all-ones mask rather than a `bool`, and the language is a DAG with no iteration binder — so take it wherever the hardware offers it.
+    **Branchless is the limit of this rule.** A fold reduces the live cases; branchless removes them from runtime entirely, because one expression is correct for every input. A comparison yielding an all-ones mask rather than a `bool`, and a language that is a DAG with no iteration binder, are both that — take it wherever the hardware offers it.
 
     The one thing it does not license is hand-rolling a *worse* branchless form than the instruction already sitting there. The retired `Round` expansion is the worked counter-example: `(x + 0.5).floor()` is two instructions where `roundps` is one, and it isn't any IEEE rounding mode either. Slower *and* wrong is never the trade. See "Floating point at the edges" in `CLAUDE.md`.
 
-    **What is branchless is the denotation, not the instruction stream** — and `Select` is the worked example of the difference, worth knowing before you "fix" it. The operation blends: every lane, always. But codegen *also* emits a short-circuit branch that skips computing an arm no lane selected (`pixelflow-codegen/src/emit/guards.rs`), bought only where the skipped arm outcosts `MISPREDICT_PENALTY_CYCLES` — mask coherence is a property of the data, which no static analysis can know, so the analysis bounds the downside by the upside instead of guessing.
+    **`Select` is not an example of that rule, and it is worth knowing which one it is before you "fix" it.** Its *instruction stream* is branchless — a bitwise blend, every lane, always. Its *denotation is a conditional*: `Select(m, a, b)` means `if m then a else b`, two cases, not one. Both arms stay live and everything downstream carries both. That makes it **dispatch** by the taxonomy above — the cheapest dispatch the hardware sells, worth reaching for on those grounds, but it collapses no case.
 
-    That branch is not a live case: it can change the work done, never the value. And that is the payoff of folding rather than an exception to it. Once the meaning carries one case, the compiler is free to put branches back for speed, because nothing downstream depends on their existence.
+    Codegen may then put a real branch back: a short-circuit skipping an arm no lane selected (`pixelflow-codegen/src/emit/guards.rs`), bought only where the skipped arm outcosts `MISPREDICT_PENALTY_CYCLES` — mask coherence is a property of the data, which no static analysis can know, so the analysis bounds the downside by the upside instead of guessing. That branch changes the work done, never the value, and it is sound precisely *because* the meaning already carried the case. It spends a condition the language always had rather than smuggling one in.
 
 ## Functions and APIs
 
