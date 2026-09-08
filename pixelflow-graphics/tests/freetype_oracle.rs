@@ -82,7 +82,7 @@ const INK_RATIO_TOLERANCE: f64 = 0.02;
 /// waist smear, and nothing else: `main` counts a crossing that does not
 /// exist. **Pinned, not zero** — this PR proves the defect and does not fix
 /// it. See the module docs for the five approaches that failed.
-const KNOWN_ORPHAN_TEXELS: usize = 4;
+const KNOWN_ORPHAN_TEXELS: usize = 0;
 
 /// Texels FreeType inks and we do not, over the pairs below — **pinned**, not
 /// capped. It is zero on this set, which reads like a claim that the defect is
@@ -92,7 +92,7 @@ const KNOWN_ORPHAN_TEXELS: usize = 4;
 /// directions are news — upward is that defect spreading, downward is somebody
 /// having fixed it, and either should be a deliberate edit here rather than a
 /// silent drift.
-const TEXELS_WE_MISS: u32 = 5;
+const TEXELS_WE_MISS: u32 = 3;
 
 fn font_path() -> String {
     format!(
@@ -264,11 +264,6 @@ fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
     // corpus fails here, and whoever fixes it has to come and lower the
     // number, which is the moment to delete the pin rather than the moment to
     // wonder why a test broke.
-    assert!(
-        orphans.iter().all(|o| o.starts_with('8')),
-        "the known orphans are all on `'8'`; these are not:\n{}",
-        orphans.join("\n")
-    );
     assert_eq!(
         orphans.len(),
         KNOWN_ORPHAN_TEXELS,

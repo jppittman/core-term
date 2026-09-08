@@ -89,9 +89,10 @@
 pub mod atlas;
 pub mod cache;
 pub mod loader;
+pub mod loop_blinn;
+pub mod outline;
 pub mod text;
 pub mod ttf;
-pub mod ttf_curve_analytical;
 
 /// The rasterizer's pixel-center convention, shared by every module in this
 /// crate that bakes or samples at one: texel/pixel `(i, j)` corresponds to
@@ -104,7 +105,9 @@ pub mod ttf_curve_analytical;
 pub(crate) const PIXEL_CENTER: f32 = 0.5;
 
 // Re-export font types (user-facing only)
-pub use ttf::{Font, Glyph, Support};
+pub use loop_blinn::{Glyph, Support};
+pub use outline::{Affine, Contour, Outline, Segment};
+pub use ttf::Font;
 
 // Re-export loader types
 pub use loader::{DataSource, EmbeddedSource, FontSource, LoadedFont, MmapSource};

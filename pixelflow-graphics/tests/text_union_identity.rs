@@ -91,15 +91,13 @@ fn pixel_centered(k: &Kernel) -> Kernel {
     )
 }
 
-/// One cell of the decomposition, baked on its own at pixel centers: the
-/// range's own extent, collapsed starting at the range's own index — the same
-/// per-summand step [`Union`] performs, exposed here so a cell can be
-/// compared against the union it came from. Matches `text_union`'s own
-/// per-cell contramap, not `layout`'s (`layout` stays in raw glyph space).
+/// One cell of the decomposition, baked on its own: the range's own extent,
+/// collapsed starting at the range's own index — the same per-summand step
+/// [`Union`] performs, exposed here so a cell can be compared against the
+/// union it came from. The cell's kernel already carries the pixel-center
+/// convention (`text_cells` folds it into the geometry).
 fn cell_baked(cell: &TextCell) -> Vec<f32> {
-    cell.range
-        .bake(&pixel_centered(&Kernel::sum(&cell.glyphs)))
-        .into_buffer()
+    cell.range.bake(&cell.kernel).into_buffer()
 }
 
 /// Samples that differ, and by how much.

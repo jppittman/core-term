@@ -1,13 +1,12 @@
 //! Regression tests for font rasterization on the kernel path.
 //!
 //! Guards the behaviors that have broken before:
-//! - Winding mask errors (mask AND vs multiply, x-intersection direction)
+//! - Winding mask errors (mask AND vs multiply, crossing direction)
 //! - Missing Y-offset for ascent in scaled glyphs
 //! - Whole-pipeline blank output
 
 use pixelflow_core::{Kernel, Lattice};
-use pixelflow_graphics::fonts::ttf_curve_analytical::AnalyticalLine;
-use pixelflow_graphics::fonts::{text, Font};
+use pixelflow_graphics::fonts::{loop_blinn, text, Contour, Font, Outline, Segment};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
@@ -16,59 +15,51 @@ fn sample(k: &Kernel, x: f32, y: f32) -> f32 {
     Lattice::eval_at(k, x, y)
 }
 
-/// Winding coverage for segment kernels: `min(|Σ|, 1)`.
-fn coverage(segments: &[Kernel]) -> Kernel {
-    Kernel::sum(segments).abs().min(&Kernel::constant(1.0))
-}
-
 // =============================================================================
 // Regression: winding masks must combine correctly
 // =============================================================================
 
 /// A 400x400 square: interior coverage saturates, all four exteriors are
-/// clear. Horizontal edges contribute nothing to the winding number, so
-/// `from_points` correctly rejects them; the inside test is fully determined
-/// by the two vertical edges.
+/// clear, in either winding direction.
 #[test]
 fn regression_mask_and_not_multiply() {
-    let segs: Vec<Kernel> = [
-        AnalyticalLine::from_points([100.0, 100.0], [500.0, 100.0]), // bottom (horizontal → None)
-        AnalyticalLine::from_points([500.0, 100.0], [500.0, 500.0]), // right
-        AnalyticalLine::from_points([500.0, 500.0], [100.0, 500.0]), // top (horizontal → None)
-        AnalyticalLine::from_points([100.0, 500.0], [100.0, 100.0]), // left
-    ]
-    .into_iter()
-    .flatten()
-    .map(|l| l.kernel())
-    .collect();
-    let cov = coverage(&segs);
+    for clockwise in [false, true] {
+        let mut corners = [
+            [100.0, 100.0],
+            [500.0, 100.0],
+            [500.0, 500.0],
+            [100.0, 500.0],
+        ];
+        if clockwise {
+            corners.reverse();
+        }
+        let cov = loop_blinn::glyph(&Outline {
+            contours: vec![Contour {
+                segments: (0..4)
+                    .map(|i| Segment::Line {
+                        from: corners[i],
+                        to: corners[(i + 1) % 4],
+                    })
+                    .collect(),
+            }],
+        })
+        .kernel;
 
-    assert!(
-        sample(&cov, 300.0, 300.0) > 0.8,
-        "center of square should be inside"
-    );
-    assert!(sample(&cov, 50.0, 300.0) < 0.2, "left should be outside");
-    assert!(sample(&cov, 600.0, 300.0) < 0.2, "right should be outside");
-    assert!(sample(&cov, 300.0, 50.0) < 0.2, "above should be outside");
-    assert!(sample(&cov, 300.0, 600.0) < 0.2, "below should be outside");
-}
-
-/// Winding uses left-ray casting: for a vertical segment at x=500, points to
-/// the RIGHT register the crossing and get full contribution; points to the
-/// LEFT see no crossing.
-#[test]
-fn regression_line_x_intersection_test() {
-    let line = AnalyticalLine::from_points([500.0, 100.0], [500.0, 500.0]).unwrap();
-    let cov = coverage(&[line.kernel()]);
-
-    assert!(
-        sample(&cov, 600.0, 300.0) > 0.8,
-        "point right of line should get high contribution"
-    );
-    assert!(
-        sample(&cov, 100.0, 300.0) < 0.2,
-        "point left of line should get low contribution"
-    );
+        assert!(
+            sample(&cov, 300.0, 300.0) > 0.8,
+            "center of square should be inside"
+        );
+        assert!(sample(&cov, 50.0, 300.0) < 0.2, "left should be outside");
+        assert!(sample(&cov, 600.0, 300.0) < 0.2, "right should be outside");
+        assert!(sample(&cov, 300.0, 50.0) < 0.2, "above should be outside");
+        assert!(sample(&cov, 300.0, 600.0) < 0.2, "below should be outside");
+        // A horizontal edge is an edge like any other: half covered on it.
+        let on_top = sample(&cov, 300.0, 100.0);
+        assert!(
+            (on_top - 0.5).abs() < 0.05,
+            "on the horizontal edge coverage should be ~0.5, got {on_top}"
+        );
+    }
 }
 
 // =============================================================================

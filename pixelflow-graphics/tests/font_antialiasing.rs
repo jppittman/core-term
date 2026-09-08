@@ -1,15 +1,14 @@
-//! Tests for gradient-normalized crossing-ramp antialiasing in the font path.
+//! Tests for gradient-normalized edge-ramp antialiasing in the font path.
 //!
-//! Antialiasing is intrinsic to the glyph coverage `Kernel`: each crossing's
-//! `DX`/`DY` become symbolic `Dwrt` resolved at bake, so the coverage ramp is
-//! ~1 *screen* pixel wide at any glyph scale (the chain rule runs through
-//! every coordinate warp). There is no separate hard/AA mode — the old
-//! Field-domain "hard step" was a degenerate mode of the retired combinator
-//! pipeline.
+//! Antialiasing is intrinsic to the glyph coverage `Kernel`: each edge
+//! function's `DX`/`DY` become symbolic `Dwrt` resolved at bake, so the
+//! coverage ramp is ~1 *screen* pixel wide at any glyph scale (the chain
+//! rule runs through every coordinate warp). There is no separate hard/AA
+//! mode — the old Field-domain "hard step" was a degenerate mode of the
+//! retired combinator pipeline.
 
 use pixelflow_core::{Kernel, Lattice};
-use pixelflow_graphics::fonts::ttf_curve_analytical::{AnalyticalLine, AnalyticalQuad};
-use pixelflow_graphics::fonts::Font;
+use pixelflow_graphics::fonts::{loop_blinn, Contour, Font, Outline, Segment};
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
@@ -19,35 +18,47 @@ fn sample(k: &Kernel, x: f32, y: f32) -> f32 {
     Lattice::eval_at(k, x, y)
 }
 
-/// Winding coverage for segment kernels: `min(|Σ|, 1)`.
-fn coverage(segments: &[Kernel]) -> Kernel {
-    Kernel::sum(segments).abs().min(&Kernel::constant(1.0))
+/// Coverage of one closed contour.
+fn coverage(segments: Vec<Segment>) -> Kernel {
+    loop_blinn::glyph(&Outline {
+        contours: vec![Contour { segments }],
+    })
+    .kernel
 }
 
 /// A square from (100,100) to (500,500) built from line segments.
-///
-/// Horizontal edges contribute nothing to the winding number, so
-/// `from_points` rejects them; the inside test is determined by the two
-/// vertical edges.
 fn square_coverage() -> Kernel {
-    let segs: Vec<Kernel> = [
-        AnalyticalLine::from_points([100.0, 100.0], [500.0, 100.0]),
-        AnalyticalLine::from_points([500.0, 100.0], [500.0, 500.0]),
-        AnalyticalLine::from_points([500.0, 500.0], [100.0, 500.0]),
-        AnalyticalLine::from_points([100.0, 500.0], [100.0, 100.0]),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|l| l.kernel())
-    .collect();
-    coverage(&segs)
+    let corners = [
+        [100.0, 100.0],
+        [500.0, 100.0],
+        [500.0, 500.0],
+        [100.0, 500.0],
+    ];
+    coverage(
+        (0..4)
+            .map(|i| Segment::Line {
+                from: corners[i],
+                to: corners[(i + 1) % 4],
+            })
+            .collect(),
+    )
 }
 
 /// A dome: quadratic from (0,0) up to the control point (50,100) and back to
-/// (100,0), closed by the (rejected, horizontal) chord. The curve's
-/// Y-extremum — the tangent point of the horizontal scanline — is at (50, 50).
+/// (100,0), closed by the horizontal chord. The curve's Y-extremum is at
+/// (50, 50).
 fn dome_coverage() -> Kernel {
-    coverage(&[AnalyticalQuad::new([0.0, 0.0], [50.0, 100.0], [100.0, 0.0]).kernel()])
+    coverage(vec![
+        Segment::Quad {
+            from: [0.0, 0.0],
+            control: [50.0, 100.0],
+            to: [100.0, 0.0],
+        },
+        Segment::Line {
+            from: [100.0, 0.0],
+            to: [0.0, 0.0],
+        },
+    ])
 }
 
 // =============================================================================
@@ -206,7 +217,8 @@ fn quad_tangent_point_is_finite() {
     let smooth = dome_coverage();
 
     // Dense grid over the dome, including the exact Y-extremum row (y = 50,
-    // where the quadratic discriminant is 0) and the tangent point (50, 50).
+    // where a scanline solver's discriminant would be 0) and the tangent
+    // point (50, 50).
     for j in 0..=120 {
         let y = j as f32 * 0.5;
         for i in 0..=100 {

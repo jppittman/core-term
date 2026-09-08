@@ -1,26 +1,25 @@
-//! Optimization-quality guards for the glyph winding kernels.
+//! Optimization-quality guards for the glyph coverage kernels.
 //!
-//! The winding kernels are the hottest runtime-composed arenas in the system
-//! (every glyph bake evaluates every reachable node per pixel), and their
-//! cost is dominated by derivative-bearing subtrees:
-//!
-//! - `AnalyticalLine`: `d = X − ((Y−y0)·k + x0)` with baked constants, so
-//!   `DX(d) = 1` and `DY(d) = −k` — the whole gradient `√(DX²+DY²)` is a
-//!   compile-time constant. If the optimizer doesn't fold it, every pixel
-//!   pays a sqrt for a number known at bake time.
-//! - `AnalyticalQuad`: the value path and both `Dwrt` gradient paths share
-//!   the discriminant / `sqrt(disc)` subtrees; losing that sharing multiplies
-//!   the per-pixel sqrt count.
+//! A glyph kernel is the hottest runtime-composed arena in the system (every
+//! bake evaluates every reachable node per pixel), and its cost is dominated
+//! by the antialiasing ramps: every edge function `d` is normalised by
+//! `‖∇d‖ = √(DX(d)² + DY(d)²)`, and for the affine edge functions —
+//! a chord's perpendicular and along-chord distances — both derivatives are
+//! constants, so the whole normalisation is a compile-time number. If the
+//! optimizer does not fold it, every pixel pays a `sqrt` for a value known
+//! at bake time, once per edge.
 //!
 //! These tests count surviving operations through the runtime pipeline
 //! (`optimize_runtime_arena` → `lower_dwrt`) — the exact stages
 //! `Lattice::bake` runs — so a regression in derivative folding or CSE shows
 //! up as a hard number, not a benchmark whisper.
 
-use pixelflow_graphics::fonts::ttf_curve_analytical::{AnalyticalLine, AnalyticalQuad};
+use pixelflow_graphics::fonts::{loop_blinn, Contour, Font, Outline, Segment};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 use pixelflow_ir::passes::lower_dwrt_owned;
 use pixelflow_ir::OpKind;
+
+const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
 /// Count reachable nodes matching `pred` from `root`.
 fn count_reachable(arena: &ExprArena, root: ExprId, pred: impl Fn(&ExprNode) -> bool) -> usize {
@@ -57,11 +56,11 @@ fn total_reachable(arena: &ExprArena, root: ExprId) -> usize {
 /// residual `Dwrt` exactly as the compile entries do, and report the final
 /// (arena, root) the emitter would actually schedule. Prints per-stage
 /// counts so a failure localizes to the stage that dropped the ball.
-fn bake_pipeline(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
+fn bake_pipeline(arena: &ExprArena, root: ExprId, shape: [u32; 2]) -> (ExprArena, ExprId) {
     let optimized = pixelflow_search::runtime::optimize_runtime_arena(
         arena,
         root,
-        pixelflow_ir::LatticeShape::POINT,
+        pixelflow_ir::LatticeShape::new(shape),
     );
     let (a, r) = optimized
         .as_deref()
@@ -74,90 +73,78 @@ fn bake_pipeline(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
         count_op(&a, r, OpKind::Dwrt),
     );
     let (dl, dr) =
-        lower_dwrt_owned(arena, root).expect("dwrt lowering must succeed on winding kernels");
+        lower_dwrt_owned(arena, root).expect("dwrt lowering must succeed on glyph kernels");
     eprintln!(
         "  lower_dwrt-only baseline: total={} sqrt={}",
         total_reachable(&dl, dr),
         count_op(&dl, dr, OpKind::Sqrt),
     );
-    lower_dwrt_owned(&a, r).expect("dwrt lowering must succeed on winding kernels")
+    lower_dwrt_owned(&a, r).expect("dwrt lowering must succeed on glyph kernels")
 }
 
+/// A closed polygon of `n` straight edges: no curves, so every edge function
+/// is affine and every gradient a constant.
+fn polygon(points: &[[f32; 2]]) -> Outline {
+    Outline {
+        contours: vec![Contour {
+            segments: (0..points.len())
+                .map(|i| Segment::Line {
+                    from: points[i],
+                    to: points[(i + 1) % points.len()],
+                })
+                .collect(),
+        }],
+    }
+}
+
+/// Every affine edge function's gradient folds: a polygon's kernel keeps
+/// one `sqrt` per edge — the capsule distance `√(d² + t²)`, which really is
+/// per pixel — and not one more. The three `√(DX² + DY²)` per edge (two
+/// affine normalisations and, for a curve, its implicit's) are the ones that
+/// must vanish.
 #[test]
-fn line_gradient_folds_to_a_constant() {
-    let line = AnalyticalLine::from_points([2.0, 1.0], [10.0, 30.0]).expect("non-degenerate");
-    let kernel = line.kernel();
+fn affine_edge_gradients_fold_to_constants() {
+    let outline = polygon(&[
+        [2.0, 1.0],
+        [30.0, 4.0],
+        [26.0, 28.0],
+        [3.0, 20.0],
+        [11.0, 9.0],
+    ]);
+    let kernel = loop_blinn::glyph(&outline).kernel;
     let (arena, root) = kernel.parts();
 
     let raw_sqrt = count_op(arena, root, OpKind::Sqrt);
     let raw_dwrt = count_op(arena, root, OpKind::Dwrt);
     let raw_total = total_reachable(arena, root);
 
-    let (opt, opt_root) = bake_pipeline(arena, root);
+    let (opt, opt_root) = bake_pipeline(arena, root, [32, 32]);
     let opt_sqrt = count_op(&opt, opt_root, OpKind::Sqrt);
     let opt_dwrt = count_op(&opt, opt_root, OpKind::Dwrt);
     let opt_total = total_reachable(&opt, opt_root);
 
     eprintln!(
-        "line: raw total={raw_total} sqrt={raw_sqrt} dwrt={raw_dwrt} -> \
+        "pentagon: raw total={raw_total} sqrt={raw_sqrt} dwrt={raw_dwrt} -> \
          optimized total={opt_total} sqrt={opt_sqrt} dwrt={opt_dwrt}"
     );
 
     assert_eq!(opt_dwrt, 0, "Dwrt must be fully resolved by bake time");
-    // DX(d) = 1 and DY(d) = -dx_over_dy (both constants), so
-    // sqrt(DX² + DY²) is a compile-time constant: no sqrt may survive.
-    assert_eq!(
-        opt_sqrt, 0,
-        "the line kernel's gradient is a compile-time constant; a surviving \
-         sqrt means every pixel of every straight glyph edge pays for a \
-         number known at bake time"
-    );
-}
-
-#[test]
-fn quad_shares_the_discriminant_between_value_and_gradient() {
-    // A genuinely quadratic segment (control point off the chord).
-    let quad = AnalyticalQuad::new([0.0, 0.0], [8.0, 20.0], [16.0, 0.0]);
-    let kernel = quad.kernel();
-    let (arena, root) = kernel.parts();
-
-    let raw_sqrt = count_op(arena, root, OpKind::Sqrt);
-    let raw_dwrt = count_op(arena, root, OpKind::Dwrt);
-    let raw_total = total_reachable(arena, root);
-
-    let (opt, opt_root) = bake_pipeline(arena, root);
-    let opt_sqrt = count_op(&opt, opt_root, OpKind::Sqrt);
-    let opt_dwrt = count_op(&opt, opt_root, OpKind::Dwrt);
-    let opt_total = total_reachable(&opt, opt_root);
-
-    eprintln!(
-        "quad: raw total={raw_total} sqrt={raw_sqrt} dwrt={raw_dwrt} -> \
-         optimized total={opt_total} sqrt={opt_sqrt} dwrt={opt_dwrt}"
-    );
-
-    assert_eq!(opt_dwrt, 0, "Dwrt must be fully resolved by bake time");
-    // The raw kernel holds ONE sqrt(disc) (shared by both roots) plus the
-    // two gradient sqrts (one per root's ramp). Differentiating d(Y) chains
-    // through sqrt(disc), whose derivative reuses the SAME sqrt node
-    // (d/dY √u = u′/(2√u)) — so a fully-shared result still has exactly
-    // three sqrts: sqrt(disc), and the two gradient-magnitude sqrts.
-    // Every sqrt beyond that is lost sharing, paid per pixel per curve.
     assert!(
-        opt_sqrt <= 3,
-        "expected ≤3 surviving sqrts (shared disc + two gradient ramps), \
-         got {opt_sqrt}: the value/gradient paths have stopped sharing the \
-         discriminant"
+        opt_sqrt <= 5,
+        "a pentagon's kernel needs one sqrt per edge (the capsule distance); \
+         {opt_sqrt} survived, so an affine edge function's gradient — a \
+         compile-time constant — is being computed per pixel"
     );
 }
 
-/// Every op the lowered winding kernels contain must be representable in
-/// the e-graph — a gap here silently turns the whole runtime optimization
-/// tier into a no-op for glyphs (exactly what happened when `BitAnd`, the
-/// Y-range mask combinator, was missing from `op_from_kind`).
+/// Every op a glyph kernel contains must be representable in the e-graph —
+/// a gap here silently turns the whole runtime optimization tier into a
+/// no-op for glyphs (exactly what happened when `BitAnd`, the mask
+/// combinator, was missing from `op_from_kind`).
 #[test]
-fn lowered_winding_ops_are_all_egraph_representable() {
-    let line = AnalyticalLine::from_points([2.0, 1.0], [10.0, 30.0]).expect("non-degenerate");
-    let kernel = line.kernel();
+fn lowered_glyph_ops_are_all_egraph_representable() {
+    let font = Font::parse(FONT_DATA).unwrap();
+    let kernel = font.glyph_kernel_scaled('g', 16.0).expect("glyph");
     let (arena, root) = kernel.parts();
     let (lowered, lroot) = lower_dwrt_owned(arena, root).expect("lower");
     let mut missing = std::collections::BTreeSet::new();
@@ -199,36 +186,20 @@ fn lowered_winding_ops_are_all_egraph_representable() {
 /// rewrite would slip past the goldens by corrupting both sides equally.
 ///
 /// Tolerance: reassociation/FMA-fusion re-rounds a long winding sum at the
-/// 1e-4 scale (observed); an unsound rule (wrong branch of a root, a lost
-/// mask) shifts coverage by O(1).
+/// 1e-4 scale (observed); an unsound rule (a lost mask, a flipped cone)
+/// shifts coverage by O(1).
 ///
-/// **Sizes, not one size, and coarse ones.** Cost is quadratic in the size
-/// while the chance of catching this is roughly linear in the row count, so a
-/// wide sweep of coarse sizes dominates a narrow sweep that includes fine
-/// ones — 128 px alone would be 75% of the texels and has never caught
-/// anything.
-///
-/// This is **more expensive than what it replaced**, and worth it. Against the
-/// single 32 px pass this test used to make, ten sizes cost about 7x more
-/// (7200 texels per glyph against 1024) — roughly 40 s in a debug run. It buys
-/// 29 real divergences at four sizes where 32 px alone found none. An earlier
-/// revision of this comment claimed a 6.9x *saving*; that compared against an
-/// intermediate 7/12/17/32/64/128 sweep that existed only within this branch,
-/// never on `main`, which is not a baseline anyone else would recognize.
-const SIZES: [u32; 10] = [7, 9, 11, 13, 15, 17, 19, 21, 23, 32];
-
 /// **Sizes, not one size.** A rounding difference only *decides* something
 /// where a comparison sits on a knife edge, and which rows land on one is a
 /// function of the size, so a single size is not a sample of this failure
-/// mode — it is a lottery ticket. `'8'` at 17 px is the recorded case: the
-/// quadratic solver's `disc >= 0` is exact zero at the parabola's vertex row,
-/// one rounding of `Y·slope + c` (fused) against two (raw) flips it, and a
-/// whole crossing (0.5 of coverage) appears on one side and not the other.
-/// Eight texels of a single row moved. 32 px — the only size this test used to
-/// run at, and the size the glyph goldens use — sees nothing.
+/// mode. The scanline kernel this replaced had such an edge — the
+/// quadratic solver's `disc >= 0` at a curve's vertex row — and 29 texels
+/// of `'8'` diverged across four of these sizes for exactly that reason.
+/// This kernel has no discriminant, and the set is asserted empty.
+const SIZES: [u32; 10] = [7, 9, 11, 13, 15, 17, 19, 21, 23, 32];
+
 #[test]
 fn optimized_glyph_matches_raw_within_reassociation_noise() {
-    use pixelflow_graphics::fonts::Font;
     use pixelflow_ir::binding::BindingTable;
     use pixelflow_ir::eval_scalar;
 
@@ -236,13 +207,6 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
     /// scale; an unsound rewrite moves coverage by O(1).
     const TOLERANCE: f32 = 1e-3;
 
-    /// Texels where the optimized and raw arenas disagree today, all on the
-    /// `'8'` waist at 13/15/17/21 px. Not noise and not an optimizer bug: the
-    /// quadratic solver's `disc >= 0` is a knife edge at a tangency, so the
-    /// two arenas' different fusion choices land on different sides of it.
-    const KNOWN_DIVERGENT_TEXELS: usize = 29;
-
-    const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
     let font = Font::parse(FONT_DATA).unwrap();
     let mut divergences: Vec<String> = Vec::new();
 
@@ -272,9 +236,7 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
                     let got = eval_scalar(opt, opt_root, &[x, y], &BindingTable::empty());
                     // Before the comparison, not folded into it: `NaN >= x` is
                     // false, so a threshold test *accepts* a non-finite
-                    // coverage silently. The `assert!` this loop replaced
-                    // caught NaN for free by asserting the negation; a
-                    // collector has to say so itself.
+                    // coverage silently. A collector has to say so itself.
                     assert!(
                         want.is_finite() && got.is_finite(),
                         "{ch}@{size} texel ({i},{j}): non-finite coverage \
@@ -292,32 +254,11 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
         }
     }
 
-    // Reported together rather than at the first hit: which rows sit on a
+    // Reported together rather than at the first hit: which texels sit on a
     // knife edge is the diagnostic, and one texel does not show it.
-    // Pinned, not empty. These 29 texels are the runtime e-graph and the raw
-    // arena disagreeing about the `'8'` waist, and they are a symptom of a
-    // live rendering defect that this PR proves and does not fix — see
-    // `quad_tangency_winding` and `freetype_oracle`. Every one is on `'8'`,
-    // so a divergence anywhere else fails here even if the count happens to
-    // match, which is what keeps this a guard against unsound rewrites rather
-    // than a record of one bug.
-    //
-    // Both saturation and `eval_scalar` are deterministic (CLAUDE.md: a kernel
-    // cannot be built differently on two machines), so the count is stable
-    // across targets. If a platform reports a different one, that is a finding
-    // about determinism, not a flaky test.
     assert!(
-        divergences.iter().all(|d| d.starts_with('8')),
-        "optimization changed coverage on a glyph other than the known \
-         `'8'` case:\n{}",
-        divergences.join("\n")
-    );
-    assert_eq!(
-        divergences.len(),
-        KNOWN_DIVERGENT_TEXELS,
-        "expected the {KNOWN_DIVERGENT_TEXELS} known `'8'` divergences, got \
-         {}. Fewer means the tangency defect has been fixed — lower the pin, \
-         or delete it and assert the set is empty.\n{}",
+        divergences.is_empty(),
+        "optimization changed coverage at {} texels:\n{}",
         divergences.len(),
         divergences.join("\n")
     );
