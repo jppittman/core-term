@@ -340,11 +340,28 @@ mod tests {
         assert!(analyze(kernel).is_ok());
     }
 
-    /// An unknown name is a capture from the caller's scope, not an error:
-    /// the expansion is a closure written where the caller wrote it, so
-    /// Rust's own resolver is the one that can say whether the name exists.
+    /// Semantic analysis does not reject an unknown name: the expansion is a
+    /// closure written where the caller wrote it, so Rust's own resolver is
+    /// the one that can say whether the name exists.
+    ///
+    /// **This proves only that `analyze` accepts it — not that the kernel
+    /// compiles.** It does not: arena lowering has no node for a captured
+    /// Rust binding and refuses with `Unknown identifier`, so
+    /// `let scale = 2.0; kernel!(|| X * scale)` is a compile error today
+    /// (verified). The name this test used to carry —
+    /// `an_unknown_name_is_captured_from_the_callers_scope` — claimed the
+    /// end-to-end behavior and so read as coverage of something nothing
+    /// checks.
+    ///
+    /// It is the same shape as the `round`/`log10`/`pow` and
+    /// `fract`/`hypot`/`clamp` defects: one stage accepts what a later stage
+    /// refuses, because the surface is spelled separately at each stage. A
+    /// capture is expressible — the emitted tokens sit in the caller's scope,
+    /// so it could fold as a `Const` exactly as a parameter does — so this is
+    /// an unimplemented capability, not an impossible one. Pass it as a
+    /// parameter meanwhile.
     #[test]
-    fn an_unknown_name_is_captured_from_the_callers_scope() {
+    fn analysis_accepts_an_unknown_name_and_leaves_it_to_rusts_resolver() {
         let input = quote! { |r: f32| X * X + captured_from_env };
         let kernel = parse(input).unwrap();
         assert!(analyze(kernel).is_ok());
