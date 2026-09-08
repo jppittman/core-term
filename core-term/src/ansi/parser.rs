@@ -21,6 +21,12 @@ enum State {
     CsiEntry,
     CsiParam,
     CsiIntermediate,
+    /// Trap state for a CSI sequence that contained a byte outside the
+    /// ECMA-48 grammar (e.g. a stray `:` where this parser does not yet
+    /// model colon sub-parameters). Absorbs bytes silently until the
+    /// terminating final byte, so the malformed sequence's tail is never
+    /// misread as printable text. See `dispatch_csi_malformed`.
+    CsiIgnore,
     OscString,
     DcsEntry,
     PmString,
@@ -241,6 +247,26 @@ impl AnsiParser {
         self.state = State::Ground;
     }
 
+    /// Reports a byte that is not valid anywhere in the CSI grammar (digit,
+    /// `;`, private marker, intermediate, or final byte) and traps the
+    /// parser in `CsiIgnore` for the remainder of the sequence.
+    ///
+    /// Falling straight back to `Ground` here (as `dispatch_error` does) would
+    /// leave the rest of the malformed sequence's bytes to be read as literal
+    /// printable text — a silent fall-through into the wrong state. Instead
+    /// the sequence's tail is discarded up to its final byte, matching how
+    /// the ECMA-48 "CSI ignore" state recovers, and no command is dispatched
+    /// for the discarded final byte since the error was already reported here.
+    fn dispatch_csi_malformed(&mut self, byte: u8) {
+        warn!(
+            "Malformed CSI sequence: unexpected byte {} ({})",
+            byte, byte as char
+        );
+        self.commands.push(AnsiCommand::Error(byte));
+        self.clear_csi_state();
+        self.state = State::CsiIgnore;
+    }
+
     fn enter_string_state(&mut self, next_state: State) {
         self.clear_string_buffer();
         self.string_state_origin = Some(self.state.clone());
@@ -351,11 +377,7 @@ impl AnsiParser {
                     self.state = State::CsiIntermediate;
                 }
                 AnsiToken::Print(f @ '@'..='~') => self.dispatch_csi(f as u8),
-                AnsiToken::Print(c) => {
-                    warn!("Unexpected char '{}' in CsiEntry", c);
-                    self.dispatch_error(c as u8);
-                    self.clear_csi_state();
-                }
+                AnsiToken::Print(c) => self.dispatch_csi_malformed(c as u8),
             },
             State::CsiParam => match token {
                 AnsiToken::C0Control(b) if b == C0Control::ESC as u8 => {
@@ -391,11 +413,7 @@ impl AnsiParser {
                     self.finalize_param();
                     self.dispatch_csi(f as u8);
                 }
-                AnsiToken::Print(c) => {
-                    warn!("Unexpected char '{}' in CsiParam", c);
-                    self.dispatch_error(c as u8);
-                    self.clear_csi_state();
-                }
+                AnsiToken::Print(c) => self.dispatch_csi_malformed(c as u8),
             },
             State::CsiIntermediate => match token {
                 AnsiToken::C0Control(b) if b == C0Control::ESC as u8 => {
@@ -409,11 +427,30 @@ impl AnsiParser {
                 }
                 AnsiToken::Print(i @ ' '..='/') => self.add_intermediate(i as u8),
                 AnsiToken::Print(f @ '@'..='~') => self.dispatch_csi(f as u8),
-                AnsiToken::Print(c) => {
-                    warn!("Unexpected char '{}' in CsiIntermediate", c);
-                    self.dispatch_error(c as u8);
+                AnsiToken::Print(c) => self.dispatch_csi_malformed(c as u8),
+            },
+            State::CsiIgnore => match token {
+                AnsiToken::C0Control(b) if b == C0Control::ESC as u8 => {
+                    self.clear_csi_state();
+                    self.clear_esc_state();
+                    self.state = State::Escape;
+                }
+                AnsiToken::C0Control(byte) => {
+                    self.dispatch_c0(byte);
                     self.clear_csi_state();
                 }
+                // The final byte ends the malformed sequence. Its `Error` was
+                // already reported when the sequence was first found invalid,
+                // so nothing further is dispatched here — just recover.
+                AnsiToken::Print(_f @ '@'..='~') => {
+                    self.clear_csi_state();
+                    self.state = State::Ground;
+                }
+                // Any other byte (digits, `;`, `:`, private markers,
+                // intermediates, or anything else) is silently absorbed:
+                // this state's entire purpose is to discard the tail of a
+                // sequence already known to be malformed.
+                AnsiToken::Print(_) => {}
             },
             State::OscString | State::DcsEntry | State::PmString | State::ApcString => {
                 match token {
