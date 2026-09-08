@@ -16,7 +16,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-mapfile -t build_scripts < <(find . -name build.rs -not -path "./target/*" | sort)
+mapfile -t build_scripts < <(find . -name build.rs -not -path "./target/*" -not -path "./target.noindex/*" | sort)
 if [[ ${#build_scripts[@]} -eq 0 ]]; then
   echo "no build.rs files found" >&2
   exit 2

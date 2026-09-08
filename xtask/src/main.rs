@@ -7,7 +7,7 @@
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Entry point for xtask.
@@ -91,6 +91,40 @@ fn parse_u32_flag(args: &[String], flag: &str) -> Option<u32> {
     args.get(idx + 1)?.parse().ok()
 }
 
+/// The directory cargo builds into, as cargo itself resolves it: the
+/// `CARGO_TARGET_DIR` override if one is set, else whatever `cargo metadata`
+/// reports (which honours `.cargo/config.toml`'s `build.target-dir`). Spelled
+/// once, here, so that renaming the directory in config cannot strand a path
+/// in this file — that is exactly how `target/release/core-term` and
+/// `target/isa-matrix` were found hardcoded when the directory moved to
+/// `target.noindex`.
+fn cargo_target_dir(workspace_root: &Path) -> PathBuf {
+    if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        return PathBuf::from(dir);
+    }
+    let out = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(workspace_root)
+        .output()
+        .expect("cargo metadata must run");
+    assert!(
+        out.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json = String::from_utf8(out.stdout).expect("cargo metadata is UTF-8");
+    let key = "\"target_directory\":\"";
+    let start = json
+        .find(key)
+        .expect("cargo metadata output has no target_directory field")
+        + key.len();
+    let end = start
+        + json[start..]
+            .find('"')
+            .expect("unterminated target_directory");
+    PathBuf::from(json[start..end].replace("\\/", "/"))
+}
+
 /// Find the workspace root by looking for Cargo.toml with [workspace]
 fn find_workspace_root() -> PathBuf {
     let mut current = env::current_dir().expect("Failed to get current directory");
@@ -155,7 +189,7 @@ fn build_and_bundle(extra_args: &[String]) -> (PathBuf, PathBuf) {
     }
 
     // Copy binary to bundle (build.rs creates the bundle structure)
-    let binary_src = workspace_root.join("target/release/core-term");
+    let binary_src = cargo_target_dir(&workspace_root).join("release/core-term");
     let binary_dest = workspace_root.join("CoreTerm.app/Contents/MacOS/CoreTerm");
 
     if !binary_src.exists() {
@@ -769,8 +803,8 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
             // full workspace build EACH — three levels filled this container's
             // disk the first time it ran for real. One dedicated dir, wiped per
             // level: peak disk is a single artifact set, and the developer's
-            // own target/ (their incremental cache) is never touched.
-            let matrix_target = workspace_root.join("target/isa-matrix");
+            // own build dir (their incremental cache) is never touched.
+            let matrix_target = cargo_target_dir(&workspace_root).join("isa-matrix");
             if matrix_target.exists() {
                 if let Err(e) = std::fs::remove_dir_all(&matrix_target) {
                     panic!(
