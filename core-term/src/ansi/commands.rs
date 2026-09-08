@@ -427,23 +427,21 @@ impl AnsiCommand {
 
     /// Parses an escape sequence with an intermediate character.
     pub(crate) fn from_esc_intermediate(intermediate: char, final_char: char) -> Option<Self> {
-        if ['(', ')', '*', '+'].contains(&intermediate) {
-            if Self::is_valid_charset_designator(final_char) {
-                Some(AnsiCommand::Esc(EscCommand::SelectCharacterSet(
-                    intermediate,
-                    final_char,
-                )))
-            } else {
-                warn!(
-                    "Invalid charset designator '{}' (0x{:02X}) for ESC {} sequence. \
-                     Valid range is 0x30-0x7E ('0'-'~').",
-                    final_char, final_char as u32, intermediate
-                );
-                None
-            }
-        } else {
-            None
+        if !['(', ')', '*', '+'].contains(&intermediate) {
+            return None;
         }
+        if !Self::is_valid_charset_designator(final_char) {
+            warn!(
+                "Invalid charset designator '{}' (0x{:02X}) for ESC {} sequence. \
+                 Valid range is 0x30-0x7E ('0'-'~').",
+                final_char, final_char as u32, intermediate
+            );
+            return None;
+        }
+        Some(AnsiCommand::Esc(EscCommand::SelectCharacterSet(
+            intermediate,
+            final_char,
+        )))
     }
 
     /// Parses SGR parameters into a list of `Attribute`s.

@@ -16,7 +16,7 @@
 use pixelflow_core::Kernel;
 
 // Import analytical curve leaf kernels
-use super::ttf_curve_analytical::{AnalyticalLine, AnalyticalQuad};
+use super::ttf_curve_analytical::{AnalyticalLine, AnalyticalQuad, DEGENERATE_EPSILON};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Kernel composition helpers
@@ -43,7 +43,11 @@ fn unit_square_mask() -> Kernel {
 /// `u = (X - tx)·inv_a + (Y - ty)·inv_b`, `v = (X - tx)·inv_c + (Y - ty)·inv_d`.
 pub(crate) fn affine_kernel(inner: &Kernel, [a, b, c, d, tx, ty]: [f32; 6]) -> Kernel {
     let det = a * d - b * c;
-    let inv_det = if det.abs() < 1e-6 { 0.0 } else { 1.0 / det };
+    let inv_det = if det.abs() < DEGENERATE_EPSILON {
+        0.0
+    } else {
+        1.0 / det
+    };
 
     let inv_a = d * inv_det;
     let inv_b = -b * inv_det;

@@ -36,6 +36,12 @@ const MIN_GRADIENT: f32 = 1e-3;
 /// is ~1e-6 font units. The `disc >= 0` gate still rejects non-intersections.
 const MIN_DISC: f32 = 1e-12;
 
+/// Threshold below which a quantity is treated as degenerate: a vertical
+/// span collapsing to a point (`from_points`), a quadratic's `ay` collapsing
+/// it to a line (`AnalyticalQuad::new`), or a near-singular affine matrix
+/// determinant (`ttf::affine_kernel`).
+pub(crate) const DEGENERATE_EPSILON: f32 = 1e-6;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Line Segment (Ray-Crossing Winding)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -85,7 +91,7 @@ impl AnalyticalLine {
     #[must_use]
     pub fn from_points([x0, y0]: [f32; 2], [x1, y1]: [f32; 2]) -> Option<Self> {
         let dy = y1 - y0;
-        if dy.abs() < 1e-6 {
+        if dy.abs() < DEGENERATE_EPSILON {
             return None;
         }
         let dx = x1 - x0;
@@ -181,7 +187,7 @@ impl AnalyticalQuad {
         let bx = 2.0 * (x1 - x0);
         let cx = x0;
 
-        let is_linear = ay.abs() < 1e-6;
+        let is_linear = ay.abs() < DEGENERATE_EPSILON;
 
         let inv_2ay = if is_linear { 0.0 } else { 0.5 / ay };
         let neg_b_2a = -by * inv_2ay;

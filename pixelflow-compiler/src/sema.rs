@@ -61,6 +61,10 @@ pub fn analyze(kernel: KernelDef) -> syn::Result<AnalyzedKernel> {
 /// axes, which a lattice no longer has.
 const RETIRED_COORDINATES: [&str; 2] = ["Z", "W"];
 
+/// Maximum per-character difference for a same-length method name to be
+/// suggested as a typo fix (e.g. `sqrtt` -> `sqrt`).
+const MAX_TYPO_CHAR_DIFF: usize = 2;
+
 struct SemanticAnalyzer {
     symbols: SymbolTable,
 }
@@ -221,7 +225,7 @@ impl SemanticAnalyzer {
                                 .zip(method_name.chars())
                                 .filter(|(a, b)| a != b)
                                 .count()
-                                <= 2)
+                                <= MAX_TYPO_CHAR_DIFF)
                 })
                 .copied();
 

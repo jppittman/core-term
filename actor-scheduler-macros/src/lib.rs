@@ -34,6 +34,19 @@ fn parse_attrs(group_str: &str) -> ActorAttrs {
     attrs
 }
 
+/// SPSC buffer capacity for each generated actor's inbound channels.
+const TROUPE_DEFAULT_BUFFER_SIZE: usize = 1024;
+
+/// One declared actor: name, type, and the [attrs] that shape its wiring.
+struct ActorSpec {
+    name: String,
+    ty: String,
+    is_main: bool,
+    is_exposed: bool,
+    /// True for [main] or [waker] — reserves a slot in the generated `Wakers` struct.
+    is_waker_slot: bool,
+}
+
 /// Generates a Troupe struct with Directory, ExposedHandles, and lifecycle methods.
 ///
 /// # Syntax
@@ -69,12 +82,7 @@ fn parse_attrs(group_str: &str) -> ActorAttrs {
 #[proc_macro]
 pub fn troupe(input: TokenStream) -> TokenStream {
     // Parse: name: Type [attrs], ...
-    // (name, type, is_main, is_exposed)
-    let mut actors: Vec<(String, String, bool, bool)> = Vec::new();
-    // Parallel to `actors`: true if the actor gets a `Wakers` slot ([main] or
-    // [waker]). Kept separate so the existing 4-tuple destructures are
-    // untouched.
-    let mut waker_slots: Vec<bool> = Vec::new();
+    let mut actors: Vec<ActorSpec> = Vec::new();
     let mut tokens = input.into_iter().peekable();
 
     while let Some(tok) = tokens.next() {
@@ -126,8 +134,13 @@ pub fn troupe(input: TokenStream) -> TokenStream {
             tokens.next(); // consume the bracket group
         }
 
-        waker_slots.push(attrs.is_main || attrs.is_waker);
-        actors.push((name, type_name, attrs.is_main, attrs.is_exposed));
+        actors.push(ActorSpec {
+            name,
+            ty: type_name,
+            is_main: attrs.is_main,
+            is_exposed: attrs.is_exposed,
+            is_waker_slot: attrs.is_main || attrs.is_waker,
+        });
 
         // Skip comma if present
         if let Some(TokenTree::Punct(p)) = tokens.peek()
@@ -138,7 +151,7 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     }
 
     // Validate exactly one main
-    let main_count = actors.iter().filter(|(_, _, m, _)| *m).count();
+    let main_count = actors.iter().filter(|a| a.is_main).count();
     if main_count != 1 {
         panic!(
             "exactly one actor must be marked [main], found {}",
@@ -149,7 +162,8 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // Generate Directory fields (all actors)
     let dir_fields: String = actors
         .iter()
-        .map(|(name, ty, _, _)| {
+        .map(|a| {
+            let (name, ty) = (&a.name, &a.ty);
             format!(
                 "pub {name}: ::actor_scheduler::ActorHandle<
                     <{ty} as ::actor_scheduler::ActorTypes>::Data,
@@ -162,10 +176,11 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .join("\n");
 
     // Generate ExposedHandles fields (only exposed actors)
-    let exposed_actors: Vec<_> = actors.iter().filter(|(_, _, _, e)| *e).collect();
+    let exposed_actors: Vec<_> = actors.iter().filter(|a| a.is_exposed).collect();
     let exposed_fields: String = exposed_actors
         .iter()
-        .map(|(name, ty, _, _)| {
+        .map(|a| {
+            let (name, ty) = (&a.name, &a.ty);
             format!(
                 "pub {name}: ::actor_scheduler::ActorHandle<
                     <{ty} as ::actor_scheduler::ActorTypes>::Data,
@@ -180,14 +195,15 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // Generate exposed() impl - creates new SPSC handles from builders
     let exposed_add_producer: String = exposed_actors
         .iter()
-        .map(|(name, _, _, _)| format!("{name}: self.{name}_builder.add_producer(),"))
+        .map(|a| format!("{name}: self.{name}_builder.add_producer(),", name = a.name))
         .collect::<Vec<_>>()
         .join("\n");
 
     // Generate builder fields for Troupe struct (builders, not schedulers)
     let builder_fields: String = actors
         .iter()
-        .map(|(name, ty, _, _)| {
+        .map(|a| {
+            let (name, ty) = (&a.name, &a.ty);
             format!(
                 "{name}_builder: ::actor_scheduler::ActorBuilder<
                     <{ty} as ::actor_scheduler::ActorTypes>::Data,
@@ -202,7 +218,7 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // Generate per-actor directory fields in Troupe
     let dir_storage_fields: String = actors
         .iter()
-        .map(|(name, _, _, _)| format!("{name}_dir: Directory,"))
+        .map(|a| format!("{}_dir: Directory,", a.name))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -211,9 +227,9 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // all others get None.
     let create_builders: String = actors
         .iter()
-        .zip(waker_slots.iter())
-        .map(|((name, ty, _, _), is_slot)| {
-            let waker = if *is_slot {
+        .map(|a| {
+            let (name, ty) = (&a.name, &a.ty);
+            let waker = if a.is_waker_slot {
                 format!("wakers.{name}")
             } else {
                 "None".to_string()
@@ -223,7 +239,7 @@ pub fn troupe(input: TokenStream) -> TokenStream {
                     <{ty} as ::actor_scheduler::ActorTypes>::Data,
                     <{ty} as ::actor_scheduler::ActorTypes>::Control,
                     <{ty} as ::actor_scheduler::ActorTypes>::Management,
-                >::new(1024, {waker});"
+                >::new({TROUPE_DEFAULT_BUFFER_SIZE}, {waker});"
             )
         })
         .collect::<Vec<_>>()
@@ -233,11 +249,11 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // the [main] actor's field, so `new_with_waker`/`new` shims below compile.
     let wakers_fields: String = actors
         .iter()
-        .zip(waker_slots.iter())
-        .filter(|(_, is_slot)| **is_slot)
-        .map(|((name, _, _, _), _)| {
+        .filter(|a| a.is_waker_slot)
+        .map(|a| {
             format!(
-                "pub {name}: ::std::option::Option<::std::sync::Arc<dyn ::actor_scheduler::WakeHandler>>,"
+                "pub {}: ::std::option::Option<::std::sync::Arc<dyn ::actor_scheduler::WakeHandler>>,",
+                a.name
             )
         })
         .collect::<Vec<_>>()
@@ -247,13 +263,12 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // `new_with_waker` shim.
     let wakers_from_main: String = actors
         .iter()
-        .zip(waker_slots.iter())
-        .filter(|(_, is_slot)| **is_slot)
-        .map(|((name, _, is_main, _), _)| {
-            if *is_main {
-                format!("{name}: main_waker,")
+        .filter(|a| a.is_waker_slot)
+        .map(|a| {
+            if a.is_main {
+                format!("{}: main_waker,", a.name)
             } else {
-                format!("{name}: None,")
+                format!("{}: None,", a.name)
             }
         })
         .collect::<Vec<_>>()
@@ -262,9 +277,8 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // `Wakers { all slots: None }` for the `new` shim.
     let wakers_all_none: String = actors
         .iter()
-        .zip(waker_slots.iter())
-        .filter(|(_, is_slot)| **is_slot)
-        .map(|((name, _, _, _), _)| format!("{name}: None,"))
+        .filter(|a| a.is_waker_slot)
+        .map(|a| format!("{}: None,", a.name))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -272,18 +286,17 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // Each actor gets its own Directory with dedicated SPSC handles
     let create_dirs: String = actors
         .iter()
-        .map(|(actor_name, _, _, _)| {
+        .map(|actor| {
             let fields: String = actors
                 .iter()
-                .map(|(target_name, _, _, _)| {
-                    format!("{target_name}: {target_name}_builder.add_producer(),")
-                })
+                .map(|target| format!("{name}: {name}_builder.add_producer(),", name = target.name))
                 .collect::<Vec<_>>()
                 .join("\n                    ");
             format!(
                 "let {actor_name}_dir = Directory {{
                     {fields}
-                }};"
+                }};",
+                actor_name = actor.name
             )
         })
         .collect::<Vec<_>>()
@@ -292,27 +305,33 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // Generate Troupe struct init
     let troupe_init: String = actors
         .iter()
-        .map(|(name, _, _, _)| format!("{name}_builder, {name}_dir,"))
+        .map(|a| format!("{name}_builder, {name}_dir,", name = a.name))
         .collect::<Vec<_>>()
         .join("\n");
 
     // Generate spawns for non-main actors in play()
     let build_schedulers: String = actors
         .iter()
-        .map(|(name, _, _, _)| format!("let mut {name}_s = self.{name}_builder.build();"))
+        .map(|a| {
+            format!(
+                "let mut {name}_s = self.{name}_builder.build();",
+                name = a.name
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
     let move_dirs: String = actors
         .iter()
-        .map(|(name, _, _, _)| format!("let {name}_dir = self.{name}_dir;"))
+        .map(|a| format!("let {name}_dir = self.{name}_dir;", name = a.name))
         .collect::<Vec<_>>()
         .join("\n");
 
     let spawns: String = actors
         .iter()
-        .filter(|(_, _, is_main, _)| !is_main)
-        .map(|(name, ty, _, _)| {
+        .filter(|a| !a.is_main)
+        .map(|a| {
+            let (name, ty) = (&a.name, &a.ty);
             format!(
                 r#"
                 s.spawn(move || {{
@@ -326,7 +345,8 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .join("\n");
 
     // Generate main actor run
-    let (main_name, main_ty, _, _) = actors.iter().find(|(_, _, m, _)| *m).unwrap();
+    let main = actors.iter().find(|a| a.is_main).unwrap();
+    let (main_name, main_ty) = (&main.name, &main.ty);
     let main_run = format!(
         r#"
         let mut actor = <{main_ty} as ::actor_scheduler::TroupeActor<Directory>>::new({main_name}_dir);
@@ -338,8 +358,11 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     let shutdown_impl = actors
         .iter()
         .rev()
-        .map(|(name, _, _, _)| {
-            format!("let _ = self.{name}.send(::actor_scheduler::Message::Shutdown);")
+        .map(|a| {
+            format!(
+                "let _ = self.{name}.send(::actor_scheduler::Message::Shutdown);",
+                name = a.name
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");

@@ -86,22 +86,25 @@ impl Drop for FastMathGuard {
 // x86_64 Implementation
 // ============================================================================
 
+/// Bit 15 (Flush to Zero: output denormals become zero) and bit 6
+/// (Denormals Are Zero: input denormals treated as zero) of MXCSR.
+#[cfg(target_arch = "x86_64")]
+const MXCSR_FTZ_DAZ: u32 = (1 << 15) | (1 << 6);
+
 #[cfg(target_arch = "x86_64")]
 #[inline]
 unsafe fn set_fp_fast_mode_x86() -> u32 {
-    // Bit 15: Flush to Zero (FTZ) - output denormals become zero
-    // Bit 6:  Denormals Are Zero (DAZ) - input denormals treated as zero
-    // 0x8040 = (1 << 15) | (1 << 6)
     let mut mxcsr: u32 = 0;
     // SAFETY: Reading/writing MXCSR is safe, caller ensures global FP state can be modified
     unsafe {
         core::arch::asm!(
             "stmxcsr [{tmp}]",           // Store current MXCSR
             "mov {old:e}, [{tmp}]",      // Save old value to return
-            "or dword ptr [{tmp}], 0x8040", // Set FTZ and DAZ bits
+            "or dword ptr [{tmp}], {mask}", // Set FTZ and DAZ bits
             "ldmxcsr [{tmp}]",           // Load updated MXCSR
             tmp = in(reg) &mut mxcsr,
             old = out(reg) mxcsr,
+            mask = const MXCSR_FTZ_DAZ,
             options(nostack),
         );
     }
@@ -125,20 +128,24 @@ unsafe fn restore_mxcsr(old_mxcsr: u32) {
 // ARM AArch64 Implementation
 // ============================================================================
 
+/// Bit 24 (Flush-to-Zero mode) of FPCR — handles both input and output
+/// denormals.
+#[cfg(target_arch = "aarch64")]
+const FPCR_FZ: u64 = 1 << 24;
+
 #[cfg(target_arch = "aarch64")]
 #[inline]
 unsafe fn set_fp_fast_mode_arm() -> u64 {
-    // Bit 24: Flush-to-Zero (FZ) mode
-    // ARM's FZ bit handles both input and output denormals
     let old_fpcr: u64;
     // SAFETY: Reading/writing FPCR is safe, caller ensures global FP state can be modified
     unsafe {
         core::arch::asm!(
             "mrs {old}, fpcr",           // Read Floating-point Control Register
-            "orr {new}, {old}, #(1 << 24)", // Set bit 24 (FZ)
+            "orr {new}, {old}, {mask}",  // Set the FZ bit
             "msr fpcr, {new}",           // Write back to FPCR
             old = out(reg) old_fpcr,
             new = out(reg) _,
+            mask = const FPCR_FZ,
             options(nomem, nostack),
         );
     }

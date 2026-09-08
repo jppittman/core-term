@@ -46,262 +46,271 @@ pub fn ast_to_arena(
     param_indices: &HashMap<String, u8>,
     arena: &mut ExprArena,
 ) -> Result<ExprId, String> {
-    let mut locals: HashMap<String, ExprId> = HashMap::new();
-    let ctx = Ctx { param_indices };
-    ast_to_arena_inner(expr, &ctx, &mut locals, arena)
+    let mut lowering = Lowering {
+        param_indices,
+        locals: HashMap::new(),
+        arena,
+    };
+    lowering.lower(expr)
 }
 
-/// Name-resolution context for the AST → arena walk.
-struct Ctx<'a> {
+/// State threaded through the AST → arena walk: parameter names (fixed for
+/// the whole kernel), `let`-bound locals (grows as blocks are walked), and
+/// the arena nodes are pushed into.
+struct Lowering<'a> {
     param_indices: &'a HashMap<String, u8>,
+    locals: HashMap<String, ExprId>,
+    arena: &'a mut ExprArena,
 }
 
-/// Translate an AST node into the arena, resolving `let`-bound locals via
-/// `locals`. The optimizer emits `let`-bindings (a [`Expr::Block`]) for shared
-/// subexpressions; each binding maps to a single [`ExprId`], so the arena
-/// faithfully preserves the discovered CSE as a DAG rather than duplicating
-/// subtrees.
-fn ast_to_arena_inner(
-    expr: &Expr,
-    ctx: &Ctx<'_>,
-    locals: &mut HashMap<String, ExprId>,
-    arena: &mut ExprArena,
-) -> Result<ExprId, String> {
-    match expr {
-        Expr::Ident(ident) => {
-            let name = ident.name.to_string();
-            match name.as_str() {
-                "X" => Ok(arena.push_var(0)),
-                "Y" => Ok(arena.push_var(1)),
-                _ => {
-                    if let Some(&id) = locals.get(&name) {
-                        Ok(id)
-                    } else if let Some(&idx) = ctx.param_indices.get(&name) {
-                        Ok(arena.push_param(idx))
-                    } else {
-                        Err(format!("Unknown identifier: {}", name))
+impl Lowering<'_> {
+    /// Translate an AST node into the arena, resolving `let`-bound locals via
+    /// `self.locals`. The optimizer emits `let`-bindings (a [`Expr::Block`]) for
+    /// shared subexpressions; each binding maps to a single [`ExprId`], so the
+    /// arena faithfully preserves the discovered CSE as a DAG rather than
+    /// duplicating subtrees.
+    fn lower(&mut self, expr: &Expr) -> Result<ExprId, String> {
+        match expr {
+            Expr::Ident(ident) => {
+                let name = ident.name.to_string();
+                match name.as_str() {
+                    "X" => Ok(self.arena.push_var(0)),
+                    "Y" => Ok(self.arena.push_var(1)),
+                    _ => {
+                        if let Some(&id) = self.locals.get(&name) {
+                            Ok(id)
+                        } else if let Some(&idx) = self.param_indices.get(&name) {
+                            Ok(self.arena.push_param(idx))
+                        } else {
+                            Err(format!("Unknown identifier: {}", name))
+                        }
                     }
                 }
             }
-        }
 
-        Expr::Literal(lit) => {
-            if let Some(val) = extract_f64_from_lit(&lit.lit) {
-                Ok(arena.push_const(val as f32))
-            } else {
-                Err("Non-numeric literal".to_string())
-            }
-        }
-
-        Expr::Binary(binary) => {
-            let lhs = ast_to_arena_inner(&binary.lhs, ctx, locals, arena)?;
-            let rhs = ast_to_arena_inner(&binary.rhs, ctx, locals, arena)?;
-
-            let op = match binary.op {
-                BinaryOp::Add => OpKind::Add,
-                BinaryOp::Sub => OpKind::Sub,
-                BinaryOp::Mul => OpKind::Mul,
-                BinaryOp::Div => OpKind::Div,
-                BinaryOp::Lt => OpKind::Lt,
-                BinaryOp::Le => OpKind::Le,
-                BinaryOp::Gt => OpKind::Gt,
-                BinaryOp::Ge => OpKind::Ge,
-                BinaryOp::Eq => OpKind::Eq,
-                BinaryOp::Ne => OpKind::Ne,
-                // Mask combination: comparison results are canonical masks in
-                // both tiers (all-ones SIMD lanes in the JIT, 1.0/0.0 in the
-                // interpreter), so bitwise AND/OR is logical AND/OR exactly.
-                BinaryOp::BitAnd => OpKind::BitAnd,
-                BinaryOp::BitOr => OpKind::BitOr,
-                _ => return Err(format!("Unsupported binary op: {:?}", binary.op)),
-            };
-
-            Ok(arena.push_binary(op, lhs, rhs))
-        }
-
-        Expr::Unary(unary) => {
-            let operand = ast_to_arena_inner(&unary.operand, ctx, locals, arena)?;
-
-            let op = match unary.op {
-                UnaryOp::Neg => OpKind::Neg,
-                UnaryOp::Not => return Err("Unsupported unary op: Not".to_string()),
-            };
-
-            Ok(arena.push_unary(op, operand))
-        }
-
-        Expr::MethodCall(call) => {
-            let method = call.method.to_string();
-
-            // `.at(x, y)` warped a manifold-typed macro param at a
-            // call site. There are no manifold params: a kernel composes
-            // `Kernel` values, and `Kernel::at` is the warp.
-            if method == "at" {
-                return Err(
-                    ".at() inside a kernel body samples a manifold param, and there are none; \
-                     compose Kernel values with Kernel::at instead"
-                        .to_string(),
-                );
+            Expr::Literal(lit) => {
+                if let Some(val) = extract_f64_from_lit(&lit.lit) {
+                    Ok(self.arena.push_const(val as f32))
+                } else {
+                    Err("Non-numeric literal".to_string())
+                }
             }
 
-            let receiver = ast_to_arena_inner(&call.receiver, ctx, locals, arena)?;
+            Expr::Binary(binary) => {
+                let lhs = self.lower(&binary.lhs)?;
+                let rhs = self.lower(&binary.rhs)?;
 
-            match (method.as_str(), call.args.len()) {
-                // Arena expressions are values; `.clone()` (needed by the
-                // combinator backend for non-Copy trees) is the identity here,
-                // so one kernel body compiles under both backends.
-                ("clone", 0) => Ok(receiver),
+                let op = match binary.op {
+                    BinaryOp::Add => OpKind::Add,
+                    BinaryOp::Sub => OpKind::Sub,
+                    BinaryOp::Mul => OpKind::Mul,
+                    BinaryOp::Div => OpKind::Div,
+                    BinaryOp::Lt => OpKind::Lt,
+                    BinaryOp::Le => OpKind::Le,
+                    BinaryOp::Gt => OpKind::Gt,
+                    BinaryOp::Ge => OpKind::Ge,
+                    BinaryOp::Eq => OpKind::Eq,
+                    BinaryOp::Ne => OpKind::Ne,
+                    // Mask combination: comparison results are canonical masks in
+                    // both tiers (all-ones SIMD lanes in the JIT, 1.0/0.0 in the
+                    // interpreter), so bitwise AND/OR is logical AND/OR exactly.
+                    BinaryOp::BitAnd => OpKind::BitAnd,
+                    BinaryOp::BitOr => OpKind::BitOr,
+                    _ => return Err(format!("Unsupported binary op: {:?}", binary.op)),
+                };
 
-                // Unary methods - primitives
-                ("sqrt", 0) => Ok(arena.push_unary(OpKind::Sqrt, receiver)),
-                ("abs", 0) => Ok(arena.push_unary(OpKind::Abs, receiver)),
-                ("neg", 0) => Ok(arena.push_unary(OpKind::Neg, receiver)),
-                ("floor", 0) => Ok(arena.push_unary(OpKind::Floor, receiver)),
-                ("ceil", 0) => Ok(arena.push_unary(OpKind::Ceil, receiver)),
-                ("recip", 0) => Ok(arena.push_unary(OpKind::Recip, receiver)),
-                ("rsqrt", 0) => Ok(arena.push_unary(OpKind::Rsqrt, receiver)),
-
-                // Unary methods - transcendentals (lowered before JIT)
-                ("sin", 0) => Ok(arena.push_unary(OpKind::Sin, receiver)),
-                ("cos", 0) => Ok(arena.push_unary(OpKind::Cos, receiver)),
-                ("tan", 0) => Ok(arena.push_unary(OpKind::Tan, receiver)),
-                ("exp", 0) => Ok(arena.push_unary(OpKind::Exp, receiver)),
-                ("exp2", 0) => Ok(arena.push_unary(OpKind::Exp2, receiver)),
-                ("ln", 0) => Ok(arena.push_unary(OpKind::Ln, receiver)),
-                ("log2", 0) => Ok(arena.push_unary(OpKind::Log2, receiver)),
-
-                // Unary methods - inverse trigonometric
-                ("atan", 0) => Ok(arena.push_unary(OpKind::Atan, receiver)),
-                ("asin", 0) => Ok(arena.push_unary(OpKind::Asin, receiver)),
-                ("acos", 0) => Ok(arena.push_unary(OpKind::Acos, receiver)),
-
-                // Binary methods
-                ("min", 1) => {
-                    let arg = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    Ok(arena.push_binary(OpKind::Min, receiver, arg))
-                }
-                ("max", 1) => {
-                    let arg = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    Ok(arena.push_binary(OpKind::Max, receiver, arg))
-                }
-                ("atan2", 1) => {
-                    let arg = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    Ok(arena.push_binary(OpKind::Atan2, receiver, arg))
-                }
-
-                // Ternary methods
-                ("mul_add", 2) => {
-                    let b = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    let c = ast_to_arena_inner(&call.args[1], ctx, locals, arena)?;
-                    Ok(arena.push_ternary(OpKind::MulAdd, receiver, b, c))
-                }
-                ("select", 2) => {
-                    let if_true = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    let if_false = ast_to_arena_inner(&call.args[1], ctx, locals, arena)?;
-                    Ok(arena.push_ternary(OpKind::Select, receiver, if_true, if_false))
-                }
-                // `clamp` is library, not a primitive: it denotes
-                // `min(max(x, lo), hi)` and is built as that composition.
-                ("clamp", 2) => {
-                    let lo = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    let hi = ast_to_arena_inner(&call.args[1], ctx, locals, arena)?;
-                    let floored = arena.push_binary(OpKind::Max, receiver, lo);
-                    Ok(arena.push_binary(OpKind::Min, floored, hi))
-                }
-
-                // Comparison methods (emitted by e-graph extraction)
-                ("lt", 1) => {
-                    let a = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    Ok(arena.push_binary(OpKind::Lt, receiver, a))
-                }
-                ("le", 1) => {
-                    let a = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    Ok(arena.push_binary(OpKind::Le, receiver, a))
-                }
-                ("gt", 1) => {
-                    let a = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    Ok(arena.push_binary(OpKind::Gt, receiver, a))
-                }
-                ("ge", 1) => {
-                    let a = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    Ok(arena.push_binary(OpKind::Ge, receiver, a))
-                }
-                ("eq", 1) => {
-                    let a = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    Ok(arena.push_binary(OpKind::Eq, receiver, a))
-                }
-                ("ne", 1) => {
-                    let a = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-                    Ok(arena.push_binary(OpKind::Ne, receiver, a))
-                }
-
-                _ => Err(format!("Unsupported method: {}", method)),
+                Ok(self.arena.push_binary(op, lhs, rhs))
             }
-        }
 
-        // Derivative projections (V/DX/DY/DZ and the Hessian family) map to
-        // `Dwrt` nodes: the runtime `lower_dwrt` pass (pixelflow-ir) rewrites
-        // them into chain-rule arithmetic before codegen, replacing the
-        // combinator backend's Jet2/Jet3 forward-mode evaluation. `V` is the
-        // identity — every arena expression is already value-space.
-        Expr::Call(call) => {
-            let func = call.func.to_string();
-            if call.args.len() != 1 {
-                return Err(format!(
-                    "Unsupported call: {}/{} (projections take one argument)",
-                    func,
-                    call.args.len()
-                ));
+            Expr::Unary(unary) => {
+                let operand = self.lower(&unary.operand)?;
+
+                let op = match unary.op {
+                    UnaryOp::Neg => OpKind::Neg,
+                    UnaryOp::Not => return Err("Unsupported unary op: Not".to_string()),
+                };
+
+                Ok(self.arena.push_unary(op, operand))
             }
-            let inner = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
-            match func.as_str() {
-                "V" => Ok(inner),
-                "DX" => Ok(push_dwrt(arena, inner, 0)),
-                "DY" => Ok(push_dwrt(arena, inner, 1)),
-                "DZ" => Ok(push_dwrt(arena, inner, 2)),
-                "DXX" => {
-                    let d = push_dwrt(arena, inner, 0);
-                    Ok(push_dwrt(arena, d, 0))
-                }
-                "DXY" => {
-                    let d = push_dwrt(arena, inner, 0);
-                    Ok(push_dwrt(arena, d, 1))
-                }
-                "DYY" => {
-                    let d = push_dwrt(arena, inner, 1);
-                    Ok(push_dwrt(arena, d, 1))
-                }
-                _ => Err(format!("Unsupported call: {}", func)),
-            }
-        }
 
-        // Parentheses are transparent - just recurse into the inner expression
-        Expr::Paren(inner) => ast_to_arena_inner(inner, ctx, locals, arena),
+            Expr::MethodCall(call) => {
+                let method = call.method.to_string();
 
-        // Blocks carry the optimizer's CSE: each `let __n = <expr>;` binds a
-        // shared subexpression to a single arena node, and the final expression
-        // references those bindings by name.
-        Expr::Block(block) => {
-            for stmt in &block.stmts {
-                match stmt {
-                    crate::ast::Stmt::Let(let_stmt) => {
-                        let id = ast_to_arena_inner(&let_stmt.init, ctx, locals, arena)?;
-                        locals.insert(let_stmt.name.to_string(), id);
+                // `.at(x, y)` warped a manifold-typed macro param at a
+                // call site. There are no manifold params: a kernel composes
+                // `Kernel` values, and `Kernel::at` is the warp.
+                if method == "at" {
+                    return Err(
+                        ".at() inside a kernel body samples a manifold param, and there are none; \
+                         compose Kernel values with Kernel::at instead"
+                            .to_string(),
+                    );
+                }
+
+                let receiver = self.lower(&call.receiver)?;
+
+                match (method.as_str(), call.args.len()) {
+                    // Arena expressions are values; `.clone()` (needed by the
+                    // combinator backend for non-Copy trees) is the identity here,
+                    // so one kernel body compiles under both backends.
+                    ("clone", 0) => Ok(receiver),
+
+                    // Unary methods - primitives
+                    ("sqrt", 0) => Ok(self.arena.push_unary(OpKind::Sqrt, receiver)),
+                    ("abs", 0) => Ok(self.arena.push_unary(OpKind::Abs, receiver)),
+                    ("neg", 0) => Ok(self.arena.push_unary(OpKind::Neg, receiver)),
+                    ("floor", 0) => Ok(self.arena.push_unary(OpKind::Floor, receiver)),
+                    ("ceil", 0) => Ok(self.arena.push_unary(OpKind::Ceil, receiver)),
+                    ("recip", 0) => Ok(self.arena.push_unary(OpKind::Recip, receiver)),
+                    ("rsqrt", 0) => Ok(self.arena.push_unary(OpKind::Rsqrt, receiver)),
+
+                    // Unary methods - transcendentals (lowered before JIT)
+                    ("sin", 0) => Ok(self.arena.push_unary(OpKind::Sin, receiver)),
+                    ("cos", 0) => Ok(self.arena.push_unary(OpKind::Cos, receiver)),
+                    ("tan", 0) => Ok(self.arena.push_unary(OpKind::Tan, receiver)),
+                    ("exp", 0) => Ok(self.arena.push_unary(OpKind::Exp, receiver)),
+                    ("exp2", 0) => Ok(self.arena.push_unary(OpKind::Exp2, receiver)),
+                    ("ln", 0) => Ok(self.arena.push_unary(OpKind::Ln, receiver)),
+                    ("log2", 0) => Ok(self.arena.push_unary(OpKind::Log2, receiver)),
+
+                    // Unary methods - inverse trigonometric
+                    ("atan", 0) => Ok(self.arena.push_unary(OpKind::Atan, receiver)),
+                    ("asin", 0) => Ok(self.arena.push_unary(OpKind::Asin, receiver)),
+                    ("acos", 0) => Ok(self.arena.push_unary(OpKind::Acos, receiver)),
+
+                    // Binary methods
+                    ("min", 1) => {
+                        let arg = self.lower(&call.args[0])?;
+                        Ok(self.arena.push_binary(OpKind::Min, receiver, arg))
                     }
-                    // A non-binding statement has no value to thread; evaluate
-                    // it so any nested error surfaces, then discard the id.
-                    crate::ast::Stmt::Expr(e) => {
-                        let _ = ast_to_arena_inner(e, ctx, locals, arena)?;
+                    ("max", 1) => {
+                        let arg = self.lower(&call.args[0])?;
+                        Ok(self.arena.push_binary(OpKind::Max, receiver, arg))
                     }
+                    ("atan2", 1) => {
+                        let arg = self.lower(&call.args[0])?;
+                        Ok(self.arena.push_binary(OpKind::Atan2, receiver, arg))
+                    }
+
+                    // Ternary methods
+                    ("mul_add", 2) => {
+                        let b = self.lower(&call.args[0])?;
+                        let c = self.lower(&call.args[1])?;
+                        Ok(self.arena.push_ternary(OpKind::MulAdd, receiver, b, c))
+                    }
+                    ("select", 2) => {
+                        let if_true = self.lower(&call.args[0])?;
+                        let if_false = self.lower(&call.args[1])?;
+                        Ok(self
+                            .arena
+                            .push_ternary(OpKind::Select, receiver, if_true, if_false))
+                    }
+                    // `clamp` is library, not a primitive: it denotes
+                    // `min(max(x, lo), hi)` and is built as that composition.
+                    ("clamp", 2) => {
+                        let lo = self.lower(&call.args[0])?;
+                        let hi = self.lower(&call.args[1])?;
+                        let floored = self.arena.push_binary(OpKind::Max, receiver, lo);
+                        Ok(self.arena.push_binary(OpKind::Min, floored, hi))
+                    }
+
+                    // Comparison methods (emitted by e-graph extraction)
+                    ("lt", 1) => {
+                        let a = self.lower(&call.args[0])?;
+                        Ok(self.arena.push_binary(OpKind::Lt, receiver, a))
+                    }
+                    ("le", 1) => {
+                        let a = self.lower(&call.args[0])?;
+                        Ok(self.arena.push_binary(OpKind::Le, receiver, a))
+                    }
+                    ("gt", 1) => {
+                        let a = self.lower(&call.args[0])?;
+                        Ok(self.arena.push_binary(OpKind::Gt, receiver, a))
+                    }
+                    ("ge", 1) => {
+                        let a = self.lower(&call.args[0])?;
+                        Ok(self.arena.push_binary(OpKind::Ge, receiver, a))
+                    }
+                    ("eq", 1) => {
+                        let a = self.lower(&call.args[0])?;
+                        Ok(self.arena.push_binary(OpKind::Eq, receiver, a))
+                    }
+                    ("ne", 1) => {
+                        let a = self.lower(&call.args[0])?;
+                        Ok(self.arena.push_binary(OpKind::Ne, receiver, a))
+                    }
+
+                    _ => Err(format!("Unsupported method: {}", method)),
                 }
             }
-            match &block.expr {
-                Some(final_expr) => ast_to_arena_inner(final_expr, ctx, locals, arena),
-                None => Err("Block has no final expression".to_string()),
-            }
-        }
 
-        _ => Err("Unsupported expression type".to_string()),
+            // Derivative projections (V/DX/DY and the Hessian family) map to
+            // `Dwrt` nodes: the runtime `lower_dwrt` pass (pixelflow-ir) rewrites
+            // them into chain-rule arithmetic before codegen, replacing the
+            // combinator backend's Jet2/Jet3 forward-mode evaluation. `V` is the
+            // identity — every arena expression is already value-space.
+            Expr::Call(call) => {
+                let func = call.func.to_string();
+                if call.args.len() != 1 {
+                    return Err(format!(
+                        "Unsupported call: {}/{} (projections take one argument)",
+                        func,
+                        call.args.len()
+                    ));
+                }
+                let inner = self.lower(&call.args[0])?;
+                match func.as_str() {
+                    "V" => Ok(inner),
+                    "DX" => Ok(push_dwrt(self.arena, inner, 0)),
+                    "DY" => Ok(push_dwrt(self.arena, inner, 1)),
+                    "DZ" => Err(
+                        "`DZ` is no longer a coordinate: a lattice has two axes, X and Y"
+                            .to_string(),
+                    ),
+                    "DXX" => {
+                        let d = push_dwrt(self.arena, inner, 0);
+                        Ok(push_dwrt(self.arena, d, 0))
+                    }
+                    "DXY" => {
+                        let d = push_dwrt(self.arena, inner, 0);
+                        Ok(push_dwrt(self.arena, d, 1))
+                    }
+                    "DYY" => {
+                        let d = push_dwrt(self.arena, inner, 1);
+                        Ok(push_dwrt(self.arena, d, 1))
+                    }
+                    _ => Err(format!("Unsupported call: {}", func)),
+                }
+            }
+
+            // Parentheses are transparent - just recurse into the inner expression
+            Expr::Paren(inner) => self.lower(inner),
+
+            // Blocks carry the optimizer's CSE: each `let __n = <expr>;` binds a
+            // shared subexpression to a single arena node, and the final expression
+            // references those bindings by name.
+            Expr::Block(block) => {
+                for stmt in &block.stmts {
+                    match stmt {
+                        crate::ast::Stmt::Let(let_stmt) => {
+                            let id = self.lower(&let_stmt.init)?;
+                            self.locals.insert(let_stmt.name.to_string(), id);
+                        }
+                        // A non-binding statement has no value to thread; evaluate
+                        // it so any nested error surfaces, then discard the id.
+                        crate::ast::Stmt::Expr(e) => {
+                            let _ = self.lower(e)?;
+                        }
+                    }
+                }
+                match &block.expr {
+                    Some(final_expr) => self.lower(final_expr),
+                    None => Err("Block has no final expression".to_string()),
+                }
+            }
+
+            _ => Err("Unsupported expression type".to_string()),
+        }
     }
 }
 
