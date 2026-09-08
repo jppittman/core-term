@@ -1,5 +1,3 @@
-> **Retracted/Superseded (2026-09-07), ledger L078.** The S4b-1 landing block's statement that `collapse_cost bench` bypasses `optimize_runtime_arena` is wrong on main - `compile_as_baked` calls it - so `collapse_cost` is a valid e-graph instrument; the S1-S4b gates themselves stand. Verdict and rationale: `docs/results/2026-09-07-claims-ledger.md` (PR #1207); the corrected benchmark and re-validation order: `docs/plans/2026-09-07-benchmark-correction.md`.
-
 # A kernel with a lattice is the only evaluation API
 
 **Date:** 2026-09-06
