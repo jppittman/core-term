@@ -201,8 +201,8 @@ impl PlaneRegion {
     /// A band of `rows` rows whose first sample is at raw index `(x0, y0)`,
     /// with each subsequent sample one unit further along X and each row one
     /// unit further along Y — no coordinate frame, just the index itself.
-    /// What [`Lattice::collapse`](crate::Lattice::collapse) and a
-    /// [`Union`](crate::Union) summand sample.
+    /// What [`Lattice::collapse`](crate::Lattice::collapse) and
+    /// [`IndexRange::bake`](crate::IndexRange::bake) sample.
     pub(crate) fn at_index(width: usize, rows: usize, x0: usize, y0: usize) -> Self {
         Self {
             width,
@@ -553,13 +553,13 @@ impl BoundManifold {
     ///
     /// [`BoundManifold::collapse_rows`] deliberately lets a row's final
     /// partial batch overhang into the stride's spare columns, because for a
-    /// frame those columns are padding nobody reads. For a summand of a
-    /// [`Union`](crate::Union) they are the *neighbour's* columns, filled by a
-    /// different program, so an overhang there is not scratch — it is wrong
-    /// samples. That is the whole of the difference: same plan, same loop,
-    /// same one-batch scratch for a row's tail, with [`RowTail::Exact`] where
-    /// a frame passes [`RowTail::Absorbs`]. No staging plane, and so nothing
-    /// to allocate.
+    /// frame those columns are padding nobody reads. For a caller writing one
+    /// piece of a larger shared destination, those spare columns are a
+    /// *neighbour's*, filled by different content, so an overhang there is
+    /// not scratch — it is wrong samples. That is the whole of the
+    /// difference: same plan, same loop, same one-batch scratch for a row's
+    /// tail, with [`RowTail::Exact`] where a frame passes
+    /// [`RowTail::Absorbs`]. No staging plane, and so nothing to allocate.
     ///
     /// # Panics
     ///
@@ -582,11 +582,11 @@ impl BoundManifold {
     /// packed pixel or a mask — the way [`Self::collapse_int_rows`] is for
     /// [`Self::collapse_rows`].
     ///
-    /// Public because the caller that needs it is a *union summand* in
-    /// another crate: a program that answers for part of a frame writes
-    /// exactly its own columns, and the columns past them belong to whatever
-    /// fills the rest. `collapse_int_rows`'s overhang policy — "the caller
-    /// owns the padding" — is false there.
+    /// Public because the caller that needs it writes one piece of a larger
+    /// shared destination from another crate: a program that answers for
+    /// part of a frame writes exactly its own columns, and the columns past
+    /// them belong to whatever fills the rest. `collapse_int_rows`'s
+    /// overhang policy — "the caller owns the padding" — is false there.
     ///
     /// # Panics
     ///

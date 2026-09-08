@@ -435,11 +435,10 @@ mod tests {
     /// before, the metric folded to constants and the two coincided. The
     /// *channel planes themselves are bit-identical* to the pre-uniform tree;
     /// what moved is only which of two equally valid schedules the packed
-    /// program's shared subterm gets. `union.rs` writes down exactly this
-    /// licence for the same reason ("extraction is a function of the arena and
-    /// of the lattice shape, not of the expression alone"), and CLAUDE.md's
-    /// "within a target, the optimizer may still produce a different answer
-    /// than the unoptimized code" is the general statement.
+    /// program's shared subterm gets — "extraction is a function of the
+    /// arena and of the lattice shape, not of the expression alone."
+    /// CLAUDE.md's "within a target, the optimizer may still produce a
+    /// different answer than the unoptimized code" is the general statement.
     ///
     /// A real miscompile — a lost channel, a swapped lane, a wrong cell —
     /// moves a byte by far more than one step, and the exact half below would

@@ -16,7 +16,7 @@
 //! antialiasing ramp's shape is pinned by `font_antialiasing.rs`, and where
 //! the ink is against a second rasterizer by `freetype_oracle.rs`.
 
-use pixelflow_core::{Kernel, Lattice, Union};
+use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::{loop_blinn, Contour, Font, Outline, Segment};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
@@ -174,21 +174,11 @@ fn pixel_centered(k: &Kernel) -> Kernel {
 /// Bake the single-kernel form over `lattice` at pixel centres.
 ///
 /// `glyph`'s winding sum is a `Kernel::sum_over` reading a bound piece
-/// table (S1a), so — unlike `bake_cells` below, which still declares no
-/// buffer — this must bind it before collapsing.
+/// table (S1a), so this must bind it before collapsing.
 fn bake_single(outline: &Outline, lattice: Lattice) -> Vec<f32> {
     let glyph = loop_blinn::glyph(outline);
     let kernel = pixel_centered(&glyph.kernel);
     glyph.bake(&kernel, lattice).into_buffer()
-}
-
-/// Bake the union-of-cells form over `lattice`.
-fn bake_cells(outline: &Outline, lattice: Lattice, cell: [usize; 2]) -> Vec<f32> {
-    let mut union = Union::over(lattice);
-    for (range, kernel) in loop_blinn::cells(outline, lattice, cell) {
-        union.place(range, &kernel);
-    }
-    union.bake().into_buffer()
 }
 
 /// Compare a baked buffer against the oracle at every sample clear of the
@@ -398,33 +388,7 @@ fn synthetic_outlines_wind_like_the_oracle() {
         let single = bake_single(outline, lattice);
         let (judged, _) = judge(&format!("{name} (single)"), outline, lattice, &single);
         assert!(judged > 1000, "{name}: only {judged} samples judged");
-        // Two cell shapes, neither a divisor of the frame, so the last row
-        // and column of cells are partial.
-        for cell in [[20, 12], [48, 48]] {
-            let cells = bake_cells(outline, lattice, cell);
-            judge(
-                &format!("{name} (cells {cell:?})"),
-                outline,
-                lattice,
-                &cells,
-            );
-        }
     }
-}
-
-/// One-sample cells: every sample its own program, its own reference point
-/// and its own pruning — the degenerate extent every argument in the
-/// module has to survive.
-#[test]
-fn one_sample_cells_wind_like_the_oracle() {
-    let lattice = Lattice::frame(12, 12);
-    let outline = outline_of(vec![
-        square(1.0, 1.0, 11.0, 11.0, false),
-        square(4.0, 4.0, 8.0, 8.0, true),
-    ]);
-    let cells = bake_cells(&outline, lattice, [1, 1]);
-    let (judged, _) = judge("holed square (cells [1, 1])", &outline, lattice, &cells);
-    assert!(judged > 20, "only {judged} samples judged");
 }
 
 // ────────────────────────────── real glyphs ──────────────────────────────
@@ -450,28 +414,6 @@ fn glyphs_wind_like_the_oracle() {
         }
     }
     assert!(judged_total > 5_000, "only {judged_total} samples judged");
-}
-
-/// The domain-side form of real glyphs, at a cell size that leaves several
-/// segments per boundary cell and whole interior cells to the constant.
-#[test]
-fn glyph_cells_wind_like_the_oracle() {
-    let font = Font::parse(FONT_DATA).expect("font");
-    for (size, cell) in [(13.0f32, [8usize, 8usize]), (24.0, [16, 8])] {
-        let n = (size * 1.5).ceil() as usize;
-        let lattice = Lattice::frame(n, n);
-        for ch in ['O', '8', 'g', '@', '{', '&'] {
-            let id = font.cmap_lookup(ch).expect("glyph");
-            let outline = font.outline_scaled_by_id(id, size).expect("outline");
-            let cells = bake_cells(&outline, lattice, cell);
-            judge(
-                &format!("{ch}@{size} (cells {cell:?})"),
-                &outline,
-                lattice,
-                &cells,
-            );
-        }
-    }
 }
 
 /// Every printable glyph, one size: the whole font's parser and every
@@ -622,52 +564,5 @@ fn the_support_is_the_outline_bounds_plus_the_ramp_reach() {
             x1 + loop_blinn::RAMP_REACH,
             y1 + loop_blinn::RAMP_REACH
         ]
-    );
-}
-
-// ────────────────────────────── the two forms agree ──────────────────────────────
-
-/// The single kernel and the union of cells compute the same function, and
-/// not merely the same classification: each cell drops the pieces that
-/// cannot reach it and picks its own reference point, and neither changes a
-/// value. What is left is the compiler's — a cell is a different arena at a
-/// different extent, so extraction may schedule it differently and round
-/// differently — so the bound is one 8-bit coverage step, an order of
-/// magnitude above the worst measured (1.1e-3 ≈ 0.3 of a step), and far
-/// below the half a pixel a dropped piece would move.
-#[test]
-fn cells_and_the_single_kernel_agree_to_within_the_compiler() {
-    let font = Font::parse(FONT_DATA).expect("font");
-    let mut worst = 0.0f32;
-    let mut worst_where = String::new();
-    let mut histogram = [0usize; 11];
-    for size in [24.0f32] {
-        let n = (size * 1.5).ceil() as usize;
-        let lattice = Lattice::frame(n, n);
-        for ch in ['O', '8', 'A', 'g', 'W', '&'] {
-            let id = font.cmap_lookup(ch).expect("glyph");
-            let outline = font.outline_scaled_by_id(id, size).expect("outline");
-            let single = bake_single(&outline, lattice);
-            let cells = bake_cells(&outline, lattice, [16, 16]);
-            for (k, (a, b)) in single.iter().zip(&cells).enumerate() {
-                let d = (a - b).abs();
-                histogram[(d * 10.0).round() as usize] += 1;
-                if d > worst {
-                    worst = d;
-                    worst_where = format!(
-                        "{ch}@{size} at ({}, {}): single {a} cells {b}",
-                        k % n,
-                        k / n
-                    );
-                }
-            }
-        }
-    }
-    eprintln!("|single − cells| histogram in tenths: {histogram:?}; worst {worst_where}");
-    assert!(
-        worst < 1.0 / 255.0,
-        "the two forms differ by {worst} ({worst_where}), more than one 8-bit \
-         coverage step — that is a dropped piece or a moved reference point, \
-         not a schedule"
     );
 }

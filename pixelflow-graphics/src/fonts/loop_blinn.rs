@@ -53,8 +53,7 @@
 //! half-plane, the chord's: `crescent = {v ≥ u²} ∩ {v ≤ u}`, which is
 //! already bounded, because `u² ≤ v ≤ u` holds nowhere but `u ∈ [0, 1]`.
 //! A GPU spends a whole rasterized triangle on that fence; two comparisons
-//! do it here. The domain-side extent this stage needed is for the
-//! *string*, not the arc — see [`cells`].
+//! do it here.
 //!
 //! ## Only a boundary softens a pixel
 //!
@@ -97,16 +96,6 @@
 //! two is the closer. That is also why a segment straying more than half a
 //! pixel (`MAX_DEVIATION`) from its chord is halved until it does not.
 //!
-//! ## The domain-side form
-//!
-//! [`cells`] cuts a lattice into rectangles and gives each only what it
-//! needs. The pruning follows from the ray: a chord spanning every row of a
-//! rectangle and lying wholly to one side is crossed by every ray from it
-//! at the same sign, so it folds into a host-side constant; a chord whose Y
-//! range ends inside those rows must be evaluated; a chord missing those
-//! rows is dropped. Slivers and ramps are regions rather than rays, and
-//! prune by reach. Rectangles needing no term are a constant.
-//!
 //! ## What is exactly zero, and where
 //!
 //! Beyond half a pixel from every boundary the ramp is saturated and the
@@ -116,8 +105,7 @@
 //! exact, whatever the glyph's shape.
 
 use super::outline::{Outline, Point, Segment};
-use super::PIXEL_CENTER;
-use pixelflow_core::{BoundManifold, DiscreteManifold, IndexRange, Kernel, Lattice, Manifold};
+use pixelflow_core::{BoundManifold, DiscreteManifold, Kernel, Lattice, Manifold};
 use pixelflow_ir::arena::BufferIdentity;
 use std::sync::Arc;
 
@@ -278,10 +266,9 @@ impl Support {
 /// outline's own frame, together with its [`Support`].
 ///
 /// Every chord and every sliver contributes at every sample, so the cost is
-/// linear in the outline's segment count; that is the price of a kernel with
-/// no extent, and the reason [`cells`] exists. The kernel is cut to its
-/// support by a mask whose false arm is the literal 0, so it composes into a
-/// larger scene as a guardable arm.
+/// linear in the outline's segment count. The kernel is cut to its support
+/// by a mask whose false arm is the literal 0, so it composes into a larger
+/// scene as a guardable arm.
 #[must_use]
 pub fn glyph(outline: &Outline) -> Glyph {
     let pieces = Pieces::of(outline);
@@ -339,139 +326,6 @@ pub fn glyph(outline: &Outline) -> Glyph {
     }
 }
 
-/// The coverage of `outline` as a **union of index ranges** over `lattice`:
-/// the domain-side form, one summand per `cell`-sized rectangle of samples
-/// that the outline reaches.
-///
-/// `outline` is in the lattice's continuous frame, sampled at pixel centres
-/// — index `(i, j)` reads coordinate `(i + ½, j + ½)`, this crate's shared
-/// convention — because a `Union` summand collapses by pure index and has no
-/// coordinate frame of its own to lend it. The contramap is folded into the
-/// geometry here rather than applied as a `Kernel::at`, so each cell's
-/// constants are exact.
-///
-/// Each summand holds only what its own rectangle needs, and what a
-/// rectangle needs follows from the ray the winding is counted along. A
-/// chord that spans *every* row of the rectangle and lies wholly to one
-/// side of it is crossed by every ray from it, at the same sign — so it is
-/// folded into the summand's constant on the host, and no term is emitted.
-/// A chord whose Y range ends inside those rows, or which passes through
-/// them, is crossed at a row-dependent place and must be evaluated. A chord
-/// missing those rows entirely is crossed by nothing here and is dropped.
-/// Slivers and ramps are pruned by reach instead, since both are regions
-/// rather than rays.
-///
-/// Rectangles that need no term at all are the constant coverage of their
-/// interior, and those where that constant is 0 are not placed. Place the
-/// result with `Union::place`; the ranges are disjoint by construction.
-///
-/// # Panics
-///
-/// Panics on a zero cell extent.
-#[must_use]
-pub fn cells(outline: &Outline, lattice: Lattice, cell: [usize; 2]) -> Vec<(IndexRange, Kernel)> {
-    assert!(
-        cell[0] > 0 && cell[1] > 0,
-        "loop_blinn::cells: a cell must have samples, got {cell:?}"
-    );
-    let indexed = outline.translated([-PIXEL_CENTER, -PIXEL_CENTER]);
-    let pieces = Pieces::of(&indexed);
-    let [ex, ey] = lattice.extent.map(|e| e as usize);
-    let mut out = Vec::new();
-    if pieces.is_empty() {
-        return out;
-    }
-    for y0 in (0..ey).step_by(cell[1]) {
-        for x0 in (0..ex).step_by(cell[0]) {
-            let (w, h) = (cell[0].min(ex - x0), cell[1].min(ey - y0));
-            let samples = Rect {
-                x0: x0 as f64,
-                y0: y0 as f64,
-                x1: (x0 + w - 1) as f64,
-                y1: (y0 + h - 1) as f64,
-            };
-            let reach = samples.dilated(f64::from(RAMP_REACH));
-            let mut constant_winding = 0.0f64;
-            let included: Vec<Included> = pieces
-                .pieces
-                .iter()
-                .filter_map(|p| {
-                    // A contour that does not reach this rectangle encloses
-                    // none of its samples, so it contributes no winding
-                    // here and no ramp: the whole character drops at once.
-                    let [bx0, by0, bx1, by1] = p.contour_bounds;
-                    if bx1 < reach.x0 || bx0 > reach.x1 || by1 < reach.y0 || by0 > reach.y1 {
-                        return None;
-                    }
-                    let [cy0, cy1] = p.chord.y_range();
-                    let [cx0, _] = p.chord.x_range();
-                    // Half-open in Y, matching `crossing_term`'s own rule.
-                    let spans_all_rows = cy0 <= samples.y0 && cy1 > samples.y1;
-                    let misses_all_rows =
-                        p.chord.is_horizontal() || cy1 <= samples.y0 || cy0 > samples.y1;
-                    let crossing = if misses_all_rows {
-                        false
-                    } else if spans_all_rows && cx0 > samples.x1 {
-                        // Crossed by every ray from this rectangle, always
-                        // to the right: one number, the same at every
-                        // sample, so the host adds it and the kernel does
-                        // not carry a term.
-                        constant_winding += p.chord.direction();
-                        false
-                    } else {
-                        // Wholly left of the rectangle and spanning it
-                        // contributes nothing to any ray; anything else has
-                        // to be asked per sample.
-                        !(spans_all_rows && p.chord.x_range()[1] <= samples.x0)
-                    };
-                    // The ramp's lower bound is the chord's distance less
-                    // the curve's deviation, so a curve softens a sample
-                    // only within the reach *plus* that deviation.
-                    let ramp = samples
-                        .dilated(f64::from(RAMP_REACH) + p.deviation())
-                        .meets_segment(p.chord.a, p.chord.b);
-                    // A curve's ramp is the implicit taken against that
-                    // bound, so wherever the ramp is built the sliver is
-                    // too — the bound alone is not an estimate, only a
-                    // floor. Where the ramp is not built the sliver is
-                    // still needed if its triangle reaches the cell: it
-                    // carries winding, not just a distance.
-                    let bulge = p
-                        .bulge
-                        .filter(|b| ramp || reach.meets_triangle(b.p0, b.p1, b.p2));
-                    (crossing || bulge.is_some() || ramp).then_some(Included {
-                        piece: *p,
-                        crossing,
-                        bulge,
-                        ramp,
-                    })
-                })
-                .collect();
-            let range = IndexRange::new(x0, y0, w, h);
-            if included.is_empty() {
-                // Nothing varies here: the constant alone decides, and an
-                // uncovered rectangle is not placed at all.
-                if constant_winding != 0.0 {
-                    out.push((range, constant(1.0)));
-                }
-                continue;
-            }
-            // Per-piece constants, unconverted (S1a is `glyph`'s table-read
-            // winding only — see its doc comment): `prepare` builds each
-            // included piece's own term from its own row, and this cell's
-            // winding is their sum plus the pieces already folded into the
-            // host constant.
-            let prepared = prepare(&included);
-            let terms: Vec<Kernel> = std::iter::once(constant_of(constant_winding))
-                .chain(prepared.iter().map(|p| p.own.clone()))
-                .collect();
-            let winding = Kernel::sum(&terms);
-            out.push((range, coverage(winding, &prepared)));
-        }
-    }
-    out
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Host geometry: the outline as chords and slivers, in f64
 // ═══════════════════════════════════════════════════════════════════════════
@@ -514,12 +368,9 @@ impl Chord {
         ((self.b[0] - self.a[0]).powi(2) + (self.b[1] - self.a[1]).powi(2)).sqrt()
     }
 
-    /// `[min, max]` of the chord's Y, and of its X.
+    /// `[min, max]` of the chord's Y.
     fn y_range(self) -> [f64; 2] {
         [self.a[1].min(self.b[1]), self.a[1].max(self.b[1])]
-    }
-    fn x_range(self) -> [f64; 2] {
-        [self.a[0].min(self.b[0]), self.a[0].max(self.b[0])]
     }
 
     /// `+1` where the chord runs in the direction of increasing Y, `−1`
@@ -582,15 +433,6 @@ struct Piece {
     /// glyphs in a string overlap constantly without their ink ever
     /// touching), so this asks the winding directly.
     may_be_interior: bool,
-    /// The box containing this piece's whole **contour**.
-    ///
-    /// A closed contour that does not enclose a sample contributes exactly
-    /// zero to its winding — a ray from the sample crosses it an even
-    /// number of times, netting nothing. So a sample outside this box need
-    /// not evaluate *any* of the contour's pieces, which is what lets a
-    /// cell drop a whole character rather than pruning its chords one at a
-    /// time against a ray that runs to infinity.
-    contour_bounds: [f64; 4],
 }
 
 impl Piece {
@@ -602,7 +444,6 @@ impl Piece {
             chord,
             bulge: None,
             may_be_interior: false,
-            contour_bounds: [0.0; 4],
         })
     }
 
@@ -667,7 +508,6 @@ impl Piece {
                 sign: area2.signum(),
             }),
             may_be_interior: false,
-            contour_bounds: [0.0; 4],
         });
     }
 
@@ -678,8 +518,7 @@ impl Piece {
     /// distance to a convex set is itself convex, so its maximum over the
     /// hull is attained at a vertex. Two of those vertices are the chord's
     /// own ends, at distance 0. So the control point's distance bounds the
-    /// whole curve's, which is what the ramp's lower bound and the cell's
-    /// pruning both need.
+    /// whole curve's, which is what the ramp's lower bound needs.
     ///
     /// Not the perpendicular distance to the chord's infinite *line*: a
     /// control point can project far outside the chord's span — the curve
@@ -689,29 +528,6 @@ impl Piece {
         self.bulge
             .map_or(0.0, |b| point_to_segment(b.p1, self.chord))
     }
-}
-
-/// The box containing every control point of a contour, and so the whole
-/// contour.
-fn contour_bounds(pieces: &[Piece]) -> [f64; 4] {
-    let mut b = [
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-    ];
-    for piece in pieces {
-        for p in [piece.chord.a, piece.chord.b]
-            .into_iter()
-            .chain(piece.bulge.map(|g| g.p1))
-        {
-            b[0] = b[0].min(p[0]);
-            b[1] = b[1].min(p[1]);
-            b[2] = b[2].max(p[0]);
-            b[3] = b[3].max(p[1]);
-        }
-    }
-    b
 }
 
 /// The winding of a contour's chords at `p`, by a horizontal ray. Chords
@@ -763,7 +579,6 @@ impl Pieces {
         // already cover it: their winding at its midpoint is nonzero. Asked
         // directly rather than through bounding boxes, because boxes touch
         // whenever glyphs sit side by side and ink almost never does.
-        let bounds: Vec<[f64; 4]> = by_contour.iter().map(|c| contour_bounds(c)).collect();
         let mut pieces = Vec::new();
         for (i, contour) in by_contour.iter().enumerate() {
             for piece in contour {
@@ -775,7 +590,6 @@ impl Pieces {
                     .any(|(_, other)| chord_winding(other, mid) != 0);
                 pieces.push(Piece {
                     may_be_interior: covered,
-                    contour_bounds: bounds[i],
                     ..*piece
                 });
             }
@@ -788,82 +602,22 @@ impl Pieces {
     }
 }
 
-/// An axis-aligned rectangle `[x0, x1] × [y0, y1]`, closed.
-#[derive(Clone, Copy, Debug)]
-struct Rect {
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
-}
-
-impl Rect {
-    fn dilated(self, r: f64) -> Self {
-        Self {
-            x0: self.x0 - r,
-            y0: self.y0 - r,
-            x1: self.x1 + r,
-            y1: self.y1 + r,
-        }
-    }
-
-    fn centre(self) -> P {
-        [(self.x0 + self.x1) / 2.0, (self.y0 + self.y1) / 2.0]
-    }
-
-    /// Whether the closed segment `a → b` has a point in the rectangle
-    /// (Liang–Barsky clipping of the parameter interval).
-    fn meets_segment(self, a: P, b: P) -> bool {
-        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let (mut t0, mut t1) = (0.0f64, 1.0f64);
-        for (p, q) in [
-            (-dx, a[0] - self.x0),
-            (dx, self.x1 - a[0]),
-            (-dy, a[1] - self.y0),
-            (dy, self.y1 - a[1]),
-        ] {
-            if p == 0.0 {
-                if q < 0.0 {
-                    return false;
-                }
-                continue;
-            }
-            let t = q / p;
-            if p < 0.0 {
-                t0 = t0.max(t);
-            } else {
-                t1 = t1.min(t);
-            }
-        }
-        t0 <= t1
-    }
-
-    /// Whether the closed triangle has a point in the rectangle: an edge
-    /// crosses it, or (the triangle contains the rectangle) its centre is
-    /// inside the triangle.
-    fn meets_triangle(self, p0: P, p1: P, p2: P) -> bool {
-        if self.meets_segment(p0, p1) || self.meets_segment(p1, p2) || self.meets_segment(p2, p0) {
-            return true;
-        }
-        let c = self.centre();
-        let (s0, s1, s2) = (cross(p0, p1, c), cross(p1, p2, c), cross(p2, p0, c));
-        (s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0) || (s0 <= 0.0 && s1 <= 0.0 && s2 <= 0.0)
-    }
-}
-
-/// A piece as one cell sees it: which of its terms that cell needs.
+/// A piece as [`prepare`] sees it: which of its own crossing/ramp
+/// contributions the caller needs. [`glyph`] is the one remaining caller and
+/// always needs both — every piece can be crossed and every piece can
+/// soften a sample somewhere on the whole plane — so `crossing` and `ramp`
+/// are unconditionally true there; the fields exist because [`prepare`]'s
+/// own crossing/sliver term and ramp distance are each gated by one.
 #[derive(Clone, Copy, Debug)]
 struct Included {
     piece: Piece,
-    /// Whether a ray from a sample in the cell can cross this chord at a
-    /// row-dependent place — i.e. the chord's Y range ends inside the
-    /// cell's rows, or it passes through them. A chord that spans every row
-    /// of the cell and lies wholly to one side contributes the same sign at
-    /// every sample, and is folded into the cell's constant instead.
+    /// Whether a ray from a sample can cross this chord at a row-dependent
+    /// place, i.e. whether the crossing term is worth building at all.
     crossing: bool,
-    /// The sliver, if its control triangle reaches the cell.
+    /// The sliver, if this piece has one.
     bulge: Option<Bulge>,
-    /// Whether the segment is near enough to soften a sample in the cell.
+    /// Whether the segment is near enough to soften some sample, i.e.
+    /// whether the ramp distance is worth building at all.
     ramp: bool,
 }
 
@@ -885,9 +639,9 @@ fn constant_of(v: f64) -> Kernel {
 //
 // [`crossing_term`] and [`sliver_term`] read a piece's numbers by column
 // rather than by field, so they have exactly one definition regardless of
-// where the numbers come from: [`glyph`] reads column `k` of row `i` from a
-// bound table at the `Kernel::sum_over` binder (`i` varies per sample-batch
-// iteration, unrolled); [`prepare`] (feeding both `cells` and `glyph`'s
+// where the numbers come from: [`glyph`]'s winding sum reads column `k` of
+// row `i` from a bound table at the `Kernel::sum_over` binder (`i` varies
+// per sample-batch iteration, unrolled); [`prepare`] (feeding `glyph`'s
 // distance/boundary fold) reads column `k` of one piece's own row, folded
 // in as a `Kernel` constant. Same body, two [`Coeff`] sources — the
 // `Scalar::{Const, Uniform}` distinction the codebase already has
@@ -1204,9 +958,9 @@ struct Prepared {
 }
 
 /// Build each included piece's [`Prepared`] contribution: the pruned
-/// crossing+sliver `own` term every caller needs (summed into the winding
-/// by [`cells`], read at the boundary test by [`coverage`]), and — only
-/// where [`Included::ramp`] asks for one — the antialiasing distance.
+/// crossing+sliver `own` term, read at the boundary test by [`coverage`],
+/// and — only where [`Included::ramp`] asks for one — the antialiasing
+/// distance.
 ///
 /// Reads every column through a per-piece constant [`Coeff`]
 /// (`Kernel::constant(row[k])`): the row is a concrete piece here, unlike
@@ -1262,10 +1016,9 @@ fn prepare(included: &[Included]) -> Vec<Prepared> {
 /// outside, and a distance decides how much of the pixel.
 ///
 /// `winding` is already resolved by the caller — [`glyph`]'s
-/// `Kernel::sum_over` a bound table, or [`cells`]'s `Kernel::sum` of a host
-/// constant plus each [`Prepared::own`] — because how it is built is the
-/// one thing S1a changes; everything below (the boundary test, the ramp,
-/// the clamp) is unconverted and reads it as a plain `Kernel` either way.
+/// `Kernel::sum_over` a bound table — and read here as a plain `Kernel`;
+/// everything below (the boundary test, the ramp, the clamp) does not care
+/// how it was built.
 ///
 /// The two halves are separate on purpose. An earlier draft made each
 /// winding term *soft*, so a crossing's existence and its coverage were one
@@ -1326,9 +1079,8 @@ fn coverage(winding: Kernel, prepared: &[Prepared]) -> Kernel {
 /// and **not sound away from it**: it underestimates where the curve is
 /// sharp (measured: a texel a full pixel outside `O` at 7 px read as an
 /// edge texel), and an underestimate past the ramp is not a rounding
-/// difference but a saturation failure, which is also what a cell's pruning
-/// relies on. [`coverage`] therefore takes it against a bound built from
-/// the chord.
+/// difference but a saturation failure. [`coverage`] therefore takes it
+/// against a bound built from the chord.
 fn implicit_distance(bulge: Bulge) -> Kernel {
     let Bulge { p0, p1, p2, .. } = bulge;
     let e1 = [p1[0] - p0[0], p1[1] - p0[1]];
@@ -1358,39 +1110,6 @@ fn implicit_distance(bulge: Bulge) -> Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_segment_meets_a_rectangle_it_crosses_and_misses_one_it_skirts() {
-        let r = Rect {
-            x0: 0.0,
-            y0: 0.0,
-            x1: 4.0,
-            y1: 4.0,
-        };
-        assert!(r.meets_segment([-1.0, 2.0], [5.0, 2.0]));
-        assert!(r.meets_segment([1.0, 1.0], [2.0, 2.0]));
-        assert!(r.meets_segment([-1.0, -1.0], [5.0, 5.0]));
-        assert!(!r.meets_segment([-1.0, 5.0], [5.0, 5.0]));
-        assert!(!r.meets_segment([5.0, -1.0], [5.0, 5.0]));
-        // Touching a corner counts: the rectangle is closed.
-        assert!(r.meets_segment([-1.0, 5.0], [5.0, -1.0]));
-        // A vertical segment beside the rectangle, and one through it.
-        assert!(!r.meets_segment([4.5, -1.0], [4.5, 5.0]));
-        assert!(r.meets_segment([4.0, -1.0], [4.0, 5.0]));
-    }
-
-    #[test]
-    fn a_triangle_meets_a_rectangle_it_contains() {
-        let r = Rect {
-            x0: 1.0,
-            y0: 1.0,
-            x1: 2.0,
-            y1: 2.0,
-        };
-        assert!(r.meets_triangle([-10.0, -10.0], [10.0, -10.0], [0.0, 10.0]));
-        assert!(!r.meets_triangle([5.0, 5.0], [6.0, 5.0], [5.0, 6.0]));
-        assert!(r.meets_triangle([0.0, 0.0], [3.0, 0.0], [0.0, 3.0]));
-    }
 
     #[test]
     fn a_flat_quadratic_is_its_chord() {

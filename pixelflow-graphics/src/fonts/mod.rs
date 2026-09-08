@@ -6,7 +6,7 @@
 //! ## Architecture: Four Layers
 //!
 //! ```text
-//! Text Layer (text(), text_union(), CachedText)
+//! Text Layer (text(), CachedText)
 //!      ↓
 //!      │  Layout: advances/kerning; one outline, placed
 //!      │
@@ -16,7 +16,7 @@
 //!      │
 //! Coverage Layer (loop_blinn)
 //!      ↓
-//!      │  An outline's winding number, as one Kernel or as a Union
+//!      │  An outline's winding number, as one Kernel
 //!      │
 //! Font Layer (Font, outline)
 //!      ↓
@@ -65,11 +65,9 @@
 //! component's placement, a pen position — is applied to control points on
 //! the host, so the kernel is built in the frame it is evaluated in.
 //!
-//! [`loop_blinn`] turns an outline into coverage, in either encoding of its
-//! extent: [`loop_blinn::glyph`] as one kernel over the whole plane, cut to
-//! an exact [`Support`]; [`loop_blinn::cells`] as a union of index ranges,
-//! each holding only the segments that reach it. Metrics come from
-//! `advance`/`kern` and their `*_by_id`/`*_scaled` variants.
+//! [`loop_blinn`] turns an outline into coverage: [`loop_blinn::glyph`] as
+//! one kernel over the whole plane, cut to an exact [`Support`]. Metrics
+//! come from `advance`/`kern` and their `*_by_id`/`*_scaled` variants.
 //!
 //! ## Layer 3: Glyph Caching (`cache` module)
 //!
@@ -137,7 +135,7 @@ pub use ttf::Font;
 pub use loader::{DataSource, EmbeddedSource, FontSource, LoadedFont, MmapSource};
 
 // Re-export text
-pub use text::{text, text_cells, text_union, TextCell};
+pub use text::text;
 
 // Re-export cache
 pub use atlas::GlyphAtlas;

@@ -80,8 +80,8 @@ const REFERENCE_INKED: f32 = 0.25;
 /// kernel. The full sweep is 99 glyph-size pairs and timed out at nextest's
 /// ten-minute cap. The subset keeps `'8'` at the sizes its defect lived at,
 /// a large size where the ramp reaches furthest, and each historically
-/// fragile glyph; the rest runs under `--ignored`, the same shape
-/// `text_union_identity` uses for the same reason:
+/// fragile glyph; the rest runs under `--ignored`, the same shape other
+/// full-corpus suites in this crate use for the same reason:
 ///
 /// ```text
 /// cargo test -p pixelflow-graphics --all-features --test freetype_oracle -- --ignored

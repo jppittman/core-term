@@ -23,10 +23,9 @@
 //! contramaps on the kernel (`Kernel::at`), composed before the lattice ever
 //! sees a coordinate.
 //!
-//! A sub-lattice is an index range, and a **[`union::Union`]** is a sum of
-//! them: disjoint ranges, each with the kernel sampled on it, collapsing into
-//! one buffer. That is the domain-side encoding of an extent, the counterpart
-//! to a `select` mask on the range side.
+//! A sub-lattice is an [`IndexRange`](crate::IndexRange): a rectangular
+//! restriction of the index, never a coordinate — the domain-side encoding of
+//! an extent, the counterpart to a `select` mask on the range side.
 //!
 //! A kernel with a lattice is the evaluation API:
 //!

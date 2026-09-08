@@ -740,6 +740,7 @@ impl Telemetry {
                         s.select_idx,
                         s.mask_idx,
                         s.exclusive,
+                        s.demand_exclusive,
                         s.guarded,
                         s.intruders,
                     )

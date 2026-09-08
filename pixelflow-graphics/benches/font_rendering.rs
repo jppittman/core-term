@@ -4,13 +4,13 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use pixelflow_core::{Kernel, Lattice, Manifold};
-use pixelflow_graphics::fonts::{text, text_union, CachedText, Font, GlyphCache};
+use pixelflow_graphics::fonts::{text, CachedText, Font, GlyphCache};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
-/// `text`/`text_union` return convention-agnostic kernels (raw glyph space);
-/// the pixel-center convention is a contramap the caller applies, same as a
-/// raw glyph kernel would.
+/// `text` returns a convention-agnostic kernel (raw glyph space); the
+/// pixel-center convention is a contramap the caller applies, same as a raw
+/// glyph kernel would.
 fn pixel_centered(k: &Kernel) -> Kernel {
     k.at(
         &Kernel::x().add(&Kernel::constant(0.5)),
@@ -67,15 +67,6 @@ fn bench_pixelflow_text_sizes(c: &mut Criterion) {
             let glyph = text(&font, &text_str, 16.0);
             let kernel = pixel_centered(&glyph.kernel);
             b.iter(|| black_box(glyph.bake(black_box(&kernel), lattice)));
-        });
-
-        // The domain encoding: one program per cell, each collapsed only over
-        // the columns its glyphs can reach. `compile` is hoisted for the same
-        // reason `cached_HELLO` hoists its own — the measurement is the
-        // collapse, and the sum row leaves its compile to the global cache.
-        group.bench_with_input(BenchmarkId::new("union", length), &length, |b, _| {
-            let program = text_union(&font, lattice, &text_str, 16.0).compile();
-            b.iter(|| black_box(program.collapse()));
         });
     }
 
