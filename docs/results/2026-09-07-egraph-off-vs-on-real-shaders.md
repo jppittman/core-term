@@ -11,6 +11,8 @@ Host: aarch64 (NEON, 4 lanes), macOS, load average 8–43 throughout (other sess
 
 | class | n | Σ bytes off → cse → on | Σ dag_cost off → cse → on | Σ mem ops off → on | median clock Δ | picture identical | verdict |
 |---|---:|---:|---:|---:|---:|---:|---|
+| bench | 3 | 73360 → 42256 → 41184 (-43.9%) | 37249 → 18513 → 18527 (-50.3%) | 891017 → 302199 (-66.1%) | - | 0/3 | helps (static) |
+| bench_wide | 1 | 28208 → 15344 → 15184 (-46.2%) | 14365 → 6901 → 6770 (-52.9%) | 6242609 → 1751202 (-71.9%) | - | 0/1 | helps (static) |
 | cellgrid | 1 | 8864 → 2512 → 2576 (-70.9%) | 1879 → 450 → 428 (-77.2%) | 42154099 → 5227011 (-87.6%) | - | 1/1 | helps (static) |
 | glyph16 | 95 | 1500068 → 883060 → 846068 (-43.6%) | 745471 → 375881 → 368113 (-50.6%) | 2596166 → 970018 (-62.6%) | - | 1/95 | helps (static) |
 | glyph32 | 95 | 1500068 → 883060 → 846100 (-43.6%) | 745471 → 375881 → 368113 (-50.6%) | 10359990 → 3570226 (-65.5%) | - | 1/95 | helps (static) |
@@ -29,6 +31,10 @@ Run with `--skip` in `off` mode because the emitter panics on them (the notes ab
 
 | kernel | extent | nodes in → off → cse → on | bytes off → cse → on | dag_cost off → cse → on | schedule off → on | guarded/selects off → on | spills off → on | mem ops off → on | saturation (apps / rounds / classes / stop) | compile off → on (ms; saturation share) |
 |---|---|---|---:|---:|---:|---:|---:|---:|---|---:|
+| bench_A_linear | 40×45 | 271 → 271 → 157 → 169 | 2128 → 1744 → 1968 (-7.5%) | 823 → 618 → 670 (-18.6%) | 191 → 71 | 242/7 → 77/7 | 0 → 0 | 0 → 3522 (+0.0%) | 8114 apps / 3 it / 3006 cls / ClassCap | 2.7 → 51.8 (95%) |
+| bench_O_quadratic | 40×45 | 1799 → 3655 → 1536 → 1482 | 28208 → 15344 → 15184 (-46.2%) | 14365 → 6901 → 6770 (-52.9%) | 3503 → 401 | 9730/209 → 979/49 | 226 → 0 | 390359 → 117702 (-69.8%) | 3328 apps / 1 it / 4868 cls / ClassCap | 39.1 → 34.7 (55%) |
+| bench_O_quadratic_wide | 640×45 | 1799 → 3655 → 1536 → 1482 | 28208 → 15344 → 15184 (-46.2%) | 14365 → 6901 → 6770 (-52.9%) | 3503 → 401 | 9730/209 → 979/49 | 226 → 0 | 6242609 → 1751202 (-71.9%) | 3328 apps / 1 it / 4868 cls / ClassCap | 38.7 → 33.6 (56%) |
+| bench_S_complex | 40×45 | 2815 → 5623 → 2463 → 2453 | 43024 → 25168 → 24032 (-44.1%) | 22061 → 10994 → 11087 (-49.7%) | 5359 → 652 | 14850/317 → 1580/77 | 291 → 0 | 500658 → 180975 (-63.9%) | 2485 apps / 1 it / 5000 cls / ClassCap | 56.1 → 42.4 (52%) |
 | cellgrid_80x24_d2 | 1600×768 | 667 → 667 → 123 → 117 | 8864 → 2512 → 2576 (-70.9%) | 1879 → 450 → 428 (-77.2%) | 779 → 217 | 0/0 → 0/0 | 27 → 7 | 42154099 → 5227011 (-87.6%) | 6841 apps / 3 it / 4641 cls / ClassCap | 1.6 → 25.2 (97%) |
 | psychedelic_packed | 1920×1080 | 1246 → 1246 → 112 → 112 | 10496 → 2176 → 2368 (-77.4%) | 4948 → 860 → 825 (-83.3%) | 1072 → 127 | 174/6 → 29/1 | 11 → 0 | 36333378 → 4324 (-100.0%) | 7319 apps / 3 it / 4676 cls / ClassCap | 4.9 → 24.7 (96%) |
 
@@ -59,35 +65,35 @@ Sorted by bytes Δ. Rule column: the on-extraction's rules from the provenance j
 
 | rule | kernels where load-bearing | Σ strict | Σ tight | Σ fired |
 |---|---:|---:|---:|---:|
-| `fma-fusion` | 188 | 5178 | 67707 | 295617 |
-| `constant-fold` | 190 | 4573 | 8131 | 48116 |
-| `canonicalize(Div)` | 189 | 3404 | 3664 | 5986 |
-| `canonicalize(Sub)` | 190 | 3137 | 8549 | 13643 |
-| `factor` | 184 | 3089 | 9743 | 75206 |
-| `associative(Add)` | 186 | 2923 | 26603 | 198778 |
-| `associative(Mul)` | 184 | 2537 | 27479 | 81269 |
-| `distribute` | 188 | 1736 | 15602 | 72782 |
-| `reverse-associative(Mul)` | 184 | 1375 | 12238 | 93183 |
-| `doubling` | 186 | 196 | 9608 | 31568 |
-| `reverse-associative(Add)` | 182 | 111 | 21002 | 217604 |
-| `annihilator` | 186 | 0 | 1320 | 26678 |
+| `fma-fusion` | 192 | 5364 | 69213 | 298631 |
+| `constant-fold` | 194 | 4698 | 8288 | 48460 |
+| `canonicalize(Div)` | 193 | 3525 | 3786 | 6120 |
+| `canonicalize(Sub)` | 194 | 3240 | 8808 | 13932 |
+| `factor` | 188 | 3203 | 10074 | 76259 |
+| `associative(Add)` | 190 | 3033 | 27275 | 200396 |
+| `associative(Mul)` | 188 | 2580 | 28203 | 82330 |
+| `distribute` | 192 | 1794 | 16054 | 73471 |
+| `reverse-associative(Mul)` | 188 | 1425 | 12493 | 94259 |
+| `doubling` | 190 | 199 | 9979 | 32407 |
+| `reverse-associative(Add)` | 186 | 113 | 21467 | 219514 |
+| `annihilator` | 190 | 0 | 1345 | 26840 |
 | `associative(Max)` | 1 | 0 | 4 | 8 |
 | `associative(Min)` | 1 | 0 | 3 | 18 |
-| `cancellation(Sub)` | 78 | 0 | 150 | 498 |
-| `commutative(Add)` | 190 | 0 | 62980 | 212972 |
-| `commutative(Max)` | 188 | 0 | 5244 | 9625 |
-| `commutative(Min)` | 190 | 0 | 4143 | 8846 |
-| `commutative(Mul)` | 190 | 0 | 55198 | 146526 |
+| `cancellation(Sub)` | 79 | 0 | 152 | 503 |
+| `commutative(Add)` | 194 | 0 | 64314 | 214833 |
+| `commutative(Max)` | 192 | 0 | 5418 | 9823 |
+| `commutative(Min)` | 194 | 0 | 4269 | 9000 |
+| `commutative(Mul)` | 194 | 0 | 56571 | 148516 |
 | `exp-homomorphism` | 1 | 0 | 5 | 21 |
 | `halving` | 25 | 0 | 228 | 5013 |
 | `idempotent(Min)` | 1 | 0 | 1 | 6 |
-| `identity(Add)` | 188 | 0 | 3194 | 78442 |
-| `identity(Mul)` | 174 | 0 | 494 | 4162 |
-| `inverse-annihilation(Sub)` | 78 | 0 | 78 | 2808 |
+| `identity(Add)` | 192 | 0 | 3219 | 78765 |
+| `identity(Mul)` | 176 | 0 | 499 | 4192 |
+| `inverse-annihilation(Sub)` | 79 | 0 | 79 | 2828 |
 
 ## `SelectHoistUnary` (`select-hoist-neg|abs|sqrt`)
 
-**Not in production.** The three rules live in `round2_rules::experimental_rules()` and are not part of `all_rules()`, so they fire zero times in every production compile above by construction. The `with-select-hoist` arm adds them to production's rules: fired in **28 of 192** measured kernels (186 applications); tight-load-bearing in **28** (186); strict 0.
+**Not in production.** The three rules live in `round2_rules::experimental_rules()` and are not part of `all_rules()`, so they fire zero times in every production compile above by construction. The `with-select-hoist` arm adds them to production's rules: fired in **28 of 196** measured kernels (186 applications); tight-load-bearing in **28** (186); strict 0.
 
 | kernel | fired | tight | strict | bytes on → +hoist | dag_cost on → +hoist | guarded/selects on → +hoist | schedule on → +hoist |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -128,7 +134,7 @@ Same-form: `eval_scalar` of the emitted arena vs the JIT at 256 sampled pixels (
 
 - same-form NaN mismatches over all kernels: on **0**, off **0**; worst same-form |Δ|: on `glyph32_U0072` 5.245208740234375e-6 (0 NaN), off `glyph32_U0072` 5.0067901611328125e-6
 - worst cross-form |Δ| (on): `glyph32_U0072` 5.125999450683594e-6 (0 NaN)
-- full-extent output bit-identical off vs on: **3 of 192** kernels
+- full-extent output bit-identical off vs on: **3 of 196** kernels
 - packed kernels (on): `cellgrid_80x24_d2`: same-form 0 mismatching of 256 sampled pixels (max byte Δ 0), cross-form 0 (max byte Δ 0); `chrome_packed`: same-form 0 mismatching of 256 sampled pixels (max byte Δ 0), cross-form 58 (max byte Δ 1); `psychedelic_packed`: same-form 0 mismatching of 256 sampled pixels (max byte Δ 0), cross-form 0 (max byte Δ 0)
 - instrument = production path: `Manifold::compile` bytes differed for 0 kernels []; probe extraction differed from production for 0 kernels []
 
@@ -138,6 +144,8 @@ Same-form: `eval_scalar` of the emitted arena vs the JIT at 256 sampled pixels (
 
 | class | Σ compile off (ms) | Σ compile on (ms) | Σ saturation (on − off optimize) | share of on |
 |---|---:|---:|---:|---:|
+| bench | 97.8 | 128.9 | 90.1 | 70% |
+| bench_wide | 38.7 | 33.6 | 18.8 | 56% |
 | cellgrid | 1.6 | 25.2 | 24.4 | 97% |
 | glyph16 | 1782.9 | 5818.8 | 4990.9 | 86% |
 | glyph32 | 5166.4 | 8330.8 | 6782.5 | 81% |

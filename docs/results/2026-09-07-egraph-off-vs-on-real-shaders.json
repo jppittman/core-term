@@ -1,6 +1,40 @@
 {
   "classes": [
     {
+      "bytes_cse": 42256,
+      "bytes_off": 73360,
+      "bytes_on": 41184,
+      "bytes_pct": -43.860414394765534,
+      "class": "bench",
+      "dag_cse": 18513,
+      "dag_off": 37249,
+      "dag_on": 18527,
+      "dag_pct": -50.26175199334211,
+      "median_clock_pct": null,
+      "mem_off": 891017,
+      "mem_on": 302199,
+      "n": 3,
+      "picture_identical": 0,
+      "verdict": "helps (static)"
+    },
+    {
+      "bytes_cse": 15344,
+      "bytes_off": 28208,
+      "bytes_on": 15184,
+      "bytes_pct": -46.17129892229155,
+      "class": "bench_wide",
+      "dag_cse": 6901,
+      "dag_off": 14365,
+      "dag_on": 6770,
+      "dag_pct": -52.871562826313955,
+      "median_clock_pct": null,
+      "mem_off": 6242609,
+      "mem_on": 1751202,
+      "n": 1,
+      "picture_identical": 0,
+      "verdict": "helps (static)"
+    },
+    {
       "bytes_cse": 2512,
       "bytes_off": 8864,
       "bytes_on": 2576,
@@ -70,6 +104,2550 @@
     }
   ],
   "kernels": [
+    {
+      "class": "bench",
+      "cse_only": {
+        "bytes": 1744,
+        "bytes_identical_to_manifold_compile": null,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 157,
+        "dag_cost": 618,
+        "dag_cost_input": 24607,
+        "emit_ms": 2.505041,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 154,
+          "guarded": 154,
+          "schedule": 120,
+          "selects": 7
+        },
+        "hoisted": 8,
+        "input_nodes": 271,
+        "lanes": 4,
+        "mode": "cse-only",
+        "name": "bench_A_linear",
+        "optimize_ms": 0.392667,
+        "oracle": {
+          "cross_form_max_abs": 0.0,
+          "cross_form_max_rel": 0.0,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 0.0,
+          "same_form_max_rel": 0.0,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 3284665688565778842,
+        "probe": {
+          "applications": 0,
+          "bytes_identical_to_production": true,
+          "classes": 157,
+          "iterations": 0,
+          "load_bearing_rules": [],
+          "select_hoist": [],
+          "stop": "IterationCeiling",
+          "unions": 0,
+          "wall_ms": 0.148875
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 0,
+        "statics": {
+          "body": {
+            "bytes": 952,
+            "instructions": 112,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 16,
+            "stores": 0
+          },
+          "bytes_total": 1744,
+          "carried": 8,
+          "dyn_bytes": 430080,
+          "dyn_instructions": 50763,
+          "dyn_memory_ops": 0,
+          "frame": {
+            "bytes": 240,
+            "instructions": 48,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 0
+          },
+          "frame_bytes": 144,
+          "hoisted": 8,
+          "pool": 20,
+          "row": {
+            "bytes": 32,
+            "instructions": 7,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 0
+          },
+          "scaffold": {
+            "bytes": 520,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 0,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "extent": [
+        40,
+        45
+      ],
+      "kernel": "bench_A_linear",
+      "off": {
+        "bytes": 2128,
+        "bytes_identical_to_manifold_compile": true,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 271,
+        "dag_cost": 823,
+        "dag_cost_input": 24607,
+        "emit_ms": 2.568083,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 249,
+          "guarded": 242,
+          "schedule": 191,
+          "selects": 7
+        },
+        "hoisted": 8,
+        "input_nodes": 271,
+        "lanes": 4,
+        "mode": "off",
+        "name": "bench_A_linear",
+        "optimize_ms": 0.101959,
+        "oracle": {
+          "cross_form_max_abs": 0.0,
+          "cross_form_max_rel": 0.0,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 0.0,
+          "same_form_max_rel": 0.0,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 3284665688565778842,
+        "probe": null,
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 0,
+        "statics": {
+          "body": {
+            "bytes": 1168,
+            "instructions": 183,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 0
+          },
+          "bytes_total": 2128,
+          "carried": 8,
+          "dyn_bytes": 527800,
+          "dyn_instructions": 82888,
+          "dyn_memory_ops": 0,
+          "frame": {
+            "bytes": 400,
+            "instructions": 88,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 0
+          },
+          "frame_bytes": 144,
+          "hoisted": 8,
+          "pool": 20,
+          "row": {
+            "bytes": 40,
+            "instructions": 10,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 0
+          },
+          "scaffold": {
+            "bytes": 520,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 0,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "on": {
+        "bytes": 1968,
+        "bytes_identical_to_manifold_compile": true,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 169,
+        "dag_cost": 670,
+        "dag_cost_input": 24607,
+        "emit_ms": 2.7281660000000003,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 95,
+          "guarded": 77,
+          "schedule": 71,
+          "selects": 7
+        },
+        "hoisted": 29,
+        "input_nodes": 271,
+        "lanes": 4,
+        "mode": "on",
+        "name": "bench_A_linear",
+        "optimize_ms": 49.104416,
+        "oracle": {
+          "cross_form_max_abs": 7.152557373046875e-7,
+          "cross_form_max_rel": 3.108188799676196e-6,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 9.5367431640625e-7,
+          "same_form_max_rel": 5.525716685454103e-6,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 2178693638911700075,
+        "probe": {
+          "applications": 8114,
+          "bytes_identical_to_production": true,
+          "classes": 3006,
+          "iterations": 3,
+          "load_bearing_rules": [
+            {
+              "fired": 1862,
+              "load_bearing": 658,
+              "rule": "fma-fusion",
+              "strict": 17
+            },
+            {
+              "fired": 861,
+              "load_bearing": 374,
+              "rule": "commutative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 1187,
+              "load_bearing": 241,
+              "rule": "associative(Add)",
+              "strict": 6
+            },
+            {
+              "fired": 1318,
+              "load_bearing": 177,
+              "rule": "reverse-associative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 463,
+              "load_bearing": 138,
+              "rule": "commutative(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 324,
+              "load_bearing": 104,
+              "rule": "associative(Mul)",
+              "strict": 7
+            },
+            {
+              "fired": 325,
+              "load_bearing": 88,
+              "rule": "distribute",
+              "strict": 1
+            },
+            {
+              "fired": 514,
+              "load_bearing": 54,
+              "rule": "reverse-associative(Mul)",
+              "strict": 7
+            },
+            {
+              "fired": 219,
+              "load_bearing": 36,
+              "rule": "constant-fold",
+              "strict": 13
+            },
+            {
+              "fired": 344,
+              "load_bearing": 29,
+              "rule": "factor",
+              "strict": 0
+            },
+            {
+              "fired": 317,
+              "load_bearing": 22,
+              "rule": "identity(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 45,
+              "load_bearing": 15,
+              "rule": "canonicalize(Sub)",
+              "strict": 6
+            },
+            {
+              "fired": 137,
+              "load_bearing": 13,
+              "rule": "annihilator",
+              "strict": 0
+            },
+            {
+              "fired": 35,
+              "load_bearing": 7,
+              "rule": "commutative(Min)",
+              "strict": 0
+            },
+            {
+              "fired": 18,
+              "load_bearing": 6,
+              "rule": "canonicalize(Div)",
+              "strict": 6
+            },
+            {
+              "fired": 30,
+              "load_bearing": 6,
+              "rule": "commutative(Max)",
+              "strict": 0
+            },
+            {
+              "fired": 26,
+              "load_bearing": 3,
+              "rule": "identity(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 5,
+              "load_bearing": 2,
+              "rule": "cancellation(Sub)",
+              "strict": 0
+            },
+            {
+              "fired": 51,
+              "load_bearing": 1,
+              "rule": "doubling",
+              "strict": 0
+            },
+            {
+              "fired": 20,
+              "load_bearing": 1,
+              "rule": "inverse-annihilation(Sub)",
+              "strict": 0
+            }
+          ],
+          "select_hoist": [],
+          "stop": "ClassCap",
+          "unions": 2493,
+          "wall_ms": 48.684375
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 0,
+        "statics": {
+          "body": {
+            "bytes": 488,
+            "instructions": 54,
+            "loads_kept": 0,
+            "loads_transient": 6,
+            "remats": 0,
+            "stores": 0
+          },
+          "bytes_total": 1968,
+          "carried": 11,
+          "dyn_bytes": 236928,
+          "dyn_instructions": 27105,
+          "dyn_memory_ops": 3522,
+          "frame": {
+            "bytes": 408,
+            "instructions": 60,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 12
+          },
+          "frame_bytes": 144,
+          "hoisted": 29,
+          "pool": 20,
+          "row": {
+            "bytes": 376,
+            "instructions": 61,
+            "loads_kept": 0,
+            "loads_transient": 12,
+            "remats": 0,
+            "stores": 6
+          },
+          "scaffold": {
+            "bytes": 696,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 0,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "packed": false,
+      "with_select_hoist": {
+        "bytes": 1968,
+        "bytes_identical_to_manifold_compile": null,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 169,
+        "dag_cost": 670,
+        "dag_cost_input": 24607,
+        "emit_ms": 2.499334,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 95,
+          "guarded": 77,
+          "schedule": 71,
+          "selects": 7
+        },
+        "hoisted": 29,
+        "input_nodes": 271,
+        "lanes": 4,
+        "mode": "with-select-hoist",
+        "name": "bench_A_linear",
+        "optimize_ms": 49.971709,
+        "oracle": {
+          "cross_form_max_abs": 7.152557373046875e-7,
+          "cross_form_max_rel": 3.108188799676196e-6,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 9.5367431640625e-7,
+          "same_form_max_rel": 5.525716685454103e-6,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 2178693638911700075,
+        "probe": {
+          "applications": 8114,
+          "bytes_identical_to_production": true,
+          "classes": 3006,
+          "iterations": 3,
+          "load_bearing_rules": [
+            {
+              "fired": 1862,
+              "load_bearing": 658,
+              "rule": "fma-fusion",
+              "strict": 17
+            },
+            {
+              "fired": 861,
+              "load_bearing": 374,
+              "rule": "commutative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 1187,
+              "load_bearing": 241,
+              "rule": "associative(Add)",
+              "strict": 6
+            },
+            {
+              "fired": 1318,
+              "load_bearing": 177,
+              "rule": "reverse-associative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 463,
+              "load_bearing": 138,
+              "rule": "commutative(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 324,
+              "load_bearing": 104,
+              "rule": "associative(Mul)",
+              "strict": 7
+            },
+            {
+              "fired": 325,
+              "load_bearing": 88,
+              "rule": "distribute",
+              "strict": 1
+            },
+            {
+              "fired": 514,
+              "load_bearing": 54,
+              "rule": "reverse-associative(Mul)",
+              "strict": 7
+            },
+            {
+              "fired": 219,
+              "load_bearing": 36,
+              "rule": "constant-fold",
+              "strict": 13
+            },
+            {
+              "fired": 344,
+              "load_bearing": 29,
+              "rule": "factor",
+              "strict": 0
+            },
+            {
+              "fired": 317,
+              "load_bearing": 22,
+              "rule": "identity(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 45,
+              "load_bearing": 15,
+              "rule": "canonicalize(Sub)",
+              "strict": 6
+            },
+            {
+              "fired": 137,
+              "load_bearing": 13,
+              "rule": "annihilator",
+              "strict": 0
+            },
+            {
+              "fired": 35,
+              "load_bearing": 7,
+              "rule": "commutative(Min)",
+              "strict": 0
+            },
+            {
+              "fired": 18,
+              "load_bearing": 6,
+              "rule": "canonicalize(Div)",
+              "strict": 6
+            },
+            {
+              "fired": 30,
+              "load_bearing": 6,
+              "rule": "commutative(Max)",
+              "strict": 0
+            },
+            {
+              "fired": 26,
+              "load_bearing": 3,
+              "rule": "identity(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 5,
+              "load_bearing": 2,
+              "rule": "cancellation(Sub)",
+              "strict": 0
+            },
+            {
+              "fired": 51,
+              "load_bearing": 1,
+              "rule": "doubling",
+              "strict": 0
+            },
+            {
+              "fired": 20,
+              "load_bearing": 1,
+              "rule": "inverse-annihilation(Sub)",
+              "strict": 0
+            }
+          ],
+          "select_hoist": [
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-neg",
+              "strict": 0
+            },
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-abs",
+              "strict": 0
+            },
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-sqrt",
+              "strict": 0
+            }
+          ],
+          "stop": "ClassCap",
+          "unions": 2493,
+          "wall_ms": 49.528917
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 0,
+        "statics": {
+          "body": {
+            "bytes": 488,
+            "instructions": 54,
+            "loads_kept": 0,
+            "loads_transient": 6,
+            "remats": 0,
+            "stores": 0
+          },
+          "bytes_total": 1968,
+          "carried": 11,
+          "dyn_bytes": 236928,
+          "dyn_instructions": 27105,
+          "dyn_memory_ops": 3522,
+          "frame": {
+            "bytes": 408,
+            "instructions": 60,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 12
+          },
+          "frame_bytes": 144,
+          "hoisted": 29,
+          "pool": 20,
+          "row": {
+            "bytes": 376,
+            "instructions": 61,
+            "loads_kept": 0,
+            "loads_transient": 12,
+            "remats": 0,
+            "stores": 6
+          },
+          "scaffold": {
+            "bytes": 696,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 0,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      }
+    },
+    {
+      "class": "bench",
+      "cse_only": {
+        "bytes": 15344,
+        "bytes_identical_to_manifold_compile": null,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 1536,
+        "dag_cost": 6901,
+        "dag_cost_input": 132157,
+        "emit_ms": 35.817458,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 3821,
+          "guarded": 2893,
+          "schedule": 1517,
+          "selects": 109
+        },
+        "hoisted": 45,
+        "input_nodes": 1799,
+        "lanes": 4,
+        "mode": "cse-only",
+        "name": "bench_O_quadratic",
+        "optimize_ms": 3.865166,
+        "oracle": {
+          "cross_form_max_abs": 6.556510925292969e-7,
+          "cross_form_max_rel": 1.7793663385299457e-6,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 6.556510925292969e-7,
+          "same_form_max_rel": 1.7793663385299457e-6,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 12384565440381888293,
+        "probe": {
+          "applications": 0,
+          "bytes_identical_to_production": true,
+          "classes": 1536,
+          "iterations": 0,
+          "load_bearing_rules": [],
+          "select_hoist": [],
+          "stop": "IterationCeiling",
+          "unions": 0,
+          "wall_ms": 1.624875
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 119,
+        "statics": {
+          "body": {
+            "bytes": 12796,
+            "instructions": 1472,
+            "loads_kept": 65,
+            "loads_transient": 195,
+            "remats": 747,
+            "stores": 119
+          },
+          "bytes_total": 15344,
+          "carried": 13,
+          "dyn_bytes": 5760168,
+          "dyn_instructions": 662804,
+          "dyn_memory_ops": 170670,
+          "frame": {
+            "bytes": 528,
+            "instructions": 89,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 30
+          },
+          "frame_bytes": 1904,
+          "hoisted": 45,
+          "pool": 20,
+          "row": {
+            "bytes": 32,
+            "instructions": 7,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 2
+          },
+          "scaffold": {
+            "bytes": 1988,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 119,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "extent": [
+        40,
+        45
+      ],
+      "kernel": "bench_O_quadratic",
+      "off": {
+        "bytes": 28208,
+        "bytes_identical_to_manifold_compile": true,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 3655,
+        "dag_cost": 14365,
+        "dag_cost_input": 132157,
+        "emit_ms": 38.242042,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 10099,
+          "guarded": 9730,
+          "schedule": 3503,
+          "selects": 209
+        },
+        "hoisted": 178,
+        "input_nodes": 1799,
+        "lanes": 4,
+        "mode": "off",
+        "name": "bench_O_quadratic",
+        "optimize_ms": 0.865041,
+        "oracle": {
+          "cross_form_max_abs": 6.556510925292969e-7,
+          "cross_form_max_rel": 1.7793663385299457e-6,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 6.556510925292969e-7,
+          "same_form_max_rel": 1.7793663385299457e-6,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 15816309233626953169,
+        "probe": null,
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 226,
+        "statics": {
+          "body": {
+            "bytes": 24112,
+            "instructions": 3325,
+            "loads_kept": 190,
+            "loads_transient": 451,
+            "remats": 559,
+            "stores": 226
+          },
+          "bytes_total": 28208,
+          "carried": 13,
+          "dyn_bytes": 10854264,
+          "dyn_instructions": 1497040,
+          "dyn_memory_ops": 390359,
+          "frame": {
+            "bytes": 2064,
+            "instructions": 340,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 164
+          },
+          "frame_bytes": 3616,
+          "hoisted": 178,
+          "pool": 20,
+          "row": {
+            "bytes": 40,
+            "instructions": 10,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 1
+          },
+          "scaffold": {
+            "bytes": 1992,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 226,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "on": {
+        "bytes": 15184,
+        "bytes_identical_to_manifold_compile": true,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 1482,
+        "dag_cost": 6770,
+        "dag_cost_input": 132157,
+        "emit_ms": 14.590208,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 979,
+          "guarded": 979,
+          "schedule": 401,
+          "selects": 49
+        },
+        "hoisted": 172,
+        "input_nodes": 1799,
+        "lanes": 4,
+        "mode": "on",
+        "name": "bench_O_quadratic",
+        "optimize_ms": 20.074166,
+        "oracle": {
+          "cross_form_max_abs": 1.3709068298339844e-6,
+          "cross_form_max_rel": 1.7571747090722711e-6,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 1.5497207641601562e-6,
+          "same_form_max_rel": 2.7455881966943777e-6,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 1503951264658031046,
+        "probe": {
+          "applications": 3328,
+          "bytes_identical_to_production": true,
+          "classes": 4868,
+          "iterations": 1,
+          "load_bearing_rules": [
+            {
+              "fired": 556,
+              "load_bearing": 404,
+              "rule": "fma-fusion",
+              "strict": 82
+            },
+            {
+              "fired": 426,
+              "load_bearing": 328,
+              "rule": "commutative(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 343,
+              "load_bearing": 286,
+              "rule": "associative(Mul)",
+              "strict": 14
+            },
+            {
+              "fired": 279,
+              "load_bearing": 259,
+              "rule": "commutative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 139,
+              "load_bearing": 139,
+              "rule": "associative(Add)",
+              "strict": 34
+            },
+            {
+              "fired": 284,
+              "load_bearing": 139,
+              "rule": "reverse-associative(Add)",
+              "strict": 1
+            },
+            {
+              "fired": 297,
+              "load_bearing": 123,
+              "rule": "doubling",
+              "strict": 1
+            },
+            {
+              "fired": 104,
+              "load_bearing": 104,
+              "rule": "distribute",
+              "strict": 11
+            },
+            {
+              "fired": 231,
+              "load_bearing": 103,
+              "rule": "factor",
+              "strict": 43
+            },
+            {
+              "fired": 272,
+              "load_bearing": 97,
+              "rule": "reverse-associative(Mul)",
+              "strict": 21
+            },
+            {
+              "fired": 68,
+              "load_bearing": 68,
+              "rule": "canonicalize(Sub)",
+              "strict": 32
+            },
+            {
+              "fired": 46,
+              "load_bearing": 46,
+              "rule": "commutative(Max)",
+              "strict": 0
+            },
+            {
+              "fired": 34,
+              "load_bearing": 34,
+              "rule": "constant-fold",
+              "strict": 32
+            },
+            {
+              "fired": 33,
+              "load_bearing": 33,
+              "rule": "commutative(Min)",
+              "strict": 0
+            },
+            {
+              "fired": 32,
+              "load_bearing": 32,
+              "rule": "canonicalize(Div)",
+              "strict": 32
+            },
+            {
+              "fired": 8,
+              "load_bearing": 4,
+              "rule": "annihilator",
+              "strict": 0
+            },
+            {
+              "fired": 2,
+              "load_bearing": 1,
+              "rule": "identity(Add)",
+              "strict": 0
+            }
+          ],
+          "select_hoist": [],
+          "stop": "ClassCap",
+          "unions": 2458,
+          "wall_ms": 17.051875000000003
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 0,
+        "statics": {
+          "body": {
+            "bytes": 4832,
+            "instructions": 256,
+            "loads_kept": 96,
+            "loads_transient": 146,
+            "remats": 0,
+            "stores": 0
+          },
+          "bytes_total": 15184,
+          "carried": 1,
+          "dyn_bytes": 2523788,
+          "dyn_instructions": 169084,
+          "dyn_memory_ops": 117702,
+          "frame": {
+            "bytes": 368,
+            "instructions": 64,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 27
+          },
+          "frame_bytes": 144,
+          "hoisted": 172,
+          "pool": 20,
+          "row": {
+            "bytes": 7756,
+            "instructions": 1196,
+            "loads_kept": 0,
+            "loads_transient": 51,
+            "remats": 187,
+            "stores": 144
+          },
+          "scaffold": {
+            "bytes": 2228,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 0,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "packed": false,
+      "with_select_hoist": {
+        "bytes": 15184,
+        "bytes_identical_to_manifold_compile": null,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 1482,
+        "dag_cost": 6770,
+        "dag_cost_input": 132157,
+        "emit_ms": 12.286209,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 979,
+          "guarded": 979,
+          "schedule": 401,
+          "selects": 49
+        },
+        "hoisted": 172,
+        "input_nodes": 1799,
+        "lanes": 4,
+        "mode": "with-select-hoist",
+        "name": "bench_O_quadratic",
+        "optimize_ms": 20.608792,
+        "oracle": {
+          "cross_form_max_abs": 1.3709068298339844e-6,
+          "cross_form_max_rel": 1.7571747090722711e-6,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 1.5497207641601562e-6,
+          "same_form_max_rel": 2.7455881966943777e-6,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 1503951264658031046,
+        "probe": {
+          "applications": 3328,
+          "bytes_identical_to_production": true,
+          "classes": 4868,
+          "iterations": 1,
+          "load_bearing_rules": [
+            {
+              "fired": 556,
+              "load_bearing": 404,
+              "rule": "fma-fusion",
+              "strict": 82
+            },
+            {
+              "fired": 426,
+              "load_bearing": 328,
+              "rule": "commutative(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 343,
+              "load_bearing": 286,
+              "rule": "associative(Mul)",
+              "strict": 14
+            },
+            {
+              "fired": 279,
+              "load_bearing": 259,
+              "rule": "commutative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 139,
+              "load_bearing": 139,
+              "rule": "associative(Add)",
+              "strict": 34
+            },
+            {
+              "fired": 284,
+              "load_bearing": 139,
+              "rule": "reverse-associative(Add)",
+              "strict": 1
+            },
+            {
+              "fired": 297,
+              "load_bearing": 123,
+              "rule": "doubling",
+              "strict": 1
+            },
+            {
+              "fired": 104,
+              "load_bearing": 104,
+              "rule": "distribute",
+              "strict": 11
+            },
+            {
+              "fired": 231,
+              "load_bearing": 103,
+              "rule": "factor",
+              "strict": 43
+            },
+            {
+              "fired": 272,
+              "load_bearing": 97,
+              "rule": "reverse-associative(Mul)",
+              "strict": 21
+            },
+            {
+              "fired": 68,
+              "load_bearing": 68,
+              "rule": "canonicalize(Sub)",
+              "strict": 32
+            },
+            {
+              "fired": 46,
+              "load_bearing": 46,
+              "rule": "commutative(Max)",
+              "strict": 0
+            },
+            {
+              "fired": 34,
+              "load_bearing": 34,
+              "rule": "constant-fold",
+              "strict": 32
+            },
+            {
+              "fired": 33,
+              "load_bearing": 33,
+              "rule": "commutative(Min)",
+              "strict": 0
+            },
+            {
+              "fired": 32,
+              "load_bearing": 32,
+              "rule": "canonicalize(Div)",
+              "strict": 32
+            },
+            {
+              "fired": 8,
+              "load_bearing": 4,
+              "rule": "annihilator",
+              "strict": 0
+            },
+            {
+              "fired": 2,
+              "load_bearing": 1,
+              "rule": "identity(Add)",
+              "strict": 0
+            }
+          ],
+          "select_hoist": [
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-neg",
+              "strict": 0
+            },
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-abs",
+              "strict": 0
+            },
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-sqrt",
+              "strict": 0
+            }
+          ],
+          "stop": "ClassCap",
+          "unions": 2458,
+          "wall_ms": 17.954500000000003
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 0,
+        "statics": {
+          "body": {
+            "bytes": 4832,
+            "instructions": 256,
+            "loads_kept": 96,
+            "loads_transient": 146,
+            "remats": 0,
+            "stores": 0
+          },
+          "bytes_total": 15184,
+          "carried": 1,
+          "dyn_bytes": 2523788,
+          "dyn_instructions": 169084,
+          "dyn_memory_ops": 117702,
+          "frame": {
+            "bytes": 368,
+            "instructions": 64,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 27
+          },
+          "frame_bytes": 144,
+          "hoisted": 172,
+          "pool": 20,
+          "row": {
+            "bytes": 7756,
+            "instructions": 1196,
+            "loads_kept": 0,
+            "loads_transient": 51,
+            "remats": 187,
+            "stores": 144
+          },
+          "scaffold": {
+            "bytes": 2228,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 0,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      }
+    },
+    {
+      "class": "bench_wide",
+      "cse_only": {
+        "bytes": 15344,
+        "bytes_identical_to_manifold_compile": null,
+        "class": "bench_wide",
+        "clock": null,
+        "compiled_nodes": 1536,
+        "dag_cost": 6901,
+        "dag_cost_input": 132157,
+        "emit_ms": 36.526959,
+        "extent": [
+          640,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 3821,
+          "guarded": 2893,
+          "schedule": 1517,
+          "selects": 109
+        },
+        "hoisted": 45,
+        "input_nodes": 1799,
+        "lanes": 4,
+        "mode": "cse-only",
+        "name": "bench_O_quadratic_wide",
+        "optimize_ms": 3.840541,
+        "oracle": {
+          "cross_form_max_abs": 0.0,
+          "cross_form_max_rel": 0.0,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 0.0,
+          "same_form_max_rel": 0.0,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 10900818603893863077,
+        "probe": {
+          "applications": 0,
+          "bytes_identical_to_production": true,
+          "classes": 1536,
+          "iterations": 0,
+          "load_bearing_rules": [],
+          "select_hoist": [],
+          "stop": "IterationCeiling",
+          "unions": 0,
+          "wall_ms": 1.496
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 119,
+        "statics": {
+          "body": {
+            "bytes": 12796,
+            "instructions": 1472,
+            "loads_kept": 65,
+            "loads_transient": 195,
+            "remats": 747,
+            "stores": 119
+          },
+          "bytes_total": 15344,
+          "carried": 13,
+          "dyn_bytes": 92133168,
+          "dyn_instructions": 10598804,
+          "dyn_memory_ops": 2728920,
+          "frame": {
+            "bytes": 528,
+            "instructions": 89,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 30
+          },
+          "frame_bytes": 1904,
+          "hoisted": 45,
+          "pool": 20,
+          "row": {
+            "bytes": 32,
+            "instructions": 7,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 2
+          },
+          "scaffold": {
+            "bytes": 1988,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 119,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "extent": [
+        640,
+        45
+      ],
+      "kernel": "bench_O_quadratic_wide",
+      "off": {
+        "bytes": 28208,
+        "bytes_identical_to_manifold_compile": true,
+        "class": "bench_wide",
+        "clock": null,
+        "compiled_nodes": 3655,
+        "dag_cost": 14365,
+        "dag_cost_input": 132157,
+        "emit_ms": 37.848125,
+        "extent": [
+          640,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 10099,
+          "guarded": 9730,
+          "schedule": 3503,
+          "selects": 209
+        },
+        "hoisted": 178,
+        "input_nodes": 1799,
+        "lanes": 4,
+        "mode": "off",
+        "name": "bench_O_quadratic_wide",
+        "optimize_ms": 0.875375,
+        "oracle": {
+          "cross_form_max_abs": 0.0,
+          "cross_form_max_rel": 0.0,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 0.0,
+          "same_form_max_rel": 0.0,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 8844208809730844497,
+        "probe": null,
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 226,
+        "statics": {
+          "body": {
+            "bytes": 24112,
+            "instructions": 3325,
+            "loads_kept": 190,
+            "loads_transient": 451,
+            "remats": 559,
+            "stores": 226
+          },
+          "bytes_total": 28208,
+          "carried": 13,
+          "dyn_bytes": 173610264,
+          "dyn_instructions": 23940790,
+          "dyn_memory_ops": 6242609,
+          "frame": {
+            "bytes": 2064,
+            "instructions": 340,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 164
+          },
+          "frame_bytes": 3616,
+          "hoisted": 178,
+          "pool": 20,
+          "row": {
+            "bytes": 40,
+            "instructions": 10,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 1
+          },
+          "scaffold": {
+            "bytes": 1992,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 226,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "on": {
+        "bytes": 15184,
+        "bytes_identical_to_manifold_compile": true,
+        "class": "bench_wide",
+        "clock": null,
+        "compiled_nodes": 1482,
+        "dag_cost": 6770,
+        "dag_cost_input": 132157,
+        "emit_ms": 13.958375,
+        "extent": [
+          640,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 979,
+          "guarded": 979,
+          "schedule": 401,
+          "selects": 49
+        },
+        "hoisted": 172,
+        "input_nodes": 1799,
+        "lanes": 4,
+        "mode": "on",
+        "name": "bench_O_quadratic_wide",
+        "optimize_ms": 19.681583999999997,
+        "oracle": {
+          "cross_form_max_abs": 0.0,
+          "cross_form_max_rel": 0.0,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 0.0,
+          "same_form_max_rel": 0.0,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 10882953973024495942,
+        "probe": {
+          "applications": 3328,
+          "bytes_identical_to_production": true,
+          "classes": 4868,
+          "iterations": 1,
+          "load_bearing_rules": [
+            {
+              "fired": 556,
+              "load_bearing": 404,
+              "rule": "fma-fusion",
+              "strict": 82
+            },
+            {
+              "fired": 426,
+              "load_bearing": 328,
+              "rule": "commutative(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 343,
+              "load_bearing": 286,
+              "rule": "associative(Mul)",
+              "strict": 14
+            },
+            {
+              "fired": 279,
+              "load_bearing": 259,
+              "rule": "commutative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 139,
+              "load_bearing": 139,
+              "rule": "associative(Add)",
+              "strict": 34
+            },
+            {
+              "fired": 284,
+              "load_bearing": 139,
+              "rule": "reverse-associative(Add)",
+              "strict": 1
+            },
+            {
+              "fired": 297,
+              "load_bearing": 123,
+              "rule": "doubling",
+              "strict": 1
+            },
+            {
+              "fired": 104,
+              "load_bearing": 104,
+              "rule": "distribute",
+              "strict": 11
+            },
+            {
+              "fired": 231,
+              "load_bearing": 103,
+              "rule": "factor",
+              "strict": 43
+            },
+            {
+              "fired": 272,
+              "load_bearing": 97,
+              "rule": "reverse-associative(Mul)",
+              "strict": 21
+            },
+            {
+              "fired": 68,
+              "load_bearing": 68,
+              "rule": "canonicalize(Sub)",
+              "strict": 32
+            },
+            {
+              "fired": 46,
+              "load_bearing": 46,
+              "rule": "commutative(Max)",
+              "strict": 0
+            },
+            {
+              "fired": 34,
+              "load_bearing": 34,
+              "rule": "constant-fold",
+              "strict": 32
+            },
+            {
+              "fired": 33,
+              "load_bearing": 33,
+              "rule": "commutative(Min)",
+              "strict": 0
+            },
+            {
+              "fired": 32,
+              "load_bearing": 32,
+              "rule": "canonicalize(Div)",
+              "strict": 32
+            },
+            {
+              "fired": 8,
+              "load_bearing": 4,
+              "rule": "annihilator",
+              "strict": 0
+            },
+            {
+              "fired": 2,
+              "load_bearing": 1,
+              "rule": "identity(Add)",
+              "strict": 0
+            }
+          ],
+          "select_hoist": [],
+          "stop": "ClassCap",
+          "unions": 2458,
+          "wall_ms": 17.571459
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 0,
+        "statics": {
+          "body": {
+            "bytes": 4832,
+            "instructions": 256,
+            "loads_kept": 96,
+            "loads_transient": 146,
+            "remats": 0,
+            "stores": 0
+          },
+          "bytes_total": 15184,
+          "carried": 1,
+          "dyn_bytes": 35139788,
+          "dyn_instructions": 1897084,
+          "dyn_memory_ops": 1751202,
+          "frame": {
+            "bytes": 368,
+            "instructions": 64,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 27
+          },
+          "frame_bytes": 144,
+          "hoisted": 172,
+          "pool": 20,
+          "row": {
+            "bytes": 7756,
+            "instructions": 1196,
+            "loads_kept": 0,
+            "loads_transient": 51,
+            "remats": 187,
+            "stores": 144
+          },
+          "scaffold": {
+            "bytes": 2228,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 0,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "packed": false,
+      "with_select_hoist": {
+        "bytes": 15184,
+        "bytes_identical_to_manifold_compile": null,
+        "class": "bench_wide",
+        "clock": null,
+        "compiled_nodes": 1482,
+        "dag_cost": 6770,
+        "dag_cost_input": 132157,
+        "emit_ms": 12.17825,
+        "extent": [
+          640,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 979,
+          "guarded": 979,
+          "schedule": 401,
+          "selects": 49
+        },
+        "hoisted": 172,
+        "input_nodes": 1799,
+        "lanes": 4,
+        "mode": "with-select-hoist",
+        "name": "bench_O_quadratic_wide",
+        "optimize_ms": 20.563292,
+        "oracle": {
+          "cross_form_max_abs": 0.0,
+          "cross_form_max_rel": 0.0,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 0.0,
+          "same_form_max_rel": 0.0,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 10882953973024495942,
+        "probe": {
+          "applications": 3328,
+          "bytes_identical_to_production": true,
+          "classes": 4868,
+          "iterations": 1,
+          "load_bearing_rules": [
+            {
+              "fired": 556,
+              "load_bearing": 404,
+              "rule": "fma-fusion",
+              "strict": 82
+            },
+            {
+              "fired": 426,
+              "load_bearing": 328,
+              "rule": "commutative(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 343,
+              "load_bearing": 286,
+              "rule": "associative(Mul)",
+              "strict": 14
+            },
+            {
+              "fired": 279,
+              "load_bearing": 259,
+              "rule": "commutative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 139,
+              "load_bearing": 139,
+              "rule": "associative(Add)",
+              "strict": 34
+            },
+            {
+              "fired": 284,
+              "load_bearing": 139,
+              "rule": "reverse-associative(Add)",
+              "strict": 1
+            },
+            {
+              "fired": 297,
+              "load_bearing": 123,
+              "rule": "doubling",
+              "strict": 1
+            },
+            {
+              "fired": 104,
+              "load_bearing": 104,
+              "rule": "distribute",
+              "strict": 11
+            },
+            {
+              "fired": 231,
+              "load_bearing": 103,
+              "rule": "factor",
+              "strict": 43
+            },
+            {
+              "fired": 272,
+              "load_bearing": 97,
+              "rule": "reverse-associative(Mul)",
+              "strict": 21
+            },
+            {
+              "fired": 68,
+              "load_bearing": 68,
+              "rule": "canonicalize(Sub)",
+              "strict": 32
+            },
+            {
+              "fired": 46,
+              "load_bearing": 46,
+              "rule": "commutative(Max)",
+              "strict": 0
+            },
+            {
+              "fired": 34,
+              "load_bearing": 34,
+              "rule": "constant-fold",
+              "strict": 32
+            },
+            {
+              "fired": 33,
+              "load_bearing": 33,
+              "rule": "commutative(Min)",
+              "strict": 0
+            },
+            {
+              "fired": 32,
+              "load_bearing": 32,
+              "rule": "canonicalize(Div)",
+              "strict": 32
+            },
+            {
+              "fired": 8,
+              "load_bearing": 4,
+              "rule": "annihilator",
+              "strict": 0
+            },
+            {
+              "fired": 2,
+              "load_bearing": 1,
+              "rule": "identity(Add)",
+              "strict": 0
+            }
+          ],
+          "select_hoist": [
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-neg",
+              "strict": 0
+            },
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-abs",
+              "strict": 0
+            },
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-sqrt",
+              "strict": 0
+            }
+          ],
+          "stop": "ClassCap",
+          "unions": 2458,
+          "wall_ms": 18.324625
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 0,
+        "statics": {
+          "body": {
+            "bytes": 4832,
+            "instructions": 256,
+            "loads_kept": 96,
+            "loads_transient": 146,
+            "remats": 0,
+            "stores": 0
+          },
+          "bytes_total": 15184,
+          "carried": 1,
+          "dyn_bytes": 35139788,
+          "dyn_instructions": 1897084,
+          "dyn_memory_ops": 1751202,
+          "frame": {
+            "bytes": 368,
+            "instructions": 64,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 27
+          },
+          "frame_bytes": 144,
+          "hoisted": 172,
+          "pool": 20,
+          "row": {
+            "bytes": 7756,
+            "instructions": 1196,
+            "loads_kept": 0,
+            "loads_transient": 51,
+            "remats": 187,
+            "stores": 144
+          },
+          "scaffold": {
+            "bytes": 2228,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 0,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      }
+    },
+    {
+      "class": "bench",
+      "cse_only": {
+        "bytes": 25168,
+        "bytes_identical_to_manifold_compile": null,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 2463,
+        "dag_cost": 10994,
+        "dag_cost_input": 214513,
+        "emit_ms": 52.648875,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 6122,
+          "guarded": 5247,
+          "schedule": 2422,
+          "selects": 173
+        },
+        "hoisted": 75,
+        "input_nodes": 2815,
+        "lanes": 4,
+        "mode": "cse-only",
+        "name": "bench_S_complex",
+        "optimize_ms": 6.6485829999999995,
+        "oracle": {
+          "cross_form_max_abs": 4.291534423828125e-6,
+          "cross_form_max_rel": 7.829509421007779e-6,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 4.291534423828125e-6,
+          "same_form_max_rel": 7.829509421007779e-6,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 9016868509481689412,
+        "probe": {
+          "applications": 0,
+          "bytes_identical_to_production": true,
+          "classes": 2463,
+          "iterations": 0,
+          "load_bearing_rules": [],
+          "select_hoist": [],
+          "stop": "IterationCeiling",
+          "unions": 0,
+          "wall_ms": 2.4455
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 190,
+        "statics": {
+          "body": {
+            "bytes": 20616,
+            "instructions": 2347,
+            "loads_kept": 96,
+            "loads_transient": 331,
+            "remats": 1174,
+            "stores": 190
+          },
+          "bytes_total": 25168,
+          "carried": 13,
+          "dyn_bytes": 9279596,
+          "dyn_instructions": 1056628,
+          "dyn_memory_ops": 277800,
+          "frame": {
+            "bytes": 956,
+            "instructions": 163,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 60
+          },
+          "frame_bytes": 3040,
+          "hoisted": 75,
+          "pool": 20,
+          "row": {
+            "bytes": 32,
+            "instructions": 7,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 2
+          },
+          "scaffold": {
+            "bytes": 3564,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 190,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "extent": [
+        40,
+        45
+      ],
+      "kernel": "bench_S_complex",
+      "off": {
+        "bytes": 43024,
+        "bytes_identical_to_manifold_compile": true,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 5623,
+        "dag_cost": 22061,
+        "dag_cost_input": 214513,
+        "emit_ms": 54.062958,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 15407,
+          "guarded": 14850,
+          "schedule": 5359,
+          "selects": 317
+        },
+        "hoisted": 270,
+        "input_nodes": 2815,
+        "lanes": 4,
+        "mode": "off",
+        "name": "bench_S_complex",
+        "optimize_ms": 1.99125,
+        "oracle": {
+          "cross_form_max_abs": 4.291534423828125e-6,
+          "cross_form_max_rel": 7.829509421007779e-6,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 4.291534423828125e-6,
+          "same_form_max_rel": 7.829509421007779e-6,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 1725702168067388365,
+        "probe": null,
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 291,
+        "statics": {
+          "body": {
+            "bytes": 36112,
+            "instructions": 5089,
+            "loads_kept": 167,
+            "loads_transient": 654,
+            "remats": 786,
+            "stores": 291
+          },
+          "bytes_total": 43024,
+          "carried": 12,
+          "dyn_bytes": 16255504,
+          "dyn_instructions": 2291054,
+          "dyn_memory_ops": 500658,
+          "frame": {
+            "bytes": 3304,
+            "instructions": 554,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 258
+          },
+          "frame_bytes": 4656,
+          "hoisted": 270,
+          "pool": 20,
+          "row": {
+            "bytes": 40,
+            "instructions": 10,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 0
+          },
+          "scaffold": {
+            "bytes": 3568,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 291,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "on": {
+        "bytes": 24032,
+        "bytes_identical_to_manifold_compile": true,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 2453,
+        "dag_cost": 11087,
+        "dag_cost_input": 214513,
+        "emit_ms": 18.576625,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 1586,
+          "guarded": 1580,
+          "schedule": 652,
+          "selects": 77
+        },
+        "hoisted": 260,
+        "input_nodes": 2815,
+        "lanes": 4,
+        "mode": "on",
+        "name": "bench_S_complex",
+        "optimize_ms": 23.857208,
+        "oracle": {
+          "cross_form_max_abs": 5.0067901611328125e-6,
+          "cross_form_max_rel": 5.485078822541637e-6,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 4.291534423828125e-6,
+          "same_form_max_rel": 4.818162545531636e-6,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 10344688017792302863,
+        "probe": {
+          "applications": 2485,
+          "bytes_identical_to_production": true,
+          "classes": 5000,
+          "iterations": 1,
+          "load_bearing_rules": [
+            {
+              "fired": 675,
+              "load_bearing": 579,
+              "rule": "commutative(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 442,
+              "load_bearing": 442,
+              "rule": "commutative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 156,
+              "load_bearing": 156,
+              "rule": "distribute",
+              "strict": 35
+            },
+            {
+              "fired": 153,
+              "load_bearing": 153,
+              "rule": "associative(Add)",
+              "strict": 36
+            },
+            {
+              "fired": 194,
+              "load_bearing": 124,
+              "rule": "doubling",
+              "strict": 1
+            },
+            {
+              "fired": 108,
+              "load_bearing": 108,
+              "rule": "canonicalize(Sub)",
+              "strict": 33
+            },
+            {
+              "fired": 247,
+              "load_bearing": 96,
+              "rule": "factor",
+              "strict": 28
+            },
+            {
+              "fired": 76,
+              "load_bearing": 76,
+              "rule": "commutative(Max)",
+              "strict": 0
+            },
+            {
+              "fired": 53,
+              "load_bearing": 53,
+              "rule": "commutative(Min)",
+              "strict": 0
+            },
+            {
+              "fired": 57,
+              "load_bearing": 53,
+              "rule": "constant-fold",
+              "strict": 48
+            },
+            {
+              "fired": 52,
+              "load_bearing": 52,
+              "rule": "canonicalize(Div)",
+              "strict": 51
+            },
+            {
+              "fired": 51,
+              "load_bearing": 48,
+              "rule": "associative(Mul)",
+              "strict": 8
+            },
+            {
+              "fired": 40,
+              "load_bearing": 40,
+              "rule": "fma-fusion",
+              "strict": 5
+            },
+            {
+              "fired": 24,
+              "load_bearing": 10,
+              "rule": "reverse-associative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 18,
+              "load_bearing": 7,
+              "rule": "reverse-associative(Mul)",
+              "strict": 1
+            },
+            {
+              "fired": 9,
+              "load_bearing": 4,
+              "rule": "annihilator",
+              "strict": 0
+            },
+            {
+              "fired": 4,
+              "load_bearing": 2,
+              "rule": "identity(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 2,
+              "load_bearing": 1,
+              "rule": "identity(Add)",
+              "strict": 0
+            }
+          ],
+          "select_hoist": [],
+          "stop": "ClassCap",
+          "unions": 2008,
+          "wall_ms": 18.943708
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 0,
+        "statics": {
+          "body": {
+            "bytes": 7456,
+            "instructions": 422,
+            "loads_kept": 150,
+            "loads_transient": 226,
+            "remats": 0,
+            "stores": 0
+          },
+          "bytes_total": 24032,
+          "carried": 4,
+          "dyn_bytes": 3900604,
+          "dyn_instructions": 279093,
+          "dyn_memory_ops": 180975,
+          "frame": {
+            "bytes": 544,
+            "instructions": 93,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 30
+          },
+          "frame_bytes": 144,
+          "hoisted": 260,
+          "pool": 20,
+          "row": {
+            "bytes": 12108,
+            "instructions": 1980,
+            "loads_kept": 0,
+            "loads_transient": 35,
+            "remats": 281,
+            "stores": 226
+          },
+          "scaffold": {
+            "bytes": 3924,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 0,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      },
+      "packed": false,
+      "with_select_hoist": {
+        "bytes": 24032,
+        "bytes_identical_to_manifold_compile": null,
+        "class": "bench",
+        "clock": null,
+        "compiled_nodes": 2453,
+        "dag_cost": 11087,
+        "dag_cost_input": 214513,
+        "emit_ms": 18.418,
+        "extent": [
+          40,
+          45
+        ],
+        "git_sha": "2e6c3dbe",
+        "guard": {
+          "exclusive": 1586,
+          "guarded": 1580,
+          "schedule": 652,
+          "selects": 77
+        },
+        "hoisted": 260,
+        "input_nodes": 2815,
+        "lanes": 4,
+        "mode": "with-select-hoist",
+        "name": "bench_S_complex",
+        "optimize_ms": 24.568083,
+        "oracle": {
+          "cross_form_max_abs": 5.0067901611328125e-6,
+          "cross_form_max_rel": 5.485078822541637e-6,
+          "cross_form_nan_mismatch": 0,
+          "packed_max_byte_cross": 0,
+          "packed_max_byte_same": 0,
+          "packed_mismatch_cross": 0,
+          "packed_mismatch_same": 0,
+          "points": 256,
+          "same_form_max_abs": 4.291534423828125e-6,
+          "same_form_max_rel": 4.818162545531636e-6,
+          "same_form_nan_mismatch": 0
+        },
+        "packed": false,
+        "picture_hash": 10344688017792302863,
+        "probe": {
+          "applications": 2485,
+          "bytes_identical_to_production": true,
+          "classes": 5000,
+          "iterations": 1,
+          "load_bearing_rules": [
+            {
+              "fired": 675,
+              "load_bearing": 579,
+              "rule": "commutative(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 442,
+              "load_bearing": 442,
+              "rule": "commutative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 156,
+              "load_bearing": 156,
+              "rule": "distribute",
+              "strict": 35
+            },
+            {
+              "fired": 153,
+              "load_bearing": 153,
+              "rule": "associative(Add)",
+              "strict": 36
+            },
+            {
+              "fired": 194,
+              "load_bearing": 124,
+              "rule": "doubling",
+              "strict": 1
+            },
+            {
+              "fired": 108,
+              "load_bearing": 108,
+              "rule": "canonicalize(Sub)",
+              "strict": 33
+            },
+            {
+              "fired": 247,
+              "load_bearing": 96,
+              "rule": "factor",
+              "strict": 28
+            },
+            {
+              "fired": 76,
+              "load_bearing": 76,
+              "rule": "commutative(Max)",
+              "strict": 0
+            },
+            {
+              "fired": 53,
+              "load_bearing": 53,
+              "rule": "commutative(Min)",
+              "strict": 0
+            },
+            {
+              "fired": 57,
+              "load_bearing": 53,
+              "rule": "constant-fold",
+              "strict": 48
+            },
+            {
+              "fired": 52,
+              "load_bearing": 52,
+              "rule": "canonicalize(Div)",
+              "strict": 51
+            },
+            {
+              "fired": 51,
+              "load_bearing": 48,
+              "rule": "associative(Mul)",
+              "strict": 8
+            },
+            {
+              "fired": 40,
+              "load_bearing": 40,
+              "rule": "fma-fusion",
+              "strict": 5
+            },
+            {
+              "fired": 24,
+              "load_bearing": 10,
+              "rule": "reverse-associative(Add)",
+              "strict": 0
+            },
+            {
+              "fired": 18,
+              "load_bearing": 7,
+              "rule": "reverse-associative(Mul)",
+              "strict": 1
+            },
+            {
+              "fired": 9,
+              "load_bearing": 4,
+              "rule": "annihilator",
+              "strict": 0
+            },
+            {
+              "fired": 4,
+              "load_bearing": 2,
+              "rule": "identity(Mul)",
+              "strict": 0
+            },
+            {
+              "fired": 2,
+              "load_bearing": 1,
+              "rule": "identity(Add)",
+              "strict": 0
+            }
+          ],
+          "select_hoist": [
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-neg",
+              "strict": 0
+            },
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-abs",
+              "strict": 0
+            },
+            {
+              "fired": 0,
+              "load_bearing": 0,
+              "rule": "select-hoist-sqrt",
+              "strict": 0
+            }
+          ],
+          "stop": "ClassCap",
+          "unions": 2008,
+          "wall_ms": 20.374583
+        },
+        "schema": "egraph-off-on-v1",
+        "spill_slots": 0,
+        "statics": {
+          "body": {
+            "bytes": 7456,
+            "instructions": 422,
+            "loads_kept": 150,
+            "loads_transient": 226,
+            "remats": 0,
+            "stores": 0
+          },
+          "bytes_total": 24032,
+          "carried": 4,
+          "dyn_bytes": 3900604,
+          "dyn_instructions": 279093,
+          "dyn_memory_ops": 180975,
+          "frame": {
+            "bytes": 544,
+            "instructions": 93,
+            "loads_kept": 0,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 30
+          },
+          "frame_bytes": 144,
+          "hoisted": 260,
+          "pool": 20,
+          "row": {
+            "bytes": 12108,
+            "instructions": 1980,
+            "loads_kept": 0,
+            "loads_transient": 35,
+            "remats": 281,
+            "stores": 226
+          },
+          "scaffold": {
+            "bytes": 3924,
+            "instructions": 0,
+            "loads_kept": 11,
+            "loads_transient": 0,
+            "remats": 0,
+            "stores": 8
+          },
+          "spill_slots": 0,
+          "vector_bytes": 16
+        },
+        "tier": "neon"
+      }
+    },
     {
       "class": "cellgrid",
       "cse_only": {
@@ -123927,88 +126505,88 @@
   ],
   "rule_census": [
     {
-      "fired": 295617,
-      "kernels": 188,
+      "fired": 298631,
+      "kernels": 192,
       "rule": "fma-fusion",
-      "strict": 5178,
-      "tight": 67707
+      "strict": 5364,
+      "tight": 69213
     },
     {
-      "fired": 48116,
-      "kernels": 190,
+      "fired": 48460,
+      "kernels": 194,
       "rule": "constant-fold",
-      "strict": 4573,
-      "tight": 8131
+      "strict": 4698,
+      "tight": 8288
     },
     {
-      "fired": 5986,
-      "kernels": 189,
+      "fired": 6120,
+      "kernels": 193,
       "rule": "canonicalize(Div)",
-      "strict": 3404,
-      "tight": 3664
+      "strict": 3525,
+      "tight": 3786
     },
     {
-      "fired": 13643,
-      "kernels": 190,
+      "fired": 13932,
+      "kernels": 194,
       "rule": "canonicalize(Sub)",
-      "strict": 3137,
-      "tight": 8549
+      "strict": 3240,
+      "tight": 8808
     },
     {
-      "fired": 75206,
-      "kernels": 184,
-      "rule": "factor",
-      "strict": 3089,
-      "tight": 9743
-    },
-    {
-      "fired": 198778,
-      "kernels": 186,
-      "rule": "associative(Add)",
-      "strict": 2923,
-      "tight": 26603
-    },
-    {
-      "fired": 81269,
-      "kernels": 184,
-      "rule": "associative(Mul)",
-      "strict": 2537,
-      "tight": 27479
-    },
-    {
-      "fired": 72782,
+      "fired": 76259,
       "kernels": 188,
+      "rule": "factor",
+      "strict": 3203,
+      "tight": 10074
+    },
+    {
+      "fired": 200396,
+      "kernels": 190,
+      "rule": "associative(Add)",
+      "strict": 3033,
+      "tight": 27275
+    },
+    {
+      "fired": 82330,
+      "kernels": 188,
+      "rule": "associative(Mul)",
+      "strict": 2580,
+      "tight": 28203
+    },
+    {
+      "fired": 73471,
+      "kernels": 192,
       "rule": "distribute",
-      "strict": 1736,
-      "tight": 15602
+      "strict": 1794,
+      "tight": 16054
     },
     {
-      "fired": 93183,
-      "kernels": 184,
+      "fired": 94259,
+      "kernels": 188,
       "rule": "reverse-associative(Mul)",
-      "strict": 1375,
-      "tight": 12238
+      "strict": 1425,
+      "tight": 12493
     },
     {
-      "fired": 31568,
-      "kernels": 186,
+      "fired": 32407,
+      "kernels": 190,
       "rule": "doubling",
-      "strict": 196,
-      "tight": 9608
+      "strict": 199,
+      "tight": 9979
     },
     {
-      "fired": 217604,
-      "kernels": 182,
-      "rule": "reverse-associative(Add)",
-      "strict": 111,
-      "tight": 21002
-    },
-    {
-      "fired": 26678,
+      "fired": 219514,
       "kernels": 186,
+      "rule": "reverse-associative(Add)",
+      "strict": 113,
+      "tight": 21467
+    },
+    {
+      "fired": 26840,
+      "kernels": 190,
       "rule": "annihilator",
       "strict": 0,
-      "tight": 1320
+      "tight": 1345
     },
     {
       "fired": 8,
@@ -124025,39 +126603,39 @@
       "tight": 3
     },
     {
-      "fired": 498,
-      "kernels": 78,
+      "fired": 503,
+      "kernels": 79,
       "rule": "cancellation(Sub)",
       "strict": 0,
-      "tight": 150
+      "tight": 152
     },
     {
-      "fired": 212972,
-      "kernels": 190,
+      "fired": 214833,
+      "kernels": 194,
       "rule": "commutative(Add)",
       "strict": 0,
-      "tight": 62980
+      "tight": 64314
     },
     {
-      "fired": 9625,
-      "kernels": 188,
+      "fired": 9823,
+      "kernels": 192,
       "rule": "commutative(Max)",
       "strict": 0,
-      "tight": 5244
+      "tight": 5418
     },
     {
-      "fired": 8846,
-      "kernels": 190,
+      "fired": 9000,
+      "kernels": 194,
       "rule": "commutative(Min)",
       "strict": 0,
-      "tight": 4143
+      "tight": 4269
     },
     {
-      "fired": 146526,
-      "kernels": 190,
+      "fired": 148516,
+      "kernels": 194,
       "rule": "commutative(Mul)",
       "strict": 0,
-      "tight": 55198
+      "tight": 56571
     },
     {
       "fired": 21,
@@ -124081,25 +126659,25 @@
       "tight": 1
     },
     {
-      "fired": 78442,
-      "kernels": 188,
+      "fired": 78765,
+      "kernels": 192,
       "rule": "identity(Add)",
       "strict": 0,
-      "tight": 3194
+      "tight": 3219
     },
     {
-      "fired": 4162,
-      "kernels": 174,
+      "fired": 4192,
+      "kernels": 176,
       "rule": "identity(Mul)",
       "strict": 0,
-      "tight": 494
+      "tight": 499
     },
     {
-      "fired": 2808,
-      "kernels": 78,
+      "fired": 2828,
+      "kernels": 79,
       "rule": "inverse-annihilation(Sub)",
       "strict": 0,
-      "tight": 78
+      "tight": 79
     },
     {
       "fired": 12,
