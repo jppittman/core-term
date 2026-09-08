@@ -42,7 +42,11 @@ binding it did not receive), so the graph after `F` holds a subset of the
 equalities the unfiltered graph would — the same law (L4 in
 `egraph/optimizer.rs`) every ordering policy is already covered by.
 
-**Identity.** `Identity(M) = M`. Under `Identity` the loop commits exactly
+**Identity.** `Identity(M) = M`, spelled `KeepAll` in Rust because
+`Identity` already names the `x · 1 = x` rewrite rule in this crate (and the
+no-op `Optimize` pass in `pixelflow-ir`), and a filter that can only drop
+cells keeps all of them exactly when it is the identity. Under `KeepAll` the
+loop commits exactly
 what it enumerated, in the order it enumerated it, and every observable —
 emitted bytes, `dag_cost`, schedule, stop reason, application count, class
 count, iteration count — is byte-identical to the loop before the seam
@@ -102,8 +106,15 @@ as a value that has been matched but not yet committed.
 
 - `EGraph::saturate_bounded` — the one production loop. Now takes
   `&mut dyn ApplicationFilter`; `saturate_budgeted`/`saturate_with_limits`
-  pass `Identity`, and `Optimizer` passes whatever `Optimizer::filter` was
-  given (default `Identity`).
+  pass `KeepAll`, and `Optimizer` passes whatever `Optimizer::filter` was
+  given (default `KeepAll`). The row is offered only when it is non-empty
+  (`F(∅) = ∅`), and its `RuleId` is resolved once per non-empty row — the
+  scan used to hash the rule label once per *match* for `match_counts`, so
+  the seam removes allocations rather than adding them.
+- `EGraph::apply_rules_once`/`apply_rules_budgeted` — the snapshot-matching
+  research loop (every rule against one snapshot, then one commit). Not
+  production, not wired; a filter over it would be the whole-matrix form,
+  and it is left alone.
 - `ApplicationMask` / `Optimizer::mask` — a filter in a weaker form (it
   withholds one application, or every re-derivation of it), but at a
   *different point*: it decides at **commit time**, keyed on the commit-time
@@ -127,10 +138,20 @@ as a value that has been matched but not yet committed.
 
 ## Public surface
 
-`egraph::filter::{ApplicationFilter, MatchRow, Identity}` and
+`egraph::filter::{ApplicationFilter, MatchRow, KeepAll}` and
 `Optimizer::filter(Box<dyn ApplicationFilter>)`. Nothing else. The row's
 `RewriteAction`s are already public (`egraph::RewriteAction`); the row is
-consumed by value inside the crate and exposed to the filter by `&mut`.
+consumed by value inside the crate and exposed to the filter through
+`MatchRow::matches` (read) and `MatchRow::retain` (the one mutation — a
+filter can shrink a row, never reorder it or add to it; the type refuses the
+wrong shape so no doc has to). `EGraph::saturate_budgeted_through` and
+`EGraphBatch::apply_rule_through` are `pub(crate)`: the filter reaches the
+loop through the optimizer, the way `rerank`, `guide`, and `mask` do, not
+through a second public saturation entry point.
+
+A filter that is not `KeepAll` does not yet enter `Optimizer::fingerprint`
+(the runtime cache key); phase 2 owes that before two filters can coexist in
+one process.
 
 `Box<dyn ApplicationFilter>` rather than a type parameter on `Optimizer`:
 the filter is called **once per rule per round** (62 × ≤ 9 calls on the
@@ -143,9 +164,10 @@ allocation (the row *is* the scan's existing `updates` vector, moved into
 ## Cost of the seam at Identity
 
 Deterministic: zero additional allocations per round (the row is the
-existing vector, moved); one indirect call per rule per round with an empty
-body. Clock: Σ glyph bake time, taken at load < 8, must be inside noise —
-recorded in the PR.
+existing vector, moved), and one `RuleId::of` (a label hash) per non-empty
+row where there was one per match; one indirect call per non-empty row with
+an empty body. Clock: Σ glyph bake time, taken at load < 8, must be inside
+noise — recorded in the PR.
 
 ## Phase 2 (not this change)
 
