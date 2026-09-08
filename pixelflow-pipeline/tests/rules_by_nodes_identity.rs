@@ -6,15 +6,32 @@
 //! classes, unions:
 //!
 //! - [`pinned_dev_subset_is_byte_identical`] (fast, runs in CI): the twelve
-//!   `shader_bench` ports plus four DejaVu glyph bakes, compared against the
-//!   goldens in `tests/fixtures/rules_by_nodes_identity.json`, which were
-//!   written by the loop **before** the seam existed (commit `e57760c0`, the
+//!   `shader_bench` ports, compared against the goldens in
+//!   `tests/fixtures/rules_by_nodes_identity.json`, which were written by
+//!   the loop **before** the seam existed (commit `e57760c0`, the
 //!   denotation-only commit). A goldens diff means the seam is not a no-op;
 //!   fix the wiring, never the goldens. Regenerate them only when the rules
 //!   or the budget change, with [`regen_goldens`].
 //! - [`full_dev_corpus_is_byte_identical`] (`#[ignore]`): every kernel
-//!   `egraph_off_on` compiles — 210 rows — against a baseline JSONL the
-//!   pre-change binary wrote, named by `PIXELFLOW_IDENTITY_BASELINE`.
+//!   `egraph_off_on` compiles — 210 rows, the glyph bakes included — against
+//!   a baseline JSONL the pre-change binary wrote, named by
+//!   `PIXELFLOW_IDENTITY_BASELINE`.
+//!
+//! Why the fast set is the shaders and not the glyphs: a glyph kernel's
+//! constants are computed in `f32` by `pixelflow-graphics` at construction,
+//! and that arithmetic contracts differently under `-fp-contract=fast` in
+//! `dev` and `release` (same source, same machine: `glyph16_U004F` extracts
+//! 1685 nodes / 3153 applications in release and 1677 / 3164 in dev, in
+//! both the pre-seam and the seam tree). The e-graph is deterministic in
+//! its input; the input is not deterministic in the build profile. That is a
+//! finding for its own change; the shaders are written as literal arenas and
+//! are byte-identical across both profiles, so they are what this pin holds.
+//!
+//! Machine code is per ISA. The goldens record the architecture they were
+//! written on; on any other architecture the e-graph columns (which are
+//! target-independent by construction — `ConstantFold` declines every
+//! platform-specific fold) are still asserted and the two byte columns are
+//! reported rather than compared.
 //!
 //! The fast probe compiles each kernel twice: once through the explicit
 //! `Optimizer::production()` path (to read the saturation stats) and once
@@ -26,7 +43,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use pixelflow_codegen::emit;
-use pixelflow_graphics::fonts::Font;
 use pixelflow_ir::optimize::{Optimize, Rewritten};
 use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
 use pixelflow_ir::{ExprArena, ExprId, LatticeShape, pipeline};
@@ -35,10 +51,6 @@ use pixelflow_search::egraph::{Optimizer, SaturationStop, Vocabulary, insert, re
 use serde::{Deserialize, Serialize};
 
 const SHADER_EXTENT: [u32; 2] = [256, 256];
-/// `GlyphAtlas::new(16pt, density, ..)`'s tile at density 1 and 2 — the
-/// two tiles `egraph_off_on` warms.
-const GLYPH_TILES: [u32; 2] = [16, 32];
-const GLYPH_CHARS: [char; 2] = ['O', 'S'];
 const GOLDENS: &str = "tests/fixtures/rules_by_nodes_identity.json";
 const BASELINE_VAR: &str = "PIXELFLOW_IDENTITY_BASELINE";
 /// Columns of an `egraph_off_on` row that are not a function of the input:
@@ -55,6 +67,8 @@ const NONDETERMINISTIC_COLUMNS: [&str; 6] = [
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Golden {
     name: String,
+    /// `std::env::consts::ARCH` of the machine that emitted `bytes`.
+    arch: String,
     input_nodes: usize,
     extracted_nodes: usize,
     dag_cost: usize,
@@ -125,6 +139,7 @@ fn observe(name: &str, arena: &ExprArena, root: ExprId, extent: [u32; 2]) -> Gol
 
     Golden {
         name: name.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
         input_nodes: reachable_nodes(&legal, legal_root),
         extracted_nodes: reachable_nodes(&extracted, extracted_root),
         dag_cost: optimized.cost.dag,
@@ -143,13 +158,8 @@ fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn dejavu() -> PathBuf {
-    manifest_dir().join("../pixelflow-graphics/assets/DejaVuSansMono-Fallback.ttf")
-}
-
-/// The pinned DEV subset, in a fixed order: twelve arena-native shader ports
-/// and four `Kernel`-composed glyph bakes (two characters at both warmed
-/// tiles), so both ways a real kernel reaches the e-graph are covered.
+/// The pinned DEV subset, in a fixed order: the twelve arena-native shader
+/// ports.
 fn pinned_subset() -> Vec<Golden> {
     let mut out = Vec::new();
     for name in SHADERTOY_KERNEL_NAMES {
@@ -160,23 +170,6 @@ fn pinned_subset() -> Vec<Golden> {
             root,
             SHADER_EXTENT,
         ));
-    }
-    let font = dejavu();
-    let data = std::fs::read(&font).unwrap_or_else(|e| panic!("read {}: {e}", font.display()));
-    let parsed = Font::parse(&data).expect("parse DejaVuSansMono-Fallback");
-    for tile in GLYPH_TILES {
-        for ch in GLYPH_CHARS {
-            let kernel = parsed
-                .glyph_kernel_scaled(ch, tile as f32)
-                .unwrap_or_else(|| panic!("no glyph for {ch:?}"));
-            let (arena, root) = kernel.parts();
-            out.push(observe(
-                &format!("glyph{tile}_U{:04X}", ch as u32),
-                arena,
-                root,
-                [tile, tile],
-            ));
-        }
     }
     out
 }
@@ -205,11 +198,29 @@ fn pinned_dev_subset_is_byte_identical() {
         actual.len()
     );
     let mut differing = Vec::new();
+    let mut bytes_unchecked = 0usize;
     for (e, a) in expected.iter().zip(&actual) {
         assert_eq!(e.name, a.name, "pinned subset order changed");
-        if e != a {
+        let mut e = e.clone();
+        if e.arch != a.arch {
+            // Another ISA emits other bytes; the e-graph columns are the
+            // target-independent claim and stay asserted below.
+            bytes_unchecked += 1;
+            e.arch = a.arch.clone();
+            e.bytes = a.bytes;
+            e.code_fnv = a.code_fnv;
+        }
+        if e != *a {
             differing.push(format!("{}:\n  expected {e:?}\n  actual   {a:?}", e.name));
         }
+    }
+    if bytes_unchecked > 0 {
+        eprintln!(
+            "rules_by_nodes_identity: goldens were emitted on {}, this is {} — machine-code \
+             bytes reported, not compared, on {bytes_unchecked} kernels",
+            expected[0].arch,
+            std::env::consts::ARCH
+        );
     }
     assert!(
         differing.is_empty(),
