@@ -48,10 +48,13 @@
 //!
 //! The skew is a **contramap**, six numbers per curve computed on the host.
 //! It only lands *your arc* on the parabola; keep going and you are on the
-//! rest of an infinite parabola that is not your curve. So the test is
-//! fenced to the arc's control triangle, and `crescent = T ∩ {f ≤ 0}`.
-//! That fence is why this stage needed a domain-side extent at all: outside
-//! its triangle `u² − v` is not slow, it is **wrong**.
+//! rest of an infinite parabola that is not your curve, where `u² − v` is
+//! not slow but **wrong**. So the test is fenced — and the fence is one
+//! half-plane, the chord's: `crescent = {v ≥ u²} ∩ {v ≤ u}`, which is
+//! already bounded, because `u² ≤ v ≤ u` holds nowhere but `u ∈ [0, 1]`.
+//! A GPU spends a whole rasterized triangle on that fence; two comparisons
+//! do it here. The domain-side extent this stage needed is for the
+//! *string*, not the arc — see [`cells`].
 //!
 //! ## Only a boundary softens a pixel
 //!
@@ -904,15 +907,31 @@ fn crossing_term(chord: Chord) -> Kernel {
 /// So this is the only place a curve differs from a straight edge, and the
 /// only place Loop and Blinn's construction is used.
 ///
-/// The crescent is `T ∩ {f ≤ 0}`: inside the control triangle, and on the
-/// chord's side of the curve. `f = u² − v` under the affine map taking
+/// The crescent is `{v ≥ u²} ∩ {v ≤ u}` under the affine map taking
 /// `P0, P1, P2` to `(0,0), (½,0), (1,1)` — the change of coordinates that
 /// lands *every* quadratic on the one parabola `v = u²`, turning "solve for
-/// where the curve is" into "evaluate a formula and read its sign". `f` is
-/// `¼` at the control point and negative on the chord, so the curve cuts
-/// the triangle in two and `f ≤ 0` is the half the chord is in.
+/// where the curve is" into "evaluate a formula and read its sign".
+///
+/// ## The fence is one half-plane, not a triangle
+///
+/// `u² − v` is *wrong* outside the arc, not merely slow, so the test has to
+/// be fenced — but the control triangle is not the cheapest fence, because
+/// two of its three edges are implied by the parabola itself. In canonical
+/// coordinates the triangle is `v ≥ 0`, `v ≤ u` (the chord), and
+/// `1 + v − 2u ≥ 0`; given `v ≥ u²`,
+///
+/// - `v ≥ u² ≥ 0` is the first edge, and
+/// - `1 + v − 2u ≥ 1 + u² − 2u = (1 − u)² ≥ 0` is the third.
+///
+/// So only the chord's own half-plane is left, and `u² ≤ v ≤ u` is already
+/// bounded on its own: it forces `u ∈ [0, 1]`, since `u² ≤ u` holds nowhere
+/// else. An axis-aligned box would have been strictly worse — it is not
+/// equivalent to the triangle, so it would be needed *in addition to* the
+/// chord test rather than instead of it.
+///
+/// Affine maps preserve half-planes and intersections, so this is the
+/// crescent in screen space too: two comparisons and one `and`.
 fn sliver_term(bulge: Bulge) -> Kernel {
-    let zero = constant(0.0);
     let Bulge { p0, p1, p2, sign } = bulge;
     let e1 = [p1[0] - p0[0], p1[1] - p0[1]];
     let e2 = [p2[0] - p0[0], p2[1] - p0[1]];
@@ -929,7 +948,7 @@ fn sliver_term(bulge: Bulge) -> Kernel {
         b: e1[0] / det,
         c: (e1[1] * p0[0] - e1[0] * p0[1]) / det,
     };
-    // (u, v) = (λ₁/2 + λ₂, λ₂), so λ₂ = v, λ₁ = 2(u − v), λ₀ = 1 − 2u + v.
+    // (u, v) = (λ₁/2 + λ₂, λ₂), so λ₂ = v and λ₁ = 2(u − v).
     let u = Linear {
         a: lambda1.a / 2.0 + lambda2.a,
         b: lambda1.b / 2.0 + lambda2.b,
@@ -937,14 +956,11 @@ fn sliver_term(bulge: Bulge) -> Kernel {
     }
     .kernel();
     let v = lambda2.kernel();
-    let inside_triangle = v
-        .ge(&zero)
-        .and(&u.ge(&v))
-        .and(&constant(1.0).add(&v).sub(&u.mul(&constant(2.0))).ge(&zero));
-    let f = u.mul(&u).sub(&v);
-    inside_triangle
-        .and(&f.le(&zero))
-        .select(&constant_of(sign), &zero)
+    let under_the_chord = u.ge(&v);
+    let over_the_parabola = u.mul(&u).sub(&v).le(&constant(0.0));
+    under_the_chord
+        .and(&over_the_parabola)
+        .select(&constant_of(sign), &constant(0.0))
 }
 
 /// Coverage of the included pieces: an exact winding decides inside from
