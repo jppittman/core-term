@@ -14,8 +14,9 @@
 //! test suite happened to run, and every allocation variant is measured on
 //! byte-identical input.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, BufferId, BufferIdentity, ExprArena, ExprId, ExprNode};
@@ -30,6 +31,21 @@ pub struct CollapseKernel {
     pub root: ExprId,
     /// The lattice extent, exactly as `Lattice::bake` would see it.
     pub extent: [u32; 2],
+    /// Captured contents for each buffer `arena` declares, aligned by
+    /// [`BufferId`]: `arena.buffers()[i]` is slot `i`'s declaration,
+    /// `buffer_data[i]` is what production actually bound there. `None` at a
+    /// slot means capture had nothing real for it.
+    ///
+    /// This is not cosmetic: collapse cost is *not* independent of a
+    /// buffer's values. `emit_skip_if_all_false`/`emit_skip_if_all_true`
+    /// (`pixelflow-codegen/src/emit/mod.rs`) branch on a `Select` guard's
+    /// mask at runtime, and a zero-filled piece table makes a glyph's every
+    /// crossing-span mask uniformly false — the guard skips an arm
+    /// production always takes. Replaying zeros here measures that skipped
+    /// arm's absence, not its cost. The replay path
+    /// (`collapse_bench::dummy_context`) binds `Some` data verbatim and
+    /// falls back to zeros only for a genuinely uncaptured slot, loudly.
+    pub buffer_data: Vec<Option<Arc<Vec<f32>>>>,
 }
 
 /// How many times each scope of the collapse nest runs, for one
@@ -81,7 +97,19 @@ impl Trips {
 // piece table (`pixelflow-graphics`'s `loop_blinn::glyph`), which is exactly
 // this shape. `Param` is still rejected: nothing production bakes carries an
 // unsubstituted macro parameter.
-const HEADER: &str = "# pixelflow collapse corpus v3";
+//
+// v3 carried a buffer's *shape* only; replay bound every declared buffer to
+// zeros (`dummy_context`) on the premise that "collapse cost depends on the
+// arena's shape, not the buffer's values." That premise was false: a
+// `Select` guard's runtime skip (`emit_skip_if_all_false`/`_all_true` in
+// `pixelflow-codegen/src/emit/mod.rs`) branches on whether any lane's mask
+// is set, which is a fact about the *data*, not the shape. A zero-filled
+// piece table makes every one of a glyph's crossing-span masks uniformly
+// false, so v3 measured a control-flow path production never takes. v4 adds
+// `D <slot> <bits>...` — the slot's captured contents, as bit patterns like
+// every other value this format stores, so replay executes the same guard
+// decisions production does.
+const HEADER: &str = "# pixelflow collapse corpus v4";
 /// Versions this format replaced, recognised only so [`decode`] can say
 /// *which* mismatch it hit and why regenerating is the fix.
 const SUPERSEDED_HEADERS: &[(&str, &str)] = &[
@@ -92,6 +120,11 @@ const SUPERSEDED_HEADERS: &[(&str, &str)] = &[
     (
         "# pixelflow collapse corpus v2",
         "v2 had no way to spell a declared buffer (`B`) or an n-ary node (`N`)",
+    ),
+    (
+        "# pixelflow collapse corpus v3",
+        "v3 declared a buffer's shape but not its contents, so replay bound zeros \
+         and never exercised the guard skip a real mask fires",
     ),
 ];
 
@@ -166,6 +199,11 @@ pub fn encode(kernel: &CollapseKernel) -> String {
         assert_ne!(v, u32::MAX, "child dumped before parent");
         v
     };
+    // A buffer with `n` gathers into it dumps `n` `B` lines (one per
+    // `Buffer` leaf), all naming the same slot — see the comment on that
+    // arm below. Its `D` line is data, not shape, so it must not repeat
+    // `n` times too; this tracks which slots already got theirs.
+    let mut buffer_data_emitted: HashSet<u16> = HashSet::new();
     for idx in 0..len {
         if !reachable[idx] {
             continue;
@@ -194,7 +232,13 @@ pub fn encode(kernel: &CollapseKernel) -> String {
             // `Uniform`'s context slot).
             ExprNode::Buffer(id) => {
                 let decl = arena.buffer_decl(*id);
-                writeln!(out, "B {} {} {}", id.0, decl.width, decl.height)
+                writeln!(out, "B {} {} {}", id.0, decl.width, decl.height).expect("fmt");
+                // Only the first occurrence of this slot writes its data —
+                // see `buffer_data_emitted` above.
+                if buffer_data_emitted.insert(id.0) {
+                    write_buffer_data(&mut out, kernel, *id);
+                }
+                Ok(())
             }
             ExprNode::Unary(k, a) => writeln!(out, "U {k:?} {}", d(&dense, *a)),
             ExprNode::Binary(k, a, b) => {
@@ -235,6 +279,32 @@ pub fn encode(kernel: &CollapseKernel) -> String {
     out
 }
 
+/// Write buffer `slot`'s captured contents as a `D` line — one bit pattern
+/// per `f32`, the way the format already stores every other value, because a
+/// decimal round trip is not exact and this data decides guard masks. A slot
+/// `kernel` has no captured contents for is not written at all: the replay
+/// path's zero fallback (`dummy_context`) is the loud, explicit case, not a
+/// silent default baked into the fixture.
+///
+/// # Panics
+/// If writing to `out` fails (an allocation failure, effectively
+/// unreachable for a `String` target).
+fn write_buffer_data(out: &mut String, kernel: &CollapseKernel, slot: BufferId) {
+    use std::fmt::Write as _;
+    let Some(data) = kernel
+        .buffer_data
+        .get(slot.0 as usize)
+        .and_then(Option::as_ref)
+    else {
+        return;
+    };
+    write!(out, "D {}", slot.0).expect("fmt");
+    for v in data.iter() {
+        write!(out, " {}", v.to_bits()).expect("fmt");
+    }
+    writeln!(out).expect("fmt");
+}
+
 fn decode(path: &Path) -> CollapseKernel {
     let text =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
@@ -271,6 +341,12 @@ fn decode(path: &Path) -> CollapseKernel {
     // original never had, shifting every `Uniform`'s context slot
     // (`ExprArena::buffers().len()`).
     let mut buffer_slots: HashMap<u16, BufferId> = HashMap::new();
+    // Decoded slot -> its captured contents, from that slot's `D` line (at
+    // most one, written once per slot regardless of how many `B` lines name
+    // it — see `write_buffer_data`). Absent for a slot capture had nothing
+    // for; folded into `CollapseKernel::buffer_data` once every buffer is
+    // declared, below.
+    let mut buffer_data: HashMap<BufferId, Arc<Vec<f32>>> = HashMap::new();
 
     let op = |s: &str| -> OpKind {
         OpKind::all()
@@ -335,6 +411,43 @@ fn decode(path: &Path) -> CollapseKernel {
                 );
                 arena.push_buffer(slot)
             }
+            ["D", orig_slot, bits @ ..] => {
+                let orig_slot: u16 = orig_slot.parse().unwrap_or_else(|e| {
+                    panic!(
+                        "{}: bad buffer data slot {orig_slot:?}: {e}",
+                        path.display()
+                    )
+                });
+                let slot = *buffer_slots.get(&orig_slot).unwrap_or_else(|| {
+                    panic!(
+                        "{}: D line for buffer slot {orig_slot} appeared before its B line \
+                         declared it",
+                        path.display()
+                    )
+                });
+                let decl = arena.buffer_decl(slot);
+                let expected = decl.width as usize * decl.height as usize;
+                assert_eq!(
+                    bits.len(),
+                    expected,
+                    "{}: buffer slot {orig_slot} data has {} value(s), the declared {}x{} \
+                     extent wants {expected}",
+                    path.display(),
+                    bits.len(),
+                    decl.width,
+                    decl.height
+                );
+                let data: Vec<f32> = bits
+                    .iter()
+                    .map(|b| {
+                        f32::from_bits(b.parse().unwrap_or_else(|e| {
+                            panic!("{}: bad buffer data bits {b:?}: {e}", path.display())
+                        }))
+                    })
+                    .collect();
+                buffer_data.insert(slot, Arc::new(data));
+                continue;
+            }
             ["U", k, a] => arena.push_unary(op(k), id(a)),
             ["Bi", k, a, b] => arena.push_binary(op(k), id(a), id(b)),
             ["T", k, a, b, c] => arena.push_ternary(op(k), id(a), id(b), id(c)),
@@ -353,12 +466,20 @@ fn decode(path: &Path) -> CollapseKernel {
         next_id += 1;
     }
 
+    // Aligned by `BufferId` — `arena.buffers()[i]` is slot `i`'s
+    // declaration — so a slot with no `D` line decodes to `None`, exactly
+    // the shape `dummy_context` expects for a genuinely uncaptured slot.
+    let buffer_data_by_slot: Vec<Option<Arc<Vec<f32>>>> = (0..arena.buffers().len())
+        .map(|i| buffer_data.get(&BufferId(i as u16)).cloned())
+        .collect();
+
     CollapseKernel {
         name: name.unwrap_or_else(|| panic!("{}: no name", path.display())),
         family: family.unwrap_or_else(|| panic!("{}: no family", path.display())),
         arena,
         root: root.unwrap_or_else(|| panic!("{}: no root", path.display())),
         extent: extent.unwrap_or_else(|| panic!("{}: no extent", path.display())),
+        buffer_data: buffer_data_by_slot,
     }
 }
 
@@ -403,6 +524,8 @@ pub fn synthetic() -> Vec<CollapseKernel> {
                 arena,
                 root,
                 extent,
+                // None of the synthetic families declare a buffer.
+                buffer_data: Vec::new(),
             });
         };
     for n in [8usize, 16, 32, 64] {
@@ -628,18 +751,36 @@ mod tests {
         let b = arena.push_gather(slot, y, x);
         let root = arena.push_binary(OpKind::Add, a, b);
 
+        // Real, non-uniform, non-zero contents — the point of this test is
+        // that these exact values, not just the 4x3 shape, survive the
+        // round trip. A vector of zeros could not tell a dropped payload
+        // from a correctly empty one.
+        let data: Vec<f32> = (0..12).map(|i| -3.5 + i as f32 * 1.25).collect();
+
         let kernel = CollapseKernel {
             name: "buffer_gather_test".to_string(),
             family: "buffer".to_string(),
             arena,
             root,
             extent: [64, 4],
+            buffer_data: vec![Some(Arc::new(data.clone()))],
         };
 
         let text = encode(&kernel);
         assert!(
             text.contains("\nB "),
             "encoding a buffer-declaring kernel must carry a `B` line:\n{text}"
+        );
+        assert!(
+            text.contains("\nD "),
+            "encoding a buffer-declaring kernel with captured contents must carry a `D` line:\n{text}"
+        );
+        // Written once per declared slot, not once per `Buffer` leaf — this
+        // kernel has two gathers into the one slot.
+        assert_eq!(
+            text.matches("\nD ").count(),
+            1,
+            "a buffer's contents must be written once per slot, not once per gather:\n{text}"
         );
 
         let dir = std::env::temp_dir().join(format!(
@@ -661,8 +802,19 @@ mod tests {
             "two gathers into one declared slot must decode to one buffer, not two"
         );
 
+        // The buffer's actual contents, not just its shape, survive the
+        // round trip exactly — bit for bit, since these values decide the
+        // guard masks a `Select` skips or takes at runtime.
+        let decoded_data = decoded.buffer_data[0]
+            .as_ref()
+            .expect("captured buffer contents must survive the round trip, not decode to None");
+        assert_eq!(
+            **decoded_data, data,
+            "buffer contents did not round trip exactly"
+        );
+
         // Bakeable end to end, through the exact path the bench uses:
-        // compile at the corpus's own shape, bind a zero-filled buffer of
+        // compile at the corpus's own shape, bind the captured buffer of
         // the declared extent, and collapse one real call.
         let mut session = crate::collapse_bench::CollapseSession::open();
         let row = session.measure(decoded, 0);

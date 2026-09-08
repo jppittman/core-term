@@ -24,8 +24,11 @@
 //! the measured contradiction that asked for it.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
+use pixelflow_graphics::fonts::Glyph;
+use pixelflow_ir::arena::ExprArena;
 use pixelflow_pipeline::collapse_bench::{
     self,
     corpus::{self, CollapseKernel},
@@ -133,6 +136,23 @@ fn main() {
     }
 }
 
+/// Captured contents for each buffer `arena` declares, matched to `glyph`'s
+/// own binding by [`BufferIdentity`](pixelflow_ir::arena::BufferIdentity) —
+/// the winding sum's real piece table, not a restatement of its shape.
+/// `None` at a slot means this glyph declared a buffer `glyph.binding`
+/// doesn't cover, which `dummy_context` reports loudly at replay rather than
+/// silently zeroing.
+fn buffer_data_for(arena: &ExprArena, glyph: &Glyph) -> Vec<Option<Arc<Vec<f32>>>> {
+    arena
+        .buffers()
+        .iter()
+        .map(|decl| match &glyph.binding {
+            Some((id, data)) if *id == decl.id => Some(Arc::clone(data)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn capture(out: &std::path::Path, font: Option<&std::path::Path>) {
     // core-term itself loads `NotoSansMono-Regular.ttf`; that asset is stored
     // in large-file storage and is a pointer file in checkouts without it, so
@@ -163,12 +183,14 @@ fn capture(out: &std::path::Path, font: Option<&std::path::Path>) {
                 continue;
             };
             let (arena, root) = glyph.kernel.parts();
+            let buffer_data = buffer_data_for(arena, &glyph);
             kernels.push(CollapseKernel {
                 name: format!("glyph{tile}_U{:04X}", ch as u32),
                 family: format!("glyph{tile}"),
                 arena: arena.clone(),
                 root,
                 extent: [tile, tile],
+                buffer_data,
             });
         }
     }
@@ -177,12 +199,14 @@ fn capture(out: &std::path::Path, font: Option<&std::path::Path>) {
             .glyph_kernel_scaled(ch, BENCH_PT)
             .unwrap_or_else(|| panic!("the font has no glyph for {ch:?}"));
         let (arena, root) = glyph.kernel.parts();
+        let buffer_data = buffer_data_for(arena, &glyph);
         kernels.push(CollapseKernel {
             name: format!("bench_{label}"),
             family: "bench".to_string(),
             arena: arena.clone(),
             root,
             extent: BENCH_EXTENT,
+            buffer_data,
         });
     }
     corpus::write_dir(out, &kernels);

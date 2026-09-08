@@ -48,6 +48,7 @@ pub mod predict;
 pub mod row;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use pixelflow_codegen::emit::executable::{ExecutableCode, Point4, TileSlice};
 use pixelflow_codegen::emit::{CompileResult, compile};
@@ -245,7 +246,7 @@ impl CollapseSession {
         let trips = Trips::of(kernel.extent, LANES as u32);
         let result = compile_as_baked(&kernel.arena, kernel.root, kernel.extent);
         let mut buffer = output_buffer(trips);
-        let (buffers, uniforms) = dummy_context(&kernel.arena);
+        let (buffers, uniforms) = dummy_context(&kernel.name, &kernel.arena, &kernel.buffer_data);
         let slots = context_slots(&buffers, &uniforms);
         let timing = time_kernel(&result.code, &mut buffer, trips, slots.as_ptr());
         let drift = self.context().normalization();
@@ -318,21 +319,57 @@ fn output_buffer(trips: Trips) -> Vec<f32> {
     vec![0.0f32; (trips.rows * trips.groups) as usize * LANES]
 }
 
-/// Zero-filled memory for every buffer slot `arena` declares, sized to the
-/// slot's own extent, plus the uniform block (one `f32` per declared
-/// argument, at its default; a single `CORPUS_ARG` slot when the arena
-/// declares none, so a kernel with no argument still reads a real block
-/// rather than one omitted array entry away from a null deref).
+/// Memory for every buffer slot `arena` declares, sized to the slot's own
+/// extent and bound to `buffer_data`'s captured contents, plus the uniform
+/// block (one `f32` per declared argument, at its default; a single
+/// `CORPUS_ARG` slot when the arena declares none, so a kernel with no
+/// argument still reads a real block rather than one omitted array entry
+/// away from a null deref).
 ///
-/// Collapse cost is a function of the arena's *shape*: a gather costs the
-/// same wherever it lands, so a corpus kernel's buffers are bound to zeros
-/// rather than any production table — nothing downstream needs the real
-/// pixels back.
-fn dummy_context(arena: &ExprArena) -> (Vec<Vec<f32>>, Vec<f32>) {
+/// Collapse cost is *not* independent of a buffer's values, only of its
+/// *identity*: `emit_skip_if_all_false`/`emit_skip_if_all_true`
+/// (`pixelflow-codegen/src/emit/mod.rs`) branch at runtime on whether a
+/// `Select` guard's mask has any lane set, and a zero-filled glyph piece
+/// table makes every crossing-span mask uniformly false — a control-flow
+/// path production never takes. So a slot binds `buffer_data`'s real
+/// contents whenever capture provided them; a slot with none is the
+/// exception, and falls back to zeros loudly — naming `kernel_name` and the
+/// slot — rather than silently reintroducing the artifact this replaced.
+fn dummy_context(
+    kernel_name: &str,
+    arena: &ExprArena,
+    buffer_data: &[Option<Arc<Vec<f32>>>],
+) -> (Vec<Vec<f32>>, Vec<f32>) {
     let buffers: Vec<Vec<f32>> = arena
         .buffers()
         .iter()
-        .map(|decl| vec![0.0f32; decl.width as usize * decl.height as usize])
+        .enumerate()
+        .map(|(slot, decl)| {
+            let expected = decl.width as usize * decl.height as usize;
+            match buffer_data.get(slot).and_then(Option::as_ref) {
+                Some(data) => {
+                    assert_eq!(
+                        data.len(),
+                        expected,
+                        "{kernel_name}: buffer slot {slot} captured {} value(s), the declared \
+                         {}x{} extent wants {expected}",
+                        data.len(),
+                        decl.width,
+                        decl.height
+                    );
+                    data.as_ref().clone()
+                }
+                None => {
+                    eprintln!(
+                        "collapse_bench: {kernel_name}: buffer slot {slot} ({}x{}) has no \
+                         captured contents; binding zeros — this replay will not exercise the \
+                         same guard decisions production's real data does",
+                        decl.width, decl.height
+                    );
+                    vec![0.0f32; expected]
+                }
+            }
+        })
         .collect();
     let uniforms: Vec<f32> = if arena.uniforms().is_empty() {
         vec![corpus::CORPUS_ARG]
@@ -426,7 +463,9 @@ fn run_calls(
 
 impl Sentinel {
     fn measure(&mut self) -> f64 {
-        let (buffers, uniforms) = dummy_context(&self.arena);
+        // The sentinel arena declares no buffers, so there is nothing for
+        // `buffer_data` to carry.
+        let (buffers, uniforms) = dummy_context("sentinel", &self.arena, &[]);
         let slots = context_slots(&buffers, &uniforms);
         time_kernel(&self.code, &mut self.buffer, self.trips, slots.as_ptr()).median
     }
