@@ -81,6 +81,22 @@ jobs:
       - name: Check every declared display driver cfg has recorded CI coverage
         run: bash scripts/check-driver-cfg-coverage.sh
 
+  # Cargo auto-discovers `src/bin/*.rs`, and an auto-discovered target carries
+  # no `required-features` -- so a research bin reading a feature-gated module
+  # builds for its author and breaks only under `--no-default-features`. That
+  # is how `corpus_gaps` landed on main red: the Feature matrix caught it, but
+  # ~90s and 40 workspace checks in. The missing `[[bin]]` entry is a property
+  # of two adjacent files, so this checks it with a grep instead of a build.
+  bin-declarations:
+    name: Bin target declarations
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check every src/bin target is declared in its Cargo.toml
+        run: bash scripts/check-bin-declarations.sh
+
   # pixelflow-search's `provenance-journal` feature (the rule-provenance
   # journal: origins, application log, union journal, `derivation_ancestors`,
   # the hindsight labeler) must never reach a downstream `kernel!` consumer's
