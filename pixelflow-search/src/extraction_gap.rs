@@ -56,7 +56,7 @@
 //!
 //! Read-only. Nothing here changes production behavior.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -67,9 +67,7 @@ use crate::arena_corpus::{category_of, load_arena_dump, median, percentile};
 use crate::egraph::extract::{
     ExtractedDAG, extract_dag_objectives, extract_dag_scoped, extract_dag_tree_arm,
 };
-use crate::egraph::{
-    Budget, CostModel, EClassId, EGraph, ENode, Extraction, Optimizer, SaturationStop,
-};
+use crate::egraph::{Budget, CostModel, EClassId, EGraph, ENode, Extraction, Optimizer};
 use crate::egraph::{Vocabulary, insert, reachable_count};
 
 // ---------------------------------------------------------------------------
@@ -860,7 +858,6 @@ fn exact_dag_choices(
 /// algorithm, so drift fails loudly rather than being averaged in.
 struct GreedyTrace {
     choices: Vec<Option<usize>>,
-    total_cost: usize,
     /// Classes whose winning node was priced at the cycle sentinel.
     cycle_priced: HashSet<u32>,
 }
@@ -946,10 +943,8 @@ fn greedy_trace(egraph: &EGraph, root: EClassId, costs: &CostModel) -> GreedyTra
         }
     }
 
-    let total_cost = best_cost[egraph.find(root).0 as usize].unwrap_or(usize::MAX);
     GreedyTrace {
         choices: best_node,
-        total_cost,
         cycle_priced,
     }
 }
@@ -1052,7 +1047,6 @@ fn measure(
 
     let mut optimizer = Optimizer::production().budget(budget);
     let mut egraph = optimizer.egraph();
-    let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
     let root_class = insert(&arena, root, &mut egraph, Vocabulary::Runtime)
         .ok()
         .unwrap_or_else(|| panic!("{name}: arena_to_egraph returned None (unsupported node)"));
@@ -1428,7 +1422,7 @@ fn write_report(
         .filter(|r| r.exact_status == "UNSOLVED")
         .collect();
 
-    let mut ratios: Vec<f64> = solved.iter().map(|r| r.ratio).collect();
+    let ratios: Vec<f64> = solved.iter().map(|r| r.ratio).collect();
     assert!(
         ratios.iter().all(|x| x.is_finite()),
         "a solved kernel produced a non-finite greedy/exact ratio — that means the exact \
@@ -1462,7 +1456,7 @@ fn write_report(
     // ones give a valid upper bound on the optimum (the best term the search
     // actually built), so `greedy / best_found` is a lower bound on the true
     // ratio.
-    let mut certified: Vec<f64> = rows
+    let certified: Vec<f64> = rows
         .iter()
         .filter(|r| r.exact_dag > 0)
         .map(|r| r.greedy_dag as f64 / r.exact_dag as f64)
@@ -1477,7 +1471,7 @@ fn write_report(
     // The always-computable half of the gap. Knuth's algorithm has no time
     // limit, so these quantiles run over EVERY kernel — nothing is excluded,
     // and no kernel is silently dropped for being hard.
-    let mut dp_loss: Vec<f64> = rows.iter().map(|r| r.dp_loss_frac).collect();
+    let dp_loss: Vec<f64> = rows.iter().map(|r| r.dp_loss_frac).collect();
     let dp_med = median(&mut dp_loss.clone());
     let dp_q1 = percentile(&mut dp_loss.clone(), 25.0);
     let dp_q3 = percentile(&mut dp_loss.clone(), 75.0);
@@ -1489,7 +1483,7 @@ fn write_report(
         .fold(f64::NAN, f64::max);
     let dp_agree = rows.iter().filter(|r| r.loss_dp == 0).count();
     let dp_greedy_wins = rows.iter().filter(|r| r.loss_dp < 0).count();
-    let mut obj_miss: Vec<f64> = rows.iter().map(|r| r.objective_miss_frac).collect();
+    let obj_miss: Vec<f64> = rows.iter().map(|r| r.objective_miss_frac).collect();
     let obj_med = median(&mut obj_miss.clone());
     let obj_p90 = percentile(&mut obj_miss.clone(), 90.0);
     let obj_worst = obj_miss
@@ -2739,7 +2733,7 @@ mod self_check {
         let model = CostModel::latency_prior();
         let mut egraph = Optimizer::production().egraph();
         let x = egraph.add(ENode::Var(0));
-        let y = egraph.add(ENode::Var(1));
+        let _y = egraph.add(ENode::Var(1));
         let sq = egraph.add(ENode::Op {
             op: op_from_kind(OpKind::Mul).expect("Mul is a known op"),
             children: vec![x, x],
@@ -2844,7 +2838,6 @@ mod self_check {
             let mut generator = BwdGenerator::new(seed, config, templates.clone());
             let pair = generator.generate_arena();
             let mut egraph = Optimizer::production().egraph();
-            let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
             let Some(root) = insert(
                 &pair.arena,
                 pair.unoptimized,

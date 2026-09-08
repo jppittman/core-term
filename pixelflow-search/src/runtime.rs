@@ -30,7 +30,7 @@
 //! `PIXELFLOW_SATURATION_TELEMETRY=/path/to/log.jsonl cargo run --features saturation-telemetry`,
 //! or leave it unset to see records on stderr.
 
-use crate::egraph::{EClassId, EGraph, ENode, Op, Optimizer};
+use crate::egraph::{EClassId, EGraph, ENode, Optimizer};
 use crate::saturate_pass::Saturate;
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
@@ -675,7 +675,7 @@ mod tests {
         });
         // Two structurally identical copies, pushed separately — exactly what
         // splice produces.
-        let mut push_dup = |a: &mut ExprArena| {
+        let push_dup = |a: &mut ExprArena| {
             let x = a.push_var(0);
             let y = a.push_var(1);
             let one = a.push_const(1.0);
@@ -827,7 +827,7 @@ mod tests {
         // screen cell size (8, 16) so no algebraic rule can cancel the
         // arithmetic away — deduplication must come from hash-consing, as in
         // the real kernel.
-        let mut push_coords = |a: &mut ExprArena| {
+        let push_coords = |a: &mut ExprArena| {
             let x = a.push_var(0);
             let y = a.push_var(1);
             let cw = a.push_const(8.0);
@@ -1438,8 +1438,8 @@ mod congruence_gap_probe {
         eprintln!("congruence probe: {synthetic_count} synthetic classical expressions");
 
         // ---- Aggregate stats ----
-        let mut all_reduction_frac: Vec<f64> = rows.iter().map(|r| r.reduction_frac).collect();
-        let mut all_cost_change_frac: Vec<f64> = rows.iter().map(|r| r.cost_change_frac).collect();
+        let all_reduction_frac: Vec<f64> = rows.iter().map(|r| r.reduction_frac).collect();
+        let all_cost_change_frac: Vec<f64> = rows.iter().map(|r| r.cost_change_frac).collect();
         let total_closure_unions: usize = rows.iter().map(|r| r.closure_unions).sum();
         let total_live_before: usize = rows.iter().map(|r| r.live_before).sum();
         let class_reduction_frac_overall = if total_live_before > 0 {
