@@ -71,8 +71,28 @@ sees `N` copies of one body. A glyph carries one piece per row, so a
 907s once S1a introduced a reduce; that is the mechanism, and it was
 mis-attributed to "saturation cost" at the time.
 
+**Measured, 2026-09-09**, nodes before and after `expand_reduce` on a real
+glyph at 32 px (after `lower_dwrt`, which is what saturation is handed):
+`A` 8,741 → 33,557 (3.8×), `O` 43,583 → 256,379 (5.9×), `8` 87,007 →
+758,059 (**8.7×**). That is the size of the graph the e-graph saturates
+over, against a body it could have optimized once.
+
 The fix is to give `Reduce` what `Gather` has: representable as structure,
-nameable by no template. The body is then one e-class, optimized once, and
+nameable by no template. **It is not the one-line change this section first
+implied.** `push_reduce` encodes the combiner, the binder slot and the
+extent as `Const(f32)` *children* (`arena.rs:547`), and in an e-graph those
+hash-cons with every other occurrence of the same value — `Const(4.0)`'s
+e-class holds `Add(2.0, 2.0)` as soon as anything folds to four, so
+extraction is free to hand `expand_reduce` a non-`Const` in the binder slot.
+It picks the `Const` on cost today, which is a convention doing a type's
+job — the case CLAUDE.md already names when it lists "`push_reduce` encodes
+an `OpKind` as a `Const(f32)`". Doing it properly wants a new `ENode`
+variant carrying that metadata (the `ENode::Buffer(BufferDecl)` pattern),
+which reaches hashing, extraction, cost and rebuild.
+
+**And it is sequenced after §4/§5, not before.** Making `Reduce`
+representable is machinery for a body whose expense is reading a piece
+table through a `Gather` — building around the construct §4 removes. The body is then one e-class, optimized once, and
 `ExpandReduce` unrolls code that is already optimized. No rule can match the
 node, so nothing can move across the binder — the same argument that makes
 `Gather` sound today.
