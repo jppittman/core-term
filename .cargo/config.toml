@@ -5,6 +5,15 @@ bundle-run = "run --package xtask --release -- bundle-run"
 bake-eigen = "run --package xtask --release -- bake-eigen"
 
 [build]
+# Build into `target.noindex/`, not `target/`. Spotlight skips any directory
+# whose name ends in `.noindex`, and FSEvents fan-out is what it is either way —
+# but on this project's ~510k artifact files, mds + FSEvents + fileproviderd were
+# measured burning ~5 of 12 cores continuously (load 21–31 with no cargo of our
+# own running), and Spotlight had 8,288 build artifacts indexed under the
+# checkout. The name is the whole mechanism; nothing else changes. `xtask`,
+# the pre-commit hook and the cfg-coverage script derive the directory from
+# cargo or from `CARGO_TARGET_DIR` rather than spelling it, so they follow.
+target-dir = "target.noindex"
 # Relaxed FP math for faster SIMD - allows FMA contraction and unsafe FP opts
 rustflags = [
     "-C", "llvm-args=-fp-contract=fast",

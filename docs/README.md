@@ -93,6 +93,11 @@ specified by [`templates/DESIGN_DOC.md`](templates/DESIGN_DOC.md). Use `Supersed
 - [`NNUE_INTEGRATION_STATUS.md`](NNUE_INTEGRATION_STATUS.md) and
   [`EGRAPH_SEARCH_INTEGRATION.md`](EGRAPH_SEARCH_INTEGRATION.md) — short current-state
   stubs (rewritten 2026-08-05) pointing at the guided-saturation and research-workflow plans.
+- [`plans/2026-08-05-egraph-nnue-research-workflow.md`](plans/2026-08-05-egraph-nnue-research-workflow.md)
+  — the extraction-head research workflow; closed 2026-09-01 when the workshop paper it targets
+  found a tie rather than a win, see
+  [`plans/2026-09-01-schedule-cost-model-denotation.md`](plans/2026-09-01-schedule-cost-model-denotation.md)
+  for the outcome.
 - [`designs/actor-scheduler-supervisor-migration.md`](designs/actor-scheduler-supervisor-migration.md)
   — explicitly superseded by the Mealy-transducer design.
 - [`designs/2026-07-23-lower-realize-boundary.md`](designs/2026-07-23-lower-realize-boundary.md)

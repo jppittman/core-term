@@ -56,6 +56,10 @@ const FONT_FILENAME: &str = "NotoSansMono-Regular.ttf";
 /// Atlas slots before the first growth (ASCII plus headroom).
 const ATLAS_CAPACITY: usize = 128;
 
+/// Scrollback navigation scales wheel delta by this many lines per unit,
+/// since a raw 1:1 mapping feels sluggish for keyboard-free scrolling.
+const SCROLL_LINES_PER_UNIT: i32 = 3;
+
 /// Find the font file, trying multiple locations:
 /// 1. macOS app bundle Resources directory (for bundled app)
 /// 2. Workspace-relative path (for cargo run from workspace root)
@@ -778,8 +782,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 } else {
                     // Scrollback navigation: negative dy scrolls up (into history),
                     // positive dy scrolls down (toward live screen)
-                    // Scale by 3 lines per scroll unit for better UX
-                    let scroll_lines = -(dy as i32) * 3;
+                    let scroll_lines = -(dy as i32) * SCROLL_LINES_PER_UNIT;
                     if self.emulator.scroll_viewport(scroll_lines) {
                         // Viewport changed, send frame immediately for responsive scrolling
                         self.send_frame();

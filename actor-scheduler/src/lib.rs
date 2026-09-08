@@ -109,7 +109,7 @@ pub use params::SchedulerParams;
 pub use spsc::TrySendError;
 
 // Re-export macros from the proc-macro crate
-pub use actor_scheduler_macros::{actor_impl, ports, troupe};
+pub use actor_scheduler_macros::{ports, troupe};
 
 use doorbell::{Chime, Doorbell, Ring};
 use sharded::{InboxBuilder, ShardedInbox};
@@ -185,20 +185,11 @@ use std::time::Duration;
 /// - No cross-lane ordering guarantees - only best-effort priority
 /// - Protection against slow-loris attacks (poorly-behaved senders can't drown channels)
 ///
-/// Configurable shutdown behavior per actor via `ShutdownMode`.
+/// Exit immediately on shutdown, dropping all pending messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ShutdownMode {
-    /// Exit immediately, drop all pending messages (default, current behavior)
     #[default]
     Immediate,
-
-    /// Drain control+management lanes, drop data
-    /// Use for actors where control/management cleanup is critical
-    DrainControl,
-
-    /// Process all pending messages before exit (with timeout fallback)
-    /// Use for actors that must process all messages (e.g., logging, persistence)
-    DrainAll { timeout: std::time::Duration },
 }
 
 #[derive(Debug)]
@@ -410,8 +401,7 @@ pub trait ActorTypes {
 /// The TroupeActor trait for actors managed by the troupe! macro.
 ///
 /// Unlike the basic `Actor` trait, `TroupeActor` is parameterized over a Directory
-/// type, enabling type-safe access to other actors in the group. The `#[actor_impl]`
-/// macro generates the impl for this trait.
+/// type, enabling type-safe access to other actors in the group.
 ///
 /// # Example
 ///
@@ -451,27 +441,6 @@ pub trait TroupeActor<Dir>:
     /// With SPSC channels, each actor OWNS its directory instance.
     /// The directory contains dedicated SPSC handles to every other actor.
     fn new(dir: Dir) -> Self;
-}
-
-/// Create a new actor with one producer handle.
-///
-/// Convenience function for single-producer actors. For multi-producer setups
-/// (e.g., troupe actors where multiple peers send to the same target), use
-/// [`ActorBuilder`] directly.
-///
-/// # Arguments
-/// * `data_buffer_size` - Size of bounded data buffer
-/// * `wake_handler` - Optional wake handler for platform event loops
-#[must_use]
-pub fn create_actor<D, C, M>(
-    data_buffer_size: usize,
-    wake_handler: Option<Arc<dyn WakeHandler>>,
-) -> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>) {
-    ActorScheduler::new_with_wake_handler(
-        SchedulerParams::DEFAULT.default_data_burst_limit,
-        data_buffer_size,
-        wake_handler,
-    )
 }
 
 /// Builder for multi-producer actor channels.
@@ -602,7 +571,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
     /// module) or a `Node` (`mealy.rs`), because [`sharded::ShardedInbox`] implements both
     /// `ShardedInbox::drain` (for the former) and [`mealy::Inbox`] (for the latter).
     #[must_use]
-    pub fn build_node<T, W>(
+    pub fn build_dedicated_thread<T, W>(
         self,
         actor: T,
         wiring: W,
@@ -632,7 +601,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
             sweep_burst,
             doorbell: self
                 .doorbell
-                .expect("ActorBuilder::build_node called twice"),
+                .expect("ActorBuilder::build_dedicated_thread called twice"),
         }
     }
 }
@@ -653,6 +622,10 @@ pub trait WakeHandler: Send + Sync {
 
 /// Fibonacci hash constant for jitter calculation.
 const JITTER_HASH_CONSTANT: u64 = 0x9e3779b97f4a7c15;
+
+/// Mixes the attempt number into the wall-clock nanoseconds before hashing,
+/// so consecutive attempts on the same thread still land in different buckets.
+const ATTEMPT_MIX_CONSTANT: u64 = 0x517cc1b727220a95;
 
 /// Calculate exponential backoff with jitter.
 ///
@@ -675,7 +648,7 @@ fn backoff_with_jitter(attempt: u32, params: &SchedulerParams) -> Result<Duratio
         .unwrap_or(Duration::from_secs(0));
 
     // Mix nanoseconds with attempt number for better distribution across threads
-    let hash = (now.as_nanos() as u64 ^ (attempt as u64).wrapping_mul(0x517cc1b727220a95))
+    let hash = (now.as_nanos() as u64 ^ (attempt as u64).wrapping_mul(ATTEMPT_MIX_CONSTANT))
         .wrapping_mul(JITTER_HASH_CONSTANT);
 
     let jitter_pct = params.jitter_min_pct + (hash % params.jitter_range_pct);
@@ -1021,79 +994,6 @@ enum SchedulerLoopStatus {
 }
 
 impl<D, C, M> ActorScheduler<D, C, M> {
-    /// Drain control and management channels without limit, ignoring data.
-    ///
-    /// Used for `ShutdownMode::DrainControl` to process critical cleanup messages
-    /// while dropping lower-priority data messages.
-    fn drain_control_and_management<A>(&mut self, actor: &mut A) -> Result<(), HandlerError>
-    where
-        A: Actor<D, C, M>,
-    {
-        // Drain control completely
-        while let DrainStatus::More = self
-            .rx_control
-            .drain(usize::MAX, |msg| actor.handle_control(msg))?
-        {}
-
-        // Drain management completely
-        while let DrainStatus::More = self
-            .rx_mgmt
-            .drain(usize::MAX, |msg| actor.handle_management(msg))?
-        {}
-
-        Ok(())
-    }
-
-    /// Drain all channels (control, management, data) with timeout fallback.
-    ///
-    /// Used for `ShutdownMode::DrainAll` to process all pending messages before shutdown.
-    /// If the timeout is exceeded, remaining messages are dropped.
-    fn drain_all_with_timeout<A>(
-        &mut self,
-        actor: &mut A,
-        timeout: std::time::Duration,
-    ) -> Result<(), HandlerError>
-    where
-        A: Actor<D, C, M>,
-    {
-        use std::time::Instant;
-
-        let deadline = Instant::now() + timeout;
-        let batch_size = 10;
-
-        loop {
-            let control_status = self
-                .rx_control
-                .drain(batch_size, |msg| actor.handle_control(msg))?;
-            if Instant::now() >= deadline {
-                return Ok(());
-            }
-
-            let mgmt_status = self
-                .rx_mgmt
-                .drain(batch_size, |msg| actor.handle_management(msg))?;
-            if Instant::now() >= deadline {
-                return Ok(());
-            }
-
-            let data_status = self
-                .rx_data
-                .drain(batch_size, |msg| actor.handle_data(msg))?;
-            if Instant::now() >= deadline {
-                return Ok(());
-            }
-
-            // Done when all channels are empty or disconnected
-            let all_done = !matches!(control_status, DrainStatus::More)
-                && !matches!(mgmt_status, DrainStatus::More)
-                && !matches!(data_status, DrainStatus::More);
-
-            if all_done {
-                return Ok(());
-            }
-        }
-    }
-
     /// Process messages from all priority lanes, return status.
     ///
     /// Returns:
@@ -1169,14 +1069,12 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     }
 
     #[cold]
-    fn handle_shutdown<A>(&mut self, actor: &mut A) -> Result<(), HandlerError>
+    fn handle_shutdown<A>(&mut self, _actor: &mut A) -> Result<(), HandlerError>
     where
         A: Actor<D, C, M>,
     {
         match self.shutdown_mode {
             ShutdownMode::Immediate => Ok(()),
-            ShutdownMode::DrainControl => self.drain_control_and_management(actor),
-            ShutdownMode::DrainAll { timeout } => self.drain_all_with_timeout(actor, timeout),
         }
     }
 
@@ -1219,19 +1117,6 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         let mut builder = ActorBuilder::new(data_buffer_size, wake_handler);
         let handle = builder.add_producer();
         let scheduler = builder.build_with_burst(data_burst_limit, ShutdownMode::default());
-        (handle, scheduler)
-    }
-
-    /// Create a new scheduler with configurable shutdown behavior and a single producer.
-    #[must_use]
-    pub fn new_with_shutdown_mode(
-        data_burst_limit: usize,
-        data_buffer_size: usize,
-        shutdown_mode: ShutdownMode,
-    ) -> (ActorHandle<D, C, M>, Self) {
-        let mut builder = ActorBuilder::new(data_buffer_size, None);
-        let handle = builder.add_producer();
-        let scheduler = builder.build_with_burst(data_burst_limit, shutdown_mode);
         (handle, scheduler)
     }
 
@@ -1352,9 +1237,9 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 /// `host.rs` so the doorbell-loop discipline it must mirror ([`ActorScheduler::run_inner`])
 /// stays on the same page as the mirror.
 ///
-/// Built by [`ActorBuilder::build_node`], never directly: the doorbell receiver and the three
-/// sharded lanes must come from the same builder as the [`ActorHandle`]s that feed them, and
-/// `ActorBuilder` is the only thing that owns that invariant.
+/// Built by [`ActorBuilder::build_dedicated_thread`], never directly: the doorbell receiver
+/// and the three sharded lanes must come from the same builder as the [`ActorHandle`]s that
+/// feed them, and `ActorBuilder` is the only thing that owns that invariant.
 pub struct DedicatedThread<
     T,
     W,
@@ -2126,6 +2011,80 @@ mod handle_wake_targeted_tests {
         );
     }
 
+    /// The `Message` docs' disclaimer — "no cross-lane ordering guarantees, only best-effort
+    /// priority" — as an executable fact rather than prose.
+    ///
+    /// Priority reorders messages that are **simultaneously pending** when a drain pass
+    /// begins. It is not a barrier: a `Control` message that arrives *while a Management
+    /// drain is already in flight* is not observed until that burst ends, because
+    /// `handle_wake` hands `rx_mgmt.drain` its whole budget before the `control2` pass runs.
+    /// Nothing can retract work the drain loop has already been handed.
+    ///
+    /// This exists because the opposite belief keeps getting written as a test: send N ticks,
+    /// send a shutdown, send N more ticks, assert only the first N were counted. Those pass
+    /// by timing luck on an idle machine and fail on a loaded one. Here the actor enqueues
+    /// the `Control` message *itself*, from inside the drain, so the interleaving is caused
+    /// by the program rather than arranged by a sleep — the counterexample is deterministic.
+    #[test]
+    fn a_control_message_enqueued_mid_drain_is_not_seen_until_the_drain_ends() {
+        struct MidDrainSender {
+            control: ActorHandle<i32, i32, i32>,
+            log: Vec<&'static str>,
+            sent: bool,
+        }
+        impl Actor<i32, i32, i32> for MidDrainSender {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                self.log.push("C");
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                self.log.push("M");
+                // Exactly one, on the first Management message: four more are already
+                // queued behind it, so a barrier would have to stop them.
+                if !self.sent {
+                    self.sent = true;
+                    self.control.send(Message::Control(0)).unwrap();
+                }
+                Ok(())
+            }
+            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
+            }
+        }
+
+        let mut builder = ActorBuilder::<i32, i32, i32>::new(100, None);
+        let preload = builder.add_producer();
+        let from_handler = builder.add_producer();
+        let mut rx = builder.build_with_burst(100, ShutdownMode::default());
+
+        for _ in 0..5 {
+            preload.send(Message::Management(0)).unwrap();
+        }
+
+        let mut actor = MidDrainSender {
+            control: from_handler,
+            log: Vec::new(),
+            sent: false,
+        };
+        while actor.log.len() < 6 {
+            assert!(
+                !rx.poll_once(&mut actor),
+                "the scheduler exited before draining both lanes, log {:?}",
+                actor.log
+            );
+        }
+
+        assert_eq!(
+            actor.log,
+            ["M", "M", "M", "M", "M", "C"],
+            "the in-flight Management burst runs to completion first; \
+             Control is best-effort priority, not a barrier"
+        );
+    }
+
     // Same setup, but with 5 messages: correct half_control=8 drains all 5 (not
     // More). A `%` mutant collapses half_control to (16 % 2).max(1) == 1, so
     // control1 only drains 1 of 5 and reports More instead.
@@ -2207,319 +2166,6 @@ mod handle_wake_targeted_tests {
 
         drop(tx);
         handle.join().unwrap();
-    }
-}
-
-// Tests targeting missed mutations in drain_all_with_timeout.
-#[cfg(test)]
-mod drain_all_targeted_tests {
-    use super::*;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    use std::time::Duration;
-
-    struct FastCountActor {
-        data: Arc<AtomicUsize>,
-    }
-
-    impl Actor<i32, (), ()> for FastCountActor {
-        fn handle_data(&mut self, _: i32) -> HandlerResult {
-            self.data.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        }
-        fn handle_control(&mut self, _: ()) -> HandlerResult {
-            Ok(())
-        }
-        fn handle_management(&mut self, _: ()) -> HandlerResult {
-            Ok(())
-        }
-        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-            Ok(ActorStatus::Idle)
-        }
-    }
-
-    // Kills: replace >= with < in drain_all_with_timeout (line 910)
-    // With <: `if Instant::now() < deadline` fires immediately → returns after first batch of 10
-    // Kills: replace && with || in all_done (lines 915-917)
-    // With ||: after first batch, control is Disconnected (non-More) → all_done=true → exits early
-    //
-    // Strategy: queue 30 data-only messages, queue Shutdown BEFORE scheduler starts.
-    // Correct code: processes all 30. Mutated code: processes only ~10 (first batch).
-    #[test]
-    fn drain_all_processes_multiple_batches_of_data() {
-        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            100,
-            1000,
-            ShutdownMode::DrainAll {
-                timeout: Duration::from_secs(10), // Far future — should not fire
-            },
-        );
-
-        let data_count = Arc::new(AtomicUsize::new(0));
-
-        // Queue Shutdown BEFORE starting scheduler thread, so scheduler sees it immediately.
-        tx.send(Message::Shutdown).unwrap();
-
-        // Queue 30 data messages into the SPSC buffer (scheduler not running yet).
-        for i in 0..30i32 {
-            tx.send(Message::Data(i)).unwrap();
-        }
-
-        // Now start the scheduler. It sees Shutdown first → calls drain_all_with_timeout.
-        // drain_all must process all 30 data messages before returning.
-        let data_clone = data_count.clone();
-        let handle = std::thread::spawn(move || {
-            let mut actor = FastCountActor { data: data_clone };
-            rx.run(&mut actor);
-        });
-
-        handle.join().unwrap();
-        assert_eq!(
-            data_count.load(Ordering::Relaxed),
-            30,
-            "drain_all_with_timeout must process all 30 queued data messages"
-        );
-    }
-
-    // Kills: replace >= with < in drain_all_with_timeout when control messages present.
-    // Also exercises the path where control/mgmt have messages alongside data.
-    #[test]
-    fn drain_all_processes_all_lanes_before_timeout() {
-        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            100,
-            1000,
-            ShutdownMode::DrainAll {
-                timeout: Duration::from_secs(10),
-            },
-        );
-
-        let data_count = Arc::new(AtomicUsize::new(0));
-
-        // Send shutdown first, then queue messages
-        tx.send(Message::Shutdown).unwrap();
-        for i in 0..20i32 {
-            tx.send(Message::Data(i)).unwrap();
-        }
-        for _ in 0..15 {
-            tx.send(Message::Control(())).unwrap();
-        }
-        for _ in 0..15 {
-            tx.send(Message::Management(())).unwrap();
-        }
-
-        let data_clone = data_count.clone();
-        let ctrl_count = Arc::new(AtomicUsize::new(0));
-        let mgmt_count = Arc::new(AtomicUsize::new(0));
-
-        struct FullCountActor {
-            data: Arc<AtomicUsize>,
-            ctrl: Arc<AtomicUsize>,
-            mgmt: Arc<AtomicUsize>,
-        }
-        impl Actor<i32, (), ()> for FullCountActor {
-            fn handle_data(&mut self, _: i32) -> HandlerResult {
-                self.data.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            fn handle_control(&mut self, _: ()) -> HandlerResult {
-                self.ctrl.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            fn handle_management(&mut self, _: ()) -> HandlerResult {
-                self.mgmt.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                Ok(ActorStatus::Idle)
-            }
-        }
-
-        let ctrl_clone = ctrl_count.clone();
-        let mgmt_clone = mgmt_count.clone();
-        let handle = std::thread::spawn(move || {
-            let mut actor = FullCountActor {
-                data: data_clone,
-                ctrl: ctrl_clone,
-                mgmt: mgmt_clone,
-            };
-            rx.run(&mut actor);
-        });
-
-        handle.join().unwrap();
-        assert_eq!(data_count.load(Ordering::Relaxed), 20);
-        assert_eq!(ctrl_count.load(Ordering::Relaxed), 15);
-        assert_eq!(mgmt_count.load(Ordering::Relaxed), 15);
-    }
-
-    // Kills: replace drain_control_and_management body with Ok(()) (line 861)
-    // With body replaced: control/mgmt messages queued at shutdown time are dropped.
-    #[test]
-    fn drain_control_processes_queued_control_and_mgmt_on_shutdown() {
-        let (tx, mut rx) =
-            ActorScheduler::new_with_shutdown_mode(100, 1000, ShutdownMode::DrainControl);
-
-        // Queue Shutdown BEFORE scheduler starts, then queue control/mgmt messages.
-        // Scheduler will see Shutdown immediately → calls drain_control_and_management.
-        tx.send(Message::Shutdown).unwrap();
-        for _ in 0..25 {
-            tx.send(Message::Control(())).unwrap();
-        }
-        for _ in 0..25 {
-            tx.send(Message::Management(())).unwrap();
-        }
-
-        let ctrl_count = Arc::new(AtomicUsize::new(0));
-        let mgmt_count = Arc::new(AtomicUsize::new(0));
-
-        struct CmActor {
-            ctrl: Arc<AtomicUsize>,
-            mgmt: Arc<AtomicUsize>,
-        }
-        impl Actor<(), (), ()> for CmActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_control(&mut self, _: ()) -> HandlerResult {
-                self.ctrl.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            fn handle_management(&mut self, _: ()) -> HandlerResult {
-                self.mgmt.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                Ok(ActorStatus::Idle)
-            }
-        }
-
-        let ctrl_clone = ctrl_count.clone();
-        let mgmt_clone = mgmt_count.clone();
-        let handle = std::thread::spawn(move || {
-            let mut actor = CmActor {
-                ctrl: ctrl_clone,
-                mgmt: mgmt_clone,
-            };
-            rx.run(&mut actor);
-        });
-
-        handle.join().unwrap();
-        assert_eq!(
-            ctrl_count.load(Ordering::Relaxed),
-            25,
-            "DrainControl must drain all 25 control messages"
-        );
-        assert_eq!(
-            mgmt_count.load(Ordering::Relaxed),
-            25,
-            "DrainControl must drain all 25 management messages"
-        );
-    }
-
-    // Kills: delete `!` on the control term of `all_done` (line 915):
-    // `!matches!(control_status, More) && !matches!(mgmt, More) && !matches!(data, More)`.
-    // With the `!` deleted, `all_done` becomes true as soon as control alone is More
-    // (mgmt/data are never sent here, so they're always "not More"), and
-    // drain_all_with_timeout returns after just the first 10-message batch.
-    #[test]
-    fn drain_all_finishes_control_only_backlog_past_first_batch() {
-        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            100,
-            1000,
-            ShutdownMode::DrainAll {
-                timeout: Duration::from_secs(10),
-            },
-        );
-
-        tx.send(Message::Shutdown).unwrap();
-        for _ in 0..25 {
-            tx.send(Message::Control(())).unwrap();
-        }
-
-        let ctrl_count = Arc::new(AtomicUsize::new(0));
-        struct ControlOnlyActor {
-            ctrl: Arc<AtomicUsize>,
-        }
-        impl Actor<(), (), ()> for ControlOnlyActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_control(&mut self, _: ()) -> HandlerResult {
-                self.ctrl.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            fn handle_management(&mut self, _: ()) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                Ok(ActorStatus::Idle)
-            }
-        }
-
-        let ctrl_clone = ctrl_count.clone();
-        let handle = std::thread::spawn(move || {
-            let mut actor = ControlOnlyActor { ctrl: ctrl_clone };
-            rx.run(&mut actor);
-        });
-
-        handle.join().unwrap();
-        assert_eq!(
-            ctrl_count.load(Ordering::Relaxed),
-            25,
-            "drain_all_with_timeout must not stop after the first control batch"
-        );
-    }
-
-    // Kills: delete `!` on the mgmt term of `all_done` (line 916), symmetric to the
-    // control-only test above.
-    #[test]
-    fn drain_all_finishes_management_only_backlog_past_first_batch() {
-        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            100,
-            1000,
-            ShutdownMode::DrainAll {
-                timeout: Duration::from_secs(10),
-            },
-        );
-
-        tx.send(Message::Shutdown).unwrap();
-        for _ in 0..25 {
-            tx.send(Message::Management(())).unwrap();
-        }
-
-        let mgmt_count = Arc::new(AtomicUsize::new(0));
-        struct ManagementOnlyActor {
-            mgmt: Arc<AtomicUsize>,
-        }
-        impl Actor<(), (), ()> for ManagementOnlyActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_control(&mut self, _: ()) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_management(&mut self, _: ()) -> HandlerResult {
-                self.mgmt.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                Ok(ActorStatus::Idle)
-            }
-        }
-
-        let mgmt_clone = mgmt_count.clone();
-        let handle = std::thread::spawn(move || {
-            let mut actor = ManagementOnlyActor { mgmt: mgmt_clone };
-            rx.run(&mut actor);
-        });
-
-        handle.join().unwrap();
-        assert_eq!(
-            mgmt_count.load(Ordering::Relaxed),
-            25,
-            "drain_all_with_timeout must not stop after the first management batch"
-        );
     }
 }
 
@@ -3257,8 +2903,7 @@ mod shutdown_tests {
 
     #[test]
     fn shutdown_immediate_exits_quickly_under_flood() {
-        let (tx, mut rx) =
-            ActorScheduler::new_with_shutdown_mode(100, 100, ShutdownMode::Immediate);
+        let (tx, mut rx) = ActorScheduler::new(100, 100);
 
         let data_count = Arc::new(AtomicUsize::new(0));
         let control_count = Arc::new(AtomicUsize::new(0));
@@ -3296,197 +2941,6 @@ mod shutdown_tests {
             shutdown_duration < Duration::from_millis(100),
             "Immediate shutdown should exit quickly, took {:?}",
             shutdown_duration
-        );
-    }
-
-    #[test]
-    fn shutdown_drain_control_processes_control_and_mgmt() {
-        let (tx, mut rx) =
-            ActorScheduler::new_with_shutdown_mode(100, 100, ShutdownMode::DrainControl);
-
-        let data_count = Arc::new(AtomicUsize::new(0));
-        let control_count = Arc::new(AtomicUsize::new(0));
-        let mgmt_count = Arc::new(AtomicUsize::new(0));
-
-        let actor_data = data_count.clone();
-        let actor_control = control_count.clone();
-        let actor_mgmt = mgmt_count.clone();
-
-        let actor_handle = thread::spawn(move || {
-            let mut actor = CountingActor {
-                data_count: actor_data,
-                control_count: actor_control,
-                mgmt_count: actor_mgmt,
-            };
-            rx.run(&mut actor);
-        });
-
-        // Send messages
-        for i in 0..50 {
-            tx.send(Message::Data(i)).unwrap();
-        }
-        for _ in 0..50 {
-            tx.send(Message::Control(())).unwrap();
-        }
-        for _ in 0..50 {
-            tx.send(Message::Management(())).unwrap();
-        }
-
-        // Give time for some to queue
-        thread::sleep(Duration::from_millis(10));
-
-        // Shutdown - should drain control+mgmt
-        tx.send(Message::Shutdown).unwrap();
-        actor_handle.join().unwrap();
-
-        // All control+mgmt should be processed, data may be dropped
-        let control = control_count.load(Ordering::Relaxed);
-        let mgmt = mgmt_count.load(Ordering::Relaxed);
-        let data = data_count.load(Ordering::Relaxed);
-
-        assert_eq!(control, 50, "All control messages should be processed");
-        assert_eq!(mgmt, 50, "All management messages should be processed");
-        // Data might be partially processed or dropped
-        assert!(data <= 50, "Data messages may be dropped");
-    }
-
-    #[test]
-    fn shutdown_drain_all_processes_everything() {
-        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            100,
-            100,
-            ShutdownMode::DrainAll {
-                timeout: Duration::from_secs(1),
-            },
-        );
-
-        let data_count = Arc::new(AtomicUsize::new(0));
-        let control_count = Arc::new(AtomicUsize::new(0));
-        let mgmt_count = Arc::new(AtomicUsize::new(0));
-
-        let actor_data = data_count.clone();
-        let actor_control = control_count.clone();
-        let actor_mgmt = mgmt_count.clone();
-
-        let actor_handle = thread::spawn(move || {
-            let mut actor = CountingActor {
-                data_count: actor_data,
-                control_count: actor_control,
-                mgmt_count: actor_mgmt,
-            };
-            rx.run(&mut actor);
-        });
-
-        // Send 100 of each type
-        for i in 0..100 {
-            tx.send(Message::Data(i)).unwrap();
-            tx.send(Message::Control(())).unwrap();
-            tx.send(Message::Management(())).unwrap();
-        }
-
-        // Give time for messages to queue
-        thread::sleep(Duration::from_millis(50));
-
-        // Shutdown - should drain all
-        tx.send(Message::Shutdown).unwrap();
-        actor_handle.join().unwrap();
-
-        // All messages should be processed
-        assert_eq!(data_count.load(Ordering::Relaxed), 100);
-        assert_eq!(control_count.load(Ordering::Relaxed), 100);
-        assert_eq!(mgmt_count.load(Ordering::Relaxed), 100);
-    }
-
-    #[test]
-    fn shutdown_drain_all_timeout_fallback() {
-        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            10,   // Small burst limit to check shutdown frequently
-            1000, // Large buffer to avoid blocking sends
-            ShutdownMode::DrainAll {
-                timeout: Duration::from_millis(50), // Short timeout
-            },
-        );
-
-        let data_count = Arc::new(AtomicUsize::new(0));
-        let control_count = Arc::new(AtomicUsize::new(0));
-        let mgmt_count = Arc::new(AtomicUsize::new(0));
-
-        let actor_data = data_count.clone();
-        let actor_control = control_count.clone();
-        let actor_mgmt = mgmt_count.clone();
-
-        // Slow actor that sleeps on each message
-        struct SlowActor {
-            data_count: Arc<AtomicUsize>,
-            control_count: Arc<AtomicUsize>,
-            mgmt_count: Arc<AtomicUsize>,
-        }
-
-        impl Actor<i32, (), ()> for SlowActor {
-            fn handle_data(&mut self, _: i32) -> HandlerResult {
-                thread::sleep(Duration::from_millis(1)); // Slow!
-                self.data_count.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-
-            fn handle_control(&mut self, _: ()) -> HandlerResult {
-                self.control_count.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-
-            fn handle_management(&mut self, _: ()) -> HandlerResult {
-                self.mgmt_count.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-
-            fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                match status {
-                    SystemStatus::Idle => Ok(ActorStatus::Idle),
-                    SystemStatus::Busy => Ok(ActorStatus::Busy),
-                }
-            }
-        }
-
-        let actor_handle = thread::spawn(move || {
-            let mut actor = SlowActor {
-                data_count: actor_data,
-                control_count: actor_control,
-                mgmt_count: actor_mgmt,
-            };
-            rx.run(&mut actor);
-        });
-
-        // Send 200 data messages (would take 200ms to process fully)
-        for i in 0..200 {
-            tx.send(Message::Data(i)).unwrap();
-        }
-
-        // Give actor time to start processing but not finish
-        thread::sleep(Duration::from_millis(5));
-
-        // Shutdown with 20ms timeout - should timeout before processing all 200
-        let shutdown_start = std::time::Instant::now();
-        tx.send(Message::Shutdown).unwrap();
-        actor_handle.join().unwrap();
-        let shutdown_duration = shutdown_start.elapsed();
-
-        // Shutdown should respect timeout (~50ms + overhead for normal run loop batch)
-        assert!(
-            shutdown_duration < Duration::from_millis(500),
-            "Timeout should limit shutdown duration, took {:?}",
-            shutdown_duration
-        );
-
-        // Should have processed SOME but definitely not all 200
-        let processed = data_count.load(Ordering::Relaxed);
-        assert!(
-            processed < 200,
-            "Timeout should prevent processing all messages, processed {}",
-            processed
-        );
-        assert!(
-            processed > 10,
-            "Should process at least some messages before timeout"
         );
     }
 }

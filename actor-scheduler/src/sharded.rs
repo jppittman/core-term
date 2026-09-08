@@ -149,18 +149,10 @@ impl<T> ShardedInbox<T> {
         if all_disconnected {
             Ok(DrainStatus::Disconnected)
         } else if total >= limit || !all_empty {
-            // We either hit the limit, or we had per-shard caps that stopped early
-            if total >= limit {
-                Ok(DrainStatus::More)
-            } else if all_empty {
-                Ok(DrainStatus::Empty)
-            } else {
-                // Some shards may have more, but we haven't proven it
-                // Re-check: did any shard actually hit its per-shard limit?
-                // If total < limit, we only stopped because of per-shard caps.
-                // That means there might be more in those shards.
-                Ok(DrainStatus::More)
-            }
+            // Either we hit the total limit outright, or per-shard caps
+            // stopped us early with unproven shards remaining — both cases
+            // report More.
+            Ok(DrainStatus::More)
         } else {
             Ok(DrainStatus::Empty)
         }

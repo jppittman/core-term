@@ -791,6 +791,59 @@ fn it_should_report_error_for_unexpected_char_in_csi_entry() {
 }
 
 #[test]
+fn it_should_discard_rest_of_malformed_csi_instead_of_printing_it() {
+    // A colon sub-parameter (as used by the ITU T.416 SGR truecolor form,
+    // e.g. `CSI 38:2:255:0:0 m`) is not modeled by this parser and is
+    // reported as an Error at the point it's found. Regression test for a
+    // bug where the parser then fell back to `Ground`, so the rest of the
+    // malformed sequence ("2:255:0:0m") was read as literal printable text
+    // and would have shown up on screen as garbage.
+    let bytes = b"\x1B[38:2:255:0:0mXY";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![
+            AnsiCommand::Error(b':'),
+            AnsiCommand::Print('X'),
+            AnsiCommand::Print('Y')
+        ],
+        "the malformed sequence's tail must be discarded, not printed"
+    );
+}
+
+#[test]
+fn it_should_recover_to_ground_and_parse_the_next_csi_after_a_malformed_one() {
+    // A malformed CSI sequence must not corrupt parsing of whatever comes
+    // next: a fully valid CSI sequence right after it should parse normally.
+    let bytes = b"\x1B[38:2:1:2:3m\x1B[31m";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![
+            AnsiCommand::Error(b':'),
+            AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Foreground(Color::Named(NamedColor::Red))
+            ])),
+        ]
+    );
+}
+
+#[test]
+fn it_should_abort_csi_ignore_on_esc_and_process_subsequent_csi() {
+    // ESC while discarding a malformed CSI's tail aborts it (like the other
+    // CSI sub-states) rather than absorbing the ESC as more garbage.
+    let bytes = b"\x1B[38:2\x1B[3m";
+    let commands = process_bytes(bytes);
+    assert_eq!(
+        commands,
+        vec![
+            AnsiCommand::Error(b':'),
+            AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![Attribute::Italic])),
+        ]
+    );
+}
+
+#[test]
 fn it_should_stay_in_escape_state_on_repeated_esc() {
     // A second ESC while already in the Escape state re-arms rather than
     // being dispatched as an (invalid) C0 control.
@@ -2444,23 +2497,26 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_d_is_vpa_column_always_1() {
-        // 'd' = VPA (Vertical Position Absolute). Column is hardcoded to 1.
-        // Mutation: changing the hardcoded 1 to 0, or wiring column to param.
+    fn csi_d_is_vpa_row_only_column_untouched() {
+        // 'd' = VPA (Vertical Position Absolute). Per ECMA-48/xterm, VPA moves
+        // only the row and leaves the column wherever it already was — it
+        // must not reset the column to 1. Regression test for a bug where
+        // this was parsed as `CursorPosition(row, 1)`, silently clobbering
+        // the column on every VPA.
         let cmds = process_bytes(b"\x1b[7d");
         assert_eq!(
             cmds,
-            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(7, 1))]
+            vec![AnsiCommand::Csi(CsiCommand::LinePositionAbsolute(7))]
         );
     }
 
     #[test]
     fn csi_d_default_row_is_1() {
-        // No param: row defaults to 1 (param_or_1), column always 1.
+        // No param: row defaults to 1 (param_or_1). VPA does not touch the column.
         let cmds = process_bytes(b"\x1b[d");
         assert_eq!(
             cmds,
-            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(1, 1))]
+            vec![AnsiCommand::Csi(CsiCommand::LinePositionAbsolute(1))]
         );
     }
 

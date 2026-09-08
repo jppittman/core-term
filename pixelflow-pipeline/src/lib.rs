@@ -5,8 +5,9 @@
 //! plumbing (`training`), and the Guide-program research bins. See
 //! docs/plans/2026-07-07-guided-saturation-redesign.md for the architecture,
 //! the (2026-07) removal of the RL self-play/critic loop this crate used to
-//! host, and docs/paper/2026-08-egraph-nnue-parity.md plus
-//! docs/plans/2026-09-01-schedule-cost-model-denotation.md for the
+//! host, and docs/plans/2026-09-01-schedule-cost-model-denotation.md (which
+//! cites the extraction-head workshop paper, closed without merging as PR
+//! #1072 on branch `claude/workshop-writeup`) for the
 //! extraction-head program whose shape was deleted on 2026-09-01 and whose
 //! denotation (a schedule-cost residual over the table) is kept.
 
