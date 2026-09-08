@@ -487,12 +487,25 @@ impl Chord {
     }
 
     /// `+1` where the chord runs in the direction of increasing Y, `−1`
-    /// where it runs the other way — the sign a ray crossing it picks up.
+    /// where it runs the other way, and **`0` where it is horizontal** —
+    /// the sign a ray crossing it picks up, and a horizontal chord is
+    /// crossed by none.
+    ///
+    /// That third case is not a special case, it is the answer: a
+    /// horizontal edge carries no winding jump at all. The jump across the
+    /// top of a rectangle is carried by the *vertical* edges, whose
+    /// half-open Y bands end there. Returning `−1` for it — which this did,
+    /// because `b.y > a.y` is false when they are equal — fabricates a jump
+    /// of one wherever a caller asks a horizontal chord which side of it
+    /// you are on, and every caller had to remember to ask `is_horizontal`
+    /// first. Two did; one did not.
     fn direction(self) -> f64 {
-        if self.b[1] > self.a[1] {
-            1.0
-        } else {
-            -1.0
+        match self.is_horizontal() {
+            true => 0.0,
+            false => match self.b[1] > self.a[1] {
+                true => 1.0,
+                false => -1.0,
+            },
         }
     }
 
@@ -922,15 +935,15 @@ fn bulge_uv(bulge: Bulge) -> (Linear, Linear) {
 fn piece_row(piece: Piece) -> [f32; PIECE_ROW_COLS] {
     let chord = piece.chord;
     let [y_min, y_max] = chord.y_range();
-    // H1: never store an infinite dx/dy — see the module note above.
-    let (dx_over_dy, direction) = if chord.is_horizontal() {
-        (0.0, 0.0)
-    } else {
-        (
-            (chord.b[0] - chord.a[0]) / (chord.b[1] - chord.a[1]),
-            chord.direction(),
-        )
+    // H1: never store an infinite dx/dy — see the module note above. The
+    // direction needs no such guard: `Chord::direction` is already `0` for
+    // a horizontal chord, which is the honest winding jump rather than a
+    // placeholder.
+    let dx_over_dy = match chord.is_horizontal() {
+        true => 0.0,
+        false => (chord.b[0] - chord.a[0]) / (chord.b[1] - chord.a[1]),
     };
+    let direction = chord.direction();
     let mut row = [0.0f32; PIECE_ROW_COLS];
     row[COL_Y_MIN] = y_min as f32;
     row[COL_Y_MAX] = y_max as f32;
