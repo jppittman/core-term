@@ -55,11 +55,30 @@ impl CodePage for MacOsCodePage {
     }
 
     fn write(&mut self, code: &[u8]) {
-        debug_assert!(code.len() <= self.capacity);
+        // `assert!`, not `debug_assert!`: this trait is publicly exported and
+        // its methods are safe, so a downstream caller reaches this
+        // `copy_nonoverlapping` from safe code. A debug-only guard compiles
+        // out of release, where the overrun would write past the mapping.
+        assert!(
+            code.len() <= self.capacity,
+            "code buffer ({} bytes) exceeds the mapped page ({} bytes)",
+            code.len(),
+            self.capacity,
+        );
         unsafe { ptr::copy_nonoverlapping(code.as_ptr(), self.ptr, code.len()) };
     }
 
     fn finish(self, len: usize) -> Result<ExecutableCode, CompileError> {
+        // Before anything reads `len` bytes: `sync_instruction_cache` walks
+        // that range, and the `ExecutableCode` this returns hands it to the
+        // safe `as_bytes`, which builds a slice from it. An unchecked `len`
+        // past `capacity` is therefore out-of-bounds through safe code.
+        if len > self.capacity {
+            return Err(CompileError::Internal(
+                "finish: code length exceeds the mapped page",
+            ));
+        }
+
         let rc = unsafe {
             mprotect(
                 self.ptr.cast::<libc::c_void>(),
