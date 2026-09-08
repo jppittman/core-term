@@ -140,6 +140,10 @@ pub struct FilterStats {
     /// Rows whose rule had no entry in the arm's table (per-rule arm only):
     /// scored as zero and reported, never silently.
     pub unknown_rule_rows: u64,
+    /// Wall clock spent inside the bilinear filter's `filter` calls, in
+    /// nanoseconds — the filter's own share of saturation. A sign, not a
+    /// claim: read it beside the load it was taken at.
+    pub filter_ns: u64,
 }
 
 /// A shared, copyable stats slot: the [`Optimizer`](crate::egraph::Optimizer)
@@ -247,6 +251,7 @@ impl BilinearFilter {
 
 impl ApplicationFilter for BilinearFilter {
     fn filter(&mut self, graph: &EGraph, row: &mut MatchRow) {
+        let started = std::time::Instant::now();
         let rule = row.rule();
         let rule_embed = self.rule_embed(rule);
         let cells = row.matches().len() as u64;
@@ -274,12 +279,14 @@ impl ApplicationFilter for BilinearFilter {
             kept += u64::from(keep);
             keep
         });
+        let filter_ns = started.elapsed().as_nanos() as u64;
         bump(&self.reporting, |s| {
             s.rows += 1;
             s.cells += cells;
             s.kept += kept;
             s.scored += scored;
             s.macs += macs;
+            s.filter_ns += filter_ns;
         });
     }
 
