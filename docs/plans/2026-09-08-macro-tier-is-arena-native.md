@@ -300,3 +300,42 @@ mutation-checked: restoring the empty prefix fails it.
 That also folded the sink, which had a two-arm `match` to decide between a
 prefixed `write!` and a bare `write_all`. With the prefix empty for the
 runtime tier, one write serves both.
+
+### Correction (2026-09-08, later): one of them *was* fixed
+
+The section above says two pinned defects moved and neither was fixed. That
+was right about `kernel_glyph_optimize.rs` and `quad_tangency_winding.rs`,
+which compare this code to itself, and wrong as a conclusion — because it was
+drawn before running the one test that compares it to something else.
+
+`freetype_oracle.rs` pinned **4 texels where pixelflow lays down ink and
+FreeType finds none** — a spurious half-covered smear outside `'8'`'s waist,
+described in that file as "a REAL, live rendering defect on `main`". It is
+now **0**, and the file asserts zero.
+
+That is a real fix, and it is the same mechanism the earlier section described
+without recognising what it implied. Two optimizers meant two independent sets
+of fusion decisions compounding, and the compound landed on the wrong side of
+`disc >= 0` at the tangency. Deleting the AST tier removes the compounding, so
+no glyph in the corpus lands on the edge any more.
+
+Five deliberate attempts to fix this failed (they are catalogued in
+`quad_tangency_winding.rs`, and the fifth is refuted most decisively: the ramp
+creates the imbalance it exists to remove). None of them was this. It fell out
+of removing a representation.
+
+The scope is worth stating precisely, because "fixed" can mean too much here:
+
+- **Fixed:** no glyph in the oracle corpus — 9 glyphs × 11 sizes, 7 px to
+  48 px — puts ink where FreeType finds none.
+- **Not fixed:** the knife edge. `disc >= 0` is still exact zero at a shared
+  extremum, and `quad_tangency_winding.rs` still measures a grazing residual
+  of 0.688 where zero is correct. A future fusion choice could put a glyph
+  back on it; the now-zero assertion in `freetype_oracle.rs` is what would
+  catch that.
+
+The methodological point is the one that file already made: *every check that
+compares this code to itself agreed with the bug*. The self-comparisons going
+quiet was not evidence of a fix, and I was right to refuse to read it as one.
+The external instrument is what settled it, and it should have been run before
+the conclusion was written rather than after.

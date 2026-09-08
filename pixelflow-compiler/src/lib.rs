@@ -319,4 +319,25 @@ mod every_advertised_method_compiles {
         // A real op at the wrong arity is just as unadvertised.
         assert!(expand(Macro::Kernel, "sqrt", 2).is_err());
     }
+
+    /// A recognized name at the wrong arity must say so.
+    ///
+    /// Refusing it is not enough, and refusing it was all the test above
+    /// checked. `sema` validates name and arity together — which is what makes
+    /// `.sqrt(1.0)` a hard error instead of something that fails three stages
+    /// later — but the failure then fell into the typo-suggestion path, which
+    /// dutifully searched for a name close to `sqrt`, found `sqrt`, and
+    /// emitted `unknown method 'sqrt'; did you mean 'sqrt'?`.
+    #[test]
+    fn a_known_name_at_the_wrong_arity_reports_the_arity() {
+        let err = expand(Macro::Kernel, "sqrt", 2).expect_err("wrong arity must fail");
+        assert!(
+            err.contains("takes 0 arguments"),
+            "expected an arity diagnostic, got: {err}"
+        );
+        assert!(
+            !err.contains("did you mean"),
+            "a recognized name must not be sent to the typo search: {err}"
+        );
+    }
 }

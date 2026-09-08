@@ -696,14 +696,95 @@ fn the_identity_optimizer_rewrites_nothing() {
     assert_eq!(assert_preserves_denotation("Identity", &mut Identity), 0);
 }
 
-#[test]
-fn lowering_dwrt_preserves_denotation() {
-    assert_preserves_denotation("LowerDwrt", &mut LowerDwrt);
+/// A pass that *eliminates* a construct cannot be checked against its own
+/// input: `eval_scalar` refuses a `Dwrt` or a `Reduce` outright, so the
+/// "before" side of `assert_preserves_denotation` does not evaluate and every
+/// such term is skipped. Which is why `LowerDwrt` and `ExpandReduce` needed
+/// their own harness, and why the two tests they had were worthless before
+/// they got one — measured, not supposed: the corpus contains no `Dwrt` and
+/// no `Reduce`, so both passes returned `Unchanged` for all 24 terms and the
+/// assertions ran **zero** times. They would have passed against a pass that
+/// miscompiled every input.
+///
+/// The way to state a law about a construct you cannot evaluate is an
+/// *independent oracle*: write the answer out separately, in ops the
+/// evaluator does have, and require the pass to agree with it. The oracle is
+/// hand-written calculus and arithmetic here, never something the pass under
+/// test produced — an oracle derived from the subject checks nothing, which is
+/// the same trap the `sin` range-reduction bug lived in (CLAUDE.md, "Precision
+/// is on the table; range is not": the JIT and its oracle shared an expansion,
+/// agreed bit-for-bit on garbage, and every same-form test passed).
+fn assert_lowers_to_oracle(label: &str, opt: &mut dyn Optimize, subject: &Kernel, oracle: &Kernel) {
+    let (arena, root) = subject.parts();
+    let (out, out_root) = match opt.optimize(arena, root) {
+        Rewritten::Changed(a, r) => (a, r),
+        // Not a skip. A pass whose whole job is to eliminate a construct has
+        // failed if it leaves one standing.
+        other => panic!("{label} must rewrite a term carrying its construct, got {other:?}"),
+    };
+
+    let (oracle_arena, oracle_root) = oracle.parts();
+    for point in &IN_DOMAIN_POINTS {
+        let want = eval_plain(oracle_arena, oracle_root, point);
+        let got = eval_plain(&out, out_root, point);
+        let agrees =
+            (want.is_nan() && got.is_nan()) || (got - want).abs() <= 1e-4 * want.abs().max(1.0);
+        assert!(
+            agrees,
+            "{label} disagrees with the hand-written oracle at {point:?}: {got} != {want}"
+        );
+    }
 }
 
+/// `LowerDwrt` against derivatives written out by hand.
 #[test]
-fn expanding_reduce_preserves_denotation() {
-    assert_preserves_denotation("ExpandReduce", &mut ExpandReduce);
+fn lowering_dwrt_agrees_with_hand_written_derivatives() {
+    let x = Kernel::x();
+    let y = Kernel::y();
+
+    // d/dx (x·x) = 2x
+    assert_lowers_to_oracle(
+        "LowerDwrt d/dx(x²)",
+        &mut LowerDwrt,
+        &x.mul(&x).dx(),
+        &Kernel::constant(2.0).mul(&x),
+    );
+
+    // d/dy (x·y + y) = x + 1
+    assert_lowers_to_oracle(
+        "LowerDwrt d/dy(xy + y)",
+        &mut LowerDwrt,
+        &x.mul(&y).add(&y).dy(),
+        &x.add(&Kernel::constant(1.0)),
+    );
+
+    // d/dx √(x² + y²) = x / √(x² + y²) — the glyph gradient's shape, and the
+    // one case here whose derivative is not a polynomial.
+    let r = x.mul(&x).add(&y.mul(&y)).sqrt();
+    assert_lowers_to_oracle("LowerDwrt d/dx(hypot)", &mut LowerDwrt, &r.dx(), &x.div(&r));
+}
+
+/// `ExpandReduce` against sums written out term by term.
+#[test]
+fn expanding_reduce_agrees_with_hand_written_sums() {
+    let x = Kernel::x();
+    let k = Kernel::constant;
+
+    // Σ_{i<4} i = 0 + 1 + 2 + 3 = 6, independent of the sample point.
+    assert_lowers_to_oracle(
+        "ExpandReduce Σi",
+        &mut ExpandReduce,
+        &Kernel::sum_over(4, |i| i.clone()),
+        &k(6.0),
+    );
+
+    // Σ_{i<3} (x + i) = 3x + 3
+    assert_lowers_to_oracle(
+        "ExpandReduce Σ(x+i)",
+        &mut ExpandReduce,
+        &Kernel::sum_over(3, |i| x.add(i)),
+        &k(3.0).mul(&x).add(&k(3.0)),
+    );
 }
 
 #[test]

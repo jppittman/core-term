@@ -58,12 +58,12 @@ use pixelflow_pipeline::collapse_bench::corpus::Trips;
 use pixelflow_pipeline::collapse_bench::row::StaticFeatures;
 use pixelflow_pipeline::collapse_bench::{self, LANES, features_of};
 use pixelflow_pipeline::shader_bench::{SHADERTOY_KERNEL_NAMES, named_shadertoy_kernel};
-use pixelflow_search::Saturate;
 use pixelflow_search::egraph::{
     Budget, CostModel, EpisodeLabels, KeepJournal, Optimizer, Rewrite, RuleSet, Vocabulary,
     all_rules, insert, reachable_count,
 };
 use pixelflow_search::math::round2_rules::experimental_rules;
+use pixelflow_search::{Saturate, Tier};
 
 const SCHEMA: &str = "egraph-off-on-v1";
 const SCREEN: [u32; 2] = [1920, 1080];
@@ -642,7 +642,7 @@ fn compile_via_variant(
     let rewritten = pipeline![
         LowerDwrt,
         ExpandReduce,
-        Saturate::with(optimizer, Vocabulary::Runtime)
+        Saturate::with(optimizer, Vocabulary::Runtime, Tier::Runtime)
     ]
     .optimize(arena, root);
     let optimize_ms = t.elapsed().as_secs_f64() * 1e3;

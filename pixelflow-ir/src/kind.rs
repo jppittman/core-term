@@ -1204,7 +1204,21 @@ pub fn known_method_names() -> impl Iterator<Item = &'static str> {
     OpKind::all()
         .filter(|op| op.is_dsl_method())
         .map(OpKind::name)
+        .chain(METHOD_ALIASES.iter().map(|(spelling, _)| *spelling))
 }
+
+/// Accepted spellings that are not their op's canonical [`OpKind::name`].
+///
+/// `from_name` takes `"powf"` because `f32::powf` is what a Rust programmer
+/// types; the canonical name is `"pow"`. Both resolve, so both must be
+/// advertised — a spelling the front end accepts but never lists is one no
+/// sweep exercises and no consumer can discover, which is exactly how a later
+/// stage could drop `powf` with every test still green.
+///
+/// The aliases live here, beside [`known_method_names`], rather than only
+/// inside `from_name`'s match: accepting a name and advertising it are the
+/// same fact, and this is the one place that says so.
+const METHOD_ALIASES: &[(&str, OpKind)] = &[("powf", OpKind::Pow)];
 
 #[cfg(test)]
 mod index_space {
@@ -1314,13 +1328,32 @@ mod op_map {
 mod method_names {
     use super::{EmitStyle, OpKind, known_method_names};
 
+    /// Every advertised name must resolve. Not every advertised name is its
+    /// own canonical spelling — `from_name` is deliberately non-injective, and
+    /// `"powf"` resolves to `Pow`, whose `name()` is `"pow"`. This asserted
+    /// the stronger property while aliases were unadvertised, which is a fine
+    /// thing to have asserted and the wrong thing to keep asserting: it would
+    /// now forbid advertising exactly the spellings that most need it.
     #[test]
-    fn every_returned_name_round_trips_through_from_name() {
+    fn every_returned_name_resolves() {
         for name in known_method_names() {
-            assert_eq!(
-                OpKind::from_name(name).map(OpKind::name),
-                Some(name),
-                "known_method_names() produced {name:?}, which from_name() cannot parse back"
+            assert!(
+                OpKind::from_name(name).is_some(),
+                "known_method_names() produced {name:?}, which from_name() cannot parse"
+            );
+        }
+    }
+
+    /// Each alias resolves to the op it claims, and is genuinely an alias
+    /// rather than a name that has quietly become canonical.
+    #[test]
+    fn every_alias_resolves_to_its_op_under_a_different_canonical_name() {
+        for (spelling, op) in super::METHOD_ALIASES {
+            assert_eq!(OpKind::from_name(spelling), Some(*op));
+            assert_ne!(
+                *spelling,
+                op.name(),
+                "{spelling:?} is the canonical name, so it does not belong in METHOD_ALIASES"
             );
         }
     }
