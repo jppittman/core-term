@@ -1,5 +1,31 @@
 # Test quality control follow-up — 2026-08-31
 
+> **Mutation counts superseded, and two tests deleted (2026-09-08).** The
+> `cargo mutants` figures below — 388 mutants, 334 caught, 39 documented
+> equivalent, "0 real gaps" — were taken against a 1647-line `x86_64.rs`.
+> `main`'s is now 1874 and structurally different: #1082 deleted
+> `X86Backend::prologue`/`epilogue`, and #1177/#1183 replaced the
+> fixed-scratch-register model with an allocator-managed pool. The mutant
+> population is a different one and these tallies do not describe the tree.
+>
+> Two of this pass's tests went with that change, and were **deleted rather
+> than ported**: both characterized `emit_binary_safe`, which no longer
+> exists, in terms of `X86_SCRATCH` — one reserved `Reg(10)` — which is now
+> `scratch: RegSet::range(4, 12)` reached as `plan.scratch.temp(n)`. There
+> is no translation of "stashes `right` into the scratch register" into a
+> world with no such register.
+>
+> **The other eleven survive and were re-verified on 2026-09-08** against
+> current `main`: they build, they pass, and every function they target
+> (`Vex::head`, `emit_movups_store`, `emit_load_ptr_from_ctx`,
+> `emit_movmskps_eax`, `emit_cmp_eax_imm8`, `x86_redzone_disp`) still
+> exists. Spot mutation check confirming they still bind rather than passing
+> vacuously: biasing `x86_redzone_disp` by 8 instead of 16 kills 2, and
+> flipping the `movups` store opcode from `0x11` to `0x10` kills 6.
+>
+> That is a spot check, not a sweep. **A full `cargo mutants` re-run against
+> the current file is still owed** before "0 real gaps" is restated anywhere.
+
 Scope: scheduled continuation of the test-quality-audit series
 (`docs/bugs/2026-08-26-test-quality-audit-followup.md` and earlier).
 `main` had not moved on that pass's open backlog since `9fce6cf` at the

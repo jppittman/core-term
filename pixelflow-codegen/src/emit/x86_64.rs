@@ -1436,43 +1436,14 @@ pub(crate) mod driver {
             );
         }
 
-        /// `dst == right` (with `dst != left`) is the one assignment that
-        /// would corrupt `right` before it's read, so it's the one case
-        /// `emit_binary_safe` must route away from the plain `emit_binary`
-        /// call. Every other combination — including "all three alias",
-        /// where `dst == right` too — goes straight through.
-        #[test]
-        fn emit_binary_safe_emits_directly_whenever_dst_is_not_the_lone_right_operand() {
-            let mut code = Vec::new();
-            emit_binary_safe(&mut code, OpKind::Sub, Reg(2), Reg(2), Reg(2));
-            let mut expected = Vec::new();
-            super::super::emit_binary(&mut expected, OpKind::Sub, Reg(2), Reg(2), Reg(2));
-            assert_eq!(code, expected, "dst aliases both operands");
-
-            let mut code = Vec::new();
-            emit_binary_safe(&mut code, OpKind::Sub, Reg(0), Reg(1), Reg(2));
-            let mut expected = Vec::new();
-            super::super::emit_binary(&mut expected, OpKind::Sub, Reg(0), Reg(1), Reg(2));
-            assert_eq!(code, expected, "dst aliases neither operand");
-        }
-
-        #[test]
-        fn emit_binary_safe_stashes_right_in_scratch_for_a_noncommutative_op_when_dst_aliases_right()
-         {
-            let mut code = Vec::new();
-            emit_binary_safe(&mut code, OpKind::Sub, Reg(1), Reg(0), Reg(1));
-            let mut expected = Vec::new();
-            super::super::emit_movaps(&mut expected, super::super::X86_SCRATCH, Reg(1));
-            super::super::emit_movaps(&mut expected, Reg(1), Reg(0));
-            super::super::emit_binary(
-                &mut expected,
-                OpKind::Sub,
-                Reg(1),
-                Reg(1),
-                super::super::X86_SCRATCH,
-            );
-            assert_eq!(code, expected);
-        }
+        // Two tests characterizing `emit_binary_safe` stood here. They were
+        // deleted, not ported: main's #1177/#1183 removed the function along
+        // with the fixed-scratch-register model they encoded (`X86_SCRATCH`,
+        // one reserved `Reg(10)`), which is now an allocator-managed pool
+        // (`scratch: RegSet::range(4, 12)`, reached as `plan.scratch.temp(n)`).
+        // There is no translation of "stashes `right` into the scratch
+        // register" into a world with no such register. The only occurrence of
+        // the name left in this file is the past-tense comment above line 1058.
 
         // `X86Backend::prologue`/`epilogue` — and the `if self.frame_bytes > 0`
         // conditional they gated — were deleted outright by main's #1082
