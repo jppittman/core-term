@@ -140,6 +140,18 @@ impl Fingerprint {
     pub fn to_bytes(self) -> [u8; 8] {
         self.0.to_le_bytes()
     }
+
+    /// Mix a second configuration digest into this one.
+    ///
+    /// `Fingerprint::from_raw(0)` is the identity: `other` is multiplied by
+    /// an odd constant (a bijection on `u64` that fixes zero) and xored in,
+    /// so a policy whose digest is zero — [`KeepAll`](super::filter::KeepAll)
+    /// — leaves the rule set's fingerprint exactly as it was.
+    #[must_use]
+    pub fn combine(self, other: Fingerprint) -> Fingerprint {
+        const ODD: u64 = 0x9E37_79B9_7F4A_7C15;
+        Fingerprint(self.0 ^ other.0.wrapping_mul(ODD))
+    }
 }
 
 impl fmt::Debug for Fingerprint {

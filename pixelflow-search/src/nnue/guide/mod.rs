@@ -63,6 +63,7 @@
 mod accumulator;
 pub mod bilinear;
 pub mod diversity;
+pub mod filter;
 pub mod linear;
 mod scoring;
 
