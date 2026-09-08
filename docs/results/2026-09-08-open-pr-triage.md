@@ -62,7 +62,7 @@ CLAUDE.md's "three metadata jobs" is now four.
 | #1206 | yes | 0 (3 resolved) | green | **ready — author's call** |
 | #1209 | yes | 0 (1 resolved) | green | **meets all three** — author's call |
 | #994 | yes | 0 | green | blocked on credentials, correctly draft |
-| #1207 | yes | 18 → **10** | docs-skip | 8 arithmetic errors fixed; the rest are verdicts |
+| #1207 | yes | 23 filed, 15 resolved, **8 open** | docs-skip | 15 decided against sources; the rest are verdicts and re-takes |
 | #1215 | yes | 7 → **4** | docs-skip | 3 factual errors fixed; the rest are thresholds |
 | #1054 | yes | 0 | **red → green** | **merged** — salvaged; closure recommendation retracted |
 | #1213 | **no** | 13 open (9 P1) | never ran | the one genuine hard stop |
@@ -360,6 +360,30 @@ still holds: the *merged* journal cannot be written from a session under this
 policy, and LFS push access remains the environment change that would let a
 sweep produce it. What it does not block, and what an earlier revision of this
 document wrongly conceded, is resolving the conflict at all — see above.
+
+## This document goes stale, and says so
+
+Verified against `main` at the time of writing. It has already been wrong
+twice about its own subject matter — once when #1154 merged an hour after
+the table called it "green after repair", once when #1054 merged after the
+table recommended closing it — and #1207's thread count moved from 18 to 10
+to 8 while the sweep was still running, as new review arrived on each push.
+
+That is the same failure this sweep kept finding in other documents: the
+test-audit backlog invalidated by merging #1199, L057's provenance
+invalidated by merging #1188, three ledger rows superseded by measurements
+that reached `main` afterwards. **A status document pinned to a moving base
+is stale by default**, and the fix is not more diligence — it is recording
+what it was checked against, so a later reader can tell.
+
+So: the counts above are as of `main` when this was written, and the live
+answer is the PR list. Where this document and GitHub disagree, GitHub is
+right.
+
+The general form, which is worth more than this document: a claims ledger,
+an audit backlog and a triage table all carry *when* they were minted and
+none carries *which tree they were verified against*. Every stale row found
+in this sweep would have been visible at a glance with that one field.
 
 ## Method note
 
