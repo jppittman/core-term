@@ -435,6 +435,11 @@ struct KernelRow {
     dag_cost_input: usize,
     dag_cost: usize,
     bytes: u32,
+    /// FNV-1a over the emitted machine code — byte identity, not length
+    /// identity. Defaulted on read so rows written before the column
+    /// existed still parse.
+    #[serde(default)]
+    code_fnv: u64,
     spill_slots: u32,
     hoisted: u32,
     statics: StaticFeatures,
@@ -995,6 +1000,15 @@ fn fnv(out: &[f32]) -> u64 {
     h
 }
 
+fn fnv_bytes(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
 struct OracleForms<'a> {
     /// The arena as constructed, legalized (`legalize`).
     input: (&'a ExprArena, ExprId),
@@ -1420,6 +1434,7 @@ fn run(args: &RunArgs<'_>) {
             dag_cost_input: dag_cost(arena, root),
             dag_cost: dag_cost(&compiled.linked, compiled.root),
             bytes: compiled.result.code.len() as u32,
+            code_fnv: fnv_bytes(compiled.result.code.as_bytes()),
             spill_slots: compiled.result.spill_count,
             hoisted: compiled.result.hoisted_values,
             statics: features_of(&compiled.result, trips),

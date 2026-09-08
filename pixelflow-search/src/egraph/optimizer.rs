@@ -54,6 +54,7 @@ use super::extract::{
     ChoiceCost, Extraction, ExtractionObjective, ExtractionReport, IncrementalExtractor, Reranker,
     choices_to_arena,
 };
+use super::filter::{ApplicationFilter, KeepAll};
 use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
 use super::guided::GuidedEpisode;
 use super::node::EClassId;
@@ -277,6 +278,10 @@ pub struct Optimizer {
     rerank: Option<Box<dyn Reranker>>,
     guide: Option<Box<dyn SaturationGuide>>,
     mask: Option<ApplicationMask>,
+    /// `F : M → M'` over each round's matches, before they are applied
+    /// (see [`super::filter`]). Never `None`: [`KeepAll`] is a value, not
+    /// an absence, and it is what production runs.
+    filter: Box<dyn ApplicationFilter>,
     /// The guided episode's carried state — dedup set, feature constant,
     /// rule-embedding cache — created on the first guided [`Self::run`] and
     /// reused by later ones, so a caller stepping an anytime curve through
@@ -383,6 +388,7 @@ impl Optimizer {
             rerank: None,
             guide: None,
             mask: None,
+            filter: Box::new(KeepAll),
             episode: None,
             #[cfg(feature = "provenance-journal")]
             observer: None,
@@ -482,6 +488,34 @@ impl Optimizer {
     #[must_use]
     pub fn mask(mut self, mask: Option<ApplicationMask>) -> Self {
         self.mask = mask;
+        self
+    }
+
+    /// Decide, each round, which of the matches saturation found are
+    /// applied: `F : M → M'` over the rules × e-classes match matrix, run
+    /// after matching and before application
+    /// (docs/plans/2026-09-08-rules-by-nodes-filter.md).
+    ///
+    /// [`Self::production`] runs [`KeepAll`], and under it the loop is
+    /// byte-identical to the loop before this seam existed —
+    /// `pixelflow-pipeline/tests/rules_by_nodes_identity.rs` pins that
+    /// rather than asserting it. A filter can only drop cells (the row type
+    /// has no constructor for an action the rules did not produce), so it
+    /// is covered by L4 like every other lever here: the graph holds a
+    /// subset of the equalities an unfiltered run would, never a different
+    /// one. The application budget is charged for what survives the filter.
+    ///
+    /// `Box<dyn>` rather than a type parameter: the filter is called once per
+    /// rule per round — the same cadence as `rerank` and `guide`, not once
+    /// per match — and `KeepAll` is a ZST, so this box does not allocate.
+    ///
+    /// A filter that is not `KeepAll` does not yet enter
+    /// [`Self::fingerprint`]; until it does, two optimizers differing only in
+    /// their filter must not share a process with
+    /// [`crate::runtime::optimize_runtime_arena`]'s cache.
+    #[must_use]
+    pub fn filter(mut self, filter: Box<dyn ApplicationFilter>) -> Self {
+        self.filter = filter;
         self
     }
 
@@ -718,10 +752,11 @@ impl Optimizer {
     /// application counter (the budget's denominator) meaning one thing.
     fn saturate(&mut self, egraph: &mut EGraph, limits: Limits) -> SaturationStats {
         let Some(guide) = self.guide.as_ref() else {
-            return egraph.saturate_budgeted(
+            return egraph.saturate_budgeted_through(
                 limits.iterations,
                 limits.classes,
                 limits.applications,
+                self.filter.as_mut(),
             );
         };
         self.episode
