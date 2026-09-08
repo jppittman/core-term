@@ -707,6 +707,13 @@ mod tests {
         }
     }
 
+    // The arm op in each fixture is load-bearing, not decoration.
+    // `SelectArms::range` refuses any arm costing `<= MISPREDICT_PENALTY_CYCLES`
+    // — guarding one cannot pay for a mispredict — so the op has to clear that
+    // bar for a guard to exist at all to pin the range of. `Rsqrt` is 21 cycles
+    // in `latency_prior`; a `Neg` is 3, and every assertion here would read
+    // zero guards.
+
     /// A `Select` whose true arm alone does work exclusive to it — the false
     /// arm is just the mask again, so it contributes nothing beyond
     /// `mask_deps`. Pins the exact range rather than only "a guard formed
@@ -717,7 +724,7 @@ mod tests {
         let schedule = alloc::vec![
             def(0, ScheduledOp::Var(0)),
             def(1, ScheduledOp::Var(1)),
-            def(2, ScheduledOp::Unary(OpKind::Neg, ValueId(1))),
+            def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
             def(
                 3,
                 ScheduledOp::Ternary(OpKind::Select, ValueId(0), ValueId(2), ValueId(0)),
@@ -739,7 +746,7 @@ mod tests {
         let schedule = alloc::vec![
             def(0, ScheduledOp::Var(0)),
             def(1, ScheduledOp::Var(1)),
-            def(2, ScheduledOp::Unary(OpKind::Neg, ValueId(1))),
+            def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
             def(
                 3,
                 ScheduledOp::Ternary(OpKind::Select, ValueId(0), ValueId(0), ValueId(2)),
@@ -764,7 +771,7 @@ mod tests {
     fn ignore_a_false_operand_missing_from_the_schedule() {
         let schedule = alloc::vec![
             def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Unary(OpKind::Neg, ValueId(3))), // ValueId(3) has no Def
+            def(1, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(3))), // ValueId(3) has no Def
             def(
                 4,
                 ScheduledOp::Ternary(OpKind::Select, ValueId(0), ValueId(0), ValueId(1)),
@@ -776,5 +783,33 @@ mod tests {
         assert_eq!(guards.len(), 1);
         assert_eq!(guards[0].select_idx, 2);
         assert_eq!(guards[0].false_range, (1, 2));
+    }
+
+    /// The cost gate is `<=`, and this pins that boundary rather than a value
+    /// safely past it. `Recip` is exactly `MISPREDICT_PENALTY_CYCLES` in
+    /// `latency_prior`, and an arm that costs exactly the mispredict penalty
+    /// is refused: the branch can save at most what it costs when it is
+    /// wrong, so guarding it is never a win. Turning the gate into `<` admits
+    /// this arm and this test says so; the `Rsqrt` fixtures above cannot,
+    /// since 21 is on the same side of the bar either way.
+    #[test]
+    fn refuse_an_arm_that_costs_exactly_the_mispredict_penalty() {
+        let schedule = alloc::vec![
+            def(0, ScheduledOp::Var(0)),
+            def(1, ScheduledOp::Var(1)),
+            def(2, ScheduledOp::Unary(OpKind::Recip, ValueId(1))),
+            def(
+                3,
+                ScheduledOp::Ternary(OpKind::Select, ValueId(0), ValueId(2), ValueId(0)),
+            ),
+        ];
+
+        assert_eq!(
+            pixelflow_search::egraph::CostModel::latency_prior().cost(OpKind::Recip),
+            MISPREDICT_PENALTY_CYCLES,
+            "fixture assumes Recip sits exactly on the gate",
+        );
+
+        assert!(analyze_select_guards(&schedule).is_empty());
     }
 }

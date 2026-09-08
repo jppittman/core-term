@@ -1,5 +1,26 @@
 # Test quality control follow-up — 2026-09-04
 
+> **Mutation counts superseded (2026-09-08).** Every `cargo mutants` number
+> below — the 25/10/12/3 first sweep, the 25/20/2/3 re-run, and the "0 real
+> gaps" conclusion — was taken against `guards.rs` as of this pass's base
+> (`1673e84`). #1177 (S3b) and #1183 (uniforms) have since rewritten the
+> file: it gained `cluster_select_arms`, a `Uniform` arm in the operand
+> walk, and — the part that reaches these tests — a cost gate, so an arm
+> costing `<= MISPREDICT_PENALTY_CYCLES` now forms no guard at all. The
+> mutant population is therefore a different one and these tallies do not
+> describe the current tree.
+>
+> The *finding* stands and was re-confirmed on 2026-09-08: `guards.rs` still
+> has no `#[test]` of its own on `main`. The three tests were repaired
+> against the new contract (their arms use `Rsqrt`, 21 cycles, because a
+> `Neg`'s 3 do not clear the gate) and a fourth was added pinning the gate's
+> boundary at `Recip`'s exactly-16. Hand mutation check after the repair:
+> `end = last + 1` → `last`, the gate's `<=` → `<`, and
+> `MISPREDICT_PENALTY_CYCLES` 16 → 15 are each killed. That is four
+> targeted mutants, not a sweep — **a full `cargo mutants` re-run against
+> the current file is still owed** before the "0 real gaps" claim is
+> restated anywhere.
+
 Scope: scheduled continuation of the test-quality-audit series
 (`docs/bugs/*-test-quality-audit-followup.md`). The 2026-09-01 pass's
 backlog items 1–3 (`pixelflow-search/egraph/cost.rs` and `graph.rs`,
