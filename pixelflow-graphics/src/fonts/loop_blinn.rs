@@ -318,6 +318,13 @@ pub fn cells(outline: &Outline, lattice: Lattice, cell: [usize; 2]) -> Vec<(Inde
                 .pieces
                 .iter()
                 .filter_map(|p| {
+                    // A contour that does not reach this rectangle encloses
+                    // none of its samples, so it contributes no winding
+                    // here and no ramp: the whole character drops at once.
+                    let [bx0, by0, bx1, by1] = p.contour_bounds;
+                    if bx1 < reach.x0 || bx0 > reach.x1 || by1 < reach.y0 || by0 > reach.y1 {
+                        return None;
+                    }
                     let [cy0, cy1] = p.chord.y_range();
                     let [cx0, _] = p.chord.x_range();
                     // Half-open in Y, matching `crossing_term`'s own rule.
@@ -461,6 +468,28 @@ struct Bulge {
 struct Piece {
     chord: Chord,
     bulge: Option<Bulge>,
+    /// Whether this piece lies under *other* contours' ink, so that it may
+    /// be inside the filled region rather than bound it. Only these pieces
+    /// pay for the boundary test in [`coverage`], and paying is expensive:
+    /// each test references the whole winding sum, and every `Kernel`
+    /// combinator copies its arena, so gating every piece makes a
+    /// whole-string kernel quadratic.
+    ///
+    /// Measured on this crate's own font: of 189 printable and Latin-1
+    /// glyphs, exactly two need it — `Ç` and `ç`, where the cedilla
+    /// overlaps the C. Bounding boxes are far too coarse a proxy (adjacent
+    /// glyphs in a string overlap constantly without their ink ever
+    /// touching), so this asks the winding directly.
+    may_be_interior: bool,
+    /// The box containing this piece's whole **contour**.
+    ///
+    /// A closed contour that does not enclose a sample contributes exactly
+    /// zero to its winding — a ray from the sample crosses it an even
+    /// number of times, netting nothing. So a sample outside this box need
+    /// not evaluate *any* of the contour's pieces, which is what lets a
+    /// cell drop a whole character rather than pruning its chords one at a
+    /// time against a ray that runs to infinity.
+    contour_bounds: [f64; 4],
 }
 
 impl Piece {
@@ -468,7 +497,27 @@ impl Piece {
     /// chord crosses nothing.
     fn line(a: P, b: P) -> Option<Self> {
         let chord = Chord { a, b };
-        (chord.length() >= ZERO_LENGTH).then_some(Self { chord, bulge: None })
+        (chord.length() >= ZERO_LENGTH).then_some(Self {
+            chord,
+            bulge: None,
+            may_be_interior: false,
+            contour_bounds: [0.0; 4],
+        })
+    }
+
+    /// A point on the segment, for asking what else covers it.
+    fn midpoint(self) -> P {
+        match self.bulge {
+            // B(½) = (p0 + 2p1 + p2) / 4.
+            Some(b) => [
+                (b.p0[0] + 2.0 * b.p1[0] + b.p2[0]) / 4.0,
+                (b.p0[1] + 2.0 * b.p1[1] + b.p2[1]) / 4.0,
+            ],
+            None => [
+                (self.chord.a[0] + self.chord.b[0]) / 2.0,
+                (self.chord.a[1] + self.chord.b[1]) / 2.0,
+            ],
+        }
     }
 
     /// The quadratic `p0 → p1 → p2` as pieces, each straying no more than
@@ -506,6 +555,8 @@ impl Piece {
                 p2,
                 sign: area2.signum(),
             }),
+            may_be_interior: false,
+            contour_bounds: [0.0; 4],
         });
     }
 
@@ -529,6 +580,48 @@ impl Piece {
     }
 }
 
+/// The box containing every control point of a contour, and so the whole
+/// contour.
+fn contour_bounds(pieces: &[Piece]) -> [f64; 4] {
+    let mut b = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for piece in pieces {
+        for p in [piece.chord.a, piece.chord.b]
+            .into_iter()
+            .chain(piece.bulge.map(|g| g.p1))
+        {
+            b[0] = b[0].min(p[0]);
+            b[1] = b[1].min(p[1]);
+            b[2] = b[2].max(p[0]);
+            b[3] = b[3].max(p[1]);
+        }
+    }
+    b
+}
+
+/// The winding of a contour's chords at `p`, by a horizontal ray. Chords
+/// rather than curves: this decides only whether a piece needs the boundary
+/// test, and a curve's crescent is at most [`MAX_DEVIATION`] wide, so a
+/// point that close to the answer is already inside the ramp.
+fn chord_winding(pieces: &[Piece], p: P) -> i32 {
+    let mut w = 0;
+    for piece in pieces {
+        let (a, b) = (piece.chord.a, piece.chord.b);
+        if (a[1] <= p[1]) == (b[1] <= p[1]) {
+            continue;
+        }
+        let t = (p[1] - a[1]) / (b[1] - a[1]);
+        if a[0] + t * (b[0] - a[0]) > p[0] {
+            w += if b[1] > a[1] { 1 } else { -1 };
+        }
+    }
+    w
+}
+
 /// An outline prepared for the kernel.
 struct Pieces {
     pieces: Vec<Piece>,
@@ -536,15 +629,44 @@ struct Pieces {
 
 impl Pieces {
     fn of(outline: &Outline) -> Self {
+        // Per contour, so a piece can be asked whether any *other* contour
+        // reaches it. Contours are what overlap in a font — a stroke drawn
+        // as two shapes, a compound glyph's components — and an edge under
+        // another contour's ink is not a boundary.
+        let mut by_contour: Vec<Vec<Piece>> = Vec::with_capacity(outline.contours.len());
+        for contour in &outline.contours {
+            let mut pieces = Vec::new();
+            for segment in &contour.segments {
+                match *segment {
+                    Segment::Line { from, to } => {
+                        pieces.extend(Piece::line(wide(from), wide(to)));
+                    }
+                    Segment::Quad { from, control, to } => {
+                        Piece::quad(wide(from), wide(control), wide(to), MAX_SPLITS, &mut pieces);
+                    }
+                }
+            }
+            by_contour.push(pieces);
+        }
+        // A piece is possibly-interior exactly when the *other* contours
+        // already cover it: their winding at its midpoint is nonzero. Asked
+        // directly rather than through bounding boxes, because boxes touch
+        // whenever glyphs sit side by side and ink almost never does.
+        let bounds: Vec<[f64; 4]> = by_contour.iter().map(|c| contour_bounds(c)).collect();
         let mut pieces = Vec::new();
-        for segment in outline.segments() {
-            match segment {
-                Segment::Line { from, to } => {
-                    pieces.extend(Piece::line(wide(from), wide(to)));
-                }
-                Segment::Quad { from, control, to } => {
-                    Piece::quad(wide(from), wide(control), wide(to), MAX_SPLITS, &mut pieces);
-                }
+        for (i, contour) in by_contour.iter().enumerate() {
+            for piece in contour {
+                let mid = piece.midpoint();
+                let covered = by_contour
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .any(|(_, other)| chord_winding(other, mid) != 0);
+                pieces.push(Piece {
+                    may_be_interior: covered,
+                    contour_bounds: bounds[i],
+                    ..*piece
+                });
             }
         }
         Self { pieces }
@@ -670,6 +792,32 @@ impl Linear {
             c: -(n[0] * a[0] + n[1] * a[1]),
         }
     }
+}
+
+/// The minimum of `terms`, folded as a **balanced tree** rather than a
+/// running accumulator.
+///
+/// Every `Kernel` combinator copies its arena, so `acc = acc.min(&d)` in a
+/// loop copies a growing arena `n` times: quadratic. `Kernel::sum` is
+/// special-cased against exactly this and says so; `min` has no such
+/// variadic form, and a balanced fold gets the same effect from the outside
+/// — each level copies `O(n)` in total and there are `log n` levels.
+///
+/// Measured on a 26-character string (about 700 pieces) before this: 4.7
+/// million arena nodes and seven seconds to *construct* the kernel.
+fn min_of(mut terms: Vec<Kernel>) -> Kernel {
+    assert!(!terms.is_empty(), "min_of: no terms");
+    while terms.len() > 1 {
+        terms = terms
+            .chunks(2)
+            .map(|pair| match pair {
+                [a, b] => a.min(b),
+                [a] => a.clone(),
+                _ => unreachable!("chunks(2) yields one or two"),
+            })
+            .collect();
+    }
+    terms.pop().expect("non-empty")
 }
 
 /// `value / (‖∇scale‖ + ε)`: `value` in units of `scale`'s own gradient,
@@ -861,13 +1009,25 @@ fn coverage(constant_winding: f64, included: &[Included]) -> Kernel {
     // removed; the two sides of the piece are `w₋` and `w₋ + dir`, which
     // differ by one and so are never both zero. The piece separates ink
     // from no-ink exactly when one of them is zero.
-    let mut distance = constant(RAMP_REACH);
+    //
+    // Only the pieces that other contours' ink actually covers pay for it.
+    // The test references the whole winding sum, and every `Kernel`
+    // combinator copies its arena, so asking it of every piece makes a
+    // long string's kernel quadratic — measured at 6 GB and climbing before
+    // this early-out existed.
+    let mut distances = vec![constant(RAMP_REACH)];
     for (piece, own, d) in &ramps {
+        if !piece.may_be_interior {
+            // Nothing else covers it, so it bounds the ink it draws.
+            distances.push(d.clone());
+            continue;
+        }
         let without = winding.sub(own);
         let other_side = without.add(&constant_of(piece.chord.direction()));
         let separates = without.abs().min(&other_side.abs()).lt(&constant(0.5));
-        distance = distance.min(&separates.select(d, &constant(RAMP_REACH)));
+        distances.push(separates.select(d, &constant(RAMP_REACH)));
     }
+    let distance = min_of(distances);
     let inside = winding.abs().ge(&constant(1.0));
     // A distance is not negative, and this is the one place that can be
     // told: the chord bound is the chord's own distance less the curve's
