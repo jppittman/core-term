@@ -154,6 +154,13 @@ impl Timer {
     }
 }
 
+impl crate::mealy::PortTarget<Duration> for Timer {
+    fn try_deliver(&self, msg: Duration) -> Result<(), crate::spsc::TrySendError<Duration>> {
+        self.set_interval(msg);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

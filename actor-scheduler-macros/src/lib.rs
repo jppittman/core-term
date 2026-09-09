@@ -500,10 +500,11 @@ enum PortKind {
     SelfPort,
 }
 
-/// One declared port: field name, message type, delivery.
+/// One declared port: field name, message type, target type, delivery.
 struct Port {
     name: String,
     ty: String,
+    target_ty: Option<String>,
     kind: PortKind,
 }
 
@@ -614,12 +615,39 @@ fn parse_ports(body: TokenStream, base: &str) -> Vec<Port> {
             _ => panic!("ports! `{base}`: expected `:` after port `{name}`"),
         }
 
-        // The type runs until a comma or an attribute bracket, so generics pass through.
+        // The type runs until a comma, attribute bracket, or `->` arrow (specifying a target type).
+        // Angle brackets `<...>` are tracked so commas inside generic parameters are preserved.
         let mut ty_tokens = Vec::new();
+        let mut target_ty_tokens = Vec::new();
+        let mut has_target = false;
+        let mut ty_angle_depth: usize = 0;
+
         loop {
             match tokens.peek() {
-                Some(TokenTree::Punct(p)) if p.as_char() == ',' => break,
-                Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Bracket => break,
+                Some(TokenTree::Punct(p)) if p.as_char() == '<' => {
+                    ty_angle_depth += 1;
+                }
+                Some(TokenTree::Punct(p)) if p.as_char() == '>' => {
+                    ty_angle_depth = ty_angle_depth.saturating_sub(1);
+                }
+                Some(TokenTree::Punct(p)) if p.as_char() == ',' && ty_angle_depth == 0 => break,
+                Some(TokenTree::Group(g))
+                    if g.delimiter() == Delimiter::Bracket && ty_angle_depth == 0 =>
+                {
+                    break;
+                }
+                Some(TokenTree::Punct(p)) if p.as_char() == '-' && ty_angle_depth == 0 => {
+                    let mut clone_tokens = tokens.clone();
+                    clone_tokens.next(); // consume '-'
+                    if let Some(TokenTree::Punct(p2)) = clone_tokens.next()
+                        && p2.as_char() == '>'
+                    {
+                        tokens.next(); // consume '-'
+                        tokens.next(); // consume '>'
+                        has_target = true;
+                        break;
+                    }
+                }
                 None => break,
                 Some(_) => {}
             }
@@ -637,6 +665,48 @@ fn parse_ports(body: TokenStream, base: &str) -> Vec<Port> {
             "ports! `{base}`: expected a type after `{name}:`"
         );
 
+        if has_target {
+            let mut target_angle_depth: usize = 0;
+            loop {
+                match tokens.peek() {
+                    Some(TokenTree::Punct(p)) if p.as_char() == '<' => {
+                        target_angle_depth += 1;
+                    }
+                    Some(TokenTree::Punct(p)) if p.as_char() == '>' => {
+                        target_angle_depth = target_angle_depth.saturating_sub(1);
+                    }
+                    Some(TokenTree::Punct(p)) if p.as_char() == ',' && target_angle_depth == 0 => {
+                        break;
+                    }
+                    Some(TokenTree::Group(g))
+                        if g.delimiter() == Delimiter::Bracket && target_angle_depth == 0 =>
+                    {
+                        break;
+                    }
+                    None => break,
+                    Some(_) => {}
+                }
+                if let Some(tok) = tokens.next() {
+                    target_ty_tokens.push(tok);
+                }
+            }
+        }
+
+        let target_ty = if has_target {
+            let target_str = target_ty_tokens
+                .into_iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join("");
+            assert!(
+                !target_str.is_empty(),
+                "ports! `{base}`: expected a target type after `->` on port `{name}`"
+            );
+            Some(target_str)
+        } else {
+            None
+        };
+
         let mut kind = PortKind::Blocking;
         if let Some(TokenTree::Group(g)) = tokens.peek()
             && g.delimiter() == Delimiter::Bracket
@@ -645,7 +715,12 @@ fn parse_ports(body: TokenStream, base: &str) -> Vec<Port> {
             tokens.next();
         }
 
-        ports.push(Port { name, ty, kind });
+        ports.push(Port {
+            name,
+            ty,
+            target_ty,
+            kind,
+        });
     }
 
     assert!(!ports.is_empty(), "ports! `{base}`: declares no ports");
@@ -676,9 +751,13 @@ fn render_ports(base: &str, ports: &[Port], self_port: Option<&Port>) -> TokenSt
     let wiring_fields = deliverable
         .iter()
         .map(|p| {
+            let target = match &p.target_ty {
+                Some(t) => t.clone(),
+                None => format!("::actor_scheduler::spsc::SpscSender<{}>", p.ty),
+            };
             format!(
-                "    /// Target of the `{}` port.\n    pub {}: ::actor_scheduler::spsc::SpscSender<{}>,",
-                p.name, p.name, p.ty
+                "    /// Target of the `{}` port.\n    pub {}: {},",
+                p.name, p.name, target
             )
         })
         .collect::<Vec<_>>()

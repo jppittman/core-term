@@ -15,7 +15,9 @@ use crate::display::platform::PlatformActor;
 use crate::engine_core::{EngineCore, EngineOut};
 use crate::error::RuntimeError;
 use crate::platform::{ActivePlatform, PlatformPixel};
-use crate::vsync_actor::{RenderedResponse, VsyncCommand, VsyncCore, VsyncManagement, VsyncWiring};
+use crate::vsync_actor::{
+    RenderedResponse, VsyncCommand, VsyncCore, VsyncCoreWiring, VsyncManagement,
+};
 use actor_scheduler::actors::{Schedule, Timer};
 use actor_scheduler::host::{GreenThread, Host};
 use actor_scheduler::mealy::{send_port, Flush, Lanes, NoLane, Node, Transducer};
@@ -565,6 +567,7 @@ impl Troupe {
         });
 
         let coordinator_driver = init.driver;
+        let coordinator_driver_present = troupe.exposed().driver;
 
         std::thread::Builder::new()
             .name("green-host".to_string())
@@ -572,9 +575,9 @@ impl Troupe {
                 let mut host = Host::new();
 
                 let vsync_core = VsyncCore::started(refresh_rate);
-                let vsync_wiring = VsyncWiring {
-                    engine: vsync_engine.engine,
-                    clock,
+                let vsync_wiring = VsyncCoreWiring {
+                    tick: vsync_engine.engine,
+                    interval: clock,
                 };
                 let vsync_node = Node::new_with_lanes(
                     vsync_core,
@@ -594,9 +597,10 @@ impl Troupe {
                 // run in that same sweep.
                 let coordinator_core = CoordinatorCore::new();
                 let coordinator_wiring = CoordinatorWiring {
-                    renderer,
-                    driver: coordinator_driver,
-                    vsync: vsync_data_tx,
+                    render: renderer,
+                    request_window: coordinator_driver,
+                    present: coordinator_driver_present,
+                    rendered: vsync_data_tx,
                 };
                 let coordinator_node = Node::new_with_lanes(
                     coordinator_core,
