@@ -1620,7 +1620,7 @@ impl ExtractedDAG {
 /// own. A child whose form is not settled yet (a cycle under repair) counts
 /// as fully varying — the conservative direction, since it can only make a
 /// form look more expensive, never less.
-fn node_variance(
+pub(super) fn node_variance(
     egraph: &EGraph,
     node: &ENode,
     best_var: &[Variance],
@@ -1848,7 +1848,7 @@ pub fn extract_dag_scoped<C: CostFunction>(
     );
     let pass = shared_dag_dp_pass(egraph, root, costs, shape, SHARED_DAG_PASS_BYTE_BUDGET);
     let stats = Some(pass.stats);
-    let Some(choices) = pass.choices else {
+    let Some(SharedPassSettled { choices, .. }) = pass.settled else {
         return assemble(
             egraph,
             root,
@@ -1906,9 +1906,9 @@ pub fn extract_dag_scoped<C: CostFunction>(
 pub const SHARED_DAG_PASS_BYTE_BUDGET: usize = 256 << 20;
 
 /// A repaired choice map and the cost of the term it names.
-struct CostedChoices {
-    choices: Vec<Option<usize>>,
-    cost: ChoiceCost,
+pub(super) struct CostedChoices {
+    pub(super) choices: Vec<Option<usize>>,
+    pub(super) cost: ChoiceCost,
 }
 
 /// The two terms [`extract_dag_scoped`] chooses between: `(tree, shared)`.
@@ -1969,8 +1969,9 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
 ) -> ExtractedDAG {
     let pass = shared_dag_dp_pass(egraph, root, costs, shape, usize::MAX);
     let choices = pass
-        .choices
-        .expect("an unbounded shared pass cannot run out of budget");
+        .settled
+        .expect("an unbounded shared pass cannot run out of budget")
+        .choices;
     let costed = repaired_and_costed(egraph, root, choices, costs, shape);
     assemble(
         egraph,
@@ -1984,7 +1985,7 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
 }
 
 /// Repair a raw DP choice map and cost the term it names.
-fn repaired_and_costed<C: CostFunction>(
+pub(super) fn repaired_and_costed<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
     mut choices: Vec<Option<usize>>,
@@ -2006,7 +2007,7 @@ fn repaired_and_costed<C: CostFunction>(
 }
 
 /// Build the sharing and emission schedule around a settled choice map.
-fn assemble(
+pub(super) fn assemble(
     egraph: &EGraph,
     root: EClassId,
     costed: CostedChoices,
@@ -2040,10 +2041,10 @@ fn assemble(
 // looks cheaper than an expensive-but-legitimate form. (A flat 1_000_000 was
 // safely above every *unweighted* cost; weighting by a frame's sample count
 // clears that by orders of magnitude.)
-const CYCLE_COST: usize = usize::MAX / 4;
+pub(super) const CYCLE_COST: usize = usize::MAX / 4;
 
 /// One node's weighted own cost under `shape`.
-fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize {
+pub(super) fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize {
     usize::try_from((costs.node_cost(node, None) as u64).saturating_mul(weight))
         .unwrap_or(usize::MAX)
 }
@@ -2052,7 +2053,7 @@ fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize 
 /// subtree, at every use. Kept exactly as it was, as the control arm of the
 /// objective A/B and as the floor [`extract_dag_scoped`] never returns worse
 /// than.
-fn tree_dp_pass<C: CostFunction>(
+pub(super) fn tree_dp_pass<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
     costs: &C,
@@ -2143,7 +2144,7 @@ fn tree_dp_pass<C: CostFunction>(
 /// the worst case at `live² / 8` bytes (the 2026-09-08 memory profile's
 /// measured quadratic); real kernels hold a small fraction of that because
 /// most live classes are variants deep inside one sub-DAG.
-fn shared_dag_dp_pass<C: CostFunction>(
+pub(super) fn shared_dag_dp_pass<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
     costs: &C,
@@ -2184,6 +2185,7 @@ fn shared_dag_dp_pass<C: CostFunction>(
     // rather than copied when a candidate takes the lead.
     let mut scratch: Vec<u32> = Vec::new();
     let mut winner: Vec<u32> = Vec::new();
+    let mut reach_shape: Vec<ReachShape> = Vec::with_capacity(live);
     let mut reach_bytes: usize = 0;
 
     for canonical in order.iter().copied() {
@@ -2269,12 +2271,20 @@ fn shared_dag_dp_pass<C: CostFunction>(
         if min_cost == CYCLE_COST {
             winner.clear();
         }
+        // The shape of this class's sub-DAG, recorded where it is decided
+        // rather than re-derived by every reader from the cost — which
+        // cannot tell the three cases apart. See [`ReachShape`].
+        reach_shape.push(match (min_cost, winner.is_empty()) {
+            (usize::MAX, _) => ReachShape::NoCandidate,
+            (_, true) => ReachShape::SelfOnly,
+            (_, false) => ReachShape::Composed,
+        });
         winner.push(me as u32);
         let set = Reach::smaller_of(&winner, words);
         reach_bytes = reach_bytes.saturating_add(set.bytes());
         if reach_bytes > budget {
             return SharedPassOutcome {
-                choices: None,
+                settled: None,
                 stats: SharedPassStats {
                     live_classes: live,
                     reach_bytes,
@@ -2290,7 +2300,15 @@ fn shared_dag_dp_pass<C: CostFunction>(
     }
 
     SharedPassOutcome {
-        choices: Some(best_node),
+        settled: Some(SharedPassSettled {
+            choices: best_node,
+            own: best_own,
+            var: best_var,
+            cost: best_cost,
+            reach_shape,
+            order,
+            compact,
+        }),
         stats: SharedPassStats {
             live_classes: live,
             reach_bytes,
@@ -2298,13 +2316,67 @@ fn shared_dag_dp_pass<C: CostFunction>(
     }
 }
 
-/// What [`shared_dag_dp_pass`] returns: its choice map when it finished
+/// The shape of one class's chosen sub-DAG, as [`shared_dag_dp_pass`]
+/// settled it.
+///
+/// Recorded rather than re-derived, because the cost cannot tell the three
+/// apart and two of them are traps. Every reader of the settled table has to
+/// agree with the DP about what a class reaches and what it costs, and a
+/// convention written in a sentinel value is an invariant something else
+/// eventually breaks — twice, here, before this became a type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReachShape {
+    /// The union of the chosen node's children's sub-DAGs, plus the class.
+    Composed,
+    /// The class alone: a leaf, or a cycle-priced winner. The recorded node
+    /// and own cost are facts about it.
+    SelfOnly,
+    /// The class alone, and **no candidate was selected**: every node's cost
+    /// saturated, so `min_cost` never fell below the initial `usize::MAX`,
+    /// and the recorded node index (0) and own cost (0) are initial values
+    /// rather than facts. The DP prices such a class at zero and reaches only
+    /// itself; anything reading the table must do the same, and must not
+    /// offer an alternative — a second opinion about this class's own cost
+    /// contradicts the one the rest of the table was built on.
+    NoCandidate,
+}
+
+/// What [`shared_dag_dp_pass`] returns: its settled table when it finished
 /// under budget, and its accounting either way.
-struct SharedPassOutcome {
+pub(super) struct SharedPassOutcome {
     /// `None` when the reach sets crossed the byte budget and the pass was
-    /// abandoned.
-    choices: Option<Vec<Option<usize>>>,
-    stats: SharedPassStats,
+    /// abandoned. A struct rather than a tuple of half-filled vectors: an
+    /// abandoned pass has no table, and the type says so instead of handing
+    /// back partial arrays a caller could read as settled.
+    pub(super) settled: Option<SharedPassSettled>,
+    pub(super) stats: SharedPassStats,
+}
+
+/// The sharing-aware DP's settled per-class table.
+///
+/// [`Beam`](super::extractor::Beam) reads it for its **anchor**: the state
+/// naming exactly the DP's own choices, which is globally consistent by
+/// construction and so can always be merged across siblings. That is what
+/// makes a beam state's existence structural rather than lucky, and what
+/// makes width 1 reproduce this pass.
+pub(super) struct SharedPassSettled {
+    /// Chosen node index per canonical e-class.
+    pub(super) choices: Vec<Option<usize>>,
+    /// Weighted own cost of the chosen node, indexed by *compact* id
+    /// (position in [`Self::order`]).
+    pub(super) own: Vec<usize>,
+    /// Variance of the chosen form, per canonical e-class.
+    pub(super) var: Vec<Variance>,
+    /// The DP's selection cost per canonical e-class — [`CYCLE_COST`] for a
+    /// class the pass priced at the cycle sentinel.
+    pub(super) cost: Vec<Option<usize>>,
+    /// The shape of each live class's chosen sub-DAG, by *compact* id.
+    pub(super) reach_shape: Vec<ReachShape>,
+    /// Root-reachable classes, children before parents.
+    pub(super) order: Vec<EClassId>,
+    /// Canonical e-class id to position in [`Self::order`]; `u32::MAX` for a
+    /// class the root does not reach.
+    pub(super) compact: Vec<u32>,
 }
 
 const REACH_WORD_BITS: usize = u64::BITS as usize;
@@ -2370,7 +2442,7 @@ impl Reach {
 /// and the DP prices such a class at the cycle sentinel exactly as it always
 /// has. Shared by both DP passes so their traversal, and therefore which
 /// classes end up cycle-priced, cannot drift apart.
-fn post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
+pub(super) fn post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
     // Dense bitset over canonical class ids, not `BTreeSet<u32>`: every id
     // here is already bounded by `egraph.num_classes()`, so a `Vec<bool>`
     // index is O(1) and allocation-free per probe, versus an O(log n)
@@ -2615,7 +2687,7 @@ mod tests {
         let costs = CostModel::latency_prior();
 
         let full = shared_dag_dp_pass(&egraph, root, &costs, LatticeShape::POINT, usize::MAX);
-        let full_choices = full.choices.expect("unbounded pass finishes");
+        let full_choices = full.settled.expect("unbounded pass finishes").choices;
         assert_eq!(full.stats.live_classes, 2 * CHAIN + 1);
         // The dense bound, plus one word of rounding per set.
         let live = full.stats.live_classes;
@@ -2629,7 +2701,7 @@ mod tests {
         let budget = full.stats.reach_bytes / 2;
         let cut = shared_dag_dp_pass(&egraph, root, &costs, LatticeShape::POINT, budget);
         assert!(
-            cut.choices.is_none(),
+            cut.settled.is_none(),
             "a pass over budget returns no choices"
         );
         assert!(
@@ -2855,7 +2927,7 @@ mod tests {
             let pass = shared_dag_dp_pass(&egraph, root, &costs, shape, usize::MAX);
             let live = pass.stats.live_classes;
             assert!(live > 100, "{nodes} nodes: only {live} live classes");
-            let choices = pass.choices.expect("unbounded");
+            let choices = pass.settled.expect("unbounded").choices;
             assert_eq!(
                 choices, reference,
                 "{nodes} nodes at {shape:?}: the hybrid pass disagrees with the dense reference"
