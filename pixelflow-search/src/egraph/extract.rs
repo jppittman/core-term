@@ -2185,7 +2185,7 @@ pub(super) fn shared_dag_dp_pass<C: CostFunction>(
     // rather than copied when a candidate takes the lead.
     let mut scratch: Vec<u32> = Vec::new();
     let mut winner: Vec<u32> = Vec::new();
-    let mut reach_is_self: Vec<bool> = Vec::with_capacity(live);
+    let mut reach_shape: Vec<ReachShape> = Vec::with_capacity(live);
     let mut reach_bytes: usize = 0;
 
     for canonical in order.iter().copied() {
@@ -2271,15 +2271,14 @@ pub(super) fn shared_dag_dp_pass<C: CostFunction>(
         if min_cost == CYCLE_COST {
             winner.clear();
         }
-        // Whether this class's sub-DAG is itself alone, recorded rather than
-        // left to be re-derived from the cost. Three unrelated situations
-        // land here — a leaf, a cycle-priced winner, and a class where NO
-        // candidate beat the initial `usize::MAX` sentinel (`winner` was
-        // never swapped in, `min_own` is still 0 and `min_idx` still 0) — and
-        // the third is invisible in the cost alone. `Beam`'s anchor reads
-        // this; before it did, that third case sent the anchor down node 0's
-        // whole subtree while the DP had priced a singleton.
-        reach_is_self.push(winner.is_empty());
+        // The shape of this class's sub-DAG, recorded where it is decided
+        // rather than re-derived by every reader from the cost — which
+        // cannot tell the three cases apart. See [`ReachShape`].
+        reach_shape.push(match (min_cost, winner.is_empty()) {
+            (usize::MAX, _) => ReachShape::NoCandidate,
+            (_, true) => ReachShape::SelfOnly,
+            (_, false) => ReachShape::Composed,
+        });
         winner.push(me as u32);
         let set = Reach::smaller_of(&winner, words);
         reach_bytes = reach_bytes.saturating_add(set.bytes());
@@ -2306,7 +2305,7 @@ pub(super) fn shared_dag_dp_pass<C: CostFunction>(
             own: best_own,
             var: best_var,
             cost: best_cost,
-            reach_is_self,
+            reach_shape,
             order,
             compact,
         }),
@@ -2315,6 +2314,31 @@ pub(super) fn shared_dag_dp_pass<C: CostFunction>(
             reach_bytes,
         },
     }
+}
+
+/// The shape of one class's chosen sub-DAG, as [`shared_dag_dp_pass`]
+/// settled it.
+///
+/// Recorded rather than re-derived, because the cost cannot tell the three
+/// apart and two of them are traps. Every reader of the settled table has to
+/// agree with the DP about what a class reaches and what it costs, and a
+/// convention written in a sentinel value is an invariant something else
+/// eventually breaks — twice, here, before this became a type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReachShape {
+    /// The union of the chosen node's children's sub-DAGs, plus the class.
+    Composed,
+    /// The class alone: a leaf, or a cycle-priced winner. The recorded node
+    /// and own cost are facts about it.
+    SelfOnly,
+    /// The class alone, and **no candidate was selected**: every node's cost
+    /// saturated, so `min_cost` never fell below the initial `usize::MAX`,
+    /// and the recorded node index (0) and own cost (0) are initial values
+    /// rather than facts. The DP prices such a class at zero and reaches only
+    /// itself; anything reading the table must do the same, and must not
+    /// offer an alternative — a second opinion about this class's own cost
+    /// contradicts the one the rest of the table was built on.
+    NoCandidate,
 }
 
 /// What [`shared_dag_dp_pass`] returns: its settled table when it finished
@@ -2346,12 +2370,8 @@ pub(super) struct SharedPassSettled {
     /// The DP's selection cost per canonical e-class — [`CYCLE_COST`] for a
     /// class the pass priced at the cycle sentinel.
     pub(super) cost: Vec<Option<usize>>,
-    /// Whether the class's chosen sub-DAG is itself alone, indexed by
-    /// *compact* id. True for a leaf, for a cycle-priced winner, and for a
-    /// class where no candidate beat the `usize::MAX` sentinel — three
-    /// situations the cost alone cannot tell apart, which is why this is
-    /// recorded here instead of re-derived by every reader.
-    pub(super) reach_is_self: Vec<bool>,
+    /// The shape of each live class's chosen sub-DAG, by *compact* id.
+    pub(super) reach_shape: Vec<ReachShape>,
     /// Root-reachable classes, children before parents.
     pub(super) order: Vec<EClassId>,
     /// Canonical e-class id to position in [`Self::order`]; `u32::MAX` for a

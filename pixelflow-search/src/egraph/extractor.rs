@@ -31,7 +31,7 @@ use pixelflow_ir::{LatticeShape, Variance};
 use super::cost::CostFunction;
 use super::extract::{
     self, CostedChoices, ExtractedDAG, ExtractionObjective, ExtractionReport, IncrementalExtractor,
-    Reranker, SHARED_DAG_PASS_BYTE_BUDGET, SharedPassSettled,
+    ReachShape, Reranker, SHARED_DAG_PASS_BYTE_BUDGET, SharedPassSettled,
 };
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
@@ -293,7 +293,6 @@ struct State {
     /// The DP's selection cost: the sum of the own column, or
     /// [`extract::CYCLE_COST`] for a cycle-priced class.
     cost: usize,
-    var: Variance,
     node: u32,
 }
 
@@ -316,7 +315,6 @@ impl State {
 struct Acc {
     members: Vec<Member>,
     below: u64,
-    var: Variance,
 }
 
 /// Merge two partial choice maps.
@@ -420,7 +418,12 @@ fn beam_pass<C: CostFunction>(
         let anchor = anchor_state(egraph, canonical, me, settled, &beams, compact, nodes);
         let mut free: Vec<State> = Vec::new();
 
-        if width > 1 {
+        // A class the DP selected no candidate for is priced at zero and
+        // reaches only itself, and the rest of its table is built on that.
+        // The beam may not offer a second opinion: a free state here would
+        // price the same node at its real (saturating) own cost, and a merge
+        // that saw both would be two maps disagreeing about one choice.
+        if width > 1 && settled.reach_shape[me] != ReachShape::NoCandidate {
             for (idx, node) in nodes.iter().enumerate() {
                 expand_node(
                     ExpandCtx {
@@ -445,7 +448,7 @@ fn beam_pass<C: CostFunction>(
             free.truncate(width - 1);
         }
 
-        beam_var[canonical.0 as usize] = anchor.var;
+        beam_var[canonical.0 as usize] = settled.var[canonical.0 as usize];
         held_bytes = held_bytes
             .saturating_add(anchor.bytes())
             .saturating_add(free.iter().map(State::bytes).sum::<usize>());
@@ -511,15 +514,11 @@ fn anchor_state(
         node: idx as u32,
         own,
     };
-    let var = settled.var[canonical.0 as usize];
-
-    // A class whose sub-DAG is itself alone, as the DP recorded it: a leaf, a
-    // cycle-priced winner, or a class no candidate's cost beat.
-    if settled.reach_is_self[me] {
+    // A class whose sub-DAG is itself alone, as the DP recorded it.
+    if settled.reach_shape[me] != ReachShape::Composed {
         return State {
             members: alloc::vec![me_member],
             cost,
-            var,
             node: idx as u32,
         };
     }
@@ -546,7 +545,6 @@ fn anchor_state(
     State {
         members,
         cost,
-        var,
         node: idx as u32,
     }
 }
@@ -582,26 +580,32 @@ fn expand_node<C: CostFunction>(
         width,
     } = ctx;
 
+    // The class's own cost under this node, and it is a function of the
+    // *node* alone — the variance is read out of the in-flight `beam_var`,
+    // the DP's own assignment, never out of a state. That is what makes two
+    // states that agree on a class agree on its price, which `merge` relies
+    // on and asserts. Making `own` depend on a state's own variance instead
+    // is how the same choice came back priced two different ways.
+    let own = extract::weighted_own(
+        costs,
+        node,
+        shape.evals(extract::node_variance(egraph, node, beam_var, canonical)),
+    ) as u64;
+    let me_member = Member {
+        class: me as u32,
+        node: idx,
+        own,
+    };
     // A leaf, a self-reference, or a child still on the DFS stack: one state,
-    // itself alone, priced exactly as the DP prices it — the variance read
-    // out of the in-flight `beam_var`, not a settled table.
-    let alone = |cost_is_cycle: bool| {
-        let var = extract::node_variance(egraph, node, beam_var, canonical);
-        let own = extract::weighted_own(costs, node, shape.evals(var)) as u64;
-        State {
-            members: alloc::vec![Member {
-                class: me as u32,
-                node: idx,
-                own
-            }],
-            cost: if cost_is_cycle {
-                extract::CYCLE_COST
-            } else {
-                usize::try_from(own).unwrap_or(usize::MAX)
-            },
-            var,
-            node: idx,
-        }
+    // itself alone, priced exactly as the DP prices it.
+    let alone = |cost_is_cycle: bool| State {
+        members: alloc::vec![me_member],
+        cost: if cost_is_cycle {
+            extract::CYCLE_COST
+        } else {
+            usize::try_from(own).unwrap_or(usize::MAX)
+        },
+        node: idx,
     };
 
     let ENode::Op { children, .. } = node else {
@@ -636,7 +640,6 @@ fn expand_node<C: CostFunction>(
     let mut anchor_acc = Acc {
         members: Vec::new(),
         below: 0,
-        var: Variance::CONST,
     };
     let mut free: Vec<Acc> = Vec::new();
     for &child in children.iter() {
@@ -660,17 +663,11 @@ fn expand_node<C: CostFunction>(
     }
 
     for acc in core::iter::once(&anchor_acc).chain(free.iter()) {
-        let own = extract::weighted_own(costs, node, shape.evals(acc.var)) as u64;
         let mut members = acc.members.clone();
-        members.push(Member {
-            class: me as u32,
-            node: idx,
-            own,
-        });
+        members.push(me_member);
         out.push(State {
             cost: usize::try_from(acc.below.saturating_add(own)).unwrap_or(usize::MAX),
             members,
-            var: acc.var,
             node: idx,
         });
     }
@@ -678,11 +675,7 @@ fn expand_node<C: CostFunction>(
 
 fn merge_acc(a: &Acc, s: &State) -> Option<Acc> {
     let (members, below) = merge(&a.members, &s.members)?;
-    Some(Acc {
-        members,
-        below,
-        var: a.var.union(s.var),
-    })
+    Some(Acc { members, below })
 }
 
 fn acc_key(a: &Acc) -> (u64, &[Member]) {

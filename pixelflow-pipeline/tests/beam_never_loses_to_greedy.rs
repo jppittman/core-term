@@ -30,6 +30,9 @@ const GLYPH_CLASS_CAP: usize = 5_000;
 /// before the DP arm was folded back in — `S`, `f`, `j`, `l`, `t`, `~`.
 const REGRESSED: [char; 6] = ['S', 'f', 'j', 'l', 't', '~'];
 
+/// The tile the production path bakes these at, as a lattice shape.
+const TILE_SHAPE: [u32; 2] = [16, 16];
+
 /// Above every shader's own production tier, so these graphs are big enough
 /// for the repair to have something to repair.
 const SHADER_CLASS_CAP: usize = 10_000;
@@ -54,19 +57,30 @@ fn saturated(
     (egraph, root_class)
 }
 
-fn assert_beam_never_dearer(egraph: &EGraph, root: EClassId, what: &str, widths: &[usize]) {
+/// The property, at **every** shape the caller might extract at. A shape is
+/// part of the objective — a node's cost is multiplied by how many times the
+/// lattice evaluates it — so "cheaper" is only meaningful against a fixed
+/// one, and a claim proved at `POINT` says nothing about a glyph bake.
+fn assert_beam_never_dearer(
+    egraph: &EGraph,
+    root: EClassId,
+    what: &str,
+    widths: &[usize],
+    shapes: &[LatticeShape],
+) {
     let costs = CostModel::latency_prior();
-    let shape = LatticeShape::POINT;
-    let greedy = Greedy.extract(egraph, root, &costs, shape);
-    for &k in widths {
-        let beam = Beam::width(k).extract(egraph, root, &costs, shape);
-        assert!(
-            beam.dag_cost <= greedy.dag_cost,
-            "{what}: Beam({k}) returned {} against Greedy's {} — Beam folds the DP's own \
-             repaired term back in precisely so this cannot happen",
-            beam.dag_cost,
-            greedy.dag_cost
-        );
+    for &shape in shapes {
+        let greedy = Greedy.extract(egraph, root, &costs, shape);
+        for &k in widths {
+            let beam = Beam::width(k).extract(egraph, root, &costs, shape);
+            assert!(
+                beam.dag_cost <= greedy.dag_cost,
+                "{what} @ {shape:?}: Beam({k}) returned {} against Greedy's {} — Beam folds \
+                 the DP's own repaired term back in precisely so this cannot happen",
+                beam.dag_cost,
+                greedy.dag_cost
+            );
+        }
     }
 }
 
@@ -87,7 +101,15 @@ fn beam_is_never_dearer_than_greedy_on_the_six_glyphs_that_regressed() {
         let (arena, root) = kernel.parts();
         let what = alloc_name(ch);
         let (egraph, root_class) = saturated(arena, root, GLYPH_CLASS_CAP, &what);
-        assert_beam_never_dearer(&egraph, root_class, &what, &[16, 64]);
+        // At the glyph's own bake shape as well as at POINT: the production
+        // path extracts at the former, and the two are different objectives.
+        assert_beam_never_dearer(
+            &egraph,
+            root_class,
+            &what,
+            &[16, 64],
+            &[LatticeShape::POINT, LatticeShape::new(TILE_SHAPE)],
+        );
     }
 }
 
@@ -96,7 +118,13 @@ fn beam_is_never_dearer_than_greedy_on_the_shader_corpus() {
     for name in SHADERTOY_KERNEL_NAMES {
         let (arena, root) = named_shadertoy_kernel(name).expect("registered shader");
         let (egraph, root_class) = saturated(&arena, root, SHADER_CLASS_CAP, name);
-        assert_beam_never_dearer(&egraph, root_class, name, &[4, 16]);
+        assert_beam_never_dearer(
+            &egraph,
+            root_class,
+            name,
+            &[4, 16],
+            &[LatticeShape::POINT, LatticeShape::new([256, 256])],
+        );
     }
 }
 

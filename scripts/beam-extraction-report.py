@@ -11,11 +11,12 @@ from collections import defaultdict
 from pathlib import Path
 
 
-def rows(d):
-    for p in sorted(Path(d).glob("*.jsonl")):
-        for line in p.read_text().splitlines():
-            if line.strip():
-                yield json.loads(line)
+def rows(dirs):
+    for d in dirs.split(","):
+        for p in sorted(Path(d).glob("*.jsonl")):
+            for line in p.read_text().splitlines():
+                if line.strip():
+                    yield json.loads(line)
 
 
 def arm(mode):
@@ -25,10 +26,10 @@ def arm(mode):
     return int(cap), (width if "+beam" in mode else 0)
 
 
-def main(indir, outprefix):
+def main(indirs, outprefix):
     # (cap, width) -> name -> row
     cells = defaultdict(dict)
-    for r in rows(indir):
+    for r in rows(indirs):
         cap, w = arm(r["mode"])
         prev = cells[(cap, w)].get(r["name"])
         if prev is not None:

@@ -69,9 +69,21 @@ Structural, then tested, then measured end to end:
 
 ## Chrome (held out, one run per arm)
 
+Ties go to the anchor, so `code_fnv = Greedy` is **no** only where the width
+found a strictly cheaper term.
+
 | cap | width | dag_cost | bytes | objective | code_fnv = Greedy | compile |
 |---|---|---:|---:|---|---|---:|
-<!--CHROME-->
+| 5000 | greedy | 1668 | 3424 | shared | — | 180 ms |
+| 5000 | beam1 | 1668 | 3424 | shared | yes | 189 ms |
+| 5000 | beam4 | 1668 | 3424 | shared | yes | 208 ms |
+| 5000 | **beam16** | **1660** | 3408 | shared | no (a strict win) | 351 ms |
+| 5000 | beam64 | 1668 | 3424 | shared | yes | 2187 ms |
+| 50000 | greedy | 2214 | 4000 | shared | — | 2469 ms |
+| 50000 | beam1 | 2214 | 4000 | shared | yes | 2504 ms |
+| 50000 | beam4 | 2214 | 4000 | shared | yes | 2572 ms |
+| 50000 | beam16 | 2214 | 4000 | shared | yes | 3606 ms |
+| 50000 | beam64 | 2214 | 4000 | shared | yes | 18307 ms |
 
 ## The reading
 
