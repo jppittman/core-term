@@ -14,9 +14,16 @@ describes how it should be read today; directory names alone do not establish cu
 - **Fixed bug** — a defect report whose described fault has been corrected.
 
 Classification is separate from design workflow status. **Every future plan and design must
-use exactly one of `Draft`, `Review`, `Approved`, or `Implemented` in its metadata**, as
-specified by [`templates/DESIGN_DOC.md`](templates/DESIGN_DOC.md). Use `Supersedes` or
-`Superseded by` metadata to record lineage rather than creating new status words.
+use exactly one status from the vocabulary in
+[`templates/DESIGN_DOC.md`](templates/DESIGN_DOC.md)** — `Draft`, `Proposed`, `Registered`,
+`Plan of record`, `Landed`, `Closed`, `Superseded` or `Historical` — and must record a
+**`Verified against:` commit sha** if it makes claims about the tree. Use `Supersedes` or
+`Superseded by` metadata to record lineage *in addition to* the status.
+
+That vocabulary was widened on 2026-09-09. It used to be `Draft | Review | Approved |
+Implemented`, which 3 of 59 plans and designs actually used; the rest had invented about
+twenty words of their own, several of which said more than any of the four. The rule now
+matches what the corpus needs rather than asking 56 documents to lie about themselves.
 
 ## Current architecture
 

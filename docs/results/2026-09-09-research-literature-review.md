@@ -642,12 +642,15 @@ Five, ordered by value per hour. None requires a measurement.
 2. **Add a `Verified against:` field to the design-doc template and grep for it.** Failure mode 5 costs
    more than any other unfixed one, it recurred four times in a single sweep, and the check is one
    script in the metadata jobs (which already run in ~6 s with no toolchain — `check-bin-declarations.sh`
-   is the precedent).
-3. **Fix the status vocabulary rather than the 56 documents.** Replace `Draft/Review/Approved/Implemented`
-   in `templates/DESIGN_DOC.md` with the words the corpus actually needs — at minimum
-   `Draft / Proposed / Registered / Plan of record / Landed / Superseded / Closed` — then enforce it in
-   the same metadata job. *(The index half is done: `docs/README.md` now lists all 59. The template's
-   vocabulary is still the four words nobody uses.)*
+   is the precedent). *(Half done: the field is now required by `templates/DESIGN_DOC.md`, which also
+   says to resolve the sha rather than name a ref — the mistake this document itself made. Nothing
+   enforces it yet; that is the remaining half.)*
+3. ~~**Fix the status vocabulary rather than the 56 documents.**~~ **Done.**
+   `templates/DESIGN_DOC.md` now defines `Draft / Proposed / Registered / Plan of record / Landed /
+   Closed / Superseded / Historical`, and `docs/README.md` states the same list and indexes all 59
+   documents. `Registered` is the one worth naming: a pre-registration commits its constants before the
+   data exists and is never revisable afterwards, which none of the old four words could express. Still
+   unenforced by a job.
 4. **Write #1193.** It is the gate that makes the benchmark correction's §B.5 enforceable and the one
    that would have caught the class-cap warm regression without a human noticing.
 5. **Amend `2026-09-01-schedule-cost-model-denotation.md`.** Its successor program is a reranker over

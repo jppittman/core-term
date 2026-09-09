@@ -16,11 +16,12 @@
 # is an identifier, and a check that cries wolf is worse than no check.
 # A backticked `foo/bar.rs` is unambiguous, so that is what this reads.
 #
-# SCOPE -- plans and designs only, per docs/README.md's own classification.
-# Those are the documents a reader *acts on*, so a dead path in one sends
-# somebody to a file that is not there. `docs/results/` and `docs/bugs/` are
-# dated evidence: a July audit naming a file deleted in August is a correct
-# record of July, and flagging it would be wrong.
+# SCOPE -- plans, designs, superpowers/ and the loose docs at the root of
+# docs/, per docs/README.md's own classification. Those are the documents a
+# reader *acts on*, so a dead path in one sends somebody to a file that is not
+# there. `docs/results/` and `docs/bugs/` are dated evidence: a July audit
+# naming a file deleted in August is a correct record of July, and flagging it
+# would be wrong.
 #
 # THREE WAYS TO BE FINE, the first two of which say something true to a reader:
 #
@@ -128,10 +129,22 @@ while IFS= read -r doc; do
       fail=1
     done
   done < <(grep -nE '`[A-Za-z0-9_][A-Za-z0-9_./-]*\.rs`' "$doc" || true)
-done < <(find docs/plans docs/designs -name '*.md' | sort)
+done < <(
+  # Plans, designs, and the superpowers plans (which are plans, in their own
+  # directory) -- plus the loose docs at the root of docs/, which are a mix of
+  # design notes and analyses that a reader acts on the same way.
+  #
+  # `docs/results/` and `docs/bugs/` stay out, deliberately: they are dated
+  # evidence, and a July audit naming a file deleted in August is a correct
+  # record of July rather than a defect.
+  {
+    find docs/plans docs/designs docs/superpowers -name '*.md'
+    find docs -maxdepth 1 -name '*.md' ! -name 'README.md'
+  } | sort
+)
 
 if [[ "$fail" -eq 0 ]]; then
-  echo "OK: $checked source paths cited across $docs plans and designs resolve"
+  echo "OK: $checked source paths cited across $docs plans, designs and notes resolve"
   echo "    ($baselined accepted via $baseline_file)"
 fi
 
