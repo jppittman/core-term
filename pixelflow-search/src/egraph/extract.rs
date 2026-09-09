@@ -2213,7 +2213,7 @@ impl StageRecorder for () {
 /// class none of whose candidates ever becomes admissible is one no
 /// well-founded term reaches — [`settle_in_cost_order`] refuses to return
 /// with the root in that state rather than inventing a choice for it.
-pub(crate) trait Settling {
+trait Settling {
     /// Price candidate `idx` of `class`. Every child class is settled, and
     /// none of them is `class` itself.
     fn price(&mut self, class: EClassId, idx: usize, node: &ENode) -> usize;
