@@ -55,7 +55,7 @@ PLATFORM_PREDICATE = re.compile(
     r")\b"
 )
 
-CFG_ATTR = re.compile(r"^\s*#\[\s*cfg\((.*)\)\s*\]\s*(//.*)?$")
+CFG_ATTR = re.compile(r"^\s*#\[\s*cfg\((.*)\)\s*\]\s*(.*)$")
 CFG_INNER_ATTR = re.compile(r"^\s*#!\[\s*cfg\((.*)\)\s*\]")
 MOD_ITEM = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*[;{]")
 OTHER_ATTR_OR_COMMENT = re.compile(r"^\s*(#\[.*\]|//.*|/\*.*\*/)?\s*$")
@@ -101,11 +101,17 @@ def check_file(path):
         m = CFG_ATTR.match(line)
         if not m:
             continue
-        predicate = m.group(1)
+        predicate, trailing = m.group(1), m.group(2).strip()
         if not PLATFORM_PREDICATE.search(predicate):
             continue
 
-        item = next_item_line(lines, idx)
+        # `#[cfg(unix)] mod foo;` puts the item on the same line as the
+        # attribute -- a real Rust shape, not just the "attribute on its own
+        # line, item below" one this checker started out only recognizing.
+        if trailing and not trailing.startswith("//"):
+            item = trailing
+        else:
+            item = next_item_line(lines, idx)
         if item is None:
             violations.append((path, idx + 1, line.strip(), "cfg at end of file, no item follows"))
             continue
