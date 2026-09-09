@@ -58,7 +58,7 @@ fn main() {
         let s = &alphabet[..n];
         let t0 = Instant::now();
         let glyph = text(&font, s, size);
-        let kernel = glyph.kernel.at(
+        let kernel = glyph.kernel().at(
             &Kernel::x().add(&Kernel::constant(0.5)),
             &Kernel::y().add(&Kernel::constant(0.5)),
         );

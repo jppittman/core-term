@@ -32,7 +32,7 @@ fn bench_pixelflow_single_char(c: &mut Criterion) {
     for (label, ch) in [("A_linear", 'A'), ("O_quadratic", 'O'), ("S_complex", 'S')] {
         group.bench_function(label, |b| {
             let glyph = text(&font, &ch.to_string(), 32.0);
-            let kernel = pixel_centered(&glyph.kernel);
+            let kernel = pixel_centered(&glyph.kernel());
             let lattice = Lattice::frame(40, 45);
 
             b.iter(|| black_box(glyph.bake(black_box(&kernel), lattice)));
@@ -65,7 +65,7 @@ fn bench_pixelflow_text_sizes(c: &mut Criterion) {
         // The range encoding: one kernel, every pixel evaluating every glyph.
         group.bench_with_input(BenchmarkId::new("sum", length), &length, |b, _| {
             let glyph = text(&font, &text_str, 16.0);
-            let kernel = pixel_centered(&glyph.kernel);
+            let kernel = pixel_centered(&glyph.kernel());
             b.iter(|| black_box(glyph.bake(black_box(&kernel), lattice)));
         });
     }
@@ -83,7 +83,7 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
         let lattice = Lattice::frame(100, 30);
         b.iter(|| {
             let glyph = text(&font, "HELLO", 20.0);
-            let kernel = pixel_centered(&glyph.kernel);
+            let kernel = pixel_centered(&glyph.kernel());
             black_box(glyph.bake(&kernel, lattice));
         });
     });

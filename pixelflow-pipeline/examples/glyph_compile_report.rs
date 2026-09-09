@@ -88,7 +88,8 @@ fn kernels(font: &Font) {
             let Some(glyph) = font.glyph_kernel_scaled(ch, tile as f32) else {
                 continue;
             };
-            let (arena, root) = glyph.kernel.parts();
+            let coverage = glyph.kernel();
+            let (arena, root) = coverage.parts();
             let started = Instant::now();
             let result = compile_as_baked(arena, root, [tile, tile]);
             let ms = started.elapsed().as_secs_f64() * 1e3;

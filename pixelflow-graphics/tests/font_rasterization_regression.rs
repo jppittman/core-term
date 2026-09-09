@@ -15,7 +15,7 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf"
 /// bound piece table — S1a of
 /// docs/plans/2026-09-09-glyph-as-a-fold-execution.md).
 fn sample(glyph: &Glyph, x: f32, y: f32) -> f32 {
-    glyph.bound(&glyph.kernel, [1, 1]).eval_at(x, y)
+    glyph.bound(&glyph.kernel(), [1, 1]).eval_at(x, y)
 }
 
 /// Bake `kernel` (derived from `glyph` by a coordinate contramap, so it
@@ -81,7 +81,7 @@ fn regression_glyph_ascent_offset() {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     // `text` is convention-agnostic; land on pixel centers as a contramap.
     let glyph = text(&font, "A", 100.0);
-    let kernel = glyph.kernel.at(
+    let kernel = glyph.kernel().at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );
@@ -111,7 +111,7 @@ fn regression_text_rendering_pipeline() {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     // `text` is convention-agnostic; land on pixel centers as a contramap.
     let glyph = text(&font, "HELLO", 20.0);
-    let kernel = glyph.kernel.at(
+    let kernel = glyph.kernel().at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );

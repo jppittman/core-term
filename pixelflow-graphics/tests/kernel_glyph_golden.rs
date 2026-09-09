@@ -26,7 +26,7 @@ fn golden_for(ch: char, size: usize) {
     // index lattice. `glyph.kernel`'s winding sum reads a bound piece table
     // (S1a), so — unlike before — this binds it rather than a bare bake.
     let n = size as u32;
-    let centered = glyph.kernel.at(
+    let centered = glyph.kernel().at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );

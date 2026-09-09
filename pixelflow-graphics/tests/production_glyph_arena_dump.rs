@@ -69,7 +69,8 @@ fn dump_production_glyph_arenas() {
                 missing.push((density, ch));
                 continue;
             };
-            let (arena, root) = glyph.kernel.parts();
+            let coverage = glyph.kernel();
+            let (arena, root) = coverage.parts();
             // `glyph.kernel`'s winding sum is a `Kernel::sum_over` (S1a): the
             // raw arena still carries the `Nary(Reduce, ..)` node this
             // dumper panics on below, same as the JIT would see it before

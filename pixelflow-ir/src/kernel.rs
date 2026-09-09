@@ -637,15 +637,35 @@ impl Kernel {
     // dedups at the compile boundary, so only construction-time copies remain.
     #[must_use]
     pub fn sum(kernels: &[Kernel]) -> Self {
+        Self::fold(Monoid::SUM, kernels)
+    }
+
+    /// `⊕ kernels` under any [`Monoid`], empty folding to its identity.
+    ///
+    /// The general form of [`Kernel::sum`], which is this at [`Monoid::SUM`].
+    /// What `sum` and a variadic `min` have in common is not "sum and min" —
+    /// it is *monoid*, and `Monoid` already names that, so there is one
+    /// definition rather than one per operator. (A glyph run wanted the `MIN`
+    /// instance: distances combine under `min` exactly as windings combine
+    /// under `+`.)
+    ///
+    /// Note this is the **fixed-arity** fold over a slice of distinct terms,
+    /// not [`Kernel::over`], which folds one body over a bounded index.
+    #[must_use]
+    pub fn fold(monoid: Monoid, kernels: &[Kernel]) -> Self {
+        let op = monoid.op();
         let Some((head, tail)) = kernels.split_first() else {
-            return Self::constant(0.0);
+            return Self::constant(
+                op.monoid_identity()
+                    .expect("a Monoid's operator has an identity"),
+            );
         };
         let mut arena = head.inner.arena.clone();
         let mut root = head.inner.root;
         let mut buffers = head.inner.buffers.clone();
         for k in tail {
             let rhs = arena.splice(&k.inner.arena, k.inner.root);
-            root = arena.push_binary(OpKind::Add, root, rhs);
+            root = arena.push_binary(op, root, rhs);
             merge_buffer_data(&mut buffers, &k.inner.buffers);
         }
         Self::wrap(arena, root, buffers)

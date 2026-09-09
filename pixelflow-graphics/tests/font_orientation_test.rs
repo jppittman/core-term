@@ -19,7 +19,7 @@ fn bake_text(s: &str) -> Vec<f32> {
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     // `text` is convention-agnostic; land on pixel centers as a contramap.
     let glyph = text(&font, s, 48.0);
-    let kernel = glyph.kernel.at(
+    let kernel = glyph.kernel().at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );

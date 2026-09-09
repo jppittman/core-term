@@ -18,7 +18,7 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf"
 /// docs/plans/2026-09-09-glyph-as-a-fold-execution.md). The compile cache
 /// makes repeated samples of the same kernel cheap.
 fn sample(glyph: &Glyph, x: f32, y: f32) -> f32 {
-    glyph.bound(&glyph.kernel, [1, 1]).eval_at(x, y)
+    glyph.bound(&glyph.kernel(), [1, 1]).eval_at(x, y)
 }
 
 /// Bake `kernel` (derived from `glyph` by a coordinate contramap, so it
@@ -179,7 +179,7 @@ fn coverage_saturates_far_from_edges() {
     let glyph = font.glyph_kernel_scaled('H', size).unwrap();
 
     let n = size as usize;
-    let centered = glyph.kernel.at(
+    let centered = glyph.kernel().at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );
@@ -252,7 +252,7 @@ fn quad_heavy_glyph_is_finite_everywhere() {
     // Sample at half-pixel steps: warp coordinates by 1/2 and bake on the
     // integer grid — texel (i, j) holds coverage at (i/2, j/2).
     let n = size as usize * 2 + 1;
-    let half = glyph.kernel.at(
+    let half = glyph.kernel().at(
         &Kernel::x().mul(&Kernel::constant(0.5)),
         &Kernel::y().mul(&Kernel::constant(0.5)),
     );

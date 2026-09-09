@@ -75,7 +75,7 @@
 //! chord the pair it compares is not the piece's two sides at all. It is
 //! therefore asked only of the pieces another contour's ink may cover, where
 //! it is the answer; a piece nothing covers always separates and says so
-//! with a threshold no winding reaches ([`ALWAYS_A_BOUNDARY`]).
+//! with a mask ORed into the test ([`COL_ALWAYS_BOUNDARY`]).
 //!
 //! ## Two folds over one table
 //!
@@ -128,7 +128,8 @@
 //! exact, whatever the glyph's shape.
 
 use super::outline::{Outline, Point, Segment};
-use pixelflow_core::{BoundManifold, DiscreteManifold, Kernel, Lattice, Manifold};
+use pixelflow_core::{BoundManifold, DiscreteManifold, Kernel, Lattice, Manifold, Monoid};
+use pixelflow_ir::OpKind;
 
 /// How far coverage can reach past the outline, in the frame the kernel is
 /// built in. A ramp is one unit wide and centred on its edge, so half a unit
@@ -177,24 +178,96 @@ const FLAT_ENOUGH: f64 = 1.0 / 256.0;
 /// zero. They travel together because they are derived together — a support
 /// restated separately from the composition it describes is a future
 /// divergence.
+/// **The two folds, not the coverage.** Coverage is not additive — summing
+/// two glyphs' coverages reaches 2 where their ink overlaps, and 2 is not a
+/// coverage — so a glyph that could only offer its finished coverage could
+/// not compose, and `text()` merged every character's contours into one
+/// outline to get around it. Winding *is* additive and distance combines
+/// under `min`, so keeping the two halves apart until the last step is what
+/// makes a run a glyph (docs/plans/2026-09-09-a-run-is-a-glyph.md).
+///
+/// Both read one piece coefficient table at their own reduce binder
+/// ([`glyph`]); the table's data travels with the kernels themselves
+/// (`Kernel::with_buffer_data`), so there is no separate binding a caller
+/// must keep paired with them.
 #[derive(Clone)]
 pub struct Glyph {
-    /// The coverage kernel. Its winding `Kernel::sum_over` and its distance
-    /// `Kernel::min_over` both read one piece coefficient table at their own
-    /// binder ([`glyph`] — S1 of
-    /// docs/plans/2026-09-09-glyph-as-a-fold-execution.md); the table's data
-    /// travels with this value (`Kernel::with_buffer_data`, seeded by
-    /// [`DiscreteManifold::kernel`] when [`glyph`] builds it), so there is
-    /// no separate binding a caller must keep paired with it — a
-    /// `Kernel::at` contramap of `kernel` (a placement, a pixel-center
-    /// shift) still carries the same table, and [`Self::bound`]/
-    /// [`Self::bake`] need nothing more than the kernel itself.
-    pub kernel: Kernel,
+    /// Exact, integral, and zero outside every contour — which is what lets
+    /// [`Self::over`] mask it to a box and lose nothing.
+    winding: Winding,
+    /// In lattice pixels, and at least [`RAMP_REACH`] outside [`Self::support`].
+    distance: Distance,
     /// Where it can be nonzero.
     pub support: Support,
 }
 
 impl Glyph {
+    /// The identity of [`Self::over`]: no ink anywhere. `text("")` is this.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            winding: Winding::zero(),
+            distance: Distance::unreachable(),
+            support: Support::EMPTY,
+        }
+    }
+
+    /// **The one exit.** Coverage, cut to the support so the box's claim
+    /// holds under any later coordinate warp rather than only where the
+    /// ramps happen to saturate.
+    ///
+    /// A method rather than a field because it is derived: two glyphs
+    /// compose through [`Self::over`] on the folds, and a stored coverage
+    /// would be a second representation to keep in step.
+    #[must_use]
+    pub fn kernel(&self) -> Kernel {
+        self.support
+            .contains()
+            .select(&coverage(&self.winding, &self.distance), &constant(0.0))
+    }
+
+    /// **Glyphs form a monoid, and this is its operation.** Winding sums,
+    /// distance takes the minimum, support unions — each componentwise, so
+    /// the whole is associative and commutative and a run's coverage does
+    /// not depend on the order its characters were laid out in.
+    ///
+    /// Each contributor is masked to its own support first, and that is
+    /// *exact*, not an approximation, for two reasons:
+    ///
+    /// - a closed contour's winding is **0** at every exterior point, so
+    ///   masking a glyph's winding to its box discards only zeros
+    ///   (`Contour::new` refusing an open contour is what licenses this);
+    /// - [`Support::around`] dilates by exactly [`RAMP_REACH`], and a piece
+    ///   further away than that contributes nothing to the ramp, so masking
+    ///   the distance to `RAMP_REACH` outside the box discards only losers
+    ///   of the `min`.
+    ///
+    /// The mask is also the *binning*: structurally every character is still
+    /// in the graph — `Select` is dispatch and both arms stay live — but a
+    /// SIMD batch is adjacent pixels almost always inside one character's
+    /// box, so the emitter's guard can skip the rest. That is a
+    /// data-dependent win, and about as coherent as such a mask ever gets.
+    #[must_use]
+    pub fn over(glyphs: &[Glyph]) -> Self {
+        let mut windings = Vec::with_capacity(glyphs.len());
+        // Seeded with the ceiling, so the `min` is never empty and a run
+        // with no ink is `RAMP_REACH` away from a boundary rather than an
+        // infinity the table's H1 rule would rather not see.
+        let mut distances = vec![Distance::unreachable()];
+        let mut support = Support::EMPTY;
+        for g in glyphs {
+            let inside = g.support.contains();
+            windings.push(g.winding.masked(&inside));
+            distances.push(g.distance.masked(&inside));
+            support = support.union(g.support);
+        }
+        Self {
+            winding: Winding::sum(&windings),
+            distance: Distance::min_of(&distances),
+            support,
+        }
+    }
+
     /// `kernel` — [`Self::kernel`] itself, or a `Kernel::at` contramap of
     /// it (a placement, a pixel-center shift) — compiled at `extent`. The
     /// piece table both folds read travels with `kernel` itself (see
@@ -251,13 +324,32 @@ impl Support {
         self.0[2] <= self.0[0] || self.0[3] <= self.0[1]
     }
 
-    /// The box shifted `dx` along X.
+    /// The mask that is set exactly inside this box — the binning test, and
+    /// the cut [`Glyph::kernel`] applies so the box's claim survives a warp.
+    fn contains(self) -> Kernel {
+        let [x0, y0, x1, y1] = self.0;
+        Kernel::x()
+            .ge(&constant(x0))
+            .and(&Kernel::x().le(&constant(x1)))
+            .and(&Kernel::y().ge(&constant(y0)))
+            .and(&Kernel::y().le(&constant(y1)))
+    }
+
+    /// The smallest box containing both — the support of two glyphs laid
+    /// side by side. Empty is the identity, which is what makes
+    /// [`Glyph::over`] a monoid on this component too.
     #[must_use]
-    pub fn shifted_x(self, dx: f32) -> Self {
-        if self.is_empty() {
-            return Self::EMPTY;
+    fn union(self, other: Self) -> Self {
+        match (self.is_empty(), other.is_empty()) {
+            (true, _) => other,
+            (_, true) => self,
+            _ => Self([
+                self.0[0].min(other.0[0]),
+                self.0[1].min(other.0[1]),
+                self.0[2].max(other.0[2]),
+                self.0[3].max(other.0[3]),
+            ]),
         }
-        Self([self.0[0] + dx, self.0[1], self.0[2] + dx, self.0[3]])
     }
 }
 
@@ -270,56 +362,87 @@ impl Support {
 /// scene as a guardable arm.
 #[must_use]
 pub fn glyph(outline: &Outline) -> Glyph {
-    let pieces = Pieces::of(outline);
-    let (Some(bounds), false) = (outline.bounds(), pieces.is_empty()) else {
-        return Glyph {
-            kernel: constant(0.0),
-            support: Support::EMPTY,
+    run(core::slice::from_ref(outline))
+}
+
+/// The coverage of several outlines as ONE [`Glyph`], each keeping its own
+/// bounding box so a sample pays only for the outlines whose box contains it.
+///
+/// **One table, not one per outline.** A piece table is a tabulation of
+/// *pieces*; which outline a piece came from is a row range, not a separate
+/// buffer. Giving each character its own table is what a frame cannot afford
+/// — `Manifold` binds at most `MAX_BOUND_BUFFERS` slots without allocating,
+/// so a five-character run would not compile
+/// (docs/plans/2026-09-09-composition-is-linking.md §4 named this limit as
+/// the cost of naming memory a slot at a time). Concatenating the rows and
+/// giving each outline's folds an offset costs one add per fold and binds
+/// one slot however long the run is.
+///
+/// [`glyph`] is this at one outline.
+#[must_use]
+pub fn run(outlines: &[Outline]) -> Glyph {
+    // Host side: every outline's rows appended into one table, and the row
+    // range plus bounding box each will fold over.
+    let mut rows: Vec<f32> = Vec::new();
+    let mut spans: Vec<(u32, u32, [f32; 4])> = Vec::new();
+    for outline in outlines {
+        let pieces = Pieces::of(outline);
+        let (Some(bounds), false) = (outline.bounds(), pieces.is_empty()) else {
+            continue;
         };
-    };
-
-    // **Two folds over one table.** Row `i` is piece `i`'s [`piece_row`], and
-    // each fold's reduce binder supplies the row index, so the arena holds
-    // two `Reduce` nodes with fixed bodies rather than `n` per-piece
-    // fragments (docs/plans/2026-09-09-glyph-as-a-fold-execution.md, S1).
-    // `DiscreteManifold::new` mints the table's own identity and `.kernel()`
-    // seeds this fragment with the piece data itself
-    // (`Kernel::with_buffer_data`), so the data travels with `table` through
-    // every combinator below rather than riding beside it in a `Glyph` field
-    // a caller has to keep paired.
-    let n = u32::try_from(pieces.pieces.len())
-        .expect("a glyph outline has far fewer pieces than u32::MAX");
-    let data: Vec<f32> = pieces.pieces.iter().flat_map(|p| piece_row(*p)).collect();
-    let table = DiscreteManifold::new(data, PIECE_ROW_COLS, n as usize).kernel();
-    let winding = Kernel::sum_over(n, |i| {
-        let c = row_at(&table, i);
-        crossing_term(&c).add(&sliver_term(&c))
-    });
-    // By name, not by value: the boundary test reads the whole winding once
-    // per piece, and composition splices, so the sum itself would put a copy
-    // of its `Reduce` node in the min's body — which `expand_reduce` then
-    // unrolls per piece, quadratic (measured: 16k, 37k, 58k nodes per piece
-    // at 40, 73, 132 pieces). A name is one node however often it is used,
-    // and expansion shares its referent (`passes::expand_refs`), so the sum
-    // is unrolled once and both folds read it.
-    let named = winding.by_ref();
-    // `RAMP_REACH` outside the fold rather than as a row: it is the min's
-    // ceiling, not a piece.
-    let distance = Kernel::min_over(n, |i| boundary_distance(&row_at(&table, i), &named))
-        .min(&constant(RAMP_REACH));
-    let coverage = coverage(&named, &distance);
-
-    let support = Support::around(bounds);
-    let [x0, y0, x1, y1] = support.bounds();
-    let inside = Kernel::x()
-        .ge(&constant(x0))
-        .and(&Kernel::x().le(&constant(x1)))
-        .and(&Kernel::y().ge(&constant(y0)))
-        .and(&Kernel::y().le(&constant(y1)));
-    Glyph {
-        kernel: inside.select(&coverage, &constant(0.0)),
-        support,
+        let start = u32::try_from(rows.len() / PIECE_ROW_COLS)
+            .expect("a run has far fewer pieces than u32::MAX");
+        let count = u32::try_from(pieces.pieces.len())
+            .expect("an outline has far fewer pieces than u32::MAX");
+        rows.extend(pieces.pieces.iter().flat_map(|p| piece_row(*p)));
+        spans.push((start, count, bounds));
     }
+    if spans.is_empty() {
+        return Glyph::empty();
+    }
+
+    // `DiscreteManifold::new` mints the table's own identity and `.kernel()`
+    // seeds the fragment with the piece data itself
+    // (`Kernel::with_buffer_data`), so the data travels with every fold below
+    // rather than riding beside them in a field a caller has to keep paired.
+    // Every span reads the same identity, so they bind one slot between them.
+    let height = rows.len() / PIECE_ROW_COLS;
+    let table = DiscreteManifold::new(rows, PIECE_ROW_COLS, height).kernel();
+
+    let placed: Vec<Glyph> = spans
+        .iter()
+        .map(|&(start, count, bounds)| {
+            let offset = constant(start as f32);
+            let winding = Winding(Kernel::sum_over(count, |i| {
+                let row = i.add(&offset);
+                let c = row_at(&table, &row);
+                crossing_term(&c).add(&sliver_term(&c)).0
+            }));
+            // By name, not by value: the boundary test reads the whole
+            // winding once per piece, and composition splices, so the sum
+            // itself would put a copy of its `Reduce` node in the min's body
+            // — which `expand_reduce` then unrolls per piece, quadratic
+            // (measured: 16k, 37k, 58k nodes per piece at 40, 73, 132
+            // pieces). A name is one node however often it is used, and
+            // expansion shares its referent (`passes::expand_refs`), so the
+            // sum is unrolled once and both folds read it.
+            let winding = Winding(winding.0.by_ref());
+            // `RAMP_REACH` as the fold's ceiling rather than a padding row:
+            // it is the min's identity, not a piece.
+            let distance = Distance(Kernel::min_over(count, |i| {
+                let row = i.add(&offset);
+                let c = row_at(&table, &row);
+                boundary_distance(&c, &winding).0
+            }))
+            .min(&Distance::unreachable());
+            Glyph {
+                winding,
+                distance,
+                support: Support::around(bounds),
+            }
+        })
+        .collect();
+    Glyph::over(&placed)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -419,7 +542,7 @@ struct Piece {
     /// Whether this piece lies under *other* contours' ink, so that it may
     /// be inside the filled region rather than bound it — the one thing
     /// [`boundary_distance`]'s test has to be *asked* about, and it reaches
-    /// the kernel as column [`COL_BOUNDARY_TEST`] rather than as a branch.
+    /// the kernel as column [`COL_ALWAYS_BOUNDARY`] rather than as a branch.
     ///
     /// It is a correctness gate, not a cost one. The two-sides formula reads
     /// the crossing term, which is 0 wherever the sample's row lies outside
@@ -611,6 +734,141 @@ fn constant(v: f32) -> Kernel {
     Kernel::constant(v)
 }
 
+/// **How many times the outline wraps this sample** — a signed integer,
+/// exactly, because every contributing term is a hard mask selecting a
+/// signed constant. Nothing here is soft.
+///
+/// That integrality is not decoration: it is what licenses both of the
+/// constants below. `|w| < ½` is a valid test for *zero* only because the
+/// nearest other value is `1`, and `|w| ≥ 1` is a valid test for *inside*
+/// for the same reason. Stated once, here, instead of twice in prose.
+#[derive(Clone)]
+struct Winding(Kernel);
+
+impl Winding {
+    /// Outside every contour, and the identity of the sum.
+    fn zero() -> Self {
+        Self(constant(0.0))
+    }
+
+    fn sum(terms: &[Winding]) -> Self {
+        let raw: Vec<Kernel> = terms.iter().map(|w| w.0.clone()).collect();
+        Self(Kernel::fold(Monoid::SUM, &raw))
+    }
+
+    fn add(&self, other: &Self) -> Self {
+        Self(self.0.add(&other.0))
+    }
+
+    fn sub(&self, other: &Self) -> Self {
+        Self(self.0.sub(&other.0))
+    }
+
+    /// This winding where `inside` holds, and [`Winding::zero`] elsewhere —
+    /// exact, because a closed contour winds zero about every exterior point.
+    fn masked(&self, inside: &Kernel) -> Self {
+        Self(inside.select(&self.0, &constant(0.0)))
+    }
+
+    /// `|w| < ½`, i.e. `w == 0`. See the type's docs for why ½ is the number.
+    fn is_zero(&self) -> Kernel {
+        self.0.abs().lt(&constant(WINDING_ZERO))
+    }
+
+    /// `|w| ≥ 1`, the non-zero fill rule.
+    fn is_inside(&self) -> Kernel {
+        self.0.abs().ge(&constant(1.0))
+    }
+}
+
+/// **How far this sample is from the nearest boundary, in pixels of the
+/// lattice being collapsed** — not of the frame the outline was built in.
+///
+/// The unit is the whole point of the type. Every construction from a raw
+/// [`Kernel`] goes through [`Distance::in_pixels`], which divides by the
+/// gradient of the edge function it came from, so the chain rule carries the
+/// scale through every enclosing `Kernel::at`. Mixing in a length that
+/// skipped that division is how a lower bound stopped being a lower bound
+/// under a magnifying warp; with this type that subtraction does not
+/// compile.
+#[derive(Clone)]
+struct Distance(Kernel);
+
+impl Distance {
+    /// Further than any ramp reaches — the identity of the `min`, and what a
+    /// piece contributes to a sample outside its own support.
+    fn unreachable() -> Self {
+        Self(constant(RAMP_REACH))
+    }
+
+    /// `value / (‖∇scale‖ + ε)`: `value` measured in units of `scale`'s own
+    /// gradient. **The only way to build one from a raw kernel.**
+    ///
+    /// `scale`'s coefficients are table reads, so `‖∇scale‖` is a `sqrt` at
+    /// run time rather than the compile-time constant it was when they were
+    /// literals. That is the price of one body per fold, and it is paid
+    /// deliberately: precomputing the magnitude on the host would put the
+    /// distance back in the outline's units and break under a magnifying
+    /// warp. (`passes::lower_dwrt` is what makes it *compile* — a table read
+    /// whose index does not move with the differentiation variable is a
+    /// constant, so its derivative is 0.)
+    fn in_pixels(value: &Kernel, scale: &Kernel) -> Self {
+        let gradient = scale.dx().hypot(&scale.dy());
+        Self(value.div(&gradient.add(&constant(MIN_GRADIENT))))
+    }
+
+    /// The capsule distance: two orthogonal distances, already both in
+    /// pixels, combined by Pythagoras. This is the one place a distance is
+    /// built from other distances rather than from an edge function.
+    fn hypot(&self, other: &Self) -> Self {
+        Self(self.0.mul(&self.0).add(&other.0.mul(&other.0)).sqrt())
+    }
+
+    fn abs(&self) -> Self {
+        Self(self.0.abs())
+    }
+
+    fn min_of(terms: &[Distance]) -> Self {
+        let raw: Vec<Kernel> = terms.iter().map(|d| d.0.clone()).collect();
+        Self(Kernel::fold(Monoid::MIN, &raw))
+    }
+
+    fn min(&self, other: &Self) -> Self {
+        Self(self.0.min(&other.0))
+    }
+
+    fn max(&self, other: &Self) -> Self {
+        Self(self.0.max(&other.0))
+    }
+
+    /// Both operands are already in pixels, so the subtraction is meaningful
+    /// — which is the invariant the type exists to hold.
+    fn sub(&self, other: &Self) -> Self {
+        Self(self.0.sub(&other.0))
+    }
+
+    /// This distance where `inside` holds, [`Distance::unreachable`]
+    /// elsewhere — exact, because [`Support::around`] dilates by exactly
+    /// [`RAMP_REACH`], so nothing outside the box could have won the `min`.
+    fn masked(&self, inside: &Kernel) -> Self {
+        Self(inside.select(&self.0, &constant(RAMP_REACH)))
+    }
+
+    /// A distance is not negative, and this is the one place that can be
+    /// told: the chord bound is the chord's own distance less the curve's
+    /// deviation, which goes below zero for a sample on the chord of a
+    /// curve. Unclamped it makes coverage's outside arm `½ − d` exceed one —
+    /// a coverage of 1.17, which is not a rounding difference but a value
+    /// outside the function's range.
+    fn non_negative(&self) -> Self {
+        Self(self.0.max(&constant(0.0)))
+    }
+
+    fn select(mask: &Kernel, if_true: &Self, if_false: &Self) -> Self {
+        Self(mask.select(&if_true.0, &if_false.0))
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // The piece row: one layout, one body per fold
 // ─────────────────────────────────────────────────────────────────────────
@@ -637,9 +895,9 @@ fn constant(v: f32) -> Kernel {
 //   is never negative for a line — the identity, again;
 // - a horizontal chord's `direction` (column 5) is 0, the honest winding
 //   jump for an edge no horizontal ray crosses;
-// - a piece nothing else covers carries [`ALWAYS_A_BOUNDARY`] in column 21,
-//   which no winding reaches, so [`boundary_distance`]'s test is true
-//   without being asked.
+// - a piece nothing else covers carries a set mask in column 21, the
+//   absorbing element of the `∨` [`boundary_distance`] ORs it into, so that
+//   test is true without being asked.
 
 /// `y_min` of the chord.
 const COL_Y_MIN: usize = 0;
@@ -679,26 +937,24 @@ const COL_HALF_LENGTH: usize = 19;
 /// How far the segment strays from its chord ([`Piece::deviation`]), `0.0`
 /// for a line.
 const COL_DEVIATION: usize = 20;
-/// The threshold the boundary test compares a winding against
-/// ([`boundary_distance`]): [`WINDING_ZERO`] for a piece another contour's
-/// ink may cover, and [`ALWAYS_A_BOUNDARY`] — which no winding reaches — for
-/// one nothing covers, which therefore always bounds the ink it draws.
-const COL_BOUNDARY_TEST: usize = 21;
+/// A **mask**, set for a piece no other contour's ink can reach: such a
+/// piece always bounds what it draws, so [`boundary_distance`] ORs this in
+/// and the winding test is not consulted.
+///
+/// A mask, not a threshold. This was `f32::MAX` compared with `lt`, which
+/// makes "always" an argument about how large a winding can get — false
+/// given enough overlapping contours. "Always" is the *absorbing* element of
+/// `∨`, and masks are where the codebase already keeps bit patterns.
+const COL_ALWAYS_BOUNDARY: usize = 21;
 /// Columns in one piece's row: `y_min, y_max, dx/dy, a.x, a.y, direction,
 /// u.a, u.b, u.c, v.a, v.b, v.c, sliver_sign, across.a, across.b, across.c,
-/// along.a, along.b, along.c, half_length, deviation, boundary_test`.
+/// along.a, along.b, along.c, half_length, deviation, always_boundary`.
 const PIECE_ROW_COLS: usize = 22;
 
 /// A winding this close to zero **is** zero: every winding term is a hard
 /// mask selecting a signed constant, so the sum is an integer and half a unit
 /// separates `0` from `±1`.
 const WINDING_ZERO: f32 = 0.5;
-
-/// The [`COL_BOUNDARY_TEST`] threshold of a piece no other contour's ink can
-/// reach. A winding is bounded by the piece count, so nothing can exceed this
-/// and the test is unconditionally true — the answer for such a piece, spelled
-/// as a number the fold's one body reads rather than as a branch on the host.
-const ALWAYS_A_BOUNDARY: f32 = f32::MAX;
 
 /// One piece's row, column `k`, as a [`Kernel`] — a bound-table read at a
 /// fold's binder. See the module section above.
@@ -797,10 +1053,7 @@ fn piece_row(piece: Piece) -> [f32; PIECE_ROW_COLS] {
     row[COL_ALONG_C] = along.c as f32;
     row[COL_HALF_LENGTH] = (length / 2.0) as f32;
     row[COL_DEVIATION] = piece.deviation() as f32;
-    row[COL_BOUNDARY_TEST] = match piece.may_be_interior {
-        true => WINDING_ZERO,
-        false => ALWAYS_A_BOUNDARY,
-    };
+    row[COL_ALWAYS_BOUNDARY] = OpKind::mask(!piece.may_be_interior);
     row
 }
 
@@ -821,25 +1074,6 @@ impl Linear {
             c: -(n[0] * a[0] + n[1] * a[1]),
         }
     }
-}
-
-/// `value / (‖∇scale‖ + ε)`: `value` in units of `scale`'s own gradient,
-/// which the calculus resolves through every enclosing coordinate warp, so
-/// a distance built from it is in pixels of whatever lattice the kernel is
-/// baked on.
-///
-/// `scale`'s coefficients are table reads, so `‖∇scale‖` is no longer the
-/// compile-time constant it was when they were literals — a gradient `sqrt`
-/// per term survives to run time. That is the price of one body, and it is
-/// paid deliberately: precomputing the magnitude on the host would put the
-/// distance back in the outline's units and break under a magnifying
-/// `Kernel::at`. (`passes::lower_dwrt` is what makes it *compile*: a table
-/// read whose index does not move with the differentiation variable is a
-/// constant, so its derivative is 0 — the one thing a `Gather` under a
-/// `Dwrt` used to be refused for.)
-fn in_pixels(value: &Kernel, scale: &Kernel) -> Kernel {
-    let gradient = scale.dx().hypot(&scale.dy());
-    value.div(&gradient.add(&constant(MIN_GRADIENT)))
 }
 
 /// **The ramp distance** of one piece: how far the sample is from it, in
@@ -865,21 +1099,23 @@ fn in_pixels(value: &Kernel, scale: &Kernel) -> Kernel {
 /// fold unrolls the sum once rather than once per piece.
 ///
 /// The test is asked of every row and answered by column 21: a piece no
-/// other contour's ink can reach compares against [`ALWAYS_A_BOUNDARY`]
-/// instead of [`WINDING_ZERO`], so it passes unconditionally. That is not
+/// other contour's ink can reach carries a set mask, ORed into the result,
+/// so it passes unconditionally. That is not
 /// merely an optimization — the two-sides formula reads the *crossing*
 /// term, which is 0 wherever the sample's row lies outside the chord's own
 /// Y band, so for a horizontal or near-horizontal chord it is `w₋ = w` and
 /// the pair is not the piece's two sides at all. Asking it of a piece that
 /// always separates would drop that piece's ramp, not merely re-derive it.
-fn boundary_distance(c: Coeff, winding: &Kernel) -> Kernel {
-    let without = winding.sub(&crossing_term(c).add(&sliver_term(c)));
-    let other_side = without.add(&c(COL_DIRECTION));
+fn boundary_distance(c: Coeff, winding: &Winding) -> Distance {
+    let own = crossing_term(c).add(&sliver_term(c));
+    let without = winding.sub(&own);
+    // `dir` is itself a winding: the jump a ray takes crossing this piece.
+    let other_side = without.add(&Winding(c(COL_DIRECTION)));
     let separates = without
-        .abs()
-        .min(&other_side.abs())
-        .lt(&c(COL_BOUNDARY_TEST));
-    separates.select(&piece_distance(c), &constant(RAMP_REACH))
+        .is_zero()
+        .or(&other_side.is_zero())
+        .or(&c(COL_ALWAYS_BOUNDARY));
+    Distance::select(&separates, &piece_distance(c), &Distance::unreachable())
 }
 
 /// The distance from the sample to one piece, in pixels: the larger of the
@@ -900,14 +1136,14 @@ fn boundary_distance(c: Coeff, winding: &Kernel) -> Kernel {
 /// corner's width away — a dark halo on every serif.
 ///
 /// Reads columns 13–20 (and, through [`implicit_distance`], 6–11).
-fn piece_distance(c: Coeff) -> Kernel {
+fn piece_distance(c: Coeff) -> Distance {
     let across = affine(c, COL_ACROSS_A, COL_ACROSS_B, COL_ACROSS_C);
     let along = affine(c, COL_ALONG_A, COL_ALONG_B, COL_ALONG_C);
     let half = c(COL_HALF_LENGTH);
     let overshoot = along.sub(&half).abs().sub(&half).max(&constant(0.0));
-    let dn = in_pixels(&across, &across);
-    let tn = in_pixels(&overshoot, &along);
-    let capsule = dn.mul(&dn).add(&tn.mul(&tn)).sqrt();
+    let perpendicular = Distance::in_pixels(&across, &across);
+    let past_the_end = Distance::in_pixels(&overshoot, &along);
+    let capsule = perpendicular.hypot(&past_the_end);
     // Both in the same units, or the subtraction is meaningless. The capsule
     // is already divided by its own gradient, so it is in pixels of whatever
     // lattice this is baked on; the deviation is a length in the outline's
@@ -916,7 +1152,7 @@ fn piece_distance(c: Coeff) -> Kernel {
     // magnification, and a lower bound that is too large is not a lower
     // bound. Normalising it through the same gradient makes them agree by
     // construction; today it divides by one.
-    let bound = capsule.sub(&in_pixels(&c(COL_DEVIATION), &across));
+    let bound = capsule.sub(&Distance::in_pixels(&c(COL_DEVIATION), &across));
     implicit_distance(c).max(&bound)
 }
 
@@ -940,7 +1176,7 @@ fn piece_distance(c: Coeff) -> Kernel {
 /// see the piece-row layout above [`piece_row`]. Asked of every row by both
 /// of [`glyph`]'s folds, with no host-side pruning: a horizontal chord's
 /// `direction` is already `0`, so the term is its own identity there.
-fn crossing_term(c: Coeff) -> Kernel {
+fn crossing_term(c: Coeff) -> Winding {
     let spans = Kernel::y()
         .ge(&c(COL_Y_MIN))
         .and(&Kernel::y().lt(&c(COL_Y_MAX)));
@@ -950,9 +1186,11 @@ fn crossing_term(c: Coeff) -> Kernel {
         .sub(&c(COL_AY))
         .mul(&c(COL_DX_OVER_DY))
         .add(&c(COL_AX));
-    spans
-        .and(&crossing_x.gt(&Kernel::x()))
-        .select(&c(COL_DIRECTION), &constant(0.0))
+    Winding(
+        spans
+            .and(&crossing_x.gt(&Kernel::x()))
+            .select(&c(COL_DIRECTION), &constant(0.0)),
+    )
 }
 
 /// **The sliver term**: `±1` inside the crescent between a curve and its
@@ -994,14 +1232,16 @@ fn crossing_term(c: Coeff) -> Kernel {
 /// once on the host, not here. A line's row makes every one of those
 /// columns `0.0`, which makes this term the identity unconditionally (see
 /// the module note above [`COL_Y_MIN`]), so a line needs no special case.
-fn sliver_term(c: Coeff) -> Kernel {
+fn sliver_term(c: Coeff) -> Winding {
     let u = affine(c, COL_U_A, COL_U_B, COL_U_C);
     let v = affine(c, COL_V_A, COL_V_B, COL_V_C);
     let under_the_chord = u.ge(&v);
     let over_the_parabola = u.mul(&u).sub(&v).le(&constant(0.0));
-    under_the_chord
-        .and(&over_the_parabola)
-        .select(&c(COL_SLIVER_SIGN), &constant(0.0))
+    Winding(
+        under_the_chord
+            .and(&over_the_parabola)
+            .select(&c(COL_SLIVER_SIGN), &constant(0.0)),
+    )
 }
 
 /// Coverage, given the winding and the distance to the nearest boundary: an
@@ -1017,19 +1257,15 @@ fn sliver_term(c: Coeff) -> Kernel {
 /// number, and a comparison landing on the wrong side of an edge moved
 /// coverage by half a unit rather than by a rounding. That coupling is what
 /// made `'8'` render with a smear at its waist.
-fn coverage(winding: &Kernel, distance: &Kernel) -> Kernel {
-    // A distance is not negative, and this is the one place that can be
-    // told: the chord bound is the chord's own distance less the curve's
-    // deviation, which goes below zero for a sample on the chord of a
-    // curve. Unclamped it makes the outside arm `½ − d` exceed one — a
-    // coverage of 1.17, which is not a rounding difference but a value
-    // outside the function's range.
-    let distance = distance.max(&constant(0.0));
-    let inside = winding.abs().ge(&constant(1.0));
+fn coverage(winding: &Winding, distance: &Distance) -> Kernel {
+    // The one place the two types are spent: past here it is a plain
+    // coverage kernel, and neither invariant is any longer available to
+    // state. `non_negative` is why the outside arm cannot exceed one.
+    let Distance(d) = distance.non_negative();
     let half = constant(0.5);
-    inside.select(
-        &half.add(&distance).min(&constant(1.0)),
-        &half.sub(&distance).max(&constant(0.0)),
+    winding.is_inside().select(
+        &half.add(&d).min(&constant(1.0)),
+        &half.sub(&d).max(&constant(0.0)),
     )
 }
 
@@ -1045,11 +1281,11 @@ fn coverage(winding: &Kernel, distance: &Kernel) -> Kernel {
 /// the one place the map is computed. A line's are all `0.0`, which makes
 /// `f` identically zero and this term exactly `0`: the `max`'s identity
 /// against a bound that is never negative for a line.
-fn implicit_distance(c: Coeff) -> Kernel {
+fn implicit_distance(c: Coeff) -> Distance {
     let u = affine(c, COL_U_A, COL_U_B, COL_U_C);
     let v = affine(c, COL_V_A, COL_V_B, COL_V_C);
     let f = u.mul(&u).sub(&v);
-    in_pixels(&f, &f).abs()
+    Distance::in_pixels(&f, &f).abs()
 }
 
 #[cfg(test)]

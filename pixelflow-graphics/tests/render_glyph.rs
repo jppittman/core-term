@@ -25,7 +25,7 @@ fn parse_font_and_get_glyph() {
     // Bake the glyph and confirm it renders real ink in range. The winding
     // sum reads a bound piece table (S1a), so bind it rather than a bare
     // `Lattice::bake`.
-    let centered = glyph_a.kernel.at(
+    let centered = glyph_a.kernel().at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );

@@ -274,7 +274,8 @@ fn compare_against_freetype(arm: Arm, corpus: &Corpus) {
             };
 
             let ours_glyph = ours.glyph_kernel_scaled(ch, size as f32).expect("glyph");
-            let (arena, root) = ours_glyph.kernel.parts();
+            let coverage = ours_glyph.kernel();
+            let (arena, root) = coverage.parts();
             // Link before anything reads structure: the folds name the
             // winding by reference, and a name has no derivative and
             // declares no buffer.

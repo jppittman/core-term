@@ -25,7 +25,7 @@ fn main() {
     // `text` is convention-agnostic (raw glyph space); land on the
     // rasterizer's pixel centers as a contramap, same as a raw glyph kernel.
     let glyph = text(&font, message, size);
-    let kernel = glyph.kernel.at(
+    let kernel = glyph.kernel().at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );

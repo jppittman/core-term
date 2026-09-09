@@ -153,7 +153,7 @@ impl CachedGlyph {
         // (i + PIXEL_CENTER, j + PIXEL_CENTER). Used to be the bake
         // lattice's own origin; a contramap on the kernel now that a
         // lattice is a pure index.
-        let centered = glyph.kernel.at(
+        let centered = glyph.kernel().at(
             &Kernel::x().add(&Kernel::constant(PIXEL_CENTER)),
             &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
         );
@@ -663,7 +663,8 @@ mod tests {
         let font = Font::parse(FONT_DATA).unwrap();
         let glyph = font.glyph_kernel_scaled('A', 32.0).unwrap();
         let cached = CachedGlyph::from_kernel(&glyph, 32, 1.0);
-        let (arena, root) = glyph.kernel.parts();
+        let coverage = glyph.kernel();
+        let (arena, root) = coverage.parts();
         // Link first — the winding sum is composed by reference — then
         // lower: `Dwrt` (the antialiasing gradient) has no scalar evaluation
         // until it is lowered, exactly as the compile entries lower it.
@@ -679,8 +680,7 @@ mod tests {
             .buffers()
             .iter()
             .map(|decl| {
-                glyph
-                    .kernel
+                coverage
                     .buffer_data()
                     .find(|(id, _)| *id == decl.id)
                     .map(|(_, d)| d.as_ref())
@@ -714,7 +714,7 @@ mod tests {
         // sampling convention), as a contramap over a plain index lattice.
         // The winding sum reads a bound piece table (S1a), so bind it
         // rather than a bare `Lattice::bake`.
-        let centered = glyph.kernel.at(
+        let centered = glyph.kernel().at(
             &Kernel::x().add(&Kernel::constant(0.5)),
             &Kernel::y().add(&Kernel::constant(0.5)),
         );

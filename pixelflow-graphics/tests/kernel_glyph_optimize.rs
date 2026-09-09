@@ -154,7 +154,7 @@ const SQRT_PER_PIECE: usize = 4;
 #[test]
 fn a_glyph_is_one_body_and_a_fixed_budget_per_piece() {
     let (small, large) = (5usize, 11usize);
-    let build = |n: usize| linked(&loop_blinn::glyph(&regular_polygon(n)).kernel);
+    let build = |n: usize| linked(&loop_blinn::glyph(&regular_polygon(n)).kernel());
     let (few, few_root) = build(small);
     let (many, many_root) = build(large);
 
@@ -206,7 +206,7 @@ fn a_glyph_is_one_body_and_a_fixed_budget_per_piece() {
 fn lowered_glyph_ops_are_all_egraph_representable() {
     let font = Font::parse(FONT_DATA).unwrap();
     let glyph = font.glyph_kernel_scaled('g', 16.0).expect("glyph");
-    let (arena, root) = linked(&glyph.kernel);
+    let (arena, root) = linked(&glyph.kernel());
     let (lowered, lroot) = lower_dwrt_owned(&arena, root).expect("lower");
     let mut missing = std::collections::BTreeSet::new();
     let len = lowered.nodes_raw().len();
@@ -276,7 +276,8 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
             let glyph = font
                 .glyph_kernel_scaled(ch, size as f32)
                 .expect("glyph kernel");
-            let (arena, root) = linked(&glyph.kernel);
+            let coverage = glyph.kernel();
+            let (arena, root) = linked(&coverage);
             let (raw, raw_root) = lower_dwrt_owned(&arena, root).expect("lower raw");
             // `glyph.kernel`'s winding sum reads a piece table that travels
             // with the kernel itself; both `eval_scalar` oracles below need
@@ -288,8 +289,7 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
                 .buffers()
                 .iter()
                 .map(|decl| {
-                    glyph
-                        .kernel
+                    coverage
                         .buffer_data()
                         .find(|(id, _)| *id == decl.id)
                         .map(|(_, d)| d.as_ref())

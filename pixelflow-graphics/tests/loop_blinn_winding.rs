@@ -177,7 +177,7 @@ fn pixel_centered(k: &Kernel) -> Kernel {
 /// table (S1a), so this must bind it before collapsing.
 fn bake_single(outline: &Outline, lattice: Lattice) -> Vec<f32> {
     let glyph = loop_blinn::glyph(outline);
-    let kernel = pixel_centered(&glyph.kernel);
+    let kernel = pixel_centered(&glyph.kernel());
     glyph.bake(&kernel, lattice).into_buffer()
 }
 
@@ -527,7 +527,7 @@ fn a_glyph_is_exactly_zero_outside_its_support() {
                 .collect();
             // `Lattice::eval_at` binds nothing, so — unlike before S1a — it
             // cannot serve this kernel's winding table; bind it explicitly.
-            let bound = glyph.bound(&glyph.kernel, [1, 1]);
+            let bound = glyph.bound(&glyph.kernel(), [1, 1]);
             for [x, y] in probes {
                 let v = bound.eval_at(x, y);
                 assert_eq!(

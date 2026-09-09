@@ -149,7 +149,7 @@ fn buffer_data_for(arena: &ExprArena, glyph: &Glyph) -> Vec<Option<Arc<Vec<f32>>
         .iter()
         .map(|decl| {
             glyph
-                .kernel
+                .kernel()
                 .buffer_data()
                 .find(|(id, _)| *id == decl.id)
                 .map(|(_, data)| Arc::new(data.to_vec()))
@@ -189,7 +189,8 @@ fn capture(out: &std::path::Path, font: Option<&std::path::Path>) {
             // Linked: the winding sum is composed by reference, and the
             // corpus holds the arena the optimizer sees — the referent
             // spliced in, declaring the table it reads.
-            let (arena, root) = glyph.kernel.parts();
+            let coverage = glyph.kernel();
+            let (arena, root) = coverage.parts();
             let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
             let buffer_data = buffer_data_for(&arena, &glyph);
             kernels.push(CollapseKernel {
@@ -206,7 +207,8 @@ fn capture(out: &std::path::Path, font: Option<&std::path::Path>) {
         let glyph = parsed
             .glyph_kernel_scaled(ch, BENCH_PT)
             .unwrap_or_else(|| panic!("the font has no glyph for {ch:?}"));
-        let (arena, root) = glyph.kernel.parts();
+        let coverage = glyph.kernel();
+        let (arena, root) = coverage.parts();
         let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
         let buffer_data = buffer_data_for(&arena, &glyph);
         kernels.push(CollapseKernel {

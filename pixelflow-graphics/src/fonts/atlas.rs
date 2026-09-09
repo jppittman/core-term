@@ -181,7 +181,7 @@ impl GlyphAtlas {
                 // texel (i, j) holds coverage at (i + PIXEL_CENTER, j +
                 // PIXEL_CENTER). Used to be the lattice's own origin; a
                 // contramap on the kernel now that a lattice is a pure index.
-                let centered = glyph.kernel.at(
+                let centered = glyph.kernel().at(
                     &Kernel::x().add(&Kernel::constant(PIXEL_CENTER)),
                     &Kernel::y().add(&Kernel::constant(PIXEL_CENTER)),
                 );

@@ -684,7 +684,7 @@ fn real_kernels(font: &Path, filter: Option<&str>) -> Vec<RealKernel> {
                 missing += 1;
                 continue;
             };
-            let kernel = glyph.kernel;
+            let kernel = glyph.kernel();
             push(
                 format!("glyph{tile}_U{:04X}", ch as u32),
                 &format!("glyph{tile}"),
@@ -699,7 +699,7 @@ fn real_kernels(font: &Path, filter: Option<&str>) -> Vec<RealKernel> {
         let kernel = parsed
             .glyph_kernel_scaled(ch, BENCH_PT)
             .unwrap_or_else(|| panic!("no glyph for {ch:?}"))
-            .kernel;
+            .kernel();
         push(
             format!("bench_{label}"),
             "bench",
