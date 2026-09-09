@@ -316,21 +316,32 @@ bake.
 ## 6. Method notes and what this does not show
 
 - Every budget arm is production's optimizer at its own tier's round cap
-  with the class cap and `40 ×` application cap moved — the sweep's
+  with the class cap and the `40 ×` application cap moved — the sweep's
   `cap{b}-app{40b}` arms — with the safety ceiling disabled, since the
   ceiling asserts something about *production's* budget and firing it here
   would say nothing about the extractor.
-- Both budget-ladder runs used the shipped extractor; the traced re-run
-  asserts its cost equals `Optimizer::run`'s on every pair analysed, so a
-  drift between the instrument and the shipped path would abort rather than
-  be quietly analysed.
-- **No monotonicity violation was observed**: every witness subterm was
-  found in the bigger graph by hash-cons lookup. The instrument would have
-  said so loudly otherwise.
-- This measures `dag_cost` and the extraction objective, not wall clock of
-  the emitted kernel. The corrected-benchmark work
-  (`docs/plans/2026-09-07-benchmark-correction.md`) is where a clock claim
-  would come from, and none is made here.
+- The traced re-run asserts its cost equals `Optimizer::run`'s on every pair
+  analysed, so a drift between the instrument and the shipped extractor
+  aborts rather than being quietly analysed. `Ties::Insertion` is separately
+  pinned byte-identical to `extract_dag_scoped` by a unit test.
+- **Chrome is held out** and was run once, at the end, in its own process
+  (`--chrome`); its rows are in the `-chrome` files. Its `dag_cost` ladder
+  reproduces the class-cap sweep exactly: 1,668 at 5k → 2,374 at 100k
+  (+42 %).
+- The classification order in the denotation put `SHARING` before
+  `DISTRACTOR`, which would have made `DISTRACTOR` unreachable since it is a
+  refinement of `SHARING`. The implemented order tests `DISTRACTOR` first
+  (`SHARING` with a rule-minted node) and `SHARING` for a seed node. Noted
+  because the denotation was written first and this is the one place it was
+  wrong.
+- An `UNPRICED` label exists for a frontier class the winning arm's table has
+  no entry for; it never fired.
+- This measures `dag_cost` and the extraction objective, **not** the emitted
+  kernel's wall clock. `docs/plans/2026-09-07-benchmark-correction.md` is
+  where a clock claim would come from, and none is made here.
+- The `seconds` column in the budget CSV was taken on a shared box under
+  load averages between 9 and 168, including a concurrent `cargo test
+  --workspace`. It is not a timing measurement.
 
 ## 7. The numbers
 
