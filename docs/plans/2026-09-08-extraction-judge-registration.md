@@ -179,6 +179,23 @@ Families: `shader` (12 kernels), `glyph` (190), `chrome` (1, held out).
    **one** extrinsic run per direction is registered. An untuned null is not
    a null (`feedback_optuna-before-quoting-any-learned-null`).
 
+### 5.1 Where the margin comes from
+
+`0.15` is not a round number picked for feel. After the fixpoint there are
+**28** objective witness pairs on DEV (`shader` 4, `glyph16` 8, `glyph32` 9,
+`psychedelic` 7) and **7** on chrome. A margin of 0.15 over C2 is therefore
+"at least four more DEV pairs eliminated than uniform-random-among-ties
+manages", which is above the spread five C2 seeds can produce on a
+population that small — the seed spread is measured **before** the learned
+arm runs, and if it turns out to exceed 0.15 the margin is raised to it and
+that raise is recorded here as an amendment with its date, before any
+learned number exists.
+
+`S_f ≤ 0.98 · S_f(C0)` is the same discipline in the other statistic: the
+fixpoint itself moved Σ objective by −2.91 % over 635 rows, so a learned
+component that cannot find 2 % on top of a mechanical fix has not earned the
+capacity.
+
 ## 6. Controls — all four run, all four reported
 
 | id | arm | what a tie with it means |
