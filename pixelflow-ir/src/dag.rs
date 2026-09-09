@@ -16,15 +16,19 @@
 //!   - no cycle detection, no `visited` set needed to terminate;
 //!   - a node's edges are contiguous, so children iterate as a slice.
 //!
-//! What this is not: `ExprArena`. That type is mutated and re-rooted
-//! throughout a kernel's whole compilation — `substitute_params`,
-//! `splice`, `substitute_vars_with` all take `&mut self`, push more
-//! nodes into the *same* growing arena, and hand back a new root to
-//! keep working against, interleaved with reads. `Dag`'s lifecycle is
-//! build-once via `Builder`, then `finish()` freezes it into a `Rooted`
-//! for reading — closer to a compiler's frozen final IR than to a live,
-//! accreting term store. Reach for this when a *new* graph fits that
-//! shape; `ExprArena` keeps its own index-based storage for now.
+//! The lifecycle is build-once: `Builder` accumulates, `finish()` freezes
+//! it into a `Rooted`, and reading happens after. That is narrower than
+//! `ExprArena`'s `&mut self` methods *look*, but not narrower than what
+//! they actually do — every one of them is already pure at its call site,
+//! and `Kernel` clones its arena before composing, so composition is
+//! already "fresh graph, splice, done". An earlier draft of these docs
+//! claimed the interleaving ruled `ExprArena` out; it does not.
+//!
+//! `ExprArena` nonetheless still keeps its own index-based storage, for
+//! reasons of representation rather than lifecycle: `ExprNode::Nary`
+//! publishes raw slab offsets, and several call sites store an `ExprId`
+//! beside the arena it indexes. `docs/plans/2026-09-09-exprarena-on-dag.md`
+//! has the full list and the staging around it.
 
 extern crate alloc;
 #[cfg(test)]

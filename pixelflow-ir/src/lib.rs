@@ -38,11 +38,16 @@ pub mod arena;
 
 /// A generic arena-backed DAG whose consumers never see the arena: nodes
 /// are named by a borrowed [`dag::Node`] handle, never a raw index.
-/// `ExprArena` predates this and keeps its own index-based storage — the
-/// two have different lifecycles (`ExprArena` is mutated and re-rooted
-/// throughout a kernel's compilation; `Dag` is built once via `Builder`
-/// and then frozen) — but any *new* graph that doesn't need that should
-/// reach for this instead of hand-rolling another `Vec` + index-newtype.
+///
+/// `ExprArena` predates this and still keeps its own index-based storage.
+/// What holds it back is representation coupling, not lifecycle — its
+/// mutating methods take `&mut self` but are already pure at every call
+/// site, so `Builder` would serve them. See
+/// `docs/plans/2026-09-09-exprarena-on-dag.md` for the actual blockers and
+/// the staging around them.
+///
+/// A *new* graph should reach for this rather than hand-roll another `Vec`
+/// plus index-newtype.
 pub mod dag;
 pub use dag::{Builder, Dag, Key, Node, Rooted, Scratch, SideTable};
 
