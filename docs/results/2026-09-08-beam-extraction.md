@@ -44,6 +44,20 @@ instead is the whole-compile ratio, which bounds it from above.
 identity claim is actually made on, since `bytes` can collide and a picture
 can agree on two different programs.
 
+**One thing the `dag_cost` column is not.** `egraph_off_on`'s `dag_cost` is
+the *unweighted* latency-prior sum over the linked arena, while the production
+path extracts under `for_lattice(shape)` — where a node's cost is multiplied
+by how many times that lattice evaluates it. The two are the same objective
+only at `LatticeShape::POINT`, which no glyph, shader or chrome row is. So
+`Beam` is guaranteed no dearer than `Greedy` **in the extractor's own
+objective** (asserted at both `POINT` and the bake shape by
+`pixelflow-pipeline/tests/beam_never_loses_to_greedy.rs`), and the column
+below can still move either way for an individual kernel — a term cheaper per
+sample is not automatically cheaper per node. That caveat is not specific to
+this document: `docs/results/2026-09-08-class-cap-sweep.md` reads the same
+column as "the extractor's objective", and at a lattice it is a correlate of
+it, not it.
+
 ## Identity: `Beam::width(1)` is `Greedy` is production
 
 Structural, then tested, then measured end to end:
@@ -61,11 +75,59 @@ Structural, then tested, then measured end to end:
 ## Quality, per family, exact
 
 `ratio` is Σ `dag_cost` against `Greedy` at the same cap; below 1 is better.
-`improved / worse` count kernels.
+`improved / worse` count kernels **in this column**, which is not the
+extractor's objective at a lattice (see above) — the four `glyph16` kernels
+that go the wrong way at `k = 64` (`f`, `j`, `l`, `~`) are cheaper per sample
+and dearer per node, not a broken guarantee. `chrome` is the held-out row,
+included here for one table and discussed on its own below.
 
 | cap | width | family | n | Σ dag_cost | ratio | improved | worse | compile ×Greedy |
 |---|---|---|---:|---:|---:|---:|---:|---:|
-<!--TABLE-->
+| 5000 | greedy | cellgrid | 1 | 428 | 1.0000 | 0 | 0 | 1.0× |
+| 5000 | beam1 | cellgrid | 1 | 428 | 1.0000 | 0 | 0 | 0.9× |
+| 5000 | beam4 | cellgrid | 1 | 428 | 1.0000 | 0 | 0 | 1.6× |
+| 5000 | beam16 | cellgrid | 1 | 428 | 1.0000 | 0 | 0 | 7.2× |
+| 5000 | beam64 | cellgrid | 1 | 420 | 0.9813 | 1 | 0 | 111.3× |
+| 5000 | greedy | chrome | 1 | 1668 | 1.0000 | 0 | 0 | 1.0× |
+| 5000 | beam1 | chrome | 1 | 1668 | 1.0000 | 0 | 0 | 1.0× |
+| 5000 | beam4 | chrome | 1 | 1668 | 1.0000 | 0 | 0 | 1.2× |
+| 5000 | beam16 | chrome | 1 | 1660 | 0.9952 | 1 | 0 | 2.0× |
+| 5000 | beam64 | chrome | 1 | 1668 | 1.0000 | 0 | 0 | 12.4× |
+| 5000 | greedy | glyph16 | 95 | 392757 | 1.0000 | 0 | 0 | 1.0× |
+| 5000 | beam1 | glyph16 | 95 | 392757 | 1.0000 | 0 | 0 | 1.0× |
+| 5000 | beam4 | glyph16 | 95 | 392741 | 1.0000 | 1 | 0 | 1.2× |
+| 5000 | beam16 | glyph16 | 95 | 392633 | 0.9997 | 8 | 0 | 2.7× |
+| 5000 | beam64 | glyph16 | 95 | 392725 | 0.9999 | 6 | 4 | 26.0× |
+| 5000 | greedy | psychedelic | 1 | 825 | 1.0000 | 0 | 0 | 1.0× |
+| 5000 | beam1 | psychedelic | 1 | 825 | 1.0000 | 0 | 0 | 1.0× |
+| 5000 | beam4 | psychedelic | 1 | 825 | 1.0000 | 0 | 0 | 1.5× |
+| 5000 | beam16 | psychedelic | 1 | 825 | 1.0000 | 0 | 0 | 6.4× |
+| 5000 | beam64 | psychedelic | 1 | 825 | 1.0000 | 0 | 0 | 72.2× |
+| 5000 | greedy | shader | 12 | 4618 | 1.0000 | 0 | 0 | 1.0× |
+| 5000 | beam1 | shader | 12 | 4618 | 1.0000 | 0 | 0 | 1.0× |
+| 5000 | beam4 | shader | 12 | 4618 | 1.0000 | 0 | 0 | 1.2× |
+| 5000 | beam16 | shader | 12 | 4618 | 1.0000 | 0 | 0 | 3.2× |
+| 5000 | beam64 | shader | 12 | 4602 | 0.9965 | 1 | 0 | 30.0× |
+| 50000 | greedy | cellgrid | 1 | 427 | 1.0000 | 0 | 0 | 1.0× |
+| 50000 | beam1 | cellgrid | 1 | 427 | 1.0000 | 0 | 0 | 1.1× |
+| 50000 | beam4 | cellgrid | 1 | 427 | 1.0000 | 0 | 0 | 2.3× |
+| 50000 | beam16 | cellgrid | 1 | 427 | 1.0000 | 0 | 0 | 11.1× |
+| 50000 | beam64 | cellgrid | 1 | 419 | 0.9813 | 1 | 0 | 134.9× |
+| 50000 | greedy | chrome | 1 | 2214 | 1.0000 | 0 | 0 | 1.0× |
+| 50000 | beam1 | chrome | 1 | 2214 | 1.0000 | 0 | 0 | 1.0× |
+| 50000 | beam4 | chrome | 1 | 2214 | 1.0000 | 0 | 0 | 1.0× |
+| 50000 | beam16 | chrome | 1 | 2214 | 1.0000 | 0 | 0 | 1.4× |
+| 50000 | beam64 | chrome | 1 | 2214 | 1.0000 | 0 | 0 | 8.0× |
+| 50000 | greedy | psychedelic | 1 | 829 | 1.0000 | 0 | 0 | 1.0× |
+| 50000 | beam1 | psychedelic | 1 | 829 | 1.0000 | 0 | 0 | 1.0× |
+| 50000 | beam4 | psychedelic | 1 | 829 | 1.0000 | 0 | 0 | 1.4× |
+| 50000 | beam16 | psychedelic | 1 | 829 | 1.0000 | 0 | 0 | 5.8× |
+| 50000 | beam64 | psychedelic | 1 | 829 | 1.0000 | 0 | 0 | 68.2× |
+| 50000 | greedy | shader | 12 | 4976 | 1.0000 | 0 | 0 | 1.0× |
+| 50000 | beam1 | shader | 12 | 4976 | 1.0000 | 0 | 0 | 0.9× |
+| 50000 | beam4 | shader | 12 | 4976 | 1.0000 | 0 | 0 | 1.0× |
+| 50000 | beam16 | shader | 12 | 4976 | 1.0000 | 0 | 0 | 1.2× |
+| 50000 | beam64 | shader | 12 | 4869 | 0.9785 | 2 | 0 | 4.0× |
 
 ## Chrome (held out, one run per arm)
 
@@ -74,22 +136,57 @@ found a strictly cheaper term.
 
 | cap | width | dag_cost | bytes | objective | code_fnv = Greedy | compile |
 |---|---|---:|---:|---|---|---:|
-| 5000 | greedy | 1668 | 3424 | shared | — | 180 ms |
-| 5000 | beam1 | 1668 | 3424 | shared | yes | 189 ms |
-| 5000 | beam4 | 1668 | 3424 | shared | yes | 208 ms |
-| 5000 | **beam16** | **1660** | 3408 | shared | no (a strict win) | 351 ms |
-| 5000 | beam64 | 1668 | 3424 | shared | yes | 2187 ms |
-| 50000 | greedy | 2214 | 4000 | shared | — | 2469 ms |
-| 50000 | beam1 | 2214 | 4000 | shared | yes | 2504 ms |
-| 50000 | beam4 | 2214 | 4000 | shared | yes | 2572 ms |
-| 50000 | beam16 | 2214 | 4000 | shared | yes | 3606 ms |
-| 50000 | beam64 | 2214 | 4000 | shared | yes | 18307 ms |
+| 5000 | greedy | 1668 | 3424 | shared | — | 177 ms |
+| 5000 | beam1 | 1668 | 3424 | shared | yes | 185 ms |
+| 5000 | beam4 | 1668 | 3424 | shared | yes | 205 ms |
+| 5000 | **beam16** | **1660** | 3408 | shared | no (a strict win) | 347 ms |
+| 5000 | beam64 | 1668 | 3424 | shared | yes | 2148 ms |
+| 50000 | greedy | 2214 | 4000 | shared | — | 2487 ms |
+| 50000 | beam1 | 2214 | 4000 | shared | yes | 2471 ms |
+| 50000 | beam4 | 2214 | 4000 | shared | yes | 2535 ms |
+| 50000 | beam16 | 2214 | 4000 | shared | yes | 3371 ms |
+| 50000 | beam64 | 2214 | 4000 | shared | yes | 19824 ms |
+
+## What the gate caught, and why it had to exist
+
+`Beam::width(k)` is never dearer than `Greedy` **in the extractor's own
+objective**. That property held on four hand-built saturated graphs in
+`pixelflow-search`'s unit tests while being false three separate ways on real
+kernels, because the situations that break it only occur at scale:
+
+1. **The repair runs after the beam's comparison.** `repair_choices_well_founded`
+   rewrites picks, and a state cheaper pre-repair can repair to a term dearer
+   than the DP's. `Beam` now folds the DP's own repaired term back in as a
+   third arm — `Greedy`'s fold with one more candidate — so the property is
+   structural.
+2. **A singleton reach set means three different things.** The sharing-aware
+   DP leaves one for a leaf, for a cycle-priced winner, and for a class where
+   *no* candidate beat the initial `usize::MAX` sentinel — and in the third
+   the recorded node index (0) and own cost (0) are initial values, not facts.
+   The beam's anchor was re-deriving the condition from `cost == CYCLE_COST`
+   and walked node 0's whole subtree where the DP had priced a singleton. It
+   is now a `ReachShape` enum recorded where the DP decides it.
+3. **A member's price was per-state.** It was computed from the variance the
+   state's own children induced, so two states agreeing on a class's node
+   could price it differently. `own` is now a function of the class and the
+   node alone, and the per-state variance field is gone.
+
+Two of the three are the same lesson: *a convention written in a sentinel
+value is an invariant something else eventually breaks*. All three were found
+by a test, not by reading — and (3) only once that test ran at the **bake
+shape** rather than only at `POINT`, which is the shape-is-part-of-the-
+objective point above, in its sharpest form.
+
+`pixelflow-pipeline/tests/beam_never_loses_to_greedy.rs` runs the property on
+the six glyphs that regressed, at the cap they regressed at, plus the twelve
+shaders, at both shapes — 22 s in release.
 
 ## The reading
 
-**Width is not monotone, and the anchor is why it is still safe.** `Beam` is
-never dearer than `Greedy` — the anchor is in every seat list, so the DP's own
-term is always reachable — but a wider beam can be dearer than a narrower one,
+**Width is not monotone, and the third arm is why it is still safe.** `Beam`
+is never dearer than `Greedy` in the extractor's objective — the DP's own
+repaired term is folded back in as a third arm — but a wider beam can be
+dearer than a narrower one,
 and is: `chrome_packed` at 5,000 is 1,660 at `k = 16` and 1,668 at `k = 64`. A
 wider beam generates strictly more candidates, and top-`k` of a larger
 candidate set need not contain top-`j` of a smaller one; a cheap partial merge
@@ -100,11 +197,20 @@ is a setting to measure and never one to raise on principle.
 **Where the term does not move at all, the answer is not "search harder".**
 At 50,000 classes chrome's extraction objective is `shared` — the beam is
 widening the arm that actually produced the returned term — and yet `k = 64`
-returns machine code identical to `Greedy`'s, having spent 18.1 s of compile
-against 2.7 s. Sixty-four seats per e-class over 10,256 live classes changed
+returns machine code identical to `Greedy`'s, having spent 19.8 s of compile
+against 2.5 s. Sixty-four seats per e-class over 10,256 live classes changed
 no choice. That is a much stronger negative than "beam was a bit worse": the
 neighbourhood a per-class beam searches does not contain the cheaper term the
 witness argument says is in the graph.
+
+**And what width does buy is under a percent, at 26–135× the compile.** The
+best cells in the whole matrix: `cellgrid` −1.9% at `k = 64` (both caps),
+`shader` −2.2% at `k = 64` and 50,000 with 2 of 12 improved, `glyph16` −0.03%
+at `k = 16` with 8 of 95 improved, `chrome` −0.5% at `k = 16` and 5,000.
+`psychedelic` never moves at any width, because its objective is
+`tree_cheaper` — the tree arm's term wins, and widening the shared arm cannot
+reach it by construction. Nothing here is worth 26× compile, which is why the
+default does not move.
 
 **Why it plausibly cannot.** A beam state must name **one** term, so two
 sibling states that disagree on any shared class cannot merge. As the graph
