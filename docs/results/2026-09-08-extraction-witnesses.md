@@ -211,9 +211,34 @@ removes the dependence on insertion order that the `'8'` bisect found, it
 is free, and it costs nothing at run time. It is **not** the fix for the
 regression.
 
-## 5. Glyphs
+## 5. Glyphs: the budget mostly helps, and where it does not it is the same story
 
-*(filled from the run — see §7)*
+Glyphs are the counter-example that keeps the headline honest. Over the 95
+warm-range glyphs at each of two tile sizes, raising the cap from 5k to 20k
+takes Σ `dag_cost` from **392,762 to 332,115 (−15.4 %)**; 74 of 95 improve,
+17 are flat (quiesced inside the smallest cap), and **4 regress**:
+
+| glyph | dag 5k | 10k | 20k | live 5k → 20k | tied 5k → 20k |
+|---|---:|---:|---:|---|---|
+| `U+006C` (`l`) | 1,773 | 1,827 | **2,172** (+22.5 %) | 432 → 526 | 162 → 185 |
+| `U+0066` (`f`) | 1,821 | 1,875 | **2,158** (+18.5 %) | 447 → 526 | 162 → 184 |
+| `U+0074` (`t`) | 1,798 | 1,907 | **1,935** (+7.6 %) | 441 → 484 | 165 → 178 |
+| `U+006A` (`j`) | 1,828 | 1,958 | **1,956** (+7.0 %) | 450 → 488 | 170 → 182 |
+
+and the biggest wins are large: `U+0024` 12,119 → 9,848, `U+0053` 11,756 →
+9,669, `U+0067` 11,540 → 9,485.
+
+**Tie density falls with the budget on glyphs** — 44.9 % → 38.9 % → 35.0 %
+of live classes — the opposite of the shaders. So "more ties" is not a law
+of bigger graphs; it is what happens when the rules a kernel's shape admits
+are predominantly cost-neutral ones. Glyph kernels are winding-number
+arithmetic over many Bézier segments, where saturation finds real
+factorizations; the regressing shaders are transcendental-heavy, where the
+reachable rewrites are mostly reassociations of the same instruction count.
+
+**Which arm wins is a coin flip on glyphs** — `Shared` on 44–48 of 95
+kernels per cap, `TreeCheaper` on the rest — so the `min-of-two` decision is
+load-bearing on roughly half of every glyph bake.
 
 ## 6. Method notes and what this does not show
 
@@ -236,4 +261,4 @@ regression.
 
 ## 7. The numbers
 
-*(filled from the run)*
+*(filled below from `2026-09-08-extraction-witnesses.json`.)*
