@@ -165,7 +165,8 @@ fn main() {
             )
         })
         .collect();
-    rows.sort_by(|a, b| b.2.cmp(&a.2));
+    // Busiest rule first: the report is read top-down for where the budget went.
+    rows.sort_by_key(|row| core::cmp::Reverse(row.2));
 
     for (label, _id, apps, med, max, zero_pct, noop_pct) in &rows {
         println!("{label:<28} {apps:>7} {med:>9} {max:>9} {zero_pct:>8.1}% {noop_pct:>8.1}%");

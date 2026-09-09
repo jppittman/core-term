@@ -827,7 +827,11 @@ impl Kernel {
     /// it — the linker only inlines — so this changes what a kernel *costs to
     /// build*, never what it means.
     ///
-    /// This is the only way a `Ref` node is produced.
+    /// This is the only way a `Ref` node is produced — so it is also why a
+    /// `no_std` build cannot hold one: the store a name is looked up in needs
+    /// a lock, `core` has none, and this method goes with the store behind
+    /// the `std` feature. Composition by value is unaffected, being what
+    /// every combinator did before a name existed.
     ///
     /// # Panics
     ///
@@ -837,6 +841,7 @@ impl Kernel {
     /// referent's value depends on a binding the store cannot carry, and the
     /// binder's rename cannot reach through a name to substitute it, so what
     /// expansion would put back is an index nothing binds.
+    #[cfg(feature = "std")]
     #[must_use]
     pub fn by_ref(&self) -> Self {
         let open = self

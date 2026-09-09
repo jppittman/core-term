@@ -20,9 +20,19 @@
 //! time, not per frame, so the population is the program's distinct kernel
 //! set.
 //!
-//! This module uses `std` (a `Mutex`-guarded map). The crate's `no_std` build
-//! is a known, unexercised gap — see the note in `lib.rs` — and this joins it
-//! rather than growing a hand-rolled lock the workspace has no other use for.
+//! **This module is the `std` feature**, and that is the whole of what the
+//! feature buys: a process-global map needs a lock, `core` has none, and a
+//! hand-rolled spinlock is a synchronisation primitive the workspace has no
+//! other use for. So under `no_std` there is no store — and therefore no
+//! [`Kernel::by_ref`](crate::kernel::Kernel::by_ref), and therefore no way to
+//! mint a `Ref` at all. The language is the same minus the ability to *name*
+//! a kernel: composition still splices, which is what it did everywhere
+//! before a name existed.
+//!
+//! That chain is a type-level statement rather than a comment, which it has
+//! to be — an earlier revision of this doc called the `no_std` build "a
+//! known, unexercised gap" and joined it, and the job that exercises it went
+//! red the first time this module reached CI.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;

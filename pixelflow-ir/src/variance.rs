@@ -286,6 +286,29 @@ impl core::fmt::Display for Variance {
 
 use alloc::vec::Vec;
 
+/// A reference denotes what its referent denotes, sampled at the same
+/// coordinates, so it varies exactly as the referent does. Resolving is the
+/// only way to know that — a key carries a kernel's identity, not its
+/// structure — and where it cannot be resolved the answer is the conservative
+/// one: refuse to claim an invariance that cannot be proved. An unresolvable
+/// key is a corrupt graph, which `passes::expand_refs` reports at the layer
+/// that can name it.
+#[cfg(feature = "std")]
+fn referent_variance(key: crate::key::KernelKey) -> Variance {
+    crate::store::KernelStore::resolve(key).map_or(Variance::ALL, |referent| {
+        let (ref_arena, ref_root) = referent.parts();
+        compute_arena_variance(ref_arena)[ref_root.0 as usize]
+    })
+}
+
+/// The same, with no store to resolve against — always the conservative
+/// answer, and never actually asked: `Kernel::by_ref` is the `std` feature
+/// too, so a `no_std` build cannot hold the key this would look up.
+#[cfg(not(feature = "std"))]
+fn referent_variance(_key: crate::key::KernelKey) -> Variance {
+    Variance::ALL
+}
+
 /// Compute variance for every node in an `ExprArena`.
 ///
 /// Returns a `Vec<Variance>` indexed by `ExprId`. Because the arena is
@@ -327,20 +350,7 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
             // prologue — and unknown on the parameter space, which is why it
             // is not a `Const`.
             ExprNode::Uniform(_) => Variance::CONST,
-            // A reference denotes what its referent denotes, sampled at the
-            // same coordinates, so it varies exactly as the referent does.
-            // Resolving is the only way to know that — a key carries a
-            // kernel's identity, not its structure.
-            ExprNode::Ref(key) => crate::store::KernelStore::resolve(*key).map_or(
-                // An unresolvable key is a corrupt graph, which
-                // `passes::expand_refs` reports at the layer that can name
-                // it. Here, refuse to claim an invariance we cannot prove.
-                Variance::ALL,
-                |referent| {
-                    let (ref_arena, ref_root) = referent.parts();
-                    compute_arena_variance(ref_arena)[ref_root.0 as usize]
-                },
-            ),
+            ExprNode::Ref(key) => referent_variance(*key),
             ExprNode::Param(_) => {
                 // Parameters are substituted before JIT compilation.
                 // If we see one here, treat conservatively as all-varying.

@@ -13,14 +13,16 @@
 //! reaches its two remaining constructors as inherent methods on
 //! `pixelflow-core`'s own `pub(crate)` lane types, with no trait at all.
 
-// NOTE: `no_std` support (disabling the `std` feature) is currently
-// incomplete: `cargo check -p pixelflow-ir --no-default-features` fails with
-// over 200 errors (missing f32 methods, `ExprId` deref mismatches in
-// `arena.rs`). No CI job builds this crate with `std` off -- the default
-// feature set and `--all-features` both enable it -- so this has never been
-// exercised. Tracked as a known, non-blocking gap by the
-// `pixelflow-ir-nostd-status` job in `.github/workflows/rust.yaml`; treat
-// `no_std` as aspirational until that job is green.
+// `no_std` is built and blocking: `cargo check -p pixelflow-ir
+// --no-default-features` with `-D warnings` runs presubmit (the "pixelflow-ir
+// no_std + pixelflow-search std-feature-off builds" job). It is no longer the
+// aspirational, unexercised gap an earlier revision of this note described —
+// and a comment that said so is precisely what let `store.rs` land three
+// unconditional `use std::` lines.
+//
+// What the `std` feature buys is exactly one module: [`store`], the
+// process-global map a `Ref` names into. See its docs for why that is the
+// whole of it.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
@@ -46,7 +48,12 @@ pub mod key;
 pub use key::KernelKey;
 
 /// The process-global, content-addressed store a `Ref` names into.
+///
+/// `std` only: a global map needs a lock. Without it nothing can mint a
+/// `Ref`, so nothing can need to resolve one — see the module's own docs.
+#[cfg(feature = "std")]
 pub mod store;
+#[cfg(feature = "std")]
 pub use store::KernelStore;
 
 /// IR-to-IR transforms: each takes an expression graph and returns another.

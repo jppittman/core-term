@@ -234,6 +234,7 @@ pub fn expand_refs(arena: &mut ExprArena, root: ExprId) -> ExprId {
 }
 
 /// Resolve one reference and splice its (itself ref-free) body into `arena`.
+#[cfg(feature = "std")]
 fn splice_referent(arena: &mut ExprArena, key: crate::key::KernelKey) -> ExprId {
     let referent = crate::store::KernelStore::resolve(key).unwrap_or_else(|| {
         panic!(
@@ -244,6 +245,22 @@ fn splice_referent(arena: &mut ExprArena, key: crate::key::KernelKey) -> ExprId 
     let (ref_arena, ref_root) = referent.parts();
     let (expanded, expanded_root) = expand_refs_owned(ref_arena, ref_root);
     arena.splice(&expanded, expanded_root)
+}
+
+/// The same, where there is no store to resolve against.
+///
+/// Unreachable rather than unimplemented: the store *is* the `std` feature,
+/// and `Kernel::by_ref` — the only producer of a `Ref` — goes with it, so a
+/// `no_std` build has no way to mint the key this would look up. Reaching
+/// here means one was minted by hand through `ExprArena::push_ref`, which
+/// names nothing.
+#[cfg(not(feature = "std"))]
+fn splice_referent(_arena: &mut ExprArena, key: crate::key::KernelKey) -> ExprId {
+    panic!(
+        "expand_refs: {key:?} cannot be resolved — the KernelStore is the \
+         `std` feature, and so is Kernel::by_ref, so nothing here can have \
+         named a kernel"
+    )
 }
 
 /// Owned wrapper mirroring [`expand_transcendentals_owned`]: identity
