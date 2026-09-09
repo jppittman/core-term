@@ -8,7 +8,9 @@ use super::cost::{CostFunction, CostModel};
 use super::deps::var_variance;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
+use alloc::collections::BinaryHeap;
 use alloc::vec::Vec;
+use core::cmp::Reverse;
 use pixelflow_ir::{LatticeShape, Variance};
 
 /// A witnessed selection: an e-graph, a root e-class, and a well-founded
@@ -1843,7 +1845,7 @@ pub fn extract_dag_scoped<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> ExtractedDAG {
-    let tree = repaired_and_costed(
+    let tree = costed(
         egraph,
         root,
         tree_dp_pass(egraph, root, &mut Dp::production(costs, shape)),
@@ -1868,7 +1870,7 @@ pub fn extract_dag_scoped<C: CostFunction>(
             },
         );
     };
-    let shared = repaired_and_costed(egraph, root, choices, costs, shape);
+    let shared = costed(egraph, root, choices, costs, shape);
     // Only the winner is assembled: the reference counts and the emission
     // schedule describe a term, and one of these two is not going to be one.
     if shared.cost.dag < tree.cost.dag {
@@ -1945,7 +1947,7 @@ pub(crate) fn extract_dag_tree_arm<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> ExtractedDAG {
-    let costed = repaired_and_costed(
+    let term = costed(
         egraph,
         root,
         tree_dp_pass(egraph, root, &mut Dp::production(costs, shape)),
@@ -1957,7 +1959,7 @@ pub(crate) fn extract_dag_tree_arm<C: CostFunction>(
     assemble(
         egraph,
         root,
-        costed,
+        term,
         ExtractionReport {
             objective: ExtractionObjective::TreeOnly,
             shared_pass: None,
@@ -1980,11 +1982,11 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
     let choices = pass
         .choices
         .expect("an unbounded shared pass cannot run out of budget");
-    let costed = repaired_and_costed(egraph, root, choices, costs, shape);
+    let term = costed(egraph, root, choices, costs, shape);
     assemble(
         egraph,
         root,
-        costed,
+        term,
         ExtractionReport {
             objective: ExtractionObjective::Shared,
             shared_pass: Some(pass.stats),
@@ -1992,24 +1994,27 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
     )
 }
 
-/// Repair a raw DP choice map and cost the term it names.
-fn repaired_and_costed<C: CostFunction>(
+/// Cost the term a settled DP choice map names.
+///
+/// There is no repair stage here any more. A map out of
+/// [`settle_in_cost_order`] is well-founded by construction — a class is
+/// settled strictly after the children of the candidate it settles on — so
+/// [`repair_choices_well_founded`] had nothing left to do but relabel
+/// classes no term reaches, and every choice it used to make on the DP's
+/// behalf was a cost decision taken with no cost model. It survives for
+/// [`Extraction::from_dp`], whose input is an arbitrary caller's map.
+/// `the_dp_map_is_well_founded_so_the_repair_is_a_no_op` is the gate.
+///
+/// The cost is of the choices being RETURNED, not of the DP table that
+/// produced them — the distinction #1111 had to make when a repair could
+/// switch a class under it, kept because it costs one walk.
+fn costed<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
-    mut choices: Vec<Option<usize>>,
+    choices: Vec<Option<usize>>,
     costs: &C,
     shape: LatticeShape,
 ) -> CostedChoices {
-    // Repair any mutual cycles in the choice graph before anything reads it.
-    repair_choices_well_founded(egraph, root, &mut choices);
-
-    // Cost the choices we are about to RETURN, not the DP table that produced
-    // them: the repair can switch a class to a different node, and reading the
-    // DP's own total here (as this did before #1111) reported the cost of a
-    // term that is not the one returned — measurably so, on 132 of 302
-    // kernels. The recomputed number is also free of the `CYCLE_COST`
-    // inflation, since the repaired map is well-founded and holds no
-    // self-referential pick.
     let cost = cost_of_choices(egraph, root, &choices, costs, shape);
     CostedChoices { choices, cost }
 }
@@ -2186,101 +2191,296 @@ impl StageRecorder for () {
     fn settled(&mut self, _: EClassId, _: usize) {}
 }
 
+/// A class is settled when its cheapest **admissible** candidate has every
+/// child settled — Knuth's AND-OR generalisation of Dijkstra, and the
+/// denotation both DP passes below compute.
+///
+/// The passes used to walk one DFS post-order, which cannot express that. A
+/// class whose child was still on the stack got priced at a sentinel and was
+/// never revisited, so on a saturated graph — commutativity alone closes
+/// cycles — a large fraction of classes carried no opinion at all, and the
+/// pick fell out of [`repair_choices_well_founded`], whose job is
+/// well-foundedness, not cost. 29 % of the frontier classes holding the
+/// witnesses of `docs/results/2026-09-08-extraction-witnesses.md`, and 73 %
+/// of them on the shaders, were decided that way; the sentinel is gone with
+/// the traversal that needed it.
+///
+/// Settling in cost order is exact whenever a candidate costs at least as
+/// much as each of its children, which both passes satisfy: the tree pass
+/// adds its children's costs to a non-negative own cost, and the shared pass
+/// prices the union of its children's reach sets, a superset of each of
+/// them. A candidate that mentions its own class is never admissible, and a
+/// class none of whose candidates ever becomes admissible is one no
+/// well-founded term reaches — [`settle_in_cost_order`] refuses to return
+/// with the root in that state rather than inventing a choice for it.
+pub(crate) trait Settling {
+    /// Price candidate `idx` of `class`. Every child class is settled, and
+    /// none of them is `class` itself.
+    fn price(&mut self, class: EClassId, idx: usize, node: &ENode) -> usize;
+
+    /// Which of two candidates priced **equally** the class keeps.
+    fn prefer(&self, class: EClassId, incumbent: usize, challenger: usize) -> bool;
+
+    /// Settle `class` on candidate `idx`, priced at `cost`. Returning
+    /// `false` abandons the pass.
+    fn settle(&mut self, class: EClassId, idx: usize, node: &ENode, cost: usize) -> bool;
+}
+
+/// A candidate that mentions its own class: no decrement ever takes this
+/// counter to zero, so the candidate is never priced.
+const NEVER_ADMISSIBLE: u32 = u32::MAX;
+
+/// Compact ids for the live classes — `u32::MAX` for a class the root does
+/// not reach.
+///
+/// The compact ids are what the shared pass indexes its reach sets by: they
+/// only ever hold classes the root reaches, and on a saturated glyph that is
+/// a third of the e-graph, so sizing them by `num_classes` would pay for the
+/// rest of the graph in every union.
+fn compact_ids(num_classes: usize, live: &[EClassId]) -> Vec<u32> {
+    let mut compact: Vec<u32> = alloc::vec![u32::MAX; num_classes];
+    for (i, c) in live.iter().enumerate() {
+        compact[c.0 as usize] = i as u32;
+    }
+    compact
+}
+
+/// Price one candidate and let it take its class's incumbent if it is
+/// cheaper, or equal and preferred.
+fn relax<S: Settling>(
+    egraph: &EGraph,
+    class: EClassId,
+    idx: usize,
+    s: &mut S,
+    best: &mut [Option<(usize, usize)>],
+    heap: &mut BinaryHeap<Reverse<(usize, u32)>>,
+) {
+    let cost = s.price(class, idx, &egraph.nodes(class)[idx]);
+    let takes = match best[class.0 as usize] {
+        None => true,
+        Some((incumbent_cost, incumbent)) => {
+            cost < incumbent_cost || (cost == incumbent_cost && s.prefer(class, incumbent, idx))
+        }
+    };
+    if !takes {
+        return;
+    }
+    best[class.0 as usize] = Some((cost, idx));
+    heap.push(Reverse((cost, class.0)));
+}
+
+/// Settle every live class in increasing cost order, or abandon.
+///
+/// `None` is [`Settling::settle`] asking to stop — the shared pass over its
+/// memory budget. Otherwise every class some well-founded term reaches has a
+/// choice, and the map is acyclic **by construction**: a class is settled
+/// strictly after the children of the candidate it settles on, so no repair
+/// stage is required to make the result materialisable.
+fn settle_in_cost_order<S: Settling>(
+    egraph: &EGraph,
+    root: EClassId,
+    order: &[EClassId],
+    s: &mut S,
+) -> Option<Vec<Option<usize>>> {
+    let num_classes = egraph.num_classes();
+    let compact = compact_ids(num_classes, order);
+    let mut choice: Vec<Option<usize>> = alloc::vec![None; num_classes];
+    let mut settled: Vec<bool> = alloc::vec![false; num_classes];
+    // The cheapest candidate priced so far for each class, and its index.
+    let mut best: Vec<Option<(usize, usize)>> = alloc::vec![None; num_classes];
+    // Unsettled distinct child classes per candidate, and — per live class —
+    // the candidates waiting on it.
+    let mut waiting: Vec<Vec<u32>> = alloc::vec![Vec::new(); num_classes];
+    let mut parents: Vec<Vec<(EClassId, usize)>> = alloc::vec![Vec::new(); order.len()];
+
+    let mut distinct: Vec<EClassId> = Vec::new();
+    for &class in order {
+        let nodes = egraph.nodes(class);
+        let mut per_node: Vec<u32> = Vec::with_capacity(nodes.len());
+        for (idx, node) in nodes.iter().enumerate() {
+            distinct.clear();
+            let mut self_referential = false;
+            if let ENode::Op { children, .. } = node {
+                for &child in children.iter() {
+                    let c = egraph.find(child);
+                    if c == class {
+                        self_referential = true;
+                        break;
+                    }
+                    if !distinct.contains(&c) {
+                        distinct.push(c);
+                    }
+                }
+            }
+            if self_referential {
+                per_node.push(NEVER_ADMISSIBLE);
+                continue;
+            }
+            for &c in &distinct {
+                let ci = compact[c.0 as usize];
+                assert!(
+                    ci != u32::MAX,
+                    "settle_in_cost_order: e-class {} is a child of live class {} but was not \
+                     enumerated as live — the two traversals have drifted",
+                    c.0,
+                    class.0
+                );
+                parents[ci as usize].push((class, idx));
+            }
+            per_node.push(distinct.len() as u32);
+        }
+        waiting[class.0 as usize] = per_node;
+    }
+
+    let mut heap: BinaryHeap<Reverse<(usize, u32)>> = BinaryHeap::new();
+    for &class in order {
+        for idx in 0..waiting[class.0 as usize].len() {
+            if waiting[class.0 as usize][idx] == 0 {
+                relax(egraph, class, idx, s, &mut best, &mut heap);
+            }
+        }
+    }
+
+    while let Some(Reverse((cost, cid))) = heap.pop() {
+        let ci = cid as usize;
+        if settled[ci] {
+            continue;
+        }
+        let (incumbent_cost, incumbent) =
+            best[ci].expect("a class in the heap has been priced at least once");
+        if incumbent_cost != cost {
+            // A superseded entry: the class has since been priced cheaper,
+            // and that entry is still in the heap.
+            continue;
+        }
+        let class = EClassId(cid);
+        if !s.settle(
+            class,
+            incumbent,
+            &egraph.nodes(class)[incumbent],
+            incumbent_cost,
+        ) {
+            return None;
+        }
+        settled[ci] = true;
+        choice[ci] = Some(incumbent);
+
+        // Taken, not borrowed: a class settles once, so nothing reads its
+        // parent list again, and the memory goes back as the pass proceeds.
+        let ps = core::mem::take(&mut parents[compact[ci] as usize]);
+        for (parent, idx) in ps {
+            let pi = parent.0 as usize;
+            if settled[pi] {
+                continue;
+            }
+            let w = &mut waiting[pi][idx];
+            assert!(
+                *w != 0 && *w != NEVER_ADMISSIBLE,
+                "settle_in_cost_order: candidate {idx} of e-class {} was decremented past its \
+                 child count — the parent index and the waiting counts disagree",
+                parent.0
+            );
+            *w -= 1;
+            if *w == 0 {
+                relax(egraph, parent, idx, s, &mut best, &mut heap);
+            }
+        }
+    }
+
+    assert!(
+        settled[egraph.find(root).0 as usize],
+        "settle_in_cost_order: root e-class {} has no well-founded term — every candidate of \
+         every class it reaches sits behind a cycle, which is structural corruption rather than \
+         a rewrite outcome",
+        root.0
+    );
+    Some(choice)
+}
+
 /// The pre-#1116 DP: cheapest node per class where a child costs its whole
-/// subtree, at every use. Kept exactly as it was, as the control arm of the
-/// objective A/B and as the floor [`extract_dag_scoped`] never returns worse
-/// than.
+/// subtree, at every use. The control arm of the objective A/B, and the
+/// floor [`extract_dag_scoped`] never returns worse than.
 pub(crate) fn tree_dp_pass<C: CostFunction, T: TieBreak, R: StageRecorder>(
     egraph: &EGraph,
     root: EClassId,
     dp: &mut Dp<'_, C, T, R>,
 ) -> Vec<Option<usize>> {
-    let (costs, shape) = (dp.costs, dp.shape);
+    let order = post_order(egraph, root);
     let num_classes = egraph.num_classes();
-    let mut best_cost: Vec<Option<usize>> = alloc::vec![None; num_classes];
-    let mut best_node: Vec<Option<usize>> = alloc::vec![None; num_classes];
-    // The variance of the form chosen for each class, which is what its
-    // scope — and so its weight — is read from. Carried in the same DP as
-    // the cost because the two determine each other: a child's variance sets
-    // its parent's weight, and a parent's weight is part of what makes one
-    // child's form worth choosing over another's.
-    let mut best_var: Vec<Variance> = alloc::vec![Variance::CONST; num_classes];
+    let mut pricer = TreePricer {
+        egraph,
+        dp,
+        cost: alloc::vec![None; num_classes],
+        // The variance of the form chosen for each class, which is what its
+        // scope — and so its weight — is read from. Carried in the same DP
+        // as the cost because the two determine each other: a child's
+        // variance sets its parent's weight, and a parent's weight is part
+        // of what makes one child's form worth choosing over another's.
+        var: alloc::vec![Variance::CONST; num_classes],
+    };
+    settle_in_cost_order(egraph, root, &order, &mut pricer)
+        .expect("the tree pass has no budget and never abandons")
+}
 
-    for canonical in post_order(egraph, root) {
-        let nodes = egraph.nodes(canonical);
-        let mut min_cost = usize::MAX;
-        let mut min_idx = 0;
-        let mut min_var = Variance::CONST;
-        // Whether any candidate has actually been taken. A class every one
-        // of whose candidates prices at `usize::MAX` takes none, and keeps
-        // index 0 with `Variance::CONST` exactly as it always has; without
-        // this, a tie-break would start displacing a pick that was never
-        // made.
-        let mut taken = false;
+/// [`tree_dp_pass`]'s pricing: a candidate costs its own weighted cost plus
+/// each child's settled cost, summed at every use.
+struct TreePricer<'a, 'c, C, T, R> {
+    egraph: &'a EGraph,
+    dp: &'a mut Dp<'c, C, T, R>,
+    cost: Vec<Option<usize>>,
+    var: Vec<Variance>,
+}
 
-        for (idx, node) in nodes.iter().enumerate() {
-            let node_var = node_variance(egraph, node, &best_var, canonical);
-            let weight = shape.evals(node_var);
-            let this_node_cost = match node {
-                ENode::Var(_)
-                | ENode::Const(_)
-                | ENode::Buffer(_)
-                | ENode::Uniform(_)
-                | ENode::Param(_) => weighted_own(costs, node, weight),
-                ENode::Op { children, .. } => {
-                    if children.iter().any(|&c| egraph.find(c) == canonical) {
-                        CYCLE_COST
-                    } else {
-                        // Saturating fold, not `.sum()`: a child's own
-                        // `best_cost` can already sit at a prohibitive
-                        // sentinel (`Dwrt`'s `usize::MAX / 4` from
-                        // `CostModel::node_op_cost`, or this function's own
-                        // `CYCLE_COST`), so a node with several such children
-                        // overflows a plain `usize` sum.
-                        let children_cost: usize = children
-                            .iter()
-                            .map(|&child| {
-                                let c = egraph.find(child);
-                                best_cost[c.0 as usize].unwrap_or(CYCLE_COST)
-                            })
-                            .fold(0usize, usize::saturating_add);
-                        weighted_own(costs, node, weight).saturating_add(children_cost)
-                    }
-                }
-            };
-
-            dp.rec.candidate(
-                canonical,
-                idx,
-                this_node_cost,
-                weighted_own(costs, node, weight),
-            );
-            let takes = this_node_cost < min_cost
-                || (taken
-                    && this_node_cost == min_cost
-                    && dp.ties.prefer(egraph, canonical, min_idx, idx));
-            if takes {
-                min_cost = this_node_cost;
-                min_idx = idx;
-                min_var = node_var;
-                taken = true;
-            }
-        }
-
-        dp.rec.settled(canonical, min_idx);
-        best_cost[canonical.0 as usize] = Some(min_cost);
-        best_node[canonical.0 as usize] = Some(min_idx);
-        best_var[canonical.0 as usize] = min_var;
+impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_, '_, C, T, R> {
+    fn price(&mut self, class: EClassId, idx: usize, node: &ENode) -> usize {
+        let node_var = node_variance(self.egraph, node, &self.var, class);
+        let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
+        let cost = match node {
+            ENode::Var(_)
+            | ENode::Const(_)
+            | ENode::Buffer(_)
+            | ENode::Uniform(_)
+            | ENode::Param(_) => own,
+            // Saturating fold, not `.sum()`: a child's own cost can already
+            // sit at a prohibitive sentinel (`Dwrt`'s `usize::MAX / 4` from
+            // `CostModel::node_op_cost`), so a node with several such
+            // children overflows a plain `usize` sum.
+            ENode::Op { children, .. } => own.saturating_add(
+                children
+                    .iter()
+                    .map(|&child| {
+                        self.cost[self.egraph.find(child).0 as usize]
+                            .expect("a priced candidate's children are settled")
+                    })
+                    .fold(0usize, usize::saturating_add),
+            ),
+        };
+        self.dp.rec.candidate(class, idx, cost, own);
+        cost
     }
 
-    best_node
+    fn prefer(&self, class: EClassId, incumbent: usize, challenger: usize) -> bool {
+        self.dp
+            .ties
+            .prefer(self.egraph, class, incumbent, challenger)
+    }
+
+    fn settle(&mut self, class: EClassId, idx: usize, node: &ENode, cost: usize) -> bool {
+        // Read the children's variances before writing this class's, which
+        // `node_variance` never consults for an admissible candidate.
+        let node_var = node_variance(self.egraph, node, &self.var, class);
+        self.cost[class.0 as usize] = Some(cost);
+        self.var[class.0 as usize] = node_var;
+        self.dp.rec.settled(class, idx);
+        true
+    }
 }
 
 /// The sharing-aware DP (#1116): cheapest node per class where the cost of a
 /// candidate is the cost of **the set of classes its sub-DAG contains**, each
 /// member priced once.
 ///
-/// Same skeleton as [`tree_dp_pass`]; the only change is what a candidate
+/// Same driver as [`tree_dp_pass`]; the only change is what a candidate
 /// costs. Each class carries the set of classes its chosen sub-DAG reaches
 /// (a [`Reach`]), and a candidate unions its children's sets, adding a
 /// class's own cost the first time that class enters the union. Two siblings
@@ -2305,162 +2505,130 @@ pub(crate) fn shared_dag_dp_pass<C: CostFunction, T: TieBreak, R: StageRecorder>
     dp: &mut Dp<'_, C, T, R>,
     budget: usize,
 ) -> SharedPassOutcome {
-    let (costs, shape) = (dp.costs, dp.shape);
-    let num_classes = egraph.num_classes();
     let order = post_order(egraph, root);
-
-    // Index the sets by position in `order`, not by e-class id: the sets
-    // only ever hold classes the root reaches, and on a saturated glyph that
-    // is a third of the e-graph (1,352 of 4,703 on `glyph16:U+0021`). Sizing
-    // them by `num_classes` would pay for the rest of the graph in every
-    // union.
     let live = order.len();
-    let words = live.div_ceil(REACH_WORD_BITS);
-    let mut compact: Vec<u32> = alloc::vec![u32::MAX; num_classes];
-    for (i, c) in order.iter().enumerate() {
-        compact[c.0 as usize] = i as u32;
-    }
-
-    let mut best_cost: Vec<Option<usize>> = alloc::vec![None; num_classes];
-    let mut best_node: Vec<Option<usize>> = alloc::vec![None; num_classes];
-    let mut best_var: Vec<Variance> = alloc::vec![Variance::CONST; num_classes];
-    // The weighted own cost of each live class's chosen node — what a union
-    // pays when that class first enters it. Indexed by compact id.
-    let mut best_own: Vec<usize> = alloc::vec![0; live];
-    // `reach[i]` is the set of classes the chosen sub-DAG at the `i`th live
-    // class contains, itself included. Filled in post-order, so a child's
-    // set is settled before any parent reads it.
-    let mut reach: Vec<Reach> = Vec::with_capacity(live);
-    // `stamp[i] == epoch` iff live class `i` has entered the union being
-    // taken for the current candidate. One epoch per candidate; never
-    // cleared, so a union costs its members and nothing else.
-    let mut stamp: Vec<usize> = alloc::vec![0; live];
-    let mut epoch: usize = 0;
-    // The union under construction, and the winning candidate's — swapped
-    // rather than copied when a candidate takes the lead.
-    let mut scratch: Vec<u32> = Vec::new();
-    let mut winner: Vec<u32> = Vec::new();
-    let mut reach_bytes: usize = 0;
-
-    for canonical in order.iter().copied() {
-        let me = compact[canonical.0 as usize] as usize;
-        debug_assert_eq!(
-            reach.len(),
-            me,
-            "shared_dag_dp_pass: reach sets must be filled in post-order"
-        );
-        let nodes = egraph.nodes(canonical);
-        let mut min_cost = usize::MAX;
-        let mut min_idx = 0;
-        let mut min_var = Variance::CONST;
-        let mut min_own = 0usize;
-        // See `tree_dp_pass`: a class none of whose candidates was taken
-        // keeps index 0, and a tie-break must not displace a non-pick.
-        let mut taken = false;
-        winner.clear();
-
-        for (idx, node) in nodes.iter().enumerate() {
-            let node_var = node_variance(egraph, node, &best_var, canonical);
-            let weight = shape.evals(node_var);
-            let own = weighted_own(costs, node, weight);
-            // `None`: this candidate reaches nothing below it (a leaf, or a
-            // cycle priced at the sentinel); `Some`: its children's union is
-            // in `scratch`.
-            let (this_node_cost, below) = match node {
-                ENode::Var(_)
-                | ENode::Const(_)
-                | ENode::Buffer(_)
-                | ENode::Uniform(_)
-                | ENode::Param(_) => (own, None),
-                ENode::Op { children, .. } => {
-                    if children.iter().any(|&c| egraph.find(c) == canonical) {
-                        (CYCLE_COST, None)
-                    } else {
-                        epoch += 1;
-                        scratch.clear();
-                        let mut below = 0usize;
-                        let mut unresolved = false;
-                        for &child in children.iter() {
-                            let c = egraph.find(child).0 as usize;
-                            if best_cost[c].is_none() {
-                                // A class still on the DFS stack: the same
-                                // cycle the tree pass prices at the sentinel.
-                                unresolved = true;
-                                break;
-                            }
-                            let ci = compact[c];
-                            assert!(
-                                ci != u32::MAX,
-                                "shared_dag_dp_pass: e-class {c} is a costed child but was \
-                                 not enumerated by post_order — the two traversals have \
-                                 drifted"
-                            );
-                            reach[ci as usize].for_each(|member| {
-                                if stamp[member as usize] != epoch {
-                                    stamp[member as usize] = epoch;
-                                    below = below.saturating_add(best_own[member as usize]);
-                                    scratch.push(member);
-                                }
-                            });
-                        }
-                        if unresolved {
-                            (CYCLE_COST, None)
-                        } else {
-                            (own.saturating_add(below), Some(()))
-                        }
-                    }
-                }
-            };
-
-            dp.rec.candidate(canonical, idx, this_node_cost, own);
-            let takes = this_node_cost < min_cost
-                || (taken
-                    && this_node_cost == min_cost
-                    && dp.ties.prefer(egraph, canonical, min_idx, idx));
-            if takes {
-                min_cost = this_node_cost;
-                min_idx = idx;
-                min_var = node_var;
-                min_own = own;
-                taken = true;
-                match below {
-                    Some(()) => core::mem::swap(&mut winner, &mut scratch),
-                    None => winner.clear(),
-                }
-            }
-        }
-        dp.rec.settled(canonical, min_idx);
-
-        // A cycle-priced winner reaches only itself, as it always has.
-        if min_cost == CYCLE_COST {
-            winner.clear();
-        }
-        winner.push(me as u32);
-        let set = Reach::smaller_of(&winner, words);
-        reach_bytes = reach_bytes.saturating_add(set.bytes());
-        if reach_bytes > budget {
-            return SharedPassOutcome {
-                choices: None,
-                stats: SharedPassStats {
-                    live_classes: live,
-                    reach_bytes,
-                },
-            };
-        }
-        reach.push(set);
-
-        best_cost[canonical.0 as usize] = Some(min_cost);
-        best_node[canonical.0 as usize] = Some(min_idx);
-        best_var[canonical.0 as usize] = min_var;
-        best_own[me] = min_own;
-    }
-
+    let mut pricer = SharedPricer {
+        egraph,
+        dp,
+        var: alloc::vec![Variance::CONST; egraph.num_classes()],
+        sets: ReachSets {
+            compact: compact_ids(egraph.num_classes(), &order),
+            reach: (0..live).map(|_| None).collect(),
+            own: alloc::vec![0; live],
+            stamp: alloc::vec![0; live],
+            epoch: 0,
+            scratch: Vec::new(),
+            words: live.div_ceil(REACH_WORD_BITS),
+            bytes: 0,
+            budget,
+        },
+    };
+    let choices = settle_in_cost_order(egraph, root, &order, &mut pricer);
     SharedPassOutcome {
-        choices: Some(best_node),
+        choices,
         stats: SharedPassStats {
             live_classes: live,
-            reach_bytes,
+            reach_bytes: pricer.sets.bytes,
         },
+    }
+}
+
+/// The reach sets, indexed by compact live id, and the budget they are held
+/// under.
+struct ReachSets {
+    compact: Vec<u32>,
+    /// `reach[i]` is the set of classes the chosen sub-DAG at live class `i`
+    /// contains, itself included — `None` until the class settles.
+    reach: Vec<Option<Reach>>,
+    /// The weighted own cost of each live class's chosen node: what a union
+    /// pays when that class first enters it.
+    own: Vec<usize>,
+    /// `stamp[i] == epoch` iff live class `i` has entered the union being
+    /// taken for the current candidate. One epoch per candidate; never
+    /// cleared, so a union costs its members and nothing else.
+    stamp: Vec<usize>,
+    epoch: usize,
+    scratch: Vec<u32>,
+    words: usize,
+    bytes: usize,
+    budget: usize,
+}
+
+impl ReachSets {
+    /// Union the children's reach sets into `scratch`, returning what those
+    /// classes cost with each member paid once.
+    fn union_below(&mut self, egraph: &EGraph, node: &ENode) -> usize {
+        self.epoch += 1;
+        self.scratch.clear();
+        let ENode::Op { children, .. } = node else {
+            return 0;
+        };
+        let mut below = 0usize;
+        for &child in children.iter() {
+            let ci = self.compact[egraph.find(child).0 as usize] as usize;
+            // Taken and put back: the closure below needs `self` mutably
+            // while the set is read, and a set is never its own member's.
+            let set = self.reach[ci]
+                .take()
+                .expect("a priced candidate's children are settled");
+            set.for_each(|member| {
+                let m = member as usize;
+                if self.stamp[m] != self.epoch {
+                    self.stamp[m] = self.epoch;
+                    below = below.saturating_add(self.own[m]);
+                    self.scratch.push(member);
+                }
+            });
+            self.reach[ci] = Some(set);
+        }
+        below
+    }
+}
+
+/// [`shared_dag_dp_pass`]'s pricing.
+struct SharedPricer<'a, 'c, C, T, R> {
+    egraph: &'a EGraph,
+    dp: &'a mut Dp<'c, C, T, R>,
+    var: Vec<Variance>,
+    sets: ReachSets,
+}
+
+impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'_, '_, C, T, R> {
+    fn price(&mut self, class: EClassId, idx: usize, node: &ENode) -> usize {
+        let node_var = node_variance(self.egraph, node, &self.var, class);
+        let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
+        let below = self.sets.union_below(self.egraph, node);
+        let cost = own.saturating_add(below);
+        self.dp.rec.candidate(class, idx, cost, own);
+        cost
+    }
+
+    fn prefer(&self, class: EClassId, incumbent: usize, challenger: usize) -> bool {
+        self.dp
+            .ties
+            .prefer(self.egraph, class, incumbent, challenger)
+    }
+
+    fn settle(&mut self, class: EClassId, idx: usize, node: &ENode, _cost: usize) -> bool {
+        let node_var = node_variance(self.egraph, node, &self.var, class);
+        let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
+        // Rebuild the winner's union rather than carrying one per class in
+        // flight: the driver prices candidates for many unsettled classes
+        // before any of them settles, so a stored winner set would be a
+        // second copy of the frontier's reach.
+        let _ = self.sets.union_below(self.egraph, node);
+        let me = self.sets.compact[class.0 as usize];
+        self.sets.scratch.push(me);
+        let set = Reach::smaller_of(&self.sets.scratch, self.sets.words);
+        self.sets.bytes = self.sets.bytes.saturating_add(set.bytes());
+        if self.sets.bytes > self.sets.budget {
+            return false;
+        }
+        self.sets.reach[me as usize] = Some(set);
+        self.sets.own[me as usize] = own;
+        self.var[class.0 as usize] = node_var;
+        self.dp.rec.settled(class, idx);
+        true
     }
 }
 
@@ -2529,13 +2697,14 @@ impl Reach {
     }
 }
 
-/// The classes reachable from `root`, children before parents.
+/// The classes reachable from `root`.
 ///
-/// A class whose own descendants reach it back appears before them — the
-/// e-graphs saturation produces are cyclic (commutativity alone is enough),
-/// and the DP prices such a class at the cycle sentinel exactly as it always
-/// has. Shared by both DP passes so their traversal, and therefore which
-/// classes end up cycle-priced, cannot drift apart.
+/// The order is a DFS post-order, which no longer decides anything: the DP
+/// passes settle in **cost** order ([`settle_in_cost_order`]), and this is
+/// the live set and the compact numbering the shared pass's reach sets are
+/// indexed by. It used to be the DP's evaluation order, which is why a class
+/// whose descendants reached it back — commutativity alone is enough on a
+/// saturated graph — appeared before them and got priced at a sentinel.
 fn post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
     // Dense bitset over canonical class ids, not `BTreeSet<u32>`: every id
     // here is already bounded by `egraph.num_classes()`, so a `Vec<bool>`
@@ -3011,6 +3180,103 @@ mod tests {
             optimized.stats.classes
         );
         (egraph, root)
+    }
+
+    /// How many classes the pre-fixpoint DP left at the cycle sentinel: a
+    /// class every one of whose candidates mentions itself or a class the
+    /// single DFS post-order had not yet priced.
+    fn sentinel_priced(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
+        let order = post_order(egraph, root);
+        let mut priced: Vec<bool> = alloc::vec![false; egraph.num_classes()];
+        let mut sentinel = Vec::new();
+        for &class in &order {
+            let all_cyclic = egraph.nodes(class).iter().all(|node| match node {
+                ENode::Op { children, .. } => children
+                    .iter()
+                    .any(|&c| egraph.find(c) == class || !priced[egraph.find(c).0 as usize]),
+                _ => false,
+            });
+            if all_cyclic {
+                sentinel.push(class);
+            }
+            priced[class.0 as usize] = true;
+        }
+        sentinel
+    }
+
+    /// The defect the fixpoint exists to remove: the post-order DP priced a
+    /// class in a cycle at the sentinel and expressed no preference, so the
+    /// pick fell to `repair_choices_well_founded`, which has no cost model.
+    /// The fixpoint prices it — `neg(neg(x)) = x` means the `Neg` class's
+    /// only child is the class that holds it, and settling in cost order
+    /// reaches the child first.
+    #[test]
+    fn the_fixpoint_prices_a_class_the_post_order_dp_left_at_the_sentinel() {
+        #[derive(Default)]
+        struct Prices(Vec<(EClassId, usize)>);
+        impl StageRecorder for Prices {
+            fn candidate(&mut self, class: EClassId, _idx: usize, cost: usize, _own: usize) {
+                self.0.push((class, cost));
+            }
+            fn settled(&mut self, _: EClassId, _: usize) {}
+        }
+
+        let (egraph, merged, n1) = cyclic_capable_egraph();
+        let n1c = egraph.find(n1);
+        assert!(
+            sentinel_priced(&egraph, merged).contains(&n1c),
+            "the fixture must hold a class the post-order DP could only price at the sentinel"
+        );
+
+        let costs = CostModel::latency_prior();
+        let mut dp = Dp::new(&costs, LatticeShape::POINT, Insertion, Prices::default());
+        let choices = tree_dp_pass(&egraph, merged, &mut dp);
+        let priced = dp.into_recorder().0;
+
+        assert!(
+            priced.iter().any(|&(c, _)| c == n1c),
+            "the class the post-order DP left at the sentinel was never priced"
+        );
+        assert!(
+            priced.iter().all(|&(_, cost)| cost < CYCLE_COST),
+            "the fixpoint priced a candidate at the cycle sentinel: {priced:?}"
+        );
+        assert!(
+            choices[n1c.0 as usize].is_some(),
+            "the class was priced but not settled"
+        );
+    }
+
+    /// The gate on deleting the repair stage from the extraction path: a
+    /// choice map out of either DP pass is already well-founded, so
+    /// `repair_choices_well_founded` has nothing to change.
+    #[test]
+    fn the_dp_map_is_well_founded_so_the_repair_is_a_no_op() {
+        let costs = CostModel::latency_prior();
+        for (nodes, shape) in [
+            (64, LatticeShape::POINT),
+            (256, LatticeShape::new([32, 32])),
+        ] {
+            let (egraph, root) = saturated_sdf_egraph(nodes);
+            for raw in [
+                tree_dp_pass(&egraph, root, &mut Dp::production(&costs, shape)),
+                shared_dag_dp_pass(
+                    &egraph,
+                    root,
+                    &mut Dp::production(&costs, shape),
+                    usize::MAX,
+                )
+                .choices
+                .expect("unbounded"),
+            ] {
+                let mut repaired = raw.clone();
+                repair_choices_well_founded(&egraph, root, &mut repaired);
+                assert_eq!(
+                    repaired, raw,
+                    "{nodes} nodes at {shape:?}: the repair moved a class the DP had settled"
+                );
+            }
+        }
     }
 
     /// The research tie-break seam changes nothing under production's
