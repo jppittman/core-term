@@ -770,14 +770,7 @@ fn train(samples: &Path, out: &Path, folds: Option<&[String]>, args: &TrainArgs)
     args.validate();
     let all = load_samples(samples);
     std::fs::create_dir_all(out).expect("create model dir");
-    let manifest = train_models(
-        &all,
-        &RuleSet::production(),
-        folds,
-        args,
-        Some(out),
-        &head_sha(),
-    );
+    let manifest = Corpus::from_samples(all).train(folds, args, Some(out));
     std::fs::write(
         out.join("manifest.json"),
         serde_json::to_string_pretty(&manifest).expect("serialize"),
@@ -785,274 +778,300 @@ fn train(samples: &Path, out: &Path, folds: Option<&[String]>, args: &TrainArgs)
     .expect("write manifest");
 }
 
-/// Train one model per requested fold and return the manifest.
+/// Everything a training run needs that is not a hyperparameter: the
+/// labelled samples, the rule set they were minted against, and the
+/// revision that gets stamped into the manifest.
 ///
-/// `out` is where the weight checkpoints are written; `None` trains
-/// without persisting them, which is what a sweep wants — [`serve`] calls
-/// hundreds of configurations and only ever reads the intrinsic metrics.
-/// A manifest produced that way carries `checkpoint: None`, and
-/// [`load_models`] refuses it rather than inventing a path.
-fn train_models(
-    all: &[Loaded],
-    rules: &RuleSet,
-    folds: Option<&[String]>,
-    args: &TrainArgs,
-    out: Option<&Path>,
-    git_sha: &str,
-) -> Manifest {
-    args.validate();
-    let mut models = BTreeMap::new();
-    let registered: Vec<&str> = FOLDS.iter().copied().chain([ALL]).collect();
-    let folds: Vec<&str> = match folds {
-        None => registered.clone(),
-        Some(requested) => requested
-            .iter()
-            .map(|f| {
-                *registered
-                    .iter()
-                    .find(|r| **r == f.as_str())
-                    .unwrap_or_else(|| panic!("--folds {f:?}: not one of {registered:?}"))
-            })
-            .collect(),
-    };
-    for held in folds {
-        let started = Instant::now();
-        let uncapped: Vec<usize> = (0..all.len())
-            .filter(|&i| held == ALL || all[i].fold != held)
-            .collect();
-        let stride = if args.train_cap == 0 {
-            1
-        } else {
-            uncapped.len().div_ceil(args.train_cap).max(1)
-        };
-        let train_idx: Vec<usize> = uncapped.into_iter().step_by(stride).collect();
-        let hold_idx: Vec<usize> = (0..all.len())
-            .filter(|&i| held != ALL && all[i].fold == held)
-            .collect();
-        assert!(!train_idx.is_empty(), "fold {held}: no training samples");
-        let n_tight = train_idx.iter().filter(|&&i| all[i].tight > 0.5).count();
-        let n_strict = train_idx.iter().filter(|&&i| all[i].strict > 0.5).count();
-        let n_pos = train_idx
-            .iter()
-            .filter(|&&i| args.label_of(&all[i]) > 0.5)
-            .count();
-        let n_neg = train_idx.len() - n_pos;
-        assert!(
-            n_pos > 0 && n_neg > 0,
-            "fold {held}: one class is absent from training"
-        );
-        let pos_weight = (n_neg as f32 * args.neg_keep / n_pos as f32).powf(args.pos_weight_power);
-        assert!(
-            pos_weight.is_finite() && pos_weight > 0.0,
-            "fold {held}: pos_weight {pos_weight} is not a weight"
-        );
-        let invisible = train_idx
-            .iter()
-            .filter(|&&i| all[i].tight > 0.5 && all[i].strict < 0.5)
-            .count() as f64
-            / n_tight.max(1) as f64;
+/// It is a struct because a sweep loads it once and trains against it
+/// hundreds of times — the corpus is the thing that persists across
+/// configurations, and [`serve`] holds exactly one.
+struct Corpus {
+    samples: Vec<Loaded>,
+    rules: RuleSet,
+    git_sha: String,
+}
 
-        let mut trainer = BilinearTrainer::cold_start(rules, args.cold_start());
-        let mut epoch_loss = Vec::new();
-        let mut lr = args.lr;
-        let batch_scale = 1.0 / args.batch_size as f32;
-        for epoch in 0..args.epochs {
-            let order = shuffled(train_idx.len(), args.seed.wrapping_add(epoch as u64));
-            let step = SgdStep {
-                lr,
+impl Corpus {
+    fn load(path: &Path) -> Self {
+        Self::from_samples(load_samples(path))
+    }
+
+    fn from_samples(samples: Vec<Loaded>) -> Self {
+        Self {
+            samples,
+            rules: RuleSet::production(),
+            git_sha: head_sha(),
+        }
+    }
+
+    /// Train one model per requested fold and return the manifest.
+    ///
+    /// `out` is where the weight checkpoints are written; `None` trains
+    /// without persisting them, which is what a sweep wants — it calls
+    /// hundreds of configurations and only ever reads the intrinsic
+    /// metrics. A manifest produced that way carries `checkpoint: None`,
+    /// and [`load_models`] refuses it rather than inventing a path.
+    fn train(&self, folds: Option<&[String]>, args: &TrainArgs, out: Option<&Path>) -> Manifest {
+        let Self {
+            samples: all,
+            rules,
+            git_sha,
+        } = self;
+        args.validate();
+        let mut models = BTreeMap::new();
+        let registered: Vec<&str> = FOLDS.iter().copied().chain([ALL]).collect();
+        let folds: Vec<&str> = match folds {
+            None => registered.clone(),
+            Some(requested) => requested
+                .iter()
+                .map(|f| {
+                    *registered
+                        .iter()
+                        .find(|r| **r == f.as_str())
+                        .unwrap_or_else(|| panic!("--folds {f:?}: not one of {registered:?}"))
+                })
+                .collect(),
+        };
+        for held in folds {
+            let started = Instant::now();
+            let uncapped: Vec<usize> = (0..all.len())
+                .filter(|&i| held == ALL || all[i].fold != held)
+                .collect();
+            let stride = if args.train_cap == 0 {
+                1
+            } else {
+                uncapped.len().div_ceil(args.train_cap).max(1)
+            };
+            let train_idx: Vec<usize> = uncapped.into_iter().step_by(stride).collect();
+            let hold_idx: Vec<usize> = (0..all.len())
+                .filter(|&i| held != ALL && all[i].fold == held)
+                .collect();
+            assert!(!train_idx.is_empty(), "fold {held}: no training samples");
+            let n_tight = train_idx.iter().filter(|&&i| all[i].tight > 0.5).count();
+            let n_strict = train_idx.iter().filter(|&&i| all[i].strict > 0.5).count();
+            let n_pos = train_idx
+                .iter()
+                .filter(|&&i| args.label_of(&all[i]) > 0.5)
+                .count();
+            let n_neg = train_idx.len() - n_pos;
+            assert!(
+                n_pos > 0 && n_neg > 0,
+                "fold {held}: one class is absent from training"
+            );
+            let pos_weight =
+                (n_neg as f32 * args.neg_keep / n_pos as f32).powf(args.pos_weight_power);
+            assert!(
+                pos_weight.is_finite() && pos_weight > 0.0,
+                "fold {held}: pos_weight {pos_weight} is not a weight"
+            );
+            let invisible = train_idx
+                .iter()
+                .filter(|&&i| all[i].tight > 0.5 && all[i].strict < 0.5)
+                .count() as f64
+                / n_tight.max(1) as f64;
+
+            let mut trainer = BilinearTrainer::cold_start(rules, args.cold_start());
+            let mut epoch_loss = Vec::new();
+            let mut lr = args.lr;
+            let batch_scale = 1.0 / args.batch_size as f32;
+            for epoch in 0..args.epochs {
+                let order = shuffled(train_idx.len(), args.seed.wrapping_add(epoch as u64));
+                let step = SgdStep {
+                    lr,
+                    l2: args.l2,
+                    max_grad_norm: args.max_grad_norm,
+                };
+                let mut loss = 0.0f64;
+                let mut seen = 0usize;
+                let mut pending = 0usize;
+                for &j in &order {
+                    let s = &all[train_idx[j]];
+                    let y = args.label_of(s);
+                    if y < 0.5 && !negative_is_kept(args.seed, epoch, j, args.neg_keep) {
+                        continue;
+                    }
+                    let summary = summary_of(&trainer, s);
+                    let forward = trainer.forward(&summary);
+                    let z = forward.score();
+                    let p = sigmoid(z);
+                    let w = if y > 0.5 { pos_weight } else { 1.0 };
+                    let eps = 1e-7f32;
+                    let l = if y > 0.5 {
+                        -(p.max(eps)).ln()
+                    } else {
+                        -((1.0 - p).max(eps)).ln()
+                    };
+                    loss += f64::from(w * l);
+                    seen += 1;
+                    trainer.accumulate(&forward, weighted_bce_grad(p, y, pos_weight) * batch_scale);
+                    pending += 1;
+                    if pending == args.batch_size {
+                        trainer.apply(step);
+                        pending = 0;
+                    }
+                }
+                if pending > 0 {
+                    trainer.apply(step);
+                }
+                assert!(seen > 0, "fold {held}: epoch {epoch} trained on no samples");
+                let mean = loss / seen as f64;
+                epoch_loss.push(mean);
+                eprintln!(
+                    "fold {held}: epoch {epoch} lr {lr:.4} samples {seen} mean weighted loss {mean:.4}"
+                );
+                lr *= args.lr_decay;
+            }
+
+            // Scores on the training samples calibrate the thresholds; on the
+            // held-out fold they are the intrinsic metric.
+            let score = |i: usize| trainer.score(&summary_of(&trainer, &all[i]));
+            let train_scores: Vec<f32> = train_idx.iter().map(|&i| score(i)).collect();
+            let mut rule_pos: BTreeMap<RuleId, (usize, usize)> = BTreeMap::new();
+            for &i in &train_idx {
+                let e = rule_pos.entry(all[i].rule).or_insert((0, 0));
+                e.0 += 1;
+                e.1 += usize::from(all[i].tight > 0.5);
+            }
+            let rule_rate =
+                |r: RuleId| -> f32 { rule_pos.get(&r).map_or(0.0, |&(n, p)| p as f32 / n as f32) };
+            let train_rates: Vec<f32> = train_idx.iter().map(|&i| rule_rate(all[i].rule)).collect();
+            let mut bilinear_threshold = BTreeMap::new();
+            let mut bilinear_realized = BTreeMap::new();
+            let mut per_rule_threshold = BTreeMap::new();
+            let mut per_rule_realized = BTreeMap::new();
+            for rho in KEEP_RATES {
+                let key = format!("{rho}");
+                let t = keep_threshold(&train_scores, rho);
+                bilinear_realized.insert(key.clone(), realized_keep_rate(&train_scores, t));
+                bilinear_threshold.insert(key.clone(), t);
+                let t = keep_threshold(&train_rates, rho);
+                per_rule_realized.insert(key.clone(), realized_keep_rate(&train_rates, t));
+                per_rule_threshold.insert(key, t);
+            }
+            let holdout = (!hold_idx.is_empty()).then(|| {
+                let scores: Vec<f32> = hold_idx.iter().map(|&i| score(i)).collect();
+                let rates: Vec<f32> = hold_idx.iter().map(|&i| rule_rate(all[i].rule)).collect();
+                let tight: Vec<f32> = hold_idx.iter().map(|&i| all[i].tight).collect();
+                let strict: Vec<f32> = hold_idx.iter().map(|&i| all[i].strict).collect();
+                Intrinsic {
+                    n: hold_idx.len(),
+                    positive_rate_tight: tight.iter().sum::<f32>() as f64 / tight.len() as f64,
+                    positive_rate_strict: strict.iter().sum::<f32>() as f64 / strict.len() as f64,
+                    bilinear_auc_tight: auc_roc(&scores, &tight),
+                    bilinear_pr_auc_tight: average_precision(&scores, &tight),
+                    bilinear_auc_strict: auc_roc(&scores, &strict),
+                    bilinear_pr_auc_strict: average_precision(&scores, &strict),
+                    per_rule_auc_tight: auc_roc(&rates, &tight),
+                    per_rule_pr_auc_tight: average_precision(&rates, &tight),
+                    per_rule_auc_strict: auc_roc(&rates, &strict),
+                    per_rule_pr_auc_strict: average_precision(&rates, &strict),
+                }
+            });
+
+            let weights = trainer.weights();
+            let mut checkpoint = BilinearGuideCheckpoint {
+                schema_identity: BilinearGuideCheckpoint::current_schema_identity(),
+                label_source: "tight-at-seam".into(),
+                trainer: "rules_filter train".into(),
+                written_at_unix_s: pixelflow_pipeline::schema::unix_now_s(),
+                seed: args.seed,
+                epochs: args.epochs,
+                lr_initial: args.lr,
+                lr_decay: args.lr_decay,
                 l2: args.l2,
                 max_grad_norm: args.max_grad_norm,
+                pos_weight,
+                rule_fingerprint: format!("{}", weights.fingerprint),
+                num_rules: rules.len(),
+                op_names: OpKind::all().map(|op| format!("{op:?}")).collect(),
+                parameters: weights.parameters.clone(),
+                op_embeddings: weights.op_embeddings.clone(),
+                train_samples: train_idx.len(),
+                train_families: 0,
+                train_positive_rate: n_pos as f64 / train_idx.len() as f64,
+                dev_samples: hold_idx.len(),
+                dev_families: usize::from(held != ALL),
+                // The all-DEV model has no held-out fold; the checkpoint's two
+                // informational metrics carry `-1.0` there (NaN serializes as
+                // `null`, which the reader refuses). The manifest holds the
+                // intrinsic numbers that count.
+                dev_auc: holdout
+                    .as_ref()
+                    .and_then(|h| h.bilinear_auc_tight)
+                    .unwrap_or(-1.0),
+                dev_pr_auc: holdout
+                    .as_ref()
+                    .and_then(|h| h.bilinear_pr_auc_tight)
+                    .unwrap_or(-1.0),
+                weights_fnv64: String::new(),
             };
-            let mut loss = 0.0f64;
-            let mut seen = 0usize;
-            let mut pending = 0usize;
-            for &j in &order {
-                let s = &all[train_idx[j]];
-                let y = args.label_of(s);
-                if y < 0.5 && !negative_is_kept(args.seed, epoch, j, args.neg_keep) {
-                    continue;
-                }
-                let summary = summary_of(&trainer, s);
-                let forward = trainer.forward(&summary);
-                let z = forward.score();
-                let p = sigmoid(z);
-                let w = if y > 0.5 { pos_weight } else { 1.0 };
-                let eps = 1e-7f32;
-                let l = if y > 0.5 {
-                    -(p.max(eps)).ln()
-                } else {
-                    -((1.0 - p).max(eps)).ln()
-                };
-                loss += f64::from(w * l);
-                seen += 1;
-                trainer.accumulate(&forward, weighted_bce_grad(p, y, pos_weight) * batch_scale);
-                pending += 1;
-                if pending == args.batch_size {
-                    trainer.apply(step);
-                    pending = 0;
-                }
-            }
-            if pending > 0 {
-                trainer.apply(step);
-            }
-            assert!(seen > 0, "fold {held}: epoch {epoch} trained on no samples");
-            let mean = loss / seen as f64;
-            epoch_loss.push(mean);
-            eprintln!(
-                "fold {held}: epoch {epoch} lr {lr:.4} samples {seen} mean weighted loss {mean:.4}"
-            );
-            lr *= args.lr_decay;
-        }
+            checkpoint.weights_fnv64 = checkpoint.weights_fingerprint();
+            let written = out.map(|dir| {
+                let path = dir.join(format!("bilinear_{held}.json"));
+                std::fs::write(
+                    &path,
+                    serde_json::to_string(&checkpoint).expect("serialize"),
+                )
+                .expect("write checkpoint");
+                path.file_name()
+                    .expect("file name")
+                    .to_string_lossy()
+                    .into_owned()
+            });
 
-        // Scores on the training samples calibrate the thresholds; on the
-        // held-out fold they are the intrinsic metric.
-        let score = |i: usize| trainer.score(&summary_of(&trainer, &all[i]));
-        let train_scores: Vec<f32> = train_idx.iter().map(|&i| score(i)).collect();
-        let mut rule_pos: BTreeMap<RuleId, (usize, usize)> = BTreeMap::new();
-        for &i in &train_idx {
-            let e = rule_pos.entry(all[i].rule).or_insert((0, 0));
-            e.0 += 1;
-            e.1 += usize::from(all[i].tight > 0.5);
-        }
-        let rule_rate =
-            |r: RuleId| -> f32 { rule_pos.get(&r).map_or(0.0, |&(n, p)| p as f32 / n as f32) };
-        let train_rates: Vec<f32> = train_idx.iter().map(|&i| rule_rate(all[i].rule)).collect();
-        let mut bilinear_threshold = BTreeMap::new();
-        let mut bilinear_realized = BTreeMap::new();
-        let mut per_rule_threshold = BTreeMap::new();
-        let mut per_rule_realized = BTreeMap::new();
-        for rho in KEEP_RATES {
-            let key = format!("{rho}");
-            let t = keep_threshold(&train_scores, rho);
-            bilinear_realized.insert(key.clone(), realized_keep_rate(&train_scores, t));
-            bilinear_threshold.insert(key.clone(), t);
-            let t = keep_threshold(&train_rates, rho);
-            per_rule_realized.insert(key.clone(), realized_keep_rate(&train_rates, t));
-            per_rule_threshold.insert(key, t);
-        }
-        let holdout = (!hold_idx.is_empty()).then(|| {
-            let scores: Vec<f32> = hold_idx.iter().map(|&i| score(i)).collect();
-            let rates: Vec<f32> = hold_idx.iter().map(|&i| rule_rate(all[i].rule)).collect();
-            let tight: Vec<f32> = hold_idx.iter().map(|&i| all[i].tight).collect();
-            let strict: Vec<f32> = hold_idx.iter().map(|&i| all[i].strict).collect();
-            Intrinsic {
-                n: hold_idx.len(),
-                positive_rate_tight: tight.iter().sum::<f32>() as f64 / tight.len() as f64,
-                positive_rate_strict: strict.iter().sum::<f32>() as f64 / strict.len() as f64,
-                bilinear_auc_tight: auc_roc(&scores, &tight),
-                bilinear_pr_auc_tight: average_precision(&scores, &tight),
-                bilinear_auc_strict: auc_roc(&scores, &strict),
-                bilinear_pr_auc_strict: average_precision(&scores, &strict),
-                per_rule_auc_tight: auc_roc(&rates, &tight),
-                per_rule_pr_auc_tight: average_precision(&rates, &tight),
-                per_rule_auc_strict: auc_roc(&rates, &strict),
-                per_rule_pr_auc_strict: average_precision(&rates, &strict),
+            let label_of = |id: RuleId| -> String {
+                rules
+                    .index_of(id)
+                    .and_then(|i| rules.label_of(i))
+                    .unwrap_or_else(|| panic!("rule {id} is not in the production rule set"))
+            };
+            let model = FoldModel {
+                fold: held.into(),
+                checkpoint: written,
+                train_samples: train_idx.len(),
+                train_folds: FOLDS
+                    .iter()
+                    .filter(|&&f| held == ALL || f != held)
+                    .map(|f| (*f).into())
+                    .collect(),
+                train_positive_rate_tight: n_tight as f64 / train_idx.len() as f64,
+                train_positive_rate_strict: n_strict as f64 / train_idx.len() as f64,
+                tight_positives_invisible_to_strict: invisible,
+                pos_weight,
+                epoch_loss,
+                bilinear_threshold,
+                bilinear_realized_keep_rate: bilinear_realized,
+                rule_rates: rule_pos
+                    .keys()
+                    .map(|&r| (label_of(r), rule_rate(r)))
+                    .collect(),
+                per_rule_threshold,
+                per_rule_realized_keep_rate: per_rule_realized,
+                holdout,
+            };
+            if let Some(h) = &model.holdout {
+                eprintln!(
+                    "fold {held}: held-out n={} tight AUC {:?} PR-AUC {:?} (per-rule {:?} / {:?}); strict AUC {:?} PR-AUC {:?} (per-rule {:?} / {:?}) ({:.0}s)",
+                    h.n,
+                    h.bilinear_auc_tight,
+                    h.bilinear_pr_auc_tight,
+                    h.per_rule_auc_tight,
+                    h.per_rule_pr_auc_tight,
+                    h.bilinear_auc_strict,
+                    h.bilinear_pr_auc_strict,
+                    h.per_rule_auc_strict,
+                    h.per_rule_pr_auc_strict,
+                    started.elapsed().as_secs_f64()
+                );
             }
-        });
-
-        let weights = trainer.weights();
-        let mut checkpoint = BilinearGuideCheckpoint {
-            schema_identity: BilinearGuideCheckpoint::current_schema_identity(),
-            label_source: "tight-at-seam".into(),
-            trainer: "rules_filter train".into(),
-            written_at_unix_s: pixelflow_pipeline::schema::unix_now_s(),
-            seed: args.seed,
-            epochs: args.epochs,
-            lr_initial: args.lr,
-            lr_decay: args.lr_decay,
-            l2: args.l2,
-            max_grad_norm: args.max_grad_norm,
-            pos_weight,
-            rule_fingerprint: format!("{}", weights.fingerprint),
-            num_rules: rules.len(),
-            op_names: OpKind::all().map(|op| format!("{op:?}")).collect(),
-            parameters: weights.parameters.clone(),
-            op_embeddings: weights.op_embeddings.clone(),
-            train_samples: train_idx.len(),
-            train_families: 0,
-            train_positive_rate: n_pos as f64 / train_idx.len() as f64,
-            dev_samples: hold_idx.len(),
-            dev_families: usize::from(held != ALL),
-            // The all-DEV model has no held-out fold; the checkpoint's two
-            // informational metrics carry `-1.0` there (NaN serializes as
-            // `null`, which the reader refuses). The manifest holds the
-            // intrinsic numbers that count.
-            dev_auc: holdout
-                .as_ref()
-                .and_then(|h| h.bilinear_auc_tight)
-                .unwrap_or(-1.0),
-            dev_pr_auc: holdout
-                .as_ref()
-                .and_then(|h| h.bilinear_pr_auc_tight)
-                .unwrap_or(-1.0),
-            weights_fnv64: String::new(),
-        };
-        checkpoint.weights_fnv64 = checkpoint.weights_fingerprint();
-        let written = out.map(|dir| {
-            let path = dir.join(format!("bilinear_{held}.json"));
-            std::fs::write(
-                &path,
-                serde_json::to_string(&checkpoint).expect("serialize"),
-            )
-            .expect("write checkpoint");
-            path.file_name()
-                .expect("file name")
-                .to_string_lossy()
-                .into_owned()
-        });
-
-        let label_of = |id: RuleId| -> String {
-            rules
-                .index_of(id)
-                .and_then(|i| rules.label_of(i))
-                .unwrap_or_else(|| panic!("rule {id} is not in the production rule set"))
-        };
-        let model = FoldModel {
-            fold: held.into(),
-            checkpoint: written,
-            train_samples: train_idx.len(),
-            train_folds: FOLDS
-                .iter()
-                .filter(|&&f| held == ALL || f != held)
-                .map(|f| (*f).into())
-                .collect(),
-            train_positive_rate_tight: n_tight as f64 / train_idx.len() as f64,
-            train_positive_rate_strict: n_strict as f64 / train_idx.len() as f64,
-            tight_positives_invisible_to_strict: invisible,
-            pos_weight,
-            epoch_loss,
-            bilinear_threshold,
-            bilinear_realized_keep_rate: bilinear_realized,
-            rule_rates: rule_pos
-                .keys()
-                .map(|&r| (label_of(r), rule_rate(r)))
-                .collect(),
-            per_rule_threshold,
-            per_rule_realized_keep_rate: per_rule_realized,
-            holdout,
-        };
-        if let Some(h) = &model.holdout {
-            eprintln!(
-                "fold {held}: held-out n={} tight AUC {:?} PR-AUC {:?} (per-rule {:?} / {:?}); strict AUC {:?} PR-AUC {:?} (per-rule {:?} / {:?}) ({:.0}s)",
-                h.n,
-                h.bilinear_auc_tight,
-                h.bilinear_pr_auc_tight,
-                h.per_rule_auc_tight,
-                h.per_rule_pr_auc_tight,
-                h.bilinear_auc_strict,
-                h.bilinear_pr_auc_strict,
-                h.per_rule_auc_strict,
-                h.per_rule_pr_auc_strict,
-                started.elapsed().as_secs_f64()
-            );
+            models.insert(held.to_string(), model);
         }
-        models.insert(held.to_string(), model);
-    }
-    Manifest {
-        schema: SCHEMA.into(),
-        git_sha: git_sha.into(),
-        args: args.clone(),
-        models,
+        Manifest {
+            schema: SCHEMA.into(),
+            git_sha: git_sha.clone(),
+            args: args.clone(),
+            models,
+        }
     }
 }
 
@@ -1082,15 +1101,14 @@ fn serve(samples: &Path, socket: &Path) {
         "socket {} already exists — remove it or pick another path",
         socket.display()
     );
-    let all = load_samples(samples);
-    let rules = RuleSet::production();
-    let sha = head_sha();
+    let corpus = Corpus::load(samples);
     let listener = UnixListener::bind(socket).expect("bind socket");
     eprintln!(
-        "serving {} samples on {} ({} rules, git {sha})",
-        all.len(),
+        "serving {} samples on {} ({} rules, git {})",
+        corpus.samples.len(),
         socket.display(),
-        rules.len()
+        corpus.rules.len(),
+        corpus.git_sha
     );
     for stream in listener.incoming() {
         let stream = stream.expect("accept");
@@ -1105,7 +1123,7 @@ fn serve(samples: &Path, socket: &Path) {
             Err(e) => serde_json::json!({ "error": format!("parse trial: {e}") }),
             Ok(trial) => {
                 let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    train_models(&all, &rules, trial.folds.as_deref(), &trial.args, None, &sha)
+                    corpus.train(trial.folds.as_deref(), &trial.args, None)
                 }));
                 match run {
                     Ok(manifest) => {
