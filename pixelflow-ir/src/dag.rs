@@ -60,7 +60,47 @@ struct Slot<T> {
     edge_len: u32,
 }
 
+/// Which DAG a [`Scratch`] or [`SideTable`] was built for.
+///
+/// Minted, not read off the DAG's address. An address answers "where does
+/// this live right now", which is not the question: a `Dag` that is moved —
+/// boxed, or returned in a tuple beside its own scratch — is the same DAG at
+/// a new address, and a fresh `Dag` allocated where a dropped one used to sit
+/// is a different DAG at the same one. Both mistakes are silent under a
+/// pointer comparison and impossible under a minted one.
+///
+/// Same discipline, for the same reason, as `BufferIdentity` and
+/// `UniformIdentity` in `arena.rs`: identity is provenance.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct DagIdentity(u32);
+
+impl DagIdentity {
+    /// Mint an identity distinct from every other in this process.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the counter is exhausted, rather than wrapping onto a live
+    /// identity and letting two unrelated DAGs share a scratch.
+    fn mint() -> Self {
+        static NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        // `fetch_update`, not `fetch_add` + assert: the add would wrap
+        // *before* the assert fires, so a caught panic would leave the
+        // counter back on a live identity. Declining to store leaves it
+        // permanently exhausted instead. (`arena.rs`'s `mint_identity` has
+        // the long version of this note.)
+        Self(
+            NEXT.fetch_update(
+                core::sync::atomic::Ordering::Relaxed,
+                core::sync::atomic::Ordering::Relaxed,
+                |n| n.checked_add(1),
+            )
+            .unwrap_or_else(|_| panic!("DagIdentity: counter exhausted")),
+        )
+    }
+}
+
 pub struct Dag<T> {
+    identity: DagIdentity,
     nodes: Vec<Slot<T>>,
     edges: Vec<u32>,
 }
@@ -68,6 +108,12 @@ pub struct Dag<T> {
 impl<T: Clone> Clone for Dag<T> {
     fn clone(&self) -> Self {
         Dag {
+            // A clone is a different DAG, so it mints rather than copies:
+            // the original's `Scratch` must not silently accept it. Today
+            // the two agree on length and shape, so accepting would be
+            // harmless — which is exactly the kind of "true until someone
+            // edits it" reasoning the identity exists to stop relying on.
+            identity: DagIdentity::mint(),
             nodes: self
                 .nodes
                 .iter()
@@ -85,6 +131,7 @@ impl<T: Clone> Clone for Dag<T> {
 impl<T> Dag<T> {
     fn new() -> Self {
         Dag {
+            identity: DagIdentity::mint(),
             nodes: Vec::new(),
             edges: Vec::new(),
         }
@@ -324,6 +371,7 @@ impl<T: Key> Builder<T> {
     pub fn with_capacity(nodes: usize, edges: usize) -> Self {
         Builder {
             dag: Dag {
+                identity: DagIdentity::mint(),
                 nodes: Vec::with_capacity(nodes),
                 edges: Vec::with_capacity(edges),
             },
@@ -420,13 +468,13 @@ impl<T> Deref for Rooted<T> {
 pub struct Scratch {
     seen: Vec<bool>,
     stack: Vec<u32>,
-    owner: *const (),
+    owner: DagIdentity,
 }
 
 impl Scratch {
     fn begin<T>(&mut self, n: Node<'_, T>) {
-        assert!(
-            core::ptr::eq(n.dag as *const Dag<T> as *const (), self.owner),
+        assert_eq!(
+            n.dag.identity, self.owner,
             "scratch used with a node from another DAG"
         );
         self.seen.fill(false);
@@ -466,32 +514,38 @@ impl<'a, 's, T> Iterator for DescendantsIn<'a, 's, T> {
 
 pub struct SideTable<V> {
     vals: Vec<V>,
-    owner: *const (),
+    owner: DagIdentity,
 }
 
 impl<T> Dag<T> {
     /// Allocate reusable traversal state for `descendants_in`.
+    ///
+    /// Bound to this DAG's identity, not its address, so the DAG may be
+    /// moved afterwards — boxed, or returned in a tuple beside the scratch
+    /// itself — without invalidating it.
     #[must_use]
     pub fn scratch(&self) -> Scratch {
         Scratch {
             seen: vec![false; self.nodes.len()],
             stack: Vec::new(),
-            owner: self as *const Dag<T> as *const (),
+            owner: self.identity,
         }
     }
 
+    /// Dense per-node storage for an analysis. Bound to this DAG's identity
+    /// on the same terms as [`Dag::scratch`].
     pub fn side_table<V: Clone>(&self, init: V) -> SideTable<V> {
         SideTable {
             vals: vec![init; self.nodes.len()],
-            owner: self as *const Dag<T> as *const (),
+            owner: self.identity,
         }
     }
 }
 
 impl<V> SideTable<V> {
     fn slot<T>(&self, n: Node<'_, T>) -> usize {
-        assert!(
-            core::ptr::eq(n.dag as *const Dag<T> as *const (), self.owner),
+        assert_eq!(
+            n.dag.identity, self.owner,
             "side table used with a node from another DAG"
         );
         n.ix() as usize
@@ -618,6 +672,58 @@ mod tests {
         let h = build();
         let mut sc = g.scratch();
         let _ = h.entry().descendants_in(&mut sc).count();
+    }
+
+    #[test]
+    #[should_panic(expected = "another DAG")]
+    fn side_table_is_arena_checked() {
+        let g = build();
+        let h = build();
+        let t = g.side_table(0usize);
+        let _ = t[h.entry()];
+    }
+
+    #[test]
+    fn moving_the_dag_does_not_invalidate_its_scratch_or_side_table() {
+        // The reason both are keyed on a minted identity rather than on
+        // `&self`'s address: a DAG can be moved after handing one out, and
+        // it is still the same DAG. Under an address comparison this
+        // panicked with "from another DAG".
+        let g = build();
+        let mut sc = g.scratch();
+        let mut sizes = g.side_table(0usize);
+
+        let g = Box::new(g); // moves the Dag; its address changes
+
+        assert_eq!(g.entry().descendants_in(&mut sc).count(), 4);
+        for n in g.iter() {
+            sizes[n] = 1 + n.children().map(|c| sizes[c]).sum::<usize>();
+        }
+        assert_eq!(sizes[g.entry()], 5);
+    }
+
+    #[test]
+    fn a_clone_is_a_different_dag() {
+        // Structurally identical, so accepting the original's scratch would
+        // be harmless *today* — which is why it is refused: that harmlessness
+        // is a property of the current code, not of the type.
+        let g = build();
+        let mut sc = g.scratch();
+        let twin = g.clone();
+        assert_eq!(g.entry().descendants_in(&mut sc).count(), 4);
+        assert_eq!(twin.len(), g.len());
+
+        let mut twin_sc = twin.scratch();
+        assert_eq!(twin.entry().descendants_in(&mut twin_sc).count(), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "another DAG")]
+    fn a_clone_does_not_inherit_the_originals_scratch() {
+        let g = build();
+        let mut sc = g.scratch();
+        let twin = g.clone();
+        let _ = twin.entry().descendants_in(&mut sc).count();
     }
 
     #[test]
