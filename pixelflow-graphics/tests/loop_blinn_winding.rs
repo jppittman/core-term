@@ -18,6 +18,8 @@
 
 use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::{loop_blinn, Contour, Font, Outline, Segment};
+use pixelflow_ir::binding::BindingTable;
+use pixelflow_ir::{passes, Evaluator};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
@@ -181,9 +183,59 @@ fn bake_single(outline: &Outline, lattice: Lattice) -> Vec<f32> {
     glyph.bake(&kernel, lattice).into_buffer()
 }
 
-/// Compare a baked buffer against the oracle at every sample clear of the
-/// ramp; returns (samples judged, samples in the ramp). Panics on the first
-/// disagreement with the offending sample.
+/// **`kernel` sampled by the IR interpreter — the same arena the JIT would
+/// compile, minus the compile.** `body` gets a sampler over it.
+///
+/// A production bake is a full runtime-tier saturation — seconds per glyph in
+/// the debug build CI runs, and it is the *compiler* that costs that; the
+/// arena underneath is the same one either way. So the breadth sweeps here,
+/// whose subject is the winding rather than codegen, read it directly, and the
+/// corpus tests keep the compiler in the loop. `kernel_glyph_golden.rs` pins
+/// the two against each other per texel on real glyphs, which is what makes
+/// the interpreter's answer usable as the kernel's answer.
+fn interpreting<R>(kernel: &Kernel, body: impl FnOnce(&dyn Fn(f32, f32) -> f32) -> R) -> R {
+    let (arena, root) = kernel.parts();
+    // Only what the interpreter cannot read for itself: a `Ref` has no
+    // structure to walk, and there is no derivative rule at eval time. It
+    // handles `Reduce` and `Gather` natively, so nothing is unrolled here.
+    let (arena, root) = passes::expand_refs_owned(arena, root);
+    let (arena, root) = passes::lower_dwrt_owned(&arena, root).expect("dwrt lowering");
+    let data: Vec<&[f32]> = arena
+        .buffers()
+        .iter()
+        .map(|decl| {
+            kernel
+                .buffer_data()
+                .find(|(id, _)| *id == decl.id)
+                .map(|(_, d)| d.as_ref())
+                .expect("the glyph kernel carries data for every slot it declares")
+        })
+        .collect();
+    let table = BindingTable::bind(&arena, &data).expect("bind the winding table");
+    let evaluator = Evaluator::new(&arena, root);
+    body(&|x, y| evaluator.eval(&[x, y], &table))
+}
+
+/// [`bake_single`]'s buffer, sampled rather than compiled. The pixel-centre
+/// convention lands on the sample here instead of on a [`pixel_centered`]
+/// contramap, which is the same function of the same coordinates.
+fn interpret_single(outline: &Outline, lattice: Lattice) -> Vec<f32> {
+    let glyph = loop_blinn::glyph(outline);
+    let [w, h] = lattice.extent;
+    interpreting(&glyph.kernel(), |at| {
+        let mut out = Vec::with_capacity((w * h) as usize);
+        for j in 0..h {
+            for i in 0..w {
+                out.push(at(i as f32 + CENTER, j as f32 + CENTER));
+            }
+        }
+        out
+    })
+}
+
+/// Compare a coverage buffer — baked or sampled — against the oracle at every
+/// sample clear of the ramp; returns (samples judged, samples in the ramp).
+/// Panics on the first disagreement with the offending sample.
 fn judge(label: &str, outline: &Outline, lattice: Lattice, baked: &[f32]) -> (usize, usize) {
     let [w, h] = lattice.extent.map(|e| e as usize);
     let (mut judged, mut in_ramp) = (0usize, 0usize);
@@ -413,6 +465,12 @@ fn glyphs_wind_like_the_oracle() {
 
 /// Every printable glyph, one size: the whole font's parser and every
 /// contour shape it produces, against the oracle.
+///
+/// Sampled, not baked — see [`interpreting`]. What breadth is here to find is
+/// an outline *shape* the twelve above do not have, and 95 production
+/// compiles to ask that question put this at two thirds of nextest's cap on
+/// CI's runner while contributing nothing the corpus test above does not
+/// already pin.
 #[test]
 fn every_printable_glyph_winds_like_the_oracle() {
     let font = Font::parse(FONT_DATA).expect("font");
@@ -422,7 +480,7 @@ fn every_printable_glyph_winds_like_the_oracle() {
     for ch in ' '..='~' {
         let id = font.cmap_lookup(ch).expect("glyph");
         let outline = font.outline_scaled_by_id(id, size).expect("outline");
-        let single = bake_single(&outline, lattice);
+        let single = interpret_single(&outline, lattice);
         judge(&format!("{ch:?}@{size}"), &outline, lattice, &single);
     }
 }
@@ -494,50 +552,101 @@ fn an_edge_inside_the_ink_is_not_a_boundary() {
 
 // ────────────────────────────── support ──────────────────────────────
 
-/// Outside the reported support the kernel is the literal `0.0` — sampled
-/// on a two-pixel ring just outside the box, and far away.
+/// A two-pixel ring just outside the support box, and far away.
+fn probes_outside(support: loop_blinn::Support) -> Vec<[f32; 2]> {
+    let [x0, y0, x1, y1] = support.bounds();
+    (0..12)
+        .flat_map(|i| {
+            let t = i as f32 / 12.0;
+            let (w, h) = (x1 - x0 + 4.0, y1 - y0 + 4.0);
+            [
+                [x0 - 2.0 + t * w, y0 - 1.0],
+                [x0 - 2.0 + t * w, y1 + 1.0],
+                [x0 - 1.0, y0 - 2.0 + t * h],
+                [x1 + 1.0, y0 - 2.0 + t * h],
+                [x0 - 2.0 + t * w, y0 - 100.0],
+                [x1 + 1000.0, y0 - 2.0 + t * h],
+            ]
+        })
+        .collect()
+}
+
+/// Not "small enough to round to zero" — the literal `+0.0`, bit for bit.
+/// The support's claim is that the kernel *is* the constant outside the box,
+/// and `Support::contains().select(_, 0.0)` makes that structural, so a
+/// tolerance here would accept a ramp that leaks instead.
+fn assert_zero(
+    label: &str,
+    bounds: [f32; 4],
+    probes: &[[f32; 2]],
+    mut at: impl FnMut([f32; 2]) -> f32,
+) {
+    for &[x, y] in probes {
+        let v = at([x, y]);
+        assert_eq!(
+            v.to_bits(),
+            0f32.to_bits(),
+            "{label}: {v:e} at ({x}, {y}) outside the support {bounds:?}"
+        );
+    }
+}
+
+/// Outside the reported support the *compiled* kernel is the literal `0.0`,
+/// on a corpus of the awkward shapes at two sizes.
+///
+/// Compiled, so the whole runtime tier is in the loop — the mask survives
+/// saturation, extraction and the emitter's select guard. That is also what
+/// makes each glyph here cost a full production compile, which is why the
+/// breadth sweep below is a separate test that does not pay for one.
 #[test]
 fn a_glyph_is_exactly_zero_outside_its_support() {
     let font = Font::parse(FONT_DATA).expect("font");
-    let corpus: Vec<(f32, char)> = (' '..='~')
-        .map(|ch| (48.0f32, ch))
-        .chain(GLYPHS.iter().flat_map(|&ch| [(12.0, ch), (20.0, ch)]))
-        .collect();
-    for (size, ch) in corpus {
-        {
+    for ch in GLYPHS {
+        for size in [12.0f32, 20.0] {
             let id = font.cmap_lookup(ch).expect("glyph");
             let glyph = font.glyph_scaled_by_id(id, size).expect("glyph");
             if glyph.support.is_empty() {
                 continue;
             }
-            let [x0, y0, x1, y1] = glyph.support.bounds();
-            let probes: Vec<[f32; 2]> = (0..12)
-                .flat_map(|i| {
-                    let t = i as f32 / 12.0;
-                    let (w, h) = (x1 - x0 + 4.0, y1 - y0 + 4.0);
-                    [
-                        [x0 - 2.0 + t * w, y0 - 1.0],
-                        [x0 - 2.0 + t * w, y1 + 1.0],
-                        [x0 - 1.0, y0 - 2.0 + t * h],
-                        [x1 + 1.0, y0 - 2.0 + t * h],
-                        [x0 - 2.0 + t * w, y0 - 100.0],
-                        [x1 + 1000.0, y0 - 2.0 + t * h],
-                    ]
-                })
-                .collect();
             // `Lattice::eval_at` binds nothing, so — unlike before S1a — it
             // cannot serve this kernel's winding table; bind it explicitly.
             let bound = glyph.bound(&glyph.kernel(), [1, 1]);
-            for [x, y] in probes {
-                let v = bound.eval_at(x, y);
-                assert_eq!(
-                    v.to_bits(),
-                    0f32.to_bits(),
-                    "{ch:?}@{size}: {v:e} at ({x}, {y}) outside the support {:?}",
-                    glyph.support.bounds()
-                );
-            }
+            assert_zero(
+                &format!("{ch:?}@{size}"),
+                glyph.support.bounds(),
+                &probes_outside(glyph.support),
+                |[x, y]| bound.eval_at(x, y),
+            );
         }
+    }
+}
+
+/// The same claim across the whole printable range, sampled rather than
+/// compiled — see [`interpreting`].
+///
+/// This is the test that walked into nextest's ten-minute cap: 95 production
+/// saturations to answer 72 constant-folding probes each, the compiles ~95% of
+/// its runtime and none of them the subject. What breadth is here to find is a
+/// glyph whose support the *builder* computes too tight, which is a property
+/// of the kernel.
+#[test]
+fn every_printable_glyph_is_exactly_zero_outside_its_support() {
+    let font = Font::parse(FONT_DATA).expect("font");
+    let size = 48.0f32;
+    for ch in ' '..='~' {
+        let id = font.cmap_lookup(ch).expect("glyph");
+        let glyph = font.glyph_scaled_by_id(id, size).expect("glyph");
+        if glyph.support.is_empty() {
+            continue;
+        }
+        interpreting(&glyph.kernel(), |at| {
+            assert_zero(
+                &format!("{ch:?}@{size}"),
+                glyph.support.bounds(),
+                &probes_outside(glyph.support),
+                |[x, y]| at(x, y),
+            );
+        });
     }
 }
 
