@@ -83,10 +83,19 @@ fn repeated_walks_do_not_allocate() {
         panic!("descendants_in's allocations never stabilized across 50 windows of 1000 calls each")
     });
 
-    // The allocating variant, for contrast: it should cost meaningfully
-    // more over the same number of calls than the reused-scratch steady
-    // state -- whatever that steady state number turns out to be on this
-    // platform.
+    // Stabilizing is necessary but not sufficient: a regression to one
+    // allocation per call also stabilizes, at 1000, and would still clear
+    // the `descendants()` comparison below (which lands near 2000, since
+    // that variant allocates both a stack and a bitmap every call). The
+    // property this test exists for is *zero*, so require it -- the loop
+    // above is only there to let a platform's one-time allocator setup
+    // land somewhere before the window that has to be clean.
+    assert_eq!(
+        steady_state, 0,
+        "descendants_in should settle at zero allocations per call, not {steady_state} per 1000"
+    );
+
+    // The allocating variant, for contrast.
     let before = ALLOCS.load(Ordering::Relaxed);
     for _ in 0..1000 {
         sink += g.entry().descendants().count();

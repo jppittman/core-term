@@ -48,11 +48,16 @@ use core::hash::{Hash, Hasher};
 use core::ops::Deref;
 
 /// Build-time handle. Opaque, and never needed by consumers.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+///
+/// The guarantee is over *construction*, not observation: there is no public
+/// constructor and no public accessor, so the only way to hold one is to have
+/// been given it by `push`/`intern`, and the only thing it can be spent on is
+/// this builder. `Debug` does render the underlying index — the panic in
+/// `Dag::push` needs it to say which child was missing — so it is not a
+/// secret, merely unforgeable. Nothing a caller can learn from printing one
+/// can be turned back into an `Id`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Id(u32);
-
-// `Id` has no public accessor and no public constructor. It exists only
-// between `Builder::intern` and `Builder::finish`, and is spent there.
 
 struct Slot<T> {
     value: T,
@@ -347,8 +352,9 @@ impl<T: Eq + Hash + Clone> Key for T {}
 
 pub struct Builder<T: Key> {
     dag: Dag<T>,
-    // Keyed on raw indices, not `Id`: that keeps `Ord`/`Hash` off the
-    // public `Id` type, so callers cannot recover construction order.
+    // Keyed on raw indices rather than `Id`, so the memo's `Ord`/`Hash`
+    // requirement lands on a `u32` instead of forcing those bounds onto the
+    // public handle, which needs neither.
     memo: Memo<(T, Vec<u32>), u32>,
 }
 
