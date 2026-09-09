@@ -145,3 +145,33 @@ DEFECT 17→18, NEVER TESTED ON REAL 14→13, total rows 88→92. Headline: **53
 **Verdict histogram, round 3 (2026-09-08):** HELD 39→39, FAILED 7→5, UNITS INVALID 15→15,
 INSTRUMENT DEFECT 18→18, NEVER TESTED ON REAL 13→14, total rows 92→91 (L078 dropped). Headline:
 **52 of 91 do not stand** (was 53 of 92).
+
+### Untuned models (added 2026-09-08)
+
+11. **Every learned-model row in this ledger was trained at one hand-picked configuration**,
+    with no hyperparameter search. JP, 2026-09-08: *"none of my models worked at all until I ran
+    optuna. We haven't run optuna once since I stopped following this closely."* The previous
+    sweep harness (`optuna_unified.py` driving `train_unified --server <unix socket>`) was
+    deleted with the RL loop in `fb8136e3`, and nothing has swept since. The rows this applies
+    to, none of whose verdicts change here — the caveat is about what the *evidence* can support,
+    not about which way a number went:
+
+    - the extraction head: **L005, L006, L007, L011, L012, L013, L015, L017**;
+    - the Guide programme, linear: **L034, L035, L036, L037, L038**;
+    - return-to-go: **L044, L045, L046**;
+    - bilinear: **L047, L048**;
+    - and the bilinear rules × nodes filter's null, which is not a row here — it is registered in
+      `docs/plans/2026-09-08-rules-filter-bilinear-registration.md` and reported in
+      `docs/results/2026-09-08-rules-filter-bilinear.md`.
+
+    A null from an untuned model is weak evidence against the *shape* it was testing: it cannot
+    separate "this architecture does not carry the signal" from "this learning rate does not".
+    It is still evidence — an untuned model that *wins* is at least a lower bound, and an untuned
+    model that ties a control at least says the shape is not free money — but it is not the
+    evidence a FAILED verdict on a shape would need.
+
+    **The rule going forward: no learned model's extrinsic number is quoted — in this ledger or
+    anywhere else — without an Optuna sweep on the intrinsic metric first, with the untuned
+    configuration enqueued as trial 0 so the tuned and untuned numbers appear in the same table.**
+    The first application of the rule is the rules × nodes filter:
+    `docs/results/2026-09-08-optuna-rules-filter.md`.
