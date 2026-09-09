@@ -3013,6 +3013,40 @@ mod tests {
         (egraph, root)
     }
 
+    /// The research tie-break seam changes nothing under production's
+    /// instance.
+    ///
+    /// `Ties::Insertion` is the `impl` the shipped extractor uses, so
+    /// `witness::extract_under` with it must return the same choice map and
+    /// the same cost as `extract_dag_scoped` — on a saturated graph, at a
+    /// frame shape, where ties are dense (the 2026-09-08 witness run found
+    /// 47–81 % of live classes tied). Without this, a refactor of either DP
+    /// pass could silently move production's extraction and only the
+    /// research harness would see it.
+    #[cfg(feature = "provenance-journal")]
+    #[test]
+    fn insertion_tie_break_is_productions_extraction() {
+        use crate::egraph::witness::{Ties, extract_under};
+        let costs = CostModel::latency_prior();
+        for (nodes, shape) in [
+            (64, LatticeShape::POINT),
+            (256, LatticeShape::new([32, 32])),
+        ] {
+            let (egraph, root) = saturated_sdf_egraph(nodes);
+            let production = extract_dag_scoped(&egraph, root, &costs, shape);
+            let (choices, cost) = extract_under(&egraph, root, &costs, shape, Ties::Insertion);
+            assert_eq!(
+                choices, production.choices,
+                "{nodes} nodes at {shape:?}: the Insertion tie-break moved production's choices"
+            );
+            assert_eq!(
+                (cost.tree, cost.dag),
+                (production.total_cost, production.dag_cost),
+                "{nodes} nodes at {shape:?}: the Insertion tie-break moved production's cost"
+            );
+        }
+    }
+
     /// The budgeted hybrid-set pass and the dense pass it replaced choose
     /// the same node in every class of a saturated graph — same objective,
     /// same tie-breaking, priced through sparse and dense sets alike —
