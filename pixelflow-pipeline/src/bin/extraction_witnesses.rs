@@ -322,6 +322,10 @@ struct WitnessRow {
     /// `objective` after greedily accepting every improving frontier swap.
     greedy_swaps: usize,
     swaps_accepted: usize,
+    /// `objective` when the witness is cheaper in the extractor's own
+    /// weighted objective; `static-only` when it is cheaper only in the
+    /// sweep's unweighted `dag_cost` column.
+    witness_kind: String,
     realizable: String,
     first_divergence: Option<FirstDivergence>,
     labels: BTreeMap<String, usize>,
@@ -599,7 +603,16 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
         accepted += 1;
     }
 
-    let realizable = if best_single <= cost_t.dag {
+    // Two witnesses, never confused. An *objective* witness is cheaper in
+    // the number the extractor actually minimizes, and is an indictment of
+    // the search. A *static-only* witness is cheaper only in the sweep's
+    // unweighted `dag_cost` column while being dearer under the shape
+    // weighting — that indicts the objective's weighting, not the search,
+    // and realizability is not a question one can ask of it.
+    let objective_witness = cost_t.dag < base;
+    let realizable = if !objective_witness {
+        "n/a (static-only)"
+    } else if best_single <= cost_t.dag {
         "REALIZABLE-1"
     } else if cur_cost <= cost_t.dag {
         "REALIZABLE-k"
@@ -695,6 +708,11 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
         best_single_swap: best_single,
         greedy_swaps: cur_cost,
         swaps_accepted: accepted,
+        witness_kind: if objective_witness {
+            "objective".into()
+        } else {
+            "static-only".into()
+        },
         realizable: realizable.into(),
         first_divergence: first,
         labels,
@@ -790,7 +808,7 @@ fn main() {
                         w.delta_dag,
                         w.divergences,
                         w.frontier,
-                        w.realizable
+                        format_args!("{} {}", w.witness_kind, w.realizable)
                     );
                     witness_rows.push(w);
                 }
@@ -824,7 +842,8 @@ fn write_out(
     let mut csv = String::from(
         "kernel,family,b_lo,b_hi,live_lo,live_hi,objective_witness,objective_greedy,\
          delta_objective,dag_witness,dag_greedy,delta_dag,occupied,merges,divergences,frontier,\
-         best_single_swap,greedy_swaps,swaps_accepted,realizable,first_class,first_label,\
+         best_single_swap,greedy_swaps,swaps_accepted,witness_kind,realizable,first_class,\
+         first_label,\
          first_stage,first_rule\n",
     );
     for w in witnesses {
@@ -838,7 +857,7 @@ fn write_out(
             None => ("-".into(), "-".into(), "-".into(), "-".into()),
         };
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{fc},{fl},{fs},{fr}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{fc},{fl},{fs},{fr}\n",
             w.kernel,
             w.family,
             w.b_lo,
@@ -858,6 +877,7 @@ fn write_out(
             w.best_single_swap,
             w.greedy_swaps,
             w.swaps_accepted,
+            w.witness_kind,
             w.realizable,
         ));
     }
