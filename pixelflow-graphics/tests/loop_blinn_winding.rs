@@ -16,10 +16,10 @@
 //! antialiasing ramp's shape is pinned by `font_antialiasing.rs`, and where
 //! the ink is against a second rasterizer by `freetype_oracle.rs`.
 
+use std::ops::RangeInclusive;
+
 use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::{loop_blinn, Contour, Font, Outline, Segment};
-use pixelflow_ir::binding::BindingTable;
-use pixelflow_ir::{passes, Evaluator};
 
 const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
@@ -183,59 +183,9 @@ fn bake_single(outline: &Outline, lattice: Lattice) -> Vec<f32> {
     glyph.bake(&kernel, lattice).into_buffer()
 }
 
-/// **`kernel` sampled by the IR interpreter — the same arena the JIT would
-/// compile, minus the compile.** `body` gets a sampler over it.
-///
-/// A production bake is a full runtime-tier saturation — seconds per glyph in
-/// the debug build CI runs, and it is the *compiler* that costs that; the
-/// arena underneath is the same one either way. So the breadth sweeps here,
-/// whose subject is the winding rather than codegen, read it directly, and the
-/// corpus tests keep the compiler in the loop. `kernel_glyph_golden.rs` pins
-/// the two against each other per texel on real glyphs, which is what makes
-/// the interpreter's answer usable as the kernel's answer.
-fn interpreting<R>(kernel: &Kernel, body: impl FnOnce(&dyn Fn(f32, f32) -> f32) -> R) -> R {
-    let (arena, root) = kernel.parts();
-    // Only what the interpreter cannot read for itself: a `Ref` has no
-    // structure to walk, and there is no derivative rule at eval time. It
-    // handles `Reduce` and `Gather` natively, so nothing is unrolled here.
-    let (arena, root) = passes::expand_refs_owned(arena, root);
-    let (arena, root) = passes::lower_dwrt_owned(&arena, root).expect("dwrt lowering");
-    let data: Vec<&[f32]> = arena
-        .buffers()
-        .iter()
-        .map(|decl| {
-            kernel
-                .buffer_data()
-                .find(|(id, _)| *id == decl.id)
-                .map(|(_, d)| d.as_ref())
-                .expect("the glyph kernel carries data for every slot it declares")
-        })
-        .collect();
-    let table = BindingTable::bind(&arena, &data).expect("bind the winding table");
-    let evaluator = Evaluator::new(&arena, root);
-    body(&|x, y| evaluator.eval(&[x, y], &table))
-}
-
-/// [`bake_single`]'s buffer, sampled rather than compiled. The pixel-centre
-/// convention lands on the sample here instead of on a [`pixel_centered`]
-/// contramap, which is the same function of the same coordinates.
-fn interpret_single(outline: &Outline, lattice: Lattice) -> Vec<f32> {
-    let glyph = loop_blinn::glyph(outline);
-    let [w, h] = lattice.extent;
-    interpreting(&glyph.kernel(), |at| {
-        let mut out = Vec::with_capacity((w * h) as usize);
-        for j in 0..h {
-            for i in 0..w {
-                out.push(at(i as f32 + CENTER, j as f32 + CENTER));
-            }
-        }
-        out
-    })
-}
-
-/// Compare a coverage buffer — baked or sampled — against the oracle at every
-/// sample clear of the ramp; returns (samples judged, samples in the ramp).
-/// Panics on the first disagreement with the offending sample.
+/// Compare a baked buffer against the oracle at every sample clear of the
+/// ramp; returns (samples judged, samples in the ramp). Panics on the first
+/// disagreement with the offending sample.
 fn judge(label: &str, outline: &Outline, lattice: Lattice, baked: &[f32]) -> (usize, usize) {
     let [w, h] = lattice.extent.map(|e| e as usize);
     let (mut judged, mut in_ramp) = (0usize, 0usize);
@@ -443,46 +393,86 @@ fn synthetic_outlines_wind_like_the_oracle() {
 const GLYPHS: [char; 12] = ['O', '8', 'A', 'g', 'W', '@', '%', '{', 'f', 'e', 'S', '&'];
 const SIZES: [f32; 3] = [7.0, 13.0, 24.0];
 
+/// Large enough that a support computed a pixel too tight leaves the ink
+/// visibly outside the box rather than inside the ramp's own slop.
+const SUPPORT_SWEEP_PX: f32 = 48.0;
+
+/// **Why these suites come in bands.** A production bake is a full
+/// runtime-tier saturation — seconds per glyph in the debug build CI runs —
+/// so a sweep over the printable range is a hundred of those, and one such
+/// sweep walked into nextest's ten-minute cap. That cap is **per test**, and
+/// each test is its own process (`.config/nextest.toml`), so cutting a sweep
+/// into bands puts every glyph through the same compile it always did while
+/// no single process carries the whole font. On a multi-core runner the bands
+/// also run at once, so the suite gets faster rather than merely legal.
+///
+/// The cuts are where ASCII's own are: `' '..='?'` is punctuation and the
+/// digits, `'@'..='_'` the capitals, `'`'..='~'` the lowercase — each about a
+/// third of the range, and each a third of the compiles.
+fn winds_like_the_oracle(band: RangeInclusive<char>) {
+    const SIZE: f32 = 20.0;
+    const EXTENT: usize = 30;
+
+    let font = Font::parse(FONT_DATA).expect("font");
+    let lattice = Lattice::frame(EXTENT, EXTENT);
+    for ch in band {
+        let id = font.cmap_lookup(ch).expect("glyph");
+        let outline = font.outline_scaled_by_id(id, SIZE).expect("outline");
+        let single = bake_single(&outline, lattice);
+        judge(&format!("{ch:?}@{SIZE}"), &outline, lattice, &single);
+    }
+}
+
 /// The single-kernel form of real glyphs: every contour shape a font
 /// produces — holes, counters, sharp joins, tangent joins, slivers.
-#[test]
-fn glyphs_wind_like_the_oracle() {
+///
+/// One test per size, for the reason in [`winds_like_the_oracle`].
+fn glyphs_wind_like_the_oracle_at(size: f32) {
     let font = Font::parse(FONT_DATA).expect("font");
-    let mut judged_total = 0usize;
-    for size in SIZES {
-        let n = (size * 1.5).ceil() as usize;
-        let lattice = Lattice::frame(n, n);
-        for ch in GLYPHS {
-            let id = font.cmap_lookup(ch).expect("glyph");
-            let outline = font.outline_scaled_by_id(id, size).expect("outline");
-            let single = bake_single(&outline, lattice);
-            let (judged, _) = judge(&format!("{ch}@{size} (single)"), &outline, lattice, &single);
-            judged_total += judged;
-        }
+    let n = (size * 1.5).ceil() as usize;
+    let lattice = Lattice::frame(n, n);
+    for ch in GLYPHS {
+        let id = font.cmap_lookup(ch).expect("glyph");
+        let outline = font.outline_scaled_by_id(id, size).expect("outline");
+        let single = bake_single(&outline, lattice);
+        let (judged, _) = judge(&format!("{ch}@{size} (single)"), &outline, lattice, &single);
+        // Scale-free, and stronger than a total: a glyph whose every sample
+        // fell inside the ramp was carried by this suite without the oracle
+        // ever having been asked about it.
+        assert!(judged > 0, "{ch}@{size}: every sample was in the ramp");
     }
-    assert!(judged_total > 5_000, "only {judged_total} samples judged");
+}
+
+#[test]
+fn glyphs_wind_like_the_oracle_at_7px() {
+    glyphs_wind_like_the_oracle_at(SIZES[0]);
+}
+
+#[test]
+fn glyphs_wind_like_the_oracle_at_13px() {
+    glyphs_wind_like_the_oracle_at(SIZES[1]);
+}
+
+#[test]
+fn glyphs_wind_like_the_oracle_at_24px() {
+    glyphs_wind_like_the_oracle_at(SIZES[2]);
 }
 
 /// Every printable glyph, one size: the whole font's parser and every
 /// contour shape it produces, against the oracle.
-///
-/// Sampled, not baked — see [`interpreting`]. What breadth is here to find is
-/// an outline *shape* the twelve above do not have, and 95 production
-/// compiles to ask that question put this at two thirds of nextest's cap on
-/// CI's runner while contributing nothing the corpus test above does not
-/// already pin.
 #[test]
-fn every_printable_glyph_winds_like_the_oracle() {
-    let font = Font::parse(FONT_DATA).expect("font");
-    let size = 20.0f32;
-    let n = 30usize;
-    let lattice = Lattice::frame(n, n);
-    for ch in ' '..='~' {
-        let id = font.cmap_lookup(ch).expect("glyph");
-        let outline = font.outline_scaled_by_id(id, size).expect("outline");
-        let single = interpret_single(&outline, lattice);
-        judge(&format!("{ch:?}@{size}"), &outline, lattice, &single);
-    }
+fn punctuation_and_digits_wind_like_the_oracle() {
+    winds_like_the_oracle(' '..='?');
+}
+
+#[test]
+fn uppercase_winds_like_the_oracle() {
+    winds_like_the_oracle('@'..='_');
+}
+
+#[test]
+fn lowercase_winds_like_the_oracle() {
+    winds_like_the_oracle('`'..='~');
 }
 
 // ──────────────────────── boundaries, not edges ────────────────────────
@@ -591,13 +581,33 @@ fn assert_zero(
     }
 }
 
-/// Outside the reported support the *compiled* kernel is the literal `0.0`,
-/// on a corpus of the awkward shapes at two sizes.
+/// Outside the reported support the kernel is the literal `0.0` — sampled on
+/// a two-pixel ring just outside the box, and far away.
 ///
-/// Compiled, so the whole runtime tier is in the loop — the mask survives
-/// saturation, extraction and the emitter's select guard. That is also what
-/// makes each glyph here cost a full production compile, which is why the
-/// breadth sweep below is a separate test that does not pay for one.
+/// Banded like the winding sweeps above, and for the same reason: this is the
+/// suite that walked into nextest's ten-minute cap, 119 production
+/// saturations in one process to answer 72 probes each.
+fn is_exactly_zero_outside_its_support(band: RangeInclusive<char>, size: f32) {
+    let font = Font::parse(FONT_DATA).expect("font");
+    for ch in band {
+        let id = font.cmap_lookup(ch).expect("glyph");
+        let glyph = font.glyph_scaled_by_id(id, size).expect("glyph");
+        if glyph.support.is_empty() {
+            continue;
+        }
+        // `Lattice::eval_at` binds nothing, so — unlike before S1a — it
+        // cannot serve this kernel's winding table; bind it explicitly.
+        let bound = glyph.bound(&glyph.kernel(), [1, 1]);
+        assert_zero(
+            &format!("{ch:?}@{size}"),
+            glyph.support.bounds(),
+            &probes_outside(glyph.support),
+            |[x, y]| bound.eval_at(x, y),
+        );
+    }
+}
+
+/// The awkward shapes, at the two sizes a terminal actually renders.
 #[test]
 fn a_glyph_is_exactly_zero_outside_its_support() {
     let font = Font::parse(FONT_DATA).expect("font");
@@ -605,11 +615,6 @@ fn a_glyph_is_exactly_zero_outside_its_support() {
         for size in [12.0f32, 20.0] {
             let id = font.cmap_lookup(ch).expect("glyph");
             let glyph = font.glyph_scaled_by_id(id, size).expect("glyph");
-            if glyph.support.is_empty() {
-                continue;
-            }
-            // `Lattice::eval_at` binds nothing, so — unlike before S1a — it
-            // cannot serve this kernel's winding table; bind it explicitly.
             let bound = glyph.bound(&glyph.kernel(), [1, 1]);
             assert_zero(
                 &format!("{ch:?}@{size}"),
@@ -621,33 +626,21 @@ fn a_glyph_is_exactly_zero_outside_its_support() {
     }
 }
 
-/// The same claim across the whole printable range, sampled rather than
-/// compiled — see [`interpreting`].
-///
-/// This is the test that walked into nextest's ten-minute cap: 95 production
-/// saturations to answer 72 constant-folding probes each, the compiles ~95% of
-/// its runtime and none of them the subject. What breadth is here to find is a
-/// glyph whose support the *builder* computes too tight, which is a property
-/// of the kernel.
+/// The same claim across the whole printable range, at the size where a
+/// support computed one pixel too tight has the most room to show.
 #[test]
-fn every_printable_glyph_is_exactly_zero_outside_its_support() {
-    let font = Font::parse(FONT_DATA).expect("font");
-    let size = 48.0f32;
-    for ch in ' '..='~' {
-        let id = font.cmap_lookup(ch).expect("glyph");
-        let glyph = font.glyph_scaled_by_id(id, size).expect("glyph");
-        if glyph.support.is_empty() {
-            continue;
-        }
-        interpreting(&glyph.kernel(), |at| {
-            assert_zero(
-                &format!("{ch:?}@{size}"),
-                glyph.support.bounds(),
-                &probes_outside(glyph.support),
-                |[x, y]| at(x, y),
-            );
-        });
-    }
+fn punctuation_and_digits_are_zero_outside_their_support() {
+    is_exactly_zero_outside_its_support(' '..='?', SUPPORT_SWEEP_PX);
+}
+
+#[test]
+fn uppercase_is_zero_outside_its_support() {
+    is_exactly_zero_outside_its_support('@'..='_', SUPPORT_SWEEP_PX);
+}
+
+#[test]
+fn lowercase_is_zero_outside_its_support() {
+    is_exactly_zero_outside_its_support('`'..='~', SUPPORT_SWEEP_PX);
 }
 
 /// The bounding box of the *ink* plus the ramp's reach: the support is not
