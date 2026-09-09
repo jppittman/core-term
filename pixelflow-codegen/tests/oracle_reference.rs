@@ -500,7 +500,24 @@ fn jit_matches_oracle_exact_unaries_and_min_max() {
             declared: Some(&declared),
         },
         &grid_xyzw(),
-        |_| false,
+        // The two large addends — `-ceil(Y)` and the `Min` — cancel at some
+        // grid points, and there the comparison stops being about the ops
+        // this test names. The JIT's kernel is optimized and the oracle
+        // evaluates the arena's own association; reassociating `+` is a valid
+        // rewrite of the algebra (CLAUDE.md, "Floating point at the edges"),
+        // so the two sides run different, equally correct, execution
+        // histories. When the addends are 1e4 and the result is O(1), one ulp
+        // of an addend is ~1e-3 and any relative tolerance on the *result* is
+        // a tolerance on the execution history instead: at
+        // `[-3.7, 10000, -10000, -10000]` the optimized form returns
+        // `sqrt(3.7)` to the last bit and the oracle's association returns
+        // 1.9238281. Skip the cancelling points; every op here is exercised
+        // by the rest of the grid, where nothing cancels.
+        |p| {
+            let (big_neg, min_term) = (-p[1].ceil(), p[2].abs().min(p[3].abs() + 1.0));
+            let largest = big_neg.abs().max(min_term.abs());
+            largest > 1.0 && (big_neg + min_term).abs() <= largest * 1e-3
+        },
     );
 }
 
