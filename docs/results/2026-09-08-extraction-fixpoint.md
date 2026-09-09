@@ -257,6 +257,18 @@ the endpoint the broken DP happened to land on. Reported, not defended.
   by a named predicate; the tolerance was **not** widened, which would hide
   a real op bug.
 
+## 7b. Compile time, for scale only
+
+A JIT-first system pays extraction on every bake, so the obvious worry is
+that a heap-ordered fixpoint costs more than a post-order walk. Total wall
+clock over the 635 DEV rows — **631.8 s baseline against 630.4 s** — says it
+does not, and chrome is *faster* at three of its five caps (0.14/0.15/0.17 s
+→ 0.11/0.12/0.14 s) and slower at 100k (3.99 s → 6.83 s). Both runs were
+taken on a shared box at load averages 7–30, hours apart, so **none of these
+is a measurement**; they are here to show there is no order-of-magnitude
+change to investigate. A real compile-time claim needs `jit_bench`'s
+discipline and this document makes none.
+
 ## 8. Data and reproduction
 
 `2026-09-08-extraction-fixpoint-budgets.csv` (635 DEV rows),
