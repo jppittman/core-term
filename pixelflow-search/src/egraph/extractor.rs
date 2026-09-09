@@ -159,6 +159,17 @@ impl<C: CostFunction> Extractor<C> for Reranked {
 ///
 /// Seat 0 costing a seat is deliberate and is the width's price: `k` seats
 /// are the anchor plus the `k - 1` cheapest other states.
+///
+/// **Width is not monotone.** `Beam` is never dearer than [`Greedy`] — the
+/// DP's own repaired term is folded back in as a third arm — but a wider
+/// beam can be dearer than a
+/// narrower one, and is, on `chrome_packed` at a 5,000-class cap (1,660 at
+/// `k = 16`, 1,668 at `k = 64`). A wider beam generates strictly more
+/// candidates, and top-`k` of a larger candidate set need not contain
+/// top-`j` of a smaller one: a cheap partial merge that later conflicts with
+/// every sibling can crowd out the state a narrower beam carried to the
+/// root. That is beam search, not a defect — but it means a width is a
+/// setting to measure, never one to raise on principle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Beam {
     width: usize,
@@ -215,8 +226,29 @@ impl<C: CostFunction> Extractor<C> for Beam {
             );
         };
 
-        let choices = beam_pass(egraph, root, costs, shape, &settled, self.width);
-        let shared = extract::repaired_and_costed(egraph, root, choices, costs, shape);
+        // Three arms, not two. The beam's own comparison happens BEFORE
+        // `repair_choices_well_founded`, and the repair can rewrite picks —
+        // so a state the beam preferred pre-repair can repair to a term
+        // dearer than the DP's. Measured, not theorised: at k = 64 on the 95
+        // DejaVu glyphs, six came back dearer than `Greedy` until this arm
+        // was added. Folding the DP's own repaired term back in makes
+        // "`Beam` is never dearer than `Greedy`" structural rather than
+        // hopeful — it is the same fold `extract_dag_scoped` performs
+        // between its two objectives, with one more candidate.
+        let dp_shared =
+            extract::repaired_and_costed(egraph, root, settled.choices.clone(), costs, shape);
+        let beam_shared = extract::repaired_and_costed(
+            egraph,
+            root,
+            beam_pass(egraph, root, costs, shape, &settled, self.width),
+            costs,
+            shape,
+        );
+        let shared = if beam_shared.cost.dag < dp_shared.cost.dag {
+            beam_shared
+        } else {
+            dp_shared
+        };
         if shared.cost.dag < tree.cost.dag {
             return extract::assemble(
                 egraph,
@@ -435,9 +467,16 @@ fn beam_pass<C: CostFunction>(
         root_me < live,
         "beam_pass: the root is not in its own post-order"
     );
+    // Ties go to the anchor, exactly as `extract_dag_scoped`'s two-objective
+    // fold gives ties to the tree arm. `min_by` keeps the first minimum and
+    // the anchor is seat 0, so a width only ever changes the returned term by
+    // being STRICTLY cheaper — which is what makes a `code_fnv` difference
+    // between an arm and `Greedy` readable as a win rather than a coin flip.
+    // The free seats are canonically sorted, so the choice among equal-cost
+    // free states is deterministic too.
     let best = beams[root_me]
         .iter()
-        .min_by(|a, b| a.key().cmp(&b.key()))
+        .min_by_key(|s| s.cost)
         .expect("beam_pass: every class holds at least its anchor");
 
     let mut choices = dp_choices.clone();

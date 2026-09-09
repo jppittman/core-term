@@ -186,11 +186,20 @@ result depend on `egraph.nodes()`'s layout, and a kernel would build
 differently on two machines, which is the thing the budget-determinism
 plan exists to forbid.
 
-**The result.** `Beam` returns `min(tree arm, beam-shared arm)` by
-`ChoiceCost::dag`, ties to tree — the *same* fold `Greedy` performs. This
-is deliberate: it makes `Beam { k: 1 }` byte-identical to `Greedy` (a
-test), so width is the only variable between them, and it preserves the
-no-regression property `extract_dag_scoped` was built for.
+**The result.** `Beam` returns `min(tree arm, DP shared arm, beam shared
+arm)` by `ChoiceCost::dag`, ties to the earlier arm — `Greedy`'s fold with
+one more candidate. Three arms rather than two, because the beam's own
+comparison happens *before* `repair_choices_well_founded` and the repair can
+rewrite picks: a state the beam preferred pre-repair can repair to a term
+dearer than the DP's. That is not hypothetical — at `k = 64` on the 95
+DejaVu glyphs, six came back dearer than `Greedy` before this arm existed.
+Folding the DP's own repaired term back in makes "`Beam` is never dearer than
+`Greedy`" structural, and keeps `Beam { k: 1 }` byte-identical to `Greedy`, so
+width is the only variable between them.
+
+Ties go to the anchor, so a width only ever changes the returned term by being
+**strictly cheaper** — which is what makes a `code_fnv` difference between an
+arm and `Greedy` readable as a win rather than a coin flip.
 
 **Objective reporting.** `Beam` reports `Shared` / `TreeCheaper` /
 `TreeOnly` exactly as `Greedy` does. It does **not** report `External`:
