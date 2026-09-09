@@ -685,7 +685,11 @@ fn choices_have_cycle_through(
 /// Panics if admission exhausts with classes left over — a class none of
 /// whose nodes has admissible children is a structurally corrupt e-graph
 /// (every well-formed class holds a creation-order witness node).
-fn repair_choices_well_founded(egraph: &EGraph, root: EClassId, choices: &mut [Option<usize>]) {
+pub(crate) fn repair_choices_well_founded(
+    egraph: &EGraph,
+    root: EClassId,
+    choices: &mut [Option<usize>],
+) {
     let num_classes = choices.len();
 
     // Scope: every canonical class reachable from `root` through ANY node —
@@ -1842,11 +1846,16 @@ pub fn extract_dag_scoped<C: CostFunction>(
     let tree = repaired_and_costed(
         egraph,
         root,
-        tree_dp_pass(egraph, root, costs, shape),
+        tree_dp_pass(egraph, root, &mut Dp::production(costs, shape)),
         costs,
         shape,
     );
-    let pass = shared_dag_dp_pass(egraph, root, costs, shape, SHARED_DAG_PASS_BYTE_BUDGET);
+    let pass = shared_dag_dp_pass(
+        egraph,
+        root,
+        &mut Dp::production(costs, shape),
+        SHARED_DAG_PASS_BYTE_BUDGET,
+    );
     let stats = Some(pass.stats);
     let Some(choices) = pass.choices else {
         return assemble(
@@ -1939,7 +1948,7 @@ pub(crate) fn extract_dag_tree_arm<C: CostFunction>(
     let costed = repaired_and_costed(
         egraph,
         root,
-        tree_dp_pass(egraph, root, costs, shape),
+        tree_dp_pass(egraph, root, &mut Dp::production(costs, shape)),
         costs,
         shape,
     );
@@ -1967,7 +1976,7 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> ExtractedDAG {
-    let pass = shared_dag_dp_pass(egraph, root, costs, shape, usize::MAX);
+    let pass = shared_dag_dp_pass(egraph, root, &mut Dp::production(costs, shape), usize::MAX);
     let choices = pass
         .choices
         .expect("an unbounded shared pass cannot run out of budget");
@@ -2040,7 +2049,7 @@ fn assemble(
 // looks cheaper than an expensive-but-legitimate form. (A flat 1_000_000 was
 // safely above every *unweighted* cost; weighting by a frame's sample count
 // clears that by orders of magnitude.)
-const CYCLE_COST: usize = usize::MAX / 4;
+pub(crate) const CYCLE_COST: usize = usize::MAX / 4;
 
 /// One node's weighted own cost under `shape`.
 fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize {
@@ -2048,16 +2057,145 @@ fn weighted_own<C: CostFunction>(costs: &C, node: &ENode, weight: u64) -> usize 
         .unwrap_or(usize::MAX)
 }
 
+/// The two policy knobs the DP passes read, plus the trace they write.
+///
+/// Grouped rather than passed as four more arguments, and monomorphized
+/// rather than dispatched: production instantiates it as
+/// `Dp<C, Insertion, ()>`, where both `T` and `R` are ZSTs whose methods are
+/// empty, so the emitted passes are byte-identical to the ones that took
+/// `(costs, shape)` alone. Every knob is a *type*, so a research arm is a
+/// second `impl` rather than a mode flag threaded through the inner loop.
+pub(crate) struct Dp<'a, C, T, R> {
+    costs: &'a C,
+    shape: LatticeShape,
+    ties: T,
+    rec: R,
+}
+
+impl<'a, C> Dp<'a, C, Insertion, ()> {
+    /// Production's instance: ties to insertion order, nothing recorded.
+    pub(crate) fn production(costs: &'a C, shape: LatticeShape) -> Self {
+        Self {
+            costs,
+            shape,
+            ties: Insertion,
+            rec: (),
+        }
+    }
+}
+
+impl<'a, C, T, R> Dp<'a, C, T, R> {
+    /// A research instance: the same DP under another tie-break, writing to
+    /// `rec`.
+    pub(crate) fn new(costs: &'a C, shape: LatticeShape, ties: T, rec: R) -> Self {
+        Self {
+            costs,
+            shape,
+            ties,
+            rec,
+        }
+    }
+
+    /// The trace the passes wrote, once they are done with it.
+    pub(crate) fn into_recorder(self) -> R {
+        self.rec
+    }
+}
+
+/// Which of two nodes a class keeps when the DP prices them **equally**.
+///
+/// The strict `<` the passes have always used answers this implicitly —
+/// the earlier index wins, and index is insertion order — which is why the
+/// `'8'` bisect saw extraction move under a semantically-null change to the
+/// input. Naming the decision makes the alternative a second `impl` instead
+/// of a fork of the pass.
+pub(crate) trait TieBreak {
+    /// At equal cost, does `challenger` displace the `incumbent` node index
+    /// in `class`?
+    fn prefer(&self, egraph: &EGraph, class: EClassId, incumbent: usize, challenger: usize)
+    -> bool;
+}
+
+/// Production: never — the first admissible node stands, so the choice is
+/// the e-graph's insertion order.
+pub(crate) struct Insertion;
+
+impl TieBreak for Insertion {
+    #[inline]
+    fn prefer(&self, _: &EGraph, _: EClassId, _: usize, _: usize) -> bool {
+        false
+    }
+}
+
+/// The research arm: a total order on the node's own content, so a tie is
+/// broken by what the node *is* rather than by when it was inserted.
+///
+/// Key, ascending: leaf/op tag, then the leaf's payload or the `OpKind`
+/// ordinal, then arity, then the canonical child ids. Two distinct nodes in
+/// one class always differ somewhere in that key (a class holds no
+/// duplicates after `rebuild`), so the order is total and the result is
+/// independent of insertion order.
+pub(crate) struct Canonical;
+
+/// `node`'s position in [`Canonical`]'s order.
+fn canonical_key(egraph: &EGraph, node: &ENode) -> (u8, u64, usize, Vec<u32>) {
+    let children: Vec<u32> = node
+        .children_slice()
+        .iter()
+        .map(|&c| egraph.find(c).0)
+        .collect();
+    match node {
+        ENode::Var(i) => (0, u64::from(*i), 0, children),
+        ENode::Const(bits) => (1, u64::from(*bits), 0, children),
+        ENode::Buffer(_) => (2, 0, 0, children),
+        ENode::Uniform(_) => (3, 0, 0, children),
+        ENode::Param(i) => (4, u64::from(*i), 0, children),
+        ENode::Op { op, .. } => (5, op.kind() as u64, children.len(), children),
+    }
+}
+
+impl TieBreak for Canonical {
+    fn prefer(
+        &self,
+        egraph: &EGraph,
+        class: EClassId,
+        incumbent: usize,
+        challenger: usize,
+    ) -> bool {
+        let nodes = egraph.nodes(class);
+        canonical_key(egraph, &nodes[challenger]) < canonical_key(egraph, &nodes[incumbent])
+    }
+}
+
+/// What a DP pass writes about each candidate it priced, for the research
+/// harness that asks *why* a class went the way it did.
+///
+/// Production's instance is `()`, whose methods are empty and inline away —
+/// the pass allocates nothing and branches nowhere for a trace nobody reads.
+pub(crate) trait StageRecorder {
+    /// One candidate priced: its DP cost and its weighted own cost.
+    fn candidate(&mut self, class: EClassId, idx: usize, cost: usize, own: usize);
+    /// The candidate the class settled on.
+    fn settled(&mut self, class: EClassId, idx: usize);
+}
+
+impl StageRecorder for () {
+    #[inline]
+    fn candidate(&mut self, _: EClassId, _: usize, _: usize, _: usize) {}
+    #[inline]
+    fn settled(&mut self, _: EClassId, _: usize) {}
+}
+
 /// The pre-#1116 DP: cheapest node per class where a child costs its whole
 /// subtree, at every use. Kept exactly as it was, as the control arm of the
 /// objective A/B and as the floor [`extract_dag_scoped`] never returns worse
 /// than.
-fn tree_dp_pass<C: CostFunction>(
+pub(crate) fn tree_dp_pass<C: CostFunction, T: TieBreak, R: StageRecorder>(
     egraph: &EGraph,
     root: EClassId,
-    costs: &C,
-    shape: LatticeShape,
+    dp: &mut Dp<'_, C, T, R>,
 ) -> Vec<Option<usize>> {
+    let (costs, shape) = (dp.costs, dp.shape);
     let num_classes = egraph.num_classes();
     let mut best_cost: Vec<Option<usize>> = alloc::vec![None; num_classes];
     let mut best_node: Vec<Option<usize>> = alloc::vec![None; num_classes];
@@ -2073,6 +2211,12 @@ fn tree_dp_pass<C: CostFunction>(
         let mut min_cost = usize::MAX;
         let mut min_idx = 0;
         let mut min_var = Variance::CONST;
+        // Whether any candidate has actually been taken. A class every one
+        // of whose candidates prices at `usize::MAX` takes none, and keeps
+        // index 0 with `Variance::CONST` exactly as it always has; without
+        // this, a tie-break would start displacing a pick that was never
+        // made.
+        let mut taken = false;
 
         for (idx, node) in nodes.iter().enumerate() {
             let node_var = node_variance(egraph, node, &best_var, canonical);
@@ -2105,13 +2249,25 @@ fn tree_dp_pass<C: CostFunction>(
                 }
             };
 
-            if this_node_cost < min_cost {
+            dp.rec.candidate(
+                canonical,
+                idx,
+                this_node_cost,
+                weighted_own(costs, node, weight),
+            );
+            let takes = this_node_cost < min_cost
+                || (taken
+                    && this_node_cost == min_cost
+                    && dp.ties.prefer(egraph, canonical, min_idx, idx));
+            if takes {
                 min_cost = this_node_cost;
                 min_idx = idx;
                 min_var = node_var;
+                taken = true;
             }
         }
 
+        dp.rec.settled(canonical, min_idx);
         best_cost[canonical.0 as usize] = Some(min_cost);
         best_node[canonical.0 as usize] = Some(min_idx);
         best_var[canonical.0 as usize] = min_var;
@@ -2143,13 +2299,13 @@ fn tree_dp_pass<C: CostFunction>(
 /// the worst case at `live² / 8` bytes (the 2026-09-08 memory profile's
 /// measured quadratic); real kernels hold a small fraction of that because
 /// most live classes are variants deep inside one sub-DAG.
-fn shared_dag_dp_pass<C: CostFunction>(
+pub(crate) fn shared_dag_dp_pass<C: CostFunction, T: TieBreak, R: StageRecorder>(
     egraph: &EGraph,
     root: EClassId,
-    costs: &C,
-    shape: LatticeShape,
+    dp: &mut Dp<'_, C, T, R>,
     budget: usize,
 ) -> SharedPassOutcome {
+    let (costs, shape) = (dp.costs, dp.shape);
     let num_classes = egraph.num_classes();
     let order = post_order(egraph, root);
 
@@ -2198,6 +2354,9 @@ fn shared_dag_dp_pass<C: CostFunction>(
         let mut min_idx = 0;
         let mut min_var = Variance::CONST;
         let mut min_own = 0usize;
+        // See `tree_dp_pass`: a class none of whose candidates was taken
+        // keeps index 0, and a tie-break must not displace a non-pick.
+        let mut taken = false;
         winner.clear();
 
         for (idx, node) in nodes.iter().enumerate() {
@@ -2253,17 +2412,24 @@ fn shared_dag_dp_pass<C: CostFunction>(
                 }
             };
 
-            if this_node_cost < min_cost {
+            dp.rec.candidate(canonical, idx, this_node_cost, own);
+            let takes = this_node_cost < min_cost
+                || (taken
+                    && this_node_cost == min_cost
+                    && dp.ties.prefer(egraph, canonical, min_idx, idx));
+            if takes {
                 min_cost = this_node_cost;
                 min_idx = idx;
                 min_var = node_var;
                 min_own = own;
+                taken = true;
                 match below {
                     Some(()) => core::mem::swap(&mut winner, &mut scratch),
                     None => winner.clear(),
                 }
             }
         }
+        dp.rec.settled(canonical, min_idx);
 
         // A cycle-priced winner reaches only itself, as it always has.
         if min_cost == CYCLE_COST {
@@ -2300,11 +2466,11 @@ fn shared_dag_dp_pass<C: CostFunction>(
 
 /// What [`shared_dag_dp_pass`] returns: its choice map when it finished
 /// under budget, and its accounting either way.
-struct SharedPassOutcome {
+pub(crate) struct SharedPassOutcome {
     /// `None` when the reach sets crossed the byte budget and the pass was
     /// abandoned.
-    choices: Option<Vec<Option<usize>>>,
-    stats: SharedPassStats,
+    pub(crate) choices: Option<Vec<Option<usize>>>,
+    pub(crate) stats: SharedPassStats,
 }
 
 const REACH_WORD_BITS: usize = u64::BITS as usize;
@@ -2614,7 +2780,12 @@ mod tests {
         let (egraph, root) = add_chain(CHAIN);
         let costs = CostModel::latency_prior();
 
-        let full = shared_dag_dp_pass(&egraph, root, &costs, LatticeShape::POINT, usize::MAX);
+        let full = shared_dag_dp_pass(
+            &egraph,
+            root,
+            &mut Dp::production(&costs, LatticeShape::POINT),
+            usize::MAX,
+        );
         let full_choices = full.choices.expect("unbounded pass finishes");
         assert_eq!(full.stats.live_classes, 2 * CHAIN + 1);
         // The dense bound, plus one word of rounding per set.
@@ -2627,7 +2798,12 @@ mod tests {
         );
 
         let budget = full.stats.reach_bytes / 2;
-        let cut = shared_dag_dp_pass(&egraph, root, &costs, LatticeShape::POINT, budget);
+        let cut = shared_dag_dp_pass(
+            &egraph,
+            root,
+            &mut Dp::production(&costs, LatticeShape::POINT),
+            budget,
+        );
         assert!(
             cut.choices.is_none(),
             "a pass over budget returns no choices"
@@ -2837,6 +3013,40 @@ mod tests {
         (egraph, root)
     }
 
+    /// The research tie-break seam changes nothing under production's
+    /// instance.
+    ///
+    /// `Ties::Insertion` is the `impl` the shipped extractor uses, so
+    /// `witness::extract_under` with it must return the same choice map and
+    /// the same cost as `extract_dag_scoped` — on a saturated graph, at a
+    /// frame shape, where ties are dense (the 2026-09-08 witness run found
+    /// 47–81 % of live classes tied). Without this, a refactor of either DP
+    /// pass could silently move production's extraction and only the
+    /// research harness would see it.
+    #[cfg(feature = "provenance-journal")]
+    #[test]
+    fn insertion_tie_break_is_productions_extraction() {
+        use crate::egraph::witness::{Ties, extract_under};
+        let costs = CostModel::latency_prior();
+        for (nodes, shape) in [
+            (64, LatticeShape::POINT),
+            (256, LatticeShape::new([32, 32])),
+        ] {
+            let (egraph, root) = saturated_sdf_egraph(nodes);
+            let production = extract_dag_scoped(&egraph, root, &costs, shape);
+            let (choices, cost) = extract_under(&egraph, root, &costs, shape, Ties::Insertion);
+            assert_eq!(
+                choices, production.choices,
+                "{nodes} nodes at {shape:?}: the Insertion tie-break moved production's choices"
+            );
+            assert_eq!(
+                (cost.tree, cost.dag),
+                (production.total_cost, production.dag_cost),
+                "{nodes} nodes at {shape:?}: the Insertion tie-break moved production's cost"
+            );
+        }
+    }
+
     /// The budgeted hybrid-set pass and the dense pass it replaced choose
     /// the same node in every class of a saturated graph — same objective,
     /// same tie-breaking, priced through sparse and dense sets alike —
@@ -2852,7 +3062,12 @@ mod tests {
         ] {
             let (egraph, root) = saturated_sdf_egraph(nodes);
             let reference = dense_reference_pass(&egraph, root, &costs, shape);
-            let pass = shared_dag_dp_pass(&egraph, root, &costs, shape, usize::MAX);
+            let pass = shared_dag_dp_pass(
+                &egraph,
+                root,
+                &mut Dp::production(&costs, shape),
+                usize::MAX,
+            );
             let live = pass.stats.live_classes;
             assert!(live > 100, "{nodes} nodes: only {live} live classes");
             let choices = pass.choices.expect("unbounded");
