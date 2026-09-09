@@ -294,14 +294,16 @@ fn compare_against_freetype(arm: Arm, corpus: &Corpus) {
             // itself, so the oracle's own binding table must carry it rather
             // than evaluate empty — neither lowering nor optimization touches
             // the buffer declarations, so `lowered` declares the same
-            // slot(s), in the same order, `ours_glyph.kernel` carries data
+            // slot(s), in the same order, `ours_glyph.kernel()` carries data
             // for.
+            // Bound first: `kernel()` builds a fresh `Kernel`, so the data
+            // it carries cannot outlive a temporary.
+            let ours_kernel = ours_glyph.kernel();
             let ours_data: Vec<&[f32]> = lowered
                 .buffers()
                 .iter()
                 .map(|decl| {
-                    ours_glyph
-                        .kernel
+                    ours_kernel
                         .buffer_data()
                         .find(|(id, _)| *id == decl.id)
                         .map(|(_, d)| d.as_ref())

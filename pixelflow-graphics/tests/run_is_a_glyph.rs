@@ -89,7 +89,7 @@ fn a_run_folds_the_same_in_any_grouping() {
     let whole = render(&loop_blinn::run(&[a.clone(), b.clone(), c.clone()]));
     let split = render(&loop_blinn::Glyph::over(&[
         loop_blinn::run(&[a.clone(), b.clone()]),
-        loop_blinn::run(&[c.clone()]),
+        loop_blinn::run(std::slice::from_ref(&c)),
         loop_blinn::Glyph::empty(),
     ]));
     assert_eq!(
@@ -175,7 +175,7 @@ fn a_box_is_a_glyph() {
     let one = loop_blinn::run(&[box_outline(8.0, 8.0, 24.0, 24.0)]);
     let coverage = render(&one);
     assert!(coverage.iter().any(|&c| c > 0.9), "the box must be filled");
-    assert!(coverage.iter().any(|&c| c == 0.0), "and bounded");
+    assert!(coverage.contains(&0.0), "and bounded");
     // Composes as an ordinary kernel: doubling coverage is just arithmetic.
     let doubled = one.kernel().mul(&Kernel::constant(2.0));
     let bound = Manifold::compile(&doubled, EXTENT).bind(&[]);

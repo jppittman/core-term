@@ -244,6 +244,10 @@ fn latency_prior_cost(arena: &ExprArena, root: ExprId) -> usize {
             ExprNode::Ref(k) => panic!(
                 "latency_prior_cost: {k:?} — a reference has no cost of its own,                  and expand_refs runs before saturation, so one here means this                  arena never went through the pipeline"
             ),
+            // A fold survives extraction; the legalizer unrolls it after.
+            // Priced as the node it is, which is what `CostModel` says about
+            // it — see `node_op_cost`'s note on why that is a sentinel.
+            ExprNode::Reduce { .. } => Some(pixelflow_ir::OpKind::Reduce),
         };
         if let Some(op) = op {
             total += costs.cost(op);

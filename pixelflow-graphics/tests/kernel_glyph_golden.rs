@@ -23,7 +23,7 @@ fn golden_for(ch: char, size: usize) {
         .unwrap_or_else(|| panic!("glyph {ch:?} not found"));
 
     // JIT: bake over the texel-center convention, a contramap over a plain
-    // index lattice. `glyph.kernel`'s winding sum reads a bound piece table
+    // index lattice. `glyph.kernel()`'s winding sum reads a bound piece table
     // (S1a), so — unlike before — this binds it rather than a bare bake.
     let n = size as u32;
     let centered = glyph.kernel().at(
@@ -57,7 +57,7 @@ fn golden_for(ch: char, size: usize) {
     // The oracle's own binding table over the same piece table the JIT
     // read — optimization/lowering restructures the Gather graph, never the
     // buffer declarations, so `lowered` declares the same slot(s), in the
-    // same order, that `centered` (== `glyph.kernel`, contramapped) carries
+    // same order, that `centered` (== `glyph.kernel()`, contramapped) carries
     // data for.
     let data: Vec<&[f32]> = lowered
         .buffers()

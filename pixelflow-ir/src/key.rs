@@ -259,6 +259,15 @@ pub fn canonical(arena: &ExprArena, root: ExprId) -> Canonical {
                 key.push(9);
                 key.extend_from_slice(&key_of.bits().to_le_bytes());
             }
+            // The fold is metadata, so it is *in the tag bytes* rather than
+            // encoded as three child nodes. Two folds over the same body
+            // under different algebras, binders or ranges are different
+            // kernels, and this is where that is said.
+            ExprNode::Reduce { fold, body } => {
+                key.push(10);
+                key.extend_from_slice(&fold.to_bits().to_le_bytes());
+                push_id(&mut key, &dense, *body);
+            }
         }
         dense[idx] = next;
         next += 1;

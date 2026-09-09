@@ -113,6 +113,14 @@ pub fn insert<I: Ir>(
                         }
                         continue;
                     }
+                    // No vocabulary check: a fold is not an op, so there is
+                    // no `Op` for a rule to name and nothing for a vocabulary
+                    // to admit or refuse. It enters as itself, under either.
+                    Shape::Reduce { body, .. } => {
+                        tasks.push(Task::Complete(r));
+                        tasks.push(Task::Visit(body));
+                        continue;
+                    }
                 };
                 memo.insert(r, class);
                 built.push(class);
@@ -122,18 +130,24 @@ pub fn insert<I: Ir>(
                     built.push(class);
                     continue;
                 }
-                let Shape::Op(kind, children) = term.project(r) else {
-                    unreachable!("Complete scheduled only for Shape::Op");
+                let class = match term.project(r) {
+                    Shape::Op(kind, children) => {
+                        let op = vocab
+                            .resolve(kind)
+                            .expect("vocabulary already checked in Visit");
+                        let start = built.len() - children.len();
+                        let operands: Vec<EClassId> = built.drain(start..).collect();
+                        egraph.add(ENode::Op {
+                            op,
+                            children: operands,
+                        })
+                    }
+                    Shape::Reduce { fold, .. } => {
+                        let body = built.pop().expect("the body was visited first");
+                        egraph.add(ENode::Reduce { fold, body })
+                    }
+                    _ => unreachable!("Complete is scheduled only for compound shapes"),
                 };
-                let op = vocab
-                    .resolve(kind)
-                    .expect("vocabulary already checked in Visit");
-                let start = built.len() - children.len();
-                let operands: Vec<EClassId> = built.drain(start..).collect();
-                let class = egraph.add(ENode::Op {
-                    op,
-                    children: operands,
-                });
                 memo.insert(r, class);
                 built.push(class);
             }
@@ -155,15 +169,17 @@ pub fn reachable_count<I: Ir>(term: &I, root: I::Ref) -> usize {
         if !seen.insert(r) {
             continue;
         }
-        if let Shape::Op(_, children) = term.project(r) {
-            match children {
+        match term.project(r) {
+            Shape::Op(_, children) => match children {
                 Children::Many(s) => stack.extend_from_slice(s),
                 other => {
                     for i in 0..other.len() {
                         stack.push(other.get(i).expect("index < len"));
                     }
                 }
-            }
+            },
+            Shape::Reduce { body, .. } => stack.push(body),
+            _ => {}
         }
     }
     seen.len()

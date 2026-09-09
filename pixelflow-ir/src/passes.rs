@@ -41,6 +41,7 @@
 //! Nothing re-fuses `mul`+`add` into `MulAdd` afterwards — see `horner_step`.
 
 use crate::arena::{ExprArena, ExprId, ExprNode};
+use crate::fold::Fold;
 use crate::kind::OpKind;
 use crate::variance::Variance;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -186,6 +187,7 @@ fn copy_node(arena: &mut ExprArena, node: &ExprNode, m: &dyn Fn(ExprId) -> ExprI
             let mapped: Vec<ExprId> = children.into_iter().map(&m).collect();
             arena.push_nary(*op, &mapped)
         }
+        ExprNode::Reduce { fold, body } => arena.push_reduce(*fold, m(*body)),
     }
 }
 
@@ -404,17 +406,8 @@ fn lower_gather(arena: &mut ExprArena, buf: ExprId, x: ExprId, y: ExprId) -> Exp
 /// analogue of [`expand_gather`].
 pub fn expand_reduce(arena: &mut ExprArena, root: ExprId) -> ExprId {
     rebuild_arena(arena, root, |arena, node, m| match node {
-        ExprNode::Nary(OpKind::Reduce, start, len) => {
-            let (s, l) = (*start as usize, *len as usize);
-            debug_assert_eq!(l, 4, "Reduce has 4 children");
-            let ch: [ExprId; 4] = {
-                let raw = &arena.nary_children_raw()[s..s + l];
-                [raw[0], raw[1], raw[2], raw[3]]
-            };
-            // Children are already lowered; read the (lowered) Const metadata
-            // and unroll over the lowered body.
-            Some(unroll_reduce(arena, m(ch[0]), m(ch[1]), m(ch[2]), m(ch[3])))
-        }
+        // The body is already lowered; unroll the fold over it.
+        ExprNode::Reduce { fold, body } => Some(unroll_reduce(arena, *fold, m(*body))),
         _ => None,
     })
 }
@@ -426,7 +419,7 @@ pub fn expand_reduce_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprI
     if !arena
         .nodes_raw()
         .iter()
-        .any(|n| matches!(n, ExprNode::Nary(OpKind::Reduce, _, _)))
+        .any(|n| matches!(n, ExprNode::Reduce { .. }))
     {
         return (arena.clone(), root);
     }
@@ -435,28 +428,19 @@ pub fn expand_reduce_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprI
     (owned, new_root)
 }
 
-/// Build the unrolled accumulation for one reduction whose children are already
-/// lowered. Reads `combiner`/`var`/`extent` from their `Const` nodes, then folds
-/// `extent` substituted copies of `body` under the combiner monoid.
-fn unroll_reduce(
-    arena: &mut ExprArena,
-    combiner: ExprId,
-    var: ExprId,
-    extent: ExprId,
-    body: ExprId,
-) -> ExprId {
-    let combiner_op = OpKind::from_index(const_val(arena, combiner, "reduce combiner") as usize)
-        .expect("reduce combiner must be a valid OpKind index");
-    let var_idx = const_val(arena, var, "reduce var") as u8;
-    let n = const_val(arena, extent, "reduce extent") as usize;
-
+/// Build the unrolled accumulation for one fold whose body is already lowered.
+///
+/// This is [`Fold::peel`] run to exhaustion. Peeling and unrolling are the
+/// same operation at different budgets — the e-graph states the first as a
+/// rewrite rule, and this is what remains for a fold that survived extraction,
+/// because codegen has no iteration binder to hand it to.
+fn unroll_reduce(arena: &mut ExprArena, fold: Fold, body: ExprId) -> ExprId {
     // Empty domain folds to the monoid identity.
-    if n == 0 {
-        let id = combiner_op
-            .monoid_identity()
-            .expect("reduce combiner is a monoid");
-        return arena.push_const(id);
+    if fold.is_empty() {
+        return arena.push_const(fold.monoid().identity());
     }
+    let combiner_op = fold.monoid().op();
+    let var_idx = fold.binder().var();
 
     // Which of the body's nodes actually vary with the index. Everything else
     // is shared across all N terms rather than copied into each of them: the
@@ -466,24 +450,18 @@ fn unroll_reduce(
     // table covers each id the substitution asks about.
     let variance = crate::variance::compute_arena_variance(arena);
 
-    // acc = body[var:=0]; then acc = combiner(acc, body[var:=k]) for k in 1..N.
-    let term = |arena: &mut ExprArena, k: usize| {
+    // acc = body[var:=lo]; then acc = combiner(acc, body[var:=k]) for the rest.
+    let term = |arena: &mut ExprArena, k: u32| {
         Substitution::new(body, var_idx, k as f32, &variance).apply(arena, body)
     };
-    let mut acc = term(arena, 0);
-    for k in 1..n {
+    let mut range = fold.range();
+    let first = range.next().expect("a non-empty fold has a first index");
+    let mut acc = term(arena, first);
+    for k in range {
         let next = term(arena, k);
         acc = arena.push_binary(combiner_op, acc, next);
     }
     acc
-}
-
-/// Read the value of a `Const` node (reduction metadata).
-fn const_val(arena: &ExprArena, id: ExprId, what: &str) -> f32 {
-    match arena.node(id) {
-        ExprNode::Const(v) => *v,
-        other => panic!("{what} must be a Const, got {other:?}"),
-    }
 }
 
 /// One unrolled term of a fold: the body with the bound index replaced by a
@@ -567,6 +545,13 @@ impl<'a> Substitution<'a> {
                     .map(|ch| self.apply(arena, ch))
                     .collect();
                 arena.push_nary(op, &mapped)
+            }
+            // A nested fold binds a slot of its own — `lowest_free_binder`
+            // never reissues a live one — so this index cannot be captured
+            // and the substitution simply passes through the body.
+            ExprNode::Reduce { fold, body } => {
+                let body = self.apply(arena, body);
+                arena.push_reduce(fold, body)
             }
         };
         if let Some(slot) = self.memo.get_mut(idx) {
@@ -783,6 +768,8 @@ fn push_deriv_children(node: &ExprNode, stack: &mut Vec<ExprId>) {
             _ => {}
         },
         ExprNode::Nary(_, _, _) => {}
+        // No rule: `diff_node` raises the error for the fold itself.
+        ExprNode::Reduce { .. } => {}
     }
 }
 
@@ -1014,9 +1001,13 @@ fn diff_node(arena: &mut ExprArena, id: ExprId, rules: &Rules) -> Result<ExprId,
             _ => Err("lower_dwrt: no derivative rule for this ternary op"),
         },
 
-        ExprNode::Nary(_, _, _) => {
-            Err("lower_dwrt: cannot differentiate an Nary op (Reduce/Tuple)")
-        }
+        ExprNode::Nary(_, _, _) => Err("lower_dwrt: cannot differentiate an Nary op (Tuple)"),
+        // Linearity — `d(⊕_k f) = ⊕_k d(f)` — holds for `Σ` and for nothing
+        // else in the monoid set: `Π` needs the product rule, and `min`/`max`
+        // are selections, not sums. The rule is not written here because
+        // this lowering is a *fallback*; the place for it is the rule set,
+        // where the e-graph can also decline it.
+        ExprNode::Reduce { .. } => Err("lower_dwrt: no derivative rule for a bounded fold"),
     }
 }
 
@@ -1570,6 +1561,12 @@ mod dwrt_tests {
     use super::*;
     use crate::binding::BindingTable;
     use crate::eval::eval_scalar;
+    use crate::fold::{Binder, Monoid};
+
+    /// The first reduction binder — `Var(4)`, which these folds bind.
+    fn binder() -> Binder {
+        Binder::from_var(4).expect("Var(4) is the first binder")
+    }
 
     /// Wrap `expr` in `Dwrt(expr, var)`, run [`lower_dwrt`], and assert no
     /// `Dwrt` is reachable from the new root (the rebuild leaves the original
@@ -1850,37 +1847,34 @@ mod dwrt_tests {
 
     #[test]
     fn unsupported_op_errors_loudly() {
-        // Differentiating a Reduce has no rule: the pass must refuse.
+        // Differentiating a fold has no rule here: the pass must refuse.
         let mut a = ExprArena::new();
-        let combiner = a.push_const(OpKind::Add.index() as f32);
-        let rvar = a.push_const(0.0);
-        let extent = a.push_const(4.0);
         let body = a.push_var(4);
-        let red = a.push_nary(OpKind::Reduce, &[combiner, rvar, extent, body]);
+        let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..4), body);
         let v0 = a.push_const(0.0);
         let root = a.push_binary(OpKind::Dwrt, red, v0);
         assert!(lower_dwrt_owned(&a, root).is_err());
     }
 
-    /// A uniform is a value, never an extent. `Kernel::over` takes a `u32`
-    /// so this cannot be built through the API; the arena can still be
-    /// hand-built (or rewritten) into it, and then the unroll must refuse
-    /// rather than read a slot index as a trip count.
+    /// A uniform is a value, never an extent — and that used to need a test,
+    /// because the extent was a `Const` child and an arena could be
+    /// hand-built (or *rewritten*) into holding a `Uniform` there, at which
+    /// point the unroll would have read a slot index as a trip count. The
+    /// extent is a field of [`Fold`] now, so there is no slot to put a
+    /// uniform in and no panic left to pin. The property below — the other
+    /// side of the same rule — is the half that was always about semantics.
     #[test]
-    #[should_panic(expected = "reduce extent must be a Const")]
-    fn a_uniform_in_the_extent_slot_is_refused() {
-        use crate::arena::{UniformDecl, UniformIdentity};
+    fn an_extent_is_not_an_expression() {
         let mut a = ExprArena::new();
-        let u = a.declare_uniform(UniformDecl {
-            id: UniformIdentity::mint(),
-            default: 4.0,
-        });
-        let combiner = a.push_const(OpKind::Add.index() as f32);
-        let rvar = a.push_const(4.0);
-        let extent = a.push_uniform(u);
         let body = a.push_var(4);
-        let red = a.push_nary(OpKind::Reduce, &[combiner, rvar, extent, body]);
-        let _ = expand_reduce(&mut a, red);
+        let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..4), body);
+        let ExprNode::Reduce { fold, .. } = *a.node(red) else {
+            panic!("expected a fold");
+        };
+        assert_eq!(fold.len(), 4);
+        // The trip count is not reachable from the node's children, so no
+        // rewrite can substitute anything for it.
+        assert_eq!(a.children(red).count(), 1);
     }
 
     /// The other side of the same rule: a uniform is a perfectly good *value*
@@ -1896,7 +1890,7 @@ mod dwrt_tests {
         let uval = a.push_uniform(u);
         let i = a.push_var(4);
         let body = a.push_binary(OpKind::Add, i, uval);
-        let red = a.push_reduce(OpKind::Add, 4, 3, body);
+        let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..3), body);
         let root = expand_reduce(&mut a, red);
         // Σ_{i<3} (i + u) = 3 + 3u.
         assert_eq!(eval(&a, root, &[0.0; 2]), 33.0);
@@ -2711,7 +2705,7 @@ mod dwrt_tests {
         // by `Add` rather than one nested inside the other.
         let mut a = ExprArena::new();
         let i = a.push_var(4);
-        let red = a.push_reduce(OpKind::Add, 4, 3, i); // Σ_{i<3} i = 0+1+2 = 3
+        let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..3), i); // Σ_{i<3} i = 3
 
         let x = a.push_var(0);
         let s = a.push_unary(OpKind::Sin, x);
@@ -2732,7 +2726,7 @@ mod dwrt_tests {
             assert!(
                 !matches!(
                     node,
-                    ExprNode::Nary(OpKind::Reduce, _, _)
+                    ExprNode::Reduce { .. }
                         | ExprNode::Unary(OpKind::Dwrt, _)
                         | ExprNode::Binary(OpKind::Dwrt, _, _)
                         | ExprNode::Ternary(OpKind::Dwrt, _, _, _)
@@ -2888,7 +2882,7 @@ impl Optimize for ExpandReduce {
         if !arena
             .nodes_raw()
             .iter()
-            .any(|n| matches!(n, ExprNode::Nary(OpKind::Reduce, _, _)))
+            .any(|n| matches!(n, ExprNode::Reduce { .. }))
         {
             return Rewritten::Unchanged;
         }
@@ -3093,7 +3087,7 @@ mod ref_expansion_tests {
     /// glyph's kernel went quadratic in its piece count.
     #[test]
     fn every_use_of_a_name_shares_one_referent() {
-        let is_reduce = |n: &ExprNode| matches!(n, ExprNode::Nary(OpKind::Reduce, ..));
+        let is_reduce = |n: &ExprNode| matches!(n, ExprNode::Reduce { .. });
         let folded = Kernel::sum_over(4, |i| i.mul(&Kernel::x()));
         let named = folded.by_ref();
         let uses = named.add(&named).mul(&named);

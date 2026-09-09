@@ -31,6 +31,7 @@ impl Ir for ExprArena {
             ExprNode::Nary(op, start, len) => {
                 Shape::Op(op, Children::Many(self.nary_children_slice(start, len)))
             }
+            ExprNode::Reduce { fold, body } => Shape::Reduce { fold, body },
         }
     }
 
@@ -62,6 +63,7 @@ impl Ir for ExprArena {
                     _ => self.push_nary(op, s),
                 },
             },
+            Shape::Reduce { fold, body } => self.push_reduce(fold, body),
         }
     }
 }
@@ -118,6 +120,9 @@ impl ExprArena {
                         .iter()
                         .filter(|k| memo[k.0 as usize].is_none())
                         .collect(),
+                    Shape::Reduce { body, .. } if memo[body.0 as usize].is_none() => {
+                        alloc::vec![body]
+                    }
                     _ => Vec::new(),
                 };
                 if !pending.is_empty() {
@@ -141,6 +146,10 @@ impl ExprArena {
                         })
                         .collect();
                     out.embed(Shape::Op(op, Children::Many(&mapped)))
+                }
+                Shape::Reduce { fold, body } => {
+                    let body = memo[body.0 as usize].expect("rebuild_into: body before fold");
+                    out.embed(Shape::Reduce { fold, body })
                 }
             };
             memo[id.0 as usize] = Some(built);

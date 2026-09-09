@@ -165,6 +165,7 @@ mod tests {
             ExprNode::Param(i) => panic!("Param({i}) reached math tests"),
             ExprNode::Buffer(b) => panic!("Buffer({}) reached math tests", b.0),
             ExprNode::Ref(k) => panic!("Ref({k:?}) reached math tests"),
+            ExprNode::Reduce { .. } => panic!("a bounded fold reached math tests"),
             ExprNode::Uniform(u) => egraph.add(ENode::Uniform(*arena.uniform_decl(u))),
             ExprNode::Unary(kind, a) => {
                 let ca = expr_to_egraph(arena, a, egraph);
@@ -210,6 +211,7 @@ mod tests {
             ENode::Const(bits) => arena.push_const(f32::from_bits(bits)),
             ENode::Buffer(decl) => panic!("Buffer({decl:?}) reached math tests"),
             ENode::Param(i) => panic!("Param({i}) reached math tests"),
+            ENode::Reduce { .. } => panic!("a bounded fold reached math tests"),
             ENode::Uniform(decl) => {
                 let slot = arena.declare_uniform(decl);
                 arena.push_uniform(slot)

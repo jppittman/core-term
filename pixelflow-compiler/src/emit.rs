@@ -190,6 +190,21 @@ pub fn arena_to_tokens(arena: &ExprArena, root: ExprId) -> TokenStream {
                 let op_code = opkind_to_tokens(*op);
                 quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Nary(#op_code, #start, #len) }
             }
+            // A fold's metadata is a `Fold`, whose fields are private
+            // precisely so no caller can assemble one that means nothing —
+            // so it travels the way the two cache keys carry it, as bits
+            // with a total inverse on the far side.
+            pixelflow_ir::arena::ExprNode::Reduce { fold, body } => {
+                let bits = fold.to_bits();
+                let body = body.0;
+                quote! {
+                    ::pixelflow_core::__macro::ir::arena::ExprNode::Reduce {
+                        fold: ::pixelflow_core::__macro::ir::fold::Fold::from_bits(#bits)
+                            .expect("kernel! emitted a well-formed fold"),
+                        body: ::pixelflow_core::__macro::ir::arena::ExprId(#body),
+                    }
+                }
+            }
         })
         .collect();
 

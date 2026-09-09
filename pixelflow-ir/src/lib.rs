@@ -30,6 +30,13 @@ extern crate alloc;
 /// Exact dyadic rationals — the constant domain the e-graph folds in, so
 /// that folding cannot contradict the algebraic rewrites. See the module docs.
 pub mod dyadic;
+
+/// What a bounded reduction *is*: the algebra it folds under, the index it
+/// binds, and the range that index runs over. See the module docs for why
+/// those are a type rather than three `Const` children.
+pub mod fold;
+pub use fold::{Binder, Fold, Monoid};
+
 pub mod kind;
 pub mod traits;
 pub mod variance;
@@ -89,7 +96,7 @@ pub use eval::{
 };
 
 pub mod kernel;
-pub use kernel::{Bits, Kernel, Monoid, Scalar, Uniform};
+pub use kernel::{Bits, Kernel, Scalar, Uniform};
 
 pub use kind::OpKind;
 pub use kind::known_method_names;

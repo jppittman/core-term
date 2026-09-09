@@ -139,7 +139,7 @@ impl CachedGlyph {
     ///
     /// Takes the whole [`Glyph`], not a bare [`Kernel`], to match
     /// [`Glyph::bake`]'s own shape; the winding sum's piece table travels
-    /// with `glyph.kernel` itself (`Kernel::with_buffer_data`, seeded by
+    /// with `glyph.kernel()` itself (`Kernel::with_buffer_data`, seeded by
     /// [`loop_blinn::glyph`](super::loop_blinn::glyph)), so — unlike
     /// before — there is no second value that must come from the same call.
     #[must_use]
@@ -671,11 +671,11 @@ mod tests {
         let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
         let (lowered, lowered_root) =
             pixelflow_ir::passes::lower_dwrt_owned(&arena, root).expect("glyph kernel lowers");
-        // `glyph.kernel`'s winding sum reads a piece table that travels with
+        // `glyph.kernel()`'s winding sum reads a piece table that travels with
         // the kernel itself (`Kernel::with_buffer_data`); the oracle needs
         // it bound too — `lower_dwrt` restructures the Dwrt subtrees only,
         // never the buffer declarations, so `lowered` declares the same
-        // slot(s), in the same order, that `glyph.kernel` carries data for.
+        // slot(s), in the same order, that `glyph.kernel()` carries data for.
         let data: Vec<&[f32]> = lowered
             .buffers()
             .iter()

@@ -324,7 +324,6 @@ fn referent_variance(_key: crate::key::KernelKey) -> Variance {
 #[must_use]
 pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> {
     use crate::arena::{ExprId, ExprNode};
-    use crate::kind::OpKind;
 
     let n = arena.len();
     let mut result = Vec::with_capacity(n);
@@ -361,18 +360,14 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
             ExprNode::Ternary(_, a, b, c) => result[a.0 as usize]
                 .union(result[b.0 as usize])
                 .union(result[c.0 as usize]),
-            // A binder is the only node that shrinks the set: it binds its index,
-            // so the index is not free in the result.
-            ExprNode::Nary(OpKind::Reduce, start, len) => {
-                let children = arena.nary_children_slice(*start, *len);
-                let body = children
-                    .get(3)
-                    .map_or(Variance::ALL, |c| result[c.0 as usize]);
-                match bound_index_slot(arena, children) {
-                    Some(slot) => body.without(Variance::from_var(slot)),
-                    // Malformed binder — refuse to claim invariance we cannot prove.
-                    None => Variance::ALL,
-                }
+            // A binder is the only node that shrinks the set: it binds its
+            // index, so the index is not free in the result. There is no
+            // "malformed binder" case to be conservative about any more —
+            // `Fold` cannot hold an index that is not a binder, so this arm
+            // no longer has to decline an analysis it used to be unable to
+            // trust.
+            ExprNode::Reduce { fold, body } => {
+                result[body.0 as usize].without(Variance::from_var(fold.binder().var()))
             }
             ExprNode::Nary(_, start, len) => {
                 let children = arena.nary_children_slice(*start, *len);
@@ -387,21 +382,6 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
     }
 
     result
-}
-
-/// The index slot a `Reduce`'s children bind, read from child 1 (a `Const`
-/// holding the slot number). `None` if the node is not a well-formed binder.
-fn bound_index_slot(
-    arena: &crate::arena::ExprArena,
-    children: &[crate::arena::ExprId],
-) -> Option<u8> {
-    let Some(crate::arena::ExprNode::Const(v)) = children.get(1).map(|id| arena.node(*id)) else {
-        return None;
-    };
-    let slot = *v as u8;
-    let binders = crate::arena::REDUCE_BINDER_BASE
-        ..crate::arena::REDUCE_BINDER_BASE + crate::arena::REDUCE_BINDERS;
-    binders.contains(&slot).then_some(slot)
 }
 
 /// Find arena nodes that should be hoisted out of the X-loop.
@@ -866,18 +846,16 @@ mod tests {
     fn binder_index_is_a_variable_like_any_other() {
         use crate::Kernel;
         use crate::arena::ExprNode;
-        use crate::kind::OpKind;
 
         // Σ_{i<4} (i · Y): the product depends on both the index and Y.
         let k = Kernel::sum_over(4, |i| i.mul(&Kernel::y()));
         let (arena, root) = k.parts();
         let v = super::compute_arena_variance(arena);
 
-        // Find the body's multiply — the node just under the Reduce.
-        let ExprNode::Nary(OpKind::Reduce, start, len) = arena.node(root) else {
+        // The body — a fold's one child.
+        let ExprNode::Reduce { body, .. } = arena.node(root) else {
             panic!("expected a Reduce at the root");
         };
-        let body = arena.nary_children_slice(*start, *len)[3];
         let body_v = v[body.0 as usize];
 
         assert!(
@@ -925,10 +903,10 @@ mod tests {
         let (arena, root) = k.parts();
         let v = super::compute_arena_variance(arena);
 
-        let ExprNode::Nary(OpKind::Reduce, start, len) = arena.node(root) else {
+        let ExprNode::Reduce { body, .. } = arena.node(root) else {
             panic!("expected a Reduce at the root");
         };
-        let body = arena.nary_children_slice(*start, *len)[3];
+        let body = *body;
 
         let out_of_binder = super::find_hoistable_out_of(4, arena, body, &v, 8);
         let sin = out_of_binder

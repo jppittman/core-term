@@ -195,6 +195,7 @@ pub fn entry_count() -> usize {
 mod tests {
     use super::*;
     use pixelflow_ir::arena::{BufferIdentity, UniformIdentity};
+    use pixelflow_ir::fold::{Binder, Fold, Monoid};
     use pixelflow_ir::kind::OpKind;
 
     const TEST_SHAPE: LatticeShape = LatticeShape::new([64, 64]);
@@ -289,26 +290,30 @@ mod tests {
     }
 
     #[test]
-    fn nary_reduce_children_affect_kernel_identity() {
-        // Two back-to-back `Reduce` nodes in the same arena: the second one's
-        // children start at a nonzero offset into the flat nary-children slab,
-        // so an off-by-slicing bug in the second node's child range either
-        // indexes out of bounds or silently drops its children from the key,
-        // making two kernels that differ only in the second reduce collide.
+    fn a_folds_range_is_part_of_its_kernel_identity() {
+        // Two kernels alike but for one fold's extent must not share a cache
+        // entry. The hazard this began as — a `Reduce`'s children living at
+        // an offset into the flat nary slab, where an off-by-slicing bug
+        // dropped them from the key — is gone with the encoding: a fold's
+        // range is a field of the node now. What it *tested* is still the
+        // property that matters, and it is about `Fold::to_bits` being in
+        // the key rather than about slicing.
+        let slot = |s: u8| Binder::from_slot(s).expect("a live binder");
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let body1 = a.push_binary(OpKind::Add, x, x);
-        let r1 = a.push_reduce(OpKind::Add, 4, 3, body1);
+        let r1 = a.push_reduce(Fold::new(Monoid::SUM, slot(0), 0..3), body1);
         let body2 = a.push_binary(OpKind::Mul, x, x);
-        let r2 = a.push_reduce(OpKind::Mul, 5, 6, body2);
+        let r2 = a.push_reduce(Fold::new(Monoid::PRODUCT, slot(1), 0..6), body2);
         let root = a.push_binary(OpKind::Add, r1, r2);
 
         let mut a2 = ExprArena::new();
         let x2 = a2.push_var(0);
         let body1b = a2.push_binary(OpKind::Add, x2, x2);
-        let r1b = a2.push_reduce(OpKind::Add, 4, 3, body1b);
+        let r1b = a2.push_reduce(Fold::new(Monoid::SUM, slot(0), 0..3), body1b);
         let body2b = a2.push_binary(OpKind::Mul, x2, x2);
-        let r2b = a2.push_reduce(OpKind::Mul, 5, 9, body2b); // extent differs only here
+        // The extent differs only here.
+        let r2b = a2.push_reduce(Fold::new(Monoid::PRODUCT, slot(1), 0..9), body2b);
         let root2 = a2.push_binary(OpKind::Add, r1b, r2b);
 
         let m1 = kernel_of(&a, root);

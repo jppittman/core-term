@@ -206,10 +206,11 @@ impl<'g> Extraction<'g> {
         let mut choices = self.choices.clone();
         choices[canonical.0 as usize] = Some(node_idx);
 
-        let new_children: &[EClassId] = match self.egraph.nodes(canonical).get(node_idx) {
-            Some(ENode::Op { children, .. }) => children,
-            _ => &[],
-        };
+        let new_children: &[EClassId] = self
+            .egraph
+            .nodes(canonical)
+            .get(node_idx)
+            .map_or(&[], ENode::children_slice);
 
         for &child in new_children {
             backfill_well_founded(self.egraph, child, &mut choices);
@@ -352,7 +353,8 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
                     }
 
                     // Skip self-referential candidates (would create cycles).
-                    if let ENode::Op { children, .. } = &nodes[node_idx] {
+                    {
+                        let children = (&nodes[node_idx]).children_slice();
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             continue;
                         }
@@ -423,7 +425,8 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
             });
             let nodes = egraph.nodes(canonical);
             if node_idx < nodes.len() {
-                if let ENode::Op { children, .. } = &nodes[node_idx] {
+                {
+                    let children = (&nodes[node_idx]).children_slice();
                     for &child in children {
                         stack.push(child);
                     }
@@ -487,7 +490,8 @@ fn backfill_well_founded(egraph: &EGraph, start: EClassId, choices: &mut [Option
         scope_pos[idx] = Some(scope.len());
         scope.push(canonical.0);
         for node in egraph.nodes(canonical) {
-            if let ENode::Op { children, .. } = node {
+            {
+                let children = (node).children_slice();
                 for &child in children {
                     stack.push(egraph.find(child));
                 }
@@ -511,7 +515,8 @@ fn backfill_well_founded(egraph: &EGraph, start: EClassId, choices: &mut [Option
         let mut any_ready = false;
         for (node_idx, node) in nodes.iter().enumerate() {
             let mut count = 0usize;
-            if let ENode::Op { children, .. } = node {
+            {
+                let children = (node).children_slice();
                 for &child in children {
                     let child_idx = egraph.find(child).0 as usize;
                     if let Some(child_pos) = scope_pos[child_idx] {
@@ -600,8 +605,8 @@ fn choices_have_cycle_from(egraph: &EGraph, root: EClassId, choices: &[Option<us
         // the one place a missing choice would become a wrong *term* is
         // `choices_to_arena`, which panics on it instead.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
-        if let Some(ENode::Op { children, .. }) = egraph.nodes(canonical).get(node_idx) {
-            for &child in children.iter().rev() {
+        if let Some(node) = egraph.nodes(canonical).get(node_idx) {
+            for &child in node.children_slice().iter().rev() {
                 stack.push((child, false));
             }
         }
@@ -646,8 +651,8 @@ fn choices_have_cycle_through(
         // same reason: extra edges can only over-report reachability, which
         // costs a rejected swap and never a wrong term.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
-        if let Some(ENode::Op { children, .. }) = egraph.nodes(c).get(node_idx) {
-            for &child in children {
+        if let Some(node) = egraph.nodes(c).get(node_idx) {
+            for &child in node.children_slice() {
                 stack.push(child);
             }
         }
@@ -703,7 +708,8 @@ fn repair_choices_well_founded(egraph: &EGraph, root: EClassId, choices: &mut [O
         scope_pos[idx] = Some(scope.len());
         scope.push(canonical.0);
         for node in egraph.nodes(canonical) {
-            if let ENode::Op { children, .. } = node {
+            {
+                let children = (node).children_slice();
                 for &child in children {
                     stack.push(egraph.find(child));
                 }
@@ -724,7 +730,8 @@ fn repair_choices_well_founded(egraph: &EGraph, root: EClassId, choices: &mut [O
         let mut per_node = Vec::with_capacity(nodes.len());
         for (node_idx, node) in nodes.iter().enumerate() {
             let mut count = 0usize;
-            if let ENode::Op { children, .. } = node {
+            {
+                let children = (node).children_slice();
                 for &child in children {
                     let child_pos = scope_pos[egraph.find(child).0 as usize]
                         .expect("child of a scope class is in scope");
@@ -889,7 +896,8 @@ pub fn extract<C: CostFunction>(
 
             // Push all children that need processing
             for node in egraph.nodes(canonical) {
-                if let ENode::Op { children, .. } = node {
+                {
+                    let children = (node).children_slice();
                     for &child in children {
                         let child_canonical = egraph.find(child);
                         if best_cost[child_canonical.0 as usize].is_none() {
@@ -913,7 +921,11 @@ pub fn extract<C: CostFunction>(
                     | ENode::Buffer(_)
                     | ENode::Uniform(_)
                     | ENode::Param(_) => costs.node_cost(node, None),
-                    ENode::Op { children, .. } => {
+                    // A fold is, for costing, a node with one child: its
+                    // metadata is not an operand, so `children_slice` is the
+                    // whole of what this arm needs to know about either.
+                    ENode::Op { .. } | ENode::Reduce { .. } => {
+                        let children = node.children_slice();
                         // Check for self-referential children
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             CYCLE_COST
@@ -1002,7 +1014,8 @@ pub fn compute_ref_counts(egraph: &EGraph, root: EClassId, choices: &[Option<usi
             if let Some(node_idx) = choices[idx] {
                 let nodes = egraph.nodes(canonical);
                 if node_idx < nodes.len() {
-                    if let ENode::Op { children, .. } = &nodes[node_idx] {
+                    {
+                        let children = (&nodes[node_idx]).children_slice();
                         for &child in children {
                             stack.push(child);
                         }
@@ -1064,7 +1077,8 @@ pub fn build_extracted_dag_from_choices(
 
         if let Some(node_idx) = choices.get(idx).copied().flatten() {
             if let Some(node) = egraph.nodes(canonical).get(node_idx) {
-                if let ENode::Op { children, .. } = node {
+                {
+                    let children = (node).children_slice();
                     for &child in children {
                         topo_walk(egraph, child, choices, ref_counts, visited, schedule);
                     }
@@ -1347,7 +1361,8 @@ pub fn choices_to_arena(
                         }
                         result_stack.push(expr_id);
                     }
-                    ENode::Op { children, .. } => {
+                    ENode::Op { .. } | ENode::Reduce { .. } => {
+                        let children = node.children_slice();
                         assert!(
                             color[idx] != 1,
                             "choices_to_arena: extraction choices are CYCLIC — e-class {} is \
@@ -1389,6 +1404,17 @@ pub fn choices_to_arena(
                 let nodes = egraph.nodes(canonical);
                 let node = &nodes[node_idx];
 
+                if let ENode::Reduce { fold, .. } = node {
+                    let body = result_stack
+                        .pop()
+                        .expect("choices_to_arena: a fold's body is built before it");
+                    let expr_id = arena.embed(Shape::Reduce { fold: *fold, body });
+                    if idx < id_map.len() {
+                        id_map[idx] = Some(expr_id);
+                    }
+                    result_stack.push(expr_id);
+                    continue;
+                }
                 let ENode::Op { op, children } = node else {
                     // Leaves are handled in Visit; reaching here would be a bug.
                     panic!(
@@ -1638,6 +1664,17 @@ fn node_variance(
             }
             acc.union(best_var[c.0 as usize])
         }),
+        // The one node that *shrinks* the set. Its index is bound, so it is
+        // not free in the result — which is what makes `Σ_i f(i)` frame-
+        // uniform when `f` reads nothing but the index, and therefore
+        // hoistable out of the pixel loop.
+        ENode::Reduce { fold, body } => {
+            let c = egraph.find(*body);
+            if c == canonical {
+                return Variance::ALL;
+            }
+            best_var[c.0 as usize].without(Variance::from_var(fold.binder().var()))
+        }
     }
 }
 
@@ -1739,7 +1776,8 @@ pub fn cost_of_choices<C: CostFunction>(
             );
             color[idx] = 1;
             stack.push((canonical, true));
-            if let ENode::Op { children, .. } = chosen(canonical) {
+            {
+                let children = (chosen(canonical)).children_slice();
                 for &child in children {
                     stack.push((child, false));
                 }
@@ -1756,20 +1794,14 @@ pub fn cost_of_choices<C: CostFunction>(
         // sums reach the ceiling on real inputs.
         let own = usize::try_from((costs.node_cost(node, None) as u64).saturating_mul(weight))
             .unwrap_or(usize::MAX);
-        let children_cost = match node {
-            ENode::Op { children, .. } => children
-                .iter()
-                .map(|&child| {
-                    let c = egraph.find(child).0 as usize;
-                    tree[c].expect("post-order visits every child before its parent")
-                })
-                .fold(0usize, usize::saturating_add),
-            ENode::Var(_)
-            | ENode::Const(_)
-            | ENode::Buffer(_)
-            | ENode::Uniform(_)
-            | ENode::Param(_) => 0,
-        };
+        let children_cost = node
+            .children_slice()
+            .iter()
+            .map(|&child| {
+                let c = egraph.find(child).0 as usize;
+                tree[c].expect("post-order visits every child before its parent")
+            })
+            .fold(0usize, usize::saturating_add);
         tree[idx] = Some(own.saturating_add(children_cost));
         var[idx] = node_var;
         dag = dag.saturating_add(own);
@@ -2083,7 +2115,8 @@ fn tree_dp_pass<C: CostFunction>(
                 | ENode::Buffer(_)
                 | ENode::Uniform(_)
                 | ENode::Param(_) => weighted_own(costs, node, weight),
-                ENode::Op { children, .. } => {
+                ENode::Op { .. } | ENode::Reduce { .. } => {
+                    let children = node.children_slice();
                     if children.iter().any(|&c| egraph.find(c) == canonical) {
                         CYCLE_COST
                     } else {
@@ -2213,7 +2246,8 @@ fn shared_dag_dp_pass<C: CostFunction>(
                 | ENode::Buffer(_)
                 | ENode::Uniform(_)
                 | ENode::Param(_) => (own, None),
-                ENode::Op { children, .. } => {
+                ENode::Op { .. } | ENode::Reduce { .. } => {
+                    let children = node.children_slice();
                     if children.iter().any(|&c| egraph.find(c) == canonical) {
                         (CYCLE_COST, None)
                     } else {
@@ -2401,7 +2435,8 @@ fn post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
             stack.push((canonical, true));
 
             for node in egraph.nodes(canonical) {
-                if let ENode::Op { children, .. } = node {
+                {
+                    let children = (node).children_slice();
                     for &child in children {
                         let child_canonical = egraph.find(child);
                         if !settled[child_canonical.0 as usize] {
@@ -2439,7 +2474,8 @@ fn count_refs_recursive(
         if ref_counts[canonical.0 as usize] == 1 {
             if let Some(node_idx) = best_node[canonical.0 as usize] {
                 let node = &egraph.nodes(canonical)[node_idx];
-                if let ENode::Op { children, .. } = node {
+                {
+                    let children = (node).children_slice();
                     for &child in children {
                         stack.push(child);
                     }
@@ -2488,7 +2524,8 @@ fn toposort_dag(
 
             if let Some(node_idx) = best_node.get(idx).and_then(|o| *o) {
                 let node = &egraph.nodes(canonical)[node_idx];
-                if let ENode::Op { children, .. } = node {
+                {
+                    let children = (node).children_slice();
                     for &child in children {
                         let child_can = egraph.find(child);
                         if !visited[child_can.0 as usize] {
@@ -2722,7 +2759,8 @@ mod tests {
                     | ENode::Buffer(_)
                     | ENode::Uniform(_)
                     | ENode::Param(_) => own,
-                    ENode::Op { children, .. } => {
+                    ENode::Op { .. } | ENode::Reduce { .. } => {
+                        let children = node.children_slice();
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             CYCLE_COST
                         } else {
@@ -2767,7 +2805,8 @@ mod tests {
             }
             let base = me * words;
             reach[base..base + words].fill(0);
-            if let ENode::Op { children, .. } = &nodes[min_idx] {
+            {
+                let children = (&nodes[min_idx]).children_slice();
                 if min_cost != CYCLE_COST {
                     for &child in children.iter() {
                         let cbase = compact[egraph.find(child).0 as usize] as usize * words;
@@ -3915,7 +3954,7 @@ mod tests {
         fn node_cost(&self, node: &ENode, _parent: Option<pixelflow_ir::OpKind>) -> usize {
             match node {
                 ENode::Op { op, .. } if op.kind() == pixelflow_ir::OpKind::Sin => usize::MAX / 2,
-                ENode::Op { .. } => 1,
+                ENode::Op { .. } | ENode::Reduce { .. } => 1,
                 ENode::Var(_)
                 | ENode::Const(_)
                 | ENode::Buffer(_)

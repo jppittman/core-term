@@ -1102,6 +1102,12 @@ mod tests {
                     d(&dense, *b),
                     d(&dense, *c)
                 ),
+                // A fold survives the runtime tier now — it is representable
+                // in the e-graph and legalized after extraction — so the dump
+                // has a line for it rather than a panic.
+                ExprNode::Reduce { fold, body } => {
+                    writeln!(out, "R {} {}", fold.to_bits(), d(&dense, *body))
+                }
                 other @ (ExprNode::Param(_) | ExprNode::Nary(..) | ExprNode::Ref(_)) => {
                     panic!("{name}: production arena contains {other:?}, which optimize_runtime_arena bails on")
                 }

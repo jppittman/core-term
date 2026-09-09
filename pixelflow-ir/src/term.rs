@@ -27,6 +27,7 @@
 //! written down.
 
 use crate::arena::{BufferDecl, UniformDecl};
+use crate::fold::Fold;
 use crate::key::KernelKey;
 use crate::kind::OpKind;
 
@@ -117,6 +118,15 @@ pub enum Shape<'a, R> {
     Ref(KernelKey),
     /// An operation over `children`.
     Op(OpKind, Children<'a, R>),
+    /// A bounded fold: `⊕_{k ∈ fold.range()} body[fold.binder() := k]`.
+    ///
+    /// Deliberately *not* a [`Shape::Op`]. A fold's algebra, binder and range
+    /// are metadata, not operands: handing them to a walker as children is
+    /// what let the combiner's `Const` share an e-class with any literal of
+    /// the same value, and put a trip count within reach of every arithmetic
+    /// rule in the set. The one child is the body, and the binder is bound in
+    /// it — this is the only shape in the language that binds anything.
+    Reduce { fold: Fold, body: R },
 }
 
 /// A term language the e-graph can destructure and rebuild.

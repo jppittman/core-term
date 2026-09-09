@@ -310,6 +310,15 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
                 key.push(9);
                 key.extend_from_slice(&k.bits().to_le_bytes());
             }
+            // The fold is metadata, so it goes in the key's tag bytes rather
+            // than as three child nodes. Two folds over one body under
+            // different algebras, binders or ranges must not share a cache
+            // entry, and this is where that is said.
+            &ExprNode::Reduce { fold, body } => {
+                key.push(10);
+                key.extend_from_slice(&fold.to_bits().to_le_bytes());
+                push_id(&mut key, &dense, body);
+            }
             &ExprNode::Unary(op, a) => {
                 key.push(4);
                 key.extend_from_slice(&op.marshal().to_bytes());
@@ -361,6 +370,7 @@ mod tests {
     use pixelflow_ir::arena::BufferDecl;
     use pixelflow_ir::binding::BindingTable;
     use pixelflow_ir::eval_scalar;
+    use pixelflow_ir::fold::{Binder, Fold, Monoid};
 
     /// Every optimization must preserve the arena's denoted value, over a
     /// spread of coordinates — the load-bearing property. Anything that ever
@@ -940,13 +950,14 @@ mod tests {
         let mut a = ExprArena::new();
         let i = a.push_var(4);
         let body = a.push_binary(OpKind::Mul, i, i);
-        let root = a.push_reduce(OpKind::Add, 4, 4, body);
+        let binder = Binder::from_var(4).expect("Var(4) is the first binder");
+        let root = a.push_reduce(Fold::new(Monoid::SUM, binder, 0..4), body);
 
         let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("a Reduce-bearing arena must optimize once distributed");
         let (opt, opt_root) = &*arc;
         assert!(
-            !reaches_nary(opt, *opt_root),
+            !reaches_a_binder(opt, *opt_root),
             "the binder must be gone from the optimized arena"
         );
         assert_eq!(
@@ -961,12 +972,13 @@ mod tests {
         let x = b.push_var(0);
         let j = b.push_var(5);
         let body = b.push_binary(OpKind::Mul, x, j);
-        let root = b.push_reduce(OpKind::Add, 5, 3, body);
+        let binder = Binder::from_var(5).expect("Var(5) is the second binder");
+        let root = b.push_reduce(Fold::new(Monoid::SUM, binder, 0..3), body);
         let (unrolled, unrolled_root) = pixelflow_ir::passes::expand_reduce_owned(&b, root);
         let arc = optimize_runtime_arena(&b, root, pixelflow_ir::LatticeShape::POINT)
             .expect("X-dependent Reduce must optimize");
         let (opt, opt_root) = &*arc;
-        assert!(!reaches_nary(opt, *opt_root));
+        assert!(!reaches_a_binder(opt, *opt_root));
         for x in [0.0f32, 1.5, -2.25, 7.0] {
             let want = eval_scalar(&unrolled, unrolled_root, &[x, 0.0], &BindingTable::empty());
             let got = eval_scalar(opt, *opt_root, &[x, 0.0], &BindingTable::empty());
@@ -975,14 +987,17 @@ mod tests {
     }
 
     /// Whether any `Nary` (the `Reduce` binder) is reachable from `root`.
-    fn reaches_nary(arena: &ExprArena, root: ExprId) -> bool {
+    /// Whether a binder survives to the optimized arena. Named for what it
+    /// asks rather than for the node shape it used to look for: a fold is
+    /// `ExprNode::Reduce` now, not an `Nary`.
+    fn reaches_a_binder(arena: &ExprArena, root: ExprId) -> bool {
         let mut seen = vec![false; arena.nodes_raw().len()];
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
             if core::mem::replace(&mut seen[id.0 as usize], true) {
                 continue;
             }
-            if matches!(arena.node(id), ExprNode::Nary(..)) {
+            if matches!(arena.node(id), ExprNode::Nary(..) | ExprNode::Reduce { .. }) {
                 return true;
             }
             stack.extend(arena.children(id));
@@ -2146,6 +2161,9 @@ pub(crate) mod production_telemetry {
                 ExprNode::Unary(k, _)
                 | ExprNode::Binary(k, _, _)
                 | ExprNode::Ternary(k, _, _, _) => Some(*k),
+                // A fold survives extraction now; the legalizer unrolls it
+                // afterwards, and this walk prices the node it is.
+                ExprNode::Reduce { .. } => Some(OpKind::Reduce),
                 other @ (ExprNode::Param(_) | ExprNode::Nary(..) | ExprNode::Ref(_)) => {
                     panic!("extracted arena contains {other:?}")
                 }

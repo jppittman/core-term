@@ -118,6 +118,7 @@ fn expression_tolerance(arena: &ExprArena, root: ExprId) -> Tolerance {
             | ExprNode::Binary(op, _, _)
             | ExprNode::Ternary(op, _, _, _)
             | ExprNode::Nary(op, _, _) => *op,
+            ExprNode::Reduce { .. } => OpKind::Reduce,
         };
         tol = tol.loosest(equivalence_tolerance(op));
         for c in arena.children(id) {

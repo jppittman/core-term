@@ -311,6 +311,24 @@ impl CostModel {
             // prohibitively expensive regardless of the learned weight table.
             ENode::Op { op, .. } if op.kind() == OpKind::Dwrt => usize::MAX / 4,
             ENode::Op { op, .. } => self.cost(op.kind()),
+            // Priced like `Dwrt`, and for the same reason rather than a
+            // similar one: **codegen has no iteration binder**, so a fold
+            // that survives extraction is unrolled into `len()` copies of
+            // its body afterwards, by a legalizer that runs after everything
+            // that could have folded or CSE'd across those copies. Any
+            // decomposition sharing the e-class is therefore the same
+            // machine code plus the optimizations, and extraction should
+            // take it whenever one exists.
+            //
+            // Note what this is *not*: an estimate of `len × cost(body)`.
+            // That number is not expressible here — `node_cost` sees a node,
+            // never its children's costs — and a fold is precisely the case
+            // where a node's cost is not additive in its operands. That is
+            // the non-additive schedule cost the `Reranker` seam exists for
+            // (docs/plans/2026-09-01-schedule-cost-model-denotation.md), and
+            // the sentinel is the honest placeholder until something can
+            // answer it.
+            ENode::Reduce { .. } => usize::MAX / 4,
         }
     }
 

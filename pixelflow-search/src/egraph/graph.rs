@@ -647,17 +647,8 @@ impl EGraph {
     }
 
     fn canonicalize_node(&self, node: &mut ENode) {
-        match node {
-            ENode::Var(_)
-            | ENode::Const(_)
-            | ENode::Buffer(_)
-            | ENode::Uniform(_)
-            | ENode::Param(_) => {}
-            ENode::Op { children, .. } => {
-                for child in children {
-                    *child = self.find(*child);
-                }
-            }
+        for child in node.children_slice_mut() {
+            *child = self.find(*child);
         }
     }
 
@@ -1125,6 +1116,7 @@ impl EGraph {
             ENode::Uniform(_) => pixelflow_ir::OpKind::Uniform,
             ENode::Param(_) => pixelflow_ir::OpKind::Param,
             ENode::Op { op, .. } => op.kind(),
+            ENode::Reduce { .. } => pixelflow_ir::OpKind::Reduce,
         }
     }
 
@@ -1487,10 +1479,7 @@ impl EGraph {
             return true;
         }
         for node in &self.classes[canonical.index()].nodes {
-            let ENode::Op { children, .. } = node else {
-                continue;
-            };
-            for &child in children {
+            for &child in node.children_slice() {
                 let child = self.find(child);
                 if self.last_changed[child.index()] > swept {
                     return true;
@@ -1499,14 +1488,7 @@ impl EGraph {
                     continue;
                 }
                 for gnode in &self.classes[child.index()].nodes {
-                    let ENode::Op {
-                        children: gchildren,
-                        ..
-                    } = gnode
-                    else {
-                        continue;
-                    };
-                    for &gchild in gchildren {
+                    for &gchild in gnode.children_slice() {
                         if self.last_changed[self.find(gchild).index()] > swept {
                             return true;
                         }
@@ -2440,11 +2422,9 @@ impl GrowthPredictor<'_> {
     /// not yet exist in the real graph, so it is already its own canonical
     /// form. Only a real child is resolved through the real union-find.
     fn canonicalize(&self, node: &mut ENode) {
-        if let ENode::Op { children, .. } = node {
-            for child in children {
-                if child.index() < self.egraph.classes.len() {
-                    *child = self.egraph.find(*child);
-                }
+        for child in node.children_slice_mut() {
+            if child.index() < self.egraph.classes.len() {
+                *child = self.egraph.find(*child);
             }
         }
     }
@@ -2881,6 +2861,19 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
         // whole lattice, whichever number it turns out to be.
         ENode::Param(_) => return sink.make(ENode::constant(0.0)),
         ENode::Op { op, children } => (*op, children.clone()),
+        // `d(⊕_k f) = ⊕_k d(f)` is linearity, which holds for `Σ` and for
+        // nothing else in the monoid set — `Π` wants the product rule, and
+        // `min`/`max` are selections. It is a rule this table does not have,
+        // so the `Dwrt` is reconstructed below and survives as the fallback,
+        // exactly as `Gather` does.
+        ENode::Reduce { .. } => {
+            let var_const = sink.make(ENode::constant(var as f32));
+            let inner = sink.make(inner.clone());
+            return sink.make(ENode::Op {
+                op: &ops::Dwrt,
+                children: vec![inner, var_const],
+            });
+        }
     };
 
     let var_const = sink.make(ENode::constant(var as f32));

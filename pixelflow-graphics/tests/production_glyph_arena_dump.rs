@@ -71,7 +71,7 @@ fn dump_production_glyph_arenas() {
             };
             let coverage = glyph.kernel();
             let (arena, root) = coverage.parts();
-            // `glyph.kernel`'s winding sum is a `Kernel::sum_over` (S1a): the
+            // `glyph.kernel()`'s winding sum is a `Kernel::sum_over` (S1a): the
             // raw arena still carries the `Nary(Reduce, ..)` node this
             // dumper panics on below, same as the JIT would see it before
             // `Manifold::compile`'s own `legalize` unrolls it. Legalize here
@@ -148,6 +148,9 @@ fn dump_arena(arena: &ExprArena, root: ExprId, name: &str, path: &std::path::Pat
             ExprNode::Binary(k, a, b) => writeln!(out, "Bi {k:?} {} {}", d(&dense, *a), d(&dense, *b)),
             ExprNode::Ternary(k, a, b, c) => {
                 writeln!(out, "T {k:?} {} {} {}", d(&dense, *a), d(&dense, *b), d(&dense, *c))
+            }
+            ExprNode::Reduce { fold, body } => {
+                writeln!(out, "R {} {}", fold.to_bits(), d(&dense, *body))
             }
             other @ (ExprNode::Param(_) | ExprNode::Nary(..) | ExprNode::Ref(_)) => {
                 panic!("{name}: production arena contains {other:?}, which optimize_runtime_arena bails on")

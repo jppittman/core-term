@@ -616,6 +616,10 @@ pub fn arena_to_kernel_code(arena: &ExprArena, root: ExprId) -> String {
                         "ExprNode::Ref({k:?}) reached arena_to_kernel_code — kernel code has \
                          no syntax for a reference; expand_refs first"
                     ),
+                    ExprNode::Reduce { .. } => panic!(
+                        "a bounded fold reached arena_to_kernel_code — kernel code has no \
+                         syntax for a binder; expand_reduce first"
+                    ),
                     ExprNode::Unary(op, _)
                     | ExprNode::Binary(op, _, _)
                     | ExprNode::Ternary(op, _, _, _) => emit_op_kc(*op, &args),

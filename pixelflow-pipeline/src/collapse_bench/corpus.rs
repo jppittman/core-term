@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, BufferId, BufferIdentity, ExprArena, ExprId, ExprNode};
+use pixelflow_ir::fold::Fold;
 
 /// One kernel and the lattice it is baked at.
 pub struct CollapseKernel {
@@ -265,6 +266,11 @@ pub fn encode(kernel: &CollapseKernel) -> String {
                 }
                 writeln!(out)
             }
+            // The fold as opaque bits — it is metadata, not children, so it
+            // travels as one field rather than as three serialized nodes.
+            ExprNode::Reduce { fold, body } => {
+                writeln!(out, "R {} {}", fold.to_bits(), d(&dense, *body))
+            }
             ExprNode::Param(i) => panic!(
                 "{}: corpus kernels must be bakeable, but this one holds Param({i}) — a \
                  macro front-end placeholder, never present in a compiled kernel",
@@ -461,6 +467,14 @@ fn decode(path: &Path) -> CollapseKernel {
             ["N", k, children @ ..] => {
                 let children: Vec<ExprId> = children.iter().map(|c| id(c)).collect();
                 arena.push_nary(op(k), &children)
+            }
+            ["R", bits, body] => {
+                let bits: u64 = bits
+                    .parse()
+                    .unwrap_or_else(|e| panic!("{}: bad fold bits {bits:?}: {e}", path.display()));
+                let fold = Fold::from_bits(bits)
+                    .unwrap_or_else(|| panic!("{}: {bits} names no fold", path.display()));
+                arena.push_reduce(fold, id(body))
             }
             other => panic!("{}: unparseable line {other:?}", path.display()),
         };

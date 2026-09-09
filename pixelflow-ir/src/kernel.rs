@@ -18,6 +18,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::arena::{BufferIdentity, ExprArena, ExprId, ExprNode, UniformDecl, UniformIdentity};
+use crate::fold::{Binder, Fold, Monoid};
 use crate::kind::OpKind;
 
 /// One bit per placeholder index, set while that index is claimed by a binder
@@ -44,7 +45,7 @@ const PLACEHOLDER_BASE: u32 = 8;
 /// The claim is released on drop, so the space is bounded by how many binders
 /// are open at this instant, not by how many kernels have ever been built.
 ///
-/// [`lowest_free_index_slot`] caps nesting at 4, so the 64 placeholders here
+/// [`lowest_free_binder`] caps nesting at [`Binder::COUNT`], so the 64 placeholders here
 /// admit 16 fully-nested concurrent constructions; exhaustion panics rather
 /// than aliasing an index.
 struct BinderScope(u32);
@@ -81,87 +82,29 @@ impl Drop for BinderScope {
     }
 }
 
-/// The lowest reduction-index slot not already bound by a `Reduce` in `arena`.
+/// The lowest binder not already bound by a `Reduce` in `arena`.
 ///
 /// Binders are built inside-out, so a fold sees every inner fold's slot and
 /// takes the next free one — distinct live binders never share an index.
 ///
 /// # Panics
 ///
-/// Panics when all four slots are live, i.e. a fifth nested reduction.
-fn lowest_free_index_slot(arena: &ExprArena) -> u8 {
-    const BINDER_BASE: usize = crate::arena::REDUCE_BINDER_BASE as usize;
-    let mut used = [false; 4];
+/// Panics when every slot is live, i.e. one fold deeper than the index space.
+fn lowest_free_binder(arena: &ExprArena) -> Binder {
+    let mut used = [false; Binder::COUNT];
     for node in arena.nodes_raw() {
-        let ExprNode::Nary(OpKind::Reduce, start, len) = node else {
-            continue;
-        };
-        let children = arena.nary_children_slice(*start, *len);
-        // Child 1 is the bound index, stored as a `Const` slot number.
-        // `checked_sub`, not `- BASE`: a slot number below the base is a
-        // retired axis or a coordinate, and subtracting past zero would wrap
-        // in release, make `get_mut` return `None`, and leave a live binder's
-        // bit unmarked — so this would hand out an index already in use and
-        // two nested reductions would silently share a slot.
-        if let Some(ExprNode::Const(v)) = children.get(1).map(|id| arena.node(*id))
-            && let Some(slot) = (*v as usize).checked_sub(BINDER_BASE)
-            && let Some(bit) = used.get_mut(slot)
-        {
-            *bit = true;
+        if let ExprNode::Reduce { fold, .. } = node {
+            used[fold.binder().slot() as usize] = true;
         }
     }
-    used.iter()
-        .position(|u| !u)
-        .map(|i| i as u8 + crate::arena::REDUCE_BINDER_BASE)
+    Binder::all()
+        .find(|b| !used[b.slot() as usize])
         .unwrap_or_else(|| {
             panic!(
-                "more than {} live nested reductions: the index space is {}..{}",
-                used.len(),
-                BINDER_BASE,
-                BINDER_BASE + used.len()
+                "more than {} live nested reductions: the index space is full",
+                Binder::COUNT
             )
         })
-}
-
-/// The algebra a reduction folds under: an associative combining operation
-/// together with the identity an empty domain folds to.
-///
-/// [`Kernel::over`] is parametrized by this, so the binder is one construct and
-/// the monoid is the knob — adding an algebra is adding a constant here, not a
-/// new kind of fold. The named constructors ([`Kernel::sum_over`] and friends)
-/// are helpers over that primitive.
-///
-/// Only associative operations with an identity qualify: associativity is what
-/// lets the backend reassociate and vectorize the fold, and the identity is
-/// what an empty domain denotes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Monoid(OpKind);
-
-impl Monoid {
-    /// `+`, identity `0` — contraction, integration, projection, accumulation.
-    pub const SUM: Self = Self(OpKind::Add);
-    /// `×`, identity `1`.
-    pub const PRODUCT: Self = Self(OpKind::Mul);
-    /// `max`, identity `−∞` — softmax's stabilizer, "best of a bounded set".
-    pub const MAX: Self = Self(OpKind::Max);
-    /// `min`, identity `+∞` — nearest hit over a bounded set of SDFs.
-    pub const MIN: Self = Self(OpKind::Min);
-    /// Mask `∨`, identity all-clear — the existential quantifier over a
-    /// bounded domain.
-    pub const ANY: Self = Self(OpKind::BitOr);
-    /// Mask `∧`, identity all-set — the universal quantifier over a bounded
-    /// domain.
-    pub const ALL: Self = Self(OpKind::BitAnd);
-
-    /// The combining operation. Private: the op set is an IR concept, and
-    /// consumers name algebras, not opcodes.
-    fn op(self) -> OpKind {
-        debug_assert!(
-            self.0.is_monoid(),
-            "Monoid must wrap an associative op with an identity"
-        );
-        self.0
-    }
 }
 
 /// A named scalar argument of a kernel: the JIT tier's spelling of a
@@ -655,10 +598,7 @@ impl Kernel {
     pub fn fold(monoid: Monoid, kernels: &[Kernel]) -> Self {
         let op = monoid.op();
         let Some((head, tail)) = kernels.split_first() else {
-            return Self::constant(
-                op.monoid_identity()
-                    .expect("a Monoid's operator has an identity"),
-            );
+            return Self::constant(monoid.identity());
         };
         let mut arena = head.inner.arena.clone();
         let mut root = head.inner.root;
@@ -695,7 +635,6 @@ impl Kernel {
     /// ```
     #[must_use]
     pub fn over(monoid: Monoid, extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
-        let op = monoid.op();
         // Build the body against a placeholder index unique to this binder,
         // then rename it to a real slot once we can see which slots the body
         // already binds. Choosing the slot up-front is impossible: the body
@@ -709,10 +648,10 @@ impl Kernel {
         let body = body(&index);
 
         let mut arena = body.inner.arena.clone();
-        let slot = lowest_free_index_slot(&arena);
-        let renamed = arena.push_var(slot);
+        let binder = lowest_free_binder(&arena);
+        let renamed = arena.push_var(binder.var());
         let root = arena.substitute_vars_with(body.inner.root, &[(scope.placeholder(), renamed)]);
-        let root = arena.push_reduce(op, slot, extent, root);
+        let root = arena.push_reduce(Fold::new(monoid, binder, 0..extent), root);
         // Only `body`'s own arena is used above — no other kernel is
         // spliced in — so its buffer table carries forward unchanged.
         Self::wrap(arena, root, body.inner.buffers.clone())

@@ -1646,6 +1646,14 @@ fn arena_to_schedule(
                  the lowering pipeline."
             ),
             ExprNode::Nary(_, _, _) => panic!("Nary not supported in JIT arena compilation"),
+            // **The emitter has no iteration binder.** A fold reaching here
+            // means `passes::expand_reduce` did not run — that pass is what
+            // turns a fold into the `len()` copies of its body the machine
+            // actually executes, and it is the reason a surviving `Reduce`
+            // is priced out of extraction rather than emitted.
+            ExprNode::Reduce { .. } => {
+                panic!("a bounded fold reached the JIT emitter -- run passes::expand_reduce first")
+            }
         };
         schedule.push(regalloc::Def {
             value: vid,
@@ -2516,6 +2524,7 @@ fn compile_via_backend<B: IsaBackend>(
 mod tests {
     use super::*;
     use pixelflow_ir::arena::ExprArena;
+    use pixelflow_ir::fold::{Binder, Fold, Monoid};
     // Only the 128-bit x86 helpers (`run1`, `run_xy`, `run2`) take an `ExprId`
     // at this level; the wider-ISA submodules import their own.
     #[cfg(all(
@@ -4840,7 +4849,8 @@ mod tests {
             let wg = a.push_gather(wb, i, j);
             let ig = a.push_gather(ib, i, zero);
             let prod = a.push_binary(OpKind::Mul, wg, ig);
-            let root = a.push_reduce(OpKind::Add, 4, in_dim as u32, prod);
+            let binder = Binder::from_var(4).expect("Var(4) is the first binder");
+            let root = a.push_reduce(Fold::new(Monoid::SUM, binder, 0..in_dim as u32), prod);
 
             let buffers: &[&[f32]] = &[w.as_slice(), input.as_slice()];
             // Output lanes j = 0..6 (rest clamp to the last row, harmless here).
@@ -5042,7 +5052,8 @@ mod tests {
             let wg = a.push_gather(wb, i, j);
             let ig = a.push_gather(ib, i, zero);
             let prod = a.push_binary(OpKind::Mul, wg, ig);
-            let root = a.push_reduce(OpKind::Add, 4, in_dim as u32, prod);
+            let binder = Binder::from_var(4).expect("Var(4) is the first binder");
+            let root = a.push_reduce(Fold::new(Monoid::SUM, binder, 0..in_dim as u32), prod);
 
             let buffers: &[&[f32]] = &[w.as_slice(), input.as_slice()];
             // Output lanes j = 0..6 (rest clamp to the last row, harmless here).

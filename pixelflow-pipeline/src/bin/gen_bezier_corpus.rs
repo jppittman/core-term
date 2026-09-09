@@ -216,6 +216,9 @@ fn assert_polynomial_only(name: &str, arena: &ExprArena) {
             | ExprNode::Uniform(_) => {
                 continue;
             }
+            ExprNode::Reduce { .. } => {
+                panic!("bezier entry {name} contains a bounded fold — the family is polynomial")
+            }
             ExprNode::Ref(k) => panic!(
                 "bezier entry {name} contains Ref({k:?}) — the family is built from \
                  arithmetic alone and never composes by reference"
@@ -370,6 +373,10 @@ fn main() {
                 ExprNode::Ref(k) => panic!(
                     "bezier entry {name} contains Ref({k:?}) — a name for a kernel \
                      interned in this process, which a corpus file outlives"
+                ),
+                ExprNode::Reduce { .. } => panic!(
+                    "bezier entry {name} contains a bounded fold — the family is \
+                     polynomial, so nothing here binds an index"
                 ),
                 ExprNode::Unary(op, _)
                 | ExprNode::Binary(op, _, _)

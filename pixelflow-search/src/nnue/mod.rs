@@ -156,6 +156,11 @@ pub fn pattern_match_arena(
                 }
                 _ => return None,
             },
+            // No template contains a fold: templates are arithmetic, and the
+            // decompositions of a fold are rules with their own constructors
+            // rather than a pattern to match. A fold in the *target* still
+            // matches nothing, which is what this arm says.
+            ExprNode::Reduce { .. } => return None,
         }
     }
 
@@ -225,6 +230,10 @@ pub fn substitute_template_arena(
             ),
             ExprNode::Ref(k) => panic!(
                 "ExprNode::Ref({k:?}) in a rewrite template — a reference names a                  kernel this rewrite cannot see; expand_refs first"
+            ),
+            ExprNode::Reduce { .. } => panic!(
+                "a fold in a rewrite template — templates are arithmetic, and a \
+                 fold binds; its decompositions are rules of their own"
             ),
             ExprNode::Unary(op, t_a) => {
                 let a = ExprId(remap[t_a.0 as usize]);
@@ -974,6 +983,10 @@ impl BwdGenerator {
             ExprNode::Uniform(u) => ExprNode::Uniform(*u),
             // A leaf whose name is arena-independent: nothing to remap.
             ExprNode::Ref(k) => ExprNode::Ref(*k),
+            ExprNode::Reduce { fold, body } => ExprNode::Reduce {
+                fold: *fold,
+                body: remap[body.0 as usize],
+            },
             ExprNode::Unary(op, a) => ExprNode::Unary(*op, remap[a.0 as usize]),
             ExprNode::Binary(op, a, b) => {
                 ExprNode::Binary(*op, remap[a.0 as usize], remap[b.0 as usize])
@@ -1027,6 +1040,7 @@ impl BwdGenerator {
                 let children: Vec<ExprId> = arena.nary_children_slice(*start, *len).to_vec();
                 arena.push_nary(*op, &children)
             }
+            ExprNode::Reduce { fold, body } => arena.push_reduce(*fold, *body),
         }
     }
 }

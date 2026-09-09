@@ -279,7 +279,7 @@ fn optimized_glyph_matches_raw_within_reassociation_noise() {
             let coverage = glyph.kernel();
             let (arena, root) = linked(&coverage);
             let (raw, raw_root) = lower_dwrt_owned(&arena, root).expect("lower raw");
-            // `glyph.kernel`'s winding sum reads a piece table that travels
+            // `glyph.kernel()`'s winding sum reads a piece table that travels
             // with the kernel itself; both `eval_scalar` oracles below need
             // it bound, not empty — `lower_dwrt`/`optimize_runtime_arena`
             // restructure the Dwrt and arithmetic subtrees only, never the
