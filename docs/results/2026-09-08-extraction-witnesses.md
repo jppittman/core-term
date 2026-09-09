@@ -61,6 +61,47 @@ weighting; that indicts the objective's weighting, not the search, and
 realizability is not a question one can ask of it. Both are tabulated,
 apart.
 
+## 1b. A finding that arrived before any classification: **the e-graph is not monotone in the class cap**
+
+The whole method rests on L2 (`docs/plans/2026-09-02-optimizer-api.md`): a
+bigger budget yields a graph that represents a superset of the terms. The
+instrument does not assume it — it looks each subterm up and fails loudly on
+a miss — and it **found misses**.
+
+| corpus | candidate pairs where the smaller budget's term was cheaper | of those, subterm absent from the bigger graph |
+|---|---:|---:|
+| shaders + glyphs (`--out /tmp/ew-dev`) | see §7 | 19 |
+| glyphs (independent run) | see §7 | 20 |
+| chrome (held out) | 10 | 3 |
+
+Every chrome miss is the same node — `MulAdd(c1429, c0, c5181)`, minted in
+`G(10k)` and absent from `G(20k)`, `G(50k)` and `G(100k)` — and the glyph
+misses are the same shape: an `fma-fusion` output, or a `Select`, present at
+the smaller cap and never minted at the larger one.
+
+That is not a bug in the lookup; it is the claim being false as the loop is
+actually run. **A different class cap is a different trajectory, not a
+prefix-extension of the same one.** The cap changes which classes get
+allocated and in what order, which changes which candidates the scan reaches
+before a round ends, which changes which rules fire — so `G(b_hi)` is a
+*different* graph that happens to be bigger, not a superset of `G(b_lo)`.
+
+Two consequences, both load-bearing:
+
+- **For the witness argument.** Roughly three quarters of the cheaper-at-a-
+  smaller-budget pairs do map, and for those the monotonicity conclusion
+  holds constructively — the term *is* in the bigger graph, by exhibition
+  rather than by appeal to L2. Those are the witnesses this document
+  reports. The rest are not witnesses at all, and are excluded rather than
+  assumed.
+- **For the optimizer's own contract.** L2 is stated as a property and is
+  used as one. It should be either restated (monotone in *applications with
+  a fixed cap*, which is a much weaker and probably true claim) or made
+  true. Right now the class cap is a budget dimension that silently changes
+  the answer's *shape*, not only its quality — which is the same class of
+  problem `docs/plans/2026-09-01-production-budget-determinism.md` closed for
+  wall clock.
+
 ## 2. The shader family: the ladder
 
 Every column is exact. `tied` is the count of live classes where two or more
