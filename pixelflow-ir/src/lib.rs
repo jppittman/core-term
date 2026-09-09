@@ -63,6 +63,21 @@ pub mod store;
 #[cfg(feature = "std")]
 pub use store::KernelStore;
 
+/// A generic arena-backed DAG whose consumers never see the arena: nodes
+/// are named by a borrowed [`dag::Node`] handle, never a raw index.
+///
+/// `ExprArena` predates this and still keeps its own index-based storage.
+/// What holds it back is representation coupling, not lifecycle — its
+/// mutating methods take `&mut self` but are already pure at every call
+/// site, so `Builder` would serve them. See
+/// `docs/plans/2026-09-09-exprarena-on-dag.md` for the actual blockers and
+/// the staging around them.
+///
+/// A *new* graph should reach for this rather than hand-roll another `Vec`
+/// plus index-newtype.
+pub mod dag;
+pub use dag::{Builder, Dag, Key, Node, Rooted, Scratch, SideTable};
+
 /// IR-to-IR transforms: each takes an expression graph and returns another.
 /// Target-blind by construction — nothing here knows which ISA it is feeding.
 pub mod passes;

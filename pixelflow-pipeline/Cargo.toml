@@ -271,3 +271,8 @@ path = "src/bin/corpus_gaps.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "extraction_witnesses"
+path = "src/bin/extraction_witnesses.rs"
+bench = false
