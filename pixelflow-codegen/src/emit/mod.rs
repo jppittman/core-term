@@ -2524,7 +2524,6 @@ fn compile_via_backend<B: IsaBackend>(
 mod tests {
     use super::*;
     use pixelflow_ir::arena::ExprArena;
-    use pixelflow_ir::fold::{Binder, Fold, Monoid};
     // Only the 128-bit x86 helpers (`run1`, `run_xy`, `run2`) take an `ExprId`
     // at this level; the wider-ISA submodules import their own.
     #[cfg(all(
@@ -4821,6 +4820,12 @@ mod tests {
 
         #[test]
         fn matmul_reduce_jit_matches_interpreter() {
+            // Imported here, not in the parent `tests` module: which ISA
+            // submodule is live is a three-way target-feature cfg, so a
+            // parent import is either unused at some level or missing at
+            // another. The `avx2+fma` rung of `xtask isa-matrix` caught both
+            // spellings; a default-target clippy sees neither.
+            use pixelflow_ir::fold::{Binder, Fold, Monoid};
             // out(j) = Σ_i W(i,j) * input(i), evaluated per output lane j = X.
             // The reduction over i unrolls to a flat gather/FMA chain (bound
             // extent), and the whole thing runs as one bound-memory kernel.
@@ -5024,6 +5029,12 @@ mod tests {
 
         #[test]
         fn matmul_reduce_jit_matches_interpreter() {
+            // Imported here, not in the parent `tests` module: which ISA
+            // submodule is live is a three-way target-feature cfg, so a
+            // parent import is either unused at some level or missing at
+            // another. The `avx2+fma` rung of `xtask isa-matrix` caught both
+            // spellings; a default-target clippy sees neither.
+            use pixelflow_ir::fold::{Binder, Fold, Monoid};
             // out(j) = Σ_i W(i,j) * input(i), evaluated per output lane j = X.
             // The reduction over i unrolls to a flat gather/FMA chain (bound
             // extent), and the whole thing runs as one bound-memory kernel.
