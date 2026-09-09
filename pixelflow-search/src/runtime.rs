@@ -164,12 +164,28 @@ fn optimize_runtime_arena_uncached(
     // winding kernels' `d = X − f(Y)` gives `DX(d) = 1` and, for a straight
     // edge, a constant `DY(d)` — making the whole gradient magnitude
     // `√(DX²+DY²)` a compile-time number) and `ConstantFold` can only cascade
-    // over constants that exist by the time saturation runs. Lowering after
-    // the e-graph leaves those folds permanently on the table, because
-    // nothing folds post-extraction.
+    // over constants that exist by the time saturation runs.
     //
     // `ExpandReduce` next, in `legalize`'s order, so what saturation sees is
     // binder-free arithmetic it can CSE and fold across the unrolled terms.
+    //
+    // **Both are meant to move after saturation**, so that the graph resolves
+    // what it can (the chain rule and a fold's decompositions are both rule
+    // sets — `egraph::derivative`, `egraph::fold_rules`) and the legalizer is
+    // the fallback for what it declined. That reorder is written and
+    // measured, and it is not landed: on a production glyph, saturation
+    // quiesces with the folds still intact, extraction keeps them, and
+    // `ExpandReduce` then unrolls after everything that could have folded
+    // across the terms — **+23% to +42% emitted nodes**, on every glyph
+    // measured. It is not the class budget (8x the cap and 9x the wall clock
+    // recover 1.5%) and not the chain's association (peeling from the back
+    // builds `expand_reduce`'s own left-leaning shape, and changes nothing).
+    // What is missing is why `PeelFold` stops firing at that scale when a
+    // 40-term table-reading fold unrolls fine. See
+    // docs/plans/2026-09-09-a-fold-is-a-node.md §9 and
+    // `pixelflow-graphics/examples/glyph_saturation_cost.rs`, which is the
+    // measurement, and `pixelflow-graphics/tests/glyph_optimization_cost.rs`,
+    // which is the gate that will not let the regression ship green.
     //
     // A declining step short-circuits the rest and yields `None` here, which
     // means exactly what it always meant: the caller compiles its own arena

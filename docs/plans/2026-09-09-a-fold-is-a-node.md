@@ -1,8 +1,11 @@
 # A fold is a node, its decompositions are rules, and legalize comes last
 
 **Date:** 2026-09-09
-**Status:** Phase 1 executed (`Reduce` is a typed node, representable in the
-e-graph). Phases 2 and 3 specified, not built.
+**Status:** Phases 1 and 2 executed — `Reduce` is a typed node, representable
+in the e-graph, and its decompositions are rules the runtime tier holds.
+**Phase 3 (the pipeline reorder) is written, measured, and not landed**: it
+costs 23–42% more emitted nodes on every production glyph. §9 has the numbers
+and the mechanism.
 **Author:** JP (the direction), Claude (draft)
 **Related:** [a-run-is-a-glyph](2026-09-09-a-run-is-a-glyph.md),
 [macro-tier-is-arena-native](2026-09-08-macro-tier-is-arena-native.md),
@@ -71,6 +74,7 @@ Two nouns have no type: **index** (a `u8` in a magic range) and **range**
 | range `[lo, hi)` | the decompositions need both ends (`sum(x over(1,10))`); today `lo` is implicit | **build** — as fields of `Fold`, not a type of its own |
 | `Fold` grouping the three | `push_reduce` would take five arguments; the three travel together at every site, and `Fold` *is* the node's metadata | **build** |
 | `BinderRange` as its own newtype | one constructor, one accessor, no site holds a range without the rest of the fold | **reject, YAGNI** — two fields inside `Fold` |
+| `Fold::split` | a real law (`⊕_{[lo,hi)} = ⊕_{[lo,m)} ⊕ ⊕_{[m,hi)}`), written and tested, then found to have no caller | **rejected in flight** — build it when a rule wants it |
 | `Monoid::tag()` returning a serializable byte | proposed for the JIT-cache key; then the canonical key and the macro emitter wanted the same thing for the *whole* fold | **rejected in flight** — replaced by `Fold::to_bits`/`from_bits`, one method for three callers |
 
 **Why the range is the load-bearing half.** Over an extent, peeling the first
@@ -97,17 +101,20 @@ Reduce { fold, body }  ⟦·⟧ = ⊕_{k ∈ fold.range()} ⟦body⟧[fold.binde
 **The decompositions, as laws:**
 
 ```text
-⊕_{[lo,hi)} f  =  f(lo) ⊕ ⊕_{[lo+1,hi)} f          (peel)
-⊕_{[lo,hi)} f  =  ⊕_{[lo,m)} f ⊕ ⊕_{[m,hi)} f      (split, lo < m < hi)
+⊕_{[lo,hi)} f  =  ⊕_{[lo,hi-1)} f ⊕ f(hi-1)        (peel, from the back)
 ⊕_{[lo,lo)} f  =  identity(⊕)                       (empty)
 ```
 
-Associativity licenses `split`; `Monoid` is the type that guarantees it. The
-identity is what makes `empty` a *value* rather than a special case.
+The identity is what makes `empty` a *value* rather than a special case.
+A `split` at an interior point is the third law and is **not built**: no rule
+wants it yet, and a law with a test but no caller is machinery ahead of demand.
 
-**The observation that unifies two mechanisms:** `ExpandReduce` is `peel` run
-to exhaustion. They are not a legalizer and a rule; they are one operation at
-two budgets. `Fold::peel` is the single method both call.
+**The observation that unifies two mechanisms:** `expand_reduce` is
+`Fold::peel_back` run to exhaustion. They are not a legalizer and a rule; they
+are one operation at two budgets, and they call the same method — which is
+not ceremony, because while each did its own range arithmetic the two produced
+*opposite associations*, and an e-graph then had to spend reassociation rules
+reaching the shape the legalizer built directly.
 
 **The binder is the only thing in the language that *shrinks* a variance set.**
 Every other node unions its children's; a fold removes its own index. That is
@@ -129,20 +136,28 @@ what the old encoding could only report by giving up.
   `Op` for a rule to name and no vocabulary decision to make.
 - Cost: the prohibitive sentinel, for `Dwrt`'s reason (§9).
 
-**Phase 2 — the decompositions are rules.** *(not built)*
-Peel, split and empty as rewrites over `ENode::Reduce`. They are dynamic
-rules with constructors rather than templates: peel has to build
-`body[binder := lo]`, which is a substitution over an *e-class*, and that is
-the standard place e-graphs and binders meet. The cost question in §9 becomes
-load-bearing here, because the class will hold both forms.
+**Phase 2 — the decompositions are rules.** *(done)*
+`PeelFold` and `EmptyFold` in `egraph/fold_rules.rs`, on the **runtime tier's**
+rule set (`RuleSet::runtime`) rather than in `all_rules`: `kernel!` has no
+syntax that builds a fold, so at the macro tier they can never fire, and
+adding them to `all_rules` would perturb the pinned rule-set grids
+`math::inflate`'s inflation study measures against for no measurement's sake.
 
-**Phase 3 — legalize is the fallback.** *(not built)*
-`pipeline![ExpandRefs, Saturate, LowerDwrt, ExpandReduce]`. What the graph
-resolved, it resolved; what it declined, the legalizer lowers, because codegen
-has no iteration binder and no `Dwrt`. This is what the user asked for, and it
-is only sound *with* Phase 2: moving the lowering after saturation without
-giving the graph the decompositions would mean glyph kernels lose every fold
-and CSE that today happens across the unrolled terms.
+They are dynamic rules with constructors, not templates, because peel has to
+build `body[binder := lo]` — a substitution over an *e-class*, which is the
+standard place e-graphs and binders meet. Two things make it sound and
+affordable: a **representative suffices** (`f ≡ g ⟹ f[x:=c] ≡ g[x:=c]`, the
+same argument `ChainRule` makes when it differentiates one representative),
+and **hash-consing is the invariance test** (a subtree that never mentions the
+binder rebuilds to the identical node, so the rule names its class instead of
+copying it). A class that reaches itself makes the walk decline, which costs
+completeness and never soundness.
+
+**Phase 3 — legalize is the fallback.** *(written, measured, not landed)*
+`pipeline![ExpandRefs, Optional(Saturate), LowerDwrt, ExpandReduce]`. What the
+graph resolved, it resolved; what it declined, the legalizer lowers, because
+codegen has no iteration binder and no `Dwrt`. See §9 for what it measured and
+why it is not in the tree.
 
 ## 7. Gates
 
@@ -224,3 +239,60 @@ combiner was a monoid and the var index a binder; `variance` had a
 gone, and none was replaced by a check somewhere else — the argument types
 refuse the values. The test that pinned the extent panic is now a test that
 the extent is not reachable from the node's children at all.
+
+**Phase 3 measured, and not landed.** The reorder is small — `Optional` (a
+step whose declining means "unoptimized", not "unlegalized", so the legalizing
+suffix still runs) and four lines of pipeline. On every production glyph it
+emits **23% to 42% more nodes**:
+
+| glyph | before | after | Δ |
+|---|---|---|---|
+| A@16 | 1041 | 1479 | +42% |
+| O@16 | 2938 | 3689 | +26% |
+| S@16 | 3178 | 3949 | +24% |
+| 8@32 | 6747 | 8369 | +24% |
+| g@32 | 4810 | 6029 | +25% |
+
+Three candidate explanations were tested and eliminated:
+
+- **Not the class budget.** At 8× the cap and 9× the wall clock the gap closes
+  by 1.5%.
+- **Not the association.** `expand_reduce` builds a left-leaning chain and the
+  first peel built a right-leaning one; `Fold::peel_back` fixes that and
+  changes nothing. (It is kept, because matching the legalizer's shape is
+  right regardless.)
+- **Not a partially-unrolled term being extracted.** Saturation telemetry
+  shows the run *quiescing* — no rule left to fire — with the folds intact,
+  and the extracted arena identical for every glyph at 154 nodes: the folded
+  form. `ExpandReduce` then unrolls after extraction, which is after
+  everything that could have folded or CSE'd across the terms. That is the
+  whole 23–42%.
+
+What is *not* explained: why `PeelFold` stops firing at that scale, when a
+40-term fold whose body reads a bound table unrolls fine
+(`fold_rules::production_shape_tests`). The two candidates left are the growth
+gate (`saturate_bounded` stops the whole scan at the first action that would
+exceed the class cap) and a cycle in the substitution walk, which declines.
+Until that is answered the reorder is a 30% regression, so the order stands
+and the legalizers still run first.
+
+**The retrospective is about the gate.** Every existing glyph test passed
+under the reorder — the goldens, the JIT-vs-interpreter oracle, the winding
+oracle, the FreeType oracle. None of them reads the *size* of the code that
+draws the pixels, so a 42% regression was invisible to CI, and the only reason
+it was caught is that this change happened to come with a measurement. That is
+a gap in the gate, not a lucky catch, and the fix is a check:
+`pixelflow-graphics/tests/glyph_optimization_cost.rs` bounds the emitted node
+count for three glyphs, and fails on all three under the reorder.
+`examples/glyph_saturation_cost.rs` is the full sweep behind it.
+
+**One more place a fold's cost is not additive.** §9's note about `node_cost`
+has a twin in the budget. `Budget::Production` picks its tier from the input's
+node count and sizes the classical class cap from its *inserted class* count —
+both of which describe how compactly the term is written, not what it denotes.
+A folded glyph arena inserts to 154 classes where its unrolled form inserts to
+1193–2967, so under the reorder the same kernel asks for a budget an order of
+magnitude smaller. That is not what sank the reorder (the budget experiment
+above rules it out) but it is wrong on its own terms, and it is the same
+mistake in a second place: a fold's size, like a fold's cost, is `len ×
+body`.

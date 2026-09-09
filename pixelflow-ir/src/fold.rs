@@ -282,22 +282,28 @@ impl Fold {
         })
     }
 
-    /// The two folds a split at `at` leaves, or `None` if `at` is not strictly
-    /// inside the range.
+    /// The fold over everything *before* the last index, and that index — or
+    /// `None` when the domain is empty.
     ///
     /// ```text
-    /// ⊕_{[lo,hi)} f  =  ⊕_{[lo,at)} f ⊕ ⊕_{[at,hi)} f
+    /// ⊕_{[lo,hi)} f  =  ⊕_{[lo,hi-1)} f ⊕ f(hi-1)
     /// ```
     ///
-    /// Associativity is what licenses this, and [`Monoid`] is the type that
-    /// guarantees it. `None` at the ends because a split there is
-    /// [`Fold::peel`]'s empty case in disguise, and offering both spellings of
-    /// one term is how an e-graph saturates on nothing.
+    /// [`Fold::peel`]'s mirror, and the one a rewrite should use: run to
+    /// exhaustion it builds the **left**-leaning chain
+    /// `((f(lo) ⊕ f(lo+1)) ⊕ …)`, which is the association
+    /// `passes::expand_reduce` produces. Peeling from the front instead
+    /// yields the same value in the opposite association, and an e-graph then
+    /// has to spend reassociation rules — and the classes they mint — to
+    /// reach the shape everything downstream was tuned on.
     #[must_use]
-    pub fn split(self, at: u32) -> Option<(Self, Self)> {
-        (u32::from(self.lo) < at && at < u32::from(self.hi)).then(|| {
-            let at = at as u16;
-            (Self { hi: at, ..self }, Self { lo: at, ..self })
+    pub fn peel_back(self) -> Option<(Self, u32)> {
+        (!self.is_empty()).then(|| {
+            let rest = Self {
+                hi: self.hi - 1,
+                ..self
+            };
+            (rest, u32::from(self.hi) - 1)
         })
     }
 }
@@ -329,20 +335,6 @@ mod tests {
         assert_eq!(indices, [3, 4, 5, 6]);
         assert!(fold.is_empty());
         assert_eq!(fold.len(), 0);
-    }
-
-    #[test]
-    fn a_split_partitions_the_range() {
-        let b = Binder::from_slot(1).expect("slot 1 exists");
-        let fold = Fold::new(Monoid::MIN, b, 0..10);
-        let (head, tail) = fold.split(4).expect("4 is inside 0..10");
-        assert_eq!(head.range(), 0..4);
-        assert_eq!(tail.range(), 4..10);
-        assert_eq!(head.len() + tail.len(), fold.len());
-        // The ends are peel's empty case; offering them as splits too would
-        // let saturation rewrite a term into itself forever.
-        assert_eq!(fold.split(0), None);
-        assert_eq!(fold.split(10), None);
     }
 
     #[test]

@@ -450,14 +450,30 @@ fn unroll_reduce(arena: &mut ExprArena, fold: Fold, body: ExprId) -> ExprId {
     // table covers each id the substitution asks about.
     let variance = crate::variance::compute_arena_variance(arena);
 
-    // acc = body[var:=lo]; then acc = combiner(acc, body[var:=k]) for the rest.
     let term = |arena: &mut ExprArena, k: u32| {
         Substitution::new(body, var_idx, k as f32, &variance).apply(arena, body)
     };
-    let mut range = fold.range();
-    let first = range.next().expect("a non-empty fold has a first index");
-    let mut acc = term(arena, first);
-    for k in range {
+
+    // Through `Fold::peel_back`, not through `fold.range()`: this loop and
+    // `egraph::fold_rules::PeelFold` are the same decomposition at different
+    // budgets, and sharing the method is what keeps them the same. It is not
+    // ceremony — the two produced *opposite* associations while each did its
+    // own range arithmetic, and an e-graph then had to spend reassociation
+    // rules reaching the shape this loop produces directly.
+    //
+    // `peel_back` yields the indices from the top down, so they are collected
+    // and consumed in reverse: the accumulator ends up on the left and the
+    // chain leans `((f(lo) ⊕ f(lo+1)) ⊕ …)`. Iterative rather than recursive
+    // for the reason everything here is — the trip count is a `u16` and the
+    // Rust stack is not.
+    let mut indices = Vec::with_capacity(fold.len() as usize);
+    let mut rest = fold;
+    while let Some((shorter, k)) = rest.peel_back() {
+        indices.push(k);
+        rest = shorter;
+    }
+    let mut acc = term(arena, *indices.last().expect("a non-empty fold has terms"));
+    for &k in indices.iter().rev().skip(1) {
         let next = term(arena, k);
         acc = arena.push_binary(combiner_op, acc, next);
     }

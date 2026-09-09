@@ -2082,6 +2082,14 @@ impl EGraph {
             RewriteAction::Differentiate { inner, var } => self.predict(|s| {
                 derivative_shape(s, inner, *var);
             }),
+            RewriteAction::PeelFold {
+                head,
+                head_root,
+                rest,
+                body,
+            } => self.predict(|s| {
+                peel_fold_shape(s, head, *head_root, *rest, *body);
+            }),
         }
     }
 
@@ -2219,6 +2227,15 @@ impl EGraph {
             RewriteAction::Differentiate { inner, var } => {
                 let deriv_id = derivative_shape(self, &inner, var);
                 self.union_counted(class_id, deriv_id)
+            }
+            RewriteAction::PeelFold {
+                head,
+                head_root,
+                rest,
+                body,
+            } => {
+                let peeled = peel_fold_shape(self, &head, head_root, rest, body);
+                self.union_counted(class_id, peeled)
             }
         }
     }
@@ -2833,6 +2850,53 @@ fn instantiate_template<S: NodeSink>(
             })
         }
     }
+}
+
+/// Build `head ⊕ ⊕_{rest} body` — one peeled term combined with the fold over
+/// what is left.
+///
+/// The head arrives as a template because computing it needs to *read* the
+/// graph (walking the body's classes to substitute the binder), which a
+/// [`NodeSink`] cannot do; the rule does that half and this replays it. The
+/// tail names `body` directly: peeling moves the range, never the body, which
+/// is what makes the rule affordable at all.
+fn peel_fold_shape<S: NodeSink>(
+    sink: &mut S,
+    head: &[super::fold_rules::HeadNode],
+    head_root: super::fold_rules::HeadRef,
+    rest: pixelflow_ir::Fold,
+    body: EClassId,
+) -> EClassId {
+    use super::fold_rules::{HeadNode, HeadRef};
+    let mut planned: Vec<EClassId> = Vec::with_capacity(head.len());
+    let resolve = |r: HeadRef, planned: &[EClassId]| match r {
+        HeadRef::Plan(i) => planned[i as usize],
+        HeadRef::Class(c) => c,
+    };
+    for entry in head {
+        let id = match entry {
+            HeadNode::Const(bits) => sink.make(ENode::Const(*bits)),
+            HeadNode::Op { op, children } => sink.make(ENode::Op {
+                op: *op,
+                children: children.iter().map(|c| resolve(*c, &planned)).collect(),
+            }),
+            HeadNode::Reduce { fold, body } => sink.make(ENode::Reduce {
+                fold: *fold,
+                body: resolve(*body, &planned),
+            }),
+        };
+        planned.push(id);
+    }
+    let head = resolve(head_root, &planned);
+    let rest_class = sink.make(ENode::Reduce { fold: rest, body });
+    let op = super::fold_rules::combiner_op(rest.monoid())
+        .expect("PeelFold checked the combiner before emitting this action");
+    // `rest` first: the peel takes the *last* index, so the accumulator is on
+    // the left and the chain leans the way `expand_reduce` builds it.
+    sink.make(ENode::Op {
+        op,
+        children: vec![rest_class, head],
+    })
 }
 
 /// Build the e-class of the derivative of `inner` with respect to variable

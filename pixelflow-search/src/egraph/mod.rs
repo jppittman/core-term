@@ -33,6 +33,7 @@ pub(crate) mod cost;
 pub mod deps;
 pub mod derivative;
 pub(crate) mod extract;
+pub mod fold_rules;
 mod graph;
 // Per-application growth telemetry (docs/plans/2026-08-31-guide-design-revision.md
 // §4.1) has no production consumer yet, exactly like `crate::telemetry` —
@@ -73,6 +74,7 @@ pub use extract::{
     SHARED_DAG_PASS_BYTE_BUDGET, SharedPassStats, build_extracted_dag_from_choices,
     choices_to_arena, compute_ref_counts, cost_of_choices, extract, extract_dag,
 };
+pub use fold_rules::{EmptyFold, PeelFold, fold_rules};
 pub use graph::{
     ApplicationMask, ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, MaskScope, RewriteTarget,
     SaturationStats, SaturationStop, ScanStop,
