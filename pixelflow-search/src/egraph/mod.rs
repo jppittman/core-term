@@ -31,6 +31,7 @@ pub(crate) mod cost;
 pub mod deps;
 pub mod derivative;
 pub(crate) mod extract;
+pub mod filter;
 mod graph;
 mod guided;
 pub mod insert;
@@ -65,6 +66,7 @@ pub use extract::{
     SHARED_DAG_PASS_BYTE_BUDGET, SharedPassStats, build_extracted_dag_from_choices,
     choices_to_arena, compute_ref_counts, cost_of_choices, extract, extract_dag,
 };
+pub use filter::{ApplicationFilter, KeepAll, MatchRow};
 pub use graph::{
     ApplicationMask, ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, MaskScope, RewriteTarget,
     SaturationStats, SaturationStop, ScanStop,

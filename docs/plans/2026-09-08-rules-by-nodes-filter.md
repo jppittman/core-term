@@ -1,0 +1,212 @@
+# The rules × nodes filter: a seam before application
+
+JP, 2026-09-08: "something of the shape of my bilinear filter that takes
+rules × nodes ⇒ rules × nodes, before application. I want a trait attached
+to it, and I want the naive version to be a no-op." This document denotes
+the seam; the code in `pixelflow-search/src/egraph/filter.rs` is obliged to
+it. The research question it serves is whether a CPU-resident net can scale
+the e-graph past its class cap: on real scenes the rules expand 110–465
+input nodes 10–40× to the cap in 2–5 rounds, and only ~1.2 % of applications
+are strictly load-bearing (~20 % by the loose bound;
+docs/results/2026-09-07-egraph-off-vs-on-real-shaders.md). A filter that
+keeps the load-bearing `(rule, class)` pairs reaches the same or a better
+extraction on a fraction of the budget. Rules are domain-conditional
+(Pythagorean identities: useless for Béziers, essential for spherical
+harmonics), which is why the filter is bilinear over a rule embedding *and* a
+node embedding rather than a per-rule prior — but this document is only
+about the seam, and the seam is policy-free.
+
+## The denotation
+
+**The match matrix.** Each saturation round, the e-graph has a sparse matrix
+`M : Rule × EClass ⇀ Action`. A cell `M[r, c]` is inhabited exactly when rule
+`r` matches some e-node of canonical class `c`, and it holds the
+`RewriteAction` that match produced — the rule's right-hand side *with its
+bindings already substituted* (a `Union` target, a `Create`d e-node, a
+`Distribute {a, b, c}` …). Not a bool and not a count: a bool would lose the
+binding, which is the only thing that distinguishes two firings of the same
+rule at the same class, and a count would lose which ones. `Rewrite::apply`
+returns at most one action per `(rule, e-node)`, so a cell may hold more than
+one action when a class has several matching e-nodes; the row for rule `r` is
+the list of `(c, action)` pairs in scan order. This is exactly the
+`updates: Vec<(EClassId, RewriteAction)>` the production scan already
+stages — the matrix type borrows it rather than inventing a second one.
+
+**The filter.** `F : M → M'`, same shape: a function from a sparse
+rules × classes matrix to a sparse rules × classes matrix over the *same*
+rule set and the *same* class ids. `F` runs **after matching and before
+application**: it sees every match the round enumerated, with its binding,
+and it decides which of them the loop commits. It may drop cells; it may not
+invent an action the rules did not produce (there is no constructor for a
+binding it did not receive), so the graph after `F` holds a subset of the
+equalities the unfiltered graph would — the same law (L4 in
+`egraph/optimizer.rs`) every ordering policy is already covered by.
+
+**Identity.** `Identity(M) = M`, spelled `KeepAll` in Rust because
+`Identity` already names the `x · 1 = x` rewrite rule in this crate (and the
+no-op `Optimize` pass in `pixelflow-ir`), and a filter that can only drop
+cells keeps all of them exactly when it is the identity. Under `KeepAll` the
+loop commits exactly
+what it enumerated, in the order it enumerated it, and every observable —
+emitted bytes, `dag_cost`, schedule, stop reason, application count, class
+count, iteration count — is byte-identical to the loop before the seam
+existed. **That is a test
+(`pixelflow-pipeline/tests/rules_by_nodes_identity.rs`), not a claim.**
+
+**Budget accounting.** The application counter (`EGraph::applications`, the
+one budget dimension every policy shares) is charged **at commit, for M'**.
+A dropped cell costs nothing: it is not counted, not recorded in the
+provenance journal, and not applied — the same three "nots" the replay mask
+already guarantees. The scan enumerates a row only up to the *remaining*
+allowance (it cannot know what `F` will keep, and it must bound its own work),
+so `|row| ≤ remaining` before `F` and `F` can only shrink it; a filter that
+drops most of a row leaves that headroom for the next rule's row. Likewise
+the class cap: the scan's `estimated_new_nodes` is an upper bound computed
+over M, so a filtered commit can only stay further under the cap. Both bounds
+are conservative in the direction of *fewer* applications, never more.
+
+## Which matching semantics the loop has
+
+The wiring depends on one question: within one round, does rule `r+1` match
+against rule `r`'s additions, or against the round's starting snapshot?
+
+**It matches against rule `r`'s additions.** `EGraph::saturate_bounded`
+(`egraph/graph.rs`) runs, per round, `for rule_idx in 0..n_rules {
+batch.apply_rule(rule_idx, …) }`, and `EGraphBatch::apply_rule` is: scan rule
+`r` over `canonical_class_ids()`, **commit** its staged actions
+(`apply_action_from_rule` — unions and node creations land in `classes`
+immediately), then `rebuild_budgeted(256)` — an *interleaved partial rebuild*
+of up to 256 worklist items before the next rule's scan starts. Rule `r+1`'s
+`canonical_class_ids()` therefore already contains what rule `r` created,
+partially re-canonicalized. The round's "one rebuild per iteration" is only
+the *drain* on `EGraphBatch::drop`; the graph rule `r+1` sees is not the
+round's starting snapshot.
+
+Consequently **M cannot be collected for all rules and filtered once**
+without changing what M *is*: rule `r+1`'s row is a function of rule `r`'s
+committed row, so collecting every row against the snapshot would enumerate
+different matches (and different bindings) than production does, and no
+filter — Identity included — could reproduce production's bytes from it. The
+only shape that preserves the semantics is the **streamed** one: `F` is
+applied to rule `r`'s row at the moment it is fully matched and before it is
+committed, then the loop proceeds to rule `r+1`. That is still
+rules × nodes → rules × nodes — the matrix is delivered one row at a time
+because that is the order the loop *produces* it, and the filter sees the
+graph as it stands when that row was matched, which is the same graph the
+row's bindings refer to. A whole-matrix filter is representable on top of it
+(buffer rows, decide, but then the rows are no longer what production would
+have matched), and that is precisely why it is not the seam.
+
+So the trait method takes one row, and "before application, after matching"
+is the point between the scan loop and the commit loop inside
+`apply_rule_at_index_timed` — the one place in the crate where a row exists
+as a value that has been matched but not yet committed.
+
+## What exists that this touches
+
+- `EGraph::saturate_bounded` — the one production loop. Now takes
+  `&mut dyn ApplicationFilter`; `saturate_budgeted`/`saturate_with_limits`
+  pass `KeepAll`, and `Optimizer` passes whatever `Optimizer::filter` was
+  given (default `KeepAll`). The row is offered only when it is non-empty
+  (`F(∅) = ∅`), and its `RuleId` is resolved once per non-empty row — the
+  scan used to hash the rule label once per *match* for `match_counts`, so
+  the seam removes allocations rather than adding them.
+- `EGraph::apply_rules_once`/`apply_rules_budgeted` — the snapshot-matching
+  research loop (every rule against one snapshot, then one commit). Not
+  production, not wired; a filter over it would be the whole-matrix form,
+  and it is left alone.
+- `ApplicationMask` / `Optimizer::mask` — a filter in a weaker form (it
+  withholds one application, or every re-derivation of it), but at a
+  *different point*: it decides at **commit time**, keyed on the commit-time
+  application ordinal, and under `MaskScope::AllMatchingCandidate` it reads
+  class content **as of each commit** — which an earlier commit in the same
+  row may have changed. A pre-application row filter sees the row's
+  pre-commit content, so folding the mask into it would change the
+  confluence-aware scope's semantics (and the replay harness's Δ
+  measurements). The `Single` scope *is* expressible as a row filter
+  (`ordinal = applications + kept_so_far`); folding it is a phase-2 change
+  that owes its own identity test on the mask fixtures. Left in place.
+- `SaturationGuide::score_candidates` (`nnue/guide/`, `egraph/guided.rs`,
+  `egraph/anytime.rs`) — the same idea (score rule × class candidates, with
+  rule and node embeddings) at the **wrong point**: a flat candidate list
+  scored after a separate enumeration in a separate loop
+  (`GuidedEpisode::advance` → `apply_single_rule`, which re-matches), never
+  wired into production, with no `Identity` and no byte-identity test. The
+  bilinear head (`nnue/guide/bilinear.rs`) is the model that phase 2 ports
+  onto `ApplicationFilter`; once it is ported, `SaturationGuide`, the guided
+  loop, and `Optimizer::guide` are marked for deletion. Not deleted here.
+
+## Public surface
+
+`egraph::filter::{ApplicationFilter, MatchRow, KeepAll}` and
+`Optimizer::filter(Box<dyn ApplicationFilter>)`. Nothing else. The row's
+`RewriteAction`s are already public (`egraph::RewriteAction`); the row is
+consumed by value inside the crate and exposed to the filter through
+`MatchRow::matches` (read) and `MatchRow::retain` (the one mutation — a
+filter can shrink a row, never reorder it or add to it; the type refuses the
+wrong shape so no doc has to). `EGraph::saturate_budgeted_through` and
+`EGraphBatch::apply_rule_through` are `pub(crate)`: the filter reaches the
+loop through the optimizer, the way `rerank`, `guide`, and `mask` do, not
+through a second public saturation entry point.
+
+A filter that is not `KeepAll` does not yet enter `Optimizer::fingerprint`
+(the runtime cache key); phase 2 owes that before two filters can coexist in
+one process.
+
+`Box<dyn ApplicationFilter>` rather than a type parameter on `Optimizer`:
+the filter is called **once per rule per round** (62 × ≤ 9 calls on the
+largest DEV kernel), not per match, and `Optimizer` already holds
+`Box<dyn Reranker>` and `Box<dyn SaturationGuide>` the same way. `Identity`
+is a ZST, so its `Box` does not allocate; the seam adds no per-round
+allocation (the row *is* the scan's existing `updates` vector, moved into
+`MatchRow` and back).
+
+## Identity, measured
+
+Pre-change baseline: the harness at `e57760c0` (loop untouched, plus the
+`code_fnv` column) — `egraph_off_on run --no-clock --no-probe`, all 210
+shipped kernels (95 glyphs × 2 tiles, 3 bench + 1 wide, 12 shaders,
+psychedelic, cellgrid, chrome ×2), release, aarch64. Post-change: the same
+run at `b531fd80`. **210 of 210 rows identical on every deterministic
+column** — machine-code FNV, bytes, dag_cost, compiled nodes, spills,
+hoisted values, schedule/guard telemetry, statics, picture hash, oracle.
+The fast pin (12 shaders, release goldens) passes in both `dev` and
+`release`, and the pre-seam tree in `dev` produces the same numbers as the
+seam tree in `dev` on all 16 originally pinned kernels (the four glyph
+bakes differ between `dev` and `release` in **both** trees — a
+`-fp-contract` effect on the glyph constants at construction, a finding for
+its own change, not this one's).
+
+## Cost of the seam at Identity
+
+Deterministic: zero additional allocations per round (the row is the
+existing vector, moved), and one `RuleId::of` (a label hash) per non-empty
+row where there was one per *match*; one indirect call per non-empty row
+with an empty body. Counted with a counting global allocator over one
+production run of each of the 12 shader ports: 3,410,337 allocations
+before, 3,292,560 after (−3.5 %, −2.07 MB), applications identical on every
+kernel.
+
+Clock (aarch64, load 6.7–7.8, alternated pre/post/pre/post, one process per
+arm, Σ `optimize_ms` over the 190 glyph bakes): round 1 11,314 → 11,171 ms
+(−1.26 %), round 2 11,340 → 11,190 ms (−1.32 %); per-kernel post/pre median
+0.98, p10 0.96, p90 1.01; pre-vs-pre and post-vs-post noise floor ±0.2 %.
+The sign agrees with the allocation count and is small: the seam costs
+nothing and returns the per-match label hashes.
+
+## Phase 2
+
+Registered before it was built in
+docs/plans/2026-09-08-rules-filter-bilinear-registration.md and measured in
+docs/results/2026-09-08-rules-filter-bilinear.md. The port is
+`pixelflow-search/src/nnue/guide/filter.rs`: `BilinearFilter` scores each
+cell with the existing `SaturationHead` over a `CellContext` observed on the
+live graph at this seam (the same function the training samples are minted
+with, so there is no feature skew between mint and deploy), and keeps the
+cells whose score clears a threshold; `PerRuleRateFilter` and
+`UniformRandomFilter` are the registered controls at the same keep-rate.
+`ApplicationFilter::fingerprint` closes the cache-key debt noted above:
+`Optimizer::fingerprint` mixes it in and `KeepAll` is the identity of
+`Fingerprint::combine`. The harness is `pixelflow-pipeline`'s
+`rules_filter` (mint / train / eval / report). `SaturationGuide` and the
+guided loop are still in the tree; their deletion is its own change.

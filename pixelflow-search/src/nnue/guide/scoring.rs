@@ -260,11 +260,28 @@ impl SaturationHead {
     /// [`OpEmbeddings`](crate::nnue::factored::OpEmbeddings) and have their
     /// own `randomize`.
     pub(crate) fn randomize(&mut self, seed: u64) {
+        self.randomize_scaled(seed, 1.0);
+    }
+
+    /// [`Self::randomize`] with every random draw multiplied by `scale`.
+    /// The parts of the initialisation that are not random — the
+    /// interaction matrix's unit diagonal and the trunk's identity — are
+    /// not scaled: `scale` sizes the noise, not the model.
+    ///
+    /// # Panics
+    ///
+    /// If `scale` is not finite and positive: a zero scale is the all-zero
+    /// saddle `BilinearTrainer::new_cold` exists to avoid.
+    pub(crate) fn randomize_scaled(&mut self, seed: u64, scale: f32) {
+        assert!(
+            scale.is_finite() && scale > 0.0,
+            "SaturationHead::randomize_scaled: scale must be finite and positive, got {scale}"
+        );
         let mut rng_state = seed.wrapping_add(54321);
 
         let mut next_f32 = || {
             rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-            (rng_state >> 33) as f32 / (1u64 << 31) as f32 * 2.0 - 1.0
+            ((rng_state >> 33) as f32 / (1u64 << 31) as f32 * 2.0 - 1.0) * scale
         };
 
         // He initialization scales
@@ -537,6 +554,22 @@ impl SaturationHead {
         let embed = self.compute_candidate_embed(&hidden);
         let mask_features = self.compute_mask_features(&embed);
         self.bilinear_score(&mask_features, &candidate.rule_embed)
+    }
+
+    /// Multiply-adds [`Self::score_candidate`] performs on a candidate with
+    /// `n_ops` neighborhood ops, counted from the head's dimensions so the
+    /// count moves with the head: the pooled input, the candidate tower, the
+    /// trunk, the candidate projection, the mask MLP's two layers, and the
+    /// bilinear form with its bias lane.
+    #[must_use]
+    pub(crate) fn score_candidate_macs(n_ops: usize) -> u64 {
+        let pool = n_ops * K;
+        let tower = CANDIDATE_INPUT_DIM * HIDDEN_DIM;
+        let trunk = HIDDEN_DIM * HIDDEN_DIM;
+        let proj = HIDDEN_DIM * EMBED_DIM;
+        let mask = MASK_INPUT_DIM * MLP_HIDDEN + MLP_HIDDEN * EMBED_DIM;
+        let bilinear = EMBED_DIM * EMBED_DIM + EMBED_DIM;
+        (pool + tower + trunk + proj + mask + bilinear) as u64
     }
 
     /// Encode a rule from the embeddings of its two sides.

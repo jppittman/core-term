@@ -54,6 +54,7 @@ use super::extract::{
     ChoiceCost, Extraction, ExtractionObjective, ExtractionReport, IncrementalExtractor, Reranker,
     choices_to_arena,
 };
+use super::filter::{ApplicationFilter, KeepAll};
 use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
 use super::guided::GuidedEpisode;
 use super::node::EClassId;
@@ -277,6 +278,10 @@ pub struct Optimizer {
     rerank: Option<Box<dyn Reranker>>,
     guide: Option<Box<dyn SaturationGuide>>,
     mask: Option<ApplicationMask>,
+    /// `F : M → M'` over each round's matches, before they are applied
+    /// (see [`super::filter`]). Never `None`: [`KeepAll`] is a value, not
+    /// an absence, and it is what production runs.
+    filter: Box<dyn ApplicationFilter>,
     /// The guided episode's carried state — dedup set, feature constant,
     /// rule-embedding cache — created on the first guided [`Self::run`] and
     /// reused by later ones, so a caller stepping an anytime curve through
@@ -383,6 +388,7 @@ impl Optimizer {
             rerank: None,
             guide: None,
             mask: None,
+            filter: Box::new(KeepAll),
             episode: None,
             #[cfg(feature = "provenance-journal")]
             observer: None,
@@ -485,6 +491,33 @@ impl Optimizer {
         self
     }
 
+    /// Decide, each round, which of the matches saturation found are
+    /// applied: `F : M → M'` over the rules × e-classes match matrix, run
+    /// after matching and before application
+    /// (docs/plans/2026-09-08-rules-by-nodes-filter.md).
+    ///
+    /// [`Self::production`] runs [`KeepAll`], and under it the loop is
+    /// byte-identical to the loop before this seam existed —
+    /// `pixelflow-pipeline/tests/rules_by_nodes_identity.rs` pins that
+    /// rather than asserting it. A filter can only drop cells (the row type
+    /// has no constructor for an action the rules did not produce), so it
+    /// is covered by L4 like every other lever here: the graph holds a
+    /// subset of the equalities an unfiltered run would, never a different
+    /// one. The application budget is charged for what survives the filter.
+    ///
+    /// `Box<dyn>` rather than a type parameter: the filter is called once per
+    /// rule per round — the same cadence as `rerank` and `guide`, not once
+    /// per match — and `KeepAll` is a ZST, so this box does not allocate.
+    ///
+    /// The filter's [`ApplicationFilter::fingerprint`] enters
+    /// [`Self::fingerprint`], so two optimizers differing only in their
+    /// filter key [`crate::runtime::optimize_runtime_arena`]'s cache apart.
+    #[must_use]
+    pub fn filter(mut self, filter: Box<dyn ApplicationFilter>) -> Self {
+        self.filter = filter;
+        self
+    }
+
     /// Record what saturation did, and hand it to `observer` when the run
     /// ends. Production passes `None` and nothing is recorded.
     #[cfg(feature = "provenance-journal")]
@@ -538,16 +571,18 @@ impl Optimizer {
         self
     }
 
-    /// The digest of this configuration: today the rule set's content and
-    /// order.
+    /// The digest of this configuration: the rule set's content and order,
+    /// mixed with the [`ApplicationFilter`]'s own digest ([`KeepAll`]'s is
+    /// the identity, so production's fingerprint is the rule set's alone).
     ///
     /// A cache that keys on the input expression alone would serve one
     /// configuration's code to another the moment two configurations coexist
     /// in a process — a warm-up compiled at one budget and steady state at
-    /// another, or some kernels reranked and some not.
+    /// another, or some kernels reranked and some not, or one kernel filtered
+    /// and the next not.
     #[must_use]
     pub fn fingerprint(&self) -> Fingerprint {
-        self.rules.fingerprint()
+        self.rules.fingerprint().combine(self.filter.fingerprint())
     }
 
     /// The limits this optimizer's budget resolves to for an input of these
@@ -718,10 +753,11 @@ impl Optimizer {
     /// application counter (the budget's denominator) meaning one thing.
     fn saturate(&mut self, egraph: &mut EGraph, limits: Limits) -> SaturationStats {
         let Some(guide) = self.guide.as_ref() else {
-            return egraph.saturate_budgeted(
+            return egraph.saturate_budgeted_through(
                 limits.iterations,
                 limits.classes,
                 limits.applications,
+                self.filter.as_mut(),
             );
         };
         self.episode

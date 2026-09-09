@@ -3,6 +3,7 @@
 use rustc_hash::FxHashMap as HashMap;
 
 use super::cost::{CostFunction, CostModel};
+use super::filter::{ApplicationFilter, KeepAll, MatchRow};
 use super::node::{EClassId, ENode};
 use super::ops::{self, Op};
 #[cfg(feature = "provenance-journal")]
@@ -1243,7 +1244,7 @@ impl EGraph {
         max_classes: usize,
         timeout: std::time::Duration,
     ) -> SaturationStats {
-        self.saturate_bounded(max_iters, max_classes, None, Some(timeout))
+        self.saturate_bounded(max_iters, max_classes, None, Some(timeout), &mut KeepAll)
     }
 
     /// Saturate under deterministic limits only — rounds, classes, and
@@ -1266,18 +1267,37 @@ impl EGraph {
         max_classes: usize,
         max_applications: Option<u64>,
     ) -> SaturationStats {
-        self.saturate_bounded(max_iters, max_classes, max_applications, None)
+        self.saturate_budgeted_through(max_iters, max_classes, max_applications, &mut KeepAll)
+    }
+
+    /// [`Self::saturate_budgeted`] with every round's matches passed through
+    /// `filter` before they are applied — the seam
+    /// [`Optimizer::filter`](super::optimizer::Optimizer::filter) drives.
+    /// `saturate_budgeted` is this with [`KeepAll`].
+    pub(crate) fn saturate_budgeted_through(
+        &mut self,
+        max_iters: usize,
+        max_classes: usize,
+        max_applications: Option<u64>,
+        filter: &mut dyn ApplicationFilter,
+    ) -> SaturationStats {
+        self.saturate_bounded(max_iters, max_classes, max_applications, None, filter)
     }
 
     /// The one rewrite-until-budget-exhausted loop. Every saturation entry
     /// point in this crate funnels here rather than re-deciding, in a second
     /// copy, when to stop.
+    ///
+    /// `filter` sees each rule's row of matches after it is enumerated and
+    /// before it is committed (see [`super::filter`]); the application
+    /// budget is charged for what survives it.
     fn saturate_bounded(
         &mut self,
         max_iters: usize,
         max_classes: usize,
         max_applications: Option<u64>,
         timeout: Option<std::time::Duration>,
+        filter: &mut dyn ApplicationFilter,
     ) -> SaturationStats {
         // Growth is decided here and in `apply_rule_at_index_timed`, so the
         // ceiling is applied here: a caller asking for `usize::MAX` classes
@@ -1338,7 +1358,7 @@ impl EGraph {
                         sweep = ScanStop::ClassCap;
                         break;
                     }
-                    let result = batch.apply_rule(rule_idx, max_classes, deadline);
+                    let result = batch.apply_rule_through(rule_idx, max_classes, deadline, filter);
                     total += result.changes;
                     match result.scan {
                         ScanStop::Completed => {}
@@ -1494,6 +1514,20 @@ impl EGraph {
         max_nodes: usize,
         deadline: Option<std::time::Instant>,
     ) -> ApplyResult {
+        self.apply_rule_through(rule_idx, max_nodes, deadline, &mut KeepAll)
+    }
+
+    /// [`Self::apply_rule_at_index_timed`] with the rule's row of matches
+    /// passed through `filter` between the scan and the commit — the one
+    /// point in the crate where a row exists as a value that has been
+    /// matched but not yet applied.
+    fn apply_rule_through(
+        &mut self,
+        rule_idx: usize,
+        max_nodes: usize,
+        deadline: Option<std::time::Instant>,
+        filter: &mut dyn ApplicationFilter,
+    ) -> ApplyResult {
         // See `HARD_CLASS_LIMIT`: the scan below is one of the two places
         // the graph decides to grow, so it is one of the two places the
         // ceiling is applied.
@@ -1530,6 +1564,10 @@ impl EGraph {
         let mut updates: Vec<(EClassId, RewriteAction)> = Vec::new();
         let mut estimated_new_nodes: usize = 0;
         let mut scan = ScanStop::Completed;
+        // Resolved at the first match and reused for every later one and
+        // for the row handed to the filter: `RuleId::of` hashes the rule's
+        // label, and a scan that matches nothing never needs it.
+        let mut rule_id: Option<RuleId> = None;
 
         // An application budget is spent by *applications*, so the scan stops
         // once it has queued its whole allowance. Checked here and not only
@@ -1604,10 +1642,9 @@ impl EGraph {
                     }
 
                     updates.push((canonical, action));
-                    *self
-                        .match_counts
-                        .entry(RuleId::of(self.rules[rule_idx].as_ref()))
-                        .or_insert(0) += 1;
+                    let id =
+                        *rule_id.get_or_insert_with(|| RuleId::of(self.rules[rule_idx].as_ref()));
+                    *self.match_counts.entry(id).or_insert(0) += 1;
                     if allowance_spent(self, updates.len()) {
                         scan = ScanStop::ApplicationBudget;
                         break 'scan;
@@ -1627,6 +1664,21 @@ impl EGraph {
         if scan == ScanStop::Completed {
             self.rule_last_swept[rule_idx] = sweep_start;
         }
+
+        // The seam: this rule's row of the match matrix, matched and not yet
+        // committed, goes through the filter. `M' ⊆ M`, so every bound the
+        // scan computed over `updates` (class-cap estimate, allowance) still
+        // holds of what comes back. An empty row is not offered: `F(∅) = ∅`
+        // for every filter, and the row's `RuleId` is only ever resolved by
+        // a match.
+        let updates = match rule_id {
+            None => updates,
+            Some(id) => {
+                let mut row = MatchRow::new(rule_idx, id, updates);
+                filter.filter(self, &mut row);
+                row.into_matches()
+            }
+        };
 
         // Commit: all actions in the log are within budget.
         // Do NOT rebuild here — caller is responsible for calling rebuild()
@@ -3961,9 +4013,21 @@ impl<'a> EGraphBatch<'a> {
         max_nodes: usize,
         deadline: Option<std::time::Instant>,
     ) -> ApplyResult {
+        self.apply_rule_through(rule_idx, max_nodes, deadline, &mut KeepAll)
+    }
+
+    /// [`Self::apply_rule`] with the rule's matches passed through `filter`
+    /// before they are committed.
+    pub(crate) fn apply_rule_through(
+        &mut self,
+        rule_idx: usize,
+        max_nodes: usize,
+        deadline: Option<std::time::Instant>,
+        filter: &mut dyn ApplicationFilter,
+    ) -> ApplyResult {
         let result = self
             .graph
-            .apply_rule_at_index_timed(rule_idx, max_nodes, deadline);
+            .apply_rule_through(rule_idx, max_nodes, deadline, filter);
         if result.changes > 0 {
             self.any_changes = true;
             // Interleaved partial rebuild: process some worklist items to keep
