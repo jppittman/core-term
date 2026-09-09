@@ -60,8 +60,8 @@ use pixelflow_pipeline::collapse_bench::row::StaticFeatures;
 use pixelflow_pipeline::collapse_bench::{self, LANES, features_of};
 use pixelflow_pipeline::shader_bench::{SHADERTOY_KERNEL_NAMES, named_shadertoy_kernel};
 use pixelflow_search::egraph::{
-    Budget, CostModel, EpisodeLabels, KeepJournal, Optimizer, Rewrite, RuleSet, SaturationConfig,
-    Vocabulary, all_rules, config_for_node_count, insert, reachable_count,
+    Beam, Budget, CostModel, EpisodeLabels, KeepJournal, Optimizer, Rewrite, RuleSet,
+    SaturationConfig, Vocabulary, all_rules, config_for_node_count, insert, reachable_count,
 };
 use pixelflow_search::math::round2_rules::experimental_rules;
 use pixelflow_search::{Saturate, Tier};
@@ -156,6 +156,13 @@ enum Command {
         /// of the resolved cap when omitted.
         #[arg(long)]
         app_cap: Option<u64>,
+        /// Extract with `Beam::width(K)` instead of `Greedy`
+        /// (`docs/plans/2026-09-08-extractor-trait.md`). Composes with every
+        /// other arm: the saturated graph is whatever the arm produced, and
+        /// only the extractor changes. `--beam 1` is `Greedy` byte-for-byte
+        /// and is how the seam's identity is checked end to end.
+        #[arg(long)]
+        beam: Option<usize>,
     },
     /// Aggregate `run --class-cap` rows across caps into the sweep documents.
     CapSweep {
@@ -1240,7 +1247,18 @@ fn saturation_probe(
 // run
 // ---------------------------------------------------------------------------
 
-fn mode_label(variant: Option<Variant>, cap: Option<CapArm>) -> String {
+fn mode_label(variant: Option<Variant>, cap: Option<CapArm>, beam: Option<usize>) -> String {
+    let base = saturation_arm_label(variant, cap);
+    let Some(k) = beam else { return base };
+    assert!(k > 0, "--beam K: K must be at least 1 (1 is Greedy)");
+    assert!(
+        base.as_str() != "off",
+        "--beam needs saturation on: there is nothing to extract from"
+    );
+    format!("{base}+beam{k}")
+}
+
+fn saturation_arm_label(variant: Option<Variant>, cap: Option<CapArm>) -> String {
     let env = std::env::var("PIXELFLOW_SATURATION").unwrap_or_else(|_| "on".to_string());
     match (variant, cap, env.as_str()) {
         (Some(_), Some(_), _) => panic!("--variant and --class-cap are separate arms"),
@@ -1273,6 +1291,7 @@ struct RunArgs<'a> {
     filter: Option<&'a str>,
     skip: &'a [String],
     font: Option<&'a Path>,
+    beam: Option<usize>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1286,6 +1305,7 @@ fn run(args: &RunArgs<'_>) {
         filter,
         skip,
         font,
+        beam,
     } = *args;
     assert!(
         std::env::var_os("PIXELFLOW_GUARD_TELEMETRY").is_some(),
@@ -1296,7 +1316,7 @@ fn run(args: &RunArgs<'_>) {
         "unset PIXELFLOW_SATURATION_TELEMETRY: the saturation columns are read back from the \
          record the optimizer prints to stderr, and a file sink would take them away"
     );
-    let mode = mode_label(variant, cap);
+    let mode = mode_label(variant, cap, beam);
     let default_font = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../pixelflow-graphics/assets/DejaVuSansMono-Fallback.ttf");
     let mut kernels = real_kernels(font.unwrap_or(&default_font), filter);
@@ -1342,11 +1362,20 @@ fn run(args: &RunArgs<'_>) {
                 inserted: egraph.num_classes(),
             }
         };
-        let in_harness_optimizer = |shape: LatticeShape| match (variant, cap) {
-            (Some(v), None) => Some(v.optimizer(shape)),
-            (None, Some(c)) => Some(c.optimizer(shape, sizes)),
-            (None, None) => None,
-            (Some(_), Some(_)) => unreachable!("mode_label rejects both arms at once"),
+        let in_harness_optimizer = |shape: LatticeShape| {
+            let arm = match (variant, cap) {
+                (Some(v), None) => Some(v.optimizer(shape)),
+                (None, Some(c)) => Some(c.optimizer(shape, sizes)),
+                (None, None) => None,
+                (Some(_), Some(_)) => unreachable!("mode_label rejects both arms at once"),
+            };
+            let Some(k) = beam else { return arm };
+            // `--beam` changes only the extractor; whatever arm built the
+            // saturated graph builds it unchanged.
+            Some(
+                arm.unwrap_or_else(|| Optimizer::production().for_lattice(shape))
+                    .extractor(Box::new(Beam::width(k))),
+            )
         };
         let compiled = match in_harness_optimizer(shape) {
             Some(optimizer) => compile_via_optimizer(arena, root, optimizer),
@@ -2534,6 +2563,7 @@ fn main() {
             cap_floor,
             cap_ceiling,
             app_cap,
+            beam,
         } => run(&RunArgs {
             out: &out,
             variant,
@@ -2569,6 +2599,7 @@ fn main() {
             filter: filter.as_deref(),
             skip: &skip,
             font: font.as_deref(),
+            beam,
         }),
         Command::CapSweep {
             rows,

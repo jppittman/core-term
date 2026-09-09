@@ -51,9 +51,9 @@ use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
 use super::cost::CostModel;
 use super::extract::{
-    ChoiceCost, Extraction, ExtractionObjective, ExtractionReport, IncrementalExtractor, Reranker,
-    choices_to_arena,
+    ChoiceCost, Extraction, ExtractionObjective, ExtractionReport, Reranker, choices_to_arena,
 };
+use super::extractor::{Extractor, Greedy};
 use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
 use super::guided::GuidedEpisode;
 use super::node::EClassId;
@@ -274,7 +274,7 @@ pub struct Optimizer {
     budget: Budget,
     cost: CostModel,
     shape: LatticeShape,
-    rerank: Option<Box<dyn Reranker>>,
+    extractor: Box<dyn Extractor<CostModel>>,
     guide: Option<Box<dyn SaturationGuide>>,
     mask: Option<ApplicationMask>,
     /// The guided episode's carried state — dedup set, feature constant,
@@ -365,10 +365,6 @@ fn tiered_ceiling_override() -> CeilingOverride {
     }
 }
 
-/// How many alternatives per e-class the reranking search evaluates. Matches
-/// the value the swap-refinement search shipped with.
-const RERANK_TOP_K: usize = 4;
-
 impl Optimizer {
     /// The production configuration: the production rule set,
     /// [`Budget::Production`], [`CostModel::latency_prior`], no lattice
@@ -380,7 +376,7 @@ impl Optimizer {
             budget: Budget::Production,
             cost: CostModel::latency_prior(),
             shape: LatticeShape::POINT,
-            rerank: None,
+            extractor: Box::new(Greedy),
             guide: None,
             mask: None,
             episode: None,
@@ -423,15 +419,23 @@ impl Optimizer {
         self
     }
 
-    /// Refine the extraction with a [`Reranker`] over whole extractions.
+    /// Take the term out of the saturated graph with a different
+    /// [`Extractor`].
     ///
-    /// This is the seam for a cost that additive DP cannot express — the
-    /// schedule-cost residual — and, per the module docs, for any objective
-    /// that wants an argmin guarantee, since `extract_dag` does not provide
-    /// one.
+    /// The seam the class-cap sweep asks for: production ships
+    /// [`Greedy`], [`Beam`](super::Beam) widens its sharing-aware pass, and
+    /// [`Reranked`](super::Reranked) is the swap-refinement search over a
+    /// [`Reranker`] — the seam for a cost additive DP cannot express, and
+    /// for any objective wanting an argmin guarantee, since the DP does not
+    /// provide one.
+    ///
+    /// One `Box<dyn>` per extraction, not per node: `Extractor` is generic
+    /// in the cost function, so the boxed object fixes only *which*
+    /// extractor runs. The cost model inside it stays the concrete
+    /// [`CostModel`] and every `node_cost` is a direct call.
     #[must_use]
-    pub fn rerank(mut self, rerank: Option<Box<dyn Reranker>>) -> Self {
-        self.rerank = rerank;
+    pub fn extractor(mut self, extractor: Box<dyn Extractor<CostModel>>) -> Self {
+        self.extractor = extractor;
         self
     }
 
@@ -667,31 +671,17 @@ impl Optimizer {
             }
         }
 
-        // Both arms report the cost of the choices they RETURN — the DP's
-        // own table is read before `repair_choices_well_founded` rewrites
-        // picks and so can name a different term (#1111), and the reranker's
-        // search score is on its own scale entirely.
-        let (choices, cost, extraction) = match self.rerank.as_ref() {
-            Some(reranker) => {
-                let choices = IncrementalExtractor::new(reranker.as_ref(), RERANK_TOP_K)
-                    .extract_choices_only(egraph, root)
-                    .1
-                    .into_choices();
-                let cost =
-                    super::extract::cost_of_choices(egraph, root, &choices, &self.cost, self.shape);
-                (choices, cost, ExtractionReport::external())
-            }
-            None => {
-                let dag = super::extract::extract_dag_scoped(egraph, root, &self.cost, self.shape);
-                let cost = dag.cost();
-                (dag.choices, cost, dag.report)
-            }
-        };
+        // The extractor reports the cost of the choices it RETURNS — the
+        // DP's own table is read before `repair_choices_well_founded`
+        // rewrites picks and so can name a different term (#1111), and a
+        // reranker's search score is on its own scale entirely.
+        let dag = self.extractor.extract(egraph, root, &self.cost, self.shape);
+        let cost = dag.cost();
 
         Optimized {
-            choices,
+            choices: dag.choices,
             cost,
-            extraction,
+            extraction: dag.report,
             stats: OptimizerStats {
                 stop: saturation.stop,
                 iterations: saturation.iterations,
