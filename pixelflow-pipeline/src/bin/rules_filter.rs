@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
 use pixelflow_codegen::emit;
@@ -34,7 +34,7 @@ use pixelflow_search::egraph::{
     ApplicationFilter, Budget, EClassId, EpisodeLabels, Fingerprint, InputSize, KeepAll,
     KeepJournal, Label, MatchRow, Optimizer, RuleId, RuleSet, Vocabulary, insert, reachable_count,
 };
-use pixelflow_search::nnue::guide::bilinear::{BilinearTrainer, SgdStep};
+use pixelflow_search::nnue::guide::bilinear::{BilinearTrainer, ColdStart, SgdStep};
 use pixelflow_search::nnue::guide::filter::{
     BilinearFilter, CellContext, Episode, FilterStats, PerRuleRateFilter, Reporting,
     UniformRandomFilter,
@@ -79,18 +79,12 @@ enum Command {
         samples: PathBuf,
         #[arg(long)]
         out: PathBuf,
-        #[arg(long, default_value_t = 3)]
-        epochs: usize,
-        #[arg(long, default_value_t = 0.01)]
-        lr: f32,
-        #[arg(long, default_value_t = 0.7)]
-        lr_decay: f32,
-        #[arg(long, default_value_t = 1e-4)]
-        l2: f32,
-        #[arg(long, default_value_t = 1.0)]
-        max_grad_norm: f32,
-        #[arg(long, default_value_t = 17)]
-        seed: u64,
+        /// Which models to train: any of `glyph`, `shader`, `scene` (the
+        /// fold held out) and `all` (the all-DEV model). Default: all four.
+        #[arg(long, num_args = 1.., value_delimiter = ',')]
+        folds: Option<Vec<String>>,
+        #[command(flatten)]
+        args: TrainArgs,
     },
     /// Every arm at every budget on every kernel; one row per run.
     Eval {
@@ -615,57 +609,208 @@ struct FoldModel {
 struct Manifest {
     schema: String,
     git_sha: String,
-    epochs: usize,
-    lr: f32,
-    lr_decay: f32,
-    l2: f32,
-    max_grad_norm: f32,
-    seed: u64,
+    #[serde(flatten)]
+    args: TrainArgs,
     models: BTreeMap<String, FoldModel>,
 }
 
-struct TrainArgs {
-    epochs: usize,
-    lr: f32,
-    lr_decay: f32,
-    l2: f32,
-    max_grad_norm: f32,
-    seed: u64,
+/// The label a sample is trained against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TrainLabel {
+    /// `EpisodeLabels::compute_tight` — the registered label (§5).
+    Tight,
+    /// `EpisodeLabels::compute_strict` — reported beside tight; blind to
+    /// union-only rewrites.
+    Strict,
 }
 
-fn train(samples: &Path, out: &Path, args: &TrainArgs) {
+/// Every hyperparameter of `train`, one definition: the clap defaults are
+/// read off [`TrainArgs::default`], which is the configuration the
+/// registered (untuned) run used, so trial 0 of a sweep is that run.
+/// Written into the manifest whole; a manifest from before a knob existed
+/// reads the default for it.
+#[derive(Args, Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+struct TrainArgs {
+    #[arg(long, default_value_t = TrainArgs::default().epochs)]
+    epochs: usize,
+    #[arg(long, default_value_t = TrainArgs::default().lr)]
+    lr: f32,
+    /// Multiplier on the learning rate after each epoch.
+    #[arg(long, default_value_t = TrainArgs::default().lr_decay)]
+    lr_decay: f32,
+    #[arg(long, default_value_t = TrainArgs::default().l2)]
+    l2: f32,
+    #[arg(long, default_value_t = TrainArgs::default().max_grad_norm)]
+    max_grad_norm: f32,
+    #[arg(long, default_value_t = TrainArgs::default().seed)]
+    seed: u64,
+    /// Label trained against.
+    #[arg(long, value_enum, default_value_t = TrainArgs::default().label)]
+    label: TrainLabel,
+    /// `pos_weight = (effective negatives / positives) ^ power`: `1.0` is
+    /// full rebalancing (the registered choice), `0.0` is unweighted BCE.
+    #[arg(long, default_value_t = TrainArgs::default().pos_weight_power)]
+    pos_weight_power: f32,
+    /// Samples whose gradients are accumulated (mean) before one SGD step.
+    #[arg(long, default_value_t = TrainArgs::default().batch_size)]
+    batch_size: usize,
+    /// Fraction of negatives each epoch trains on, decided per sample by
+    /// a hash of `(seed, epoch, index)`; `pos_weight` is computed on the
+    /// effective negative count. `1.0` is every negative.
+    #[arg(long, default_value_t = TrainArgs::default().neg_keep)]
+    neg_keep: f32,
+    /// Multiplier on every random draw of the head's initialisation.
+    #[arg(long, default_value_t = TrainArgs::default().init_scale)]
+    init_scale: f32,
+    /// Offset written over every ReLU bias at initialisation.
+    #[arg(long, default_value_t = TrainArgs::default().relu_warm_bias)]
+    relu_warm_bias: f32,
+    /// Stride cap on the training samples per model (0 = all): a sweep
+    /// trains on a deterministic stride of the fold's training set, and
+    /// the held-out fold is never capped.
+    #[arg(long, default_value_t = TrainArgs::default().train_cap)]
+    train_cap: usize,
+}
+
+impl Default for TrainArgs {
+    fn default() -> Self {
+        let cold = ColdStart::seeded(17);
+        Self {
+            epochs: 3,
+            lr: 0.01,
+            lr_decay: 0.7,
+            l2: 1e-4,
+            max_grad_norm: 1.0,
+            seed: cold.seed,
+            label: TrainLabel::Tight,
+            pos_weight_power: 1.0,
+            batch_size: 1,
+            neg_keep: 1.0,
+            init_scale: cold.init_scale,
+            relu_warm_bias: cold.relu_warm_bias,
+            train_cap: 0,
+        }
+    }
+}
+
+impl TrainArgs {
+    fn validate(&self) {
+        assert!(self.epochs > 0, "--epochs must be positive");
+        assert!(self.batch_size > 0, "--batch-size must be positive");
+        assert!(
+            (0.0..=1.0).contains(&self.neg_keep) && self.neg_keep > 0.0,
+            "--neg-keep must be in (0, 1], got {}",
+            self.neg_keep
+        );
+        assert!(
+            self.pos_weight_power.is_finite() && self.pos_weight_power >= 0.0,
+            "--pos-weight-power must be finite and non-negative, got {}",
+            self.pos_weight_power
+        );
+        assert!(
+            self.lr.is_finite() && self.lr > 0.0,
+            "--lr must be finite and positive, got {}",
+            self.lr
+        );
+        assert!(
+            self.lr_decay.is_finite() && self.lr_decay > 0.0,
+            "--lr-decay must be finite and positive, got {}",
+            self.lr_decay
+        );
+    }
+
+    fn cold_start(&self) -> ColdStart {
+        ColdStart {
+            seed: self.seed,
+            init_scale: self.init_scale,
+            relu_warm_bias: self.relu_warm_bias,
+        }
+    }
+
+    fn label_of(&self, s: &Loaded) -> f32 {
+        match self.label {
+            TrainLabel::Tight => s.tight,
+            TrainLabel::Strict => s.strict,
+        }
+    }
+}
+
+/// Whether the negative at `index` is trained on in `epoch`: a hash of
+/// `(seed, epoch, index)` against `neg_keep`, so the subsample is a
+/// deterministic function of the run and differs between epochs.
+fn negative_is_kept(seed: u64, epoch: usize, index: usize, neg_keep: f32) -> bool {
+    if neg_keep >= 1.0 {
+        return true;
+    }
+    let mut z = seed ^ (epoch as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (index as u64) << 1;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 40) as f32 / (1u64 << 24) as f32 <= neg_keep
+}
+
+fn train(samples: &Path, out: &Path, folds: Option<&[String]>, args: &TrainArgs) {
+    args.validate();
     let all = load_samples(samples);
     std::fs::create_dir_all(out).expect("create model dir");
     let rules = RuleSet::production();
     let mut models = BTreeMap::new();
-    let mut folds: Vec<&str> = FOLDS.to_vec();
-    folds.push(ALL);
+    let registered: Vec<&str> = FOLDS.iter().copied().chain([ALL]).collect();
+    let folds: Vec<&str> = match folds {
+        None => registered.clone(),
+        Some(requested) => requested
+            .iter()
+            .map(|f| {
+                *registered
+                    .iter()
+                    .find(|r| **r == f.as_str())
+                    .unwrap_or_else(|| panic!("--folds {f:?}: not one of {registered:?}"))
+            })
+            .collect(),
+    };
     for held in folds {
         let started = Instant::now();
-        let train_idx: Vec<usize> = (0..all.len())
+        let uncapped: Vec<usize> = (0..all.len())
             .filter(|&i| held == ALL || all[i].fold != held)
             .collect();
+        let stride = if args.train_cap == 0 {
+            1
+        } else {
+            uncapped.len().div_ceil(args.train_cap).max(1)
+        };
+        let train_idx: Vec<usize> = uncapped.into_iter().step_by(stride).collect();
         let hold_idx: Vec<usize> = (0..all.len())
             .filter(|&i| held != ALL && all[i].fold == held)
             .collect();
         assert!(!train_idx.is_empty(), "fold {held}: no training samples");
-        let n_pos = train_idx.iter().filter(|&&i| all[i].tight > 0.5).count();
+        let n_tight = train_idx.iter().filter(|&&i| all[i].tight > 0.5).count();
         let n_strict = train_idx.iter().filter(|&&i| all[i].strict > 0.5).count();
+        let n_pos = train_idx
+            .iter()
+            .filter(|&&i| args.label_of(&all[i]) > 0.5)
+            .count();
         let n_neg = train_idx.len() - n_pos;
         assert!(
             n_pos > 0 && n_neg > 0,
             "fold {held}: one class is absent from training"
         );
-        let pos_weight = n_neg as f32 / n_pos as f32;
+        let pos_weight = (n_neg as f32 * args.neg_keep / n_pos as f32).powf(args.pos_weight_power);
+        assert!(
+            pos_weight.is_finite() && pos_weight > 0.0,
+            "fold {held}: pos_weight {pos_weight} is not a weight"
+        );
         let invisible = train_idx
             .iter()
             .filter(|&&i| all[i].tight > 0.5 && all[i].strict < 0.5)
             .count() as f64
-            / n_pos as f64;
+            / n_tight.max(1) as f64;
 
-        let mut trainer = BilinearTrainer::new_cold(&rules, args.seed);
+        let mut trainer = BilinearTrainer::cold_start(&rules, args.cold_start());
         let mut epoch_loss = Vec::new();
         let mut lr = args.lr;
+        let batch_scale = 1.0 / args.batch_size as f32;
         for epoch in 0..args.epochs {
             let order = shuffled(train_idx.len(), args.seed.wrapping_add(epoch as u64));
             let step = SgdStep {
@@ -674,26 +819,43 @@ fn train(samples: &Path, out: &Path, args: &TrainArgs) {
                 max_grad_norm: args.max_grad_norm,
             };
             let mut loss = 0.0f64;
+            let mut seen = 0usize;
+            let mut pending = 0usize;
             for &j in &order {
                 let s = &all[train_idx[j]];
+                let y = args.label_of(s);
+                if y < 0.5 && !negative_is_kept(args.seed, epoch, j, args.neg_keep) {
+                    continue;
+                }
                 let summary = summary_of(&trainer, s);
                 let forward = trainer.forward(&summary);
                 let z = forward.score();
                 let p = sigmoid(z);
-                let w = if s.tight > 0.5 { pos_weight } else { 1.0 };
+                let w = if y > 0.5 { pos_weight } else { 1.0 };
                 let eps = 1e-7f32;
-                let l = if s.tight > 0.5 {
+                let l = if y > 0.5 {
                     -(p.max(eps)).ln()
                 } else {
                     -((1.0 - p).max(eps)).ln()
                 };
                 loss += f64::from(w * l);
-                trainer.accumulate(&forward, weighted_bce_grad(p, s.tight, pos_weight));
+                seen += 1;
+                trainer.accumulate(&forward, weighted_bce_grad(p, y, pos_weight) * batch_scale);
+                pending += 1;
+                if pending == args.batch_size {
+                    trainer.apply(step);
+                    pending = 0;
+                }
+            }
+            if pending > 0 {
                 trainer.apply(step);
             }
-            let mean = loss / order.len() as f64;
+            assert!(seen > 0, "fold {held}: epoch {epoch} trained on no samples");
+            let mean = loss / seen as f64;
             epoch_loss.push(mean);
-            eprintln!("fold {held}: epoch {epoch} lr {lr:.4} mean weighted loss {mean:.4}");
+            eprintln!(
+                "fold {held}: epoch {epoch} lr {lr:.4} samples {seen} mean weighted loss {mean:.4}"
+            );
             lr *= args.lr_decay;
         }
 
@@ -807,7 +969,7 @@ fn train(samples: &Path, out: &Path, args: &TrainArgs) {
                 .filter(|&&f| held == ALL || f != held)
                 .map(|f| (*f).into())
                 .collect(),
-            train_positive_rate_tight: n_pos as f64 / train_idx.len() as f64,
+            train_positive_rate_tight: n_tight as f64 / train_idx.len() as f64,
             train_positive_rate_strict: n_strict as f64 / train_idx.len() as f64,
             tight_positives_invisible_to_strict: invisible,
             pos_weight,
@@ -842,12 +1004,7 @@ fn train(samples: &Path, out: &Path, args: &TrainArgs) {
     let manifest = Manifest {
         schema: SCHEMA.into(),
         git_sha: head_sha(),
-        epochs: args.epochs,
-        lr: args.lr,
-        lr_decay: args.lr_decay,
-        l2: args.l2,
-        max_grad_norm: args.max_grad_norm,
-        seed: args.seed,
+        args: args.clone(),
         models,
     };
     std::fs::write(
@@ -1712,24 +1869,9 @@ fn main() {
         Command::Train {
             samples,
             out,
-            epochs,
-            lr,
-            lr_decay,
-            l2,
-            max_grad_norm,
-            seed,
-        } => train(
-            &samples,
-            &out,
-            &TrainArgs {
-                epochs,
-                lr,
-                lr_decay,
-                l2,
-                max_grad_norm,
-                seed,
-            },
-        ),
+            folds,
+            args,
+        } => train(&samples, &out, folds.as_deref(), &args),
         Command::Eval {
             models,
             out,

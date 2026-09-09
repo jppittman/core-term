@@ -418,6 +418,38 @@ impl SaturationGuide for BilinearCandidateGuide {
 /// candidates), so it opens the layer without swamping the signal.
 const RELU_WARM_BIAS: f32 = 0.5;
 
+/// What a cold start is made of: the seed, and the two initialisation
+/// scales that were constants until the hyperparameter sweep
+/// (docs/results/2026-09-08-optuna-rules-filter.md) needed to vary them.
+/// [`ColdStart::seeded`] is the registered cold start, byte-identical to
+/// [`BilinearTrainer::new_cold`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColdStart {
+    /// Seed of the head's random initialisation.
+    pub seed: u64,
+    /// Multiplier on every random draw of the head's initialisation. The
+    /// interaction matrix's unit diagonal and the trunk's identity are not
+    /// random and are not scaled. `1.0` is He initialisation.
+    pub init_scale: f32,
+    /// Positive offset written over every ReLU bias after the random
+    /// draw — see `SaturationHead::warm_relu_biases`. `0.0` leaves the
+    /// biases at their random draw.
+    pub relu_warm_bias: f32,
+}
+
+impl ColdStart {
+    /// The registered cold start at `seed`: He initialisation, ReLU biases
+    /// warmed by [`RELU_WARM_BIAS`].
+    #[must_use]
+    pub const fn seeded(seed: u64) -> Self {
+        Self {
+            seed,
+            init_scale: 1.0,
+            relu_warm_bias: RELU_WARM_BIAS,
+        }
+    }
+}
+
 /// One SGD step's hyper-parameters.
 ///
 /// A struct rather than two `f32` arguments: `step(c, d, 0.01, 1e-4)` has two
@@ -503,10 +535,26 @@ impl BilinearTrainer {
     /// and it is stated here rather than left as a magic constant.
     #[must_use]
     pub fn new_cold(rules: &RuleSet, seed: u64) -> Self {
-        let embeddings = OpEmbeddings::new_with_latency_prior(seed);
+        Self::cold_start(rules, ColdStart::seeded(seed))
+    }
+
+    /// [`Self::new_cold`] with the initialisation scales spelled out.
+    ///
+    /// # Panics
+    ///
+    /// If `start.init_scale` is not finite and positive, or
+    /// `start.relu_warm_bias` is not finite.
+    #[must_use]
+    pub fn cold_start(rules: &RuleSet, start: ColdStart) -> Self {
+        assert!(
+            start.relu_warm_bias.is_finite(),
+            "BilinearTrainer::cold_start: relu_warm_bias must be finite, got {}",
+            start.relu_warm_bias
+        );
+        let embeddings = OpEmbeddings::new_with_latency_prior(start.seed);
         let mut head = SaturationHead::new();
-        head.randomize(seed);
-        head.warm_relu_biases(RELU_WARM_BIAS);
+        head.randomize_scaled(start.seed, start.init_scale);
+        head.warm_relu_biases(start.relu_warm_bias);
         let (concats, templateless) = rule_concats(&embeddings, rules);
         Self {
             embeddings,
