@@ -15,7 +15,8 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead as _, Write as _};
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
@@ -85,6 +86,18 @@ enum Command {
         folds: Option<Vec<String>>,
         #[command(flatten)]
         args: TrainArgs,
+    },
+    /// A sweep server: load the samples once, then train one
+    /// configuration per connection. A trial is a JSON line in
+    /// (`{"folds": [...], "args": {...}}`, both optional) and the
+    /// manifest as a JSON line out, so an Optuna study pays the corpus
+    /// load once instead of once per trial.
+    Serve {
+        #[arg(long)]
+        samples: PathBuf,
+        /// Unix socket to listen on. Refuses to clobber an existing path.
+        #[arg(long)]
+        socket: PathBuf,
     },
     /// Every arm at every budget on every kernel; one row per run.
     Eval {
@@ -586,7 +599,9 @@ struct Intrinsic {
 #[derive(Serialize, Deserialize, Clone)]
 struct FoldModel {
     fold: String,
-    checkpoint: String,
+    /// The checkpoint file, relative to the manifest. `None` when the
+    /// model was trained by [`serve`], which does not persist weights.
+    checkpoint: Option<String>,
     train_samples: usize,
     train_folds: Vec<String>,
     train_positive_rate_tight: f64,
@@ -755,7 +770,37 @@ fn train(samples: &Path, out: &Path, folds: Option<&[String]>, args: &TrainArgs)
     args.validate();
     let all = load_samples(samples);
     std::fs::create_dir_all(out).expect("create model dir");
-    let rules = RuleSet::production();
+    let manifest = train_models(
+        &all,
+        &RuleSet::production(),
+        folds,
+        args,
+        Some(out),
+        &head_sha(),
+    );
+    std::fs::write(
+        out.join("manifest.json"),
+        serde_json::to_string_pretty(&manifest).expect("serialize"),
+    )
+    .expect("write manifest");
+}
+
+/// Train one model per requested fold and return the manifest.
+///
+/// `out` is where the weight checkpoints are written; `None` trains
+/// without persisting them, which is what a sweep wants — [`serve`] calls
+/// hundreds of configurations and only ever reads the intrinsic metrics.
+/// A manifest produced that way carries `checkpoint: None`, and
+/// [`load_models`] refuses it rather than inventing a path.
+fn train_models(
+    all: &[Loaded],
+    rules: &RuleSet,
+    folds: Option<&[String]>,
+    args: &TrainArgs,
+    out: Option<&Path>,
+    git_sha: &str,
+) -> Manifest {
+    args.validate();
     let mut models = BTreeMap::new();
     let registered: Vec<&str> = FOLDS.iter().copied().chain([ALL]).collect();
     let folds: Vec<&str> = match folds {
@@ -807,7 +852,7 @@ fn train(samples: &Path, out: &Path, folds: Option<&[String]>, args: &TrainArgs)
             .count() as f64
             / n_tight.max(1) as f64;
 
-        let mut trainer = BilinearTrainer::cold_start(&rules, args.cold_start());
+        let mut trainer = BilinearTrainer::cold_start(rules, args.cold_start());
         let mut epoch_loss = Vec::new();
         let mut lr = args.lr;
         let batch_scale = 1.0 / args.batch_size as f32;
@@ -943,12 +988,18 @@ fn train(samples: &Path, out: &Path, folds: Option<&[String]>, args: &TrainArgs)
             weights_fnv64: String::new(),
         };
         checkpoint.weights_fnv64 = checkpoint.weights_fingerprint();
-        let path = out.join(format!("bilinear_{held}.json"));
-        std::fs::write(
-            &path,
-            serde_json::to_string(&checkpoint).expect("serialize"),
-        )
-        .expect("write checkpoint");
+        let written = out.map(|dir| {
+            let path = dir.join(format!("bilinear_{held}.json"));
+            std::fs::write(
+                &path,
+                serde_json::to_string(&checkpoint).expect("serialize"),
+            )
+            .expect("write checkpoint");
+            path.file_name()
+                .expect("file name")
+                .to_string_lossy()
+                .into_owned()
+        });
 
         let label_of = |id: RuleId| -> String {
             rules
@@ -958,11 +1009,7 @@ fn train(samples: &Path, out: &Path, folds: Option<&[String]>, args: &TrainArgs)
         };
         let model = FoldModel {
             fold: held.into(),
-            checkpoint: path
-                .file_name()
-                .expect("file name")
-                .to_string_lossy()
-                .into(),
+            checkpoint: written,
             train_samples: train_idx.len(),
             train_folds: FOLDS
                 .iter()
@@ -1001,17 +1048,81 @@ fn train(samples: &Path, out: &Path, folds: Option<&[String]>, args: &TrainArgs)
         }
         models.insert(held.to_string(), model);
     }
-    let manifest = Manifest {
+    Manifest {
         schema: SCHEMA.into(),
-        git_sha: head_sha(),
+        git_sha: git_sha.into(),
         args: args.clone(),
         models,
-    };
-    std::fs::write(
-        out.join("manifest.json"),
-        serde_json::to_string_pretty(&manifest).expect("serialize"),
-    )
-    .expect("write manifest");
+    }
+}
+
+/// One trial: the fold selection and the configuration. Both fields
+/// default, so `{}` is the registered configuration on every fold.
+#[derive(Deserialize)]
+struct Trial {
+    #[serde(default)]
+    folds: Option<Vec<String>>,
+    #[serde(default)]
+    args: TrainArgs,
+}
+
+/// Serve trials on `socket` until the listener is closed.
+///
+/// One connection is one trial, handled in the order it arrives: the
+/// study is sequential by construction, which is what makes a trial's
+/// wall clock comparable to its neighbours on a shared box.
+///
+/// A panic inside a trial — an invalid configuration, a fold that trains
+/// on nothing — is not swallowed: the trial's error travels back as
+/// `{"error": ...}` so the study records the failure, and the sweep
+/// script is the one that decides whether to prune or stop.
+fn serve(samples: &Path, socket: &Path) {
+    assert!(
+        !socket.exists(),
+        "socket {} already exists — remove it or pick another path",
+        socket.display()
+    );
+    let all = load_samples(samples);
+    let rules = RuleSet::production();
+    let sha = head_sha();
+    let listener = UnixListener::bind(socket).expect("bind socket");
+    eprintln!(
+        "serving {} samples on {} ({} rules, git {sha})",
+        all.len(),
+        socket.display(),
+        rules.len()
+    );
+    for stream in listener.incoming() {
+        let stream = stream.expect("accept");
+        let mut reader = BufReader::new(&stream);
+        let mut line = String::new();
+        let read = reader.read_line(&mut line).expect("read trial");
+        if read == 0 {
+            continue;
+        }
+        let started = Instant::now();
+        let reply = match serde_json::from_str::<Trial>(&line) {
+            Err(e) => serde_json::json!({ "error": format!("parse trial: {e}") }),
+            Ok(trial) => {
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    train_models(&all, &rules, trial.folds.as_deref(), &trial.args, None, &sha)
+                }));
+                match run {
+                    Ok(manifest) => {
+                        let mut v = serde_json::to_value(&manifest).expect("serialize manifest");
+                        v["wall_s"] = started.elapsed().as_secs_f64().into();
+                        v
+                    }
+                    Err(_) => serde_json::json!({
+                        "error": "trial panicked — see the server's stderr"
+                    }),
+                }
+            }
+        };
+        let mut out = &stream;
+        writeln!(out, "{reply}").expect("write reply");
+        out.flush().expect("flush reply");
+    }
 }
 
 fn head_sha() -> String {
@@ -1076,7 +1187,13 @@ fn load_models(dir: &Path) -> Models {
     let mut weights = BTreeMap::new();
     let mut rates = BTreeMap::new();
     for (fold, model) in &manifest.models {
-        let text = std::fs::read_to_string(dir.join(&model.checkpoint)).expect("read checkpoint");
+        let name = model.checkpoint.as_ref().unwrap_or_else(|| {
+            panic!(
+                "manifest holds no checkpoint for fold {fold}: it was written by `serve`, \
+                 which trains without persisting weights — re-run `train --out`"
+            )
+        });
+        let text = std::fs::read_to_string(dir.join(name)).expect("read checkpoint");
         let checkpoint: BilinearGuideCheckpoint =
             serde_json::from_str(&text).expect("parse checkpoint");
         weights.insert(fold.clone(), checkpoint.to_weights(&rules));
@@ -1872,6 +1989,7 @@ fn main() {
             folds,
             args,
         } => train(&samples, &out, folds.as_deref(), &args),
+        Command::Serve { samples, socket } => serve(&samples, &socket),
         Command::Eval {
             models,
             out,
