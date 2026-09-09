@@ -48,6 +48,12 @@ pub mod rule_order;
 pub mod rules;
 pub mod saturate;
 pub mod template;
+// Research only: the read-only half of the extraction-witness instrument
+// (docs/plans/2026-09-08-extraction-witnesses.md). Gated behind the feature
+// every `pixelflow-pipeline` harness already builds with, so nothing here
+// reaches a downstream build.
+#[cfg(feature = "provenance-journal")]
+pub mod witness;
 
 // Re-export public API
 pub use anytime::{
