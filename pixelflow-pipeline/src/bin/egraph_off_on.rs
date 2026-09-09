@@ -449,6 +449,11 @@ struct KernelRow {
     optimize_ms: f64,
     emit_ms: f64,
     bytes_identical_to_manifold_compile: Option<bool>,
+    /// FNV-1a of the emitted machine code. Two arms whose extractors chose
+    /// the same term compile to the same bytes; `bytes` alone can collide,
+    /// and a picture can agree on two different programs. This is the column
+    /// an identity claim is made on.
+    code_fnv: u64,
     picture_hash: u64,
     oracle: Option<Oracle>,
     clock: Option<Clock>,
@@ -991,6 +996,15 @@ fn run_once(code: &ExecutableCode, ctx: &Ctx, trips: Trips, out: &mut [f32]) {
     }
 }
 
+fn fnv_bytes(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
 fn fnv(out: &[f32]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for v in out {
@@ -1456,6 +1470,7 @@ fn run(args: &RunArgs<'_>) {
             optimize_ms: compiled.optimize_ms,
             emit_ms: compiled.emit_ms,
             bytes_identical_to_manifold_compile,
+            code_fnv: fnv_bytes(compiled.result.code.as_bytes()),
             picture_hash,
             oracle,
             clock,
