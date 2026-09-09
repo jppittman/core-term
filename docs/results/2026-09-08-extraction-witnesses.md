@@ -40,11 +40,13 @@ repair pass rather than by cost.
 
 ## 1. What a witness is
 
-The e-graph is monotone: a run at a larger class cap performs every
-application the smaller run performed and then more, so the larger graph
-represents a superset of the terms. When the extractor's own output at the
-smaller cap is *cheaper* than its output at the larger one, that cheaper
-term is provably in the bigger graph, and the extractor walked past it. The
+The e-graph was *expected* to be monotone: a run at a larger class cap
+performs every application the smaller run performed and then more, so the
+larger graph represents a superset of the terms (L2,
+`docs/plans/2026-09-02-optimizer-api.md`). §1b is what happened to that
+assumption. Where it does hold — checked, not assumed — the extractor's own
+cheaper output at the smaller cap is a term present in the bigger graph that
+the extractor walked past. The
 instrument looks each of its subterms up in the bigger graph by hash-cons —
 read-only, and a miss is a loud failure rather than a skip, since
 monotonicity is exactly what is being tested — which yields a second choice
