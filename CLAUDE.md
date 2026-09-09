@@ -417,6 +417,22 @@ Priority: AVX-512 > SSE2 (x86-64), NEON (aarch64) — no scalar fallback for oth
   than reconstructed, and `Union`'s explicit ranges and a select's implicit
   mask are the same thing at different levels of static knowledge. See
   docs/plans/2026-09-07-demand-is-a-dag-property.md.
+- **Platform `cfg` is encapsulation, not sprinkle** - a platform-predicate
+  `#[cfg(...)]` (`target_os`, `target_arch`, `target_family`,
+  `target_feature`, `target_pointer_width`, `target_endian`, `windows`,
+  `unix`, or a bare arch/os name like `aarch64`/`x86_64`/`wasm32`) is only
+  allowed to (1) gate a whole file or module — `#![cfg(...)]` at the top of a
+  file, or `#[cfg(...)]` directly on a `mod foo;`/`mod foo { ... }` item — or
+  (2) select a platform implementation as a single-line dispatch item in
+  `mod.rs` (e.g. `#[cfg(aarch64)] pub use native::Foo as PlatformFoo;`).
+  Scattering it on an individual `fn`/`struct`/`impl`/field inside an
+  otherwise platform-agnostic file means the platform split is `grep -r cfg`
+  instead of a file boundary, and the two halves silently drift back into
+  each other's file. Put the platform-specific code in its own file and
+  select it once, at the seam. Enforced by `scripts/check-cfg-encapsulation.sh`
+  (CI job `cfg-encapsulation`), baselined against pre-existing violations in
+  `scripts/cfg_encapsulation_baseline.txt` — new violations fail, old ones
+  are tracked, not silently regenerated as debt.
 - **New implementation of an existing category → trait first** - Before
   adding a second way of doing something the codebase already does one way,
   check whether that category is already a trait. If it is, implement the new
