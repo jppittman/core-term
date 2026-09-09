@@ -26,7 +26,7 @@
 //! frame request.
 
 use actor_scheduler::actors::Timer;
-use actor_scheduler::mealy::{all, send_port, Credit, Flush, Transducer, Wiring};
+use actor_scheduler::mealy::{Credit, Transducer};
 use actor_scheduler::{HandlerError, Message};
 use log::info;
 use std::sync::mpsc::Sender;
@@ -76,23 +76,17 @@ actor_scheduler::impl_management_message!(VsyncManagement);
 // VsyncCore: the pure decision logic
 // ────────────────────────────────────────────────────────────────────────────
 
-/// What a tick decides to emit: the payload of `EngineData::VSync`, without depending on
-/// `EngineData` itself — `VsyncCore` knows nothing about the engine's wire types, only that it
-/// produces a timestamp triple.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct VsyncTick {
-    pub(crate) timestamp: Instant,
-    pub(crate) target_timestamp: Instant,
-    pub(crate) refresh_interval: Duration,
-}
+type EngineMsg = Message<
+    crate::api::private::EngineData,
+    crate::api::private::EngineControl,
+    crate::api::public::AppManagement,
+>;
 
-/// Output word for [`VsyncCore`]: at most one tick and one interval change per step. `Default`
-/// (both `None`) is the common case — most steps (Start/Stop/FPS tracking/etc.) emit nothing.
-#[derive(Debug, Default)]
-pub(crate) struct VsyncCoreOut {
-    pub(crate) tick: Option<VsyncTick>,
-    /// Set when a control message changed the tick interval; the wiring relays it to the clock.
-    pub(crate) interval: Option<Duration>,
+actor_scheduler::ports! {
+    VsyncCore {
+        tick: EngineMsg -> crate::api::private::EngineActorHandle,
+        interval: Duration -> Timer,
+    }
 }
 
 /// Pure vsync decision core. No threads, no channels, no `EngineActorHandle` — a `step_*` call
@@ -240,69 +234,15 @@ impl Transducer for VsyncCore {
                 let target_timestamp = now + self.interval;
                 self.next_vsync = timestamp + self.interval; // no cumulative drift
                 Ok(VsyncCoreOut {
-                    tick: Some(VsyncTick {
+                    tick: Some(Message::Data(crate::api::private::EngineData::VSync {
                         timestamp,
                         target_timestamp,
                         refresh_interval: self.interval,
-                    }),
+                    })),
                     ..VsyncCoreOut::default()
                 })
             }
         }
-    }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// VsyncWiring: where a step's output ports go — the engine and the clock
-// ────────────────────────────────────────────────────────────────────────────
-
-/// Where a vsync step's output goes: ticks to the engine, interval changes to the clock.
-///
-/// Built once in `engine_troupe.rs`'s bootstrap and handed to the `Node` that hosts
-/// [`VsyncCore`] — this is the only place a real send happens; the core itself only decides.
-pub(crate) struct VsyncWiring {
-    pub(crate) engine: crate::api::private::EngineActorHandle,
-    pub(crate) clock: Timer,
-}
-
-impl Wiring for VsyncWiring {
-    type Out = VsyncCoreOut;
-
-    fn flush(&mut self, out: &mut VsyncCoreOut) -> Flush {
-        use crate::api::private::EngineData;
-
-        // MAX_TOKENS bounds outstanding ticks (design doc §3.2): every tick is gated by
-        // `Credit::try_consume`, so the engine's inbox can never fill from this edge alone —
-        // `Blocked` here means that invariant broke, so parking (not dropping the tick) is the
-        // honest response.
-        let mut tick_msg = out.tick.take().map(|tick| {
-            Message::Data(EngineData::VSync {
-                timestamp: tick.timestamp,
-                target_timestamp: tick.target_timestamp,
-                refresh_interval: tick.refresh_interval,
-            })
-        });
-        let tick_flush = send_port(&mut tick_msg, &self.engine);
-        if let Some(Message::Data(EngineData::VSync {
-            timestamp,
-            target_timestamp,
-            refresh_interval,
-        })) = tick_msg
-        {
-            out.tick = Some(VsyncTick {
-                timestamp,
-                target_timestamp,
-                refresh_interval,
-            });
-        }
-
-        // Infallible: the clock has no ring to be full, and outliving its Timer is not a state
-        // this wiring can observe.
-        if let Some(interval) = out.interval.take() {
-            self.clock.set_interval(interval);
-        }
-
-        all([tick_flush, Flush::Done])
     }
 }
 
@@ -452,7 +392,7 @@ mod tests {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Tests: VsyncWiring — the one place a real send happens
+// Tests: VsyncCoreWiring — the one place a real send happens
 // ────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -461,6 +401,8 @@ mod wiring_tests {
     use crate::api::private::{EngineControl, EngineData};
     use crate::api::public::AppManagement;
     use actor_scheduler::actors::Schedule;
+    use actor_scheduler::mealy::Wiring;
+    use actor_scheduler::mealy::{send_port, Flush};
     use actor_scheduler::{Actor, ActorScheduler, ActorStatus, HandlerResult, SystemStatus};
     use std::ops::ControlFlow;
 
@@ -474,18 +416,20 @@ mod wiring_tests {
         )
     }
 
-    fn one_tick() -> VsyncTick {
+    fn one_tick_msg() -> EngineMsg {
         let now = Instant::now();
-        VsyncTick {
+        Message::Data(EngineData::VSync {
             timestamp: now,
             target_timestamp: now,
             refresh_interval: Duration::from_millis(16),
-        }
+        })
     }
 
     /// Stop the borrowed clock so the test does not leak a timer thread.
-    fn stop(wiring: VsyncWiring) {
-        let VsyncWiring { clock, .. } = wiring;
+    fn stop(wiring: VsyncCoreWiring) {
+        let VsyncCoreWiring {
+            interval: clock, ..
+        } = wiring;
         clock.stop();
     }
 
@@ -493,13 +437,13 @@ mod wiring_tests {
     fn a_tick_reaches_the_engine_as_vsync_data() {
         let (engine, mut engine_sched) =
             ActorScheduler::<EngineData, EngineControl, AppManagement>::new(4, 8);
-        let mut wiring = VsyncWiring {
-            engine,
-            clock: quiet_clock(),
+        let mut wiring = VsyncCoreWiring {
+            tick: engine,
+            interval: quiet_clock(),
         };
 
         let mut out = VsyncCoreOut {
-            tick: Some(one_tick()),
+            tick: Some(one_tick_msg()),
             interval: None,
         };
         assert_eq!(wiring.flush(&mut out), Flush::Done);
@@ -550,12 +494,12 @@ mod wiring_tests {
             port = tick();
         }
 
-        let mut wiring = VsyncWiring {
-            engine,
-            clock: quiet_clock(),
+        let mut wiring = VsyncCoreWiring {
+            tick: engine,
+            interval: quiet_clock(),
         };
         let mut out = VsyncCoreOut {
-            tick: Some(one_tick()),
+            tick: Some(one_tick_msg()),
             interval: None,
         };
         assert_eq!(wiring.flush(&mut out), Flush::Blocked);
@@ -570,12 +514,12 @@ mod wiring_tests {
             ActorScheduler::<EngineData, EngineControl, AppManagement>::new(4, 8);
         drop(engine_sched);
 
-        let mut wiring = VsyncWiring {
-            engine,
-            clock: quiet_clock(),
+        let mut wiring = VsyncCoreWiring {
+            tick: engine,
+            interval: quiet_clock(),
         };
         let mut out = VsyncCoreOut {
-            tick: Some(one_tick()),
+            tick: Some(one_tick_msg()),
             interval: None,
         };
         assert_eq!(wiring.flush(&mut out), Flush::Disconnected);
@@ -588,9 +532,9 @@ mod wiring_tests {
     fn an_interval_change_reaches_the_clock_and_is_always_cleared() {
         let (engine, _engine_sched) =
             ActorScheduler::<EngineData, EngineControl, AppManagement>::new(4, 8);
-        let mut wiring = VsyncWiring {
-            engine,
-            clock: quiet_clock(),
+        let mut wiring = VsyncCoreWiring {
+            tick: engine,
+            interval: quiet_clock(),
         };
 
         let mut out = VsyncCoreOut {
@@ -721,7 +665,10 @@ mod integration_tests {
                 management: tick_rx,
                 data: data_rx,
             },
-            VsyncWiring { engine, clock },
+            VsyncCoreWiring {
+                tick: engine,
+                interval: clock,
+            },
             SchedulerParams::DEFAULT,
         );
 

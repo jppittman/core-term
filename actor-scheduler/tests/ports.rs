@@ -250,3 +250,45 @@ fn a_disconnected_inbox_halts_a_generated_node() {
     drop(tx_in);
     assert_eq!(node.poll(), Step::Halted);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Custom target types pass through (`-> TargetType`)
+// ────────────────────────────────────────────────────────────────────────────
+
+use actor_scheduler::actors::{Schedule, Timer};
+use std::time::Duration;
+
+ports! {
+    CustomTarget {
+        tick: u8 -> actor_scheduler::spsc::SpscSender<u8>,
+        interval: Duration -> Timer,
+    }
+}
+
+#[test]
+fn a_custom_target_type_is_used_in_generated_wiring() {
+    let (tx_tick, mut rx_tick) = spsc_channel::<u8>(4);
+    let timer = Timer::spawn(
+        "test-ports-custom-target",
+        Schedule::Every(Duration::from_secs(3600)),
+        || std::ops::ControlFlow::Continue(()),
+    );
+
+    let mut wiring = CustomTargetWiring {
+        tick: tx_tick,
+        interval: timer,
+    };
+
+    let mut out = CustomTargetOut {
+        tick: Some(42),
+        interval: Some(Duration::from_millis(100)),
+    };
+
+    assert_eq!(wiring.flush(&mut out), Flush::Done);
+    assert!(out.tick.is_none());
+    assert!(out.interval.is_none());
+
+    assert_eq!(rx_tick.try_recv().unwrap(), 42);
+
+    wiring.interval.stop();
+}

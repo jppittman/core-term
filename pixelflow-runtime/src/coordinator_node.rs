@@ -39,7 +39,7 @@ use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt, Window,
 use crate::platform::PlatformPixel;
 use crate::render_coordinator::{Completed, RenderCoordinator, Step};
 use crate::vsync_actor::RenderedResponse;
-use actor_scheduler::mealy::{all, send_port, Flush, Transducer, Wiring};
+use actor_scheduler::mealy::Transducer;
 use actor_scheduler::{ActorHandle, GreenSender, HandlerError, Message};
 use pixelflow_graphics::render::renderer::{RenderRequest, RenderResponse, RendererHandle};
 use std::time::{Duration, Instant};
@@ -82,25 +82,20 @@ impl std::fmt::Debug for CoordinatorData {
     }
 }
 
-/// One optional slot per downstream edge. `Default` (all `None`/`false`) is the silent step —
-/// most inputs move state without telling any peer, exactly as `EngineOut`/`VsyncCoreOut`.
-#[derive(Default)]
-pub(crate) struct CoordinatorOut {
-    /// → the renderer. Credit(1) bounds this edge below the reply ring's capacity, so it
-    /// never actually parks; see [`CoordinatorWiring`].
-    pub(crate) render: Option<RenderRequest<PlatformPixel, WindowMeta>>,
-    /// → the driver's management lane (`DisplayMgmt::RequestWindow`). A flag, not an
-    /// `Option<T>`: there is no payload, only "ask now or don't".
-    pub(crate) request_window: bool,
-    /// → the driver's data lane (`DisplayData::Present`). The only other copy of this buffer
-    /// besides a non-stale render completion (migration doc §9.2), so this and the render
-    /// completion are the two edges that must never drop it.
-    pub(crate) present: Option<Window>,
-    /// → vsync's data lane (FPS telemetry). Parks like every other port (§9.2 revised): the
-    /// ring holds 128 samples, one per presented frame, so a full ring means the vsync node
-    /// hasn't run in roughly two seconds — a wedged node, not a transient — and parking makes
-    /// that visible instead of silently skewing the FPS number forever.
-    pub(crate) rendered: Option<RenderedResponse>,
+type RenderMsg = Message<
+    RenderRequest<PlatformPixel, WindowMeta>,
+    pixelflow_graphics::render::renderer::RenderControl,
+    pixelflow_graphics::render::renderer::RenderManagement,
+>;
+type DisplayMsg = Message<DisplayData, DisplayControl, DisplayMgmt>;
+
+actor_scheduler::ports! {
+    Coordinator {
+        render: RenderMsg -> RendererHandle<PlatformPixel, WindowMeta>,
+        request_window: DisplayMsg -> ActorHandle<DisplayData, DisplayControl, DisplayMgmt>,
+        present: DisplayMsg -> ActorHandle<DisplayData, DisplayControl, DisplayMgmt>,
+        rendered: RenderedResponse -> GreenSender<RenderedResponse>,
+    }
 }
 
 /// Owns the render coordinator plus the one piece of state that used to live on `EngineCore`:
@@ -134,10 +129,10 @@ impl CoordinatorCore {
         match step {
             Step::Idle => {}
             Step::RequestWindow => {
-                out.request_window = true;
+                out.request_window = Some(Message::Management(DisplayMgmt::RequestWindow));
                 self.render.request_sent();
             }
-            Step::Render(request) => out.render = Some(request),
+            Step::Render(request) => out.render = Some(Message::Data(request)),
         }
     }
 
@@ -151,7 +146,7 @@ impl CoordinatorCore {
         window: Window,
         out: &mut CoordinatorOut,
     ) {
-        out.present = Some(window);
+        out.present = Some(Message::Data(DisplayData::Present { window }));
 
         self.frame_number += 1;
         out.rendered = Some(RenderedResponse {
@@ -202,64 +197,6 @@ impl Transducer for CoordinatorCore {
     }
 }
 
-/// Where a coordinator step's output goes: the renderer, the driver (present + window
-/// requests), and vsync's telemetry lane. Template: `VsyncWiring` (`vsync_actor.rs`).
-pub(crate) struct CoordinatorWiring {
-    pub(crate) renderer: RendererHandle<PlatformPixel, WindowMeta>,
-    pub(crate) driver: ActorHandle<DisplayData, DisplayControl, DisplayMgmt>,
-    pub(crate) vsync: GreenSender<RenderedResponse>,
-}
-
-impl Wiring for CoordinatorWiring {
-    type Out = CoordinatorOut;
-
-    fn flush(&mut self, out: &mut CoordinatorOut) -> Flush {
-        // The render credit bounds this edge to one in flight, so `Blocked` is provably a bug —
-        // but park, don't panic: the payload is the driver's only buffer (§9.2 of the mealy
-        // design doc).
-        let mut render_msg = out.render.take().map(Message::Data);
-        let render_flush = send_port(&mut render_msg, &self.renderer);
-        if let Some(Message::Data(request)) = render_msg {
-            out.render = Some(request);
-        }
-
-        // Parked-and-retained replaces the old `send_render`/`present_cooked_frame` path's
-        // destroyed-on-failure hazard (see the NOTE that used to live on
-        // `EngineHandler::send_render`) — the payload is the ping-pong buffer's only copy, so
-        // losing it here would freeze the display for good.
-        let mut present_msg = out
-            .present
-            .take()
-            .map(|window| Message::Data(DisplayData::Present { window }));
-        let present_flush = send_port(&mut present_msg, &self.driver);
-        if let Some(Message::Data(DisplayData::Present { window })) = present_msg {
-            out.present = Some(window);
-        }
-
-        // Safe to park rather than drop: the latch (`RenderCoordinator::request_sent`, already
-        // applied in `CoordinatorCore::route`) means we never double-ask, so a retry after this
-        // parks is still exactly one ask.
-        let mut request_window_msg = out
-            .request_window
-            .then_some(Message::Management(DisplayMgmt::RequestWindow));
-        let request_window_flush = send_port(&mut request_window_msg, &self.driver);
-        out.request_window = request_window_msg.is_some();
-
-        // Telemetry parks like every other port now (§9.2 revised): the ring holds 128 samples,
-        // one per presented frame, so a full ring means the vsync node hasn't run in roughly two
-        // seconds — a wedged node, not a transient — and parking makes that visible instead of
-        // silently skewing the FPS number forever.
-        let rendered_flush = send_port(&mut out.rendered, &self.vsync);
-
-        all([
-            render_flush,
-            present_flush,
-            request_window_flush,
-            rendered_flush,
-        ])
-    }
-}
-
 #[cfg(test)]
 mod tests {
     //! `CoordinatorCore` driven directly — no `Node`, no channels, no scheduler. Mirrors
@@ -299,7 +236,7 @@ mod tests {
         let mut core = CoordinatorCore::new();
         let out = core.step_data(CoordinatorData::Submit(manifold())).unwrap();
         assert!(
-            out.request_window,
+            out.request_window.is_some(),
             "a scene with no buffer in hand must ask for one"
         );
 
@@ -323,7 +260,9 @@ mod tests {
         let out = core
             .step_data(CoordinatorData::Granted(one_to_one_window()))
             .unwrap();
-        let request = out.render.expect("expected a render request");
+        let Message::Data(request) = out.render.expect("expected a render request") else {
+            panic!("expected Message::Data");
+        };
 
         let out = core
             .step_management(RenderResponse {
@@ -352,7 +291,9 @@ mod tests {
             let out = core
                 .step_data(CoordinatorData::Granted(one_to_one_window()))
                 .unwrap();
-            let request = out.render.expect("expected a render request");
+            let Message::Data(request) = out.render.expect("expected a render request") else {
+                panic!("expected Message::Data");
+            };
 
             let out = core
                 .step_management(RenderResponse {
@@ -384,11 +325,11 @@ mod tests {
     fn a_request_window_step_latches_immediately_on_emission() {
         let mut core = CoordinatorCore::new();
         let out = core.step_data(CoordinatorData::Submit(manifold())).unwrap();
-        assert!(out.request_window);
+        assert!(out.request_window.is_some());
 
         let out = core.step_data(CoordinatorData::Submit(manifold())).unwrap();
         assert!(
-            !out.request_window,
+            out.request_window.is_none(),
             "the latch must already be set from the first ask"
         );
     }
@@ -530,7 +471,12 @@ mod node_tests {
 
     impl Rig {
         fn new() -> Self {
-            let (driver, driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+            let mut driver_builder = actor_scheduler::ActorBuilder::new(LANE_BUFFER, None);
+            let driver_rw = driver_builder.add_producer();
+            let driver_p = driver_builder.add_producer();
+            let driver_sched = driver_builder
+                .build_with_burst(LANE_BURST, actor_scheduler::ShutdownMode::default());
+
             let (renderer, render_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
 
             // A `Waker` with nobody listening is harmless, so a throwaway scheduler dropped
@@ -555,9 +501,10 @@ mod node_tests {
                     data: data_rx,
                 },
                 CoordinatorWiring {
-                    renderer,
-                    driver,
-                    vsync,
+                    render: renderer,
+                    request_window: driver_rw,
+                    present: driver_p,
+                    rendered: vsync,
                 },
                 SchedulerParams::DEFAULT,
             );
