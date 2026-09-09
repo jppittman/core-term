@@ -11,7 +11,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::fold::Fold;
 use crate::kernel::Scalar;
+use crate::key::KernelKey;
 use crate::kind::OpKind;
 
 /// Coordinate axes a lattice has, and so the coordinate `Var` indices: `X = 0`,
@@ -203,11 +205,32 @@ pub enum ExprNode {
     /// is unknown until the call — and constant across the lattice, so it is
     /// loaded once per call rather than once per batch.
     Uniform(UniformId),
+    /// A kernel named by content — *evaluate that kernel here*. The one node
+    /// composition can hold instead of splicing a body in
+    /// (docs/plans/2026-09-09-composition-is-linking.md); the referent lives
+    /// in the [`KernelStore`](crate::store::KernelStore) and
+    /// [`expand_refs`](crate::passes::expand_refs) is what puts it back.
+    ///
+    /// A leaf with an identity of its own, like [`ExprNode::Buffer`]: it has
+    /// no children in *this* arena, and every pass that reads structure must
+    /// either expand it or refuse it — never walk through it.
+    Ref(KernelKey),
     Unary(OpKind, ExprId),
     Binary(OpKind, ExprId, ExprId),
     Ternary(OpKind, ExprId, ExprId, ExprId),
     /// N-ary node. Children live in `ExprArena::nary_children[start..start+len]`.
     Nary(OpKind, u32, u16),
+    /// A bounded fold: `⊕_{k ∈ fold.range()} body[fold.binder() := k]`.
+    ///
+    /// The only node that *binds* — the binder is not free in the result — and
+    /// the only one whose metadata is part of its identity rather than a
+    /// child. It used to be `Nary(Reduce, [Const(op), Const(var), Const(n),
+    /// body])`, decoded by four readers with three different failure modes;
+    /// see [`crate::fold`] for why an e-graph could not hold that shape.
+    Reduce {
+        fold: Fold,
+        body: ExprId,
+    },
 }
 
 const _: () = assert!(
@@ -398,6 +421,37 @@ impl ExprArena {
         None
     }
 
+    /// The first `Var(i)` with `i >= floor` reachable from `root`, if any.
+    ///
+    /// `Var`'s index space is three namespaces stacked in one integer —
+    /// coordinates, then the reserved retired axes, then reduction binders,
+    /// then a binder's under-construction placeholder — so "is this term open
+    /// above `floor`?" is the only question a caller can ask structurally.
+    /// [`retired_axis`](ExprArena::retired_axis) is its sibling for the one
+    /// range that is closed rather than open-ended.
+    ///
+    /// Reachable from `root`, not every node, for
+    /// [`retired_axis`](ExprArena::retired_axis)'s reason: an arena keeps the
+    /// nodes a rebuild replaced, and nothing evaluates those.
+    #[must_use]
+    pub fn free_var_at_or_above(&self, root: ExprId, floor: u8) -> Option<u8> {
+        let mut seen = alloc::vec![false; self.nodes.len()];
+        let mut stack = alloc::vec![root];
+        while let Some(id) = stack.pop() {
+            let idx = id.0 as usize;
+            if core::mem::replace(&mut seen[idx], true) {
+                continue;
+            }
+            if let ExprNode::Var(i) = &self.nodes[idx]
+                && *i >= floor
+            {
+                return Some(*i);
+            }
+            stack.extend(self.children(id));
+        }
+        None
+    }
+
     /// Push a `Const(v)` node.
     pub fn push_const(&mut self, v: f32) -> ExprId {
         self.push_node(ExprNode::Const(v))
@@ -490,6 +544,19 @@ impl ExprArena {
         self.push_node(ExprNode::Uniform(id))
     }
 
+    /// Push a `Ref(key)` leaf — a kernel named by content rather than spliced
+    /// in.
+    ///
+    /// No table declares it and nothing here checks that `key` resolves: the
+    /// referent lives in the process-global
+    /// [`KernelStore`](crate::store::KernelStore), which is the only thing
+    /// that can answer, and [`expand_refs`](crate::passes::expand_refs) is
+    /// where an unknown key is reported. `Kernel::by_ref` is the only
+    /// producer.
+    pub fn push_ref(&mut self, key: KernelKey) -> ExprId {
+        self.push_node(ExprNode::Ref(key))
+    }
+
     /// Get the declaration for a uniform slot.
     ///
     /// # Panics
@@ -517,37 +584,15 @@ impl ExprArena {
         self.push_ternary(OpKind::Gather, buf, x, y)
     }
 
-    /// Push a reduction `Nary(Reduce, [Const(combiner), Const(reduce_var),
-    /// Const(extent), body])`.
+    /// Push the bounded fold `⊕_{k ∈ fold.range()} body[fold.binder() := k]`.
     ///
-    /// `combiner` is the monoid op folded with (`Add`/`Mul`/`Min`/`Max`);
-    /// `reduce_var` is the index (4..8) that `body` folds over; `extent` is the
-    /// trip count. Lowered to an unrolled accumulation by `expand_reduce`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `combiner` is not a monoid op or `reduce_var` is outside 4..8.
-    pub fn push_reduce(
-        &mut self,
-        combiner: OpKind,
-        reduce_var: u8,
-        extent: u32,
-        body: ExprId,
-    ) -> ExprId {
-        assert!(
-            combiner.is_monoid(),
-            "push_reduce: {combiner:?} is not a valid reduction combiner"
-        );
-        let binders = REDUCE_BINDER_BASE..REDUCE_BINDER_BASE + REDUCE_BINDERS;
-        assert!(
-            binders.contains(&reduce_var),
-            "push_reduce: reduce_var {reduce_var} out of range (must be {:?})",
-            binders
-        );
-        let c = self.push_const(combiner.index() as f32);
-        let v = self.push_const(reduce_var as f32);
-        let n = self.push_const(extent as f32);
-        self.push_nary(OpKind::Reduce, &[c, v, n, body])
+    /// Two arguments, because [`Fold`] is the metadata: which algebra, which
+    /// index, which range. Every one of those was an assertion here — a
+    /// combiner that is a monoid, a var index inside the binder space, a trip
+    /// count that fits — and each is now a thing the type will not build.
+    /// `expand_reduce` lowers a survivor to an unrolled accumulation.
+    pub fn push_reduce(&mut self, fold: Fold, body: ExprId) -> ExprId {
+        self.push_node(ExprNode::Reduce { fold, body })
     }
 
     /// Get the declaration for a buffer slot.
@@ -666,6 +711,13 @@ impl ExprArena {
     ///
     /// Leaf nodes map to: `Var -> OpKind::Var`, `Const/Param -> OpKind::Const`,
     /// `Buffer -> OpKind::Buffer`, `Uniform -> OpKind::Uniform`.
+    ///
+    /// # Panics
+    ///
+    /// Panics on an [`ExprNode::Ref`]. A reference is a *name*, not an
+    /// operation: giving it an `OpKind` would let it into every cost model,
+    /// vocabulary and emitter that dispatches on one, and each of those would
+    /// then price or emit a kernel it cannot see. Expand it first.
     #[inline]
     #[must_use]
     pub fn kind(&self, id: ExprId) -> OpKind {
@@ -674,10 +726,15 @@ impl ExprArena {
             ExprNode::Const(_) | ExprNode::Param(_) => OpKind::Const,
             ExprNode::Buffer(_) => OpKind::Buffer,
             ExprNode::Uniform(_) => OpKind::Uniform,
+            ExprNode::Ref(key) => panic!(
+                "ExprArena::kind: {key:?} is a reference to a kernel, not an \
+                 operation; run passes::expand_refs before asking for a kind"
+            ),
             ExprNode::Unary(op, _) => *op,
             ExprNode::Binary(op, _, _) => *op,
             ExprNode::Ternary(op, _, _, _) => *op,
             ExprNode::Nary(op, _, _) => *op,
+            ExprNode::Reduce { .. } => OpKind::Reduce,
         }
     }
 
@@ -690,7 +747,8 @@ impl ExprArena {
             | ExprNode::Const(_)
             | ExprNode::Param(_)
             | ExprNode::Buffer(_)
-            | ExprNode::Uniform(_) => ExprChildren::Zero,
+            | ExprNode::Uniform(_)
+            | ExprNode::Ref(_) => ExprChildren::Zero,
             ExprNode::Unary(_, a) => ExprChildren::One(*a),
             ExprNode::Binary(_, a, b) => ExprChildren::Two(*a, *b),
             ExprNode::Ternary(_, a, b, c) => ExprChildren::Three(*a, *b, *c),
@@ -699,6 +757,10 @@ impl ExprArena {
                 let l = *len as usize;
                 ExprChildren::Nary(&self.nary_children[s..s + l])
             }
+            // One child, not four: the combiner, the binder and the extent
+            // are no longer expressions, so nothing that walks children can
+            // reach them, fold them, or cost them.
+            ExprNode::Reduce { body, .. } => ExprChildren::One(*body),
         }
     }
 
@@ -717,7 +779,8 @@ impl ExprArena {
                 | ExprNode::Const(_)
                 | ExprNode::Param(_)
                 | ExprNode::Buffer(_)
-                | ExprNode::Uniform(_) => {
+                | ExprNode::Uniform(_)
+                | ExprNode::Ref(_) => {
                     max_depth = max_depth.max(d);
                 }
                 ExprNode::Unary(_, a) => {
@@ -743,6 +806,7 @@ impl ExprArena {
                         }
                     }
                 }
+                ExprNode::Reduce { body, .. } => stack.push((*body, d + 1)),
             }
         }
         max_depth
@@ -760,7 +824,8 @@ impl ExprArena {
                 ExprNode::Const(_)
                 | ExprNode::Param(_)
                 | ExprNode::Buffer(_)
-                | ExprNode::Uniform(_) => {}
+                | ExprNode::Uniform(_)
+                | ExprNode::Ref(_) => {}
                 ExprNode::Unary(_, a) => stack.push(*a),
                 ExprNode::Binary(_, a, b) => {
                     stack.push(*a);
@@ -778,6 +843,7 @@ impl ExprArena {
                         stack.push(*child);
                     }
                 }
+                ExprNode::Reduce { body, .. } => stack.push(*body),
             }
         }
         false
@@ -809,7 +875,8 @@ impl ExprArena {
                 | ExprNode::Const(_)
                 | ExprNode::Param(_)
                 | ExprNode::Buffer(_)
-                | ExprNode::Uniform(_) => {}
+                | ExprNode::Uniform(_)
+                | ExprNode::Ref(_) => {}
                 ExprNode::Unary(_, a) => stack.push(*a),
                 ExprNode::Binary(_, a, b) => {
                     stack.push(*a);
@@ -827,6 +894,7 @@ impl ExprArena {
                         stack.push(*child);
                     }
                 }
+                ExprNode::Reduce { body, .. } => stack.push(*body),
             }
         }
         false
@@ -850,7 +918,8 @@ impl ExprArena {
                 | ExprNode::Const(_)
                 | ExprNode::Param(_)
                 | ExprNode::Buffer(_)
-                | ExprNode::Uniform(_) => {}
+                | ExprNode::Uniform(_)
+                | ExprNode::Ref(_) => {}
                 ExprNode::Unary(_, a) => stack.push(*a),
                 ExprNode::Binary(_, a, b) => {
                     stack.push(*a);
@@ -868,6 +937,7 @@ impl ExprArena {
                         stack.push(*child);
                     }
                 }
+                ExprNode::Reduce { body, .. } => stack.push(*body),
             }
         }
         count
@@ -913,7 +983,8 @@ impl ExprArena {
                         | ExprNode::Const(_)
                         | ExprNode::Param(_)
                         | ExprNode::Buffer(_)
-                        | ExprNode::Uniform(_) => {}
+                        | ExprNode::Uniform(_)
+                        | ExprNode::Ref(_) => {}
                         ExprNode::Unary(_, a) => {
                             work.push(Task::Descend(*a));
                         }
@@ -933,6 +1004,7 @@ impl ExprArena {
                                 work.push(Task::Descend(*child));
                             }
                         }
+                        ExprNode::Reduce { body, .. } => work.push(Task::Descend(*body)),
                     }
                 }
                 Task::Emit(id) => {
@@ -963,6 +1035,9 @@ impl ExprArena {
                         // in this arena.
                         ExprNode::Buffer(b) => self.push_node(ExprNode::Buffer(b)),
                         ExprNode::Uniform(u) => self.push_node(ExprNode::Uniform(u)),
+                        // A key is arena-independent, so a reference copies
+                        // across as itself.
+                        ExprNode::Ref(k) => self.push_ref(k),
                         ExprNode::Unary(op, a) => {
                             let na = id_map[a.0 as usize]
                                 .expect("substitute_params: child not yet mapped for Unary");
@@ -995,6 +1070,11 @@ impl ExprArena {
                                 })
                                 .collect();
                             self.push_nary(op, &child_ids)
+                        }
+                        ExprNode::Reduce { fold, body } => {
+                            let body = id_map[body.0 as usize]
+                                .expect("substitute_params: reduce body not yet mapped");
+                            self.push_reduce(fold, body)
                         }
                     };
                     id_map[id.0 as usize] = Some(new_id);
@@ -1055,6 +1135,9 @@ impl ExprArena {
                         ExprNode::Var(i) => self.push_var(i),
                         ExprNode::Const(v) => self.push_const(v),
                         ExprNode::Param(i) => self.push_param(i),
+                        // Content-addressed, so a reference means the same
+                        // kernel in every arena and needs no remapping.
+                        ExprNode::Ref(k) => self.push_ref(k),
                         ExprNode::Buffer(b) => {
                             let slot = match buf_map[b.0 as usize] {
                                 Some(slot) => slot,
@@ -1108,6 +1191,10 @@ impl ExprArena {
                                 .map(|c| m(*c))
                                 .collect();
                             self.push_nary(op, &mapped)
+                        }
+                        ExprNode::Reduce { fold, body } => {
+                            let body = m(body);
+                            self.push_reduce(fold, body)
                         }
                     };
                     id_map[id.0 as usize] = Some(new_id);
@@ -1168,6 +1255,7 @@ impl ExprArena {
                         ExprNode::Param(i) => self.push_param(i),
                         ExprNode::Buffer(b) => self.push_node(ExprNode::Buffer(b)),
                         ExprNode::Uniform(u) => self.push_node(ExprNode::Uniform(u)),
+                        ExprNode::Ref(k) => self.push_ref(k),
                         ExprNode::Unary(op, a) => {
                             let a = m(a);
                             self.push_unary(op, a)
@@ -1185,6 +1273,10 @@ impl ExprArena {
                             let child_ids: Vec<ExprId> = self.nary_children[s..s + l].to_vec();
                             let mapped: Vec<ExprId> = child_ids.into_iter().map(m).collect();
                             self.push_nary(op, &mapped)
+                        }
+                        ExprNode::Reduce { fold, body } => {
+                            let body = m(body);
+                            self.push_reduce(fold, body)
                         }
                     };
                     id_map[id.0 as usize] = Some(new_id);
@@ -1272,6 +1364,7 @@ impl ExprArena {
                 ExprNode::Param(i) => out.push_param(*i),
                 ExprNode::Buffer(b) => out.push_buffer(buffer_slot(*b)),
                 ExprNode::Uniform(u) => out.push_uniform(uniform_slot(*u)),
+                ExprNode::Ref(k) => out.push_ref(*k),
                 ExprNode::Unary(op, a) => out.push_unary(*op, m(*a)),
                 ExprNode::Binary(op, a, b) => out.push_binary(*op, m(*a), m(*b)),
                 ExprNode::Ternary(op, a, b, c) => out.push_ternary(*op, m(*a), m(*b), m(*c)),
@@ -1280,6 +1373,10 @@ impl ExprArena {
                     let mapped: Vec<ExprId> =
                         self.nary_children[s..s + l].iter().map(|c| m(*c)).collect();
                     out.push_nary(*op, &mapped)
+                }
+                ExprNode::Reduce { fold, body } => {
+                    let body = m(*body);
+                    out.push_reduce(*fold, body)
                 }
             };
             dense[idx] = Some(new_id);
@@ -1309,6 +1406,7 @@ impl ExprArena {
                     ExprNode::Param(i) => write!(f, "Param({})", i)?,
                     ExprNode::Buffer(b) => write!(f, "Buffer({})", b.0)?,
                     ExprNode::Uniform(u) => write!(f, "Uniform({})", u.0)?,
+                    ExprNode::Ref(k) => write!(f, "Ref({:#018x})", k.bits())?,
                     ExprNode::Unary(op, a) => {
                         stack.push(Task::WriteStr(")"));
                         stack.push(Task::Visit(*a));
@@ -1345,6 +1443,18 @@ impl ExprArena {
                         }
                         f.write_str(op.name())?;
                         f.write_str("(")?;
+                    }
+                    ExprNode::Reduce { fold, body } => {
+                        stack.push(Task::WriteStr(")"));
+                        stack.push(Task::Visit(*body));
+                        write!(
+                            f,
+                            "{}_{}over({}..{})(",
+                            OpKind::Reduce.name(),
+                            fold.binder().var(),
+                            fold.range().start,
+                            fold.range().end
+                        )?;
                     }
                 },
             }
@@ -1406,6 +1516,13 @@ impl ExprArena {
                         return false;
                     }
                 }
+                // A key IS the content, so comparing keys compares the
+                // kernels named — no arena is needed to say so.
+                (ExprNode::Ref(sk), ExprNode::Ref(ok)) => {
+                    if sk != ok {
+                        return false;
+                    }
+                }
                 (ExprNode::Unary(s_op, s_a), ExprNode::Unary(o_op, o_a)) => {
                     if s_op != o_op {
                         return false;
@@ -1429,6 +1546,21 @@ impl ExprArena {
                     stack.push((*s_a, *o_a));
                     stack.push((*s_b, *o_b));
                     stack.push((*s_c, *o_c));
+                }
+                (
+                    ExprNode::Reduce {
+                        fold: s_fold,
+                        body: s_body,
+                    },
+                    ExprNode::Reduce {
+                        fold: o_fold,
+                        body: o_body,
+                    },
+                ) => {
+                    if s_fold != o_fold {
+                        return false;
+                    }
+                    stack.push((*s_body, *o_body));
                 }
                 (ExprNode::Nary(s_op, s_start, s_len), ExprNode::Nary(o_op, o_start, o_len)) => {
                     if s_op != o_op || s_len != o_len {
@@ -1469,6 +1601,7 @@ impl fmt::Display for DisplayExpr<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fold::{Binder, Monoid};
     use alloc::format;
 
     // 1. test_push_and_access
@@ -1651,20 +1784,28 @@ mod tests {
         let _ = arena.push_buffer(BufferId(0));
     }
 
+    /// A fold's metadata is a [`Fold`], so the two things `push_reduce` used
+    /// to assert — a combiner that is a monoid, a var index inside the binder
+    /// space — are no longer states this function can be *called* in. The
+    /// tests that pinned those panics could not be written any more, and the
+    /// properties they guarded are in `crate::fold`'s own tests instead. This
+    /// is the whole point of the retype: an assertion you delete because the
+    /// argument type refuses the value is the one kind you never have to
+    /// maintain.
     #[test]
-    #[should_panic(expected = "is not a valid reduction combiner")]
-    fn push_reduce_should_panic_when_the_combiner_is_not_a_monoid_op() {
+    fn a_fold_carries_its_own_metadata() {
         let mut arena = ExprArena::new();
-        let body = arena.push_var(4);
-        let _ = arena.push_reduce(OpKind::Sin, 4, 4, body);
-    }
+        let body = arena.push_var(REDUCE_BINDER_BASE);
+        let binder = Binder::from_var(REDUCE_BINDER_BASE).expect("the first binder");
+        let fold = Fold::new(Monoid::SUM, binder, 0..4);
+        let red = arena.push_reduce(fold, body);
 
-    #[test]
-    #[should_panic(expected = "out of range")]
-    fn push_reduce_should_panic_when_the_reduce_var_is_outside_4_to_8() {
-        let mut arena = ExprArena::new();
-        let body = arena.push_var(0);
-        let _ = arena.push_reduce(OpKind::Add, 3, 4, body);
+        assert_eq!(arena.kind(red), OpKind::Reduce);
+        // One child — the body. The combiner, the binder and the extent are
+        // not expressions, so nothing that walks children can reach them.
+        let children: Vec<ExprId> = arena.children(red).collect();
+        assert_eq!(children, alloc::vec![body]);
+        assert!(matches!(arena.node(red), ExprNode::Reduce { fold: f, .. } if *f == fold));
     }
 
     // 8. test_nary

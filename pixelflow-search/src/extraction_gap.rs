@@ -131,7 +131,8 @@ impl Instance {
         while let Some(c) = stack.pop() {
             reachable.push(c);
             for node in egraph.nodes(EClassId(c)) {
-                if let ENode::Op { children, .. } = node {
+                {
+                    let children = (node).children_slice();
                     for &ch in children {
                         let ch = egraph.find(ch).0;
                         if !seen[ch as usize] {
@@ -885,7 +886,8 @@ fn greedy_trace(egraph: &EGraph, root: EClassId, costs: &CostModel) -> GreedyTra
             }
             stack.push((canonical, true));
             for node in egraph.nodes(canonical) {
-                if let ENode::Op { children, .. } = node {
+                {
+                    let children = (node).children_slice();
                     for &child in children {
                         let child_canonical = egraph.find(child);
                         if best_cost[child_canonical.0 as usize].is_none() {
@@ -908,7 +910,8 @@ fn greedy_trace(egraph: &EGraph, root: EClassId, costs: &CostModel) -> GreedyTra
                     | ENode::Buffer(_)
                     | ENode::Uniform(_)
                     | ENode::Param(_) => costs.node_op_cost(node),
-                    ENode::Op { children, .. } => {
+                    ENode::Op { .. } | ENode::Reduce { .. } => {
+                        let children = node.children_slice();
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             saw_cycle = true;
                             CYCLE_COST

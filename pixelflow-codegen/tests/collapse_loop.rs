@@ -18,6 +18,7 @@ use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
+use pixelflow_ir::fold::{Binder, Fold, Monoid};
 use pixelflow_ir::{DifferentialCheck, PointVerdict, Uniform};
 
 /// Declare `u` in `a` and return its leaf — a scalar invariant across the
@@ -313,7 +314,8 @@ fn matmul_reduce_one_call_fills_output() {
     let wg = a.push_gather(wb, i, j);
     let ig = a.push_gather(ib, i, zero);
     let prod = a.push_binary(OpKind::Mul, wg, ig);
-    let root = a.push_reduce(OpKind::Add, 4, in_dim as u32, prod);
+    let binder = Binder::from_var(4).expect("Var(4) is the first binder");
+    let root = a.push_reduce(Fold::new(Monoid::SUM, binder, 0..in_dim as u32), prod);
 
     let ctx = [w.as_ptr(), input.as_ptr()];
     let res = compile(&a, root).expect("matmul collapse compile");

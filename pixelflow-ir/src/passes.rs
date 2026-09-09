@@ -1,10 +1,11 @@
 //! IR-to-IR transforms: legalization.
 //!
-//! Four passes, each `(arena, root) -> (arena, root)`, each turning ops no
-//! backend can emit into ops every backend can:
+//! Five passes, each `(arena, root) -> (arena, root)`, each turning nodes no
+//! backend can emit into nodes every backend can:
 //!
 //! | pass | consumes | produces |
 //! |---|---|---|
+//! | [`expand_refs`] | `Ref` | the referent, spliced in |
 //! | [`lower_dwrt`] | `Dwrt` | arithmetic, and *re-introduces* transcendentals |
 //! | [`expand_reduce`] | `Reduce` | the combiner applied over unrolled copies |
 //! | [`expand_gather`] | `Gather` | index arithmetic + `RawGather` |
@@ -12,8 +13,9 @@
 //!
 //! The order in that table is the order they must run: differentiating a `sin`
 //! produces a `cos`, so `lower_dwrt` has to go before the pass that expands
-//! them. Every pass is idempotent and has an identity fast-path, so running
-//! one that has nothing to do is free.
+//! them, and you cannot differentiate a *name*, so `expand_refs` goes before
+//! everything. Every pass is idempotent and has an identity fast-path, so
+//! running one that has nothing to do is free.
 //!
 //! **Nothing here knows what it is lowering *for*.** There is no `cfg` in this
 //! module beyond `#[cfg(test)]`, and no import outside `crate::{arena, kind,
@@ -39,8 +41,10 @@
 //! Nothing re-fuses `mul`+`add` into `MulAdd` afterwards — see `horner_step`.
 
 use crate::arena::{ExprArena, ExprId, ExprNode};
+use crate::fold::Fold;
 use crate::kind::OpKind;
 use crate::variance::Variance;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 /// Run every legalization pass, in the one order they compose in.
@@ -61,9 +65,12 @@ use alloc::vec::Vec;
 /// Propagates [`lower_dwrt_owned`]'s error for expressions with no derivative
 /// rule — bound-memory reads, integer/bit ops, reductions.
 pub fn legalize(arena: &ExprArena, root: ExprId) -> Result<(ExprArena, ExprId), &'static str> {
-    // `lower_dwrt` first: differentiating a `sin` manufactures a `cos`, so it
+    // `expand_refs` before anything else: every pass below reads structure,
+    // and a reference has none to read — you cannot differentiate a name.
+    let (arena, root) = expand_refs_owned(arena, root);
+    // `lower_dwrt` next: differentiating a `sin` manufactures a `cos`, so it
     // has to precede the pass that expands them.
-    let (arena, root) = lower_dwrt_owned(arena, root)?;
+    let (arena, root) = lower_dwrt_owned(&arena, root)?;
     let (arena, root) = expand_reduce_owned(&arena, root);
     let (arena, root) = expand_gather_owned(&arena, root);
     Ok(expand_transcendentals_owned(&arena, root))
@@ -170,6 +177,7 @@ fn copy_node(arena: &mut ExprArena, node: &ExprNode, m: &dyn Fn(ExprId) -> ExprI
         // Same arena, so the buffer and uniform tables (and ids) stay valid.
         ExprNode::Buffer(b) => arena.push_buffer(*b),
         ExprNode::Uniform(u) => arena.push_uniform(*u),
+        ExprNode::Ref(k) => arena.push_ref(*k),
         ExprNode::Unary(op, a) => arena.push_unary(*op, m(*a)),
         ExprNode::Binary(op, a, b) => arena.push_binary(*op, m(*a), m(*b)),
         ExprNode::Ternary(op, a, b, c) => arena.push_ternary(*op, m(*a), m(*b), m(*c)),
@@ -179,8 +187,101 @@ fn copy_node(arena: &mut ExprArena, node: &ExprNode, m: &dyn Fn(ExprId) -> ExprI
             let mapped: Vec<ExprId> = children.into_iter().map(&m).collect();
             arena.push_nary(*op, &mapped)
         }
+        ExprNode::Reduce { fold, body } => arena.push_reduce(*fold, m(*body)),
     }
 }
+
+// ──────────────────────────────── Ref expansion ──────────────────────────────
+
+/// Replace every [`ExprNode::Ref`] reachable from `root` with its referent,
+/// spliced in, returning the (possibly new) root in the same arena.
+///
+/// This is the linker, and in this stage it only inlines
+/// (docs/plans/2026-09-09-composition-is-linking.md §3): a reference is
+/// resolved through the [`KernelStore`](crate::store::KernelStore) and its
+/// body copied in at the reference's position, reading the same coordinates
+/// the reference did. The splice merges the referent's buffer and uniform
+/// declarations into this arena by identity, exactly as composition does, so
+/// a referent over bound memory keeps naming the same memory.
+///
+/// Recursive: a referent may itself hold references, and each is expanded
+/// before its body is spliced. That terminates because references form a DAG
+/// by construction — a key names content that already existed when the key
+/// was minted, so nothing can reference itself.
+///
+/// **Two uses of one name are one node.** That is what a name is for: the
+/// referent is spliced once per key, and every later `Ref` to that key
+/// points at the same subgraph. A kernel referenced `m` times therefore
+/// costs one copy of its body rather than `m` — and a reduction inside it
+/// is unrolled once by [`expand_reduce`], not `m` times. Splicing per use
+/// would give back exactly what composition by value costs (measured on a
+/// glyph whose winding sum is read once per boundary piece: 16k, 37k, 58k
+/// legalized nodes *per piece* at 40, 73, 132 pieces — quadratic).
+///
+/// # Panics
+///
+/// Panics if a key names no interned kernel. The only producer of a `Ref` is
+/// `Kernel::by_ref`, which interns before it names, so an unresolvable key is
+/// a corrupt graph rather than a condition to recover from.
+pub fn expand_refs(arena: &mut ExprArena, root: ExprId) -> ExprId {
+    let mut spliced: BTreeMap<crate::key::KernelKey, ExprId> = BTreeMap::new();
+    rebuild_arena(arena, root, |arena, node, _m| match node {
+        ExprNode::Ref(key) => Some(
+            *spliced
+                .entry(*key)
+                .or_insert_with(|| splice_referent(arena, *key)),
+        ),
+        _ => None,
+    })
+}
+
+/// Resolve one reference and splice its (itself ref-free) body into `arena`.
+#[cfg(feature = "std")]
+fn splice_referent(arena: &mut ExprArena, key: crate::key::KernelKey) -> ExprId {
+    let referent = crate::store::KernelStore::resolve(key).unwrap_or_else(|| {
+        panic!(
+            "expand_refs: {key:?} names no interned kernel — every Ref is \
+             minted by Kernel::by_ref, which interns first"
+        )
+    });
+    let (ref_arena, ref_root) = referent.parts();
+    let (expanded, expanded_root) = expand_refs_owned(ref_arena, ref_root);
+    arena.splice(&expanded, expanded_root)
+}
+
+/// The same, where there is no store to resolve against.
+///
+/// Unreachable rather than unimplemented: the store *is* the `std` feature,
+/// and `Kernel::by_ref` — the only producer of a `Ref` — goes with it, so a
+/// `no_std` build has no way to mint the key this would look up. Reaching
+/// here means one was minted by hand through `ExprArena::push_ref`, which
+/// names nothing.
+#[cfg(not(feature = "std"))]
+fn splice_referent(_arena: &mut ExprArena, key: crate::key::KernelKey) -> ExprId {
+    panic!(
+        "expand_refs: {key:?} cannot be resolved — the KernelStore is the \
+         `std` feature, and so is Kernel::by_ref, so nothing here can have \
+         named a kernel"
+    )
+}
+
+/// Owned wrapper mirroring [`expand_transcendentals_owned`]: identity
+/// fast-path when the arena holds no `Ref`, otherwise clone-and-expand.
+#[must_use]
+pub fn expand_refs_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
+    if !arena
+        .nodes_raw()
+        .iter()
+        .any(|n| matches!(n, ExprNode::Ref(_)))
+    {
+        return (arena.clone(), root);
+    }
+    let mut owned = arena.clone();
+    let new_root = expand_refs(&mut owned, root);
+    (owned, new_root)
+}
+
+// ───────────────────────── Transcendental expansion ──────────────────────────
 
 /// Expand every transcendental node reachable from `root` into a primitive
 /// arithmetic subgraph, returning the (possibly new) root in the same arena.
@@ -305,17 +406,8 @@ fn lower_gather(arena: &mut ExprArena, buf: ExprId, x: ExprId, y: ExprId) -> Exp
 /// analogue of [`expand_gather`].
 pub fn expand_reduce(arena: &mut ExprArena, root: ExprId) -> ExprId {
     rebuild_arena(arena, root, |arena, node, m| match node {
-        ExprNode::Nary(OpKind::Reduce, start, len) => {
-            let (s, l) = (*start as usize, *len as usize);
-            debug_assert_eq!(l, 4, "Reduce has 4 children");
-            let ch: [ExprId; 4] = {
-                let raw = &arena.nary_children_raw()[s..s + l];
-                [raw[0], raw[1], raw[2], raw[3]]
-            };
-            // Children are already lowered; read the (lowered) Const metadata
-            // and unroll over the lowered body.
-            Some(unroll_reduce(arena, m(ch[0]), m(ch[1]), m(ch[2]), m(ch[3])))
-        }
+        // The body is already lowered; unroll the fold over it.
+        ExprNode::Reduce { fold, body } => Some(unroll_reduce(arena, *fold, m(*body))),
         _ => None,
     })
 }
@@ -327,7 +419,7 @@ pub fn expand_reduce_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprI
     if !arena
         .nodes_raw()
         .iter()
-        .any(|n| matches!(n, ExprNode::Nary(OpKind::Reduce, _, _)))
+        .any(|n| matches!(n, ExprNode::Reduce { .. }))
     {
         return (arena.clone(), root);
     }
@@ -336,28 +428,19 @@ pub fn expand_reduce_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprI
     (owned, new_root)
 }
 
-/// Build the unrolled accumulation for one reduction whose children are already
-/// lowered. Reads `combiner`/`var`/`extent` from their `Const` nodes, then folds
-/// `extent` substituted copies of `body` under the combiner monoid.
-fn unroll_reduce(
-    arena: &mut ExprArena,
-    combiner: ExprId,
-    var: ExprId,
-    extent: ExprId,
-    body: ExprId,
-) -> ExprId {
-    let combiner_op = OpKind::from_index(const_val(arena, combiner, "reduce combiner") as usize)
-        .expect("reduce combiner must be a valid OpKind index");
-    let var_idx = const_val(arena, var, "reduce var") as u8;
-    let n = const_val(arena, extent, "reduce extent") as usize;
-
+/// Build the unrolled accumulation for one fold whose body is already lowered.
+///
+/// This is [`Fold::peel`] run to exhaustion. Peeling and unrolling are the
+/// same operation at different budgets — the e-graph states the first as a
+/// rewrite rule, and this is what remains for a fold that survived extraction,
+/// because codegen has no iteration binder to hand it to.
+fn unroll_reduce(arena: &mut ExprArena, fold: Fold, body: ExprId) -> ExprId {
     // Empty domain folds to the monoid identity.
-    if n == 0 {
-        let id = combiner_op
-            .monoid_identity()
-            .expect("reduce combiner is a monoid");
-        return arena.push_const(id);
+    if fold.is_empty() {
+        return arena.push_const(fold.monoid().identity());
     }
+    let combiner_op = fold.monoid().op();
+    let var_idx = fold.binder().var();
 
     // Which of the body's nodes actually vary with the index. Everything else
     // is shared across all N terms rather than copied into each of them: the
@@ -367,24 +450,34 @@ fn unroll_reduce(
     // table covers each id the substitution asks about.
     let variance = crate::variance::compute_arena_variance(arena);
 
-    // acc = body[var:=0]; then acc = combiner(acc, body[var:=k]) for k in 1..N.
-    let term = |arena: &mut ExprArena, k: usize| {
-        Substitution::new(arena, var_idx, k as f32, &variance).apply(arena, body)
+    let term = |arena: &mut ExprArena, k: u32| {
+        Substitution::new(body, var_idx, k as f32, &variance).apply(arena, body)
     };
-    let mut acc = term(arena, 0);
-    for k in 1..n {
+
+    // Through `Fold::peel_back`, not through `fold.range()`: this loop and
+    // `egraph::fold_rules::PeelFold` are the same decomposition at different
+    // budgets, and sharing the method is what keeps them the same. It is not
+    // ceremony — the two produced *opposite* associations while each did its
+    // own range arithmetic, and an e-graph then had to spend reassociation
+    // rules reaching the shape this loop produces directly.
+    //
+    // `peel_back` yields the indices from the top down, so they are collected
+    // and consumed in reverse: the accumulator ends up on the left and the
+    // chain leans `((f(lo) ⊕ f(lo+1)) ⊕ …)`. Iterative rather than recursive
+    // for the reason everything here is — the trip count is a `u16` and the
+    // Rust stack is not.
+    let mut indices = Vec::with_capacity(fold.len() as usize);
+    let mut rest = fold;
+    while let Some((shorter, k)) = rest.peel_back() {
+        indices.push(k);
+        rest = shorter;
+    }
+    let mut acc = term(arena, *indices.last().expect("a non-empty fold has terms"));
+    for &k in indices.iter().rev().skip(1) {
         let next = term(arena, k);
         acc = arena.push_binary(combiner_op, acc, next);
     }
     acc
-}
-
-/// Read the value of a `Const` node (reduction metadata).
-fn const_val(arena: &ExprArena, id: ExprId, what: &str) -> f32 {
-    match arena.node(id) {
-        ExprNode::Const(v) => *v,
-        other => panic!("{what} must be a Const, got {other:?}"),
-    }
 }
 
 /// One unrolled term of a fold: the body with the bound index replaced by a
@@ -401,16 +494,24 @@ struct Substitution<'a> {
     /// Variance for every node the body can reach, indexed by `ExprId`.
     variance: &'a [Variance],
     /// Rebuilt nodes, so a shared subtree is rebuilt once and stays shared.
+    ///
+    /// Sized to the body, not the arena: children are pushed before their
+    /// parent, so nothing the body reaches has an id above the body's own.
+    /// One table per term is unavoidable (each term substitutes a different
+    /// value), but an arena-sized one is written in full on allocation —
+    /// `None` here is not the zero pattern — and the arena grows with every
+    /// term appended, so the unroll wrote O(terms × arena) bytes to produce
+    /// O(terms × body) nodes.
     memo: Vec<Option<ExprId>>,
 }
 
 impl<'a> Substitution<'a> {
-    fn new(arena: &ExprArena, var: u8, value: f32, variance: &'a [Variance]) -> Self {
+    fn new(body: ExprId, var: u8, value: f32, variance: &'a [Variance]) -> Self {
         Self {
             var,
             value,
             variance,
-            memo: alloc::vec![None; arena.nodes_raw().len()],
+            memo: alloc::vec![None; body.0 as usize + 1],
         }
     }
 
@@ -433,6 +534,10 @@ impl<'a> Substitution<'a> {
             ExprNode::Param(i) => arena.push_param(i),
             ExprNode::Buffer(b) => arena.push_buffer(b),
             ExprNode::Uniform(u) => arena.push_uniform(u),
+            // A leaf, and a closed one: a referent binds its own reduction
+            // indices, so no substitution of this fold's index can reach
+            // inside it.
+            ExprNode::Ref(k) => arena.push_ref(k),
             ExprNode::Unary(op, a) => {
                 let a = self.apply(arena, a);
                 arena.push_unary(op, a)
@@ -456,6 +561,13 @@ impl<'a> Substitution<'a> {
                     .map(|ch| self.apply(arena, ch))
                     .collect();
                 arena.push_nary(op, &mapped)
+            }
+            // A nested fold binds a slot of its own — `lowest_free_binder`
+            // never reissues a live one — so this index cannot be captured
+            // and the substitution simply passes through the body.
+            ExprNode::Reduce { fold, body } => {
+                let body = self.apply(arena, body);
+                arena.push_reduce(fold, body)
             }
         };
         if let Some(slot) = self.memo.get_mut(idx) {
@@ -483,8 +595,9 @@ impl<'a> Substitution<'a> {
 /// first, so nested derivatives (`DXX` = `Dwrt(Dwrt(e, 0), 0)`) differentiate
 /// an already-`Dwrt`-free subgraph.
 ///
-/// Errors loudly on any op with no derivative rule (bound-memory reads,
-/// integer/bit ops, reductions) rather than silently miscompiling.
+/// Errors loudly on any op with no derivative rule (integer/bit ops,
+/// reductions, and a bound-memory read whose *index* moves with the variable)
+/// rather than silently miscompiling.
 pub fn lower_dwrt(arena: &mut ExprArena, root: ExprId) -> Result<ExprId, &'static str> {
     try_rebuild_arena(arena, root, |arena, node, m| match node {
         ExprNode::Binary(OpKind::Dwrt, expr, var) => {
@@ -536,29 +649,90 @@ pub fn lower_dwrt_owned(
 /// comparison operands are never differentiated), walking an explicit stack;
 /// (2) compute marked derivatives in ascending id order — the arena is
 /// append-only, so children always precede parents.
+///
+/// Both passes touch only what `expr` reaches, and the tables are keyed
+/// rather than arena-sized: a kernel holds one `Dwrt` per antialiased edge,
+/// and an arena-sized table per `Dwrt` — scanned in pass 2, and zeroed on
+/// allocation — made lowering quadratic in the arena while its output stayed
+/// linear (measured on a 613-piece text run: 86 s, of a 1.5 M-node arena).
 fn differentiate(arena: &mut ExprArena, expr: ExprId, var: u8) -> Result<ExprId, &'static str> {
-    let entry_len = arena.nodes_raw().len();
-
     // Pass 1: mark derivative-needed nodes.
-    let mut need = alloc::vec![false; entry_len];
+    let mut marked: BTreeSet<ExprId> = BTreeSet::new();
     let mut stack: Vec<ExprId> = alloc::vec![expr];
     while let Some(id) = stack.pop() {
-        if core::mem::replace(&mut need[id.0 as usize], true) {
+        if !marked.insert(id) {
             continue;
         }
         push_deriv_children(arena.node(id), &mut stack);
     }
 
-    // Pass 2: bottom-up compute in topological (id) order.
-    let mut memo: Vec<Option<ExprId>> = alloc::vec![None; entry_len];
-    for idx in 0..entry_len {
-        if !need[idx] {
-            continue;
-        }
-        let d = diff_node(arena, ExprId(idx as u32), var, &memo)?;
-        memo[idx] = Some(d);
+    // A tabulation is the one rule that asks about *dependence* rather than
+    // shape, and the variance table is the answer. Computed only where a
+    // tabulation is actually reached — it is a scan of the whole arena, and a
+    // kernel carries one `Dwrt` per antialiased edge, so paying for it
+    // unconditionally is how this pass was quadratic before.
+    //
+    // Computed *before* pass 2 appends: every node `diff_node` asks about is
+    // primal and so predates this point.
+    let reads_memory = marked.iter().any(|id| {
+        matches!(
+            arena.node(*id),
+            ExprNode::Ternary(OpKind::Gather, _, _, _) | ExprNode::Binary(OpKind::RawGather, _, _)
+        )
+    });
+    let table = reads_memory.then(|| crate::variance::compute_arena_variance(arena));
+    let variance = table.as_deref().unwrap_or(&[]);
+
+    // Pass 2: bottom-up compute in topological (id) order — the set iterates
+    // ascending, and the arena is append-only, so children precede parents.
+    let mut memo: BTreeMap<ExprId, ExprId> = BTreeMap::new();
+    for id in marked {
+        // Rebuilt per node because `memo` is borrowed here and written below.
+        let rules = Rules {
+            var,
+            memo: &memo,
+            variance,
+        };
+        let d = diff_node(arena, id, &rules)?;
+        memo.insert(id, d);
     }
-    Ok(memo[expr.0 as usize].expect("derivative of the root was computed"))
+    Ok(*memo
+        .get(&expr)
+        .expect("derivative of the root was computed"))
+}
+
+/// What a derivative rule needs besides the node itself: the variable being
+/// differentiated against, the children's already-computed derivatives, and —
+/// for a tabulation — whether its index moves with that variable.
+struct Rules<'a> {
+    var: u8,
+    memo: &'a BTreeMap<ExprId, ExprId>,
+    /// Variance for every primal node, or empty when no tabulation is
+    /// reachable and the question is never asked.
+    variance: &'a [Variance],
+}
+
+impl Rules<'_> {
+    /// **A tabulation is a constant wherever its index is.** Reading memory
+    /// does not vary with a coordinate — only the *address* does — so the
+    /// derivative of `Gather(b, i…)` is `0` exactly when no `i` mentions the
+    /// variable, which is the question [`Variance`] already answers.
+    ///
+    /// An index that does move is still refused: differentiating through it
+    /// needs the code the tabulation replaced, and a bound buffer does not
+    /// carry it (docs/plans/2026-09-09-the-graph-differentiates.md §3).
+    fn tabulation(&self, arena: &mut ExprArena, index: &[ExprId]) -> Result<ExprId, &'static str> {
+        let moves = index.iter().any(|id| {
+            !self
+                .variance
+                .get(id.0 as usize)
+                .is_some_and(|v| v.is_invariant_in(self.var))
+        });
+        match moves {
+            true => Err("lower_dwrt: cannot differentiate a bound-memory read"),
+            false => Ok(arena.push_const(0.0)),
+        }
+    }
 }
 
 /// Which children's derivatives the rule for `node` consumes. Must stay in
@@ -571,7 +745,8 @@ fn push_deriv_children(node: &ExprNode, stack: &mut Vec<ExprId>) {
         | ExprNode::Const(_)
         | ExprNode::Param(_)
         | ExprNode::Buffer(_)
-        | ExprNode::Uniform(_) => {}
+        | ExprNode::Uniform(_)
+        | ExprNode::Ref(_) => {}
         ExprNode::Unary(op, a) => match op {
             // d = 0 without touching the operand.
             OpKind::Floor | OpKind::Ceil | OpKind::Round => {}
@@ -609,21 +784,23 @@ fn push_deriv_children(node: &ExprNode, stack: &mut Vec<ExprId>) {
             _ => {}
         },
         ExprNode::Nary(_, _, _) => {}
+        // No rule: `diff_node` raises the error for the fold itself.
+        ExprNode::Reduce { .. } => {}
     }
 }
 
-fn diff_node(
-    arena: &mut ExprArena,
-    id: ExprId,
-    var: u8,
-    memo: &[Option<ExprId>],
-) -> Result<ExprId, &'static str> {
+fn diff_node(arena: &mut ExprArena, id: ExprId, rules: &Rules) -> Result<ExprId, &'static str> {
+    let Rules { var, memo, .. } = *rules;
     match arena.node(id).clone() {
         ExprNode::Var(i) => Ok(arena.push_const(if i == var { 1.0 } else { 0.0 })),
         // Constants, scalar params (baked before evaluation) and uniforms
         // (invariant across the lattice) are coordinate-independent.
         ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Uniform(_) => Ok(arena.push_const(0.0)),
         ExprNode::Buffer(_) => Err("lower_dwrt: cannot differentiate a bound-memory read"),
+        // You cannot differentiate a name. Give the reference a resolvable
+        // referent — `expand_refs`, which every pipeline runs before this —
+        // and you differentiate the referent instead.
+        ExprNode::Ref(_) => Err("lower_dwrt: cannot differentiate a Ref; run expand_refs first"),
 
         ExprNode::Unary(op, a) => {
             // Step functions and int-domain ops never mark their operand in
@@ -812,7 +989,7 @@ fn diff_node(
                 Ok(arena.push_binary(OpKind::Mul, p, inner))
             }
             OpKind::Dwrt => Err("lower_dwrt: nested Dwrt survived lowering (internal invariant)"),
-            OpKind::RawGather => Err("lower_dwrt: cannot differentiate a bound-memory read"),
+            OpKind::RawGather => rules.tabulation(arena, &[b]),
             OpKind::IAdd | OpKind::Shl | OpKind::Shr | OpKind::BitAnd | OpKind::BitOr => {
                 Err("lower_dwrt: cannot differentiate integer/bit-manipulation ops")
             }
@@ -836,21 +1013,27 @@ fn diff_node(
                 let dc = dchild(memo, c);
                 Ok(arena.push_ternary(OpKind::Select, a, db, dc))
             }
-            OpKind::Gather => Err("lower_dwrt: cannot differentiate a bound-memory read"),
+            OpKind::Gather => rules.tabulation(arena, &[b, c]),
             _ => Err("lower_dwrt: no derivative rule for this ternary op"),
         },
 
-        ExprNode::Nary(_, _, _) => {
-            Err("lower_dwrt: cannot differentiate an Nary op (Reduce/Tuple)")
-        }
+        ExprNode::Nary(_, _, _) => Err("lower_dwrt: cannot differentiate an Nary op (Tuple)"),
+        // Linearity — `d(⊕_k f) = ⊕_k d(f)` — holds for `Σ` and for nothing
+        // else in the monoid set: `Π` needs the product rule, and `min`/`max`
+        // are selections, not sums. The rule is not written here because
+        // this lowering is a *fallback*; the place for it is the rule set,
+        // where the e-graph can also decline it.
+        ExprNode::Reduce { .. } => Err("lower_dwrt: no derivative rule for a bounded fold"),
     }
 }
 
 /// Read a child's already-computed derivative. Pass 1 marks exactly the
 /// children each rule consumes and pass 2 runs bottom-up, so the entry is
 /// always populated when the parent's rule fires.
-fn dchild(memo: &[Option<ExprId>], child: ExprId) -> ExprId {
-    memo[child.0 as usize].expect("child derivative marked and computed before parent")
+fn dchild(memo: &BTreeMap<ExprId, ExprId>, child: ExprId) -> ExprId {
+    *memo
+        .get(&child)
+        .expect("child derivative marked and computed before parent")
 }
 
 /// `√(1 − u²)` — shared by the asin/acos rules.
@@ -1394,6 +1577,12 @@ mod dwrt_tests {
     use super::*;
     use crate::binding::BindingTable;
     use crate::eval::eval_scalar;
+    use crate::fold::{Binder, Monoid};
+
+    /// The first reduction binder — `Var(4)`, which these folds bind.
+    fn binder() -> Binder {
+        Binder::from_var(4).expect("Var(4) is the first binder")
+    }
 
     /// Wrap `expr` in `Dwrt(expr, var)`, run [`lower_dwrt`], and assert no
     /// `Dwrt` is reachable from the new root (the rebuild leaves the original
@@ -1674,37 +1863,34 @@ mod dwrt_tests {
 
     #[test]
     fn unsupported_op_errors_loudly() {
-        // Differentiating a Reduce has no rule: the pass must refuse.
+        // Differentiating a fold has no rule here: the pass must refuse.
         let mut a = ExprArena::new();
-        let combiner = a.push_const(OpKind::Add.index() as f32);
-        let rvar = a.push_const(0.0);
-        let extent = a.push_const(4.0);
         let body = a.push_var(4);
-        let red = a.push_nary(OpKind::Reduce, &[combiner, rvar, extent, body]);
+        let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..4), body);
         let v0 = a.push_const(0.0);
         let root = a.push_binary(OpKind::Dwrt, red, v0);
         assert!(lower_dwrt_owned(&a, root).is_err());
     }
 
-    /// A uniform is a value, never an extent. `Kernel::over` takes a `u32`
-    /// so this cannot be built through the API; the arena can still be
-    /// hand-built (or rewritten) into it, and then the unroll must refuse
-    /// rather than read a slot index as a trip count.
+    /// A uniform is a value, never an extent — and that used to need a test,
+    /// because the extent was a `Const` child and an arena could be
+    /// hand-built (or *rewritten*) into holding a `Uniform` there, at which
+    /// point the unroll would have read a slot index as a trip count. The
+    /// extent is a field of [`Fold`] now, so there is no slot to put a
+    /// uniform in and no panic left to pin. The property below — the other
+    /// side of the same rule — is the half that was always about semantics.
     #[test]
-    #[should_panic(expected = "reduce extent must be a Const")]
-    fn a_uniform_in_the_extent_slot_is_refused() {
-        use crate::arena::{UniformDecl, UniformIdentity};
+    fn an_extent_is_not_an_expression() {
         let mut a = ExprArena::new();
-        let u = a.declare_uniform(UniformDecl {
-            id: UniformIdentity::mint(),
-            default: 4.0,
-        });
-        let combiner = a.push_const(OpKind::Add.index() as f32);
-        let rvar = a.push_const(4.0);
-        let extent = a.push_uniform(u);
         let body = a.push_var(4);
-        let red = a.push_nary(OpKind::Reduce, &[combiner, rvar, extent, body]);
-        let _ = expand_reduce(&mut a, red);
+        let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..4), body);
+        let ExprNode::Reduce { fold, .. } = *a.node(red) else {
+            panic!("expected a fold");
+        };
+        assert_eq!(fold.len(), 4);
+        // The trip count is not reachable from the node's children, so no
+        // rewrite can substitute anything for it.
+        assert_eq!(a.children(red).count(), 1);
     }
 
     /// The other side of the same rule: a uniform is a perfectly good *value*
@@ -1720,7 +1906,7 @@ mod dwrt_tests {
         let uval = a.push_uniform(u);
         let i = a.push_var(4);
         let body = a.push_binary(OpKind::Add, i, uval);
-        let red = a.push_reduce(OpKind::Add, 4, 3, body);
+        let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..3), body);
         let root = expand_reduce(&mut a, red);
         // Σ_{i<3} (i + u) = 3 + 3u.
         assert_eq!(eval(&a, root, &[0.0; 2]), 33.0);
@@ -2318,8 +2504,10 @@ mod dwrt_tests {
             }
         }
 
-        // A bare Gather (bound-memory read) cannot be differentiated, and
-        // neither can its lowered RawGather form.
+        // A Gather whose index moves with the variable cannot be
+        // differentiated, and neither can its lowered RawGather form. (An
+        // index that does *not* move is a constant — see
+        // `a_tabulation_is_a_constant_wherever_its_index_is`.)
         let mut a = ExprArena::new();
         let b = a.declare_buffer(BufferDecl {
             id: BufferIdentity::mint(),
@@ -2352,6 +2540,83 @@ mod dwrt_tests {
             Err(msg) => assert_eq!(msg, BOUND_MEMORY),
             Ok(_) => panic!("expected {BOUND_MEMORY:?}"),
         }
+    }
+
+    /// **A tabulation is a constant wherever its index is.** A piece table
+    /// read at a reduce binder — the shape `fonts::loop_blinn` builds — has a
+    /// coordinate-free address, so it is a number as far as X is concerned
+    /// and its derivative is 0; a table read at X itself still has no
+    /// derivative here, because differentiating through the address needs the
+    /// code the tabulation replaced.
+    ///
+    /// Both halves, and both spellings (`Gather` and the `RawGather` it
+    /// lowers to), because a rule that answered 0 for the second half would
+    /// be a silent miscompile rather than an error.
+    #[test]
+    fn a_tabulation_is_a_constant_wherever_its_index_is() {
+        use crate::arena::{BufferDecl, BufferIdentity, REDUCE_BINDER_BASE};
+
+        // `index_from(&mut arena)` builds the gather's row index.
+        let table = |index_from: &dyn Fn(&mut ExprArena) -> ExprId| {
+            let mut a = ExprArena::new();
+            let b = a.declare_buffer(BufferDecl {
+                id: BufferIdentity::mint(),
+                width: 4,
+                height: 4,
+            });
+            let col = a.push_const(0.0);
+            let row = index_from(&mut a);
+            let g = a.push_gather(b, col, row);
+            (a, b, col, row, g)
+        };
+
+        // Indexed by the reduce binder: constant in X, so `d/dX` is 0.
+        let (mut a, _, _, _, g) = table(&|a| a.push_var(REDUCE_BINDER_BASE));
+        let x_axis = a.push_const(0.0);
+        let root = a.push_binary(OpKind::Dwrt, g, x_axis);
+        let (lowered, lroot) =
+            lower_dwrt_owned(&a, root).expect("a binder-indexed read is a constant");
+        assert!(
+            matches!(lowered.node(lroot), ExprNode::Const(v) if *v == 0.0),
+            "expected Const(0.0), got {:?}",
+            lowered.node(lroot)
+        );
+
+        // The same read, one pass later: `RawGather` over the lowered address,
+        // still constant in X.
+        let (mut a, _, _, _, g) = table(&|a| a.push_var(REDUCE_BINDER_BASE));
+        let raw = expand_gather(&mut a, g);
+        let x_axis = a.push_const(0.0);
+        let root = a.push_binary(OpKind::Dwrt, raw, x_axis);
+        let (lowered, lroot) =
+            lower_dwrt_owned(&a, root).expect("a binder-indexed read is a constant");
+        assert!(
+            matches!(lowered.node(lroot), ExprNode::Const(v) if *v == 0.0),
+            "expected Const(0.0), got {:?}",
+            lowered.node(lroot)
+        );
+
+        // Indexed by X: the address moves, and there is no rule for that.
+        let (mut a, _, _, _, g) = table(&|a| a.push_var(0));
+        let x_axis = a.push_const(0.0);
+        let root = a.push_binary(OpKind::Dwrt, g, x_axis);
+        match lower_dwrt_owned(&a, root) {
+            Err(msg) => assert_eq!(msg, "lower_dwrt: cannot differentiate a bound-memory read"),
+            Ok(_) => panic!("an X-indexed table read has no derivative here"),
+        }
+
+        // And the derivative is per-variable, not per-node: the same
+        // X-indexed read is a constant in Y.
+        let (mut a, _, _, _, g) = table(&|a| a.push_var(0));
+        let y_axis = a.push_const(1.0);
+        let root = a.push_binary(OpKind::Dwrt, g, y_axis);
+        let (lowered, lroot) =
+            lower_dwrt_owned(&a, root).expect("an X-indexed read is constant in Y");
+        assert!(
+            matches!(lowered.node(lroot), ExprNode::Const(v) if *v == 0.0),
+            "expected Const(0.0), got {:?}",
+            lowered.node(lroot)
+        );
     }
 
     #[test]
@@ -2456,7 +2721,7 @@ mod dwrt_tests {
         // by `Add` rather than one nested inside the other.
         let mut a = ExprArena::new();
         let i = a.push_var(4);
-        let red = a.push_reduce(OpKind::Add, 4, 3, i); // Σ_{i<3} i = 0+1+2 = 3
+        let red = a.push_reduce(Fold::new(Monoid::SUM, binder(), 0..3), i); // Σ_{i<3} i = 3
 
         let x = a.push_var(0);
         let s = a.push_unary(OpKind::Sin, x);
@@ -2477,7 +2742,7 @@ mod dwrt_tests {
             assert!(
                 !matches!(
                     node,
-                    ExprNode::Nary(OpKind::Reduce, _, _)
+                    ExprNode::Reduce { .. }
                         | ExprNode::Unary(OpKind::Dwrt, _)
                         | ExprNode::Binary(OpKind::Dwrt, _, _)
                         | ExprNode::Ternary(OpKind::Dwrt, _, _, _)
@@ -2559,6 +2824,29 @@ mod dwrt_tests {
 
 use crate::optimize::{Optimize, Rewritten};
 
+/// Replace every `Ref` with its referent.
+///
+/// First in every pipeline, because a reference is a name and every step
+/// after this one reads structure: you cannot differentiate a name, unroll
+/// one, or price one.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExpandRefs;
+
+impl Optimize for ExpandRefs {
+    fn optimize(&mut self, arena: &ExprArena, root: ExprId) -> Rewritten {
+        if !arena
+            .nodes_raw()
+            .iter()
+            .any(|n| matches!(n, ExprNode::Ref(_)))
+        {
+            return Rewritten::Unchanged;
+        }
+        let mut owned = arena.clone();
+        let new_root = expand_refs(&mut owned, root);
+        Rewritten::Changed(owned, new_root)
+    }
+}
+
 /// Resolve `Dwrt` (symbolic differentiation) into ordinary arithmetic.
 ///
 /// Runs BEFORE saturation, and the order matters: differentiation manufactures
@@ -2610,12 +2898,361 @@ impl Optimize for ExpandReduce {
         if !arena
             .nodes_raw()
             .iter()
-            .any(|n| matches!(n, ExprNode::Nary(OpKind::Reduce, _, _)))
+            .any(|n| matches!(n, ExprNode::Reduce { .. }))
         {
             return Rewritten::Unchanged;
         }
         let mut owned = arena.clone();
         let new_root = expand_reduce(&mut owned, root);
         Rewritten::Changed(owned, new_root)
+    }
+}
+
+#[cfg(test)]
+mod ref_expansion_tests {
+    use super::*;
+    use crate::binding::BindingTable;
+    use crate::eval::eval_scalar;
+    use crate::kernel::Kernel;
+    use crate::key::canonical;
+    use crate::optimize::Rewritten;
+    use crate::store::KernelStore;
+
+    /// Coordinates a denotation is compared over: axis-aligned, off-lattice,
+    /// negative, and the origin, so a warp or a sign error cannot hide.
+    const SPREAD: [(f32, f32); 6] = [
+        (0.0, 0.0),
+        (1.0, 2.0),
+        (-1.5, 0.5),
+        (3.25, -4.75),
+        (0.5, 0.5),
+        (-7.0, 9.0),
+    ];
+
+    fn eval(arena: &ExprArena, root: ExprId, x: f32, y: f32) -> f32 {
+        eval_scalar(arena, root, &[x, y], &BindingTable::empty())
+    }
+
+    /// Whether any `Ref` is *reachable* from `root`. Reachable, not present:
+    /// a rebuild leaves what it replaced behind as garbage, so the expanded
+    /// arena still holds the reference node it expanded — nothing reaches it.
+    fn reaches_ref(arena: &ExprArena, root: ExprId) -> bool {
+        count_reachable(arena, root, |n| matches!(n, ExprNode::Ref(_))) > 0
+    }
+
+    /// How many nodes reachable from `root` satisfy `pred` — each counted
+    /// once, however many parents share it.
+    fn count_reachable(arena: &ExprArena, root: ExprId, pred: impl Fn(&ExprNode) -> bool) -> usize {
+        let mut seen = alloc::vec![false; arena.nodes_raw().len()];
+        let mut stack = alloc::vec![root];
+        let mut count = 0;
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut seen[id.0 as usize], true) {
+                continue;
+            }
+            count += usize::from(pred(arena.node(id)));
+            stack.extend(arena.children(id));
+        }
+        count
+    }
+
+    /// The two kernels denote the same function over [`SPREAD`].
+    fn assert_same_denotation(want: &Kernel, got_arena: &ExprArena, got_root: ExprId) {
+        let (w_arena, w_root) = want.parts();
+        for (x, y) in SPREAD {
+            let expected = eval(w_arena, w_root, x, y);
+            let actual = eval(got_arena, got_root, x, y);
+            assert_eq!(
+                expected.to_bits(),
+                actual.to_bits(),
+                "expansion changed the value at ({x}, {y}): {expected} != {actual}"
+            );
+        }
+    }
+
+    /// `√((X − 1.5)² + Y²) − 0.75` — arithmetic with shared subterms, so a
+    /// splice that broke DAG sharing would show up in the node count.
+    fn circle() -> Kernel {
+        let dx = Kernel::x().sub(&Kernel::constant(1.5));
+        let dy = Kernel::y();
+        dx.mul(&dx)
+            .add(&dy.mul(&dy))
+            .sqrt()
+            .sub(&Kernel::constant(0.75))
+    }
+
+    /// The load-bearing law: a reference expands to exactly the kernel it
+    /// names — same value everywhere, and the same identity.
+    #[test]
+    fn a_reference_expands_to_its_referent() {
+        let k = circle();
+        let named = k.by_ref();
+        let (named_arena, named_root) = named.parts();
+        assert_eq!(
+            named_arena.nodes_raw().len(),
+            1,
+            "a reference is one node, whatever it names"
+        );
+
+        let (expanded, root) = expand_refs_owned(named_arena, named_root);
+        assert_same_denotation(&k, &expanded, root);
+
+        let (want_arena, want_root) = k.parts();
+        assert!(
+            expanded.subtree_eq(root, want_arena, want_root),
+            "the expansion must be structurally the referent"
+        );
+        assert_eq!(
+            canonical(&expanded, root).key,
+            canonical(want_arena, want_root).key,
+            "and must therefore have the referent's identity"
+        );
+    }
+
+    /// A reference composes like any other kernel, and expanding the
+    /// composition gives the composition of the expansions.
+    #[test]
+    fn a_reference_composes_and_expands_inside_a_composition() {
+        let k = circle();
+        let composed = k.by_ref().add(&Kernel::y().mul(&Kernel::constant(3.0)));
+        let direct = k.add(&Kernel::y().mul(&Kernel::constant(3.0)));
+
+        let (c_arena, c_root) = composed.parts();
+        let (expanded, root) = expand_refs_owned(c_arena, c_root);
+        assert_same_denotation(&direct, &expanded, root);
+
+        let (d_arena, d_root) = direct.parts();
+        assert_eq!(
+            canonical(&expanded, root).key,
+            canonical(d_arena, d_root).key,
+            "composing by reference and composing by splice are the same kernel"
+        );
+    }
+
+    /// A referent may itself hold references. Expansion is to fixpoint, not
+    /// one level: a surviving `Ref` would reach a backend that refuses it.
+    #[test]
+    fn nested_references_expand_all_the_way_down() {
+        let inner = circle();
+        let middle = inner.by_ref().mul(&Kernel::constant(2.0));
+        let outer = middle.by_ref().add(&Kernel::x());
+        let direct = inner.mul(&Kernel::constant(2.0)).add(&Kernel::x());
+
+        let (o_arena, o_root) = outer.parts();
+        let (expanded, root) = expand_refs_owned(o_arena, o_root);
+        assert!(
+            !reaches_ref(&expanded, root),
+            "no reference may survive expansion"
+        );
+        assert_same_denotation(&direct, &expanded, root);
+        let (d_arena, d_root) = direct.parts();
+        assert_eq!(
+            canonical(&expanded, root).key,
+            canonical(d_arena, d_root).key
+        );
+    }
+
+    /// The oracle resolves a reference itself, so a caller never has to know
+    /// whether the kernel it holds was composed by reference or by splice.
+    #[test]
+    fn eval_scalar_resolves_a_reference() {
+        let k = circle();
+        let named = k.by_ref().add(&Kernel::constant(10.0));
+        let direct = k.add(&Kernel::constant(10.0));
+        let (n_arena, n_root) = named.parts();
+        assert_same_denotation(&direct, n_arena, n_root);
+    }
+
+    /// Every pass has an identity fast-path, and this one carries the
+    /// determinism of the runtime pipeline: a tier that gained a step must
+    /// emit the same kernel it did before for every kernel with no reference
+    /// in it, which is every kernel production builds today.
+    #[test]
+    fn expansion_is_an_identity_when_nothing_is_named() {
+        let k = circle();
+        let (arena, root) = k.parts();
+        let (out, out_root) = expand_refs_owned(arena, root);
+        assert_eq!(out_root, root, "the root cannot move");
+        assert_eq!(
+            out.nodes_raw().len(),
+            arena.nodes_raw().len(),
+            "no node may be added or dropped"
+        );
+        assert_eq!(canonical(&out, out_root).key, canonical(arena, root).key);
+        assert!(matches!(
+            ExpandRefs.optimize(arena, root),
+            Rewritten::Unchanged
+        ));
+    }
+
+    /// And it is a real step when there *is* something named.
+    #[test]
+    fn the_pipeline_step_expands_a_reference() {
+        let named = circle().by_ref();
+        let (arena, root) = named.parts();
+        let Rewritten::Changed(out, out_root) = ExpandRefs.optimize(arena, root) else {
+            panic!("ExpandRefs must change an arena that holds a Ref");
+        };
+        assert!(!reaches_ref(&out, out_root));
+        assert_same_denotation(&circle(), &out, out_root);
+    }
+
+    /// Two uses of one name are one node. The referent is spliced once and
+    /// shared, so a reduction named three times is unrolled once; composed
+    /// by value it is copied and unrolled three times, which is where a
+    /// glyph's kernel went quadratic in its piece count.
+    #[test]
+    fn every_use_of_a_name_shares_one_referent() {
+        let is_reduce = |n: &ExprNode| matches!(n, ExprNode::Reduce { .. });
+        let folded = Kernel::sum_over(4, |i| i.mul(&Kernel::x()));
+        let named = folded.by_ref();
+        let uses = named.add(&named).mul(&named);
+        let direct = folded.add(&folded).mul(&folded);
+        let (d_arena, d_root) = direct.parts();
+        assert_eq!(
+            count_reachable(d_arena, d_root, is_reduce),
+            3,
+            "by value, every use is its own copy"
+        );
+
+        let (u_arena, u_root) = uses.parts();
+        let (expanded, root) = expand_refs_owned(u_arena, u_root);
+        assert!(!reaches_ref(&expanded, root));
+        assert_eq!(
+            count_reachable(&expanded, root, is_reduce),
+            1,
+            "by name, every use reaches the one referent"
+        );
+        assert_same_denotation(&direct, &expanded, root);
+
+        // And the fold pays for one body: fewer nodes after the unroll than
+        // the by-value composition, which unrolls each of its three copies.
+        let (unrolled, unrolled_root) = expand_reduce_owned(&expanded, root);
+        let (d_unrolled, d_unrolled_root) = expand_reduce_owned(d_arena, d_root);
+        let shared = count_reachable(&unrolled, unrolled_root, |_| true);
+        let copied = count_reachable(&d_unrolled, d_unrolled_root, |_| true);
+        assert!(
+            shared < copied,
+            "one shared unroll ({shared} nodes) must be smaller than three ({copied})"
+        );
+    }
+
+    /// `legalize` runs this first, so a reference never reaches the pass that
+    /// would have to differentiate it.
+    #[test]
+    fn legalize_expands_before_it_differentiates() {
+        let k = Kernel::x().mul(&Kernel::x());
+        let differentiated = k.by_ref().dx();
+        let (arena, root) = differentiated.parts();
+        let (out, out_root) = legalize(arena, root).expect("a named kernel still differentiates");
+        // d/dx (x²) = 2x.
+        for (x, y) in SPREAD {
+            let got = eval(&out, out_root, x, y);
+            assert!(
+                (got - 2.0 * x).abs() < 1e-5,
+                "d/dx x² at ({x}, {y}) was {got}"
+            );
+        }
+    }
+
+    /// `lower_dwrt` on its own refuses a reference rather than inventing a
+    /// derivative for a name.
+    #[test]
+    fn differentiating_a_reference_directly_is_refused() {
+        let named = Kernel::x().mul(&Kernel::x()).by_ref().dx();
+        let (arena, root) = named.parts();
+        match lower_dwrt_owned(arena, root) {
+            Err(msg) => assert!(
+                msg.contains("cannot differentiate a Ref"),
+                "unexpected message: {msg}"
+            ),
+            Ok(_) => panic!("lower_dwrt must refuse a Ref"),
+        }
+    }
+
+    /// A key that names nothing is a corrupt graph, reported where it can be
+    /// named rather than expanded into whatever happened to be at that slot.
+    #[test]
+    #[should_panic(expected = "names no interned kernel")]
+    fn an_unresolvable_key_is_refused() {
+        // A key nothing interned: `resolve` says so, and expansion cannot
+        // proceed on a name with no referent.
+        let never = Kernel::x().add(&Kernel::constant(3.0e-28));
+        let (never_arena, never_root) = never.parts();
+        let orphan = crate::key::KernelKey::of(never_arena, never_root);
+        assert!(KernelStore::resolve(orphan).is_none(), "must be unknown");
+        let mut a = ExprArena::new();
+        let root = a.push_ref(orphan);
+        let _refused = expand_refs_owned(&a, root);
+    }
+
+    /// An *open* term — a `Kernel::over` body still holding its binder's
+    /// placeholder — has no identity to name it by: the binder's rename
+    /// cannot reach through a name, so expansion would put back an index
+    /// nothing binds.
+    #[test]
+    #[should_panic(expected = "an open term has no identity")]
+    fn naming_an_open_term_is_refused() {
+        let _refused = Kernel::sum_over(3, |i| i.by_ref());
+    }
+
+    /// A warp substitutes the receiver's coordinates, and a reference has
+    /// none to substitute — so `.at` expands first. Sampling the referent at
+    /// the *outer* coordinates would be plausible and wrong.
+    #[test]
+    fn a_warp_reaches_through_a_reference() {
+        let body = Kernel::x().mul(&Kernel::y());
+        let warp = |k: &Kernel| {
+            k.at(
+                &Kernel::x().add(&Kernel::constant(1.0)),
+                &Kernel::y().mul(&Kernel::constant(2.0)),
+            )
+        };
+        let named = warp(&body.by_ref());
+        let direct = warp(&body);
+        let (n_arena, n_root) = named.parts();
+        assert_same_denotation(&direct, n_arena, n_root);
+        // (x+1)·2y at (3, 4) is 4·8.
+        assert_eq!(eval(n_arena, n_root, 3.0, 4.0), 32.0);
+    }
+
+    /// A reduction body may name a kernel, and the fold still unrolls: the
+    /// binder's index is substituted in the *expanded* body.
+    #[test]
+    fn a_reduction_over_a_reference_unrolls() {
+        let named = circle().by_ref();
+        let folded = Kernel::sum_over(3, |i| i.mul(&named));
+        let direct = Kernel::sum_over(3, |i| i.mul(&circle()));
+        let (f_arena, f_root) = folded.parts();
+        let (expanded, root) = expand_refs_owned(f_arena, f_root);
+        let (unrolled, unrolled_root) = expand_reduce_owned(&expanded, root);
+        assert_same_denotation(&direct, &unrolled, unrolled_root);
+    }
+
+    /// **A fold may name another fold**, and the two take the *same* index
+    /// slot when it does. `Kernel::over` picks the lowest slot no `Reduce` in
+    /// its body already binds, and a `Ref` is a leaf — so a name hides the
+    /// inner binder from that scan, where splicing the referent in would have
+    /// shown it and pushed the outer fold to the next slot.
+    ///
+    /// The shadowing is sound because expansion is inside-out: the referent's
+    /// own binder is substituted away before the outer fold's unroll ever
+    /// looks at it. This pins that, because it is the shape a glyph's
+    /// boundary test builds — a `min` over pieces whose body names the
+    /// winding `sum` over the same pieces — and getting it wrong is a silent
+    /// wrong answer, not a panic.
+    #[test]
+    fn a_fold_may_name_another_fold() {
+        let inner = Kernel::sum_over(3, |j| j.mul(&Kernel::x()));
+        let named = inner.by_ref();
+        let folded = Kernel::min_over(4, |i| i.add(&named).mul(&Kernel::y()));
+        // Spliced rather than named: `Kernel::over` sees the inner `Reduce`
+        // here and hands the outer fold a different slot, so this is the same
+        // denotation built with no shadowing at all.
+        let direct = Kernel::min_over(4, |i| i.add(&inner).mul(&Kernel::y()));
+        let (f_arena, f_root) = folded.parts();
+        let (expanded, root) = expand_refs_owned(f_arena, f_root);
+        let (unrolled, unrolled_root) = expand_reduce_owned(&expanded, root);
+        assert_same_denotation(&direct, &unrolled, unrolled_root);
     }
 }

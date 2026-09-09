@@ -284,9 +284,17 @@ fn compact_subtree(
             "compact_subtree: unexpected Param({i}) in a BwdGenerator expression \
              (the generator never produces Param nodes)"
         ),
+        ExprNode::Reduce { .. } => panic!(
+            "compact_subtree: unexpected bounded fold in a BwdGenerator expression \
+             (the generator never binds an index)"
+        ),
         ExprNode::Uniform(_) => panic!(
             "compact_subtree: unexpected Uniform node in a BwdGenerator expression \
              (the generator never produces Uniform nodes)"
+        ),
+        ExprNode::Ref(k) => panic!(
+            "compact_subtree: unexpected Ref({k:?}) in a BwdGenerator expression \
+             (the generator never composes by reference)"
         ),
         ExprNode::Buffer(_) => panic!(
             "compact_subtree: unexpected Buffer node in a BwdGenerator expression \

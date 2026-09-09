@@ -36,7 +36,7 @@ use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
 use pixelflow_ir::optimize::{Identity, Optimize};
-use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
+use pixelflow_ir::passes::{ExpandReduce, ExpandRefs, LowerDwrt};
 use pixelflow_ir::pipeline;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -155,29 +155,55 @@ fn optimize_runtime_arena_uncached(
     // The tier's pipeline, as a composition rather than three hand-sequenced
     // calls. The order is load-bearing and is now the expression itself:
     //
-    // `LowerDwrt` first, because differentiation manufactures constants (the
+    // `ExpandRefs` first, because every step after it reads structure and a
+    // reference has none to read — its body is in the `KernelStore`, not in
+    // this arena. It is an identity when nothing composed by reference, which
+    // is every kernel production builds today.
+    //
+    // `LowerDwrt` next, because differentiation manufactures constants (the
     // winding kernels' `d = X − f(Y)` gives `DX(d) = 1` and, for a straight
     // edge, a constant `DY(d)` — making the whole gradient magnitude
     // `√(DX²+DY²)` a compile-time number) and `ConstantFold` can only cascade
-    // over constants that exist by the time saturation runs. Lowering after
-    // the e-graph leaves those folds permanently on the table, because
-    // nothing folds post-extraction.
+    // over constants that exist by the time saturation runs.
     //
     // `ExpandReduce` next, in `legalize`'s order, so what saturation sees is
     // binder-free arithmetic it can CSE and fold across the unrolled terms.
+    //
+    // **Both are meant to move after saturation**, so that the graph resolves
+    // what it can (the chain rule and a fold's decompositions are both rule
+    // sets — `egraph::derivative`, `egraph::fold_rules`) and the legalizer is
+    // the fallback for what it declined. That reorder is written and
+    // measured, and it is not landed: on a production glyph, saturation
+    // quiesces with the folds still intact, extraction keeps them, and
+    // `ExpandReduce` then unrolls after everything that could have folded
+    // across the terms — **+23% to +42% emitted nodes**, on every glyph
+    // measured. It is not the class budget (8x the cap and 9x the wall clock
+    // recover 1.5%) and not the chain's association (peeling from the back
+    // builds `expand_reduce`'s own left-leaning shape, and changes nothing).
+    // What is missing is why `PeelFold` stops firing at that scale when a
+    // 40-term table-reading fold unrolls fine. See
+    // docs/plans/2026-09-09-a-fold-is-a-node.md §9 and
+    // `pixelflow-graphics/examples/glyph_saturation_cost.rs`, which is the
+    // measurement, and `pixelflow-graphics/tests/glyph_optimization_cost.rs`,
+    // which is the gate that will not let the regression ship green.
     //
     // A declining step short-circuits the rest and yields `None` here, which
     // means exactly what it always meant: the caller compiles its own arena
     // unchanged, unoptimized but correct.
     match saturation_switch() {
-        SaturationSwitch::On => pipeline![LowerDwrt, ExpandReduce, Saturate::runtime(shape)]
-            .optimize(arena, root)
-            .into_changed(),
+        SaturationSwitch::On => pipeline![
+            ExpandRefs,
+            LowerDwrt,
+            ExpandReduce,
+            Saturate::runtime(shape)
+        ]
+        .optimize(arena, root)
+        .into_changed(),
         // The `Identity` path: the same legalizing prefix, no saturation.
         // What `Lattice::bake` would emit if the e-graph did not exist —
         // the "F" column of docs/plans/2026-09-06-egraph-at-production-scale.md
         // §7, measured by docs/results/2026-09-07-egraph-off-vs-on-real-shaders.md.
-        SaturationSwitch::Off => pipeline![LowerDwrt, ExpandReduce, Identity]
+        SaturationSwitch::Off => pipeline![ExpandRefs, LowerDwrt, ExpandReduce, Identity]
             .optimize(arena, root)
             .into_changed(),
     }
@@ -294,6 +320,21 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
                 key.extend_from_slice(alloc::format!("{:?}", decl.id).as_bytes());
                 key.extend_from_slice(&decl.default.to_bits().to_le_bytes());
             }
+            // A reference's key IS its referent's content, digested, so
+            // encoding the key is encoding the kernel it names.
+            &ExprNode::Ref(k) => {
+                key.push(9);
+                key.extend_from_slice(&k.bits().to_le_bytes());
+            }
+            // The fold is metadata, so it goes in the key's tag bytes rather
+            // than as three child nodes. Two folds over one body under
+            // different algebras, binders or ranges must not share a cache
+            // entry, and this is where that is said.
+            &ExprNode::Reduce { fold, body } => {
+                key.push(10);
+                key.extend_from_slice(&fold.to_bits().to_le_bytes());
+                push_id(&mut key, &dense, body);
+            }
             &ExprNode::Unary(op, a) => {
                 key.push(4);
                 key.extend_from_slice(&op.marshal().to_bytes());
@@ -345,6 +386,7 @@ mod tests {
     use pixelflow_ir::arena::BufferDecl;
     use pixelflow_ir::binding::BindingTable;
     use pixelflow_ir::eval_scalar;
+    use pixelflow_ir::fold::{Binder, Fold, Monoid};
 
     /// Every optimization must preserve the arena's denoted value, over a
     /// spread of coordinates — the load-bearing property. Anything that ever
@@ -924,13 +966,14 @@ mod tests {
         let mut a = ExprArena::new();
         let i = a.push_var(4);
         let body = a.push_binary(OpKind::Mul, i, i);
-        let root = a.push_reduce(OpKind::Add, 4, 4, body);
+        let binder = Binder::from_var(4).expect("Var(4) is the first binder");
+        let root = a.push_reduce(Fold::new(Monoid::SUM, binder, 0..4), body);
 
         let arc = optimize_runtime_arena(&a, root, pixelflow_ir::LatticeShape::POINT)
             .expect("a Reduce-bearing arena must optimize once distributed");
         let (opt, opt_root) = &*arc;
         assert!(
-            !reaches_nary(opt, *opt_root),
+            !reaches_a_binder(opt, *opt_root),
             "the binder must be gone from the optimized arena"
         );
         assert_eq!(
@@ -945,12 +988,13 @@ mod tests {
         let x = b.push_var(0);
         let j = b.push_var(5);
         let body = b.push_binary(OpKind::Mul, x, j);
-        let root = b.push_reduce(OpKind::Add, 5, 3, body);
+        let binder = Binder::from_var(5).expect("Var(5) is the second binder");
+        let root = b.push_reduce(Fold::new(Monoid::SUM, binder, 0..3), body);
         let (unrolled, unrolled_root) = pixelflow_ir::passes::expand_reduce_owned(&b, root);
         let arc = optimize_runtime_arena(&b, root, pixelflow_ir::LatticeShape::POINT)
             .expect("X-dependent Reduce must optimize");
         let (opt, opt_root) = &*arc;
-        assert!(!reaches_nary(opt, *opt_root));
+        assert!(!reaches_a_binder(opt, *opt_root));
         for x in [0.0f32, 1.5, -2.25, 7.0] {
             let want = eval_scalar(&unrolled, unrolled_root, &[x, 0.0], &BindingTable::empty());
             let got = eval_scalar(opt, *opt_root, &[x, 0.0], &BindingTable::empty());
@@ -959,14 +1003,17 @@ mod tests {
     }
 
     /// Whether any `Nary` (the `Reduce` binder) is reachable from `root`.
-    fn reaches_nary(arena: &ExprArena, root: ExprId) -> bool {
+    /// Whether a binder survives to the optimized arena. Named for what it
+    /// asks rather than for the node shape it used to look for: a fold is
+    /// `ExprNode::Reduce` now, not an `Nary`.
+    fn reaches_a_binder(arena: &ExprArena, root: ExprId) -> bool {
         let mut seen = vec![false; arena.nodes_raw().len()];
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
             if core::mem::replace(&mut seen[id.0 as usize], true) {
                 continue;
             }
-            if matches!(arena.node(id), ExprNode::Nary(..)) {
+            if matches!(arena.node(id), ExprNode::Nary(..) | ExprNode::Reduce { .. }) {
                 return true;
             }
             stack.extend(arena.children(id));
@@ -2130,7 +2177,10 @@ pub(crate) mod production_telemetry {
                 ExprNode::Unary(k, _)
                 | ExprNode::Binary(k, _, _)
                 | ExprNode::Ternary(k, _, _, _) => Some(*k),
-                other @ (ExprNode::Param(_) | ExprNode::Nary(..)) => {
+                // A fold survives extraction now; the legalizer unrolls it
+                // afterwards, and this walk prices the node it is.
+                ExprNode::Reduce { .. } => Some(OpKind::Reduce),
+                other @ (ExprNode::Param(_) | ExprNode::Nary(..) | ExprNode::Ref(_)) => {
                     panic!("extracted arena contains {other:?}")
                 }
             };

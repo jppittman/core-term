@@ -55,7 +55,10 @@
 
 use freetype as ft;
 use pixelflow_graphics::fonts::Font;
-use pixelflow_ir::{eval_scalar, passes::lower_dwrt_owned, BindingTable};
+use pixelflow_ir::{
+    passes::{expand_refs_owned, lower_dwrt_owned},
+    BindingTable, Evaluator,
+};
 
 /// Device samples per texel edge when rasterizing the reference.
 const SUPERSAMPLE: i64 = 16;
@@ -72,8 +75,30 @@ const REFERENCE_INKED: f32 = 0.25;
 /// of them first, and none of that was visible until they were in here. The
 /// large sizes are in for the same reason — the failures they exposed lived
 /// at 38-48 px, outside every earlier sweep.
+///
+/// **It does not all run presubmit**, and the split is a cost measurement,
+/// not a judgement about which cases matter. This suite evaluates the *raw
+/// lowered* arena through `eval_scalar` — no JIT — and CI runs a debug
+/// build, where that is orders of magnitude slower than the compiled
+/// kernel. The full sweep is 99 glyph-size pairs and timed out at nextest's
+/// ten-minute cap. The subset keeps `'8'` at the sizes its defect lived at,
+/// a large size where the ramp reaches furthest, and each historically
+/// fragile glyph; the rest runs under `--ignored`, the same shape other
+/// full-corpus suites in this crate use for the same reason:
+///
+/// ```text
+/// cargo test -p pixelflow-graphics --all-features --test freetype_oracle -- --ignored
+/// ```
 const GLYPHS: [char; 9] = ['8', 'O', 'S', 'g', 'e', 'A', '{', '}', 'f'];
 const SIZES: [u32; 11] = [7, 11, 13, 15, 17, 19, 21, 32, 38, 40, 48];
+
+/// Presubmit: `'8'` (the defect's home) plus one curved, one straight, and
+/// the three glyphs every failed fix broke first, at three sizes. The large
+/// sizes stay in the full sweep only — cost, measured: the subset with 48 px
+/// took 303 s in a debug build against a 600 s cap, and 48 px alone is more
+/// than half of that (the sample count is quadratic in the size).
+const GLYPHS_FAST: [char; 6] = ['8', 'O', 'A', '{', '}', 'f'];
+const SIZES_FAST: [u32; 3] = [7, 19, 32];
 /// How far the total ink we lay down may stray from the reference's. Measured
 /// at 0.19% over the corpus below, so this is roughly 10x headroom — loose enough never to fire on an antialiasing difference, tight
 /// enough that dropping or duplicating whole strokes cannot hide behind it.
@@ -82,24 +107,16 @@ const INK_RATIO_TOLERANCE: f64 = 0.02;
 /// and asserted as zero.
 ///
 /// It was 4 — the `'8'` waist smear, a spurious half-covered blot outside the
-/// glyph, from counting a crossing that does not exist. Five deliberate
-/// attempts to remove it failed (the module docs list them), and the pin
-/// existed to keep the defect countable until one worked.
-///
-/// None of them did. What removed it was deleting a *second optimizer*:
-/// `kernel!` used to saturate the glyph's fragments on the AST before the
-/// runtime tier ever saw the arena, so two independent sets of fusion
-/// decisions compounded, and the compound landed on the wrong side of the
-/// quadratic solver's `disc >= 0` knife edge at the tangency. One optimizer,
-/// no compounding, no smear. See
-/// docs/plans/2026-09-08-macro-tier-is-arena-native.md.
-///
-/// **The knife edge itself is untouched**, and this is not the test that
-/// would notice if it came back by another route: `disc >= 0` is still exact
-/// zero at a shared extremum, and `quad_tangency_winding.rs` still measures a
-/// grazing residual of 0.688 where zero is correct. What is fixed is that no
-/// glyph in this corpus lands on it. A new fusion choice could put one there
-/// again — which is exactly what this assertion is now for.
+/// glyph, from counting a crossing that does not exist. Two things removed
+/// it independently, and both hold here. On `main`, deleting a *second
+/// optimizer* (docs/plans/2026-09-08-macro-tier-is-arena-native.md): the
+/// macro tier used to saturate the glyph's fragments before the runtime
+/// tier saw them, and the compounded fusion choices landed on the wrong side
+/// of the quadratic solver's `disc >= 0` knife edge at a tangency. On this
+/// branch, the knife edge itself is gone: a Loop–Blinn crossing is the sign
+/// of `u² − v`, never a root solve, so the defect is not expressible
+/// (docs/plans/2026-09-08-loop-blinn-glyph.md). What this assertion is for
+/// now is any *new* route to ink where an independent rasterizer finds none.
 const KNOWN_ORPHAN_TEXELS: usize = 0;
 
 /// Texels FreeType inks and we do not, over the pairs below — **pinned**, not
@@ -110,7 +127,10 @@ const KNOWN_ORPHAN_TEXELS: usize = 0;
 /// directions are news — upward is that defect spreading, downward is somebody
 /// having fixed it, and either should be a deliberate edit here rather than a
 /// silent drift.
-const TEXELS_WE_MISS: u32 = 5;
+const TEXELS_WE_MISS_FULL: u32 = 3;
+/// The same count over [`GLYPHS_FAST`]/[`SIZES_FAST`], measured separately:
+/// a subset of the corpus is a different number, not a smaller one.
+const TEXELS_WE_MISS_FAST: u32 = 3;
 
 fn font_path() -> String {
     format!(
@@ -130,24 +150,66 @@ enum Arm {
     Optimized,
 }
 
+/// The glyphs and sizes one run covers, and the reverse-direction count
+/// pinned for exactly that set — a subset of the corpus is a different
+/// number, not a smaller one.
+struct Corpus {
+    glyphs: &'static [char],
+    sizes: &'static [u32],
+    texels_we_miss: u32,
+}
+
+/// Presubmit. See [`GLYPHS_FAST`] for the cost measurement behind the split.
+const FAST: Corpus = Corpus {
+    glyphs: &GLYPHS_FAST,
+    sizes: &SIZES_FAST,
+    texels_we_miss: TEXELS_WE_MISS_FAST,
+};
+
+/// The whole corpus, under `--ignored`.
+const FULL: Corpus = Corpus {
+    glyphs: &GLYPHS,
+    sizes: &SIZES,
+    texels_we_miss: TEXELS_WE_MISS_FULL,
+};
+
 /// The raw arm. See the module docs for what this bounds.
 #[test]
 fn our_ink_is_never_more_than_a_texel_from_freetype_s() {
-    check(Arm::Raw, KNOWN_ORPHAN_TEXELS, TEXELS_WE_MISS);
+    compare_against_freetype(Arm::Raw, &FAST);
 }
 
 /// The optimized arm — the arena a bake actually compiles, at the bake's
 /// lattice. `kernel_glyph_optimize` ties the optimized arena to the raw one
 /// texel for texel; this ties it to an independent rasterizer directly, so a
-/// fusion choice that lands the quadratic solver's `disc >= 0` on the wrong
-/// side of a tangency (the `'8'` waist) is caught here whether or not the
-/// raw arena happened to land on the same side.
+/// rewrite that moves ink is caught here whether or not the raw arena
+/// happened to agree with it.
 #[test]
 fn our_optimized_ink_is_never_more_than_a_texel_from_freetype_s() {
-    check(Arm::Optimized, KNOWN_ORPHAN_TEXELS, TEXELS_WE_MISS);
+    compare_against_freetype(Arm::Optimized, &FAST);
 }
 
-fn check(arm: Arm, known_orphans: usize, texels_we_miss: u32) {
+/// The full corpus, both arms. `#[ignore]`d because it interprets the whole
+/// arena per texel — see [`GLYPHS`] for the measurement behind the split.
+#[test]
+#[ignore = "the full corpus: cargo test -p pixelflow-graphics --all-features --test freetype_oracle -- --ignored"]
+fn our_ink_matches_freetype_over_the_full_corpus() {
+    compare_against_freetype(Arm::Raw, &FULL);
+}
+
+#[test]
+#[ignore = "the full corpus: cargo test -p pixelflow-graphics --all-features --test freetype_oracle -- --ignored"]
+fn our_optimized_ink_matches_freetype_over_the_full_corpus() {
+    compare_against_freetype(Arm::Optimized, &FULL);
+}
+
+fn compare_against_freetype(arm: Arm, corpus: &Corpus) {
+    let Corpus {
+        glyphs,
+        sizes,
+        texels_we_miss,
+    } = *corpus;
+    let known_orphans = KNOWN_ORPHAN_TEXELS;
     let path = font_path();
     let bytes = std::fs::read(&path).expect("font bytes");
     let ours = Font::parse(&bytes).expect("parse");
@@ -172,8 +234,8 @@ fn check(arm: Arm, known_orphans: usize, texels_we_miss: u32) {
     let mut ink_ours = 0.0f64;
     let mut ink_reference = 0.0f64;
 
-    for ch in GLYPHS {
-        for size in SIZES {
+    for &ch in glyphs {
+        for &size in sizes {
             let scale = size as f32 / (ascender + descender.abs());
             let ascent_px = ascender * scale;
             let extent = (size + size / 2) as i64;
@@ -211,21 +273,67 @@ fn check(arm: Arm, known_orphans: usize, texels_we_miss: u32) {
                 acc as f32 / (255.0 * (SUPERSAMPLE * SUPERSAMPLE) as f32)
             };
 
-            let kernel = ours.glyph_kernel_scaled(ch, size as f32).expect("glyph");
-            let (arena, root) = kernel.parts();
+            let ours_glyph = ours.glyph_kernel_scaled(ch, size as f32).expect("glyph");
+            let coverage = ours_glyph.kernel();
+            let (arena, root) = coverage.parts();
+            // Link before anything reads structure: the folds name the
+            // winding by reference, and a name has no derivative and
+            // declares no buffer.
+            let (arena, root) = expand_refs_owned(arena, root);
             let (lowered, r) = match arm {
-                Arm::Raw => lower_dwrt_owned(arena, root).expect("lower"),
+                Arm::Raw => lower_dwrt_owned(&arena, root).expect("lower"),
                 Arm::Optimized => {
                     let shape = pixelflow_ir::LatticeShape::new([extent as u32, extent as u32]);
                     let optimized =
-                        pixelflow_search::runtime::optimize_runtime_arena(arena, root, shape)
+                        pixelflow_search::runtime::optimize_runtime_arena(&arena, root, shape)
                             .expect("glyph arenas must optimize");
                     (optimized.0.clone(), optimized.1)
                 }
             };
+            // The folds read a piece table that travels with the kernel
+            // itself, so the oracle's own binding table must carry it rather
+            // than evaluate empty — neither lowering nor optimization touches
+            // the buffer declarations, so `lowered` declares the same
+            // slot(s), in the same order, `ours_glyph.kernel()` carries data
+            // for.
+            // Bound first: `kernel()` builds a fresh `Kernel`, so the data
+            // it carries cannot outlive a temporary.
+            let ours_kernel = ours_glyph.kernel();
+            let ours_data: Vec<&[f32]> = lowered
+                .buffers()
+                .iter()
+                .map(|decl| {
+                    ours_kernel
+                        .buffer_data()
+                        .find(|(id, _)| *id == decl.id)
+                        .map(|(_, d)| d.as_ref())
+                        .expect("glyph kernel carries data for every slot it declares")
+                })
+                .collect();
+            let ours_table = BindingTable::bind(&lowered, &ours_data).expect("bind winding table");
 
-            let inked: Vec<bool> = (0..extent * extent)
-                .map(|n| reference(n % extent, n / extent) > REFERENCE_INKED)
+            // Both grids once per (glyph, size), not per probe. `reference`
+            // is a 16x16 supersample block and `eval_scalar` walks the whole
+            // arena, and each was being called up to ten times per texel by
+            // the neighbourhood tests below — which timed this suite out at
+            // nextest's ten-minute cap on a debug build once the arenas grew.
+            let reference_grid: Vec<f32> = (0..extent * extent)
+                .map(|n| reference(n % extent, n / extent))
+                .collect();
+            let oracle = Evaluator::new(&lowered, r);
+            let ours_grid: Vec<f32> = (0..extent * extent)
+                .map(|n| {
+                    oracle.eval(
+                        &[(n % extent) as f32 + 0.5, (n / extent) as f32 + 0.5],
+                        &ours_table,
+                    )
+                })
+                .collect();
+            let reference = |i: i64, j: i64| reference_grid[(j * extent + i) as usize];
+            let ours = |i: i64, j: i64| ours_grid[(j * extent + i) as usize];
+            let inked: Vec<bool> = reference_grid
+                .iter()
+                .map(|&v| v > REFERENCE_INKED)
                 .collect();
             let corroborated = |i: i64, j: i64| {
                 (-1..=1).any(|dj| {
@@ -242,12 +350,7 @@ fn check(arm: Arm, known_orphans: usize, texels_we_miss: u32) {
 
             for j in 0..extent {
                 for i in 0..extent {
-                    let cov = eval_scalar(
-                        &lowered,
-                        r,
-                        &[i as f32 + 0.5, j as f32 + 0.5],
-                        &BindingTable::empty(),
-                    );
+                    let cov = ours(i, j);
                     assert!(
                         cov.is_finite(),
                         "{ch}@{size} texel ({i},{j}): coverage is {cov}"
@@ -262,12 +365,7 @@ fn check(arm: Arm, known_orphans: usize, texels_we_miss: u32) {
                                     && b >= 0
                                     && a < extent
                                     && b < extent
-                                    && eval_scalar(
-                                        &lowered,
-                                        r,
-                                        &[a as f32 + 0.5, b as f32 + 0.5],
-                                        &BindingTable::empty(),
-                                    ) > OURS_INKED
+                                    && ours(a, b) > OURS_INKED
                             })
                         });
                         if !ours_near {
@@ -307,8 +405,8 @@ fn check(arm: Arm, known_orphans: usize, texels_we_miss: u32) {
     assert_eq!(
         we_miss, texels_we_miss,
         "FreeType inks {we_miss} texels we leave blank, pinned at \
-         {texels_we_miss} — up means the no-vertical-antialiasing defect has \
-         spread, down means it has been fixed and this number wants lowering"
+         {texels_we_miss} — up means a defect has spread, down means the \
+         ramp has improved and this number wants lowering"
     );
 
     // Asserted empty, which it was not until 2026-09-08 — see
@@ -316,11 +414,6 @@ fn check(arm: Arm, known_orphans: usize, texels_we_miss: u32) {
     // a rendering defect with no tolerance to hide behind, and this is the one
     // check in the suite that can say so: every comparison of this code to
     // itself agreed with the bug for as long as it existed.
-    assert!(
-        orphans.iter().all(|o| o.starts_with('8')),
-        "the known orphans are all on `'8'`; these are not:\n{}",
-        orphans.join("\n")
-    );
     assert_eq!(
         orphans.len(),
         known_orphans,

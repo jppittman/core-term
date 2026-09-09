@@ -51,9 +51,7 @@ use pixelflow_graphics::render::scene::{Scene, compile_cell_grid_for};
 use pixelflow_graphics::scene3d::{Hit, Plane, Ray, Rgba, Sphere, checker, sky};
 use pixelflow_ir::optimize::{Optimize, Rewritten};
 use pixelflow_ir::passes::{ExpandReduce, LowerDwrt};
-use pixelflow_ir::{
-    BindingTable, ExprArena, ExprId, ExprNode, LatticeShape, eval_scalar, pipeline,
-};
+use pixelflow_ir::{BindingTable, Evaluator, ExprArena, ExprId, ExprNode, LatticeShape, pipeline};
 use pixelflow_pipeline::alloc_probe::{self, CountingAlloc};
 use pixelflow_pipeline::collapse_bench::corpus::Trips;
 use pixelflow_pipeline::collapse_bench::row::StaticFeatures;
@@ -700,10 +698,14 @@ fn real_kernels(font: &Path, filter: Option<&str>) -> Vec<RealKernel> {
         let atlas = GlyphAtlas::new(CELL_HEIGHT_PT, density, ATLAS_CAPACITY);
         let tile = atlas.tile_px() as u32;
         for ch in WARM_RANGE {
-            let Some(kernel) = parsed.glyph_kernel_scaled(ch, tile as f32) else {
+            // The winding sum reads a bound piece table, so a glyph is a
+            // kernel plus its binding. This harness measures the arena the
+            // optimizer sees, which the kernel alone carries.
+            let Some(glyph) = parsed.glyph_kernel_scaled(ch, tile as f32) else {
                 missing += 1;
                 continue;
             };
+            let kernel = glyph.kernel();
             push(
                 format!("glyph{tile}_U{:04X}", ch as u32),
                 &format!("glyph{tile}"),
@@ -717,7 +719,8 @@ fn real_kernels(font: &Path, filter: Option<&str>) -> Vec<RealKernel> {
     for (label, ch) in BENCH_CHARS {
         let kernel = parsed
             .glyph_kernel_scaled(ch, BENCH_PT)
-            .unwrap_or_else(|| panic!("no glyph for {ch:?}"));
+            .unwrap_or_else(|| panic!("no glyph for {ch:?}"))
+            .kernel();
         push(
             format!("bench_{label}"),
             "bench",
@@ -965,15 +968,50 @@ struct Ctx {
     _buffers: Vec<Arc<Vec<f32>>>,
 }
 
-fn context_for(linked: &ExprArena, case: Option<&CellGridCase>) -> Ctx {
+/// One kernel's own tabulations, by the [`BufferIdentity`] each was seeded
+/// under — `Kernel::buffer_data()` (`bee7813`, "a kernel carries its own
+/// tabulations"). A glyph's winding sum reads a piece table this way: the
+/// data travels with `RealKernel::kernel` itself, with nothing separate a
+/// caller must gather and keep paired with it.
+type Carried = [(pixelflow_ir::arena::BufferIdentity, Arc<[f32]>)];
+
+/// Resolve one declared buffer to real memory: `carried` — the kernel's own
+/// tabulation — first, then `case`'s cell-grid buffers for the one kernel
+/// (the terminal cell grid) that reads externally-owned per-frame memory
+/// instead of a self-contained table. Mirrors `Manifold::bind`'s own
+/// precedence (`pixelflow-core/src/lattice/manifold.rs`): a slot the kernel
+/// carries data for is already spoken for, so a caller-supplied binding is
+/// only ever the fallback. This harness cannot call `Manifold::bind` itself
+/// — it drives its own instrumented `ExecutableCode`, compiled outside
+/// `Manifold::compile` so it can capture guard telemetry and optimize/emit
+/// timings — but the resolution a raw context table needs is the same.
+///
+/// # Panics
+/// If `id` names neither the kernel's own tabulation nor (when given) the
+/// cell-grid case's buffers — a kernel that declares a buffer nothing here
+/// can bind, which is a corpus bug rather than a shape to paper over.
+fn resolve_buffer<'a>(
+    id: pixelflow_ir::arena::BufferIdentity,
+    carried: &'a Carried,
+    case: Option<&'a CellGridCase>,
+) -> &'a [f32] {
+    if let Some((_, data)) = carried.iter().find(|(cid, _)| *cid == id) {
+        return data;
+    }
+    let case = case.unwrap_or_else(|| {
+        panic!("buffer {id:?}: not in the kernel's own tabulation and no cell-grid case was given")
+    });
+    if id == case.cells_id {
+        &case.cells
+    } else {
+        &case.atlas
+    }
+}
+
+fn context_for(linked: &ExprArena, carried: &Carried, case: Option<&CellGridCase>) -> Ctx {
     let mut buffers: Vec<Arc<Vec<f32>>> = Vec::new();
     for decl in linked.buffers() {
-        let case = case.expect("a buffer-bearing kernel without its buffers");
-        let data = if decl.id == case.cells_id {
-            case.cells.clone()
-        } else {
-            case.atlas.clone()
-        };
+        let data = resolve_buffer(decl.id, carried, case);
         assert_eq!(
             data.len(),
             (decl.width * decl.height) as usize,
@@ -981,7 +1019,7 @@ fn context_for(linked: &ExprArena, case: Option<&CellGridCase>) -> Ctx {
             decl.width,
             decl.height
         );
-        buffers.push(data);
+        buffers.push(Arc::new(data.to_vec()));
     }
     let uniforms: Vec<f32> = linked.uniforms().iter().map(|u| u.default).collect();
     let mut slots: Vec<*const f32> = buffers.iter().map(|b| b.as_ptr()).collect();
@@ -1021,6 +1059,8 @@ struct OracleForms<'a> {
     input: (&'a ExprArena, ExprId),
     /// The arena that was emitted.
     linked: (&'a ExprArena, ExprId),
+    /// The kernel's own tabulations — see [`Carried`].
+    carried: &'a Carried,
     case: Option<&'a CellGridCase>,
     packed: bool,
 }
@@ -1029,26 +1069,20 @@ fn oracle(forms: &OracleForms<'_>, out: &[f32], trips: Trips) -> Oracle {
     let OracleForms {
         input,
         linked,
+        carried,
         case,
         packed,
     } = *forms;
     let bindings_for = |arena: &ExprArena| -> BindingTable<'_> {
-        let table = match case {
-            Some(case) => {
-                let slices: Vec<&[f32]> = arena
-                    .buffers()
-                    .iter()
-                    .map(|d| {
-                        if d.id == case.cells_id {
-                            case.cells.as_slice()
-                        } else {
-                            case.atlas.as_slice()
-                        }
-                    })
-                    .collect();
-                BindingTable::bind(arena, &slices).expect("bind oracle buffers")
-            }
-            None => BindingTable::empty(),
+        let decls = arena.buffers();
+        let table = if decls.is_empty() {
+            BindingTable::empty()
+        } else {
+            let slices: Vec<&[f32]> = decls
+                .iter()
+                .map(|d| resolve_buffer(d.id, carried, case))
+                .collect();
+            BindingTable::bind(arena, &slices).expect("bind oracle buffers")
         };
         table
             .bind_uniforms(arena, &[])
@@ -1061,11 +1095,13 @@ fn oracle(forms: &OracleForms<'_>, out: &[f32], trips: Trips) -> Oracle {
     let stride = (pixels / ORACLE_POINTS).max(1);
     let mut o = Oracle::default();
     let mut px = 0usize;
+    let same_form = Evaluator::new(linked.0, linked.1);
+    let cross_form = Evaluator::new(input.0, input.1);
     while px < pixels && o.points < ORACLE_POINTS {
         let (x, y) = ((px % width) as f32 + 0.5, (px / width) as f32 + 0.5);
         let jit = out[px];
-        let same = eval_scalar(linked.0, linked.1, &[x, y], &b_ln);
-        let cross = eval_scalar(input.0, input.1, &[x, y], &b_in);
+        let same = same_form.eval(&[x, y], &b_ln);
+        let cross = cross_form.eval(&[x, y], &b_in);
         if packed {
             let byte_delta = |a: f32, b: f32| -> u32 {
                 a.to_bits()
@@ -1348,7 +1384,24 @@ fn run(args: &RunArgs<'_>) {
     let git_sha = head_sha();
 
     for (i, rk) in kernels.iter().enumerate() {
+        // Linked: a glyph composes its winding sum by reference, and this
+        // harness measures the arena the optimizer sees — which is the
+        // referent spliced in, not a one-node name for it.
         let (arena, root) = rk.kernel.parts();
+        let (arena, root) = pixelflow_ir::passes::expand_refs_owned(arena, root);
+        let arena = &arena;
+        // A glyph's winding sum reads a bound piece table (S1a,
+        // docs/plans/2026-09-09-glyph-as-a-fold-execution.md): its kernel
+        // declares a `Buffer` and carries the table's own data
+        // (`Kernel::buffer_data`, `bee7813`), with no separate binding for
+        // this harness to gather by hand. `context_for`/`oracle` resolve
+        // every declared buffer against this before falling back to the
+        // cell-grid case's externally-owned memory (`resolve_buffer`).
+        let carried: Vec<(pixelflow_ir::arena::BufferIdentity, Arc<[f32]>)> = rk
+            .kernel
+            .buffer_data()
+            .map(|(id, data)| (id, Arc::clone(data)))
+            .collect();
         let shape = LatticeShape::new(rk.extent);
         let trips = Trips::of(rk.extent, LANES as u32);
         let started = Instant::now();
@@ -1398,7 +1451,7 @@ fn run(args: &RunArgs<'_>) {
             None
         };
 
-        let ctx = context_for(&compiled.linked, rk.cell_grid.as_ref());
+        let ctx = context_for(&compiled.linked, &carried, rk.cell_grid.as_ref());
         let mut buffer = vec![0.0f32; (trips.rows * trips.groups) as usize * LANES];
         run_once(&compiled.result.code, &ctx, trips, &mut buffer);
         let picture_hash = fnv(&buffer);
@@ -1407,6 +1460,7 @@ fn run(args: &RunArgs<'_>) {
             &OracleForms {
                 input: (&legal, legal_root),
                 linked: (&compiled.linked, compiled.root),
+                carried: &carried,
                 case: rk.cell_grid.as_ref(),
                 packed: rk.packed,
             },

@@ -273,16 +273,36 @@ fn frame_zero_dimensions() {
     assert_eq!(discrete.height(), 0);
 }
 
-/// `bake` binds nothing, so a kernel that reads memory cannot be baked — and
-/// the refusal has to **name the slot it could not fill**, not read a null
-/// base pointer and hand back plausible numbers. The rule lives in
-/// `Manifold::bind`, which is the only place that can state it once for both
-/// callers; this pins that `bake` still reaches it.
+/// `bake` binds nothing itself, so a kernel that declares a buffer it does
+/// not *carry* data for cannot be baked — and the refusal has to **name the
+/// slot it could not fill**, not read a null base pointer and hand back
+/// plausible numbers. The rule lives in `Manifold::bind`, which is the only
+/// place that can state it once for both callers; this pins that `bake`
+/// still reaches it.
+///
+/// `DiscreteManifold::kernel_for`, not `.kernel()`: the latter seeds the
+/// kernel with its own buffer (the data travelling with the value), so
+/// `bake` now succeeds on it without a caller binding anything — see
+/// [`a_kernel_carrying_its_own_buffer_bakes_with_no_explicit_binding`]. This
+/// is the genuinely unbound case: an identity a kernel names but no data was
+/// ever seeded under.
 #[test]
 #[should_panic(expected = "nothing bound to slot")]
 fn baking_a_kernel_over_bound_memory_names_the_slot_it_cannot_fill() {
+    let id = pixelflow_ir::arena::BufferIdentity::mint();
+    let dataless = DiscreteManifold::kernel_for(id, 2, 2);
+    let _refused = Lattice::frame(2, 2).bake(&dataless);
+}
+
+/// The other half of the pair above: a kernel built from
+/// [`DiscreteManifold::kernel`] carries its own buffer, so `Lattice::bake` —
+/// which binds nothing itself — still succeeds, reading the data the kernel
+/// seeded rather than a caller-supplied binding.
+#[test]
+fn a_kernel_carrying_its_own_buffer_bakes_with_no_explicit_binding() {
     let texture = DiscreteManifold::new(alloc::vec![1.0, 2.0, 3.0, 4.0], 2, 2);
-    let _refused = Lattice::frame(2, 2).bake(&texture.kernel());
+    let baked = Lattice::frame(2, 2).bake(&texture.kernel());
+    assert_eq!(baked.buffer(), &[1.0, 2.0, 3.0, 4.0]);
 }
 
 // ---- Index-space lattices (feature/tensor indexing) ----

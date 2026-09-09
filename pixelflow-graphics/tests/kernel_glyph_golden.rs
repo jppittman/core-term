@@ -11,25 +11,26 @@
 use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::Font;
 use pixelflow_ir::binding::BindingTable;
-use pixelflow_ir::eval_scalar;
 use pixelflow_ir::passes::lower_dwrt_owned;
+use pixelflow_ir::Evaluator;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
 fn golden_for(ch: char, size: usize) {
     let font = Font::parse(FONT_BYTES).expect("parse font");
-    let kernel: Kernel = font
+    let glyph = font
         .glyph_kernel_scaled(ch, size as f32)
         .unwrap_or_else(|| panic!("glyph {ch:?} not found"));
 
     // JIT: bake over the texel-center convention, a contramap over a plain
-    // index lattice.
+    // index lattice. `glyph.kernel()`'s winding sum reads a bound piece table
+    // (S1a), so — unlike before — this binds it rather than a bare bake.
     let n = size as u32;
-    let centered = kernel.at(
+    let centered = glyph.kernel().at(
         &Kernel::x().add(&Kernel::constant(0.5)),
         &Kernel::y().add(&Kernel::constant(0.5)),
     );
-    let baked = Lattice { extent: [n, n] }.bake(&centered);
+    let baked = glyph.bake(&centered, Lattice { extent: [n, n] });
     let got = baked.buffer();
     assert_eq!(got.len(), size * size);
 
@@ -53,11 +54,30 @@ fn golden_for(ch: char, size: usize) {
         None => lower_dwrt_owned(arena, root).expect("dwrt lowering"),
     };
 
+    // The oracle's own binding table over the same piece table the JIT
+    // read — optimization/lowering restructures the Gather graph, never the
+    // buffer declarations, so `lowered` declares the same slot(s), in the
+    // same order, that `centered` (== `glyph.kernel()`, contramapped) carries
+    // data for.
+    let data: Vec<&[f32]> = lowered
+        .buffers()
+        .iter()
+        .map(|decl| {
+            centered
+                .buffer_data()
+                .find(|(id, _)| *id == decl.id)
+                .map(|(_, d)| d.as_ref())
+                .expect("glyph kernel carries data for every slot it declares")
+        })
+        .collect();
+    let table = BindingTable::bind(&lowered, &data).expect("bind the winding table");
+
+    let oracle = Evaluator::new(&lowered, lroot);
     let mut ink = 0.0f32;
     for j in 0..size {
         for i in 0..size {
             let (x, y) = (i as f32, j as f32);
-            let want = eval_scalar(&lowered, lroot, &[x, y], &BindingTable::empty());
+            let want = oracle.eval(&[x, y], &table);
             let jit = got[j * size + i];
             assert!(
                 jit.is_finite(),

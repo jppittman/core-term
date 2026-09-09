@@ -54,6 +54,7 @@ pub mod avx2;
 pub mod avx512;
 #[cfg(test)]
 pub(crate) mod coverage;
+pub(crate) mod demand;
 pub mod encoded;
 pub mod executable;
 mod guards;
@@ -1631,7 +1632,28 @@ fn arena_to_schedule(
             ExprNode::Ternary(op, a, b, c) => {
                 ScheduledOp::Ternary(*op, map_child(a), map_child(b), map_child(c))
             }
+            // Same unreachable precondition as `Dwrt` above: `passes::legalize`
+            // runs `expand_refs` first in every compile entry point, so a
+            // reference here means this schedule was built without the
+            // lowering pipeline. Refusing is not a limitation to lift — a
+            // surviving reference is a *call*, and codegen emits one flat
+            // function per kernel with no ABI for one
+            // (docs/plans/2026-09-09-composition-is-linking.md §5.2).
+            ExprNode::Ref(key) => panic!(
+                "arena_to_schedule: {key:?} names a kernel whose body is not in \
+                 this arena. expand_refs runs first in every compile entry \
+                 point, so a survivor means this schedule was built without \
+                 the lowering pipeline."
+            ),
             ExprNode::Nary(_, _, _) => panic!("Nary not supported in JIT arena compilation"),
+            // **The emitter has no iteration binder.** A fold reaching here
+            // means `passes::expand_reduce` did not run — that pass is what
+            // turns a fold into the `len()` copies of its body the machine
+            // actually executes, and it is the reason a surviving `Reduce`
+            // is priced out of extraction rather than emitted.
+            ExprNode::Reduce { .. } => {
+                panic!("a bounded fold reached the JIT emitter -- run passes::expand_reduce first")
+            }
         };
         schedule.push(regalloc::Def {
             value: vid,
@@ -2564,6 +2586,38 @@ mod tests {
         let v = a.push_const(0.0);
         let root = a.push_binary(OpKind::Dwrt, x, v);
         let _ = arena_to_schedule(&a, root);
+    }
+
+    /// And the same for a `Ref`: its body is not in this arena at all, so a
+    /// survivor is a schedule built without `expand_refs`. `compile` runs
+    /// `legalize` first, so this too has to call the scheduler directly.
+    #[test]
+    #[should_panic(expected = "names a kernel whose body is not in")]
+    fn a_surviving_reference_fails_loudly() {
+        let named = pixelflow_ir::Kernel::x()
+            .mul(&pixelflow_ir::Kernel::constant(3.0))
+            .by_ref();
+        let (arena, root) = named.parts();
+        let _ = arena_to_schedule(arena, root);
+    }
+
+    /// The route that *does* work: the compile entry expands the reference
+    /// before it schedules, so a kernel composed by reference emits exactly
+    /// what the spliced composition emits.
+    #[test]
+    fn a_reference_compiles_through_the_entry_point() {
+        let body = pixelflow_ir::Kernel::x().mul(&pixelflow_ir::Kernel::constant(3.0));
+        let named = body.by_ref().add(&pixelflow_ir::Kernel::y());
+        let direct = body.add(&pixelflow_ir::Kernel::y());
+        let (n_arena, n_root) = named.parts();
+        let (d_arena, d_root) = direct.parts();
+        let named_code = compile(n_arena, n_root).expect("a named kernel compiles");
+        let direct_code = compile(d_arena, d_root).expect("and so does the spliced one");
+        for (x, y) in [(0.0f32, 0.0f32), (1.5, -2.0), (-3.25, 7.5)] {
+            let want = eval_point(&direct_code.code, x, y, 0.0, 0.0);
+            let got = eval_point(&named_code.code, x, y, 0.0, 0.0);
+            assert_eq!(got, want, "at ({x}, {y})");
+        }
     }
 
     /// The scaffold's size does not depend on the frame it wraps.
@@ -4766,6 +4820,12 @@ mod tests {
 
         #[test]
         fn matmul_reduce_jit_matches_interpreter() {
+            // Imported here, not in the parent `tests` module: which ISA
+            // submodule is live is a three-way target-feature cfg, so a
+            // parent import is either unused at some level or missing at
+            // another. The `avx2+fma` rung of `xtask isa-matrix` caught both
+            // spellings; a default-target clippy sees neither.
+            use pixelflow_ir::fold::{Binder, Fold, Monoid};
             // out(j) = Σ_i W(i,j) * input(i), evaluated per output lane j = X.
             // The reduction over i unrolls to a flat gather/FMA chain (bound
             // extent), and the whole thing runs as one bound-memory kernel.
@@ -4794,7 +4854,8 @@ mod tests {
             let wg = a.push_gather(wb, i, j);
             let ig = a.push_gather(ib, i, zero);
             let prod = a.push_binary(OpKind::Mul, wg, ig);
-            let root = a.push_reduce(OpKind::Add, 4, in_dim as u32, prod);
+            let binder = Binder::from_var(4).expect("Var(4) is the first binder");
+            let root = a.push_reduce(Fold::new(Monoid::SUM, binder, 0..in_dim as u32), prod);
 
             let buffers: &[&[f32]] = &[w.as_slice(), input.as_slice()];
             // Output lanes j = 0..6 (rest clamp to the last row, harmless here).
@@ -4968,6 +5029,12 @@ mod tests {
 
         #[test]
         fn matmul_reduce_jit_matches_interpreter() {
+            // Imported here, not in the parent `tests` module: which ISA
+            // submodule is live is a three-way target-feature cfg, so a
+            // parent import is either unused at some level or missing at
+            // another. The `avx2+fma` rung of `xtask isa-matrix` caught both
+            // spellings; a default-target clippy sees neither.
+            use pixelflow_ir::fold::{Binder, Fold, Monoid};
             // out(j) = Σ_i W(i,j) * input(i), evaluated per output lane j = X.
             // The reduction over i unrolls to a flat gather/FMA chain (bound
             // extent), and the whole thing runs as one bound-memory kernel.
@@ -4996,7 +5063,8 @@ mod tests {
             let wg = a.push_gather(wb, i, j);
             let ig = a.push_gather(ib, i, zero);
             let prod = a.push_binary(OpKind::Mul, wg, ig);
-            let root = a.push_reduce(OpKind::Add, 4, in_dim as u32, prod);
+            let binder = Binder::from_var(4).expect("Var(4) is the first binder");
+            let root = a.push_reduce(Fold::new(Monoid::SUM, binder, 0..in_dim as u32), prod);
 
             let buffers: &[&[f32]] = &[w.as_slice(), input.as_slice()];
             // Output lanes j = 0..6 (rest clamp to the last row, harmless here).

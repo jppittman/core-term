@@ -20,6 +20,7 @@
 
 use crate::arena::{ExprArena, ExprId, ExprNode, UniformId};
 use crate::binding::BindingTable;
+use crate::fold::Fold;
 use crate::kind::OpKind;
 // `alloc`, not `std`: the oracle must stay buildable with the `std` feature
 // off (the crate is the bootloader target's floor), and a memoized DAG walk
@@ -61,19 +62,80 @@ pub fn eval_scalar(
     // transcendental-heavy expressions. Nodes under a reduction binder are
     // excluded: their value changes with the binding, so caching them across
     // iterations would return a stale term.
-    let (expanded, root) = crate::passes::expand_transcendentals_owned(arena, root);
-    let variance = crate::variance::compute_arena_variance(&expanded);
-    let n = expanded.len();
-    let memo = core::cell::RefCell::new(alloc::vec![None; n]);
-    Env {
-        arena: &expanded,
-        vars,
-        bindings,
-        reduce_vars: [0.0; 4],
-        variance: &variance,
-        memo: &memo,
+    // References first, for the reason `legalize` expands them first: the
+    // referent's body is not in this arena, so every walk below — the
+    // transcendental expansion, the variance table, the memo indexed by
+    // `ExprId` — would be walking a name. Splicing it in *is* "evaluate that
+    // kernel at these coordinates", and it is the same expansion the compiled
+    // path takes, so oracle and JIT cannot disagree about what a reference
+    // means. Identity (a bare clone) when the arena holds none.
+    //
+    // All of that preparation is O(arena) and none of it depends on the
+    // point. A caller evaluating many points prepares once with
+    // [`Evaluator`]; this entry is that, for one point.
+    Evaluator::new(arena, root).eval(vars, bindings)
+}
+
+/// [`eval_scalar`]'s arena, prepared once, for evaluation at many points.
+///
+/// Everything `eval_scalar` does before it reads a node — link references,
+/// expand transcendentals, compute the variance table, size the memo — is
+/// O(arena) and independent of the point, while the evaluation itself is
+/// O(reachable). Paying the preparation per point made a sweep over a
+/// lattice cost O(texels × arena): on a 32 px glyph's raw arena it was 30×
+/// slower than the same sweep over the (compact) optimized arena, which is
+/// the difference between an oracle that runs in a second and one that hits
+/// a CI timeout. Prepare once, evaluate per point.
+///
+/// The memo is reset between points by the entries the point touched, not by
+/// the arena's length, so a point costs what it reaches and nothing more.
+pub struct Evaluator {
+    arena: ExprArena,
+    root: ExprId,
+    variance: alloc::vec::Vec<crate::variance::Variance>,
+    memo: core::cell::RefCell<alloc::vec::Vec<Option<f32>>>,
+    /// Memo entries written while evaluating the current point.
+    touched: core::cell::RefCell<alloc::vec::Vec<ExprId>>,
+}
+
+impl Evaluator {
+    /// Prepare `arena` for evaluation from `root`: the same lowering
+    /// [`eval_scalar`] applies, done once.
+    #[must_use]
+    pub fn new(arena: &ExprArena, root: ExprId) -> Self {
+        let (arena, root) = crate::passes::expand_refs_owned(arena, root);
+        let (arena, root) = crate::passes::expand_transcendentals_owned(&arena, root);
+        let variance = crate::variance::compute_arena_variance(&arena);
+        let n = arena.len();
+        Self {
+            arena,
+            root,
+            variance,
+            memo: core::cell::RefCell::new(alloc::vec![None; n]),
+            touched: core::cell::RefCell::new(alloc::vec::Vec::new()),
+        }
     }
-    .eval(root)
+
+    /// The root's value at `vars`, exactly as [`eval_scalar`] would compute
+    /// it on the same arena.
+    #[must_use]
+    pub fn eval(&self, vars: &[f32; crate::arena::COORD_AXES], bindings: &BindingTable<'_>) -> f32 {
+        let value = Env {
+            arena: &self.arena,
+            vars,
+            bindings,
+            reduce_vars: [0.0; 4],
+            variance: &self.variance,
+            memo: &self.memo,
+            touched: &self.touched,
+        }
+        .eval(self.root);
+        let mut memo = self.memo.borrow_mut();
+        for id in self.touched.borrow_mut().drain(..) {
+            memo[id.0 as usize] = None;
+        }
+        value
+    }
 }
 
 /// How closely a JIT-computed lane must match [`eval_scalar`]'s answer for the
@@ -850,9 +912,9 @@ fn uniform_value(arena: &ExprArena, bindings: &BindingTable<'_>, u: UniformId) -
 /// # Panics
 ///
 /// Panics on the node shapes the bound walk does not model: `Param` (substitute
-/// first), a bare `Buffer`, and `Nary`/`Reduce` (a fold rebinds its body per
-/// iteration, so a flat per-node memo cannot represent it — expand the reduce
-/// first).
+/// first), a bare `Buffer`, a `Ref` (expand it first — its body is not in this
+/// arena), and `Nary`/`Reduce` (a fold rebinds its body per iteration, so a
+/// flat per-node memo cannot represent it — expand the reduce first).
 fn value_children(node: &ExprNode) -> ([ExprId; 3], usize) {
     const NONE: ExprId = ExprId(0);
     match node {
@@ -867,9 +929,13 @@ fn value_children(node: &ExprNode) -> ([ExprId; 3], usize) {
             "PointCheck: bare Buffer({}) is not a value; read it through Gather",
             b.0
         ),
-        ExprNode::Nary(op, _, _) => panic!(
-            "PointCheck: Nary({op:?}) — a reduction rebinds its body per iteration, \
-             which a per-node bound cannot represent; expand_reduce first"
+        ExprNode::Ref(key) => panic!(
+            "PointCheck: {key:?} names a kernel whose body is not in this arena;              expand_refs first"
+        ),
+        ExprNode::Nary(op, _, _) => panic!("PointCheck: Nary({op:?}) is not a value"),
+        ExprNode::Reduce { .. } => panic!(
+            "PointCheck: a fold rebinds its body per iteration, which a \
+             per-node bound cannot represent; expand_reduce first"
         ),
     }
 }
@@ -1677,6 +1743,9 @@ struct Env<'a> {
     reduce_vars: [f32; 4],
     variance: &'a [crate::variance::Variance],
     memo: &'a core::cell::RefCell<alloc::vec::Vec<Option<f32>>>,
+    /// Every memo entry this point wrote, so [`Evaluator`] can clear them
+    /// without touching the rest of the arena.
+    touched: &'a core::cell::RefCell<alloc::vec::Vec<ExprId>>,
 }
 
 impl Env<'_> {
@@ -1715,6 +1784,12 @@ impl Env<'_> {
                 "eval_scalar: bare Buffer({}) is not a value; read it through Gather",
                 b.0
             ),
+            // Unreachable precondition: `eval_scalar` expands references
+            // before building this environment, so a survivor means the walk
+            // was entered without that step.
+            ExprNode::Ref(key) => panic!(
+                "eval_scalar: {key:?} survived expand_refs — this environment                  was built without the entry point's expansion"
+            ),
             ExprNode::Unary(op, a) => {
                 let x = self.eval(*a);
                 op.eval_unary(x).unwrap_or_else(|| {
@@ -1743,15 +1818,12 @@ impl Env<'_> {
                 op.eval_ternary(x, y, z)
                     .unwrap_or_else(|| panic!("eval_scalar: no scalar eval for ternary {op:?}"))
             }
-            ExprNode::Nary(OpKind::Reduce, start, len) => {
-                assert_eq!(*len, 4, "Reduce must have 4 children");
-                let ch = self.arena.nary_children_slice(*start, *len);
-                self.reduce(ch[0], ch[1], ch[2], ch[3])
-            }
+            ExprNode::Reduce { fold, body } => self.reduce(*fold, *body),
             ExprNode::Nary(op, _, _) => panic!("eval_scalar: Nary({op:?}) unsupported"),
         };
         if is_memoizable {
             self.memo.borrow_mut()[id.0 as usize] = Some(val);
+            self.touched.borrow_mut().push(id);
         }
         val
     }
@@ -1797,40 +1869,19 @@ impl Env<'_> {
     /// combining terms with the monoid named by the `combiner` child. This is
     /// the reference definition that the unrolled `expand_reduce` form must
     /// match. `combiner`, `reduce_var`, and `extent` are `Const` children.
-    fn reduce(&self, combiner: ExprId, reduce_var: ExprId, extent: ExprId, body: ExprId) -> f32 {
-        let op = OpKind::from_index(self.const_of(combiner, "reduce combiner") as usize)
-            .expect("reduce combiner must be a valid OpKind index");
-        let var_idx = self.const_of(reduce_var, "reduce var index") as usize;
-        let n = self.const_of(extent, "reduce extent") as usize;
-        let base = crate::arena::REDUCE_BINDER_BASE as usize;
-        let slots = base + self.reduce_vars.len();
-        assert!(
-            (base..slots).contains(&var_idx),
-            "reduce index Var({var_idx}) out of range (must be {base}..{slots})"
-        );
-        let slot = var_idx - base;
-
-        let mut acc = op
-            .monoid_identity()
-            .unwrap_or_else(|| panic!("reduce combiner {op:?} is not a monoid"));
-        for k in 0..n {
+    fn reduce(&self, fold: Fold, body: ExprId) -> f32 {
+        let op = fold.monoid().op();
+        let slot = fold.binder().slot() as usize;
+        let mut acc = fold.monoid().identity();
+        for k in fold.range() {
             let mut child = *self;
             child.reduce_vars[slot] = k as f32;
             let term = child.eval(body);
-            // Combine under the monoid op (Add/Mul/Min/Max).
             acc = op
                 .eval_binary(acc, term)
                 .expect("monoid combiner evaluates on two scalars");
         }
         acc
-    }
-
-    /// Read a `Const` child that encodes an integer parameter.
-    fn const_of(&self, id: ExprId, what: &str) -> f32 {
-        match self.arena.node(id) {
-            ExprNode::Const(v) => *v,
-            other => panic!("reduce {what} must be a Const, got {other:?}"),
-        }
     }
 }
 
@@ -1838,7 +1889,14 @@ impl Env<'_> {
 mod tests {
     use super::*;
     use crate::arena::BufferDecl;
+    use crate::fold::{Binder, Monoid};
     use alloc::vec;
+
+    /// The first reduction binder — `Var(4)`, which every fold in these tests
+    /// builds its body against.
+    fn binder() -> Binder {
+        Binder::from_var(4).expect("Var(4) is the first binder")
+    }
 
     /// A lattice-invariant leaf holding `default` — what a scalar that used
     /// to ride a retired axis is now.
@@ -1989,7 +2047,7 @@ mod tests {
         let one = arena.push_const(1.0);
         let ip1 = arena.push_binary(OpKind::Add, i, one);
         let sq = arena.push_binary(OpKind::Mul, ip1, ip1);
-        let root = arena.push_reduce(OpKind::Add, 4, 4, sq);
+        let root = arena.push_reduce(Fold::new(Monoid::SUM, binder(), 0..4), sq);
 
         let bindings = BindingTable::empty();
         assert_eq!(eval_scalar(&arena, root, &[0.0; 2], &bindings), 30.0);
@@ -2000,7 +2058,7 @@ mod tests {
         // max_{i=0..4} i = 3 ; prod_{i=1..4}(via body i+1) = 2*3*4 = 24.
         let mut arena = ExprArena::new();
         let i = arena.push_var(4);
-        let max_root = arena.push_reduce(OpKind::Max, 4, 4, i);
+        let max_root = arena.push_reduce(Fold::new(Monoid::MAX, binder(), 0..4), i);
         let bindings = BindingTable::empty();
         assert_eq!(eval_scalar(&arena, max_root, &[0.0; 2], &bindings), 3.0);
 
@@ -2008,29 +2066,29 @@ mod tests {
         let ip1 = arena.push_binary(OpKind::Add, i, one);
         // product over i=1..4 of (i+1): i=1->2, 2->3, 3->4  => start at i=0 -> 1
         // Reduce over 0..4 of (i+1) = 1*2*3*4 = 24.
-        let mul_root = arena.push_reduce(OpKind::Mul, 4, 4, ip1);
+        let mul_root = arena.push_reduce(Fold::new(Monoid::PRODUCT, binder(), 0..4), ip1);
         assert_eq!(eval_scalar(&arena, mul_root, &[0.0; 2], &bindings), 24.0);
     }
 
     #[test]
     fn fold_an_empty_reduce_domain_to_the_combiners_monoid_identity() {
-        // extent=0 skips `reduce`'s loop entirely, so the result IS
-        // `OpKind::monoid_identity()` — the only place that private value is
-        // observable through the public eval_scalar/push_reduce surface.
-        fn empty_reduce(combiner: OpKind) -> f32 {
+        // An empty range skips `reduce`'s loop entirely, so the result IS
+        // `Monoid::identity()` — the only place that value is observable
+        // through the public eval_scalar/push_reduce surface.
+        fn empty_reduce(monoid: Monoid) -> f32 {
             let mut arena = ExprArena::new();
             let body = arena.push_var(4);
-            let root = arena.push_reduce(combiner, 4, 0, body);
+            let root = arena.push_reduce(Fold::new(monoid, binder(), 0..0), body);
             eval_scalar(&arena, root, &[0.0; 2], &BindingTable::empty())
         }
 
-        assert_eq!(empty_reduce(OpKind::Add), 0.0);
-        assert_eq!(empty_reduce(OpKind::Mul), 1.0);
-        assert_eq!(empty_reduce(OpKind::Min), f32::INFINITY);
-        assert_eq!(empty_reduce(OpKind::Max), f32::NEG_INFINITY);
-        assert_eq!(empty_reduce(OpKind::BitOr).to_bits(), 0u32);
+        assert_eq!(empty_reduce(Monoid::SUM), 0.0);
+        assert_eq!(empty_reduce(Monoid::PRODUCT), 1.0);
+        assert_eq!(empty_reduce(Monoid::MIN), f32::INFINITY);
+        assert_eq!(empty_reduce(Monoid::MAX), f32::NEG_INFINITY);
+        assert_eq!(empty_reduce(Monoid::ANY).to_bits(), 0u32);
         assert_eq!(
-            empty_reduce(OpKind::BitAnd).to_bits(),
+            empty_reduce(Monoid::ALL).to_bits(),
             u32::MAX,
             "BitAnd's monoid identity is the all-ones bit pattern (never read as a number)"
         );
@@ -2044,17 +2102,14 @@ mod tests {
         let x = arena.push_var(0);
         let i = arena.push_var(4);
         let body = arena.push_binary(OpKind::Add, x, i);
-        let root = arena.push_reduce(OpKind::Add, 4, 5, body); // Σ_{i=0}^{4}(X+i)
+        let root = arena.push_reduce(Fold::new(Monoid::SUM, binder(), 0..5), body); // Σ_{i=0}^{4}(X+i)
 
         let mut lowered = arena.clone();
         let lroot = expand_reduce(&mut lowered, root);
         // No Reduce node remains reachable from the new root.
         let mut stack = alloc::vec![lroot];
         while let Some(id) = stack.pop() {
-            assert!(!matches!(
-                lowered.node(id),
-                ExprNode::Nary(OpKind::Reduce, _, _)
-            ));
+            assert!(!matches!(lowered.node(id), ExprNode::Reduce { .. }));
             for c in lowered.children(id) {
                 stack.push(c);
             }
@@ -2091,7 +2146,7 @@ mod tests {
         let wg = arena.push_gather(wb, i, zero);
         let ig = arena.push_gather(ib, i, zero);
         let prod = arena.push_binary(OpKind::Mul, wg, ig);
-        let root = arena.push_reduce(OpKind::Add, 4, 3, prod);
+        let root = arena.push_reduce(Fold::new(Monoid::SUM, binder(), 0..3), prod);
 
         let bindings = BindingTable::bind(&arena, &[w.as_slice(), inp.as_slice()]).unwrap();
         // 2*10 + 3*20 + 4*30 = 20 + 60 + 120 = 200.
