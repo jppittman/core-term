@@ -151,8 +151,8 @@ arbitrary pick was sometimes the luckier one. The honest reading is that the
 mechanical defect is out and the **search** limit is now what is left,
 which is exactly what §5 registers.
 
-All 7 chrome witness pairs survive, but the gap they name shrinks: mean
-|Δobjective| / greedy **17.9 % → 4.8 %**. Their first-divergence labels move
+All 7 chrome witness pairs survive, but the gap they name shrinks — the
+mean of |Δobjective| over greedy's own objective goes **17.9 % → 4.8 %**. Their first-divergence labels move
 from `COORDINATED` 6 / `CYCLE-PRICED` 1 to `COORDINATED` 5 / `TIE` 2, and
 every one of them is now settled at stage `dp` — none by the repair, none by
 `min-of-two`.
