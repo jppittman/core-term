@@ -450,14 +450,7 @@ fn sin_of_negative_zero_is_positive_zero() {
 /// are accurate for x > 0.
 #[test]
 fn log_family_nan_outside_domain_and_accurate_inside() {
-    let out_of_domain = [
-        0.0,
-        -0.0,
-        -1.0,
-        -100.0,
-        f32::NEG_INFINITY,
-        f32::NAN,
-    ];
+    let out_of_domain = [0.0, -0.0, -1.0, -100.0, f32::NEG_INFINITY, f32::NAN];
     for &x in &out_of_domain {
         let l2 = log2_at(x);
         let ln = ln_at(x);
@@ -471,15 +464,24 @@ fn log_family_nan_outside_domain_and_accurate_inside() {
     for &x in &in_domain {
         let got_log2 = log2_at(x);
         let want_log2 = (x as f64).log2() as f32;
-        assert!((got_log2 - want_log2).abs() <= 1e-4, "log2({x}) = {got_log2}, want {want_log2}");
+        assert!(
+            (got_log2 - want_log2).abs() <= 1e-4,
+            "log2({x}) = {got_log2}, want {want_log2}"
+        );
 
         let got_ln = ln_at(x);
         let want_ln = (x as f64).ln() as f32;
-        assert!((got_ln - want_ln).abs() <= 1e-4, "ln({x}) = {got_ln}, want {want_ln}");
+        assert!(
+            (got_ln - want_ln).abs() <= 1e-4,
+            "ln({x}) = {got_ln}, want {want_ln}"
+        );
 
         let got_log10 = log10_at(x);
         let want_log10 = (x as f64).log10() as f32;
-        assert!((got_log10 - want_log10).abs() <= 1e-4, "log10({x}) = {got_log10}, want {want_log10}");
+        assert!(
+            (got_log10 - want_log10).abs() <= 1e-4,
+            "log10({x}) = {got_log10}, want {want_log10}"
+        );
     }
 }
 
@@ -500,7 +502,10 @@ fn pow_nan_for_nonpositive_base_or_nan() {
     let got = pow_at(2.0, 3.0);
     assert!((got - 8.0).abs() <= 1e-3, "pow(2.0, 3.0) = {got}, want 8.0");
     let got_sqrt = pow_at(4.0, 0.5);
-    assert!((got_sqrt - 2.0).abs() <= 1e-3, "pow(4.0, 0.5) = {got_sqrt}, want 2.0");
+    assert!(
+        (got_sqrt - 2.0).abs() <= 1e-3,
+        "pow(4.0, 0.5) = {got_sqrt}, want 2.0"
+    );
 }
 
 /// `exp` and `exp2` propagate NaN arguments.
