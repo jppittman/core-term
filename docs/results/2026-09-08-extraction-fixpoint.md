@@ -220,6 +220,16 @@ that regressed in the class-cap sweep now improve:
 
 (the 32 px rows; the 16 px rows are the same shapes and move identically.)
 
+**And the two columns disagree in both directions.** The three kernels whose
+`dag_cost` still climbs are `cosine_palette` (292 → 521, objective −23 %),
+`julia_set` (640 → 648, objective +0.7 %) and `psychedelic_packed`
+(821 → 825, objective +0.0007 %). The ten whose **objective** climbs include
+eight glyphs whose `dag_cost` *falls*, some by a lot — `U+0058`
+842 → **638** with the objective +3.0 %, `U+0078` 828 → **603** with +2.6 %,
+`U+002A` 1,204 → **1,121** with +7.8 %. Whichever column is quoted, the other
+one says the opposite on a different kernel. §3 is not a footnote about one
+shader.
+
 **What it costs.** On glyphs the trade is visible and small: at the 5k and
 10k caps the fixpoint is better in both columns (Σ objective −0.04 % /
 −0.02 %, Σ `dag_cost` −0.42 % / −0.22 %) and at 20k it is **worse**
