@@ -3024,12 +3024,20 @@ mod tests {
         assert_eq!(seen, many);
     }
 
-    /// The sharing-aware DP as it shipped before the reach sets went
-    /// hybrid: one dense bitset per live class, the union taken word by
-    /// word. Kept verbatim as the reference the budgeted pass is held to —
-    /// its results are the ones every committed extraction row was taken
-    /// with (`docs/results/2026-09-07-egraph-off-vs-on-real-shaders-rows`),
-    /// so agreeing with it on a saturated graph is agreeing with them.
+    /// The sharing-aware DP as it shipped before the reach sets went hybrid
+    /// **and** before the pass settled in cost order: one dense bitset per
+    /// live class, one DFS post-order, `CYCLE_COST` for a class whose child
+    /// is still on the stack. Kept verbatim as the reference the budgeted
+    /// pass is held to — its results are the ones every committed extraction
+    /// row was taken with
+    /// (`docs/results/2026-09-07-egraph-off-vs-on-real-shaders-rows`).
+    ///
+    /// Its agreement with the shipped pass is therefore conditional, and the
+    /// condition is checked rather than assumed: the fixpoint reproduces
+    /// this reference exactly **wherever this reference had an opinion**, so
+    /// the caller asserts the fixture holds no class it could only price at
+    /// the sentinel. Without that assertion the comparison would quietly go
+    /// vacuous the day a fixture grew a cycle.
     fn dense_reference_pass<C: CostFunction>(
         egraph: &EGraph,
         root: EClassId,
@@ -3327,6 +3335,12 @@ mod tests {
             (256, LatticeShape::new([32, 32])),
         ] {
             let (egraph, root) = saturated_sdf_egraph(nodes);
+            assert!(
+                sentinel_priced(&egraph, root).is_empty(),
+                "{nodes} nodes: the reference could only price some class at the sentinel, so \
+                 it has no opinion there and this comparison would be vacuous — see \
+                 `the_fixpoint_prices_a_class_the_post_order_dp_left_at_the_sentinel`"
+            );
             let reference = dense_reference_pass(&egraph, root, &costs, shape);
             let pass = shared_dag_dp_pass(
                 &egraph,
