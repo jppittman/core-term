@@ -2185,6 +2185,7 @@ pub(super) fn shared_dag_dp_pass<C: CostFunction>(
     // rather than copied when a candidate takes the lead.
     let mut scratch: Vec<u32> = Vec::new();
     let mut winner: Vec<u32> = Vec::new();
+    let mut reach_is_self: Vec<bool> = Vec::with_capacity(live);
     let mut reach_bytes: usize = 0;
 
     for canonical in order.iter().copied() {
@@ -2270,6 +2271,15 @@ pub(super) fn shared_dag_dp_pass<C: CostFunction>(
         if min_cost == CYCLE_COST {
             winner.clear();
         }
+        // Whether this class's sub-DAG is itself alone, recorded rather than
+        // left to be re-derived from the cost. Three unrelated situations
+        // land here — a leaf, a cycle-priced winner, and a class where NO
+        // candidate beat the initial `usize::MAX` sentinel (`winner` was
+        // never swapped in, `min_own` is still 0 and `min_idx` still 0) — and
+        // the third is invisible in the cost alone. `Beam`'s anchor reads
+        // this; before it did, that third case sent the anchor down node 0's
+        // whole subtree while the DP had priced a singleton.
+        reach_is_self.push(winner.is_empty());
         winner.push(me as u32);
         let set = Reach::smaller_of(&winner, words);
         reach_bytes = reach_bytes.saturating_add(set.bytes());
@@ -2296,6 +2306,7 @@ pub(super) fn shared_dag_dp_pass<C: CostFunction>(
             own: best_own,
             var: best_var,
             cost: best_cost,
+            reach_is_self,
             order,
             compact,
         }),
@@ -2333,9 +2344,14 @@ pub(super) struct SharedPassSettled {
     /// Variance of the chosen form, per canonical e-class.
     pub(super) var: Vec<Variance>,
     /// The DP's selection cost per canonical e-class — [`CYCLE_COST`] for a
-    /// class the pass priced at the cycle sentinel, whose sub-DAG is itself
-    /// alone.
+    /// class the pass priced at the cycle sentinel.
     pub(super) cost: Vec<Option<usize>>,
+    /// Whether the class's chosen sub-DAG is itself alone, indexed by
+    /// *compact* id. True for a leaf, for a cycle-priced winner, and for a
+    /// class where no candidate beat the `usize::MAX` sentinel — three
+    /// situations the cost alone cannot tell apart, which is why this is
+    /// recorded here instead of re-derived by every reader.
+    pub(super) reach_is_self: Vec<bool>,
     /// Root-reachable classes, children before parents.
     pub(super) order: Vec<EClassId>,
     /// Canonical e-class id to position in [`Self::order`]; `u32::MAX` for a

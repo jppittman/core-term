@@ -513,8 +513,9 @@ fn anchor_state(
     };
     let var = settled.var[canonical.0 as usize];
 
-    // A cycle-priced class reaches only itself, as it does in the DP.
-    if cost == extract::CYCLE_COST {
+    // A class whose sub-DAG is itself alone, as the DP recorded it: a leaf, a
+    // cycle-priced winner, or a class no candidate's cost beat.
+    if settled.reach_is_self[me] {
         return State {
             members: alloc::vec![me_member],
             cost,
