@@ -122,6 +122,7 @@ pub(super) struct Builder<B: IsaBackend> {
     loops: Vec<Loop>,
     constants: Constants<B::Constant>,
     interned: BTreeMap<B::Constant, Constant>,
+    anchors: B::Anchors,
     /// Blocks minted and not yet entered.
     pending: usize,
 }
@@ -143,6 +144,7 @@ impl<B: IsaBackend> Builder<B> {
             loops: Vec::new(),
             constants,
             interned: BTreeMap::new(),
+            anchors: B::Anchors::default(),
             pending: 0,
         };
         let params =
@@ -299,10 +301,21 @@ impl<B: IsaBackend> Builder<B> {
         }
         let entry = Constant {
             label: self.labels.mint(),
+            offset: index * size_of::<B::Constant>() as u64,
         };
         self.constants.entries.push((entry.label, k));
         self.interned.insert(k, entry);
         Ok(entry)
+    }
+
+    /// The label of the pool section.
+    pub(super) fn pool(&self) -> Label {
+        self.constants.label
+    }
+
+    /// What the backend keeps for the whole function.
+    pub(super) fn anchors(&mut self) -> &mut B::Anchors {
+        &mut self.anchors
     }
 
     /// Record the loop whose head is `head`, nested in `parent`, returning its
@@ -467,4 +480,14 @@ impl<'a, B: IsaBackend> Spiller<'a, B> {
         let operands = operands::<B>(&inst);
         self.insts.push(Pushed { inst, operands });
     }
+}
+
+/// A fresh value of class `D` for an instruction of the allocator's to
+/// define, and its name as the class `C` the allocator asked for.
+pub(in crate::emit) fn defined<C: Spill, D: Spill>(
+    b: &mut Spiller<'_, impl IsaBackend>,
+) -> (Def<D>, Value<C>) {
+    let dst = b.def::<D>();
+    let value = dst.value().name().typed();
+    (dst, value)
 }

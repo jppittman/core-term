@@ -300,7 +300,8 @@ pub(in crate::emit) enum VectorFile {}
 pub(in crate::emit) enum GeneralFile {}
 /// AVX-512's `k1`–`k7`. `k0` is not a member: an EVEX `aaa` of 0 means "no mask".
 pub(in crate::emit) enum OpmaskFile {}
-/// x86 `EFLAGS`, aarch64 `NZCV`: one member.
+/// x86 `EFLAGS`: one member. aarch64 has none: nothing selected there reads or
+/// writes `NZCV`.
 pub(in crate::emit) enum FlagsFile {}
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(in crate::emit) enum FileId { Vector, General, Opmask, Flags }
@@ -460,13 +461,14 @@ impl RegisterFile {
 |---|---|---|---|---|---|
 | AVX2 | `ymm0`–`15` | `rax rcx rdx rsi rdi r8 r9 r10 r11` | — | `EFLAGS` | `rdi rsi rdx` |
 | AVX-512 | `zmm0`–`31` | same as AVX2 | `k1`–`k7` | `EFLAGS` | `rdi rsi rdx` |
-| NEON | `v0`–`7`, `v16`–`31` | `x0`–`x17` | — | `NZCV` | `x0 x1 x2` |
+| NEON | `v0`–`7`, `v16`–`31` | `x0`–`x17` | — | — | `x0 x1 x2` |
 
 Notes on the table:
 
 - The vector members are today's (`AVX2_FILE` `avx2.rs:1164`, `AVX512_FILE` `avx512.rs:1233`, `AARCH64_FILE` `aarch64.rs:1881`).
 - The general members are the caller-saved registers that today's three hand-split pools (`gpr_scratch`, `pointers`, the pins) partition, now as one file. `r8`, `x16` and `x17` join it.
 - AAPCS64's IP0/IP1 matter only across a call, through a linker veneer. A leaf kernel makes no calls (ontology: Register).
+- NEON's flags file is empty: nothing selected there reads or writes `NZCV` (a mask is a vector and a guard is `cbz` on a general register), so no instruction has a flags field.
 
 ### 2.4 The frame
 
@@ -512,7 +514,8 @@ pub(super) struct SlotLease { name: SlotName }
 ///   region alone (16-aligned) when no vector was spilled. Past
 ///   `MAX_FRAME` (2 MiB) it is `BudgetExceeded`.
 /// - **The stack pointer is the frame's.** Its only readers are frame-slot
-///   operands and `SlotAddr` (§2.10). Its only writers are the function's
+///   operands and the one `add t, sp, #hi, lsl 12` a deep NEON slot's address
+///   is (§2.10). Its only writers are the function's
 ///   `Enter` and `Ret` instructions. It is in no class.
 /// - After the scan, the allocator converts its `&'m mut Frame` into
 ///   `&'m Frame`, and the allocated function borrows `&'m FrameSlot`s from it.
@@ -969,8 +972,9 @@ pub(in crate::emit) trait IsaBackend: Sized + 'static {
 
     // The allocator's own instructions.
     fn copy<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>) -> Value<C>;
-    /// Store `src` to `slot`. When `slot.offset()` does not encode: a
-    /// `SlotAddr` into a fresh `Pointer`, then the store through it.
+    /// Store `src` to `slot`. When `slot.offset()` does not encode: one
+    /// `add t, sp, #hi, lsl 12` into a fresh `Pointer`, then the store through
+    /// it with the low part.
     fn spill<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>, slot: &FrameSlot);
     fn reload<C: Spill>(b: &mut Spiller<'_, Self>, slot: &FrameSlot) -> Value<C>;
     /// Whether the allocator may place this instruction again where a read
@@ -1205,7 +1209,7 @@ In the new pipeline, none of these is ever written. The legacy code is deleted i
 | H3 | (at HEAD) AVX2 guard `avx2.rs`'s `branch_if_arm_is_dead`: `Inst::MoveMask`, `Gp::CmpByte` or `Gp::Test`, `Gp::Jcc` | `rax` clobbered between instructions | `g = MoveMask(m)`, then `f = Test(g)` (a dead `True` arm) or `f = CmpByte(g, 0xFF)` (a dead `False` arm), then `Jcc(f)`. The encoder picks the `cmp al` form | B9 |
 | H4 | `FmovToGp` with `Rd = 16` (`table.rs:425-439`); `mvn_w(X16, X16)` (`aarch64.rs:2097`); `CBNZ_W16_OVER_B` (`2745`), `BranchIfW16Zero` (`2770`) | IP0 written and tested by convention | `FmovToGp { dst: Write<Integer> }`, `MvnW { dst: Tie<Integer> }`, `CbzFar { test: Read<Integer>, taken, next }` (`cbnz w, .+8; b taken` with an `imm26` field) | A12b fields (`next` at B1); C4 values |
 | H5 | `emit_fmov_imm`'s `w16` path (`aarch64.rs:466-477`) | `movz/movk w16; dup` | Every constant is selected: `movi`, `fmov`, or `ldr q, [p, #off]` | C4 |
-| H6 | `address_in_ip0` (`table.rs:530`), called by `StrQ` (`562`), `LdrQ` (`617`) and `LdrS` (`672`). `LdrS` also serves `emit_uniform_load` (`aarch64.rs:410`) and `index_into`'s slot read (`2269`). `StrX`/`LdrX` panic past `imm12` (`table.rs:589-594`, `644-648`), and `LdrX` serves `Context` (`aarch64.rs:2390-2401`), so a context slot of 4096 or more panics | IP0 as an address, and two panics | Spills: `spill`/`reload` emit `SlotAddr { dst: Write<Pointer>, slot }` (`add t, sp, #hi, lsl 12; add t, t, #lo`); narrow slots always encode. Non-frame loads (`Uniform`, `Context`): selection emits `t = AddImm(base, #hi, lsl 12)`, `ldr [t, #lo]`, and `movz/movk` plus a register `add` past 16 MiB. The binder read is an ordinary reload. One instruction replaces today's chain of `add #4080` | C4 |
+| H6 | `address_in_ip0` (`table.rs:530`), called by `StrQ` (`562`), `LdrQ` (`617`) and `LdrS` (`672`). `LdrS` also serves `emit_uniform_load` (`aarch64.rs:410`) and `index_into`'s slot read (`2269`). `StrX`/`LdrX` panic past `imm12` (`table.rs:589-594`, `644-648`), and `LdrX` serves `Context` (`aarch64.rs:2390-2401`), so a context slot of 4096 or more panics | IP0 as an address, and two panics | Spills: `spill`/`reload` emit one `add t, sp, #hi, lsl 12` into a fresh `Pointer` and the transfer at `[t, #lo]` (as built: `AddSpHi`, with no separate low add); narrow slots always encode. Non-frame loads (`Uniform`, `Context`): selection emits `t = AddImm(base, #hi, lsl 12)`, `ldr [t, #lo]`, and `BudgetExceeded` past 16 MiB, as x86's `disp32` is. The binder read is an ordinary reload. One instruction replaces today's chain of `add #4080` | C4 |
 | H7 | `kortestw` bytes hardwiring `k1,k1` (`avx512.rs:647-653`) | An encoder that ignores its register | `KorTest { flags: Write<Flags>, k: Read<Opmask> }` encodes `k.number()` | A11b field; C2 value |
 | H8 | Gather mask `mov eax, 0xFFFF; kmovw k1, eax` (`avx512.rs:749`); `aaa = 001` (`789`); `gpr_temps_for(Gather) = 0` | `rax` and `k1` clobbered, undeclared. At HEAD (since P5 and P6): `k1` and `eax` are both declared, `gpr_temps_for(Gather) = 1` and `set_gather_mask` takes the `Gpr`; C2 deletes the sequence | `k = KOnes` (`kxnorw k, k0, k0` as built: no general register), then `Gather { dst: Early<Vector>, mask: Tie<Opmask> }`. `kxnorw` reads its own operand, and `vgatherdps` writes the mask it gathers under, so a `KOnes` on the previous gather's mask chains each gather behind the last (the `mov`/`kmovw` pair only writes). C2 gave `KOnes` a source nothing writes, `k0`, which is part of the idiom's encoding and not a value | C2 |
 | H9 | Gather into `temp(1)`, then `vmovaps` (`avx512.rs:1368-1381`) | A temp plus a move standing in for an early def | `dst: S::Early<Vector>`; the move is gone | C2 |
@@ -1224,7 +1228,7 @@ In the new pipeline, none of these is ever written. The legacy code is deleted i
 | H22 | About 227 signatures taking `code: &mut Vec<u8>` (`grep -c`, `bdee3900`) | Choice and encoding fused | Per-ISA `Inst<S>`; `encode(&Inst<Bound>)` | A9–A12 |
 | H23 | `Where::Ptr` (`regalloc.rs:647`); `pointers` (`370`) beside `gpr_scratch` (`352`) | One physical file split by role | One `GeneralFile`. `Pointer` and `Integer` are *types* of values in it | B3 / D1 |
 | H24 | `accumulator_slots`/`binder_slots` keyed by the `Reduce`'s `ValueId`, "the later fold wins" (`regalloc.rs:1050-1054`, pins `1216-1287`) | Two carved siblings sharing slots by accident | Each fold's parameters belong to its own `Head`, and slots are leases | B6 / D1 |
-| H25 | (at HEAD) The stack pointer: written by `frame_alloc` and `emit_ret`, which frees (`avx2.rs:1465`, `avx512.rs:1552`, `aarch64.rs:2110-2136`), read by every slot (`x86_64.rs:796`, `aarch64.rs:1864`) | A register in no class, used by convention | Owned by `Frame`. Read only through slot operands and `SlotAddr`; written only by `Enter`/`Ret` | B3, C4 |
+| H25 | (at HEAD) The stack pointer: written by `frame_alloc` and `emit_ret`, which frees (`avx2.rs:1465`, `avx512.rs:1552`, `aarch64.rs:2110-2136`), read by every slot (`x86_64.rs:796`, `aarch64.rs:1864`) | A register in no class, used by convention | Owned by `Frame`. Read only through slot operands and a deep slot's one `add t, sp, #hi, lsl 12`; written only by `Enter`/`Ret` | B3, C4 |
 | H26 | Placeholder defs: `place_roots` rewrites a hoisted vector def to `Const(0.0)` (`program/scopes.rs:277`); a pointer one stays `Context`; `stays_put` (`scopes.rs:205`) | A def whose op lies about what it is. A selected placeholder is a silent 0.0 (the escape-hatches 2026-09-04 miscompile) | `ScheduledOp::Outer(Class)`, a typed read of an enclosing value (A5). D2 deletes the placeholders | A5, D2 |
 | H27 | `vzeroupper` and `ret` (`x86_64.rs:159`) | Implicit clobber and read | `Ret` is the exit terminator; nothing is live there (asserted) | B3 |
 | H28 | `Write`'s binder read chosen by residency: `vcvttss2si r64, m32` from a slot (`x86_64.rs:846-857`), NEON `ldr s via` (`aarch64.rs:2269-2278`) | A selection made by residency | The binder is a value. A slot-held binder gets a reload, then the register form | B3 (x86), C4 (NEON) |
@@ -1292,7 +1296,7 @@ Tests deleted because the property is now a type, an invariant, or moot:
 - `a_carried_register_is_untouched_by_everything_inside_the_loop`: a carried lease is held to the latch, and join invariant 1 is asserted.
 - `a_destination_never_lands_on_a_resident_operand`, `reservations_match_residency_under_pressure`, `a_temp_collides_with_neither_the_operand_nor_the_destination`, `an_if_reserves_a_target_for_each_arm_it_has_to_reload`, `a_resident_operand_reserves_no_reload_target`, `an_op_that_asks_for_no_temp_gets_none`, `a_temp_is_free_again_at_the_next_instruction`: reservations do not exist.
 - `sibling_column_folds_share_a_reduce_and_its_slots`: the accident it pins is gone.
-- `a_deep_frame_addresses_through_ip0` (`aarch64.rs:1728`): replaced in C4.
+- `a_deep_frame_addresses_through_ip0` (`aarch64.rs:1728`): tests legacy's chain of `add`s, and goes with legacy in D1 (C4's deep-slot value test is `tests/deep_frame.rs`).
 
 **D2 — `program/`.**
 - `Outer` placeholder defs (fold schedules hold only their own defs);
@@ -1638,7 +1642,7 @@ Every commit in this phase is live in production.
     - It is the same selected instruction placed twice, so the scan keeps its instructions in one list and a record names one by index. No cloning walk and no fresh `Def` are needed: the value keeps its id and takes a new register, as a reload does.
     - It has no slot and no store. `store_at_definition` skips it, so a loop head's flush and an eviction drop it for nothing.
     - Its eviction is the cheapest tier of `EvictionRank` (`Store::Never`), below a value whose slot already holds it.
-    - The allocator asserts that the instruction defines one value, reads none, and does not define `Flags`.
+    - The allocator asserts that the instruction defines one value, first, and otherwise only reads, and does not define `Flags`. B7 asserted that it reads none; C4 places what it reads first.
 - **Check:** the `parked_roots_w37` row, which B6 left about 1% above legacy in bytes and memory operations (nine pinned registers over one long straight-line fold body). It is below legacy in both now (bytes 249,664 to 204,768 against legacy's 247,328; loads plus stores 212,099 to 112,090 against 209,915), because a constant is no longer stored and reloaded. The loads that remain are remats, which legacy folds into memory operands and does not count.
   - Remat of a carried constant instead of carrying it was tried and measured: it shrinks the glyph row's code (768 bytes against 880) but nearly doubles its trip-weighted traffic (634 against 340), since the hot scope then redefines each constant every trip. Carrying stays priced as in B6.
 - **Gate:** K(avx2) as in B4, plus `constants_are_rematerialized_rather_than_spilled` in `tests/residency.rs`, against a compiled kernel's `traffic`. B5's `the_value_read_farthest_out_is_the_one_given_up` there is sized from `traffic.pool`, and replaces the in-file `belady_evicts_the_value_used_farthest_out`, which is deleted. Both run under either pipeline.
@@ -1711,28 +1715,34 @@ Every commit in this phase is live in production.
 
 #### C4: NEON selection, beside
 
-- **Files:** `aarch64.rs`, `aarch64/table.rs`, `.github/workflows/rust.yaml` (a macOS step running V with the knob).
+- **Files:** `aarch64.rs`, `aarch64/table.rs`; `regalloc/local.rs`, `build.rs` and `mod.rs` for what the pool base asks of them (the `Anchors` type, `Constant::offset`, the `(Neon, Selection)` arms of `compile_native` and `GOLDEN`'s `Target::compile`); `.github/workflows/rust.yaml` (a macOS step running V with the knob); the tests keyed by tier.
 - **Add:**
-  - `enter` defines the pool base `p = AdrpAdd(pool section)`, rematerializable.
-  - `Scan::defer` and the remat placement place a rematerializable instruction's reads first (B7 asserts there are none): `ldr q, [p, #offset]` reads the rematerializable `p`.
+  - `FILE`: `v0`–`7` and `v16`–`31`, `x0`–`x17` (IP0 and IP1 are the allocator's), no flags, entry `x0 x1 x2`.
+  - `enter`: `Enter` (a `ProbePage` per page while more than `STACK_PAGE` remains, then `sub sp, sp, #n` in steps of 4,080, which keeps `sp` 16-aligned and holds a 4,096-byte rest in `imm12`), then the pool base `p = AdrpAdd(pool section)`, rematerializable. `Builder::anchors` keeps `p` for the function.
+  - The allocator places a rematerializable instruction's reads first, which B7 asserted there were none of: `ldr q, [p, #offset]` reads the rematerializable `p`.
+    - `Liveness` counts a read of the constant as a read of `p` at that position, so `p` is live while any constant is read, a loop that reads one carries it, and a value that reads nothing more is released. `Scan::defer` accepts an instruction that defines one value, first, and otherwise only reads. `reload_into` places the reads, then the definition. The instruction has no slot, so neither has `p`.
   - Constants: `movi`, `fmov`, or `ldr q, [p, #offset]`. `POOL_REACH = 4096`; past it, `BudgetExceeded`.
-  - `Uniform` and `Context` with the address arithmetic of H6.
-  - The gather as `UmovW`/`LdrS`/`InsFirst`/`InsLane`.
-  - `Rsqrt`/`Recip` as SSA sequences: `e = frsqrte(x)`; `t = fmul(e, e)`; `t' = frsqrts(x, t)` (a `Tie` on `t`); `r = fmul(e, t')` (a `Tie` on `e`).
+  - `Uniform` and `Context` with the address arithmetic of H6: the offset itself, or `add t, base, #hi, lsl 12` and the low part in the transfer. Past 16 MiB (the high part past `imm12`) is `BudgetExceeded`, as x86's `disp32` is.
+  - The gather as `UmovW`/`LdrW`/`InsFirst`/`InsLane`.
+  - `Rsqrt`/`Recip` as SSA sequences of plain `Alu`s: `e = frsqrte(x)`; `t = fmul(e, e)`; `t' = frsqrts(x, t)`; `r = fmul(e, t')`. `FRSQRTS` and `FMUL` are three-operand, so nothing is tied and nothing is copied.
   - `branch` as `Umaxv`/`Uminv` → `FmovToGp` → (`MvnW`) → `CbzFar`.
-  - `spill`/`reload` emitting `SlotAddr` for deep vector slots.
+  - `spill`/`reload` emit the slot's address for a deep vector slot: `AddSpHi` (`add t, sp, #hi, lsl 12`) into a fresh `Pointer`, and the transfer at `[t, #lo]`. A store right after the definition is placed behind the scan, where the allocator cannot choose a register; it names a general register no value has held so far (`Scan::unused_general`), which was free there too, and refuses by name when every one has been held.
   - The remainder store through `St1Lane` with a `Tie<Pointer>` base.
 - **Tests:**
-  - New, value: `a_context_slot_past_imm12_loads`, at slot 4,096 (this panics on legacy NEON).
-  - New: `a_deep_vector_slot_is_addressed_through_an_allocated_pointer`, replacing `a_deep_frame_addresses_through_ip0`.
-  - Rewritten: `a_uniform_past_the_old_u16_width_loads_on_every_backend` (`mod.rs:5699`, asserts at `5785-5789`) asserts `add xN, base, #hi, lsl 12; ldr s, [xN, #lo]`, with `N` read from the bytes, not fixed.
-  - **`GOLDEN_SELECTED[neon]`**, including A1's `deep_frame` row, which crosses 64 KiB.
-- **Gate:** G and M (plus the knob step).
+  - New, value: `a_context_slot_past_imm12_loads` (`tests/context_past_imm12.rs`), at slot 4,096 (this panics on legacy NEON).
+  - The deep vector slot's value test is `tests/deep_frame.rs`, now at an eighth more terms than the pinned row: selection's frame for the pinned row is 61,104 bytes on NEON, a few KiB under `ldr q`'s reach, where legacy's was 125 KB. It replaces `a_deep_frame_addresses_through_ip0`, which tests legacy's chain of `add`s and goes with legacy in D1.
+  - Rewritten: `a_uniform_past_the_old_u16_width_loads_on_every_backend` (`mod.rs:5699`, asserts at `5785-5789`) also asserts `add xN, base, #hi, lsl 12; ldr s, [xN, #lo]` of the selected code, with `N` read from the bytes, not fixed.
+  - `tests/stack_probe.rs` runs on aarch64 Linux too (`uc_mcontext.sp`).
+  - **`GOLDEN_SELECTED[neon]`** (`tests/golden_selected.rs`'s third table). The `neon+selection` tiers of the graphics pins (`glyph_branches`, `the_scenes_emit_their_pinned_code`) are new rows.
+- **Gate:** G Q QK L, and M (plus the knob step).
 
 #### C5: NEON runs the selection pipeline
 
-- **Bytes:** every NEON column moves, for C1's reason plus `x16`/`x17` joining `General`.
-- **Report and gate:** as C1, plus M.
+- **Bytes:** every NEON column moves, for C1's reason. (`x16` and `x17` joined `General` in C4, where `FILE` is declared: the selection pipeline shares no pool with legacy's use of them.)
+- **Report and gate:** as C1, plus M. The report carries C4's open items, which C4 measured beside legacy and could not settle:
+  - Compile cost. Callgrind per compile of the emission, NEON legacy -> selection, after C4: `guarded_if_in_fold` +4.5%, `binary_ops` +4.5%, `memory` +6.2%, where `glyph_like_w37` -17%, `unary_ops` -24% and `deep_frame` -33%. C5 reports the production bake (`'@'@16`, `'8'@32`) against the 20% threshold, and says why these rows rise or removes the rise.
+  - Emitted code. C4 measured executed instructions (qemu `-d exec`) falling on every row, and `EmitTraffic`'s scheduled-operation count rising by a few on eight (it counts each store, which legacy's `Counting::emit_write` does not). C5 re-pins with both.
+  - Byte-moving items C4 left: `Ret` and `Enter` release and probe the frame in 4,080-byte `add sp` steps, where `add sp, sp, #hi, lsl 12; add sp, sp, #lo` is two words (15 words for the 61,104-byte `deep_frame` row); a `GOLDEN_SELECTED_NEON` row at `deep_frame`'s 9/8 size, which crosses the 64 KiB `ldr q` reach, so the deep slot's bytes are pinned and not only its values.
 
 #### C6: Probe the stack in `Enter`
 
@@ -1763,6 +1773,7 @@ Every commit in this phase is live in production.
 - **Files:** `program/scopes.rs`, `program/mod.rs`, `emit/select.rs`.
 - **Change:**
   - `place_roots` removes moved defs instead of writing `Outer`.
+  - A store right after a definition is placed behind the scan, so a deep NEON slot's address takes a general register no value has held (`Scan::unused_general`, refused by name when every one has). A per-definition record of the registers free at the definition, or placing a deep slot's address at the definition, would make that register a lease and lift the limit.
   - `stays_put`'s non-binder role goes. A `Reduce` placeholder is no longer kept, and the driver resolves it through `Bindings`.
   - Delete `Outer`, `program::Class` and `ScheduledOp::class`. With the placeholders gone, `scopes.rs:276` was the last reader.
 - **Bytes:** identical.

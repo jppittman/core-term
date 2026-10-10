@@ -14,8 +14,9 @@
 //! Unlike `GOLDEN`, which emits all three targets from any host through the
 //! crate's own entry points, this reaches the pipeline through `compile`, so it
 //! is the host's tier and the process's knob: it does nothing unless run on the
-//! selection pipeline, at a tier with a table below. The `isa-matrix` job does.
-//! `GOLDEN`'s columns pin the same code for the tiers whose default is
+//! selection pipeline, at a tier with a table below. The `isa-matrix` job does
+//! for the x86 tiers, and the macOS job (and `qemu-aarch64`, with the knob) for
+//! NEON. `GOLDEN`'s columns pin the same code for the tiers whose default is
 //! selection.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -34,6 +35,7 @@ const BYTES_PER_LANE: usize = 4;
 /// The vector widths of the tiers the tables are for.
 const AVX2_VECTOR_BYTES: usize = 32;
 const AVX512_VECTOR_BYTES: usize = 64;
+const NEON_VECTOR_BYTES: usize = 16;
 
 /// A row's emitted code: its length in bytes and the FNV-1a 64 digest of those
 /// bytes.
@@ -70,11 +72,29 @@ const GOLDEN_SELECTED_AVX512: [Bytes; 11] = [
     (401852, 0xb7be255b2b5b4d12),
 ];
 
+/// The same, on NEON, which the macOS job (and `qemu-aarch64`, under the knob)
+/// runs. `deep_frame` is 61,104 bytes of frame here, a few KiB under what
+/// `ldr q` reaches; `tests/deep_frame.rs` has the kernel past it.
+const GOLDEN_SELECTED_NEON: [Bytes; 11] = [
+    (320, 0x1e2cc2ccd2c39688),
+    (320, 0xaf15a3b51b626a3b),
+    (512, 0xf2c73927a15e6f3a),
+    (560, 0x441eee7bc834ff63),
+    (142560, 0x9eb8bd206736568b),
+    (1872, 0x85e1e22c75b380c7),
+    (624, 0xace3ddd873b0de8f),
+    (672, 0x3404e179b1577f67),
+    (384, 0x836d82c90fed0e27),
+    (432, 0x7e2dc82a4db53468),
+    (188320, 0xcfe28253787ecf9d),
+];
+
 #[test]
 fn the_sibling_fold_rows_emit_the_recorded_bytes_through_selection() {
     let pins = match jit_vector_bytes() {
         AVX2_VECTOR_BYTES => GOLDEN_SELECTED_AVX2,
         AVX512_VECTOR_BYTES => GOLDEN_SELECTED_AVX512,
+        NEON_VECTOR_BYTES => GOLDEN_SELECTED_NEON,
         _ => return,
     };
     if !selection() {

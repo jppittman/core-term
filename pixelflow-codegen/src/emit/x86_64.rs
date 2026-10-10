@@ -13,7 +13,7 @@
 //! (docs/plans/2026-09-22-the-isa-is-decided-at-startup.md §7).
 
 use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller};
+use super::build::{Builder, Def, Spiller, defined};
 use super::regalloc::resource::FrameSlot;
 use super::{
     AsmInsn, Assembly, Binding, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Gpr, Integer,
@@ -736,16 +736,6 @@ pub(super) fn define<B: X86, C: Class>(
     let value = dst.value();
     b.push(B::general(make(dst)));
     value
-}
-
-/// A fresh value of class `D` for an instruction of the allocator's to
-/// define, and its name as the class `C` the allocator asked for.
-pub(super) fn defined<C: Spill, D: Spill>(
-    b: &mut Spiller<'_, impl IsaBackend>,
-) -> (Def<D>, Value<C>) {
-    let dst = b.def::<D>();
-    let value = dst.value().name().typed();
-    (dst, value)
 }
 
 /// `mov p, [ctx + 8·slot]`.

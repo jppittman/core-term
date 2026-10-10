@@ -25,7 +25,7 @@
 //! AVX-512 tier resets `k1`.
 
 use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller};
+use super::build::{Builder, Def, Spiller, defined};
 use super::regalloc::resource::FrameSlot;
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::x86_64;
@@ -1098,6 +1098,7 @@ impl X86 for Avx2 {
 impl IsaBackend for Avx2 {
     type Inst<S: Stage> = Op<S>;
     type Constant = u32;
+    type Anchors = ();
     type Lane = Value<Vector>;
 
     // SysV has no callee-saved vector registers and the collapse ABI passes
@@ -1326,7 +1327,7 @@ impl IsaBackend for Avx2 {
     fn copy<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>) -> Value<C> {
         match C::ID {
             ClassId::Vector => {
-                let (dst, copy) = x86_64::defined::<C, Vector>(b);
+                let (dst, copy) = defined::<C, Vector>(b);
                 b.push(Op::Vector(Inst::Mov {
                     dst,
                     src: src.name().typed(),
@@ -1352,7 +1353,7 @@ impl IsaBackend for Avx2 {
     fn reload<C: Spill>(b: &mut Spiller<'_, Self>, slot: &FrameSlot) -> Value<C> {
         match C::ID {
             ClassId::Vector => {
-                let (dst, reloaded) = x86_64::defined::<C, Vector>(b);
+                let (dst, reloaded) = defined::<C, Vector>(b);
                 b.push(Op::Vector(Inst::ReloadVector {
                     dst,
                     slot: slot.name(),

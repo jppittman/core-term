@@ -418,7 +418,8 @@ enum GeneralFile {}
 /// AVX-512's `k1`-`k7`. `k0` is not a member: an EVEX `aaa` of 0 means "no
 /// mask".
 enum OpmaskFile {}
-/// x86 `EFLAGS`, aarch64 `NZCV`: one member.
+/// x86 `EFLAGS`: one member. aarch64 has none, because nothing selected there
+/// reads or writes `NZCV`.
 enum FlagsFile {}
 
 /// A [`File`] as data.
@@ -903,10 +904,12 @@ struct Constants<K> {
     entries: Vec<(Label, K)>,
 }
 
-/// One pool entry: its label (x86 reads it RIP-relative).
+/// One pool entry: its label (x86 reads it RIP-relative) and its byte offset
+/// in the section (aarch64 reads `[pool base, #offset]`).
 #[derive(Copy, Clone, Debug)]
 struct Constant {
     label: Label,
+    offset: u64,
 }
 
 /// A whole kernel, in layout order.
@@ -958,6 +961,9 @@ trait IsaBackend: Sized + 'static {
     /// One pool entry: x86 `u32` (each load broadcasts a scalar), aarch64
     /// `[u32; 4]`. It occupies `size_of` bytes of the pool section.
     type Constant: Copy + Ord;
+    /// What selection keeps for the whole function: aarch64's pool base value;
+    /// nothing on x86.
+    type Anchors: Default;
     /// One IR lane value as this machine holds it: `Value<Vector>` on AVX2
     /// and NEON; a `Vector` or an `Opmask` value on AVX-512.
     type Lane: Copy;
@@ -987,7 +993,7 @@ trait IsaBackend: Sized + 'static {
     /// End the block: go to `to`. A `Fallthrough` when `to` is `next`.
     fn jump(b: &mut build::Builder<Self>, to: Target, next: Label);
     /// The entry block's `Enter`, and the backend's per-function values
-    /// (aarch64's pool base).
+    /// ([`build::Builder::anchors`]: aarch64's pool base).
     fn enter(b: &mut build::Builder<Self>);
     fn ret(b: &mut build::Builder<Self>);
 
@@ -999,11 +1005,11 @@ trait IsaBackend: Sized + 'static {
     fn reload<C: Spill>(b: &mut build::Spiller<'_, Self>, slot: &FrameSlot) -> Value<C>;
 
     /// Whether the allocator may place this instruction again where a read
-    /// needs its definition, instead of storing it. It must have no effect and
-    /// one operand: the register it writes, of any class but `Flags`. The
-    /// allocator asserts that, and does not yet place an instruction that
-    /// reads (a pool load through aarch64's base register is C4's to teach it):
-    /// pool loads addressed by a label, `movi`/`fmov` immediates, the zero and
+    /// needs its definition, instead of storing it. It must have no effect,
+    /// write one register first, of any class but `Flags`, and otherwise only
+    /// read. The allocator asserts that, and places what it reads first (a
+    /// pool load through aarch64's base register reads the base, which is
+    /// itself one): pool loads, `movi`/`fmov` immediates, the zero and
     /// all-ones idioms.
     fn rematerializable(inst: &Self::Inst<Selected>) -> bool;
 
@@ -2739,11 +2745,7 @@ pub(crate) fn compile_native(
         }
         (Isa::Avx2, Pipeline::Selection) => compile_on::<avx2::Avx2>(&program),
         (Isa::Avx512, Pipeline::Selection) => compile_on::<avx512::Avx512>(&program),
-        (Isa::Neon, Pipeline::Selection) => panic!(
-            "{PIPELINE_VAR}=selection has no `{}` backend yet; it is refused rather than \
-             downgraded, so a run emits exactly the pipeline it was asked for",
-            Isa::Neon.name()
-        ),
+        (Isa::Neon, Pipeline::Selection) => compile_on::<aarch64::Neon>(&program),
     }
 }
 
@@ -2762,8 +2764,8 @@ enum Pipeline {
 
 impl Pipeline {
     /// What a tier compiles with when nothing says otherwise: selection once
-    /// the tier has switched to it. AVX-512 has a selection backend and has not
-    /// switched; NEON has neither.
+    /// the tier has switched to it. AVX-512 and NEON have a selection backend
+    /// and have not switched.
     const fn of(isa: Isa) -> Self {
         match isa {
             Isa::Avx2 => Self::Selection,
@@ -6245,6 +6247,31 @@ mod tests {
                 words.contains(&add_ip0) && words.iter().copied().any(ldr_s_ip0),
                 "NEON: no IP0-addressed load of the argument"
             );
+
+            // The selection pipeline adds the high part of the offset to the
+            // block's address, into a register it chose, and loads from that
+            // register with the low part: `N` is read from the bytes.
+            let selected = compile_on::<aarch64::Neon>(&regalloc::ScopedSchedule::from_schedule(
+                for_backend(neon.register_file()),
+            ))
+            .expect("NEON selection")
+            .code;
+            let words: Vec<u32> = selected
+                .as_bytes()
+                .chunks(4)
+                .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+                .collect();
+            let (hi, lo) = (PAST_U16_BYTES >> 12, PAST_U16_BYTES & 0xFFF);
+            // `add xN, xM, #hi, lsl 12`, then `ldr sT, [xN, #lo]`.
+            let add_hi = |w: u32| (w & !0x3FF) == 0x9140_0000 | (hi << 10);
+            let ldr_through =
+                |w: u32, n: u32| (w & !0x1F) == 0xBD40_0000 | ((lo / 4) << 10) | (n << 5);
+            assert!(
+                words.iter().any(
+                    |&add| add_hi(add) && words.iter().any(|&ldr| ldr_through(ldr, add & 0x1F))
+                ),
+                "NEON selection: no `add xN, base, #{hi}, lsl 12` feeding an `ldr s, [xN, #{lo}]`"
+            );
         }
     }
 
@@ -6768,8 +6795,8 @@ mod tests {
                     (Self::Aarch64, Pipeline::Legacy) => {
                         compile_on(aarch64::driver::Aarch64Backend::new(), lanes, subject)
                     }
-                    (target, Pipeline::Selection) => {
-                        panic!("{target:?} has no selection backend to compile a row with")
+                    (Self::Aarch64, Pipeline::Selection) => {
+                        selected_on::<aarch64::Neon>(lanes, subject)
                     }
                 }
             }

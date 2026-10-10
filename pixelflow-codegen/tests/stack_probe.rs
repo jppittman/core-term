@@ -9,7 +9,10 @@
 //! touch of that page is some slot of the finished frame, with the stack
 //! pointer half a frame below.
 
-#![cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#![cfg(all(
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    target_os = "linux"
+))]
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -20,6 +23,21 @@ mod rows {
     include!("support/deep_frame.rs");
 }
 include!("support/knob.rs");
+
+/// The stack pointer a signal interrupted.
+#[cfg(target_arch = "x86_64")]
+mod interrupted {
+    pub fn stack_pointer(context: &libc::ucontext_t) -> usize {
+        context.uc_mcontext.gregs[libc::REG_RSP as usize] as usize
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+mod interrupted {
+    pub fn stack_pointer(context: &libc::ucontext_t) -> usize {
+        context.uc_mcontext.sp as usize
+    }
+}
 
 const PAGE: usize = 4096;
 const WIDTH: usize = 11;
@@ -41,7 +59,7 @@ extern "C" fn on_fault(_: libc::c_int, info: *mut libc::siginfo_t, context: *mut
         let context = &*context.cast::<libc::ucontext_t>();
         (
             (*info).si_addr() as usize,
-            context.uc_mcontext.gregs[libc::REG_RSP as usize] as usize,
+            interrupted::stack_pointer(context),
         )
     };
     if address & !(PAGE - 1) != guard {
