@@ -423,7 +423,7 @@ pub(super) enum Inst<S: Stage> {
         k: S::Read<Opmask>,
     },
     /// `kmovw dst, src`: the low sixteen bits of a general register.
-    Kmovw {
+    KFromGpr {
         dst: S::Write<Opmask>,
         src: S::Read<Integer>,
     },
@@ -505,7 +505,8 @@ pub(super) enum Inst<S: Stage> {
     },
     /// `kxnorw dst, k0, k0`: all sixteen bits set. `k0` is never written, so
     /// the instruction waits on nothing, where `kxnorw k, k, k` would wait on
-    /// the last gather still clearing `k`.
+    /// the last gather still clearing `k`. `k0` is part of the idiom's
+    /// encoding, not a value: plan H8 asks for a source nothing writes.
     KOnes { dst: S::Write<Opmask> },
     /// `kmovw dst, src`
     KMov {
@@ -647,7 +648,7 @@ impl Inst<Selected> {
                 flags: f.write(flags),
                 k: f.read(*k),
             },
-            Inst::Kmovw { dst, src } => Inst::Kmovw {
+            Inst::KFromGpr { dst, src } => Inst::KFromGpr {
                 dst: f.write(dst),
                 src: f.read(*src),
             },
@@ -813,7 +814,7 @@ impl<S: Placed> Inst<S> {
                 EncodedInst::from_slice(&[0xC5, 0xF8, 0x98, 0xC0 | (k << 3) | k])
             }
             // `VEX.L0.0F.W0 92 /r`, in the three-byte prefix.
-            Inst::Kmovw { dst, src } => {
+            Inst::KFromGpr { dst, src } => {
                 let src = S::read::<Integer>(src);
                 // B̄ is inverted: set when the source needs no extension bit.
                 let no_extension = if src < 8 { 0x20 } else { 0x00 };
@@ -1015,7 +1016,7 @@ fn mask_temps_for(op: &super::ScheduledOp) -> u8 {
 // =============================================================================
 
 /// Set the gather's writemask `mask` to all-ones: `mov ones, 0xFFFF`, then
-/// `kmovw mask, ones` in the two-byte VEX prefix, which [`Inst::Kmovw`] (the
+/// `kmovw mask, ones` in the two-byte VEX prefix, which [`Inst::KFromGpr`] (the
 /// three-byte form) does not encode. A gather clears the bits it completes, so
 /// this runs before each one, and it clobbers `ones`, the gather's declared
 /// GPR temp. A `kxnorw k1, k1, k1` would need neither a GPR nor a second
@@ -1242,10 +1243,11 @@ enum UnaryForm {
     Lanewise(Lanewise),
     Round(Rounding),
     /// `Neg` and `Abs` xor or and the sign bit, which is a constant to hold in
-    /// a register first.
+    /// a register first: `bits`, or all-ones shifted by `shift`.
     Signed {
         op: Alu,
         bits: u32,
+        shift: (Direction, u8),
     },
 }
 
@@ -1255,10 +1257,12 @@ fn unary_form(op: OpKind) -> UnaryForm {
         OpKind::Neg => UnaryForm::Signed {
             op: Alu::Xor,
             bits: SIGN_BIT,
+            shift: (Direction::Left, 31),
         },
         OpKind::Abs => UnaryForm::Signed {
             op: Alu::And,
             bits: !SIGN_BIT,
+            shift: (Direction::Right, 1),
         },
         OpKind::Floor => UnaryForm::Round(Rounding::Floor),
         OpKind::Ceil => UnaryForm::Round(Rounding::Ceil),
@@ -1295,7 +1299,7 @@ fn emit_unary(
         // `dst` may alias `src`, so the mask goes in the temp, not `dst`:
         // writing it into `dst` first would clobber the source before it is
         // read.
-        UnaryForm::Signed { op, bits } => {
+        UnaryForm::Signed { op, bits, .. } => {
             let mask = super::declared_temp(temp);
             emit_const(code, mask, f32::from_bits(bits), pool)?;
             Inst::Alu {
@@ -1373,11 +1377,7 @@ fn constant(b: &mut Builder<Avx512>, value: f32) -> Result<Value<Vector>, Compil
 
 /// The sign bit, or all that is below it, as a shift of all-ones: two
 /// instructions and no read of the pool, where a loop would read it every trip.
-fn sign_mask(b: &mut Builder<Avx512>, bits: u32) -> Value<Vector> {
-    let (direction, amount) = match bits {
-        SIGN_BIT => (Direction::Left, 31),
-        _ => (Direction::Right, 1),
-    };
+fn sign_mask(b: &mut Builder<Avx512>, (direction, amount): (Direction, u8)) -> Value<Vector> {
     let ones = emit(b, |dst| Inst::Ones { dst });
     emit(b, |dst| Inst::Shift {
         direction,
@@ -1461,8 +1461,8 @@ impl IsaBackend for Avx512 {
                 Lane::Vector(match unary_form(op) {
                     UnaryForm::Lanewise(op) => emit(b, |dst| Inst::Unary { op, dst, src }),
                     UnaryForm::Round(mode) => emit(b, |dst| Inst::Round { mode, dst, src }),
-                    UnaryForm::Signed { op, bits } => {
-                        let mask = sign_mask(b, bits);
+                    UnaryForm::Signed { op, shift, .. } => {
+                        let mask = sign_mask(b, shift);
                         emit(b, |dst| Inst::Alu {
                             op,
                             dst,
@@ -1622,7 +1622,7 @@ impl IsaBackend for Avx512 {
             dst,
             imm: (1u32 << lanes) - 1,
         });
-        let mask = emit(b, |dst| Inst::Kmovw { dst, src: bits });
+        let mask = emit(b, |dst| Inst::KFromGpr { dst, src: bits });
         b.push(Op::Vector(Inst::StoreMasked {
             dst,
             src: value,
@@ -2744,7 +2744,7 @@ pub(super) mod driver {
             }
             .emit_into(code);
             AsmProgram::from([
-                Inst::Kmovw { dst: k, src: mask },
+                Inst::KFromGpr { dst: k, src: mask },
                 Inst::StoreMasked {
                     dst: at,
                     src: write.value,
@@ -2787,7 +2787,7 @@ pub(super) mod driver {
         fn a_masked_store_and_its_mask_encode_as_the_manual_says() {
             let mut c = Vec::new();
             // kmovw k1, ecx — VEX.L0.0F.W0 92 /r
-            Inst::Kmovw {
+            Inst::KFromGpr {
                 dst: KReg(1),
                 src: x86::gpr::RCX,
             }
@@ -2795,7 +2795,7 @@ pub(super) mod driver {
             assert_eq!(c, [0xC4, 0xE1, 0x78, 0x92, 0xC9]);
             // kmovw k2, r9d — the source past r8 clears B
             let mut c = Vec::new();
-            Inst::Kmovw {
+            Inst::KFromGpr {
                 dst: KReg(2),
                 src: Gpr(9),
             }

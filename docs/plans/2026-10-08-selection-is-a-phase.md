@@ -1207,7 +1207,7 @@ In the new pipeline, none of these is ever written. The legacy code is deleted i
 | H5 | `emit_fmov_imm`'s `w16` path (`aarch64.rs:466-477`) | `movz/movk w16; dup` | Every constant is selected: `movi`, `fmov`, or `ldr q, [p, #off]` | C4 |
 | H6 | `address_in_ip0` (`table.rs:530`), called by `StrQ` (`562`), `LdrQ` (`617`) and `LdrS` (`672`). `LdrS` also serves `emit_uniform_load` (`aarch64.rs:410`) and `index_into`'s slot read (`2269`). `StrX`/`LdrX` panic past `imm12` (`table.rs:589-594`, `644-648`), and `LdrX` serves `Context` (`aarch64.rs:2390-2401`), so a context slot of 4096 or more panics | IP0 as an address, and two panics | Spills: `spill`/`reload` emit `SlotAddr { dst: Write<Pointer>, slot }` (`add t, sp, #hi, lsl 12; add t, t, #lo`); narrow slots always encode. Non-frame loads (`Uniform`, `Context`): selection emits `t = AddImm(base, #hi, lsl 12)`, `ldr [t, #lo]`, and `movz/movk` plus a register `add` past 16 MiB. The binder read is an ordinary reload. One instruction replaces today's chain of `add #4080` | C4 |
 | H7 | `kortestw` bytes hardwiring `k1,k1` (`avx512.rs:647-653`) | An encoder that ignores its register | `KorTest { flags: Write<Flags>, k: Read<Opmask> }` encodes `k.number()` | A11b field; C2 value |
-| H8 | Gather mask `mov eax, 0xFFFF; kmovw k1, eax` (`avx512.rs:749`); `aaa = 001` (`789`); `gpr_temps_for(Gather) = 0` | `rax` and `k1` clobbered, undeclared. At HEAD (since P5 and P6): `k1` and `eax` are both declared, `gpr_temps_for(Gather) = 1` and `set_gather_mask` takes the `Gpr`; C2 deletes the sequence | `k = KOnes` (`kxnorw k, k, k`: no general register), then `Gather { dst: Early<Vector>, mask: Tie<Opmask> }`. `kxnorw` reads its own operand, and `vgatherdps` writes the mask it gathers under, so a `KOnes` on the previous gather's mask chains each gather behind the last (the `mov`/`kmovw` pair only writes). C2 gives `KOnes` a source nothing writes, or measures the chain | C2 |
+| H8 | Gather mask `mov eax, 0xFFFF; kmovw k1, eax` (`avx512.rs:749`); `aaa = 001` (`789`); `gpr_temps_for(Gather) = 0` | `rax` and `k1` clobbered, undeclared. At HEAD (since P5 and P6): `k1` and `eax` are both declared, `gpr_temps_for(Gather) = 1` and `set_gather_mask` takes the `Gpr`; C2 deletes the sequence | `k = KOnes` (`kxnorw k, k0, k0` as built: no general register), then `Gather { dst: Early<Vector>, mask: Tie<Opmask> }`. `kxnorw` reads its own operand, and `vgatherdps` writes the mask it gathers under, so a `KOnes` on the previous gather's mask chains each gather behind the last (the `mov`/`kmovw` pair only writes). C2 gave `KOnes` a source nothing writes, `k0`, which is part of the idiom's encoding and not a value | C2 |
 | H9 | Gather into `temp(1)`, then `vmovaps` (`avx512.rs:1368-1381`) | A temp plus a move standing in for an early def | `dst: S::Early<Vector>`; the move is gone | C2 |
 | H10 | Fold `t0`/`t1` (`mod.rs:1798`); seed through `t0` (`1825-1826`); `acc = if body_result == t0 {…}` (`1881`) | The driver aliasing registers by hand | Seeds are preheader `Target` arguments; the accumulate is `Binary(combine, acc, body)` | B3 |
 | H11 | `test_ge` borrowing the guard's `k` (`mod.rs:1855`; `avx512.rs:1604-1613`) | One mask register serving two roles | `done` is an ordinary compare; its `Opmask` value is its own | B3, C2 |
@@ -1252,7 +1252,7 @@ The narrowing already removes these, so they are not listed again here: `Item`, 
 
 **A9–A12.** Every free byte-writer in `x86_64.rs`, `avx2.rs`, `avx512.rs`, `aarch64.rs` and `table.rs` becomes an `Inst<S>` arm plus its `encode` arm. Deleted along the way:
 - `emit_test_eax`, `emit_movmskps_eax`, `emit_cmp_al_imm8` (gone at A9 and A10b: `Gp::Test`, `Inst::MoveMask`, `Gp::CmpByte`);
-- `emit_set_gather_mask`, `emit_mask_flags`, `gather(…, base_gpr: u8, …)` (gone at A11b: `Inst::Ptestm`, `Inst::KorTest`, `Inst::Gather`; the gather's mask set is the transitional `set_gather_mask`, which C2 deletes);
+- `emit_set_gather_mask`, `emit_mask_flags`, `gather(…, base_gpr: u8, …)` (gone at A11b: `Inst::Ptestm`, `Inst::KorTest`, `Inst::Gather`; the gather's mask set is the transitional `set_gather_mask`, which D1 deletes);
 - aarch64's positional `Inst` (`aarch64.rs:41`) and `BranchIfW16Zero`'s fixed register.
 
 **D1 — the legacy pipeline.**
@@ -1520,7 +1520,7 @@ Every commit in this phase is live in production.
   - `Gather { dst: Early, mask: Tie<Opmask> }`, encoding `aaa = mask.number()`;
   - `StoreMasked`, the remainder's masked store.
 
-  `Pred` joins the shared operation enums in `x86_64.rs`, and the `Opmask` marker is built here. `Kand`, `Kor`, `BlendK` and `KOnes` are not built: nothing selects them until C2's `type Lane`, their first reader (`KOnes` also chains gathers; see H8). The gather keeps `mov eax, 0xFFFF; kmovw k1, eax` as `set_gather_mask`, whose `kmovw` is the two-byte VEX form that `Kmovw` (three bytes) does not encode. C2 deletes it.
+  `Pred` joins the shared operation enums in `x86_64.rs`, and the `Opmask` marker is built here. `Kand`, `Kor`, `BlendK` and `KOnes` are not built: nothing selects them until C2's `type Lane`, their first reader (`KOnes` also chains gathers; see H8). The gather keeps `mov eax, 0xFFFF; kmovw k1, eax` as `set_gather_mask`, whose `kmovw` is the two-byte VEX form that `KFromGpr` (three bytes) does not encode. D1 deletes it.
 - **Deferred from A9, whose first reader is here:** the `Opmask` marker (`Class::Physical = KReg`).
 - **Bytes:** identical.
 - **Gate:** G each.
@@ -1691,12 +1691,13 @@ Every commit in this phase is live in production.
   - `Blend` as `vblendmps zmm{k}` on an `Opmask` condition, `vpternlogd 0xCA` on a `Vector` one;
   - `Gather` through `KOnes`, which is `kxnorw k, k0, k0`: `k0` is never written, so the mask waits on nothing, where `kxnorw k, k, k` would chain each gather behind the last (H8);
   - `branch` as `KorTest(k)` → `Jcc` on an `Opmask` condition, with `Ptestm` first on a `Vector` one;
-  - the masked remainder store through `MovImm32` → `Kmovw`;
+  - the masked remainder store through `MovImm32` → `KFromGpr`;
   - `Neg` and `Abs` build their mask from `Ones` and a shift (`0x8000_0000` is `-1 << 31`, `0x7FFF_FFFF` is `-1 >> 1`) instead of reading the pool, so a loop does not read memory for it every trip;
   - `copy`, `spill` and `reload` of an `Opmask` value: `kmovw`, to and from the frame.
 - **Deviation from the plan as first written:**
   - *The `disp32` pin.* A spill is `disp32` by construction (`Imm32`, never EVEX's scaled `disp8`), so the byte pin is the values of `tests/register_pressure.rs`, whose kernels spill zmm slots at offsets past 64 and read them back; a scaled displacement would read another slot. The predicate kernel added there spills `Opmask` values.
   - *The `Tied` steal in `Scan::place` is not built.* It is reached by a tied write that a backward branch passes to a carried parameter. Every latch argument on every tier is a plain write (the step and the combine), and a probe over the codegen, core and graphics suites at both tiers found no tied write that a parameter wants. Code nothing reaches cannot be tested through the public API (§0.6); the first backend whose accumulate is tied builds it.
+  - *`Neg` and `Abs` trade a pool read for an ALU instruction.* Per `Neg` or `Abs` per trip, `LoadConst` + the op (two instructions, one pool read) becomes `Ones`, a shift and the op (three ALU instructions, no read). The ratchet's `unary_ops_w37` row read the pool 54 times against legacy's 36, but legacy's figure undercounts: its `emit_unary` calls `emit_const` directly, outside the `Counting` decorator, so the same per-trip mask loads are missing from the 36. `EmitTraffic` counts scheduled operations, not selected ones, so the extra instruction is not in any figure, and it runs on p0/p5, which are scarce at 512 bits. AVX2 selection keeps the pool read for the same op. An embedded broadcast (`vxorps`/`vandps zmm, zmm, [rip + c]{1to16}`: one instruction, one pool read) is the cheaper form and is not built; the ratchet would need an honest `LEGACY_AVX512` unary row first.
   - *`set_gather_mask` stays* until D1: the legacy driver still sets its gather mask that way. The selected gather no longer does.
   - *A guarded `If` whose arm is a bare comparison is refused by name* under the knob (`select.rs`'s `guarded_if`): the join's parameter takes one class, and the arm's lane is in the other file. §0.1 has no conversion to make them one. C3 may not switch production until this is settled.
 - **`GOLDEN_SELECTED[avx512]`** is `tests/golden_selected.rs`'s second table. The `isa-matrix` job's `avx512f+dq, selection` leg runs V under `PIXELFLOW_CODEGEN=selection PIXELFLOW_ISA=avx512` where the runner has AVX-512.
@@ -1705,6 +1706,7 @@ Every commit in this phase is live in production.
 #### C3: AVX-512 runs the selection pipeline
 
 - **Bytes:** every AVX-512 column moves, for C1's reason, plus predicates kept in `k` (§0.1): each compare feeding a blend, a guard or mask logic loses its `vpmovm2d`, and each guard loses its `vptestmd`.
+- **Widen once.** `Lane::vector` emits a fresh `vpmovm2d` on each read of an `Opmask` lane that has no `k` form, so a mask read as a number `N` times is widened `N` times where legacy widened once at the compare. No pinned row shows it. The settlement of the guarded-`If` question (C2's last deviation) decides how a lane is held, and the widened `Vector` belongs beside it, widened at most once per value; add the row that would show it.
 - **Report and gate:** as C1.
 
 #### C4: NEON selection, beside
@@ -1834,7 +1836,7 @@ The expectation is that emit plus allocation stays within ±20% of today on `'@'
 | F10 | Flat `Bindings` | **Adopted.** Scoped frames (§2.9) |
 | F11 | General carry budget undefined | **Adopted.** `members − GENERAL_CARRY_RESERVE (5)`, derivation stated (§2.11) |
 | F12 | No stack probe | **Adopted.** C6 |
-| F13 | EVEX `disp8` scaling | **Adopted.** Typed `Disp` kept, slots always `disp32`, pin at offset 64 (C2) |
+| F13 | EVEX `disp8` scaling | **Adopted.** Typed `Disp` kept, slots always `disp32`; the check is `register_pressure.rs`'s values (C2) |
 | F14 | Pool entry type and reach per backend | **Adopted.** `type Constant`, `POOL_REACH`; `BUILTIN_HEADROOM` deleted |
 | F15 | Slot reads inside selected instructions | **Adopted** as a byte change attributed in C1/C4. No fold hook (§4.3) |
 | F16 | No test that every encoder handles every register | **Adopted.** `tests/register_pressure.rs` (§0.6): a pressure kernel checked by its values, in place of the `samples()` encoder test |

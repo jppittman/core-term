@@ -813,6 +813,7 @@ pub(super) fn jump<B: X86>(b: &mut Builder<B>, to: Target, next: Label) {
     }));
 }
 
+/// `sub rsp, frame`: the function's entry.
 pub(super) fn enter<B: X86>(b: &mut Builder<B>) {
     let flags = b.def();
     b.push(B::general(Gp::Enter {
@@ -821,6 +822,7 @@ pub(super) fn enter<B: X86>(b: &mut Builder<B>) {
     }));
 }
 
+/// `add rsp, frame; vzeroupper; ret`: the function's one exit.
 pub(super) fn ret<B: X86>(b: &mut Builder<B>) {
     let flags = b.def();
     b.push(B::general(Gp::Ret {

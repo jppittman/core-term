@@ -276,10 +276,11 @@ impl<B: IsaBackend> Builder<B> {
     }
 
     /// Whether the instruction last pushed is one the allocator places again
-    /// where a read needs it ([`IsaBackend::rematerializable`]).
+    /// where a read needs it ([`IsaBackend::rematerializable`]): asked right
+    /// after a constant's selection, the one that defines it.
     pub(super) fn ends_rematerializable(&self) -> bool {
-        let open = self.blocks.last().and_then(|block| block.insts.last());
-        open.is_some_and(|pushed| B::rematerializable(&pushed.inst))
+        let last = self.blocks.last().and_then(|block| block.insts.last());
+        last.is_some_and(|pushed| B::rematerializable(&pushed.inst))
     }
 
     /// The pool entry for `k`, deduplicated.

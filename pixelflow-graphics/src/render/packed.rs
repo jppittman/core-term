@@ -514,7 +514,7 @@ mod tests {
         ("avx2", 5296, 0x8c12_dcf8_c29d_98b0),
         ("avx512", 6224, 0x9e5c_99e8_27bc_546a),
         ("neon", 3520, 0x8a30_5ff7_636f_e4fe),
-        ("avx512+selection", 5240, 0xc48960c9808eb8f9),
+        ("avx512+selection", 5240, 0xc489_60c9_808e_b8f9),
         ("avx2+legacy", 6192, 0xb419_6e71_9c99_afb6),
     ];
 
@@ -523,7 +523,7 @@ mod tests {
         ("avx2", 956, 0xf671_c139_7e06_ee59),
         ("avx512", 1196, 0x1080_ada6_22ad_f852),
         ("neon", 976, 0xd6f5_70fd_e78e_6f74),
-        ("avx512+selection", 968, 0x280ceb5d49e7edfc),
+        ("avx512+selection", 968, 0x280c_eb5d_49e7_edfc),
         ("avx2+legacy", 1276, 0x1d42_97fa_4eec_b1f4),
     ];
 }

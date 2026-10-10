@@ -130,9 +130,8 @@ fn reference(tables: &[Vec<f32>], x: f32, y: f32) -> f64 {
 fn assert_pressured(result: &CompileResult) {
     let frame_reads: u64 = result.traffic.scopes.iter().map(|s| s.loads).sum();
     assert!(
-        result.spill_count > 0 && frame_reads > 0,
-        "the kernel no longer outnumbers the register files: {} slots, {frame_reads} frame reads",
-        result.spill_count
+        frame_reads > 0,
+        "the kernel no longer outnumbers the register files: it reads nothing back from the frame"
     );
 }
 

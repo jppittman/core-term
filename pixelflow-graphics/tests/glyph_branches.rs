@@ -15,7 +15,6 @@
 //! re-pins from the values the failure prints, after checking the glyphs'
 //! branches with the emitter's census and their bake throughput.
 
-use pixelflow_codegen::isa::Isa;
 use pixelflow_codegen::{fnv1a64, isa, jit_cache};
 use pixelflow_core::Kernel;
 use pixelflow_graphics::fonts::Font;
@@ -38,7 +37,7 @@ const PINS: [(char, u32, TierPins); 3] = [
             ("avx2", 2836, 0x30fd_ab98_f7df_3b32),
             ("avx512", 3172, 0x2d16_3a20_0ca5_5eee),
             ("neon", 1904, 0x8b99_0dca_5fa6_15da),
-            ("avx512+selection", 2604, 0x1b972673dfb044fd),
+            ("avx512+selection", 2604, 0x1b97_2673_dfb0_44fd),
             ("avx2+legacy", 3012, 0x2a8c_6135_0420_6970),
         ],
     ),
@@ -49,7 +48,7 @@ const PINS: [(char, u32, TierPins); 3] = [
             ("avx2", 2832, 0x9335_b8d3_4de6_2c38),
             ("avx512", 3172, 0x7939_6944_482a_feeb),
             ("neon", 1904, 0x113e_3102_6b9b_2b3e),
-            ("avx512+selection", 2604, 0x926e25e2bfb82e00),
+            ("avx512+selection", 2604, 0x926e_25e2_bfb8_2e00),
             ("avx2+legacy", 3008, 0x3c1c_4b85_1887_fa8a),
         ],
     ),
@@ -60,7 +59,7 @@ const PINS: [(char, u32, TierPins); 3] = [
             ("avx2", 2836, 0x56b2_1cc7_6344_6fd3),
             ("avx512", 3172, 0xd675_74c3_f870_26e3),
             ("neon", 1888, 0xc973_f004_e574_5a98),
-            ("avx512+selection", 2604, 0x205a2b4475ff1274),
+            ("avx512+selection", 2604, 0x205a_2b44_75ff_1274),
             ("avx2+legacy", 3012, 0x0d3a_e133_99a6_af0d),
         ],
     ),
@@ -86,8 +85,8 @@ fn a_glyphs_code_is_pinned() {
     let font = Font::parse(FONT_DATA).expect("parse font");
     let host = isa::detect();
     let default = match host {
-        Isa::Avx2 => "selection",
-        Isa::Avx512 | Isa::Neon => "legacy",
+        isa::Isa::Avx2 => "selection",
+        isa::Isa::Avx512 | isa::Isa::Neon => "legacy",
     };
     let tier = match std::env::var("PIXELFLOW_CODEGEN") {
         Ok(knob) if !knob.trim().eq_ignore_ascii_case(default) => {

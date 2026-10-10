@@ -969,10 +969,12 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
             let commands = commands.expect("a mode with no test commands produced no skip reason");
             let mut env = vec![("PIXELFLOW_ISA", level.isa)];
             env.extend(level.pipeline.map(|knob| ("PIXELFLOW_CODEGEN", knob)));
-            if !commands
-                .iter()
-                .all(|args| run_cargo(&workspace_root, &env, args))
-            {
+            // Every command runs: one run shows each failing suite of a leg,
+            // not only the first.
+            let passed = (commands.iter())
+                .map(|args| run_cargo(&workspace_root, &env, args))
+                .fold(true, |all, ok| all & ok);
+            if !passed {
                 println!("isa-matrix: {} — cargo test FAILED", level.name);
                 results.push((level.name, LevelResult::Failed));
                 continue;
