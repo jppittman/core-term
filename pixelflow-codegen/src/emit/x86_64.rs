@@ -17,8 +17,8 @@ use super::build::{Builder, Def, Spiller};
 use super::regalloc::resource::FrameSlot;
 use super::{
     AsmInsn, Assembly, Binding, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Gpr, Integer,
-    IsaBackend, Label, LabelRef, Loc, Physical, Placed, Pointer, PtrReg, Rebind, Reg, Selected,
-    Spill, Stage, Target, Value, WritePlan, regalloc,
+    IsaBackend, Label, LabelRef, Loc, Physical, Placed, Pointer, PtrReg, Rebind, Reg, STACK_PAGE,
+    Selected, Spill, Stage, Target, Value, WritePlan, regalloc,
 };
 use crate::error::CompileError;
 use alloc::collections::BTreeMap;
@@ -392,7 +392,8 @@ pub(super) enum Gp<S: Stage> {
         dst: S::Write<Pointer>,
         to: S::Target,
     },
-    /// `sub rsp, imm32`: the function's frame.
+    /// `sub rsp, imm32`: the function's frame, a page at a time past one page
+    /// ([`enter_probing`]).
     Enter {
         size: S::FrameSize,
         flags: S::Write<Flags>,
@@ -652,10 +653,7 @@ impl<S: Placed> Gp<S> {
                 inst.push(((dst & 7) << 3) | RM_RIP_AT_MOD0);
                 inst.extend(&[0, 0, 0, 0]);
             }
-            Gp::Enter { size, .. } => {
-                inst.extend(&[rex_w(0, RSP.0), 0x81, modrm_rr(5, RSP.0)]);
-                inst.extend(&S::frame_size(size).to_le_bytes());
-            }
+            Gp::Enter { size, .. } => inst = sub_rsp(S::frame_size(size)),
             Gp::Ret { size, .. } => {
                 inst.extend(&[rex_w(0, RSP.0), 0x81, modrm_rr(0, RSP.0)]);
                 inst.extend(&S::frame_size(size).to_le_bytes());
@@ -682,6 +680,9 @@ impl<S: Placed> Gp<S> {
 
     /// The instruction's bytes, and the label fields in them.
     pub(super) fn assemble(&self, out: &mut Encoding<'_>) {
+        if let Gp::Enter { size, .. } = self {
+            return enter_probing(S::frame_size(size), out);
+        }
         out.bytes(self.encode().as_bytes());
         if let Some((at, to)) = self.label_field() {
             out.field(at, S::target(to), patch_rel32);
@@ -910,6 +911,34 @@ pub(super) struct Imm32(pub(super) i32);
 #[inline(always)]
 const fn rex_w(reg: u8, rm: u8) -> u8 {
     0x48 | (((reg >> 3) & 1) << 2) | ((rm >> 3) & 1)
+}
+
+/// `sub rsp, imm32`.
+fn sub_rsp(bytes: u32) -> EncodedInst {
+    let mut inst = EncodedInst::new();
+    inst.extend(&[rex_w(0, RSP.0), 0x81, modrm_rr(5, RSP.0)]);
+    inst.extend(&bytes.to_le_bytes());
+    inst
+}
+
+/// `mov dword [rsp], 0`: `C7 /0 id` at the SIB form `rsp` always takes.
+const PROBE: [u8; 7] = [0xC7, RM_SIB, SIB_BASE_ONLY, 0, 0, 0, 0];
+
+/// `sub rsp, size`, entered a page at a time while more than a page remains,
+/// each page touched before the next is taken.
+///
+/// A thread's stack ends in one guard page, and a single `sub` past it lands
+/// in whatever is mapped beyond without touching the guard. The probe is a
+/// store, so it needs no register and no flags, and it is the instruction's own
+/// bytes: `MAX_FRAME` bounds the sequence at 512 pairs.
+fn enter_probing(size: u32, out: &mut Encoding<'_>) {
+    let mut left = size;
+    while left > STACK_PAGE {
+        out.bytes(sub_rsp(STACK_PAGE).as_bytes());
+        out.bytes(&PROBE);
+        left -= STACK_PAGE;
+    }
+    out.bytes(sub_rsp(left).as_bytes());
 }
 
 /// ModRM for the register-direct form: `mod = 11`.

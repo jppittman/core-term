@@ -334,6 +334,14 @@ enum Inst<S: Stage> {
         dst: S::Write<Pointer>,
         to: S::Target,
     },
+    /// `sub sp, sp, #1, lsl 12; str xzr, [sp]`: one page of the frame, taken
+    /// and touched. A frame past a page is entered by this, once per page,
+    /// then a `sub` for the rest: a thread's stack ends in one guard page, and
+    /// a single `sub` past it lands in whatever is mapped beyond without
+    /// touching it. It names no register, because `sp` is the frame's and
+    /// `xzr` is not in any class.
+    #[expect(dead_code, reason = "live from C4")]
+    ProbePage,
     /// `ret`
     Ret,
 }
@@ -451,6 +459,7 @@ impl Inst<Physical> {
                 CBZ_W_OPCODE | CB_OP_NONZERO | (CBNZ_SKIPS_B << DispField::IMM19.shift) | rd(test.0)
             }
             Inst::AdrpAdd { dst, .. } => 0x9000_0000 | rd(dst.0),
+            Inst::ProbePage => SUB_SP_PAGE,
             Inst::Ret => 0xD65F_03C0,
         }
     }
@@ -462,6 +471,7 @@ impl AsmInsn for Inst<Physical> {
         let second_word = match self {
             Inst::Mov { dst, src } if dst == src => return,
             Inst::CbzFar { taken, .. } => Some(Inst::B { to: taken }.encode()),
+            Inst::ProbePage => Some(STR_XZR_SP),
             // `add dst, dst, #0`, whose immediate `patch_adrp_add` fills in.
             Inst::AdrpAdd { dst, .. } => Some(
                 Inst::AddImm {
@@ -2265,6 +2275,13 @@ impl DispField {
         code[at..at + 4].copy_from_slice(&((existing & !mask) | field).to_le_bytes());
     }
 }
+
+/// `sub sp, sp, #1, lsl 12`: `SUB (immediate)` with `sh = 1` and `imm12 = 1`,
+/// 4096 bytes, `Rn = Rd = sp`.
+const SUB_SP_PAGE: u32 = 0xD140_07FF;
+
+/// `str xzr, [sp]`: `STR Xt, [Xn]` with `Rt = xzr` and `Rn = sp`.
+const STR_XZR_SP: u32 = 0xF900_03FF;
 
 /// `CBZ Wt`'s opcode with the register and displacement fields clear:
 /// `sf = 0` (a W register) and `011010`, then `op` in bit 24.

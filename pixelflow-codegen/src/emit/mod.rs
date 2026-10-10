@@ -698,6 +698,11 @@ impl Stage for Selected {
 #[derive(Copy, Clone, Debug)]
 struct FrameSize;
 
+/// How far a function's entry may move the stack pointer before it touches
+/// what it moved over: one guard page is the smallest a thread's stack can
+/// end in, and every host's page is at least this.
+const STACK_PAGE: u32 = 4096;
+
 /// A stage whose fields hold nothing: what [`IsaBackend::walk`] builds when
 /// only the traversal matters.
 enum Observed {}
@@ -6851,7 +6856,7 @@ mod tests {
                 (656, 0x0e7016ed19878723),
             ],
             [
-                (204768, 0x3bee772bb0d20234),
+                (204992, 0x8cca9719cdafb323),
                 (278032, 0x282aa77769f9e2ff),
                 (188496, 0x578f9987a3386dcc),
             ],
@@ -6881,7 +6886,7 @@ mod tests {
                 (480, 0x4adfc2b1aba3fa1f),
             ],
             [
-                (356060, 0x3046d9022ee419bb),
+                (356460, 0x1acf2d0ad97001c3),
                 (450476, 0x894da10795bcf548),
                 (605648, 0xff316d78ddef246a),
             ],

@@ -1736,15 +1736,16 @@ Every commit in this phase is live in production.
 
 #### C6: Probe the stack in `Enter`
 
-- **Files:** `x86_64.rs`, `aarch64.rs`.
+- **Files:** `x86_64.rs`, `aarch64.rs`, `mod.rs` (`STACK_PAGE`), `tests/stack_probe.rs`.
 - **Change:** a frame larger than one page is entered one page at a time, with no register:
-  - x86: `sub rsp, 4096; mov dword [rsp], 0`, repeated, then the remainder;
-  - aarch64: `sub sp, sp, #1, lsl 12; str xzr, [sp]`, repeated, then the remainder.
+  - x86: `sub rsp, 4096; mov dword [rsp], 0`, repeated while more than a page remains, then `sub rsp, <the rest>` (1 to 4096 bytes). `Gp::Enter`'s `assemble` writes the sequence, so selection's `Enter` is the only caller; legacy's `frame_alloc` encodes the one `sub` as before, and D1 deletes it.
+  - aarch64: the instruction `ProbePage` (`sub sp, sp, #1, lsl 12; str xzr, [sp]`, two words, no operands) is added and unused until C4, whose `Enter` emits it once per page and then the `sub` for the rest.
 
-  `MAX_FRAME` (2 MiB) bounds this at 512 pairs.
+  `MAX_FRAME` (2 MiB) bounds this at 511 pairs.
 - **Why:** spawned threads get Rust's 2 MiB default stack behind one guard page, and a single `sub` can skip it (allocation F12).
-- **Bytes:** only rows whose frame exceeds 4 KiB move (`parked_roots`, `deep_frame`). Every other row must not move.
-- **Gate:** V, M, and a re-baseline of those rows.
+- **Bytes:** only rows whose frame exceeds 4 KiB move (`parked_roots`, `deep_frame`), by 14 bytes per page. Every other row must not move.
+- **Tests:** `tests/stack_probe.rs` makes a page in the middle of `deep_frame`'s frame inaccessible on a spawned thread, and a `SIGSEGV` handler on an alternate stack records the fault address and the stack pointer. A probe faults with the stack pointer in the page; without it the first touch is a slot of the finished frame. x86-64 Linux, selection only; C4 extends it to NEON.
+- **Gate:** G, Q, K2, K5, QK, L, and a re-baseline of those rows (`GOLDEN`'s AVX2 column, `GOLDEN_SELECTED_AVX2`, `GOLDEN_SELECTED_AVX512`).
 
 ### Phase D: delete the legacy pipeline
 
