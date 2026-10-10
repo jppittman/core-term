@@ -470,12 +470,12 @@ mod tests {
             ("silhouette", silhouette(), SILHOUETTE_PINS),
         ];
         // A tier is pinned under the pipeline it compiles with by default; one
-        // `PIXELFLOW_CODEGEN` asks for instead has a tier of its own, `avx2+legacy`:
+        // `PIXELFLOW_CODEGEN` asks for instead has a tier of its own, `neon+legacy`:
         // the same scenes, other code.
         let isa = pixelflow_codegen::isa::detect();
         let default = match isa {
-            Isa::Avx2 => "selection",
-            Isa::Avx512 | Isa::Neon => "legacy",
+            Isa::Avx2 | Isa::Neon => "selection",
+            Isa::Avx512 => "legacy",
         };
         let tier = match std::env::var("PIXELFLOW_CODEGEN") {
             Ok(knob) if !knob.trim().eq_ignore_ascii_case(default) => {
@@ -504,28 +504,28 @@ mod tests {
     }
 
     /// One kernel's code on each tier, `(tier, bytes, fnv1a64)`; `+legacy` after
-    /// the ISA's name is the legacy pipeline, which AVX2 no longer compiles with
-    /// by default, and `+selection` the selection pipeline where it is not the
-    /// default yet.
+    /// the ISA's name is the legacy pipeline, which AVX2 and NEON no longer
+    /// compile with by default, and `+selection` the selection pipeline where
+    /// it is not the default yet (AVX-512).
     type TierPins = [(&'static str, usize, u64); 6];
 
     /// The chrome sphere's code per tier.
     const CHROME_PINS: TierPins = [
         ("avx2", 5296, 0x8c12_dcf8_c29d_98b0),
         ("avx512", 6224, 0x9e5c_99e8_27bc_546a),
-        ("neon", 3520, 0x8a30_5ff7_636f_e4fe),
+        ("neon", 3200, 0xb36b_bc90_12ff_c79e),
         ("avx512+selection", 5240, 0xc489_60c9_808e_b8f9),
         ("avx2+legacy", 6192, 0xb419_6e71_9c99_afb6),
-        ("neon+selection", 3200, 0xb36b_bc90_12ff_c79e),
+        ("neon+legacy", 3520, 0x8a30_5ff7_636f_e4fe),
     ];
 
     /// The silhouette's code per tier.
     const SILHOUETTE_PINS: TierPins = [
         ("avx2", 956, 0xf671_c139_7e06_ee59),
         ("avx512", 1196, 0x1080_ada6_22ad_f852),
-        ("neon", 976, 0xd6f5_70fd_e78e_6f74),
+        ("neon", 864, 0x8505_e404_aa55_7166),
         ("avx512+selection", 968, 0x280c_eb5d_49e7_edfc),
         ("avx2+legacy", 1276, 0x1d42_97fa_4eec_b1f4),
-        ("neon+selection", 864, 0x8505_e404_aa55_7166),
+        ("neon+legacy", 976, 0xd6f5_70fd_e78e_6f74),
     ];
 }

@@ -588,19 +588,18 @@ jobs:
         shell: bash
         run: cargo nextest run --workspace --all-features --profile ci
 
-      # macOS is the one job that runs NEON on hardware, so it is the one that
-      # runs the selection pipeline's NEON backend there: the suites that
-      # compile kernels, with `PIXELFLOW_CODEGEN=selection`. Until the backend
-      # is NEON's default (the knob dies with the legacy pipeline), the
-      # workspace run above is the legacy pipeline's.
-      - name: Run the selection pipeline's tests (NEON)
+      # macOS is the one job that runs NEON on hardware, and NEON compiles with
+      # the selection pipeline, so the workspace run above is that pipeline's.
+      # The legacy pipeline, until it is deleted, gets a step of only what
+      # means something under it: the byte pins keyed to it (`neon+legacy`).
+      - name: Run the legacy pipeline's pins (NEON)
         if: needs.change-scope.outputs.docs_only != 'true' && runner.os == 'macOS'
         shell: bash
         env:
-          PIXELFLOW_CODEGEN: selection
+          PIXELFLOW_CODEGEN: legacy
         run: >-
           cargo nextest run --workspace --all-features --profile ci
-          -E 'package(pixelflow-codegen) | package(pixelflow-core) | package(pixelflow-graphics)'
+          -E 'package(pixelflow-graphics) & (binary(glyph_branches) | test(~render::packed::))'
 
       # nextest does not run doctests; run them separately.
       - name: Run doctests
