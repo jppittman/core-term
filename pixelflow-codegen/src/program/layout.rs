@@ -10,11 +10,10 @@
 //! the whole scope re-examined per `If`. Here the order is *chosen*, from the
 //! ownership the DAG already states (`ownership`).
 //!
-//! **What earns a block.** An arm region whose price exceeds
-//! [`MISPREDICT_PENALTY_CYCLES`] (strictly: an arm that costs exactly the
-//! penalty cannot pay for its own branch) and whose mask is computed in this
-//! scope. A cheaper arm is merged into the region around it: it is neither
-//! branched over nor moved, it is simply part of its parent's values.
+//! **What earns a block.** An arm region that owns a value (a block nested in
+//! it counts) and whose mask is computed in this scope. There is no price: an
+//! arm is skipped when no lane selects it, however little it holds. An arm
+//! with nothing of its own is merged into the region around it.
 //!
 //! **Where a block goes.** Each earning region becomes one *block*: its own
 //! values, in the order they already had, with the earning blocks nested in it
@@ -45,7 +44,7 @@
 
 use alloc::vec::Vec;
 
-use crate::program::guards::{FoldReads, MISPREDICT_PENALTY_CYCLES};
+use crate::program::guards::FoldReads;
 use crate::program::ownership::{Ownership, Positions};
 use crate::program::tree::Tree;
 use crate::program::{ArmPair, Def, IfGuard, ValueId};
@@ -77,8 +76,15 @@ struct Blocks {
 }
 
 impl Blocks {
-    fn of(own: &Ownership, positions: &Positions) -> Self {
+    fn of(own: &Ownership, positions: &Positions, len: usize) -> Self {
         let regions = own.regions();
+        let mut owns = alloc::vec![false; regions.len()];
+        for pos in 0..len {
+            owns[own.region_of(pos).0] = true;
+        }
+        for region in (1..owns.len()).rev() {
+            owns[regions.parent(region)] |= owns[region];
+        }
         let mut arm_of_region = alloc::vec![None; regions.len()];
         for (i, arm) in own.arms().iter().enumerate() {
             arm_of_region[arm.region.0] = Some(i);
@@ -92,10 +98,8 @@ impl Blocks {
         // block is known by the time the region is reached.
         for (region, arm) in arm_of_region.iter().enumerate().skip(1) {
             let enclosing = blocks.of_region[regions.parent(region)];
-            let earns = arm.filter(|&i| {
-                let arm = &own.arms()[i];
-                arm.cycles > MISPREDICT_PENALTY_CYCLES && positions.get(arm.mask).is_some()
-            });
+            let earns =
+                arm.filter(|&i| owns[region] && positions.get(own.arms()[i].mask).is_some());
             blocks.of_region[region] = match earns {
                 Some(i) => {
                     blocks.arm.push(Some(i));
@@ -120,7 +124,7 @@ impl Layout {
     fn from(schedule: &[Def], folds: &FoldReads, own: &Ownership) -> Self {
         let len = schedule.len();
         let positions = Positions::of(schedule);
-        let blocks = Blocks::of(own, &positions);
+        let blocks = Blocks::of(own, &positions, len);
         let count = blocks.tree.len();
         let block_at = |pos: usize| blocks.of_region[own.region_of(pos).0];
 
@@ -421,7 +425,6 @@ mod tests {
                     "the {:?} arm of the If at {} is not exactly the run of what it owns",
                     which, arm.if_pos
                 );
-                assert!(arm.cycles > MISPREDICT_PENALTY_CYCLES);
             }
         }
         let values = layout
@@ -474,37 +477,6 @@ mod tests {
             6,
             "the scope's last value stays last"
         );
-    }
-
-    /// An arm that costs exactly the mispredict penalty earns nothing, and one
-    /// a little over earns its block.
-    #[test]
-    fn the_bound_is_strict() {
-        assert_eq!(
-            pixelflow_search::egraph::CostModel::latency_prior().cost(OpKind::Recip),
-            MISPREDICT_PENALTY_CYCLES,
-            "fixture assumes Recip sits exactly on the bound",
-        );
-        let recip_only = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
-            unary(2, OpKind::Recip, 1),
-            if_of(3, 0, 2, 0),
-        ];
-        assert!(
-            Layout::of(&recip_only, &[], &FoldReads::default())
-                .guards
-                .is_empty()
-        );
-        let a_little_more = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
-            unary(2, OpKind::Recip, 1),
-            unary(3, OpKind::Neg, 2),
-            if_of(4, 0, 3, 0),
-        ];
-        let layout = Layout::of(&a_little_more, &[], &FoldReads::default());
-        assert_eq!(layout.guards.len(), 1);
     }
 
     /// Both arms of one `If` each earn a run, and the `If` that is the scope's
@@ -587,7 +559,7 @@ mod tests {
     }
 
     /// A random DAG with `Ifs` in it: every value reads earlier ones, an `If`
-    /// reads three. Heavy ops (`Rsqrt`, 21 cycles) make arms worth a branch.
+    /// reads three.
     fn random_schedule(seed: u64, len: usize) -> Vec<Def> {
         let mut rng = Lcg(seed);
         let mut schedule: Vec<Def> =
@@ -633,7 +605,7 @@ mod tests {
         }
     }
 
-    // -- What a loop reads and costs -------------------------------------
+    // -- What a loop reads ------------------------------------------------
 
     /// A four-trip fold; the scope its body was carved into is not what these
     /// tests look at, so the body names a hole.
@@ -672,10 +644,7 @@ mod tests {
         // The sibling's body holds `W`'s id, as a placeholder read from its
         // accumulator slot.
         let sibling = [def(1, reduce())];
-        let folds = FoldReads::new(
-            &schedule,
-            [(ValueId(5), &sibling[..], &FoldReads::default())],
-        );
+        let folds = FoldReads::new(&schedule, [(ValueId(5), &sibling[..])]);
 
         let (blind, _) = laid_out(&schedule);
         let (seen, values) = laid_out_with(&schedule, &[], &folds);
@@ -703,7 +672,7 @@ mod tests {
             def(7, ScheduledOp::Binary(OpKind::Add, ValueId(6), ValueId(1))),
         ];
         let body = [def(3, ScheduledOp::Const(0.0))];
-        let folds = FoldReads::new(&schedule, [(ValueId(4), &body[..], &FoldReads::default())]);
+        let folds = FoldReads::new(&schedule, [(ValueId(4), &body[..])]);
         let (_, values) = laid_out_with(&schedule, &[], &folds);
         assert!(at(&values, 3) < at(&values, 4), "{values:?}");
     }
@@ -740,185 +709,5 @@ mod tests {
         let (layout, _) = laid_out(&schedule);
         assert_eq!(layout.guards.len(), 1);
         assert_eq!(layout.guards[0].range(IfArm::False), (1, 2));
-    }
-
-    /// The arm fold's trip count below: long enough that pricing the loop as
-    /// one instruction, or as nothing, is off by a factor this large.
-    const ARM_TRIPS: u32 = 64;
-
-    /// A sum of `trips` terms binding `slot`.
-    fn sum_over(slot: u8, trips: u32) -> pixelflow_ir::fold::Fold {
-        use pixelflow_ir::fold::{Binder, Fold, Monoid};
-        let binder = Binder::from_slot(slot).expect("a live binder slot");
-        Fold::new(Monoid::SUM, binder, 0..trips)
-    }
-
-    /// `select(X < 20, F, 0) + Y`, with `F` the `Reduce` def `fold` opening at
-    /// position 3 — the true arm's only entry of its own.
-    fn if_over_a_fold(fold: pixelflow_ir::fold::Fold, body_root: u64) -> Vec<Def> {
-        alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Const(20.0)),
-            def(2, ScheduledOp::Binary(OpKind::Lt, ValueId(0), ValueId(1))),
-            def(3, ScheduledOp::Reduce(fold, ValueId(body_root))),
-            def(4, ScheduledOp::Const(0.0)),
-            if_of(5, 2, 3, 4),
-            def(6, ScheduledOp::Var(1)),
-            def(7, ScheduledOp::Binary(OpKind::Add, ValueId(5), ValueId(6))),
-        ]
-    }
-
-    /// `|x − j|` per trip, `j` the binder of `fold` and `x` read from the
-    /// enclosing scope as `ValueId(0)`; the ids from `first` up are the body's
-    /// own.
-    fn distance_body(fold: pixelflow_ir::fold::Fold, first: u64) -> Vec<Def> {
-        let (j, diff, abs) = (first, first + 1, first + 2);
-        alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(j, ScheduledOp::Var(fold.binder().var())),
-            def(
-                diff,
-                ScheduledOp::Binary(OpKind::Sub, ValueId(0), ValueId(j))
-            ),
-            def(abs, ScheduledOp::Unary(OpKind::Abs, ValueId(diff))),
-        ]
-    }
-
-    /// The price of the one arm of `schedule`'s one `If` that has work.
-    fn true_arm_price(schedule: &[Def], roots: &[ValueId], folds: &FoldReads) -> usize {
-        let own = Ownership::of(schedule, roots, folds);
-        assert_eq!(own.arms().len(), 2);
-        own.arms()[0].cycles
-    }
-
-    /// An arm that owns a fold is priced by the loop: `n` trips of a `k`-cycle
-    /// body are `n·k`, plus the `n − 1` combines — not the `Reduce` def's
-    /// table price of 0, which refused the arm a branch however long the
-    /// loop. With the price, the arm clears the mispredict bound and is
-    /// guarded.
-    #[test]
-    fn an_arm_that_owns_a_fold_is_priced_by_its_trips() {
-        let cycles = pixelflow_search::egraph::CostModel::latency_prior();
-        let fold = sum_over(0, ARM_TRIPS);
-        let body = distance_body(fold, 10);
-        let schedule = if_over_a_fold(fold, 12);
-        let folds = FoldReads::new(&schedule, [(ValueId(3), &body[..], &FoldReads::default())]);
-
-        let n = ARM_TRIPS as usize;
-        let k = cycles.cost(OpKind::Sub) + cycles.cost(OpKind::Abs);
-        let combine = cycles.cost(OpKind::Add);
-        assert_eq!(
-            true_arm_price(&schedule, &[], &folds),
-            n * k + (n - 1) * combine,
-            "the arm is its loop: {n} trips of a {k}-cycle body, and a combine between each"
-        );
-        assert_eq!(
-            true_arm_price(&schedule, &[], &folds),
-            cycles.fold_cost(fold, k)
-        );
-        assert_eq!(
-            true_arm_price(&schedule, &[], &FoldReads::default()),
-            0,
-            "a Reduce def that opens no loop here is a slot read, and the table prices it 0"
-        );
-
-        let (layout, _) = laid_out_with(&schedule, &[], &folds);
-        assert_eq!(
-            layout.guards[0].range(IfArm::True),
-            (3, 4),
-            "the loop is skipped whole"
-        );
-        assert!(
-            Layout::of(&schedule, &[], &FoldReads::default())
-                .guards
-                .is_empty()
-        );
-    }
-
-    /// A table read whose address the lane binder does not reach is a
-    /// `Broadcast`, and in a fold's body it runs every trip: `Σ_j |x − t[j]|`
-    /// is priced `n` reads, as the extractor priced the arena's `RawGather`,
-    /// not `n` of a uniform's prologue leaf (0). Its base pointer is the
-    /// scope's root and read by the loop, so the arm is the loop alone.
-    #[test]
-    fn a_table_read_per_trip_is_priced_as_the_read_it_is() {
-        let cycles = pixelflow_search::egraph::CostModel::latency_prior();
-        let fold = sum_over(0, ARM_TRIPS);
-        let (x, ctx, j, t, diff, abs) = (0, 8, 10, 11, 12, 13);
-        let schedule = alloc::vec![
-            def(x, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Const(20.0)),
-            def(2, ScheduledOp::Binary(OpKind::Lt, ValueId(x), ValueId(1))),
-            def(ctx, ScheduledOp::Context(0)),
-            def(3, ScheduledOp::Reduce(fold, ValueId(abs))),
-            def(4, ScheduledOp::Const(0.0)),
-            if_of(5, 2, 3, 4),
-            def(6, ScheduledOp::Var(1)),
-            def(7, ScheduledOp::Binary(OpKind::Add, ValueId(5), ValueId(6))),
-        ];
-        let body = [
-            def(x, ScheduledOp::Var(0)),
-            def(ctx, ScheduledOp::Context(0)),
-            def(j, ScheduledOp::Var(fold.binder().var())),
-            def(t, ScheduledOp::Broadcast(ValueId(j), ValueId(ctx))),
-            def(
-                diff,
-                ScheduledOp::Binary(OpKind::Sub, ValueId(x), ValueId(t)),
-            ),
-            def(abs, ScheduledOp::Unary(OpKind::Abs, ValueId(diff))),
-        ];
-        let folds = FoldReads::new(&schedule, [(ValueId(3), &body[..], &FoldReads::default())]);
-        let roots = [ValueId(ctx)];
-
-        let k =
-            cycles.cost(OpKind::RawGather) + cycles.cost(OpKind::Sub) + cycles.cost(OpKind::Abs);
-        assert_eq!(
-            true_arm_price(&schedule, &roots, &folds),
-            cycles.fold_cost(fold, k)
-        );
-        let (layout, _) = laid_out_with(&schedule, &roots, &folds);
-        assert_eq!(
-            layout.guards[0].range(IfArm::True),
-            (4, 5),
-            "the loop, not its pointer"
-        );
-    }
-
-    /// A fold nested in the arm's fold is priced by its own trips inside every
-    /// trip of the outer one: `m · (n·k + …)`, recursively — the inner loop's
-    /// price comes from the outer body's own `FoldReads`.
-    #[test]
-    fn a_nested_fold_is_priced_by_the_product_of_its_trips() {
-        const OUTER_TRIPS: u32 = 4;
-        let cycles = pixelflow_search::egraph::CostModel::latency_prior();
-        let (outer, inner) = (sum_over(0, OUTER_TRIPS), sum_over(1, ARM_TRIPS));
-        // Outer body: `|I − i|`, `I` the inner fold, `i` the outer binder.
-        let outer_body = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(20, ScheduledOp::Var(outer.binder().var())),
-            def(21, ScheduledOp::Reduce(inner, ValueId(32))),
-            def(
-                22,
-                ScheduledOp::Binary(OpKind::Sub, ValueId(21), ValueId(20))
-            ),
-            def(23, ScheduledOp::Unary(OpKind::Abs, ValueId(22))),
-        ];
-        let inner_body = distance_body(inner, 30);
-        let inside = FoldReads::new(
-            &outer_body,
-            [(ValueId(21), &inner_body[..], &FoldReads::default())],
-        );
-        let schedule = if_over_a_fold(outer, 23);
-        let folds = FoldReads::new(&schedule, [(ValueId(3), &outer_body[..], &inside)]);
-
-        let k = cycles.cost(OpKind::Sub) + cycles.cost(OpKind::Abs);
-        let inner_loop = cycles.fold_cost(inner, k);
-        let outer_loop = cycles.fold_cost(outer, inner_loop + k);
-        let price = true_arm_price(&schedule, &[], &folds);
-        assert_eq!(price, outer_loop);
-        assert!(
-            outer_loop >= (OUTER_TRIPS * ARM_TRIPS) as usize * k,
-            "every trip of the outer loop runs the whole inner one"
-        );
     }
 }

@@ -5,7 +5,7 @@
 - **Author**: JP (design), Claude (draft)
 - **Status**: `Plan of record`. This is revision 3.
   - Revision 2 answered three reviews (allocation, closure and landing), and Appendix A records what was done with each point.
-  - Revision 3 carries JP's decisions of 2026-10-08, which override anything below that disagrees with them (§0).
+  - Revision 3 carries JP's decisions of 2026-10-08, which override anything below that disagrees with them (§0). §0.11 and §0.12 carry his rulings of 2026-10-11.
 - **Created**: 2026-10-08
 - **Verified against**: `origin/main` at `bdee3900` (#1335). At `bdee3900`, `pixelflow-codegen` is the same as at `fc1da611` except for `emit/coverage.rs`.
 - **Assumes the narrowing lands first.** The narrowing is worktree `/home/user/pixelflow-narrow`, branch `codegen-narrow-emit`, at `2da80bba` plus uncommitted work. It is based on `9bd3df6c` and must be rebased over #1330–#1335. After it lands:
@@ -115,6 +115,10 @@ These are binding. Where a later section disagrees, this section wins, and the i
     - A kernel's bytes moving is never by itself a finding, and no item re-pins or re-baselines them. An item reports code bytes (`byte_probe`) in its commit body, for information. Encoder tests (one instruction against its ISA-manual encoding) stay, as do tests of a property of compiled code that is not a pinned value (`spill_count == 0`, a bound, a comparison with the other pipeline).
     - `emit::tests::sibling_folds` went with `GOLDEN`: its one other test pinned the frame offsets legacy's fold slots address (`Addressed`), an accident of legacy's slot keying that mattered only because the bytes were pinned.
     - Every mention of a byte pin, a re-baselined `GOLDEN` or `GOLDEN_SELECTED` below is history of items already landed, or is superseded by this decision: D1 has no `GOLDEN_SELECTED`→`GOLDEN` rename and no pinned ceiling table.
+12. **An `If` is a blend, and its arms are blocks** (JP, 2026-10-11; C3a). Verbatim, first: *"I don't understand this design problem. Why would there be a shape difference between guarded and unguarded if. I feel like the guard non guard shouldn't be in the emitter/this code section at all. Can you remove unguarded? Just remove that."* Then, on the first attempt: *"This should be a pur deletion. I don't give two ducks about the performance implications. Delete it and delete the machinery around it. ... This binary bloat doesn't make sense btw. I can't believe this is right/what I intended."*
+    - There is one shape. An `If` is `Blend`, always, and has no join. Blend is bitwise on every backend (`vandps`/`vandnps`/`vorps`; `vblendmps` under `k`; `BSL`), so a uniform mask takes every lane from the arm that ran and the skipped arm's register is never observed. B9's premise, that an `If` with a skippable arm cannot blend, was false.
+    - Every arm with work of its own is a block, skipped when no lane of the mask selects it. There is no bound: `MISPREDICT_PENALTY_CYCLES` and everything that priced an arm (`Arm::cycles`, `Ownership::price`, `def_cycles`, `FoldReads`'s cycles) are deleted. An arm earns a block by owning a value, and by its mask being computed in the arm's scope.
+    - So there is no uniform wrapper, no `If` join, no join parameter in the allocator, and no mask/vector join problem on AVX-512: C3's text on it is moot.
 
 ## 1. What each phase is
 
@@ -855,9 +859,10 @@ pub(in crate::emit) struct Constant { pub label: Label, pub offset: u64 }
 ///
 /// **Dominance is relaxed in one way, and only one.**
 /// - A value an `If` arm defines is read by that `If`'s blend.
-/// - On the path where a uniform mask skipped the arm, the wrapper goes to
-///   that `If`'s single-arm block, and the blend does not run.
-/// - So a definition dominates every read that *executes*, not every
+/// - On the path where a uniform mask skipped the arm, the blend still runs
+///   and reads a register nothing wrote there. It takes every lane from the
+///   arm that ran, so that register is never observed.
+/// - So a definition dominates every read that *observes* it, not every
 ///   syntactic read.
 /// - Interval liveness (§1.3) never carries the value above its definition.
 ///   Join invariant 2 takes its location from the path that defines it.
@@ -1053,15 +1058,8 @@ The driver binds every IR value to a `B::Lane` and never inspects one (§0.1). T
       - `done = lane(Binary(Ge, step, hi))`, which AVX-512 holds in `k`.
    5. Then `branch(Test { cond: done, dead: True }, Edges { taken: Head(F) [step, acc'], next: exit })`. A broadcast `done` is uniform, so "no lane is true" is exactly "not done".
 4. The `Reduce`'s value is `acc'`. It dominates the exit, which has one predecessor, so no exit parameter is needed (closure 14).
-5. An arm guarded by `IfGuard` is `branch(Test { cond, dead: arm }, Edges { taken: past, next: arm_block })`. Then the arm's defs, then `jump(past, past)`.
-6. A guarded `If`'s uniform wrapper:
-   - `branch(dead: True → only_false)`;
-   - `branch(dead: False → only_true)`;
-   - the blend block, ending `jump(join [blend])`;
-   - `only_false`, ending `jump(join [f])`;
-   - `only_true`, ending `jump(join [t], next = join)`;
-   - `join`, with one parameter.
-7. `ret`.
+5. An arm with work of its own, read off `IfGuard`, is `branch(Test { cond, dead: arm }, Edges { taken: past, next: arm_block })`. Then the arm's defs, then `jump(past, past)`. An `If` itself is one `lane(Blend)` after its arms, whether or not they are blocks (§0.12): it has no join and no parameter.
+6. `ret`.
 
 ### 2.11 Allocation
 
@@ -1099,7 +1097,7 @@ pub(in crate::emit) trait RegisterAllocator {
 /// An allocated kernel: every register a borrowed token, every slot a
 /// borrowed slot, every block argument a placed move.
 pub(in crate::emit) struct Allocated<'m, B: IsaBackend> {
-    pub blocks: Vec<Block<Emitted<'m, B>>>,   // a loop parameter that is not carried is a slot; a carried or forward-join one is a register
+    pub blocks: Vec<Block<Emitted<'m, B>>>,   // a loop parameter that is not carried is a slot; a carried one is a register
     pub loops: Vec<Loop>,
     constants: Constants<B::Constant>,        // the program lays them out: `program()`
     labels: Labels,                           // the program takes them: `program()`
@@ -1143,7 +1141,6 @@ pub(in crate::emit) enum Origin { Selected, Spill, Reload, Remat, Copy }
    - Every argument is made resident before the first is passed, so a parameter that is not carried takes its argument by a store to its slot, in any order, and an argument that is a parameter of its own target is already home.
    - A carried parameter's register is its home from the loop's entry to its latch. The backward branch's moves are sequentialized so that none overwrites what another reads, and a register cycle is broken through a fresh value, allocated like any other (closure 21). No selected function passes one loop parameter to another, so B6 ships no cycle break: `sequence` panics naming the missing producer, and the break lands with the first producer (its test is then a kernel that swaps two loop parameters, through `compile`).
    - They are sound because no target parameter is live into the other successor (asserted).
-   - A forward join's parameter is in a register, not a slot (B9). A slot would cost the `If` a store on each path and a load after the join, where legacy pays neither. The first branch to reach the join gives the parameter a register as an entering branch does a loop's: the lease of its argument when that dies there, a copy's otherwise. Each later branch puts its argument in that register: a move, or no instruction when the argument is there already, after a store of whatever else holds the register on that path when it is not free. The parameter is stored, when it is, at the join's entry.
 6. **Joins** are checked against §1.3's three invariants. Forward joins take the intersection of their predecessors' states, taken from snapshots recorded at each forward branch.
    - B5 had no forward join to take: nothing selected before B9 branches past a block, so `allocate` refused a branch that does. B9 adds the snapshots with its first producer: `Edge`, recorded after each forward branch, and `arrive`, which takes them at the block's start. A block entered by the branch just before it, and by no other, is in that state already.
    - A loop head is flushed (B5): every value live into it that the loop does not carry (B6) is stored and dropped from its register, so a loop's body is entered in one state however it is reached. The carried values are in their registers at the head and at the latch, which is asserted there.
@@ -1316,7 +1313,7 @@ Tests deleted because the property is now a type, an invariant, or moot:
 |---|---|
 | A selection phase (`IsaBackend::{lane, context, store, branch, jump, enter, ret}`, `select.rs`) | The allocator cannot see a register an instruction needs until the instruction exists. Any order that allocates first has to be *told*, and being told is a prediction. Escape-hatches step 2 made the predictions more accurate, and every remaining hatch is a place they still run out. |
 | A machine IR (`Inst<S>`, `Block`, `Function`, `Target`) | Selection's output must hold chosen instructions with unbound registers. A `Vec<u8>` per op cannot be allocated, and a `ScheduledOp` with a temp count is what exists today. |
-| Blocks and labels inside it | If control flow (guards, the wrapper, loops) stayed outside, the code emitting it would run between allocated instructions and need registers. That is H3–H5 and H10–H13 over again. |
+| Blocks and labels inside it | If control flow (guards, loops) stayed outside, the code emitting it would run between allocated instructions and need registers. That is H3–H5 and H10–H13 over again. |
 | `asm.rs` standing alone | The ontology's Assembler. Today's push/bind/finish builder lets the driver write bytes into it, and that is what H22 is. |
 | `Reg`/`Pool`/`Lease`, `FrameSlot`/`Frame`/`SlotLease` | Without them, "only the allocator chooses registers" is enforced by `checked()` asserts and comments, which is today. Ownership is the only mechanism that makes a hand-picked register a compile error. |
 | `Stage`, `Rebind`, `walk` | The allocator needs every operand with its access, and the encoder needs named typed fields. One traversal produces both and cannot drift; two hand-written traversals would. |
@@ -1402,7 +1399,7 @@ Every commit in this phase is live in production.
   |---|---|
   | `unary_ops` | every `REQUIRED_UNARY_OPS` op (`coverage.rs`) |
   | `binary_ops` | every `REQUIRED_BINARY_OPS` op, with the comparisons consumed by `BitAnd` and `If` |
-  | `shift_muladd_blend` | `Shl`, `Shr`, `MulAdd`, an unguarded `If` |
+  | `shift_muladd_blend` | `Shl`, `Shr`, `MulAdd`, an `If` |
   | `memory` | a lane-varying gather, a lane-uniform broadcast, a uniform at element 0 and one at element 5,000 |
   | `deep_frame` | `deep_frame(n)` in `tests/support/deep_frame.rs` (`traffic.rs`'s `wide_live_range_kernel` is private to its tests and spills 96 bytes at any `n` on NEON), with `n` past the 64 KiB edge: the NEON spill area alone is past `ldr q`'s reach. `tests/deep_frame.rs` compiles it through `compile`, asserting `spill_bytes` and its values against a scalar reference |
 
@@ -1659,8 +1656,8 @@ Every commit in this phase is live in production.
 - **Files:** `select.rs`, `regalloc/local.rs`. `avx2.rs` is unchanged: B3 landed AVX2's `branch` with both tests (`Test` for a dead `True` arm, `CmpByte` for a dead `False` one) and the encoder's `cmp al` form.
 - **Add:**
   - Forward joins in the allocator: the state at each forward branch (`Edge`), and the intersection at the join (§2.11, step 6, `arrive`).
-  - A join's parameter in a register (§2.11, step 5): the first branch to reach it homes it, and each later one moves its argument there.
-  - Guarded arms and the uniform wrapper, as in §2.10, read off `IfGuard`.
+  - A join's parameter in a register (§2.11, step 5): the first branch to reach it homes it, and each later one moves its argument there. (C3a deletes it: no `If` has a join, §0.12.)
+  - Guarded arms and the uniform wrapper, as in §2.10, read off `IfGuard`. (C3a deletes the wrapper, §0.12.)
 - **Gate:** K(avx2) is now all of V, plus `guard_fold_price`, `guard_parked_reads`, `guard_sibling_fold`, `a_fold_owned_by_an_arm_is_guarded`.
 
 #### B10: The gate for the new pipeline
@@ -1701,14 +1698,14 @@ Every commit in this phase is live in production.
   - *The `Tied` steal in `Scan::place` is not built.* It is reached by a tied write that a backward branch passes to a carried parameter. Every latch argument on every tier is a plain write (the step and the combine), and a probe over the codegen, core and graphics suites at both tiers found no tied write that a parameter wants. Code nothing reaches cannot be tested through the public API (§0.6); the first backend whose accumulate is tied builds it.
   - *`Neg` and `Abs` trade a pool read for an ALU instruction.* Per `Neg` or `Abs` per trip, `LoadConst` + the op (two instructions, one pool read) becomes `Ones`, a shift and the op (three ALU instructions, no read). The ratchet's `unary_ops_w37` row read the pool 54 times against legacy's 36, but legacy's figure undercounts: its `emit_unary` calls `emit_const` directly, outside the `Counting` decorator, so the same per-trip mask loads are missing from the 36. `EmitTraffic` counts scheduled operations, not selected ones, so the extra instruction is not in any figure, and it runs on p0/p5, which are scarce at 512 bits. AVX2 selection keeps the pool read for the same op. An embedded broadcast (`vxorps`/`vandps zmm, zmm, [rip + c]{1to16}`: one instruction, one pool read) is the cheaper form and is not built; the ratchet would need an honest `LEGACY_AVX512` unary row first.
   - *`set_gather_mask` stays* until D1: the legacy driver still sets its gather mask that way. The selected gather no longer does.
-  - *A guarded `If` whose arm is a bare comparison is refused by name* under the knob (`select.rs`'s `guarded_if`): the join's parameter takes one class, and the arm's lane is in the other file. §0.1 has no conversion to make them one. C3 may not switch production until this is settled.
+  - *A guarded `If` whose arm is a bare comparison was refused by name* under the knob (`select.rs`'s `guarded_if`): the join's parameter took one class, and the arm's lane is in the other file. C3a settles it by deleting the join (§0.12): an `If` is a blend, so there is nothing left to refuse.
 - **`GOLDEN_SELECTED[avx512]`** is `tests/golden_selected.rs`'s second table. The `isa-matrix` job's `avx512f+dq, selection` leg runs V under `PIXELFLOW_CODEGEN=selection PIXELFLOW_ISA=avx512` where the runner has AVX-512.
 - **Gate:** G Q K5 L.
 
 #### C3: AVX-512 runs the selection pipeline
 
 - **Bytes:** every AVX-512 row of `byte_probe` moves (reported, not pinned: §0.11), for C1's reason, plus predicates kept in `k` (§0.1): each compare feeding a blend, a guard or mask logic loses its `vpmovm2d`, and each guard loses its `vptestmd`.
-- **Widen once.** `Lane::vector` emits a fresh `vpmovm2d` on each read of an `Opmask` lane that has no `k` form, so a mask read as a number `N` times is widened `N` times where legacy widened once at the compare. No pinned row shows it. The settlement of the guarded-`If` question (C2's last deviation) decides how a lane is held, and the widened `Vector` belongs beside it, widened at most once per value; add the row that would show it.
+- **Widen once.** `Lane::vector` emits a fresh `vpmovm2d` on each read of an `Opmask` lane that has no `k` form, so a mask read as a number `N` times is widened `N` times where legacy widened once at the compare. No pinned row shows it. The widened `Vector` belongs beside the lane, widened at most once per value; add the row that would show it. (C2's guarded-`If` question is gone: C3a deleted the `If` join, §0.12.)
 - **Report and gate:** as C1.
 
 #### C4: NEON selection, beside

@@ -600,10 +600,16 @@
   2. A jump, when `m` is uniform over a batch (hoist and guard).
   3. A bitwise blend, when `m` varies by lane.
 
+  Codegen emits 2 and 3 as one shape, always: a blend whose arms are blocks,
+  each skipped when no lane of `m` selects it. A uniform batch takes an arm by
+  skipping the other; the blend is the lane-varying path, and is harmless on a
+  uniform batch, because it is bitwise and takes every lane from the arm that
+  ran. There is no second shape for an arm that is "not worth" a branch.
+
   A mask built only from uniforms is lowering 2's best case, not lowering
   3's.
 - **Is not:**
-  - A blend.
+  - A blend alone: its arms are blocks.
   - A fold.
   - Branchless by meaning.
   - A branch bought per `If`.
@@ -638,13 +644,9 @@
   §1, §9 (JP: "Select contains an if"); the-language-is-kernel §1.6.
   Lowering 1's analysis exists (D1, `pixelflow-ir/src/mask_support.rs`); the
   split itself, the bind-time tier, the interval tier and general guards are
-  unbuilt (D2–D5). Open: layout grants a block only to an arm priced above
-  `MISPREDICT_PENALTY_CYCLES` (`arm.cycles > MISPREDICT_PENALTY_CYCLES` in
-  `program/layout.rs`) and merges cheaper arms into the surrounding region.
-  That is the per-`If` purchase CLAUDE.md calls the backwards default, but
-  #1313, the latest decision, kept it as a bound-gated pass over the
-  finished DAG. Whether the bound decides *whether* `If` jumps, or only
-  whether a cheap arm is worth separating, has not been decided.
+  unbuilt (D2–D5). Decided (JP, 2026-10-11): there is no bound. Layout
+  (`program/layout.rs`) makes a block of every arm that owns a value, and
+  `emit/select.rs` selects every `If` as `LaneOp::Blend`, with no join.
 
 ### Constant (Const) and its two domains
 

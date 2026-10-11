@@ -35,9 +35,8 @@
 use alloc::vec::Vec;
 
 use pixelflow_ir::kind::OpKind;
-use pixelflow_search::egraph::CostModel;
 
-use crate::program::guards::{FoldReads, def_cycles};
+use crate::program::guards::FoldReads;
 use crate::program::tree::Tree;
 use crate::program::{Def, IfArm, ScheduledOp, ValueId};
 
@@ -66,10 +65,6 @@ pub(super) struct Arm {
     arm: IfArm,
     /// The region the arm's values belong to.
     pub(super) region: Region,
-    /// Latency-prior cycles of everything the arm owns, nested arms and the
-    /// folds it owns included: what skipping the arm saves, and so what a
-    /// branch over it can pay for.
-    pub(super) cycles: usize,
 }
 
 /// Ownership of one scope's schedule.
@@ -116,7 +111,6 @@ impl Ownership {
     /// inputs, so the two answer the same question.
     pub(super) fn of(schedule: &[Def], external: &[ValueId], folds: &FoldReads) -> Self {
         let positions = Positions::of(schedule);
-        let cycles = CostModel::latency_prior();
         let mut me = Self {
             region_of: alloc::vec![Region::SCOPE; schedule.len()],
             regions: Tree::rooted(),
@@ -158,14 +152,12 @@ impl Ownership {
                         mask: *mask,
                         arm: IfArm::False,
                         region: on_false,
-                        cycles: 0,
                     });
                     me.arms.push(Arm {
                         if_pos: pos,
                         mask: *mask,
                         arm: IfArm::True,
                         region: on_true,
-                        cycles: 0,
                     });
                     read(&mut me, *mask, here);
                     read(&mut me, *if_true, on_true);
@@ -179,27 +171,8 @@ impl Ownership {
             }
         }
 
-        me.price(schedule, folds, &cycles);
         me.arms.reverse();
         me
-    }
-
-    /// Each arm's price: the cycles of every def in its region or one nested
-    /// in it. A child's number is larger than its parent's, so one descending
-    /// sweep folds every region into its parent.
-    fn price(&mut self, schedule: &[Def], folds: &FoldReads, cycles: &CostModel) {
-        let mut subtree = alloc::vec![0usize; self.regions.len()];
-        for (pos, def) in schedule.iter().enumerate() {
-            let region = self.region_of[pos].0;
-            subtree[region] = subtree[region].saturating_add(def_cycles(def, folds, cycles));
-        }
-        for region in (1..subtree.len()).rev() {
-            let parent = self.regions.parent(region);
-            subtree[parent] = subtree[parent].saturating_add(subtree[region]);
-        }
-        for arm in &mut self.arms {
-            arm.cycles = subtree[arm.region.0];
-        }
     }
 
     /// Every arm of every `If`, in schedule order, an `If`'s true arm first.
@@ -310,8 +283,8 @@ mod tests {
         assert_eq!(own.region_of(2), Region::SCOPE);
     }
 
-    /// An arm that owns an `If` owns what that `If`'s arms own, and prices
-    /// them: the outer true arm costs everything nested in it.
+    /// An arm that owns an `If` owns what that `If`'s arms own: the outer true
+    /// arm holds everything nested in it.
     #[test]
     fn a_nested_arm_is_owned_by_the_arm_around_it() {
         let schedule = alloc::vec![
@@ -337,7 +310,6 @@ mod tests {
             "the inner If and everything under it belongs to the arm it is the root of"
         );
         assert_eq!(owned(&own, outer_false, schedule.len()), alloc::vec![5]);
-        assert!(outer_true.cycles > inner_true.cycles);
     }
 
     /// The relation is a property of the reads, so reordering the schedule
@@ -375,7 +347,7 @@ mod tests {
                         .map(|pos| schedule[pos].value.0)
                         .collect();
                     values.sort_unstable();
-                    (arm.arm, values, arm.cycles)
+                    (arm.arm, values)
                 })
                 .collect::<Vec<_>>()
         };

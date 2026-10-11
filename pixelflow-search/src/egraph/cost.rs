@@ -155,7 +155,7 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
         // where it is priced. Zero here is not a price, only the absence of
         // one: codegen's guard analysis once read it as the price of a whole
         // loop, and refused a branch over a 64-trip fold as too cheap to be
-        // worth one. (It said "lowered (unrolled) before costing" while
+        // worth one; no arm is priced now. (It said "lowered (unrolled) before costing" while
         // folds were unrolled before saturation. They no longer are: codegen
         // emits a surviving fold as a loop.)
         OpKind::Reduce => 0,
@@ -405,10 +405,7 @@ impl CostModel {
     /// [`node_op_cost`](Self::node_op_cost) is `fold_cost(fold, 0)`, the
     /// combiner chain, and the DP multiplies the body's price by the trip
     /// count where it has that price in hand (`extract.rs`'s
-    /// `fold_body_multiple`). Codegen's guard analysis prices a loop a
-    /// `If` arm owns with it whole, the body priced over the loop's own
-    /// schedule (`pixelflow-codegen`'s `program::guards::FoldReads`) — an arm is
-    /// worth a branch by what running it costs, and a loop costs its trips.
+    /// `fold_body_multiple`).
     ///
     /// Saturating: a nest of long folds over an expensive body is a price
     /// past any budget, not an overflow.
@@ -722,11 +719,9 @@ mod cost_model_accessors {
         assert_eq!(model.node_op_cost(&node), model.cost(OpKind::Add));
     }
 
-    /// A fold has one price, [`CostModel::fold_cost`], whichever side asks.
-    /// The extractor's DP reaches it in two halves — `node_op_cost` is the
-    /// combiner chain, and the DP adds the body once per trip — while
-    /// codegen's guard analysis calls it whole for a loop an arm owns. Pinned
-    /// from the extractor's side: with no rewrite rule to choose another
+    /// A fold's price is [`CostModel::fold_cost`]. The extractor's DP reaches
+    /// it in two halves — `node_op_cost` is the combiner chain, and the DP adds
+    /// the body once per trip. Pinned: with no rewrite rule to choose another
     /// form, `Σ_{j<40} |X − j|` is priced exactly `fold_cost(fold, − + |·|)`.
     #[test]
     fn the_extractor_prices_a_fold_at_fold_cost() {

@@ -386,8 +386,8 @@
 - **Is:** an `If` arm as a region of the DAG. "Every `If` opens two
   **regions**, one per arm, nested in the region the `If` itself belongs to
   … A value belongs to the **lowest common ancestor** of the regions that
-  read it." An arm owns exactly what only it reads, including folds, each
-  priced at its trips (`FoldReads`). Other senses of "arm": the extractor's
+  read it." An arm owns exactly what only it reads, including folds
+  (`FoldReads`). Other senses of "arm": the extractor's
   tree and shared DP arms, and a remainder arm (the code for an extent that
   is not a lane multiple).
 - **Is not:** a contiguous run recovered by searching a flat schedule
@@ -407,7 +407,8 @@
 - **Is:** five senses:
   1. A **guard clause**, the strongest fold.
   2. An **`If` guard**: the branch that skips an arm's owned block when a
-     batch's mask is uniform (`IfGuard`). It is lowering 2 of `If`.
+     batch's mask is uniform (`IfGuard`). Every arm with work of its own has
+     one; the `If` is a blend either way.
   3. A **runtime guard**: a check "defending what a type should have made
      unrepresentable" (`retired_axis` in `emit::compile`).
   4. The retired IR node `ExprNode::Guard { mask, on, off }`, and D7's open
@@ -427,21 +428,6 @@
   (`pixelflow-codegen/src/pipeline.rs`); `FastMathGuard`
   (`pixelflow-core/src/fastmath.rs`); emit-should-just-emit status
   (2026-10-05); CLAUDE.md "Denote before you build".
-
-### Mispredict bound
-
-- **Is:** `MISPREDICT_PENALTY_CYCLES` (16), "the single analytic
-  profitability bound" an arm's price must clear to be laid out as its own
-  block.
-- **Is not:** a tuned constant. Not replaceable by a learned term ("A learned
-  term may rerank; it may not replace the analytic floor"). Not to be met by
-  a fold priced at zero.
-- **Follows:** the guard analysis and the extractor price a fold with one
-  function, `fold_cost` (D2). Whether this bound decides that an `If` jumps
-  at all is open (see If).
-- **Lives:** `pixelflow-codegen/src/program/guards.rs` (the constant),
-  `program/layout.rs` (its one use); one-conditional §9;
-  an-integral-is-a-fold §6.6, D2.
 
 ### Loop
 
@@ -470,7 +456,7 @@
 
 - **Is:** a label, its parameters, and a sequence of instructions ending in
   one whose label operands are the block's successors. Other senses: a
-  layout block (an earning arm region laid out as one run), a `kernel!`
+  layout block (an arm region that owns a value, laid out as one run), a `kernel!`
   block of items, and a program's uniform block.
 - **Is not:** a run found by permuting a flat schedule.
 - **Follows:** a value live into a block from more than one predecessor is a

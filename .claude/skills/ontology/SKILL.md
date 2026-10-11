@@ -145,7 +145,6 @@ index for the word first.
 - Frame. Homonym
 - Arm ownership. Homonym of Arm
 - Guard. Homonym
-- Mispredict bound
 - Loop
 - Block. Homonym
 - Label. Homonym of the hindsight label and the cost label
