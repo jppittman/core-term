@@ -1,10 +1,10 @@
 // A frame past what NEON addresses directly, and the two helpers every kernel in
 // `sibling_rows.rs` builds with.
 //
-// Included, not compiled, like `sibling_rows.rs`, which includes this file: the
-// byte pins (`emit::tests::sibling_folds`), `examples/byte_probe.rs` and
-// `tests/deep_frame.rs` (which runs the kernel) all take `deep_frame` from here,
-// so the kernel whose bytes are pinned is the kernel whose values are checked.
+// Included, not compiled, like `sibling_rows.rs`, which includes this file:
+// `examples/byte_probe.rs` and `tests/deep_frame.rs` (which runs the kernel)
+// both take `deep_frame` from here, so the kernel whose bytes are probed is the
+// kernel whose values are checked.
 
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 

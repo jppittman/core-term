@@ -47,10 +47,9 @@
 //! scope's `EmitTraffic`, indented under it. Never a wall time: the output
 //! is diffed.
 //!
-//! The kernels are `tests/support/sibling_rows.rs`, the file the byte
-//! golden in `emit::tests::sibling_folds` includes, so the two measure one
-//! definition of each row. The golden pins all three backends from any
-//! host; this prints the host's own, through the production path as well.
+//! The kernels are `tests/support/sibling_rows.rs`, the file the tests that
+//! measure them include, so each measures one definition of each row. This
+//! prints the host's own backend, through the production path.
 
 use pixelflow_codegen::emit::{CompileResult, ScopeTraffic, compile};
 use pixelflow_codegen::jit_cache::{self, Linked};
@@ -247,7 +246,7 @@ struct SiblingRow {
     shape: LatticeShape,
 }
 
-/// The rows that reach sibling folds, named as the golden names them.
+/// The rows that reach sibling folds, named as the tests name them.
 ///
 /// `wL` is one batch of the host's own lane count, so a run here and a run
 /// on the other tier differ in which rows have a remainder fold and in the

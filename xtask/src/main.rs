@@ -616,11 +616,10 @@ const ISA_LEVELS: &[IsaLevel] = &[
     // tiers with a selection backend. Not tiers, but decided the same way (the
     // environment, once, at startup) and run the same way. The selection leg
     // is the pipeline a tier ships, or will: every suite that compiles a
-    // kernel and checks it, in the three crates that do, so the pins that mean
-    // something under it (the glyph and scene byte pins, the V suites) run
-    // presubmit under the code that ships, whatever tier the `test` job's
-    // runner happens to have. The workspace's other crates are not held to it
-    // yet.
+    // kernel and checks it, in the three crates that do, so the checks that mean
+    // something under it (the V suites) run presubmit under the code that
+    // ships, whatever tier the `test` job's runner happens to have. The
+    // workspace's other crates are not held to it yet.
     IsaLevel {
         name: "avx2+fma, selection",
         isa: "avx2",
@@ -654,38 +653,21 @@ const ISA_LEVELS: &[IsaLevel] = &[
         ]],
     },
     // The legacy pipeline, until it is deleted, runs only what means something
-    // under it: the memory table it is held to, and the byte pins keyed to it.
-    // Everything else is checked by the values it computes, which the leg above
-    // checks under the pipeline that ships.
+    // under it: the memory table it is held to. Everything else is checked by
+    // the values it computes, which the leg above checks under the pipeline
+    // that ships.
     IsaLevel {
         name: "avx2+fma, legacy",
         isa: "avx2",
         requires: &["avx2", "fma"],
         pipeline: Some("legacy"),
-        suites: &[
-            &[
-                "test",
-                "-p",
-                "pixelflow-codegen",
-                "--test",
-                "memory_ratchet",
-            ],
-            &[
-                "test",
-                "-p",
-                "pixelflow-graphics",
-                "--test",
-                "glyph_branches",
-            ],
-            &[
-                "test",
-                "-p",
-                "pixelflow-graphics",
-                "--lib",
-                "--",
-                "render::packed::",
-            ],
-        ],
+        suites: &[&[
+            "test",
+            "-p",
+            "pixelflow-codegen",
+            "--test",
+            "memory_ratchet",
+        ]],
     },
 ];
 

@@ -99,7 +99,6 @@ These are binding. Where a later section disagrees, this section wins, and the i
    - This revises B1's and B2's unit tests and B10's exhaustive encoder test (`#[cfg(test)] fn samples()`):
      - an invariant that no production input can break is asserted in production code, not unit-tested through a back door;
      - the register coverage B10 wants is a pressure kernel per tier, whose live values outnumber each file's members, checked by its values.
-   - `GOLDEN_SELECTED` lives in `tests/`, built through the production API.
    - Existing in-file tests that a commit touches may stay where they are. Each commit's tests must still fail when the commit's change is reverted.
 7. **CI: no new required check.**
    - Branch protection cannot be edited from here. The selection-pipeline legs are steps in jobs that are already required: the `isa-matrix` job for x86 tiers, and the `test` matrix job on macOS for NEON.
@@ -110,6 +109,12 @@ These are binding. Where a later section disagrees, this section wins, and the i
    - Every commit message states its line delta.
 9. **NEON runs locally.** The gate **Q** (§5) runs the NEON suites under `qemu-aarch64`. So M (macOS CI) confirms; it no longer discovers.
 10. **Departures 2 and 3 above are accepted:** tokens are minted per compile, and x86 constants are RIP-relative, with no pool base. Departure 1 is §0.3.
+11. **Goldens are images, not binaries** (JP, 2026-10-11; G1). Verbatim: *"Don't care about the goldens. Golden should be images no binaries"*. Of the memory ratchet's per-row check that selection's code is no larger than legacy's: *"This test is stupid and doesn't fit the rules"*.
+    - No test pins a compiled kernel's bytes, length or hash. G1 deleted `GOLDEN`, `golden_selected.rs`, `glyph_branches.rs`, `render::packed`'s `the_scenes_emit_their_pinned_code` and the ratchet's code-bytes term, with the tier- and knob-keyed tables, the xtask legacy-leg suites and the macOS legacy step that served them.
+    - The goldens are the images: `pixelflow-graphics/tests/golden/*.ppm`, compared by `glyph_atlas_golden`, `e2e_render_to_file`, `scene3d_test`, `raymarch_sphere` and others.
+    - A kernel's bytes moving is never by itself a finding, and no item re-pins or re-baselines them. An item reports code bytes (`byte_probe`) in its commit body, for information. Encoder tests (one instruction against its ISA-manual encoding) stay, as do tests of a property of compiled code that is not a pinned value (`spill_count == 0`, a bound, a comparison with the other pipeline).
+    - `emit::tests::sibling_folds` went with `GOLDEN`: its one other test pinned the frame offsets legacy's fold slots address (`Addressed`), an accident of legacy's slot keying that mattered only because the bytes were pinned.
+    - Every mention of a byte pin, a re-baselined `GOLDEN` or `GOLDEN_SELECTED` below is history of items already landed, or is superseded by this decision: D1 has no `GOLDEN_SELECTED`→`GOLDEN` rename and no pinned ceiling table.
 
 ## 1. What each phase is
 
@@ -1269,7 +1274,7 @@ The narrowing already removes these, so they are not listed again here: `Item`, 
 - `emit_scope`, `resolve_operands`, `location_of`, `binding`;
 - `WritePlan`, `MaskTest`;
 - the legacy trait (renamed `LegacyBackend` in B1) with every verb: `jump`, `register_file`, `begin`, `emit_plan`, `emit_mov`, `emit_store`, `ptr_store`, `ptr_load`, `ptr_mov`, `emit_resolve`, `branch_if_arm_is_dead`, `frame_alloc`, `anchor`, `finish`, `slot_store`, `slot_load`, `scope_begin`, `scope_end`, `add_scalar`, `load_const`, `alu`, `test_ge`, `emit_write`, `emit_ret`;
-- `compile_via_backend`, `AtFloor`'s legacy verbs, `Addressed`, and the legacy `GOLDEN` table;
+- `compile_via_backend` and `AtFloor`'s legacy verbs;
 - the `PIXELFLOW_CODEGEN` knob (`Pipeline`, `pipeline()`, and `compile_native`'s match on it).
 
 `emit/storage.rs`: the whole file (`Slot`, `StackFrame`, `MAX_FRAME`, which moves to `regalloc/resource.rs`).
@@ -1380,14 +1385,7 @@ cargo test --target aarch64-unknown-linux-gnu -p pixelflow-codegen   # + the V s
 
 **K(tier)**: V run with `PIXELFLOW_CODEGEN=selection PIXELFLOW_ISA=<tier>`, through the production API. In B4–B8, K names the subset that commit makes pass. In B9 and later it is all of V.
 
-**`GOLDEN`** is at `emit/mod.rs:6657`; the test is at `6706`. Its doc says:
-
-> *"a refactor does not edit this table; an intentional byte change does, in a commit of its own that says why."*
-
-- Each byte-moving commit below is its change, plus the re-baselined rows, plus the reason, and nothing else.
-- A row's provenance is `git log -L` on it. `GOLDEN`'s doc names no commit hash: a commit cannot name itself.
-- A row moving outside the commit's predicted set is a finding, explained in that commit.
-- `GOLDEN_SELECTED` is the new pipeline's table. It is born in B10 for AVX2, and gains AVX-512 in C2 and NEON in C4. It obeys the same rule from birth. In D1 it replaces `GOLDEN`.
+**There are no byte goldens** (§0.11). A commit that moves bytes says so and why in its body, with `byte_probe`'s rows before and after; no table is edited. Items B10–C6 below describe the pins they re-baselined, and G1 deleted those pins.
 
 **Transitional dead code.** A module that only the next one or two commits make live carries `#[expect(dead_code, reason = "live from <commit>")]`. Because it is `expect` and not `allow`, CI fails the commit that makes it live until the attribute is removed.
 
@@ -1709,7 +1707,7 @@ Every commit in this phase is live in production.
 
 #### C3: AVX-512 runs the selection pipeline
 
-- **Bytes:** every AVX-512 column moves, for C1's reason, plus predicates kept in `k` (§0.1): each compare feeding a blend, a guard or mask logic loses its `vpmovm2d`, and each guard loses its `vptestmd`.
+- **Bytes:** every AVX-512 row of `byte_probe` moves (reported, not pinned: §0.11), for C1's reason, plus predicates kept in `k` (§0.1): each compare feeding a blend, a guard or mask logic loses its `vpmovm2d`, and each guard loses its `vptestmd`.
 - **Widen once.** `Lane::vector` emits a fresh `vpmovm2d` on each read of an `Opmask` lane that has no `k` form, so a mask read as a number `N` times is widened `N` times where legacy widened once at the compare. No pinned row shows it. The settlement of the guarded-`If` question (C2's last deviation) decides how a lane is held, and the widened `Vector` belongs beside it, widened at most once per value; add the row that would show it.
 - **Report and gate:** as C1.
 
@@ -1763,10 +1761,8 @@ Every commit in this phase is live in production.
 #### D1: Delete the legacy pipeline and the knob
 
 - **Files:** everything §4.1 lists under D1, `rust.yaml` (the selection steps and the macOS knob step).
-- **Change:**
-  - `GOLDEN_SELECTED` becomes `GOLDEN`.
-  - The quality ratchet becomes a pinned ceiling table per row and backend, holding the selection pipeline's numbers at this commit.
-- **Bytes:** identical.
+- **Change:** the quality ratchet (`tests/memory_ratchet.rs`) is deleted with legacy, not converted into a ceiling table of selection's numbers: a pinned table of a compiled kernel's numbers is a golden of binaries (§0.11). `GOLDEN_SELECTED` no longer exists (G1), so there is no rename.
+- **Bytes:** identical (`byte_probe` before and after is the check, not a pin).
 - **Gate:** G and M. `scripts/check-emit-boundary.sh` passes.
 
 #### D2: A fold's schedule holds only its own definitions
