@@ -7,7 +7,7 @@
 //! the value test of a frame past 64 KiB, run on NEON under qemu and natively
 //! on aarch64 hosts, and on the host's x86 tier elsewhere, where the same
 //! kernel's spill area is wider still. The kernel has more terms than
-//! `sibling_rows.rs`'s pinned row: the selection pipeline's frame for that row
+//! `sibling_rows.rs`'s row: the selection pipeline's frame for that row
 //! is a few KiB under the reach, and this test is about the frame past it.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -21,7 +21,7 @@ mod rows {
 
 /// The reach of a 12-bit displacement scaled by a 16-byte vector.
 const REACH: u32 = 64 * 1024;
-/// An eighth more terms than the pinned row has: enough that every pipeline's
+/// An eighth more terms than the row has: enough that every pipeline's
 /// frame is past `REACH`.
 const TERMS: usize = rows::DEEP_FRAME_TERMS + rows::DEEP_FRAME_TERMS / 8;
 const WIDTH: usize = 11;

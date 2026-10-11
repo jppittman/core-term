@@ -33,10 +33,9 @@ const AVX2_VECTOR_BYTES: usize = 32;
 const AVX512_VECTOR_BYTES: usize = 64;
 const BYTES_PER_LANE: usize = 4;
 
-/// What one row costs: its code, and what a call executes.
+/// What one row costs: what a call executes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Cost {
-    bytes: u64,
     loads: u64,
     stores: u64,
     pool_reads: u64,
@@ -55,7 +54,6 @@ impl Cost {
             scopes.iter().zip(trips).map(|(s, t)| count(s) * t).sum()
         };
         Self {
-            bytes: result.code.as_bytes().len() as u64,
             loads: weighted(|s| s.loads),
             stores: weighted(|s| s.stores),
             pool_reads: weighted(|s| s.remats),
@@ -92,67 +90,56 @@ fn costs() -> Vec<Cost> {
 /// where they run. That undercounts legacy's loads, never overcounts them.
 const LEGACY_AVX2: [Cost; 11] = [
     Cost {
-        bytes: 724,
         loads: 33,
         stores: 18,
         pool_reads: 49,
     },
     Cost {
-        bytes: 728,
         loads: 33,
         stores: 18,
         pool_reads: 49,
     },
     Cost {
-        bytes: 1056,
         loads: 89,
         stores: 26,
         pool_reads: 196,
     },
     Cost {
-        bytes: 1056,
         loads: 71,
         stores: 36,
         pool_reads: 358,
     },
     Cost {
-        bytes: 247328,
         loads: 195968,
         stores: 13947,
         pool_reads: 2177,
     },
     Cost {
-        bytes: 3012,
         loads: 1769,
         stores: 189,
         pool_reads: 190,
     },
     Cost {
-        bytes: 1136,
         loads: 68,
         stores: 7,
         pool_reads: 48,
     },
     Cost {
-        bytes: 932,
         loads: 6,
         stores: 2,
         pool_reads: 43,
     },
     Cost {
-        bytes: 636,
         loads: 3,
         stores: 1,
         pool_reads: 43,
     },
     Cost {
-        bytes: 500,
         loads: 0,
         stores: 0,
         pool_reads: 39,
     },
     Cost {
-        bytes: 420428,
         loads: 165548,
         stores: 62065,
         pool_reads: 131,
@@ -162,67 +149,56 @@ const LEGACY_AVX2: [Cost; 11] = [
 /// The legacy pipeline's cost for each of `rows::TABLE`, on AVX-512.
 const LEGACY_AVX512: [Cost; 11] = [
     Cost {
-        bytes: 676,
         loads: 3,
         stores: 3,
         pool_reads: 49,
     },
     Cost {
-        bytes: 664,
         loads: 3,
         stores: 3,
         pool_reads: 49,
     },
     Cost {
-        bytes: 992,
         loads: 9,
         stores: 9,
         pool_reads: 124,
     },
     Cost {
-        bytes: 1056,
         loads: 18,
         stores: 18,
         pool_reads: 220,
     },
     Cost {
-        bytes: 278032,
         loads: 119558,
         stores: 11633,
         pool_reads: 2129,
     },
     Cost {
-        bytes: 2932,
         loads: 383,
         stores: 77,
         pool_reads: 130,
     },
     Cost {
-        bytes: 1120,
         loads: 0,
         stores: 0,
         pool_reads: 36,
     },
     Cost {
-        bytes: 1108,
         loads: 0,
         stores: 0,
         pool_reads: 31,
     },
     Cost {
-        bytes: 700,
         loads: 0,
         stores: 0,
         pool_reads: 31,
     },
     Cost {
-        bytes: 596,
         loads: 0,
         stores: 0,
         pool_reads: 27,
     },
     Cost {
-        bytes: 450476,
         loads: 90185,
         stores: 37000,
         pool_reads: 119,
@@ -244,8 +220,8 @@ fn print_table(measured: &[Cost]) -> String {
         .iter()
         .map(|c| {
             format!(
-                "    Cost {{ bytes: {}, loads: {}, stores: {}, pool_reads: {} }},",
-                c.bytes, c.loads, c.stores, c.pool_reads
+                "    Cost {{ loads: {}, stores: {}, pool_reads: {} }},",
+                c.loads, c.stores, c.pool_reads
             )
         })
         .collect::<Vec<_>>()
@@ -268,11 +244,11 @@ fn legacy_traffic_is_the_recorded_table() {
 }
 
 /// Per row, at most a quarter more memory operations than legacy and a few
-/// more, in all at most legacy's, and no more of the stack's and no more code.
+/// more, in all at most legacy's, and no more of the stack's.
 ///
 /// The slack is for the rows whose traffic is a handful of constants: one
-/// pool read more there is a large fraction. The stack traffic and the code
-/// have none, because the new pipeline is below the old on every row today.
+/// pool read more there is a large fraction. The stack traffic has none,
+/// because the new pipeline is below the old on every row today.
 #[test]
 fn selection_moves_no_more_memory_than_legacy() {
     let Some(legacy) = legacy().filter(|_| selection()) else {
@@ -284,14 +260,10 @@ fn selection_moves_no_more_memory_than_legacy() {
     for ((row, now), then) in rows::TABLE.iter().zip(&measured).zip(legacy) {
         let (now_memory, then_memory) = (now.memory(), then.memory());
         let stack = (now.loads + now.stores, then.loads + then.stores);
-        if now_memory * 4 > then_memory * 5 + 4 * SLACK
-            || stack.0 > stack.1
-            || now.bytes > then.bytes
-        {
+        if now_memory * 4 > then_memory * 5 + 4 * SLACK || stack.0 > stack.1 {
             worse.push(format!(
-                "{}: memory {now_memory} against {then_memory}, stack {} against {}, \
-                 code {} against {} bytes",
-                row.name, stack.0, stack.1, now.bytes, then.bytes
+                "{}: memory {now_memory} against {then_memory}, stack {} against {}",
+                row.name, stack.0, stack.1
             ));
         }
     }

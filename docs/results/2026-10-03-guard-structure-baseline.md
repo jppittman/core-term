@@ -65,17 +65,18 @@ on time as well as on bytes.
 
 ## Pinned in CI
 
-As of 2026-10-08. `EmitTraffic::branches`, `BranchTraffic` and
-`CompiledKernel::branches()` are deleted — nothing outside a test read them —
-so the scene and glyph pins read the code the compile hands back instead.
-Every arm gained or lost moves those bytes; so does every other change to the
-code, which is the price of pinning an output rather than an internal table.
+As of 2026-10-11. `EmitTraffic::branches`, `BranchTraffic` and
+`CompiledKernel::branches()` are deleted — nothing outside a test read them.
+The scene and glyph byte pins that replaced them
+(`render::packed::tests::the_scenes_emit_their_pinned_code` and
+`tests/glyph_branches.rs`: `(bytes, fnv1a64)` per tier) are deleted too: goldens
+are images, not binaries (docs/plans/2026-10-08-selection-is-a-phase.md §0.11).
+What remains:
 
 | pin | what it holds |
 |---|---|
-| `render::packed::tests::the_scenes_emit_their_pinned_code` | chrome and silhouette at 1080p, through `jit_cache::compile`: `(bytes, fnv1a64)` per tier (AVX2, AVX-512, NEON) — the chrome bytes are the table's above |
-| `tests/glyph_branches.rs` | `@` at 16 px, `8` and `O` at 32 px (in-tree fallback font): `(bytes, fnv1a64)` per tier; the structure in those bytes is the **(3, 3)** of the layout switch |
 | `emit::tests::a_chrome_shaped_kernel_keeps_its_branches` | the guard structure itself, at the scale of one channel: (3, 6, 70), with a silhouette-shaped control (0, 0, 0) |
+| `render::packed::tests::four_channels_share_one_geometry` | four channels emit under twice the code of one |
 
 Before 2026-10-08 the scene and glyph pins were the structure itself:
 `the_chrome_sphere_keeps_its_branches` (3 guards, 6 arms),
