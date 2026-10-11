@@ -14,12 +14,12 @@ use pixelflow_ir::{ExprArena, LatticeShape, OpKind};
 include!("support/knob.rs");
 
 /// `(c − x) + y` over a small lattice, where `c` is a constant or, for the
-/// control, another variable. A constant that is neither zero nor all-ones is
-/// a load.
+/// control, another variable. A constant that is neither zero, all-ones nor an
+/// `fmov` immediate (NEON makes `3.5` in a register without memory) is a load.
 fn compiled(constant: bool) -> CompileResult {
     let mut a = ExprArena::new();
     let [x, y] = [0, 1].map(|v| a.push_var(v));
-    let c = if constant { a.push_const(3.5) } else { y };
+    let c = if constant { a.push_const(0.1) } else { y };
     let flipped = a.push_binary(OpKind::Sub, c, x);
     let root = a.push_binary(OpKind::Add, flipped, y);
     compile(&a, root, LatticeShape::new([64, 4])).expect("the kernel compiles")
@@ -46,12 +46,12 @@ fn a_selected_constant_is_counted_as_brought_in() {
     let (with, without) = (compiled(true), compiled(false));
     assert!(
         sum(&with, |s| s.remats) > sum(&without, |s| s.remats),
-        "the constant 3.5 was not counted as brought in"
+        "the constant 0.1 was not counted as brought in"
     );
     assert_eq!(
         sum(&with, |s| s.instructions),
         sum(&without, |s| s.instructions),
-        "the constant 3.5 was counted as an instruction as well"
+        "the constant 0.1 was counted as an instruction as well"
     );
 }
 

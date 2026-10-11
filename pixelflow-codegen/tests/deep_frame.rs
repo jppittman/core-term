@@ -6,7 +6,9 @@
 //! `a_deep_spill_frame_compiles_correctly` forces more than 128 bytes; this is
 //! the value test of a frame past 64 KiB, run on NEON under qemu and natively
 //! on aarch64 hosts, and on the host's x86 tier elsewhere, where the same
-//! kernel's spill area is wider still.
+//! kernel's spill area is wider still. The kernel has more terms than
+//! `sibling_rows.rs`'s pinned row: the selection pipeline's frame for that row
+//! is a few KiB under the reach, and this test is about the frame past it.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
@@ -19,10 +21,13 @@ mod rows {
 
 /// The reach of a 12-bit displacement scaled by a 16-byte vector.
 const REACH: u32 = 64 * 1024;
+/// An eighth more terms than the pinned row has: enough that every pipeline's
+/// frame is past `REACH`.
+const TERMS: usize = rows::DEEP_FRAME_TERMS + rows::DEEP_FRAME_TERMS / 8;
 const WIDTH: usize = 11;
 const ROWS: usize = 3;
 const ORIGIN: [f32; 2] = [2.0, 5.0];
-/// A balanced `f32` sum of `DEEP_FRAME_TERMS` positive terms, squared, errs
+/// A balanced `f32` sum of `TERMS` positive terms, squared, errs
 /// about `1e-6` relative, and one misaddressed far slot moves it by `4e-4`.
 const TOLERANCE: f64 = 1e-5;
 
@@ -41,7 +46,7 @@ fn reference(terms: usize, x: f32, y: f32) -> f64 {
 
 #[test]
 fn a_spill_area_past_64_kib_holds_the_kernels_values() {
-    let (arena, root) = rows::deep_frame(rows::DEEP_FRAME_TERMS);
+    let (arena, root) = rows::deep_frame(TERMS);
     let shape = LatticeShape::new([WIDTH as u32, ROWS as u32]);
     let compiled = compile(&arena, root, shape).expect("a deep frame compiles");
     assert!(
@@ -60,7 +65,7 @@ fn a_spill_area_past_64_kib_holds_the_kernels_values() {
         for col in 0..WIDTH {
             let (x, y) = (ORIGIN[0] + col as f32, ORIGIN[1] + row as f32);
             let got = f64::from(out[row * WIDTH + col]);
-            let want = reference(rows::DEEP_FRAME_TERMS, x, y);
+            let want = reference(TERMS, x, y);
             assert!(
                 (got - want).abs() <= TOLERANCE * want.abs(),
                 "row {row} col {col} (x={x}, y={y}): got {got}, want {want}"

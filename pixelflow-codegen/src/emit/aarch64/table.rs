@@ -10,7 +10,7 @@
 //! `Inst::encode` whose words carry no operation to choose.
 
 use super::Inst;
-use crate::emit::{AsmInsn, Integer, Physical, Pointer, PtrReg, Stage};
+use crate::emit::{AsmInsn, Integer, Physical, Pointer, PtrReg, Rebind, Selected, Stage};
 use alloc::vec::Vec;
 
 // =============================================================================
@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 /// 12-bit unsigned immediate for AArch64 arithmetic instructions: a value the
 /// field holds, so [`Inst::encode`] needs no mask.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) struct Imm12(u16);
+pub(in crate::emit) struct Imm12(u16);
 
 impl Imm12 {
     /// # Panics
@@ -44,7 +44,7 @@ impl Imm12 {
 /// discriminant is the opcode with its register fields clear.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]
-pub(super) enum Alu {
+pub(in crate::emit) enum Alu {
     Fadd = 0x4E20_D400,
     Fsub = 0x4EA0_D400,
     Fmul = 0x6E20_DC00,
@@ -67,7 +67,7 @@ pub(super) enum Alu {
 /// `Umaxv` are the horizontal reductions: the scalar lands in lane 0.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]
-pub(super) enum Lanewise {
+pub(in crate::emit) enum Lanewise {
     Fsqrt = 0x6EA1_F800,
     Fabs = 0x4EA0_F800,
     Fneg = 0x6EA0_F800,
@@ -105,7 +105,7 @@ pub(super) const MAX_ADD_IMM: u32 = 4080;
 /// The base being a pointer-class operand guarantees an integer counter or
 /// index cannot be mistakenly passed as an address.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) struct Mem<S: Stage> {
+pub(in crate::emit) struct Mem<S: Stage> {
     /// The register holding the base address.
     pub(super) base: S::Read<Pointer>,
     /// Displacement in bytes; must be a multiple of the access size.
@@ -115,29 +115,54 @@ pub(super) struct Mem<S: Stage> {
 /// An address spelled `[base, w<index>, uxtw #2]` — a 32-bit index register,
 /// zero-extended to 64 bits and scaled by 4.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) struct MemIndexed<S: Stage> {
+pub(in crate::emit) struct MemIndexed<S: Stage> {
     /// The register holding the buffer base pointer.
     pub(super) base: S::Read<Pointer>,
     /// The element index, read as the 32-bit `w<index>`.
     pub(super) index: S::Read<Integer>,
 }
 
-impl Mem<Physical> {
-    /// The offset in units of the access it addresses: what `imm12` holds.
-    ///
-    /// # Panics
-    ///
-    /// If the offset is not a multiple of the access size.
-    pub(super) fn scaled(self, access: u32) -> u32 {
-        assert!(
-            self.offset.is_multiple_of(access),
-            "{}-bit access offset {} is not {access}-byte aligned",
-            access * 8,
-            self.offset
-        );
-        self.offset / access
-    }
+/// `offset` in units of the access it addresses: what `imm12` holds.
+///
+/// # Panics
+///
+/// If the offset is not a multiple of the access size.
+pub(super) fn scaled(offset: u32, access: u32) -> u32 {
+    assert!(
+        offset.is_multiple_of(access),
+        "{}-bit access offset {offset} is not {access}-byte aligned",
+        access * 8
+    );
+    offset / access
+}
 
+impl<S: Stage> Mem<S> {
+    pub(super) fn scaled(&self, access: u32) -> u32 {
+        scaled(self.offset, access)
+    }
+}
+
+impl Mem<Selected> {
+    /// Rebuild at stage `T`.
+    pub(super) fn walk<T: Stage>(&self, f: &mut impl Rebind<T>) -> Mem<T> {
+        Mem {
+            base: f.read(self.base),
+            offset: self.offset,
+        }
+    }
+}
+
+impl MemIndexed<Selected> {
+    /// Rebuild at stage `T`.
+    pub(super) fn walk<T: Stage>(&self, f: &mut impl Rebind<T>) -> MemIndexed<T> {
+        MemIndexed {
+            base: f.read(self.base),
+            index: f.read(self.index),
+        }
+    }
+}
+
+impl Mem<Physical> {
     /// `self`, or `[ip0]` after the adds that compute it when the offset is
     /// past the 12-bit scaled immediate of an `access`-byte transfer.
     pub(super) fn near(self, code: &mut Vec<u8>, access: u32, ip0: PtrReg) -> Self {

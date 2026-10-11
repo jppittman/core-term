@@ -8,8 +8,9 @@
 //!
 //! The count of selected machine instructions is not reported, only the
 //! scheduled operations they were selected from (`ScopeTraffic::instructions`,
-//! which counts a constant not at all: it is a pool read, where it is read), so
-//! the code's bytes stand in for it. They run on the selection pipeline, a tier's
+//! which counts a constant only when the instruction selected for it is not
+//! rematerializable: every AVX2 constant is, and is counted where it is read),
+//! so the code's bytes stand in for it. They run on the selection pipeline, a tier's
 //! default or `PIXELFLOW_CODEGEN=selection`; under the legacy pipeline they do
 //! nothing.
 
@@ -33,7 +34,8 @@ type Family = fn(usize) -> (ExprArena, ExprId);
 /// What a compile adds to the operations it was given, and what it came to.
 #[derive(Clone, Copy, Debug)]
 struct Size {
-    /// Scheduled operations selected, constants excluded.
+    /// Scheduled operations selected; a constant only when its instruction is
+    /// not rematerializable.
     scheduled: u64,
     /// Loads, stores and pool reads the allocator placed.
     inserted: u64,
@@ -117,16 +119,17 @@ fn doubling_a_kernel_at_most_doubles_what_is_emitted() {
     }
 }
 
-/// Selection picks at most four instructions for each scheduled operation and
-/// an instruction is at most ten bytes, so a row's code is bounded by its
-/// scheduled operations: the per-row stand-in for selected instructions at
-/// most four times the scheduled ones. The rows come to 11 to 27.
+/// A row's code is bounded by its scheduled operations. The ceiling is
+/// empirical, over every byte emitted (the allocator's inserted instructions,
+/// the prologue and epilogue and the pool included): the rows come to 11 to 27
+/// bytes an operation today, and 40 leaves room for a kernel with more
+/// constants or reloads per operation without letting the growth go unseen.
 #[test]
 fn a_row_emits_bytes_in_proportion_to_its_scheduled_operations() {
     if !selection() {
         return;
     }
-    const BYTES_PER_OPERATION: u64 = 4 * 10;
+    const BYTES_PER_OPERATION: u64 = 40;
     let lanes = (jit_vector_bytes() / BYTES_PER_LANE) as u32;
     for row in &rows::TABLE {
         let (arena, root) = (row.build)();

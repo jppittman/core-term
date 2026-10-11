@@ -41,7 +41,9 @@ use alloc::vec::Vec;
 pub struct ScopeTraffic {
     /// Scheduled operations emitted. The legacy pipeline counts a constant
     /// as one, as well as in `remats`; the selection pipeline counts it only
-    /// in `remats`, where it is read.
+    /// when the instruction selected for it is not rematerializable. A
+    /// rematerializable one (every AVX2 constant) is placed where it is read,
+    /// and counted there: in `remats`, when it reads the pool.
     pub instructions: u64,
     /// Stack loads emitted: an instruction's operand reloads, a range brought
     /// back into a register, a scope head's reconciliation, a guard's mask, a
