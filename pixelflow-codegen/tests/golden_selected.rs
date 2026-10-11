@@ -15,15 +15,14 @@
 //! crate's own entry points, this reaches the pipeline through `compile`, so it
 //! is the host's tier and the process's knob: it does nothing unless run on the
 //! selection pipeline, at a tier with a table below. The `isa-matrix` job does
-//! for the x86 tiers, and the macOS job (and `qemu-aarch64`, with the knob) for
-//! NEON. `GOLDEN`'s columns pin the same code for the tiers whose default is
+//! for the x86 tiers, and the macOS job (and `qemu-aarch64`) for NEON. `GOLDEN`'s columns pin the same code for the tiers whose default is
 //! selection.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
 use pixelflow_codegen::emit::compile;
 use pixelflow_codegen::{fnv1a64, jit_vector_bytes};
-use pixelflow_ir::LatticeShape;
+use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
 mod rows {
     include!("support/sibling_rows.rs");
@@ -72,22 +71,31 @@ const GOLDEN_SELECTED_AVX512: [Bytes; 11] = [
     (401852, 0xb7be255b2b5b4d12),
 ];
 
-/// The same, on NEON, which the macOS job (and `qemu-aarch64`, under the knob)
-/// runs. `deep_frame` is 61,104 bytes of frame here, a few KiB under what
-/// `ldr q` reaches; `tests/deep_frame.rs` has the kernel past it.
+/// The same, on NEON, which the macOS job (and `qemu-aarch64`) runs.
+/// `deep_frame` is a few KiB of frame under what `ldr q` reaches; the kernel
+/// past it is pinned below.
 const GOLDEN_SELECTED_NEON: [Bytes; 11] = [
     (320, 0x1e2cc2ccd2c39688),
     (320, 0xaf15a3b51b626a3b),
     (512, 0xf2c73927a15e6f3a),
     (560, 0x441eee7bc834ff63),
-    (142560, 0x9eb8bd206736568b),
+    (142528, 0x954183c9b0d1beac),
     (1872, 0x85e1e22c75b380c7),
     (624, 0xace3ddd873b0de8f),
     (672, 0x3404e179b1577f67),
     (384, 0x836d82c90fed0e27),
     (432, 0x7e2dc82a4db53468),
-    (188320, 0xcfe28253787ecf9d),
+    (188256, 0x583610d0ca30c949),
 ];
+
+/// What `arena` compiles to at `width`, and its frame, through `compile`.
+fn emitted(arena: &ExprArena, root: ExprId, width: rows::Width) -> (Bytes, u64) {
+    let lanes = (jit_vector_bytes() / BYTES_PER_LANE) as u32;
+    let shape = LatticeShape::new([width.columns(lanes), rows::ROWS]);
+    let result = compile(arena, root, shape).expect("a sibling-fold row compiles");
+    let code = result.code.as_bytes();
+    ((code.len(), fnv1a64(code)), result.frame_bytes)
+}
 
 #[test]
 fn the_sibling_fold_rows_emit_the_recorded_bytes_through_selection() {
@@ -100,15 +108,11 @@ fn the_sibling_fold_rows_emit_the_recorded_bytes_through_selection() {
     if !selection() {
         return;
     }
-    let lanes = (jit_vector_bytes() / BYTES_PER_LANE) as u32;
     let mut recomputed = Vec::new();
     let mut moved = Vec::new();
     for (row, pin) in rows::TABLE.iter().zip(pins) {
         let (arena, root) = (row.build)();
-        let shape = LatticeShape::new([row.width.columns(lanes), rows::ROWS]);
-        let result = compile(&arena, root, shape).expect("a sibling-fold row compiles");
-        let code = result.code.as_bytes();
-        let actual = (code.len(), fnv1a64(code));
+        let (actual, _) = emitted(&arena, root, row.width);
         if actual != pin {
             moved.push(format!(
                 "{}: pinned {pin:x?}, emitted {actual:x?}",
@@ -123,5 +127,32 @@ fn the_sibling_fold_rows_emit_the_recorded_bytes_through_selection() {
          if the change is intentional, re-baseline it in its own commit with:\n{}",
         moved.join("\n"),
         recomputed.join("\n")
+    );
+}
+
+/// The reach of `ldr q`'s scaled 12-bit displacement.
+const LDR_Q_REACH: u64 = 64 * 1024;
+
+/// `deep_frame_w37` at the size `tests/deep_frame.rs` runs: an eighth more terms
+/// than the pinned row, so the spill area is past `ldr q`'s reach and a slot's
+/// address is computed into a register. The row above pins no such sequence.
+const GOLDEN_SELECTED_NEON_PAST_REACH: Bytes = (216768, 0x36d2f2006f5cf761);
+
+#[test]
+fn a_deep_slot_past_the_reach_emits_the_recorded_bytes_through_selection() {
+    if jit_vector_bytes() != NEON_VECTOR_BYTES || !selection() {
+        return;
+    }
+    let terms = rows::DEEP_FRAME_TERMS + rows::DEEP_FRAME_TERMS / 8;
+    let (arena, root) = rows::deep_frame(terms);
+    let (actual, frame) = emitted(&arena, root, rows::Width::Remainder);
+    assert!(
+        frame > LDR_Q_REACH,
+        "the row no longer reaches past ldr q (frame_bytes = {frame})"
+    );
+    assert_eq!(
+        actual, GOLDEN_SELECTED_NEON_PAST_REACH,
+        "re-baseline it in its own commit with ({}, {:#018x})",
+        actual.0, actual.1
     );
 }

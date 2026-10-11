@@ -108,9 +108,9 @@ fn ldr_s(code: &mut Vec<u8>, dst: Reg, addr: Mem<Physical>) {
 /// `ldr w`'s index is an `Integer` and its base a `Pointer`. Every
 /// instruction is one 32-bit word, except [`Inst::CbzFar`],
 /// [`Inst::AdrpAdd`] and [`Inst::ProbePage`], which are two, and the frame's
-/// [`Inst::Enter`] and [`Inst::Ret`], which are as many as the frame is pages
-/// and steps. The legacy driver adds a displacement past the scaled immediate
-/// into IP0 before the instruction, by [`ldr_q`], [`str_q`] and [`ldr_s`]
+/// [`Inst::Enter`] (a [`Inst::ProbePage`] per page) and [`Inst::Ret`] (two
+/// adds). The legacy driver adds a displacement past the scaled immediate into
+/// IP0 before the instruction, by [`ldr_q`], [`str_q`] and [`ldr_s`]
 /// ([`Mem::near`]); selection computes the address into a value.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum Inst<S: Stage> {
@@ -845,14 +845,19 @@ const SUB_SP: u32 = 0xD100_03FF;
 /// `add sp, sp, #bytes`'s word with the immediate clear.
 const ADD_SP: u32 = 0x9100_03FF;
 
-/// `sp` moved by `bytes`, in steps of the largest `add` immediate that keeps
-/// it 16-byte aligned.
+/// The `sh` bit of `add`/`sub` (immediate): the immediate is shifted left 12.
+const SHIFT_12: u32 = 1 << 22;
+
+/// `sp` moved by `bytes`: whole pages in the shifted immediate, then the rest,
+/// so a frame is two words however deep it is. `bytes` is a multiple of 16, as
+/// every frame is, so `sp` stays aligned.
 fn step_sp(opcode: u32, bytes: u32, put: &mut impl FnMut(u32)) {
-    let mut remaining = bytes;
-    while remaining > 0 {
-        let chunk = remaining.min(MAX_ADD_IMM);
-        put(opcode | (Imm12::new(chunk).bits() << 10));
-        remaining -= chunk;
+    let (pages, rest) = (bytes / STACK_PAGE, bytes % STACK_PAGE);
+    if pages > 0 {
+        put(opcode | SHIFT_12 | (Imm12::new(pages).bits() << 10));
+    }
+    if rest > 0 {
+        put(opcode | (Imm12::new(rest).bits() << 10));
     }
 }
 

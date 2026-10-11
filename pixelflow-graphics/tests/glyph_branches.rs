@@ -36,10 +36,10 @@ const PINS: [(char, u32, TierPins); 3] = [
         [
             ("avx2", 2836, 0x30fd_ab98_f7df_3b32),
             ("avx512", 3172, 0x2d16_3a20_0ca5_5eee),
-            ("neon", 1904, 0x8b99_0dca_5fa6_15da),
+            ("neon", 1728, 0x9b87_f193_5410_8436),
             ("avx512+selection", 2604, 0x1b97_2673_dfb0_44fd),
             ("avx2+legacy", 3012, 0x2a8c_6135_0420_6970),
-            ("neon+selection", 1728, 0x9b87_f193_5410_8436),
+            ("neon+legacy", 1904, 0x8b99_0dca_5fa6_15da),
         ],
     ),
     (
@@ -48,10 +48,10 @@ const PINS: [(char, u32, TierPins); 3] = [
         [
             ("avx2", 2832, 0x9335_b8d3_4de6_2c38),
             ("avx512", 3172, 0x7939_6944_482a_feeb),
-            ("neon", 1904, 0x113e_3102_6b9b_2b3e),
+            ("neon", 1712, 0x3d57_223e_007b_3e78),
             ("avx512+selection", 2604, 0x926e_25e2_bfb8_2e00),
             ("avx2+legacy", 3008, 0x3c1c_4b85_1887_fa8a),
-            ("neon+selection", 1712, 0x3d57_223e_007b_3e78),
+            ("neon+legacy", 1904, 0x113e_3102_6b9b_2b3e),
         ],
     ),
     (
@@ -60,10 +60,10 @@ const PINS: [(char, u32, TierPins); 3] = [
         [
             ("avx2", 2836, 0x56b2_1cc7_6344_6fd3),
             ("avx512", 3172, 0xd675_74c3_f870_26e3),
-            ("neon", 1888, 0xc973_f004_e574_5a98),
+            ("neon", 1712, 0x385c_9332_6a32_f0bb),
             ("avx512+selection", 2604, 0x205a_2b44_75ff_1274),
             ("avx2+legacy", 3012, 0x0d3a_e133_99a6_af0d),
-            ("neon+selection", 1712, 0x385c_9332_6a32_f0bb),
+            ("neon+legacy", 1888, 0xc973_f004_e574_5a98),
         ],
     ),
 ];
@@ -88,8 +88,8 @@ fn a_glyphs_code_is_pinned() {
     let font = Font::parse(FONT_DATA).expect("parse font");
     let host = isa::detect();
     let default = match host {
-        isa::Isa::Avx2 => "selection",
-        isa::Isa::Avx512 | isa::Isa::Neon => "legacy",
+        isa::Isa::Avx2 | isa::Isa::Neon => "selection",
+        isa::Isa::Avx512 => "legacy",
     };
     let tier = match std::env::var("PIXELFLOW_CODEGEN") {
         Ok(knob) if !knob.trim().eq_ignore_ascii_case(default) => {

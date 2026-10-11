@@ -2764,12 +2764,12 @@ enum Pipeline {
 
 impl Pipeline {
     /// What a tier compiles with when nothing says otherwise: selection once
-    /// the tier has switched to it. AVX-512 and NEON have a selection backend
-    /// and have not switched.
+    /// the tier has switched to it. AVX-512 has a selection backend and has
+    /// not switched.
     const fn of(isa: Isa) -> Self {
         match isa {
-            Isa::Avx2 => Self::Selection,
-            Isa::Avx512 | Isa::Neon => Self::Legacy,
+            Isa::Avx2 | Isa::Neon => Self::Selection,
+            Isa::Avx512 => Self::Legacy,
         }
     }
 }
@@ -6865,57 +6865,57 @@ mod tests {
             [
                 (580, 0xcd22a56b8b260b1a),
                 (676, 0xb2ca1015afc4ecf7),
-                (400, 0x78f1164693fe0da6),
+                (320, 0x1e2cc2ccd2c39688),
             ],
             [
                 (568, 0x86d60c1545a26d56),
                 (664, 0xf22ace44c2fda4c8),
-                (400, 0xaa96d96596a05551),
+                (320, 0xaf15a3b51b626a3b),
             ],
             [
                 (880, 0x3ebb4798982a8c6d),
                 (992, 0x66e9f1ebf718d0cd),
-                (608, 0x14a21aabd82fe2e8),
+                (512, 0xf2c73927a15e6f3a),
             ],
             [
                 (896, 0x609dcba2dd47b291),
                 (1056, 0x662f9c26c2bbcafc),
-                (656, 0x0e7016ed19878723),
+                (560, 0x441eee7bc834ff63),
             ],
             [
                 (204992, 0x8cca9719cdafb323),
                 (278032, 0x282aa77769f9e2ff),
-                (188496, 0x578f9987a3386dcc),
+                (142528, 0x954183c9b0d1beac),
             ],
             [
                 (2292, 0x6f731e42104d8439),
                 (2932, 0x3943e837c9f115d3),
-                (2144, 0x92246f5ac70b7ef7),
+                (1872, 0x85e1e22c75b380c7),
             ],
             [
                 (992, 0x99dfdad6d446b32d),
                 (1120, 0x2a5133484f338421),
-                (704, 0x435919f39c14241c),
+                (624, 0xace3ddd873b0de8f),
             ],
             [
                 (852, 0x2c228ca476b28b53),
                 (1108, 0x9bac855b3070b143),
-                (736, 0xe94f00f62e4f2b4e),
+                (672, 0x3404e179b1577f67),
             ],
             [
                 (556, 0x8403cb1c517f09a5),
                 (700, 0x18187fcf1e57608f),
-                (432, 0xad9d34cf0f162be5),
+                (384, 0x836d82c90fed0e27),
             ],
             [
                 (452, 0x737225ee0861c2c9),
                 (596, 0x261da02fa7c98009),
-                (480, 0x4adfc2b1aba3fa1f),
+                (432, 0x7e2dc82a4db53468),
             ],
             [
                 (356460, 0x1acf2d0ad97001c3),
                 (450476, 0x894da10795bcf548),
-                (605648, 0xff316d78ddef246a),
+                (188256, 0x583610d0ca30c949),
             ],
         ];
 

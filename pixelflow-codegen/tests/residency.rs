@@ -1,6 +1,6 @@
 //! A value stays in its register until something needs the register.
 //!
-//! Run on the selection pipeline (AVX2's own, or `PIXELFLOW_CODEGEN=selection`),
+//! Run on the selection pipeline (AVX2's and NEON's own, or `PIXELFLOW_CODEGEN=selection`),
 //! these fail on an allocator that stores every value to the frame when it is
 //! defined and reloads it at every read. They are written against what a
 //! kernel emits, not against the allocator: its traffic, its frame, and the
