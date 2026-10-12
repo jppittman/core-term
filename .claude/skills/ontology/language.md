@@ -334,7 +334,9 @@
   - A retired axis is "refused, not unrepresentable". It would read as
     frame-uniform and hoist silently, so `emit::compile` refuses it
     unconditionally, and only on nodes reachable from the root.
-  - Each meaning removed shrinks the hazard: the binder became `Binder`.
+  - Each meaning removed shrinks the hazard: the binder became `Binder`, and
+    past lowering the schedule's `Var` holds one (`ScheduledOp::Var(Binder)`),
+    so codegen decodes no range.
   - Once collapse has run, the axiom ranges have no reason to exist.
 - **Lives:** `ExprNode::Var(u8)` (`pixelflow-ir/src/arena.rs`), whose doc
   still lists "a parameter placeholder"; `ENode::Var(u8)`
@@ -404,7 +406,8 @@
 - **Lives:** `pixelflow_ir::fold::{Binder, Placeholder}`
   (`pixelflow-ir/src/fold.rs`), `arena::{REDUCE_BINDER_BASE,
   REDUCE_BINDERS}` (both `pub(crate)`), `ExprArena::close_over`
-  (`pixelflow-ir/src/arena.rs`), `BinderScope` (`pixelflow-ir/src/kernel.rs`).
+  (`pixelflow-ir/src/arena.rs`), `BinderScope` (`pixelflow-ir/src/kernel.rs`),
+  `ScheduledOp::Var` (`pixelflow-codegen/src/program/mod.rs`).
   Decided in `2026-09-09-a-fold-is-a-node.md` §3–§5, collapse-is-a-fold
   steps 2½ and 3, and the-language-is-kernel §1.3, §1.5, D4.
 
@@ -437,7 +440,9 @@
     2026-10-03); `ExprNode::Acc` (built and reverted: "A node every consumer
     refuses, including its target, is not a node in the language").
 - **Follows:**
-  - The empty fold is the monoid's identity.
+  - The empty fold is the monoid's identity, so its variance is `CONST`
+    (`compute_arena_variance`) and lowering schedules the identity
+    (`arena_to_schedule`).
   - Peel and halve are e-graph rules, so unrolling is extraction's choice.
   - A fold costs `len × body`, and its size for budgeting is also
     `len × body`.

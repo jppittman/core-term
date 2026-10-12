@@ -92,7 +92,9 @@ mod tests {
     use crate::program::guards::FoldReads;
     use crate::program::ownership::Positions;
     use crate::program::{IfArm, ScheduledOp, ValueId};
+    use pixelflow_ir::fold::Binder;
     use pixelflow_ir::kind::OpKind;
+    use pixelflow_ir::variance::Variance;
 
     /// The positions of the defs under `items`, nested arms included, in the
     /// order they run.
@@ -130,10 +132,25 @@ mod tests {
         })
     }
 
+    /// A def whose variance is a placeholder, `CONST`: the analyses under
+    /// test read operands and nesting, never a def's variance (scoping does,
+    /// and these fixtures do not go through it). Only [`var`] is exact.
     fn def(value: u64, op: ScheduledOp) -> Def {
         Def {
             value: ValueId(value),
             op,
+            variance: Variance::CONST,
+        }
+    }
+
+    /// A binder's value: a leaf the scope reads and does not compute, varying
+    /// with that binder alone.
+    fn var(value: u64, slot: u8) -> Def {
+        let binder = Binder::from_slot(slot).expect("a binder slot");
+        Def {
+            value: ValueId(value),
+            op: ScheduledOp::Var(binder),
+            variance: Variance::from_var(binder.var()),
         }
     }
 
@@ -235,8 +252,8 @@ mod tests {
     #[test]
     fn an_arm_runs_immediately_before_its_if() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             unary(2, OpKind::Rsqrt, 1),
             if_of(3, 0, 2, 0),
         ];
@@ -253,8 +270,8 @@ mod tests {
     #[test]
     fn a_stranger_between_an_arms_values_stays_where_it_was() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             unary(2, OpKind::Sqrt, 1),  // the arm's, first value
             unary(3, OpKind::Neg, 0),   // a stranger: nothing in the arm reads it
             unary(4, OpKind::Rsqrt, 2), // the arm's, second value
@@ -269,8 +286,8 @@ mod tests {
     #[test]
     fn both_arms_of_an_if_run_before_it_true_arm_first() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             unary(2, OpKind::Rsqrt, 1),
             unary(3, OpKind::Rsqrt, 0),
             unary(4, OpKind::Sqrt, 2),
@@ -287,8 +304,8 @@ mod tests {
     #[test]
     fn nested_arms_run_inside_the_arm_around_them() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             unary(2, OpKind::Rsqrt, 1),
             unary(3, OpKind::Rsqrt, 0),
             unary(4, OpKind::Sqrt, 2),
@@ -329,8 +346,8 @@ mod tests {
     #[test]
     fn a_block_follows_an_input_it_shares_with_the_scope() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             unary(2, OpKind::Sqrt, 1), // the arm's
             unary(3, OpKind::Neg, 0),  // shared: the arm reads it below
             def(4, ScheduledOp::Binary(OpKind::Add, ValueId(2), ValueId(3))),
@@ -363,8 +380,7 @@ mod tests {
     /// reads three.
     fn random_schedule(seed: u64, len: usize) -> Vec<Def> {
         let mut rng = Lcg(seed);
-        let mut schedule: Vec<Def> =
-            alloc::vec![def(0, ScheduledOp::Var(0)), def(1, ScheduledOp::Var(1))];
+        let mut schedule: Vec<Def> = alloc::vec![var(0, 0), var(1, 1)];
         while schedule.len() < len {
             let value = schedule.len() as u64;
             let earlier = |rng: &mut Lcg| rng.below(value as usize) as u64;
@@ -428,7 +444,7 @@ mod tests {
     #[test]
     fn an_arm_does_not_own_what_a_sibling_fold_reads() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
+            var(0, 0),
             def(1, reduce()),
             unary(2, OpKind::Rsqrt, 1),
             def(3, ScheduledOp::Binary(OpKind::Mul, ValueId(1), ValueId(2))),
@@ -454,8 +470,8 @@ mod tests {
     #[test]
     fn what_a_fold_reads_stays_ahead_of_the_fold() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             unary(2, OpKind::Rsqrt, 1),
             def(3, ScheduledOp::Binary(OpKind::Add, ValueId(1), ValueId(1))),
             def(4, reduce()),
@@ -474,8 +490,8 @@ mod tests {
     #[test]
     fn a_pointer_stays_ahead_of_its_reader() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             unary(2, OpKind::Rsqrt, 1),
             def(3, ScheduledOp::Binary(OpKind::Add, ValueId(1), ValueId(1))),
             def(4, ScheduledOp::Context(0)),
@@ -493,7 +509,7 @@ mod tests {
     #[test]
     fn a_read_of_a_value_the_schedule_never_defines_is_ignored() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
+            var(0, 0),
             unary(1, OpKind::Rsqrt, 3), // ValueId(3) has no Def
             if_of(4, 0, 0, 1),
         ];

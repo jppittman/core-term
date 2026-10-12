@@ -387,7 +387,10 @@
 
 - **Is:** the set of binders (coordinates and fold binders) a value depends
   on, as a `u64` bitset. Law: if `b ∉ var(v)`, then `⟦v⟧` is constant along
-  `b`. Children union; "a fold removes its own index". It is the Boolean
+  `b`. Children union; "a fold removes its own index". In
+  `compute_arena_variance` a fold over nothing is its identity, `CONST`; the
+  e-graph reaches the same `CONST` for such a node through `EmptyFold` and the
+  class meet, not through its per-node transfer. It is the Boolean
   shadow of the forward derivative. For an e-class, `var(C) = ⋂ var(n)`, a
   greatest fixpoint from ALL. The placement rule: "the shallowest scope that
   binds every variable … That one rule is loop-invariant code motion,
@@ -406,6 +409,8 @@
   - A unit's leaf carries its variance.
   - Retired bits 2–3 must be refused.
 - **Lives:** `pixelflow_ir::Variance(u64)` (`pixelflow-ir/src/variance.rs`),
+  computed per node by `compute_arena_variance` and carried onto every
+  scheduled `Def` by lowering (`pixelflow-codegen/src/program/lower.rs`),
   `EGraph::variance` (`pub(crate)`, `pixelflow-search/src/egraph/graph.rs`),
   `Extraction::chosen_variance` (`extract.rs`); one-name-bound-later §2;
   an-integral-is-a-fold §1 and §3 (that part survived the retraction). Today

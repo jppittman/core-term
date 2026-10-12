@@ -22,6 +22,7 @@ use alloc::vec::Vec;
 
 use pixelflow_ir::fold::{Binder, Fold};
 use pixelflow_ir::kind::OpKind;
+use pixelflow_ir::variance::Variance;
 
 /// A value in the program (SSA-style).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,13 +39,17 @@ pub(crate) struct Def {
     pub(super) value: ValueId,
     /// The operation that computes it.
     pub(super) op: ScheduledOp,
+    /// What the value varies with: the variance of the arena node it was
+    /// lowered from (`compute_arena_variance`), which scoping places it by.
+    pub(super) variance: Variance,
 }
 
 /// Info about an operation in the schedule.
 #[derive(Debug, Clone)]
 pub(crate) enum ScheduledOp {
-    /// Variable reference (input register)
-    Var(u8),
+    /// A fold's binder, read as a value: the counter of the innermost
+    /// enclosing loop that binds it.
+    Var(Binder),
     /// Constant value
     Const(f32),
     /// Unary op with input value
@@ -93,9 +98,11 @@ pub(crate) enum ScheduledOp {
     /// The lane fold's binder: the constant `[0, 1, …, L−1]`. The fold
     /// whose binder this is executes by lanes (its body is inlined into its
     /// parent's schedule — see `lower::arena_to_schedule`), so the binder is a
-    /// leaf here rather than a loop counter. Carries the binder so its
-    /// variance bit is the fold's, which is what "lane-uniform" is read off.
-    Lanes(Binder),
+    /// leaf here rather than a loop counter. Its def's variance is the lane
+    /// binder's bit alone (the arena `Var`'s), so every value built on it
+    /// carries that bit; lowering reads lane-uniformity off the arena's table,
+    /// and scoping keeps lane-varying values in the storing scope by it.
+    Lanes,
     /// The store the lattice's folds wrap a kernel in: `value`'s first
     /// `lanes` lanes at `out + 4·(row·pitch + col)`, `row` and `col` being
     /// the enclosing folds' binders. This def *is* the lane fold, executed
@@ -119,9 +126,7 @@ pub(crate) enum ScheduledOp {
     /// body is the value named by the second field — in *this schedule's*
     /// numbering (`lower::arena_to_schedule` maps it like any other child), before
     /// `scopes::extract_folds` carves the body out into its own
-    /// [`ScopeFold`]. Kept only so `scopes::schedule_variance` can look
-    /// the body's variance up (`Reduce`'s own result is the body's variance
-    /// with the binder's own bit removed) and so `scopes::extract_folds` can find
+    /// [`ScopeFold`]. Kept so `scopes::extract_folds` can find
     /// the body's closure; the emitter never resolves it as an operand —
     /// the loop's result comes from the loop selection opens for the
     /// [`Scope::Fold`] this def opens, not from this `ValueId`.
@@ -306,9 +311,8 @@ pub(crate) struct ArmBlock {
 /// A `Reduce` is a leaf here, the same as `Uniform` — by the time one reaches
 /// a schedule this function walks, `scopes::extract_folds` has already carved its
 /// body out into its own `ScopeFold`; the `ValueId` `ScheduledOp::Reduce`
-/// still carries is `scopes::schedule_variance`'s and `scopes::extract_folds`'s own concern
-/// (they run before extraction, and after respectively, over different
-/// schedules), never an operand this scope's allocation resolves. What the
+/// still carries is `scopes::extract_folds`'s own concern, never an operand
+/// this scope's allocation resolves. What the
 /// loop it opens reads from this scope is a dependency all the same, and the
 /// guard analysis has it as one (`guards::FoldReads`). A `Seq`
 /// sequences two effects and reads no register; a `Write` reads the one
@@ -317,7 +321,7 @@ pub(crate) struct ArmBlock {
 pub(crate) fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
     let (a, b, c) = match sop {
         ScheduledOp::Var(_)
-        | ScheduledOp::Lanes(_)
+        | ScheduledOp::Lanes
         | ScheduledOp::Const(_)
         | ScheduledOp::Context(_)
         | ScheduledOp::Uniform(..)

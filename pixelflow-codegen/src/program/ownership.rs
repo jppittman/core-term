@@ -220,11 +220,27 @@ mod tests {
     use pixelflow_ir::LatticeShape;
     use pixelflow_ir::arena::{ExprArena, ExprId};
     use pixelflow_ir::fold::{Binder, Fold, Monoid};
+    use pixelflow_ir::variance::Variance;
 
+    /// A def whose variance is a placeholder, `CONST`: the analyses under
+    /// test read operands and nesting, never a def's variance (scoping does,
+    /// and these fixtures do not go through it). Only [`var`] is exact.
     fn def(value: u64, op: ScheduledOp) -> Def {
         Def {
             value: ValueId(value),
             op,
+            variance: Variance::CONST,
+        }
+    }
+
+    /// A binder's value: a leaf the scope reads and does not compute, varying
+    /// with that binder alone.
+    fn var(value: u64, slot: u8) -> Def {
+        let binder = Binder::from_slot(slot).expect("a binder slot");
+        Def {
+            value: ValueId(value),
+            op: ScheduledOp::Var(binder),
+            variance: Variance::from_var(binder.var()),
         }
     }
 
@@ -256,8 +272,8 @@ mod tests {
     #[test]
     fn an_arm_owns_what_only_it_reads() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
             if_of(3, 0, 2, 0),
         ];
@@ -275,8 +291,8 @@ mod tests {
     #[test]
     fn a_value_both_arms_read_belongs_to_neither() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
             def(3, ScheduledOp::Unary(OpKind::Neg, ValueId(2))),
             def(4, ScheduledOp::Unary(OpKind::Sqrt, ValueId(2))),
@@ -414,8 +430,8 @@ mod tests {
     #[test]
     fn a_nested_arm_is_owned_by_the_arm_around_it() {
         let schedule = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
             def(3, ScheduledOp::Unary(OpKind::Sqrt, ValueId(1))),
             if_of(4, 0, 2, 3),
@@ -441,8 +457,8 @@ mod tests {
     #[test]
     fn the_order_of_the_schedule_does_not_change_what_is_owned() {
         let ops = alloc::vec![
-            def(0, ScheduledOp::Var(0)),
-            def(1, ScheduledOp::Var(1)),
+            var(0, 0),
+            var(1, 1),
             def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
             def(3, ScheduledOp::Unary(OpKind::Sqrt, ValueId(1))),
             def(4, ScheduledOp::Unary(OpKind::Neg, ValueId(3))),
