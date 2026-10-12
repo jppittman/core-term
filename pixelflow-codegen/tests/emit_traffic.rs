@@ -3,7 +3,7 @@
 //! The selection pipeline hands out whole register files and loads every
 //! constant it uses, so a zero in `pool` or `remats` there would be a silent
 //! one: both are journaled as cost-model features. Run on the selection
-//! pipeline (AVX2's and NEON's own, or `PIXELFLOW_CODEGEN=selection`), these fail when
+//! pipeline (every tier's own, or `PIXELFLOW_CODEGEN=selection`), these fail when
 //! `EmitTraffic::of` reports either as zero.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]

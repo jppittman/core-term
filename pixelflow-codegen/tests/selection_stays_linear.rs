@@ -10,9 +10,9 @@
 //! scheduled operations they were selected from (`ScopeTraffic::instructions`,
 //! which counts a constant only when the instruction selected for it is not
 //! rematerializable: every AVX2 constant is, and is counted where it is read),
-//! so the code's bytes stand in for it. They run on the selection pipeline, a tier's
-//! default or `PIXELFLOW_CODEGEN=selection`; under the legacy pipeline they do
-//! nothing.
+//! so the code's bytes stand in for it. They run on the selection pipeline,
+//! every tier's default or `PIXELFLOW_CODEGEN=selection`; under the legacy
+//! pipeline they do nothing.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 

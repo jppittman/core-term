@@ -615,7 +615,7 @@ const ISA_LEVELS: &[IsaLevel] = &[
     // The pipelines (docs/plans/2026-10-08-selection-is-a-phase.md), at the
     // tiers with a selection backend. Not tiers, but decided the same way (the
     // environment, once, at startup) and run the same way. The selection leg
-    // is the pipeline a tier ships, or will: every suite that compiles a
+    // is the pipeline every tier ships: every suite that compiles a
     // kernel and checks it, in the three crates that do, so the checks that mean
     // something under it (the V suites) run presubmit under the code that
     // ships, whatever tier the `test` job's runner happens to have. The
