@@ -13,9 +13,11 @@ use super::{
     unimplemented_op,
 };
 use crate::error::CompileError;
-use crate::program::{Def, IfArm, Item, ScheduledOp, Scope, ScopedSchedule, ValueId};
+use crate::pass::Pass;
+use crate::program::{Def, Flow, IfArm, Item, ScheduledOp, Scope, ScopedSchedule, ValueId};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 use pixelflow_ir::fold::{Binder, Fold, Monoid};
 use pixelflow_ir::kind::OpKind;
 
@@ -23,34 +25,40 @@ use pixelflow_ir::kind::OpKind;
 /// been taught yet: the op, named.
 const DRIVER: &str = "the selection driver";
 
-/// Select `scoped` as one machine function.
-///
-/// # Errors
-///
-/// [`CompileError::BudgetExceeded`] when the backend refuses a constant.
-pub(super) fn select<B: IsaBackend>(scoped: &ScopedSchedule) -> Result<Function<B>, CompileError> {
-    let (mut b, entry) = Builder::<B>::new();
-    B::enter(&mut b);
-    let mut selector = Selector {
-        scoped,
-        b,
-        entry,
-        frames: Vec::new(),
-        binders: Vec::new(),
-        loops: Vec::new(),
-        scheduled: alloc::vec![0; scoped.folds.len() + 1],
-    };
-    selector.scope(Scope::Body, None)?;
-    B::ret(&mut selector.b);
-    let mut function = selector.b.finish();
-    function.scheduled = selector.scheduled;
-    Ok(function)
+/// Selection: a scoped schedule as one machine function.
+pub(super) struct Select<B: IsaBackend>(pub(super) PhantomData<fn() -> B>);
+
+impl<B: IsaBackend> Pass for Select<B> {
+    type Input = ScopedSchedule<Flow>;
+    type Output = Function<B>;
+
+    /// # Errors
+    ///
+    /// [`CompileError::BudgetExceeded`] when the backend refuses a constant.
+    fn run(self, scoped: ScopedSchedule<Flow>) -> Result<Function<B>, CompileError> {
+        let (mut b, entry) = Builder::<B>::new();
+        B::enter(&mut b);
+        let mut selector = Selector {
+            scoped: &scoped,
+            b,
+            entry,
+            frames: Vec::new(),
+            binders: Vec::new(),
+            loops: Vec::new(),
+            scheduled: alloc::vec![0; scoped.folds.len() + 1],
+        };
+        selector.scope(Scope::Body, None)?;
+        B::ret(&mut selector.b);
+        let mut function = selector.b.finish();
+        function.scheduled = selector.scheduled;
+        Ok(function)
+    }
 }
 
 /// The loop nest as it is entered: one binding frame per open scope, and the
 /// binders and loops the code being selected is inside.
 struct Selector<'s, B: IsaBackend> {
-    scoped: &'s ScopedSchedule,
+    scoped: &'s ScopedSchedule<Flow>,
     b: Builder<B>,
     entry: Entry,
     /// Values by name, one frame per open scope, innermost last. Sibling folds
@@ -97,8 +105,8 @@ impl<B: IsaBackend> Selector<'_, B> {
     ) -> Result<Option<B::Lane>, CompileError> {
         let scoped = self.scoped;
         let (schedule, flow) = match scope {
-            Scope::Body => (&scoped.body.schedule, &scoped.body.flow),
-            Scope::Fold(j) => (&scoped.folds[j].schedule, &scoped.folds[j].flow),
+            Scope::Body => (&scoped.body.schedule, &scoped.body.analysis),
+            Scope::Fold(j) => (&scoped.folds[j].schedule, &scoped.folds[j].analysis),
         };
         self.frames.push(Frame::new());
         // The blocks being walked, innermost last, each arm with the block

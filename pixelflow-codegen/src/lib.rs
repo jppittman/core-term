@@ -40,6 +40,7 @@ pub fn jit_vector_bytes() -> usize {
 }
 
 mod error;
+mod pass;
 mod pipeline;
 mod program;
 

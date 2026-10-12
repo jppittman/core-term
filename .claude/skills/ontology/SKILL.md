@@ -1,6 +1,6 @@
 ---
 name: ontology
-description: What each thing in this project IS (kernel, kernel!, uniform, binding time, binder, fold, monoid, range, mask, If, arm, Var, Ref, identity, lattice, manifold, collapse, lane, pipeline P, stage vs tier, saturation, budget, extraction, cost, variance, demand, scope, placement, root, park, carry, slot, label, operand, instruction, register, value, temp, block, loop, phase, guard, priority lane, cell, glyph, font programs), along with what it is not, what follows from it, and where it lives in the code. Read it before designing, reviewing or cleaning up code that touches one of these terms. Read it whenever a special case appears, because the deeper model is usually here.
+description: What each thing in this project IS (kernel, kernel!, uniform, binding time, binder, fold, monoid, range, mask, If, arm, Var, Ref, identity, lattice, manifold, collapse, lane, pipeline P, stage vs tier, saturation, budget, extraction, cost, variance, demand, scope, placement, root, park, carry, slot, label, operand, instruction, register, value, temp, block, loop, phase, pass, guard, priority lane, cell, glyph, font programs), along with what it is not, what follows from it, and where it lives in the code. Read it before designing, reviewing or cleaning up code that touches one of these terms. Read it whenever a special case appears, because the deeper model is usually here.
 ---
 
 # Ontology
@@ -24,7 +24,7 @@ How to read the entries:
   behind the decision.
 - **Homonyms** are marked. One word in this project often names several
   unrelated things, and each sense is listed separately: tier, region, slot,
-  shape, root, guard, arm, block, phase, frame, lane, park, label, fold,
+  shape, root, guard, arm, block, phase, pass, frame, lane, park, label, fold,
   uniform, schedule. Before you reason from a word, ask which sense it is.
 
 The entries are in one file per part. Read the part a term belongs to, not
@@ -125,6 +125,7 @@ index for the word first.
 ### Codegen — [codegen.md](codegen.md)
 
 - Phase. Homonym
+- Pass. Homonym of the language's pass
 - Lowering
 - Schedule (Def). Homonym
 - Scope and the nest

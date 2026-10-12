@@ -1,18 +1,20 @@
 //! The driver: from an arena and a lattice's shape to machine code.
 //!
-//! One function does what the stages in between are for. The arena is
-//! legalized into the lattice's folds (`pixelflow_ir::passes::legalize`),
-//! lowered to a flat schedule ([`crate::program::arena_to_schedule`]), split into its nest
-//! ([`ScopedSchedule::from_schedule`]), and handed to the emitter, which
-//! allocates and emits it ([`compile_native`]). Nothing here is the emitter's:
-//! `emit/` is handed a finished program and names none of the stages above it.
+//! The stages are [`Pass`] values, run as one chain: the arena is legalized
+//! into the lattice's folds ([`Legalize`], `pixelflow_ir::passes::legalize`),
+//! lowered to a flat schedule ([`Lower`]), split into its nest ([`Nest`]), its
+//! arms' ownership read off backward ([`Own`]) and their blocks laid out
+//! ([`Layout`]); then the emitter selects, allocates and assembles it
+//! ([`emit::native`]). Nothing here is the emitter's: `emit/` is handed the
+//! stages above it as a value and names none of them.
 
-use crate::emit::{CompileResult, compile_native};
+use crate::emit::{self, CompileResult};
 use crate::error::CompileError;
-use crate::program::ScopedSchedule;
-use crate::program::arena_to_schedule;
+use crate::pass::Pass;
+use crate::program::{Def, Layout, Nest, Own, arena_to_schedule};
+use core::marker::PhantomData;
 use pixelflow_ir::LatticeShape;
-use pixelflow_ir::arena::{UniformDecl, UniformId, UniformIdentity};
+use pixelflow_ir::arena::{ExprArena, ExprId, UniformDecl, UniformId, UniformIdentity};
 use pixelflow_ir::passes::lattice::{Collapse, Domain};
 
 /// A lane is one `f32`.
@@ -43,7 +45,7 @@ fn origin() -> [UniformDecl; 2] {
 /// The uniform slots [`origin`]'s two instances hold in a legalized arena —
 /// the two `passes::lattice::collapse` declared, which is why they are always
 /// present.
-fn origin_slots(arena: &pixelflow_ir::arena::ExprArena) -> [UniformId; 2] {
+fn origin_slots(arena: &ExprArena) -> [UniformId; 2] {
     origin().map(|decl| {
         let slot = arena
             .uniforms()
@@ -54,7 +56,49 @@ fn origin_slots(arena: &pixelflow_ir::arena::ExprArena) -> [UniformId; 2] {
     })
 }
 
-/// Compile an [`ExprArena`](pixelflow_ir::arena::ExprArena) DAG into a
+/// `passes::legalize` for the collapse of a lattice of `shape` on a target of
+/// `lanes` lanes: the kernel comes back wrapped in the lattice's folds.
+struct Legalize<'a> {
+    collapse: Collapse,
+    arena: PhantomData<&'a ExprArena>,
+}
+
+impl Legalize<'_> {
+    fn new(shape: LatticeShape, lanes: u32) -> Self {
+        let domain = Domain {
+            shape,
+            origin: origin(),
+        };
+        Self {
+            collapse: Collapse { domain, lanes },
+            arena: PhantomData,
+        }
+    }
+}
+
+impl<'a> Pass for Legalize<'a> {
+    type Input = (&'a ExprArena, ExprId);
+    type Output = (ExprArena, ExprId);
+
+    fn run(self, (arena, root): Self::Input) -> Result<Self::Output, CompileError> {
+        pixelflow_ir::passes::legalize(arena, root, &self.collapse).map_err(CompileError::Legalize)
+    }
+}
+
+/// `arena_to_schedule`: a legalized arena to the flat schedule the later
+/// stages read.
+struct Lower;
+
+impl Pass for Lower {
+    type Input = (ExprArena, ExprId);
+    type Output = Vec<Def>;
+
+    fn run(self, (arena, root): Self::Input) -> Result<Self::Output, CompileError> {
+        Ok(arena_to_schedule(&arena, root, origin_slots(&arena)))
+    }
+}
+
+/// Compile an [`ExprArena`] DAG into a
 /// **collapse** kernel for a lattice of `shape`: the kernel is wrapped in the
 /// lattice's folds by
 /// [`pixelflow_ir::passes::legalize`], and every fold is emitted as a loop
@@ -79,8 +123,8 @@ fn origin_slots(arena: &pixelflow_ir::arena::ExprArena) -> [UniformId; 2] {
 /// axis; this one names the axis. Also panics on a zero extent, which has
 /// no sample to compute.
 pub fn compile(
-    arena: &pixelflow_ir::arena::ExprArena,
-    root: pixelflow_ir::arena::ExprId,
+    arena: &ExprArena,
+    root: ExprId,
     shape: LatticeShape,
 ) -> Result<CompileResult, CompileError> {
     assert!(
@@ -95,49 +139,31 @@ pub fn compile(
         shape.extent()
     );
     let lanes = (crate::jit_vector_bytes() as u32) / BYTES_PER_LANE;
-    let schedule = lower(arena, root, shape, lanes)?;
-    compile_native(ScopedSchedule::from_schedule(schedule))
-}
-
-/// `passes::legalize` at `shape` for a target of `lanes` lanes, then
-/// `arena_to_schedule`: everything [`compile`] runs before the emitter is
-/// handed a schedule.
-fn lower(
-    arena: &pixelflow_ir::arena::ExprArena,
-    root: pixelflow_ir::arena::ExprId,
-    shape: LatticeShape,
-    lanes: u32,
-) -> Result<Vec<crate::program::Def>, CompileError> {
-    let collapse = Collapse {
-        domain: Domain {
-            shape,
-            origin: origin(),
-        },
-        lanes,
-    };
-    let (arena, root) =
-        pixelflow_ir::passes::legalize(arena, root, &collapse).map_err(CompileError::Legalize)?;
-    let origin_ids = origin_slots(&arena);
-    Ok(arena_to_schedule(&arena, root, origin_ids))
+    let front = Legalize::new(shape, lanes)
+        .then(Lower)
+        .then(Nest)
+        .then(Own)
+        .then(Layout);
+    emit::native(front, (arena, root))
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::LatticeShape;
+    use super::*;
 
     /// A lane is one `f32`.
     pub(crate) const BYTES_PER_LANE: u32 = super::BYTES_PER_LANE;
 
-    /// `passes::legalize` at `shape` for a target of `lanes` lanes, then
-    /// `arena_to_schedule`: everything a compile runs before the emitter is
-    /// handed a schedule, at a width a test chooses.
+    /// The stages that make a schedule, at a width a test chooses: everything
+    /// a compile runs before scoping.
     pub(crate) fn schedule_for(
-        a: &pixelflow_ir::arena::ExprArena,
-        root: pixelflow_ir::arena::ExprId,
+        a: &ExprArena,
+        root: ExprId,
         shape: LatticeShape,
         lanes: u32,
-    ) -> Vec<crate::program::Def> {
-        super::lower(a, root, shape, lanes).expect("legalize")
+    ) -> Vec<Def> {
+        let schedule = Legalize::new(shape, lanes).then(Lower);
+        schedule.run((a, root)).expect("legalize")
     }
 
     /// The backstop for an arena that never became a `Kernel`.

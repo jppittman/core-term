@@ -5,7 +5,7 @@
 //! the scopes a schedule is split into ([`ScopedSchedule`]) and the blocks each
 //! scope's arms are ([`Flow`]). None of it names a register or a byte: it is what lowering
 //! produces and what allocation and emission consume, which is why it lives
-//! under neither.
+//! under neither. The stages that build it are [`Nest`], [`Own`] and [`Layout`].
 
 mod guards;
 mod layout;
@@ -13,7 +13,10 @@ mod lower;
 mod ownership;
 mod scopes;
 mod tree;
+pub(crate) use layout::Layout;
 pub(crate) use lower::arena_to_schedule;
+pub(crate) use ownership::Own;
+pub(crate) use scopes::Nest;
 
 use alloc::vec::Vec;
 
@@ -168,26 +171,30 @@ pub(crate) enum Scope {
 ///
 /// The body is a field rather than `folds[0]` because it is genuinely a
 /// different thing: it wraps everything and opens nowhere.
-pub(crate) struct ScopedSchedule {
+///
+/// `A` is what each stage after [`Nest`] works out about every scope: nothing
+/// as [`Nest`] leaves it, then its [`ownership::Ownership`] ([`Own`]), then its
+/// [`Flow`] ([`Layout`]). A stage cannot be handed a nest its predecessor has
+/// not run on.
+pub(crate) struct ScopedSchedule<A> {
     /// What runs once per call.
-    pub(super) body: ScopeRegion,
+    pub(super) body: ScopeRegion<A>,
     /// The surviving folds, in [`Scope::Fold`] order — every one of them,
     /// the lattice's own included.
-    pub(super) folds: Vec<ScopeFold>,
+    pub(super) folds: Vec<ScopeFold<A>>,
 }
 
 /// One scope of a [`ScopedSchedule`] that opens nowhere: the body.
-pub(crate) struct ScopeRegion {
+pub(crate) struct ScopeRegion<A> {
     /// What it computes, in topological order.
     pub(super) schedule: Vec<Def>,
-    /// How `schedule` runs: its defs, with the arms that earn a branch nested
-    /// as the blocks they are.
-    pub(super) flow: Flow,
+    /// What the stages since scoping have worked out about it.
+    pub(super) analysis: A,
 }
 
 /// One surviving fold of a [`ScopedSchedule`]: a scope that opens in the
 /// middle of another scope.
-pub(crate) struct ScopeFold {
+pub(crate) struct ScopeFold<A> {
     /// The scope whose schedule holds this loop's def.
     pub(super) parent: Scope,
     /// The `Reduce` def of `parent` this is the body of.
@@ -198,17 +205,57 @@ pub(crate) struct ScopeFold {
     pub(super) outer: Vec<ValueId>,
     /// The loop body, in topological order.
     pub(super) schedule: Vec<Def>,
-    /// How the body runs, as [`ScopeRegion::flow`].
-    pub(super) flow: Flow,
+    /// What the stages since scoping have worked out about it.
+    pub(super) analysis: A,
 }
 
-impl ScopeFold {
+impl<A> ScopeFold<A> {
     /// The ids the fold names: the ones it defines and the ones it reads
     /// from outside. Those its parent's schedule also holds are what the
     /// fold reads from there.
     pub(super) fn reads(&self) -> impl Iterator<Item = ValueId> + '_ {
         let defined = self.schedule.iter().map(|def| def.value);
         defined.chain(self.outer.iter().copied())
+    }
+}
+
+impl<A> ScopedSchedule<A> {
+    /// What `scope` holds: its defs, the ids it reads from outside (none for
+    /// the body) and its analysis.
+    fn at(&self, scope: Scope) -> (&[Def], &[ValueId], &A) {
+        match scope {
+            Scope::Body => (&self.body.schedule, &[], &self.body.analysis),
+            Scope::Fold(j) => {
+                let fold = &self.folds[j];
+                (&fold.schedule, &fold.outer, &fold.analysis)
+            }
+        }
+    }
+
+    /// This nest with each scope's analysis replaced by what `f` works out
+    /// about that scope, reading the whole nest as it was.
+    fn analyze<B>(self, f: impl Fn(&Self, Scope) -> B) -> ScopedSchedule<B> {
+        let body = f(&self, Scope::Body);
+        let analyses: Vec<B> = (0..self.folds.len())
+            .map(|j| f(&self, Scope::Fold(j)))
+            .collect();
+        let body = ScopeRegion {
+            schedule: self.body.schedule,
+            analysis: body,
+        };
+        let folds = self
+            .folds
+            .into_iter()
+            .zip(analyses)
+            .map(|(fold, analysis)| ScopeFold {
+                parent: fold.parent,
+                reduce: fold.reduce,
+                outer: fold.outer,
+                schedule: fold.schedule,
+                analysis,
+            })
+            .collect();
+        ScopedSchedule { body, folds }
     }
 }
 
@@ -225,7 +272,7 @@ pub(crate) enum IfArm {
 /// branch nested as the block it is, immediately before its `If` (`layout`).
 /// Selection walks it and emits the guard and the block after it around each
 /// arm; nothing recovers a region from a position.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Flow {
     /// What the scope runs, outermost.
     pub(super) items: Vec<Item>,
