@@ -62,7 +62,7 @@ pub(super) struct Arm {
     /// The `If`'s mask.
     pub(super) mask: ValueId,
     /// Which arm.
-    arm: IfArm,
+    pub(super) arm: IfArm,
     /// The region the arm's values belong to.
     pub(super) region: Region,
 }

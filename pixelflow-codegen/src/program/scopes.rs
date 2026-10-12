@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 
 use super::{
-    Def, ScheduledOp, Scope, ScopeFold, ScopeRegion, ScopedSchedule, ValueId, guards,
+    Def, Flow, ScheduledOp, Scope, ScopeFold, ScopeRegion, ScopedSchedule, ValueId, guards,
     layout::Layout, structural_children,
 };
 
@@ -112,7 +112,7 @@ impl ScopedSchedule {
             body: ScopeRegion {
                 roots: Vec::new(),
                 schedule: body,
-                guards: Vec::new(),
+                flow: Flow::default(),
             },
             folds: Vec::new(),
         };
@@ -123,9 +123,9 @@ impl ScopedSchedule {
     }
 }
 
-/// Put every scope's schedule in its final order and tabulate the branches
-/// over it — the last step of [`ScopedSchedule::from_schedule`], and the only place either is
-/// decided for a body or a fold.
+/// Put every scope's schedule in its final order and nest the arms that earn a
+/// block in it — the last step of [`ScopedSchedule::from_schedule`], and the
+/// only place either is decided for a body or a fold.
 ///
 /// Last because both are questions about the scope's *final* contents: which
 /// arms earn a branch depends on what the loops the scope opens read from
@@ -134,8 +134,7 @@ impl ScopedSchedule {
 /// until [`attach_folds`] and [`place_roots`] have run. The order is *chosen*
 /// here, from who owns what (`program::layout`), rather than repaired
 /// beforehand and then hoped to survive the placement. Nothing after this
-/// edits a schedule or a table: the allocator reads them as its input and the
-/// emitter branches over the same ones.
+/// edits a schedule or its flow: selection reads them as its input.
 ///
 /// A scope's layout permutes its schedule, and a fold's `at` is a position in
 /// its parent's, so each scope's children are carried to the new order as the
@@ -155,16 +154,16 @@ fn lay_out(scoped: &mut ScopedSchedule) {
                 .map(|fold| (schedule[fold.at].value, fold.reads())),
         );
         let layout = Layout::of(schedule, roots, &opened);
-        let (ordered, branches) = (layout.apply(schedule), layout.guards);
+        let (ordered, flow) = (layout.apply(schedule), layout.flow);
         let position = layout.position;
         match scope {
             Scope::Body => {
                 scoped.body.schedule = ordered;
-                scoped.body.guards = branches;
+                scoped.body.flow = flow;
             }
             Scope::Fold(j) => {
                 scoped.folds[j].schedule = ordered;
-                scoped.folds[j].guards = branches;
+                scoped.folds[j].flow = flow;
             }
         }
         for fold in scoped.folds.iter_mut().filter(|fold| fold.parent == scope) {
@@ -541,7 +540,7 @@ fn attach_fold(scoped: &mut ScopedSchedule, fold: PendingFold, parent: Scope, at
         roots: Vec::new(),
         outer: Vec::new(),
         schedule,
-        guards: Vec::new(),
+        flow: Flow::default(),
     });
     for child in children {
         let at = scoped.folds[index]

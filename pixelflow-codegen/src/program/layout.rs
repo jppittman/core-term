@@ -1,9 +1,10 @@
-//! Where each value goes, and which arms are one run: the order of a scope's
-//! schedule, decided once from who owns what.
+//! Where each value goes, and which arms are blocks: the order of a scope's
+//! schedule, decided once from who owns what, and the arms nested in it as the
+//! blocks they are.
 //!
-//! A branch skips a *range*, so an arm earns one only if the values it owns
-//! sit in one run, and a schedule written in the order a program was
-//! constructed rarely puts them there: an arm's values are interleaved with
+//! A branch skips a block, so an arm earns one only if the values it owns sit
+//! in one run, and a schedule written in the order a program was constructed
+//! rarely puts them there: an arm's values are interleaved with
 //! whatever else happened to be built between them. The order used to be
 //! repaired after the fact, by a search over the schedule that asked, for each
 //! `If`, which entries its arms own and partitioned the region around it —
@@ -49,9 +50,9 @@ use alloc::vec::Vec;
 use crate::program::guards::FoldReads;
 use crate::program::ownership::{Ownership, Positions};
 use crate::program::tree::Tree;
-use crate::program::{ArmPair, Def, IfGuard, ValueId};
+use crate::program::{ArmBlock, Def, Flow, Item, ValueId};
 
-/// A scope's schedule order and the branches over it.
+/// A scope's schedule order and the blocks over it.
 pub(super) struct Layout {
     /// The old position of each new position: the schedule to emit is
     /// `order.map(|old| schedule[old])`.
@@ -59,8 +60,9 @@ pub(super) struct Layout {
     /// The new position of each old position: how a table of positions into
     /// the old schedule (a fold's `at`) is carried to the new one.
     pub(super) position: Vec<usize>,
-    /// The `If`s with a branch, in new positions, ascending.
-    pub(super) guards: Vec<IfGuard>,
+    /// The scope's items in new positions, with the arms that earn a block
+    /// nested.
+    pub(super) flow: Flow,
 }
 
 /// The blocks of one scope: the earning arm regions, nested as they are in the
@@ -133,18 +135,16 @@ impl Layout {
             members[block_at(pos)].push(pos);
         }
 
-        // Where each block starts and how many values it spans, nested blocks
-        // included. A child is numbered after its parent, so one descending
-        // sweep folds each into the one around it.
+        // Where each block starts, nested blocks included. A child is numbered
+        // after its parent, so one descending sweep folds each into the one
+        // around it.
         let mut first: Vec<usize> = members
             .iter()
             .map(|own| own.first().copied().unwrap_or(usize::MAX))
             .collect();
-        let mut span: Vec<usize> = members.iter().map(Vec::len).collect();
         for block in (1..count).rev() {
             let parent = blocks.tree.parent(block);
             first[parent] = first[parent].min(first[block]);
-            span[parent] += span[block];
         }
 
         // What a block must follow in its parent's sequence: the values its
@@ -224,7 +224,7 @@ impl Layout {
             child: usize,
         }
         let mut order = Vec::with_capacity(len);
-        let mut start = alloc::vec![0usize; count];
+        let mut items: Vec<Vec<Item>> = alloc::vec![Vec::new(); count];
         let mut stack = alloc::vec![Frame {
             block: 0,
             member: 0,
@@ -237,7 +237,7 @@ impl Layout {
                 && next_member.is_none_or(|member| anchor[child] <= member)
             {
                 frame.child += 1;
-                start[child] = order.len();
+                items[block].push(Item::Arm(child - 1));
                 stack.push(Frame {
                     block: child,
                     member: 0,
@@ -247,15 +247,11 @@ impl Layout {
             }
             match next_member {
                 Some(member) => {
+                    items[block].push(Item::Def(order.len()));
                     order.push(member);
                     frame.member += 1;
                 }
                 None => {
-                    debug_assert_eq!(
-                        order.len(),
-                        start[block] + span[block],
-                        "a block is one run of exactly the values it owns"
-                    );
                     stack.pop();
                 }
             }
@@ -271,32 +267,24 @@ impl Layout {
             position[old] = new;
         }
 
-        let mut run_of_arm = alloc::vec![None; own.arms().len()];
-        for block in 1..count {
-            let arm = blocks.arm[block].expect("a block but the scope is an arm");
-            run_of_arm[arm] = Some((start[block], start[block] + span[block]));
-        }
-        let mut guards: Vec<IfGuard> = own
-            .arms()
-            .chunks(2)
-            .zip(run_of_arm.chunks(2))
-            .filter(|(_, runs)| runs.iter().any(Option::is_some))
-            .map(|(pair, runs)| {
-                let if_idx = position[pair[0].if_pos];
-                let run = |arm: usize| runs[arm].unwrap_or((if_idx, if_idx));
-                IfGuard {
-                    if_idx,
-                    mask_vid: pair[0].mask,
-                    ranges: ArmPair::new(run(0), run(1)),
+        let mut items = items.into_iter();
+        let top = items.next().expect("the scope is block 0");
+        let arms = items
+            .zip(&blocks.arm[1..])
+            .map(|(items, &arm)| {
+                let arm = &own.arms()[arm.expect("a block but the scope is an arm")];
+                ArmBlock {
+                    arm: arm.arm,
+                    mask: arm.mask,
+                    items,
                 }
             })
             .collect();
-        guards.sort_by_key(|guard| guard.if_idx);
 
         Self {
             order,
             position,
-            guards,
+            flow: Flow { items: top, arms },
         }
     }
 
@@ -312,14 +300,30 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::program::IfArm;
     use crate::program::ScheduledOp;
-    use crate::program::{IfArm, IfGuard};
     use pixelflow_ir::kind::OpKind;
 
     impl Layout {
         /// Whether the schedule is returned as it came.
         fn is_identity(&self) -> bool {
             self.order.iter().enumerate().all(|(new, &old)| new == old)
+        }
+
+        /// The positions of the defs under `arm`, nested arms included, in
+        /// the order they run.
+        fn run(&self, arm: usize) -> Vec<usize> {
+            fn walk(layout: &Layout, items: &[Item], out: &mut Vec<usize>) {
+                for item in items {
+                    match *item {
+                        Item::Def(at) => out.push(at),
+                        Item::Arm(inner) => walk(layout, &layout.flow.arms[inner].items, out),
+                    }
+                }
+            }
+            let mut out = Vec::new();
+            walk(self, &self.flow.arms[arm].items, &mut out);
+            out
         }
 
         /// Whether this is a layout: every read still follows the value it reads,
@@ -396,42 +400,48 @@ mod tests {
         let layout = Layout::of(schedule, roots, folds);
         assert!(layout.is_sound(schedule, roots, folds));
         let own = Ownership::of(schedule, roots, folds);
-        for pair in own.arms().chunks(2) {
-            let guard = layout
-                .guards
-                .iter()
-                .find(|g| schedule[layout.order[g.if_idx]].value == schedule[pair[0].if_pos].value);
-            // An `If`'s true arm first (`Ownership::arms`).
-            for (arm, which) in pair.iter().zip(IfArm::ALL) {
-                let owned: Vec<ValueId> = (0..schedule.len())
-                    .filter(|&pos| {
-                        own.regions()
-                            .common_ancestor(own.region_of(pos).0, arm.region.0)
-                            == arm.region.0
-                    })
-                    .map(|pos| schedule[pos].value)
-                    .collect();
-                let run: Vec<ValueId> = guard
-                    .map(|g| g.range(which))
-                    .filter(|&(start, end)| start != end)
-                    .map(|(start, end)| {
-                        (start..end)
-                            .map(|new| schedule[layout.order[new]].value)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if run.is_empty() {
-                    continue;
-                }
-                let (mut run, mut owned) = (run, owned);
-                run.sort_unstable();
-                owned.sort_unstable();
-                assert_eq!(
-                    run, owned,
-                    "the {:?} arm of the If at {} is not exactly the run of what it owns",
-                    which, arm.if_pos
-                );
-            }
+        // What each arm owns, by the value it was laid out as.
+        let owned = |arm: &crate::program::ownership::Arm| -> Vec<ValueId> {
+            let mut owned: Vec<ValueId> = (0..schedule.len())
+                .filter(|&pos| {
+                    own.regions()
+                        .common_ancestor(own.region_of(pos).0, arm.region.0)
+                        == arm.region.0
+                })
+                .map(|pos| schedule[pos].value)
+                .collect();
+            owned.sort_unstable();
+            owned
+        };
+        let earning = own
+            .arms()
+            .iter()
+            .filter(|arm| !owned(arm).is_empty())
+            .count();
+        assert_eq!(
+            layout.flow.arms.len(),
+            earning,
+            "an arm that owns a value is a block"
+        );
+        for (i, block) in layout.flow.arms.iter().enumerate() {
+            let run = layout.run(i);
+            assert!(
+                run.windows(2).all(|w| w[1] == w[0] + 1),
+                "the {:?} arm is one run of positions: {run:?}",
+                block.arm
+            );
+            let mut run: Vec<ValueId> = run
+                .into_iter()
+                .map(|new| schedule[layout.order[new]].value)
+                .collect();
+            run.sort_unstable();
+            assert!(
+                own.arms()
+                    .iter()
+                    .any(|arm| arm.arm == block.arm && arm.mask == block.mask && owned(arm) == run),
+                "the {:?} arm is not exactly the run of what it owns",
+                block.arm
+            );
         }
         let values = layout
             .order
@@ -453,9 +463,9 @@ mod tests {
         let (layout, values) = laid_out(&schedule);
         assert!(layout.is_identity());
         assert_eq!(values, [0, 1, 2, 3]);
-        assert_eq!(layout.guards.len(), 1);
-        assert_eq!(layout.guards[0].range(IfArm::True), (1, 3));
-        assert_eq!(layout.guards[0].range(IfArm::False), (3, 3));
+        assert_eq!(layout.flow.arms.len(), 1);
+        assert_eq!(layout.flow.arms[0].arm, IfArm::True);
+        assert_eq!(layout.run(0), [1, 2]);
     }
 
     /// A stranger between the arm's values: the arm's two values become one
@@ -500,10 +510,14 @@ mod tests {
         ];
         let (layout, values) = laid_out(&schedule);
         assert_eq!(*values.last().unwrap(), 6);
-        let guard = &layout.guards[0];
-        let (t, f) = (guard.range(IfArm::True), guard.range(IfArm::False));
-        assert!(t.0 != t.1 && f.0 != f.1, "both arms branch: {guard:?}");
-        assert!(t.1 <= f.0 || f.1 <= t.0, "the two runs do not overlap");
+        let arms = &layout.flow.arms;
+        assert_eq!(arms.len(), 2, "both arms branch");
+        assert_eq!((arms[0].arm, arms[1].arm), (IfArm::True, IfArm::False));
+        let (t, f) = (layout.run(0), layout.run(1));
+        assert!(
+            t.last() < f.first() || f.last() < t.first(),
+            "the two runs do not overlap: {t:?} {f:?}"
+        );
     }
 
     /// An arm nested in an arm: both are runs, the inner inside the outer.
@@ -520,12 +534,30 @@ mod tests {
             if_of(7, 0, 5, 6),
         ];
         let (layout, _) = laid_out(&schedule);
-        let (inner, outer) = (&layout.guards[0], &layout.guards[1]);
-        let inside = |a: (usize, usize), b: (usize, usize)| b.0 <= a.0 && a.1 <= b.1;
-        assert!(
-            inside(inner.range(IfArm::True), outer.range(IfArm::True)),
-            "the inner arm's run is inside the outer's: {inner:?} in {outer:?}"
-        );
+        let holds = |block: &ArmBlock| {
+            block
+                .items
+                .iter()
+                .filter_map(|item| match *item {
+                    Item::Arm(inner) => Some(inner),
+                    Item::Def(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let (outer, inner) = layout
+            .flow
+            .arms
+            .iter()
+            .position(|block| !holds(block).is_empty())
+            .map(|outer| (outer, holds(&layout.flow.arms[outer])))
+            .expect("an arm holds another");
+        for inner in inner {
+            let (inner, outer) = (layout.run(inner), layout.run(outer));
+            assert!(
+                inner.iter().all(|at| outer.contains(at)),
+                "the inner arm's run is inside the outer's: {inner:?} in {outer:?}"
+            );
+        }
     }
 
     /// A block whose input is computed inside what would be its span waits for
@@ -652,9 +684,8 @@ mod tests {
 
         let (blind, _) = laid_out(&schedule);
         let (seen, values) = laid_out_with(&schedule, &[], &folds);
-        let len = |g: &IfGuard| g.range(IfArm::True).1 - g.range(IfArm::True).0;
-        assert_eq!(len(&blind.guards[0]), 3, "the arm owned `W` unseen");
-        assert_eq!(len(&seen.guards[0]), 2, "`W` is not the arm's");
+        assert_eq!(blind.run(0).len(), 3, "the arm owned `W` unseen");
+        assert_eq!(seen.run(0).len(), 2, "`W` is not the arm's");
         assert!(
             at(&values, 1) < at(&values, 2),
             "and it stays ahead of the arm"
@@ -710,7 +741,8 @@ mod tests {
             if_of(4, 0, 0, 1),
         ];
         let (layout, _) = laid_out(&schedule);
-        assert_eq!(layout.guards.len(), 1);
-        assert_eq!(layout.guards[0].range(IfArm::False), (1, 2));
+        assert_eq!(layout.flow.arms.len(), 1);
+        assert_eq!(layout.flow.arms[0].arm, IfArm::False);
+        assert_eq!(layout.run(0), [1]);
     }
 }
