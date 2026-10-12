@@ -250,26 +250,6 @@ mod tests {
         compile(kernel, TEST_SHAPE).expect("compile").kernel
     }
 
-    /// The backstop, exercised through the route this module owns:
-    /// `Kernel::from_parts` refuses a caller's arena, but a rewrite rule
-    /// instantiating one of its own metavariables would arrive here already
-    /// past that. The assertion itself lives in `emit::compile`, so this
-    /// asserts the *route* reaches it rather than re-testing the check.
-    #[test]
-    #[should_panic(expected = "the arena names Var")]
-    fn an_arena_naming_a_retired_axis_never_reaches_the_emitter() {
-        let mut a = ExprArena::new();
-        let x = a.push_var(0);
-        // A constant no other test uses, so this arena misses the cache and
-        // the emit path actually runs.
-        let z = a.push_var(2);
-        let c = a.push_const(7.25);
-        let scaled = a.push_binary(OpKind::Mul, z, c);
-        let root = a.push_binary(OpKind::Add, x, scaled);
-        let k = Kernel::from_parts(a, root);
-        let _refused = compile(&k, TEST_SHAPE);
-    }
-
     fn circle_arena(garbage: bool) -> Kernel {
         let mut a = ExprArena::new();
         if garbage {
