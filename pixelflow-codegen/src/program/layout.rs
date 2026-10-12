@@ -1,345 +1,107 @@
-//! Where each value goes, and which arms are blocks: the order of a scope's
-//! schedule, decided once from who owns what, and the arms nested in it as the
-//! blocks they are.
+//! The blocks of a scope: which arms are skipped by a branch, and where each
+//! sits among the scope's values.
 //!
-//! A branch skips a block, so an arm earns one only if the values it owns sit
-//! in one run, and a schedule written in the order a program was constructed
-//! rarely puts them there: an arm's values are interleaved with
-//! whatever else happened to be built between them. The order used to be
-//! repaired after the fact, by a search over the schedule that asked, for each
-//! `If`, which entries its arms own and partitioned the region around it —
-//! the whole scope re-examined per `If`. Here the order is *chosen*, from the
-//! ownership the DAG already states (`ownership`).
+//! **What earns a block.** An arm region that owns a value (`ownership`; an
+//! `If` nested in it is one). There is no price: an arm is skipped when no lane
+//! selects it, however little it holds, and whatever scope computes its mask.
+//! An arm with nothing of its own has no block.
 //!
-//! **What earns a block.** An arm region that owns a value (an `If` nested in
-//! it is one). There is no price: an arm is skipped when no lane selects it,
-//! however little it holds. The mask may be an enclosing scope's: it is bound
-//! before this scope begins, and the arm waits on it only when it is computed
-//! here. An arm with nothing of its own is merged into the region around it.
+//! **Where a block goes.** Every value stays in the order it was constructed,
+//! within the block that owns it. An `If`'s earning arms go immediately before
+//! the `If`, the true arm first. That is always after everything an arm reads:
+//! an arm-owned value is read only inside its arm or by its `If`, so what it
+//! reads from the region around it was constructed before it, hence before the
+//! `If`; and the mask is read by the `If`. The same holds one level up for
+//! anything the arm's own region owns, since its block goes before its own
+//! `If`.
 //!
-//! **Where a block goes.** Each earning region becomes one *block*: its own
-//! values, in the order they already had, with the earning blocks nested in it
-//! spliced in. A block is placed in its parent block's sequence immediately
-//! before the first of the parent's own values whose original position is at
-//! or past the block's *anchor*, the latest of
-//!
-//! - the block's first original position (nothing moves earlier than it was),
-//! - one past the original position of anything the block reads that the
-//!   parent block computes itself (it must follow its inputs), and
-//! - one past its mask.
-//!
-//! The `If` is one of the parent's own values and sits past every anchor of
-//! its arms, so a block always lands ahead of its `If`, and the scope's last
-//! value stays last. The two arms of an `If` share the later of their anchors,
-//! so they land together, and blocks that share an anchor go in order of their
-//! `If`, the true arm first.
-//!
-//! **Nothing else moves.** A block already one run after its mask has its
-//! first position as its anchor and lands where it was, so a scope whose arms
-//! are all in order is returned as it came: the identity, by construction and
-//! not by a check that happens to hold.
-//!
-//! The order's validity is checked, not argued: the tests below check, over
-//! hand-built and random schedules, that each arm a layout branches over is
-//! exactly the run of the values that arm owns. Until the search it replaced
-//! was deleted, the old analysis ran on every layout's output and had to find
-//! the same runs.
+//! Selection walks the [`Flow`]; the schedule itself is never reordered.
 
 use alloc::vec::Vec;
 
 use crate::program::guards::FoldReads;
-use crate::program::ownership::{Ownership, Positions};
-use crate::program::tree::Tree;
+use crate::program::ownership::{Arm, Ownership};
 use crate::program::{ArmBlock, Def, Flow, Item, ValueId};
 
-/// A scope's schedule order and the blocks over it.
-pub(super) struct Layout {
-    /// The old position of each new position: the schedule to emit is
-    /// `order.map(|old| schedule[old])`.
-    order: Vec<usize>,
-    /// The scope's items in new positions, with the arms that earn a block
-    /// nested.
-    pub(super) flow: Flow,
-}
-
-/// The blocks of one scope: the earning arm regions, nested as they are in the
-/// region tree, and the scope itself as block 0.
-struct Blocks {
-    /// Nesting of the blocks. Numbered in region order, so a parent precedes
-    /// its children.
-    tree: Tree,
-    /// The block each region's values go to: itself if it earns one, else
-    /// the nearest enclosing region that does.
-    of_region: Vec<usize>,
-    /// The arm (an index into `Ownership::arms`) each block is, `None` for the
-    /// scope.
-    arm: Vec<Option<usize>>,
-}
-
-impl Blocks {
-    fn of(own: &Ownership, len: usize) -> Self {
-        let regions = own.regions();
-        let mut owns = alloc::vec![false; regions.len()];
-        for pos in 0..len {
-            owns[own.region_of(pos).0] = true;
-        }
-        let mut arm_of_region = alloc::vec![None; regions.len()];
-        for (i, arm) in own.arms().iter().enumerate() {
-            arm_of_region[arm.region.0] = Some(i);
-        }
-        let mut blocks = Self {
-            tree: Tree::rooted(),
-            of_region: alloc::vec![0; regions.len()],
-            arm: alloc::vec![None],
-        };
-        // Parents are numbered before their children, so a region's enclosing
-        // block is known by the time the region is reached.
-        for (region, arm) in arm_of_region.iter().enumerate().skip(1) {
-            let enclosing = blocks.of_region[regions.parent(region)];
-            blocks.of_region[region] = match arm.filter(|_| owns[region]) {
-                Some(i) => {
-                    blocks.arm.push(Some(i));
-                    blocks.tree.grow(enclosing)
-                }
-                None => enclosing,
-            };
-        }
-        blocks
-    }
-}
-
-impl Layout {
-    /// The layout of `schedule`, from the ownership of its values.
+impl Flow {
+    /// The flow of `schedule`, from the ownership of its values.
     ///
     /// `external` and `folds` are as for [`Ownership::of`].
     pub(super) fn of(schedule: &[Def], external: &[ValueId], folds: &FoldReads) -> Self {
         let own = Ownership::of(schedule, external, folds);
-        Self::from(schedule, folds, &own)
-    }
+        let mut owns = alloc::vec![false; own.regions().len()];
+        for pos in 0..schedule.len() {
+            owns[own.region_of(pos).0] = true;
+        }
+        let earning: Vec<&Arm> = own.arms().iter().filter(|arm| owns[arm.region.0]).collect();
+        // The items of each region's block: the scope's is block 0, and an
+        // earning arm's is one past its index in `earning`.
+        let mut block = alloc::vec![0; owns.len()];
+        for (i, arm) in earning.iter().enumerate() {
+            block[arm.region.0] = i + 1;
+        }
+        let mut items: Vec<Vec<Item>> = alloc::vec![Vec::new(); earning.len() + 1];
 
-    fn from(schedule: &[Def], folds: &FoldReads, own: &Ownership) -> Self {
-        let len = schedule.len();
-        let positions = Positions::of(schedule);
-        let blocks = Blocks::of(own, len);
-        let count = blocks.tree.len();
-        let block_at = |pos: usize| blocks.of_region[own.region_of(pos).0];
-
-        let mut members: Vec<Vec<usize>> = alloc::vec![Vec::new(); count];
-        for pos in 0..len {
-            members[block_at(pos)].push(pos);
-        }
-
-        // Where each block starts, nested blocks included. A child is numbered
-        // after its parent, so one descending sweep folds each into the one
-        // around it.
-        let mut first: Vec<usize> = members
-            .iter()
-            .map(|own| own.first().copied().unwrap_or(usize::MAX))
-            .collect();
-        for block in (1..count).rev() {
-            let parent = blocks.tree.parent(block);
-            first[parent] = first[parent].min(first[block]);
-        }
-
-        // What a block must follow in its parent's sequence: the values its
-        // parent computes itself that anything inside it reads. A read of
-        // something higher up needs nothing here — the whole parent block
-        // already follows that — and a read of something deeper is an `If`
-        // reading the root of its own arm, which precedes the `If` by
-        // construction.
-        let mut after = alloc::vec![0usize; count];
-        for (pos, def) in schedule.iter().enumerate() {
-            let here = block_at(pos);
-            for read in folds.reads(def.value, &def.op) {
-                let Some(source) = positions.get(read) else {
-                    continue;
-                };
-                let there = block_at(source);
-                if blocks.tree.depth(there) >= blocks.tree.depth(here) {
-                    continue;
-                }
-                let child = blocks.tree.ancestor_at(here, blocks.tree.depth(there) + 1);
-                debug_assert_eq!(blocks.tree.parent(child), there);
-                after[child] = after[child].max(source + 1);
-            }
-        }
-
-        let mut block_of_arm = alloc::vec![None; own.arms().len()];
-        for block in 1..count {
-            block_of_arm[blocks.arm[block].expect("a block but the scope is an arm")] = Some(block);
-        }
-        let alone = |block: usize| {
-            let Some(arm) = blocks.arm[block] else {
-                return 0;
-            };
-            let mask = positions.get(own.arms()[arm].mask).map_or(0, |at| at + 1);
-            first[block].max(after[block]).max(mask)
-        };
-        // An `If`'s arms are placed together, at the later of their anchors, the
-        // true arm first: each arm's value lives across any block between it
-        // and the `If`, so an arm that happens to be written ahead of the other
-        // must not hold a register across it.
-        let anchor: Vec<usize> = (0..count)
-            .map(|block| match blocks.arm[block] {
-                Some(arm) => {
-                    block_of_arm[arm ^ 1].map_or(alone(block), |twin| alone(block).max(alone(twin)))
-                }
-                None => 0,
-            })
-            .collect();
-
-        // Children in the order they are placed: by anchor, then by `If`, the
-        // true arm first. The arms are already in `If` order, so a stable
-        // counting sort by anchor is the whole sort.
-        let in_arm_order: Vec<usize> = block_of_arm.into_iter().flatten().collect();
-        let mut next_slot = alloc::vec![0usize; len + 2];
-        for &block in &in_arm_order {
-            next_slot[anchor[block] + 1] += 1;
-        }
-        for at in 1..next_slot.len() {
-            next_slot[at] += next_slot[at - 1];
-        }
-        let mut placed = alloc::vec![0usize; in_arm_order.len()];
-        for &block in &in_arm_order {
-            placed[next_slot[anchor[block]]] = block;
-            next_slot[anchor[block]] += 1;
-        }
-        let mut children: Vec<Vec<usize>> = alloc::vec![Vec::new(); count];
-        for block in placed {
-            children[blocks.tree.parent(block)].push(block);
-        }
-
-        // Emit: each block's own values in order, a child spliced ahead of the
-        // first own value at or past its anchor. One explicit stack, because a
-        // program may nest as deep as it likes and a call stack may not.
-        struct Frame {
-            block: usize,
-            member: usize,
-            child: usize,
-        }
-        let mut order = Vec::with_capacity(len);
-        let mut items: Vec<Vec<Item>> = alloc::vec![Vec::new(); count];
-        let mut stack = alloc::vec![Frame {
-            block: 0,
-            member: 0,
-            child: 0
-        }];
-        while let Some(frame) = stack.last_mut() {
-            let block = frame.block;
-            let next_member = members[block].get(frame.member).copied();
-            if let Some(&child) = children[block].get(frame.child)
-                && next_member.is_none_or(|member| anchor[child] <= member)
-            {
-                frame.child += 1;
-                items[block].push(Item::Arm(child - 1));
-                stack.push(Frame {
-                    block: child,
-                    member: 0,
-                    child: 0,
-                });
-                continue;
-            }
-            match next_member {
-                Some(member) => {
-                    items[block].push(Item::Def(order.len()));
-                    order.push(member);
-                    frame.member += 1;
-                }
-                None => {
-                    stack.pop();
+        // The arms are in `If` order, true arm first, so they are met in the
+        // order they are spliced.
+        let mut pending = own.arms().iter().peekable();
+        for pos in 0..schedule.len() {
+            let here = block[own.region_of(pos).0];
+            while let Some(arm) = pending.next_if(|arm| arm.at == pos) {
+                if owns[arm.region.0] {
+                    items[here].push(Item::Arm(block[arm.region.0] - 1));
                 }
             }
+            items[here].push(Item::Def(pos));
         }
-        debug_assert_eq!(
-            order.len(),
-            len,
-            "a layout moves values, never adds or drops"
-        );
+        debug_assert!(pending.next().is_none(), "every arm is spliced at its If");
 
         let mut items = items.into_iter();
         let top = items.next().expect("the scope is block 0");
-        let arms = items
-            .zip(&blocks.arm[1..])
-            .map(|(items, &arm)| {
-                let arm = &own.arms()[arm.expect("a block but the scope is an arm")];
-                ArmBlock {
-                    arm: arm.arm,
-                    mask: arm.mask,
-                    items,
-                }
+        let arms = earning
+            .into_iter()
+            .zip(items)
+            .map(|(arm, items)| ArmBlock {
+                arm: arm.arm,
+                mask: arm.mask,
+                items,
             })
             .collect();
-
-        Self {
-            order,
-            flow: Flow { items: top, arms },
-        }
-    }
-
-    /// `schedule` in the new order.
-    pub(super) fn apply(&self, schedule: &[Def]) -> Vec<Def> {
-        self.order
-            .iter()
-            .map(|&old| schedule[old].clone())
-            .collect()
+        Self { items: top, arms }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::program::IfArm;
-    use crate::program::ScheduledOp;
+    use crate::program::ownership::Positions;
+    use crate::program::{IfArm, ScheduledOp};
     use pixelflow_ir::kind::OpKind;
 
-    impl Layout {
-        /// Whether the schedule is returned as it came.
-        fn is_identity(&self) -> bool {
-            self.order.iter().enumerate().all(|(new, &old)| new == old)
-        }
-
-        /// The positions of the defs under `arm`, nested arms included, in
-        /// the order they run.
-        fn run(&self, arm: usize) -> Vec<usize> {
-            fn walk(layout: &Layout, items: &[Item], out: &mut Vec<usize>) {
-                for item in items {
-                    match *item {
-                        Item::Def(at) => out.push(at),
-                        Item::Arm(inner) => walk(layout, &layout.flow.arms[inner].items, out),
-                    }
-                }
+    /// The positions of the defs under `items`, nested arms included, in the
+    /// order they run.
+    fn run(flow: &Flow, items: &[Item], out: &mut Vec<usize>) {
+        for item in items {
+            match *item {
+                Item::Def(at) => out.push(at),
+                Item::Arm(inner) => run(flow, &flow.arms[inner].items, out),
             }
-            let mut out = Vec::new();
-            walk(self, &self.flow.arms[arm].items, &mut out);
-            out
         }
+    }
 
-        /// Whether this is a layout: every read still follows the value it reads,
-        /// and laying the result out again moves nothing — the property that makes
-        /// the tables derived from one pass the tables of the order it chose.
-        ///
-        /// A schedule that reads a value before it defines it (a hand-built
-        /// fixture) has no order to keep, and passes.
-        fn is_sound(&self, schedule: &[Def], roots: &[ValueId], folds: &FoldReads) -> bool {
-            if !reads_follow(0..schedule.len(), schedule, folds) {
-                return true;
-            }
-            reads_follow(self.order.iter().copied(), schedule, folds)
-                && Self::of(&self.apply(schedule), roots, folds).is_identity()
-        }
+    /// The positions of the defs under `arm`, in the order they run.
+    fn under(flow: &Flow, arm: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        run(flow, &flow.arms[arm].items, &mut out);
+        out
     }
 
     /// Whether, taking `schedule`'s defs in `order`, every read follows the value
     /// it reads. A value this schedule does not define (a live-in) is not read
     /// from here.
-    fn reads_follow(
-        order: impl Iterator<Item = usize>,
-        schedule: &[Def],
-        folds: &FoldReads,
-    ) -> bool {
+    fn reads_follow(order: &[usize], schedule: &[Def], folds: &FoldReads) -> bool {
         let positions = Positions::of(schedule);
         let mut at = alloc::vec![0usize; schedule.len()];
-        let order: Vec<usize> = order.collect();
         for (new, &old) in order.iter().enumerate() {
             at[old] = new;
         }
@@ -375,91 +137,105 @@ mod tests {
         def(value, ScheduledOp::Unary(op, ValueId(of)))
     }
 
-    /// The layout of `schedule` and the values in its new order, after every
-    /// property a layout owes has been checked: it is one (every read follows
-    /// its value, and laying it out again moves nothing), and each arm it
-    /// branches over is exactly the run of the values that arm owns — no
-    /// stranger inside it, nothing the arm owns outside it.
-    fn laid_out(schedule: &[Def]) -> (Layout, Vec<u64>) {
+    /// The flow of `schedule` and the values in the order it runs them, after
+    /// every property a flow owes has been checked: every read follows its
+    /// value; each arm it branches over is exactly the run of the values that
+    /// arm owns — no stranger inside it, nothing the arm owns outside it; and
+    /// an `If`'s earning arms run immediately before it, the true arm first.
+    fn laid_out(schedule: &[Def]) -> (Flow, Vec<u64>) {
         laid_out_with(schedule, &[], &FoldReads::default())
     }
 
-    fn laid_out_with(schedule: &[Def], roots: &[ValueId], folds: &FoldReads) -> (Layout, Vec<u64>) {
-        let layout = Layout::of(schedule, roots, folds);
-        assert!(layout.is_sound(schedule, roots, folds));
+    fn laid_out_with(schedule: &[Def], roots: &[ValueId], folds: &FoldReads) -> (Flow, Vec<u64>) {
+        let flow = Flow::of(schedule, roots, folds);
+        let mut order = Vec::new();
+        run(&flow, &flow.items, &mut order);
+        assert_eq!(order.len(), schedule.len(), "a flow runs every def once");
+        // A schedule that reads a value before it defines it (a hand-built
+        // fixture) has no order to keep.
+        let in_order = reads_follow(&(0..schedule.len()).collect::<Vec<_>>(), schedule, folds);
+        assert!(
+            !in_order || reads_follow(&order, schedule, folds),
+            "a read runs before the value it reads: {order:?}"
+        );
         let own = Ownership::of(schedule, roots, folds);
-        // What each arm owns, by the value it was laid out as.
-        let owned = |arm: &crate::program::ownership::Arm| -> Vec<ValueId> {
-            let mut owned: Vec<ValueId> = (0..schedule.len())
+        // What an arm owns, by position.
+        let owned = |arm: &Arm| -> Vec<usize> {
+            (0..schedule.len())
                 .filter(|&pos| {
                     own.regions()
                         .common_ancestor(own.region_of(pos).0, arm.region.0)
                         == arm.region.0
                 })
-                .map(|pos| schedule[pos].value)
-                .collect();
-            owned.sort_unstable();
-            owned
+                .collect()
         };
-        let earning = own
-            .arms()
-            .iter()
-            .filter(|arm| !owned(arm).is_empty())
-            .count();
+        let earning = own.arms().iter().filter(|arm| !owned(arm).is_empty());
         assert_eq!(
-            layout.flow.arms.len(),
-            earning,
+            flow.arms.len(),
+            earning.clone().count(),
             "an arm that owns a value is a block"
         );
-        for (i, block) in layout.flow.arms.iter().enumerate() {
-            let run = layout.run(i);
-            assert!(
-                run.windows(2).all(|w| w[1] == w[0] + 1),
-                "the {:?} arm is one run of positions: {run:?}",
-                block.arm
-            );
-            let mut run: Vec<ValueId> = run
-                .into_iter()
-                .map(|new| schedule[layout.order[new]].value)
-                .collect();
+        for (i, (arm, block)) in earning.zip(&flow.arms).enumerate() {
+            let mut run = under(&flow, i);
+            assert_eq!((block.arm, block.mask), (arm.arm, arm.mask));
             run.sort_unstable();
-            assert!(
-                own.arms()
-                    .iter()
-                    .any(|arm| arm.arm == block.arm && arm.mask == block.mask && owned(arm) == run),
-                "the {:?} arm is not exactly the run of what it owns",
+            assert_eq!(
+                owned(arm),
+                run,
+                "the {:?} arm is not exactly what it owns",
                 block.arm
             );
         }
-        let values = layout
-            .order
-            .iter()
-            .map(|&old| schedule[old].value.0)
-            .collect();
-        (layout, values)
+        // Immediately before each `If`: the run of what its true arm owns, then
+        // of what its false arm owns.
+        for (at, def) in schedule.iter().enumerate() {
+            if !matches!(def.op, ScheduledOp::Ternary(OpKind::If, ..)) {
+                continue;
+            }
+            let arms: Vec<Vec<usize>> = own
+                .arms()
+                .iter()
+                .filter(|arm| arm.at == at)
+                .map(&owned)
+                .collect();
+            let end = order
+                .iter()
+                .position(|&pos| pos == at)
+                .expect("every def runs");
+            let mut start = end - arms.iter().map(Vec::len).sum::<usize>();
+            for owned in arms {
+                let mut ran = order[start..start + owned.len()].to_vec();
+                ran.sort_unstable();
+                assert_eq!(ran, owned, "an arm of the If at {at} is not just before it");
+                start += owned.len();
+            }
+        }
+        let values = order.iter().map(|&pos| schedule[pos].value.0).collect();
+        (flow, values)
     }
 
-    /// Arms already one run after their mask: nothing moves.
+    /// An arm's values run immediately before the `If`, the mask's cone staying
+    /// where it was.
     #[test]
-    fn a_scope_whose_arms_are_in_order_is_returned_as_it_came() {
+    fn an_arm_runs_immediately_before_its_if() {
         let schedule = alloc::vec![
             def(0, ScheduledOp::Var(0)),
             def(1, ScheduledOp::Var(1)),
             unary(2, OpKind::Rsqrt, 1),
             if_of(3, 0, 2, 0),
         ];
-        let (layout, values) = laid_out(&schedule);
-        assert!(layout.is_identity());
+        let (flow, values) = laid_out(&schedule);
         assert_eq!(values, [0, 1, 2, 3]);
-        assert_eq!(layout.flow.arms.len(), 1);
-        assert_eq!(layout.flow.arms[0].arm, IfArm::True);
-        assert_eq!(layout.run(0), [1, 2]);
+        assert_eq!(flow.arms.len(), 1);
+        assert_eq!(flow.arms[0].arm, IfArm::True);
+        assert_eq!(under(&flow, 0), [1, 2]);
     }
 
-    /// A stranger between the arm's values: the arm's two values become one
-    /// run and the stranger stays where the `If` does not need it moved.
+    /// A stranger between the arm's values: the arm's values become one run at
+    /// the `If`, and the stranger, which the arm does not read, stays where it
+    /// was.
     #[test]
-    fn a_stranger_between_an_arms_values_is_left_behind() {
+    fn a_stranger_between_an_arms_values_stays_where_it_was() {
         let schedule = alloc::vec![
             def(0, ScheduledOp::Var(0)),
             def(1, ScheduledOp::Var(1)),
@@ -469,24 +245,13 @@ mod tests {
             if_of(5, 0, 4, 0),
             def(6, ScheduledOp::Binary(OpKind::Add, ValueId(5), ValueId(3))),
         ];
-        let (layout, values) = laid_out(&schedule);
-        assert!(!layout.is_identity());
-        // The arm is values 2 and 4 and must be adjacent; the stranger is
-        // read after the `If` and stays out of the arm's way.
-        let at = |v: u64| values.iter().position(|&x| x == v).unwrap();
-        assert_eq!(at(4), at(2) + 1, "the arm is one run: {values:?}");
-        assert!(at(5) > at(4));
-        assert_eq!(
-            *values.last().unwrap(),
-            6,
-            "the scope's last value stays last"
-        );
+        let (_, values) = laid_out(&schedule);
+        assert_eq!(values, [0, 3, 1, 2, 4, 5, 6]);
     }
 
-    /// Both arms of one `If` each earn a run, and the `If` that is the scope's
-    /// root stays last.
+    /// Both arms of one `If` run just before it, the true arm first.
     #[test]
-    fn both_arms_of_an_if_are_runs_and_the_if_stays_last() {
+    fn both_arms_of_an_if_run_before_it_true_arm_first() {
         let schedule = alloc::vec![
             def(0, ScheduledOp::Var(0)),
             def(1, ScheduledOp::Var(1)),
@@ -496,21 +261,15 @@ mod tests {
             unary(5, OpKind::Sqrt, 3),
             if_of(6, 0, 4, 5),
         ];
-        let (layout, values) = laid_out(&schedule);
-        assert_eq!(*values.last().unwrap(), 6);
-        let arms = &layout.flow.arms;
-        assert_eq!(arms.len(), 2, "both arms branch");
+        let (flow, values) = laid_out(&schedule);
+        let arms = &flow.arms;
         assert_eq!((arms[0].arm, arms[1].arm), (IfArm::True, IfArm::False));
-        let (t, f) = (layout.run(0), layout.run(1));
-        assert!(
-            t.last() < f.first() || f.last() < t.first(),
-            "the two runs do not overlap: {t:?} {f:?}"
-        );
+        assert_eq!(values, [0, 1, 2, 4, 3, 5, 6]);
     }
 
-    /// An arm nested in an arm: both are runs, the inner inside the outer.
+    /// An arm nested in an arm: the inner runs before its `If`, inside the outer.
     #[test]
-    fn nested_arms_are_nested_runs() {
+    fn nested_arms_run_inside_the_arm_around_them() {
         let schedule = alloc::vec![
             def(0, ScheduledOp::Var(0)),
             def(1, ScheduledOp::Var(1)),
@@ -521,7 +280,8 @@ mod tests {
             unary(6, OpKind::Recip, 1),
             if_of(7, 0, 5, 6),
         ];
-        let (layout, _) = laid_out(&schedule);
+        let (flow, values) = laid_out(&schedule);
+        assert_eq!(values, [0, 1, 2, 4, 3, 5, 6, 7]);
         let holds = |block: &ArmBlock| {
             block
                 .items
@@ -532,15 +292,15 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let (outer, inner) = layout
-            .flow
+        let (outer, inner) = flow
             .arms
             .iter()
             .position(|block| !holds(block).is_empty())
-            .map(|outer| (outer, holds(&layout.flow.arms[outer])))
+            .map(|outer| (outer, holds(&flow.arms[outer])))
             .expect("an arm holds another");
+        assert_eq!(inner.len(), 2, "both of the inner If's arms");
         for inner in inner {
-            let (inner, outer) = (layout.run(inner), layout.run(outer));
+            let (inner, outer) = (under(&flow, inner), under(&flow, outer));
             assert!(
                 inner.iter().all(|at| outer.contains(at)),
                 "the inner arm's run is inside the outer's: {inner:?} in {outer:?}"
@@ -548,10 +308,10 @@ mod tests {
         }
     }
 
-    /// A block whose input is computed inside what would be its span waits for
-    /// it: the block lands after the input, not before.
+    /// An input the arm shares with the region around it was constructed ahead
+    /// of the `If`, so it is ahead of the arm placed there.
     #[test]
-    fn a_block_follows_an_input_that_sits_inside_its_span() {
+    fn a_block_follows_an_input_it_shares_with_the_scope() {
         let schedule = alloc::vec![
             def(0, ScheduledOp::Var(0)),
             def(1, ScheduledOp::Var(1)),
@@ -563,8 +323,7 @@ mod tests {
             if_of(7, 0, 5, 6),
         ];
         let (_, values) = laid_out(&schedule);
-        let at = |v: u64| values.iter().position(|&x| x == v).unwrap();
-        assert!(at(3) < at(4), "the input precedes its reader: {values:?}");
+        assert_eq!(values, [0, 3, 1, 2, 4, 5, 6, 7]);
     }
 
     /// A deterministic stream, so a failure names its seed.
@@ -613,20 +372,16 @@ mod tests {
         schedule
     }
 
-    /// Whatever the DAG, the layout is a layout, and every arm it branches
-    /// over is exactly the run of the values that arm owns.
+    /// Whatever the DAG, every read follows its value, and every arm the flow
+    /// branches over is exactly the run of the values that arm owns, just
+    /// before its `If`.
     #[test]
-    fn a_random_dag_lays_out_validly() {
+    fn a_random_dag_is_laid_out_validly() {
         for seed in 0..300 {
             let len = 20 + (seed as usize % 40);
             let schedule = random_schedule(seed, len);
             let roots: Vec<ValueId> = alloc::vec![ValueId((len - 1) as u64)];
             let folds = FoldReads::default();
-            let layout = Layout::of(&schedule, &roots, &folds);
-            assert!(
-                layout.is_sound(&schedule, &roots, &folds),
-                "seed {seed}: not a layout"
-            );
             laid_out_with(&schedule, &roots, &folds);
         }
     }
@@ -649,7 +404,7 @@ mod tests {
         values
             .iter()
             .position(|&x| x == v)
-            .expect("a layout keeps every def")
+            .expect("a flow runs every def")
     }
 
     /// `W` is read by the true arm and by a sibling fold's body, which runs
@@ -672,8 +427,8 @@ mod tests {
 
         let (blind, _) = laid_out(&schedule);
         let (seen, values) = laid_out_with(&schedule, &[], &folds);
-        assert_eq!(blind.run(0).len(), 3, "the arm owned `W` unseen");
-        assert_eq!(seen.run(0).len(), 2, "`W` is not the arm's");
+        assert_eq!(under(&blind, 0).len(), 3, "the arm owned `W` unseen");
+        assert_eq!(under(&seen, 0).len(), 2, "`W` is not the arm's");
         assert!(
             at(&values, 1) < at(&values, 2),
             "and it stays ahead of the arm"
@@ -728,9 +483,9 @@ mod tests {
             unary(1, OpKind::Rsqrt, 3), // ValueId(3) has no Def
             if_of(4, 0, 0, 1),
         ];
-        let (layout, _) = laid_out(&schedule);
-        assert_eq!(layout.flow.arms.len(), 1);
-        assert_eq!(layout.flow.arms[0].arm, IfArm::False);
-        assert_eq!(layout.run(0), [1]);
+        let (flow, _) = laid_out(&schedule);
+        assert_eq!(flow.arms.len(), 1);
+        assert_eq!(flow.arms[0].arm, IfArm::False);
+        assert_eq!(under(&flow, 0), [1]);
     }
 }

@@ -225,14 +225,14 @@ pub(crate) enum IfArm {
 }
 
 /// How a scope's schedule runs: its defs in order, with each arm that earns a
-/// branch nested as the block it is (`layout`). Selection walks it and emits
-/// the guard and the block after it around each arm; nothing recovers a
-/// region from a position.
+/// branch nested as the block it is, immediately before its `If` (`layout`).
+/// Selection walks it and emits the guard and the block after it around each
+/// arm; nothing recovers a region from a position.
 #[derive(Debug, Default)]
 pub(crate) struct Flow {
     /// What the scope runs, outermost.
     pub(super) items: Vec<Item>,
-    /// Every arm that earns a block, parents before the arms nested in them.
+    /// Every arm that earns a block, in the order of their `If`s.
     pub(super) arms: Vec<ArmBlock>,
 }
 

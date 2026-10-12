@@ -3,8 +3,8 @@
 //! the fold's *body* rather than through a register operand.
 //!
 //! `pixelflow-codegen`'s `program::ownership` decides which schedule entries an
-//! `If`'s arm owns and `program::layout` orders a scope so an arm is one
-//! contiguous run (before them, `emit/guards.rs`'s `if_arms` and
+//! `If`'s arm owns and `program::layout` nests an arm as a block
+//! before its `If` (before them, `emit/guards.rs`'s `if_arms` and
 //! `cluster_if_arms` did the same by search). All of them used to read
 //! dependencies off
 //! `regalloc::operands` alone, which treats a `Reduce` def as a leaf: once

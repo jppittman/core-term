@@ -1,10 +1,9 @@
 //! What a loop a scope opens reads from it: the fact about a schedule that
-//! layout and ownership need to keep an arm from skipping a value a loop reads.
+//! the flow and ownership need to keep an arm from skipping a value a loop reads.
 //!
 //! [`FoldReads`] is the fold table — the edges a `Reduce` def's body adds to
-//! the scope that opens it. Which arms are branched over, and the order that
-//! makes each one a run, is `layout`'s: it is chosen from who owns what
-//! (`ownership`), not recovered afterwards by a search over the order.
+//! the scope that opens it. Which arms are branched over, and where each
+//! goes, is `layout`'s: it is chosen from who owns what (`ownership`).
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -22,8 +21,8 @@ use crate::program::{Def, ScheduledOp, ValueId};
 /// value invariant in the fold from the park this scope leaves it in. Nothing
 /// in this scope's schedule recorded those reads, so to everything here that
 /// asks what a value is needed by, or needs, the fold read nothing: a guard
-/// could skip a fold whose result a sibling fold's body still reads, and
-/// clustering could sink a fold's input to after the fold
+/// could skip a fold whose result a sibling fold's body still reads, or a
+/// value a fold reads, which the fold then finds unwritten
 /// (`pixelflow-core/tests/guard_sibling_fold.rs` pins both). These are the
 /// missing edges, and with them the def consumes what its fold reads the way
 /// any def consumes its operands.

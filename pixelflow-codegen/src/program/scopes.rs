@@ -2,7 +2,7 @@
 //!
 //! Lowering ([`super::lower`]) produces one flat schedule. Scoping carves each
 //! surviving `Reduce` out into a scope of its own, moves every value to the
-//! outermost scope that binds what it depends on, and lays every scope out.
+//! outermost scope that binds what it depends on, and nests each scope's arms.
 //! [`ScopedSchedule::from_schedule`] is the one way in; nothing here names a
 //! register or a byte.
 
@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use super::{
     Def, Flow, ScheduledOp, Scope, ScopeFold, ScopeRegion, ScopedSchedule, ValueId, guards,
-    layout::Layout, structural_children,
+    structural_children,
 };
 
 /// Compute [`Variance`](pixelflow_ir::variance::Variance) for every schedule entry.
@@ -123,19 +123,16 @@ impl ScopedSchedule {
     }
 }
 
-/// Put every scope's schedule in its final order and nest the arms that earn a
-/// block in it — the last step of [`ScopedSchedule::from_schedule`], and the
-/// only place either is decided for a body or a fold.
+/// Nest the arms that earn a block in every scope's flow — the last step of
+/// [`ScopedSchedule::from_schedule`], and the only place it is decided for a
+/// body or a fold.
 ///
-/// Last because both are questions about the scope's *final* contents: which
-/// arms earn a branch depends on what the loops the scope opens read from
+/// Last because which arms earn a branch is a question about the scope's
+/// *final* contents: it depends on what the loops the scope opens read from
 /// it and on the roots it parks for them — a skipped arm would leave a park
 /// unwritten for a loop that runs regardless — and none of that is settled
-/// until [`attach_folds`] and [`place_roots`] have run. The order is *chosen*
-/// here, from who owns what (`program::layout`), rather than repaired
-/// beforehand and then hoped to survive the placement. Nothing after this
+/// until [`attach_folds`] and [`place_roots`] have run. Nothing after this
 /// edits a schedule or its flow: selection reads them as its input.
-///
 fn lay_out(scoped: &mut ScopedSchedule) {
     for scope in core::iter::once(Scope::Body).chain((0..scoped.folds.len()).map(Scope::Fold)) {
         let nest = &*scoped;
@@ -150,17 +147,10 @@ fn lay_out(scoped: &mut ScopedSchedule) {
                 .filter(|fold| fold.parent == scope)
                 .map(|fold| (fold.reduce, fold.reads())),
         );
-        let layout = Layout::of(schedule, roots, &opened);
-        let (ordered, flow) = (layout.apply(schedule), layout.flow);
+        let flow = Flow::of(schedule, roots, &opened);
         match scope {
-            Scope::Body => {
-                scoped.body.schedule = ordered;
-                scoped.body.flow = flow;
-            }
-            Scope::Fold(j) => {
-                scoped.folds[j].schedule = ordered;
-                scoped.folds[j].flow = flow;
-            }
+            Scope::Body => scoped.body.flow = flow,
+            Scope::Fold(j) => scoped.folds[j].flow = flow,
         }
     }
 }
@@ -294,8 +284,8 @@ fn binder_of_fold(scoped: &ScopedSchedule, j: usize) -> u8 {
 /// its position: everything the body's closure computed, in topological
 /// order, ending at the value the `Reduce` combines each iteration.
 struct PendingFold {
-    /// The `Reduce` def's own `ValueId` — a schedule permutation (LICM, arm
-    /// clustering) may move it, but never renames it, so this is what
+    /// The `Reduce` def's own `ValueId` — a schedule permutation (LICM) may
+    /// move it, but never renames it, so this is what
     /// `attach_folds` searches the post-partition schedule for.
     reduce_vid: ValueId,
     /// The fold's own per-iteration computation, in topological order,
@@ -482,10 +472,10 @@ fn extract_folds_bound_by(
 /// Record each [`PendingFold`] of the body as a [`ScopeFold`], and its
 /// children inside it.
 ///
-/// A fold names the `Reduce` def it opens at by value, not by position: the
-/// scope's layout, which runs after this, permutes the schedule — it moves a
-/// `Def`, never renames the `ValueId` it defines. That the def is in the
-/// parent's schedule is asserted where the layout asks for the fold's reads
+/// A fold names the `Reduce` def it opens at by value, not by position:
+/// `place_roots`, which runs after this, edits the schedules, and it moves a
+/// `Def` without renaming the `ValueId` it defines. That the def is in the
+/// parent's schedule is asserted where the flow asks for the fold's reads
 /// ([`guards::FoldReads::new`]).
 fn attach_folds(scoped: &mut ScopedSchedule, pending: Vec<PendingFold>) {
     for fold in pending {

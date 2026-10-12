@@ -45,11 +45,12 @@
   and schedule loops are folds).
 - **Is not:** an annotation on a previous schedule. Not sorted by demand
   (09-07, retracted 09-08). Not recovered by a search after flattening.
-- **Follows:** layout places each block after its inputs and its mask, and
-  "Nothing else moves". Schedule choices make cost non-additive.
+- **Follows:** the schedule is never reordered: values stay in the order
+  they were constructed, and an `If`'s arm blocks go immediately before it
+  (the `Flow`). Schedule choices make cost non-additive.
 - **Lives:** `pixelflow-codegen/src/program/mod.rs` (`Def`, `ScheduledOp`,
   `ScopedSchedule`), `program/layout.rs`. The schedule
-  reaches the emitter finished: selection walks it in order, and
+  reaches the emitter finished: selection walks its `Flow`, and
   `regalloc::local::allocate` chooses registers and slots, never the order.
 
 ### Scope and the nest
@@ -386,7 +387,8 @@
   tree and shared DP arms, and a remainder arm (the code for an extent that
   is not a lane multiple).
 - **Is not:** a contiguous run recovered by searching a flat schedule
-  (`select_arms`, 80.5% of emit; `cluster_if_arms`; both deleted). Not
+  (`select_arms`, 80.5% of emit; `cluster_if_arms`; both deleted), or
+  placed by permuting one (the layout's anchors, deleted 2026-10-12). Not
   exclusive by reachability alone. The old "reaches the arm" rule was a
   latent miscompile; exclusivity is a closure, "my consumers are skipped
   with me". Not a `KernelKey` field (G1/G2, retired).
@@ -394,7 +396,8 @@
   not strip exclusivity, which is a DAG fact computed before partitioning.
   An arm may own a root when it owns every scope that reads it (see Root).
 - **Lives:** `pixelflow-codegen/src/program/ownership.rs` (#1311),
-  `program/layout.rs` (#1312, #1313), `program/guards.rs` (`FoldReads`);
+  `program/layout.rs` (#1312, #1313; `Flow::of`: an `If`'s arms go
+  immediately before it), `program/guards.rs` (`FoldReads`);
   CLAUDE.md "`If` contains an if".
 
 ### Guard. Homonym
@@ -449,10 +452,11 @@
 ### Block. Homonym
 
 - **Is:** a label, its parameters, and a sequence of instructions ending in
-  one whose label operands are the block's successors. Other senses: a
-  layout block (an arm region that owns a value, laid out as one run), a `kernel!`
+  one whose label operands are the block's successors. Other senses: an
+  arm block (an arm region that owns a value, placed immediately before its `If`), a `kernel!`
   block of items, and a program's uniform block.
-- **Is not:** a run found by permuting a flat schedule.
+- **Is not:** a run found by permuting a flat schedule. A block's place is
+  not computed: it is the `If` it belongs to.
 - **Follows:** a value live into a block from more than one predecessor is a
   block parameter; that is what a phi is. "Emit the arms as blocks and there
   is nothing to search for."
