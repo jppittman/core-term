@@ -353,7 +353,7 @@ fn extract_folds(
 /// more at the top for the coverage that reads it. Such a `Reduce` stays
 /// the enclosing scope's fold, and the fold that reads its result keeps its
 /// def as a **placeholder** — in the schedule, so the reads resolve, but
-/// opening no scope here; `allocate_nest` parks it in its accumulator slot,
+/// opening no scope here; `regalloc::local::allocate` parks it in its accumulator slot,
 /// where the enclosing scope's loop left it before this one began.
 /// `placeholder` is that verdict from the level above, by `ValueId`, so a
 /// level never mistakes one for a fold of its own.
@@ -508,7 +508,7 @@ fn attach_folds(scoped: &mut ScopedSchedule, pending: Vec<PendingFold>) {
 
 /// Record `fold` as a [`ScopeFold`] opening at `at` in `parent`,
 /// then each of its children inside it — depth first, so a parent's index is
-/// always below its children's, which is the order `allocate_nest` and the
+/// always below its children's, which is the order `regalloc::local::allocate` and the
 /// frame layout both walk the tree in.
 ///
 /// A child's position is a search of its parent's schedule, for the same

@@ -1,17 +1,14 @@
-//! `EmitTraffic` reports what was emitted, on whichever pipeline compiled it.
+//! `EmitTraffic` reports what was emitted.
 //!
-//! The selection pipeline hands out whole register files and loads every
-//! constant it uses, so a zero in `pool` or `remats` there would be a silent
-//! one: both are journaled as cost-model features. Run on the selection
-//! pipeline (every tier's own, or `PIXELFLOW_CODEGEN=selection`), these fail when
-//! `EmitTraffic::of` reports either as zero.
+//! The allocator hands out whole register files and loads every constant it
+//! uses, so a zero in `pool` or `remats` would be a silent one: both are
+//! journaled as cost-model features. These fail when `EmitTraffic::of`
+//! reports either as zero.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
 use pixelflow_codegen::emit::{CompileResult, ScopeTraffic, compile};
 use pixelflow_ir::{ExprArena, LatticeShape, OpKind};
-
-include!("support/knob.rs");
 
 /// `(c − x) + y` over a small lattice, where `c` is a constant or, for the
 /// control, another variable. A constant that is neither zero, all-ones nor an
@@ -33,13 +30,9 @@ fn a_kernel_reports_the_registers_its_allocator_hands_out() {
     );
 }
 
-/// Legacy counts the constant once, where it is defined; selection counts it
-/// at each read, and not as an instruction.
+/// A constant is counted at each read, and not as an instruction.
 #[test]
 fn a_selected_constant_is_counted_as_brought_in() {
-    if !selection() {
-        return;
-    }
     let sum = |kernel: &CompileResult, count: fn(&ScopeTraffic) -> u64| -> u64 {
         kernel.traffic.scopes.iter().map(count).sum()
     };

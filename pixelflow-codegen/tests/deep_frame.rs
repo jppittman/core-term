@@ -7,8 +7,8 @@
 //! the value test of a frame past 64 KiB, run on NEON under qemu and natively
 //! on aarch64 hosts, and on the host's x86 tier elsewhere, where the same
 //! kernel's spill area is wider still. The kernel has more terms than
-//! `sibling_rows.rs`'s row: the selection pipeline's frame for that row
-//! is a few KiB under the reach, and this test is about the frame past it.
+//! `sibling_rows.rs`'s row: the frame for that row is a few KiB under
+//! the reach, and this test is about the frame past it.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 

@@ -48,11 +48,9 @@
 - **Follows:** layout places each block after its inputs and its mask, and
   "Nothing else moves". Schedule choices make cost non-additive.
 - **Lives:** `pixelflow-codegen/src/program/mod.rs` (`Def`, `ScheduledOp`,
-  `ScopedSchedule`), `program/layout.rs`. Today `ScopeCode`
-  (`emit/regalloc/mod.rs`) says "The schedule is an *output* because choosing it
-  is part of allocating", and `emit_scope` says "The allocator chooses the
-  evaluation order", while `RegisterAllocator::allocate_nest` says "The nest
-  is handed over finished … returns it unchanged". The docs disagree.
+  `ScopedSchedule`), `program/layout.rs`. The schedule
+  reaches the emitter finished: selection walks it in order, and
+  `regalloc::local::allocate` chooses registers and slots, never the order.
 
 ### Scope and the nest
 
@@ -111,8 +109,10 @@
   owns every scope that reads it (a-glyph-is-a-formula §4.3, confirmed
   "still needed" by an-integral §6.6).
 - **Lives:** `ScopeRegion::roots`, `ScopeFold::roots`
-  (`pixelflow-codegen/src/program/mod.rs`), `FoldRoots`
-  (`emit/regalloc/mod.rs`), `place_roots` (`program/scopes.rs`). Today
+  (`pixelflow-codegen/src/program/mod.rs`), `place_roots` (`program/scopes.rs`).
+  Selection has no root or park of its own: a value live into a loop's head
+  is carried in a register or stored and dropped there (`plan_carries`,
+  `emit/regalloc/local.rs`). Today
   `program/ownership.rs` says "A scope's root is read by the scope itself,
   so no arm owns it", which contradicts the arm rule.
 
@@ -153,9 +153,9 @@
   Never a mask." That rule is dissolved today, because no arm owns a root.
   If arms come to own roots (see Root), the zero-park rule comes back with
   them.
-- **Lives:** `NestAllocation::parks`, `Allocation::park`
-  (`pixelflow-codegen/src/emit/regalloc/mod.rs`), `place_roots`
-  (`program/scopes.rs`); a-surviving-reduce-is-a-loop §3a (JP: "Register
+- **Lives:** deleted with the legacy allocator (`NestAllocation::parks`,
+  `Allocation::park`); `place_roots` (`program/scopes.rs`) still places a
+  root in its scope; a-surviving-reduce-is-a-loop §3a (JP: "Register
   allocation is the job of the register allocator"), R1; demand §2 "Parks";
   one-conditional §4.
 
@@ -174,9 +174,8 @@
   (`file.inside(carried)`). Anything inside a loop that writes a carried
   register is a miscompile visible only in pixels. The coldest root, the
   outermost accumulator, goes to a slot first.
-- **Lives:** `plan_carries`, `CarryPlan`, `Carried`, `RegisterFile::inside`
-  (`pixelflow-codegen/src/emit/regalloc/mod.rs`), the per-class
-  `type Budget = [usize; 2]` (`.../regalloc/policy.rs`); escape-hatches step 4;
+- **Lives:** `plan_carries` (`pixelflow-codegen/src/emit/regalloc/local.rs`), the
+  per-file `type Budget = [usize; 4]` (`.../regalloc/policy.rs`); escape-hatches step 4;
   collapse-is-a-fold step 2½; a-pointer-is-a-value §2.
 
 ### Back edge (head reconciliation)
@@ -190,8 +189,9 @@
 - **Follows:** "Unexercised code that has been correct for months is not
   evidence." Either reach it with a test or show it is unneeded and delete
   it.
-- **Lives:** `pixelflow-codegen/src/emit/regalloc/mod.rs` (`Point::TAIL`);
-  a-surviving-reduce-is-a-loop §4b.
+- **Lives:** the backward branch of a loop's latch, a sequentialized parallel
+  move (`pixelflow-codegen/src/emit/regalloc/local.rs`), with join invariant 1
+  asserted at each latch; a-surviving-reduce-is-a-loop §4b.
 
 ### Value
 
@@ -205,7 +205,7 @@
   block parameter.
 - **Lives:** `ValueId(pub u64)`, `Def` (`pixelflow-codegen/src/program/mod.rs`);
   `emit::Value<C>`, a typed name, and `build::Def<C>`, the right to define
-  one (`emit/{mod,build}.rs`, unused until B4).
+  one (`emit/{mod,build}.rs`).
   Today an effect (`Write`, `Seq`) is a `Def` with a `ValueId` that defines
   no value, and a leaf scheduled in two scopes is "two definitions of one
   name" (09-04). Both contradict "one definition", which is why lives are
@@ -214,15 +214,15 @@
 ### Class
 
 - **Is:** there are two, and the second replaces the first. `program::Class`
-  is an enum, `Vector` (one batch of `f32` lanes, in a `Reg`) or `Pointer` (an
-  address, in a `PtrReg`), "a function of the defining op". Every consumer
+  is an enum, `Vector` (one batch of `f32` lanes) or `Pointer` (an address),
+  "a function of the defining op". Every consumer
   knows which class it expects by position. "The classes never compete for
   a register." `emit::Class` (`emit/mod.rs`) is a sealed trait with the markers
   `Vector`, `Pointer`, `Integer`, `Opmask` and `Flags` (`ClassId` is the same
   set as data, on a `ValueName`), the type an instruction's
   operand field is declared with, so a base address cannot be handed a
   `row * pitch` product. The flags are a class. D2 deletes
-  `program::Class`; D1 deletes only `emit::Class`'s `type Physical`.
+  `program::Class`.
 - **Is not:** a reason for a second algorithm ("One algorithm, two pools").
 - **Follows:** carry budgets are per class. Vector-only scratch (temps,
   guard registers, the result role) does not apply to pointers.
@@ -241,12 +241,11 @@
   Not a vector. Not allocated outside the allocator. JP: "it should know
   what a pointer register is, and our assembler should require one."
 - **Follows:** `Gather`, `Broadcast` and `Uniform` take the base as an
-  operand. `ResolvedOp` types the base as `PtrReg`, so "a wrong class at
-  resolution is a panic naming the allocator, never a silently wrong
-  address". Loads fell from 45 per batch to 3 per call. Open: fold binders
+  operand. Selection types the base as `Value<Pointer>`, so a wrong class
+  is a type error, never a silently wrong address. Loads fell from 45 per batch to 3 per call. Open: fold binders
   as integers in GPRs, the pool anchor as a value, and callee-saved GPRs.
 - **Lives:** `ScheduledOp::Context(u16)` (`pixelflow-codegen/src/program/mod.rs`),
-  `Where::Ptr`, `RegisterFile::pointers` (`emit/regalloc/mod.rs`);
+  `emit::Pointer`, the general file's `Members::general` (`emit/register_file.rs`);
   `docs/plans/2026-09-22-a-pointer-is-a-value.md`.
 
 ### Constant pool (constants in codegen)
@@ -264,9 +263,10 @@
   traffic rose honestly while bytes fell. The pool's anchor is a pointer
   value the allocator should place.
 - **Lives:** `CONST_POOL_ALIGN` (`pixelflow-codegen/src/emit/mod.rs`),
-  `POOL_BASE` (`emit/x86_64.rs`), `X17` (`emit/aarch64.rs`);
-  collapse-is-a-fold step 5½. Today the anchor is pinned to `r8`/`X17` by
-  convention (a-pointer-is-a-value §5, open), which contradicts Register.
+  `Constants` (`emit/mod.rs`); collapse-is-a-fold step 5½. x86 reads each
+  entry RIP-relative by its own label and has no anchor; NEON's pool base is
+  a `Value<Pointer>` selection defines once (`IsaBackend::Anchors`). It was pinned to
+  `r8`/`X17` by convention before selection (a-pointer-is-a-value §5).
 
 ### Register
 
@@ -292,13 +292,11 @@
   clobber `x16`/`x17` across a call; a leaf kernel makes none. Whoever owns a
   resource makes every choice about it; whoever needs a specific one states
   the requirement, not the choice.
-- **Lives:** today `Reg`/`Gpr`/`PtrReg`/`KReg(pub u8)`
-  (`pixelflow-codegen/src/emit/mod.rs`), all `Copy` with public fields, so
-  any code can construct one (`POOL_BASE: PtrReg = PtrReg(8)`,
-  `X17: PtrReg = PtrReg(17)`), which contradicts this entry; `RegisterFile`,
-  `RegSet`, `GprSet`, `MaskSet` (`emit/regalloc/mod.rs`). Escape hatches:
-  `docs/plans/2026-09-01-register-allocation-escape-hatches.md`. `fixed` is
-  empty on every backend. The live hatch is `POOL_BASE`.
+- **Lives:** `Reg`, `Pool` and `Lease` (`pixelflow-codegen/src/emit/regalloc/resource.rs`),
+  minted only by `Pool::mint` and `Leases::new`; `In`, `Out` and `InOut`, the
+  borrows an instruction's operand fields hold; `RegisterFile`
+  (`emit/register_file.rs`), each backend's `IsaBackend::FILE`. Escape hatches:
+  `docs/plans/2026-09-01-register-allocation-escape-hatches.md`.
 
 ### Temp
 
@@ -311,13 +309,11 @@
   phase is missing — the stage that would have made them values runs after
   the one that needed them (see Phase). "A reload result and an instruction
   temp are the same thing — a value the input DAG did not contain."
-- **Lives:** the `RegisterFile::{temps_for, gpr_temps_for, mask_temps_for}`
-  fields, filled by each backend's `temps_for` in
-  `pixelflow-codegen/src/emit/{avx2,avx512,aarch64}.rs`;
-  `Scratch::{REDUCE_TEMPS, MAX_TEMPS}` and `RegisterFile::MIN_SCRATCH`
-  (`emit/regalloc/mod.rs`). Today `MAX_TEMPS` is still sized for the deleted
-  scalar-insert gather ("No encoding asks for more than two now").
-  escape-hatches §A, §C, step 2.
+- **Lives:** nowhere: every intermediate an instruction needs is a value
+  selection defines (`emit/select.rs`, `emit/build.rs`), and the allocator
+  gives it a register like any other. `temps_for`, `REDUCE_TEMPS` and
+  `MIN_SCRATCH` were the legacy allocator's predictions of them, deleted with
+  it (D1). escape-hatches §A, §C, step 2.
 
 ### Spill, reload, remat
 
@@ -330,10 +326,9 @@
   without skipping every read". Splitting raises the slot count while
   lowering traffic. Residency is final once the reader is allocated, so
   reload targets are per-instruction roles.
-- **Lives:** `Where::{Spilled, Remat}`, `LinearScan`
-  (`pixelflow-codegen/src/emit/regalloc/mod.rs`); escape-hatches step 2 and the
-  2026-09-05 block. The selection pipeline's allocator,
-  `regalloc::local::allocate`, does this one value at a time: a value stays in
+- **Lives:** `regalloc::local::allocate`
+  (`pixelflow-codegen/src/emit/regalloc/local.rs`); escape-hatches step 2 and the
+  2026-09-05 block. It does this one value at a time: a value stays in
   its register until the register is needed, the cheapest to give up by
   `EvictionRank` goes, and its store is placed after its definition when it is
   first evicted. A loop head still flushes every live value to its slot.
@@ -357,11 +352,12 @@
   were not, the atlas came out blank. The layout owner owns the offsets.
 - **Lives:** `UniformId(pub u64)`, `BufferId(pub u16)`
   (`pixelflow-ir/src/arena.rs`), `Binder(u8)` (`pixelflow-ir/src/fold.rs`),
-  `emit::storage::Slot` (`pixelflow-codegen/src/emit/storage.rs`),
-  `NestAllocation::{parks, accumulator_slots, binder_slots}`
-  (`emit/regalloc/mod.rs`). Today `Slot::new` is a public `const fn` on a `Copy`
-  type, which contradicts denotational-diagnosis step 8. `FrameLayout` was
-  deleted 2026-10-06 ("The allocator lays the frame out itself").
+  `FrameSlot` and `SlotName` (`pixelflow-codegen/src/emit/regalloc/resource.rs`):
+  a `FrameSlot` is minted only by `Frame`, not `Copy`, at an offset fixed for
+  its life. The legacy `Slot` (`emit/storage.rs`) and `NestAllocation::{parks,
+  accumulator_slots, binder_slots}` were deleted with the legacy allocator
+  (D1). `FrameLayout` was deleted 2026-10-06 ("The allocator lays the frame
+  out itself").
 
 ### Frame. Homonym
 
@@ -374,12 +370,10 @@
   reads them and computes none").
 - **Follows:** "The frame prologue is never guarded." No per-frame heap
   allocation.
-- **Lives:** `NestAllocation::new` (`pixelflow-codegen/src/emit/regalloc/mod.rs`),
-  `StackFrame` (`emit/storage.rs`); the
-  `a_folds_spill_slots_do_not_alias_its_parents` guard (`emit/mod.rs`). The
-  selection pipeline's is `regalloc::resource::Frame`, laid out by
-  `regalloc::local::allocate` from value intervals before any instruction is
-  bound.
+- **Lives:** `regalloc::resource::Frame` (`pixelflow-codegen/src/emit/regalloc/resource.rs`),
+  laid out by `regalloc::local::allocate` from value intervals before any
+  instruction is bound; the `a_folds_spill_slots_do_not_alias_its_parents`
+  guard (`emit/mod.rs`).
 
 ### Arm ownership. Homonym of Arm
 
@@ -446,11 +440,10 @@
   (R1: "the accumulate is an ordinary `Binary` def … the allocator learns
   nothing about folds"); selected as blocks by `Selector::fold`
   (`pixelflow-codegen/src/emit/select.rs`, B3 of
-  `docs/plans/2026-10-08-selection-is-a-phase.md`, unused until B4), whose
-  `Loop::trips` is the body's runs per call; today emitted by verbs in
-  `pixelflow-codegen/src/emit/mod.rs`'s `Reduce` arm ("seed, test, body,
-  combine, step", with `Scratch::REDUCE_TEMPS`, labels
-  `reduce{vid}_top`/`reduce{vid}_exit`), which contradicts it.
+  `docs/plans/2026-10-08-selection-is-a-phase.md`), whose
+  `Loop::trips` is the body's runs per call. The verbs that once emitted it
+  inline (`Reduce` arm, `Scratch::REDUCE_TEMPS`) were deleted with the legacy
+  driver (D1).
 
 ### Block. Homonym
 
@@ -464,9 +457,10 @@
   is nothing to search for."
 - **Lives:** `Block`, `Function` and `build::Builder`
   (`pixelflow-codegen/src/emit/{mod,build}.rs`), built by B1 of
-  `docs/plans/2026-10-08-selection-is-a-phase.md` and unused until B4.
-  `pixelflow-codegen/src/program/layout.rs`'s blocks, which the legacy
-  pipeline still uses, have no label, parameters or terminating instruction.
+  `docs/plans/2026-10-08-selection-is-a-phase.md`.
+  `pixelflow-codegen/src/program/layout.rs`'s blocks have no label,
+  parameters or terminating instruction; selection makes the `Block`s from
+  them (D3).
 
 ### Label. Homonym of the hindsight label and the cost label
 
@@ -492,11 +486,9 @@
   constructor, so it cannot dangle; it is 64-bit, like every id.
 - **Lives:** `emit::asm::Label` (`pixelflow-codegen/src/emit/asm.rs`) — a
   `u64` minted by `Labels::mint`, its only constructor, owned by the program
-  (`Assembly::mint`). `emit_scope` mints a
-  guard's `past` label where it makes the branch and carries it in
-  `PendingBranch` to its bind point; a fold mints `top` and `exit`, an `If`
-  its three, `compile_via_backend` the pool's and hands it to `anchor` and
-  `finish`. Nothing is derived from the id of what it names. History: R0 of
+  (`Function::labels`). Selection mints a block's label with the block, and
+  the constant pool's with the pool. Nothing is derived from the id of what
+  it names. History: R0 of
   `docs/plans/2026-09-10-a-surviving-reduce-is-a-loop.md` made a label an
   item and its reference an operand; "A label should be keyed by the node it
   names" in the same plan removed the site-to-label map by keying on the
@@ -520,12 +512,12 @@
   instruction. `pin_shift_counts`, which re-pins a shift count's extraction
   choice to a `Const`, is the symptom of a missing operand-kind type.
 - **Lives:** `Operand`, `Access` and `operands` (`emit/mod.rs`), built by B1
-  of `docs/plans/2026-10-08-selection-is-a-phase.md` and unused until B4.
-  The legacy pipeline still has the split below: `program::operands()` yields only
-  vector reads, the base comes from a separate `pointer_operand()` (both in
-  `pixelflow-codegen/src/program/mod.rs`), and branches expose their target
-  through `AsmInsn::label_ref()` (`emit/mod.rs`). All three contradict this
-  entry. `pin_shift_counts` lives in `pixelflow-search/src/egraph/extract.rs`.
+  of `docs/plans/2026-10-08-selection-is-a-phase.md`. The schedule still has the
+  split below: `program::operands()` yields only vector reads, and the base
+  comes from a separate `pointer_operand()` (both in
+  `pixelflow-codegen/src/program/mod.rs`); selection joins them
+  (`all_operands`). `pin_shift_counts` lives in
+  `pixelflow-search/src/egraph/extract.rs`.
 
 ### Instruction
 
@@ -535,18 +527,16 @@
 - **Follows:** every register an instruction touches is one of its operands —
   including the ones it clobbers and the flags — so nothing about it is hidden
   from the allocator. A branch is an ordinary instruction.
-- **Lives:** `AsmInsn` (`pixelflow-codegen/src/emit/mod.rs`), the backends'
+- **Lives:** the backends'
   instruction enums: `Gp<S>`, x86's general-register instructions, generic
   over a `Stage` and with named fields typed by `Class` (`emit/x86_64.rs`);
   `Inst<S>` in `emit/avx2.rs` and `emit/avx512.rs`, the VEX and EVEX
   instructions, over the same vocabulary, and `avx2::Op<S>`, the instruction
   AVX2's selection puts in a block; `Inst` in `emit/aarch64.rs`. One encoder
-  serves the legacy `Physical` stage and the allocator's `Bound` one, through
-  `Placed` (`emit/mod.rs`), until D1. Today
-  most emission is `LegacyBackend` verbs writing bytes inline ("Instructions:
-  bytes written inline by ~236 functions, not values", denotational-diagnosis;
-  e.g. `emit_write(&mut self, code: &mut Vec<u8>, …)`), which contradicts
-  this entry.
+  serves the allocator's `Bound` stage, through `Placed` (`emit/mod.rs`).
+  ("Instructions: bytes written inline by ~236 functions, not values",
+  denotational-diagnosis, described the legacy `LegacyBackend` verbs, deleted
+  at D1.)
 
 ### Branch
 
@@ -556,14 +546,14 @@
   discriminants are the manual's values).
 - **Is not:** something that returns a position. Not hand-picked mnemonics
   over a private `jcc(code, cc: u8)`.
-- **Follows:** a loop's back edge is `push(Gp::Jmp { to: top })`. Arm skips
-  are one verb, `branch_if_arm_is_dead(.., MaskTest, Label)`, "because they
-  differed only in which uniform mask lets an arm go, which is what `IfArm`
-  already names". A fold's trip test reuses `IfArm::False`'s test.
+- **Follows:** a loop's back edge is `Gp::Jmp { to: top }`. Arm skips are one
+  verb, `IsaBackend::branch(.., Test, Edges)`, "because they differed only in
+  which uniform mask lets an arm go, which is what `IfArm` already names". A
+  fold's trip test reuses `IfArm::False`'s test.
 - **Lives:** `pixelflow-codegen/src/emit/{x86_64,aarch64}.rs` (the
-  instructions), `LegacyBackend::branch_if_arm_is_dead` (`emit/mod.rs`,
-  implemented in `emit/{avx2,avx512,aarch64}.rs`), `IfArm`
-  (`program/mod.rs`); a-surviving-reduce-is-a-loop R0.
+  instructions), `IsaBackend::{branch, jump}` (`emit/mod.rs`, implemented in
+  `emit/{avx2,avx512,aarch64}.rs`), `IfArm` (`program/mod.rs`);
+  a-surviving-reduce-is-a-loop R0.
 
 ### Assembly program
 
@@ -580,12 +570,9 @@
   allocator inserting its own code — builds a value; nothing writes bytes.
 - **Lives:** `asm::AsmProgram` (`pixelflow-codegen/src/emit/asm.rs`) is the
   value: `text` and `data` sections of `Item`s, and the `Labels` that minted
-  every label in it. Today `emit::Assembly` (`emit/mod.rs`) is the front end
-  that accumulates it as the legacy driver walks a schedule: one per kernel,
-  threaded through every scope (`emit_scope(allocation, backend, &mut asm)`),
-  so no scope's bytes are spliced into another's. The constant pool is its
-  data section (`Assembly::pool`). The selection pipeline builds the value
-  directly.
+  every label in it. The constant pool is its data section. The allocator
+  builds the value from the blocks (`Allocated::program`); the push/bind/finish
+  `Assembly` front end was deleted with the legacy driver (D1).
 
 ### Assembler
 
@@ -604,10 +591,8 @@
   the crate, and everything above it depends on it, never the reverse.
 - **Lives:** `asm::assemble` (`pixelflow-codegen/src/emit/asm.rs`), which
   imports nothing from the crate (`scripts/check_emit_boundary.py` rule A) and
-  is handed the encoder as a closure, so it names no instruction type. Its
-  front end is `emit::Assembly`, a push/bind/finish builder whose `run` field
-  the legacy driver writes position-independent bytes into; `finish` is
-  `assemble`. The front end goes with the legacy pipeline.
+  is handed the encoder as a closure, so it names no instruction type. It is
+  called once, from `emit::compile_on`, on the program the allocator builds.
   `docs/designs/assembler-as-functor.md`.
 
 ### Emitter
@@ -635,8 +620,7 @@
 - **Follows:** it was deleted in collapse-is-a-fold step 5. Precoloured X and
   Y, `SCAFFOLD_ACC`/`SCAFFOLD_SCRATCH` and `RegisterFile::inputs` went with
   it.
-- **Lives:** deleted. The residue is the per-fold verbs in the `Reduce` arm
-  of `pixelflow-codegen/src/emit/mod.rs` (see Loop).
+- **Lives:** deleted. A fold is a loop of blocks (see Loop).
 
 ### ISA tier (vector width)
 
@@ -657,6 +641,4 @@
   (`pixelflow-codegen/src/isa/mod.rs`), `emit::compile_native`
   (`pub(crate)`, `emit/mod.rs`, which calls `detect()` itself);
   `2026-09-22-the-isa-is-decided-at-startup.md`; CLAUDE.md "SIMD Backend
-  Selection". While the selection series is in flight, `PIXELFLOW_CODEGEN=
-  legacy|selection` (read once like `detect`; unset, `selection` on every tier)
-  picks the pipeline per process (`emit::pipeline`).
+  Selection".

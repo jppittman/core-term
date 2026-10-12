@@ -1,4 +1,4 @@
-//! What the selection pipeline emits grows with the kernel, not faster.
+//! What a compile emits grows with the kernel, not faster.
 //!
 //! Its register scan is linear in the instructions it is given times the size
 //! of a register file, so its time is bounded by how many instructions there
@@ -10,9 +10,7 @@
 //! scheduled operations they were selected from (`ScopeTraffic::instructions`,
 //! which counts a constant only when the instruction selected for it is not
 //! rematerializable: every AVX2 constant is, and is counted where it is read),
-//! so the code's bytes stand in for it. They run on the selection pipeline,
-//! every tier's default or `PIXELFLOW_CODEGEN=selection`; under the legacy
-//! pipeline they do nothing.
+//! so the code's bytes stand in for it.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
@@ -24,7 +22,6 @@ use pixelflow_ir::{ExprArena, ExprId, LatticeShape, OpKind};
 mod rows {
     include!("support/sibling_rows.rs");
 }
-include!("support/knob.rs");
 
 const BYTES_PER_LANE: usize = 4;
 
@@ -64,9 +61,6 @@ fn compiled(arena: &ExprArena, root: ExprId, columns: u32) -> CompileResult {
 /// the allocator to twice the scheduled operations, a bound that fails earlier.
 #[test]
 fn the_allocator_inserts_at_most_twice_what_was_scheduled() {
-    if !selection() {
-        return;
-    }
     const PER_OPERATION: u64 = 2;
     let lanes = (jit_vector_bytes() / BYTES_PER_LANE) as u32;
     for row in &rows::TABLE {
@@ -89,9 +83,6 @@ fn the_allocator_inserts_at_most_twice_what_was_scheduled() {
 /// code would not show at all.
 #[test]
 fn doubling_a_kernel_at_most_doubles_what_is_emitted() {
-    if !selection() {
-        return;
-    }
     /// Past linear by the rounding a fixed prologue and a square-root number of
     /// shared products add.
     const GROWTH_PERCENT: u64 = 220;
@@ -126,9 +117,6 @@ fn doubling_a_kernel_at_most_doubles_what_is_emitted() {
 /// constants or reloads per operation without letting the growth go unseen.
 #[test]
 fn a_row_emits_bytes_in_proportion_to_its_scheduled_operations() {
-    if !selection() {
-        return;
-    }
     const BYTES_PER_OPERATION: u64 = 40;
     let lanes = (jit_vector_bytes() / BYTES_PER_LANE) as u32;
     for row in &rows::TABLE {

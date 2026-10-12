@@ -4,10 +4,10 @@
 // carved into both.
 //
 // Included, not compiled: `examples/byte_probe.rs` prints their bytes through
-// the host's own backend, and `tests/memory_ratchet.rs` and
-// `tests/selection_stays_linear.rs` measure them through `compile`, all over
-// `TABLE`, the one list of rows. One definition, so none of them can drift into
-// measuring different kernels under the same name. Only `pixelflow_ir`'s public vocabulary is named, since an example is a
+// the host's own backend, and `tests/selection_stays_linear.rs` measures them
+// through `compile`, both over `TABLE`, the one list of rows. One definition,
+// so neither can drift into measuring different kernels under the same name.
+// Only `pixelflow_ir`'s public vocabulary is named, since an example is a
 // crate of its own.
 //
 // `deep_frame.rs`, included below, carries the helpers the kernels share.

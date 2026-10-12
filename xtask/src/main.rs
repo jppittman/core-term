@@ -577,12 +577,6 @@ struct IsaLevel {
     name: &'static str,
     isa: &'static str,
     requires: &'static [&'static str],
-    /// The `PIXELFLOW_CODEGEN` value to run under, when it is not the default
-    /// pipeline.
-    pipeline: Option<&'static str>,
-    /// The `cargo` invocations that hold that pipeline in place of the mode's;
-    /// none means the mode's own, which is every level but a pipeline's.
-    suites: &'static [&'static [&'static str]],
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -596,78 +590,17 @@ const ISA_LEVELS: &[IsaLevel] = &[
         name: "avx2+fma",
         isa: "avx2",
         requires: &["avx2", "fma"],
-        pipeline: None,
-        suites: &[],
     },
     IsaLevel {
-        // DQ, not just F: `avx512::emit_compare` materializes a mask with
-        // `vpmovm2d`, which is AVX-512DQ, and the EVEX float logicals are DQ
-        // too. An AVX-512F-only part (Knights Landing) would take an
+        // DQ, not just F: a comparison's mask is widened with `vpmovm2d`,
+        // which is AVX-512DQ, and the EVEX float logicals are DQ too. An
+        // AVX-512F-only part (Knights Landing) would take an
         // illegal-instruction fault on any kernel containing a comparison,
         // so probing for F alone would "support" a level that cannot run —
         // and `pixelflow_codegen::isa` would not select it either.
         name: "avx512f+dq",
         isa: "avx512",
         requires: &["avx512f", "avx512dq"],
-        pipeline: None,
-        suites: &[],
-    },
-    // The pipelines (docs/plans/2026-10-08-selection-is-a-phase.md), at the
-    // tiers with a selection backend. Not tiers, but decided the same way (the
-    // environment, once, at startup) and run the same way. The selection leg
-    // is the pipeline every tier ships: every suite that compiles a
-    // kernel and checks it, in the three crates that do, so the checks that mean
-    // something under it (the V suites) run presubmit under the code that
-    // ships, whatever tier the `test` job's runner happens to have. The
-    // workspace's other crates are not held to it yet.
-    IsaLevel {
-        name: "avx2+fma, selection",
-        isa: "avx2",
-        requires: &["avx2", "fma"],
-        pipeline: Some("selection"),
-        suites: &[&[
-            "test",
-            "-p",
-            "pixelflow-codegen",
-            "-p",
-            "pixelflow-core",
-            "-p",
-            "pixelflow-graphics",
-            "--no-fail-fast",
-        ]],
-    },
-    IsaLevel {
-        name: "avx512f+dq, selection",
-        isa: "avx512",
-        requires: &["avx512f", "avx512dq"],
-        pipeline: Some("selection"),
-        suites: &[&[
-            "test",
-            "-p",
-            "pixelflow-codegen",
-            "-p",
-            "pixelflow-core",
-            "-p",
-            "pixelflow-graphics",
-            "--no-fail-fast",
-        ]],
-    },
-    // The legacy pipeline, until it is deleted, runs only what means something
-    // under it: the memory table it is held to. Everything else is checked by
-    // the values it computes, which the leg above checks under the pipeline
-    // that ships.
-    IsaLevel {
-        name: "avx2+fma, legacy",
-        isa: "avx2",
-        requires: &["avx2", "fma"],
-        pipeline: Some("legacy"),
-        suites: &[&[
-            "test",
-            "-p",
-            "pixelflow-codegen",
-            "--test",
-            "memory_ratchet",
-        ]],
     },
 ];
 
@@ -929,10 +862,7 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
             // itself refuses `PIXELFLOW_ISA` naming a tier the host cannot run,
             // so this check is what turns that refusal into a stated NOT RUN
             // rather than a failed test binary.
-            let commands = mode.test_commands().map(|tests| match level.suites {
-                [] => tests,
-                own => own,
-            });
+            let commands = mode.test_commands();
             let skip_reason = match commands {
                 None => Some("build-only mode: tests run in postsubmit".to_string()),
                 Some(_) => level
@@ -949,8 +879,7 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
             }
 
             let commands = commands.expect("a mode with no test commands produced no skip reason");
-            let mut env = vec![("PIXELFLOW_ISA", level.isa)];
-            env.extend(level.pipeline.map(|knob| ("PIXELFLOW_CODEGEN", knob)));
+            let env = [("PIXELFLOW_ISA", level.isa)];
             // Every command runs: one run shows each failing suite of a leg,
             // not only the first.
             let passed = (commands.iter())
@@ -961,10 +890,7 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
                 results.push((level.name, LevelResult::Failed));
                 continue;
             }
-            let scope = match level.suites {
-                [] => mode.scope(),
-                _ => "the pipeline's own suites",
-            };
+            let scope = mode.scope();
             println!("isa-matrix: {} — {scope} tests passed", level.name);
 
             results.push((level.name, LevelResult::Passed { scope }));

@@ -1760,6 +1760,11 @@ Every commit in this phase is live in production.
 
 - **Files:** everything §4.1 lists under D1, `rust.yaml` (the selection steps and the macOS knob step).
 - **Change:** the quality ratchet (`tests/memory_ratchet.rs`) is deleted with legacy, not converted into a ceiling table of selection's numbers: a pinned table of a compiled kernel's numbers is a golden of binaries (§0.11). `GOLDEN_SELECTED` no longer exists (G1), so there is no rename.
+  - Landed as a deletion: `emit/storage.rs`, `tests/support/knob.rs` and `tests/memory_ratchet.rs` are gone whole, and `regalloc/mod.rs` is the three `mod` lines the selection allocator needs. xtask's `IsaLevel` is `name`, `isa` and `requires` again, and `rust.yaml`'s job timeout is back at 25 minutes.
+  - The register newtypes became the ABI's hardware numbers where selection names one (`x86_64::gpr::{RDX, RSP, RSI, RDI}`, aarch64's `abi::{X0, X1, X2, SP}`), as `u8` constants.
+  - `Placed` stays: it has one impl (`Bound`) now, and is not in §4.1's list. Collapsing it is a rewrite of every encoder's operand reads, for no line it would save.
+  - Tests that needed a hand-picked register (`Gp<Physical>`, `Inst<Physical>`: the per-instruction encoder tests of `x86_64.rs`, `avx2.rs`, `avx512.rs` and `aarch64.rs`, and `emit/mod.rs`'s `muladd_encoding` bytes) go with the stage: a token is minted only by the allocator (§0), so no test can name `ymm12`. The assembler's label tests were rewritten in place against `asm::assemble`; the memory-operand tests against `mem_operand_into`'s hardware numbers; `fused_encodes_to_the_targets_fma` against `compile`, checking the instruction is present on each tier; `backend_op_coverage` sweeps `compile` instead of `emit_plan`. A per-instruction encoder test is not expressible through `compile`, `CompileResult` or `EmitTraffic`; a public encoder observation would be a new API, so none is added.
+  - `ReadHere` (one live variant), `reads_saved` and `loop_state_saved` are deleted with the allocator that used them.
 - **Bytes:** identical (`byte_probe` before and after is the check, not a pin).
 - **Gate:** G and M. `scripts/check-emit-boundary.sh` passes.
 

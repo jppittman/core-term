@@ -1,7 +1,6 @@
 //! A value stays in its register until something needs the register.
 //!
-//! Run on the selection pipeline (every tier's own, or `PIXELFLOW_CODEGEN=selection`),
-//! these fail on an allocator that stores every value to the frame when it is
+//! These fail on an allocator that stores every value to the frame when it is
 //! defined and reloads it at every read. They are written against what a
 //! kernel emits, not against the allocator: its traffic, its frame, and the
 //! numbers it computes.
@@ -10,8 +9,6 @@
 
 use pixelflow_codegen::emit::{CompileResult, CompiledKernel, compile};
 use pixelflow_ir::{ExprArena, ExprId, LatticeShape, OpKind};
-
-include!("support/knob.rs");
 
 /// `build`'s kernel over the lattice coordinates `x` and `y`, compiled at one
 /// point.
@@ -169,17 +166,11 @@ fn constants_are_rematerialized_rather_than_spilled() {
 }
 
 /// `if x < 14 { sin(x) * y } else { exp(y / 8) + sqrt(x) }`, with both arms
-/// worth a branch, joins its value in a register: it costs the memory its two
+/// worth a branch, keeps its value in a register: it costs the memory its two
 /// arms' sum does. An `If` whose result went through the frame would store it
-/// on each path and load it after the join.
-///
-/// The legacy pipeline reserves registers for its guards and spends more on
-/// this kernel, so the comparison is made on the selection pipeline only.
+/// on each path and load it after the blend.
 #[test]
-fn a_guarded_if_joins_in_a_register() {
-    if !selection() {
-        return;
-    }
+fn an_if_keeps_its_value_in_a_register() {
     let arms = |a: &mut ExprArena, x, y| {
         let sine = a.push_unary(OpKind::Sin, x);
         let hot = a.push_binary(OpKind::Mul, sine, y);

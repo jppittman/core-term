@@ -21,8 +21,8 @@
 //!
 //! **A loop carries its hottest values.** The values live into a loop's head
 //! that its reads save the most reloads on, and the loop's own parameters, keep
-//! a register from before the head to the latch ([`plan_carries`], priced as
-//! legacy's carries were and bounded by what a file has beyond a reserve). The
+//! a register from before the head to the latch ([`plan_carries`], priced by
+//! the reloads they save and bounded by what a file has beyond a reserve). The
 //! preheader makes them resident, nothing evicts them inside, and the backward
 //! branch moves each parameter's next value into the parameter's register: a
 //! parallel move, with the value written there in the first place wherever the
@@ -53,7 +53,7 @@
 //! slot is a borrowed offset.
 
 use super::policy::{
-    self, Budget, CARRY_RESERVE, Candidate, EvictionRank, GENERAL_CARRY_RESERVE, ReadHere, Store,
+    self, Budget, CARRY_RESERVE, Candidate, EvictionRank, GENERAL_CARRY_RESERVE, Store,
 };
 use super::resource::{Frame, In, InOut, Leases, Lent, Out, Pool, SlotLease, SlotName};
 use crate::emit::asm::{AsmProgram, Item, Label, Labels};
@@ -1587,7 +1587,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
                 (false, false) => Store::Needed,
             };
             let distance = self.next_read(id).map(|next| next - self.position);
-            (EvictionRank::new(ReadHere::No, store, distance), id)
+            (EvictionRank::new(store, distance), id)
         };
         let victim = self
             .held

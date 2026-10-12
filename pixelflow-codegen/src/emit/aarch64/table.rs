@@ -1,7 +1,7 @@
 //! The AArch64 operation vocabulary: the enums whose discriminants are the
 //! opcodes, the memory operands and the sizes their immediates scale by.
 //!
-//! The instructions themselves are [`Inst`]'s arms, grouped by their algebraic
+//! The instructions themselves are `Inst`'s arms, grouped by their algebraic
 //! morphism:
 //! - [`Alu`]: $V \times V \to V$
 //! - [`Lanewise`]: $V \to V$, and the horizontal reductions $V \to S$
@@ -9,16 +9,14 @@
 //! Magic hex opcodes live strictly on the enums below, and on the arms of
 //! `Inst::encode` whose words carry no operation to choose.
 
-use super::Inst;
-use crate::emit::{AsmInsn, Integer, Physical, Pointer, PtrReg, Rebind, Selected, Stage};
-use alloc::vec::Vec;
+use crate::emit::{Integer, Pointer, Rebind, Selected, Stage};
 
 // =============================================================================
 // Algebraic Instruction Shapes
 // =============================================================================
 
 /// 12-bit unsigned immediate for AArch64 arithmetic instructions: a value the
-/// field holds, so [`Inst::encode`] needs no mask.
+/// field holds, so `Inst::encode` needs no mask.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(in crate::emit) struct Imm12(u16);
 
@@ -96,8 +94,6 @@ pub(super) const X_BYTES: u32 = 8;
 pub(super) const S_BYTES: u32 = 4;
 /// The largest value a 12-bit scaled immediate holds.
 pub(super) const MAX_IMM12: u32 = 4095;
-/// The largest 16-byte-aligned displacement `add`'s own 12-bit immediate holds.
-pub(super) const MAX_ADD_IMM: u32 = 4080;
 
 /// An address spelled `[base, #offset]` — the scaled-immediate addressing mode.
 ///
@@ -159,71 +155,5 @@ impl MemIndexed<Selected> {
             base: f.read(self.base),
             index: f.read(self.index),
         }
-    }
-}
-
-impl Mem<Physical> {
-    /// `self`, or `[ip0]` after the adds that compute it when the offset is
-    /// past the 12-bit scaled immediate of an `access`-byte transfer.
-    pub(super) fn near(self, code: &mut Vec<u8>, access: u32, ip0: PtrReg) -> Self {
-        if self.scaled(access) > MAX_IMM12 {
-            return address_in_ip0(code, self, ip0);
-        }
-        self
-    }
-}
-
-/// Rewrite `addr` as `[ip0]`, computing `base + offset` into `ip0` first.
-///
-/// The fallback for a displacement past the 12-bit scaled immediate — a spill
-/// frame deeper than 64 KiB. `add`'s immediate is 12 bits too, so a large
-/// displacement takes several of them.
-fn address_in_ip0(
-    code: &mut Vec<u8>,
-    Mem { base, offset }: Mem<Physical>,
-    ip0: PtrReg,
-) -> Mem<Physical> {
-    let mut remaining = offset;
-    let first = remaining.min(MAX_ADD_IMM);
-    Inst::AddImm {
-        dst: ip0,
-        src: base,
-        imm: Imm12::new(first),
-    }
-    .emit_into(code);
-    remaining -= first;
-    while remaining > 0 {
-        let chunk = remaining.min(MAX_ADD_IMM);
-        Inst::AddImm {
-            dst: ip0,
-            src: ip0,
-            imm: Imm12::new(chunk),
-        }
-        .emit_into(code);
-        remaining -= chunk;
-    }
-    Mem {
-        base: ip0,
-        offset: 0,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn add_i64_encodes_an_immediate() {
-        let mut code_imm = Vec::new();
-        Inst::AddImm {
-            dst: PtrReg(0),
-            src: PtrReg(1),
-            imm: Imm12::new(42),
-        }
-        .emit_into(&mut code_imm);
-        assert_eq!(
-            code_imm,
-            (0x9100_0000u32 | (42 << 10) | (1 << 5)).to_le_bytes()
-        );
     }
 }
