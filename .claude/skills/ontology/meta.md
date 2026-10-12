@@ -27,7 +27,6 @@
   - The selector's fold (`emit/select.rs`) branching on
     `monoid != SEQ`, and `Fold::combine_op` (`pixelflow-ir/src/fold.rs`) as
     "one narrow door".
-  - Ownership's "no arm owns a root" (`program/ownership.rs`).
   - `Rules::tabulation` in `lower_dwrt` (`pixelflow-ir/src/passes.rs`; see
     Dwrt).
 

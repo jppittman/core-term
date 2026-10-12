@@ -98,25 +98,29 @@
 
 ### Root. Homonym
 
-- **Is:** a scope's roots are "the values it computes for the scopes inside
-  it: placed here, by the outermost scope binding every binder the value
-  depends on". A fold's binder and accumulator are its roots. So are
-  constants and `Context` pointers. Other senses: a kernel's root, the arena
-  node a `Kernel` names; and a candidate's match root, its e-class.
+- **Is:** what a scope computes for the scopes inside it: a sibling fold's
+  accumulator, a constant, a `Context` pointer. Derived, not stored: the
+  defs of a scope that a fold inside it names in `ScopeFold::outer`, each
+  computed by the outermost scope binding every binder it depends on. Other
+  senses: a kernel's root, the arena node a `Kernel` names; and a candidate's
+  match root, its e-class.
 - **Is not:** reserved by fiat. Not in the schedule of the scopes inside,
   which hold only their own definitions (`ScopeFold::outer` names what they
-  read from outside). Not a value with zero reads.
-- **Follows:** every root is carried or parked by one ranking. A root's
-  handoff counts as a read at its definition. An arm may own a root when it
-  owns every scope that reads it (a-glyph-is-a-formula §4.3, confirmed
-  "still needed" by an-integral §6.6).
-- **Lives:** `ScopeRegion::roots`, `ScopeFold::roots`
-  (`pixelflow-codegen/src/program/mod.rs`), `place_roots` (`program/scopes.rs`).
-  Selection has no root or park of its own: a value live into a loop's head
-  is carried in a register or stored and dropped there (`plan_carries`,
-  `emit/regalloc/local.rs`). Today
-  `program/ownership.rs` says "A scope's root is read by the scope itself,
-  so no arm owns it", which contradicts the arm rule.
+  read from outside). Not a value with zero reads. Not pinned to its scope: a
+  loop reads its roots at its `Reduce` (`FoldReads`), and a root is owned
+  like any value, by the lowest common ancestor of its readers' regions.
+- **Follows:** an arm owns a root when it owns every scope that reads it
+  (a-glyph-is-a-formula §4.3, an-integral §6.6): a batch that skips the arm
+  computes none of it. That is sound because a fold's `outer` is closed —
+  what it reads from outside, its parent defines ahead of the fold or reads
+  from outside in turn, and it reads nothing it does not define or name
+  there — which `lay_out` asserts.
+- **Lives:** `ScopeFold::outer` (`pixelflow-codegen/src/program/mod.rs`),
+  `place_roots` and `lay_out` (`program/scopes.rs`), `FoldReads`
+  (`program/guards.rs`). Selection has no root or park of its own: a value
+  live into a loop's head is carried in a register or stored and dropped
+  there (`plan_carries`, `emit/regalloc/local.rs`). The `roots` fields were
+  deleted with ownership's "no arm owns a root" pin, their one reader.
 
 ### Hoist (LICM)
 
@@ -152,12 +156,17 @@
   mask.
 - **Follows:** nothing inside a scope relocates a parked value, so head
   reconciliation stays dead. "A skipped region leaves zero in its parks.
-  Never a mask." That rule is dissolved today, because no arm owns a root.
-  If arms come to own roots (see Root), the zero-park rule comes back with
-  them.
+  Never a mask." (demand §7, one-conditional §9) is retired: arms own roots,
+  and nothing reads what a skipped arm left behind. An arm-owned value is
+  read only inside the arm's block, which one branch skips whole. Its life,
+  its slot's lease and its store end inside the block, a loop's exit store
+  included, so the join after the arm never holds it. The `If` reads the
+  skipped arm's result only through a bitwise blend that takes no lane from
+  it (selection §0.12).
 - **Lives:** deleted with the legacy allocator (`NestAllocation::parks`,
-  `Allocation::park`); `place_roots` (`program/scopes.rs`) still places a
-  root in its scope; a-surviving-reduce-is-a-loop §3a (JP: "Register
+  `Allocation::park`); `place_roots` (`program/scopes.rs`) removes a root
+  from the folds that read it and names it in their `outer`;
+  a-surviving-reduce-is-a-loop §3a (JP: "Register
   allocation is the job of the register allocator"), R1; demand §2 "Parks";
   one-conditional §4.
 
@@ -394,7 +403,7 @@
   with me". Not a `KernelKey` field (G1/G2, retired).
 - **Follows:** what skipping saves is everything the arm owns. Hoisting must
   not strip exclusivity, which is a DAG fact computed before partitioning.
-  An arm may own a root when it owns every scope that reads it (see Root).
+  An arm owns a root when it owns every scope that reads it (see Root).
 - **Lives:** `pixelflow-codegen/src/program/ownership.rs` (#1311),
   `program/layout.rs` (#1312, #1313; `Flow::of`: an `If`'s arms go
   immediately before it), `program/guards.rs` (`FoldReads`);
@@ -418,9 +427,9 @@
   retired node equalled `If` "only for a batch-uniform mask"; retired
   2026-10-05, G3 withdrawn).
 - **Follows:** a guard's mask is read at the guard site, so liveness covers
-  it. A skipped arm leaves zero in its parks. A runtime guard is a symptom:
-  fold it into a type wherever the wrong value would be silently
-  representable.
+  it. A skipped arm leaves nothing anyone reads (see Park). A runtime guard
+  is a symptom: fold it into a type wherever the wrong value would be
+  silently representable.
 - **Lives:** `pixelflow-codegen/src/program/{guards,layout}.rs`, `Flow`
   and `ArmBlock` (`program/mod.rs`); `retired_axis` checked in `compile`
   (`pixelflow-codegen/src/pipeline.rs`); `FastMathGuard`

@@ -9,9 +9,10 @@
 //! **Where a block goes.** Every value stays in the order it was constructed,
 //! within the block that owns it. An `If`'s earning arms go immediately before
 //! the `If`, the true arm first. That is always after everything an arm reads:
-//! an arm-owned value is read only inside its arm or by its `If`, so what it
-//! reads from the region around it was constructed before it, hence before the
-//! `If`; and the mask is read by the `If`. The same holds one level up for
+//! an arm-owned value is read only inside its arm, by a loop whose `Reduce` the
+//! arm holds, or by its `If`, so what it reads from the region around it was
+//! constructed before it, hence before the `If`; and the mask is read by the
+//! `If`. The same holds one level up for
 //! anything the arm's own region owns, since its block goes before its own
 //! `If`.
 //!
@@ -21,14 +22,14 @@ use alloc::vec::Vec;
 
 use crate::program::guards::FoldReads;
 use crate::program::ownership::{Arm, Ownership};
-use crate::program::{ArmBlock, Def, Flow, Item, ValueId};
+use crate::program::{ArmBlock, Def, Flow, Item};
 
 impl Flow {
     /// The flow of `schedule`, from the ownership of its values.
     ///
-    /// `external` and `folds` are as for [`Ownership::of`].
-    pub(super) fn of(schedule: &[Def], external: &[ValueId], folds: &FoldReads) -> Self {
-        let own = Ownership::of(schedule, external, folds);
+    /// `folds` is as for [`Ownership::of`].
+    pub(super) fn of(schedule: &[Def], folds: &FoldReads) -> Self {
+        let own = Ownership::of(schedule, folds);
         let mut owns = alloc::vec![false; own.regions().len()];
         for pos in 0..schedule.len() {
             owns[own.region_of(pos).0] = true;
@@ -75,7 +76,7 @@ impl Flow {
 mod tests {
     use super::*;
     use crate::program::ownership::Positions;
-    use crate::program::{IfArm, ScheduledOp};
+    use crate::program::{IfArm, ScheduledOp, ValueId};
     use pixelflow_ir::kind::OpKind;
 
     /// The positions of the defs under `items`, nested arms included, in the
@@ -143,11 +144,11 @@ mod tests {
     /// arm owns — no stranger inside it, nothing the arm owns outside it; and
     /// an `If`'s earning arms run immediately before it, the true arm first.
     fn laid_out(schedule: &[Def]) -> (Flow, Vec<u64>) {
-        laid_out_with(schedule, &[], &FoldReads::default())
+        laid_out_with(schedule, &FoldReads::default())
     }
 
-    fn laid_out_with(schedule: &[Def], roots: &[ValueId], folds: &FoldReads) -> (Flow, Vec<u64>) {
-        let flow = Flow::of(schedule, roots, folds);
+    fn laid_out_with(schedule: &[Def], folds: &FoldReads) -> (Flow, Vec<u64>) {
+        let flow = Flow::of(schedule, folds);
         let mut order = Vec::new();
         run(&flow, &flow.items, &mut order);
         assert_eq!(order.len(), schedule.len(), "a flow runs every def once");
@@ -158,7 +159,7 @@ mod tests {
             !in_order || reads_follow(&order, schedule, folds),
             "a read runs before the value it reads: {order:?}"
         );
-        let own = Ownership::of(schedule, roots, folds);
+        let own = Ownership::of(schedule, folds);
         // What an arm owns, by position.
         let owned = |arm: &Arm| -> Vec<usize> {
             (0..schedule.len())
@@ -380,9 +381,7 @@ mod tests {
         for seed in 0..300 {
             let len = 20 + (seed as usize % 40);
             let schedule = random_schedule(seed, len);
-            let roots: Vec<ValueId> = alloc::vec![ValueId((len - 1) as u64)];
-            let folds = FoldReads::default();
-            laid_out_with(&schedule, &roots, &folds);
+            laid_out_with(&schedule, &FoldReads::default());
         }
     }
 
@@ -426,7 +425,7 @@ mod tests {
         let folds = FoldReads::new(&schedule, [(ValueId(5), [ValueId(1)])]);
 
         let (blind, _) = laid_out(&schedule);
-        let (seen, values) = laid_out_with(&schedule, &[], &folds);
+        let (seen, values) = laid_out_with(&schedule, &folds);
         assert_eq!(under(&blind, 0).len(), 3, "the arm owned `W` unseen");
         assert_eq!(under(&seen, 0).len(), 2, "`W` is not the arm's");
         assert!(
@@ -450,7 +449,7 @@ mod tests {
             def(7, ScheduledOp::Binary(OpKind::Add, ValueId(6), ValueId(1))),
         ];
         let folds = FoldReads::new(&schedule, [(ValueId(4), [ValueId(3)])]);
-        let (_, values) = laid_out_with(&schedule, &[], &folds);
+        let (_, values) = laid_out_with(&schedule, &folds);
         assert!(at(&values, 3) < at(&values, 4), "{values:?}");
     }
 
