@@ -341,8 +341,8 @@
   only policy". Its denotation is `cost(E) = analytic(E) + residual(E)`,
   with `analytic = Σ cycles(op)·trips(level(op))`, where the level is a
   property of the *chosen* nodes. A fold is priced by one formula,
-  `fold_cost = len·body + (len−1)·combine`, used by the extractor (D2). The proposed price (M14) has the arbiter price
-  each settled term "by what codegen executes, with one rule for kernel and
+  `fold_cost = len·body + (len−1)·combine`, used by the extractor (D2). The
+  proposed price (M14) has the arbiter price each settled term "by what codegen executes, with one rule for kernel and
   lattice folds alike".
 - **Is not:**
   - A learned total-cost predictor: that shape tied the table and was

@@ -402,8 +402,8 @@
 - **Is:** five senses:
   1. A **guard clause**, the strongest fold.
   2. An **`If` guard**: the branch that skips an arm's owned block when a
-     batch's mask is uniform (`IfGuard`). Every arm with work of its own has
-     one; the `If` is a blend either way.
+     batch's mask is uniform (an `ArmBlock` of the scope's `Flow`). Every arm
+     with work of its own has one; the `If` is a blend either way.
   3. A **runtime guard**: a check "defending what a type should have made
      unrepresentable" (`retired_axis` in `emit::compile`).
   4. The retired IR node `ExprNode::Guard { mask, on, off }`, and D7's open
@@ -418,8 +418,8 @@
   it. A skipped arm leaves zero in its parks. A runtime guard is a symptom:
   fold it into a type wherever the wrong value would be silently
   representable.
-- **Lives:** `pixelflow-codegen/src/program/{guards,layout}.rs`, `IfGuard`
-  (`program/mod.rs`); `retired_axis` checked in `compile`
+- **Lives:** `pixelflow-codegen/src/program/{guards,layout}.rs`, `Flow`
+  and `ArmBlock` (`program/mod.rs`); `retired_axis` checked in `compile`
   (`pixelflow-codegen/src/pipeline.rs`); `FastMathGuard`
   (`pixelflow-core/src/fastmath.rs`); emit-should-just-emit status
   (2026-10-05); CLAUDE.md "Denote before you build".

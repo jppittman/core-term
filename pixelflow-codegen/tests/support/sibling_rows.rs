@@ -269,9 +269,8 @@ pub fn binary_ops() -> (ExprArena, ExprId) {
     (a, root)
 }
 
-/// The shifts, the fused multiply-add and a blend that is not worth a branch:
-/// `Shl` and `Shr` by an immediate, `MulAdd`, and an `If` whose arms are a
-/// multiply and an add.
+/// The shifts, the fused multiply-add and a small `If`: `Shl` and `Shr` by an
+/// immediate, `MulAdd`, and an `If` whose arms are a multiply and an add.
 ///
 /// `to_float(to_int(p) << 3 >> 2) · y + x`, blended with `x·2` and `y + 1`
 /// by `x < y`
@@ -381,8 +380,8 @@ fn deep() -> (ExprArena, ExprId) {
 /// folds exist (a remainder alone; a main alone; both), and each other kernel
 /// where both exist. After them, the coverage rows: every op the backends owe,
 /// every way a kernel reads memory, and a frame past what NEON addresses
-/// directly, all at the width with a remainder. The names are the byte pins',
-/// and the traffic pins'.
+/// directly, all at the width with a remainder. The names are the ones
+/// `byte_probe` prints and the traffic tests report.
 pub const TABLE: [Row; 11] = [
     Row {
         name: "glyph_like_w1",

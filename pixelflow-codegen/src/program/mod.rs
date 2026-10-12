@@ -120,9 +120,8 @@ pub(crate) enum ScheduledOp {
     /// the body's variance up (`Reduce`'s own result is the body's variance
     /// with the binder's own bit removed) and so `scopes::extract_folds` can find
     /// the body's closure; the emitter never resolves it as an operand —
-    /// the loop's result comes from `regalloc::Allocation::opens_at`
-    /// naming the [`Scope::Fold`] this def opens, not from this
-    /// `ValueId`.
+    /// the loop's result comes from the loop selection opens for the
+    /// [`Scope::Fold`] this def opens, not from this `ValueId`.
     Reduce(Fold, ValueId),
 }
 
@@ -192,8 +191,8 @@ pub(crate) struct ScopeRegion {
 pub(crate) struct ScopeFold {
     /// The scope whose schedule holds this loop's def.
     pub(super) parent: Scope,
-    /// Which def of `parent` — the `Reduce` this is the body of.
-    pub(super) at: usize,
+    /// The `Reduce` def of `parent` this is the body of.
+    pub(super) reduce: ValueId,
     /// Values this fold computes for the scopes inside it.
     pub(super) roots: Vec<ValueId>,
     /// Values an enclosing scope computes that this fold reads: what

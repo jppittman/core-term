@@ -592,8 +592,9 @@ const ISA_LEVELS: &[IsaLevel] = &[
         requires: &["avx2", "fma"],
     },
     IsaLevel {
-        // DQ, not just F: a comparison's mask is widened with `vpmovm2d`,
-        // which is AVX-512DQ, and the EVEX float logicals are DQ too. An
+        // DQ, not just F: a comparison's mask lane read as bits is widened
+        // with `vpmovm2d`, which is AVX-512DQ, and the EVEX float logicals
+        // are DQ too. An
         // AVX-512F-only part (Knights Landing) would take an
         // illegal-instruction fault on any kernel containing a comparison,
         // so probing for F alone would "support" a level that cannot run —

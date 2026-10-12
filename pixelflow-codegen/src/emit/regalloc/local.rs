@@ -170,8 +170,8 @@ struct Life {
     /// placed only where a read needs it ([`IsaBackend::rematerializable`]): an
     /// index into the scan's instructions.
     remat: Option<usize>,
-    /// Whether its definition is one of those, known before the scan: such a
-    /// value is never stored, so it needs no slot.
+    /// Whether its definition can be placed again, known before the scan: such
+    /// a value is never stored, so it needs no slot.
     recompute: Recompute,
 }
 
@@ -179,11 +179,12 @@ struct Life {
 #[derive(Clone, Copy)]
 enum Recompute {
     No,
-    /// It reads nothing: `Zero`, `Ones`.
+    /// It reads no register: a zero, an all-ones, an immediate, an x86
+    /// RIP-relative pool load.
     Leaf,
-    /// It reads one value: a pool load reads the pool's base. A read of the
-    /// value is a read of that too, because placing the definition again reads
-    /// it.
+    /// It reads one value: an aarch64 pool load reads the pool's base. A read
+    /// of the value is a read of that too, because placing the definition
+    /// again reads it.
     Reads(ValueName),
 }
 

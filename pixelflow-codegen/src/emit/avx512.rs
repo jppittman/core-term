@@ -1061,15 +1061,6 @@ impl X86 for Avx512 {
     }
 }
 
-/// The `Lane` a block parameter of this class is.
-fn lane_of_class(param: ValueName) -> Lane {
-    match param.class {
-        ClassId::Vector => Lane::Vector(param.typed()),
-        ClassId::Opmask => Lane::Opmask(param.typed()),
-        class => unreachable!("{class:?} holds no lane"),
-    }
-}
-
 impl IsaBackend for Avx512 {
     type Inst<S: Stage> = Op<S>;
     type Constant = u32;
@@ -1255,7 +1246,7 @@ impl IsaBackend for Avx512 {
     }
 
     fn param_lane(param: ValueName) -> Lane {
-        lane_of_class(param)
+        Lane::Vector(param.typed())
     }
 
     fn context(

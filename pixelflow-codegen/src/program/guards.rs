@@ -37,14 +37,11 @@ use crate::program::{Def, ScheduledOp, ValueId};
 /// transitive by construction. Every named id is an edge, a leaf the body
 /// rebuilds for itself included: that over-approximates (such a leaf is kept
 /// out of an arm the fold does not run in).
+///
+/// Keyed by a loop's `Reduce` def; the value is the ids of this scope's that
+/// the loop reads.
 #[derive(Default)]
-pub(super) struct FoldReads(BTreeMap<ValueId, OpenedFold>);
-
-/// One loop a scope opens, as that scope sees it.
-struct OpenedFold {
-    /// This scope's values the loop reads ([`FoldReads`]).
-    reads: Vec<ValueId>,
-}
+pub(super) struct FoldReads(BTreeMap<ValueId, Vec<ValueId>>);
 
 impl FoldReads {
     /// The folds opened in `scope`, each given as its `Reduce` def's
@@ -83,7 +80,7 @@ impl FoldReads {
                     .into_iter()
                     .filter(|value| here.get(value.0 as usize).copied().unwrap_or(false))
                     .collect();
-                (reduce, OpenedFold { reads })
+                (reduce, reads)
             })
             .collect();
         Self(opened)
@@ -99,7 +96,7 @@ impl FoldReads {
         op: &'a ScheduledOp,
     ) -> impl Iterator<Item = ValueId> + 'a {
         let fold: &[ValueId] = match op {
-            ScheduledOp::Reduce(..) => self.0.get(&value).map_or(&[], |f| f.reads.as_slice()),
+            ScheduledOp::Reduce(..) => self.0.get(&value).map_or(&[], Vec::as_slice),
             _ => &[],
         };
         crate::program::all_operands(op).chain(fold.iter().copied())

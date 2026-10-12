@@ -2020,13 +2020,13 @@ mod tests {
             }
         }
 
-        /// The same, with the mask itself spilled.
+        /// The same, under pressure on the mask.
         ///
-        /// Getting the mask to be the value that spills takes care: eviction
-        /// is Belady, so the victim is whatever is used farthest out. The mask
-        /// is read only at the `If`, and the [`filler`] between fills the
-        /// pool — so the mask is the farthest-out live value there, and it is
-        /// the one to go.
+        /// Eviction goes by distance, so the victim is whatever is read
+        /// farthest out. The mask is read only at the `If`, and the [`filler`]
+        /// between fills the pool — so the mask is the likeliest to go. The
+        /// traffic cannot say which value was stored; it says the nest stored
+        /// one, and the values are right on both mask paths.
         #[test]
         fn a_guarded_if_survives_a_spilled_mask() {
             let mut a = ExprArena::new();
@@ -2051,7 +2051,7 @@ mod tests {
             let result = compile(&a, root, POINT).expect("a spilled mask compiles");
             assert!(
                 result.traffic.scopes.iter().map(|s| s.stores).sum::<u64>() > 0,
-                "nothing spilled, so the spilled-mask path this test exists for is never reached"
+                "nothing was stored, so the filler no longer puts the nest under pressure"
             );
 
             for &(px, py) in &[(3.0f32, 2.0f32), (-2.0, 0.5), (0.5, -1.0)] {
@@ -2065,8 +2065,8 @@ mod tests {
             }
         }
 
-        /// A value spilled before a guarded arm, read again inside it, and read
-        /// once more after it.
+        /// A value under pressure before a guarded arm, read again inside it,
+        /// and read once more after it.
         ///
         /// The arm is code a uniform mask skips, so a register a read inside it
         /// reloads is one the skipped path never loaded: the value read after
@@ -2088,9 +2088,8 @@ mod tests {
             // Shared-base arms, so neither arm's leaves land outside it and
             // the arms' own nodes stay adjacent (see `guarded_if`).
             let base = a.push_binary(OpKind::Mul, mid, y);
-            // The true arm reads `split` twice: one read would be reloaded
-            // into a scratch and kept nowhere, which is not the case under
-            // test.
+            // The true arm reads `split` twice: a reload inside the arm is
+            // then read again, which is the case under test.
             let t1 = a.push_binary(OpKind::Mul, base, split);
             let t2 = a.push_binary(OpKind::Add, t1, split);
             let t3 = a.push_binary(OpKind::Mul, t2, base);
@@ -2106,7 +2105,7 @@ mod tests {
             let result = compile(&a, root, POINT).expect("a split range compiles");
             assert!(
                 result.traffic.scopes.iter().map(|s| s.stores).sum::<u64>() > 0,
-                "the value under test stayed in a register, so nothing is split"
+                "nothing was stored, so the filler no longer puts the nest under pressure"
             );
             // x < 0 is the all-false mask: the true arm — and the reload
             // inside it — never runs, and the read after it must still be the

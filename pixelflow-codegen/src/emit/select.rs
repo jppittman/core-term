@@ -114,7 +114,7 @@ impl<B: IsaBackend> Selector<'_, B> {
                 continue;
             };
             match item {
-                Item::Def(at) => self.definition(scope, at, &schedule[at])?,
+                Item::Def(at) => self.definition(scope, &schedule[at])?,
                 Item::Arm(arm) => {
                     let arm = &flow.arms[arm];
                     let cond = self.lookup(arm.mask);
@@ -128,9 +128,9 @@ impl<B: IsaBackend> Selector<'_, B> {
         Ok(result)
     }
 
-    /// Select the def at position `at` of `scope`'s schedule, and bind the
-    /// value it defines.
-    fn definition(&mut self, scope: Scope, at: usize, def: &Def) -> Result<(), CompileError> {
+    /// Select `def`, a def of `scope`'s schedule, and bind the value it
+    /// defines.
+    fn definition(&mut self, scope: Scope, def: &Def) -> Result<(), CompileError> {
         let scoped = self.scoped;
         // A sequence and a binder's alias select nothing; a `Reduce`
         // counts once it is known to open a loop; a constant counts only
@@ -169,7 +169,7 @@ impl<B: IsaBackend> Selector<'_, B> {
                 let j = scoped
                     .folds
                     .iter()
-                    .position(|f| f.parent == scope && f.at == at)
+                    .position(|f| f.parent == scope && f.reduce == def.value)
                     .unwrap_or_else(|| panic!("{:?} opens no fold in its scope", def.value));
                 self.scheduled[scope_ix(scope)] += 1;
                 match self.fold(scope, j, (*fold, *body))? {
