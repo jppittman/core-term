@@ -139,4 +139,21 @@ pub(crate) mod tests {
     ) -> Vec<crate::program::Def> {
         super::lower(a, root, shape, lanes).expect("legalize")
     }
+
+    /// The backstop for an arena that never became a `Kernel`.
+    /// `Kernel::from_parts` refuses an arena naming a retired axis
+    /// (`pixelflow-ir`'s `an_arena_naming_a_retired_axis_is_not_a_kernel`),
+    /// but `compile` takes a bare arena: the benchmark harnesses and corpus
+    /// tools call it directly, and a rewrite rule that instantiated one of
+    /// its own metavariables would hand it one past that refusal. So the
+    /// arena goes straight in here, and the refusal is this function's own.
+    #[test]
+    #[should_panic(expected = "emit::compile: the arena names Var")]
+    fn an_arena_naming_a_retired_axis_never_reaches_the_emitter() {
+        let mut a = pixelflow_ir::arena::ExprArena::new();
+        let x = a.push_var(0);
+        let z = a.push_var(2);
+        let root = a.push_binary(pixelflow_ir::OpKind::Add, x, z);
+        let _refused = super::compile(&a, root, LatticeShape::new([4, 4]));
+    }
 }
