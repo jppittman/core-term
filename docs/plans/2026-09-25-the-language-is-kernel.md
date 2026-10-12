@@ -1179,9 +1179,29 @@ and the builder never becomes the font's surface.
     28.5 and 47.3. Content and font do not move it (every cell gathers the
     same four taps). A zoom from 16 to 18 px costs 152 ms on AVX-512 and
     162 ms on AVX2, the atlas's re-bake most of it; C1's per-count programs
-    compile in 1.2–1.5 s at a tile size (3.8 s cold), so the per-cell
-    path's zoom is about 8× today's unless it is warmed differently (C2's
-    D-7).
+    compile in 0.9–1.5 s at a new tile size (3.2–3.8 s cold), so the
+    per-cell path's zoom is about 8× today's unless that compile shrinks or
+    is warmed differently (C2's D-7). The font itself never recompiles: its
+    data is uniforms, and a zoom pays only for the new extent.
+  - **Where a per-count compile's time goes (2026-10-12, AVX-512).** The
+    29 programs ASCII needs hold 528 pieces, about 100 IR nodes and 1.5 KB
+    of code each (n=40: 4,152 nodes, 62 KB). About 96% of compile time is
+    the e-graph, not code generation:
+
+    | all 29 programs | e-graph | code generation |
+    |---|---|---|
+    | cold, 16 px | 3.2–3.8 s | 0.12–0.14 s |
+    | new size, 32 px (saturation cached) | 0.8–0.9 s | 0.13–0.14 s |
+
+    Each piece reads its own uniform slots, so it is a distinct subterm:
+    the same piece is saturated and extracted 528 times. Extraction is not
+    cached per (structure, size) and costs about 6 ms a call whatever its
+    size. The per-sample loop at n=40 is 1,695 instructions a 16-lane batch,
+    943 of them loads, about 24 of every 42 per piece reloading a value
+    parked once per collapse (978 parked). Compiled with no e-graph it is
+    2,095 instructions and 824 loads, 740 parked: the e-graph removes 19%
+    of instructions and adds 14% of loads. Frame time with and without it
+    is not measured.
 - **Recommendation.**
   - Measure the font program before deleting the atlas (C2's gate).
   - If 200×60 at 32 px misses 16.7 ms, bring JP the numbers and the two

@@ -24,10 +24,11 @@
   - [selection-is-a-phase](2026-10-08-selection-is-a-phase.md) §0.12, §0.13, D2 and D3. This plan generalizes §0.13 (§7A.5). Selection, the allocator and the per-ISA emitters are not changed, apart from one count (§3.9).
 - **Builds on β** (#1368, "an arm owns the roots only its loops read"). JP approved β with α (#1367) and γ. It was CL1 in an earlier draft of this plan, and CL1 is now the instrument (§10). β:
   - deleted `Ownership::of`'s `external` pin, the `roots` fields of `ScopeRegion` and `ScopeFold`, and `place_roots`' computing-scope search;
-  - added `ScopedSchedule::assert_closed` (`program/scopes.rs:163-224`), which `lay_out` runs per scope;
+  - added `ScopedSchedule::assert_closed` (`program/scopes.rs:80`), which `lay_out` ran per scope and, since #1371, the `Own` pass runs (`ownership.rs:89`);
   - retired the zero-park rule, on an argument this plan makes false (§7A.2);
   - grew `pixelflow-codegen/src` by 21 production lines and 96 in-file test lines.
-- **Comes after γ.** JP approved the series α, β, γ, then this plan. γ carries the arena's variance into codegen, deletes `schedule_variance` and types `ScheduledOp::Var(Binder)`. Nothing here needs γ, but nothing here reorders the series.
+- **Comes after γ** (#1372). JP approved the series α, β, γ, then this plan. γ carried the arena's variance into codegen, deleted `schedule_variance` and typed `ScheduledOp::Var(Binder)`. Nothing here needs γ, but nothing here reorders the series.
+- **Rebased on #1371**, the passes as one typed pipeline (`Legalize -> Lower -> Nest -> Own -> Layout -> Select -> Allocate -> Assemble`). `Own` is the ownership pass this plan changes, and `Flow::of` already takes an `Ownership` rather than computing one, so that item of CL2 is done. What CL2 still changes is the order: `Own` is a `ScopedSchedule::analyze` (`program/mod.rs:242-264`), one independent call per scope; this plan makes it children-first, handing each scope's `Demand` to its parent.
 - **Departs from recorded decisions.** Each is named in §7 with its source. None is undone silently.
 
 **The request.** The parallel track names the work: *"D1: placement that reads demand. It puts a piece's row work inside its row-scope band guard. That is 79% of U_g's executed work"* (one-pipeline §5, :922-923). JP approved this write-up on 2026-10-12, in the series α, β, γ, then this plan. §1.1 says what the 79% does and does not measure.
@@ -85,7 +86,7 @@ The denotation (§2) was written before the placement code was reread. This tabl
 
 | part of the denotation | at `7acdcaee` |
 |---|---|
-| variance `var(v)` | `schedule_variance` (`program/scopes.rs:21-88`), a second copy of the arena's transfer function. γ deletes it. It is orthogonal to this plan. |
+| variance `var(v)` | `Def::variance`, carried from `compute_arena_variance` since γ (#1372), which deleted `schedule_variance`, the second copy of the arena's transfer function. It is orthogonal to this plan. |
 | scope by variance | `extract_folds_bound_by` keeps in a scope what its variance allows (`scopes.rs:494-497`); `place_roots` removes from a fold what does not name its binder (:266-277). It matches the denotation. It is kept. |
 | demand, within one scope | `Ownership::of` (`ownership.rs:102-165`): one reverse pass, each value owned by the lowest common ancestor of the regions that read it. It matches the denotation, confined to one scope. |
 | demand, across scopes | Nowhere. `FoldReads` stands in for a fold's readers, at the `Reduce`'s own region (`guards.rs:96-106`). A read of a value the scope does not define is dropped (`ownership.rs:124-126`). |
@@ -98,7 +99,7 @@ The denotation (§2) was written before the placement code was reread. This tabl
 
 What the code has that the denotation does not:
 
-- `ScopeFold::outer` (`mod.rs:195-198`) and `ScopeFold::reads` (:205-213). `outer`'s production readers are `reads` and `assert_closed`. `reads`'s only reader is `lay_out`'s `FoldReads` (`scopes.rs:144-145`).
+- `ScopeFold::outer` (`mod.rs:195-198`) and `ScopeFold::reads` (:205-213). `outer`'s production readers are `reads` and `assert_closed`. `reads`'s only reader is `Own`'s `FoldReads` (`ownership.rs:91-96`).
 - `FoldReads::new`'s named-id table and filter (`guards.rs:57-90`), with its admitted over-approximation: "a leaf the body rebuilds for itself … over-approximates" (:39-42).
 - The doc rule "the frame prologue is never guarded", and β's Park argument (§7A.2, §7A.3).
 
@@ -208,7 +209,7 @@ Keying by literal alone, so that two `If`s on one mask share a block, is CL4. It
 
 ### 3.3 Ownership runs children first, and returns its demand
 
-`lay_out` runs the folds in reverse index order, then the body. A parent's index is always below its children's (`attach_fold`'s doc, `scopes.rs:516-518`), so every child is done before its parent. Today it runs the body first, then the folds in index order (`scopes.rs:139`).
+`Own` runs the folds in reverse index order, then the body. A parent's index is always below its children's (`attach_fold`'s doc, `scopes.rs:418-420`), so every child is done before its parent. Today `Own` is a `ScopedSchedule::analyze`, which visits the body first, then the folds in index order, each without the others' results (`mod.rs:242-246`). CL2 gives `Own` a children-first traversal that carries each child's `Demand` to its parent; `analyze` stays as it is for the passes that need no such hand-off.
 
 `Ownership::of` runs one reverse pass per scope, as today, with two changes:
 
@@ -263,9 +264,9 @@ With projected regions keyed by `If`, a block never needs splitting. Every membe
 - **Untested today.** No test builds a value defined in a skippable block and live into a loop after the join. CL2 adds one (§10).
 - **The `Function` doc.** It says "Dominance is relaxed in one way, and only one" (`emit/mod.rs:607-616`). A row-block value read in a column arm on the same literal is not dominated in the CFG either. Selection §2.13 already names the cause: "A correlated branch is not in the CFG" (sel:1194). The doc is restated as the law of §2.6, not extended to a second relaxation. It is a doc comment.
 
-### 3.8 What `lay_out` asserts
+### 3.8 What `Own` and `Layout` assert
 
-In production code, linear, as selection §0.6 asks of an invariant no production input can break (sel:100). `ScopedSchedule::assert_closed` (`scopes.rs:163-224`) is where they live; it is β's, extended rather than joined by a second mechanism. Today `lay_out` runs it before `Flow::of` (`scopes.rs:141`, :146). Checks 2-4 need the ownership tree, the flow and the scope's `Demand`, so CL2 runs it after.
+In production code, linear, as selection §0.6 asks of an invariant no production input can break (sel:100). `ScopedSchedule::assert_closed` (`scopes.rs:163-224`) is where they live; it is β's, extended rather than joined by a second mechanism. Today `Own` runs it before `Ownership::of` (`ownership.rs:89`). Checks 2-4 need the ownership tree, the flow and the scope's `Demand`, so CL2 runs them in `Layout`, after `Flow::of`.
 
 1. **Order.** Every read follows its definition in flow order.
 2. **Nesting.** Every def runs in the block of its own region, and every block is spliced into the block of its parent's nearest owning ancestor. One walk of the flow with a stack of open regions.
@@ -353,7 +354,7 @@ impl Ownership {
 - `Region` (`ownership.rs:43-53`) stays a node of one scope's tree. It gains one way to be made: `under(parent, literal)`, made once and then found.
 - `Arm` (`ownership.rs:55-66`) replaces its `mask` and `arm` fields with one `literal`, so the pair has one home, and `under(ρ, ℓ)` reads it directly. Its list gains the projected regions.
 - `ArmBlock { arm, mask, items }` (`mod.rs:245-255`) is unchanged. It is selection's view of a block: a test and what it skips. Which `If` a literal belongs to is a placement fact that selection never needs, so it stays out of the type selection reads. An arm block and a projected block are one type, and selection never asks which it has (fold before you dispatch).
-- `Flow::of` takes the scope's `Ownership` instead of computing it (`layout.rs:32`). `lay_out` calls `Ownership::of` itself, with the `FoldReads` built from the children's `Demand`, keeps the scope's own `Demand` for its parent, lays out the flow, and then runs `assert_closed`. Children first makes every input exist when it is needed.
+- `Flow::of` already takes the scope's `Ownership` (`layout.rs:46`, #1371). `Own` calls `Ownership::of` children first, with the `FoldReads` built from the children's `Demand`, and keeps the scope's own `Demand` in its `Ownership` for the parent. `Layout` lays out the flow and then runs §3.8's checks. Children first makes every input exist when it is needed.
 
 **What becomes unrepresentable.**
 
@@ -365,7 +366,7 @@ impl Ownership {
 **What stays a loud runtime check**, since a wrong value would panic on the next line rather than be silently representable (CLAUDE.md, "Denote before you build"):
 
 - a mask not bound before its block panics in `Selector::lookup` (`emit/select.rs:382-390`);
-- `lay_out`'s assertions (§3.8), which cover the stale-mask and missed-read cases `lookup` cannot see.
+- §3.8's assertions, which cover the stale-mask and missed-read cases `lookup` cannot see.
 
 **What is not typed, and is not needed here.** Whether a `ValueId` is a mask. The IR has no mask type, and `OpKind::is_bitwise_domain()` stands in for one (CLAUDE.md). That is one reason splitting a `BitAnd` mask into conjunct literals is deferred (§12, Q9).
 
@@ -559,7 +560,7 @@ CL1 names what CL2's gate needs, and builds no more:
 
 **CL2: projection, "an inner literal guards outer work".**
 
-- **Change:** §3.2-§3.9 and §5's CL2 list. `Ownership::of` seeds the accumulating root and returns its `Demand`. `FoldReads` carries the children's. `lay_out` runs children first. Projected regions are keyed by `(If, arm)` and placed before their first reading `Reduce`. `lay_out` asserts §3.8, `assert_closed` restated over `Demand` included. `ScopeTraffic` gains the guarded-op count and `collapse_bench` records it. The `Function` doc is restated as §2.6's law. Nothing else in `emit/` changes.
+- **Change:** §3.2-§3.9 and §5's CL2 list. `Ownership::of` seeds the accumulating root and returns its `Demand`. `FoldReads` carries the children's. `Own` runs children first. Projected regions are keyed by `(If, arm)` and placed before their first reading `Reduce`. `Layout` asserts §3.8, `assert_closed` restated over `Demand` included. `ScopeTraffic` gains the guarded-op count and `collapse_bench` records it. The `Function` doc is restated as §2.6's law. Nothing else in `emit/` changes.
 - **New tests**, in `pixelflow-core/tests/` unless stated, each against a plain-f64 reference, at `WIDTH` and `RAGGED_WIDTH`:
   - the font's shape: a row-only value read only in the arm of a per-batch `If` on a row-uniform mask, on rows all in, all out and mixed;
   - a body value read in the column fold under a uniform mask, collapsed `check_per_call`-style, so a skipped call follows one that ran;
