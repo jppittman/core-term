@@ -218,22 +218,16 @@ impl<B: IsaBackend> Selector<'_, B> {
                     self.lane(LaneOp::MulAdd(a, b, c))?
                 }
                 ScheduledOp::Ternary(OpKind::If, cond, if_true, if_false) => {
-                    let guarded = guards
-                        .iter()
-                        .any(|guard| guard.if_idx == at && guard.has_guarded_arm());
                     let (cond, if_true, if_false) = (
                         self.lookup(*cond),
                         self.lookup(*if_true),
                         self.lookup(*if_false),
                     );
-                    match guarded {
-                        true => self.guarded_if(scope, cond, (if_true, if_false))?,
-                        false => self.lane(LaneOp::Blend {
-                            cond,
-                            if_true,
-                            if_false,
-                        })?,
-                    }
+                    self.lane(LaneOp::Blend {
+                        cond,
+                        if_true,
+                        if_false,
+                    })?
                 }
                 ScheduledOp::Ternary(op, ..) => unimplemented_op(DRIVER, op),
                 ScheduledOp::Context(slot) => {
@@ -391,71 +385,6 @@ impl<B: IsaBackend> Selector<'_, B> {
         };
         B::jump(&mut self.b, to, label);
         self.b.enter(past);
-    }
-
-    /// An `If` with a guarded arm, as blocks:
-    ///
-    /// ```text
-    /// no lane true:   only_false
-    /// no lane false:  only_true
-    /// blend:          the lane-varying path
-    /// join(result)
-    /// ```
-    ///
-    /// An arm a uniform mask skipped did not run, and its value is read only
-    /// on the paths where it did, so each path passes the `If`'s value to the
-    /// join.
-    fn guarded_if(
-        &mut self,
-        scope: Scope,
-        cond: B::Lane,
-        (if_true, if_false): (B::Lane, B::Lane),
-    ) -> Result<B::Lane, CompileError> {
-        let [only_false, only_true, second, blend] = [(); 4].map(|()| self.b.block(&[], scope));
-        let to = |block: &Pending| Target {
-            label: block.label(),
-            args: Vec::new(),
-        };
-        let first = Edges {
-            taken: to(&only_false),
-            next: second.label(),
-        };
-        let dead = |dead| Test { cond, dead };
-        B::branch(&mut self.b, dead(IfArm::True), first);
-        self.b.enter(second);
-        let second = Edges {
-            taken: to(&only_true),
-            next: blend.label(),
-        };
-        B::branch(&mut self.b, dead(IfArm::False), second);
-        self.b.enter(blend);
-        let blended = self.lane(LaneOp::Blend {
-            cond,
-            if_true,
-            if_false,
-        })?;
-        let class = B::lane_name(blended).class;
-        for arm in [if_true, if_false] {
-            assert_eq!(
-                B::lane_name(arm).class,
-                class,
-                "a guarded If's arm is held in another register file than its value, and \
-                 its join takes one: selection has no way to hold a lane in the other file"
-            );
-        }
-        let join = self.b.block(&[class], scope);
-        let result = B::param_lane(join.params()[0]);
-        let into = |lane| Target {
-            label: join.label(),
-            args: alloc::vec![B::lane_name(lane)],
-        };
-        B::jump(&mut self.b, into(blended), only_false.label());
-        self.b.enter(only_false);
-        B::jump(&mut self.b, into(if_false), only_true.label());
-        self.b.enter(only_true);
-        B::jump(&mut self.b, into(if_true), join.label());
-        self.b.enter(join);
-        Ok(result)
     }
 
     fn lane(&mut self, op: LaneOp<B>) -> Result<B::Lane, CompileError> {

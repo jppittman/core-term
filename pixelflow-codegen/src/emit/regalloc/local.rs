@@ -38,10 +38,7 @@
 //! through the arm alone, so the join takes its register from that path; one
 //! some path evicted, or placed again, is read from its slot after the join,
 //! and a reload made inside an arm dies at the arm's end. The slots stay
-//! valid on every path because each is written right after its definition. A
-//! join's parameter ([`Scan::join`]) is in a register too: the first branch to
-//! reach it gives it one, as a loop's entering branch does, and each later
-//! branch moves its argument there.
+//! valid on every path because each is written right after its definition.
 //!
 //! The slots are the second register file. Liveness is intervals in layout
 //! order: a value lives from its definition to its last read, a value defined
@@ -605,7 +602,6 @@ pub(in crate::emit) fn allocate<'m, B: IsaBackend>(
         active: Vec::new(),
         want: BTreeMap::new(),
         edges: BTreeMap::new(),
-        joined: BTreeMap::new(),
         free,
         held,
         used_general: [entry_numbers.ctx, entry_numbers.out, entry_numbers.pitch]
@@ -819,9 +815,6 @@ struct Scan<'f, 'm, B: IsaBackend> {
     /// What each forward branch left for the block it reaches, by block, until
     /// the scan gets there.
     edges: BTreeMap<Label, Vec<Edge>>,
-    /// A forward join's parameter, once a branch has given it a register: its
-    /// block and the register's number.
-    joined: BTreeMap<u64, (usize, u8)>,
     /// The leases nothing holds, by file.
     free: [Vec<Lent<'m, B>>; 4],
     /// The values in a register, by id.
@@ -1192,9 +1185,9 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     /// Pass `target`'s arguments to its parameters. A parameter the loop
     /// carries is in a register: the entering branch gives it one
     /// ([`Self::home`]), and a backward branch moves its argument there. Any
-    /// other is stored to its slot. A join's parameter is in a register too
-    /// ([`Self::join`]). Every argument is in a register before the first one
-    /// is passed, so the moves are a parallel move however they overlap.
+    /// other is stored to its slot. Every argument is in a register before the
+    /// first one is passed, so the moves are a parallel move however they
+    /// overlap.
     fn pass(&mut self, target: &Target, args: &[ValueName]) -> Result<(), CompileError> {
         let params = self.blocks_at[&target.label].1.clone();
         let back = self.blocks_at[&target.label].0 <= self.block;
@@ -1204,10 +1197,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             if arg.id == param.id || !self.lives[param.id as usize].read {
                 continue;
             }
-            let Some(l) = carrying else {
-                self.join(*param, arg, args, self.blocks_at[&target.label].0)?;
-                continue;
-            };
+            let l = carrying.expect("only a loop's head takes parameters");
             let carried = self.plan[l].contains(&param.id);
             match (carried, back) {
                 (true, false) => {
@@ -1240,79 +1230,6 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             true => Ok(self.held.remove(arg.id).expect("an argument is held")),
             false => self.copy_of(arg),
         }
-    }
-
-    /// Pass `arg` to `param`, a parameter of the forward join at block `join`.
-    /// The first branch to reach the join gives `param` its register
-    /// ([`Self::home`]); every later one puts its argument in that register,
-    /// after storing whatever else holds it there.
-    fn join(
-        &mut self,
-        param: ValueName,
-        arg: ValueName,
-        args: &[ValueName],
-        join: usize,
-    ) -> Result<(), CompileError> {
-        let Some(&(_, to)) = self.joined.get(&param.id) else {
-            let lent = self.home(arg, args)?;
-            self.joined.insert(param.id, (join, lent.number()));
-            self.held.insert(param.id, lent);
-            return Ok(());
-        };
-        assert!(
-            self.held.get(param.id).is_none(),
-            "{param:?} is in a register before the branch that passes it its argument"
-        );
-        let file = arg.class.file();
-        let from = self.held.number(arg.id);
-        if from != to {
-            let lent = self.vacate(file, to)?;
-            self.held.insert(param.id, lent);
-            self.move_register(&Move {
-                value: arg,
-                from,
-                to,
-            });
-            return Ok(());
-        }
-        // The argument is in the parameter's register already, and is read
-        // again: it goes to its slot, and the parameter has the register.
-        if self.live_after(arg.id) {
-            self.store_at_definition(arg.id)?;
-        }
-        let lent = self.held.remove(arg.id).expect("an argument is held");
-        self.held.insert(param.id, lent);
-        Ok(())
-    }
-
-    /// The lease of register `number` of `file`, which the value in it, if
-    /// any, gives up: it is stored first when the slot does not hold it.
-    ///
-    /// # Panics
-    /// When the value is one the instruction being placed needs, or a carried
-    /// one inside its loop.
-    fn vacate(&mut self, file: FileId, number: u8) -> Result<Lent<'m, B>, CompileError> {
-        let holder = self
-            .held
-            .iter()
-            .find(|(_, lent)| lent.file() == file && lent.number() == number)
-            .map(|(id, _)| id);
-        if let Some(holder) = holder {
-            assert!(
-                !self.pinned.contains(&holder) && !self.kept(holder),
-                "instruction {} of {:?} needs register {number} of {file:?}, which value {holder} must keep",
-                self.position,
-                self.at
-            );
-            self.store_at_definition(holder)?;
-            let lent = self.held.remove(holder).expect("the holder is held");
-            self.free[file as usize].push(lent);
-        }
-        let bank = &mut self.free[file as usize];
-        let at = bank.iter().position(|lent| lent.number() == number);
-        let lent = bank.swap_remove(at.expect("a register no value holds is free"));
-        self.note_general(&lent);
-        Ok(lent)
     }
 
     /// `lent` is, or is about to be, a value's register: record it in
@@ -1530,10 +1447,6 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             .find(|l| (l.head..=l.latch).contains(&def) && l.latch < self.position);
         if let Some(l) = over {
             return StorePoint::Entry(l.exit);
-        }
-        // A join's parameter is defined where the join begins.
-        if let Some(&(block, _)) = self.joined.get(&value) {
-            return StorePoint::Entry(block);
         }
         let (block, index) =
             self.defined[value as usize].expect("a value in a register was defined");

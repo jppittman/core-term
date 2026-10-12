@@ -34,8 +34,6 @@
     `monoid != SEQ`, and `Fold::combine_op` (`pixelflow-ir/src/fold.rs`) as
     "one narrow door".
   - Ownership's "no arm owns a root" (`program/ownership.rs`).
-  - Layout's per-arm `MISPREDICT_PENALTY_CYCLES` purchase
-    (`program/layout.rs`; see If).
   - `Rules::tabulation` in `lower_dwrt` (`pixelflow-ir/src/passes.rs`; see
     Dwrt).
 
@@ -103,9 +101,5 @@
   that each match a case to read one property should call one method.
 - **Lives:** CLAUDE.md, "Fold before you dispatch" and "New implementation
   of an existing category → trait first"; `docs/STYLE.md` (Code Structure
-  rule 3). Today `docs/STYLE.md` rule 3 and `AGENTS.md` still call the branch
-  around an `If` "not a violation" and something codegen buys ("bought only
-  where the skipped arm outcosts `MISPREDICT_PENALTY_CYCLES`"). That
-  contradicts the If entry. `docs/STYLE.md` also cites
-  `pixelflow-codegen/src/emit/guards.rs`, which was deleted in #1313; the
-  analysis now lives in `program/guards.rs`.
+  rule 3). `docs/STYLE.md` and `AGENTS.md` call the branch around an `If` "not
+  a violation": it changes the work done, never the value.

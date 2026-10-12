@@ -130,7 +130,7 @@ impl ScopedSchedule {
 /// decided for a body or a fold.
 ///
 /// Last because both are questions about the scope's *final* contents: which
-/// arms are worth a branch depends on what the loops the scope opens read from
+/// arms earn a branch depends on what the loops the scope opens read from
 /// it and on the roots it parks for them — a skipped arm would leave a park
 /// unwritten for a loop that runs regardless — and none of that is settled
 /// until [`attach_folds`] and [`place_roots`] have run. The order is *chosen*
@@ -139,26 +139,11 @@ impl ScopedSchedule {
 /// edits a schedule or a table: the allocator reads them as its input and the
 /// emitter branches over the same ones.
 ///
-/// What a loop costs, which decides whether an arm owning it pays for a
-/// branch, is made of the loops inside it ([`guards::FoldReads`]), so the
-/// scopes go innermost first: a fold's index is always above its parent's,
-/// which makes the reverse of nest order a children-before-parents order. A
-/// scope's layout permutes its schedule, and a fold's `at` is a position in
+/// A scope's layout permutes its schedule, and a fold's `at` is a position in
 /// its parent's, so each scope's children are carried to the new order as the
 /// scope is laid out.
 fn lay_out(scoped: &mut ScopedSchedule) {
-    let slot = |scope: Scope| match scope {
-        Scope::Body => 0,
-        Scope::Fold(j) => j + 1,
-    };
-    let mut reads: Vec<guards::FoldReads> = (0..=scoped.folds.len())
-        .map(|_| guards::FoldReads::default())
-        .collect();
-    for scope in (0..scoped.folds.len())
-        .rev()
-        .map(Scope::Fold)
-        .chain(core::iter::once(Scope::Body))
-    {
+    for scope in core::iter::once(Scope::Body).chain((0..scoped.folds.len()).map(Scope::Fold)) {
         let nest = &*scoped;
         let (schedule, roots) = match scope {
             Scope::Body => (&nest.body.schedule, &nest.body.roots),
@@ -168,12 +153,8 @@ fn lay_out(scoped: &mut ScopedSchedule) {
             schedule,
             nest.folds
                 .iter()
-                .enumerate()
-                .filter(|(_, fold)| fold.parent == scope)
-                .map(|(k, fold)| {
-                    let inner = &reads[slot(Scope::Fold(k))];
-                    (schedule[fold.at].value, fold.schedule.as_slice(), inner)
-                }),
+                .filter(|fold| fold.parent == scope)
+                .map(|fold| (schedule[fold.at].value, fold.schedule.as_slice())),
         );
         let layout = Layout::of(schedule, roots, &opened);
         let (ordered, branches) = (layout.apply(schedule), layout.guards);
@@ -191,7 +172,6 @@ fn lay_out(scoped: &mut ScopedSchedule) {
         for fold in scoped.folds.iter_mut().filter(|fold| fold.parent == scope) {
             fold.at = position[fold.at];
         }
-        reads[slot(scope)] = opened;
     }
 }
 

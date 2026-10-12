@@ -1,33 +1,19 @@
-//! An `If` arm that owns a fold (`Reduce`) is worth a branch by what the
-//! fold's loop costs to run: its trip count times its body, plus the combine
-//! per trip.
-//!
-//! `pixelflow-codegen/src/emit/guards.rs` guards an arm only when its price
-//! clears `MISPREDICT_PENALTY_CYCLES` (16): an arm cheaper than a mispredict
-//! cannot pay for its own branch. The price is the latency prior summed over
-//! the entries the arm owns, and it used to take a fold's entry at
-//! `cost(Reduce) · len`, where the table's `Reduce` is 0 — so an arm that is
-//! nothing but a 64-trip loop was priced 0 and never guarded, while the
-//! extractor that chose the loop had priced it at `len · body`. One fact, two
-//! answers. The guard analysis now prices the loop with the extractor's own
-//! formula (`CostModel::fold_cost`), its body priced over the fold's own
-//! schedule, nested folds recursively.
+//! An `If` arm that owns a fold (`Reduce`) is a block, skipped whole when no
+//! lane selects it: on a batch whose mask is uniform the whole loop is jumped
+//! over.
 //!
 //! Every kernel in the first section has an arm that is a fold and nothing
-//! else it owns, so it is guarded now and was not before: on a batch whose
-//! mask is uniform the whole loop is jumped over. Each is checked texel by
-//! texel against a plain-`f64` reference, never a pixelflow evaluator; a
-//! skipped loop that should have run, or a run loop whose result was then
-//! dropped, shows as a wrong texel. The second section is guarded now too,
-//! around more than one loop: both arms loops, an arm skipping a fold and the
-//! fold only it reads (at one and at two scopes' distance), a mask that is
-//! itself a loop, and the glyph's shape of a fold read across two `If`s.
-//! The third section is two arms the price now clears but ownership still
+//! else it owns. Each is checked texel by texel against a plain-`f64`
+//! reference, never a pixelflow evaluator; a skipped loop that should have
+//! run, or a run loop whose result was then dropped, shows as a wrong texel.
+//! The second section is around more than one loop: both arms loops, an arm
+//! skipping a fold and the fold only it reads (at one and at two scopes'
+//! distance), a mask that is itself a loop, and the glyph's shape of a fold
+//! read across two `If`s. The third section is two arms that ownership still
 //! refuses — correctness only, and what the demand-regions work (D1) is for.
 //!
-//! That the guard forms is not visible from here — nothing outside
-//! `pixelflow-codegen` can name a guard — and is pinned there
-//! (`program::guards`' unit tests price the arm; `emit`'s test
+//! That the branch forms is not visible from here — nothing outside
+//! `pixelflow-codegen` can name a guard — and is pinned there (`emit`'s test
 //! `a_fold_owned_by_an_arm_is_guarded` finds the branch in the allocated
 //! nest).
 
@@ -44,8 +30,7 @@ const WIDTH: usize = 64;
 const RAGGED_WIDTH: usize = 61;
 /// More than one row, so a stale accumulator can also be the previous row's.
 const HEIGHT: usize = 4;
-/// The arm fold's trip count: `64 · (sub + abs) + 63 · add`, far past the
-/// guard's 16-cycle bound, where the arm used to be priced 0.
+/// The arm fold's trip count.
 const TRIPS: u32 = 64;
 /// The mask's threshold on `X`: at any lane width, most batches are uniform
 /// on one side of it or the other.
@@ -215,7 +200,7 @@ fn an_arm_that_is_a_fold_in_a_remainder_batch() {
 }
 
 /// `select(X < T, Σ_{j<4} |F(X − 8j) − j|, 0) + Y`: the arm is a fold whose
-/// body is a fold, priced as the product of the two trip counts.
+/// body is a fold.
 #[test]
 fn an_arm_that_is_a_nested_fold() {
     let arm = Kernel::sum_over(OUTER_TRIPS, |j| {
@@ -339,7 +324,7 @@ fn a_fold_read_across_two_ifs() {
     check_at("fold read across two ifs", RAGGED_WIDTH, &k, want);
 }
 
-// ───── priced past the bound, and still refused by ownership ─────
+// ───── still refused by ownership ─────
 
 /// `select(X < T, 0, F(X + Y)) + Y`: the loop reads `X + Y`, which nothing
 /// outside it reads. Clustering gathers `X + Y` into the arm, but the batch

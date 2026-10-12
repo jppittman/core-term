@@ -190,6 +190,36 @@ fn an_if_blends_and_branches() {
     check(&out, |x, y| if x < y { x * x } else { y * y });
 }
 
+/// `if x < edge { x * x + y } else { 3 * x - y }`, both arms with work of
+/// their own, with `edge` in the second batch of a row: the first batch is
+/// uniformly true, the second is mixed, and the remainder is uniformly false
+/// at every lane width. An `If` is a blend whose arms are blocks, and each of
+/// the three runs it differently.
+#[test]
+fn an_if_with_work_in_both_arms_is_right_on_every_kind_of_batch() {
+    let lanes = jit_vector_bytes() / core::mem::size_of::<f32>();
+    let edge_at = ORIGIN[0] + (lanes + lanes / 2) as f32;
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let edge = a.push_const(edge_at);
+    let three = a.push_const(3.0);
+    let before = a.push_binary(OpKind::Lt, x, edge);
+    let xx = a.push_binary(OpKind::Mul, x, x);
+    let hot = a.push_binary(OpKind::Add, xx, y);
+    let tripled = a.push_binary(OpKind::Mul, three, x);
+    let cold = a.push_binary(OpKind::Sub, tripled, y);
+    let root = a.push_ternary(OpKind::If, before, hot, cold);
+
+    let out = collapse(&a, root, &[], &[]);
+    check(
+        &out,
+        |x, y| {
+            if x < edge_at { x * x + y } else { 3.0 * x - y }
+        },
+    );
+}
+
 /// `if x < 14 { sin(x) * y } else { exp(y / 8) + sqrt(x) }`: both arms are
 /// worth a branch. A batch whose mask is uniform runs the one arm, and a batch
 /// whose mask varies runs both and blends them, so the three ways through an

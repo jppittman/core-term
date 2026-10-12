@@ -931,9 +931,10 @@ struct Constant {
 ///
 /// **Dominance is relaxed in one way, and only one.**
 /// - A value an `If` arm defines is read by that `If`'s blend.
-/// - On the path where a uniform mask skipped the arm, the wrapper goes to
-///   that `If`'s single-arm block, and the blend does not run.
-/// - So a definition dominates every read that *executes*, not every
+/// - On the path where a uniform mask skipped the arm, the blend still runs,
+///   and reads a register nothing wrote there. It takes every lane from the
+///   arm that ran, so that register is never observed.
+/// - So a definition dominates every read that *observes* it, not every
 ///   syntactic read.
 /// - Interval liveness never carries the value above its definition, and join
 ///   invariant 2 takes its location from the path that defines it.
@@ -4575,23 +4576,7 @@ mod tests {
     mod if_guard_driver {
         use super::*;
 
-        /// Padding that makes an arm worth a branch, and what it adds.
-        ///
-        /// A guard is refused for an arm whose work costs less than the
-        /// mispredict penalty it risks, which is right and which means a
-        /// fixture's arms have to be arms worth guarding — a two-op arm is
-        /// not one. Three adds of distinct constants are 12 latency-prior
-        /// cycles, and every point below stays exact in `f32`.
-        const PADDING: f32 = 6.0;
-
-        fn worth_a_branch(a: &mut ExprArena, arm: ExprId) -> ExprId {
-            (1..=3u32).fold(arm, |acc, i| {
-                let c = a.push_const(i as f32);
-                a.push_binary(OpKind::Add, acc, c)
-            })
-        }
-
-        /// `(X > 0) ? B³ : 3B` (plus [`PADDING`] on each arm) over a shared
+        /// `(X > 0) ? B³ : 3B` over a shared
         /// `B = X·Y` — arms that are exclusive *and* contiguous in the
         /// schedule.
         ///
@@ -4610,10 +4595,8 @@ mod tests {
             let cond = a.push_binary(OpKind::Gt, x, zero);
             let bb = a.push_binary(OpKind::Mul, base, base);
             let bbb = a.push_binary(OpKind::Mul, bb, base);
-            let bbb = worth_a_branch(a, bbb);
             let b2 = a.push_binary(OpKind::Add, base, base);
             let b3 = a.push_binary(OpKind::Add, b2, base);
-            let b3 = worth_a_branch(a, b3);
             let sel = a.push_ternary(OpKind::If, cond, bbb, b3);
             // Live ACROSS the `If` and read after it. Without something in
             // this role the `If` is the root, nothing downstream reads a
@@ -4727,7 +4710,6 @@ mod tests {
             let two = a.push_const(2.0);
             let f2 = a.push_binary(OpKind::Add, f1, two);
 
-            let (t3, f2) = (worth_a_branch(a, t3), worth_a_branch(a, f2));
             let inner = a.push_ternary(OpKind::If, inner_cond, t3, f2);
 
             // The rest of the outer true arm, split around a second one.
@@ -4744,7 +4726,6 @@ mod tests {
             let seven = a.push_const(7.0);
             let p2 = a.push_binary(OpKind::Mul, p1, seven);
 
-            let (o2, p2) = (worth_a_branch(a, o2), worth_a_branch(a, p2));
             let outer = a.push_ternary(OpKind::If, outer_cond, o2, p2);
             let carried = a.push_binary(OpKind::Add, across_inner, across_outer);
             let root = a.push_binary(OpKind::Add, outer, carried);
@@ -4755,161 +4736,26 @@ mod tests {
         /// guard anywhere — every operation exact at the points below.
         fn nested_expected(x: f32, y: f32) -> f32 {
             let base = x * y;
-            let inner = PADDING
-                + if y > 0.0 {
-                    base * base * base + 1.0
-                } else {
-                    base + base + 2.0
-                };
-            let outer = PADDING
-                + if x > 0.0 {
-                    (inner + 3.0) * 5.0
-                } else {
-                    (base + 6.0) * 7.0
-                };
-            outer + (x + y) + x * 4.0
-        }
-
-        /// The branches of the kernel at `root`, compiled the way `compile`
-        /// compiles it, at one batch.
-        fn census_of(a: &ExprArena, root: ExprId) -> (usize, usize, usize) {
-            census(a, root, batch())
-        }
-
-        /// A kernel shaped like the chrome sphere keeps every branch it earns,
-        /// and the sphere's silhouette alone earns none.
-        ///
-        /// Counts the guards the compile's own tables hold, through
-        /// `Allocation::if_guards`: what the emitter branches on, and what no
-        /// render can see, since a guarded `If` and a blended one produce the
-        /// same pixels. A decision that moves a guard's arm out of reach is a
-        /// slower kernel with the same picture, and this is where it shows.
-        ///
-        /// Three numbers, because an `If` count alone is a weak gate. The real
-        /// chrome at 1920x1080 reads `(3, 6, 719)` under the scratch probe on
-        /// AVX-512 and on AVX2: 3 of its 17 `If`s earn a guard, each over both
-        /// arms. With the old clustering search switched off it still read 3
-        /// guards, but 4 arms and 292 entries. This kernel is that shape in miniature
-        /// — an `If` whose two arms each hold an `If`, with a value both
-        /// worlds read first reached inside one of them — and reads the same
-        /// three guards over six arms.
-        ///
-        /// The control is the silhouette mask over arms cheaper than the
-        /// mispredict they would risk: one `If` and no guard. (The real sphere
-        /// over sky read `(0, 0, 0)` before the layout chose the order and
-        /// reads `(1, 1, 37)` since — its sky arm is costlier than this
-        /// control's; docs/results/2026-10-03-guard-structure-baseline.md.)
-        /// Counting `If`s would not tell it from the other; the arms' cost
-        /// does.
-        #[test]
-        fn a_chrome_shaped_kernel_keeps_its_branches() {
-            let mut a = ExprArena::new();
-            let chrome = chrome_shaped(&mut a);
-            assert_eq!(
-                census_of(&a, chrome),
-                (3, 6, 70),
-                "the chrome-shaped kernel's branches moved"
-            );
-
-            let mut b = ExprArena::new();
-            let silhouette = silhouette_shaped(&mut b);
-            assert_eq!(
-                census_of(&b, silhouette),
-                (0, 0, 0),
-                "arms under the mispredict bound earned a branch"
-            );
-        }
-
-        fn bin(a: &mut ExprArena, op: OpKind, l: ExprId, r: ExprId) -> ExprId {
-            a.push_binary(op, l, r)
-        }
-
-        /// The chrome sphere at the scale of one channel: `sphere.select(
-        /// world(mirrored), world(ray))`, each `world(r) = floor.select(
-        /// checker(r), sky(r))` (`pixelflow-graphics`'s `scene3d`, the scene
-        /// `render::packed` compiles). Three `If`s: the sphere's,
-        /// and one per world.
-        ///
-        /// Arithmetic only. A transcendental expands into `If`s of its own, so
-        /// a census over one would move whenever an expansion did, which is
-        /// not what it is there to say.
-        fn chrome_shaped(a: &mut ExprArena) -> ExprId {
-            let x = a.push_var(0);
-            let y = a.push_var(1);
-            let zero = a.push_const(0.0);
-            let one = a.push_const(1.0);
-            let two = a.push_const(2.0);
-
-            // The sphere: the primary ray's discriminant, whose sign is the
-            // silhouette, and the bounce the mirrored ray takes off it.
-            let xx = bin(a, OpKind::Mul, x, x);
-            let yy = bin(a, OpKind::Mul, y, y);
-            let r2 = bin(a, OpKind::Add, xx, yy);
-            let disc = bin(a, OpKind::Sub, one, r2);
-            let hit = bin(a, OpKind::Gt, disc, zero);
-            let bounce = bin(a, OpKind::Mul, disc, two);
-            let bx = bin(a, OpKind::Mul, bounce, x);
-            let by = bin(a, OpKind::Mul, bounce, y);
-            let mx = bin(a, OpKind::Sub, x, bx);
-            let my = bin(a, OpKind::Sub, y, by);
-
-            // What both worlds read and neither owns: the horizon's tint, and
-            // where the floor is.
-            let tint = bin(a, OpKind::Mul, xx, yy);
-            let floor = a.push_const(-0.5);
-
-            let world = |a: &mut ExprArena, rx: ExprId, ry: ExprId| {
-                let height = bin(a, OpKind::Mul, rx, ry);
-                let on_floor = bin(a, OpKind::Lt, height, floor);
-                let u = bin(a, OpKind::Mul, rx, two);
-                let v = bin(a, OpKind::Mul, ry, two);
-                let uu = bin(a, OpKind::Mul, u, u);
-                let vv = bin(a, OpKind::Mul, v, v);
-                let checker = bin(a, OpKind::Sub, uu, vv);
-                let checker = bin(a, OpKind::Mul, checker, tint);
-                let checker = bin(a, OpKind::Add, checker, u);
-                let sky = bin(a, OpKind::Mul, ry, tint);
-                let sky = bin(a, OpKind::Add, sky, vv);
-                let sky = bin(a, OpKind::Mul, sky, sky);
-                let (checker, sky) = (worth_a_branch(a, checker), worth_a_branch(a, sky));
-                a.push_ternary(OpKind::If, on_floor, checker, sky)
+            let inner = if y > 0.0 {
+                base * base * base + 1.0
+            } else {
+                base + base + 2.0
             };
-            let mirrored = world(a, mx, my);
-            let direct = world(a, x, y);
-            let sel = a.push_ternary(OpKind::If, hit, mirrored, direct);
-            let carried = bin(a, OpKind::Sub, x, y);
-            bin(a, OpKind::Add, sel, carried)
-        }
-
-        /// The sphere over the sky and nothing else: the same silhouette
-        /// mask, but arms that are a constant and a few instructions —
-        /// cheaper than the mispredict they would risk, so no guard anywhere.
-        fn silhouette_shaped(a: &mut ExprArena) -> ExprId {
-            let x = a.push_var(0);
-            let y = a.push_var(1);
-            let zero = a.push_const(0.0);
-            let one = a.push_const(1.0);
-            let xx = bin(a, OpKind::Mul, x, x);
-            let yy = bin(a, OpKind::Mul, y, y);
-            let r2 = bin(a, OpKind::Add, xx, yy);
-            let disc = bin(a, OpKind::Sub, one, r2);
-            let hit = bin(a, OpKind::Gt, disc, zero);
-            let grey = a.push_const(0.5);
-            let sky = bin(a, OpKind::Add, y, one);
-            let sel = a.push_ternary(OpKind::If, hit, grey, sky);
-            let carried = bin(a, OpKind::Sub, x, y);
-            bin(a, OpKind::Add, sel, carried)
+            let outer = if x > 0.0 {
+                (inner + 3.0) * 5.0
+            } else {
+                (base + 6.0) * 7.0
+            };
+            outer + (x + y) + x * 4.0
         }
 
         /// Trip count of [`a_fold_owned_by_an_arm_is_guarded`]'s fold.
         const ARM_FOLD_TRIPS: u32 = 64;
 
         /// `(X > 0) ? Σ_{j<64} |X − j| : 0`, plus a value carried across: an
-        /// arm that is a loop and nothing else. All the scope holds of the
-        /// loop is its `Reduce` def, which the latency table prices 0; the
-        /// arm is priced as the loop it opens (`guards::FoldReads`), clears
-        /// the mispredict bound, and is guarded — and the answer on the
-        /// batch that skips the loop is the false arm's.
+        /// arm that is a loop and nothing else. The arm owns the loop and is
+        /// guarded — and the answer on the batch that skips the loop is the
+        /// false arm's.
         #[test]
         fn a_fold_owned_by_an_arm_is_guarded() {
             use pixelflow_ir::fold::{Binder, Fold, Monoid};
@@ -5049,7 +4895,7 @@ mod tests {
                 (-0.25, 2.0),
             ] {
                 let b = x * y;
-                let want = if x > 0.0 { b * b * b } else { 3.0 * b } + PADDING + (x - y);
+                let want = if x > 0.0 { b * b * b } else { 3.0 * b } + (x - y);
                 let got = eval_point(&result.code, x, y);
                 assert!(
                     (got - want).abs() <= 1e-3,
@@ -5088,10 +4934,8 @@ mod tests {
             let base = a.push_binary(OpKind::Mul, mid, y);
             let bb = a.push_binary(OpKind::Mul, base, base);
             let bbb = a.push_binary(OpKind::Mul, bb, base);
-            let bbb = worth_a_branch(&mut a, bbb);
             let b2 = a.push_binary(OpKind::Add, base, base);
             let b3 = a.push_binary(OpKind::Add, b2, base);
-            let b3 = worth_a_branch(&mut a, b3);
             let sel = a.push_ternary(OpKind::If, cond, bbb, b3);
             let carried = a.push_binary(OpKind::Sub, x, y);
             let root = a.push_binary(OpKind::Add, sel, carried);
@@ -5111,7 +4955,7 @@ mod tests {
 
             for &(px, py) in &[(3.0f32, 2.0f32), (-2.0, 0.5), (0.5, -1.0)] {
                 let b = filler_value(px) * py;
-                let want = if px > 0.0 { b * b * b } else { 3.0 * b } + PADDING + (px - py);
+                let want = if px > 0.0 { b * b * b } else { 3.0 * b } + (px - py);
                 let got = eval_point(&result.code, px, py);
                 assert!(
                     (got - want).abs() <= 1e-2 * want.abs().max(1.0),
@@ -5172,10 +5016,8 @@ mod tests {
             let t1 = a.push_binary(OpKind::Mul, base, split);
             let t2 = a.push_binary(OpKind::Add, t1, split);
             let t3 = a.push_binary(OpKind::Mul, t2, base);
-            let t3 = worth_a_branch(&mut a, t3);
             let f1 = a.push_binary(OpKind::Add, base, base);
             let f2 = a.push_binary(OpKind::Add, f1, base);
-            let f2 = worth_a_branch(&mut a, f2);
             let sel = a.push_ternary(OpKind::If, cond, t3, f2);
             // Read after the arm, which is what makes the confinement rule
             // load-bearing: on the skipped path this must not name the
@@ -5250,7 +5092,7 @@ mod tests {
                 } else {
                     (b + b) + b
                 };
-                let want = arm_value + PADDING + v + (px - py);
+                let want = arm_value + v + (px - py);
                 let got = eval_point(&result.code, px, py);
                 assert!(
                     (got - want).abs() <= 1e-2 * want.abs().max(1.0),
@@ -6331,8 +6173,8 @@ mod tests {
             let (guards, arms_branched, _) = census(&a, root, shape);
             assert_eq!(
                 (guards, arms_branched),
-                (1, 1),
-                "the true arm is worth a branch and the false arm is not"
+                (1, 2),
+                "each arm holds work of its own, so each is branched over"
             );
 
             let expect = |x: f32| {
