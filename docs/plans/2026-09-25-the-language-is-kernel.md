@@ -1161,6 +1161,27 @@ and the builder never becomes the font's surface.
     it calls itself "a bound on the direction, not on this plan".
   - One-pipeline's Q3 recommended keeping the atlas until D1. JP's atlas
     sentence and Q1 ruling replace it with the font program (D10).
+  - **Today's frame, measured (C2a.0, 2026-10-12, `b0acb33e`).**
+    `pixelflow-pipeline/examples/frame_budget.rs` times production's path
+    (`GlyphAtlas`, `compile_platform_cell_grid`, `Scene::render`) with
+    NotoSansMono, the median of 60 renders after 10 warm-ups, on a 4-core
+    KVM Xeon at 2.8 GHz. Dense ASCII, medians in ms:
+
+    | grid, cell | AVX-512, 1 / 4 threads | AVX2, 1 / 4 threads |
+    |---|---|---|
+    | 80×24, 10×16 | 5.2 / 1.4 | 8.1 / 2.2 |
+    | 200×60, 10×16 | 26.7 / 7.5 | 49.5 / 13.0 |
+    | 80×24, 20×32 | 17.0 / 4.5 | 33.5 / 8.9 |
+    | 200×60, 20×32 | 104.4 / 28.5 | 190.7 / 47.3 |
+
+    Today's path misses the gate's case, 200×60 at 32 px, on both tiers:
+    the per-cell column is held to 16.7 ms by a predecessor that takes
+    28.5 and 47.3. Content and font do not move it (every cell gathers the
+    same four taps). A zoom from 16 to 18 px costs 152 ms on AVX-512 and
+    162 ms on AVX2, the atlas's re-bake most of it; C1's per-count programs
+    compile in 1.2–1.5 s at a tile size (3.8 s cold), so the per-cell
+    path's zoom is about 8× today's unless it is warmed differently (C2's
+    D-7).
 - **Recommendation.**
   - Measure the font program before deleting the atlas (C2's gate).
   - If 200×60 at 32 px misses 16.7 ms, bring JP the numbers and the two
