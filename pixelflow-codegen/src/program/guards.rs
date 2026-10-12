@@ -30,13 +30,13 @@ use crate::program::{Def, ScheduledOp, ValueId};
 ///
 /// They take no walk of a body. A fold's schedule is carved out of its
 /// parent's and keeps the parent's `ValueId`s, so what a fold reads from its
-/// parent is among the ids the two schedules share; and a fold nested in the
-/// fold is carved out of *that* schedule in turn, so whatever it reads from
-/// here is shared with the outer one too — the edges are transitive by
-/// construction. Every shared id is an edge, a leaf the body rebuilds for
-/// itself included: that over-approximates (such a leaf is kept out of an arm
-/// the fold does not run in), and asks nothing of which values `scopes::place_roots`
-/// later parks and which it leaves to be rebuilt.
+/// parent is among the ids it names: its schedule's, and the ones
+/// `scopes::place_roots` took out of it for an enclosing scope to compute.
+/// A fold nested in the fold is carved out of *that* schedule in turn, so
+/// whatever it reads from here is named by the outer one too — the edges are
+/// transitive by construction. Every named id is an edge, a leaf the body
+/// rebuilds for itself included: that over-approximates (such a leaf is kept
+/// out of an arm the fold does not run in).
 #[derive(Default)]
 pub(super) struct FoldReads(BTreeMap<ValueId, OpenedFold>);
 
@@ -48,15 +48,15 @@ struct OpenedFold {
 
 impl FoldReads {
     /// The folds opened in `scope`, each given as its `Reduce` def's
-    /// `ValueId` and the fold's own schedule.
+    /// `ValueId` and the ids the fold names (`ScopeFold::reads`).
     ///
     /// # Panics
     ///
     /// If a fold's `ValueId` is not a `Reduce` def of `scope`: a loop opens
     /// where its def is, and nowhere else.
-    pub(super) fn new<'a>(
+    pub(super) fn new(
         scope: &[Def],
-        folds: impl IntoIterator<Item = (ValueId, &'a [Def])>,
+        folds: impl IntoIterator<Item = (ValueId, impl IntoIterator<Item = ValueId>)>,
     ) -> Self {
         let capacity = scope
             .iter()
@@ -74,14 +74,13 @@ impl FoldReads {
         }
         let opened = folds
             .into_iter()
-            .map(|(reduce, body)| {
+            .map(|(reduce, named)| {
                 assert!(
                     opens.contains(&reduce),
                     "{reduce:?} opens a fold but is not a Reduce def of its scope"
                 );
-                let reads = body
-                    .iter()
-                    .map(|def| def.value)
+                let reads = named
+                    .into_iter()
                     .filter(|value| here.get(value.0 as usize).copied().unwrap_or(false))
                     .collect();
                 (reduce, OpenedFold { reads })

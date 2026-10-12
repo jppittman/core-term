@@ -1304,8 +1304,7 @@ mod tests {
     ///
     /// The `Reduce` arm ends its def early, past the hand-off, so a carried
     /// fold result used to reach the scopes inside in a register nothing had
-    /// loaded. A fold result is never a root now (`stays_put`), so nothing
-    /// carries one: the scopes inside read it from its accumulator slot.
+    /// loaded. The scopes inside now read it as the value the loop bound.
     /// `X + Σ_{i<3} 2i = X + 6`.
     #[test]
     fn a_lattice_invariant_fold_is_the_bodys_own() {
@@ -1454,8 +1453,8 @@ mod tests {
     }
 
     /// The same hoist when the invariant fold *is* the outer body: the
-    /// outer's schedule is one placeholder, and its result comes from the
-    /// slot. `Σ_{j<2} Σ_{i<3} (X + i) = 2·(3X + 3) = 6X + 6`.
+    /// outer's schedule is empty, and its result is the value the enclosing
+    /// scope's loop bound. `Σ_{j<2} Σ_{i<3} (X + i) = 2·(3X + 3) = 6X + 6`.
     #[test]
     fn an_invariant_reduce_as_a_folds_whole_body_is_hoisted() {
         use pixelflow_ir::fold::{Binder, Fold, Monoid};

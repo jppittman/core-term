@@ -41,7 +41,7 @@ pub(super) fn select<B: IsaBackend>(scoped: &ScopedSchedule) -> Result<Function<
         loops: Vec::new(),
         scheduled: alloc::vec![0; scoped.folds.len() + 1],
     };
-    selector.scope(Scope::Body)?;
+    selector.scope(Scope::Body, None)?;
     B::ret(&mut selector.b);
     let mut function = selector.b.finish();
     function.scheduled = selector.scheduled;
@@ -117,10 +117,15 @@ impl<B: IsaBackend> Frame<B> {
 }
 
 impl<B: IsaBackend> Selector<'_, B> {
-    /// Select `scope`'s schedule, and return the lane of its root: `None`
-    /// when the root is an effect (a store, a sequence, a fold over the unit
-    /// monoid) and not a value.
-    fn scope(&mut self, scope: Scope) -> Result<Option<B::Lane>, CompileError> {
+    /// Select `scope`'s schedule, and return the lane of `root`, the value it
+    /// computes: `None` when it computes an effect (a store, a sequence, a
+    /// fold over the unit monoid) and not a value. A fold's root may be a
+    /// value an enclosing scope computed, which its schedule does not hold.
+    fn scope(
+        &mut self,
+        scope: Scope,
+        root: Option<ValueId>,
+    ) -> Result<Option<B::Lane>, CompileError> {
         let scoped = self.scoped;
         let (schedule, guards) = match scope {
             Scope::Body => (&scoped.body.schedule, &scoped.body.guards),
@@ -140,14 +145,13 @@ impl<B: IsaBackend> Selector<'_, B> {
                 let past = self.open_arm(scope, cond, arm.arm);
                 open.push((arm.end, past));
             }
-            // A placeholder, a sequence and a binder's alias select nothing;
-            // a `Reduce` counts once it is known to open a loop; a constant
-            // counts only when its instruction is not one the allocator
-            // places at each read, where it is counted as a remat.
+            // A sequence and a binder's alias select nothing; a `Reduce`
+            // counts once it is known to open a loop; a constant counts only
+            // when its instruction is not one the allocator places at each
+            // read, where it is counted as a remat.
             if !matches!(
                 def.op,
                 ScheduledOp::Const(_)
-                    | ScheduledOp::Outer(_)
                     | ScheduledOp::Seq(..)
                     | ScheduledOp::Var(_)
                     | ScheduledOp::Reduce(..)
@@ -155,8 +159,6 @@ impl<B: IsaBackend> Selector<'_, B> {
                 self.scheduled[scope_ix(scope)] += 1;
             }
             let value = match &def.op {
-                // Computed by an enclosing scope, which bound it there.
-                ScheduledOp::Outer(_) => continue,
                 ScheduledOp::Seq(..) => continue,
                 ScheduledOp::Write {
                     row,
@@ -176,18 +178,14 @@ impl<B: IsaBackend> Selector<'_, B> {
                     B::store(&mut self.b, store);
                     continue;
                 }
-                // A fold this scope opens is a loop here; any other is the
-                // result of one an enclosing scope ran, bound there.
-                ScheduledOp::Reduce(fold, _) => {
-                    let Some(j) = scoped
+                ScheduledOp::Reduce(fold, body) => {
+                    let j = scoped
                         .folds
                         .iter()
                         .position(|f| f.parent == scope && f.at == at)
-                    else {
-                        continue;
-                    };
+                        .unwrap_or_else(|| panic!("{:?} opens no fold in its scope", def.value));
                     self.scheduled[scope_ix(scope)] += 1;
-                    match self.fold(scope, j, *fold)? {
+                    match self.fold(scope, j, (*fold, *body))? {
                         Some(result) => result,
                         None => continue,
                     }
@@ -258,13 +256,7 @@ impl<B: IsaBackend> Selector<'_, B> {
             open.is_empty() && starts.is_empty(),
             "an arm is open at the end of its scope, or begins past it"
         );
-        let root = schedule.last().expect("a scope's schedule is not empty");
-        let is_unit = match &root.op {
-            ScheduledOp::Write { .. } | ScheduledOp::Seq(..) => true,
-            ScheduledOp::Reduce(fold, _) => fold.monoid() == Monoid::SEQ,
-            _ => false,
-        };
-        let result = (!is_unit).then(|| self.lookup(root.value));
+        let result = root.map(|root| self.lookup(root));
         self.frames.pop();
         Ok(result)
     }
@@ -284,7 +276,7 @@ impl<B: IsaBackend> Selector<'_, B> {
         &mut self,
         parent: Scope,
         j: usize,
-        fold: Fold,
+        (fold, body): (Fold, ValueId),
     ) -> Result<Option<B::Lane>, CompileError> {
         assert!(
             !fold.is_empty(),
@@ -321,14 +313,13 @@ impl<B: IsaBackend> Selector<'_, B> {
         let binder = params[0];
         self.binders.push((fold.binder(), binder));
         self.loops.push((index, trips));
-        let body = self.scope(Scope::Fold(j))?;
+        let result = self.scope(Scope::Fold(j), accumulates.then_some(body))?;
         self.loops.pop();
         self.binders.pop();
 
-        let accumulated = match (accumulates, body) {
-            (true, Some(body)) => Some(self.binary(fold.combine_op(), params[1], body)?),
-            (false, _) => None,
-            (true, None) => panic!("a fold over a value monoid has a value to combine"),
+        let accumulated = match result {
+            Some(body) => Some(self.binary(fold.combine_op(), params[1], body)?),
+            None => None,
         };
         let stride = self.constant(fold.stride() as f32)?;
         let step = self.binary(OpKind::Add, binder, stride)?;

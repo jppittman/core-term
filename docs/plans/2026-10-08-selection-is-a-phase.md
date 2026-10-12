@@ -1043,7 +1043,7 @@ The driver binds every IR value to a `B::Lane` and never inspects one (§0.1). T
 
 1. `enter`.
 2. The body's defs, in schedule order:
-   - `Outer` placeholders (A5) and non-opening `Reduce` placeholders are reads resolved through `Bindings`, not definitions.
+   - A fold's schedule holds only its own definitions (D2). A read of an enclosing scope's value is found by looking outward through the open scopes' bindings.
    - A `Var(n)` resolves to a binder.
    - `Seq` emits nothing.
    - `Write` calls `store`.
@@ -1770,14 +1770,17 @@ Every commit in this phase is live in production.
 
 #### D2: A fold's schedule holds only its own definitions
 
-- **Files:** `program/scopes.rs`, `program/mod.rs`, `emit/select.rs`.
+- **Files:** `program/scopes.rs`, `program/mod.rs`, `program/guards.rs`, `program/layout.rs`, `emit/select.rs`.
 - **Change:**
-  - `place_roots` removes moved defs instead of writing `Outer`.
-  - A store right after a definition is placed behind the scan, so a deep NEON slot's address takes a general register no value has held (`Scan::unused_general`, refused by name when every one has). A per-definition record of the registers free at the definition, or placing a deep slot's address at the definition, would make that register a lease and lift the limit.
-  - `stays_put`'s non-binder role goes. A `Reduce` placeholder is no longer kept, and the driver resolves it through `Bindings`.
+  - `place_roots` removes the defs it moves instead of writing `Outer`. Two kinds of def stay whatever their variance: a binder's `Var` and a `Reduce` that opens a fold in that scope. Any other `Reduce` is a sibling fold's result and moves like every other def (its computing scope's `roots` gain it).
+  - What a fold reads from outside is `ScopeFold::outer`, the ids `place_roots` removed. `FoldReads` named a fold's reads by the ids its schedule shared with its parent's, and the placeholders were most of those; `ScopeFold::reads` is the schedule's ids and `outer`.
+  - A fold's root is passed to `Selector::scope`, which looks it up before the scope's frame closes. A fold whose body is another fold's result has an empty schedule.
+  - An arm earns a block whatever scope computes its mask. The placeholder had made every mask "computed in this scope", so `Layout`'s condition was vacuous in production; it is dropped, and an arm waits on its mask only when the mask is computed in the scope. An arm that owned only a placeholder was a branch over nothing, and is no longer a block.
+  - `stays_put` is gone.
   - Delete `Outer`, `program::Class` and `ScheduledOp::class`. With the placeholders gone, `scopes.rs:276` was the last reader.
-- **Bytes:** identical.
-- **Gate:** G.
+  - The store after a definition (the NEON deep-slot note from C4) is not part of this item: it is the allocator's, and `Scan::unused_general` is unchanged.
+- **Bytes:** identical, except that an arm with no work of its own is no longer a block (an empty branch is gone from `swirl`, `named_beside` and `shift_muladd_blend_w37`, 16 bytes each on x86).
+- **Gate:** G Q W W2 L.
 
 #### D3: Arms are read off the region tree
 
