@@ -54,16 +54,6 @@ impl Tree {
         self.parent.len()
     }
 
-    /// `node`'s parent; the root's is itself.
-    pub(super) fn parent(&self, node: usize) -> usize {
-        self.parent[node]
-    }
-
-    /// `node`'s distance from the root.
-    pub(super) fn depth(&self, node: usize) -> usize {
-        self.depth[node]
-    }
-
     /// `node`'s ancestor at `depth`, which must not be deeper than `node`.
     pub(super) fn ancestor_at(&self, mut node: usize, depth: usize) -> usize {
         while self.depth[node] > depth {

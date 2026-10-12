@@ -30,7 +30,7 @@
 //! (and on 300 random DAGs) until the search was deleted; what keeps this pass
 //! honest now is its own tests, which pin the relation case by case, and the
 //! layout built on it, whose every branch is checked to be exactly the run of
-//! the values its arm owns.
+//! the values its arm owns, ahead of its `If`.
 
 use alloc::vec::Vec;
 
@@ -55,6 +55,8 @@ impl Region {
 /// One arm of one `If`, as a region.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Arm {
+    /// The position of the `If` in the schedule.
+    pub(super) at: usize,
     /// The `If`'s mask.
     pub(super) mask: ValueId,
     /// Which arm.
@@ -144,11 +146,13 @@ impl Ownership {
                     // Pushed false arm first: the sweep meets the `If`s
                     // last-to-first and the list is reversed once at the end.
                     me.arms.push(Arm {
+                        at: pos,
                         mask: *mask,
                         arm: IfArm::False,
                         region: on_false,
                     });
                     me.arms.push(Arm {
+                        at: pos,
                         mask: *mask,
                         arm: IfArm::True,
                         region: on_true,

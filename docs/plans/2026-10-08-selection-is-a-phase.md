@@ -5,7 +5,7 @@
 - **Author**: JP (design), Claude (draft)
 - **Status**: `Plan of record`. This is revision 3.
   - Revision 2 answered three reviews (allocation, closure and landing), and Appendix A records what was done with each point.
-  - Revision 3 carries JP's decisions of 2026-10-08, which override anything below that disagrees with them (§0). §0.11 and §0.12 carry his rulings of 2026-10-11.
+  - Revision 3 carries JP's decisions of 2026-10-08, which override anything below that disagrees with them (§0). §0.11 and §0.12 carry his rulings of 2026-10-11, and §0.13 the one of 2026-10-12.
 - **Created**: 2026-10-08
 - **Verified against**: `origin/main` at `bdee3900` (#1335). At `bdee3900`, `pixelflow-codegen` is the same as at `fc1da611` except for `emit/coverage.rs`.
 - **Assumes the narrowing lands first.** The narrowing is worktree `/home/user/pixelflow-narrow`, branch `codegen-narrow-emit`, at `2da80bba` plus uncommitted work. It is based on `9bd3df6c` and must be rebased over #1330–#1335. After it lands:
@@ -119,6 +119,10 @@ These are binding. Where a later section disagrees, this section wins, and the i
     - There is one shape. An `If` is `Blend`, always, and has no join. Blend is bitwise on every backend (`vandps`/`vandnps`/`vorps`; `vblendmps` under `k`; `BSL`), so a uniform mask takes every lane from the arm that ran and the skipped arm's register is never observed. B9's premise, that an `If` with a skippable arm cannot blend, was false.
     - Every arm with work of its own is a block, skipped when no lane of the mask selects it. There is no bound: `MISPREDICT_PENALTY_CYCLES` and everything that priced an arm (`Arm::cycles`, `Ownership::price`, `def_cycles`, `FoldReads`'s cycles) are deleted. An arm earns a block by owning a value, and by its mask being computed in the arm's scope.
     - So there is no uniform wrapper, no `If` join, no join parameter in the allocator, and no mask/vector join problem on AVX-512: C3's text on it is moot.
+13. **An `If`'s arm blocks go immediately before the `If`** (JP, 2026-10-12; E1). Verbatim, first: *"Wdym by a folds schedule? Like. I cannot comprehend why select/if would be at all complicated? Emitting it uses 2 labels (or the linker path we'd maybe not fully designed? That might be it?) why is it complicated"*. Told that the inherent part is ownership (a value goes inside an arm's block only if that arm alone reads it) and that the accidental part is `layout.rs` reordering each scope's schedule with anchors so the series could stay byte-identical, and asked whether to delete the anchors, he answered: *"yes, delete it"*.
+    - Every value stays in the order it was constructed, within the block that owns it. An `If`'s earning arms, true arm first, go immediately before the `If`. That is the whole placement rule, and it is always valid: an arm-owned value is read only inside its arm or by its `If`, so what it reads from the region around it was constructed before it, hence before the `If`, and the mask is read by the `If`.
+    - So `layout.rs` has no anchor, no `first`, no `after`, no `alone`, no counting sort, and no permutation of the schedule: the `Flow` is the order, and selection walks it. Text below that describes layout's anchors, "nothing moves earlier than it was", "the identity, by construction", or a reordered schedule is superseded. A `Flow`'s arms are in the order of their `If`s, not parents before children.
+    - Bytes move because arm code lands next to its `If`. They are reported, not pinned (§0.11).
 
 ## 1. What each phase is
 
@@ -1785,7 +1789,7 @@ Every commit in this phase is live in production.
 #### D3: Arms are read off the region tree
 
 - **Files:** `program/layout.rs`, `program/mod.rs`, `program/ownership.rs`, `program/scopes.rs`, `emit/select.rs`.
-- **Change:** `Layout` hands selection the nested blocks it already builds (`Blocks`): a scope's `Flow` is its items (`Item::Def(position)` or `Item::Arm(i)`) and the arms that earn a block (`ArmBlock`: which arm, its mask, its items), stored flat, parents before the arms nested in them, so that neither dropping nor walking one recurses. A fold's opening is its `Reduce` def, found by position as before. Selection walks the items with one explicit stack and emits the guard and the `past` block around each arm. Deleted: `IfGuard`, `ArmPair`, `IfArm::ALL`, the flattening into runs, the per-block span and start, and `arms_by_start`. The tests that checked an arm's `(start, end)` range check the positions of its subtree.
+- **Change:** `Layout` hands selection the nested blocks it already builds (`Blocks`): a scope's `Flow` is its items (`Item::Def(position)` or `Item::Arm(i)`) and the arms that earn a block (`ArmBlock`: which arm, its mask, its items), stored flat (in the order of their `If`s after E1, §0.13; parents before the arms nested in them as first landed), so that neither dropping nor walking one recurses. A fold's opening is its `Reduce` def, found by position as before. Selection walks the items with one explicit stack and emits the guard and the `past` block around each arm. Deleted: `IfGuard`, `ArmPair`, `IfArm::ALL`, the flattening into runs, the per-block span and start, and `arms_by_start`. The tests that checked an arm's `(start, end)` range check the positions of its subtree.
 - **Bytes:** identical.
 - **Gate:** G Q W W2 L.
 
