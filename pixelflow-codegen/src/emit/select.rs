@@ -185,7 +185,7 @@ impl<B: IsaBackend> Selector<'_, B> {
                     None => return Ok(()),
                 }
             }
-            ScheduledOp::Var(var) => self.binder_of_var(*var),
+            ScheduledOp::Var(binder) => self.binder(*binder),
             ScheduledOp::Const(value) => {
                 let lane = self.lane(LaneOp::Const(*value))?;
                 if !self.b.ends_rematerializable() {
@@ -193,7 +193,7 @@ impl<B: IsaBackend> Selector<'_, B> {
                 }
                 lane
             }
-            ScheduledOp::Lanes(_) => self.lane(LaneOp::Lanes)?,
+            ScheduledOp::Lanes => self.lane(LaneOp::Lanes)?,
             ScheduledOp::Unary(op, a) => {
                 let a = self.lookup(*a);
                 self.lane(LaneOp::Unary(*op, a))?
@@ -414,18 +414,10 @@ impl<B: IsaBackend> Selector<'_, B> {
         let found = self.binders.iter().rev().find(|(b, _)| *b == binder);
         let (_, lane) = found.unwrap_or_else(|| {
             panic!(
-                "a store names binder slot {} that no enclosing fold binds",
+                "binder slot {} is read where no enclosing fold binds it",
                 binder.slot()
             )
         });
-        *lane
-    }
-
-    /// The lane of the innermost fold binding `Var(var)`.
-    fn binder_of_var(&self, var: u8) -> B::Lane {
-        let found = self.binders.iter().rev().find(|(b, _)| b.var() == var);
-        let (_, lane) =
-            found.unwrap_or_else(|| panic!("Var({var}) names no enclosing fold's binder"));
         *lane
     }
 }

@@ -15,79 +15,6 @@ use super::{
 use crate::error::CompileError;
 use crate::pass::Pass;
 
-/// Compute [`Variance`](pixelflow_ir::variance::Variance) for every schedule entry.
-///
-/// The schedule mirrors the arena's topological order, so one forward pass
-/// suffices — the dense result is indexed by `ValueId.0`.
-fn schedule_variance(schedule: &[Def]) -> Vec<pixelflow_ir::variance::Variance> {
-    use pixelflow_ir::variance::Variance;
-    let max_vid = schedule.iter().map(|def| def.value.0).max().unwrap_or(0) as usize;
-    let mut v = alloc::vec![Variance::CONST; max_vid + 1];
-    for def in schedule {
-        let (vid, op) = (&def.value, &def.op);
-        let i = vid.0 as usize;
-        v[i] = match op {
-            // Lowering emits a `Var` only for a binder it found, so an index
-            // past the analysis's bits is a hand-built schedule, which `ALL`
-            // would let through without a name.
-            ScheduledOp::Var(idx) => {
-                assert!(
-                    *idx < Variance::VARIABLES,
-                    "{vid:?} reads Var({idx}), past the {} variables the analysis names",
-                    Variance::VARIABLES
-                );
-                Variance::from_var(*idx)
-            }
-            ScheduledOp::Lanes(lane) => Variance::from_var(lane.var()),
-            // Invariant across the lattice; unknown until the call. The
-            // `CONST` here is what carries it into the per-call scope — a
-            // context pointer, and a uniform read through one.
-            ScheduledOp::Const(_) | ScheduledOp::Context(_) | ScheduledOp::Uniform(..) => {
-                Variance::CONST
-            }
-            ScheduledOp::Unary(_, a)
-            | ScheduledOp::ShiftImm(_, a, _)
-            // A gather reads from a bound buffer, whose contents are fixed for
-            // the kernel's lifetime — its variance is its index's variance.
-            // A broadcast is a gather whose index lacks the lane bit, so
-            // the same rule places it in the scope its address varies in.
-            | ScheduledOp::Gather(a, _)
-            | ScheduledOp::Broadcast(a, _) => v[a.0 as usize],
-            ScheduledOp::Binary(_, a, b) | ScheduledOp::Seq(a, b) => {
-                v[a.0 as usize].union(v[b.0 as usize])
-            }
-            ScheduledOp::Ternary(_, a, b, c) => v[a.0 as usize]
-                .union(v[b.0 as usize])
-                .union(v[c.0 as usize]),
-            // A completed reduction closes over its own binder: nothing
-            // outside the fold can read it (that is what makes it a binder),
-            // so the result's variance is the body's, minus that one bit —
-            // `Variance::without` is exactly "what a binder does to its own
-            // index" (see `variance.rs`'s doc).
-            ScheduledOp::Reduce(fold, body) => {
-                v[body.0 as usize].without(Variance::from_var(fold.binder().var()))
-            }
-            // A store reads its row and column for the address, so it sits
-            // inside both their folds — which is the whole of why the
-            // lattice's loops can be placed by the same rule as everything
-            // else. And it is the lane fold, so like any `Reduce` it closes
-            // over its own binder: the row fold's result must not read as
-            // lane-varying, or the body would disown it.
-            ScheduledOp::Write {
-                row,
-                col,
-                lane,
-                value,
-                ..
-            } => v[value.0 as usize]
-                .without(Variance::from_var(lane.var()))
-                .union(Variance::from_var(row.var()))
-                .union(Variance::from_var(col.var())),
-        };
-    }
-    v
-}
-
 /// Split a flat schedule into its nest, placing every value in the outermost
 /// scope that binds all the binders it depends on.
 ///
@@ -110,10 +37,15 @@ impl Pass for Nest {
     type Output = ScopedSchedule<()>;
 
     fn run(self, schedule: Vec<Def>) -> Result<ScopedSchedule<()>, CompileError> {
-        // Variance first, over the arena's *full* schedule — a surviving
-        // `Reduce`'s own result depends on its body's, and the body's def is
-        // about to move (`extract_folds`, next) out of this array entirely.
-        let variance = schedule_variance(&schedule);
+        use pixelflow_ir::variance::Variance;
+        // The carving asks for an operand's variance by `ValueId` at every
+        // level of the nest, so one table, from the full schedule before it
+        // is split. Lowering numbers its defs `0..len`, so every slot is
+        // written; an id past `len` panics here rather than read another's.
+        let mut variance = alloc::vec![Variance::ALL; schedule.len()];
+        for def in &schedule {
+            variance[def.value.0 as usize] = def.variance;
+        }
         let (body, pending) = extract_folds(schedule, &variance);
         let mut scoped = ScopedSchedule {
             body: ScopeRegion {
@@ -123,7 +55,7 @@ impl Pass for Nest {
             folds: Vec::new(),
         };
         attach_folds(&mut scoped, pending);
-        place_roots(&mut scoped, &variance);
+        place_roots(&mut scoped);
         Ok(scoped)
     }
 }
@@ -208,7 +140,7 @@ impl<A> ScopedSchedule<A> {
 /// what the fold defines. Two kinds of def stay whatever their variance: a
 /// binder's `Var`, and a `Reduce` that opens a fold here. Any other `Reduce`
 /// is a sibling fold's result, computed by the scope that opened that fold.
-fn place_roots(scoped: &mut ScopedSchedule<()>, variance: &[pixelflow_ir::variance::Variance]) {
+fn place_roots(scoped: &mut ScopedSchedule<()>) {
     use pixelflow_ir::variance::Variance;
 
     // What each fold binds, read off before any def is edited: its own
@@ -235,7 +167,7 @@ fn place_roots(scoped: &mut ScopedSchedule<()>, variance: &[pixelflow_ir::varian
         let mut outer: Vec<ValueId> = Vec::new();
         let mut kept: Vec<Def> = Vec::new();
         for def in core::mem::take(&mut scoped.folds[j].schedule) {
-            let defined_here = variance[def.value.0 as usize].bits() & binder.bits() != 0
+            let defined_here = def.variance.bits() & binder.bits() != 0
                 || matches!(def.op, ScheduledOp::Var(_))
                 || opened.contains(&def.value);
             if defined_here {
@@ -300,10 +232,10 @@ struct PendingFold {
 ///
 /// A fold inside a fold's body is carved the same way, one level down: the
 /// outer fold's closure is a schedule like any other, and the inner fold is
-/// a `Reduce` def in it. `variance` is indexed by `ValueId` (dense and
-/// positional in the arena's own schedule — `arena_to_schedule` assigns
-/// them in the order it pushes `Def`s), which is what lets one array answer
-/// for every level.
+/// a `Reduce` def in it. `variance` is every def's [`Def::variance`] by
+/// `ValueId`, built once by [`Nest`]; a fold's
+/// schedule keeps its parent's ids, which is what lets one array answer an
+/// operand's variance at every level.
 fn extract_folds(
     schedule: Vec<Def>,
     variance: &[pixelflow_ir::variance::Variance],
@@ -464,7 +396,7 @@ fn extract_folds_bound_by(
 
     let remaining: Vec<Def> = schedule
         .into_iter()
-        .filter(|def| variance[def.value.0 as usize].bits() & deeper == 0)
+        .filter(|def| def.variance.bits() & deeper == 0)
         .collect();
     (remaining, pending)
 }

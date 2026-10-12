@@ -3,8 +3,8 @@
 //! Which variables an expression depends on, as a bitset. This is the shared
 //! type used by both the e-graph's extractor (`pixelflow-search`, which prices
 //! a node by [`LatticeShape::evals`] of it) and codegen's loop placement
-//! (`pixelflow-codegen`'s `schedule_variance` and `place_roots`, in
-//! `program/scopes.rs`).
+//! (`pixelflow-codegen`'s `arena_to_schedule`, which carries each node's
+//! variance onto the def it lowers to, and `place_roots`, which places by it).
 //!
 //! ## Variable Mapping
 //!
@@ -304,6 +304,8 @@ fn referent_variance(_key: crate::key::KernelKey) -> Variance {
 /// `Extraction::chosen_variance`, reads the whole per-node table (the e-graph
 /// keeps the same fact per class, as `EGraph::variance`). In this crate
 /// `passes::lower_dwrt`'s tabulation rule reads it the same way.
+/// `pixelflow-codegen`'s lowering (`arena_to_schedule`) reads it once per
+/// compile and carries each node's entry onto the def that node becomes.
 #[must_use]
 pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> {
     use crate::arena::{ExprId, ExprNode};
@@ -343,6 +345,11 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
             ExprNode::Ternary(_, a, b, c) => result[a.0 as usize]
                 .union(result[b.0 as usize])
                 .union(result[c.0 as usize]),
+            // A fold over nothing is its monoid's identity, whatever its body
+            // reads (`Fold::is_empty`): a constant. Read off the body instead,
+            // every reader would inherit the body's variables, which lowering
+            // never schedules (it schedules the identity in the fold's place).
+            ExprNode::Reduce { fold, .. } if fold.is_empty() => Variance::CONST,
             // A binder is the only node that shrinks the set: it binds its
             // index, so the index is not free in the result. There is no
             // "malformed binder" case to be conservative about any more —

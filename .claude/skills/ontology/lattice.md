@@ -165,7 +165,7 @@
 - **Follows:** a lane-uniform value is a broadcast, and a value varying by
   lane alone is invariant over the call, so it is a body root (step 5½).
   `pack(L)` is the one pass that takes L, and codegen hands L to it.
-- **Lives:** `ScheduledOp::Lanes(Binder)` (`pixelflow-codegen/src/program/mod.rs`),
+- **Lives:** `ScheduledOp::Lanes` (`pixelflow-codegen/src/program/mod.rs`),
   `jit_vector_bytes()` (`pixelflow-codegen/src/isa/mod.rs`); CLAUDE.md "SIMD
   is an implementation detail"; collapse-is-a-fold §1a, §2.2;
   `desloppify/rules/simd-is-codegens.json`.

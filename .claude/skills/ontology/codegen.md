@@ -55,8 +55,10 @@
 - **Is not:** an e-graph step. Not a place where codegen consults the
   algebra.
 - **Follows:** the e-graph reasons about the monoidal form, and the lowered
-  form may fuse `acc + a[i]*b[i]` into an FMA. `arena_to_schedule` reads
-  variance once to choose between gather and broadcast.
+  form may fuse `acc + a[i]*b[i]` into an FMA. `arena_to_schedule` reads the
+  arena's variance once: the lane bit chooses between gather and broadcast,
+  and every `Def` carries its node's variance to scoping, which places by it.
+  Nothing recomputes variance on the schedule.
 - **Lives:** `pixelflow-codegen/src/program/lower.rs` (`arena_to_schedule`);
   a-surviving-reduce-is-a-loop 2a″. Today the combine is emitted by the
   `Reduce` arm in `emit/mod.rs` outside the schedule (see Loop), which
@@ -65,7 +67,8 @@
 ### Schedule (Def). Homonym
 
 - **Is:** in codegen, a scope's evaluation order: a topological `Vec<Def>`,
-  where each `Def` defines exactly one value (SSA). It is "the first layer
+  where each `Def` defines exactly one value (SSA) and carries that value's
+  variance. It is "the first layer
   that has" a previous iteration. Other senses: the Halide sense, a form
   plus placement ("an extraction is no longer a form; it is a form **plus a
   schedule**"); and the loop nest ("the lattice is part of the schedule",
