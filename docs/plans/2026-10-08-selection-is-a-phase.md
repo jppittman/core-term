@@ -1705,7 +1705,8 @@ Every commit in this phase is live in production.
 #### C3: AVX-512 runs the selection pipeline
 
 - **Bytes:** every AVX-512 row of `byte_probe` moves (reported, not pinned: §0.11), for C1's reason, plus predicates kept in `k` (§0.1): each compare feeding a blend, a guard or mask logic loses its `vpmovm2d`, and each guard loses its `vptestmd`.
-- **Widen once.** `Lane::vector` emits a fresh `vpmovm2d` on each read of an `Opmask` lane that has no `k` form, so a mask read as a number `N` times is widened `N` times where legacy widened once at the compare. No pinned row shows it. The widened `Vector` belongs beside the lane, widened at most once per value; add the row that would show it. (C2's guarded-`If` question is gone: C3a deleted the `If` join, §0.12.)
+- **Widen once: not built.** `Lane::vector` emits a fresh `vpmovm2d` on each read of an `Opmask` lane that has no `k` form, so a mask read as a number `N` times is widened `N` times where legacy widened once at the compare. Remembering the widened `Vector` beside the lane takes a memo that knows which block it was made in, because an arm's widening does not dominate a reader outside the arm. Nothing in the tree needs it: `vpmovm2d` appears 0 times in the selected code of every `byte_probe` row and of the `'@'`@16 and `'8'`@32 glyph kernels (legacy: 3 to 15 per row). A probe built to show it (one `Lt` read three times by `BitAnd`) widens 3 times where legacy widens once, and is still smaller, 328 bytes against 392.
+- **The `Opmask` carry budget stays 0.** A predicate live into a loop head is stored and reloaded with `kmovw` each trip. No emitted loop does: in all 11 sibling rows, no backward-branch region holds a `kmovw` load from or store to the frame. The glyph kernels compile to no loop at all, and their 12 `kmovw` spills and reloads sit outside one.
 - **Report and gate:** as C1.
 
 #### C4: NEON selection, beside

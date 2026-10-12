@@ -658,7 +658,5 @@
   (`pub(crate)`, `emit/mod.rs`, which calls `detect()` itself);
   `2026-09-22-the-isa-is-decided-at-startup.md`; CLAUDE.md "SIMD Backend
   Selection". While the selection series is in flight, `PIXELFLOW_CODEGEN=
-  legacy|selection` (read once like `detect`; unset, a tier's own: `selection`
-  on AVX2 and NEON, `legacy` on AVX-512, which has not switched) picks the
-  pipeline per process, and `selection` on a tier with no selection backend is
-  refused, never downgraded (`emit::pipeline`).
+  legacy|selection` (read once like `detect`; unset, `selection` on every tier)
+  picks the pipeline per process (`emit::pipeline`).

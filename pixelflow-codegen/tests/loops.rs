@@ -1,6 +1,6 @@
 //! A loop keeps what it reads in registers and pays for what leaves it once.
 //!
-//! Run on the selection pipeline (AVX2's and NEON's own, or `PIXELFLOW_CODEGEN=selection`),
+//! Run on the selection pipeline (every tier's own, or `PIXELFLOW_CODEGEN=selection`),
 //! these fail on an allocator that drops every register at a loop's head, and
 //! on one that stores a value at its definition when the definition runs every
 //! trip. They are written against what a kernel emits: its traffic per scope,

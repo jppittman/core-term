@@ -2710,13 +2710,16 @@ fn location_of(locs: &[Option<Binding>], vid: regalloc::ValueId) -> Binding {
 // The one place a target decides anything
 // =============================================================================
 
-/// Drive `schedule` to a kernel on the backend the host's CPU selected.
+/// Drive `schedule` to a kernel on the backend the host's CPU selected, through
+/// the pipeline [`pipeline`] names: selection (select, allocate, assemble) on
+/// every tier, or, for diagnosis until the legacy emitters are deleted,
+/// `PIXELFLOW_CODEGEN=legacy`.
 ///
-/// Every [`LegacyBackend`] compiles on every host — emission is a pure function of
-/// `(schedule, RegisterFile)` into a `Vec<u8>`, and an x86 machine is perfectly
-/// capable of computing NEON instruction words. So the target does not decide
-/// which backends *exist*; it decides which one is *instantiated*, here, from
-/// the tier [`crate::isa::detect`] read off CPUID at startup. Each arm
+/// Every backend compiles on every host — emission is a pure function of the
+/// schedule into a `Vec<u8>`, and an x86 machine is perfectly capable of
+/// computing NEON instruction words. So the target does not decide which
+/// backends *exist*; it decides which one is *instantiated*, here, from the
+/// tier [`crate::isa::detect`] read off CPUID at startup. Each arm
 /// monomorphizes the driver against one concrete backend, exactly as the
 /// `cfg(target_feature)`-selected `Native` alias this replaces did: static
 /// dispatch inside the compile, no `dyn`, no vtable. The one `match` is this,
@@ -2734,7 +2737,7 @@ pub(crate) fn compile_native(
     program: regalloc::ScopedSchedule,
 ) -> Result<CompileResult, CompileError> {
     let isa = crate::isa::detect();
-    match (isa, pipeline(isa)) {
+    match (isa, pipeline()) {
         (Isa::Avx2, Pipeline::Legacy) => {
             compile_via_backend(program, &mut avx2::driver::Avx2Backend::new())
         }
@@ -2763,30 +2766,18 @@ enum Pipeline {
     Selection,
 }
 
-impl Pipeline {
-    /// What a tier compiles with when nothing says otherwise: selection once
-    /// the tier has switched to it. AVX-512 has a selection backend and has
-    /// not switched.
-    const fn of(isa: Isa) -> Self {
-        match isa {
-            Isa::Avx2 | Isa::Neon => Self::Selection,
-            Isa::Avx512 => Self::Legacy,
-        }
-    }
-}
-
 /// The pipeline this process compiles with: `PIXELFLOW_CODEGEN=legacy` or
-/// `selection`, else the tier's own ([`Pipeline::of`]). Read once at the first
-/// compile like [`crate::isa::detect`], because a compile cache keyed on shape
-/// assumes the choice does not change under it.
+/// `selection`, else selection. Read once at the first compile like
+/// [`crate::isa::detect`], because a compile cache keyed on shape assumes the
+/// choice does not change under it.
 ///
 /// # Panics
 /// On any other value, quoting it.
-fn pipeline(isa: Isa) -> Pipeline {
+fn pipeline() -> Pipeline {
     static PIPELINE: std::sync::OnceLock<Pipeline> = std::sync::OnceLock::new();
     *PIPELINE.get_or_init(|| {
         let Some(raw) = std::env::var_os(PIPELINE_VAR) else {
-            return Pipeline::of(isa);
+            return Pipeline::Selection;
         };
         match raw.to_str().map(|name| name.trim().to_ascii_lowercase()) {
             Some(name) if name == "legacy" => Pipeline::Legacy,
