@@ -535,7 +535,9 @@ mod tests {
             "the value depends on all three, via x and y, and nothing else"
         );
         assert!(
-            !v[value.0 as usize].is_spatially_varying(),
+            v[value.0 as usize]
+                .intersection(Variance::COORDS)
+                .is_const(),
             "no coordinate bit survives collapse"
         );
     }

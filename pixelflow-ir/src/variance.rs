@@ -90,12 +90,12 @@ impl Variance {
     /// and belong to no scope.
     ///
     /// **Note what that costs, because it is a trap.** Bits 2 and 3 are
-    /// outside *both* [`Self::COORDS`] and [`Self::BINDERS`], so a stray
-    /// retired axis reads as [`Self::is_frame_uniform`] and LICM hoists it
-    /// into the per-call prologue. When they were `Z`/`W` inside `COORDS`
-    /// they were never hoisted. The failure mode got strictly worse when the
-    /// axes retired, which is exactly why the emitter's refusal is
-    /// unconditional rather than advisory.
+    /// outside *both* [`Self::COORDS`] and [`Self::BINDERS`], so a value
+    /// naming a retired axis names no scope, and placement would send it to
+    /// the per-call prologue. When they were `Z`/`W` inside `COORDS` they
+    /// were never hoisted. The failure mode got strictly worse when the axes
+    /// retired, which is exactly why the emitter's refusal is unconditional
+    /// rather than advisory.
     ///
     /// # Panics
     ///
@@ -108,13 +108,6 @@ impl Variance {
             "variable index must be below Variance::VARIABLES"
         );
         Self(1 << var_idx)
-    }
-
-    /// Create from raw bits. Every bit is a variable.
-    #[inline]
-    #[must_use]
-    pub const fn from_bits(bits: u64) -> Self {
-        Self(bits)
     }
 
     /// Get the raw bits.
@@ -232,32 +225,6 @@ impl Variance {
     #[must_use]
     pub const fn depends_on_y(self) -> bool {
         self.0 & Self::Y.0 != 0
-    }
-
-    /// True if this can be computed once per call: it depends on no
-    /// coordinate and no binder, which is where a uniform's arithmetic lives.
-    ///
-    /// A binder index disqualifies it as surely as a coordinate does — a
-    /// value that changes per step of a reduction cannot be lifted to frame
-    /// scope, which sits outside the binder.
-    #[inline]
-    #[must_use]
-    pub const fn is_frame_uniform(self) -> bool {
-        self.0 & (Self::COORDS.0 | Self::BINDERS.0) == 0
-    }
-
-    /// True if this varies across the lattice: it depends on a coordinate.
-    #[inline]
-    #[must_use]
-    pub const fn is_spatially_varying(self) -> bool {
-        self.0 & Self::COORDS.0 != 0
-    }
-
-    /// Number of variables this expression depends on (`0..=VARIABLES`).
-    #[inline]
-    #[must_use]
-    pub const fn popcount(self) -> u32 {
-        self.0.count_ones()
     }
 }
 
@@ -427,8 +394,6 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
 /// An axis of extent 1 is a per-call constant; an axis of larger extent is a
 /// binder the emitted code loops over: `passes::lattice::collapse` wraps the
 /// kernel in one fold per axis, and codegen emits each as a loop.
-/// [`varying`](Self::varying) names the binders as a [`Variance`], so
-/// `deps(node) ∩ shape.varying()` is the scope a node's value lives at.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct LatticeShape([u32; crate::arena::COORD_AXES]);
 
@@ -449,23 +414,6 @@ impl LatticeShape {
     #[must_use]
     pub const fn extent(self) -> [u32; crate::arena::COORD_AXES] {
         self.0
-    }
-
-    /// The binders: one bit per axis of extent above 1, in [`Variance`]'s
-    /// order. Equal to `pixelflow_core::Lattice::loop_mask()` for the same
-    /// extents.
-    #[inline]
-    #[must_use]
-    pub const fn varying(self) -> Variance {
-        let mut bits = 0u64;
-        let mut axis = 0;
-        while axis < crate::arena::COORD_AXES {
-            if self.0[axis] > 1 {
-                bits |= 1 << axis;
-            }
-            axis += 1;
-        }
-        Variance(bits)
     }
 
     /// How many times this lattice evaluates a value whose dependencies are
@@ -548,7 +496,7 @@ mod tests {
             .fold(Variance::CONST, Variance::union);
         assert_eq!(binders, Variance::BINDERS);
         assert_eq!(
-            Variance::BINDERS.popcount() as usize,
+            Variance::BINDERS.bits().count_ones() as usize,
             crate::fold::Binder::COUNT
         );
         // The retired axes' bits sit between the two, in no scope at all.
@@ -564,7 +512,7 @@ mod tests {
 
     #[test]
     fn verify_union() {
-        assert_eq!(Variance::X.union(Variance::Y), Variance::from_bits(0b0011));
+        assert_eq!(Variance::X.union(Variance::Y).bits(), 0b0011);
         assert_eq!(Variance::CONST.union(Variance::Y), Variance::Y);
         assert_eq!(Variance::X.union(Variance::X), Variance::X);
         assert_eq!(Variance::X.union(Variance::Y), Variance::COORDS);
@@ -600,13 +548,10 @@ mod tests {
         assert!(!Variance::X.is_x_invariant());
 
         // A uniform is CONST, and CONST is what lands in the per-call
-        // prologue; nothing else is frame-uniform now that Z and W are gone.
-        assert!(Variance::CONST.is_frame_uniform());
-        assert!(!Variance::X.is_frame_uniform());
-        assert!(!Variance::from_var(4).is_frame_uniform());
-
-        assert!(Variance::X.is_spatially_varying());
-        assert!(!Variance::CONST.is_spatially_varying());
+        // prologue: a coordinate or a binder keeps a value out of it.
+        assert!(Variance::CONST.is_const());
+        assert!(!Variance::X.is_const());
+        assert!(!Variance::from_var(4).is_const());
     }
 
     #[test]
@@ -629,19 +574,6 @@ mod tests {
         assert!(all.starts_with("Variance{X,Y,?2,?3,i4,i5,"), "{all}");
         let last = Variance::VARIABLES - 1;
         assert!(all.ends_with(&format!(",i{last}}}")), "{all}");
-    }
-
-    #[test]
-    fn verify_popcount() {
-        assert_eq!(Variance::CONST.popcount(), 0);
-        assert_eq!(Variance::X.popcount(), 1);
-        assert_eq!(Variance::X.union(Variance::Y).popcount(), 2);
-        assert_eq!(Variance::COORDS.popcount(), 2);
-        assert_eq!(
-            Variance::BINDERS.popcount(),
-            u32::from(Variance::VARIABLES) - 4
-        );
-        assert_eq!(Variance::ALL.popcount(), u32::from(Variance::VARIABLES));
     }
 
     /// A reference's variance is its referent's — resolved, not guessed. A
@@ -773,7 +705,7 @@ mod tests {
         assert!(body_v.depends_on_y());
         assert!(body_v.is_x_invariant(), "nothing here reads X");
         assert!(
-            !body_v.is_frame_uniform(),
+            !body_v.is_const(),
             "a value that changes per fold step cannot lift to frame scope"
         );
         // The result, by contrast, has lost the index.
@@ -894,14 +826,6 @@ mod tests {
 #[cfg(test)]
 mod lattice_shape_tests {
     use super::{LatticeShape, Variance};
-
-    #[test]
-    fn binders_are_the_axes_with_extent_above_one() {
-        assert_eq!(LatticeShape::POINT.varying(), Variance::CONST);
-        assert_eq!(LatticeShape::new([37, 1]).varying(), Variance::X);
-        assert_eq!(LatticeShape::new([1, 37]).varying(), Variance::Y);
-        assert_eq!(LatticeShape::new([8, 8]).varying(), Variance::COORDS);
-    }
 
     #[test]
     fn evals_counts_the_iterations_of_the_innermost_binder_depended_on() {
