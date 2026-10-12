@@ -102,8 +102,9 @@
   depends on". A fold's binder and accumulator are its roots. So are
   constants and `Context` pointers. Other senses: a kernel's root, the arena
   node a `Kernel` names; and a candidate's match root, its e-class.
-- **Is not:** reserved by fiat. Not emitted in the scopes inside, where it
-  is a placeholder read from its park. Not a value with zero reads.
+- **Is not:** reserved by fiat. Not in the schedule of the scopes inside,
+  which hold only their own definitions (`ScopeFold::outer` names what they
+  read from outside). Not a value with zero reads.
 - **Follows:** every root is carried or parked by one ranking. A root's
   handoff counts as a read at its definition. An arm may own a root when it
   owns every scope that reads it (a-glyph-is-a-formula §4.3, confirmed

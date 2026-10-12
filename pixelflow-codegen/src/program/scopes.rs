@@ -43,8 +43,6 @@ fn schedule_variance(schedule: &[Def]) -> Vec<pixelflow_ir::variance::Variance> 
             ScheduledOp::Const(_) | ScheduledOp::Context(_) | ScheduledOp::Uniform(..) => {
                 Variance::CONST
             }
-            // Written by `place_roots`, which runs once this has.
-            ScheduledOp::Outer(_) => unreachable!("{vid:?} is an Outer before placement"),
             ScheduledOp::Unary(_, a)
             | ScheduledOp::ShiftImm(_, a, _)
             // A gather reads from a bound buffer, whose contents are fixed for
@@ -98,8 +96,8 @@ impl ScopedSchedule {
     /// reaches whose variance names no binder deeper than the fold's own — which
     /// still includes values invariant *in* the fold, computed in it once per
     /// trip. [`place_roots`] then moves each of those up to the outermost scope
-    /// binding its binders, where it is computed once, and leaves a placeholder
-    /// behind for the scope that read it. That is loop-invariant code motion
+    /// binding its binders, where it is computed once, and takes it out of the
+    /// fold's schedule, which holds only what the fold defines. That is loop-invariant code motion
     /// out of every fold at once — the lattice's rows and columns included, so
     /// a per-call value is computed per call and a per-row one per row
     /// (docs/plans/2026-09-16-collapse-is-a-fold.md §2.2) — asked as one
@@ -154,7 +152,7 @@ fn lay_out(scoped: &mut ScopedSchedule) {
             nest.folds
                 .iter()
                 .filter(|fold| fold.parent == scope)
-                .map(|fold| (schedule[fold.at].value, fold.schedule.as_slice())),
+                .map(|fold| (schedule[fold.at].value, fold.reads())),
         );
         let layout = Layout::of(schedule, roots, &opened);
         let (ordered, branches) = (layout.apply(schedule), layout.guards);
@@ -175,29 +173,19 @@ fn lay_out(scoped: &mut ScopedSchedule) {
     }
 }
 
-/// Whether a def is a placeholder already, and so not the placement's to
-/// park: a binder's `Var` (found where its fold keeps it), a `Reduce` that
-/// is not this scope's own (read from its accumulator slot).
-///
-/// A `Const` used to be here too, as "cheaper rebuilt than reloaded". It is
-/// not: rebuilding one is two instructions on x86, and a value parked for the
-/// scopes inside is carried in a register when one is free, which is zero.
-/// Whether a constant is worth a register is the allocator's question, priced
-/// like every other root's, so nothing here answers it.
-fn stays_put(op: &ScheduledOp) -> bool {
-    matches!(op, ScheduledOp::Var(_) | ScheduledOp::Reduce(..))
-}
-
 /// The second half of [`ScopedSchedule::from_schedule`]: in every fold, each def whose
 /// variance does not name the fold's binder is computed by an enclosing
 /// scope — the outermost binding every binder it *does* name — and read
-/// here from that scope's park.
+/// here from the binding that scope made.
 ///
 /// The value is already in the enclosing scope's schedule: a fold's closure
 /// was carved out of its parent's, and a value invariant in the fold has no
 /// bit deeper than the parent's, so the parent kept it. What changes is that
-/// the fold's own copy becomes a placeholder, and the value joins the
-/// computing scope's `roots`.
+/// the fold's own copy is removed, the value joins the computing scope's
+/// `roots`, and the fold records it as `outer`: a fold's schedule holds only
+/// what the fold defines. Two kinds of def stay whatever their variance: a
+/// binder's `Var`, and a `Reduce` that opens a fold here. Any other `Reduce`
+/// is a sibling fold's result, computed by the scope that opened that fold.
 fn place_roots(scoped: &mut ScopedSchedule, variance: &[pixelflow_ir::variance::Variance]) {
     use pixelflow_ir::variance::Variance;
 
@@ -236,10 +224,26 @@ fn place_roots(scoped: &mut ScopedSchedule, variance: &[pixelflow_ir::variance::
                 }
             }
         }
+        // Positions in this fold's schedule at which a fold of its own opens.
+        let opened: Vec<usize> = scoped
+            .folds
+            .iter()
+            .filter(|fold| fold.parent == Scope::Fold(j))
+            .map(|fold| fold.at)
+            .collect();
         let mut moved: Vec<(Scope, ValueId)> = Vec::new();
-        for def in &mut scoped.folds[j].schedule {
+        let mut removed: Vec<usize> = Vec::new();
+        let mut kept: Vec<Def> = Vec::new();
+        for (at, def) in core::mem::take(&mut scoped.folds[j].schedule)
+            .into_iter()
+            .enumerate()
+        {
             let deps = variance[def.value.0 as usize];
-            if deps.bits() & own.bits() != 0 || stays_put(&def.op) {
+            let defined_here = deps.bits() & own.bits() != 0
+                || matches!(def.op, ScheduledOp::Var(_))
+                || opened.contains(&at);
+            if defined_here {
+                kept.push(def);
                 continue;
             }
             // The outermost ancestor binding every binder `deps` names: the
@@ -251,9 +255,18 @@ fn place_roots(scoped: &mut ScopedSchedule, variance: &[pixelflow_ir::variance::
                 .find(|(_, binds)| deps.bits() & binds.bits() != 0)
                 .map_or(Scope::Body, |(scope, _)| *scope);
             moved.push((computing, def.value));
-            // The placeholder; never emitted, located at the park.
-            def.op = ScheduledOp::Outer(def.op.class());
+            removed.push(at);
         }
+        // The folds opened here keep their `Reduce` defs, at new positions.
+        for fold in scoped
+            .folds
+            .iter_mut()
+            .filter(|fold| fold.parent == Scope::Fold(j))
+        {
+            fold.at -= removed.partition_point(|&at| at < fold.at);
+        }
+        scoped.folds[j].schedule = kept;
+        scoped.folds[j].outer = moved.iter().map(|&(_, vid)| vid).collect();
         for (computing, vid) in moved {
             let roots = match computing {
                 Scope::Body => &mut scoped.body.roots,
@@ -341,8 +354,8 @@ fn extract_folds(
 /// a fold's closure also reached but whose variance names no deeper binder
 /// (a shared invariant leaf, or one that varies only with an enclosing
 /// binder) is not dropped: it stays here too, and stays in the fold's own
-/// schedule as well — where [`place_roots`] turns it into a placeholder read
-/// from the enclosing scope's park. Getting this backwards — removing the
+/// schedule as well — where [`place_roots`] takes it out, to be read from
+/// the enclosing scope. Getting this backwards — removing the
 /// whole closure — would orphan exactly that shared leaf's other consumer.
 /// The closure ends at such a value: what it is built from is the computing
 /// scope's business, not the fold's, and is not carried in behind it.
@@ -352,9 +365,9 @@ fn extract_folds(
 /// glyph's winding sum run once per piece of its distance fold, and once
 /// more at the top for the coverage that reads it. Such a `Reduce` stays
 /// the enclosing scope's fold, and the fold that reads its result keeps its
-/// def as a **placeholder** — in the schedule, so the reads resolve, but
-/// opening no scope here; `regalloc::local::allocate` parks it in its accumulator slot,
-/// where the enclosing scope's loop left it before this one began.
+/// def as a **placeholder** for now — in the schedule, so the closure walk
+/// resolves, but opening no scope here; [`place_roots`] takes it out, and the
+/// fold reads the result the enclosing scope's loop bound.
 /// `placeholder` is that verdict from the level above, by `ValueId`, so a
 /// level never mistakes one for a fold of its own.
 fn extract_folds_bound_by(
@@ -425,7 +438,7 @@ fn extract_folds_bound_by(
         let mut stack = Vec::new();
         mark[body_vid.0 as usize] = true;
         // The root too: a body that *is* another fold's result reads that
-        // result from its slot, and the whole schedule is the placeholder.
+        // result from the enclosing scope, and the whole schedule is the placeholder.
         if hoisted(body_vid) {
             placeholder_here[body_vid.0 as usize] = is_fold(body_vid);
         } else {
@@ -526,6 +539,7 @@ fn attach_fold(scoped: &mut ScopedSchedule, fold: PendingFold, parent: Scope, at
         parent,
         at,
         roots: Vec::new(),
+        outer: Vec::new(),
         schedule,
         guards: Vec::new(),
     });
@@ -549,7 +563,6 @@ fn attach_fold(scoped: &mut ScopedSchedule, fold: PendingFold, parent: Scope, at
 mod tests {
     use super::*;
     use crate::pipeline::tests::schedule_for;
-    use crate::program::Class;
     use pixelflow_ir::LatticeShape;
     use pixelflow_ir::arena::{ExprArena, ExprId, UniformDecl, UniformIdentity};
     use pixelflow_ir::kind::OpKind;
@@ -617,19 +630,14 @@ mod tests {
             "the body parks it for the fold: roots {:?}",
             scoped.body.roots
         );
-        let inner: alloc::vec::Vec<&ScheduledOp> = scoped
+        let in_a_fold = scoped
             .folds
             .iter()
             .flat_map(|f| f.schedule.iter())
-            .filter(|d| d.value == k)
-            .map(|d| &d.op)
-            .collect();
+            .any(|d| d.value == k);
         assert!(
-            !inner.is_empty()
-                && inner
-                    .iter()
-                    .all(|op| matches!(op, ScheduledOp::Outer(Class::Vector))),
-            "the fold reads it through a placeholder, never its own copy: {inner:?}"
+            !in_a_fold && scoped.folds.iter().any(|f| f.outer.contains(&k)),
+            "the fold reads it from the body, never through a copy of its own"
         );
     }
 

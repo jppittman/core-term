@@ -11,8 +11,9 @@
 //! ownership the DAG already states (`ownership`).
 //!
 //! **What earns a block.** An arm region that owns a value (a block nested in
-//! it counts) and whose mask is computed in this scope. There is no price: an
-//! arm is skipped when no lane selects it, however little it holds. An arm
+//! it counts). There is no price: an arm is skipped when no lane selects it,
+//! however little it holds. The mask may be an enclosing scope's: it is bound
+//! before this scope begins, and the arm waits on it only when it is computed here. An arm
 //! with nothing of its own is merged into the region around it.
 //!
 //! **Where a block goes.** Each earning region becomes one *block*: its own
@@ -28,8 +29,9 @@
 //!
 //! The `If` is one of the parent's own values and sits past every anchor of
 //! its arms, so a block always lands ahead of its `If`, and the scope's last
-//! value stays last. Blocks that share an anchor go in order of their `If`,
-//! the true arm first.
+//! value stays last. The two arms of an `If` share the later of their anchors,
+//! so they land together, and blocks that share an anchor go in order of their
+//! `If`, the true arm first.
 //!
 //! **Nothing else moves.** A block already one run after its mask has its
 //! first position as its anchor and lands where it was, so a scope whose arms
@@ -76,7 +78,7 @@ struct Blocks {
 }
 
 impl Blocks {
-    fn of(own: &Ownership, positions: &Positions, len: usize) -> Self {
+    fn of(own: &Ownership, len: usize) -> Self {
         let regions = own.regions();
         let mut owns = alloc::vec![false; regions.len()];
         for pos in 0..len {
@@ -98,9 +100,7 @@ impl Blocks {
         // block is known by the time the region is reached.
         for (region, arm) in arm_of_region.iter().enumerate().skip(1) {
             let enclosing = blocks.of_region[regions.parent(region)];
-            let earns =
-                arm.filter(|&i| owns[region] && positions.get(own.arms()[i].mask).is_some());
-            blocks.of_region[region] = match earns {
+            blocks.of_region[region] = match arm.filter(|_| owns[region]) {
                 Some(i) => {
                     blocks.arm.push(Some(i));
                     blocks.tree.grow(enclosing)
@@ -124,7 +124,7 @@ impl Layout {
     fn from(schedule: &[Def], folds: &FoldReads, own: &Ownership) -> Self {
         let len = schedule.len();
         let positions = Positions::of(schedule);
-        let blocks = Blocks::of(own, &positions, len);
+        let blocks = Blocks::of(own, len);
         let count = blocks.tree.len();
         let block_at = |pos: usize| blocks.of_region[own.region_of(pos).0];
 
@@ -170,28 +170,34 @@ impl Layout {
             }
         }
 
+        let mut block_of_arm = alloc::vec![None; own.arms().len()];
+        for block in 1..count {
+            block_of_arm[blocks.arm[block].expect("a block but the scope is an arm")] = Some(block);
+        }
+        let alone = |block: usize| {
+            let Some(arm) = blocks.arm[block] else {
+                return 0;
+            };
+            let mask = positions.get(own.arms()[arm].mask).map_or(0, |at| at + 1);
+            first[block].max(after[block]).max(mask)
+        };
+        // An `If`'s arms are placed together, at the later of their anchors, the
+        // true arm first: each arm's value lives across any block between it
+        // and the `If`, so an arm that happens to be written ahead of the other
+        // must not hold a register across it.
         let anchor: Vec<usize> = (0..count)
-            .map(|block| {
-                let Some(arm) = blocks.arm[block] else {
-                    return 0;
-                };
-                let mask = positions
-                    .get(own.arms()[arm].mask)
-                    .expect("a block's mask is in the scope");
-                first[block].max(after[block]).max(mask + 1)
+            .map(|block| match blocks.arm[block] {
+                Some(arm) => {
+                    block_of_arm[arm ^ 1].map_or(alone(block), |twin| alone(block).max(alone(twin)))
+                }
+                None => 0,
             })
             .collect();
 
         // Children in the order they are placed: by anchor, then by `If`, the
         // true arm first. The arms are already in `If` order, so a stable
         // counting sort by anchor is the whole sort.
-        let in_arm_order: Vec<usize> = {
-            let mut by_arm = alloc::vec![None; own.arms().len()];
-            for block in 1..count {
-                by_arm[blocks.arm[block].expect("a block but the scope is an arm")] = Some(block);
-            }
-            by_arm.into_iter().flatten().collect()
-        };
+        let in_arm_order: Vec<usize> = block_of_arm.into_iter().flatten().collect();
         let mut next_slot = alloc::vec![0usize; len + 2];
         for &block in &in_arm_order {
             next_slot[anchor[block] + 1] += 1;
@@ -641,10 +647,8 @@ mod tests {
             def(5, reduce()),
             def(6, ScheduledOp::Binary(OpKind::Add, ValueId(4), ValueId(5))),
         ];
-        // The sibling's body holds `W`'s id, as a placeholder read from its
-        // accumulator slot.
-        let sibling = [def(1, reduce())];
-        let folds = FoldReads::new(&schedule, [(ValueId(5), &sibling[..])]);
+        // The sibling's body names `W`'s id, which an enclosing scope computed.
+        let folds = FoldReads::new(&schedule, [(ValueId(5), [ValueId(1)])]);
 
         let (blind, _) = laid_out(&schedule);
         let (seen, values) = laid_out_with(&schedule, &[], &folds);
@@ -671,8 +675,7 @@ mod tests {
             if_of(6, 0, 5, 0),
             def(7, ScheduledOp::Binary(OpKind::Add, ValueId(6), ValueId(1))),
         ];
-        let body = [def(3, ScheduledOp::Const(0.0))];
-        let folds = FoldReads::new(&schedule, [(ValueId(4), &body[..])]);
+        let folds = FoldReads::new(&schedule, [(ValueId(4), [ValueId(3)])]);
         let (_, values) = laid_out_with(&schedule, &[], &folds);
         assert!(at(&values, 3) < at(&values, 4), "{values:?}");
     }

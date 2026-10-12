@@ -24,21 +24,6 @@ use pixelflow_ir::kind::OpKind;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ValueId(pub(super) u64);
 
-/// Which register file a value lives in: a vector of `f32` lanes, or an
-/// address.
-///
-/// A function of the defining op ([`ScheduledOp::class`]), and every
-/// consumer knows by position which it reads — a `Gather`'s index is a
-/// vector and its base is a pointer
-/// (docs/plans/2026-09-22-a-pointer-is-a-value.md).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Class {
-    /// One SIMD batch of `f32`.
-    Vector,
-    /// An address.
-    Pointer,
-}
-
 /// One step of a schedule: a value, and the operation that defines it.
 ///
 /// Every step defines exactly one value — the DAG is in SSA form — so a
@@ -72,7 +57,7 @@ pub(crate) enum ScheduledOp {
     /// Bound-memory gather: read the buffer whose base is the second operand
     /// at the lane index computed by the first. Lowered from
     /// `RawGather(Buffer(slot), index)`; the `Buffer` leaf *is* the base — a
-    /// [`ScheduledOp::Context`] def, a [`Class::Pointer`] value
+    /// [`ScheduledOp::Context`] def, a pointer value
     /// the allocator places like any other — so the index is the one vector
     /// operand and the base the one pointer operand.
     Gather(ValueId, ValueId),
@@ -96,7 +81,7 @@ pub(crate) enum ScheduledOp {
     /// The `k`-th pointer of the context the kernel is called with: a
     /// buffer's base for `k` below the buffer count, the link's uniform
     /// block and the origin block after. The definition of every
-    /// [`Class::Pointer`] value; no operands, variance `CONST`,
+    /// pointer value; no operands, variance `CONST`,
     /// so it is placed in the per-call scope and carried into the loops
     /// inside by `plan_carries` on the strength of its reads there — one
     /// load per call where every gather used to reload it
@@ -139,26 +124,6 @@ pub(crate) enum ScheduledOp {
     /// naming the [`Scope::Fold`] this def opens, not from this
     /// `ValueId`.
     Reduce(Fold, ValueId),
-    /// A read of a value an enclosing scope computes: what `scopes::place_roots`
-    /// leaves in a fold's schedule where the def it moved out used to be, and
-    /// the class of the value it stands for. Emits nothing and reads nothing;
-    /// the value is where the enclosing scope parked it.
-    Outer(Class),
-}
-
-impl ScheduledOp {
-    /// Which register file the value this op defines lives in: a
-    /// [`ScheduledOp::Context`] is an address, an [`ScheduledOp::Outer`] is
-    /// whatever it stands for, everything else is a vector (an effect's
-    /// "value" included, which is never placed anywhere).
-    #[must_use]
-    pub(super) fn class(&self) -> Class {
-        match self {
-            ScheduledOp::Context(_) => Class::Pointer,
-            ScheduledOp::Outer(class) => *class,
-            _ => Class::Vector,
-        }
-    }
 }
 
 /// Which scope of a loop nest: the body the call runs once, or one of the
@@ -233,10 +198,24 @@ pub(crate) struct ScopeFold {
     pub(super) at: usize,
     /// Values this fold computes for the scopes inside it.
     pub(super) roots: Vec<ValueId>,
+    /// Values an enclosing scope computes that this fold reads: what
+    /// `scopes::place_roots` took out of `schedule`, which holds only what
+    /// the fold defines.
+    pub(super) outer: Vec<ValueId>,
     /// The loop body, in topological order.
     pub(super) schedule: Vec<Def>,
     /// The body's `If` guards, as [`ScopeRegion::guards`].
     pub(super) guards: Vec<IfGuard>,
+}
+
+impl ScopeFold {
+    /// The ids the fold names: the ones it defines and the ones it reads
+    /// from outside. Those its parent's schedule also holds are what the
+    /// fold reads from there.
+    pub(super) fn reads(&self) -> impl Iterator<Item = ValueId> + '_ {
+        let defined = self.schedule.iter().map(|def| def.value);
+        defined.chain(self.outer.iter().copied())
+    }
 }
 
 /// Which arm of an `If` node a guard branch skips or targets.
@@ -320,7 +299,6 @@ pub(crate) fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use
         | ScheduledOp::Context(_)
         | ScheduledOp::Uniform(..)
         | ScheduledOp::Reduce(..)
-        | ScheduledOp::Outer(_)
         | ScheduledOp::Seq(..) => (None, None, None),
         // A gather's base is a pointer, read through `pointer_operand`; the
         // index is its one vector operand.
@@ -336,7 +314,7 @@ pub(crate) fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use
 }
 
 /// The address an operation reads, if it reads one: a gather's, a
-/// broadcast's or a uniform load's base, always a [`Class::Pointer`] value.
+/// broadcast's or a uniform load's base, always a pointer value.
 /// One at most.
 pub(crate) fn pointer_operand(sop: &ScheduledOp) -> Option<ValueId> {
     match sop {
