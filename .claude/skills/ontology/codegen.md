@@ -14,10 +14,37 @@
   sections) → encoding. The same rule applies upstream: an ordering stated
   as a type removes the guard that defends it (the phase-typed arena, see
   Legality).
-- **Lives:** `pixelflow-codegen/src/pipeline.rs` (legalize → lower
-  (`arena_to_schedule`) → scopes and layout (`ScopedSchedule::from_schedule`)
-  → allocate and emit (`compile_native`)); `scripts/check-emit-boundary.sh`.
-  Instruction selection is the missing phase.
+- **Lives:** `pixelflow-codegen/src/pipeline.rs` (`compile`: the chain's
+  front, `Legalize → Lower → Nest → Own → Layout`) and `emit::native` (its
+  back, `Select → Allocate → Assemble`, on the tier's backend; see Pass);
+  `scripts/check-emit-boundary.sh`.
+
+### Pass. Homonym of the language's pass
+
+- **Is:** one stage of the compiler as a value: a type with an `Input`, an
+  `Output` and `run(self, input) -> Result<Output, CompileError>`, carrying
+  its own parameters (shape, lanes, backend) as fields. Stages compose with
+  `then`, Kleisli composition in `Result`: associative, and the first error
+  ends the chain. The chain is `Legalize → Lower → Nest → Own → Layout →
+  Select → Allocate → Assemble`, and each stage's output type is the next's
+  input (JP, 2026-10-12: "I want all the passes pipelined/monadic/laid
+  neatly", "I want a pass trait").
+- **Is not:** a pass manager. There is no `dyn Pass`, registry or list of
+  passes at run time: a chain is a type, built where its parameters are
+  known, and the backend is chosen once, when it is built. Not a stage that
+  calls another stage (`Flow::of` used to run the backward ownership pass
+  inside the forward layout, inside the scoping). Not the language's pass
+  (an endomorphism on (arena, root): `legalize`'s steps, `Optimize`; see
+  compiler.md), nor a stage of P (open value, closed program).
+- **Follows:** a fact two later stages need is a stage of its own, with its
+  own output type: ownership is `Own`, between scoping and layout, so
+  `ScopedSchedule<A>` carries `()`, then each scope's `Ownership`, then its
+  `Flow`, and a stage cannot be handed a nest its predecessor has not run on.
+- **Lives:** `pixelflow-codegen/src/pass.rs` (`Pass`, `Then`);
+  `pipeline.rs` (`Legalize`, `Lower`); `program/{scopes,ownership,layout}.rs`
+  (`Nest`, `Own`, `Layout`); `emit/select.rs`, `emit/regalloc/local.rs`,
+  `emit/mod.rs` (`Select`, `Allocate`, `Assemble`);
+  docs/plans/2026-10-08-selection-is-a-phase.md §0.14.
 
 ### Lowering
 
@@ -51,7 +78,7 @@
 - **Lives:** `pixelflow-codegen/src/program/mod.rs` (`Def`, `ScheduledOp`,
   `ScopedSchedule`), `program/layout.rs`. The schedule
   reaches the emitter finished: selection walks its `Flow`, and
-  `regalloc::local::allocate` chooses registers and slots, never the order.
+  the `Allocate` pass (`regalloc::local`) chooses registers and slots, never the order.
 
 ### Scope and the nest
 
@@ -70,8 +97,8 @@
   reconciled at its own head. The frame is a tree. A scope's children are
   found by scanning `folds` for their parent.
 - **Lives:** `pixelflow-codegen/src/program/mod.rs` (`Scope`,
-  `ScopedSchedule { body, folds }`, `ScopeFold`, `ScopeRegion`),
-  `program/scopes.rs` (`extract_folds`); a-surviving-reduce-is-a-loop
+  `ScopedSchedule<A> { body, folds }`, `ScopeFold`, `ScopeRegion`),
+  `program/scopes.rs` (`Nest`, `extract_folds`); a-surviving-reduce-is-a-loop
   §4a–§4b; collapse-is-a-fold §2.2, step 5.
 
 ### Placement (Span, Point). Homonym
@@ -114,9 +141,9 @@
   computes none of it. That is sound because a fold's `outer` is closed —
   what it reads from outside, its parent defines ahead of the fold or reads
   from outside in turn, and it reads nothing it does not define or name
-  there — which `lay_out` asserts.
+  there — which `Own` asserts of every scope (`assert_closed`).
 - **Lives:** `ScopeFold::outer` (`pixelflow-codegen/src/program/mod.rs`),
-  `place_roots` and `lay_out` (`program/scopes.rs`), `FoldReads`
+  `place_roots` and `assert_closed` (`program/scopes.rs`), `FoldReads`
   (`program/guards.rs`). Selection has no root or park of its own: a value
   live into a loop's head is carried in a register or stored and dropped
   there (`plan_carries`, `emit/regalloc/local.rs`). The `roots` fields were
@@ -337,7 +364,7 @@
   without skipping every read". Splitting raises the slot count while
   lowering traffic. Residency is final once the reader is allocated, so
   reload targets are per-instruction roles.
-- **Lives:** `regalloc::local::allocate`
+- **Lives:** the `Allocate` pass (`regalloc::local`)
   (`pixelflow-codegen/src/emit/regalloc/local.rs`); escape-hatches step 2 and the
   2026-09-05 block. It does this one value at a time: a value stays in
   its register until the register is needed, the cheapest to give up by
@@ -382,7 +409,7 @@
 - **Follows:** "The frame prologue is never guarded." No per-frame heap
   allocation.
 - **Lives:** `regalloc::resource::Frame` (`pixelflow-codegen/src/emit/regalloc/resource.rs`),
-  laid out by `regalloc::local::allocate` from value intervals before any
+  laid out by the `Allocate` pass (`regalloc::local`) from value intervals before any
   instruction is bound; the `a_folds_spill_slots_do_not_alias_its_parents`
   guard (`emit/mod.rs`).
 
@@ -404,9 +431,9 @@
 - **Follows:** what skipping saves is everything the arm owns. Hoisting must
   not strip exclusivity, which is a DAG fact computed before partitioning.
   An arm owns a root when it owns every scope that reads it (see Root).
-- **Lives:** `pixelflow-codegen/src/program/ownership.rs` (#1311),
-  `program/layout.rs` (#1312, #1313; `Flow::of`: an `If`'s arms go
-  immediately before it), `program/guards.rs` (`FoldReads`);
+- **Lives:** `pixelflow-codegen/src/program/ownership.rs` (#1311; `Own`, the
+  backward pass), `program/layout.rs` (#1312, #1313; `Layout`, `Flow::of`: an
+  `If`'s arms go immediately before it), `program/guards.rs` (`FoldReads`);
   CLAUDE.md "`If` contains an if".
 
 ### Guard. Homonym
@@ -606,12 +633,14 @@
 - **Lives:** `asm::assemble` (`pixelflow-codegen/src/emit/asm.rs`), which
   imports nothing from the crate (`scripts/check_emit_boundary.py` rule A) and
   is handed the encoder as a closure, so it names no instruction type. It is
-  called once, from `emit::compile_on`, on the program the allocator builds.
+  called once, by the `Assemble` pass, on the program the allocator builds.
   `docs/designs/assembler-as-functor.md`.
 
 ### Emitter
 
-- **Is:** the last stage, handed a finished `ScopedSchedule`. "The emitter
+- **Is:** the last stages (`Select`, `Allocate`, `Assemble`), handed a
+  finished `ScopedSchedule<Flow>` by the front of the chain (`Legalize` to
+  `Layout`). "The emitter
   gains no analysis. If a stage needs one, it belongs upstream. Hash-consing
   and other free-at-the-point-of-use folds are fine; a search is not."
 - **Is not:** a search ("What calls itself 'emit' is four fifths a search").
@@ -652,7 +681,7 @@
   one tier and about 14 on another). `xtask isa-matrix` runs both x86 tiers
   from one build. The tier must be an input to P.
 - **Lives:** `pixelflow_codegen::isa::{Isa, detect}`, `jit_vector_bytes`
-  (`pixelflow-codegen/src/isa/mod.rs`), `emit::compile_native`
+  (`pixelflow-codegen/src/isa/mod.rs`), `emit::native`
   (`pub(crate)`, `emit/mod.rs`, which calls `detect()` itself);
   `2026-09-22-the-isa-is-decided-at-startup.md`; CLAUDE.md "SIMD Backend
   Selection".

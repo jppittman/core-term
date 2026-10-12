@@ -64,6 +64,7 @@ use crate::emit::{
     Target, Value, ValueName, Vector,
 };
 use crate::error::CompileError;
+use crate::pass::Pass;
 use alloc::collections::{BTreeMap, BinaryHeap};
 use alloc::vec::Vec;
 use core::cmp::Reverse;
@@ -513,212 +514,217 @@ fn plan_carries(live: &Liveness, reads: &[usize], budget: Budget) -> Vec<Vec<u64
     plan
 }
 
-/// Allocate `function`: bind every value to leases of `pool` and slots of
-/// `frame`, inserting the stores, reloads and copies that make the binding
-/// hold.
-///
-/// # Errors
-/// [`CompileError::BudgetExceeded`] when the narrow region passes 4,096 slots
-/// or the frame passes `MAX_FRAME`.
-///
-/// # Panics
-/// A selection bug, never a fact about a kernel: an instruction holding more
-/// registers of a file than the file has, a `Flags` value read after another
-/// flags write or held to the end of its block, a carried value that is not in
-/// its register at its loop's latch, a loop parameter read past the latch, a
-/// backward branch whose moves form a register cycle (no producer before a loop
-/// passes one parameter to another), a latch move into a register that a value
-/// other than the loop's parameters and the moved arguments holds, a value
-/// dropped at a join that is in no slot, a block no scanned branch reaches, a
-/// loop's exit reached by anything but its latch, or an entry block whose first
-/// instruction does not make the frame.
-pub(in crate::emit) fn allocate<'m, B: IsaBackend>(
-    function: Function<B>,
-    pool: &'m Pool<B>,
-    frame: &'m mut Frame,
-) -> Result<Allocated<'m, B>, CompileError> {
-    let mut live = Liveness::of(&function);
-    let reads = live.index_reads();
-    layout(&mut live.lives, frame)?;
-    let hoisted = live.lives.iter().filter(|life| life.hoisted).count() as u64;
-    let budget = [
-        B::FILE
-            .members(FileId::Vector)
-            .len()
-            .saturating_sub(CARRY_RESERVE),
-        B::FILE
-            .members(FileId::General)
-            .len()
-            .saturating_sub(GENERAL_CARRY_RESERVE),
-        0,
-        0,
-    ];
-    let plan = plan_carries(&live, &reads, budget);
-    let Liveness { lives, loops, .. } = live;
+/// The allocator: binds every value to leases of `pool` and slots of `frame`,
+/// inserting the stores, reloads and copies that make the binding hold.
+pub(in crate::emit) struct Allocate<'m, B: IsaBackend> {
+    pub(in crate::emit) pool: &'m Pool<B>,
+    pub(in crate::emit) frame: &'m mut Frame,
+}
 
-    let leases = Leases::new(pool);
-    let mut free: [Vec<Lent<B>>; 4] = [
-        leases.vector.into_iter().map(Lent::Vector).collect(),
-        leases.general.into_iter().map(Lent::General).collect(),
-        leases.opmask.into_iter().map(Lent::Opmask).collect(),
-        leases.flags.into_iter().map(Lent::Flags).collect(),
-    ];
-    // The ABI's registers are the entry parameters' to begin with.
-    let entry = [
-        function.entry.ctx.name(),
-        function.entry.out.name(),
-        function.entry.pitch.name(),
-    ];
-    let mut held = Held(Vec::new());
-    let abi = [leases.entry.ctx, leases.entry.out, leases.entry.pitch];
-    for (value, lease) in entry.iter().zip(abi) {
-        held.insert(value.id, Lent::General(lease));
-    }
-    // One nothing reads is dead on arrival, which the scan would find only
-    // after the first instruction.
-    for value in entry {
-        if lives[value.id as usize].reads.is_empty() {
-            let lent = held.remove(value.id).expect("an entry value is held");
-            free[lent.file() as usize].push(lent);
-        }
-    }
-    // The ABI registers are stored, if they ever are, right after the entry
-    // block's first instruction, which makes the frame.
-    let mut defined: Vec<Option<(usize, usize)>> = alloc::vec![None; lives.len()];
-    for value in entry {
-        defined[value.id as usize] = Some((0, 0));
-    }
+impl<'m, B: IsaBackend> Pass for Allocate<'m, B> {
+    type Input = Function<B>;
+    type Output = Allocated<'m, B>;
 
-    let mut labels = function.labels;
-    let text_end = labels.mint();
-    let blocks_at = function
-        .blocks
-        .iter()
-        .enumerate()
-        .map(|(i, block)| (block.label, (i, block.params.clone())))
-        .collect();
-    let loop_at = function
-        .loops
-        .iter()
-        .enumerate()
-        .map(|(i, l)| (l.head, i))
-        .collect();
-    let entry_numbers = B::FILE.entry();
-    let mut scan = Scan {
-        frame: &mut *frame,
-        reads,
-        lives,
-        blocks_at,
-        loops,
-        plan,
-        loop_at,
-        active: Vec::new(),
-        want: BTreeMap::new(),
-        edges: BTreeMap::new(),
-        free,
-        held,
-        used_general: [entry_numbers.ctx, entry_numbers.out, entry_numbers.pitch]
-            .into_iter()
-            .fold(0, |used, number| used | 1 << number),
-        pinned: Vec::new(),
-        next: function.classes.len() as u64,
-        defined,
-        insts: Vec::new(),
-        records: Vec::new(),
-        late: BTreeMap::new(),
-        numbers: Vec::new(),
-        at: function.blocks[0].label,
-        block: 0,
-        position: 0,
-    };
+    /// # Errors
+    /// [`CompileError::BudgetExceeded`] when the narrow region passes 4,096 slots
+    /// or the frame passes `MAX_FRAME`.
+    ///
+    /// # Panics
+    /// A selection bug, never a fact about a kernel: an instruction holding more
+    /// registers of a file than the file has, a `Flags` value read after another
+    /// flags write or held to the end of its block, a carried value that is not in
+    /// its register at its loop's latch, a loop parameter read past the latch, a
+    /// backward branch whose moves form a register cycle (no producer before a loop
+    /// passes one parameter to another), a latch move into a register that a value
+    /// other than the loop's parameters and the moved arguments holds, a value
+    /// dropped at a join that is in no slot, a block no scanned branch reaches, a
+    /// loop's exit reached by anything but its latch, or an entry block whose first
+    /// instruction does not make the frame.
+    fn run(self, function: Function<B>) -> Result<Allocated<'m, B>, CompileError> {
+        let Self { pool, frame } = self;
+        let mut live = Liveness::of(&function);
+        let reads = live.index_reads();
+        layout(&mut live.lives, frame)?;
+        let hoisted = live.lives.iter().filter(|life| life.hoisted).count() as u64;
+        let budget = [
+            B::FILE
+                .members(FileId::Vector)
+                .len()
+                .saturating_sub(CARRY_RESERVE),
+            B::FILE
+                .members(FileId::General)
+                .len()
+                .saturating_sub(GENERAL_CARRY_RESERVE),
+            0,
+            0,
+        ];
+        let plan = plan_carries(&live, &reads, budget);
+        let Liveness { lives, loops, .. } = live;
 
-    let mut shapes = Vec::with_capacity(function.blocks.len());
-    for block in function.blocks {
-        scan.at = block.label;
-        scan.records.push(Vec::new());
-        scan.head(block.label)?;
-        for pushed in block.insts {
-            scan.instruction(pushed)?;
-            scan.position += 1;
+        let leases = Leases::new(pool);
+        let mut free: [Vec<Lent<B>>; 4] = [
+            leases.vector.into_iter().map(Lent::Vector).collect(),
+            leases.general.into_iter().map(Lent::General).collect(),
+            leases.opmask.into_iter().map(Lent::Opmask).collect(),
+            leases.flags.into_iter().map(Lent::Flags).collect(),
+        ];
+        // The ABI's registers are the entry parameters' to begin with.
+        let entry = [
+            function.entry.ctx.name(),
+            function.entry.out.name(),
+            function.entry.pitch.name(),
+        ];
+        let mut held = Held(Vec::new());
+        let abi = [leases.entry.ctx, leases.entry.out, leases.entry.pitch];
+        for (value, lease) in entry.iter().zip(abi) {
+            held.insert(value.id, Lent::General(lease));
         }
-        let flags = scan
-            .held
-            .iter()
-            .find_map(|(id, lent)| (lent.file() == FileId::Flags).then_some(id));
-        if let Some(flags) = flags {
-            panic!(
-                "value {flags} is a flags value live at the end of {:?}, and no flags value is live at a label",
-                block.label
-            );
-        }
-        shapes.push((block.label, block.scope));
-        scan.block += 1;
-    }
-    assert!(
-        scan.held.0.is_empty() && scan.active.is_empty() && scan.edges.is_empty(),
-        "values are held after the last instruction: {:?}, loops are open (by index): {:?}, and branches to {:?} were never arrived at",
-        scan.held.iter().map(|(id, _)| id).collect::<Vec<_>>(),
-        scan.active.iter().map(|a| a.index).collect::<Vec<_>>(),
-        scan.edges.keys()
-    );
-    let Scan {
-        free,
-        insts,
-        records,
-        late,
-        numbers,
-        ..
-    } = scan;
-
-    let slots = frame.minted();
-    let frame: &'m Frame = frame;
-    let mut bank = free;
-    bank.iter_mut()
-        .for_each(|file| file.sort_unstable_by_key(Lent::number));
-    let mut binding = Binding {
-        frame,
-        insts: &insts,
-        bank,
-        numbers: &numbers,
-        next: 0,
-        framed: false,
-    };
-    let mut late = late;
-    let mut blocks = Vec::with_capacity(records.len());
-    for (b, (block, (label, scope))) in records.into_iter().zip(shapes).enumerate() {
-        let mut insts = Vec::with_capacity(block.len());
-        for stored in late.remove(&StorePoint::Entry(b)).unwrap_or_default() {
-            insts.push(binding.record(&stored));
-        }
-        for (k, record) in block.into_iter().enumerate() {
-            insts.push(binding.record(&record));
-            assert!(
-                (b, k) != (0, 0) || binding.framed,
-                "the entry block's first instruction does not make the frame, so the ABI registers have nowhere to be stored"
-            );
-            for stored in late.remove(&StorePoint::After(b, k)).unwrap_or_default() {
-                insts.push(binding.record(&stored));
+        // One nothing reads is dead on arrival, which the scan would find only
+        // after the first instruction.
+        for value in entry {
+            if lives[value.id as usize].reads.is_empty() {
+                let lent = held.remove(value.id).expect("an entry value is held");
+                free[lent.file() as usize].push(lent);
             }
         }
-        blocks.push(Block {
-            label,
-            params: Vec::new(),
-            insts,
-            scope,
-        });
-    }
+        // The ABI registers are stored, if they ever are, right after the entry
+        // block's first instruction, which makes the frame.
+        let mut defined: Vec<Option<(usize, usize)>> = alloc::vec![None; lives.len()];
+        for value in entry {
+            defined[value.id as usize] = Some((0, 0));
+        }
 
-    Ok(Allocated {
-        blocks,
-        loops: function.loops,
-        constants: function.constants,
-        labels,
-        text_end,
-        frame_bytes: frame.bytes(),
-        slots,
-        hoisted,
-        scheduled: function.scheduled,
-    })
+        let mut labels = function.labels;
+        let text_end = labels.mint();
+        let blocks_at = function
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(i, block)| (block.label, (i, block.params.clone())))
+            .collect();
+        let loop_at = function
+            .loops
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (l.head, i))
+            .collect();
+        let entry_numbers = B::FILE.entry();
+        let mut scan = Scan {
+            frame: &mut *frame,
+            reads,
+            lives,
+            blocks_at,
+            loops,
+            plan,
+            loop_at,
+            active: Vec::new(),
+            want: BTreeMap::new(),
+            edges: BTreeMap::new(),
+            free,
+            held,
+            used_general: [entry_numbers.ctx, entry_numbers.out, entry_numbers.pitch]
+                .into_iter()
+                .fold(0, |used, number| used | 1 << number),
+            pinned: Vec::new(),
+            next: function.classes.len() as u64,
+            defined,
+            insts: Vec::new(),
+            records: Vec::new(),
+            late: BTreeMap::new(),
+            numbers: Vec::new(),
+            at: function.blocks[0].label,
+            block: 0,
+            position: 0,
+        };
+
+        let mut shapes = Vec::with_capacity(function.blocks.len());
+        for block in function.blocks {
+            scan.at = block.label;
+            scan.records.push(Vec::new());
+            scan.head(block.label)?;
+            for pushed in block.insts {
+                scan.instruction(pushed)?;
+                scan.position += 1;
+            }
+            let flags = scan
+                .held
+                .iter()
+                .find_map(|(id, lent)| (lent.file() == FileId::Flags).then_some(id));
+            if let Some(flags) = flags {
+                panic!(
+                    "value {flags} is a flags value live at the end of {:?}, and no flags value is live at a label",
+                    block.label
+                );
+            }
+            shapes.push((block.label, block.scope));
+            scan.block += 1;
+        }
+        assert!(
+            scan.held.0.is_empty() && scan.active.is_empty() && scan.edges.is_empty(),
+            "values are held after the last instruction: {:?}, loops are open (by index): {:?}, and branches to {:?} were never arrived at",
+            scan.held.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            scan.active.iter().map(|a| a.index).collect::<Vec<_>>(),
+            scan.edges.keys()
+        );
+        let Scan {
+            free,
+            insts,
+            records,
+            late,
+            numbers,
+            ..
+        } = scan;
+
+        let slots = frame.minted();
+        let frame: &'m Frame = frame;
+        let mut bank = free;
+        bank.iter_mut()
+            .for_each(|file| file.sort_unstable_by_key(Lent::number));
+        let mut binding = Binding {
+            frame,
+            insts: &insts,
+            bank,
+            numbers: &numbers,
+            next: 0,
+            framed: false,
+        };
+        let mut late = late;
+        let mut blocks = Vec::with_capacity(records.len());
+        for (b, (block, (label, scope))) in records.into_iter().zip(shapes).enumerate() {
+            let mut insts = Vec::with_capacity(block.len());
+            for stored in late.remove(&StorePoint::Entry(b)).unwrap_or_default() {
+                insts.push(binding.record(&stored));
+            }
+            for (k, record) in block.into_iter().enumerate() {
+                insts.push(binding.record(&record));
+                assert!(
+                    (b, k) != (0, 0) || binding.framed,
+                    "the entry block's first instruction does not make the frame, so the ABI registers have nowhere to be stored"
+                );
+                for stored in late.remove(&StorePoint::After(b, k)).unwrap_or_default() {
+                    insts.push(binding.record(&stored));
+                }
+            }
+            blocks.push(Block {
+                label,
+                params: Vec::new(),
+                insts,
+                scope,
+            });
+        }
+
+        Ok(Allocated {
+            blocks,
+            loops: function.loops,
+            constants: function.constants,
+            labels,
+            text_end,
+            frame_bytes: frame.bytes(),
+            slots,
+            hoisted,
+            scheduled: function.scheduled,
+        })
+    }
 }
 
 /// An instruction the scan has placed: which of the scan's instructions to

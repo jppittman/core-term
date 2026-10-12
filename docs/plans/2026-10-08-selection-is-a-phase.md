@@ -5,7 +5,7 @@
 - **Author**: JP (design), Claude (draft)
 - **Status**: `Plan of record`. This is revision 3.
   - Revision 2 answered three reviews (allocation, closure and landing), and Appendix A records what was done with each point.
-  - Revision 3 carries JP's decisions of 2026-10-08, which override anything below that disagrees with them (§0). §0.11 and §0.12 carry his rulings of 2026-10-11, and §0.13 the one of 2026-10-12.
+  - Revision 3 carries JP's decisions of 2026-10-08, which override anything below that disagrees with them (§0). §0.11 and §0.12 carry his rulings of 2026-10-11, and §0.13 and §0.14 the ones of 2026-10-12.
 - **Created**: 2026-10-08
 - **Verified against**: `origin/main` at `bdee3900` (#1335). At `bdee3900`, `pixelflow-codegen` is the same as at `fc1da611` except for `emit/coverage.rs`.
 - **Assumes the narrowing lands first.** The narrowing is worktree `/home/user/pixelflow-narrow`, branch `codegen-narrow-emit`, at `2da80bba` plus uncommitted work. It is based on `9bd3df6c` and must be rebased over #1330–#1335. After it lands:
@@ -123,6 +123,12 @@ These are binding. Where a later section disagrees, this section wins, and the i
     - Every value stays in the order it was constructed, within the block that owns it. An `If`'s earning arms, true arm first, go immediately before the `If`. That is the whole placement rule, and it is always valid: an arm-owned value is read only inside its arm or by its `If`, so what it reads from the region around it was constructed before it, hence before the `If`, and the mask is read by the `If`.
     - So `layout.rs` has no anchor, no `first`, no `after`, no `alone`, no counting sort, and no permutation of the schedule: the `Flow` is the order, and selection walks it. Text below that describes layout's anchors, "nothing moves earlier than it was", "the identity, by construction", or a reordered schedule is superseded. A `Flow`'s arms are in the order of their `If`s, not parents before children.
     - Bytes move because arm code lands next to its `If`. They are reported, not pinned (§0.11).
+14. **The passes are one typed pipeline of `Pass` values, and ownership is its own backward pass** (JP, 2026-10-12; F1). Verbatim, first: *"Add the backward pass. Uhm. I want all the passes pipelined/monadic/laid neatly"*. To the proposal of one chain of passes: *"Yes that's what I meant"*. Then: *"I want a pass trait"*.
+    - `pass.rs` defines `trait Pass { type Input; type Output; fn run(self, Input) -> Result<Output, CompileError>; fn then(self, next) }` and the combinator `Then<A, B>`, whose input is `A`'s, whose output is `B`'s, and which requires `B::Input = A::Output`. `then` is associative and the first `Err` ends the chain. A chain is a type: no `dyn Pass`, no registry, no list of passes at run time.
+    - Each stage is a type carrying its own parameters (shape, lanes, backend, the pool and frame it allocates from), taking only its input, and calling no other pass. The chain is `Legalize -> Lower -> Nest -> Own -> Layout -> Select -> Allocate -> Assemble`. `Nest` is scoping (`Scope` is the name of a scope), `Own` is the backward pass, and `Layout` makes each scope's `Flow`.
+    - `ScopedSchedule<A>` carries what each stage after `Nest` works out about every scope: nothing, then its `Ownership`, then its `Flow`. `Flow::of` no longer calls `Ownership::of`; the nest `Own` returns holds one `Ownership` per scope, computed in one backward pass over each, and `Layout` reads it.
+    - `compile` builds the front of the chain (`Legalize` to `Layout`) and `emit::native` matches the tier once, appending `Select`, `Allocate` and `Assemble` for that backend. `emit/` names `Pass` and no stage above it.
+    - Text below that describes `compile_native`, `ScopedSchedule::from_schedule`, `lay_out`, or a driver that calls `select`, `allocate` and `assemble` as functions is superseded.
 
 ## 1. What each phase is
 
@@ -948,7 +954,7 @@ impl<'a, B: IsaBackend> Spiller<'a, B> {
 ```rust
 /// Everything about a target. The driver, the allocator and the assembler
 /// are generic over it, and none of them names a register, an opcode or an
-/// encoding. `compile_native` monomorphizes it once per tier: one `match`
+/// encoding. `emit::native` monomorphizes it once per tier: one `match`
 /// per kernel.
 pub(in crate::emit) trait IsaBackend: Sized + 'static {
     type Inst<S: Stage>;
@@ -1154,16 +1160,18 @@ pub(in crate::emit) enum Origin { Selected, Spill, Reload, Remat, Copy }
 ### 2.12 The driver
 
 ```rust
-/// The selection pipeline: select, allocate, assemble.
-fn compile_on<B: IsaBackend>(scoped: &ScopedSchedule) -> Result<CompileResult, CompileError> {
-    let function = select::<B>(scoped)?;
+/// The front of the chain, then select, allocate, assemble on one backend.
+fn compile_on<B: IsaBackend, P: Pass<Output = ScopedSchedule<Flow>>>(
+    front: P,
+    input: P::Input,
+) -> Result<CompileResult, CompileError> {
     let pool = Pool::<B>::mint();
     let mut frame = Frame::empty(B::FILE.vector_bytes());
-    let mut allocated = local::allocate(function, &pool, &mut frame)?;
-    let program = allocated.program();         // text: blocks; data: the pool
-    let assembled = asm::assemble(&program, |i, out| B::encode(&i.inst, out));
-    let traffic = EmitTraffic::of(&allocated, &assembled);
-    CompileResult::new(&assembled.code, traffic, allocated.frame_bytes)
+    front
+        .then(Select::<B>::new())              // blocks of instructions over values
+        .then(Allocate { pool: &pool, frame: &mut frame })
+        .then(Assemble::<B>::new())            // text: blocks; data: the pool
+        .run(input)
 }
 ```
 

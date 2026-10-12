@@ -2,14 +2,15 @@
 //!
 //! ## Phases
 //!
-//! A schedule becomes machine code in three phases, run by `compile_native`
-//! on the backend the host's tier selected:
-//! - **Selection** (`select`) walks the scoped schedule and builds a
+//! A schedule becomes machine code in three phases, `Pass`es run in a row
+//! by `native` on the backend the host's tier selected:
+//! - **Selection** (`Select`) walks the scoped schedule and builds a
 //!   `Function`: blocks of instructions over values, which no register has
 //!   been chosen for.
-//! - **Allocation** (`regalloc`) chooses every register and frame slot, and
-//!   inserts the copies, spills and reloads its choices need.
-//! - **Assembly** (`asm`) lays the blocks out and encodes them.
+//! - **Allocation** (`Allocate`, in `regalloc`) chooses every register and
+//!   frame slot, and inserts the copies, spills and reloads its choices need.
+//! - **Assembly** (`Assemble`, over `asm`) lays the blocks out and encodes
+//!   them.
 //!
 //! The backends (`avx2`, `avx512`, `aarch64`) are `IsaBackend`s: what a
 //! target contributes is its register file and its instructions, and nothing
@@ -84,9 +85,8 @@ use register_file::RegisterFile;
 
 use pixelflow_ir::kind::OpKind;
 
-use crate::program::IfArm;
-use crate::program::Scope;
-use crate::program::ScopedSchedule;
+use crate::pass::Pass;
+use crate::program::{Flow, IfArm, Scope, ScopedSchedule};
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -787,7 +787,8 @@ pub struct CompileResult {
 // The one place a target decides anything
 // =============================================================================
 
-/// Drive `program` to a kernel on the backend the host's CPU selected.
+/// Run `front`, the stages that make a scoped schedule, and then the emitter
+/// on it, on the backend the host's CPU selected.
 ///
 /// Every backend compiles on every host — emission is a pure function of the
 /// program into a `Vec<u8>`, and an x86 machine is perfectly capable of
@@ -806,31 +807,55 @@ pub struct CompileResult {
 ///
 /// Genuinely host-bound code lives in [`executable`] (the `KernelFn` ABI types
 /// and the `mmap`/`mprotect` that makes bytes callable) and nowhere else.
-pub(crate) fn compile_native(program: ScopedSchedule) -> Result<CompileResult, CompileError> {
+pub(crate) fn native<P>(front: P, input: P::Input) -> Result<CompileResult, CompileError>
+where
+    P: Pass<Output = ScopedSchedule<Flow>>,
+{
     match crate::isa::detect() {
-        Isa::Avx2 => compile_on::<avx2::Avx2>(&program),
-        Isa::Avx512 => compile_on::<avx512::Avx512>(&program),
-        Isa::Neon => compile_on::<aarch64::Neon>(&program),
+        Isa::Avx2 => compile_on::<avx2::Avx2, P>(front, input),
+        Isa::Avx512 => compile_on::<avx512::Avx512, P>(front, input),
+        Isa::Neon => compile_on::<aarch64::Neon, P>(front, input),
     }
 }
 
-/// The selection pipeline: select, allocate, assemble.
-fn compile_on<B: IsaBackend>(program: &ScopedSchedule) -> Result<CompileResult, CompileError> {
-    let function = select::select::<B>(program)?;
+/// `front`, then select, allocate, assemble: the chain on one backend.
+fn compile_on<B, P>(front: P, input: P::Input) -> Result<CompileResult, CompileError>
+where
+    B: IsaBackend,
+    P: Pass<Output = ScopedSchedule<Flow>>,
+{
     let pool = regalloc::resource::Pool::<B>::mint();
     let mut frame = regalloc::resource::Frame::empty(B::FILE.vector_bytes());
-    let mut allocated = regalloc::local::allocate(function, &pool, &mut frame)?;
-    let program = allocated.program();
-    let assembled = asm::assemble(&program, |emitted, out| B::encode(&emitted.inst, out));
-    let traffic = EmitTraffic::of(&allocated, &assembled);
-    let code = unsafe { executable::CompiledKernel::from_code(&assembled.code)? };
-    Ok(CompileResult {
-        code,
-        spill_count: allocated.slots,
-        frame_bytes: allocated.frame_bytes,
-        hoisted_values: allocated.hoisted,
-        traffic,
-    })
+    front
+        .then(select::Select::<B>(PhantomData))
+        .then(regalloc::local::Allocate {
+            pool: &pool,
+            frame: &mut frame,
+        })
+        .then(Assemble::<B>(PhantomData))
+        .run(input)
+}
+
+/// Lay the allocated blocks out and encode them: a [`CompileResult`].
+struct Assemble<'m, B: IsaBackend>(PhantomData<&'m fn() -> B>);
+
+impl<'m, B: IsaBackend> Pass for Assemble<'m, B> {
+    type Input = regalloc::local::Allocated<'m, B>;
+    type Output = CompileResult;
+
+    fn run(self, mut allocated: Self::Input) -> Result<CompileResult, CompileError> {
+        let program = allocated.program();
+        let assembled = asm::assemble(&program, |emitted, out| B::encode(&emitted.inst, out));
+        let traffic = EmitTraffic::of(&allocated, &assembled);
+        let code = unsafe { executable::CompiledKernel::from_code(&assembled.code)? };
+        Ok(CompileResult {
+            code,
+            spill_count: allocated.slots,
+            frame_bytes: allocated.frame_bytes,
+            hoisted_values: allocated.hoisted,
+            traffic,
+        })
+    }
 }
 
 // =============================================================================
@@ -841,22 +866,20 @@ fn compile_on<B: IsaBackend>(program: &ScopedSchedule) -> Result<CompileResult, 
 mod tests {
     use super::*;
     use crate::pipeline::tests::{BYTES_PER_LANE, schedule_for};
-    use crate::program::ScheduledOp;
+    use crate::program::{Layout, Nest, Own, ScheduledOp};
     use pixelflow_ir::LatticeShape;
     use pixelflow_ir::arena::{ExprArena, ExprId, UniformId};
 
     /// `a` compiled for backend `B` on whatever host runs the test: the
-    /// schedule lowered at `B`'s own lane count, scoped the way a compile
-    /// scopes it.
+    /// schedule at `B`'s own lane count, then the stages `compile` runs after it.
     fn compile_for<B: IsaBackend>(
         a: &ExprArena,
         root: ExprId,
         shape: LatticeShape,
     ) -> Result<CompileResult, CompileError> {
         let lanes = B::FILE.vector_bytes() as u32 / BYTES_PER_LANE;
-        compile_on::<B>(&ScopedSchedule::from_schedule(schedule_for(
-            a, root, shape, lanes,
-        )))
+        let scoped = Nest.then(Own).then(Layout);
+        compile_on::<B, _>(scoped, schedule_for(a, root, shape, lanes))
     }
 
     /// Lanes in one SIMD batch at the tier this host selected.

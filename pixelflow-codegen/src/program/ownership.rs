@@ -36,9 +36,11 @@ use alloc::vec::Vec;
 
 use pixelflow_ir::kind::OpKind;
 
+use crate::error::CompileError;
+use crate::pass::Pass;
 use crate::program::guards::FoldReads;
 use crate::program::tree::Tree;
-use crate::program::{Def, IfArm, ScheduledOp, ValueId};
+use crate::program::{Def, IfArm, ScheduledOp, ScopedSchedule, ValueId};
 
 /// A region of one scope: the scope itself, or one arm of one `If` in it.
 ///
@@ -65,8 +67,39 @@ pub(super) struct Arm {
     pub(super) region: Region,
 }
 
+/// The backward pass: every scope's [`Ownership`], read off the nest.
+///
+/// Its own stage, between [`Nest`](super::Nest) and [`Layout`](super::Layout),
+/// because ownership is a fact about the DAG that layout uses and neither
+/// computes the other.
+///
+/// # Panics
+///
+/// If a scope is not closed ([`ScopedSchedule::assert_closed`]): ownership
+/// sees a loop's reads only at its `Reduce`, so a read the nest did not name
+/// would let an arm own a value a loop outside the arm reads.
+pub(crate) struct Own;
+
+impl Pass for Own {
+    type Input = ScopedSchedule<()>;
+    type Output = ScopedSchedule<Ownership>;
+
+    fn run(self, scoped: ScopedSchedule<()>) -> Result<ScopedSchedule<Ownership>, CompileError> {
+        Ok(scoped.analyze(|nest, scope| {
+            nest.assert_closed(scope);
+            let (schedule, _, ()) = nest.at(scope);
+            let opened = nest
+                .folds
+                .iter()
+                .filter(|fold| fold.parent == scope)
+                .map(|fold| (fold.reduce, fold.reads()));
+            Ownership::of(schedule, &FoldReads::new(schedule, opened))
+        }))
+    }
+}
+
 /// Ownership of one scope's schedule.
-pub(super) struct Ownership {
+pub(crate) struct Ownership {
     /// The region each schedule position belongs to.
     region_of: Vec<Region>,
     /// The regions, nested as the `If`s are.
@@ -183,7 +216,7 @@ impl Ownership {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::program::{IfArm, Item, ScopedSchedule};
+    use crate::program::{Item, Layout, Nest};
     use pixelflow_ir::LatticeShape;
     use pixelflow_ir::arena::{ExprArena, ExprId};
     use pixelflow_ir::fold::{Binder, Fold, Monoid};
@@ -259,7 +292,7 @@ mod tests {
     }
 
     /// A value whose readers are all loops one arm runs is the arm's, through
-    /// production scoping (`ScopedSchedule::from_schedule`): a loop reads what
+    /// production scoping (`Nest`, `Own`, `Layout`): a loop reads what
     /// it reads at its `Reduce` (`FoldReads`), so a batch that skips the arm
     /// skips the loops and what only they read. A reader outside the arm keeps
     /// the value outside (`layout`'s
@@ -280,9 +313,10 @@ mod tests {
             let lanes = (crate::jit_vector_bytes() / core::mem::size_of::<f32>()) as u32;
             let schedule =
                 crate::pipeline::tests::schedule_for(a, root, LatticeShape::new([lanes, 1]), lanes);
-            let ScopedSchedule { body, folds } = ScopedSchedule::from_schedule(schedule);
-            let (schedule, flow) = core::iter::once((body.schedule, body.flow))
-                .chain(folds.into_iter().map(|fold| (fold.schedule, fold.flow)))
+            let scoped = Nest.then(Own).then(Layout).run(schedule).expect("scoped");
+            let ScopedSchedule { body, folds } = scoped;
+            let (schedule, flow) = core::iter::once((body.schedule, body.analysis))
+                .chain(folds.into_iter().map(|fold| (fold.schedule, fold.analysis)))
                 .find(|(schedule, _)| {
                     schedule
                         .iter()

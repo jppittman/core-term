@@ -23,7 +23,7 @@
 - **Lives:** `pixelflow-codegen/src/{pipeline,jit_cache}.rs`,
   `pixelflow-search/src/runtime.rs`. Decided in one-pipeline §1.1, amended
   by the-language-is-kernel O1. Today `detect()` is called inside
-  `emit/mod.rs` (`compile_native`), `EmitCtx` carries only `max_regs`,
+  `emit/mod.rs` (`native`), `EmitCtx` carries only `max_regs`,
   `jit_cache::compile` emits a declined term as given, and the
   `program`/`preload` entry points do not exist.
 
@@ -86,7 +86,8 @@
 
 ### Pass, legalize, Optimize
 
-- **Is:** a pass is an endomorphism on (arena, root). **Legalize** runs
+- **Is:** a pass (here; codegen's `Pass` is a stage of the compiler's back
+  half, see codegen.md) is an endomorphism on (arena, root). **Legalize** runs
   after extraction and link, in an order forced by meaning:
   `expand_refs → lower_dwrt → collapse(extent) → pack(L) → expand_gather →
   expand_transcendentals`. You cannot differentiate a name; you must

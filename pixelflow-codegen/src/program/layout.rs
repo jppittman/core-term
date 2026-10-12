@@ -20,16 +20,30 @@
 
 use alloc::vec::Vec;
 
-use crate::program::guards::FoldReads;
+use crate::error::CompileError;
+use crate::pass::Pass;
 use crate::program::ownership::{Arm, Ownership};
-use crate::program::{ArmBlock, Def, Flow, Item};
+use crate::program::{ArmBlock, Def, Flow, Item, ScopedSchedule};
+
+/// Every scope's [`Flow`], from its [`Ownership`]: the last stage before
+/// selection, which walks what it makes.
+pub(crate) struct Layout;
+
+impl Pass for Layout {
+    type Input = ScopedSchedule<Ownership>;
+    type Output = ScopedSchedule<Flow>;
+
+    fn run(self, owned: ScopedSchedule<Ownership>) -> Result<ScopedSchedule<Flow>, CompileError> {
+        Ok(owned.analyze(|nest, scope| {
+            let (schedule, _, own) = nest.at(scope);
+            Flow::of(schedule, own)
+        }))
+    }
+}
 
 impl Flow {
     /// The flow of `schedule`, from the ownership of its values.
-    ///
-    /// `folds` is as for [`Ownership::of`].
-    pub(super) fn of(schedule: &[Def], folds: &FoldReads) -> Self {
-        let own = Ownership::of(schedule, folds);
+    fn of(schedule: &[Def], own: &Ownership) -> Self {
         let mut owns = alloc::vec![false; own.regions().len()];
         for pos in 0..schedule.len() {
             owns[own.region_of(pos).0] = true;
@@ -75,6 +89,7 @@ impl Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::program::guards::FoldReads;
     use crate::program::ownership::Positions;
     use crate::program::{IfArm, ScheduledOp, ValueId};
     use pixelflow_ir::kind::OpKind;
@@ -148,7 +163,8 @@ mod tests {
     }
 
     fn laid_out_with(schedule: &[Def], folds: &FoldReads) -> (Flow, Vec<u64>) {
-        let flow = Flow::of(schedule, folds);
+        let own = Ownership::of(schedule, folds);
+        let flow = Flow::of(schedule, &own);
         let mut order = Vec::new();
         run(&flow, &flow.items, &mut order);
         assert_eq!(order.len(), schedule.len(), "a flow runs every def once");
@@ -159,7 +175,6 @@ mod tests {
             !in_order || reads_follow(&order, schedule, folds),
             "a read runs before the value it reads: {order:?}"
         );
-        let own = Ownership::of(schedule, folds);
         // What an arm owns, by position.
         let owned = |arm: &Arm| -> Vec<usize> {
             (0..schedule.len())
