@@ -154,9 +154,6 @@ fn chain(n: usize) -> (ExprArena, ExprId) {
 /// zero): either leaves this difference at 0, not 1.
 #[test]
 fn one_more_scheduled_operation_moves_the_total_scheduled_count_by_one() {
-    if !selection() {
-        return;
-    }
     let lanes = (jit_vector_bytes() / BYTES_PER_LANE) as u32;
     let scheduled_at = |n| {
         let (arena, root) = chain(n);
@@ -179,9 +176,6 @@ fn one_more_scheduled_operation_moves_the_total_scheduled_count_by_one() {
 /// so nothing downstream grows or shrinks).
 #[test]
 fn a_second_sibling_fold_moves_the_total_scheduled_count_by_two() {
-    if !selection() {
-        return;
-    }
     let lanes = (jit_vector_bytes() / BYTES_PER_LANE) as u32;
     let one = {
         let mut a = ExprArena::new();
