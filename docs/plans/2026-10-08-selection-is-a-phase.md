@@ -1058,7 +1058,7 @@ The driver binds every IR value to a `B::Lane` and never inspects one (§0.1). T
       - `done = lane(Binary(Ge, step, hi))`, which AVX-512 holds in `k`.
    5. Then `branch(Test { cond: done, dead: True }, Edges { taken: Head(F) [step, acc'], next: exit })`. A broadcast `done` is uniform, so "no lane is true" is exactly "not done".
 4. The `Reduce`'s value is `acc'`. It dominates the exit, which has one predecessor, so no exit parameter is needed (closure 14).
-5. An arm with work of its own, read off `IfGuard`, is `branch(Test { cond, dead: arm }, Edges { taken: past, next: arm_block })`. Then the arm's defs, then `jump(past, past)`. An `If` itself is one `lane(Blend)` after its arms, whether or not they are blocks (§0.12): it has no join and no parameter.
+5. An arm with work of its own, a block of the scope's `Flow`, is `branch(Test { cond, dead: arm }, Edges { taken: past, next: arm_block })`. Then the arm's defs, then `jump(past, past)`. An `If` itself is one `lane(Blend)` after its arms, whether or not they are blocks (§0.12): it has no join and no parameter.
 6. `ret`.
 
 ### 2.11 Allocation
@@ -1305,7 +1305,7 @@ Tests deleted because the property is now a type, an invariant, or moot:
 - `stays_put`'s placeholder role;
 - `program::Class` and `ScheduledOp::class`.
 
-**D3.** `IfGuard`, `ArmPair` (if unused), and the flattening at `program/layout.rs:269-283`.
+**D3.** `IfGuard`, `ArmPair`, `IfArm::ALL`, and the flattening into runs in `program/layout.rs`.
 
 ### 4.2 Added, and why it is the least that works
 
@@ -1784,10 +1784,10 @@ Every commit in this phase is live in production.
 
 #### D3: Arms are read off the region tree
 
-- **Files:** `program/layout.rs`, `program/mod.rs`, `emit/select.rs`.
-- **Change:** `Layout` hands selection the nested blocks it already builds (`Blocks`, `layout.rs:67-109`): items are a def, an arm (its `If`, which arm, its items), or a fold opening. Selection emits the guard and the `past` block around each arm subtree. Delete `IfGuard`, the flattening (`layout.rs:269-283`) and the range bookkeeping.
+- **Files:** `program/layout.rs`, `program/mod.rs`, `program/ownership.rs`, `program/scopes.rs`, `emit/select.rs`.
+- **Change:** `Layout` hands selection the nested blocks it already builds (`Blocks`): a scope's `Flow` is its items (`Item::Def(position)` or `Item::Arm(i)`) and the arms that earn a block (`ArmBlock`: which arm, its mask, its items), stored flat, parents before the arms nested in them, so that neither dropping nor walking one recurses. A fold's opening is its `Reduce` def, found by position as before. Selection walks the items with one explicit stack and emits the guard and the `past` block around each arm. Deleted: `IfGuard`, `ArmPair`, `IfArm::ALL`, the flattening into runs, the per-block span and start, and `arms_by_start`. The tests that checked an arm's `(start, end)` range check the positions of its subtree.
 - **Bytes:** identical.
-- **Gate:** G.
+- **Gate:** G Q W W2 L.
 
 ---
 

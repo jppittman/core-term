@@ -13,10 +13,9 @@ use super::{
     unimplemented_op,
 };
 use crate::error::CompileError;
-use crate::program::{IfArm, IfGuard, ScheduledOp, Scope, ScopedSchedule, ValueId};
+use crate::program::{Def, IfArm, Item, ScheduledOp, Scope, ScopedSchedule, ValueId};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::cmp::Reverse;
 use pixelflow_ir::fold::{Binder, Fold, Monoid};
 use pixelflow_ir::kind::OpKind;
 
@@ -46,36 +45,6 @@ pub(super) fn select<B: IsaBackend>(scoped: &ScopedSchedule) -> Result<Function<
     let mut function = selector.b.finish();
     function.scheduled = selector.scheduled;
     Ok(function)
-}
-
-/// A guarded arm: skipped when no lane of the mask selects it.
-struct Arm {
-    arm: IfArm,
-    mask: ValueId,
-    /// The schedule position its run ends at.
-    end: usize,
-}
-
-/// The arms of `guards` by the schedule position each begins at, outer arms
-/// before the arms nested in them.
-fn arms_by_start(guards: &[IfGuard]) -> BTreeMap<usize, Vec<Arm>> {
-    let mut starts: BTreeMap<usize, Vec<Arm>> = BTreeMap::new();
-    for guard in guards {
-        for arm in IfArm::ALL {
-            let (start, end) = guard.range(arm);
-            if start != end {
-                let mask = guard.mask_vid;
-                starts
-                    .entry(start)
-                    .or_default()
-                    .push(Arm { arm, mask, end });
-            }
-        }
-    }
-    starts
-        .values_mut()
-        .for_each(|arms| arms.sort_by_key(|arm| Reverse(arm.end)));
-    starts
 }
 
 /// The loop nest as it is entered: one binding frame per open scope, and the
@@ -127,138 +96,149 @@ impl<B: IsaBackend> Selector<'_, B> {
         root: Option<ValueId>,
     ) -> Result<Option<B::Lane>, CompileError> {
         let scoped = self.scoped;
-        let (schedule, guards) = match scope {
-            Scope::Body => (&scoped.body.schedule, &scoped.body.guards),
-            Scope::Fold(j) => (&scoped.folds[j].schedule, &scoped.folds[j].guards),
+        let (schedule, flow) = match scope {
+            Scope::Body => (&scoped.body.schedule, &scoped.body.flow),
+            Scope::Fold(j) => (&scoped.folds[j].schedule, &scoped.folds[j].flow),
         };
         self.frames.push(Frame::new());
-        let mut starts = arms_by_start(guards);
-        // The arms open at this point of the schedule, innermost last, each
-        // with the block that follows it.
-        let mut open: Vec<(usize, Pending)> = Vec::new();
-        for (at, def) in schedule.iter().enumerate() {
-            while let Some((_, past)) = open.pop_if(|(end, _)| *end == at) {
-                self.close_arm(past);
-            }
-            for arm in starts.remove(&at).unwrap_or_default() {
-                let cond = self.lookup(arm.mask);
-                let past = self.open_arm(scope, cond, arm.arm);
-                open.push((arm.end, past));
-            }
-            // A sequence and a binder's alias select nothing; a `Reduce`
-            // counts once it is known to open a loop; a constant counts only
-            // when its instruction is not one the allocator places at each
-            // read, where it is counted as a remat.
-            if !matches!(
-                def.op,
-                ScheduledOp::Const(_)
-                    | ScheduledOp::Seq(..)
-                    | ScheduledOp::Var(_)
-                    | ScheduledOp::Reduce(..)
-            ) {
-                self.scheduled[scope_ix(scope)] += 1;
-            }
-            let value = match &def.op {
-                ScheduledOp::Seq(..) => continue,
-                ScheduledOp::Write {
-                    row,
-                    col,
-                    lanes,
-                    value,
-                    ..
-                } => {
-                    let store = Store {
-                        out: self.entry.out,
-                        pitch: self.entry.pitch,
-                        row: self.binder(*row),
-                        col: self.binder(*col),
-                        value: self.lookup(*value),
-                        lanes: *lanes,
-                    };
-                    B::store(&mut self.b, store);
-                    continue;
+        // The blocks being walked, innermost last, each arm with the block
+        // that follows it. One explicit stack: arms nest as deep as a program
+        // likes, and a call stack does not.
+        let mut open = alloc::vec![(flow.items.iter(), None)];
+        while let Some((items, _)) = open.last_mut() {
+            let Some(&item) = items.next() else {
+                let (_, past) = open.pop().expect("a block is open");
+                if let Some(past) = past {
+                    self.close_arm(past);
                 }
-                ScheduledOp::Reduce(fold, body) => {
-                    let j = scoped
-                        .folds
-                        .iter()
-                        .position(|f| f.parent == scope && f.at == at)
-                        .unwrap_or_else(|| panic!("{:?} opens no fold in its scope", def.value));
-                    self.scheduled[scope_ix(scope)] += 1;
-                    match self.fold(scope, j, (*fold, *body))? {
-                        Some(result) => result,
-                        None => continue,
-                    }
-                }
-                ScheduledOp::Var(var) => self.binder_of_var(*var),
-                ScheduledOp::Const(value) => {
-                    let lane = self.lane(LaneOp::Const(*value))?;
-                    if !self.b.ends_rematerializable() {
-                        self.scheduled[scope_ix(scope)] += 1;
-                    }
-                    lane
-                }
-                ScheduledOp::Lanes(_) => self.lane(LaneOp::Lanes)?,
-                ScheduledOp::Unary(op, a) => {
-                    let a = self.lookup(*a);
-                    self.lane(LaneOp::Unary(*op, a))?
-                }
-                ScheduledOp::Binary(op, a, b) => {
-                    let (a, b) = (self.lookup(*a), self.lookup(*b));
-                    self.lane(LaneOp::Binary(*op, a, b))?
-                }
-                ScheduledOp::ShiftImm(op, a, amount) => {
-                    let a = self.lookup(*a);
-                    self.lane(LaneOp::Shift(*op, a, *amount))?
-                }
-                ScheduledOp::Ternary(OpKind::MulAdd, a, b, c) => {
-                    let (a, b, c) = (self.lookup(*a), self.lookup(*b), self.lookup(*c));
-                    self.lane(LaneOp::MulAdd(a, b, c))?
-                }
-                ScheduledOp::Ternary(OpKind::If, cond, if_true, if_false) => {
-                    let (cond, if_true, if_false) = (
-                        self.lookup(*cond),
-                        self.lookup(*if_true),
-                        self.lookup(*if_false),
-                    );
-                    self.lane(LaneOp::Blend {
-                        cond,
-                        if_true,
-                        if_false,
-                    })?
-                }
-                ScheduledOp::Ternary(op, ..) => unimplemented_op(DRIVER, op),
-                ScheduledOp::Context(slot) => {
-                    let ctx = self.entry.ctx;
-                    let pointer = B::context(&mut self.b, ctx, u64::from(*slot))?;
-                    self.frame().pointers.insert(def.value, pointer);
-                    continue;
-                }
-                ScheduledOp::Uniform(base, element) => {
-                    let base = self.pointer(*base);
-                    self.lane(LaneOp::Uniform {
-                        base,
-                        element: *element,
-                    })?
-                }
-                ScheduledOp::Gather(index, base) => {
-                    let (base, index) = (self.pointer(*base), self.lookup(*index));
-                    self.lane(LaneOp::Gather { base, index })?
-                }
-                ScheduledOp::Broadcast(index, base) => {
-                    let (base, index) = (self.pointer(*base), self.lookup(*index));
-                    self.lane(LaneOp::Broadcast { base, index })?
-                }
+                continue;
             };
-            self.bind(def.value, value);
+            match item {
+                Item::Def(at) => self.definition(scope, at, &schedule[at])?,
+                Item::Arm(arm) => {
+                    let arm = &flow.arms[arm];
+                    let cond = self.lookup(arm.mask);
+                    let past = self.open_arm(scope, cond, arm.arm);
+                    open.push((arm.items.iter(), Some(past)));
+                }
+            }
         }
-        assert!(
-            open.is_empty() && starts.is_empty(),
-            "an arm is open at the end of its scope, or begins past it"
-        );
         let result = root.map(|root| self.lookup(root));
         self.frames.pop();
         Ok(result)
+    }
+
+    /// Select the def at position `at` of `scope`'s schedule, and bind the
+    /// value it defines.
+    fn definition(&mut self, scope: Scope, at: usize, def: &Def) -> Result<(), CompileError> {
+        let scoped = self.scoped;
+        // A sequence and a binder's alias select nothing; a `Reduce`
+        // counts once it is known to open a loop; a constant counts only
+        // when its instruction is not one the allocator places at each
+        // read, where it is counted as a remat.
+        if !matches!(
+            def.op,
+            ScheduledOp::Const(_)
+                | ScheduledOp::Seq(..)
+                | ScheduledOp::Var(_)
+                | ScheduledOp::Reduce(..)
+        ) {
+            self.scheduled[scope_ix(scope)] += 1;
+        }
+        let value = match &def.op {
+            ScheduledOp::Seq(..) => return Ok(()),
+            ScheduledOp::Write {
+                row,
+                col,
+                lanes,
+                value,
+                ..
+            } => {
+                let store = Store {
+                    out: self.entry.out,
+                    pitch: self.entry.pitch,
+                    row: self.binder(*row),
+                    col: self.binder(*col),
+                    value: self.lookup(*value),
+                    lanes: *lanes,
+                };
+                B::store(&mut self.b, store);
+                return Ok(());
+            }
+            ScheduledOp::Reduce(fold, body) => {
+                let j = scoped
+                    .folds
+                    .iter()
+                    .position(|f| f.parent == scope && f.at == at)
+                    .unwrap_or_else(|| panic!("{:?} opens no fold in its scope", def.value));
+                self.scheduled[scope_ix(scope)] += 1;
+                match self.fold(scope, j, (*fold, *body))? {
+                    Some(result) => result,
+                    None => return Ok(()),
+                }
+            }
+            ScheduledOp::Var(var) => self.binder_of_var(*var),
+            ScheduledOp::Const(value) => {
+                let lane = self.lane(LaneOp::Const(*value))?;
+                if !self.b.ends_rematerializable() {
+                    self.scheduled[scope_ix(scope)] += 1;
+                }
+                lane
+            }
+            ScheduledOp::Lanes(_) => self.lane(LaneOp::Lanes)?,
+            ScheduledOp::Unary(op, a) => {
+                let a = self.lookup(*a);
+                self.lane(LaneOp::Unary(*op, a))?
+            }
+            ScheduledOp::Binary(op, a, b) => {
+                let (a, b) = (self.lookup(*a), self.lookup(*b));
+                self.lane(LaneOp::Binary(*op, a, b))?
+            }
+            ScheduledOp::ShiftImm(op, a, amount) => {
+                let a = self.lookup(*a);
+                self.lane(LaneOp::Shift(*op, a, *amount))?
+            }
+            ScheduledOp::Ternary(OpKind::MulAdd, a, b, c) => {
+                let (a, b, c) = (self.lookup(*a), self.lookup(*b), self.lookup(*c));
+                self.lane(LaneOp::MulAdd(a, b, c))?
+            }
+            ScheduledOp::Ternary(OpKind::If, cond, if_true, if_false) => {
+                let (cond, if_true, if_false) = (
+                    self.lookup(*cond),
+                    self.lookup(*if_true),
+                    self.lookup(*if_false),
+                );
+                self.lane(LaneOp::Blend {
+                    cond,
+                    if_true,
+                    if_false,
+                })?
+            }
+            ScheduledOp::Ternary(op, ..) => unimplemented_op(DRIVER, op),
+            ScheduledOp::Context(slot) => {
+                let ctx = self.entry.ctx;
+                let pointer = B::context(&mut self.b, ctx, u64::from(*slot))?;
+                self.frame().pointers.insert(def.value, pointer);
+                return Ok(());
+            }
+            ScheduledOp::Uniform(base, element) => {
+                let base = self.pointer(*base);
+                self.lane(LaneOp::Uniform {
+                    base,
+                    element: *element,
+                })?
+            }
+            ScheduledOp::Gather(index, base) => {
+                let (base, index) = (self.pointer(*base), self.lookup(*index));
+                self.lane(LaneOp::Gather { base, index })?
+            }
+            ScheduledOp::Broadcast(index, base) => {
+                let (base, index) = (self.pointer(*base), self.lookup(*index));
+                self.lane(LaneOp::Broadcast { base, index })?
+            }
+        };
+        self.bind(def.value, value);
+        Ok(())
     }
 
     /// The loop `fold` opens at `parent`'s `Reduce`, as blocks:

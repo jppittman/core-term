@@ -2,8 +2,8 @@
 //! arena and the machine code shares.
 //!
 //! A scheduled value ([`Def`]) and the operation that defines it ([`ScheduledOp`]),
-//! the scopes a schedule is split into ([`ScopedSchedule`]) and the branches over
-//! them ([`IfGuard`]). None of it names a register or a byte: it is what lowering
+//! the scopes a schedule is split into ([`ScopedSchedule`]) and the blocks each
+//! scope's arms are ([`Flow`]). None of it names a register or a byte: it is what lowering
 //! produces and what allocation and emission consume, which is why it lives
 //! under neither.
 
@@ -182,11 +182,9 @@ pub(crate) struct ScopeRegion {
     pub(super) roots: Vec<ValueId>,
     /// What it computes, in topological order.
     pub(super) schedule: Vec<Def>,
-    /// This scope's `If` guards: which entries of `schedule` each branch
-    /// skips. A table over `schedule`, handed in with it — the allocator
-    /// places split ranges around the arms it names and the emitter branches
-    /// over them, and neither derives them.
-    pub(super) guards: Vec<IfGuard>,
+    /// How `schedule` runs: its defs, with the arms that earn a branch nested
+    /// as the blocks they are.
+    pub(super) flow: Flow,
 }
 
 /// One surviving fold of a [`ScopedSchedule`]: a scope that opens in the
@@ -204,8 +202,8 @@ pub(crate) struct ScopeFold {
     pub(super) outer: Vec<ValueId>,
     /// The loop body, in topological order.
     pub(super) schedule: Vec<Def>,
-    /// The body's `If` guards, as [`ScopeRegion::guards`].
-    pub(super) guards: Vec<IfGuard>,
+    /// How the body runs, as [`ScopeRegion::flow`].
+    pub(super) flow: Flow,
 }
 
 impl ScopeFold {
@@ -218,7 +216,7 @@ impl ScopeFold {
     }
 }
 
-/// Which arm of an `If` node a guard branch skips or targets.
+/// Which arm of an `If` node a branch skips.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum IfArm {
     /// The `if_true` arm: skipped when all lanes of the mask are false.
@@ -227,55 +225,37 @@ pub(crate) enum IfArm {
     False,
 }
 
-impl IfArm {
-    /// Both arms of an `If`.
-    pub(super) const ALL: [Self; 2] = [Self::True, Self::False];
+/// How a scope's schedule runs: its defs in order, with each arm that earns a
+/// branch nested as the block it is (`layout`). Selection walks it and emits
+/// the guard and the block after it around each arm; nothing recovers a
+/// region from a position.
+#[derive(Debug, Default)]
+pub(crate) struct Flow {
+    /// What the scope runs, outermost.
+    pub(super) items: Vec<Item>,
+    /// Every arm that earns a block, parents before the arms nested in them.
+    pub(super) arms: Vec<ArmBlock>,
 }
 
-/// A value associated with each arm of an `If` node (`True` and `False`).
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub(crate) struct ArmPair<T> {
-    true_arm: T,
-    false_arm: T,
+/// One step of a block.
+#[derive(Copy, Clone, Debug)]
+pub(crate) enum Item {
+    /// The def at this position of the scope's schedule.
+    Def(usize),
+    /// The block of this entry of [`Flow::arms`], run where it stands.
+    Arm(usize),
 }
 
-impl<T> ArmPair<T> {
-    /// Construct a pair from true-arm and false-arm values.
-    #[inline]
-    pub(super) const fn new(true_arm: T, false_arm: T) -> Self {
-        Self {
-            true_arm,
-            false_arm,
-        }
-    }
-}
-
-/// Describes an If node's short-circuit structure in the schedule.
-///
-/// For `If(mask, if_true, if_false)`, identifies contiguous ranges of
-/// schedule entries that are exclusive to each arm (not shared with mask
-/// or the other arm). These ranges can be guarded by conditional branches.
-#[derive(Debug, Clone)]
-pub(crate) struct IfGuard {
-    /// Schedule index of the If node itself.
-    pub(super) if_idx: usize,
-    /// ValueId of the mask operand (already computed before arms).
-    pub(super) mask_vid: ValueId,
-    /// Range of schedule indices exclusive to each arm: `[start, end)`.
-    /// Empty if `start == end`.
-    pub(super) ranges: ArmPair<(usize, usize)>,
-}
-
-impl IfGuard {
-    /// Schedule index range exclusive to the given arm: `[start, end)`.
-    #[must_use]
-    #[inline]
-    pub(super) const fn range(&self, arm: IfArm) -> (usize, usize) {
-        match arm {
-            IfArm::True => self.ranges.true_arm,
-            IfArm::False => self.ranges.false_arm,
-        }
-    }
+/// An arm of an `If` that owns work of its own: skipped when no lane of the
+/// mask selects it.
+#[derive(Debug)]
+pub(crate) struct ArmBlock {
+    /// Which arm of its `If`.
+    pub(super) arm: IfArm,
+    /// The `If`'s mask, bound before the block begins.
+    pub(super) mask: ValueId,
+    /// What the arm runs.
+    pub(super) items: Vec<Item>,
 }
 
 /// The values an operation reads *as registers*, in operand order.
