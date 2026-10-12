@@ -816,7 +816,7 @@ across a new boundary. Checked, and that framing doesn't survive contact
 with the code: **there is no method named `Field::splat`.** `Field<A>`
 (`lib.rs:428`) has no inherent `splat` at all; its public constructor is
 `Field::from(f32)`, which calls `FieldStorage::splat_storage` internally
-(`storage.rs`). `splat` only exists as a *trait* method,
+(`storage.rs`, since deleted). `splat` only exists as a *trait* method,
 `SimdOps::splat`/`SimdU32Ops::splat` (`backend/mod.rs:74,270`), implemented
 by the concrete lane types `F32x4`/`F32x8`/`F32x16`/`U32x4`/... in
 `backend/x86.rs` and `backend/arm.rs` (both since deleted, with `Field`

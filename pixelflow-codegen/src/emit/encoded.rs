@@ -4,8 +4,6 @@
 //! `EncodedInst` is a 16-byte `Copy` stack struct: 15 payload bytes and a 1-byte length.
 //! It fits in a single 128-bit register and incurs zero heap allocations.
 
-use alloc::vec::Vec;
-
 /// A stack-allocated encoded instruction (up to 15 bytes).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct EncodedInst {
@@ -62,12 +60,5 @@ impl EncodedInst {
     #[inline]
     pub(super) fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.len as usize]
-    }
-}
-
-impl crate::emit::AsmInsn for EncodedInst {
-    #[inline]
-    fn emit_into(self, code: &mut Vec<u8>) {
-        code.extend_from_slice(self.as_bytes());
     }
 }

@@ -369,8 +369,8 @@ const INNER_TRIPS: u32 = 40;
 
 /// Bug 1 inside a fold's own body: `Σ_j select(X + j < T, V_j·sin, 0) + U_j`
 /// with `V_j = Σ_m |X + j − m/2|` and `U_j = Σ_k |V_j − 40k|`. The `If`, `V`
-/// and `U` are all in the outer fold's scope, whose edges `allocate_nest`
-/// and `cluster_pending` build from that fold's children.
+/// and `U` are all in the outer fold's scope, whose edges the allocator
+/// builds from that fold's children.
 #[test]
 fn a_guard_in_a_folds_body_keeps_a_fold_a_sibling_fold_reads() {
     let k = Kernel::sum_over(OUTER_TRIPS, |j| {

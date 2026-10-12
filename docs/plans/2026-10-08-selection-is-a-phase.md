@@ -1515,7 +1515,7 @@ Every commit in this phase is live in production.
 - **A11b:** the `Opmask`-file fields:
   - `CmpK { dst: Write<Opmask> }`, `Movm2d`, `Ptestm`;
   - `KorTest { flags, k: Read<Opmask> }`, which encodes `k.number()`;
-  - `Kmovw`;
+  - `KFromGpr`;
   - `Gather { dst: Early, mask: Tie<Opmask> }`, encoding `aaa = mask.number()`;
   - `StoreMasked`, the remainder's masked store.
 
@@ -1633,7 +1633,7 @@ Every commit in this phase is live in production.
 
 - **Files:** `emit/regalloc/local.rs`, `avx2.rs` (`rematerializable`, real since P7 for `LoadConst`, `Zero` and `Ones`).
 - **Change:**
-  - A rematerializable definition is not placed where it is selected. The scan keeps it (`Scan::remats`, by the value it defines), and a read that finds the value in no register places it again before that read (`Origin::Remat`). One nobody reads is never placed.
+  - A rematerializable definition is not placed where it is selected. The scan keeps it (`Life::remat`, the instruction's index in the value's life), and a read that finds the value in no register places it again before that read (`Origin::Remat`). One nobody reads is never placed.
     - It is the same selected instruction placed twice, so the scan keeps its instructions in one list and a record names one by index. No cloning walk and no fresh `Def` are needed: the value keeps its id and takes a new register, as a reload does.
     - It has no slot and no store. `store_at_definition` skips it, so a loop head's flush and an eviction drop it for nothing.
     - Its eviction is the cheapest tier of `EvictionRank` (`Store::Never`), below a value whose slot already holds it.
@@ -1752,7 +1752,7 @@ Every commit in this phase is live in production.
 - **Why:** spawned threads get Rust's 2 MiB default stack behind one guard page, and a single `sub` can skip it (allocation F12).
 - **Bytes:** only rows whose frame exceeds 4 KiB move (`parked_roots`, `deep_frame`), by 14 bytes per page. Every other row must not move.
 - **Tests:** `tests/stack_probe.rs` makes a page in the middle of `deep_frame`'s frame inaccessible on a spawned thread, and a `SIGSEGV` handler on an alternate stack records the fault address and the stack pointer. A probe faults with the stack pointer in the page; without it the first touch is a slot of the finished frame. x86-64 Linux, selection only; C4 extends it to NEON.
-- **Gate:** G, Q, K2, K5, QK, L, and a re-baseline of those rows (`GOLDEN`'s AVX2 column, `GOLDEN_SELECTED_AVX2`, `GOLDEN_SELECTED_AVX512`).
+- **Gate:** G, Q, K2, K5, QK (passes from C4), L, M, and a re-baseline of those rows (`GOLDEN`'s AVX2 column, `GOLDEN_SELECTED_AVX2`, `GOLDEN_SELECTED_AVX512`).
 
 ### Phase D: delete the legacy pipeline
 
@@ -1760,6 +1760,11 @@ Every commit in this phase is live in production.
 
 - **Files:** everything §4.1 lists under D1, `rust.yaml` (the selection steps and the macOS knob step).
 - **Change:** the quality ratchet (`tests/memory_ratchet.rs`) is deleted with legacy, not converted into a ceiling table of selection's numbers: a pinned table of a compiled kernel's numbers is a golden of binaries (§0.11). `GOLDEN_SELECTED` no longer exists (G1), so there is no rename.
+  - Landed as a deletion: `emit/storage.rs`, `tests/support/knob.rs` and `tests/memory_ratchet.rs` are gone whole, and `regalloc/mod.rs` is the three `mod` lines the selection allocator needs. xtask's `IsaLevel` is `name`, `isa` and `requires` again, and `rust.yaml`'s job timeout is back at 25 minutes.
+  - The register newtypes became the ABI's hardware numbers where selection names one (`x86_64::gpr::{RDX, RSP, RSI, RDI}`, aarch64's `abi::{X0, X1, X2, SP}`), as `u8` constants.
+  - `Placed` stays: it has one impl (`Bound`) now, and is not in §4.1's list. Collapsing it is a rewrite of every encoder's operand reads, for no line it would save.
+  - Tests that needed a hand-picked register (`Gp<Physical>`, `Inst<Physical>`: the per-instruction encoder tests of `x86_64.rs`, `avx2.rs`, `avx512.rs` and `aarch64.rs`, and `emit/mod.rs`'s `muladd_encoding` bytes) go with the stage: a token is minted only by the allocator (§0), so no test can name `ymm12`. The assembler's label tests were rewritten in place against `asm::assemble`; the memory-operand tests against `mem_operand_into`'s hardware numbers; `fused_encodes_to_the_targets_fma` against `compile`, checking the instruction is present on each tier; `backend_op_coverage` sweeps `compile` instead of `emit_plan`. A per-instruction encoder test is not expressible through `compile`, `CompileResult` or `EmitTraffic`; a public encoder observation would be a new API, so none is added.
+  - `ReadHere` (one live variant), `reads_saved` and `loop_state_saved` are deleted with the allocator that used them.
 - **Bytes:** identical (`byte_probe` before and after is the check, not a pin).
 - **Gate:** G and M. `scripts/check-emit-boundary.sh` passes.
 
@@ -1788,7 +1793,7 @@ Every commit in this phase is live in production.
 ### Risks
 
 1. **B5–B7 carry the allocation quality.** The quality ratchet (B10) is the check, and the trip-weighted memory traffic is the measure escape-hatches validated against wall clock. Correctness rests on V; there is no second JIT to compare against, by design (#1320).
-2. **The carry reserves are fitted, not derived.** `CARRY_RESERVE = 7` and `GENERAL_CARRY_RESERVE = 5` are kept so that the switch is about representation. aarch64 gains one general carry (13 against today's 12), and that is attributed in C5. Re-deriving both reserves is the first follow-up.
+2. **The carry reserves are fitted, not derived.** `CARRY_RESERVE = 7` and `GENERAL_CARRY_RESERVE = 5` are kept so that the switch is about representation. aarch64 gains one general carry (13 against today's 12), and that is C4's `FILE` (`x0`–`x17`). Re-deriving both reserves is the first follow-up.
 3. **The join invariants are asserted, not built around.** No edge blocks are built. If invariant 1 or 2 fires, the remedy is an edge block on that edge: one `jmp` per trip.
 4. **Dominance is relaxed across uniform guards.** An allocator that "repaired" an undefined path with a phi would be wrong. The relaxation is documented on `Function`, and `guard_parked_reads` and `guard_sibling_fold` exercise it.
 5. **Affine is not linear.** A dropped `Def` is a panic at `finish`, not a compile error (§2.13).

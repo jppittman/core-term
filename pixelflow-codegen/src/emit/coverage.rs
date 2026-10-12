@@ -1,44 +1,42 @@
-//! The op-coverage completeness contract every [`super::LegacyBackend`] must satisfy.
+//! The op-coverage completeness contract every [`super::IsaBackend`] must satisfy.
 //!
 //! This is test-only infrastructure (see `emit/mod.rs`'s `backend_op_coverage`
 //! tests), not a production API. It exists because nothing previously enumerated "the ops a
-//! backend must support" anywhere: AVX-512's binary-op dispatch
-//! (`avx512::emit_binary`) implemented 6 of the 15 required ops and nothing
-//! caught the gap until 36 tests failed by accident the first time someone
-//! actually compiled with `-C target-feature=+avx512f`. These lists turn that
-//! into a named, itemized test failure instead of a silent hole.
+//! backend must support" anywhere: AVX-512's binary-op dispatch implemented 6
+//! of the 15 required ops and nothing caught the gap until 36 tests failed by
+//! accident the first time someone actually compiled with
+//! `-C target-feature=+avx512f`. These lists turn that into a named, itemized
+//! test failure instead of a silent hole.
 //!
-//! Every `OpKind` a `LegacyBackend` might see falls into exactly one bucket:
+//! Every `OpKind` a backend might see falls into exactly one bucket:
 //!
-//! - Reaches `LegacyBackend::emit_plan` as `ResolvedOp::Unary` — [`REQUIRED_UNARY_OPS`].
-//! - Reaches it as `ResolvedOp::Binary` — [`REQUIRED_BINARY_OPS`].
-//! - Reaches it as `ResolvedOp::ShiftImm` (the RHS `Const` shift amount is
-//!   folded to an immediate by `program::lower::arena_to_schedule`, so only the op + LHS
-//!   survive to codegen) — [`REQUIRED_SHIFT_OPS`].
-//! - Reaches it as `ResolvedOp::FusedMulAdd` or
-//!   `ResolvedOp::If` — [`REQUIRED_TERNARY_OPS`]. Not swept generically
-//!   like the arrays above (each has a distinct `ResolvedOp` shape and
-//!   `setup_mov` convention), so the per-backend tests construct these two
-//!   explicitly instead of looping.
+//! - Selected as a `LaneOp::Unary` — [`REQUIRED_UNARY_OPS`].
+//! - Selected as a `LaneOp::Binary` — [`REQUIRED_BINARY_OPS`].
+//! - Selected as a `LaneOp::Shift` (the RHS `Const` shift amount is folded to
+//!   an immediate by `program::lower::arena_to_schedule`, so only the op +
+//!   LHS survive to codegen) — [`REQUIRED_SHIFT_OPS`].
+//! - Selected as a `LaneOp::MulAdd` or `LaneOp::Blend` (an `If`) —
+//!   [`REQUIRED_TERNARY_OPS`]. Not swept generically like the arrays above
+//!   (each has its own operand shape), so the per-backend tests construct
+//!   these two explicitly instead of looping.
 //! - Is eliminated by a `lowering` pass before any backend sees it
 //!   (transcendentals by `expand_transcendentals`, `Dwrt` by `lower_dwrt`,
 //!   the ternary `Gather` op by `expand_gather` — see `lowering.rs`) — absent
 //!   from every list here on purpose.
 //! - Is a loop, not an op: a `Reduce` survives `legalize` and opens a
-//!   `regalloc::Scope::Fold` — likewise absent.
+//!   `Scope::Fold` — likewise absent.
 //! - Is structural and never becomes a `ScheduledOp` at all (`Var`, `Const`,
 //!   `Tuple`, `Buffer`) — likewise absent.
-//! - `RawGather` (bound-memory read) reaches `ResolvedOp::Gather`, but is
+//! - `RawGather` (bound-memory read) selects as a `LaneOp::Gather`, but is
 //!   intentionally backend-asymmetric today (native `vgatherdps` on AVX2 and
 //!   AVX-512; a four-lane scalar-load sequence on aarch64) — deliberately NOT
 //!   included in a "every backend must support this" list; its own test
 //!   coverage lives with the gather-specific tests. A `RawGather` whose
-//!   index the lane binder does not reach is `ResolvedOp::Broadcast`
-//!   instead — one scalar load broadcast, the same shape on every backend —
-//!   pinned byte-for-byte per backend by `tests::broadcast` in `mod.rs`.
-//! - `Uniform` (per-call scalar) reaches `ResolvedOp::Uniform` as a leaf
-//!   definition with no operands — a broadcast load from the block — and is
-//!   pinned byte-for-byte per backend by `tests::uniforms` in `mod.rs`.
+//!   index the lane binder does not reach is a `LaneOp::Broadcast`
+//!   instead — one scalar load broadcast, the same shape on every backend.
+//! - `Uniform` (per-call scalar) selects as a `LaneOp::Uniform` leaf with no
+//!   operands — a broadcast load from the block — and is covered by
+//!   `tests::uniforms` in `mod.rs`.
 //!
 //! "Absent from every list on purpose" is checked, not asserted: the test at the
 //! foot of this file walks `OpKind::all()` and demands each op sit in exactly
@@ -46,7 +44,7 @@
 
 use pixelflow_ir::kind::OpKind;
 
-/// Ops that reach `LegacyBackend::emit_plan` as `ResolvedOp::Unary { op, .. }`.
+/// Ops selected as a `LaneOp::Unary`.
 pub(super) const REQUIRED_UNARY_OPS: &[OpKind] = &[
     OpKind::Neg,
     OpKind::Sqrt,
@@ -60,7 +58,7 @@ pub(super) const REQUIRED_UNARY_OPS: &[OpKind] = &[
     OpKind::IntToFloat,
 ];
 
-/// Ops that reach `LegacyBackend::emit_plan` as `ResolvedOp::Binary { op, .. }`.
+/// Ops selected as a `LaneOp::Binary`.
 pub(super) const REQUIRED_BINARY_OPS: &[OpKind] = &[
     OpKind::Add,
     OpKind::Sub,
@@ -79,12 +77,12 @@ pub(super) const REQUIRED_BINARY_OPS: &[OpKind] = &[
     OpKind::BitOr,
 ];
 
-/// Ops that reach `LegacyBackend::emit_plan` as `ResolvedOp::ShiftImm { op, .. }`.
+/// Ops selected as a `LaneOp::Shift`.
 pub(super) const REQUIRED_SHIFT_OPS: &[OpKind] = &[OpKind::Shl, OpKind::Shr];
 
-/// Ops with a bespoke `ResolvedOp` shape (`FusedMulAdd` for `MulAdd`, `If`
-/// for `If`). Listed for documentation; the per-backend tests build these
-/// plans explicitly rather than looping generically.
+/// Ops with a bespoke `LaneOp` shape (`MulAdd`, and `Blend` for `If`). Listed
+/// for documentation; the per-backend tests build these kernels explicitly
+/// rather than looping generically.
 pub(super) const REQUIRED_TERNARY_OPS: &[OpKind] = &[OpKind::MulAdd, OpKind::If];
 
 /// Ops no `REQUIRED_*` list holds, each for the reason beside it. The test
@@ -109,10 +107,10 @@ const NOT_REQUIRED: &[OpKind] = &[
     OpKind::Dwrt,
     // and `Gather` by `expand_gather`, into index arithmetic plus `RawGather`.
     OpKind::Gather,
-    // Leaves and memory: each reaches a backend, if at all, as a `ResolvedOp`
-    // of its own shape, pinned by its own test rather than swept.
-    OpKind::Var,       // a binder's placeholder (`Nop`), or the lane iota (`Lanes`)
-    OpKind::Const,     // `LoadConst`
+    // Leaves and memory: each reaches a backend, if at all, as a `LaneOp`
+    // of its own shape, covered by its own test rather than swept.
+    OpKind::Var,       // a binder, or the lane iota (`Lanes`)
+    OpKind::Const,     // `Const`
     OpKind::Buffer,    // `Context`, a base pointer
     OpKind::Uniform,   // `Uniform`, a broadcast load from the block
     OpKind::RawGather, // `Gather`, or `Broadcast` when the index is lane-uniform

@@ -22,7 +22,6 @@ use pixelflow_ir::LatticeShape;
 mod rows {
     include!("support/deep_frame.rs");
 }
-include!("support/knob.rs");
 
 /// The stack pointer a signal interrupted.
 #[cfg(target_arch = "x86_64")]
@@ -88,9 +87,6 @@ fn run(code: &pixelflow_codegen::emit::CompiledKernel) -> Vec<f32> {
 
 #[test]
 fn a_frame_past_a_page_touches_every_page_as_it_takes_it() {
-    if !selection() {
-        return;
-    }
     let (arena, root) = rows::deep_frame(rows::DEEP_FRAME_TERMS);
     let shape = LatticeShape::new([WIDTH as u32, ROWS as u32]);
     let compiled = compile(&arena, root, shape).expect("a deep frame compiles");

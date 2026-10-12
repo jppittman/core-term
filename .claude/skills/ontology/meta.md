@@ -23,14 +23,8 @@
   `docs/plans/2026-09-01-register-allocation-escape-hatches.md` ("a list of
   invariants a person maintains that a type could maintain instead");
   `desloppify/rules/carve-out.json`. Exceptions known to be live today:
-  - The constant pool's anchor, pinned in `r8`/`X17` (`POOL_BASE: PtrReg =
-    PtrReg(8)` in `pixelflow-codegen/src/emit/x86_64.rs`; `X17` in
-    `emit/aarch64.rs`).
-  - `temps_for` (one per backend in `emit/{avx2,avx512,aarch64}.rs`, reached
-    through the `RegisterFile::temps_for` field) and `Scratch::REDUCE_TEMPS`
-    (`emit/regalloc/mod.rs`).
   - Effects (`Write`, `Seq`) as `Def`s that define no value.
-  - The emitter's `Reduce` arm (`emit/mod.rs`) branching on
+  - The selector's fold (`emit/select.rs`) branching on
     `monoid != SEQ`, and `Fold::combine_op` (`pixelflow-ir/src/fold.rs`) as
     "one narrow door".
   - Ownership's "no arm owns a root" (`program/ownership.rs`).

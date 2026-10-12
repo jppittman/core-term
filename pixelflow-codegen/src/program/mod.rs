@@ -29,16 +29,13 @@ pub(crate) struct ValueId(pub(super) u64);
 ///
 /// A function of the defining op ([`ScheduledOp::class`]), and every
 /// consumer knows by position which it reads — a `Gather`'s index is a
-/// vector and its base is a pointer. The two classes never compete for a
-/// register, so allocation runs once per class over one schedule
-/// (`LinearScan`), each pass blind to the other's values, and the assembler
-/// gets a `PtrReg` where it demands one because the allocator never held
-/// the address anywhere else (docs/plans/2026-09-22-a-pointer-is-a-value.md).
+/// vector and its base is a pointer
+/// (docs/plans/2026-09-22-a-pointer-is-a-value.md).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Class {
-    /// One SIMD batch of `f32`, in a `Reg`.
+    /// One SIMD batch of `f32`.
     Vector,
-    /// An address, in a `PtrReg`.
+    /// An address.
     Pointer,
 }
 
@@ -187,8 +184,7 @@ pub(crate) enum Scope {
     /// The whole function: what runs once per call, and holds the outermost
     /// fold's def.
     Body,
-    /// A surviving `Reduce`'s loop body, indexing
-    /// `NestAllocation::folds`. It opens in the *middle* of its parent's
+    /// A surviving `Reduce`'s loop body. It opens in the *middle* of its parent's
     /// schedule, which is what makes the nest a tree.
     Fold(usize),
 }
@@ -273,12 +269,6 @@ impl<T> ArmPair<T> {
             false_arm,
         }
     }
-
-    /// Iterate over references to both arm values.
-    #[inline]
-    pub(super) fn values(&self) -> impl Iterator<Item = &T> {
-        [&self.true_arm, &self.false_arm].into_iter()
-    }
 }
 
 /// Describes an If node's short-circuit structure in the schedule.
@@ -306,21 +296,6 @@ impl IfGuard {
             IfArm::True => self.ranges.true_arm,
             IfArm::False => self.ranges.false_arm,
         }
-    }
-
-    /// Whether this arm is guarded (has a non-empty range).
-    #[must_use]
-    #[inline]
-    fn is_guarded(&self, arm: IfArm) -> bool {
-        let (s, e) = self.range(arm);
-        s != e
-    }
-
-    /// Whether either arm is guarded.
-    #[must_use]
-    #[inline]
-    pub(super) fn has_guarded_arm(&self) -> bool {
-        IfArm::ALL.iter().any(|&arm| self.is_guarded(arm))
     }
 }
 
@@ -362,8 +337,7 @@ pub(crate) fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use
 
 /// The address an operation reads, if it reads one: a gather's, a
 /// broadcast's or a uniform load's base, always a [`Class::Pointer`] value.
-/// One at most, which is what lets `Scratch::ptr_reload` be a single
-/// register.
+/// One at most.
 pub(crate) fn pointer_operand(sop: &ScheduledOp) -> Option<ValueId> {
     match sop {
         ScheduledOp::Gather(_, base) | ScheduledOp::Broadcast(_, base) => Some(*base),

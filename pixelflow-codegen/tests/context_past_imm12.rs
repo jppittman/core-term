@@ -5,16 +5,13 @@
 //! origin blocks. A kernel that declares 4,097 buffers reads the last through
 //! slot 4,096, one past the 4,095 that `ldr x, [ctx, #slot·8]` encodes on
 //! NEON: an address too far for the instruction is computed first, and the
-//! pointer it loads must still be the last buffer's, not the first's. The
-//! legacy NEON pipeline panics on it, so this runs on the selection pipeline.
+//! pointer it loads must still be the last buffer's, not the first's.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
 use pixelflow_codegen::emit::compile;
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity, ExprArena};
 use pixelflow_ir::{LatticeShape, OpKind};
-
-include!("support/knob.rs");
 
 /// One slot past the scaled immediate's last: 4,096.
 const BUFFERS: usize = 4097;
@@ -24,9 +21,6 @@ const ORIGIN: [f32; 2] = [2.0, 5.0];
 
 #[test]
 fn a_context_slot_past_imm12_loads() {
-    if !selection() {
-        return;
-    }
     let mut a = ExprArena::new();
     let buffers: Vec<_> = (0..BUFFERS)
         .map(|_| {
