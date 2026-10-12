@@ -77,9 +77,10 @@ fn imm5_lane(lane: u8) -> u32 {
 /// `ldr w`'s index is an `Integer` and its base a `Pointer`. Every
 /// instruction is one 32-bit word, except [`Inst::CbzFar`],
 /// [`Inst::AdrpAdd`] and [`Inst::ProbePage`], which are two, and the frame's
-/// [`Inst::Enter`] (a [`Inst::ProbePage`] per page) and [`Inst::Ret`] (two
-/// adds). A displacement past the scaled immediate is added into a value the
-/// allocator places, before the instruction.
+/// [`Inst::Enter`] (a [`Inst::ProbePage`] per page, then at most two subs) and
+/// [`Inst::Ret`] (at most two adds, then `ret`). A displacement past the scaled
+/// immediate is added into a value the allocator places, before the
+/// instruction.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum Inst<S: Stage> {
     /// `op dst.4s, a.4s, b.4s`
@@ -754,8 +755,9 @@ const ADD_SP: u32 = 0x9100_03FF;
 const SHIFT_12: u32 = 1 << 22;
 
 /// `sp` moved by `bytes`: whole pages in the shifted immediate, then the rest,
-/// so a frame is two words however deep it is. `bytes` is a multiple of 16, as
-/// every frame is, so `sp` stays aligned.
+/// so a frame is two words. That holds because `MAX_FRAME` keeps the pages
+/// within the 12-bit immediate. `bytes` is a multiple of 16, as every frame is,
+/// so `sp` stays aligned.
 fn step_sp(opcode: u32, bytes: u32, put: &mut impl FnMut(u32)) {
     let (pages, rest) = (bytes / STACK_PAGE, bytes % STACK_PAGE);
     if pages > 0 {

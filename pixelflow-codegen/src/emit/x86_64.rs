@@ -607,7 +607,7 @@ const PROBE: [u8; 7] = [0xC7, RM_SIB, SIB_BASE_ONLY, 0, 0, 0, 0];
 /// A thread's stack ends in one guard page, and a single `sub` past it lands
 /// in whatever is mapped beyond without touching the guard. The probe is a
 /// store, so it needs no register and no flags, and it is the instruction's own
-/// bytes: `MAX_FRAME` bounds the sequence at 512 pairs.
+/// bytes: `MAX_FRAME` bounds the sequence at 511 pairs.
 fn enter_probing(size: u32, out: &mut Encoding<'_>) {
     let mut left = size;
     while left > STACK_PAGE {

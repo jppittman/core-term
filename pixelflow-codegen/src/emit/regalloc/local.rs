@@ -126,8 +126,14 @@ impl<'m, B: IsaBackend> Allocated<'m, B> {
         }
         data.push(Item::Bind(self.constants.label));
         for &(label, constant) in &self.constants.entries {
+            let bytes = B::constant_bytes(constant);
+            assert_eq!(
+                bytes.len(),
+                size_of::<B::Constant>(),
+                "pool entries sit back to back, so `Constant::offset` is the entry's size times its index"
+            );
             data.push(Item::Bind(label));
-            data.push(Item::Bytes(B::constant_bytes(constant)));
+            data.push(Item::Bytes(bytes));
         }
         AsmProgram {
             text,
@@ -164,13 +170,21 @@ struct Life {
     /// placed only where a read needs it ([`IsaBackend::rematerializable`]): an
     /// index into the scan's instructions.
     remat: Option<usize>,
-    /// What that definition reads, for the ones that read anything: a pool
-    /// load reads the pool's base. A read of the value is a read of it too,
-    /// because placing the definition again reads it.
-    rereads: Option<ValueName>,
     /// Whether its definition is one of those, known before the scan: such a
     /// value is never stored, so it needs no slot.
-    recomputable: bool,
+    recompute: Recompute,
+}
+
+/// Whether a value's definition can be placed again, and what that reads.
+#[derive(Clone, Copy)]
+enum Recompute {
+    No,
+    /// It reads nothing: `Zero`, `Ones`.
+    Leaf,
+    /// It reads one value: a pool load reads the pool's base. A read of the
+    /// value is a read of that too, because placing the definition again reads
+    /// it.
+    Reads(ValueName),
 }
 
 /// What the allocator knows of one loop before it places anything.
@@ -222,8 +236,7 @@ impl Liveness {
                 stored: false,
                 carried_until: None,
                 remat: None,
-                rereads: None,
-                recomputable: false,
+                recompute: Recompute::No,
             })
             .collect();
 
@@ -299,12 +312,11 @@ impl Liveness {
                     && let [Operand::Reg { value, .. }, reads @ ..] = &pushed.operands[..]
                 {
                     let life = &mut live.lives[value.id as usize];
-                    life.recomputable = true;
                     let mut reads = reads.iter().filter_map(|operand| match operand {
                         Operand::Reg { value, .. } => Some(*value),
                         Operand::Target(_) | Operand::Frame(_) => None,
                     });
-                    life.rereads = reads.next();
+                    life.recompute = reads.next().map_or(Recompute::Leaf, Recompute::Reads);
                     assert!(
                         reads.next().is_none(),
                         "a rematerializable instruction reads at most one value"
@@ -364,7 +376,7 @@ impl Liveness {
                 life.hoisted = true;
             }
         }
-        if let Some(base) = life.rereads {
+        if let Recompute::Reads(base) = life.recompute {
             self.read(base, position);
         }
     }
@@ -376,7 +388,7 @@ fn layout(lives: &mut [Life], frame: &mut Frame) -> Result<(), CompileError> {
     let mut narrow: Vec<usize> = (0..lives.len())
         .filter(|&id| {
             lives[id].read
-                && !lives[id].recomputable
+                && matches!(lives[id].recompute, Recompute::No)
                 && matches!(
                     lives[id].class,
                     ClassId::Pointer | ClassId::Integer | ClassId::Opmask
@@ -757,14 +769,13 @@ impl<'m, B: IsaBackend> Held<'m, B> {
         self.get(id).expect("a value is held").number()
     }
 
-    fn insert(&mut self, id: u64, lent: Lent<'m, B>) -> Option<Lent<'m, B>> {
-        match self.at(id) {
-            Ok(at) => Some(core::mem::replace(&mut self.0[at].1, lent)),
-            Err(at) => {
-                self.0.insert(at, (id, lent));
-                None
-            }
-        }
+    /// A lease is a register, so a value already held cannot take another:
+    /// the one it had would be dropped, and its register lost.
+    fn insert(&mut self, id: u64, lent: Lent<'m, B>) {
+        let Err(at) = self.at(id) else {
+            panic!("value {id} is already in a register");
+        };
+        self.0.insert(at, (id, lent));
     }
 
     fn remove(&mut self, id: u64) -> Option<Lent<'m, B>> {
@@ -936,7 +947,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     /// here, so it is held to this position even when it is not needed.
     fn pin(&mut self, value: u64) {
         self.pinned.push(value);
-        if let Some(base) = self.lives[value as usize].rereads {
+        if let Recompute::Reads(base) = self.lives[value as usize].recompute {
             self.pin(base.id);
         }
     }
@@ -1113,7 +1124,8 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             return;
         }
         let start = self.position;
-        let mut ids: Vec<u64> = (edges.iter())
+        let mut ids: Vec<u64> = edges
+            .iter()
             .flat_map(|e| e.residents.iter().map(|&(id, _)| id))
             .collect();
         ids.sort_unstable();
@@ -1370,7 +1382,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
                 value,
                 access: Access::Write,
             };
-            let Some(base) = life.rereads else {
+            let Recompute::Reads(base) = life.recompute else {
                 return self.place(inst, &[define], Origin::Remat);
             };
             // The definition reads, so what it reads is placed first, and kept
@@ -1478,8 +1490,8 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
             for operand in &pushed.operands {
                 self.numbers.push(match operand {
                     Operand::Reg { value: read, .. } if read.id == value => number,
-                    Operand::Reg { value: temp, .. } if temp.id as usize >= self.lives.len() => {
-                        assert_eq!(temp.class, ClassId::Pointer, "{temp:?} is not a slot's address");
+                    Operand::Reg { value: pointer, .. } if pointer.id as usize >= self.lives.len() => {
+                        assert_eq!(pointer.class, ClassId::Pointer, "{pointer:?} is not a slot's address");
                         match address {
                             Some(number) => number,
                             None => *address.insert(self.unused_general()?),
@@ -1521,7 +1533,10 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     /// ones not yet stored: what a loop head expects of the state it is
     /// entered in.
     fn flush(&mut self) -> Result<(), CompileError> {
-        let dropped: Vec<u64> = (self.held.iter().map(|(id, _)| id))
+        let dropped: Vec<u64> = self
+            .held
+            .iter()
+            .map(|(id, _)| id)
             .filter(|&id| !self.kept(id))
             .collect();
         for id in dropped {
@@ -1733,10 +1748,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         let lent = self.acquire(value.class)?;
         self.numbers[at] = lent.number();
         self.pinned.push(value.id);
-        assert!(
-            self.held.insert(value.id, lent).is_none(),
-            "{value:?} is defined while in a register"
-        );
+        self.held.insert(value.id, lent);
         Ok(())
     }
 

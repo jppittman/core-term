@@ -882,7 +882,8 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
             let env = [("PIXELFLOW_ISA", level.isa)];
             // Every command runs: one run shows each failing suite of a leg,
             // not only the first.
-            let passed = (commands.iter())
+            let passed = commands
+                .iter()
                 .map(|args| run_cargo(&workspace_root, &env, args))
                 .fold(true, |all, ok| all & ok);
             if !passed {
