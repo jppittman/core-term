@@ -11,11 +11,11 @@
 //! the whole scope re-examined per `If`. Here the order is *chosen*, from the
 //! ownership the DAG already states (`ownership`).
 //!
-//! **What earns a block.** An arm region that owns a value (a block nested in
-//! it counts). There is no price: an arm is skipped when no lane selects it,
+//! **What earns a block.** An arm region that owns a value (an `If` nested in
+//! it is one). There is no price: an arm is skipped when no lane selects it,
 //! however little it holds. The mask may be an enclosing scope's: it is bound
-//! before this scope begins, and the arm waits on it only when it is computed here. An arm
-//! with nothing of its own is merged into the region around it.
+//! before this scope begins, and the arm waits on it only when it is computed
+//! here. An arm with nothing of its own is merged into the region around it.
 //!
 //! **Where a block goes.** Each earning region becomes one *block*: its own
 //! values, in the order they already had, with the earning blocks nested in it
@@ -57,9 +57,6 @@ pub(super) struct Layout {
     /// The old position of each new position: the schedule to emit is
     /// `order.map(|old| schedule[old])`.
     order: Vec<usize>,
-    /// The new position of each old position: how a table of positions into
-    /// the old schedule (a fold's `at`) is carried to the new one.
-    pub(super) position: Vec<usize>,
     /// The scope's items in new positions, with the arms that earn a block
     /// nested.
     pub(super) flow: Flow,
@@ -85,9 +82,6 @@ impl Blocks {
         let mut owns = alloc::vec![false; regions.len()];
         for pos in 0..len {
             owns[own.region_of(pos).0] = true;
-        }
-        for region in (1..owns.len()).rev() {
-            owns[regions.parent(region)] |= owns[region];
         }
         let mut arm_of_region = alloc::vec![None; regions.len()];
         for (i, arm) in own.arms().iter().enumerate() {
@@ -262,11 +256,6 @@ impl Layout {
             "a layout moves values, never adds or drops"
         );
 
-        let mut position = alloc::vec![0usize; len];
-        for (new, &old) in order.iter().enumerate() {
-            position[old] = new;
-        }
-
         let mut items = items.into_iter();
         let top = items.next().expect("the scope is block 0");
         let arms = items
@@ -283,7 +272,6 @@ impl Layout {
 
         Self {
             order,
-            position,
             flow: Flow { items: top, arms },
         }
     }

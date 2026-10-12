@@ -43,12 +43,12 @@ pub struct StaticFeatures {
     /// of a kernel, so it is kept out of the derived dynamic figures below and
     /// recorded here instead.
     pub scaffold: ScopeRow,
-    /// Frame slots holding a value with an address: the body's
-    /// `regalloc::Allocation::spill_slots`.
+    /// Frame slots holding a value with an address:
+    /// `CompileResult::spill_count`.
     pub spill_slots: u64,
     /// Stack bytes the frame occupies: `CompileResult::frame_bytes`, a frame
-    /// offset bounded by `StackFrame`'s 2 MiB limit and the slot encodings,
-    /// not a program count.
+    /// offset bounded by `MAX_FRAME` and the slot encodings, not a program
+    /// count.
     pub frame_bytes: u32,
     /// Values LICM lifted out of the body.
     pub hoisted: u64,

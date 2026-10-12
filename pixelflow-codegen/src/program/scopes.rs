@@ -136,9 +136,6 @@ impl ScopedSchedule {
 /// beforehand and then hoped to survive the placement. Nothing after this
 /// edits a schedule or its flow: selection reads them as its input.
 ///
-/// A scope's layout permutes its schedule, and a fold's `at` is a position in
-/// its parent's, so each scope's children are carried to the new order as the
-/// scope is laid out.
 fn lay_out(scoped: &mut ScopedSchedule) {
     for scope in core::iter::once(Scope::Body).chain((0..scoped.folds.len()).map(Scope::Fold)) {
         let nest = &*scoped;
@@ -151,11 +148,10 @@ fn lay_out(scoped: &mut ScopedSchedule) {
             nest.folds
                 .iter()
                 .filter(|fold| fold.parent == scope)
-                .map(|fold| (schedule[fold.at].value, fold.reads())),
+                .map(|fold| (fold.reduce, fold.reads())),
         );
         let layout = Layout::of(schedule, roots, &opened);
         let (ordered, flow) = (layout.apply(schedule), layout.flow);
-        let position = layout.position;
         match scope {
             Scope::Body => {
                 scoped.body.schedule = ordered;
@@ -165,9 +161,6 @@ fn lay_out(scoped: &mut ScopedSchedule) {
                 scoped.folds[j].schedule = ordered;
                 scoped.folds[j].flow = flow;
             }
-        }
-        for fold in scoped.folds.iter_mut().filter(|fold| fold.parent == scope) {
-            fold.at = position[fold.at];
         }
     }
 }
@@ -223,24 +216,21 @@ fn place_roots(scoped: &mut ScopedSchedule, variance: &[pixelflow_ir::variance::
                 }
             }
         }
-        // Positions in this fold's schedule at which a fold of its own opens.
-        let opened: Vec<usize> = scoped
+        // The `Reduce` defs in this fold's schedule at which a fold of its own
+        // opens.
+        let opened: Vec<ValueId> = scoped
             .folds
             .iter()
             .filter(|fold| fold.parent == Scope::Fold(j))
-            .map(|fold| fold.at)
+            .map(|fold| fold.reduce)
             .collect();
         let mut moved: Vec<(Scope, ValueId)> = Vec::new();
-        let mut removed: Vec<usize> = Vec::new();
         let mut kept: Vec<Def> = Vec::new();
-        for (at, def) in core::mem::take(&mut scoped.folds[j].schedule)
-            .into_iter()
-            .enumerate()
-        {
+        for def in core::mem::take(&mut scoped.folds[j].schedule) {
             let deps = variance[def.value.0 as usize];
             let defined_here = deps.bits() & own.bits() != 0
                 || matches!(def.op, ScheduledOp::Var(_))
-                || opened.contains(&at);
+                || opened.contains(&def.value);
             if defined_here {
                 kept.push(def);
                 continue;
@@ -254,15 +244,6 @@ fn place_roots(scoped: &mut ScopedSchedule, variance: &[pixelflow_ir::variance::
                 .find(|(_, binds)| deps.bits() & binds.bits() != 0)
                 .map_or(Scope::Body, |(scope, _)| *scope);
             moved.push((computing, def.value));
-            removed.push(at);
-        }
-        // The folds opened here keep their `Reduce` defs, at new positions.
-        for fold in scoped
-            .folds
-            .iter_mut()
-            .filter(|fold| fold.parent == Scope::Fold(j))
-        {
-            fold.at -= removed.partition_point(|&at| at < fold.at);
         }
         scoped.folds[j].schedule = kept;
         scoped.folds[j].outer = moved.iter().map(|&(_, vid)| vid).collect();
@@ -295,11 +276,15 @@ fn lane_binders(schedule: &[Def]) -> pixelflow_ir::variance::Variance {
 /// A fold's binder, read off the `Reduce` def it opens at in its parent.
 fn binder_of_fold(scoped: &ScopedSchedule, j: usize) -> u8 {
     let fold = &scoped.folds[j];
-    let def = match fold.parent {
-        Scope::Body => &scoped.body.schedule[fold.at],
-        Scope::Fold(p) => &scoped.folds[p].schedule[fold.at],
+    let schedule = match fold.parent {
+        Scope::Body => &scoped.body.schedule,
+        Scope::Fold(p) => &scoped.folds[p].schedule,
     };
-    let ScheduledOp::Reduce(meta, _) = &def.op else {
+    let Some(ScheduledOp::Reduce(meta, _)) = schedule
+        .iter()
+        .find(|def| def.value == fold.reduce)
+        .map(|def| &def.op)
+    else {
         panic!("Fold({j}) opens at a def that is not a Reduce")
     };
     meta.binder().var()
@@ -494,40 +479,25 @@ fn extract_folds_bound_by(
     (remaining, pending)
 }
 
-/// Locate each [`PendingFold`]'s `Reduce` def in the body's schedule and
-/// record it as a [`ScopeFold`].
+/// Record each [`PendingFold`] of the body as a [`ScopeFold`], and its
+/// children inside it.
 ///
-/// Searched by value rather than carried through as a position: the scope's
-/// layout, which runs after this, permutes the schedule — it moves a `Def`,
-/// never renames the `ValueId` it defines — and carries each fold's position
-/// along itself ([`lay_out`]).
+/// A fold names the `Reduce` def it opens at by value, not by position: the
+/// scope's layout, which runs after this, permutes the schedule — it moves a
+/// `Def`, never renames the `ValueId` it defines. That the def is in the
+/// parent's schedule is asserted where the layout asks for the fold's reads
+/// ([`guards::FoldReads::new`]).
 fn attach_folds(scoped: &mut ScopedSchedule, pending: Vec<PendingFold>) {
     for fold in pending {
-        let at = scoped
-            .body
-            .schedule
-            .iter()
-            .position(|def| def.value == fold.reduce_vid)
-            .unwrap_or_else(|| {
-                panic!(
-                    "{:?}'s Reduce def is not in the body after extract_folds",
-                    fold.reduce_vid
-                )
-            });
-        attach_fold(scoped, fold, Scope::Body, at);
+        attach_fold(scoped, fold, Scope::Body);
     }
 }
 
-/// Record `fold` as a [`ScopeFold`] opening at `at` in `parent`,
-/// then each of its children inside it — depth first, so a parent's index is
-/// always below its children's, which is the order `regalloc::local::allocate` and the
-/// frame layout both walk the tree in.
-///
-/// A child's position is a search of its parent's schedule, for the same
-/// reason [`attach_folds`] searches rather than carries: the allocator keeps
-/// a fold's evaluation order, but a position is a fact about a schedule and
-/// this is the schedule it will be asked of.
-fn attach_fold(scoped: &mut ScopedSchedule, fold: PendingFold, parent: Scope, at: usize) {
+/// Record `fold` as a [`ScopeFold`] opening in `parent`, then each of its
+/// children inside it — depth first, so a parent's index is always below its
+/// children's, which is the order `regalloc::local::allocate` and the frame
+/// layout both walk the tree in.
+fn attach_fold(scoped: &mut ScopedSchedule, fold: PendingFold, parent: Scope) {
     let PendingFold {
         reduce_vid,
         schedule,
@@ -536,25 +506,14 @@ fn attach_fold(scoped: &mut ScopedSchedule, fold: PendingFold, parent: Scope, at
     let index = scoped.folds.len();
     scoped.folds.push(ScopeFold {
         parent,
-        at,
+        reduce: reduce_vid,
         roots: Vec::new(),
         outer: Vec::new(),
         schedule,
         flow: Flow::default(),
     });
     for child in children {
-        let at = scoped.folds[index]
-            .schedule
-            .iter()
-            .position(|def| def.value == child.reduce_vid)
-            .unwrap_or_else(|| {
-                panic!(
-                    "{:?}'s Reduce def is not in {reduce_vid:?}'s body, which \
-                     extract_folds said it was nested in",
-                    child.reduce_vid
-                )
-            });
-        attach_fold(scoped, child, Scope::Fold(index), at);
+        attach_fold(scoped, child, Scope::Fold(index));
     }
 }
 

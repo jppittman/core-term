@@ -55,10 +55,6 @@ impl Region {
 /// One arm of one `If`, as a region.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Arm {
-    /// Schedule position of the `If` (in the order the ownership was read
-    /// from; positions are only names for defs here, the relation does not
-    /// depend on them).
-    pub(super) if_pos: usize,
     /// The `If`'s mask.
     pub(super) mask: ValueId,
     /// Which arm.
@@ -148,13 +144,11 @@ impl Ownership {
                     // Pushed false arm first: the sweep meets the `If`s
                     // last-to-first and the list is reversed once at the end.
                     me.arms.push(Arm {
-                        if_pos: pos,
                         mask: *mask,
                         arm: IfArm::False,
                         region: on_false,
                     });
                     me.arms.push(Arm {
-                        if_pos: pos,
                         mask: *mask,
                         arm: IfArm::True,
                         region: on_true,
@@ -300,8 +294,6 @@ mod tests {
         let [inner_true, inner_false, outer_true, outer_false] = own.arms() else {
             panic!("two Ifs are four arms, in schedule order");
         };
-        // The inner If sits at position 4, the outer at 6.
-        assert_eq!((inner_true.if_pos, outer_true.if_pos), (4, 6));
         assert_eq!(owned(&own, inner_true, schedule.len()), alloc::vec![2]);
         assert_eq!(owned(&own, inner_false, schedule.len()), alloc::vec![3]);
         assert_eq!(

@@ -155,9 +155,9 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
         // where it is priced. Zero here is not a price, only the absence of
         // one: codegen's guard analysis once read it as the price of a whole
         // loop, and refused a branch over a 64-trip fold as too cheap to be
-        // worth one; no arm is priced now. (It said "lowered (unrolled) before costing" while
-        // folds were unrolled before saturation. They no longer are: codegen
-        // emits a surviving fold as a loop.)
+        // worth one; no arm is priced now. (It said "lowered (unrolled)
+        // before costing" while folds were unrolled before saturation. They
+        // no longer are: codegen emits a surviving fold as a loop.)
         OpKind::Reduce => 0,
         // A leaf like Buffer: its one broadcast load lands in the per-call
         // prologue, which the per-sample cost model does not see.
