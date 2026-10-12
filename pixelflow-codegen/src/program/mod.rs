@@ -158,12 +158,13 @@ pub(crate) enum Scope {
 ///
 /// This is the loop nest as data. `body` is what happens once per call — the
 /// per-call values, and the outermost fold's def — and each fold's schedule
-/// is what happens once per trip of its loop. Each scope's `roots` are the
-/// values it computes for the scopes inside it: placed here, by the
-/// outermost scope binding every binder the value depends on, so a value
-/// depending on nothing is computed once per call and one depending only on
-/// the row binder once per row (docs/plans/2026-09-16-collapse-is-a-fold.md
-/// §2.2).
+/// is what happens once per trip of its loop. A value is computed by the
+/// outermost scope binding every binder it depends on, so a value depending
+/// on nothing is computed once per call and one depending only on the row
+/// binder once per row (docs/plans/2026-09-16-collapse-is-a-fold.md §2.2);
+/// a fold that reads it names it in [`ScopeFold::outer`]. A scope's roots —
+/// what it computes for the scopes inside it — are its defs some fold inside
+/// names there: derived, not stored.
 ///
 /// The body is a field rather than `folds[0]` because it is genuinely a
 /// different thing: it wraps everything and opens nowhere.
@@ -177,8 +178,6 @@ pub(crate) struct ScopedSchedule {
 
 /// One scope of a [`ScopedSchedule`] that opens nowhere: the body.
 pub(crate) struct ScopeRegion {
-    /// Values this scope computes for the ones inside it.
-    pub(super) roots: Vec<ValueId>,
     /// What it computes, in topological order.
     pub(super) schedule: Vec<Def>,
     /// How `schedule` runs: its defs, with the arms that earn a branch nested
@@ -193,8 +192,6 @@ pub(crate) struct ScopeFold {
     pub(super) parent: Scope,
     /// The `Reduce` def of `parent` this is the body of.
     pub(super) reduce: ValueId,
-    /// Values this fold computes for the scopes inside it.
-    pub(super) roots: Vec<ValueId>,
     /// Values an enclosing scope computes that this fold reads: what
     /// `scopes::place_roots` took out of `schedule`, which holds only what
     /// the fold defines.

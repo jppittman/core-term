@@ -9,8 +9,8 @@
 //! The second section is around more than one loop: both arms loops, an arm
 //! skipping a fold and the fold only it reads (at one and at two scopes'
 //! distance), a mask that is itself a loop, and the glyph's shape of a fold
-//! read across two `If`s. The third section is two arms that ownership still
-//! refuses — correctness only, and what the demand-regions work (D1) is for.
+//! read across two `If`s. The third section is a loop's inputs: an arm owns a
+//! value only its loop reads, and one the mask reads too stays outside it.
 //!
 //! That the branch forms is not visible from here — nothing outside
 //! `pixelflow-codegen` can name a guard — and is pinned there (`emit`'s test
@@ -271,7 +271,7 @@ fn an_arm_skips_a_nested_fold_and_the_fold_it_reads() {
             .abs()
     });
     let k = x().ge(&c(THRESHOLD)).select(&arm, &c(0.0)).add(&y());
-    check("nested reader in the arm", &k, |x, y| {
+    let want = |x: f64, y: f64| {
         let f = fold_ref(x);
         let arm: f64 = (0..OUTER_TRIPS)
             .map(f64::from)
@@ -283,7 +283,9 @@ fn an_arm_skips_a_nested_fold_and_the_fold_it_reads() {
             })
             .sum();
         (if x >= THRESHOLD { arm } else { 0.0 }) + y
-    });
+    };
+    check("nested reader in the arm", &k, want);
+    check_at("nested reader in the arm", RAGGED_WIDTH, &k, want);
 }
 
 /// `select(∃j. X > 10 + 5j, F(X), 0) + Y`: the mask is a loop too, which
@@ -324,12 +326,12 @@ fn a_fold_read_across_two_ifs() {
     check_at("fold read across two ifs", RAGGED_WIDTH, &k, want);
 }
 
-// ───── still refused by ownership ─────
+// ───── what only an arm's loop reads ─────
 
 /// `select(X < T, 0, F(X + Y)) + Y`: the loop reads `X + Y`, which nothing
-/// outside it reads. Clustering gathers `X + Y` into the arm, but the batch
-/// scope parks it for the loop, and a parked value is pinned outside every
-/// arm (no arm may own a root), so it splits the run.
+/// outside it reads, so the false arm owns both. `X + Y` is computed inside
+/// the arm and read inside the loop the arm runs, and a batch that skips the
+/// arm computes neither.
 #[test]
 fn an_arm_that_is_a_fold_reading_a_value_only_it_reads() {
     let s = x().add(&y());
@@ -337,18 +339,17 @@ fn an_arm_that_is_a_fold_reading_a_value_only_it_reads() {
         .lt(&c(THRESHOLD))
         .select(&c(0.0), &fold_of(&s))
         .add(&y());
-    check("fold reading a parked value", &k, |x, y| {
+    let want = |x: f64, y: f64| {
         let arm = if x < THRESHOLD { 0.0 } else { fold_ref(x + y) };
         arm + y
-    });
+    };
+    check("fold reading a value only it reads", &k, want);
+    check_at("fold reading a value only it reads", RAGGED_WIDTH, &k, want);
 }
 
 /// `Σ_{j<4} select(X + j < T, F(X + j), 0) + Y`: the `If` is in the outer
-/// fold's own body. The inner loop's schedule still carries the lane and
-/// coordinate leaves `X + j` was built from before it was parked, and a leaf
-/// the loop's schedule shares is a read of it (`guards::FoldReads`), so the
-/// arm owns those leaves too — scheduled ahead of the mask, where no branch
-/// after the mask can span them.
+/// fold's own body. The arm owns `F`'s loop. The mask reads `X + j` too, so
+/// `X + j` stays in the region around the `If`.
 #[test]
 fn an_arm_that_is_a_fold_in_a_folds_body() {
     let k = Kernel::sum_over(OUTER_TRIPS, |j| {

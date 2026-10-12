@@ -445,6 +445,11 @@ two meanings become two types.
 - **`If`'s value semantics do not change.** Which lowering is chosen
   changes what is computed, never what is selected.
 - **A skipped region leaves zero in its parks.** Never a mask.
+  - (2026-10-12) Retired by placement β: an arm owns the roots only its loops
+    read, and nothing reads what a skipped arm left behind. An arm-owned
+    value is read only inside the arm's block, so its life, its slot and its
+    store end there. See Park in `.claude/skills/ontology/codegen.md` and D2
+    in `docs/plans/2026-10-08-selection-is-a-phase.md`.
 - **The frame prologue is never guarded.** It runs once per call.
 
 ## 10. Non-goals

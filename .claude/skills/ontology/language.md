@@ -399,7 +399,8 @@
     binder slot keyed that way was one slot for two folds, and a label
     derived that way would be wrong too.
   - A binder is the loop counter: broadcast, stepped by 1.0, exact to 2²⁴.
-  - The binder and the accumulator are roots the allocator places.
+  - The accumulator is a root when a fold inside reads it; the binder is
+    the fold's own `Var`, carried or stepped by the allocator.
 - **Lives:** `pixelflow_ir::fold::{Binder, Placeholder}`
   (`pixelflow-ir/src/fold.rs`), `arena::{REDUCE_BINDER_BASE,
   REDUCE_BINDERS}` (both `pub(crate)`), `ExprArena::close_over`
@@ -546,11 +547,10 @@
 - **Is not:** a number. `1.0` is not true: `mask & 1.0` blends `7.0` and
   `9.0` into `4.5`. All-ones read as a number is NaN. Not something an
   arithmetic rule reasons about. Not hash-consed with a number: it is
-  `Bits`, never `Num`. Not what a skipped arm's park holds. Not an IR type
-  (D8: types in sema only). Superseded: mask ops kept out of the global
-  vocabulary because registering them broke the AA ramp (2026-07-28). That
-  reason expired with DwrtFree; the cause was optimizing an open term at all
-  (one-pipeline §2).
+  `Bits`, never `Num`. Not an IR type (D8: types in sema only). Superseded:
+  mask ops kept out of the global vocabulary because registering them broke
+  the AA ramp (2026-07-28). That reason expired with DwrtFree; the cause was
+  optimizing an open term at all (one-pipeline §2).
 - **Follows:**
   - `OpKind::mask(bool)` is the only constructor.
   - `is_bitwise_domain()` marks the ops whose results are patterns, and the

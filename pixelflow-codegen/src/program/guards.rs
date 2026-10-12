@@ -33,9 +33,13 @@ use crate::program::{Def, ScheduledOp, ValueId};
 /// `scopes::place_roots` took out of it for an enclosing scope to compute.
 /// A fold nested in the fold is carved out of *that* schedule in turn, so
 /// whatever it reads from here is named by the outer one too — the edges are
-/// transitive by construction. Every named id is an edge, a leaf the body
-/// rebuilds for itself included: that over-approximates (such a leaf is kept
-/// out of an arm the fold does not run in).
+/// transitive by construction, and `scopes::lay_out` asserts it, both ways: a
+/// fold's `outer` is defined in its parent ahead of the fold or read by the
+/// parent from outside, and a fold's defs read only its own defs and its
+/// `outer`. Nothing else would see a read these edges missed. Every named id
+/// is an edge, a leaf the body rebuilds for itself included: that
+/// over-approximates (such a leaf is kept out of an arm the fold does not run
+/// in).
 ///
 /// Keyed by a loop's `Reduce` def; the value is the ids of this scope's that
 /// the loop reads.

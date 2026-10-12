@@ -338,6 +338,10 @@ algebra rather than from a resident implementation.
 - **The frame prologue is never guarded.** It runs once per call; a
   branch there buys nothing and the allocator must not be pinned for it.
 - **A skipped region leaves zero in its parks.** Never a mask.
+  - (2026-10-12) Retired by placement β: an arm owns the roots only its loops
+    read, and nothing reads what a skipped arm left behind. See Park in
+    `.claude/skills/ontology/codegen.md` and D2 in
+    `docs/plans/2026-10-08-selection-is-a-phase.md`.
 - **Select stays a blend.** Its value semantics do not change; demand
   only decides what is computed, never what is selected.
 
