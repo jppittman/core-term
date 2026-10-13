@@ -1637,8 +1637,8 @@ impl EGraph {
         // cheapest rule's `apply` — so polling it once per node would be a
         // measurable tax on every scan. It is polled instead at the three
         // places that make the ceiling hard without that tax: once per
-        // e-class (the boundary already clones the class's node vector, so a
-        // clock read is lost in the noise), every `DEADLINE_POLL_NODES` nodes
+        // e-class (a clock read is lost in a class's worth of rule
+        // evaluations), every `DEADLINE_POLL_NODES` nodes
         // within a class (so one enormous e-class cannot run unbounded), and
         // once after the scan and its commit (so a deadline that elapsed
         // inside an opaque `apply` is still seen). The bound that buys is an
@@ -1705,9 +1705,10 @@ impl EGraph {
                 continue;
             }
 
-            let nodes: Vec<ENode> = self.classes[canonical.index()].nodes.clone();
-
-            for node in &nodes {
+            // Borrowed, not cloned: the scan only reads the graph (a rule's
+            // `apply` takes `&EGraph`, and every write waits for the commit
+            // below), so nothing can move the class's nodes under the loop.
+            for node in &self.classes[canonical.index()].nodes {
                 evals += 1;
                 if evals % DEADLINE_POLL_NODES == 0 && expired(deadline) {
                     scan = ScanStop::Deadline;
@@ -1749,10 +1750,6 @@ impl EGraph {
                     }
 
                     updates.push((canonical, action));
-                    *self
-                        .match_counts
-                        .entry(RuleId::of(self.rules[rule_idx].as_ref()))
-                        .or_insert(0) += 1;
                     if allowance_spent(self, updates.len()) {
                         scan = ScanStop::ApplicationBudget;
                         break 'scan;
@@ -1771,6 +1768,16 @@ impl EGraph {
         // necessary — safe, just less tight.
         if scan == ScanStop::Completed {
             self.rule_last_swept[rule_idx] = sweep_start;
+        }
+
+        // Every queued action is one match, so this scan's matches are
+        // `updates`' length — counted once, after the scan, which is what
+        // lets the scan borrow the graph rather than clone each class.
+        if !updates.is_empty() {
+            *self
+                .match_counts
+                .entry(RuleId::of(self.rules[rule_idx].as_ref()))
+                .or_insert(0) += updates.len();
         }
 
         // Commit: all actions in the log are within budget.
