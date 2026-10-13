@@ -51,6 +51,18 @@ any intermediate structure (schedules, scopes, ownership regions, blocks).
 A slowdown nothing fails is a gap in CI ("CI is the gate"), and the fix is a
 benchmark check, not a unit test.
 
+A performance claim is tested as an outcome, against a baseline, never as a
+mechanism. JP: GCC might assert that a trigonometric benchmark built with
+fast-math outperforms the same benchmark without it, and that is not
+brittle; it does not test "the inner workings of the register allocator ...
+when you enable fast math", or look for CPU flags. Here the two
+differentials below are timed as well as compared: the optimized corpus is
+no slower than its `kernel_raw!` twin, and AVX-512 no slower than AVX2 on
+the same host. Both are relative, on one machine at one time, so host noise
+largely cancels. Compile time and a code-size ceiling are absolute
+measurements with regression thresholds. All of it lives in the benchmark
+gate.
+
 ## Where a test lives
 
 Location is not the criterion; what the test asserts is. An in-file test is
