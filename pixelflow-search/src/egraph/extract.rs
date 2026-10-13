@@ -4,7 +4,7 @@
 //! the "best" one according to a cost model and materialises it as an
 //! [`pixelflow_ir::ExprArena`].
 
-use super::cost::{CostFunction, CostModel};
+use super::cost::CostFunction;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use alloc::collections::BinaryHeap;
@@ -24,9 +24,9 @@ use pixelflow_ir::{LatticeShape, Variance};
 /// forgets to repair or backfill it produces that bug silently.
 ///
 /// `Extraction` makes the bug class unrepresentable: the only ways to
-/// obtain a value of this type are [`Extraction::from_dp`] (wraps
-/// [`repair_choices_well_founded`]) and [`Extraction::from_backfill`]
-/// (wraps [`backfill_well_founded`]) — both establish well-foundedness as
+/// obtain a value of this type are `Extraction::from_dp` (wraps
+/// `repair_choices_well_founded`) and `Extraction::from_backfill`
+/// (wraps `backfill_well_founded`) — both establish well-foundedness as
 /// part of construction, so a bare unvalidated vector can never cross into
 /// [`choices_to_arena`] or the edge walker
 /// ([`crate::nnue::EdgeTrace::from_extraction`]), which accept only
@@ -347,14 +347,14 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
                 let mut best_swap_cost = current_cost;
                 let mut best_swap: Option<Extraction<'g>> = None;
 
-                for node_idx in 0..candidates_to_try {
+                for (node_idx, node) in nodes.iter().enumerate().take(candidates_to_try) {
                     if node_idx == current_node_idx {
                         continue;
                     }
 
                     // Skip self-referential candidates (would create cycles).
                     {
-                        let children = (&nodes[node_idx]).children_slice();
+                        let children = node.children_slice();
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             continue;
                         }
@@ -426,7 +426,7 @@ impl<'a, R: Reranker + ?Sized> IncrementalExtractor<'a, R> {
             let nodes = egraph.nodes(canonical);
             if node_idx < nodes.len() {
                 {
-                    let children = (&nodes[node_idx]).children_slice();
+                    let children = nodes[node_idx].children_slice();
                     for &child in children {
                         stack.push(child);
                     }
@@ -1023,7 +1023,7 @@ pub fn compute_ref_counts(egraph: &EGraph, root: EClassId, choices: &[Option<usi
                 let nodes = egraph.nodes(canonical);
                 if node_idx < nodes.len() {
                     {
-                        let children = (&nodes[node_idx]).children_slice();
+                        let children = nodes[node_idx].children_slice();
                         for &child in children {
                             stack.push(child);
                         }
@@ -1065,48 +1065,48 @@ pub fn build_extracted_dag_from_choices(
         .collect();
 
     // Topological schedule: shared classes before their dependents (post-order).
-    let mut schedule = Vec::new();
-    let mut visited = alloc::vec![false; egraph.num_classes()];
+    /// Post-order walk of the chosen subgraph, scheduling each shared class
+    /// after the classes it depends on.
+    struct TopoWalk<'a> {
+        egraph: &'a EGraph,
+        choices: &'a [Option<usize>],
+        ref_counts: &'a [u32],
+        visited: Vec<bool>,
+        schedule: Vec<EClassId>,
+    }
 
-    fn topo_walk(
-        egraph: &EGraph,
-        class: EClassId,
-        choices: &[Option<usize>],
-        ref_counts: &[u32],
-        visited: &mut Vec<bool>,
-        schedule: &mut Vec<EClassId>,
-    ) {
-        let canonical = egraph.find(class);
-        let idx = canonical.index();
-        if idx >= visited.len() || visited[idx] {
-            return;
-        }
-        visited[idx] = true;
+    impl TopoWalk<'_> {
+        fn visit(&mut self, class: EClassId) {
+            let canonical = self.egraph.find(class);
+            let idx = canonical.index();
+            if idx >= self.visited.len() || self.visited[idx] {
+                return;
+            }
+            self.visited[idx] = true;
 
-        if let Some(node_idx) = choices.get(idx).copied().flatten() {
-            if let Some(node) = egraph.nodes(canonical).get(node_idx) {
-                {
-                    let children = (node).children_slice();
-                    for &child in children {
-                        topo_walk(egraph, child, choices, ref_counts, visited, schedule);
-                    }
+            if let Some(node_idx) = self.choices.get(idx).copied().flatten()
+                && let Some(node) = self.egraph.nodes(canonical).get(node_idx)
+            {
+                for &child in node.children_slice() {
+                    self.visit(child);
                 }
             }
-        }
 
-        if ref_counts.get(idx).copied().unwrap_or(0) > 1 {
-            schedule.push(canonical);
+            if self.ref_counts.get(idx).copied().unwrap_or(0) > 1 {
+                self.schedule.push(canonical);
+            }
         }
     }
 
-    topo_walk(
+    let mut walk = TopoWalk {
         egraph,
-        root,
         choices,
         ref_counts,
-        &mut visited,
-        &mut schedule,
-    );
+        visited: alloc::vec![false; egraph.num_classes()],
+        schedule: Vec::new(),
+    };
+    walk.visit(root);
+    let schedule = walk.schedule;
 
     ExtractedDAG {
         root: canonical_root,
@@ -1536,7 +1536,7 @@ pub struct ExtractedDAG {
     pub report: ExtractionReport,
 }
 
-/// Which of [`extract_dag_scoped`]'s objectives produced the returned term.
+/// Which of `extract_dag_scoped`'s objectives produced the returned term.
 ///
 /// The two-objective no-regression property (the sharing-aware term is
 /// returned only when it is cheaper by true [`ChoiceCost::dag`], else the
@@ -1557,7 +1557,7 @@ pub enum ExtractionObjective {
     /// outgrew [`SHARED_DAG_PASS_BYTE_BUDGET`] and it was abandoned.
     TreeOnly,
     /// The choices were supplied from outside the two-objective DP — a
-    /// [`Reranker`](super::Reranker), or a caller's own choice map through
+    /// `Reranker`, or a caller's own choice map through
     /// [`build_extracted_dag_from_choices`]. Neither objective's pass ran.
     External,
 }
@@ -1575,7 +1575,7 @@ impl ExtractionObjective {
     }
 }
 
-/// What [`shared_dag_dp_pass`] cost, whether or not it finished.
+/// What `shared_dag_dp_pass` cost, whether or not it finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SharedPassStats {
     /// Classes reachable from the root — the set the pass's reach sets
@@ -1619,8 +1619,8 @@ impl ExtractionReport {
 
 /// Which column of [`ChoiceCost`] a DP arm's own minimized value is on.
 ///
-/// The two arms of [`extract_dag_scoped`] minimize *different quantities* —
-/// [`tree_dp_pass`] a tree cost, [`shared_dag_dp_pass`] a DAG cost — and a
+/// The two arms of `extract_dag_scoped` minimize *different quantities* —
+/// `tree_dp_pass` a tree cost, `shared_dag_dp_pass` a DAG cost — and a
 /// claim read off one arm's table means nothing beside the other column. The
 /// scale is carried rather than inferred from [`ExtractionObjective`] because
 /// a number whose units live in a comment is a number something will
@@ -1714,23 +1714,6 @@ impl ExtractedDAG {
     }
 }
 
-/// Extract a DAG with sharing information from an e-class.
-///
-/// This is the DAG-aware version of `extract()`. It returns structural
-/// information about sharing that codegen can use to emit let-bindings.
-///
-/// # Arguments
-///
-/// * `egraph` - The e-graph to extract from
-/// * `root` - The root e-class
-/// * `costs` - The cost function for choosing best nodes
-///
-/// # Returns
-///
-/// An `ExtractedDAG` containing:
-/// - Best node per e-class
-/// - Shared e-classes (for let-binding)
-/// - Topological order for emission
 /// The variance of one e-node, given the variance already chosen for the
 /// classes below it — [`ENode::variance`], the transfer function the
 /// e-graph's class fact is seeded by, fed the chosen forms instead. A fold's
@@ -1767,7 +1750,7 @@ fn node_variance(
 pub struct ChoiceCost {
     /// Every child summed at every use — **sharing is never priced**, so a
     /// subterm reached ten times is paid ten times. This is the objective
-    /// [`extract_dag_scoped`]'s DP minimizes, which is why it is reported:
+    /// `extract_dag_scoped`'s DP minimizes, which is why it is reported:
     /// comparing the DP against a reference means comparing this number.
     pub tree: usize,
 
@@ -1783,16 +1766,16 @@ pub struct ChoiceCost {
 ///
 /// This costs *the choice function it is given* — nothing is minimized here,
 /// no node is reconsidered. Pass a settled, well-founded choice map (the
-/// output of [`repair_choices_well_founded`], or [`Extraction::choices`]);
+/// output of `repair_choices_well_founded`, or `Extraction::choices`);
 /// costing the raw DP table instead is exactly the #1111 bug this exists to
 /// close, so a cyclic map panics rather than returning a number for a term
 /// that cannot be materialized.
 ///
-/// Weighting matches [`extract_dag_scoped`]: a node's op cost is multiplied
+/// Weighting matches `extract_dag_scoped`: a node's op cost is multiplied
 /// by [`LatticeShape::evals`] of the variance of the *chosen* form below it,
 /// so a subexpression that depends on nothing is priced once per call and an
 /// X-dependent one once per sample. Leaves are free
-/// ([`CostModel::node_op_cost`]), so under [`LatticeShape::POINT`]
+/// (`CostModel::node_op_cost`), so under [`LatticeShape::POINT`]
 /// `ChoiceCost::dag` equals the latency-prior cost of the arena
 /// `choices_to_arena` builds from the same map.
 ///
@@ -1958,13 +1941,13 @@ pub fn extract_dag_scoped<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> ExtractedDAG {
+    let pricing = Pricing { costs, shape };
+    let at = Rooted { egraph, root };
     let tree = costed(
-        egraph,
-        root,
+        at,
         tree_dp_pass(egraph, root, &mut Dp::production(costs, shape)),
         CostScale::Tree,
-        costs,
-        shape,
+        &pricing,
     );
     let pass = shared_dag_dp_pass(
         egraph,
@@ -1976,7 +1959,7 @@ pub fn extract_dag_scoped<C: CostFunction>(
     let Some(dp) = pass.outcome else {
         return assemble(egraph, root, tree, ExtractionObjective::TreeOnly, stats);
     };
-    let shared = costed(egraph, root, dp, CostScale::Dag, costs, shape);
+    let shared = costed(at, dp, CostScale::Dag, &pricing);
     // The comparison is between two *re-costed* terms, never between the two
     // DPs' own tables: those are on different scales (`CostScale`). Both sides
     // here are `cost_of_choices` of a settled map under the same `costs` and
@@ -1990,12 +1973,12 @@ pub fn extract_dag_scoped<C: CostFunction>(
     assemble(egraph, root, tree, ExtractionObjective::TreeCheaper, stats)
 }
 
-/// The most memory [`shared_dag_dp_pass`] may hold in reach sets before it
-/// gives up and [`extract_dag_scoped`] returns the tree term as
+/// The most memory `shared_dag_dp_pass` may hold in reach sets before it
+/// gives up and `extract_dag_scoped` returns the tree term as
 /// [`ExtractionObjective::TreeOnly`].
 ///
 /// The pass's memory is the sum of its reach sets, each held in whichever
-/// form is smaller (see [`Reach`]), so the worst case is the dense bound
+/// form is smaller (see `Reach`), so the worst case is the dense bound
 /// `live_classes² / 8` bytes — a chain, where every class reaches every
 /// class below it — and real kernels sit far under it: the reach sets are
 /// the sub-DAGs of the chosen terms, and most of a saturated glyph's live
@@ -2011,6 +1994,27 @@ pub fn extract_dag_scoped<C: CostFunction>(
 /// reaches.
 pub const SHARED_DAG_PASS_BYTE_BUDGET: usize = 256 << 20;
 
+/// What a term is priced under: the cost function and the lattice that weights
+/// each node by how often it is evaluated.
+pub(crate) struct Pricing<'a, C> {
+    pub(crate) costs: &'a C,
+    pub(crate) shape: LatticeShape,
+}
+
+/// The class a term is extracted from, in the graph that holds it.
+#[derive(Clone, Copy)]
+pub(crate) struct Rooted<'a> {
+    pub(crate) egraph: &'a EGraph,
+    pub(crate) root: EClassId,
+}
+
+impl<C: CostFunction> Pricing<'_, C> {
+    /// The price of the term `choices` names, from `at`.
+    pub(crate) fn of_choices(&self, at: Rooted<'_>, choices: &[Option<usize>]) -> ChoiceCost {
+        cost_of_choices(at.egraph, at.root, choices, self.costs, self.shape)
+    }
+}
+
 /// A settled choice map, the cost of the term it names, and what the DP that
 /// produced it claimed that term was worth.
 struct CostedChoices {
@@ -2024,6 +2028,7 @@ struct CostedChoices {
 /// `tree` is the pre-#1116 extractor, arithmetic for arithmetic, and exists
 /// so the A/B that justifies the sharing-aware objective can be run against
 /// the thing it replaced rather than against a remembered number.
+#[cfg(test)]
 pub(crate) fn extract_dag_objectives<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
@@ -2038,6 +2043,7 @@ pub(crate) fn extract_dag_objectives<C: CostFunction>(
 
 /// The tree-cost arm on its own — the pre-#1116 extractor, and the control
 /// the objective A/B and its cost measurement are run against.
+#[cfg(test)]
 pub(crate) fn extract_dag_tree_arm<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
@@ -2045,12 +2051,10 @@ pub(crate) fn extract_dag_tree_arm<C: CostFunction>(
     shape: LatticeShape,
 ) -> ExtractedDAG {
     let term = costed(
-        egraph,
-        root,
+        Rooted { egraph, root },
         tree_dp_pass(egraph, root, &mut Dp::production(costs, shape)),
         CostScale::Tree,
-        costs,
-        shape,
+        &Pricing { costs, shape },
     );
     // `shared_pass: None` — the pass was not run, as opposed to run and
     // abandoned, which is what production's `TreeOnly` carries.
@@ -2062,6 +2066,7 @@ pub(crate) fn extract_dag_tree_arm<C: CostFunction>(
 /// term above some size would be measuring nothing — so a graph that would
 /// exceed [`SHARED_DAG_PASS_BYTE_BUDGET`] in production is the caller's
 /// memory to spend here.
+#[cfg(test)]
 pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
     egraph: &EGraph,
     root: EClassId,
@@ -2072,7 +2077,12 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
     let choices = pass
         .outcome
         .expect("an unbounded shared pass cannot run out of budget");
-    let term = costed(egraph, root, choices, CostScale::Dag, costs, shape);
+    let term = costed(
+        Rooted { egraph, root },
+        choices,
+        CostScale::Dag,
+        &Pricing { costs, shape },
+    );
     assemble(
         egraph,
         root,
@@ -2097,15 +2107,13 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
 /// produced them — the distinction #1111 had to make when a repair could
 /// switch a class under it, kept because it costs one walk.
 fn costed<C: CostFunction>(
-    egraph: &EGraph,
-    root: EClassId,
+    at: Rooted<'_>,
     dp: DpOutcome,
     scale: CostScale,
-    costs: &C,
-    shape: LatticeShape,
+    pricing: &Pricing<'_, C>,
 ) -> CostedChoices {
     let DpOutcome { choices, root_cost } = dp;
-    let cost = cost_of_choices(egraph, root, &choices, costs, shape);
+    let cost = pricing.of_choices(at, &choices);
     let audit = ClaimAudit {
         claimed: root_cost,
         scale,
@@ -2185,6 +2193,7 @@ fn assemble(
 // looks cheaper than an expensive-but-legitimate form. (A flat 1_000_000 was
 // safely above every *unweighted* cost; weighting by a frame's sample count
 // clears that by orders of magnitude.)
+#[cfg(any(test, feature = "provenance-journal"))]
 pub(crate) const CYCLE_COST: usize = usize::MAX / 4;
 
 /// One node's weighted own cost under `shape`.
@@ -2251,6 +2260,7 @@ impl<'a, C> Dp<'a, C, Insertion, ()> {
 impl<'a, C, T, R> Dp<'a, C, T, R> {
     /// A research instance: the same DP under another tie-break, writing to
     /// `rec`.
+    #[cfg(any(test, feature = "provenance-journal"))]
     pub(crate) fn new(costs: &'a C, shape: LatticeShape, ties: T, rec: R) -> Self {
         Self {
             costs,
@@ -2261,6 +2271,7 @@ impl<'a, C, T, R> Dp<'a, C, T, R> {
     }
 
     /// The trace the passes wrote, once they are done with it.
+    #[cfg(any(test, feature = "provenance-journal"))]
     pub(crate) fn into_recorder(self) -> R {
         self.rec
     }
@@ -2282,6 +2293,7 @@ pub(crate) trait TieBreak {
 
 /// Production: never — the first admissible node stands, so the choice is
 /// the e-graph's insertion order.
+#[derive(Clone, Copy)]
 pub(crate) struct Insertion;
 
 impl TieBreak for Insertion {
@@ -2299,9 +2311,12 @@ impl TieBreak for Insertion {
 /// one class always differ somewhere in that key (a class holds no
 /// duplicates after `rebuild`), so the order is total and the result is
 /// independent of insertion order.
+#[derive(Clone, Copy)]
+#[cfg(any(test, feature = "provenance-journal"))]
 pub(crate) struct Canonical;
 
 /// `node`'s position in [`Canonical`]'s order.
+#[cfg(any(test, feature = "provenance-journal"))]
 fn canonical_key(egraph: &EGraph, node: &ENode) -> (u8, u128, usize, Vec<u32>) {
     let children: Vec<u32> = node
         .children_slice()
@@ -2322,6 +2337,7 @@ fn canonical_key(egraph: &EGraph, node: &ENode) -> (u8, u128, usize, Vec<u32>) {
     }
 }
 
+#[cfg(any(test, feature = "provenance-journal"))]
 impl TieBreak for Canonical {
     fn prefer(
         &self,
@@ -2408,28 +2424,45 @@ fn compact_ids(num_classes: usize, live: &[EClassId]) -> Vec<u32> {
     compact
 }
 
-/// Price one candidate and let it take its class's incumbent if it is
-/// cheaper, or equal and preferred.
-fn relax<S: Settling>(
-    egraph: &EGraph,
+/// The cheapest candidate priced so far for each class — its cost and index —
+/// and the classes waiting to be settled, cheapest first.
+struct Frontier {
+    best: Vec<Option<(usize, usize)>>,
+    heap: BinaryHeap<Reverse<(usize, u32)>>,
+}
+
+/// One node of a class, by position: what a [`Frontier`] prices.
+#[derive(Clone, Copy)]
+struct Candidate {
     class: EClassId,
     idx: usize,
-    s: &mut S,
-    best: &mut [Option<(usize, usize)>],
-    heap: &mut BinaryHeap<Reverse<(usize, u32)>>,
-) {
-    let cost = s.price(class, idx, &egraph.nodes(class)[idx]);
-    let takes = match best[class.0 as usize] {
-        None => true,
-        Some((incumbent_cost, incumbent)) => {
-            cost < incumbent_cost || (cost == incumbent_cost && s.prefer(class, incumbent, idx))
+}
+
+impl Frontier {
+    fn new(num_classes: usize) -> Self {
+        Self {
+            best: alloc::vec![None; num_classes],
+            heap: BinaryHeap::new(),
         }
-    };
-    if !takes {
-        return;
     }
-    best[class.0 as usize] = Some((cost, idx));
-    heap.push(Reverse((cost, class.0)));
+
+    /// Price one candidate and let it take its class's incumbent if it is
+    /// cheaper, or equal and preferred.
+    fn relax<S: Settling>(&mut self, egraph: &EGraph, candidate: Candidate, s: &mut S) {
+        let Candidate { class, idx } = candidate;
+        let cost = s.price(class, idx, &egraph.nodes(class)[idx]);
+        let takes = match self.best[class.0 as usize] {
+            None => true,
+            Some((incumbent_cost, incumbent)) => {
+                cost < incumbent_cost || (cost == incumbent_cost && s.prefer(class, incumbent, idx))
+            }
+        };
+        if !takes {
+            return;
+        }
+        self.best[class.0 as usize] = Some((cost, idx));
+        self.heap.push(Reverse((cost, class.0)));
+    }
 }
 
 /// Settle every live class in increasing cost order, or abandon.
@@ -2453,8 +2486,7 @@ fn settle_in_cost_order<S: Settling>(
     let compact = compact_ids(num_classes, order);
     let mut choice: Vec<Option<usize>> = alloc::vec![None; num_classes];
     let mut settled: Vec<bool> = alloc::vec![false; num_classes];
-    // The cheapest candidate priced so far for each class, and its index.
-    let mut best: Vec<Option<(usize, usize)>> = alloc::vec![None; num_classes];
+    let mut frontier = Frontier::new(num_classes);
     // Unsettled distinct child classes per candidate, and — per live class —
     // the candidates waiting on it.
     let mut waiting: Vec<Vec<u32>> = alloc::vec![Vec::new(); num_classes];
@@ -2500,22 +2532,21 @@ fn settle_in_cost_order<S: Settling>(
         waiting[class.0 as usize] = per_node;
     }
 
-    let mut heap: BinaryHeap<Reverse<(usize, u32)>> = BinaryHeap::new();
     for &class in order {
-        for idx in 0..waiting[class.0 as usize].len() {
-            if waiting[class.0 as usize][idx] == 0 {
-                relax(egraph, class, idx, s, &mut best, &mut heap);
+        for (idx, &pending) in waiting[class.0 as usize].iter().enumerate() {
+            if pending == 0 {
+                frontier.relax(egraph, Candidate { class, idx }, s);
             }
         }
     }
 
-    while let Some(Reverse((cost, cid))) = heap.pop() {
+    while let Some(Reverse((cost, cid))) = frontier.heap.pop() {
         let ci = cid as usize;
         if settled[ci] {
             continue;
         }
         let (incumbent_cost, incumbent) =
-            best[ci].expect("a class in the heap has been priced at least once");
+            frontier.best[ci].expect("a class in the heap has been priced at least once");
         if incumbent_cost != cost {
             // A superseded entry: the class has since been priced cheaper,
             // and that entry is still in the heap.
@@ -2550,7 +2581,7 @@ fn settle_in_cost_order<S: Settling>(
             );
             *w -= 1;
             if *w == 0 {
-                relax(egraph, parent, idx, s, &mut best, &mut heap);
+                frontier.relax(egraph, Candidate { class: parent, idx }, s);
             }
         }
     }
@@ -2562,7 +2593,7 @@ fn settle_in_cost_order<S: Settling>(
          a rewrite outcome",
         root.0
     );
-    let root_cost = best[egraph.find(root).0 as usize]
+    let root_cost = frontier.best[egraph.find(root).0 as usize]
         .expect("a settled class has been priced")
         .0;
     Some(DpOutcome {
@@ -2856,7 +2887,7 @@ impl Reach {
     /// `members` as the smaller of the two forms over `words` dense words.
     /// `members` must be distinct.
     fn smaller_of(members: &[u32], words: usize) -> Self {
-        let sparse_bytes = members.len() * core::mem::size_of::<u32>();
+        let sparse_bytes = std::mem::size_of_val(members);
         let dense_bytes = words * core::mem::size_of::<u64>();
         if sparse_bytes <= dense_bytes {
             return Self::Sparse(members.to_vec());
@@ -2968,14 +2999,14 @@ fn count_refs_recursive(
         ref_counts[canonical.0 as usize] += 1;
 
         // Only recurse on first visit to count true structural refs
-        if ref_counts[canonical.0 as usize] == 1 {
-            if let Some(node_idx) = best_node[canonical.0 as usize] {
-                let node = &egraph.nodes(canonical)[node_idx];
-                {
-                    let children = (node).children_slice();
-                    for &child in children {
-                        stack.push(child);
-                    }
+        if ref_counts[canonical.0 as usize] == 1
+            && let Some(node_idx) = best_node[canonical.0 as usize]
+        {
+            let node = &egraph.nodes(canonical)[node_idx];
+            {
+                let children = (node).children_slice();
+                for &child in children {
+                    stack.push(child);
                 }
             }
         }
@@ -3042,7 +3073,7 @@ fn toposort_dag(
 
     // Add root if not already included
     let root_canonical = egraph.find(root);
-    if !result.iter().any(|id| *id == root_canonical) {
+    if !result.contains(&root_canonical) {
         result.push(root_canonical);
     }
 
@@ -3052,6 +3083,7 @@ fn toposort_dag(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::cost::CostModel;
 
     /// Scope-weighted extraction un-fuses an FMA to move work out of the loop.
     ///
@@ -3327,7 +3359,7 @@ mod tests {
             let base = me * words;
             reach[base..base + words].fill(0);
             {
-                let children = (&nodes[min_idx]).children_slice();
+                let children = nodes[min_idx].children_slice();
                 if min_cost != CYCLE_COST {
                     for &child in children.iter() {
                         let cbase = compact[egraph.find(child).0 as usize] as usize * words;
@@ -3744,7 +3776,7 @@ mod tests {
         let extractor = IncrementalExtractor::new(&reranker, 8);
         let (_cost, extraction) = extractor.extract_choices_only(&egraph, merged);
         let (arena, root) = choices_to_arena(&extraction);
-        assert!(arena.len() >= 1);
+        assert!(!arena.is_empty());
         assert!(root.0 < arena.len() as u32);
     }
 

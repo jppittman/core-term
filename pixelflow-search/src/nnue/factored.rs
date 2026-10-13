@@ -10,12 +10,12 @@
 //!   table the extractor actually uses.
 //!
 //! - The typed edge stream: a walk over an expression DAG — an [`ExprArena`]
-//!   subtree, or an e-graph [`Extraction`](crate::egraph::extract::Extraction)
+//!   subtree, or an e-graph [`Extraction`]
 //!   — emits one [`CostEdge`] per parent→child slot, bound at a depth-encoded
 //!   [`PeSlot`]. A second reference to a shared node is a register reload
 //!   (`parent → Var`), exactly as the JIT's let-binding emitter sees it. An
 //!   [`EdgeTrace`] is that stream recorded in emission order, and an
-//!   [`EdgeSink`] is where a walk sends it — a parent-child edge is the
+//!   `EdgeSink` is where a walk sends it — a parent-child edge is the
 //!   up/down context primitive the Guide's candidate-context design folds.
 //!
 //! The extraction (value) head that used to sit on top of this — an
@@ -92,6 +92,7 @@ pub const MLP_HIDDEN: usize = 16;
 /// - `z_RHS`: what it PRODUCES (production prediction)
 /// - `z_LHS - z_RHS`: what CHANGED (the delta)
 /// - `z_LHS * z_RHS`: what's SHARED (preserved structure)
+///
 /// Arena-backed rule templates: one [`ArenaRuleTemplate`] per rule index.
 ///
 /// `None` slots are rules that define no structural template (or only one
@@ -302,7 +303,7 @@ impl ArenaRuleTemplates {
 /// similarity between operations.
 #[derive(Clone)]
 pub struct OpEmbeddings {
-    /// E[op][i] = i-th dimension of op's embedding.
+    /// `E[op][i]` = i-th dimension of op's embedding.
     /// Stored as one K-vector per op: `OpMap::LEN * K` = 50 × 32 = 1,600 floats.
     pub e: OpMap<[f32; K]>,
 }
@@ -349,7 +350,7 @@ impl OpEmbeddings {
     /// Initialize with latency priors in place.
     ///
     /// Dimension 0 = latency, squashed to `[0, 1]` from the shared
-    /// [`latency_prior_cycles`] cycle table (source of truth, also used by
+    /// `latency_prior_cycles` cycle table (source of truth, also used by
     /// `egraph::cost::CostModel::latency_prior`) via
     /// `ln(1+cycles) / ln(1+1000)`.
     ///
@@ -483,8 +484,8 @@ const fn const_exp(x: f64) -> f64 {
 /// Reduces x to [-pi, pi] first for accuracy.
 const fn const_sin(x: f64) -> f64 {
     // Reduce to [-pi, pi]
-    let pi: f64 = 3.141592653589793;
-    let two_pi: f64 = 6.283185307179586;
+    let pi: f64 = core::f64::consts::PI;
+    let two_pi: f64 = core::f64::consts::TAU;
     let mut r = x;
     // Simple modular reduction (good enough for small positive x)
     while r > pi {
@@ -508,8 +509,8 @@ const fn const_sin(x: f64) -> f64 {
 
 /// Const-compatible cos(x) via Taylor series.
 const fn const_cos(x: f64) -> f64 {
-    let pi: f64 = 3.141592653589793;
-    let two_pi: f64 = 6.283185307179586;
+    let pi: f64 = core::f64::consts::PI;
+    let two_pi: f64 = core::f64::consts::TAU;
     let mut r = x;
     while r > pi {
         r -= two_pi;
@@ -610,7 +611,7 @@ impl EdgeTrace {
 
     /// Walk the DAG an [`Extraction`] will materialise: its chosen node per
     /// reachable e-class, with every `Shl`/`Shr` count child pinned to its
-    /// class's `Const` representative ([`Extraction::pinned_choices`]) — the
+    /// class's `Const` representative (`Extraction::pinned_choices`) — the
     /// same view `choices_to_arena` emits, so the trace describes the
     /// compiled DAG and not whichever node the extraction happened to record
     /// for a count class.
@@ -851,7 +852,7 @@ impl CostDag for ChoicesCostDag<'_> {
     }
 
     fn resolve(&self, id: u32, out: &mut Vec<u32>) -> Option<OpKind> {
-        use crate::egraph::{EClassId, ENode};
+        use crate::egraph::EClassId;
         let egraph = self.extraction.egraph();
         let canonical = egraph.find(EClassId(id));
         let node_idx = self.pinned_choice(canonical)?;

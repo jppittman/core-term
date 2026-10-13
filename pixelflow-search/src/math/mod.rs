@@ -94,7 +94,7 @@ pub use trig::{
 /// This is the primary entry point for getting all math rules. Categories:
 /// - Algebra (30 rules): 8 InversePair (AddNeg/MulRecip × 4 each) + 22 basic
 ///   (constant fold, commutative×4, identity×2, annihilator, idempotent×2,
-///    distributive, factor, doubling, halving, associative×4, reverse-associative×4)
+///   distributive, factor, doubling, halving, associative×4, reverse-associative×4)
 /// - Parity (6 rules): sin, cos, tan, asin, atan, abs negation symmetry
 /// - Trig (5 rules): angle addition×2, reverse angle addition, half angle, Pythagorean
 /// - Exp (7 rules): function inverse cancellation×4, homomorphisms×2, power combine
@@ -131,110 +131,7 @@ pub fn all_rules() -> Vec<Box<dyn Rewrite>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena_pat;
-    use crate::egraph::{EClassId, EGraph, ENode, saturate_with_budget};
-    use pixelflow_ir::OpKind;
-    use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
-
-    /// Insert an arena subtree into an e-graph, returning its e-class.
-    fn expr_to_egraph(arena: &ExprArena, id: ExprId, egraph: &mut EGraph) -> EClassId {
-        match arena.node(id) {
-            ExprNode::Var(idx) => egraph.add(ENode::Var(idx)),
-            ExprNode::Const(val) => egraph.add(ENode::Const(val.to_bits())),
-            ExprNode::Param(i) => panic!("Param({i}) reached math tests"),
-            ExprNode::Buffer(b) => panic!("Buffer({}) reached math tests", b.0),
-            ExprNode::Ref(k) => panic!("Ref({k:?}) reached math tests"),
-            ExprNode::Reduce { .. } => panic!("a bounded fold reached math tests"),
-            ExprNode::Write { .. } => panic!("a Write reached math tests"),
-            ExprNode::Uniform(u) => egraph.add(ENode::Uniform(*arena.uniform_decl(u))),
-            ExprNode::Unary(kind, a) => {
-                let ca = expr_to_egraph(arena, a, egraph);
-                let op = crate::egraph::ops::op_from_kind(kind)
-                    .unwrap_or_else(|| panic!("unsupported op in math test: {kind:?}"));
-                egraph.add(ENode::Op {
-                    op,
-                    children: vec![ca],
-                })
-            }
-            ExprNode::Binary(kind, a, b) => {
-                let ca = expr_to_egraph(arena, a, egraph);
-                let cb = expr_to_egraph(arena, b, egraph);
-                let op = crate::egraph::ops::op_from_kind(kind)
-                    .unwrap_or_else(|| panic!("unsupported op in math test: {kind:?}"));
-                egraph.add(ENode::Op {
-                    op,
-                    children: vec![ca, cb],
-                })
-            }
-            ExprNode::Ternary(kind, a, b, c) => {
-                let ca = expr_to_egraph(arena, a, egraph);
-                let cb = expr_to_egraph(arena, b, egraph);
-                let cc = expr_to_egraph(arena, c, egraph);
-                let op = crate::egraph::ops::op_from_kind(kind)
-                    .unwrap_or_else(|| panic!("unsupported op in math test: {kind:?}"));
-                egraph.add(ENode::Op {
-                    op,
-                    children: vec![ca, cb, cc],
-                })
-            }
-            ExprNode::Nary(kind, _) => panic!("unsupported n-ary op in math test: {kind:?}"),
-        }
-    }
-
-    /// Materialise the cheapest representative of an e-class into `arena`.
-    fn eclass_to_arena(egraph: &EGraph, class: EClassId, arena: &mut ExprArena) -> ExprId {
-        // Snapshot the chosen node so the egraph borrow is released before we
-        // recurse (which borrows egraph again) and push into the arena.
-        let node = egraph.nodes(class)[0].clone();
-        match node {
-            ENode::Var(idx) => arena.push_var(idx),
-            ENode::Const(bits) => arena.push_const(f32::from_bits(bits)),
-            ENode::Buffer(decl) => panic!("Buffer({decl:?}) reached math tests"),
-            ENode::Param(i) => panic!("Param({i}) reached math tests"),
-            ENode::Reduce { .. } => panic!("a bounded fold reached math tests"),
-            ENode::Ref { key, .. } => panic!("unit {key:?} reached math tests"),
-            ENode::Uniform(decl) => {
-                let slot = arena.declare_uniform(decl);
-                arena.push_uniform(slot)
-            }
-            ENode::Op { op, children } => {
-                let kind = op.kind();
-                let child_ids: Vec<ExprId> = children
-                    .iter()
-                    .map(|&c| eclass_to_arena(egraph, c, arena))
-                    .collect();
-                match child_ids.len() {
-                    1 => arena.push_unary(kind, child_ids[0]),
-                    2 => arena.push_binary(kind, child_ids[0], child_ids[1]),
-                    3 => arena.push_ternary(kind, child_ids[0], child_ids[1], child_ids[2]),
-                    n => panic!("unsupported arity in math test: {n}"),
-                }
-            }
-        }
-    }
-
-    /// A third free scalar, as the kernel argument it would be: a lattice
-    /// has two axes, so `var 2` is not a coordinate. Never folded, so the
-    /// tree shape the rules act on is the one the test wrote.
-    fn arg(a: &mut ExprArena, default: f32) -> ExprId {
-        let slot = a.declare_uniform(pixelflow_ir::Uniform::new(default).decl());
-        a.push_uniform(slot)
-    }
-
-    /// Standard test points including edge cases.
-    fn standard_test_points() -> Vec<[f32; 2]> {
-        vec![
-            [0.5, 0.7],
-            [0.0, 0.0],
-            [1.0, 1.0],
-            [-1.0, -1.0],
-            [100.0, 100.0],
-            [-100.0, -100.0],
-            [0.001, 0.001],
-            [3.14159, 1.5708],
-            [-0.5, 0.3],
-        ]
-    }
+    use pixelflow_ir::arena::ExprArena;
 
     #[test]
     fn associativity_templates() {

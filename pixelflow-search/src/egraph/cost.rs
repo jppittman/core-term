@@ -229,7 +229,7 @@ impl Default for CostModel {
 
 impl CostModel {
     /// Create a cost model seeded with the handcrafted latency-prior cycle
-    /// table ([`latency_prior_cycles`]).
+    /// table (`latency_prior_cycles`).
     ///
     /// This is the default: an all-zero cost model makes every expression
     /// "free" and extraction degenerates to an arbitrary tie-break, so
@@ -242,7 +242,7 @@ impl CostModel {
 
     /// Create a cost model from the handcrafted latency-prior cycle table.
     ///
-    /// Source of truth: [`latency_prior_cycles`], shared with
+    /// Source of truth: `latency_prior_cycles`, shared with
     /// `nnue::factored::OpEmbeddings::init_with_latency_prior` so the static
     /// table and the Guide's op-embedding prior cannot drift apart.
     pub fn latency_prior() -> Self {

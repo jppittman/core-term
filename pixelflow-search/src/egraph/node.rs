@@ -90,7 +90,7 @@ pub enum ENode {
     /// closed (its variance names no binder), so every rewrite conditioned
     /// on binder-invariance is the one it would be with the body inlined.
     /// Only the runtime tier's unit walk admits one (`EGraph::admit_unit`);
-    /// [`insert`](super::insert) declines a reference the graph was not told
+    /// [`insert`](fn@super::insert) declines a reference the graph was not told
     /// is a unit.
     Ref { key: KernelKey, variance: Variance },
 }

@@ -27,7 +27,7 @@
 //!
 //! Every rule here answers with a [`Plan`]: the nodes its right-hand side
 //! adds, in build order, over classes the graph already holds. A plan
-//! rather than an [`ExprArena`] template because a rebuilt body is a copy
+//! rather than an `ExprArena` template because a rebuilt body is a copy
 //! of a term the graph holds, and may contain any op the graph holds (a
 //! `Gather`, a mask),
 //! while a template resolves its ops through [`ops::op_from_kind`], which
@@ -66,7 +66,7 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pixelflow_ir::{Binder, ExprArena, ExprId, ExprNode, Fold, Monoid};
+use pixelflow_ir::{Binder, Fold, Monoid};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
@@ -602,31 +602,12 @@ fn rebuild(node: &ENode, kids: &[Done]) -> Option<HeadNode> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egraph::CostModel;
-    use crate::egraph::extract::extract;
     use crate::egraph::saturate::SaturationConfig;
     use crate::egraph::{Vocabulary, insert};
-    use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
+    use pixelflow_ir::{ExprArena, OpKind};
 
     fn binder(slot: u8) -> Binder {
         Binder::from_slot(slot).expect("a live binder")
-    }
-
-    /// Saturate with the fold rules alone and extract. Isolating them keeps
-    /// the assertion about *these* rules rather than about whatever the whole
-    /// algebra does to the residue afterwards.
-    fn unroll_by_rule(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
-        let mut eg = EGraph::with_rules(fold_rules());
-        let class = insert(arena, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
-        SaturationConfig::compatibility(60).run(&mut eg);
-        let (out, out_root, _cost) = extract(&eg, class, &CostModel::latency_prior());
-        (out, out_root)
-    }
-
-    fn has_fold(arena: &ExprArena) -> bool {
-        arena
-            .nodes()
-            .any(|(_, n)| matches!(n, ExprNode::Reduce { .. }))
     }
 
     /// **A peel moves the range, not the body.** `Σ_{[0,3)} X` has a body
@@ -1252,7 +1233,7 @@ mod production_shape_tests {
         let mut eg = EGraph::with_rules(fold_rules());
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         let stats = SaturationConfig::compatibility(200).run(&mut eg);
-        let (out, out_root, _cost) = extract(&eg, class, &CostModel::latency_prior());
+        let (out, _out_root, _cost) = extract(&eg, class, &CostModel::latency_prior());
 
         assert!(
             !has_fold(&out),

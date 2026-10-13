@@ -700,7 +700,7 @@ impl<'a> Search<'a> {
             return;
         }
         self.expansions += 1;
-        if self.expansions % 2048 == 0
+        if self.expansions.is_multiple_of(2048)
             && (self.expansions > self.max_expansions || Instant::now() > self.deadline)
         {
             self.timed_out = true;
@@ -760,15 +760,29 @@ impl<'a> Search<'a> {
     }
 }
 
+/// The best term known before the exact search starts: its choice map and
+/// DAG cost.
+#[derive(Clone, Copy)]
+struct Incumbent<'a> {
+    choices: &'a [Option<usize>],
+    cost: u64,
+}
+
 /// Exact DAG-cost extraction, seeded with `ub_choices` (the greedy term) as
 /// the incumbent so the bound bites from the first node.
 fn exact_dag_choices(
     inst: &Instance,
-    seed: &[Option<usize>],
-    seed_cost: u64,
-    max_expansions: u64,
-    time_limit: Duration,
+    incumbent: Incumbent<'_>,
+    limits: SearchLimits,
 ) -> ExactResult {
+    let Incumbent {
+        choices: seed,
+        cost: seed_cost,
+    } = incumbent;
+    let SearchLimits {
+        time_limit,
+        max_expansions,
+    } = limits;
     let n = inst.cands.len();
     let started = Instant::now();
     // The search runs on a pruned copy; the caller's instance keeps every
@@ -1034,16 +1048,43 @@ struct Measured {
     row: Row,
 }
 
-fn measure(
-    name: &str,
-    category: &'static str,
+/// The saturation budget a kernel is optimized under, with the name it
+/// carries in the report.
+#[derive(Clone, Copy)]
+struct Regime {
     budget: Budget,
-    budget_label: &'static str,
-    arena: &ExprArena,
+    label: &'static str,
+}
+
+/// The kernel one measurement is taken on, and the regime it is optimized
+/// under.
+struct Subject<'a> {
+    name: &'a str,
+    category: &'static str,
+    regime: Regime,
+    arena: &'a ExprArena,
     root: ExprId,
+}
+
+/// How long the exact search may run: wall clock and node expansions.
+#[derive(Clone, Copy)]
+struct SearchLimits {
     time_limit: Duration,
     max_expansions: u64,
-) -> Measured {
+}
+
+fn measure(subject: Subject<'_>, limits: SearchLimits) -> Measured {
+    let Subject {
+        name,
+        category,
+        regime,
+        arena,
+        root,
+    } = subject;
+    let Regime {
+        budget,
+        label: budget_label,
+    } = regime;
     // What `optimize_runtime_arena_uncached` hands the e-graph for a term
     // with no reference: the arena as written (`expand_refs` is the identity
     // on it; one that held a reference is measured here whole rather than
@@ -1160,7 +1201,11 @@ fn measure(
     .min_by_key(|&(_, c)| c)
     .map(|(choices, c)| (choices.clone(), c))
     .expect("three seeds");
-    let exact = exact_dag_choices(&inst, &seed, seed_cost, max_expansions, time_limit);
+    let incumbent = Incumbent {
+        choices: &seed,
+        cost: seed_cost,
+    };
+    let exact = exact_dag_choices(&inst, incumbent, limits);
 
     let cycle_priced_used_by_exact = trace
         .cycle_priced
@@ -1273,6 +1318,10 @@ fn extraction_gap_measurement() {
     );
     let time_limit = Duration::from_secs(env_usize("PIXELFLOW_EXTRACTION_GAP_SECS", 20) as u64);
     let max_expansions = env_usize("PIXELFLOW_EXTRACTION_GAP_EXPANSIONS", 40_000_000) as u64;
+    let limits = SearchLimits {
+        time_limit,
+        max_expansions,
+    };
     let limit_kernels = env_usize("PIXELFLOW_EXTRACTION_GAP_LIMIT", usize::MAX);
 
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -1294,14 +1343,17 @@ fn extraction_gap_measurement() {
         let (name, arena, root) = load_arena_dump(path);
         let category = category_of(&path.file_name().unwrap().to_string_lossy());
         let m = measure(
-            &name,
-            category,
-            Budget::Production,
-            "production",
-            &arena,
-            root,
-            time_limit,
-            max_expansions,
+            Subject {
+                name: &name,
+                category,
+                regime: Regime {
+                    budget: Budget::Production,
+                    label: "production",
+                },
+                arena: &arena,
+                root,
+            },
+            limits,
         );
         eprintln!(
             "{:<28} {:>6} cls {:>7} reach {:>6} free  greedy {:>7} treeopt {:>7} exact {:>7} [{}] {:.0}ms",
@@ -1337,14 +1389,17 @@ fn extraction_gap_measurement() {
                 let pair = generator.generate_arena();
                 let name = format!("synth_d{max_depth}_s{seed}");
                 let m = measure(
-                    &name,
-                    "synthetic",
-                    Budget::Production,
-                    "production",
-                    &pair.arena,
-                    pair.unoptimized,
-                    time_limit,
-                    max_expansions,
+                    Subject {
+                        name: &name,
+                        category: "synthetic",
+                        regime: Regime {
+                            budget: Budget::Production,
+                            label: "production",
+                        },
+                        arena: &pair.arena,
+                        root: pair.unoptimized,
+                    },
+                    limits,
                 );
                 rows.push(m.row);
             }
@@ -1384,14 +1439,14 @@ fn extraction_gap_measurement() {
             ),
         ] {
             let m = measure(
-                &format!("{name} [{label}]"),
-                category,
-                budget,
-                label,
-                &arena,
-                root,
-                time_limit,
-                max_expansions,
+                Subject {
+                    name: &format!("{name} [{label}]"),
+                    category,
+                    regime: Regime { budget, label },
+                    arena: &arena,
+                    root,
+                },
+                limits,
             );
             eprintln!(
                 "monotonicity {:<32} greedy {:>7} treeopt {:>7} exact {:>7} [{}]",
@@ -1406,23 +1461,35 @@ fn extraction_gap_measurement() {
     }
 
     write_report(
-        &rows,
-        &monotone_rows,
-        real_count,
-        synth_count,
-        time_limit,
-        max_expansions,
+        &KernelRows {
+            rows: &rows,
+            monotone: &monotone_rows,
+            real_count,
+            synth_count,
+        },
+        limits,
     );
 }
 
-fn write_report(
-    rows: &[Row],
-    monotone: &[Row],
+/// What a finished run measured, for the report to summarize.
+struct KernelRows<'a> {
+    rows: &'a [Row],
+    monotone: &'a [Row],
     real_count: usize,
     synth_count: usize,
-    time_limit: Duration,
-    max_expansions: u64,
-) {
+}
+
+fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
+    let KernelRows {
+        rows,
+        monotone,
+        real_count,
+        synth_count,
+    } = *measured;
+    let SearchLimits {
+        time_limit,
+        max_expansions,
+    } = limits;
     let solved: Vec<&Row> = rows
         .iter()
         .filter(|r| r.exact_status == "OPTIMAL")
@@ -1583,7 +1650,7 @@ fn write_report(
     );
     for r in rows.iter().chain(monotone.iter()) {
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{:.3},{},{},{},{},{},{},{},{},{},{},{:.1},{:.6},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{:.3},{},{},{},{},{},{},{},{},{},{},{:.1},{:.6},{},{},{},{},{},{},{},{:.6},{:.6}\n",
             r.name,
             r.category,
             r.budget,
@@ -1610,10 +1677,9 @@ fn write_report(
             r.cycle_priced_total,
             r.reported_matches_returned,
             r.reported_delta,
-            format!(
-                "{},{:.6},{:.6}",
-                r.dominated_candidates, r.dp_loss_frac, r.objective_miss_frac
-            ),
+            r.dominated_candidates,
+            r.dp_loss_frac,
+            r.objective_miss_frac,
         ));
     }
     let csv_path = out_dir.join("2026-09-02-extraction-gap.csv");
@@ -2089,6 +2155,10 @@ fn extraction_objective_measurement() {
     );
     let time_limit = Duration::from_secs(env_usize("PIXELFLOW_EXTRACTION_GAP_SECS", 4) as u64);
     let max_expansions = env_usize("PIXELFLOW_EXTRACTION_GAP_EXPANSIONS", 15_000_000) as u64;
+    let limits = SearchLimits {
+        time_limit,
+        max_expansions,
+    };
     let limit_kernels = env_usize("PIXELFLOW_EXTRACTION_GAP_LIMIT", usize::MAX);
     let skip_synthetic = std::env::var("PIXELFLOW_EXTRACTION_OBJECTIVE_REAL_ONLY").is_ok();
 
@@ -2111,14 +2181,17 @@ fn extraction_objective_measurement() {
         let (name, arena, root) = load_arena_dump(path);
         let category = category_of(&path.file_name().unwrap().to_string_lossy());
         let m = measure(
-            &name,
-            category,
-            Budget::Production,
-            "production",
-            &arena,
-            root,
-            time_limit,
-            max_expansions,
+            Subject {
+                name: &name,
+                category,
+                regime: Regime {
+                    budget: Budget::Production,
+                    label: "production",
+                },
+                arena: &arena,
+                root,
+            },
+            limits,
         );
         eprintln!(
             "{:<28} tree {:>8} shared {:>8} chosen {:>8} exact {:>8} [{}]",
@@ -2152,29 +2225,31 @@ fn extraction_objective_measurement() {
                 let pair = generator.generate_arena();
                 let name = format!("synth_d{max_depth}_s{seed}");
                 let m = measure(
-                    &name,
-                    "synthetic",
-                    Budget::Production,
-                    "production",
-                    &pair.arena,
-                    pair.unoptimized,
-                    time_limit,
-                    max_expansions,
+                    Subject {
+                        name: &name,
+                        category: "synthetic",
+                        regime: Regime {
+                            budget: Budget::Production,
+                            label: "production",
+                        },
+                        arena: &pair.arena,
+                        root: pair.unoptimized,
+                    },
+                    limits,
                 );
                 rows.push(m.row);
             }
         }
     }
 
-    write_objective_report(&rows, real_count, time_limit, max_expansions);
+    write_objective_report(&rows, real_count, limits);
 }
 
-fn write_objective_report(
-    rows: &[Row],
-    real_count: usize,
-    time_limit: Duration,
-    max_expansions: u64,
-) {
+fn write_objective_report(rows: &[Row], real_count: usize, limits: SearchLimits) {
+    let SearchLimits {
+        time_limit,
+        max_expansions,
+    } = limits;
     // The gate, first and unconditionally: a single real kernel priced worse
     // than before is a stop, not a line in a table.
     let regressions: Vec<&Row> = rows
@@ -2763,10 +2838,14 @@ mod self_check {
         let treeopt_cost = inst.dag_cost(&treeopt).expect("tree-optimal is a term");
         let exact = exact_dag_choices(
             &inst,
-            &greedy.choices,
-            greedy_cost.min(treeopt_cost),
-            5_000_000,
-            Duration::from_secs(30),
+            Incumbent {
+                choices: &greedy.choices,
+                cost: greedy_cost.min(treeopt_cost),
+            },
+            SearchLimits {
+                time_limit: Duration::from_secs(30),
+                max_expansions: 5_000_000,
+            },
         );
         assert_eq!(
             exact.status,
@@ -2868,10 +2947,14 @@ mod self_check {
             let seed_cost = inst.dag_cost(&treeopt).expect("tree-optimal is a term");
             let exact = exact_dag_choices(
                 &inst,
-                &treeopt,
-                seed_cost,
-                50_000_000,
-                Duration::from_secs(20),
+                Incumbent {
+                    choices: &treeopt,
+                    cost: seed_cost,
+                },
+                SearchLimits {
+                    time_limit: Duration::from_secs(20),
+                    max_expansions: 50_000_000,
+                },
             );
             assert_eq!(
                 exact.status,

@@ -1,6 +1,3 @@
-#![allow(clippy::all)]
-#![allow(warnings)]
-#![allow(unused)]
 extern crate alloc;
 
 #[cfg(test)]

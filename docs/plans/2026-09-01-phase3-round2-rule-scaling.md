@@ -127,7 +127,7 @@ inflation. Nothing is inserted or reordered inside the prefix.
 ### 2.1 Mode (i): exact duplicates — the "learnable overhead" control
 
 The inflation is copies of existing rules under new rule indices: a `DuplicateRule` wrapper that
-delegates `apply`/`is_destructive`/templates to the original and reports
+delegates `apply`/`is_destructive` (since deleted)/templates to the original and reports
 `name = "<original>#dup<k>"`. Same closure (a duplicate can create nothing the original cannot),
 same per-match closure semantics, purely more matches per sweep. Copies are appended in cycles:
 cycle 1 = every rule in index order (|R| = 124), cycle 2 (186), cycle 3 (248); the half-cycle

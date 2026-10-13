@@ -91,7 +91,7 @@ with no error case at all:
 
 - `egraph::HARD_CLASS_LIMIT` is now a `pub const` and a **ceiling on every
   class budget**. `saturate_with_limits`, `apply_rule_at_index_timed` and
-  `apply_rules_budgeted` each clamp their caller's cap to it, so a call site
+  `apply_rules_budgeted` (since deleted) each clamp their caller's cap to it, so a call site
   that passes `usize::MAX` gets the ceiling and an honest `ClassCap` stop
   instead of a graph that grows until `add` starts lying. Production caps are
   untouched, so no shipping configuration changes behavior.

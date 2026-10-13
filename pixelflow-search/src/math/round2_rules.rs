@@ -2,8 +2,8 @@
 //!
 //! `docs/plans/2026-09-01-phase3-round2-rule-scaling.md` §2.3 — the fidelity
 //! arm of Phase 3 Round 2 ("does the Guide's advantage grow with the rule
-//! count?"). This module is **harness-only**: [`experimental_rules`] is not
-//! called by [`super::all_rules`] or [`super::all_math_rules`], and nothing
+//! count?"). This module is **harness-only**: `experimental_rules` is not
+//! called by `super::all_rules` or `super::all_math_rules`, and nothing
 //! here changes production behavior. Adoption of any rule into production is
 //! JP's decision, made after the Round 2 measurement, on its own PR.
 //!
@@ -89,10 +89,11 @@ fn eclass_const(egraph: &EGraph, id: EClassId) -> Option<f32> {
 /// If any node in `class` is `Op(kind)` with exactly one child, return it.
 fn extract_unary(egraph: &EGraph, class: EClassId, kind: OpKind) -> Option<EClassId> {
     for node in egraph.nodes(class) {
-        if let ENode::Op { op, children } = node {
-            if op.kind() == kind && children.len() == 1 {
-                return Some(children[0]);
-            }
+        if let ENode::Op { op, children } = node
+            && op.kind() == kind
+            && children.len() == 1
+        {
+            return Some(children[0]);
         }
     }
     None
@@ -101,10 +102,11 @@ fn extract_unary(egraph: &EGraph, class: EClassId, kind: OpKind) -> Option<EClas
 /// If any node in `class` is `Op(kind)` with exactly two children, return them.
 fn extract_binary(egraph: &EGraph, class: EClassId, kind: OpKind) -> Option<(EClassId, EClassId)> {
     for node in egraph.nodes(class) {
-        if let ENode::Op { op, children } = node {
-            if op.kind() == kind && children.len() == 2 {
-                return Some((children[0], children[1]));
-            }
+        if let ENode::Op { op, children } = node
+            && op.kind() == kind
+            && children.len() == 2
+        {
+            return Some((children[0], children[1]));
         }
     }
     None
@@ -437,13 +439,13 @@ impl Rewrite for MaxSelfNegAsAbs {
             return None;
         }
         for (x, other) in [(children[0], children[1]), (children[1], children[0])] {
-            if let Some(negated) = extract_unary(egraph, other, OpKind::Neg) {
-                if egraph.find(negated) == egraph.find(x) {
-                    return Some(RewriteAction::Create(ENode::Op {
-                        op: &ops::Abs,
-                        children: vec![x],
-                    }));
-                }
+            if let Some(negated) = extract_unary(egraph, other, OpKind::Neg)
+                && egraph.find(negated) == egraph.find(x)
+            {
+                return Some(RewriteAction::Create(ENode::Op {
+                    op: &ops::Abs,
+                    children: vec![x],
+                }));
             }
         }
         None
@@ -941,13 +943,13 @@ impl Rewrite for NormalizeAsSqrt {
             return None;
         }
         for (x_cand, rsqrt_side) in [(children[0], children[1]), (children[1], children[0])] {
-            if let Some(x2) = extract_unary(egraph, rsqrt_side, OpKind::Rsqrt) {
-                if egraph.find(x_cand) == egraph.find(x2) {
-                    return Some(RewriteAction::Create(ENode::Op {
-                        op: &ops::Sqrt,
-                        children: vec![x_cand],
-                    }));
-                }
+            if let Some(x2) = extract_unary(egraph, rsqrt_side, OpKind::Rsqrt)
+                && egraph.find(x_cand) == egraph.find(x2)
+            {
+                return Some(RewriteAction::Create(ENode::Op {
+                    op: &ops::Sqrt,
+                    children: vec![x_cand],
+                }));
             }
         }
         None
@@ -1301,81 +1303,6 @@ pub fn experimental_rules() -> Vec<Box<dyn Rewrite>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_ir::Uniform;
-
-    /// Well-conditioned sample points, seeded and fixed: finite, moderate
-    /// magnitude, no zeros (avoids `Recip`/`Rsqrt` poles), all-positive
-    /// available separately for domain-restricted rules (`sqrt`, `ln`,
-    /// `log10`, `rsqrt`, N23).
-    fn general_points() -> Vec<[f32; 4]> {
-        vec![
-            [1.3, 0.7, 2.1, -0.9],
-            [-2.4, 3.1, -0.5, 1.8],
-            [0.6, -1.7, 4.2, 2.9],
-            [5.5, -3.3, 1.1, -4.4],
-            [0.25, 0.75, -1.25, 3.75],
-        ]
-    }
-
-    /// All-positive points: for rules whose domain excludes zero/negative
-    /// (`sqrt`, `ln`, `log10`, `rsqrt`, `recip`-of-min/max compositions).
-    fn positive_points() -> Vec<[f32; 4]> {
-        vec![
-            [1.3, 0.7, 2.1, 0.9],
-            [2.4, 3.1, 0.5, 1.8],
-            [0.6, 1.7, 4.2, 2.9],
-            [5.5, 3.3, 1.1, 4.4],
-            [0.25, 0.75, 1.25, 3.75],
-        ]
-    }
-
-    /// Points for rules whose `Var(0)` metavariable names a `select` mask
-    /// (N14): a mask is a bit pattern, never a number (CLAUDE.md), so
-    /// `Var(0)` must be bound to a genuine all-ones/all-zero pattern, not an
-    /// arbitrary float — using an arbitrary float there is off-label (no
-    /// rule in the language ever constructs `If` with a non-mask first
-    /// argument) and produces meaningless partial-bit blends on both sides
-    /// alike, which is a test-harness bug, not a rule counterexample. Other
-    /// slots are well-conditioned positive floats (N14c hoists `Sqrt`).
-    fn if_mask_points() -> Vec<[f32; 4]> {
-        let t = f32::from_bits(u32::MAX);
-        let f = 0.0_f32;
-        vec![
-            [t, 1.3, 2.7, 4.1],
-            [f, 1.3, 2.7, 4.1],
-            [t, 4.2, 0.5, 1.9],
-            [f, 4.2, 0.5, 1.9],
-        ]
-    }
-
-    /// Replace every metavariable past the coordinate axes with one of
-    /// `args`, declared in this arena. `Var(2)`/`Var(3)` are not coordinates
-    /// — a lattice has two axes — and a value invariant across the lattice is
-    /// exactly what an arbitrary subterm's stand-in should be.
-    fn bind_metavars_past_the_axes(
-        arena: &mut ExprArena,
-        root: ExprId,
-        args: &[Uniform],
-    ) -> ExprId {
-        let subs: Vec<(u8, ExprId)> = args
-            .iter()
-            .enumerate()
-            .map(|(i, u)| {
-                let slot = arena.declare_uniform(u.decl());
-                let axis = pixelflow_ir::arena::COORD_AXES as u8 + i as u8;
-                (axis, arena.push_uniform(slot))
-            })
-            .collect();
-        arena.substitute_vars_with(root, &subs)
-    }
-
-    const TIGHT: f32 = 1e-4;
-    /// `Recip`/`Rsqrt` are hardware estimates in the JIT, but `eval_scalar`
-    /// computes them exactly (`1.0/x`, `1.0/sqrt(x)`) — see kind.rs
-    /// `eval_unary`. The oracle here therefore checks the *exact* identity;
-    /// the loose tolerance exists only for float rounding across the two
-    /// independently-built expression trees, not for estimate error.
-    const LOOSE: f32 = 1e-3;
 
     /// Sanity: the batch is harness-only, and its count matches the doc
     /// comment on [`experimental_rules`] (guards against silent drift if a

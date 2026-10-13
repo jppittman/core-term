@@ -136,12 +136,12 @@ impl<T: FunctionInverse> Rewrite for ForwardBackward<T> {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
+                && arg_op.kind() == T::backward().kind()
+                && arg_children.len() == 1
             {
-                if arg_op.kind() == T::backward().kind() && arg_children.len() == 1 {
-                    let x = arg_children[0];
-                    // forward(backward(x)) → x
-                    return Some(RewriteAction::Union(x));
-                }
+                let x = arg_children[0];
+                // forward(backward(x)) → x
+                return Some(RewriteAction::Union(x));
             }
         }
         None
@@ -202,12 +202,12 @@ impl<T: FunctionInverse> Rewrite for BackwardForward<T> {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
+                && arg_op.kind() == T::forward().kind()
+                && arg_children.len() == 1
             {
-                if arg_op.kind() == T::forward().kind() && arg_children.len() == 1 {
-                    let x = arg_children[0];
-                    // backward(forward(x)) → x
-                    return Some(RewriteAction::Union(x));
-                }
+                let x = arg_children[0];
+                // backward(forward(x)) → x
+                return Some(RewriteAction::Union(x));
             }
         }
         None
@@ -325,18 +325,18 @@ impl<T: Homomorphism> Rewrite for HomomorphismRule<T> {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
+                && arg_op.kind() == T::source_op().kind()
+                && arg_children.len() == 2
             {
-                if arg_op.kind() == T::source_op().kind() && arg_children.len() == 2 {
-                    let a = arg_children[0];
-                    let b = arg_children[1];
-                    // func(source_op(a, b)) → target_op(func(a), func(b))
-                    return Some(RewriteAction::Homomorphism {
-                        func: T::func(),
-                        target_op: T::target_op(),
-                        a,
-                        b,
-                    });
-                }
+                let a = arg_children[0];
+                let b = arg_children[1];
+                // func(source_op(a, b)) → target_op(func(a), func(b))
+                return Some(RewriteAction::Homomorphism {
+                    func: T::func(),
+                    target_op: T::target_op(),
+                    a,
+                    b,
+                });
             }
         }
         None
@@ -420,10 +420,11 @@ impl Rewrite for PowerCombine {
 impl PowerCombine {
     fn extract_pow(&self, egraph: &EGraph, class: EClassId) -> Option<(EClassId, EClassId)> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node {
-                if op.kind() == OpKind::Pow && children.len() == 2 {
-                    return Some((children[0], children[1]));
-                }
+            if let ENode::Op { op, children } = node
+                && op.kind() == OpKind::Pow
+                && children.len() == 2
+            {
+                return Some((children[0], children[1]));
             }
         }
         None

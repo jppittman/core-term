@@ -15,7 +15,7 @@
 //! ```
 //!
 //! This module provides:
-//! - Special-value strength reduction via [`PowSpecialValue`]: pow(x,0)→1,
+//! - Special-value strength reduction via `PowSpecialValue`: pow(x,0)→1,
 //!   pow(x,1)→x, pow(x,2)→mul(x,x), pow(x,0.5)→sqrt(x), pow(x,-1)→recip(x),
 //!   pow(x,-0.5)→rsqrt(x)
 //! - Power recurrence: pow(x,n) ↔ x * pow(x,n-1) for integer n≥2
@@ -279,17 +279,17 @@ impl Rewrite for LogPower {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
+                && arg_op.kind() == OpKind::Pow
+                && arg_children.len() == 2
             {
-                if arg_op.kind() == OpKind::Pow && arg_children.len() == 2 {
-                    let x = arg_children[0];
-                    let n = arg_children[1];
-                    // log(pow(x, n)) → n * log(x)
-                    return Some(RewriteAction::LogPower {
-                        log_op: self.log_op,
-                        base: x,
-                        exponent: n,
-                    });
-                }
+                let x = arg_children[0];
+                let n = arg_children[1];
+                // log(pow(x, n)) → n * log(x)
+                return Some(RewriteAction::LogPower {
+                    log_op: self.log_op,
+                    base: x,
+                    exponent: n,
+                });
             }
         }
         None
@@ -351,12 +351,12 @@ impl Rewrite for ExpandSquare {
                 op: sum_op,
                 children: sum_children,
             } = sum_node
+                && sum_op.kind() == OpKind::Add
+                && sum_children.len() == 2
             {
-                if sum_op.kind() == OpKind::Add && sum_children.len() == 2 {
-                    let a = sum_children[0];
-                    let b = sum_children[1];
-                    return Some(RewriteAction::ExpandSquare { a, b });
-                }
+                let a = sum_children[0];
+                let b = sum_children[1];
+                return Some(RewriteAction::ExpandSquare { a, b });
             }
         }
         None
@@ -434,13 +434,12 @@ impl DiffOfSquares {
     /// Check if an e-class contains Mul(x, x) for some x, and return x.
     fn extract_self_mul(&self, egraph: &EGraph, id: EClassId) -> Option<EClassId> {
         for node in egraph.nodes(id) {
-            if let ENode::Op { op, children } = node {
-                if op.kind() == OpKind::Mul
-                    && children.len() == 2
-                    && egraph.find(children[0]) == egraph.find(children[1])
-                {
-                    return Some(children[0]);
-                }
+            if let ENode::Op { op, children } = node
+                && op.kind() == OpKind::Mul
+                && children.len() == 2
+                && egraph.find(children[0]) == egraph.find(children[1])
+            {
+                return Some(children[0]);
             }
         }
         None

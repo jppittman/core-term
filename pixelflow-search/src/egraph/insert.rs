@@ -31,7 +31,7 @@ pub enum Declined {
     /// Only [`Vocabulary::Runtime`] declines it: a `Param` at bake time means
     /// a builder was never called, and the term reached compilation without
     /// being specialized. The macro tier holds params natively as
-    /// [`ENode::Param`](super::node::ENode::Param), because an unbound slot
+    /// [`ENode::Param`], because an unbound slot
     /// is what a builder *is*.
     Param(u8),
     /// A kernel named by content, which the graph was not told is a unit.

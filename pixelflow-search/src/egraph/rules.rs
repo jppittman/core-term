@@ -154,6 +154,9 @@ impl fmt::Display for Fingerprint {
     }
 }
 
+/// The rule vector a [`RuleSet`] and the graphs built over it share.
+pub(crate) type SharedRules = Arc<Vec<Box<dyn Rewrite>>>;
+
 /// An ordered rule vocabulary, plus the ids that name its members.
 ///
 /// Rules are held behind an `Arc` — the same one an
@@ -162,7 +165,7 @@ impl fmt::Display for Fingerprint {
 /// many graphs as it likes without rebuilding it, and so the ids it computed
 /// once are provably the ids of the rules those graphs apply.
 pub struct RuleSet {
-    rules: Arc<Vec<Box<dyn Rewrite>>>,
+    rules: SharedRules,
     ids: Arc<Vec<RuleId>>,
     fingerprint: Fingerprint,
 }
@@ -214,7 +217,7 @@ impl RuleSet {
     /// The shared rule vector and its ids, for building an
     /// [`EGraph`](super::EGraph) over this vocabulary.
     #[must_use]
-    pub fn shared(&self) -> (Arc<Vec<Box<dyn Rewrite>>>, Arc<Vec<RuleId>>) {
+    pub fn shared(&self) -> (SharedRules, Arc<Vec<RuleId>>) {
         (Arc::clone(&self.rules), Arc::clone(&self.ids))
     }
 

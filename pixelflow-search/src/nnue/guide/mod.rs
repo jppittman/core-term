@@ -11,7 +11,7 @@
 //!
 //! **Loud note, per that task's explicit instruction: this trait's shape
 //! changed.** The original contract scored a candidate against a *whole-graph*
-//! summary (`GraphSummary`, wrapping [`GraphAccumulator`]) plus a bare rule
+//! summary (`GraphSummary`, wrapping `GraphAccumulator`) plus a bare rule
 //! embedding (`RuleCandidate`). `docs/plans/2026-08-31-guide-design-revision.md`
 //! §4 argues from measurement, not taste, that this is the wrong granularity:
 //! the dominant per-round cost is candidate-level deduplication (90.4% of
@@ -22,7 +22,7 @@
 //! e-class neighborhood + budget state, mirroring
 //! [`crate::egraph::candidate::CandidateFeatures`] (the same object minted for
 //! the strict-label training pipeline, `gen_strict_labels`) field for field —
-//! rather than [`GraphSummary`]/[`RuleCandidate`].
+//! rather than `GraphSummary`/`RuleCandidate`.
 //!
 //! `GraphAccumulator` itself is **not deleted** (segregation rule,
 //! `docs/plans/2026-08-31-guide-design-revision.md` §4 last paragraph: "the
@@ -126,7 +126,7 @@ fn shift1(emb: &[f32; K]) -> [f32; K] {
 /// those from a second computation (the anti-drift rule this module's own
 /// doc states: "there is exactly one place a caller can get this wrong"),
 /// `CandidateSummary` carries them too — additively, alongside the fields
-/// [`scoring::SaturationHead`]'s tower already consumed. `rule` and
+/// `scoring::SaturationHead`'s tower already consumed. `rule` and
 /// `match_class_node_count` come straight off `features.key` (already
 /// computed, nothing new to derive); `expr_node_count` has no home in
 /// [`CandidateFeatures`] (it's an episode-level constant, not part of any
@@ -136,13 +136,18 @@ fn shift1(emb: &[f32; K]) -> [f32; K] {
 /// `EGraph::node_count()` at the episode's start — see
 /// `saturate_guided_until_applications`).
 pub struct CandidateSummary {
+    /// The rule's embedding in the space the saturation head scores in.
     pub rule_embed: [f32; EMBED_DIM],
+    /// One-hop child ops of the matched class (see
+    /// [`CandidateFeatures::neighborhood_ops`](crate::egraph::candidate::CandidateFeatures::neighborhood_ops)).
     pub neighborhood_ops: Vec<OpKind>,
+    /// The application's ordinal over the registered budget; past `1.0` once
+    /// an episode samples beyond it.
     pub budget_fraction: f32,
     /// Which rule this candidate is, by stable identity
     /// ([`CandidateKey::rule`](crate::egraph::candidate::CandidateKey::rule))
     /// — consumed by the per-rule linear guides, not by
-    /// [`scoring::SaturationHead`]'s tower (which reads only `rule_embed`).
+    /// `scoring::SaturationHead`'s tower (which reads only `rule_embed`).
     ///
     /// A [`RuleId`] rather than a position: a per-rule weight vector keyed
     /// by index is repointed wholesale by a same-length reorder of the rule
@@ -150,7 +155,7 @@ pub struct CandidateSummary {
     /// [`crate::egraph::rules`].
     pub rule: RuleId,
     /// Node count of the matched e-class's canonical content
-    /// ([`ClassContentKey::node_count`]) — `train_guide`'s
+    /// (`ClassContentKey::node_count`) — `train_guide`'s
     /// `log_match_class` feature, before the `log1p` the linear model
     /// applies.
     pub match_class_node_count: usize,
