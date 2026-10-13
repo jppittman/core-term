@@ -23,15 +23,15 @@ use pixelflow_ir::{LatticeShape, Variance};
 /// 2.7GB OOM, see `choices_to_arena`'s doc comment), and a call site that
 /// forgets to repair or backfill it produces that bug silently.
 ///
-/// `Extraction` makes the bug class unrepresentable: the only ways to
-/// obtain a value of this type are `Extraction::from_dp` (wraps
-/// `repair_choices_well_founded`) and `Extraction::from_backfill`
-/// (wraps `backfill_well_founded`) — both establish well-foundedness as
-/// part of construction, so a bare unvalidated vector can never cross into
-/// [`choices_to_arena`] or the edge walker
-/// ([`crate::nnue::EdgeTrace::from_extraction`]), which accept only
-/// `&Extraction`. See docs/plans/2026-08-17-cost-model-domain.md §1
-/// "Extraction (J2)".
+/// `Extraction::from_dp` (wraps `repair_choices_well_founded`) and
+/// `Extraction::from_backfill` (wraps `backfill_well_founded`) establish
+/// well-foundedness as part of construction. `Extraction::from_well_founded`
+/// does not: it trusts a map whose producer already guaranteed it, and the
+/// backstop for a broken trust is [`choices_to_arena`]'s own refusal (it
+/// panics on a cycle, a missing choice or an out-of-range index rather than
+/// looping). The edge walker ([`crate::nnue::EdgeTrace::from_extraction`])
+/// accepts only `&Extraction` as well. See
+/// docs/plans/2026-08-17-cost-model-domain.md §1 "Extraction (J2)".
 pub struct Extraction<'g> {
     egraph: &'g EGraph,
     root: EClassId,
@@ -39,7 +39,40 @@ pub struct Extraction<'g> {
 }
 
 impl<'g> Extraction<'g> {
-    /// The DP path's smart constructor: makes `choices` well-founded via
+    /// Seals a map that is already complete and acyclic from `root`,
+    /// without repairing it.
+    ///
+    /// [`Optimizer::extract`] returns such a map from either extractor:
+    /// [`settle_in_cost_order`] admits a class only after the children of the
+    /// candidate it settles on, and the reranker's map is the choices of a
+    /// [`Extraction::from_backfill`] value after its swap search. Either way
+    /// `cost_of_choices` has already walked the map from the root and
+    /// panicked on a missing choice or a cycle. [`repair_choices_well_founded`]
+    /// changes no pick reachable from `root` in such a map
+    /// (`the_dp_map_is_well_founded_so_the_repair_is_a_no_op` pins this), and
+    /// running it anyway cost a walk of the whole downward closure per
+    /// extraction. A map nothing has vouched for belongs in
+    /// [`Extraction::from_dp`] or [`Extraction::from_backfill`].
+    ///
+    /// Nothing is checked here, deliberately: a cyclic map handed to this
+    /// constructor is its producer's bug, and [`choices_to_arena`] refuses it
+    /// loudly (`CYCLIC`, with the class id) rather than looping.
+    pub(crate) fn from_well_founded(
+        egraph: &'g EGraph,
+        root: EClassId,
+        choices: Vec<Option<usize>>,
+    ) -> Self {
+        Self {
+            egraph,
+            root: egraph.find(root),
+            choices,
+        }
+    }
+
+    /// The research path's smart constructor, for a map nothing has vouched
+    /// for: the legacy tree DP [`extract`] (whose `CYCLE_COST` records
+    /// cycles; every map the repair ever rewrote came from it), the witness
+    /// passes and the extraction-gap harness. Makes `choices` well-founded via
     /// [`repair_choices_well_founded`] (resolving any mutual cycles the
     /// bottom-up DP recorded — `CYCLE_COST` penalizes only
     /// self-references, so two merged classes can each cheapest-pick a
@@ -62,7 +95,7 @@ impl<'g> Extraction<'g> {
     /// reachable from `root` still lacking a choice via
     /// [`backfill_well_founded`], then seals the result. Tests and research
     /// harnesses that pin specific node choices come in here; production
-    /// extraction comes in through [`Extraction::from_dp`].
+    /// extraction comes in through [`Extraction::from_well_founded`].
     ///
     /// # Panics
     ///
@@ -2099,7 +2132,8 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
 /// settled strictly after the children of the candidate it settles on — so
 /// [`repair_choices_well_founded`] had nothing left to do but relabel
 /// classes no term reaches, and every choice it used to make on the DP's
-/// behalf was a cost decision taken with no cost model. It survives for
+/// behalf was a cost decision taken with no cost model. Production seals the
+/// map through [`Extraction::from_well_founded`]; the repair survives for
 /// [`Extraction::from_dp`], whose input is an arbitrary caller's map.
 /// `the_dp_map_is_well_founded_so_the_repair_is_a_no_op` is the gate.
 ///
@@ -3817,33 +3851,24 @@ mod tests {
         // Before the gray-marking assert, this walk re-scheduled the cycle
         // forever: a full-DEV bench run grew to 2.7GB and died by SIGKILL
         // with zero diagnostics. The cycle must be a loud extractor
-        // accusation instead. `Extraction`'s own constructors now refuse a
-        // cyclic choice set before this point is ever reached (see
-        // `extraction_constructors_refuse_a_cyclic_choice_set`) — this test
-        // exercises `choices_to_arena`'s own belt-and-suspenders check by
-        // constructing the `Extraction` directly (private-field literal,
-        // valid from within this module), bypassing the smart constructors
-        // on purpose.
+        // accusation instead. `from_well_founded` checks nothing, so on the
+        // production path (`Optimized::to_arena`) this assert is the only
+        // guard against a producer that broke its promise.
         let (egraph, merged, n1) = cyclic_capable_egraph();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
         let m = egraph.find(merged).0 as usize;
         let i = egraph.find(n1).0 as usize;
         choices[m] = Some(neg_index(&egraph, merged).expect("merged class holds Neg(n1)"));
         choices[i] = Some(neg_index(&egraph, n1).expect("n1 holds Neg(x)"));
-        let extraction = Extraction {
-            egraph: &egraph,
-            root: egraph.find(merged),
-            choices,
-        };
-        let _ = choices_to_arena(&extraction);
+        let _ = choices_to_arena(&Extraction::from_well_founded(&egraph, merged, choices));
     }
 
     #[test]
     #[should_panic(expected = "cyclic")]
     fn extraction_constructors_refuse_a_cyclic_choice_set() {
-        // The type-level guarantee J2 adds: a cyclic choice vector can no
-        // longer become an `Extraction` at all, so the 2.7GB-OOM class of
-        // bug can't reach `choices_to_arena` in the first place.
+        // `from_backfill` refuses a cyclic vector up front (`from_dp`
+        // repairs it); only `from_well_founded` defers to `choices_to_arena`
+        // (see `choices_to_arena_refuses_a_cyclic_choice_set`).
         let (egraph, merged, n1) = cyclic_capable_egraph();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
         let m = egraph.find(merged).0 as usize;

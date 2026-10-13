@@ -37,10 +37,9 @@
 //! What that argument does **not** cover, and the doc comment on
 //! [`Optimizer::cost`] repeats: `extract_dag` is *not* argmin under the cost
 //! model. It prices a tree rather than a DAG (sharing is never charged), it
-//! is a single DFS over graphs that saturation makes cyclic, and the cost it
-//! reports is read before a well-foundedness repair may change the term. The
-//! cost model is the objective extraction *aims at*, not a minimum it
-//! attains. `Reranker` is the seam for any
+//! is a heuristic over graphs that saturation makes cyclic, and the cost it
+//! reports is that of the returned choices. The cost model is the objective
+//! extraction *aims at*, not a minimum it attains. `Reranker` is the seam for any
 //! objective that needs a guarantee — non-additive or otherwise — because it
 //! scores whole extractions.
 
@@ -227,6 +226,7 @@ pub struct OptimizerStats {
 #[derive(Clone, Debug)]
 pub struct Optimized {
     /// One node index per canonical e-class, well-founded from the root.
+    /// [`Self::to_arena`] trusts this and does not repair it.
     pub choices: Vec<Option<usize>>,
     /// What [`Self::choices`] costs, in both the shape the extraction DP
     /// minimizes ([`ChoiceCost::tree`]) and the shape the emitted kernel pays
@@ -247,10 +247,17 @@ impl Optimized {
     /// Materialise the extracted DAG as an arena.
     ///
     /// `egraph` and `root` must be the ones [`Optimizer::run`] was given;
-    /// the choices index that graph's classes.
+    /// the choices index that graph's classes. They are sealed as they are,
+    /// with no repair: [`Optimizer::extract`] returns a well-founded map from
+    /// either extractor, and [`choices_to_arena`] panics if a hand-edited
+    /// [`Self::choices`] is not.
     #[must_use]
     pub fn to_arena(&self, egraph: &EGraph, root: EClassId) -> (ExprArena, ExprId) {
-        choices_to_arena(&Extraction::from_dp(egraph, root, self.choices.clone()))
+        choices_to_arena(&Extraction::from_well_founded(
+            egraph,
+            root,
+            self.choices.clone(),
+        ))
     }
 }
 
@@ -527,11 +534,10 @@ impl Optimizer {
     /// Read "aims at" literally: `extract_dag` is a heuristic, not an argmin.
     /// It sums children's costs, which prices a tree — a shared
     /// subexpression is charged once per use in the objective and once in
-    /// total in the emitted code. It is a single DFS, so on the cyclic graphs
-    /// saturation always produces (commutativity alone makes cycles) a class
-    /// whose child is still on the stack is scored at a cycle sentinel and
-    /// never revisited. Use [`Optimizer::rerank`] for an objective that needs
-    /// a guarantee.
+    /// total in the emitted code. Extraction settles classes in cost order,
+    /// so a class is admitted only after the children of the candidate it
+    /// settles on, but the sum is still taken over a tree. Use
+    /// [`Optimizer::rerank`] for an objective that needs a guarantee.
     #[must_use]
     pub fn cost(mut self, cost: CostModel) -> Self {
         self.cost = cost;
@@ -651,9 +657,12 @@ impl Optimizer {
     #[must_use]
     pub fn extract(&self, egraph: &EGraph, root: EClassId, stats: OptimizerStats) -> Optimized {
         // Both arms report the cost of the choices they RETURN — the DP's
-        // own table is read before `repair_choices_well_founded` rewrites
-        // picks and so can name a different term (#1111), and the reranker's
-        // search score is on its own scale entirely.
+        // table is costed after settlement rather than read off the DP
+        // (#1111), and the reranker's search score is on its own scale
+        // entirely. Both also return a well-founded map (settled in cost
+        // order, or the choices of a sealed `Extraction`) and both are walked
+        // from the root by `cost_of_choices`, which panics on a cycle: that is
+        // what lets `Optimized::to_arena` seal it without a repair.
         let (choices, cost, extraction) = match self.rerank.as_ref() {
             Some(reranker) => {
                 let choices = IncrementalExtractor::new(reranker.as_ref(), RERANK_TOP_K)
