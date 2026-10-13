@@ -12,8 +12,7 @@
 //! test green. These assert the *bits*, on inputs chosen so the two forms
 //! cannot agree.
 //!
-//! x86-64 only, because it executes: the encoding itself is pinned for all
-//! three backends from any host by `emit::tests::muladd_encoding`.
+//! x86-64 only, because it executes.
 #![cfg(target_arch = "x86_64")]
 
 use pixelflow_codegen::emit::{CompiledKernel, compile};
