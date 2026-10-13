@@ -25,8 +25,6 @@
 //! and trivially reproducible from the seed alone (no state to serialize or
 //! replay).
 
-use crate::egraph::REGISTERED_PRIMARY_BUDGET_APPLICATIONS;
-
 use super::{CandidateSummary, SaturationGuide};
 
 /// FNV-1a, 64-bit — a small, dependency-free, well-distributed non-crypto
@@ -77,8 +75,8 @@ fn candidate_fingerprint(c: &CandidateSummary) -> u64 {
 }
 
 /// One candidate's deterministic pseudo-random score, `seed` mixed with the
-/// candidate's own fingerprint (see [`candidate_fingerprint`]) via
-/// [`splitmix64`], normalized to `[0.0, 1.0)`. Exposed at module scope (not
+/// candidate's own fingerprint (see `candidate_fingerprint`) via
+/// `splitmix64`, normalized to `[0.0, 1.0)`. Exposed at module scope (not
 /// just via [`UniformRandomGuide`]) so `pixelflow-pipeline`'s trajectory
 /// minter can reuse the identical uniform term for its `EpsilonMix` ordering
 /// policy (mixing a NAMED base Guide's rank with this same hash-uniform)
@@ -112,6 +110,7 @@ pub fn uniform_unit_score(seed: u64, c: &CandidateSummary) -> f32 {
 /// per-expression return spread that carries the credit signal collapses.
 #[derive(Clone, Copy, Debug)]
 pub struct UniformRandomGuide {
+    /// Names the ordering: the same seed scores the same batch identically.
     pub seed: u64,
 }
 
@@ -123,16 +122,6 @@ impl SaturationGuide for UniformRandomGuide {
             .collect()
     }
 }
-
-/// The registered primary budget tier, re-exported here purely so a caller
-/// that only imports this module (e.g. a unit test constructing a
-/// `CandidateSummary` by hand) does not also need to reach into
-/// `crate::egraph` for a constant this module's own doc already discusses —
-/// **not** used by any scoring logic above, which is budget-agnostic by
-/// design (a fixed pseudo-random preference over candidate SHAPES, not a
-/// function of how far through the budget the episode is).
-#[allow(dead_code)]
-const _DOC_ONLY_BUDGET_REFERENCE: usize = REGISTERED_PRIMARY_BUDGET_APPLICATIONS;
 
 #[cfg(test)]
 mod tests {

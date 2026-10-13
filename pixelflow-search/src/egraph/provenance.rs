@@ -7,10 +7,10 @@
 //! # Design
 //!
 //! E-nodes have no stable identity of their own: they live at `(EClassId,
-//! node_idx)`, and `node_idx` shifts whenever [`EGraph::union`] extends a
-//! class's node vector or [`EGraph::rebuild_budgeted`] rewrites it in place.
+//! node_idx)`, and `node_idx` shifts whenever `EGraph::union` extends a
+//! class's node vector or `EGraph::rebuild_budgeted` rewrites it in place.
 //! To track provenance we mint a process-wide stable [`ENodeId`] for every
-//! e-node the instant it is created in [`EGraph::add`] (the sole creation
+//! e-node the instant it is created in `EGraph::add` (the sole creation
 //! choke point), and thread a parallel `tags: Vec<ENodeId>` alongside every
 //! `EClass::nodes: Vec<ENode>` so the tag at index `i` always names the node
 //! at index `i` — including through `union`'s `extend()` and
@@ -25,7 +25,7 @@
 //!   as the output of a rewrite.
 //! - [`Provenance::applications`]: a log of every rewrite firing
 //!   ([`ApplicationRecord`]), keyed by [`ApplicationId`].
-//! - [`Provenance::unions`]: an append-only [`UnionEvent`] journal recording
+//! - `Provenance::unions`: an append-only [`UnionEvent`] journal recording
 //!   every class-level merge, whether rule-driven or congruence-closure
 //!   (rebuild-driven, `rule_idx: None`).
 //!
@@ -61,12 +61,13 @@ use rustc_hash::FxHashMap as HashMap;
 #[cfg(feature = "provenance-journal")]
 use std::collections::BTreeSet;
 
+#[cfg(feature = "provenance-journal")]
 use super::node::EClassId;
 
 /// Stable, process-wide identity for an e-node, independent of its current
 /// `(EClassId, node_idx)` position.
 ///
-/// Minted once, in [`EGraph::add`], for every node that isn't a memo hit.
+/// Minted once, in `EGraph::add`, for every node that isn't a memo hit.
 /// Never reused, never renumbered — this is the whole point: `(EClassId,
 /// node_idx)` shifts under union and rebuild, `ENodeId` never does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -385,10 +386,10 @@ pub fn derivation_ancestors(
             // The match root of the application that created this node is
             // itself a class whose tagged nodes may have contributed
             // (over-approximation #1 extended to the match side).
-            if let Some(record) = provenance.application(app_id) {
-                if visited_classes.insert(record.match_root) {
-                    class_stack.push(record.match_root);
-                }
+            if let Some(record) = provenance.application(app_id)
+                && visited_classes.insert(record.match_root)
+            {
+                class_stack.push(record.match_root);
             }
         }
         for child_class in children_of(node) {
@@ -415,10 +416,10 @@ pub fn derivation_ancestors(
             }
             if let Some(Origin::Rule(app_id)) = provenance.origin(node) {
                 result.insert(app_id);
-                if let Some(record) = provenance.application(app_id) {
-                    if visited_classes.insert(record.match_root) {
-                        class_stack.push(record.match_root);
-                    }
+                if let Some(record) = provenance.application(app_id)
+                    && visited_classes.insert(record.match_root)
+                {
+                    class_stack.push(record.match_root);
                 }
             }
             for child_class in children_of(node) {
@@ -457,6 +458,28 @@ pub fn derivation_ancestors(
     }
 
     result
+}
+
+/// How an ancestry walk reads the e-graph it walks: the tags in a class, the
+/// classes a tagged node points at, and a class's current canonical id. An
+/// offline analysis, so dynamic calls cost nothing that matters.
+#[cfg(feature = "provenance-journal")]
+#[derive(Clone, Copy)]
+pub struct GraphView<'a> {
+    pub tags_of: &'a dyn Fn(EClassId) -> Vec<ENodeId>,
+    pub children_of: &'a dyn Fn(ENodeId) -> Vec<EClassId>,
+    pub canonical_of: &'a dyn Fn(EClassId) -> EClassId,
+}
+
+/// Where a tight ancestry walk starts and what it prunes with; see
+/// [`derivation_ancestors_tight`] for why the two differ.
+#[cfg(feature = "provenance-journal")]
+#[derive(Clone, Copy)]
+pub struct TightWalk<'a> {
+    /// The nodes the walk starts from.
+    pub seeds: &'a [(EClassId, ENodeId)],
+    /// The extraction's complete class -> chosen-node map.
+    pub chosen_nodes: &'a [(EClassId, ENodeId)],
 }
 
 /// A second, narrower ancestry walk over the same provenance records as
@@ -539,17 +562,23 @@ pub fn derivation_ancestors(
 /// means one seed, but the pruning still needs every class's choice, or each
 /// class the walk descends into has no entry and falls back to the unpruned
 /// "all tags" behavior — silently returning the loose bound under the tight
-/// bound's name. [`EGraph::derivation_ancestors_tight`] passes the same
+/// bound's name. `EGraph::derivation_ancestors_tight` passes the same
 /// slice for both, which is right when the seeds ARE the whole extraction.
 #[cfg(feature = "provenance-journal")]
 pub fn derivation_ancestors_tight(
-    tags_of: &impl Fn(EClassId) -> Vec<ENodeId>,
-    children_of: &impl Fn(ENodeId) -> Vec<EClassId>,
-    canonical_of: &impl Fn(EClassId) -> EClassId,
+    graph: GraphView<'_>,
     provenance: &Provenance,
-    seeds: &[(EClassId, ENodeId)],
-    chosen_nodes: &[(EClassId, ENodeId)],
+    walk: TightWalk<'_>,
 ) -> BTreeSet<ApplicationId> {
+    let GraphView {
+        tags_of,
+        children_of,
+        canonical_of,
+    } = graph;
+    let TightWalk {
+        seeds,
+        chosen_nodes,
+    } = walk;
     let mut chosen_map: HashMap<EClassId, ENodeId> = HashMap::default();
     for &(class, node) in chosen_nodes {
         let class = canonical_of(class);

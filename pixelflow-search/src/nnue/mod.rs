@@ -400,7 +400,7 @@ impl BwdGenerator {
     ///
     /// - Nodes `[0, optimized_node_count)` belong to the optimized subtree.
     /// - Nodes `[optimized_node_count, arena.len())` belong to the unoptimized
-    ///   subtree (pushed via [`ExprArena::push_expr`] after junkification).
+    ///   subtree (pushed via `ExprArena::push_expr` after junkification).
     ///
     /// Use `arena.len()` for an O(1) total node count, or
     /// `arena.node_count_subtree(pair.optimized)` for the optimized subtree
@@ -408,7 +408,7 @@ impl BwdGenerator {
     ///
     /// # Panics
     ///
-    /// Same conditions as [`generate`].
+    /// Same conditions as `generate`.
     #[must_use]
     pub fn generate_arena(&mut self) -> BwdTrainingPairArena {
         let mut junkify_attempts = 0;

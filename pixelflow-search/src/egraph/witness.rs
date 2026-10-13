@@ -24,7 +24,7 @@ use pixelflow_ir::{Ir, LatticeShape, Shape};
 
 use super::cost::CostFunction;
 use super::extract::{
-    CYCLE_COST, Canonical, ChoiceCost, Dp, ExtractionObjective, Insertion,
+    CYCLE_COST, Canonical, ChoiceCost, Dp, ExtractionObjective, Insertion, Pricing, Rooted,
     SHARED_DAG_PASS_BYTE_BUDGET, StageRecorder, TieBreak, cost_of_choices,
     repair_choices_well_founded, shared_dag_dp_pass, tree_dp_pass,
 };
@@ -201,7 +201,16 @@ pub fn trace<C: CostFunction>(
 
     let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
     let tree_raw = tree_dp_pass(egraph, root, &mut dp).choices;
-    let tree = finish(egraph, root, tree_raw, dp.into_recorder(), costs, shape);
+    let pricing = Pricing { costs, shape };
+    let at = Rooted { egraph, root };
+    let tree = finish(
+        at,
+        RawPass {
+            choices: tree_raw,
+            table: dp.into_recorder(),
+        },
+        &pricing,
+    );
 
     let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
     let pass = shared_dag_dp_pass(egraph, root, &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
@@ -216,7 +225,14 @@ pub fn trace<C: CostFunction>(
             cost,
         };
     };
-    let shared = finish(egraph, root, raw, table, costs, shape);
+    let shared = finish(
+        at,
+        RawPass {
+            choices: raw,
+            table,
+        },
+        &pricing,
+    );
 
     let (objective, winner) = if shared.cost.dag < tree.cost.dag {
         (ExtractionObjective::Shared, &shared)
@@ -233,17 +249,21 @@ pub fn trace<C: CostFunction>(
     }
 }
 
-fn finish<C: CostFunction>(
-    egraph: &EGraph,
-    root: EClassId,
-    raw: Vec<Option<usize>>,
+/// What a DP pass produced before repair: its choice map and the candidate
+/// table it recorded.
+struct RawPass {
+    choices: Vec<Option<usize>>,
     table: CandidateTable,
-    costs: &C,
-    shape: LatticeShape,
-) -> PassTrace {
+}
+
+fn finish<C: CostFunction>(at: Rooted<'_>, pass: RawPass, pricing: &Pricing<'_, C>) -> PassTrace {
+    let RawPass {
+        choices: raw,
+        table,
+    } = pass;
     let mut repaired = raw.clone();
-    repair_choices_well_founded(egraph, root, &mut repaired);
-    let cost = cost_of_choices(egraph, root, &repaired, costs, shape);
+    repair_choices_well_founded(at.egraph, at.root, &mut repaired);
+    let cost = pricing.of_choices(at, &repaired);
     PassTrace {
         raw,
         repaired,
@@ -306,19 +326,6 @@ fn run_arms<C: CostFunction, T: TieBreak + Copy>(
     }
     (tree, tree_cost)
 }
-
-impl Clone for Insertion {
-    fn clone(&self) -> Self {
-        Insertion
-    }
-}
-impl Copy for Insertion {}
-impl Clone for Canonical {
-    fn clone(&self) -> Self {
-        Canonical
-    }
-}
-impl Copy for Canonical {}
 
 // ---------------------------------------------------------------------------
 // Mapping a term into a graph

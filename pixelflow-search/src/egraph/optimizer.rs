@@ -11,8 +11,8 @@
 //!
 //! [`Optimizer`] is that place. Everything the research program wants to vary
 //! is a field on it that defaults to what production does today: the rule set
-//! and its [`Fingerprint`](super::Fingerprint), the [`Budget`], the cost
-//! model, an optional [`Reranker`](super::extract::Reranker), and an optional
+//! and its [`Fingerprint`], the [`Budget`], the cost
+//! model, an optional `Reranker`, and an optional
 //! [`Observer`].
 //!
 //! # Why an optional lever is safe without a correctness review
@@ -40,7 +40,7 @@
 //! is a single DFS over graphs that saturation makes cyclic, and the cost it
 //! reports is read before a well-foundedness repair may change the term. The
 //! cost model is the objective extraction *aims at*, not a minimum it
-//! attains. [`Reranker`](super::extract::Reranker) is the seam for any
+//! attains. `Reranker` is the seam for any
 //! objective that needs a guarantee — non-additive or otherwise — because it
 //! scores whole extractions.
 
@@ -51,8 +51,7 @@ use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
 use super::cost::CostModel;
 use super::extract::{
-    ChoiceCost, Extraction, ExtractionObjective, ExtractionReport, IncrementalExtractor, Reranker,
-    choices_to_arena,
+    ChoiceCost, Extraction, ExtractionReport, IncrementalExtractor, Reranker, choices_to_arena,
 };
 use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
 use super::guided::GuidedEpisode;
@@ -233,11 +232,11 @@ pub struct Optimized {
     /// minimizes ([`ChoiceCost::tree`]) and the shape the emitted kernel pays
     /// ([`ChoiceCost::dag`]). Read from the settled choices, so it describes
     /// the term [`Self::to_arena`] materializes — including under a
-    /// [`Reranker`], whose search has its own scale and never produced this
+    /// `Reranker`, whose search has its own scale and never produced this
     /// number before.
     pub cost: ChoiceCost,
     /// Which objective chose [`Self::choices`], and what the sharing-aware
-    /// pass cost — [`ExtractionObjective::External`] under a [`Reranker`].
+    /// pass cost — `ExtractionObjective::External` under a `Reranker`.
     /// A cost quoted without this is a cost from an unknown extractor.
     pub extraction: ExtractionReport,
     /// What the run did.
@@ -424,7 +423,7 @@ impl Optimizer {
         self
     }
 
-    /// Refine the extraction with a [`Reranker`] over whole extractions.
+    /// Refine the extraction with a `Reranker` over whole extractions.
     ///
     /// This is the seam for a cost that additive DP cannot express — the
     /// schedule-cost residual — and, per the module docs, for any objective
@@ -438,7 +437,7 @@ impl Optimizer {
 
     /// Order the rewrite candidates saturation applies.
     ///
-    /// A [`SaturationGuide`](crate::nnue::guide::SaturationGuide) supplies
+    /// A [`SaturationGuide`] supplies
     /// **order only** — it never constructs a rewrite action, never unions,
     /// never sees a mutable e-graph. That is what makes law **L4** (see this
     /// module's docs) hold without a numeric-equivalence suite: every

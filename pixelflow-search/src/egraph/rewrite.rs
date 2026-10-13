@@ -245,19 +245,6 @@ pub trait Rewrite: Send + Sync {
     /// Returns `Some(action)` if the rule matches.
     fn apply(&self, egraph: &EGraph, id: EClassId, node: &ENode) -> Option<RewriteAction>;
 
-    /// Whether this rule is destructive: the matched LHS node should be
-    /// removed from the e-class after the action is applied.
-    ///
-    /// Only safe for rules that provably simplify: the RHS is strictly
-    /// cheaper than the LHS (involution, identity, annihilator, constant-fold).
-    /// Destructive rules reduce e-graph size, preventing node accumulation
-    /// that slows future rule matching.
-    ///
-    /// Default: false (non-destructive, standard equality saturation).
-    fn is_destructive(&self) -> bool {
-        false
-    }
-
     /// LHS template expression (what this rule matches).
     ///
     /// Uses metavariables: `Expr::Var(0)` = A, `Expr::Var(1)` = B, etc.

@@ -3,12 +3,12 @@
 //! `kernel!` already runs full saturation at macro-expansion
 //! time: `pixelflow-compiler::optimize` builds an e-graph from the parsed
 //! AST, saturates, and extracts before ever touching an
-//! [`ExprArena`](pixelflow_ir::ExprArena). Anything stamped by those macros
+//! [`ExprArena`]. Anything stamped by those macros
 //! reaches `pixelflow_codegen::jit_cache` already optimized.
 //!
 //! `Kernel` values composed directly at runtime — `Kernel::over`, `.at()`,
 //! `.select()`, arithmetic — never go through that macro, so their arenas hit
-//! [`pixelflow_codegen::jit_cache::compile`] raw:
+//! `pixelflow_codegen::jit_cache::compile` raw:
 //! no CSE, no FMA fusion, no algebraic simplification. [`optimize_runtime_arena`]
 //! is the same pipeline applied to an arena directly, for exactly that gap —
 //! today's highest-volume instance is the font glyph bake
@@ -47,7 +47,7 @@
 //!    children and no constant fact, so the one thing a rule reads off it is
 //!    its variance — `FactorFold`'s side condition, and the binder
 //!    substitution `PeelFold`/`HalveFold` skip a binder-free class by — and
-//!    the leaf carries its referent's ([`ENode::Ref`]). Every conditioned
+//!    the leaf carries its referent's (`ENode::Ref`). Every conditioned
 //!    rewrite is the one it would be with the body inlined.
 //! 2. The context cannot change what a unit reads. A unit is **closed**: its
 //!    variance names the coordinates and nothing else, which the unit walk
@@ -213,6 +213,7 @@ pub fn optimize_runtime_arena(
 /// [`optimize_runtime_arena`] with the cache bypassed: a fresh saturation
 /// whatever this process has seen, for a measurement that must not report a
 /// cached answer as its own.
+#[cfg(test)]
 fn optimize_runtime_arena_uncached(
     arena: &ExprArena,
     root: ExprId,
@@ -453,8 +454,10 @@ impl Job<'_> {
     /// telemetry records.
     fn optimize(&self, run: Run) -> Option<(ExprArena, ExprId)> {
         let canon = canonical(self.arena, self.root);
-        let saturated = match (run.saturate)(self, &canon, run.shape) {
-            Ok(saturated) => saturated,
+        // One optimizer per job: it keys the cache, saturates, and extracts.
+        let mut optimizer = runtime_optimizer(run.shape);
+        let obtained = match (run.saturate)(self, &canon, &mut optimizer) {
+            Ok(obtained) => obtained,
             Err(declined) => {
                 #[cfg(feature = "saturation-telemetry")]
                 crate::telemetry::record_decline(crate::tier::Tier::Runtime, declined);
@@ -463,7 +466,51 @@ impl Job<'_> {
                 return None;
             }
         };
-        Some(extract_for(&saturated, &canon, self.arena, run.shape))
+        Some(self.extract(&obtained, &canon, &optimizer))
+    }
+
+    /// Extract the graph `obtained` under `optimizer`'s lattice and hand the
+    /// term back in this job's own names and slot order — unlowered: a unit
+    /// is linked before `lower_dwrt` runs, once, over the whole program.
+    ///
+    /// With `saturation-telemetry`, the caller whose call ran the saturation
+    /// also writes its record, from the extraction production is making: a
+    /// caller that found the graph cached saturated nothing, so it records
+    /// nothing, and the record is always priced at the saturating caller's
+    /// shape.
+    fn extract(
+        &self,
+        obtained: &Obtained,
+        canon: &Canonical,
+        optimizer: &Optimizer,
+    ) -> (ExprArena, ExprId) {
+        let saturated = &obtained.saturated;
+        let optimized =
+            optimizer.extract(&saturated.egraph, saturated.root, saturated.stats.clone());
+        let (extracted, extracted_root) = optimized.to_arena(&saturated.egraph, saturated.root);
+        #[cfg(feature = "saturation-telemetry")]
+        if let Some(facts) = &obtained.ran_here {
+            crate::telemetry::record(crate::telemetry::SaturationInvocation {
+                tier: crate::tier::Tier::Runtime,
+                node_count: facts.node_count,
+                inserted_classes: facts.inserted_classes,
+                extraction: optimized.extraction,
+                stats: &optimized.stats,
+                union_count: optimized.stats.unions,
+                extracted_arena: &extracted,
+                extracted_root,
+                wall_clock: facts.started.elapsed(),
+                kernel_label: None,
+            });
+        }
+
+        // Names. The graph's are the saturating composition's, in extraction
+        // order; this caller's go in their slots, in this caller's own order.
+        let (in_canonical_order, extracted_root) =
+            extracted.relink(extracted_root, &saturated.buffers, &saturated.uniforms);
+        in_canonical_order
+            .with_tables(canon.buffers.clone(), canon.uniforms.clone())
+            .relink(extracted_root, self.arena.buffers(), self.arena.uniforms())
     }
 }
 
@@ -478,7 +525,7 @@ struct Run {
 }
 
 /// Where a run gets a term's saturated graph.
-type Saturate = fn(&Job<'_>, &Canonical, LatticeShape) -> Result<Arc<Saturated>, Declined>;
+type Saturate = fn(&Job<'_>, &Canonical, &mut Optimizer) -> Result<Obtained, Declined>;
 
 impl Run {
     /// A run with as many workers as the host has threads — one where the
@@ -527,28 +574,6 @@ impl Run {
     }
 }
 
-/// Extract `saturated` for `shape` and hand the term back in `arena`'s own
-/// names and slot order — unlowered: a unit is linked before `lower_dwrt`
-/// runs, once, over the whole program.
-fn extract_for(
-    saturated: &Saturated,
-    canon: &Canonical,
-    arena: &ExprArena,
-    shape: LatticeShape,
-) -> (ExprArena, ExprId) {
-    let optimizer = runtime_optimizer(shape);
-    let optimized = optimizer.extract(&saturated.egraph, saturated.root, saturated.stats.clone());
-    let (extracted, extracted_root) = optimized.to_arena(&saturated.egraph, saturated.root);
-
-    // Names. The graph's are the saturating composition's, in extraction
-    // order; this caller's go in their slots, in this caller's own order.
-    let (in_canonical_order, extracted_root) =
-        extracted.relink(extracted_root, &saturated.buffers, &saturated.uniforms);
-    in_canonical_order
-        .with_tables(canon.buffers.clone(), canon.uniforms.clone())
-        .relink(extracted_root, arena.buffers(), arena.uniforms())
-}
-
 /// A term saturated once, for every lattice it is later extracted at.
 struct Saturated {
     egraph: EGraph,
@@ -559,6 +584,47 @@ struct Saturated {
     /// relink to, before another composition's take the slots.
     buffers: Vec<BufferDecl>,
     uniforms: Vec<UniformDecl>,
+    #[cfg(feature = "saturation-telemetry")]
+    facts: SaturationFacts,
+}
+
+/// A saturated graph as one caller got it.
+struct Obtained {
+    saturated: Arc<Saturated>,
+    /// Present only for the caller whose call ran the saturation, so the
+    /// record is written once per saturation, by the caller that paid for it,
+    /// and shared state never decides who that is.
+    #[cfg(feature = "saturation-telemetry")]
+    ran_here: Option<SaturationFacts>,
+}
+
+impl Obtained {
+    /// The graph some other call saturated.
+    fn cached(saturated: Arc<Saturated>) -> Self {
+        Self {
+            saturated,
+            #[cfg(feature = "saturation-telemetry")]
+            ran_here: None,
+        }
+    }
+
+    /// The graph this call saturated.
+    fn fresh(saturated: Arc<Saturated>) -> Self {
+        Self {
+            #[cfg(feature = "saturation-telemetry")]
+            ran_here: Some(saturated.facts),
+            saturated,
+        }
+    }
+}
+
+/// The telemetry record's saturation-side fields.
+#[cfg(feature = "saturation-telemetry")]
+#[derive(Clone, Copy)]
+struct SaturationFacts {
+    node_count: usize,
+    inserted_classes: usize,
+    started: std::time::Instant,
 }
 
 /// The runtime tier's optimizer: production policy over the runtime
@@ -584,8 +650,8 @@ type Slot = Arc<OnceLock<Result<Arc<Saturated>, Declined>>>;
 fn saturated_for(
     job: &Job<'_>,
     canon: &Canonical,
-    shape: LatticeShape,
-) -> Result<Arc<Saturated>, Declined> {
+    optimizer: &mut Optimizer,
+) -> Result<Obtained, Declined> {
     static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Slot>>> = OnceLock::new();
 
     let mut key = canon.key.clone();
@@ -596,7 +662,7 @@ fn saturated_for(
     // steady state at another, some kernels reranked and some not). It is a
     // constant today because production names exactly one configuration;
     // keying on it is what keeps that from being load-bearing.
-    key.extend_from_slice(&runtime_optimizer(shape).fingerprint().to_bytes());
+    key.extend_from_slice(&optimizer.fingerprint().to_bytes());
 
     let slot: Slot = Arc::clone(
         CACHE
@@ -608,27 +674,36 @@ fn saturated_for(
     );
     // Outside the map's lock, so distinct structures saturate concurrently;
     // inside the slot's, so one structure saturates once.
-    slot.get_or_init(|| saturate(job, canon, shape).map(Arc::new))
-        .clone()
+    let mut ran_here = false;
+    let saturated = slot
+        .get_or_init(|| {
+            ran_here = true;
+            saturate(job, canon, optimizer).map(Arc::new)
+        })
+        .clone()?;
+    Ok(match ran_here {
+        true => Obtained::fresh(saturated),
+        false => Obtained::cached(saturated),
+    })
 }
 
 /// [`saturate`], uncached: the [`Saturate`] a measurement runs.
+#[cfg(test)]
 fn saturate_fresh(
     job: &Job<'_>,
     canon: &Canonical,
-    shape: LatticeShape,
-) -> Result<Arc<Saturated>, Declined> {
-    saturate(job, canon, shape).map(Arc::new)
+    optimizer: &mut Optimizer,
+) -> Result<Obtained, Declined> {
+    saturate(job, canon, optimizer).map(|saturated| Obtained::fresh(Arc::new(saturated)))
 }
 
-/// Insert `job`'s term and saturate it under the runtime tier's
-/// configuration, its units admitted as leaves.
-///
-/// `shape` is not what saturation depends on; it prices the one extraction
-/// the telemetry record carries, the extraction this saturation was asked
-/// for.
-fn saturate(job: &Job<'_>, canon: &Canonical, shape: LatticeShape) -> Result<Saturated, Declined> {
-    let mut optimizer = runtime_optimizer(shape);
+/// Insert `job`'s term and saturate it under `optimizer`'s configuration,
+/// its units admitted as leaves.
+fn saturate(
+    job: &Job<'_>,
+    canon: &Canonical,
+    optimizer: &mut Optimizer,
+) -> Result<Saturated, Declined> {
     let mut egraph = optimizer.egraph();
     for (&key, &variance) in job.leaves {
         egraph.admit_unit(key, variance);
@@ -638,29 +713,9 @@ fn saturate(job: &Job<'_>, canon: &Canonical, shape: LatticeShape) -> Result<Sat
     #[cfg(feature = "saturation-telemetry")]
     let inserted_classes = egraph.num_classes();
     #[cfg(feature = "saturation-telemetry")]
-    let telemetry_start = std::time::Instant::now();
+    let started = std::time::Instant::now();
     let stats = optimizer.saturate_term(&mut egraph, node_count);
     SATURATIONS.fetch_add(1, Ordering::Relaxed);
-
-    #[cfg(feature = "saturation-telemetry")]
-    {
-        let optimized = optimizer.extract(&egraph, root_class, stats.clone());
-        let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
-        crate::telemetry::record(crate::telemetry::SaturationInvocation {
-            tier: crate::tier::Tier::Runtime,
-            node_count,
-            inserted_classes,
-            extraction: optimized.extraction,
-            stats: &optimized.stats,
-            union_count: optimized.stats.unions,
-            extracted_arena: &extracted,
-            extracted_root,
-            wall_clock: telemetry_start.elapsed(),
-            kernel_label: None,
-        });
-    }
-    #[cfg(not(feature = "saturation-telemetry"))]
-    let _ = node_count;
 
     Ok(Saturated {
         egraph,
@@ -668,6 +723,12 @@ fn saturate(job: &Job<'_>, canon: &Canonical, shape: LatticeShape) -> Result<Sat
         stats,
         buffers: canon.buffers.clone(),
         uniforms: canon.uniforms.clone(),
+        #[cfg(feature = "saturation-telemetry")]
+        facts: SaturationFacts {
+            node_count,
+            inserted_classes,
+            started,
+        },
     })
 }
 
@@ -685,7 +746,6 @@ mod tests {
     use super::*;
     use pixelflow_ir::OpKind;
     use pixelflow_ir::arena::BufferDecl;
-    use pixelflow_ir::fold::{Binder, Fold, Monoid};
 
     #[test]
     fn repeated_bake_of_the_same_kernel_hits_the_cache() {
@@ -759,13 +819,6 @@ mod tests {
             stack.extend(arena.children(id));
         }
         out
-    }
-
-    fn count_gathers(arena: &ExprArena, root: ExprId) -> usize {
-        reachable_ids(arena, root)
-            .iter()
-            .filter(|&&id| matches!(arena.node(id), ExprNode::Ternary(OpKind::Gather, ..)))
-            .count()
     }
 
     /// Identities of buffers referenced by reachable `Buffer` leaves.
@@ -1096,24 +1149,6 @@ mod tests {
             "the other unit is optimized to Y: {}",
             out.display(*out_root)
         );
-    }
-
-    /// Whether a binder survives to the optimized arena. Named for what it
-    /// asks rather than for the node shape it used to look for: a fold is
-    /// `ExprNode::Reduce` now, not an `Nary`.
-    fn reaches_a_binder(arena: &ExprArena, root: ExprId) -> bool {
-        let mut seen = vec![false; arena.len()];
-        let mut stack = vec![root];
-        while let Some(id) = stack.pop() {
-            if core::mem::replace(&mut seen[id.0 as usize], true) {
-                continue;
-            }
-            if matches!(arena.node(id), ExprNode::Nary(..) | ExprNode::Reduce { .. }) {
-                return true;
-            }
-            stack.extend(arena.children(id));
-        }
-        false
     }
 }
 

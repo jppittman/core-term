@@ -328,8 +328,8 @@ impl GraphAccumulator {
 /// to avoid division by zero.
 fn l2_normalize_section(values: &mut [f32], start: usize, end: usize) {
     let mut sum_sq: f32 = 0.0;
-    for i in start..end {
-        sum_sq += values[i] * values[i];
+    for &v in &values[start..end] {
+        sum_sq += v * v;
     }
     let norm = sqrtf(sum_sq);
     // Guard: skip normalization for zero/near-zero sections to avoid NaN/Inf.
@@ -337,8 +337,8 @@ fn l2_normalize_section(values: &mut [f32], start: usize, end: usize) {
         return;
     }
     let inv_norm = 1.0 / norm;
-    for i in start..end {
-        values[i] *= inv_norm;
+    for v in &mut values[start..end] {
+        *v *= inv_norm;
     }
 }
 
@@ -625,12 +625,10 @@ mod tests {
         // Round-tripping through a large baseline (values up to ~140) loses
         // a few ULPs to floating-point rounding, so this compares within a
         // tight epsilon rather than bit-for-bit.
-        for i in 0..GRAPH_ACC_DIM {
+        for (i, (&got, &want)) in gacc.values.iter().zip(&baseline).enumerate() {
             assert!(
-                (gacc.values[i] - baseline[i]).abs() < 1e-4,
-                "values[{i}] mismatch: got {} want {}",
-                gacc.values[i],
-                baseline[i]
+                (got - want).abs() < 1e-4,
+                "values[{i}] mismatch: got {got} want {want}"
             );
         }
         assert_eq!(gacc.edge_count, baseline_edges);
@@ -856,12 +854,10 @@ mod tests {
         gacc.add_2hop_edge(&emb, OpKind::Div, OpKind::Neg, OpKind::Abs);
         gacc.remove_2hop_edge(&emb, OpKind::Div, OpKind::Neg, OpKind::Abs);
 
-        for i in 0..GRAPH_ACC_DIM {
+        for (i, (&got, &want)) in gacc.values.iter().zip(&baseline).enumerate() {
             assert!(
-                (gacc.values[i] - baseline[i]).abs() < 1e-4,
-                "values[{i}] mismatch: got {} want {}",
-                gacc.values[i],
-                baseline[i]
+                (got - want).abs() < 1e-4,
+                "values[{i}] mismatch: got {got} want {want}"
             );
         }
     }

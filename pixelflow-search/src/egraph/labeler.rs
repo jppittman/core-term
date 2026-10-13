@@ -67,7 +67,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::cost::CostModel;
 use super::extract::{self, ExtractedDAG};
 use super::graph::EGraph;
-use super::node::{EClassId, ENode};
+use super::node::EClassId;
 use super::provenance::{ApplicationId, ENodeId, Origin};
 use super::rewrite::Rewrite;
 use super::saturate::SaturationConfig;
@@ -406,6 +406,7 @@ pub fn run_episode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::node::ENode;
     use crate::egraph::ops;
     use crate::egraph::provenance::Origin;
     use crate::math::algebra::Commutative;

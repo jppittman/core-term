@@ -18,7 +18,6 @@
 use rustc_hash::FxHashMap as HashMap;
 
 use super::graph::{EGraph, SaturationStop};
-use super::node::EClassId;
 use super::rules::RuleId;
 
 /// Result of a budget-limited saturation run.
@@ -54,7 +53,7 @@ pub struct SaturationResult {
     /// Was keyed by `Rewrite::name()`, which is a *family* name: all four
     /// `Commutative` instances answered to `"commutative"` and landed in one
     /// bucket, so every per-rule number derived from this map was wrong by
-    /// aggregation. [`RuleId`](crate::egraph::RuleId) is per instance.
+    /// aggregation. [`RuleId`] is per instance.
     pub rule_matches: HashMap<RuleId, usize>,
 
     /// The rewrite budget that was used.
@@ -408,50 +407,10 @@ pub(crate) fn tier_for_input(input: InputSize) -> (&'static str, SaturationConfi
     }
 }
 
-/// Configuration for multi-budget training data generation.
-///
-/// Generate training data at multiple budget levels for curriculum learning.
-#[derive(Clone, Debug)]
-pub struct MultiBudgetConfig {
-    /// Budget levels to generate data at (e.g., [50, 100, 200, 500]).
-    pub budgets: Vec<usize>,
-
-    /// Number of samples to generate at each budget level.
-    pub samples_per_budget: usize,
-}
-
-impl Default for MultiBudgetConfig {
-    fn default() -> Self {
-        Self {
-            budgets: vec![50, 100, 200, 500],
-            samples_per_budget: 2500,
-        }
-    }
-}
-
-/// Extract the best achievable cost within budget.
-///
-/// This is the ground truth label for training: given an expression,
-/// what's the lowest cost we can achieve with `budget` rewrite iterations?
-pub fn achievable_cost_within_budget(
-    egraph: &mut EGraph,
-    root: EClassId,
-    budget: usize,
-    costs: &super::cost::CostModel,
-) -> (usize, SaturationResult) {
-    // Run budget-limited saturation
-    let result = saturate_with_budget(egraph, budget);
-
-    // Extract best cost
-    let (_arena, _arena_root, cost) = egraph.extract_best(root, costs);
-
-    (cost, result)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egraph::{CostModel, ENode, Rewrite, ops};
+    use crate::egraph::{ENode, Rewrite, ops};
     use crate::math::algebra::{
         AddNeg, Annihilator, Cancellation, Canonicalize, Commutative, Identity,
         InverseAnnihilation, Involution, MulRecip,
@@ -518,24 +477,6 @@ mod tests {
 
         assert_eq!(result.budget, 1);
         assert!(result.iterations <= 1);
-    }
-
-    #[test]
-    fn achievable_cost() {
-        let mut eg = egraph_with_rules();
-        let x = eg.add(ENode::Var(0));
-        let zero = eg.add(ENode::constant(0.0));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, zero],
-        });
-
-        let costs = CostModel::new();
-        let (cost, result) = achievable_cost_within_budget(&mut eg, sum, 10, &costs);
-
-        // x + 0 should simplify to x (cost 0)
-        assert_eq!(cost, 0);
-        assert!(result.saturated);
     }
 
     #[test]

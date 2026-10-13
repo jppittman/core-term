@@ -13,12 +13,12 @@
 //! # Matching convention
 //!
 //! A pattern position is matched against either a concrete [`ENode`] (the
-//! rule's own root, handed in by the sweep — [`match_root`]) or an
+//! rule's own root, handed in by the sweep — `match_root`) or an
 //! [`EClassId`] (every other position, where the pattern may need to try
-//! more than one of that class's representatives — [`match_class`]). Both
+//! more than one of that class's representatives — `match_class`). Both
 //! read metavariables (`ExprNode::Var`) the same way every existing template
 //! does: `Var(0)` = A, `Var(1)` = B, etc. A repeated metavariable must bind
-//! to the same **canonical** class everywhere it appears — [`Bindings`]
+//! to the same **canonical** class everywhere it appears — `Bindings`
 //! enforces that via `egraph.find`.
 //!
 //! This is deliberately a single first-match search (mirroring `Factor`'s
@@ -34,7 +34,7 @@ use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::rewrite::{Rewrite, RewriteAction, TemplateArena};
+use super::rewrite::{Rewrite, RewriteAction};
 
 use pixelflow_ir::expr::ExprData;
 use pixelflow_ir::{Node, Rooted};
@@ -507,7 +507,7 @@ impl TemplateRewrite {
     /// RHS at `position`, then build the rule whose single application
     /// creates what `a`-then-`b` would create in two rounds. `position` is a
     /// child-index path into `a.rhs_template()` (`[]` = the whole RHS);
-    /// [`positions`] enumerates every valid one for a given `a`.
+    /// `positions` enumerates every valid one for a given `a`.
     ///
     /// Returns `None` when: either side lacks templates, `b.lhs` does not
     /// unify with `a.rhs` at `position`, `b` turns out to be a no-op there,

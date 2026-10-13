@@ -101,7 +101,7 @@ fn fisher_yates<T>(v: &mut [T], seed: u64) {
 /// rate 0.0, tied with every measured-zero rule.
 ///
 /// Not recomputed at runtime — the report is a frozen artifact from a
-/// specific training run. [`crate::egraph::rule_order::tests::numeric_first_order_is_pinned`]
+/// specific training run. `crate::egraph::rule_order::tests::numeric_first_order_is_pinned`
 /// re-derives this from the report's markdown table and asserts equality,
 /// so a hand-transcription error is a test failure, not a silent drift.
 #[rustfmt::skip]

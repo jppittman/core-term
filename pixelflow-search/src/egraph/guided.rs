@@ -327,7 +327,7 @@ impl GuidedEpisode {
 mod tests {
     use super::*;
     use crate::egraph::rewrite::Rewrite;
-    use crate::egraph::{ENode, Optimizer, ops};
+    use crate::egraph::{ENode, ops};
     use crate::math::algebra::Commutative;
     use crate::nnue::factored::OpEmbeddings;
     use crate::nnue::guide::Guide;
@@ -340,15 +340,6 @@ mod tests {
     impl SaturationGuide for FlatGuide {
         fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
             alloc::vec![0.0; candidates.len()]
-        }
-    }
-
-    /// Reverses match-enumeration order: the adversarial ordering L4 has to
-    /// hold under.
-    struct ReversingGuide;
-    impl SaturationGuide for ReversingGuide {
-        fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
-            (0..candidates.len()).map(|i| i as f32).collect()
         }
     }
 

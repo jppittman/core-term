@@ -175,9 +175,6 @@ impl<T: InversePair> Rewrite for Involution<T> {
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
         Some(T::derived().kind())
     }
-    fn is_destructive(&self) -> bool {
-        true
-    }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         if !node_matches_op(node, T::inverse()) {
@@ -239,9 +236,6 @@ impl<T: InversePair> Rewrite for Cancellation<T> {
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
         Some(T::derived().kind())
     }
-    fn is_destructive(&self) -> bool {
-        true
-    }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         if !node_matches_op(node, T::derived()) {
@@ -250,16 +244,16 @@ impl<T: InversePair> Rewrite for Cancellation<T> {
         let (numerator, canceller) = node.binary_operands()?;
 
         for inner_node in egraph.nodes(numerator) {
-            if node_matches_op(inner_node, T::base()) {
-                if let Some((a, b)) = inner_node.binary_operands() {
-                    // (a ⊕ b) ⊖ b → a
-                    if egraph.find(b) == egraph.find(canceller) {
-                        return Some(RewriteAction::Union(a));
-                    }
-                    // (b ⊕ a) ⊖ b → a (if BASE is commutative)
-                    if T::base().is_commutative() && egraph.find(a) == egraph.find(canceller) {
-                        return Some(RewriteAction::Union(b));
-                    }
+            if node_matches_op(inner_node, T::base())
+                && let Some((a, b)) = inner_node.binary_operands()
+            {
+                // (a ⊕ b) ⊖ b → a
+                if egraph.find(b) == egraph.find(canceller) {
+                    return Some(RewriteAction::Union(a));
+                }
+                // (b ⊕ a) ⊖ b → a (if BASE is commutative)
+                if T::base().is_commutative() && egraph.find(a) == egraph.find(canceller) {
+                    return Some(RewriteAction::Union(b));
                 }
             }
         }
@@ -313,23 +307,21 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
 
         // x ⊕ inv(x) → identity
         for node_b in egraph.nodes(b) {
-            if node_matches_op(node_b, T::inverse()) {
-                if let Some(&inner) = node_b.children().first() {
-                    if egraph.find(inner) == egraph.find(a) {
-                        return Some(RewriteAction::Create(ENode::constant(T::identity())));
-                    }
-                }
+            if node_matches_op(node_b, T::inverse())
+                && let Some(&inner) = node_b.children().first()
+                && egraph.find(inner) == egraph.find(a)
+            {
+                return Some(RewriteAction::Create(ENode::constant(T::identity())));
             }
         }
 
         // inv(x) ⊕ x → identity
         for node_a in egraph.nodes(a) {
-            if node_matches_op(node_a, T::inverse()) {
-                if let Some(&inner) = node_a.children().first() {
-                    if egraph.find(inner) == egraph.find(b) {
-                        return Some(RewriteAction::Create(ENode::constant(T::identity())));
-                    }
-                }
+            if node_matches_op(node_a, T::inverse())
+                && let Some(&inner) = node_a.children().first()
+                && egraph.find(inner) == egraph.find(b)
+            {
+                return Some(RewriteAction::Create(ENode::constant(T::identity())));
             }
         }
 
@@ -674,9 +666,6 @@ impl Rewrite for Identity {
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
         Some(self.op.kind())
     }
-    fn is_destructive(&self) -> bool {
-        true
-    }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
@@ -721,9 +710,6 @@ impl Annihilator {
 impl Rewrite for Annihilator {
     fn name(&self) -> &str {
         "annihilator"
-    }
-    fn is_destructive(&self) -> bool {
-        true
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -930,9 +916,6 @@ impl ConstantFold {
 impl Rewrite for ConstantFold {
     fn name(&self) -> &str {
         "constant-fold"
-    }
-    fn is_destructive(&self) -> bool {
-        true
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

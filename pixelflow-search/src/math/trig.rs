@@ -151,24 +151,24 @@ impl<T: AngleAddition> Rewrite for AngleAdditionRule<T> {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
+                && arg_op.kind() == OpKind::Add
+                && arg_children.len() == 2
             {
-                if arg_op.kind() == OpKind::Add && arg_children.len() == 2 {
-                    let a = arg_children[0];
-                    let b = arg_children[1];
-                    let exp = T::expansion();
+                let a = arg_children[0];
+                let b = arg_children[1];
+                let exp = T::expansion();
 
-                    // Create the expansion:
-                    // term1_op1(a)*term1_op2(b) + sign*term2_op1(a)*term2_op2(b)
-                    return Some(RewriteAction::AngleAddition {
-                        term1_op1: exp.term1_op1,
-                        term1_op2: exp.term1_op2,
-                        term2_op1: exp.term2_op1,
-                        term2_op2: exp.term2_op2,
-                        term2_sign: exp.term2_sign,
-                        a,
-                        b,
-                    });
-                }
+                // Create the expansion:
+                // term1_op1(a)*term1_op2(b) + sign*term2_op1(a)*term2_op2(b)
+                return Some(RewriteAction::AngleAddition {
+                    term1_op1: exp.term1_op1,
+                    term1_op2: exp.term1_op2,
+                    term2_op1: exp.term2_op1,
+                    term2_op2: exp.term2_op2,
+                    term2_sign: exp.term2_sign,
+                    a,
+                    b,
+                });
             }
         }
         None
@@ -328,10 +328,11 @@ impl Pythagorean {
         trig_op: OpKind,
     ) -> Option<EClassId> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node {
-                if op.kind() == trig_op && children.len() == 1 {
-                    return Some(children[0]);
-                }
+            if let ENode::Op { op, children } = node
+                && op.kind() == trig_op
+                && children.len() == 1
+            {
+                return Some(children[0]);
             }
         }
         None
@@ -505,10 +506,11 @@ impl ReverseAngleAddition {
         trig_op: OpKind,
     ) -> Option<EClassId> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node {
-                if op.kind() == trig_op && children.len() == 1 {
-                    return Some(children[0]);
-                }
+            if let ENode::Op { op, children } = node
+                && op.kind() == trig_op
+                && children.len() == 1
+            {
+                return Some(children[0]);
             }
         }
         None
@@ -606,10 +608,11 @@ impl HalfAngleProduct {
         trig_op: OpKind,
     ) -> Option<EClassId> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node {
-                if op.kind() == trig_op && children.len() == 1 {
-                    return Some(children[0]);
-                }
+            if let ENode::Op { op, children } = node
+                && op.kind() == trig_op
+                && children.len() == 1
+            {
+                return Some(children[0]);
             }
         }
         None

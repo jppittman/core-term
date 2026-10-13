@@ -658,7 +658,7 @@ impl EGraph {
 
     /// Turn on per-application growth telemetry: how many e-nodes/e-classes
     /// each committed rewrite application actually adds, per rule (see
-    /// [`super::growth`]). Off by default and free to leave off — this is
+    /// `super::growth`). Off by default and free to leave off — this is
     /// the one call that starts paying for it.
     #[cfg(feature = "saturation-telemetry")]
     pub fn enable_growth_telemetry(&mut self) {
@@ -799,16 +799,6 @@ impl EGraph {
     #[must_use]
     pub(crate) fn variance(&self, class: EClassId) -> Variance {
         self.var_fact[self.find(class).index()]
-    }
-
-    /// The literal `class` is known to equal, if it is one — the class's
-    /// constant fact, which outlives a mid-`rebuild` drain of its nodes (see
-    /// the `const_fact` field). A comparison mask reads here as the NaN its
-    /// all-ones pattern is, so a caller that wants a *number* asks for one
-    /// it can recognize (`1.0`, a finite nonzero slope).
-    #[must_use]
-    pub(crate) fn constant(&self, class: EClassId) -> Option<f32> {
-        self.const_fact[self.find(class).index()].map(f32::from_bits)
     }
 
     pub fn union(&mut self, a: EClassId, b: EClassId) -> EClassId {
@@ -1148,12 +1138,16 @@ impl EGraph {
         };
         let canonical_of = |class: EClassId| -> EClassId { self.find(class) };
         super::provenance::derivation_ancestors_tight(
-            &tags_of,
-            &children_of,
-            &canonical_of,
+            super::provenance::GraphView {
+                tags_of: &tags_of,
+                children_of: &children_of,
+                canonical_of: &canonical_of,
+            },
             &self.provenance,
-            seeds,
-            chosen_nodes,
+            super::provenance::TightWalk {
+                seeds,
+                chosen_nodes,
+            },
         )
     }
 
@@ -1440,11 +1434,11 @@ impl EGraph {
         let mut stop = SaturationStop::IterationCeiling;
 
         for _ in 0..max_iters {
-            if let Some(t) = timeout {
-                if start.elapsed() >= t {
-                    stop = SaturationStop::Timeout;
-                    break;
-                }
+            if let Some(t) = timeout
+                && start.elapsed() >= t
+            {
+                stop = SaturationStop::Timeout;
+                break;
             }
             if self.classes.len() > max_classes {
                 stop = SaturationStop::ClassCap;
@@ -1545,33 +1539,6 @@ impl EGraph {
             total_unions,
             stop,
         }
-    }
-
-    /// Apply all rewrite rules once with a node budget.
-    ///
-    /// Returns the number of changes made. Stops if the graph exceeds
-    /// `max_nodes` classes.
-    pub fn apply_rules_once(&mut self, max_nodes: usize) -> usize {
-        self.apply_rules_budgeted(max_nodes)
-    }
-
-    /// Apply a single rule (by index) everywhere it matches, with budget.
-    ///
-    /// Returns changes made and evaluations consumed. Stops scanning
-    /// if the graph exceeds `max_nodes` classes.
-    pub fn apply_rule_at_index(&mut self, rule_idx: usize, max_nodes: usize) -> ApplyResult {
-        self.apply_rule_at_index_budgeted(rule_idx, max_nodes)
-    }
-
-    /// Apply a single rule with a node budget. Stops scanning when the
-    /// e-graph exceeds `max_nodes` classes, preventing runaway growth
-    /// from a single rule application.
-    pub fn apply_rule_at_index_budgeted(
-        &mut self,
-        rule_idx: usize,
-        max_nodes: usize,
-    ) -> ApplyResult {
-        self.apply_rule_at_index_timed(rule_idx, max_nodes, None)
     }
 
     /// Whether `canonical`'s forward neighborhood — itself, its direct
@@ -1710,7 +1677,7 @@ impl EGraph {
             // below), so nothing can move the class's nodes under the loop.
             for node in &self.classes[canonical.index()].nodes {
                 evals += 1;
-                if evals % DEADLINE_POLL_NODES == 0 && expired(deadline) {
+                if evals.is_multiple_of(DEADLINE_POLL_NODES) && expired(deadline) {
                     scan = ScanStop::Deadline;
                     break 'scan;
                 }
@@ -1884,11 +1851,10 @@ impl EGraph {
     /// one [`super::provenance::ApplicationId`].
     ///
     /// This is the sole entry point into `apply_action` from rule-driven
-    /// call sites (`apply_single_rule`, `apply_rule_at_index_timed`,
-    /// `apply_rules_budgeted`) — it exists so provenance attribution can't
-    /// drift out of sync with the actual rewrite dispatch: every caller that
-    /// knows a `rule_idx` funnels through here instead of calling
-    /// `apply_action` directly.
+    /// call sites (`apply_single_rule`, `apply_rule_at_index_timed`) — it
+    /// exists so provenance attribution can't drift out of sync with the
+    /// actual rewrite dispatch: every caller that knows a `rule_idx` funnels
+    /// through here instead of calling `apply_action` directly.
     ///
     /// Records one [`ApplicationRecord`] up front (even if the action turns
     /// out to produce no net change, e.g. a `Union` with an already-equal
@@ -1975,7 +1941,7 @@ impl EGraph {
                 minted_from..self.next_enode_id,
                 result,
             );
-            return result;
+            result
         }
 
         #[cfg(not(feature = "provenance-journal"))]
@@ -2113,7 +2079,14 @@ impl EGraph {
                 b,
                 c,
             } => self.predict(|s| {
-                distribute_shape(s, *outer, *inner, *a, *b, *c);
+                distribute_shape(
+                    s,
+                    Distributive {
+                        outer: *outer,
+                        inner: *inner,
+                    },
+                    [*a, *b, *c],
+                );
             }),
             RewriteAction::Factor {
                 outer,
@@ -2122,7 +2095,14 @@ impl EGraph {
                 unique_l,
                 unique_r,
             } => self.predict(|s| {
-                factor_shape(s, *outer, *inner, *common, *unique_l, *unique_r);
+                factor_shape(
+                    s,
+                    Distributive {
+                        outer: *outer,
+                        inner: *inner,
+                    },
+                    [*common, *unique_l, *unique_r],
+                );
             }),
             RewriteAction::Canonicalize {
                 target,
@@ -2152,13 +2132,18 @@ impl EGraph {
             } => self.predict(|s| {
                 angle_addition_shape(
                     s,
-                    *term1_op1,
-                    *term1_op2,
-                    *term2_op1,
-                    *term2_op2,
-                    *term2_sign,
-                    *a,
-                    *b,
+                    AngleTerms {
+                        term1: Product {
+                            on_a: *term1_op1,
+                            on_b: *term1_op2,
+                        },
+                        term2: Product {
+                            on_a: *term2_op1,
+                            on_b: *term2_op2,
+                        },
+                        term2_sign: *term2_sign,
+                    },
+                    [*a, *b],
                 );
             }),
             RewriteAction::Homomorphism {
@@ -2244,7 +2229,7 @@ impl EGraph {
                 b,
                 c,
             } => {
-                let result_id = distribute_shape(self, outer, inner, a, b, c);
+                let result_id = distribute_shape(self, Distributive { outer, inner }, [a, b, c]);
                 self.union_counted(class_id, result_id)
             }
             RewriteAction::Factor {
@@ -2254,7 +2239,11 @@ impl EGraph {
                 unique_l,
                 unique_r,
             } => {
-                let result_id = factor_shape(self, outer, inner, common, unique_l, unique_r);
+                let result_id = factor_shape(
+                    self,
+                    Distributive { outer, inner },
+                    [common, unique_l, unique_r],
+                );
                 self.union_counted(class_id, result_id)
             }
             RewriteAction::Canonicalize {
@@ -2287,9 +2276,18 @@ impl EGraph {
                 a,
                 b,
             } => {
-                let result_id = angle_addition_shape(
-                    self, term1_op1, term1_op2, term2_op1, term2_op2, term2_sign, a, b,
-                );
+                let terms = AngleTerms {
+                    term1: Product {
+                        on_a: term1_op1,
+                        on_b: term1_op2,
+                    },
+                    term2: Product {
+                        on_a: term2_op1,
+                        on_b: term2_op2,
+                    },
+                    term2_sign,
+                };
+                let result_id = angle_addition_shape(self, terms, [a, b]);
                 self.union_counted(class_id, result_id)
             }
             RewriteAction::Homomorphism {
@@ -2352,106 +2350,6 @@ impl EGraph {
         }
     }
 
-    fn apply_rules_budgeted(&mut self, max_nodes: usize) -> usize {
-        // See `HARD_CLASS_LIMIT`.
-        let max_nodes = max_nodes.min(HARD_CLASS_LIMIT);
-        // One call = one "apply all rules once" pass, the same granularity
-        // saturate_with_limits uses for its step counter.
-        self.step += 1;
-
-        let mut unions = 0;
-        let mut updates: Vec<(usize, EClassId, RewriteAction)> = Vec::new();
-
-        let canonical_ids = self.canonical_class_ids();
-        for canonical in canonical_ids {
-            if self.classes.len() > max_nodes {
-                break;
-            }
-            let nodes: Vec<ENode> = self.classes[canonical.index()].nodes.clone();
-
-            for node in &nodes {
-                for (rule_idx, rule) in self.rules.iter().enumerate() {
-                    if let Some(action) = rule.apply(self, canonical, node) {
-                        updates.push((rule_idx, canonical, action));
-                        *self
-                            .match_counts
-                            .entry(RuleId::of(rule.as_ref()))
-                            .or_insert(0) += 1;
-                    }
-                }
-            }
-        }
-
-        for (rule_idx, class_id, action) in updates {
-            unions += self.apply_action_from_rule(rule_idx, class_id, action);
-            if self.classes.len() > max_nodes {
-                break;
-            }
-        }
-
-        // Lazy rebuild: caller should call rebuild() after all rules applied.
-        // saturate_with_limits handles this.
-        unions
-    }
-
-    pub fn extract_with_costs(&self, root: EClassId, costs: &CostModel) -> ENode {
-        let root = self.find(root);
-        let mut cost_table: HashMap<EClassId, (usize, ENode)> = HashMap::default();
-        let canonical_ids: Vec<EClassId> = self.class_ids().collect();
-        // Fixed-point iteration: at most one pass per canonical class.
-        for _ in 0..canonical_ids.len() {
-            let mut changed = false;
-            for &id in &canonical_ids {
-                for node in &self.classes[id.index()].nodes {
-                    let cost = self.node_cost_with_model(node, &cost_table, costs);
-                    let current = cost_table.get(&id).map(|(c, _)| *c).unwrap_or(usize::MAX);
-                    if cost < current {
-                        cost_table.insert(id, (cost, node.clone()));
-                        changed = true;
-                    }
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        // `ENode::Const(0)` used to stand in here — the number 0.0 wearing
-        // an extracted term's type, returned for a root the fixpoint never
-        // priced. The fixpoint visits every canonical class and every class
-        // holds at least one node, so a miss is a bug in this loop, and the
-        // caller has no way to tell 0.0-the-answer from 0.0-the-excuse.
-        let Some((_, node)) = cost_table.get(&root) else {
-            panic!(
-                "extract_with_costs: root e-class {} was never priced by the \
-                 fixpoint — every canonical class holds at least one node, so \
-                 this is a bug in the loop above, not an empty graph",
-                root.0
-            )
-        };
-        node.clone()
-    }
-
-    fn node_cost_with_model(
-        &self,
-        node: &ENode,
-        cost_table: &HashMap<EClassId, (usize, ENode)>,
-        costs: &CostModel,
-    ) -> usize {
-        let get_child_cost = |id: EClassId| {
-            let id = self.find(id);
-            cost_table
-                .get(&id)
-                .map(|(c, _)| *c)
-                .unwrap_or(usize::MAX / 4)
-        };
-        let op_cost = costs.node_op_cost(node);
-        let child_cost = node
-            .children_slice()
-            .iter()
-            .fold(0usize, |acc, &c| acc.saturating_add(get_child_cost(c)));
-        child_cost.saturating_add(op_cost)
-    }
-
     /// Extract the minimum-cost expression from an e-class.
     pub fn extract_expr_with_costs(
         &self,
@@ -2472,24 +2370,6 @@ impl EGraph {
         costs: &C,
     ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId, usize) {
         super::extract::extract(self, root, costs)
-    }
-
-    /// Extract a DAG with sharing information from an e-class.
-    ///
-    /// Unlike `extract_expr_with_costs`, this tracks which e-classes are used
-    /// multiple times, enabling codegen to emit let-bindings for shared subexprs.
-    ///
-    /// # Example
-    ///
-    /// For `sin(X) * sin(X) + sin(X)`:
-    /// - Tree extraction would compute sin(X) three times
-    /// - DAG extraction marks sin(X) as shared, enabling: `let __0 = X.sin(); __0 * __0 + __0`
-    pub fn extract_dag_with_costs(
-        &self,
-        root: EClassId,
-        costs: &CostModel,
-    ) -> super::extract::ExtractedDAG {
-        super::extract::extract_dag(self, root, costs)
     }
 }
 
@@ -2574,44 +2454,48 @@ impl NodeSink for GrowthPredictor<'_> {
     }
 }
 
-/// `Distribute`: `A * (B + C) -> A*B + A*C`.
-fn distribute_shape<S: NodeSink>(
-    sink: &mut S,
+/// The two operators of a distributive law: `outer` is the root of the term
+/// the rule matched and `inner` the operator beneath it. `Distribute` matches
+/// `*` over `+` and `Factor` matches `+` over `*`, so the roles are fixed by
+/// the match, not by which operator is which.
+#[derive(Clone, Copy)]
+struct Distributive {
     outer: &'static dyn Op,
     inner: &'static dyn Op,
-    a: EClassId,
-    b: EClassId,
-    c: EClassId,
+}
+
+/// `Distribute`: `A * (B + C) -> A*B + A*C`, with `ops` = (outer `*`, inner
+/// `+`) and `operands` = `[A, B, C]`.
+fn distribute_shape<S: NodeSink>(
+    sink: &mut S,
+    ops: Distributive,
+    operands: [EClassId; 3],
 ) -> EClassId {
+    let [a, b, c] = operands;
     let ab_id = sink.make(ENode::Op {
-        op: outer,
+        op: ops.outer,
         children: vec![a, b],
     });
     let ac_id = sink.make(ENode::Op {
-        op: outer,
+        op: ops.outer,
         children: vec![a, c],
     });
     sink.make(ENode::Op {
-        op: inner,
+        op: ops.inner,
         children: vec![ab_id, ac_id],
     })
 }
 
-/// `Factor`: `A*B + A*C -> A * (B + C)`.
-fn factor_shape<S: NodeSink>(
-    sink: &mut S,
-    outer: &'static dyn Op,
-    inner: &'static dyn Op,
-    common: EClassId,
-    unique_l: EClassId,
-    unique_r: EClassId,
-) -> EClassId {
+/// `Factor`: `A*B + A*C -> A * (B + C)`, with `ops` = (outer `+`, inner `*`)
+/// and `operands` = `[A, B, C]`.
+fn factor_shape<S: NodeSink>(sink: &mut S, ops: Distributive, operands: [EClassId; 3]) -> EClassId {
+    let [common, unique_l, unique_r] = operands;
     let sum_id = sink.make(ENode::Op {
-        op: outer,
+        op: ops.outer,
         children: vec![unique_l, unique_r],
     });
     sink.make(ENode::Op {
-        op: inner,
+        op: ops.inner,
         children: vec![common, sum_id],
     })
 }
@@ -2682,27 +2566,44 @@ fn odd_parity_shape<S: NodeSink>(sink: &mut S, func: &'static dyn Op, inner: ECl
     })
 }
 
+/// `on_a(a) * on_b(b)`: one term of an angle-addition identity.
+#[derive(Clone, Copy)]
+struct Product {
+    on_a: &'static dyn Op,
+    on_b: &'static dyn Op,
+}
+
+/// The shape of an angle-addition identity: two products of single-argument
+/// functions, joined by `term2_sign`.
+#[derive(Clone, Copy)]
+struct AngleTerms {
+    term1: Product,
+    term2: Product,
+    term2_sign: crate::math::trig::Sign,
+}
+
 /// `AngleAddition`: `sin(a+b) -> sin(a)cos(b) + cos(a)sin(b)` (or the `cos`
 /// case, sign-selected).
-#[allow(clippy::too_many_arguments)]
 fn angle_addition_shape<S: NodeSink>(
     sink: &mut S,
-    term1_op1: &'static dyn Op,
-    term1_op2: &'static dyn Op,
-    term2_op1: &'static dyn Op,
-    term2_op2: &'static dyn Op,
-    term2_sign: crate::math::trig::Sign,
-    a: EClassId,
-    b: EClassId,
+    terms: AngleTerms,
+    angles: [EClassId; 2],
 ) -> EClassId {
     use crate::math::trig::Sign;
 
+    let [a, b] = angles;
+    let AngleTerms {
+        term1,
+        term2,
+        term2_sign,
+    } = terms;
+
     let t1_left_id = sink.make(ENode::Op {
-        op: term1_op1,
+        op: term1.on_a,
         children: vec![a],
     });
     let t1_right_id = sink.make(ENode::Op {
-        op: term1_op2,
+        op: term1.on_b,
         children: vec![b],
     });
     let term1_id = sink.make(ENode::Op {
@@ -2711,11 +2612,11 @@ fn angle_addition_shape<S: NodeSink>(
     });
 
     let t2_left_id = sink.make(ENode::Op {
-        op: term2_op1,
+        op: term2.on_a,
         children: vec![a],
     });
     let t2_right_id = sink.make(ENode::Op {
-        op: term2_op2,
+        op: term2.on_b,
         children: vec![b],
     });
     let term2_id = sink.make(ENode::Op {
@@ -3398,7 +3299,7 @@ mod tests {
         });
 
         // First scan: nothing to find (`p` isn't known to be `sin(x)`).
-        let result = egraph.apply_rule_at_index_budgeted(0, 10_000);
+        let result = egraph.apply_rule_at_index_timed(0, 10_000, None);
         assert_eq!(
             result.changes, 0,
             "the identity cannot match before p == sin(x) is known"
@@ -3414,7 +3315,7 @@ mod tests {
         // Second scan of the SAME rule must still see `sum` as worth
         // checking, even though neither `sum` nor `p_sq` (only their
         // grandchild `p`) changed.
-        let result = egraph.apply_rule_at_index_budgeted(0, 10_000);
+        let result = egraph.apply_rule_at_index_timed(0, 10_000, None);
         assert_eq!(
             result.changes, 1,
             "dirty-class tracking must not skip `sum` just because its own \

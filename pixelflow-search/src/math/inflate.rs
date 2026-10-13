@@ -80,14 +80,14 @@ pub enum RuleOrder {
     /// order fixed and isolates the |R| effect. Applies only to the base-62
     /// set (`spec.mode == None`) — see [`order_matched_base`] for why this is
     /// well-defined independent of which mode (`dup`/`comp`) the inflation at
-    /// `total` came from: [`fisher_yates`] permutes purely by vector length.
+    /// `total` came from: `fisher_yates` permutes purely by vector length.
     OrderMatchedBase(u64, usize),
     /// v3: the base-62 rules, fully shuffled by this seed (no inflation
     /// content at all) — isolates seed sensitivity of the order effect
     /// itself, independent of any inflated point.
     ///
     /// **Not** `egraph::rule_order::RuleOrder::Shuffled`, despite the name.
-    /// This one shuffles with [`fisher_yates`] — the same permutation
+    /// This one shuffles with `fisher_yates` — the same permutation
     /// [`Self::Interleave`] and [`Self::OrderMatchedBase`] use — because the
     /// whole point of this variant is to be `Interleave(seed)`'s base-only
     /// control at the *same* seed. `rule_order`'s shuffle draws from a
@@ -416,7 +416,7 @@ fn apply_order(rules: &mut [Box<dyn Rewrite>], order: RuleOrder) {
 /// (positions `0..62` of the pre-shuffle base+inflation list, in the order
 /// the shuffle leaves them).
 ///
-/// **Well-defined independent of mode.** [`fisher_yates`]'s swap sequence is
+/// **Well-defined independent of mode.** `fisher_yates`'s swap sequence is
 /// a function of the slice's LENGTH only (`1..v.len()`, never its content),
 /// so for a fixed `(seed, total)` the permutation is identical whether the
 /// `total - 62` inflation positions were filled by `dup:<total>` or
@@ -487,9 +487,6 @@ impl Rewrite for DuplicateRule {
     }
     fn apply(&self, egraph: &EGraph, id: EClassId, node: &ENode) -> Option<RewriteAction> {
         self.inner.apply(egraph, id, node)
-    }
-    fn is_destructive(&self) -> bool {
-        self.inner.is_destructive()
     }
     fn lhs_template(&self, out: &mut ExprArena) -> Option<pixelflow_ir::ExprId> {
         self.inner.lhs_template(out)
@@ -1153,7 +1150,7 @@ mod tests {
     fn shuffled_base_permutes_without_changing_membership() {
         let base_names: HashSet<String> =
             all_rules().iter().map(|r| r.name().to_string()).collect();
-        let shuffled = shuffled_base(0xC0FF_EE);
+        let shuffled = shuffled_base(0x00C0_FFEE);
         assert_eq!(shuffled.len(), 62);
         let shuffled_names: HashSet<String> =
             shuffled.iter().map(|r| r.name().to_string()).collect();

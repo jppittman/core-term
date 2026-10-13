@@ -271,14 +271,23 @@ fn build_shape(a: &mut ExprArena, shape: usize, konst: f32) -> ExprId {
     }
 }
 
-fn build_expr(
-    a: &mut ExprArena,
+/// One row of the covering array, resolved to the ops and shapes it names.
+struct Recipe {
     outer: OpKind,
     wrapper: Option<OpKind>,
     left: usize,
     right: usize,
     konst: f32,
-) -> ExprId {
+}
+
+fn build_expr(a: &mut ExprArena, recipe: &Recipe) -> ExprId {
+    let Recipe {
+        outer,
+        wrapper,
+        left,
+        right,
+        konst,
+    } = *recipe;
     let l = build_shape(a, left, konst);
     let r = build_shape(a, right, konst);
     let inner = a.push_binary(outer, l, r);
@@ -366,7 +375,7 @@ fn pict_rewrite_rules_preserve_semantics() {
     let num_threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let chunk_size = (rows.len() + num_threads - 1) / num_threads;
+    let chunk_size = rows.len().div_ceil(num_threads);
 
     let mut handles = Vec::new();
     for chunk in rows.chunks(chunk_size) {
@@ -384,7 +393,14 @@ fn pict_rewrite_rules_preserve_semantics() {
                 let konst = CONSTS[row[4]];
 
         let mut arena = ExprArena::new();
-        let root = build_expr(&mut arena, outer, wrapper, left, right, konst);
+        let recipe = Recipe {
+            outer,
+            wrapper,
+            left,
+            right,
+            konst,
+        };
+        let root = build_expr(&mut arena, &recipe);
         let orig_str = arena.display(root).to_string();
 
         // Optimize the way the compiler does: build e-graph, saturate once,

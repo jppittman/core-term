@@ -79,6 +79,7 @@ use super::*;
 use crate::egraph::rules::{RuleId, RuleSet};
 use crate::nnue::guide::linear::{LinearCandidateGuide, LinearWeights};
 use crate::nnue::guide::{CandidateSummary, Guide, SaturationGuide};
+use pixelflow_ir::OpKind;
 
 /// A neighborhood shaped like the inside of a spherical-harmonic kernel.
 const SH_LIKE: OpKind = OpKind::Sin;

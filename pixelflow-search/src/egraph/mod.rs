@@ -5,17 +5,17 @@
 //!
 //! # Module Structure
 //!
-//! - [`node`]: Core data structures (EClassId, Op, ENode)
+//! - `node`: Core data structures (EClassId, Op, ENode)
 //! - [`candidate`]: Candidate-local features and the dedup key a guided
 //!   saturation loop orders by
-//! - [`cost`]: Cost model for extraction
+//! - `cost`: Cost model for extraction
 //! - [`rewrite`]: Rewrite rule infrastructure
 //! - [`extract`]: Expression tree extraction, including DAG-aware extraction
-//! - [`extraction`]: Cost-model policy selection (the static latency prior)
+//! - `extraction`: Cost-model policy selection (the static latency prior)
 //!   shared by the AOT macro tier and [`crate::runtime`]
 //! - [`saturate`]: Budget-limited saturation, plus the size-based
 //!   [`saturate::SaturationConfig`] presets both tiers drive it with
-//! - [`graph`]: The EGraph itself
+//! - `graph`: The EGraph itself
 //! - `growth` (feature `saturation-telemetry`): per-application growth
 //!   telemetry — how many e-nodes/e-classes a rewrite actually added
 //!
@@ -103,8 +103,7 @@ pub use rules::{Fingerprint, RuleId, RuleSet, rule_label};
 pub use saturate::{
     APPLICATIONS_PER_CLASS, CLASSICAL_CLASS_CEILING, CLASSICAL_CLASS_FLOOR,
     CLASSICAL_CLASSES_PER_INSERTED_CLASS, InputSize, SaturationConfig, SaturationResult,
-    achievable_cost_within_budget, config_for_input, config_for_node_count, saturate_with_budget,
-    saturate_with_full_budget,
+    config_for_input, config_for_node_count, saturate_with_budget, saturate_with_full_budget,
 };
 pub use template::TemplateRewrite;
 
@@ -150,7 +149,7 @@ pub fn all_rules() -> Vec<Box<dyn Rewrite>> {
     crate::math::all_rules()
 }
 
-/// Build [`RuleTemplates`] from all registered rules.
+/// Build `RuleTemplates` from all registered rules.
 ///
 /// Collects LHS/RHS expression templates from every rule that provides them.
 /// Rules without templates (returning `None`) get empty slots.

@@ -204,10 +204,11 @@ fn rule_concats(
     let mut templateless = Vec::new();
     for (idx, rule) in shared.iter().enumerate() {
         let template = ArenaRuleTemplate::from_rule(rule.as_ref());
-        if template.lhs.is_none() && template.rhs.is_none() {
-            if let Some(label) = rules.label_of(idx) {
-                templateless.push(label);
-            }
+        if template.lhs.is_none()
+            && template.rhs.is_none()
+            && let Some(label) = rules.label_of(idx)
+        {
+            templateless.push(label);
         }
         let z_lhs = pool_template_side(embeddings, &template.arena, template.lhs);
         let z_rhs = pool_template_side(embeddings, &template.arena, template.rhs);
@@ -253,13 +254,15 @@ fn concat_rank(concats: &BTreeMap<RuleId, [f32; RULE_CONCAT_DIM]>) -> usize {
         };
         rows.swap(rank, pivot);
         let inv = 1.0 / rows[rank][col];
-        for r in (rank + 1)..rows.len() {
-            let factor = rows[r][col] * inv;
+        let (pivots, below) = rows.split_at_mut(rank + 1);
+        let pivot_row = pivots[rank];
+        for row in below {
+            let factor = row[col] * inv;
             if factor == 0.0 {
                 continue;
             }
-            for c in col..RULE_CONCAT_DIM {
-                rows[r][c] -= factor * rows[rank][c];
+            for (x, &p) in row[col..].iter_mut().zip(&pivot_row[col..]) {
+                *x -= factor * p;
             }
         }
         rank += 1;
