@@ -816,7 +816,7 @@ quickly.
 > guarded-region hole above does not reappear. A kept range inside a
 > `Select` arm, for a value defined outside it, ends where the arm does
 > (`guarded_arms`, from the same `analyze_select_guards` the emitter branches
-> on — now in `emit/guards.rs` so both call one function).
+> on — then in `emit/guards.rs`, since deleted, so both call one function).
 >
 > **Measured on 259 real glyph bakes, memory operations counted at the
 > emitter:**

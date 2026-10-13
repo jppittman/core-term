@@ -64,7 +64,7 @@ impl<A> ScopedSchedule<A> {
     /// The closure of one scope, which [`Own`](super::Own) asserts of each
     /// scope before it reads off the scope's ownership. Ownership sees a
     /// loop's reads at its `Reduce`, one level down
-    /// ([`super::guards::FoldReads`]), so a read it did not see would let an
+    /// ([`super::ownership::FoldReads`]), so a read it did not see would let an
     /// arm own a value a loop outside the arm reads. Closure is asserted both
     /// ways:
     ///
@@ -407,8 +407,7 @@ fn extract_folds_bound_by(
 /// A fold names the `Reduce` def it opens at by value, not by position:
 /// `place_roots`, which runs after this, edits the schedules, and it moves a
 /// `Def` without renaming the `ValueId` it defines. That the def is in the
-/// parent's schedule is asserted where ownership asks for the fold's reads
-/// ([`super::guards::FoldReads::new`]).
+/// parent's schedule is asserted by [`ScopedSchedule::assert_closed`].
 fn attach_folds(scoped: &mut ScopedSchedule<()>, pending: Vec<PendingFold>) {
     for fold in pending {
         attach_fold(scoped, fold, Scope::Body);

@@ -7,7 +7,6 @@
 //! produces and what allocation and emission consume, which is why it lives
 //! under neither. The stages that build it are [`Nest`], [`Own`] and [`Layout`].
 
-mod guards;
 mod layout;
 mod lower;
 mod ownership;
@@ -308,7 +307,7 @@ pub(crate) struct ArmBlock {
 /// still carries names that scope's root, never an operand
 /// this scope's allocation resolves. What the
 /// loop it opens reads from this scope is a dependency all the same, and the
-/// guard analysis has it as one (`guards::FoldReads`). A `Seq`
+/// ownership has it as one (`ownership::FoldReads`). A `Seq`
 /// sequences two effects and reads no register; a `Write` reads the one
 /// value it stores — its row and column are binders, found where their
 /// folds keep them, not operands.

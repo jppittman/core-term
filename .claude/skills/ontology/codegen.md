@@ -147,7 +147,7 @@
   there — which `Own` asserts of every scope (`assert_closed`).
 - **Lives:** `ScopeFold::outer` (`pixelflow-codegen/src/program/mod.rs`),
   `place_roots` and `assert_closed` (`program/scopes.rs`), `FoldReads`
-  (`program/guards.rs`). Selection has no root or park of its own: a value
+  (`program/ownership.rs`). Selection has no root or park of its own: a value
   live into a loop's head is carried in a register or stored and dropped
   there (`plan_carries`, `emit/regalloc/local.rs`). The `roots` fields were
   deleted with ownership's "no arm owns a root" pin, their one reader.
@@ -436,7 +436,7 @@
   An arm owns a root when it owns every scope that reads it (see Root).
 - **Lives:** `pixelflow-codegen/src/program/ownership.rs` (#1311; `Own`, the
   backward pass), `program/layout.rs` (#1312, #1313; `Layout`, `Flow::of`: an
-  `If`'s arms go immediately before it), `program/guards.rs` (`FoldReads`);
+  `If`'s arms go immediately before it);
   CLAUDE.md "`If` contains an if".
 
 ### Guard. Homonym

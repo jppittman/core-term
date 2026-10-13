@@ -324,7 +324,7 @@ So the language has none:
 - **`Select` is renamed `If`**, in the IR, the e-graph, the emitter and the
   docs. CLAUDE.md needs a section, "Select contains an if", to explain what
   the name hides. The emitter was built on the misreading, blend by default
-  with a branch bought per select (`emit/guards.rs`), and that cost 73% of a
+  with a branch bought per select (`emit/guards.rs`, since deleted), and that cost 73% of a
   glyph bake (docs/BACKLOG.md X1) and the slowness of runs. The name is the
   bug (A6).
 

@@ -90,8 +90,7 @@ impl Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::program::guards::FoldReads;
-    use crate::program::ownership::Positions;
+    use crate::program::ownership::{FoldReads, Positions, reads};
     use crate::program::{IfArm, ScheduledOp, ValueId};
     use pixelflow_ir::fold::Binder;
     use pixelflow_ir::kind::OpKind;
@@ -126,8 +125,7 @@ mod tests {
         }
         order.iter().enumerate().all(|(new, &old)| {
             let def = &schedule[old];
-            folds
-                .reads(def.value, &def.op)
+            reads(folds, def)
                 .filter_map(|read| positions.get(read))
                 .all(|source| at[source] < new)
         })
@@ -177,7 +175,7 @@ mod tests {
     /// arm owns — no stranger inside it, nothing the arm owns outside it; and
     /// an `If`'s earning arms run immediately before it, the true arm first.
     fn laid_out(schedule: &[Def]) -> (Flow, Vec<u64>) {
-        laid_out_with(schedule, &FoldReads::default())
+        laid_out_with(schedule, &FoldReads::new())
     }
 
     fn laid_out_with(schedule: &[Def], folds: &FoldReads) -> (Flow, Vec<u64>) {
@@ -413,7 +411,7 @@ mod tests {
         for seed in 0..300 {
             let len = 20 + (seed as usize % 40);
             let schedule = random_schedule(seed, len);
-            laid_out_with(&schedule, &FoldReads::default());
+            laid_out_with(&schedule, &FoldReads::new());
         }
     }
 
@@ -454,7 +452,7 @@ mod tests {
             def(6, ScheduledOp::Binary(OpKind::Add, ValueId(4), ValueId(5))),
         ];
         // The sibling's body names `W`'s id, which an enclosing scope computed.
-        let folds = FoldReads::new(&schedule, [(ValueId(5), [ValueId(1)])]);
+        let folds = FoldReads::from([(ValueId(5), alloc::vec![ValueId(1)])]);
 
         let (blind, _) = laid_out(&schedule);
         let (seen, values) = laid_out_with(&schedule, &folds);
@@ -480,7 +478,7 @@ mod tests {
             if_of(6, 0, 5, 0),
             def(7, ScheduledOp::Binary(OpKind::Add, ValueId(6), ValueId(1))),
         ];
-        let folds = FoldReads::new(&schedule, [(ValueId(4), [ValueId(3)])]);
+        let folds = FoldReads::from([(ValueId(4), alloc::vec![ValueId(3)])]);
         let (_, values) = laid_out_with(&schedule, &folds);
         assert!(at(&values, 3) < at(&values, 4), "{values:?}");
     }
