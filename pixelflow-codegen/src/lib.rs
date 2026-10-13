@@ -24,6 +24,8 @@ pub mod isa;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub mod jit_cache;
 pub use error::CompileError;
+/// The digest the byte probes print and `pixelflow-pipeline`'s content identities are built from; the definition lives in `pixelflow-ir`.
+pub use pixelflow_ir::key::fnv1a64;
 
 /// Byte width of the vector the JIT emits for on this host: 64 (AVX-512), 32
 /// (AVX2) or 16 (NEON). The register width of the backend [`isa::detect`]
@@ -38,29 +40,3 @@ mod error;
 mod pass;
 mod pipeline;
 mod program;
-
-/// FNV-1a's 64-bit offset basis.
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-/// FNV-1a's 64-bit prime.
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// FNV-1a over bytes: the one definition `pixelflow-pipeline`'s content
-/// identities are built from (`schema::fnv1a64_const` is this function), and
-/// the digest the byte probes print, so two runs diffed line by
-/// line say whether a change moved any code.
-///
-/// Here because this is the lowest crate the pipeline and every probe that
-/// digests emitted code already depend on; the only property it needs is that
-/// different bytes give different digests, and a dependency for that would be
-/// silly. A `const fn` so a schema identity can be derived at compile time.
-#[must_use]
-pub const fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = FNV_OFFSET_BASIS;
-    // `while`, not an iterator: iterators are not callable in a `const fn`.
-    let mut i = 0;
-    while i < bytes.len() {
-        hash = (hash ^ bytes[i] as u64).wrapping_mul(FNV_PRIME);
-        i += 1;
-    }
-    hash
-}

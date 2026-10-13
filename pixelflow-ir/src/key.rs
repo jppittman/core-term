@@ -75,6 +75,27 @@ const MIX_SHIFT_A: u32 = 30;
 const MIX_SHIFT_B: u32 = 27;
 const MIX_SHIFT_C: u32 = 31;
 
+/// FNV-1a over bytes, continuing from `state`.
+const fn fnv1a64_from(mut state: u64, bytes: &[u8]) -> u64 {
+    // `while`, not an iterator: iterators are not callable in a `const fn`.
+    let mut i = 0;
+    while i < bytes.len() {
+        state = (state ^ bytes[i] as u64).wrapping_mul(FNV_PRIME);
+        i += 1;
+    }
+    state
+}
+
+/// FNV-1a over bytes: the workspace's one definition. A *stable* digest,
+/// unlike `DefaultHasher`, whose output is explicitly not guaranteed across
+/// releases, so an identity built from it (a `RuleId`, a schema, a probe's
+/// code digest) is reproducible by a different build. A `const fn` so a
+/// schema identity can be derived at compile time.
+#[must_use]
+pub const fn fnv1a64(bytes: &[u8]) -> u64 {
+    fnv1a64_from(FNV_OFFSET_BASIS, bytes)
+}
+
 /// FNV-1a as a [`core::hash::Hasher`], so the link tables can be folded into
 /// the digest through their derived [`Hash`](core::hash::Hash) — the
 /// identities they carry have no byte accessor, and adding one to widen a
@@ -83,10 +104,7 @@ struct Fnv1a(u64);
 
 impl core::hash::Hasher for Fnv1a {
     fn write(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.0 ^= u64::from(*b);
-            self.0 = self.0.wrapping_mul(FNV_PRIME);
-        }
+        self.0 = fnv1a64_from(self.0, bytes);
     }
 
     fn finish(&self) -> u64 {

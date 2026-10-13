@@ -27,23 +27,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 
+use pixelflow_ir::key::fnv1a64;
+
 use super::rewrite::Rewrite;
-
-/// FNV-1a over bytes — a *stable* hash, unlike `DefaultHasher`, whose output
-/// is explicitly not guaranteed across releases. A [`RuleId`] outlives the
-/// process that minted it (it is written into checkpoints and reports), so
-/// the digest has to be reproducible by a different build.
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut h = FNV_OFFSET;
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    h
-}
 
 /// The canonical, stable name of one rule *instance*.
 ///
@@ -81,7 +67,7 @@ impl RuleId {
     /// loader reading rule keys back out of a checkpoint or a JSON report.
     #[must_use]
     pub fn from_label(label: &str) -> Self {
-        Self(fnv1a(label.as_bytes()))
+        Self(fnv1a64(label.as_bytes()))
     }
 
     /// The raw digest, for serialization.
@@ -229,17 +215,11 @@ impl RuleSet {
     #[must_use]
     pub fn new(rules: Vec<Box<dyn Rewrite>>) -> Self {
         let ids: Vec<RuleId> = rules.iter().map(|r| RuleId::of(r.as_ref())).collect();
-        let mut h = FNV_OFFSET;
-        for id in &ids {
-            for &b in &id.0.to_le_bytes() {
-                h ^= u64::from(b);
-                h = h.wrapping_mul(FNV_PRIME);
-            }
-        }
+        let id_bytes: Vec<u8> = ids.iter().flat_map(|id| id.0.to_le_bytes()).collect();
         Self {
             rules: Arc::new(rules),
             ids: Arc::new(ids),
-            fingerprint: Fingerprint(h),
+            fingerprint: Fingerprint(fnv1a64(&id_bytes)),
         }
     }
 

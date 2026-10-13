@@ -25,21 +25,9 @@
 //! and trivially reproducible from the seed alone (no state to serialize or
 //! replay).
 
-use super::{CandidateSummary, SaturationGuide};
+use pixelflow_ir::key::fnv1a64;
 
-/// FNV-1a, 64-bit — a small, dependency-free, well-distributed non-crypto
-/// hash; adequate here because the only property this module needs is
-/// "looks uniform, is deterministic," not collision resistance.
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET_BASIS;
-    for &b in bytes {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
-}
+use super::{CandidateSummary, SaturationGuide};
 
 /// SplitMix64's output mixer — cheap, well-studied avalanche for turning one
 /// `u64` (here, `seed ^ fingerprint`) into a second `u64` that does not
