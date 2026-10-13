@@ -21,7 +21,7 @@
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::rewrite::{Rewrite, RewriteAction};
+use super::rewrite::{Rewrite, RewriteAction, RootShapes};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use pixelflow_ir::kind::OpKind;
@@ -39,6 +39,10 @@ impl ChainRule {
 impl Rewrite for ChainRule {
     fn name(&self) -> &str {
         "differentiate"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Dwrt)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

@@ -23,7 +23,7 @@ use pixelflow_ir::arena::ExprArena;
 
 use super::all_rules;
 use super::round2_rules;
-use crate::egraph::rewrite::{Rewrite, RewriteAction};
+use crate::egraph::rewrite::{Rewrite, RewriteAction, RootShapes};
 use crate::egraph::template::{self, TemplateRewrite};
 use crate::egraph::{EClassId, EGraph, ENode};
 
@@ -484,6 +484,9 @@ impl DuplicateRule {
 impl Rewrite for DuplicateRule {
     fn name(&self) -> &str {
         &self.name
+    }
+    fn root_shapes(&self) -> RootShapes {
+        self.inner.root_shapes()
     }
     fn apply(&self, egraph: &EGraph, id: EClassId, node: &ENode) -> Option<RewriteAction> {
         self.inner.apply(egraph, id, node)

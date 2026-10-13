@@ -19,7 +19,7 @@
 use std::marker::PhantomData;
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, RootShapes, ops};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -131,6 +131,10 @@ impl<T: AngleAddition> Rewrite for AngleAdditionRule<T> {
         }
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(T::op().kind())
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Op(Add(a, b))
         let ENode::Op { op, children } = node else {
@@ -222,6 +226,10 @@ impl Pythagorean {
 impl Rewrite for Pythagorean {
     fn name(&self) -> &str {
         "pythagorean"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Add)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -361,6 +369,10 @@ impl ReverseAngleAddition {
 impl Rewrite for ReverseAngleAddition {
     fn name(&self) -> &str {
         "reverse-angle-addition"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Add)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -541,6 +553,10 @@ impl HalfAngleProduct {
 impl Rewrite for HalfAngleProduct {
     fn name(&self) -> &str {
         "half-angle-product"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

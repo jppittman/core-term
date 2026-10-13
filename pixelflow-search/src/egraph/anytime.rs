@@ -85,9 +85,12 @@ pub struct AnytimeCheckpoint {
     /// Cumulative completed sweeps at the sample (diagnostic only).
     pub sweeps: usize,
     /// Cumulative rule-match ATTEMPTS at the sample
-    /// ([`EGraph::total_evals`]) — "raw matches enumerated", the
-    /// denominator Round 2's Guide-overhead-flatness precondition needs
-    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1).
+    /// ([`EGraph::total_evals`]) — `apply` calls, the denominator Round 2's
+    /// Guide-overhead-flatness precondition needs
+    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1). A node
+    /// outside a rule's [`super::Rewrite::root_shapes`] is not a call, so curves
+    /// recorded before root shapes existed counted more and do not compare
+    /// with these directly.
     /// Diagnostic: nothing in the curve's y-axis reads it.
     pub evals_actual: usize,
     /// E-class count at the sample.

@@ -4,9 +4,10 @@ use alloc::sync::Arc;
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::ops::Op;
+use super::ops::{Op, Vocabulary};
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
+use pixelflow_ir::OpKind;
 use pixelflow_ir::Rooted;
 /// A rewrite RHS pattern, shared.
 ///
@@ -16,6 +17,7 @@ use pixelflow_ir::Rooted;
 /// wrapped rather than forcing a `Debug` impl onto `ExprArena` itself,
 /// which would be a wider API surface change than this justifies.
 use pixelflow_ir::expr::ExprData;
+use pixelflow_ir::kind::OpMap;
 
 /// A rewrite RHS pattern, shared.
 #[derive(Clone)]
@@ -209,6 +211,105 @@ pub enum RewriteAction {
     },
 }
 
+/// The node shapes on which a rule's [`Rewrite::apply`] can return `Some`.
+///
+/// A node's *shape* is its [`OpKind`]: for an [`ENode::Op`] the op's own, and
+/// for every other node the kind that names its variant (`Var`, `Const`,
+/// `Buffer`, `Uniform`, `Param`, `Reduce`). A [`ENode::Ref`] names no kind,
+/// so only [`RootShapes::Any`] admits one.
+///
+/// The set is a *claim about `apply`*, and the scan spends it: a node whose
+/// shape is outside it is never handed to the rule, because the rule would
+/// have declined it. A set smaller than the truth therefore silently loses
+/// rewrites; a larger one costs only the calls it was meant to save. That
+/// asymmetry is why "matches anything" is a named answer, [`RootShapes::Any`],
+/// and why [`Rewrite::root_shapes`] has no default: a rule's author states the
+/// shapes, and a forgotten impl is a compile error rather than a rule the
+/// scan quietly never calls.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RootShapes {
+    /// Every node, including a [`ENode::Ref`]: for a rule that genuinely
+    /// inspects the root's shape itself, or a probe that must see them all.
+    Any,
+    /// Exactly the nodes whose shape is marked.
+    Kinds(OpMap<bool>),
+}
+
+// Prints the marked kinds only: `OpMap`'s derived `Debug` lists every kind,
+// marked or not, which buries the answer in a failed assertion.
+impl core::fmt::Debug for RootShapes {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Any => f.write_str("Any"),
+            Self::Kinds(marked) => f
+                .debug_set()
+                .entries(
+                    marked
+                        .iter()
+                        .filter(|(_, in_set)| **in_set)
+                        .map(|(kind, _)| kind),
+                )
+                .finish(),
+        }
+    }
+}
+
+impl RootShapes {
+    /// No node: a rule that can never match.
+    #[must_use]
+    pub const fn nothing() -> Self {
+        Self::Kinds(OpMap::splat(false))
+    }
+
+    /// Nodes of this one shape.
+    #[must_use]
+    pub fn kind(kind: OpKind) -> Self {
+        Self::kinds(&[kind])
+    }
+
+    /// Nodes of any of these shapes.
+    #[must_use]
+    pub fn kinds(kinds: &[OpKind]) -> Self {
+        let mut marked = OpMap::splat(false);
+        for &kind in kinds {
+            marked[kind] = true;
+        }
+        Self::Kinds(marked)
+    }
+
+    /// Every [`ENode::Op`], whatever its op: the kinds a runtime-tier graph
+    /// can hold as an op, which [`Vocabulary::Runtime`] already states.
+    #[must_use]
+    pub fn every_op() -> Self {
+        Self::Kinds(OpMap::from_fn(|kind| {
+            Vocabulary::Runtime.resolve(kind).is_some()
+        }))
+    }
+
+    /// Whether `node` is in the set.
+    #[must_use]
+    pub fn admits(&self, node: &ENode) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Kinds(marked) => Self::shape_of(node).is_some_and(|kind| marked[kind]),
+        }
+    }
+
+    /// The shape of `node`; `None` for a [`ENode::Ref`], which no `OpKind` names.
+    fn shape_of(node: &ENode) -> Option<OpKind> {
+        match node {
+            ENode::Var(_) => Some(OpKind::Var),
+            ENode::Const(_) => Some(OpKind::Const),
+            ENode::Buffer(_) => Some(OpKind::Buffer),
+            ENode::Uniform(_) => Some(OpKind::Uniform),
+            ENode::Param(_) => Some(OpKind::Param),
+            ENode::Reduce { .. } => Some(OpKind::Reduce),
+            ENode::Op { op, .. } => Some(op.kind()),
+            ENode::Ref { .. } => None,
+        }
+    }
+}
+
 /// A rewrite rule that can be applied to e-graph nodes.
 ///
 /// Requires `Send + Sync` so rules can be shared across worker threads
@@ -240,6 +341,14 @@ pub trait Rewrite: Send + Sync {
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
         None
     }
+
+    /// The shapes of root node this rule's [`apply`](Rewrite::apply) can
+    /// match: the scan does not call `apply` on a node outside the set.
+    ///
+    /// Derived from `apply`'s own guards on the node it is handed, not from
+    /// the shapes it goes on to read in the node's children. Required, with no
+    /// default: see [`RootShapes`].
+    fn root_shapes(&self) -> RootShapes;
 
     /// Try to apply this rule to a node in an e-class.
     /// Returns `Some(action)` if the rule matches.

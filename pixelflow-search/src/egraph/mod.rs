@@ -41,6 +41,7 @@ mod graph;
 mod growth;
 mod guided;
 pub mod insert;
+mod live;
 // The hindsight labeler reads the provenance journal directly
 // (`derivation_ancestors`, `Origin`, `Provenance::recorded_count`) — it has
 // nothing to compute without it.
@@ -98,7 +99,7 @@ pub use provenance::{ApplicationId, ENodeId, Provenance};
 pub use provenance::{
     ApplicationRecord, Origin, UnionEvent, derivation_ancestors, format_derivation_trace,
 };
-pub use rewrite::{Rewrite, RewriteAction, TemplateArena, TemplatePattern};
+pub use rewrite::{Rewrite, RewriteAction, RootShapes, TemplateArena, TemplatePattern};
 pub use rules::{Fingerprint, RuleId, RuleSet, rule_label};
 pub use saturate::{
     APPLICATIONS_PER_CLASS, CLASSICAL_CLASS_CEILING, CLASSICAL_CLASS_FLOOR,

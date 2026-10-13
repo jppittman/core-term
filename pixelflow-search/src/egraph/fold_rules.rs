@@ -66,12 +66,12 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pixelflow_ir::{Binder, Fold, Monoid};
+use pixelflow_ir::{Binder, Fold, Monoid, OpKind};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::ops;
-use super::rewrite::{Rewrite, RewriteAction};
+use super::rewrite::{Rewrite, RewriteAction, RootShapes};
 
 /// What a [`HeadNode`]'s child is: an earlier entry in the same plan, or an
 /// e-class that already exists.
@@ -368,6 +368,10 @@ impl Rewrite for PeelFold {
         "peel-fold"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Reduce)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Reduce { fold, body } = node else {
             return None;
@@ -403,6 +407,10 @@ impl Rewrite for PeelFold {
 impl Rewrite for HalveFold {
     fn name(&self) -> &str {
         "halve-fold"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Reduce)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -444,6 +452,10 @@ impl Rewrite for EmptyFold {
         "empty-fold"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Reduce)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Reduce { fold, .. } = node else {
             return None;
@@ -456,6 +468,10 @@ impl Rewrite for EmptyFold {
 impl Rewrite for FactorFold {
     fn name(&self) -> &str {
         "factor-fold"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Reduce)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

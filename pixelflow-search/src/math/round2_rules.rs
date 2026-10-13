@@ -39,7 +39,9 @@
 use alloc::sync::Arc;
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, TemplatePattern, ops};
+use crate::egraph::{
+    EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes, TemplatePattern, ops,
+};
 use core::f32::consts::{LN_2, LOG2_E, LOG10_2};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
@@ -134,6 +136,10 @@ impl Rewrite for MinMaxDuality {
         self.name
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.from)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -184,6 +190,10 @@ struct MinMaxAbsorption {
 impl Rewrite for MinMaxAbsorption {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.outer)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -242,6 +252,10 @@ struct MinMaxTranslate {
 impl Rewrite for MinMaxTranslate {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Add)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -310,6 +324,10 @@ impl Rewrite for MinScaledByNonnegLiteral {
         "min-scaled-by-nonneg-literal"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -360,6 +378,10 @@ impl Rewrite for MinMaxDistributive {
         "min-max-distributive"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Min)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -404,6 +426,10 @@ impl Rewrite for AbsAsMax {
         "abs-as-max"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Abs)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -429,6 +455,10 @@ struct MaxSelfNegAsAbs;
 impl Rewrite for MaxSelfNegAsAbs {
     fn name(&self) -> &str {
         "max-self-neg-as-abs"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Max)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -478,6 +508,10 @@ impl Rewrite for IfSameBranch {
         "select-same-branch"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::If)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -516,6 +550,10 @@ impl Rewrite for IfLtToMin {
         "select-lt-to-min"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::If)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -549,6 +587,10 @@ struct IfLtToMax;
 impl Rewrite for IfLtToMax {
     fn name(&self) -> &str {
         "select-lt-to-max"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::If)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -595,6 +637,10 @@ struct IfHoistUnary {
 impl Rewrite for IfHoistUnary {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::If)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -653,6 +699,10 @@ impl Rewrite for CompareFlipLt {
         "compare-flip-lt"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Lt)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -689,6 +739,10 @@ impl Rewrite for TanDefinition {
         "tan-definition"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Tan)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -715,6 +769,10 @@ struct TanFusion;
 impl Rewrite for TanFusion {
     fn name(&self) -> &str {
         "tan-fusion"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -771,6 +829,10 @@ impl Rewrite for ExpAsExp2 {
         "exp-as-exp2"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Exp)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -798,6 +860,10 @@ impl Rewrite for LnAsLog2 {
         "ln-as-log2"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Ln)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -823,6 +889,10 @@ struct Log10AsLog2;
 impl Rewrite for Log10AsLog2 {
     fn name(&self) -> &str {
         "log10-as-log2"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Log10)
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -857,6 +927,10 @@ struct SqrtProduct;
 impl Rewrite for SqrtProduct {
     fn name(&self) -> &str {
         "sqrt-product"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -896,6 +970,10 @@ impl Rewrite for RsqrtSquareAsRecip {
         "rsqrt-square-as-recip"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -933,6 +1011,10 @@ struct NormalizeAsSqrt;
 impl Rewrite for NormalizeAsSqrt {
     fn name(&self) -> &str {
         "normalize-as-sqrt"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -977,6 +1059,10 @@ impl Rewrite for RecipProduct {
         "recip-product"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -1009,6 +1095,10 @@ struct RecipOfProduct;
 impl Rewrite for RecipOfProduct {
     fn name(&self) -> &str {
         "recip-of-product"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Recip)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -1048,6 +1138,10 @@ impl Rewrite for FmaUnfuse {
         "fma-unfuse"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::MulAdd)
+    }
+
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -1076,6 +1170,10 @@ struct FmaMulIdentity;
 impl Rewrite for FmaMulIdentity {
     fn name(&self) -> &str {
         "fma-mul-identity"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::MulAdd)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -1110,6 +1208,10 @@ struct FmaAddIdentity;
 impl Rewrite for FmaAddIdentity {
     fn name(&self) -> &str {
         "fma-add-identity"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::MulAdd)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -1150,6 +1252,10 @@ impl Rewrite for NegDistributesAdd {
         "neg-distributes-add"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Neg)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -1176,6 +1282,10 @@ struct NegDistributesMul;
 impl Rewrite for NegDistributesMul {
     fn name(&self) -> &str {
         "neg-distributes-mul"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Neg)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -1216,6 +1326,10 @@ struct DivByLiteral;
 impl Rewrite for DivByLiteral {
     fn name(&self) -> &str {
         "div-by-literal"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Div)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

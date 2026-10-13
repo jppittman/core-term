@@ -138,7 +138,9 @@ struct ExprCurve {
     /// per round" per §7.1.
     sweeps_at: Vec<usize>,
     /// Cumulative rule-match attempts (`EGraph::total_evals`) at each grid
-    /// checkpoint — "raw matches enumerated" per §7.1; unguided has no
+    /// checkpoint — `apply` calls per §7.1, which exclude nodes outside a
+    /// rule's `Rewrite::root_shapes` (curves recorded before that counted
+    /// every node and do not compare directly); unguided has no
     /// scorer, so `evals_at[j] / apps_at[j]` stands in for a scored-
     /// candidate-per-application count.
     evals_at: Vec<usize>,
