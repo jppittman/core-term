@@ -14,7 +14,7 @@
 //!    be read before `repair_choices_well_founded` may change the choices, so
 //!    the reported number need not describe the returned term — this harness
 //!    measured that on 132 of 302 kernels. Both reported numbers are now
-//!    computed from the repaired choices, and there are two:
+//!    computed from the returned choices, and there are two:
 //!    `ExtractedDAG::total_cost` is the tree cost the DP minimizes and
 //!    `ExtractedDAG::dag_cost` is the DAG cost the kernel pays. The
 //!    `reported_matches_returned` column below is kept as the standing
@@ -1912,7 +1912,7 @@ fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
         "\n(iii) **cost reported before repair** (issue #1111, fixed): `total_cost` fails to \
          describe the returned term on **{reported_mismatch} of {}** kernels. It was 132/302 \
          when the number was read before `repair_choices_well_founded`; it is costed from the \
-         repaired choices now, so anything but 0 here is a regression. Per-kernel magnitudes \
+         returned choices now, so anything but 0 here is a regression. Per-kernel magnitudes \
          are in `reported_delta`.\n",
         rows.len()
     )
