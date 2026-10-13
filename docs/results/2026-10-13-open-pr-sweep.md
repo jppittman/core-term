@@ -12,24 +12,38 @@ each carries a decision that is the owner's to make, stated below.
 
 `main` was at `85a39ba` when both PRs were re-verified green.
 
-**A note on "rebased", written after the fact:** `main` advanced to `879cf649`
-(#1374, `feat(desloppify): --out journals every reply`) while this sweep was
-running, so both PRs now read as 1 commit behind. I did **not** re-update them
-for it, deliberately. That commit touches only `desloppify/` — 5 files, all
-under `desloppify/src` and `desloppify/tests` — which is disjoint from both
-PRs (#994 is `.github/`, `assets/`, `scripts/`; #1323 is
-`pixelflow-compiler/`, `pixelflow-ir/`). Both still merge cleanly against the
-new tip, verified with `git merge-tree`. Chasing the tip would have cost two
-more full presubmits, ~30 minutes of runner time including two macOS slots, to
-re-verify against a change in an unrelated crate — the exact waste flagged
-under #994 below. "Rebased" is taken here to mean *merges cleanly and was
-tested green against a recent `main`*, which both are; it cannot mean *pinned
-to the tip*, because the tip moves faster than a presubmit completes.
+**A note on "rebased":** `main` advanced to `879cf649` (#1374,
+`feat(desloppify): --out journals every reply`) mid-sweep, leaving both PRs
+1 commit behind. I first declined to re-update them, on the grounds that the
+commit touches only `desloppify/` (5 files under `desloppify/src` and
+`desloppify/tests`), is disjoint from both PRs (#994 is `.github/`,
+`assets/`, `scripts/`; #1323 is `pixelflow-compiler/`, `pixelflow-ir/`), and
+that both still merged cleanly per `git merge-tree` — so re-running would
+spend two presubmits and two macOS slots to verify against an unrelated
+crate.
+
+**That was the wrong call, and the distinction is worth recording.** "Merges
+cleanly" and "rebased" are not the same property. A clean merge says only
+that no two edits collide textually; being up to date says the PR's green CI
+was produced *against the code that will actually be its base*. A disjoint
+diff makes a semantic break unlikely, not impossible — and this very sweep
+turned up the case that proves the gap: #1339 deleted
+`pixelflow-compiler/tests/common/section_1_7.rs`, and `git merge-tree`
+reported no conflict with #1323 regardless, because a dangling `include!`
+is not a textual collision. The merge check cannot see that class of break;
+only building the merged tree can. So both PRs were brought to 0 behind
+`879cf649` — #994 at `690425a5`, #1323 at `c82f8dda` — and re-verified
+there.
+
+The cost objection still stands on its own terms, but it is an argument for
+making the check cheaper, not for skipping it. The place to spend it is
+`scripts/ci-change-scope.sh`, which already knows how to classify a diff and
+skip the jobs it cannot affect.
 
 | PR | Rebased | Review threads | CI | Disposition |
 |---|---|---|---|---|
-| [#994](https://github.com/jppittman/pixelflow/pull/994) macOS signed+notarized DMG release | now 0 behind | none | **22/22 green** | **Decide: merge inert, or close and reopen when signing is on the roadmap** |
-| [#1323](https://github.com/jppittman/pixelflow/pull/1323) `.at` is first-class contramap | now 0 behind | none | **22/22 green** | **Decide: the two questions the PR already asks** |
+| [#994](https://github.com/jppittman/pixelflow/pull/994) macOS signed+notarized DMG release | 0 behind (`690425a5`) | none | green | **Decide: merge inert, or close and reopen when signing is on the roadmap** |
+| [#1323](https://github.com/jppittman/pixelflow/pull/1323) `.at` is first-class contramap | 0 behind (`c82f8dda`) | none | green | **Decide: the two questions the PR already asks** |
 
 ---
 
