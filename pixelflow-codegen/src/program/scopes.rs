@@ -486,11 +486,6 @@ mod tests {
     /// A constant shared between a lattice-invariant expression and a varying
     /// one is computed by the outer scope and parked for the inner one, like
     /// any other value the inner scope reads but does not vary.
-    ///
-    /// It used to be computed in both: `place_roots` left a leaf where it was,
-    /// on the theory that nothing is saved by parking a value one instruction
-    /// rebuilds. Two instructions on x86, per read, per trip — and a parked
-    /// root is carried in a register when one is free, which is none.
     #[test]
     fn a_leaf_feeding_both_scopes_is_parked_by_the_outer_one() {
         let (a, root) = shared_leaf_kernel();

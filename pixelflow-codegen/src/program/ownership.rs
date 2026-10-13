@@ -23,14 +23,6 @@
 //! One pass, O(reads × log depth): the lowest common ancestor is a climb on
 //! skip pointers, so a ladder of `else if`s a thousand deep costs what a flat
 //! scope does.
-//!
-//! This replaced a search. The old analysis recovered the same sets per `If`
-//! by closing a cone under "every consumer is in the set", which is a walk of
-//! the whole scope for every `If`. The two were asserted equal on every compile
-//! (and on 300 random DAGs) until the search was deleted; what keeps this pass
-//! honest now is its own tests, which pin the relation case by case, and the
-//! layout built on it, whose every branch is checked to be exactly the run of
-//! the values its arm owns, ahead of its `If`.
 
 use alloc::vec::Vec;
 

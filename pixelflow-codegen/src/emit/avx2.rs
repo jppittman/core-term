@@ -42,11 +42,8 @@ use crate::program::IfArm;
 use alloc::vec::Vec;
 use pixelflow_ir::OpKind;
 
-// The AVX2 tier requires FMA3, and `crate::isa` refuses a host without it:
-// AVX2-without-FMA is not a narrower tier but a paper configuration, and the
-// probe's doc says why (no shipping CPU has one without the other, and the
-// two-rounding fork it once forced on `emit_fmadd_c_in_dst` put two
-// materially different kernels under one environment fingerprint).
+// The AVX2 tier requires FMA3, and `crate::isa` refuses a host without it; the
+// probe's doc says why.
 
 // =============================================================================
 // VEX.256 encoder

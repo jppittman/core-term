@@ -1,10 +1,11 @@
 //! The blocks of a scope: which arms are skipped by a branch, and where each
 //! sits among the scope's values.
 //!
-//! **What earns a block.** An arm region that owns a value (`ownership`; an
-//! `If` nested in it is one). There is no price: an arm is skipped when no lane
-//! selects it, however little it holds, and whatever scope computes its mask.
-//! An arm with nothing of its own has no block.
+//! **What earns a block.** An arm region that owns a value of this scope
+//! (`ownership`; an `If` nested in it is one). There is no price: an arm is
+//! skipped when no lane selects it, however little it holds. Where its mask
+//! was computed does not matter, since selection reads the mask from whichever
+//! enclosing scope defined it. An arm with nothing of its own has no block.
 //!
 //! **Where a block goes.** Every value stays in the order it was constructed,
 //! within the block that owns it. An `If`'s earning arms go immediately before

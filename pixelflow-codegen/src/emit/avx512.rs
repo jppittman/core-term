@@ -15,8 +15,8 @@
 //! form. Note `vpmovm2d` is AVX-512**DQ**, not F: an
 //! F-only part would fault on any kernel containing a comparison.
 //!
-//! Transcendentals themselves are still a separate lowering stage; ops with no
-//! rule here are refused up front rather than mis-emitted.
+//! Transcendentals are expanded by `legalize` before any backend sees them;
+//! ops with no rule here are refused up front rather than mis-emitted.
 //!
 //! Spills use a real stack frame (a `zmm` is 64 bytes — far past the 128-byte
 //! red zone).
@@ -169,14 +169,12 @@ impl Evex {
     }
 
     /// `op zmmREG, [addr]` — the memory form used for spills, reloads,
-    /// constant broadcast and the collapse loop's output store.
+    /// constant broadcast and the output store.
     ///
     /// EVEX.R/B are stored INVERTED, and X likewise: there is no index
     /// register in any of these forms, so X is always the encoded 1.
-    /// (Encoding B = 0 for an `rsp` base was the spill-path bug: it set the
-    /// base's bit 3, addressing r12 and faulting on a garbage pointer.)
     /// The ModRM/SIB/displacement tail is the architecture's, not EVEX's, so
-    /// it comes from `x86_64::mem_operand`.
+    /// it comes from `x86_64::mem_operand_into`.
     fn rm<D: Disp>(self, reg: u8, base: u8, disp: D) -> EncodedInst {
         let mut inst = EncodedInst::new();
         let r = ((reg >> 3) & 1) ^ 1;
@@ -895,7 +893,7 @@ impl<'m> Op<Bound<'m, Avx512>> {
 
 /// Sentinel for the EVEX `vvvv`/`V'` source field on instructions that have no
 /// second source (2-operand forms): the field must read as *unused*, which the
-/// hardware encodes as `vvvv = 1111` AND `V' = 1`. In `evex_rrr` both are
+/// hardware encodes as `vvvv = 1111` AND `V' = 1`. In [`Evex::rrr`] both are
 /// derived from the `src1` index by inversion, so the index that yields
 /// `vvvv=1111, V'=1` is **0** (not 0x1F — that has bit4 set, giving `V'=0` and a
 /// `#UD` / SIGILL).

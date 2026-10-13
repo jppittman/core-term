@@ -303,17 +303,9 @@ pub(super) enum Inst<S: Stage> {
     /// depends on where every instruction ahead of it landed; and this
     /// instruction's own size is one of those — so choosing the short form is
     /// branch relaxation, and resolving it needs layout iterated to a fixed
-    /// point to save four bytes once per compiled function. The alternative
-    /// this replaced tried to dodge that fixed point instead of running it:
-    /// emit `ADR` optimistically, *estimate* the distance to the not-yet-emitted
-    /// pool with a magic margin, and — when the estimate crossed it — splice
-    /// four bytes into the middle of already-emitted code to widen it to
-    /// `ADRP`+`ADD` after the fact. That splice was sound only because the
-    /// anchor sits above the whole loop nest, so every branch in the body had
-    /// both endpoints on the same side of it; a branch spanning it would have
-    /// broken silently. `AdrpAdd` has no estimate and nothing to splice — its
-    /// size is fixed before a single byte is laid out, like every other
-    /// instruction here.
+    /// point to save four bytes once per compiled function. `AdrpAdd`'s size is
+    /// fixed before a single byte is laid out, like every other instruction
+    /// here.
     ///
     /// # Alignment invariant
     ///
@@ -1514,9 +1506,8 @@ impl DispField {
     ///
     /// If the displacement is not a whole number of instructions, or does not
     /// fit. The first is a bug in this crate; the second is a real limit of the
-    /// encoding. A guard no longer meets it: [`Inst::CbzFar`] jumps with a
-    /// `B`, ±128 MiB (2026-10-05; before that an arm past `CBZ`'s 262,144
-    /// words panicked here), and no emitter verb branches with a `B.cond`.
+    /// encoding. A guard does not meet it: [`Inst::CbzFar`] jumps with a `B`,
+    /// ±128 MiB, and no emitter verb branches with a `B.cond`.
     fn write(self, code: &mut [u8], at: usize, target: usize) {
         let bytes = target as i64 - at as i64;
         assert!(

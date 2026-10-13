@@ -7,9 +7,7 @@
 //! them), the memory-operand tail (`Mem`, `Disp`) every vector encoder's
 //! ModRM/SIB is built from, and the vector operations both tiers name ([`Alu`]
 //! and its kin, whose bytes are each tier's). Nothing here names a vector
-//! width: the `ymm`/`zmm` encodings live in `avx2.rs` and `avx512.rs`, and the
-//! 128-bit tier that used to sit in this file is gone
-//! (docs/plans/2026-09-22-the-isa-is-decided-at-startup.md §7).
+//! width: the `ymm`/`zmm` encodings live in `avx2.rs` and `avx512.rs`.
 
 use super::asm::Encoding;
 use super::build::{Builder, Def, Spiller, defined};
@@ -781,7 +779,7 @@ pub(super) fn displacement(index: u64, size: u64) -> Result<Imm32, CompileError>
 /// they cost a different number of bytes, and `mod = 00` is not "a
 /// displacement of zero" (see [`NoDisp`]). So the width is picked by the
 /// operand's TYPE — never by the caller reaching for a differently-named
-/// function, which is where that choice used to live.
+/// function.
 pub(super) trait Disp: Copy {
     /// The ModRM `mod` field this displacement implies.
     const MOD: u8;
@@ -822,9 +820,8 @@ impl Disp for Imm32 {
 
 /// An address spelled `[base + disp]`.
 ///
-/// The base being a `Pointer` is the point: `rsp` is a value here. It used
-/// to be the `_rsp` and `_base` suffixes of five separate functions that all
-/// encoded the same `movups`, where nothing could check it.
+/// The base being a `Pointer` is the point: `rsp` is a value here, so one
+/// encoder serves it and every other base.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Mem<S: Stage, D> {
     /// The register the displacement is measured from.

@@ -120,11 +120,8 @@ pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Lin
     } = canonical(linked_arena, linked_root);
 
     // Optimize, link, then emit. This is not a step callers get to sequence:
-    // an arena reaching a backend unoptimized is never what anyone wanted,
-    // and when the choice was on offer, two of the three production call
-    // sites took the wrong one and compiled the terminal's cell-grid kernels
-    // with no CSE and no FMA fusion. It is inside the compile entry because
-    // that is the only place it cannot be forgotten.
+    // an arena reaching a backend unoptimized is never what anyone wanted, so
+    // it is inside the compile entry, the one place it cannot be forgotten.
     //
     // The optimizer is handed the arena *as written*, references and all: a
     // reference is a unit, optimized by itself and linked back in after
@@ -320,12 +317,7 @@ mod tests {
     #[test]
     fn a_folds_range_is_part_of_its_kernel_identity() {
         // Two kernels alike but for one fold's extent must not share a cache
-        // entry. The hazard this began as — a `Reduce`'s children living at
-        // an offset into the flat nary slab, where an off-by-slicing bug
-        // dropped them from the key — is gone with the encoding: a fold's
-        // range is a field of the node now. What it *tested* is still the
-        // property that matters, and it is about `Fold::to_bits` being in
-        // the key rather than about slicing.
+        // entry: the property is that `Fold::to_bits` is in the key.
         let slot = |s: u8| Binder::from_slot(s).expect("a live binder");
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -718,7 +710,7 @@ mod tests {
     /// The link omits it; the relink drops it with the garbage. Forced down
     /// the optimizer's bail path (`RawGather` is post-lowering, so the
     /// e-graph declines and the input arena, table and all, is what gets
-    /// linked), which is where an unreachable declaration used to panic.
+    /// linked).
     #[test]
     fn a_declared_but_unread_uniform_links_on_the_bail_path() {
         let decl = |default| UniformDecl {

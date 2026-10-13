@@ -1073,10 +1073,10 @@ mod tests {
     /// (`shared` read once inside the fold's body, once again after it),
     /// but pushed to the arena in the *interleaved* order unrolling a fold
     /// produces (const, add, const, add, const, add) rather than all three
-    /// constants first. That reordering alone, with no change to the DAG's shape,
-    /// used to compute `24` instead of `21`: the outer scope's own copy of
-    /// `shared` shared a register with the fold's own per-iteration
-    /// recompute of it, so its last iteration's write clobbered it.
+    /// constants first. That reordering alone, with no change to the DAG's
+    /// shape, must still compute `21`, not `24`: the outer scope's own copy of `shared`
+    /// must not share a register with the fold's own per-iteration recompute
+    /// of it, whose last iteration's write would clobber it.
     ///
     /// `shared = (X+0)+(X+1)+(X+2) = 3X+3`;
     /// `reduce = sum_{i=0}^{3}(shared + i) = 4*shared + 6`;
@@ -1114,15 +1114,11 @@ mod tests {
 
     /// A fold's spill slots do not alias its parent's.
     ///
-    /// The frame used to be sized as a plain `max` over the nest's scopes,
-    /// with every one of them handing out slots from offset 0. That is right
-    /// for the two collapse prologues and the body — they run one after
-    /// another, each parking what the next needs in a *hoist* slot above the
-    /// frame, so an earlier scope's own slots are dead by the time a later one
-    /// opens. A fold is the scope that is not like that: its loop runs in the
-    /// middle of its parent's schedule, and the parent's spilled values are
-    /// live across it. Sharing a base meant the fold's body wrote its own
-    /// temporaries over them.
+    /// Scopes that run one after another may share slots: an earlier scope's
+    /// own slots are dead by the time a later one opens. A fold is the scope
+    /// that is not like that: its loop runs in the middle of its parent's
+    /// schedule, and the parent's spilled values are live across it. Sharing
+    /// a base would let the fold's body write its own temporaries over them.
     ///
     /// It took real pressure on both sides to see: for a glyph, a 2,472-def
     /// fold body over a 2,130-def parent, which is every slot the parent had,
@@ -1208,10 +1204,8 @@ mod tests {
 
     /// A fold inside a fold's body is a loop inside a loop.
     ///
-    /// `extract_folds` used to refuse this shape (one level, with
-    /// `expand_nested_reduce` unrolling the inner fold ahead of it); it
-    /// carves the inner fold out of the outer fold's closure now, the same
-    /// way it carves the outer one out of the body. The inner body reads
+    /// `extract_folds` carves the inner fold out of the outer fold's closure,
+    /// the same way it carves the outer one out of the body. The inner body reads
     /// *both* binders — a contraction — which is what exercises the outer
     /// binder staying in its register across the inner loop, and the inner
     /// scope being handed the outer binder's park.
@@ -1325,9 +1319,8 @@ mod tests {
     /// — and its result reaches the scopes inside from wherever its loop left
     /// it.
     ///
-    /// The `Reduce` arm ends its def early, past the hand-off, so a carried
-    /// fold result used to reach the scopes inside in a register nothing had
-    /// loaded. The scopes inside now read it as the value the loop bound.
+    /// A carried fold result reaches the scopes inside as the value the loop
+    /// bound, never in a register nothing had loaded.
     /// `X + Σ_{i<3} 2i = X + 6`.
     #[test]
     fn a_lattice_invariant_fold_is_the_bodys_own() {
@@ -1782,32 +1775,17 @@ mod tests {
     // The shared driver's If short-circuit guard, on every backend that
     // has a JIT.
     //
-    // `sched_if_guards` below covers this path on whichever tier the
-    // host runs, and `avx512_if_guards` covers AVX-512 by name. aarch64
-    // had no guard test at all, which mattered because
-    // that is the one backend whose guard needs a scratch register: reducing a
-    // mask with `UMAXV`/`UMINV` writes a scalar into a vector register, where
-    // the x86 tiers use `movmskps`/`kortest` and the flags. So the register
-    // that reduction destroys was, on aarch64 alone, an untested choice.
-    //
-    // These run wherever a backend exists, against the same expected values,
-    // so no backend's guard can drift from another's.
+    // `sched_if_guards` below covers this path on whichever tier the host
+    // runs. These run wherever a backend exists, against the same expected
+    // values, so no backend's guard can drift from another's.
     // =========================================================================
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     mod if_guard_driver {
         use super::*;
 
-        /// `(X > 0) ? B³ : 3B` over a shared
-        /// `B = X·Y` — arms that are exclusive *and* contiguous in the
-        /// schedule.
-        ///
-        /// Both properties are needed and the second is easy to lose: a guard
-        /// skips a whole index range, so every index in it must belong to that
-        /// arm. Giving each arm its own `Var` looks exclusive but is not
-        /// contiguous — the `Var` is scheduled with the other leaves, far
-        /// below the arm's body, and the range from there to the arm swallows
-        /// the mask. Deriving both arms from one shared value keeps every leaf
-        /// out of both arms, which is what leaves the arms' own nodes adjacent.
+        /// `(X > 0) ? B³ : 3B` over a shared `B = X·Y`: each arm owns work of
+        /// its own and the shared `B` belongs to neither, so both arms earn a
+        /// block.
         fn guarded_if(a: &mut ExprArena) -> ExprId {
             let x = a.push_var(0);
             let y = a.push_var(1);
@@ -2164,8 +2142,9 @@ mod tests {
     }
 
     /// A `Dwrt`-carrying arena must JIT-compile end-to-end: the compile entry
-    /// runs `lower_dwrt`, so `D(√(x²+y²), x)` compiles to `x / √(x²+y²)`
-    /// without the caller ever seeing the derivative machinery.
+    /// runs `legalize`, which lowers the `Dwrt`, so `D(√(x²+y²), x)` compiles
+    /// to `x / √(x²+y²)` without the caller ever seeing the derivative
+    /// machinery.
     #[test]
     fn dwrt_compiles_to_analytic_derivative() {
         let mut a = ExprArena::new();
@@ -2209,10 +2188,9 @@ mod tests {
         assert!(compile(&a, root, POINT).is_err());
     }
 
-    /// A deep spill frame must compile and produce correct results — the
-    /// glyph-scale-kernel case that used to refuse with "exceeds 128-byte red
-    /// zone". There is no red zone any more, so what is under test is only
-    /// that a frame dozens of slots deep is emitted and addressed correctly.
+    /// A deep spill frame must compile and produce correct results: a frame
+    /// dozens of slots deep, the glyph-scale-kernel case, is emitted and
+    /// addressed correctly.
     ///
     /// Forty terms, **paired by a permutation** so that each is read twice,
     /// far apart: no evaluation order keeps them all in registers. Pushing
@@ -2264,8 +2242,7 @@ mod tests {
     }
 
     /// Every x86-64 unary transcendental/round op must match its scalar
-    /// reference across a range of inputs — these exercise `emit_arena` →
-    /// `emit_unary` directly (not the compiler's lowering).
+    /// reference across a range of inputs.
     #[test]
     fn x86_unary_builtins_match_scalar() {
         // Tolerances reflect the shared (with aarch64) minimax-polynomial
@@ -2575,10 +2552,7 @@ mod tests {
             // `Recip`, which is a hardware
             // *estimate* — ~12 bits from `rcpps`, ~14 from `vrcp14ps` — so it
             // injects ~1.2e-4 into the ratio and differs by ISA level. That is
-            // also why this is looser than the same check in
-            // `pixelflow-ir/tests/trig_range.rs`: the scalar oracle's `Recip`
-            // is an exact `1.0/x`, so that test bounds the polynomial and this
-            // one bounds the polynomial plus the estimate.
+            // also why this bound is the polynomial's plus the estimate's.
             const ATAN_TOL: f32 = 1e-3;
 
             // atan over a wide range (exercises the |ratio|>1 swap branch).
@@ -2659,7 +2633,7 @@ mod tests {
         use super::*;
 
         /// One point of a kernel whose single argument is bound to `u` — the
-        /// lattice-invariant third input a test used to spell `Var(2)`.
+        /// lattice-invariant third input.
         fn eval_point_with_arg(code: &executable::CompiledKernel, x: f32, y: f32, u: f32) -> f32 {
             collapse_into(code, &[], &[u], (x, y), POINT)[0]
         }
@@ -2684,10 +2658,6 @@ mod tests {
         /// An expression that fits in registers compiles without spilling and
         /// computes the right answer.
         ///
-        /// This used to compare a "Sethi-Ullman path" against a "scheduled
-        /// path". Both arms had long since become the same `compile` call,
-        /// so it compiled one function twice and asserted it equalled
-        /// itself; only the ground-truth comparison was load-bearing.
         #[test]
         fn sched_no_spill_is_correct() {
             // f = sqrt(X*X + Y*Y) - Y*U, a non-commutative shape whose third
@@ -2755,11 +2725,7 @@ mod tests {
     //
     // Turns "backend X silently doesn't support op Y" into a named, itemized
     // test failure instead of a gap nobody notices until something happens to
-    // exercise it (this is exactly how AVX-512's binary-op dispatch sat at
-    // 6-of-15 required ops — nothing enumerated "the ops every backend must
-    // support" anywhere, so the hole was invisible until 36 tests failed by
-    // accident the first time someone compiled with `-C target-feature=
-    // +avx512f`).
+    // exercise it.
     //
     // Every backend compiles on every host — emission is a pure function
     // into bytes — so the sweeps below run for all three from whichever
@@ -2891,7 +2857,7 @@ mod tests {
             }
         }
 
-        /// The slot `UniformId` used to stop at, and one past it, in
+        /// A slot past what 16 bits hold, and its offset in
         /// bytes: offset 3 shifted up by a full 16-bit range, so that the
         /// byte offset `262_156` (`0x0004_000C`) is `0x0C` wrapped to 16 bits
         /// — the load a narrower offset would have emitted for it, reading

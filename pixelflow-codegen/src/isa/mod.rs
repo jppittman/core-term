@@ -3,14 +3,10 @@
 //!
 //! Every backend in [`crate::emit`] compiles on every host — emission is a
 //! pure function into bytes — so the target never decided which backends
-//! *exist*, only which one is *instantiated*. Until this module that choice
-//! was `cfg(target_feature)`: the build's flags, which a plain `cargo build`
-//! never sets, so every x86-64 host ran 128-bit SSE2 kernels however wide the
-//! machine was, and each wider tier was a separate build of the whole
-//! workspace that only `xtask isa-matrix` ever made. Now the choice is
-//! CPUID's: the widest tier this host can execute, with a floor of AVX2+FMA on
-//! x86-64 (there is no SSE2 tier any more) and NEON on aarch64. A host below
-//! the floor is refused, loudly, with the feature it lacks named.
+//! *exist*, only which one is *instantiated*. The choice is CPUID's, not the
+//! build's flags: the widest tier this host can execute, with a floor of
+//! AVX2+FMA on x86-64 (there is no SSE2 tier) and NEON on aarch64. A host
+//! below the floor is refused, loudly, with the feature it lacks named.
 //!
 //! The width follows the tier ([`jit_vector_bytes`](crate::jit_vector_bytes)),
 //! and nothing else in the workspace holds one: `pixelflow-core` asks for it

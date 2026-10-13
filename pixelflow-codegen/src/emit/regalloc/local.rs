@@ -94,7 +94,7 @@ pub(in crate::emit) struct Emitted<'m, B: IsaBackend> {
 
 /// An allocated kernel: every register a borrowed token, every slot a
 /// borrowed slot, every block argument a placed move. A block has no
-/// parameters any more: they are slots.
+/// parameters: they are slots.
 pub(in crate::emit) struct Allocated<'m, B: IsaBackend> {
     pub(in crate::emit) blocks: Vec<Block<Emitted<'m, B>>>,
     pub(in crate::emit) loops: Vec<Loop>,
