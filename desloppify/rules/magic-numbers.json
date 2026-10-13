@@ -1,0 +1,22 @@
+{
+  "unit": "functions",
+  "levels": {
+    "decide": 1,
+    "explain": 2
+  },
+  "exclude": [
+    "**/*_tests.rs",
+    "**/benches/**",
+    "**/examples/**",
+    "**/tests.rs",
+    "**/tests/**"
+  ],
+  "question": "Does this function use a numeric literal other than 0, 1 or 2 whose meaning is not obvious from its line?",
+  "fine": {
+    "named_or_obvious": "Every such number is a named constant, an obvious unit conversion, or a coefficient of a documented formula — or there are none."
+  },
+  "violations": {
+    "magic_number": "A threshold, size, count, bit mask, timeout or protocol value appears as a bare literal."
+  },
+  "guidance": "Suggest a constant name for each."
+}

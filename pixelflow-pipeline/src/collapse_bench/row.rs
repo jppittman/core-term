@@ -10,25 +10,24 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a field's meaning changes, so a stale file is rejected
 /// rather than silently mixed into an analysis.
-pub const SCHEMA: &str = "collapse-cost-v1";
+pub const SCHEMA: &str = "collapse-cost-v2";
 
 /// Emitted traffic in one scope of the collapse nest.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopeRow {
-    pub bytes: u32,
-    pub instructions: u32,
-    pub loads_transient: u32,
-    pub loads_kept: u32,
-    pub remats: u32,
-    pub stores: u32,
+    pub bytes: u64,
+    pub instructions: u64,
+    pub loads: u64,
+    pub remats: u64,
+    pub stores: u64,
 }
 
 impl ScopeRow {
     /// Loads plus stores: the quantity the rejected allocator policies
     /// optimized.
     #[must_use]
-    pub const fn memory_ops(&self) -> u32 {
-        self.loads_transient + self.loads_kept + self.stores
+    pub const fn memory_ops(&self) -> u64 {
+        self.loads + self.stores
     }
 }
 
@@ -36,7 +35,7 @@ impl ScopeRow {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StaticFeatures {
     /// Bytes of the whole emitted function, scaffold included.
-    pub bytes_total: u32,
+    pub bytes_total: u64,
     pub frame: ScopeRow,
     pub row: ScopeRow,
     pub body: ScopeRow,
@@ -44,15 +43,17 @@ pub struct StaticFeatures {
     /// of a kernel, so it is kept out of the derived dynamic figures below and
     /// recorded here instead.
     pub scaffold: ScopeRow,
-    /// Frame slots holding a value with an address: the body's
-    /// `regalloc::Allocation::spill_slots`.
-    pub spill_slots: u32,
-    /// Stack bytes the frame occupies.
+    /// Frame slots holding a value with an address:
+    /// `CompileResult::spill_count`.
+    pub spill_slots: u64,
+    /// Stack bytes the frame occupies: `CompileResult::frame_bytes`, a frame
+    /// offset bounded by `MAX_FRAME` and the slot encodings, not a program
+    /// count.
     pub frame_bytes: u32,
     /// Values LICM lifted out of the body.
-    pub hoisted: u32,
+    pub hoisted: u64,
     /// Of those, the ones holding a register across the loops inside.
-    pub carried: u32,
+    pub carried: u64,
     /// Registers the allocator could hand out.
     pub pool: u32,
     /// Bytes one spilled register occupies — 16 for NEON, 32 for AVX2, 64 for AVX-512.
@@ -97,7 +98,7 @@ pub struct Measurement {
     /// Bytes of the sentinel's own emitted code. If this differs between two
     /// refs, the sentinel is not the same anchor on both and the calibration
     /// above cannot be compared.
-    pub sentinel_bytes: u32,
+    pub sentinel_bytes: u64,
     pub samples: u32,
     /// Calls the timer bracketed per sample, after the dispersion autoscale.
     pub calls_per_sample: u64,

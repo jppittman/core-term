@@ -55,12 +55,12 @@ pub struct Predictor {
 ///
 /// The scaffold is excluded — it is the same code under every allocation, so
 /// it adds the same constant to both sides of every comparison.
-fn dyn_of(r: &Row, per_scope: fn(&super::row::ScopeRow) -> u32) -> f64 {
+fn dyn_of(r: &Row, per_scope: fn(&super::row::ScopeRow) -> u64) -> f64 {
     let s = &r.statics;
     let (rows, groups) = (r.rows as f64, r.groups as f64);
-    f64::from(per_scope(&s.frame))
-        + f64::from(per_scope(&s.row)) * rows
-        + f64::from(per_scope(&s.body)) * rows * groups
+    per_scope(&s.frame) as f64
+        + per_scope(&s.row) as f64 * rows
+        + per_scope(&s.body) as f64 * rows * groups
 }
 
 /// The candidates, simplest first.
@@ -88,22 +88,17 @@ pub fn predictors() -> Vec<Predictor> {
         Predictor {
             name: "dyn_traffic",
             gloss: "dyn_mem_ops + trip-weighted rematerializations — every value the code has to \
-                    fetch or rebuild, whether or not it comes from memory",
-            eval: |r| {
-                dyn_of(r, |s| {
-                    s.loads_transient + s.loads_kept + s.remats + s.stores
-                })
-            },
+                    fetch or rebuild, whether or not it comes from memory. A remat is a read of \
+                    the constant pool: since selection B10 a zero or all-ones idiom is none, and \
+                    legacy counts a LoadConst and a fold's bound and step, so journal rows from \
+                    before it are not comparable",
+            eval: |r| dyn_of(r, |s| s.loads + s.remats + s.stores),
         },
         Predictor {
             name: "dyn_emitted_ops",
             gloss: "trip-weighted scheduled operations + every load, store and rematerialization \
                     around them",
-            eval: |r| {
-                dyn_of(r, |s| {
-                    s.instructions + s.loads_transient + s.loads_kept + s.remats + s.stores
-                })
-            },
+            eval: |r| dyn_of(r, |s| s.instructions + s.loads + s.remats + s.stores),
         },
         Predictor {
             name: "dyn_bytes",
@@ -125,24 +120,22 @@ pub fn predictors() -> Vec<Predictor> {
             name: "static_mem_ops",
             gloss: "the rejected quantity: memory ops with no trip weighting at all",
             eval: |r| {
-                f64::from(
-                    r.statics.frame.memory_ops()
-                        + r.statics.row.memory_ops()
-                        + r.statics.body.memory_ops(),
-                )
+                (r.statics.frame.memory_ops()
+                    + r.statics.row.memory_ops()
+                    + r.statics.body.memory_ops()) as f64
             },
         },
         Predictor {
             name: "static_bytes",
             gloss: "the other rejected quantity: total emitted code bytes",
-            eval: |r| f64::from(r.statics.bytes_total),
+            eval: |r| r.statics.bytes_total as f64,
         },
     ]
 }
 
 /// 1 when the whole function fits L1i, growing linearly with the overflow.
 fn l1i_pressure(r: &Row) -> f64 {
-    1.0 + (f64::from(r.statics.bytes_total) / L1I_BYTES - 1.0).max(0.0)
+    1.0 + (r.statics.bytes_total as f64 / L1I_BYTES - 1.0).max(0.0)
 }
 
 // =============================================================================
@@ -439,7 +432,7 @@ pub fn report(rows: &[Row], stat: Stat) -> String {
                 remat,
                 mem + remat,
                 sum(|r| r.statics.dyn_instructions as f64),
-                sum(|r| f64::from(r.statics.bytes_total)),
+                sum(|r| r.statics.bytes_total as f64),
             )
             .expect("fmt");
         }

@@ -1,0 +1,26 @@
+{
+  "unit": "file",
+  "levels": {
+    "decide": 1,
+    "explain": 2
+  },
+  "paths": [
+    "pixelflow-*/**"
+  ],
+  "exclude": [
+    "pixelflow-codegen/src/emit/**",
+    "pixelflow-codegen/src/isa/**"
+  ],
+  "skills": [
+    "pixelflow-architecture"
+  ],
+  "question": "Does this file make SIMD visible outside pixelflow-codegen's emitters?",
+  "fine": {
+    "no_simd": "No lane counts, vector widths, intrinsics or ISA choices appear; reading `jit_vector_bytes()` to size a buffer is fine."
+  },
+  "violations": {
+    "names_lanes": "A type, constant or parameter names a lane count or vector width, or a public item exposes a vector.",
+    "raw_simd": "`std::arch`/`core::arch` intrinsics, `__m256`-style types, `#[target_feature]`, or per-lane loops and lane arithmetic.",
+    "build_time_isa": "An ISA chosen by `cfg(target_feature)` or build flags instead of at startup by the JIT."
+  }
+}

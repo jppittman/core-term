@@ -18,16 +18,22 @@ The rules, over the non-test, non-comment, non-string text of each file:
       `program/mod.rs` defines (`IfGuard`, `ScopedSchedule`, `Def`, ...) and
       nothing behind it. The list is the filesystem's, not a hand-kept one, so
       a submodule added later is covered the day it is added,
-    - `crate::pipeline`, `crate::jit_cache`, `crate::compiled_kernel` (the
-      driver and what drives it). The one exemption is a plain `pub use`
-      re-export (`pub use crate::pipeline::{compile, origin};`): it keeps a
+    - `crate::pipeline`, `crate::jit_cache` (the driver and what drives it).
+      The one exemption is a plain `pub use` re-export
+      (`pub use crate::pipeline::compile;`): it keeps a
       public path where it was and is not a use. `pub(crate) use` and `use`
       are not re-exports and are not exempt, and nothing else is exempt from
       anything else.
 
+  Rule A (`pixelflow-codegen/src/emit/asm.rs`, the assembler, which is also
+  scanned by rule E) may not name anything of the crate or its siblings: no
+  `crate::` or `super::` path and no `pixelflow_` crate. The assembler is a
+  function from a program to a binary, handed the encoder as a value, and
+  everything else depends on it, never the reverse.
+
   Rule P (every `pixelflow-codegen/src/program/**/*.rs`) may not name
     `crate::emit`, `crate::isa`, `crate::pipeline`, `crate::jit_cache`,
-    `crate::compiled_kernel`, `regalloc`, `executable` or `ExecutableCode`.
+    `regalloc`, `executable` or `CompiledKernel`.
     `program/` MAY name `pixelflow_search`: pricing an arm is its business.
 
 What is not scanned, deliberately: comments and string literals (prose and
@@ -52,14 +58,19 @@ reviewed edit to this script.
 
 Usage:
   check_emit_boundary.py             scan the tree
-  check_emit_boundary.py --self-test run the scanner over in-memory cases
+  check_emit_boundary.py --self-test run the scanner over in-memory cases and
+                                     two synthetic trees
 """
+import contextlib
+import io
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC = REPO_ROOT / "pixelflow-codegen" / "src"
+ASSEMBLER = Path("emit") / "asm.rs"
 
 ITEM_KEYWORDS = (
     "fn", "mod", "impl", "struct", "enum", "trait", "type", "use", "const",
@@ -305,19 +316,23 @@ def rules(program_submodules):
         (rf"\bprogram\s*::\s*(?:{sub})\b", False),
         (rf"\bprogram\s*::\s*\{{[^;]*?\b(?:{sub})\b", False),
         (r"\bprogram\s*::\s*\*", False),
-        (r"\b(?:crate|super)\s*::\s*(?:jit_cache|compiled_kernel)\b", False),
-        (r"\b(?:crate|super)\s*::\s*\{[^;]*?\b(?:jit_cache|compiled_kernel)\b", False),
+        (r"\b(?:crate|super)\s*::\s*jit_cache\b", False),
+        (r"\b(?:crate|super)\s*::\s*\{[^;]*?\bjit_cache\b", False),
         (r"\b(?:crate|super)\s*::\s*pipeline\b", True),
         (r"\b(?:crate|super)\s*::\s*\{[^;]*?\bpipeline\b", True),
     ]
     program = [
-        (r"\b(?:crate|super)\s*::\s*(?:emit|isa|pipeline|jit_cache|compiled_kernel)\b", False),
-        (r"\b(?:crate|super)\s*::\s*\{[^;]*?\b(?:emit|isa|pipeline|jit_cache|compiled_kernel)\b", False),
+        (r"\b(?:crate|super)\s*::\s*(?:emit|isa|pipeline|jit_cache)\b", False),
+        (r"\b(?:crate|super)\s*::\s*\{[^;]*?\b(?:emit|isa|pipeline|jit_cache)\b", False),
         (r"\bregalloc\b", False),
         (r"\bexecutable\b", False),
-        (r"\bExecutableCode\b", False),
+        (r"\bCompiledKernel\b", False),
     ]
-    return {"E": emit, "P": program}
+    assembler = [
+        (r"\b(?:crate|super)\s*::", False),
+        (r"\bpixelflow_\w+", False),
+    ]
+    return {"E": emit, "P": program, "A": assembler}
 
 
 def scan(src, scope, program_submodules):
@@ -338,23 +353,32 @@ def program_submodules(program_dir):
     return mods | {p.name for p in program_dir.iterdir() if p.is_dir()}
 
 
-def check_tree():
-    subs = program_submodules(SRC / "program")
-    failures, files = 0, 0
-    for scope, directory in (("E", SRC / "emit"), ("P", SRC / "program")):
+def check_tree(src=SRC):
+    subs = program_submodules(src / "program")
+    failures, files, assembler = 0, 0, False
+    for scope, directory in (("E", src / "emit"), ("P", src / "program")):
         found = sorted(directory.rglob("*.rs"))
         if not found:
             # A renamed or emptied scope would otherwise scan nothing and say OK.
-            print(f"FAIL: {directory.relative_to(SRC)}/ holds no .rs files", file=sys.stderr)
+            print(f"FAIL: {directory.relative_to(src)}/ holds no .rs files", file=sys.stderr)
             return 1
         for path in found:
+            # The assembler answers to rule A as well as to its directory's.
+            is_assembler = path == src / ASSEMBLER
+            assembler |= is_assembler
+            scopes = [scope] + (["A"] if is_assembler else [])
             files += 1
-            for line, token in scan(path.read_text(), scope, subs):
-                failures += 1
-                print(
-                    f"FAIL: {path.relative_to(SRC)}:{line}: names {token} [rule {scope}]",
-                    file=sys.stderr,
-                )
+            for scope_name in scopes:
+                for line, token in scan(path.read_text(), scope_name, subs):
+                    failures += 1
+                    print(
+                        f"FAIL: {path.relative_to(src)}:{line}: names {token} [rule {scope_name}]",
+                        file=sys.stderr,
+                    )
+    if not assembler:
+        # A renamed or moved assembler would otherwise escape rule A and say OK.
+        print(f"FAIL: the assembler {ASSEMBLER} was not found", file=sys.stderr)
+        return 1
     if failures:
         print(f"{failures} emit-boundary violation(s)", file=sys.stderr)
         return 1
@@ -454,7 +478,7 @@ def self_test():
     case("pub use of the search is still flagged", "pub use pixelflow_search::egraph::CostModel;\n", 1)
     case("grouped crate:: use of the driver", "use crate::{error, pipeline::compile};\n", 1)
     case("grouped crate:: use of the cache", "use crate::{jit_cache::compile};\n", 1)
-    case("multi-line grouped crate:: use", "use crate::{\n    error,\n    compiled_kernel::K,\n};\n", 1)
+    case("multi-line grouped crate:: use", "use crate::{\n    error,\n    jit_cache::K,\n};\n", 1)
     case("grouped super::super:: use of the driver", "use super::super::{pipeline};\n", 1)
     case("grouped crate:: use of other things is fine", "use crate::{error::CompileError, program::Def};\n", 0)
     case("a name that only starts with pipeline", "use crate::{pipeline_stats::X};\n", 0)
@@ -484,10 +508,17 @@ def self_test():
     )
     case("P: emit", "use crate::emit::guards::X;\n", 1, "P")
     case("P: regalloc", "fn f(d: regalloc::Def) {}\n", 1, "P")
-    case("P: executable and ExecutableCode", "use executable::ExecutableCode;\n", 2, "P")
+    case("P: executable and CompiledKernel", "use executable::CompiledKernel;\n", 2, "P")
     case("P: pipeline", "use crate::pipeline::compile;\n", 1, "P")
     case("P: pub use does not exempt the pipeline", "pub use crate::pipeline::compile;\n", 1, "P")
     case("P may name the search", token + "\n", 0, "P")
+    case("A: crate path", "use crate::emit::Label;\n", 1, "A")
+    case("A: super path", "use super::Gpr;\n", 1, "A")
+    case("A: grouped crate path", "use crate::{emit::Label, error};\n", 1, "A")
+    case("A: a sibling crate", "use pixelflow_ir::kind::OpKind;\n", 1, "A")
+    case("A: alloc is not the crate", "use alloc::vec::Vec;\n", 0, "A")
+    case("A: self is its own", "use self::inner::X;\n", 0, "A")
+    case("A: prose and tests may name the crate", "// use crate::x;\n#[cfg(test)]\nmod t { use super::*; }\n", 0, "A")
     case("P: a cfg(test) item may name the driver", "#[cfg(test)]\nmod tests {\n use crate::pipeline::schedule_for;\n}\n", 0, "P")
     case(
         "a lifetime is not a char literal",
@@ -495,6 +526,21 @@ def self_test():
         1,
     )
     case("a quote char literal", "const Q: char = '\"';\nuse pixelflow_search::x;\n", 1)
+
+    # The same synthetic tree with and without the assembler: the second is the
+    # positive control that makes the first's failure the assembler's absence.
+    for name, files, want in (
+        ("a tree without the assembler fails", ("emit/other.rs", "program/mod.rs"), 1),
+        ("a tree with the assembler passes", ("emit/other.rs", "emit/asm.rs", "program/mod.rs"), 0),
+    ):
+        with tempfile.TemporaryDirectory() as root:
+            src = Path(root)
+            for file in files:
+                (src / file).parent.mkdir(parents=True, exist_ok=True)
+                (src / file).write_text("")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                got = check_tree(src)
+        cases.append((name, got, want))
 
     failed = [c for c in cases if c[1] != c[2]]
     for name, got, want in failed:

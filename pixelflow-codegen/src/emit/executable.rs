@@ -4,63 +4,44 @@
 
 use crate::error::CompileError;
 
-/// A region of executable memory containing JIT-compiled code.
+/// One kernel's emitted code, at one lattice shape, held as executable memory.
 ///
-/// The memory is allocated as read-write, code is written to it,
-/// then it's flipped to read-execute (W^X security).
-pub struct ExecutableCode {
+/// The memory is allocated as read-write, code is written to it, then it is
+/// flipped to read-execute (W^X). The loop nest is inside the code — the
+/// lattice's rows, batches and lanes are folds the kernel was wrapped in
+/// before it was scheduled (docs/plans/2026-09-16-collapse-is-a-fold.md) — so
+/// [`call`](Self::call) is the whole collapse, and the lattice shape is what
+/// the code *is*: its loop bounds are the extent it was compiled at. No cache;
+/// the caller decides its lifetime.
+pub struct CompiledKernel {
     ptr: *mut u8,
     len: usize,
     capacity: usize,
 }
 
 // SAFETY: The code is immutable after compilation and can be shared across threads.
-unsafe impl Send for ExecutableCode {}
-unsafe impl Sync for ExecutableCode {}
+unsafe impl Send for CompiledKernel {}
+unsafe impl Sync for CompiledKernel {}
 
-impl ExecutableCode {
+impl CompiledKernel {
     /// Compile a code buffer into executable memory.
     ///
     /// # Safety
     /// The caller must ensure the code buffer contains valid machine code
     /// for the current architecture.
     #[cfg(unix)]
-    pub unsafe fn from_code(code: &[u8]) -> Result<Self, CompileError> {
+    pub(super) unsafe fn from_code(code: &[u8]) -> Result<Self, CompileError> {
         NativeCodePage::from_code(code)
     }
 
-    /// Get a function pointer to the compiled code.
-    ///
-    /// # Safety
-    /// The caller must ensure the code implements the correct calling convention
-    /// and signature for type `F`.
-    #[inline]
-    #[must_use]
-    pub unsafe fn as_fn<F>(&self) -> F {
-        // SAFETY: Caller guarantees F matches the compiled code's signature.
-        unsafe { core::mem::transmute_copy(&self.ptr) }
-    }
-
-    /// Get the code as a byte slice (for debugging).
+    /// The emitted machine code. The bytes are the artifact, not an ABI.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
     }
-
-    /// Length of the compiled code in bytes.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Whether the code is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
 }
 
-impl ExecutableCode {
+impl CompiledKernel {
     /// Run the collapse this code is: every lattice point the kernel was
     /// compiled for, stored into `out`, whose rows are `pitch` elements apart.
     ///
@@ -74,12 +55,14 @@ impl ExecutableCode {
     ///   the extent the kernel was compiled at.
     #[inline(always)]
     pub unsafe fn call(&self, ctx: *const *const f32, out: *mut f32, pitch: usize) {
-        let func: KernelFn = unsafe { self.as_fn() };
+        // SAFETY: the code is a `KernelFn` — every compile emits one — and the
+        // caller upholds its contract, above.
+        let func: KernelFn = unsafe { core::mem::transmute_copy(&self.ptr) };
         func(ctx, out, pitch)
     }
 }
 
-impl Drop for ExecutableCode {
+impl Drop for CompiledKernel {
     fn drop(&mut self) {
         #[cfg(unix)]
         unsafe {
@@ -102,7 +85,7 @@ impl Drop for ExecutableCode {
 // =============================================================================
 
 /// The lifecycle of a writable JIT code page transitioning to executable memory.
-pub trait CodePage: Sized {
+trait CodePage: Sized {
     /// Get the system page size for this platform.
     fn page_size() -> usize;
 
@@ -114,14 +97,10 @@ pub trait CodePage: Sized {
 
     /// Seal the page to Read+Execute, synchronize instruction caches,
     /// and return the executable handle.
-    fn finish(self, len: usize) -> Result<ExecutableCode, CompileError>;
+    fn finish(self, len: usize) -> Result<CompiledKernel, CompileError>;
 
     /// Compile a code buffer into executable memory.
-    fn from_code(code: &[u8]) -> Result<ExecutableCode, CompileError> {
-        if code.is_empty() {
-            return Err(CompileError::EmptyCodeBuffer);
-        }
-
+    fn from_code(code: &[u8]) -> Result<CompiledKernel, CompileError> {
         let page_size = Self::page_size();
         let capacity = (code.len() + page_size - 1) & !(page_size - 1);
 
@@ -134,26 +113,12 @@ pub trait CodePage: Sized {
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::MacOsCodePage;
-#[cfg(target_os = "macos")]
-pub type NativeCodePage = macos::MacOsCodePage;
+type NativeCodePage = macos::MacOsCodePage;
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::LinuxCodePage;
-#[cfg(target_os = "linux")]
-pub type NativeCodePage = linux::LinuxCodePage;
-
-pub mod mock;
-pub use mock::MockCodePage;
-
-/// Get the system page size for the native target.
-#[must_use]
-#[inline]
-pub fn page_size() -> usize {
-    NativeCodePage::page_size()
-}
+type NativeCodePage = linux::LinuxCodePage;
 
 // =============================================================================
 // The one kernel ABI
@@ -175,7 +140,7 @@ pub fn page_size() -> usize {
 ///
 /// Every lane of every batch the code computes is stored: the width is the
 /// extent's, and a row's final partial batch stores exactly its remainder.
-pub type KernelFn = extern "C" fn(*const *const f32, *mut f32, usize);
+type KernelFn = extern "C" fn(*const *const f32, *mut f32, usize);
 
 // =============================================================================
 // Tests
@@ -205,18 +170,17 @@ mod page_tests {
         }
     }
 
-    /// Asked of the machine, not assumed from the OS. A bad `sysconf` fallback
-    /// would show up here as a non-power-of-two or an absurd size.
+    /// Asked of the machine, not assumed from the OS.
     ///
     /// The lower bound and the power of two together are what aarch64's
-    /// [`AdrpAdd`](crate::emit::aarch64::AdrpAdd) rests on: they make every
+    /// [`AdrpAdd`](crate::emit::aarch64::Inst::AdrpAdd) rests on: they make every
     /// mapping a multiple of 4 KiB, which is the only reason masking a
     /// *buffer offset* finds the same page that masking the runtime address
     /// would. A 2 KiB page here and every `ADRP` this crate emits is off by
     /// one.
     #[test]
     fn page_size_is_a_sane_power_of_two() {
-        let n = page_size();
+        let n = NativeCodePage::page_size();
         assert!(n >= 4096, "page size {n} below the smallest we run on");
         assert!(n <= 1 << 20, "page size {n} implausibly large");
         assert!(n.is_power_of_two(), "page size {n} is not a power of two");
@@ -229,9 +193,7 @@ mod page_tests {
     fn code_survives_the_w_xor_x_flip() {
         let code = host_ret();
         // SAFETY: `code` is a single valid `ret` for this architecture.
-        let exec = unsafe { ExecutableCode::from_code(&code) }.expect("map + flip");
-        assert_eq!(exec.len(), code.len());
-        assert!(!exec.is_empty());
+        let exec = unsafe { CompiledKernel::from_code(&code) }.expect("map + flip");
         assert_eq!(
             exec.as_bytes(),
             code.as_slice(),
@@ -245,38 +207,15 @@ mod page_tests {
     fn length_reported_is_the_code_not_the_mapping() {
         let mut code = host_ret();
         let ret_len = code.len();
-        code.resize(page_size() + ret_len, 0);
+        code.resize(NativeCodePage::page_size() + ret_len, 0);
         code.rotate_right(ret_len); // keep the `ret` first
         // SAFETY: entry point is a valid `ret`; the padding is never executed.
-        let exec = unsafe { ExecutableCode::from_code(&code) }.expect("map + flip");
-        assert_eq!(exec.len(), code.len(), "len must be the code, not the page");
-    }
-
-    #[test]
-    fn an_empty_buffer_is_refused() {
-        // SAFETY: empty slice; rejected before anything is mapped.
-        match unsafe { ExecutableCode::from_code(&[]) } {
-            Err(e) => assert_eq!(e, CompileError::EmptyCodeBuffer),
-            Ok(_) => panic!("an empty buffer must not map"),
-        }
-    }
-
-    /// `sync_instruction_cache` must accept an empty range without touching
-    /// memory — the aarch64 path computes a loop bound from it.
-    #[test]
-    fn syncing_an_empty_range_is_a_no_op() {
-        #[cfg(target_os = "macos")]
-        macos::test_sync_empty();
-        #[cfg(target_os = "linux")]
-        linux::test_sync_empty();
-    }
-
-    #[test]
-    fn mock_code_page_exercises_lifecycle() {
-        let code = host_ret();
-        let exec = MockCodePage::from_code(&code).expect("mock map + flip");
-        assert_eq!(exec.len(), code.len());
-        assert_eq!(exec.as_bytes(), code.as_slice());
+        let exec = unsafe { CompiledKernel::from_code(&code) }.expect("map + flip");
+        assert_eq!(
+            exec.as_bytes().len(),
+            code.len(),
+            "len must be the code, not the page"
+        );
     }
 
     /// Every other test in this module reads `host_ret`'s bytes back rather
@@ -292,23 +231,9 @@ mod page_tests {
         // bare `ret` touches no memory and no register but the program
         // counter, so calling it with no arguments and discarding any return
         // value is sound as long as it really is one.
-        let exec = unsafe { ExecutableCode::from_code(&code) }.expect("map + flip");
-        let func: NoOp = unsafe { exec.as_fn() };
+        let exec = unsafe { CompiledKernel::from_code(&code) }.expect("map + flip");
+        let func: NoOp = unsafe { core::mem::transmute(exec.as_bytes().as_ptr()) };
         unsafe { func() };
-    }
-
-    /// `from_code` refuses an empty buffer, so `is_empty` can never observe
-    /// the zero-length case through it; go around it the way `from_code`
-    /// itself is built — `map` then `finish` directly — to construct the
-    /// case `is_empty` exists to report.
-    #[test]
-    fn is_empty_reports_a_zero_length_page() {
-        let exec = MockCodePage::map(page_size())
-            .expect("map")
-            .finish(0)
-            .expect("finish");
-        assert!(exec.is_empty());
-        assert_eq!(exec.len(), 0);
     }
 
     /// The `- 1` in `(len + page_size - 1) & !(page_size - 1)` is what stops
@@ -316,11 +241,10 @@ mod page_tests {
     /// pin the arithmetic at that boundary specifically; a naive round-up
     /// without it would double the mapping for `exact` below. `capacity` is
     /// private to this crate but not to this module — [`page_tests`] is a
-    /// descendant of `executable`, same as `MockCodePage`'s own construction
-    /// of it.
+    /// descendant of `executable`.
     #[test]
     fn capacity_rounds_up_to_the_page_size_without_overshooting_an_exact_multiple() {
-        let page = page_size();
+        let page = NativeCodePage::page_size();
 
         let exact = vec![0u8; page];
         let exec = NativeCodePage::from_code(&exact).expect("map");
@@ -364,7 +288,7 @@ mod abi_tests {
         let mut out = [0u32; 2];
         // SAFETY: the code writes exactly eight bytes at `out` and returns.
         unsafe {
-            let exec = ExecutableCode::from_code(code).expect("map + flip");
+            let exec = CompiledKernel::from_code(code).expect("map + flip");
             exec.call(
                 core::ptr::null(),
                 out.as_mut_ptr().cast::<f32>(),

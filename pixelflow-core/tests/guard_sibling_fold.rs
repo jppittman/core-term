@@ -3,8 +3,8 @@
 //! the fold's *body* rather than through a register operand.
 //!
 //! `pixelflow-codegen`'s `program::ownership` decides which schedule entries an
-//! `If`'s arm owns and `program::layout` orders a scope so an arm is one
-//! contiguous run (before them, `emit/guards.rs`'s `if_arms` and
+//! `If`'s arm owns and `program::layout` nests an arm as a block
+//! before its `If` (before them, `emit/guards.rs`'s `if_arms` and
 //! `cluster_if_arms` did the same by search). All of them used to read
 //! dependencies off
 //! `regalloc::operands` alone, which treats a `Reduce` def as a leaf: once
@@ -18,8 +18,8 @@
 //!    `out = select(X < T, W·sin(X/10), 0) + D`, with `W = Σ_j |X − j/2|` and
 //!    `D = Σ_k |W − 40k|`. `D`'s body reads `W`'s accumulator through a
 //!    placeholder, so `W`'s only consumer in the batch scope was the arm's
-//!    `Mul`; `W`'s `Reduce` is never a scope root (`stays_put` in `program/scopes.rs`), so the
-//!    `OUTSIDE` pin did not cover it either. `sin`'s expansion alone prices
+//!    `Mul`; `W`'s `Reduce` was not a scope root then (`stays_put`, deleted in
+//!    D2), so the `OUTSIDE` pin did not cover it either. `sin`'s expansion alone prices
 //!    the arm past the 16-cycle bound, and it was guarded — `W`'s whole loop
 //!    inside the skipped range. On a batch whose mask is
 //!    uniformly false, `D` read `W`'s slot as the last batch that ran the arm
@@ -61,7 +61,8 @@ const HEIGHT: usize = 4;
 /// Trip count of every fold. Even, so the optimizer halves the fold without
 /// peeling a term out of it: `W` stays a bare `Reduce`, and a sibling reads
 /// its accumulator directly. (With an odd count the peeled term makes `W` an
-/// `Add` in the batch scope, which is an ordinary root, and pins the fold.)
+/// `Add` in the batch scope, which `D` reads in place of `W`'s accumulator, so
+/// the sibling no longer reads the accumulator directly.)
 const TRIPS: u32 = 100;
 /// `W`'s per-trip offset step.
 const W_STEP: f64 = 0.5;
@@ -369,8 +370,8 @@ const INNER_TRIPS: u32 = 40;
 
 /// Bug 1 inside a fold's own body: `Σ_j select(X + j < T, V_j·sin, 0) + U_j`
 /// with `V_j = Σ_m |X + j − m/2|` and `U_j = Σ_k |V_j − 40k|`. The `If`, `V`
-/// and `U` are all in the outer fold's scope, whose edges `allocate_nest`
-/// and `cluster_pending` build from that fold's children.
+/// and `U` are all in the outer fold's scope, whose edges the allocator
+/// builds from that fold's children.
 #[test]
 fn a_guard_in_a_folds_body_keeps_a_fold_a_sibling_fold_reads() {
     let k = Kernel::sum_over(OUTER_TRIPS, |j| {
@@ -447,10 +448,10 @@ fn control_an_arm_that_owns_nothing() {
 }
 
 /// `select(X < T, W·sin, 0) + D'` with `D' = Σ_k |W + Y − 40k|`: the sibling
-/// reads `W + Y`, which the batch scope computes and parks — an ordinary
-/// root, pinned outside every arm, and `W` with it. The guard fired and the
-/// answer was right even before the fix, which is what made a *direct* read
-/// the hazard.
+/// reads `W + Y`, which the batch scope computes for `D'`'s loop. That loop
+/// runs outside the arm, so no arm owns `W + Y`, nor `W` with it. The guard
+/// fired and the answer was right even before the fix, which is what made a
+/// *direct* read the hazard.
 #[test]
 fn control_a_sibling_reading_through_a_parked_value() {
     let w = w_of_x();

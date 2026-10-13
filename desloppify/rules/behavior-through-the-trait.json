@@ -1,0 +1,28 @@
+{
+  "unit": "outline",
+  "levels": {
+    "decide": 1,
+    "explain": 2
+  },
+  "exclude": [
+    "**/*_tests.rs",
+    "**/benches/**",
+    "**/examples/**",
+    "**/tests.rs",
+    "**/tests/**"
+  ],
+  "context": "module_root",
+  "skills": [
+    "behavioral-contracts"
+  ],
+  "question": "Does this file give any public inherent method behavior that its module's contract — its traits, or the trait shape documented in the module root's docs — does not declare?",
+  "fine": {
+    "no_public_methods": "There are no public inherent methods beyond constructors (`new`, `with_*`, `from_*`, builders) and plain accessors of data types.",
+    "through_the_contract": "Every public inherent method is declared by the contract, with the same signature."
+  },
+  "violations": {
+    "second_door": "A public method duplicates behavior a trait impl forwards to, so callers can bypass the contract.",
+    "undeclared_behavior": "A public method offers behavior no trait or documented shape declares, or its signature differs from the documented one."
+  },
+  "guidance": "Name each method and the trait method it belongs on."
+}

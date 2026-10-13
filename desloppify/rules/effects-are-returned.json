@@ -1,0 +1,27 @@
+{
+  "unit": "file",
+  "levels": {
+    "decide": 2,
+    "explain": 3
+  },
+  "exclude": [
+    "**/*_tests.rs",
+    "**/benches/**",
+    "**/examples/**",
+    "**/tests.rs",
+    "**/tests/**"
+  ],
+  "skills": [
+    "behavioral-contracts"
+  ],
+  "question": "Does a trait method or trait impl in this file perform an effect itself — I/O, sending on a channel or actor handle, spawning, sleeping, reading a clock or global state — where it could return a value describing the effect for a thin adapter to perform?",
+  "fine": {
+    "no_contract_effects": "No trait or trait method here performs effects, or there are no traits here.",
+    "effects_returned": "Contract methods return their effects as values (as `EmulatorAction`, `AnsiBatch` and `DriverOut` do).",
+    "adapter": "The only effects are in an adapter whose whole job is performing effects a contract returned (an actor's `handle_*` forwarding a returned effect)."
+  },
+  "violations": {
+    "performs_effects": "A contract method performs an effect it could return instead, so the contract cannot be tested without the I/O."
+  },
+  "guidance": "Name the effect type that would replace it."
+}

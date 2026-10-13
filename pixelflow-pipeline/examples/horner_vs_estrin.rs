@@ -208,7 +208,7 @@ fn prior_sum(arena: &ExprArena, root: ExprId, model: &CostModel) -> f64 {
 /// moves the wrong way.
 struct Emitted {
     outputs: Vec<f32>,
-    spills: u32,
+    spills: u64,
     bytes: usize,
 }
 
@@ -230,7 +230,7 @@ fn evaluate(arena: &ExprArena, root: ExprId, n: usize) -> Emitted {
     Emitted {
         outputs: out,
         spills: result.spill_count,
-        bytes: result.code.len(),
+        bytes: result.code.as_bytes().len(),
     }
 }
 
@@ -266,7 +266,7 @@ struct Row {
     ns: [[f64; 2]; 3],
     adj: [[f64; 2]; 3],
     err: [f64; 2],
-    spills: [u32; 2],
+    spills: [u64; 2],
     bytes: [usize; 2],
 }
 

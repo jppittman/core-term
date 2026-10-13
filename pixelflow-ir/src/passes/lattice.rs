@@ -12,15 +12,16 @@
 //!                  Write(row=j, col=i, lane=l, f(x0 + i + l, y0 + j))
 //! pack(L)     = fold_j (   fold_{i∈[0,w−r) step L}   fold_{l∈[0,L)} Write(…)
 //!                        ; fold_{i∈[w−r,w−r+1)}      fold_{l∈[0,r)} Write(…) )
-//!                                                      (the `;` arm only when r > 0)
+//!                 (the first arm only when w − r > 0, the second only when r > 0,
+//!                  the `;` only when both exist)
 //! ```
 //!
 //! `w × h` is the extent, `q = w / L`, `r = w % L`; every fold is over
 //! [`Monoid::SEQ`], the unit monoid; `;` is [`OpKind::Seq`]. `collapse` builds
 //! a *degenerate* `[0,1)` lane fold rather than none at all, so `Write`
-//! always has all three binders and `pack` only ever reshapes the two inner
-//! folds' ranges — the body, the `Write` node itself, is shared and
-//! untouched. This is the monadic reading — a `SEQ` fold is `for_`, `Seq` is
+//! always has all three binders and `pack` only ever rebuilds the two inner
+//! folds around it, with new ranges, or drops one — the `Write` node itself
+//! is shared and untouched. This is the monadic reading — a `SEQ` fold is `for_`, `Seq` is
 //! `>>` — and `pack` is exactly the chunking law
 //! `for_ [0,w) f = for_ [0,w−r) step L (\i -> for_ [0,L) (\l -> f(i+l))) >>
 //! for_ [w−r] (\i -> for_ [0,r) (\l -> f(i+l)))`
@@ -73,7 +74,7 @@ pub struct Domain {
 ///
 /// # Panics
 ///
-/// - If a `Ref` or a `Dwrt` (any arity) is reachable from
+/// - If a `Ref` or a `Dwrt` (binary or n-ary) is reachable from
 ///   `root`. A `Ref` is a name:
 ///   [`substitute_vars_with`](ExprArena::substitute_vars_with) copies it
 ///   through without reaching the referent's `Var(0)`, so the warp below
@@ -155,10 +156,7 @@ fn reachable_taken_binders(arena: &ExprArena, root: ExprId) -> [bool; Binder::CO
                  would silently never reach it; run expand_refs first \
                  ({PASS_ORDER})"
             ),
-            ExprNode::Unary(OpKind::Dwrt, _)
-            | ExprNode::Binary(OpKind::Dwrt, _, _)
-            | ExprNode::Ternary(OpKind::Dwrt, _, _, _)
-            | ExprNode::Nary(OpKind::Dwrt, _) => panic!(
+            ExprNode::Binary(OpKind::Dwrt, _, _) | ExprNode::Nary(OpKind::Dwrt, _) => panic!(
                 "collapse: a Dwrt is reachable from root — it must be taken \
                  with respect to Var(0) before this pass substitutes that \
                  variable away; run lower_dwrt first ({PASS_ORDER})"
@@ -178,16 +176,17 @@ fn reachable_taken_binders(arena: &ExprArena, root: ExprId) -> [bool; Binder::CO
     taken
 }
 
-/// Strip-mine [`collapse`]'s column fold by `lanes`: a main fold stepping by
-/// `lanes` over `[0, w−r)` with a full lane fold `[0, lanes)` inside it, then
-/// — only when `r = w mod lanes` is nonzero — the remainder
-/// `[w−r, w−r+1)` × `[0, r)`, sequenced after the main fold under the row
-/// fold with [`OpKind::Seq`]. The `Write` [`collapse`] built is the same
-/// `ExprId` in every arm: only the two inner folds' ranges move, never the
-/// body they wrap (module doc — the chunking law for `for_`).
+/// Strip-mine [`collapse`]'s column fold by `lanes`, under the row fold. Let
+/// `r = w mod lanes`. A main fold exists only when `w − r > 0`: it steps by
+/// `lanes` over `[0, w−r)` with a full lane fold `[0, lanes)` inside it. A
+/// remainder exists only when `r > 0`: `[w−r, w−r+1)` × `[0, r)`. When both
+/// exist the remainder is sequenced after the main fold with [`OpKind::Seq`].
+/// The `Write` [`collapse`] built is the same `ExprId` in every arm: only the
+/// two inner folds around it are rebuilt, never the body they wrap (module doc
+/// — the chunking law for `for_`).
 ///
-/// When `w < lanes` this still holds: the main fold becomes the empty strided
-/// fold `[0,0)`, and the whole column is the remainder. No special case.
+/// When `w < lanes` there is no full batch, so there is no main fold: the whole
+/// column is the remainder. A fold over nothing is not built to be skipped.
 ///
 /// # Panics
 ///
@@ -196,7 +195,7 @@ fn reachable_taken_binders(arena: &ExprArena, root: ExprId) -> [bool; Binder::CO
 ///   `[0,1)`) wrapping a `Write` whose `row`/`col`/`lane` equal the three
 ///   folds' binders, in that order. Naming a pipeline-order bug: `pack` must
 ///   run directly on `collapse`'s own output.
-/// - If `lanes == 0`.
+/// - If `lanes == 0`, or the column fold is empty.
 pub fn pack(arena: &mut ExprArena, root: ExprId, lanes: u32) -> ExprId {
     assert!(lanes != 0, "pack: lanes must be nonzero");
 
@@ -209,19 +208,21 @@ pub fn pack(arena: &mut ExprArena, root: ExprId, lanes: u32) -> ExprId {
     let h = row_fold.range().end;
     let r = w % lanes;
 
-    let lane_main = arena.push_reduce(Fold::new(Monoid::SEQ, lane, 0..lanes), write);
-    let col_main = arena.push_reduce(
-        Fold::strided(Monoid::SEQ, col, 0..(w - r), lanes),
-        lane_main,
-    );
-
-    let body = if r > 0 {
+    let main = (w > r).then(|| {
+        let lane_main = arena.push_reduce(Fold::new(Monoid::SEQ, lane, 0..lanes), write);
+        arena.push_reduce(
+            Fold::strided(Monoid::SEQ, col, 0..(w - r), lanes),
+            lane_main,
+        )
+    });
+    let remainder = (r > 0).then(|| {
         let lane_rem = arena.push_reduce(Fold::new(Monoid::SEQ, lane, 0..r), write);
-        let col_rem =
-            arena.push_reduce(Fold::new(Monoid::SEQ, col, (w - r)..(w - r + 1)), lane_rem);
-        arena.push_binary(OpKind::Seq, col_main, col_rem)
-    } else {
-        col_main
+        arena.push_reduce(Fold::new(Monoid::SEQ, col, (w - r)..(w - r + 1)), lane_rem)
+    });
+    let body = match (main, remainder) {
+        (Some(main), Some(remainder)) => arena.push_binary(OpKind::Seq, main, remainder),
+        (Some(only), None) | (None, Some(only)) => only,
+        (None, None) => panic!("pack: the lattice has no column"),
     };
 
     arena.push_reduce(Fold::new(Monoid::SEQ, row, 0..h), body)
@@ -534,7 +535,9 @@ mod tests {
             "the value depends on all three, via x and y, and nothing else"
         );
         assert!(
-            !v[value.0 as usize].is_spatially_varying(),
+            v[value.0 as usize]
+                .intersection(Variance::COORDS)
+                .is_const(),
             "no coordinate bit survives collapse"
         );
     }
@@ -722,9 +725,8 @@ mod tests {
         assert_eq!(v[packed.0 as usize], Variance::CONST);
     }
 
-    /// `w = 3`, `L = 4`: a row narrower than one batch. The main fold is the
-    /// empty strided fold `[0,0)` — no special case — and the whole row is
-    /// the remainder, `[0,1) × [0,3)`.
+    /// `w = 3`, `L = 4`: a row narrower than one batch. There is no main fold
+    /// to build, and the whole row is the remainder, `[0,1) × [0,3)`.
     #[test]
     fn pack_of_a_row_narrower_than_a_batch_is_all_remainder() {
         let k = Kernel::x().add(&Kernel::y());
@@ -742,23 +744,12 @@ mod tests {
             panic!("packed root must be the row fold");
         };
 
-        let ExprNode::Binary(OpKind::Seq, main, rem) = arena.node(row_body) else {
-            panic!("even an all-remainder row sequences main then remainder");
-        };
-
-        let ExprNode::Reduce { fold: main_col, .. } = arena.node(main) else {
-            panic!("main must be a Reduce");
-        };
-        assert!(main_col.is_empty());
-        assert_eq!(main_col.range(), 0..0);
-        assert_eq!(main_col.stride(), 4);
-
         let ExprNode::Reduce {
             fold: rem_col,
             body: rem_lane_id,
-        } = arena.node(rem)
+        } = arena.node(row_body)
         else {
-            panic!("rem must be a Reduce");
+            panic!("the row fold's body must be the remainder, with no main fold");
         };
         assert_eq!(rem_col.range(), 0..1);
         let ExprNode::Reduce { fold: rem_lane, .. } = arena.node(rem_lane_id) else {

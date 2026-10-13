@@ -2,46 +2,31 @@
 //! arena and the machine code shares.
 //!
 //! A scheduled value ([`Def`]) and the operation that defines it ([`ScheduledOp`]),
-//! the scopes a schedule is split into ([`ScopedSchedule`]) and the branches over
-//! them ([`IfGuard`]). None of it names a register or a byte: it is what lowering
+//! the scopes a schedule is split into ([`ScopedSchedule`]) and the blocks each
+//! scope's arms are ([`Flow`]). None of it names a register or a byte: it is what lowering
 //! produces and what allocation and emission consume, which is why it lives
-//! under neither.
+//! under neither. The stages that build it are [`Nest`], [`Own`] and [`Layout`].
 
-pub(crate) mod guards;
-pub(crate) mod layout;
-pub(crate) mod lower;
-pub(crate) mod ownership;
+mod guards;
+mod layout;
+mod lower;
+mod ownership;
 mod scopes;
-pub(crate) mod tree;
-#[cfg(test)]
-pub(crate) use scopes::lay_out;
+mod tree;
+pub(crate) use layout::Layout;
+pub(crate) use lower::arena_to_schedule;
+pub(crate) use ownership::Own;
+pub(crate) use scopes::Nest;
 
 use alloc::vec::Vec;
 
 use pixelflow_ir::fold::{Binder, Fold};
 use pixelflow_ir::kind::OpKind;
+use pixelflow_ir::variance::Variance;
 
 /// A value in the program (SSA-style).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ValueId(pub u32);
-
-/// Which register file a value lives in: a vector of `f32` lanes, or an
-/// address.
-///
-/// A function of the defining op ([`ScheduledOp::class`]), and every
-/// consumer knows by position which it reads — a `Gather`'s index is a
-/// vector and its base is a pointer. The two classes never compete for a
-/// register, so allocation runs once per class over one schedule
-/// (`LinearScan`), each pass blind to the other's values, and the assembler
-/// gets a `PtrReg` where it demands one because the allocator never held
-/// the address anywhere else (docs/plans/2026-09-22-a-pointer-is-a-value.md).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Class {
-    /// One SIMD batch of `f32`, in a `Reg`.
-    Vector,
-    /// An address, in a `PtrReg`.
-    Pointer,
-}
+pub(crate) struct ValueId(pub(super) u64);
 
 /// One step of a schedule: a value, and the operation that defines it.
 ///
@@ -49,18 +34,22 @@ pub enum Class {
 /// schedule is a sequence of these, and a value's program point is its index
 /// in that sequence.
 #[derive(Clone, Debug)]
-pub struct Def {
+pub(crate) struct Def {
     /// The value this step defines.
-    pub value: ValueId,
+    pub(super) value: ValueId,
     /// The operation that computes it.
-    pub op: ScheduledOp,
+    pub(super) op: ScheduledOp,
+    /// What the value varies with: the variance of the arena node it was
+    /// lowered from (`compute_arena_variance`), which scoping places it by.
+    pub(super) variance: Variance,
 }
 
 /// Info about an operation in the schedule.
 #[derive(Debug, Clone)]
-pub enum ScheduledOp {
-    /// Variable reference (input register)
-    Var(u8),
+pub(crate) enum ScheduledOp {
+    /// A fold's binder, read as a value: the counter of the innermost
+    /// enclosing loop that binds it.
+    Var(Binder),
     /// Constant value
     Const(f32),
     /// Unary op with input value
@@ -76,7 +65,7 @@ pub enum ScheduledOp {
     /// Bound-memory gather: read the buffer whose base is the second operand
     /// at the lane index computed by the first. Lowered from
     /// `RawGather(Buffer(slot), index)`; the `Buffer` leaf *is* the base — a
-    /// [`ScheduledOp::Context`] def, a [`Class::Pointer`] value
+    /// [`ScheduledOp::Context`] def, a pointer value
     /// the allocator places like any other — so the index is the one vector
     /// operand and the base the one pointer operand.
     Gather(ValueId, ValueId),
@@ -100,7 +89,7 @@ pub enum ScheduledOp {
     /// The `k`-th pointer of the context the kernel is called with: a
     /// buffer's base for `k` below the buffer count, the link's uniform
     /// block and the origin block after. The definition of every
-    /// [`Class::Pointer`] value; no operands, variance `CONST`,
+    /// pointer value; no operands, variance `CONST`,
     /// so it is placed in the per-call scope and carried into the loops
     /// inside by `plan_carries` on the strength of its reads there — one
     /// load per call where every gather used to reload it
@@ -109,9 +98,11 @@ pub enum ScheduledOp {
     /// The lane fold's binder: the constant `[0, 1, …, L−1]`. The fold
     /// whose binder this is executes by lanes (its body is inlined into its
     /// parent's schedule — see `lower::arena_to_schedule`), so the binder is a
-    /// leaf here rather than a loop counter. Carries the binder so its
-    /// variance bit is the fold's, which is what "lane-uniform" is read off.
-    Lanes(Binder),
+    /// leaf here rather than a loop counter. Its def's variance is the lane
+    /// binder's bit alone (the arena `Var`'s), so every value built on it
+    /// carries that bit; lowering reads lane-uniformity off the arena's table,
+    /// and scoping keeps lane-varying values in the storing scope by it.
+    Lanes,
     /// The store the lattice's folds wrap a kernel in: `value`'s first
     /// `lanes` lanes at `out + 4·(row·pitch + col)`, `row` and `col` being
     /// the enclosing folds' binders. This def *is* the lane fold, executed
@@ -135,27 +126,11 @@ pub enum ScheduledOp {
     /// body is the value named by the second field — in *this schedule's*
     /// numbering (`lower::arena_to_schedule` maps it like any other child), before
     /// `scopes::extract_folds` carves the body out into its own
-    /// [`ScopeFold`]. Kept only so `scopes::schedule_variance` can look
-    /// the body's variance up (`Reduce`'s own result is the body's variance
-    /// with the binder's own bit removed) and so `scopes::extract_folds` can find
+    /// [`ScopeFold`]. Kept so `scopes::extract_folds` can find
     /// the body's closure; the emitter never resolves it as an operand —
-    /// the loop's result comes from `regalloc::Allocation::opens_at`
-    /// naming the [`Scope::Fold`] this def opens, not from this
-    /// `ValueId`.
+    /// the loop's result comes from the loop selection opens for the
+    /// [`Scope::Fold`] this def opens, not from this `ValueId`.
     Reduce(Fold, ValueId),
-}
-
-impl ScheduledOp {
-    /// Which register file the value this op defines lives in: a
-    /// [`ScheduledOp::Context`] is an address, everything else is a vector
-    /// (an effect's "value" included, which is never placed anywhere).
-    #[must_use]
-    pub fn class(&self) -> Class {
-        match self {
-            ScheduledOp::Context(_) => Class::Pointer,
-            _ => Class::Vector,
-        }
-    }
 }
 
 /// Which scope of a loop nest: the body the call runs once, or one of the
@@ -177,12 +152,11 @@ impl ScheduledOp {
 /// the way down. The derived `Ord` is therefore **not** nesting order — it
 /// is a total order over names, for deterministic keying.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Scope {
+pub(crate) enum Scope {
     /// The whole function: what runs once per call, and holds the outermost
     /// fold's def.
     Body,
-    /// A surviving `Reduce`'s loop body, indexing
-    /// `NestAllocation::folds`. It opens in the *middle* of its parent's
+    /// A surviving `Reduce`'s loop body. It opens in the *middle* of its parent's
     /// schedule, which is what makes the nest a tree.
     Fold(usize),
 }
@@ -192,188 +166,144 @@ pub enum Scope {
 ///
 /// This is the loop nest as data. `body` is what happens once per call — the
 /// per-call values, and the outermost fold's def — and each fold's schedule
-/// is what happens once per trip of its loop. Each scope's `roots` are the
-/// values it computes for the scopes inside it: placed here, by the
-/// outermost scope binding every binder the value depends on, so a value
-/// depending on nothing is computed once per call and one depending only on
-/// the row binder once per row (docs/plans/2026-09-16-collapse-is-a-fold.md
-/// §2.2).
+/// is what happens once per trip of its loop. A value is computed by the
+/// outermost scope binding every binder it depends on, so a value depending
+/// on nothing is computed once per call and one depending only on the row
+/// binder once per row (docs/plans/2026-09-16-collapse-is-a-fold.md §2.2);
+/// a fold that reads it names it in [`ScopeFold::outer`]. A scope's roots —
+/// what it computes for the scopes inside it — are its defs some fold inside
+/// names there: derived, not stored.
 ///
 /// The body is a field rather than `folds[0]` because it is genuinely a
 /// different thing: it wraps everything and opens nowhere.
-pub struct ScopedSchedule {
+///
+/// `A` is what each stage after [`Nest`] works out about every scope: nothing
+/// as [`Nest`] leaves it, then its [`ownership::Ownership`] ([`Own`]), then its
+/// [`Flow`] ([`Layout`]). A stage cannot be handed a nest its predecessor has
+/// not run on.
+pub(crate) struct ScopedSchedule<A> {
     /// What runs once per call.
-    pub body: ScopeRegion,
+    pub(super) body: ScopeRegion<A>,
     /// The surviving folds, in [`Scope::Fold`] order — every one of them,
     /// the lattice's own included.
-    pub folds: Vec<ScopeFold>,
+    pub(super) folds: Vec<ScopeFold<A>>,
 }
 
 /// One scope of a [`ScopedSchedule`] that opens nowhere: the body.
-pub struct ScopeRegion {
-    /// Values this scope computes for the ones inside it.
-    pub roots: Vec<ValueId>,
+pub(crate) struct ScopeRegion<A> {
     /// What it computes, in topological order.
-    pub schedule: Vec<Def>,
-    /// This scope's `If` guards: which entries of `schedule` each branch
-    /// skips. A table over `schedule`, handed in with it — the allocator
-    /// places split ranges around the arms it names and the emitter branches
-    /// over them, and neither derives them.
-    pub(crate) guards: Vec<IfGuard>,
+    pub(super) schedule: Vec<Def>,
+    /// What the stages since scoping have worked out about it.
+    pub(super) analysis: A,
 }
 
 /// One surviving fold of a [`ScopedSchedule`]: a scope that opens in the
 /// middle of another scope.
-pub struct ScopeFold {
+pub(crate) struct ScopeFold<A> {
     /// The scope whose schedule holds this loop's def.
-    pub parent: Scope,
-    /// Which def of `parent` — the `Reduce` this is the body of.
-    pub at: usize,
-    /// Values this fold computes for the scopes inside it.
-    pub roots: Vec<ValueId>,
+    pub(super) parent: Scope,
+    /// The `Reduce` def of `parent` this is the body of.
+    pub(super) reduce: ValueId,
+    /// Values an enclosing scope computes that this fold reads: what
+    /// `scopes::place_roots` took out of `schedule`, which holds only what
+    /// the fold defines.
+    pub(super) outer: Vec<ValueId>,
     /// The loop body, in topological order.
-    pub schedule: Vec<Def>,
-    /// The body's `If` guards, as [`ScopeRegion::guards`].
-    pub(crate) guards: Vec<IfGuard>,
+    pub(super) schedule: Vec<Def>,
+    /// What the stages since scoping have worked out about it.
+    pub(super) analysis: A,
 }
 
-/// Which arm of an `If` node a guard branch skips or targets.
+impl<A> ScopeFold<A> {
+    /// The ids the fold names: the ones it defines and the ones it reads
+    /// from outside. Those its parent's schedule also holds are what the
+    /// fold reads from there.
+    pub(super) fn reads(&self) -> impl Iterator<Item = ValueId> + '_ {
+        let defined = self.schedule.iter().map(|def| def.value);
+        defined.chain(self.outer.iter().copied())
+    }
+}
+
+impl<A> ScopedSchedule<A> {
+    /// What `scope` holds: its defs, the ids it reads from outside (none for
+    /// the body) and its analysis.
+    fn at(&self, scope: Scope) -> (&[Def], &[ValueId], &A) {
+        match scope {
+            Scope::Body => (&self.body.schedule, &[], &self.body.analysis),
+            Scope::Fold(j) => {
+                let fold = &self.folds[j];
+                (&fold.schedule, &fold.outer, &fold.analysis)
+            }
+        }
+    }
+
+    /// This nest with each scope's analysis replaced by what `f` works out
+    /// about that scope, reading the whole nest as it was.
+    fn analyze<B>(self, f: impl Fn(&Self, Scope) -> B) -> ScopedSchedule<B> {
+        let body = f(&self, Scope::Body);
+        let analyses: Vec<B> = (0..self.folds.len())
+            .map(|j| f(&self, Scope::Fold(j)))
+            .collect();
+        let body = ScopeRegion {
+            schedule: self.body.schedule,
+            analysis: body,
+        };
+        let folds = self
+            .folds
+            .into_iter()
+            .zip(analyses)
+            .map(|(fold, analysis)| ScopeFold {
+                parent: fold.parent,
+                reduce: fold.reduce,
+                outer: fold.outer,
+                schedule: fold.schedule,
+                analysis,
+            })
+            .collect();
+        ScopedSchedule { body, folds }
+    }
+}
+
+/// Which arm of an `If` node a branch skips.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum IfArm {
+pub(crate) enum IfArm {
     /// The `if_true` arm: skipped when all lanes of the mask are false.
     True,
     /// The `if_false` arm: skipped when all lanes of the mask are true.
     False,
 }
 
-impl IfArm {
-    /// Both arms of an `If`.
-    pub const ALL: [Self; 2] = [Self::True, Self::False];
+/// How a scope's schedule runs: its defs in order, with each arm that earns a
+/// branch nested as the block it is, immediately before its `If` (`layout`).
+/// Selection walks it and emits the guard and the block after it around each
+/// arm; nothing recovers a region from a position.
+#[derive(Debug)]
+pub(crate) struct Flow {
+    /// What the scope runs, outermost.
+    pub(super) items: Vec<Item>,
+    /// Every arm that earns a block, in the order of their `If`s.
+    pub(super) arms: Vec<ArmBlock>,
 }
 
-/// A value associated with each arm of an `If` node (`True` and `False`).
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct ArmPair<T> {
-    pub true_arm: T,
-    pub false_arm: T,
+/// One step of a block.
+#[derive(Copy, Clone, Debug)]
+pub(crate) enum Item {
+    /// The def at this position of the scope's schedule.
+    Def(usize),
+    /// The block of this entry of [`Flow::arms`], run where it stands.
+    Arm(usize),
 }
 
-impl<T> ArmPair<T> {
-    /// Construct a pair from true-arm and false-arm values.
-    #[inline]
-    pub const fn new(true_arm: T, false_arm: T) -> Self {
-        Self {
-            true_arm,
-            false_arm,
-        }
-    }
-
-    /// Access the value for `arm`.
-    #[inline]
-    pub const fn get(&self, arm: IfArm) -> &T {
-        match arm {
-            IfArm::True => &self.true_arm,
-            IfArm::False => &self.false_arm,
-        }
-    }
-
-    /// Mutably access the value for `arm`.
-    #[inline]
-    pub fn get_mut(&mut self, arm: IfArm) -> &mut T {
-        match arm {
-            IfArm::True => &mut self.true_arm,
-            IfArm::False => &mut self.false_arm,
-        }
-    }
-
-    /// Iterate over references to both arm values.
-    #[inline]
-    pub fn values(&self) -> impl Iterator<Item = &T> {
-        [&self.true_arm, &self.false_arm].into_iter()
-    }
-}
-
-impl<T> core::ops::Index<IfArm> for ArmPair<T> {
-    type Output = T;
-    #[inline]
-    fn index(&self, arm: IfArm) -> &Self::Output {
-        self.get(arm)
-    }
-}
-
-impl<T> core::ops::IndexMut<IfArm> for ArmPair<T> {
-    #[inline]
-    fn index_mut(&mut self, arm: IfArm) -> &mut Self::Output {
-        self.get_mut(arm)
-    }
-}
-
-/// Describes an If node's short-circuit structure in the schedule.
-///
-/// For `If(mask, if_true, if_false)`, identifies contiguous ranges of
-/// schedule entries that are exclusive to each arm (not shared with mask
-/// or the other arm). These ranges can be guarded by conditional branches.
-#[derive(Debug, Clone)]
-pub(crate) struct IfGuard {
-    /// Schedule index of the If node itself.
-    pub(crate) if_idx: usize,
-    /// ValueId of the mask operand (already computed before arms).
-    pub(crate) mask_vid: ValueId,
-    /// Range of schedule indices exclusive to each arm: `[start, end)`.
-    /// Empty if `start == end`.
-    pub(crate) ranges: ArmPair<(usize, usize)>,
-}
-
-impl IfGuard {
-    /// Schedule index range exclusive to the given arm: `[start, end)`.
-    #[must_use]
-    #[inline]
-    pub(crate) const fn range(&self, arm: IfArm) -> (usize, usize) {
-        match arm {
-            IfArm::True => self.ranges.true_arm,
-            IfArm::False => self.ranges.false_arm,
-        }
-    }
-
-    /// Schedule index range exclusive to the true arm: `[start, end)`.
-    #[must_use]
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) const fn true_range(&self) -> (usize, usize) {
-        self.ranges.true_arm
-    }
-
-    /// Schedule index range exclusive to the false arm: `[start, end)`.
-    #[must_use]
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) const fn false_range(&self) -> (usize, usize) {
-        self.ranges.false_arm
-    }
-
-    /// Whether this arm is guarded (has a non-empty range).
-    #[must_use]
-    #[inline]
-    pub(crate) fn is_guarded(&self, arm: IfArm) -> bool {
-        let (s, e) = self.range(arm);
-        s != e
-    }
-
-    /// Whether either arm is guarded.
-    #[must_use]
-    #[inline]
-    pub(crate) fn has_guarded_arm(&self) -> bool {
-        IfArm::ALL.iter().any(|&arm| self.is_guarded(arm))
-    }
-
-    /// Total entries skipped across both arms.
-    #[must_use]
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn total_guarded_entries(&self) -> usize {
-        (self.ranges.true_arm.1 - self.ranges.true_arm.0)
-            + (self.ranges.false_arm.1 - self.ranges.false_arm.0)
-    }
+/// An arm of an `If` that owns work of its own: skipped when no lane of the
+/// mask selects it.
+#[derive(Debug)]
+pub(crate) struct ArmBlock {
+    /// Which arm of its `If`.
+    pub(super) arm: IfArm,
+    /// The `If`'s mask, bound before the block begins.
+    pub(super) mask: ValueId,
+    /// What the arm runs.
+    pub(super) items: Vec<Item>,
 }
 
 /// The values an operation reads *as registers*, in operand order.
@@ -381,9 +311,8 @@ impl IfGuard {
 /// A `Reduce` is a leaf here, the same as `Uniform` — by the time one reaches
 /// a schedule this function walks, `scopes::extract_folds` has already carved its
 /// body out into its own `ScopeFold`; the `ValueId` `ScheduledOp::Reduce`
-/// still carries is `scopes::schedule_variance`'s and `scopes::extract_folds`'s own concern
-/// (they run before extraction, and after respectively, over different
-/// schedules), never an operand this scope's allocation resolves. What the
+/// still carries is `scopes::extract_folds`'s own concern, never an operand
+/// this scope's allocation resolves. What the
 /// loop it opens reads from this scope is a dependency all the same, and the
 /// guard analysis has it as one (`guards::FoldReads`). A `Seq`
 /// sequences two effects and reads no register; a `Write` reads the one
@@ -392,7 +321,7 @@ impl IfGuard {
 pub(crate) fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
     let (a, b, c) = match sop {
         ScheduledOp::Var(_)
-        | ScheduledOp::Lanes(_)
+        | ScheduledOp::Lanes
         | ScheduledOp::Const(_)
         | ScheduledOp::Context(_)
         | ScheduledOp::Uniform(..)
@@ -412,9 +341,8 @@ pub(crate) fn operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use
 }
 
 /// The address an operation reads, if it reads one: a gather's, a
-/// broadcast's or a uniform load's base, always a [`Class::Pointer`] value.
-/// One at most, which is what lets `Scratch::ptr_reload` be a single
-/// register.
+/// broadcast's or a uniform load's base, always a pointer value.
+/// One at most.
 pub(crate) fn pointer_operand(sop: &ScheduledOp) -> Option<ValueId> {
     match sop {
         ScheduledOp::Gather(_, base) | ScheduledOp::Broadcast(_, base) => Some(*base),
@@ -435,7 +363,7 @@ pub(crate) fn all_operands(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> +
 /// plus the body a `Reduce` folds and the two effects a `Seq` orders — the
 /// children a walk of the DAG's structure follows, as opposed to the
 /// registers an instruction reads ([`operands`]).
-pub(crate) fn structural_children(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
+fn structural_children(sop: &ScheduledOp) -> impl Iterator<Item = ValueId> + use<'_> {
     let extra = match sop {
         ScheduledOp::Reduce(_, body) => [Some(*body), None],
         ScheduledOp::Seq(a, b) => [Some(*a), Some(*b)],

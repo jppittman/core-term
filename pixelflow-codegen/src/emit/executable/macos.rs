@@ -8,11 +8,11 @@ use libc::{
     sysconf,
 };
 
-use super::{CodePage, ExecutableCode};
+use super::{CodePage, CompiledKernel};
 use crate::error::CompileError;
 
 /// A mapped, writable code page on macOS.
-pub struct MacOsCodePage {
+pub(super) struct MacOsCodePage {
     ptr: *mut u8,
     capacity: usize,
 }
@@ -31,7 +31,8 @@ fn sync_instruction_cache(_ptr: *mut u8, _len: usize) {}
 impl CodePage for MacOsCodePage {
     fn page_size() -> usize {
         let n = unsafe { sysconf(_SC_PAGESIZE) };
-        if n > 0 { n as usize } else { 16384 }
+        assert!(n > 0, "sysconf(_SC_PAGESIZE) failed");
+        n as usize
     }
 
     fn map(capacity: usize) -> Result<Self, CompileError> {
@@ -55,30 +56,12 @@ impl CodePage for MacOsCodePage {
     }
 
     fn write(&mut self, code: &[u8]) {
-        // `assert!`, not `debug_assert!`: this trait is publicly exported and
-        // its methods are safe, so a downstream caller reaches this
-        // `copy_nonoverlapping` from safe code. A debug-only guard compiles
-        // out of release, where the overrun would write past the mapping.
-        assert!(
-            code.len() <= self.capacity,
-            "code buffer ({} bytes) exceeds the mapped page ({} bytes)",
-            code.len(),
-            self.capacity,
-        );
+        // `CodePage::from_code` maps `code.len()` rounded up to a page, and
+        // nothing else calls this.
         unsafe { ptr::copy_nonoverlapping(code.as_ptr(), self.ptr, code.len()) };
     }
 
-    fn finish(self, len: usize) -> Result<ExecutableCode, CompileError> {
-        // Before anything reads `len` bytes: `sync_instruction_cache` walks
-        // that range, and the `ExecutableCode` this returns hands it to the
-        // safe `as_bytes`, which builds a slice from it. An unchecked `len`
-        // past `capacity` is therefore out-of-bounds through safe code.
-        if len > self.capacity {
-            return Err(CompileError::Internal(
-                "finish: code length exceeds the mapped page",
-            ));
-        }
-
+    fn finish(self, len: usize) -> Result<CompiledKernel, CompileError> {
         let rc = unsafe {
             mprotect(
                 self.ptr.cast::<libc::c_void>(),
@@ -93,7 +76,7 @@ impl CodePage for MacOsCodePage {
         sync_instruction_cache(self.ptr, len);
 
         let me = core::mem::ManuallyDrop::new(self);
-        Ok(ExecutableCode {
+        Ok(CompiledKernel {
             ptr: me.ptr,
             len,
             capacity: me.capacity,
@@ -103,12 +86,14 @@ impl CodePage for MacOsCodePage {
 
 impl Drop for MacOsCodePage {
     fn drop(&mut self) {
-        unsafe { munmap(self.ptr.cast::<libc::c_void>(), self.capacity) };
+        // As `CompiledKernel::drop`: the failure is a leak at best and nothing
+        // can be done about it here, but it must not pass unremarked. This
+        // drop is reached on `finish`'s error paths too.
+        let rc = unsafe { munmap(self.ptr.cast::<libc::c_void>(), self.capacity) };
+        debug_assert_eq!(
+            rc, 0,
+            "munmap failed for {:?} ({} bytes)",
+            self.ptr, self.capacity
+        );
     }
-}
-
-#[cfg(test)]
-pub(crate) fn test_sync_empty() {
-    let mut byte = 0u8;
-    sync_instruction_cache(&raw mut byte, 0);
 }

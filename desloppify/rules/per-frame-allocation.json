@@ -1,0 +1,31 @@
+{
+  "unit": "functions",
+  "levels": {
+    "decide": 1,
+    "explain": 2
+  },
+  "paths": [
+    "pixelflow-runtime/**",
+    "pixelflow-graphics/**",
+    "pixelflow-core/**",
+    "core-term/src/**"
+  ],
+  "exclude": [
+    "**/*_tests.rs",
+    "**/benches/**",
+    "**/examples/**",
+    "**/tests.rs",
+    "**/tests/**"
+  ],
+  "skills": [
+    "pixelflow-architecture"
+  ],
+  "question": "Does this function allocate on the heap in code that runs every frame, cell, glyph or pixel during rendering?",
+  "fine": {
+    "no_hot_allocation": "No heap allocation, or only in setup, construction, caching on a miss, or code that plainly runs once."
+  },
+  "violations": {
+    "allocates_per_frame": "`Vec::new`/`vec!`/`collect`, `String`/`format!`, `Box::new`, `clone()` of a heap type or `HashMap` construction on a per-frame path."
+  },
+  "guidance": "Suggest the reused buffer or cache."
+}
