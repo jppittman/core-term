@@ -23,7 +23,7 @@
 use std::marker::PhantomData;
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, RootShapes, ops};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -116,6 +116,10 @@ impl<T: FunctionInverse> Rewrite for ForwardBackward<T> {
         }
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(T::forward().kind())
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: forward(backward(x))
         let ENode::Op { op, children } = node else {
@@ -180,6 +184,10 @@ impl<T: FunctionInverse> Rewrite for BackwardForward<T> {
             OpKind::Log2 => "log2-exp2-cancel",
             _ => "backward-forward-cancel",
         }
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(T::backward().kind())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -305,6 +313,10 @@ impl<T: Homomorphism> Rewrite for HomomorphismRule<T> {
         }
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(T::func().kind())
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: func(source_op(a, b))
         let ENode::Op { op, children } = node else {
@@ -372,6 +384,10 @@ impl PowerCombine {
 impl Rewrite for PowerCombine {
     fn name(&self) -> &str {
         "power-combine"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

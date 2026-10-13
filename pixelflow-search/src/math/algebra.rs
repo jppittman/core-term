@@ -8,7 +8,7 @@
 use std::marker::PhantomData;
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, RootShapes, ops};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -121,6 +121,10 @@ impl<T: InversePair> Rewrite for Canonicalize<T> {
         "canonicalize"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(T::derived().kind())
+    }
+
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
         Some(T::derived().kind())
     }
@@ -170,6 +174,10 @@ impl<T: InversePair> Default for Involution<T> {
 impl<T: InversePair> Rewrite for Involution<T> {
     fn name(&self) -> &str {
         "involution"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(T::inverse().kind())
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
@@ -231,6 +239,10 @@ impl<T: InversePair> Default for Cancellation<T> {
 impl<T: InversePair> Rewrite for Cancellation<T> {
     fn name(&self) -> &str {
         "cancellation"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(T::derived().kind())
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
@@ -295,6 +307,10 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
         "inverse-annihilation"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(T::base().kind())
+    }
+
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
         Some(T::derived().kind())
     }
@@ -357,6 +373,10 @@ impl Rewrite for Associative {
         "associative"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.op.kind())
+    }
+
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
         Some(self.op.kind())
     }
@@ -415,6 +435,10 @@ impl ReverseAssociative {
 impl Rewrite for ReverseAssociative {
     fn name(&self) -> &str {
         "reverse-associative"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.op.kind())
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
@@ -478,6 +502,10 @@ impl Rewrite for Commutative {
         "commutative"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.op.kind())
+    }
+
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
         Some(self.op.kind())
     }
@@ -524,6 +552,10 @@ impl Distributive {
 impl Rewrite for Distributive {
     fn name(&self) -> &str {
         "distribute"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.outer.kind())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -585,6 +617,10 @@ impl Factor {
 impl Rewrite for Factor {
     fn name(&self) -> &str {
         "factor"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.outer.kind())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -663,6 +699,13 @@ impl Rewrite for Identity {
         "identity"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        if self.op.identity().is_none() {
+            return RootShapes::nothing();
+        }
+        RootShapes::kind(self.op.kind())
+    }
+
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
         Some(self.op.kind())
     }
@@ -712,6 +755,13 @@ impl Rewrite for Annihilator {
         "annihilator"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        if self.op.annihilator().is_none() {
+            return RootShapes::nothing();
+        }
+        RootShapes::kind(self.op.kind())
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
         if node_op.kind() != self.op.kind() {
@@ -754,6 +804,13 @@ impl Idempotent {
 impl Rewrite for Idempotent {
     fn name(&self) -> &str {
         "idempotent"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        if !self.op.is_idempotent() {
+            return RootShapes::nothing();
+        }
+        RootShapes::kind(self.op.kind())
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
@@ -811,6 +868,10 @@ impl Rewrite for Doubling {
         "doubling"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Add)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Add(a, b) where a == b
         let ENode::Op { op, children } = node else {
@@ -858,6 +919,10 @@ impl Halving {
 impl Rewrite for Halving {
     fn name(&self) -> &str {
         "halving"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Mul)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -916,6 +981,10 @@ impl ConstantFold {
 impl Rewrite for ConstantFold {
     fn name(&self) -> &str {
         "constant-fold"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::every_op()
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

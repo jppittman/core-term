@@ -29,7 +29,7 @@
 //! - x-x → Canonicalize(AddNeg) → x + neg(x) → InverseAnnihilation → 0
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, RootShapes, ops};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -78,6 +78,10 @@ struct PowSpecialValue {
 impl Rewrite for PowSpecialValue {
     fn name(&self) -> &str {
         self.name
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Pow)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -193,6 +197,10 @@ impl Rewrite for PowerRecurrence {
         "power-recurrence"
     }
 
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Pow)
+    }
+
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let ENode::Op { op, children } = node else {
             return None;
@@ -258,6 +266,10 @@ impl Rewrite for LogPower {
             OpKind::Log2 => "log2-power",
             _ => "logN-power",
         }
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(self.log_op.kind())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -326,6 +338,10 @@ impl ExpandSquare {
 impl Rewrite for ExpandSquare {
     fn name(&self) -> &str {
         "expand-square"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Pow)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -397,6 +413,10 @@ impl DiffOfSquares {
 impl Rewrite for DiffOfSquares {
     fn name(&self) -> &str {
         "diff-of-squares"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Sub)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

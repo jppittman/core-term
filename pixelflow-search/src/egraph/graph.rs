@@ -3,6 +3,7 @@
 use rustc_hash::FxHashMap as HashMap;
 
 use super::cost::{CostFunction, CostModel};
+use super::live::LiveClasses;
 use super::node::{EClassId, ENode};
 use super::ops::{self, Op};
 #[cfg(feature = "provenance-journal")]
@@ -59,6 +60,14 @@ pub struct EGraph {
     pub(crate) classes: Vec<EClass>,
     pub(crate) parent: Vec<EClassId>,
     memo: HashMap<ENode, EClassId>,
+    /// The classes [`Self::class_ids`] yields, as a set: a rule scan reads it
+    /// instead of asking `find` of every class ever minted. Written only by
+    /// [`Self::track_liveness`], which restates [`Self::is_live`] for one
+    /// class and is called where a class is minted, merged or drained
+    /// ([`Self::add`], [`Self::union`], [`Self::rebuild_budgeted`]). Checked
+    /// against `class_ids` whenever a rebuild finishes, so a site that forgets
+    /// to call it fails loudly instead of dropping classes from every scan.
+    live: LiveClasses,
     worklist: Vec<EClassId>,
     /// `queued[id.index()]` is `true` while `id` has an entry on `worklist`
     /// awaiting `rebuild_budgeted`. Guards `union`'s push: several unions
@@ -78,12 +87,16 @@ pub struct EGraph {
     /// bucket, so every per-rule report built on it was wrong by aggregation.
     pub match_counts: HashMap<RuleId, usize>,
     /// Cumulative rule-match ATTEMPTS across this e-graph's whole lifetime —
-    /// every node checked against a rule, matched or not, summed from
+    /// every node a rule's [`Rewrite::apply`] was called on, matched or not
+    /// (a node outside the rule's [`Rewrite::root_shapes`] is not an
+    /// attempt: the rule is never asked), summed from
     /// [`ApplyResult::evals`] at the one site every rule-application path
     /// funnels through.
     ///
-    /// This is "raw matches enumerated"
-    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1): the
+    /// This is the matches enumerated
+    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1), counted
+    /// as `apply` calls: a node outside a rule's root shapes is not one, so
+    /// figures recorded before root shapes existed counted more. The
     /// Guide-cost-flatness precondition needs it denominated per
     /// application, and per application needs it cumulative across the
     /// resumed budget calls an anytime curve makes, the same way
@@ -206,7 +219,7 @@ pub struct EGraph {
     last_changed: Vec<u64>,
     /// `rule_last_swept[rule_idx]` is the [`Self::mutation_counter`] value
     /// captured just BEFORE that rule's most recent *complete* scan of
-    /// `canonical_class_ids()` began. Parallel to `rules`. See
+    /// `class_ids()` began. Parallel to `rules`. See
     /// [`Self::class_is_dirty`] for how it is used and why the value is
     /// taken from the scan's start, not its end.
     rule_last_swept: Vec<u64>,
@@ -353,6 +366,7 @@ impl Clone for EGraph {
             classes: self.classes.clone(),
             parent: self.parent.clone(),
             memo: self.memo.clone(),
+            live: self.live.clone(),
             worklist: self.worklist.clone(),
             queued: self.queued.clone(),
             rules: self.rules.clone(), // Arc clone - cheap, shares rules
@@ -386,7 +400,8 @@ impl Clone for EGraph {
 /// Result of applying a single rule: changes made and evaluations consumed.
 ///
 /// `changes` counts union/create actions. `evals` counts rule match
-/// attempts (one per node checked). Evals model compute cost — the
+/// attempts (one per node the rule's `apply` is called on, which excludes a
+/// node outside its [`Rewrite::root_shapes`]). Evals model compute cost — the
 /// Guide learns to stay within an eval budget just as it learns to
 /// stay within a node budget.
 pub struct ApplyResult {
@@ -508,6 +523,7 @@ impl EGraph {
             classes: Vec::new(),
             parent: Vec::new(),
             memo: HashMap::default(),
+            live: LiveClasses::default(),
             worklist: Vec::new(),
             queued: Vec::new(),
             rules: std::sync::Arc::new(Vec::new()),
@@ -547,6 +563,7 @@ impl EGraph {
             classes: Vec::new(),
             parent: Vec::new(),
             memo: HashMap::default(),
+            live: LiveClasses::default(),
             worklist: Vec::new(),
             queued: Vec::new(),
             rules: std::sync::Arc::new(rules),
@@ -773,6 +790,7 @@ impl EGraph {
             tags: vec![enode_id],
         });
         self.parent.push(id);
+        self.track_liveness(id);
         self.queued.push(false);
         self.mutation_counter += 1;
         self.last_changed.push(self.mutation_counter);
@@ -866,6 +884,8 @@ impl EGraph {
         let child_tags = std::mem::take(&mut self.classes[child.index()].tags);
         self.classes[parent.index()].nodes.extend(child_nodes);
         self.classes[parent.index()].tags.extend(child_tags);
+        self.track_liveness(child);
+        self.track_liveness(parent);
         // The guard above proved the two facts agree (or that at most one
         // exists), so `or` is a merge, not a choice.
         if self.const_fact[parent.index()].is_none() {
@@ -1034,6 +1054,13 @@ impl EGraph {
             let dest = self.find(id);
             self.classes[dest.index()].nodes.extend(new_nodes);
             self.classes[dest.index()].tags.extend(new_tags);
+            self.track_liveness(dest);
+        }
+        if self.worklist.is_empty() {
+            assert!(
+                !self.live_has_drifted(),
+                "the live-class set has drifted from the graph's canonical classes"
+            );
         }
         self.worklist.len()
     }
@@ -1179,24 +1206,29 @@ impl EGraph {
     /// Returns an iterator of all e-class IDs that are canonical (i.e., roots
     /// of their union-find tree) and have at least one node.
     pub fn class_ids(&self) -> impl Iterator<Item = EClassId> + '_ {
-        (0..self.classes.len()).filter_map(move |idx| {
-            let id = EClassId(idx as u32);
-            let canonical = self.find(id);
-            if canonical == id && !self.classes[idx].nodes.is_empty() {
-                Some(id)
-            } else {
-                None
-            }
-        })
+        (0..self.classes.len())
+            .map(|idx| EClassId(idx as u32))
+            .filter(|&id| self.is_live(id))
     }
 
-    /// Collect all canonical e-class IDs into a `Vec`.
-    ///
-    /// Use this instead of `class_ids()` when the caller needs `&mut self`
-    /// (since the iterator borrows `&self`). This is the single source of
-    /// truth for "which classes are canonical" — delegates to `class_ids()`.
-    pub fn canonical_class_ids(&self) -> Vec<EClassId> {
-        self.class_ids().collect()
+    /// Whether `id` is canonical and holds at least one node: the definition
+    /// of a class [`Self::class_ids`] yields.
+    fn is_live(&self, id: EClassId) -> bool {
+        self.find(id) == id && !self.classes[id.index()].nodes.is_empty()
+    }
+
+    /// Restate [`Self::is_live`] for `id` in the [`LiveClasses`] set. The one
+    /// writer of that set.
+    fn track_liveness(&mut self, id: EClassId) {
+        match self.is_live(id) {
+            true => self.live.insert(id),
+            false => self.live.remove(id),
+        }
+    }
+
+    /// Whether the [`LiveClasses`] set disagrees with [`Self::class_ids`].
+    fn live_has_drifted(&self) -> bool {
+        !self.live.iter().eq(self.class_ids())
     }
 
     /// Get the total number of nodes across all e-classes.
@@ -1649,8 +1681,18 @@ impl EGraph {
         let sweep_start = self.mutation_counter;
         let swept = self.rule_last_swept[rule_idx];
 
-        let canonical_ids = self.canonical_class_ids();
-        'scan: for canonical in canonical_ids {
+        // What the rule can match at a root, asked once: the node loop below
+        // never hands it a node it would have declined, and the class loop
+        // never pays the dirtiness walk for a class holding no such node.
+        let roots = self.rules[rule_idx].root_shapes();
+
+        // The scan only reads the graph (every write waits for the commit
+        // below), so nothing can add or merge a class under the iterator.
+        debug_assert!(
+            !self.live_has_drifted(),
+            "the live-class set has drifted from the graph's canonical classes"
+        );
+        'scan: for canonical in self.live.iter() {
             // Budget check: current graph + pending creates must stay under limit
             if self.classes.len() + estimated_new_nodes > max_nodes {
                 scan = ScanStop::ClassCap;
@@ -1664,6 +1706,15 @@ impl EGraph {
                 scan = ScanStop::ApplicationBudget;
                 break;
             }
+            // Only a node in the rule's root shapes can produce an action, so
+            // a class with none is skipped exactly as a clean class is.
+            if !self.classes[canonical.index()]
+                .nodes
+                .iter()
+                .any(|node| roots.admits(node))
+            {
+                continue;
+            }
             // Nothing within DIRTY_TRACKING_MAX_DEPTH hops of `canonical`
             // has changed since this rule last swept the whole graph, so
             // this rule's answer on `canonical` cannot have changed either
@@ -1676,6 +1727,9 @@ impl EGraph {
             // `apply` takes `&EGraph`, and every write waits for the commit
             // below), so nothing can move the class's nodes under the loop.
             for node in &self.classes[canonical.index()].nodes {
+                if !roots.admits(node) {
+                    continue;
+                }
                 evals += 1;
                 if evals.is_multiple_of(DEADLINE_POLL_NODES) && expired(deadline) {
                     scan = ScanStop::Deadline;
@@ -1774,8 +1828,10 @@ impl EGraph {
     }
 
     /// Cumulative rule-match attempts across this e-graph's whole lifetime
-    /// (see the `total_evals` field doc) — the raw-matches-enumerated
-    /// counter §7.1's Guide-overhead-flatness measurement denominates.
+    /// (see the `total_evals` field doc) — the `apply`-calls counter §7.1's
+    /// Guide-overhead-flatness measurement denominates. It excludes nodes
+    /// outside a rule's [`Rewrite::root_shapes`], so curves recorded before
+    /// root shapes existed do not compare with it directly.
     #[must_use]
     pub const fn total_evals(&self) -> usize {
         self.total_evals

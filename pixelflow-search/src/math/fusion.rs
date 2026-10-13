@@ -12,7 +12,7 @@
 //!
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes, ops};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -41,6 +41,10 @@ impl Default for FmaFusion {
 impl Rewrite for FmaFusion {
     fn name(&self) -> &str {
         "fma-fusion"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(OpKind::Add)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
@@ -111,6 +115,10 @@ impl Default for RecipSqrt {
 impl Rewrite for RecipSqrt {
     fn name(&self) -> &str {
         "recip-sqrt"
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kinds(&[OpKind::Div, OpKind::Recip])
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

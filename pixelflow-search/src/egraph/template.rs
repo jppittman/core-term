@@ -34,8 +34,9 @@ use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::rewrite::{Rewrite, RewriteAction};
+use super::rewrite::{Rewrite, RewriteAction, RootShapes};
 
+use pixelflow_ir::OpKind;
 use pixelflow_ir::expr::ExprData;
 use pixelflow_ir::{Node, Rooted};
 
@@ -75,6 +76,23 @@ fn match_root(
         | ExprData::Ref(_)
         | ExprData::Reduce(_) => false,
         ExprData::Op(_) => match_op(egraph, pat, node, bindings),
+    }
+}
+
+/// The shapes `match_root` accepts for a pattern rooted at `pat`: exactly the
+/// arms of that function that can return `true`, none for a pattern root it
+/// always refuses. The two match on `ExprData` side by side so that an arm
+/// changed in one is read against the other.
+fn root_shapes_of(pat: Node<'_, ExprData>) -> RootShapes {
+    match *pat {
+        ExprData::Const(_) => RootShapes::kind(OpKind::Const),
+        ExprData::Op(kind) => RootShapes::kind(kind),
+        ExprData::Var(_)
+        | ExprData::Param(_)
+        | ExprData::Buffer(_)
+        | ExprData::Uniform(_)
+        | ExprData::Ref(_)
+        | ExprData::Reduce(_) => RootShapes::nothing(),
     }
 }
 
@@ -180,6 +198,9 @@ pub struct TemplateRewrite {
     /// One past the highest metavariable index used in `lhs`/`rhs` — the
     /// fixed length every produced `bindings` vector has.
     metavar_count: u8,
+    /// The shapes `match_root` can accept (none, or the kind of `lhs`'s root),
+    /// read off `lhs`'s root once.
+    root_shapes: RootShapes,
 }
 
 impl TemplateRewrite {
@@ -215,6 +236,7 @@ impl TemplateRewrite {
             .map_or(0, |m| m + 1);
         Self {
             name: name.into(),
+            root_shapes: root_shapes_of(lhs),
             rooted: Arc::new(rooted),
             metavar_count,
         }
@@ -246,6 +268,10 @@ impl TemplateRewrite {
 impl Rewrite for TemplateRewrite {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        self.root_shapes
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {

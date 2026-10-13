@@ -9,7 +9,7 @@ use std::time::Duration;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_search::egraph::{
-    EClassId, EGraph, ENode, Rewrite, RewriteAction, SaturationStop, all_rules,
+    EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes, SaturationStop, all_rules,
     saturate_with_full_budget,
 };
 
@@ -132,6 +132,12 @@ struct SleepyRule;
 impl Rewrite for SleepyRule {
     fn name(&self) -> &str {
         "sleepy"
+    }
+
+    // The sleep must happen inside the scan, so `apply` has to be called on
+    // every node: this rule matches nothing, but the test needs it asked.
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::Any
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, _node: &ENode) -> Option<RewriteAction> {

@@ -10,7 +10,7 @@
 use std::marker::PhantomData;
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, RootShapes, ops};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -137,6 +137,10 @@ impl<T: Parity> Rewrite for ParityNegation<T> {
             ParityKind::Odd => "odd-negation",
             ParityKind::Even => "even-negation",
         }
+    }
+
+    fn root_shapes(&self) -> RootShapes {
+        RootShapes::kind(T::op().kind())
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
