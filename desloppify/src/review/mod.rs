@@ -58,7 +58,7 @@ pub struct Reviewers<A, D> {
 }
 
 /// A violation a model reported.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct Finding {
     /// The rule's id.
     pub rule: String,
@@ -101,7 +101,7 @@ pub struct Report {
 }
 
 /// What a cluster of findings in one module is a symptom of.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Diagnosis {
     /// The module the symptoms are in.
     pub component: PathBuf,
@@ -125,7 +125,7 @@ pub struct Diagnosis {
 
 /// The model beneath several diagnoses in one module: the diagnoses are its
 /// symptoms, one level up.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Root {
     /// The module the diagnoses are in.
     pub component: PathBuf,
