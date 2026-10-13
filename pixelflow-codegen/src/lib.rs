@@ -26,12 +26,12 @@ pub mod jit_cache;
 pub use error::CompileError;
 
 /// Byte width of the vector the JIT emits for on this host: 64 (AVX-512), 32
-/// (AVX2) or 16 (NEON). [`isa::detect`]'s width, and the one width in the
-/// workspace — `pixelflow-core` asks for it here rather than carrying a vector
-/// type of its own to assert against.
+/// (AVX2) or 16 (NEON). The register width of the backend [`isa::detect`]
+/// selects, and the one width in the workspace — `pixelflow-core` asks for it
+/// here rather than carrying a vector type of its own to assert against.
 #[must_use]
 pub fn jit_vector_bytes() -> usize {
-    isa::detect().vector_bytes()
+    emit::vector_bytes(isa::detect())
 }
 
 mod error;

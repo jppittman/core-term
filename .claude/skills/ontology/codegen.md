@@ -678,7 +678,8 @@
 - **Is:** "The ISA tier is a property of the process, not of the build: a
   fact the CPU reports, read once." `Isa` has three inhabitants: `Avx2`
   (AVX2+FMA, the floor), `Avx512` (needs avx512f+dq) and `Neon`. The backend
-  is a function of the tier, and the width is `Isa::vector_bytes`.
+  is a function of the tier, and the width is that backend's register file
+  (`B::FILE.vector_bytes()`), read publicly through `jit_vector_bytes()`.
 - **Is not:** a build flag (`RUSTFLAGS`/`target-cpu` change nothing). Not
   SSE2: "It was the default only because the build flag was unset". Not a
   ladder of fallbacks: a host below the floor is refused, naming the missing

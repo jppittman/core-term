@@ -768,8 +768,11 @@ pub struct CompileResult {
 /// backends *exist*; it decides which one is *instantiated*, here, from the
 /// tier [`crate::isa::detect`] read off CPUID at startup. Each arm
 /// monomorphizes [`compile_on`] against one concrete backend: static dispatch
-/// inside the compile, no `dyn`, no vtable. The one `match` is this, and it
-/// runs once per kernel, not once per instruction.
+/// inside the compile, no `dyn`, no vtable. The one `match` a compile takes is
+/// this, and it runs once per kernel, not once per instruction.
+///
+/// `front` is built once the backend is chosen, from the lane count its
+/// register file gives: the width of a vector is the backend's to state.
 ///
 /// `detect` answers `Neon` only on aarch64 and `Avx2`/`Avx512` only on x86-64,
 /// so no arm carries a `cfg`: the other architecture's backend is typechecked
@@ -779,26 +782,45 @@ pub struct CompileResult {
 ///
 /// Genuinely host-bound code lives in [`executable`] (the `KernelFn` ABI types
 /// and the `mmap`/`mprotect` that makes bytes callable) and nowhere else.
-pub(crate) fn native<P>(front: P, input: P::Input) -> Result<CompileResult, CompileError>
+pub(crate) fn native<P, F>(front: F, input: P::Input) -> Result<CompileResult, CompileError>
 where
     P: Pass<Output = ScopedSchedule<Flow>>,
+    F: FnOnce(u32) -> P,
 {
     match crate::isa::detect() {
-        Isa::Avx2 => compile_on::<avx2::Avx2, P>(front, input),
-        Isa::Avx512 => compile_on::<avx512::Avx512, P>(front, input),
-        Isa::Neon => compile_on::<aarch64::Neon, P>(front, input),
+        Isa::Avx2 => compile_on::<avx2::Avx2, P, F>(front, input),
+        Isa::Avx512 => compile_on::<avx512::Avx512, P, F>(front, input),
+        Isa::Neon => compile_on::<aarch64::Neon, P, F>(front, input),
     }
 }
 
-/// `front`, then select, allocate, assemble: the chain on one backend.
-fn compile_on<B, P>(front: P, input: P::Input) -> Result<CompileResult, CompileError>
+/// Bytes in one vector register of `isa`'s backend: the batch the lattice's
+/// lane fold is executed by. The arms mirror [`native`]'s.
+#[must_use]
+pub(crate) fn vector_bytes(isa: Isa) -> usize {
+    match isa {
+        Isa::Avx2 => avx2::Avx2::FILE.vector_bytes() as usize,
+        Isa::Avx512 => avx512::Avx512::FILE.vector_bytes() as usize,
+        Isa::Neon => aarch64::Neon::FILE.vector_bytes() as usize,
+    }
+}
+
+/// Lanes in one vector of backend `B`: a lane is one `f32`.
+fn lanes_of<B: IsaBackend>() -> u32 {
+    (B::FILE.vector_bytes() / core::mem::size_of::<f32>() as u64) as u32
+}
+
+/// `front` at `B`'s lane count, then select, allocate, assemble: the chain on
+/// one backend.
+fn compile_on<B, P, F>(front: F, input: P::Input) -> Result<CompileResult, CompileError>
 where
     B: IsaBackend,
     P: Pass<Output = ScopedSchedule<Flow>>,
+    F: FnOnce(u32) -> P,
 {
     let pool = regalloc::resource::Pool::<B>::mint();
     let mut frame = regalloc::resource::Frame::empty(B::FILE.vector_bytes());
-    front
+    front(lanes_of::<B>())
         .then(select::Select::<B>(PhantomData))
         .then(regalloc::local::Allocate {
             pool: &pool,
@@ -837,7 +859,7 @@ impl<'m, B: IsaBackend> Pass for Assemble<'m, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::tests::{BYTES_PER_LANE, schedule_for};
+    use crate::pipeline::tests::schedule_for;
     use crate::program::{Layout, Nest, Own, ScheduledOp};
     use pixelflow_ir::LatticeShape;
     use pixelflow_ir::arena::{ExprArena, ExprId, UniformId};
@@ -849,9 +871,8 @@ mod tests {
         root: ExprId,
         shape: LatticeShape,
     ) -> Result<CompileResult, CompileError> {
-        let lanes = B::FILE.vector_bytes() as u32 / BYTES_PER_LANE;
         let scoped = Nest.then(Own).then(Layout);
-        compile_on::<B, _>(scoped, schedule_for(a, root, shape, lanes))
+        compile_on::<B, _, _>(|_| scoped, schedule_for(a, root, shape, lanes_of::<B>()))
     }
 
     /// Lanes in one SIMD batch at the tier this host selected.
@@ -868,24 +889,6 @@ mod tests {
     /// what a test about per-lane behaviour needs.
     fn batch() -> LatticeShape {
         LatticeShape::new([lanes() as u32, 1])
-    }
-
-    /// Each backend's register file is the width its kernels are legalized
-    /// and framed at, and the width is the ISA's: a `ymm` is 32 bytes, a
-    /// `zmm` 64 and a NEON `q` register 16, by definition.
-    #[test]
-    fn every_backends_vector_width_is_its_tiers() {
-        assert_eq!(avx2::Avx2::FILE.vector_bytes(), 32);
-        assert_eq!(avx512::Avx512::FILE.vector_bytes(), 64);
-        assert_eq!(aarch64::Neon::FILE.vector_bytes(), 16);
-        // And the width a compile legalizes at (`jit_vector_bytes`) is the
-        // width of the backend it instantiates.
-        let native = match crate::isa::detect() {
-            Isa::Avx2 => avx2::Avx2::FILE.vector_bytes(),
-            Isa::Avx512 => avx512::Avx512::FILE.vector_bytes(),
-            Isa::Neon => aarch64::Neon::FILE.vector_bytes(),
-        };
-        assert_eq!(native as usize, crate::jit_vector_bytes());
     }
 
     /// Run the collapse `code` is over a plane of exactly `shape`'s extent,
