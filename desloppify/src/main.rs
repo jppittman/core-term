@@ -24,6 +24,10 @@ const GROWTH_RPM_PER_MINUTE: f64 = 10.0;
 /// Providers count requests per minute, so a minute after a cut every reply
 /// to a call made at the old rate is in.
 const COOLDOWN: Duration = Duration::from_secs(60);
+/// Under `--out`: every model reply, one JSON object a line.
+const JOURNAL: &str = "journal.jsonl";
+/// Under `--out`: what the review gathered, before the lead review.
+const REPORT: &str = "report.json";
 
 /// Who answers the calls.
 #[derive(Clone, Copy, ValueEnum)]
@@ -94,6 +98,12 @@ struct Args {
     /// lead reviewer's synthesized review.
     #[arg(long)]
     findings_only: bool,
+    /// Keep the run here: every model reply in `journal.jsonl` as it
+    /// arrives, and the gathered findings and diagnoses in `report.json`
+    /// before the lead review is asked for. A rerun with the same directory
+    /// answers every question already in the journal without a call.
+    #[arg(long)]
+    out: Option<PathBuf>,
     #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/rules"))]
     rules: PathBuf,
     #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/skills"))]
@@ -125,6 +135,20 @@ fn api(provider: Provider, args: &Args) -> Result<impl Ask> {
 }
 
 async fn with<A: Ask>(
+    ask: A,
+    args: &Args,
+    rules: Arc<Vec<Rule>>,
+    plan: Vec<Call>,
+) -> Result<ExitCode> {
+    let Some(out) = &args.out else {
+        return deciding(ask, args, rules, plan).await;
+    };
+    std::fs::create_dir_all(out)?;
+    let journaled = agent::journaled(ask, &out.join(JOURNAL))?;
+    deciding(journaled, args, rules, plan).await
+}
+
+async fn deciding<A: Ask>(
     ask: A,
     args: &Args,
     rules: Arc<Vec<Rule>>,
@@ -164,10 +188,19 @@ async fn run<A: Ask, D: Decide>(
     for failure in &report.failures {
         eprintln!("error: {failure:#}");
     }
+    if let Some(out) = &args.out {
+        write_report(&out.join(REPORT), &report)?;
+    }
     let lead = if args.findings_only {
         None
     } else {
-        synthesize(&reviewers.ask, &rules, &report).await?
+        // Without a lead, the findings and diagnoses are still the review.
+        synthesize(&reviewers.ask, &rules, &report)
+            .await
+            .unwrap_or_else(|error| {
+                eprintln!("error: the lead review: {error:#}");
+                None
+            })
     };
     match &lead {
         Some(review) => println!("{}", review.text),
@@ -185,6 +218,24 @@ async fn run<A: Ask, D: Decide>(
     } else {
         ExitCode::FAILURE
     })
+}
+
+/// Everything the review gathered, as one JSON object: findings, diagnoses
+/// and roots (their `explains` index the findings and diagnoses), each
+/// rule's decisions, and the failures as text.
+fn write_report(path: &Path, report: &Report) -> Result<()> {
+    let failures: Vec<String> = report.failures.iter().map(|f| format!("{f:#}")).collect();
+    let json = serde_json::json!({
+        "findings": report.findings,
+        "diagnoses": report.diagnoses,
+        "roots": report.roots,
+        "decisions": report.decisions,
+        "escalated": report.escalated,
+        "usage": report.usage,
+        "failures": failures,
+    });
+    std::fs::write(path, serde_json::to_string_pretty(&json)?)?;
+    Ok(())
 }
 
 /// How each rule decided its units, and how many went to the model, to
