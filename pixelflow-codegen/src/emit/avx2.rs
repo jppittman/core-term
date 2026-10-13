@@ -25,7 +25,7 @@
 //! AVX-512 tier resets `k1`.
 
 use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller, defined};
+use super::build::{Builder, Def, Spiller};
 use super::regalloc::resource::FrameSlot;
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::x86_64;
@@ -34,8 +34,7 @@ use super::x86_64::{
 };
 use super::{
     Bound, Class, ClassId, Edges, EncodedInst, Integer, IsaBackend, Label, LaneOp, Pointer, Rebind,
-    Selected, Spill, Stage, Store, Target, Test, Value, ValueName, Vector, slot_disp,
-    unimplemented_op,
+    Selected, Stage, Store, Target, Test, Value, ValueName, Vector, slot_disp, unimplemented_op,
 };
 use crate::error::CompileError;
 use crate::program::IfArm;
@@ -999,44 +998,44 @@ impl IsaBackend for Avx2 {
         x86_64::ret(b);
     }
 
-    fn copy<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>) -> Value<C> {
-        match C::ID {
-            ClassId::Vector => {
-                let (dst, copy) = defined::<C, Vector>(b);
-                b.push(Op::Vector(Inst::Mov {
+    fn copy(b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
+        match src.class {
+            ClassId::Vector => b.define::<Vector>(|dst| {
+                Op::Vector(Inst::Mov {
                     dst,
-                    src: src.name().typed(),
-                }));
-                copy
-            }
+                    src: src.typed(),
+                })
+            }),
             ClassId::Pointer | ClassId::Integer => x86_64::copy_general(b, src),
-            ClassId::Opmask | ClassId::Flags => unreachable!("AVX2 has no {:?} to copy", C::ID),
+            ClassId::Opmask | ClassId::Flags => {
+                unreachable!("AVX2 has no {:?} to copy", src.class)
+            }
         }
     }
 
-    fn spill<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>, slot: &FrameSlot) {
-        match C::ID {
+    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
+        match src.class {
             ClassId::Vector => b.push(Op::Vector(Inst::SpillVector {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: slot.name(),
             })),
             ClassId::Pointer | ClassId::Integer => x86_64::spill_general(b, src, slot),
-            ClassId::Opmask | ClassId::Flags => unreachable!("AVX2 has no {:?} to spill", C::ID),
+            ClassId::Opmask | ClassId::Flags => {
+                unreachable!("AVX2 has no {:?} to spill", src.class)
+            }
         }
     }
 
-    fn reload<C: Spill>(b: &mut Spiller<'_, Self>, slot: &FrameSlot) -> Value<C> {
-        match C::ID {
-            ClassId::Vector => {
-                let (dst, reloaded) = defined::<C, Vector>(b);
-                b.push(Op::Vector(Inst::ReloadVector {
+    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
+        match class {
+            ClassId::Vector => b.define::<Vector>(|dst| {
+                Op::Vector(Inst::ReloadVector {
                     dst,
                     slot: slot.name(),
-                }));
-                reloaded
-            }
-            ClassId::Pointer | ClassId::Integer => x86_64::reload_general(b, slot),
-            ClassId::Opmask | ClassId::Flags => unreachable!("AVX2 has no {:?} to reload", C::ID),
+                })
+            }),
+            ClassId::Pointer | ClassId::Integer => x86_64::reload_general(b, class, slot),
+            ClassId::Opmask | ClassId::Flags => unreachable!("AVX2 has no {class:?} to reload"),
         }
     }
 

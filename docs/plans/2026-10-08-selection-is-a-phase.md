@@ -991,12 +991,12 @@ pub(in crate::emit) trait IsaBackend: Sized + 'static {
     fn ret(b: &mut Builder<Self>);
 
     // The allocator's own instructions.
-    fn copy<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>) -> Value<C>;
+    fn copy(b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName;
     /// Store `src` to `slot`. When `slot.offset()` does not encode: one
     /// `add t, sp, #hi, lsl 12` into a fresh `Pointer`, then the store through
     /// it with the low part.
-    fn spill<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>, slot: &FrameSlot);
-    fn reload<C: Spill>(b: &mut Spiller<'_, Self>, slot: &FrameSlot) -> Value<C>;
+    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot);
+    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName;
     /// Whether the allocator may place this instruction again where a read
     /// needs its definition, instead of storing it. It must have no effect and
     /// one operand: the register it writes, of any class but `Flags`. The

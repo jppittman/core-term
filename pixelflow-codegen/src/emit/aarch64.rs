@@ -8,13 +8,13 @@
 //! values and leaves the registers to the allocator.
 
 use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller, defined};
+use super::build::{Builder, Def, Spiller};
 use super::regalloc::resource::FrameSlot;
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::{
     Bound, Class, ClassId, Edges, FrameSize, IfArm, Integer, IsaBackend, Label, LaneOp, Patch,
-    Pointer, Rebind, STACK_PAGE, Selected, Spill, Stage, Store, Target, Test, Value, ValueName,
-    Vector, frame_bytes, slot_disp, unimplemented_op,
+    Pointer, Rebind, STACK_PAGE, Selected, Stage, Store, Target, Test, Value, ValueName, Vector,
+    frame_bytes, slot_disp, unimplemented_op,
 };
 use crate::error::CompileError;
 use alloc::vec::Vec;
@@ -1293,87 +1293,67 @@ impl IsaBackend for Neon {
         b.push(Inst::Ret { size: FrameSize });
     }
 
-    fn copy<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>) -> Value<C> {
-        match C::ID {
-            ClassId::Vector => {
-                let (dst, copy) = defined::<C, Vector>(b);
-                b.push(Inst::Mov {
-                    dst,
-                    src: src.name().typed(),
-                });
-                copy
+    fn copy(b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
+        match src.class {
+            ClassId::Vector => b.define::<Vector>(|dst| Inst::Mov {
+                dst,
+                src: src.typed(),
+            }),
+            ClassId::Pointer => b.define::<Pointer>(|dst| Inst::MovX {
+                dst,
+                src: src.typed(),
+            }),
+            ClassId::Integer => b.define::<Integer>(|dst| Inst::MovInt {
+                dst,
+                src: src.typed(),
+            }),
+            ClassId::Opmask | ClassId::Flags => {
+                unreachable!("NEON has no {:?} to copy", src.class)
             }
-            ClassId::Pointer => {
-                let (dst, copy) = defined::<C, Pointer>(b);
-                b.push(Inst::MovX {
-                    dst,
-                    src: src.name().typed(),
-                });
-                copy
-            }
-            ClassId::Integer => {
-                let (dst, copy) = defined::<C, Integer>(b);
-                b.push(Inst::MovInt {
-                    dst,
-                    src: src.name().typed(),
-                });
-                copy
-            }
-            ClassId::Opmask | ClassId::Flags => unreachable!("NEON has no {:?} to copy", C::ID),
         }
     }
 
-    fn spill<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>, slot: &FrameSlot) {
+    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
         let name = slot.name();
-        match C::ID {
+        match src.class {
             ClassId::Vector if reaches(slot.offset()) => b.push(Inst::SpillQ {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: name,
             }),
             ClassId::Vector => {
                 let addr = deep(b, slot.offset());
                 b.push(Inst::StrQ {
-                    src: src.name().typed(),
+                    src: src.typed(),
                     addr,
                 });
             }
             ClassId::Pointer => b.push(Inst::SpillPtr {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: name,
             }),
             ClassId::Integer => b.push(Inst::SpillInt {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: name,
             }),
-            ClassId::Opmask | ClassId::Flags => unreachable!("NEON has no {:?} to spill", C::ID),
+            ClassId::Opmask | ClassId::Flags => {
+                unreachable!("NEON has no {:?} to spill", src.class)
+            }
         }
     }
 
-    fn reload<C: Spill>(b: &mut Spiller<'_, Self>, slot: &FrameSlot) -> Value<C> {
+    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
         let name = slot.name();
-        match C::ID {
+        match class {
             ClassId::Vector if reaches(slot.offset()) => {
-                let (dst, reloaded) = defined::<C, Vector>(b);
-                b.push(Inst::ReloadQ { dst, slot: name });
-                reloaded
+                b.define::<Vector>(|dst| Inst::ReloadQ { dst, slot: name })
             }
             ClassId::Vector => {
                 let addr = deep(b, slot.offset());
-                let (dst, reloaded) = defined::<C, Vector>(b);
-                b.push(Inst::LdrQ { dst, addr });
-                reloaded
+                b.define::<Vector>(|dst| Inst::LdrQ { dst, addr })
             }
-            ClassId::Pointer => {
-                let (dst, reloaded) = defined::<C, Pointer>(b);
-                b.push(Inst::ReloadPtr { dst, slot: name });
-                reloaded
-            }
-            ClassId::Integer => {
-                let (dst, reloaded) = defined::<C, Integer>(b);
-                b.push(Inst::ReloadInt { dst, slot: name });
-                reloaded
-            }
-            ClassId::Opmask | ClassId::Flags => unreachable!("NEON has no {:?} to reload", C::ID),
+            ClassId::Pointer => b.define::<Pointer>(|dst| Inst::ReloadPtr { dst, slot: name }),
+            ClassId::Integer => b.define::<Integer>(|dst| Inst::ReloadInt { dst, slot: name }),
+            ClassId::Opmask | ClassId::Flags => unreachable!("NEON has no {class:?} to reload"),
         }
     }
 

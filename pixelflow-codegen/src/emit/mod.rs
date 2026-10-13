@@ -268,10 +268,8 @@ impl Class for Opmask {
     const ID: ClassId = ClassId::Opmask;
 }
 
-/// The classes a frame slot can hold. `Flags` cannot be stored, so the
-/// allocator's own verbs ([`IsaBackend::copy`], [`spill`](IsaBackend::spill),
-/// [`reload`](IsaBackend::reload)) do not accept it: calling one with `Flags` is
-/// a type error.
+/// The classes the allocator's own instructions define: everything but
+/// `Flags`, so a copy, a spill or a reload cannot write the flags.
 trait Spill: Class {}
 
 impl Spill for Vector {}
@@ -646,11 +644,15 @@ trait IsaBackend: Sized + 'static {
     fn ret(b: &mut build::Builder<Self>);
 
     // The allocator's own instructions.
-    fn copy<C: Spill>(b: &mut build::Spiller<'_, Self>, src: Value<C>) -> Value<C>;
+    // They take a class as data and match it once: `Flags` cannot be copied,
+    // stored or loaded, and each backend refuses it.
+    /// A fresh value holding `src`.
+    fn copy(b: &mut build::Spiller<'_, Self>, src: ValueName) -> ValueName;
     /// Store `src` to `slot`. When `slot.offset()` does not encode: the slot's
     /// address into a fresh `Pointer`, then the store through it.
-    fn spill<C: Spill>(b: &mut build::Spiller<'_, Self>, src: Value<C>, slot: &FrameSlot);
-    fn reload<C: Spill>(b: &mut build::Spiller<'_, Self>, slot: &FrameSlot) -> Value<C>;
+    fn spill(b: &mut build::Spiller<'_, Self>, src: ValueName, slot: &FrameSlot);
+    /// A fresh value of `class`, loaded from `slot`.
+    fn reload(b: &mut build::Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName;
 
     /// Whether the allocator may place this instruction again where a read
     /// needs its definition, instead of storing it. It must have no effect,

@@ -10,11 +10,11 @@
 //! width: the `ymm`/`zmm` encodings live in `avx2.rs` and `avx512.rs`.
 
 use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller, defined};
+use super::build::{Builder, Def, Spiller};
 use super::regalloc::resource::FrameSlot;
 use super::{
     Bound, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label,
-    Pointer, Rebind, STACK_PAGE, Selected, Spill, Stage, Target, Value, frame_bytes, slot_disp,
+    Pointer, Rebind, STACK_PAGE, Selected, Stage, Target, Value, ValueName, frame_bytes, slot_disp,
 };
 use crate::error::CompileError;
 use alloc::vec::Vec;
@@ -504,42 +504,34 @@ pub(super) fn ret<B: X86>(b: &mut Builder<B>) {
 }
 
 /// `mov` of an address or an integer between general registers.
-pub(super) fn copy_general<B: X86, C: Spill>(b: &mut Spiller<'_, B>, src: Value<C>) -> Value<C> {
-    match C::ID {
-        ClassId::Pointer => {
-            let (dst, copy) = defined::<C, Pointer>(b);
-            b.push(B::general(Gp::Mov {
+pub(super) fn copy_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName) -> ValueName {
+    match src.class {
+        ClassId::Pointer => b.define::<Pointer>(|dst| {
+            B::general(Gp::Mov {
                 dst,
-                src: src.name().typed(),
-            }));
-            copy
-        }
-        ClassId::Integer => {
-            let (dst, copy) = defined::<C, Integer>(b);
-            b.push(B::general(Gp::MovInt {
+                src: src.typed(),
+            })
+        }),
+        ClassId::Integer => b.define::<Integer>(|dst| {
+            B::general(Gp::MovInt {
                 dst,
-                src: src.name().typed(),
-            }));
-            copy
-        }
+                src: src.typed(),
+            })
+        }),
         class => unreachable!("{class:?} is not held in a general register"),
     }
 }
 
 /// `mov [rsp + slot], src` of an address or an integer.
-pub(super) fn spill_general<B: X86, C: Spill>(
-    b: &mut Spiller<'_, B>,
-    src: Value<C>,
-    slot: &FrameSlot,
-) {
+pub(super) fn spill_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName, slot: &FrameSlot) {
     let slot = slot.name();
-    b.push(B::general(match C::ID {
+    b.push(B::general(match src.class {
         ClassId::Pointer => Gp::SpillPtr {
-            src: src.name().typed(),
+            src: src.typed(),
             slot,
         },
         ClassId::Integer => Gp::SpillInt {
-            src: src.name().typed(),
+            src: src.typed(),
             slot,
         },
         class => unreachable!("{class:?} is not held in a general register"),
@@ -547,22 +539,15 @@ pub(super) fn spill_general<B: X86, C: Spill>(
 }
 
 /// `mov dst, [rsp + slot]` of an address or an integer.
-pub(super) fn reload_general<B: X86, C: Spill>(
+pub(super) fn reload_general<B: X86>(
     b: &mut Spiller<'_, B>,
+    class: ClassId,
     slot: &FrameSlot,
-) -> Value<C> {
+) -> ValueName {
     let slot = slot.name();
-    match C::ID {
-        ClassId::Pointer => {
-            let (dst, reloaded) = defined::<C, Pointer>(b);
-            b.push(B::general(Gp::ReloadPtr { dst, slot }));
-            reloaded
-        }
-        ClassId::Integer => {
-            let (dst, reloaded) = defined::<C, Integer>(b);
-            b.push(B::general(Gp::ReloadInt { dst, slot }));
-            reloaded
-        }
+    match class {
+        ClassId::Pointer => b.define::<Pointer>(|dst| B::general(Gp::ReloadPtr { dst, slot })),
+        ClassId::Integer => b.define::<Integer>(|dst| B::general(Gp::ReloadInt { dst, slot })),
         class => unreachable!("{class:?} is not held in a general register"),
     }
 }

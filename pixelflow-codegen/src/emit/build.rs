@@ -474,20 +474,22 @@ impl<'a, B: IsaBackend> Spiller<'a, B> {
         }
     }
 
+    /// Append the instruction `build` makes from a fresh definition of class
+    /// `C`, and name what it defines.
+    pub(in crate::emit) fn define<C: Spill>(
+        &mut self,
+        build: impl FnOnce(Def<C>) -> B::Inst<Selected>,
+    ) -> ValueName {
+        let dst = self.def::<C>();
+        let name = dst.value().name();
+        self.push(build(dst));
+        name
+    }
+
     /// Append `inst` with its operand list, which is computed here and
     /// nowhere else.
     pub(in crate::emit) fn push(&mut self, inst: B::Inst<Selected>) {
         let operands = operands::<B>(&inst);
         self.insts.push(Pushed { inst, operands });
     }
-}
-
-/// A fresh value of class `D` for an instruction of the allocator's to
-/// define, and its name as the class `C` the allocator asked for.
-pub(in crate::emit) fn defined<C: Spill, D: Spill>(
-    b: &mut Spiller<'_, impl IsaBackend>,
-) -> (Def<D>, Value<C>) {
-    let dst = b.def::<D>();
-    let value = dst.value().name().typed();
-    (dst, value)
 }

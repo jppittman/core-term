@@ -22,7 +22,7 @@
 //! red zone).
 
 use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller, defined};
+use super::build::{Builder, Def, Spiller};
 use super::regalloc::resource::FrameSlot;
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::x86_64;
@@ -31,8 +31,8 @@ use super::x86_64::{
 };
 use super::{
     Bound, Class, ClassId, Edges, EncodedInst, Flags, Integer, IsaBackend, Label, LaneOp, Opmask,
-    Pointer, Rebind, Selected, Spill, Stage, Store, Target, Test, Value, ValueName, Vector,
-    slot_disp, unimplemented_op,
+    Pointer, Rebind, Selected, Stage, Store, Target, Test, Value, ValueName, Vector, slot_disp,
+    unimplemented_op,
 };
 use crate::error::CompileError;
 use crate::program::IfArm;
@@ -1315,37 +1315,33 @@ impl IsaBackend for Avx512 {
         x86_64::ret(b);
     }
 
-    fn copy<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>) -> Value<C> {
-        match C::ID {
-            ClassId::Vector => {
-                let (dst, copy) = defined::<C, Vector>(b);
-                b.push(Op::Vector(Inst::Mov {
+    fn copy(b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
+        match src.class {
+            ClassId::Vector => b.define::<Vector>(|dst| {
+                Op::Vector(Inst::Mov {
                     dst,
-                    src: src.name().typed(),
-                }));
-                copy
-            }
-            ClassId::Opmask => {
-                let (dst, copy) = defined::<C, Opmask>(b);
-                b.push(Op::Vector(Inst::KMov {
+                    src: src.typed(),
+                })
+            }),
+            ClassId::Opmask => b.define::<Opmask>(|dst| {
+                Op::Vector(Inst::KMov {
                     dst,
-                    src: src.name().typed(),
-                }));
-                copy
-            }
+                    src: src.typed(),
+                })
+            }),
             ClassId::Pointer | ClassId::Integer => x86_64::copy_general(b, src),
             ClassId::Flags => unreachable!("the flags are not copied"),
         }
     }
 
-    fn spill<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>, slot: &FrameSlot) {
-        match C::ID {
+    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
+        match src.class {
             ClassId::Vector => b.push(Op::Vector(Inst::SpillVector {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: slot.name(),
             })),
             ClassId::Opmask => b.push(Op::Vector(Inst::SpillMask {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: slot.name(),
             })),
             ClassId::Pointer | ClassId::Integer => x86_64::spill_general(b, src, slot),
@@ -1353,25 +1349,21 @@ impl IsaBackend for Avx512 {
         }
     }
 
-    fn reload<C: Spill>(b: &mut Spiller<'_, Self>, slot: &FrameSlot) -> Value<C> {
-        match C::ID {
-            ClassId::Vector => {
-                let (dst, reloaded) = defined::<C, Vector>(b);
-                b.push(Op::Vector(Inst::ReloadVector {
+    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
+        match class {
+            ClassId::Vector => b.define::<Vector>(|dst| {
+                Op::Vector(Inst::ReloadVector {
                     dst,
                     slot: slot.name(),
-                }));
-                reloaded
-            }
-            ClassId::Opmask => {
-                let (dst, reloaded) = defined::<C, Opmask>(b);
-                b.push(Op::Vector(Inst::ReloadMask {
+                })
+            }),
+            ClassId::Opmask => b.define::<Opmask>(|dst| {
+                Op::Vector(Inst::ReloadMask {
                     dst,
                     slot: slot.name(),
-                }));
-                reloaded
-            }
-            ClassId::Pointer | ClassId::Integer => x86_64::reload_general(b, slot),
+                })
+            }),
+            ClassId::Pointer | ClassId::Integer => x86_64::reload_general(b, class, slot),
             ClassId::Flags => unreachable!("the flags are not reloaded"),
         }
     }
