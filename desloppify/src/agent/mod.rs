@@ -10,14 +10,18 @@
 //! - [`dry_run`]: no model at all — every call is answered `[]` and reports
 //!   the input tokens it would have sent. Running a review through it is how
 //!   a review is priced, through the same pipeline a real one takes.
+//!
+//! [`journaled`] wraps any of them so a run that dies loses nothing.
 
 mod claude_code;
 mod dry_run;
+mod journal;
 mod rig;
 
 use std::error::Error;
 use std::num::NonZeroUsize;
 use std::ops::AddAssign;
+use std::path::Path;
 
 use anyhow::Result;
 
@@ -62,7 +66,7 @@ pub struct Answer {
 }
 
 /// Tokens billed, summed over some number of calls.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Usage {
     pub calls: u64,
     /// Every input token, cached or not.
@@ -109,6 +113,21 @@ pub fn claude_code(jobs: NonZeroUsize) -> impl Ask {
 #[must_use]
 pub fn dry_run() -> impl Ask {
     dry_run::DryRun
+}
+
+/// `inner`, with every answer appended to the JSON Lines file at `path` as
+/// it arrives, one object per line: the question's key, the reply's text and
+/// its usage. A question the file already answers — same level, system
+/// prompt, prompt and schema — is answered from it without a call, with the
+/// usage it cost then, so a rerun after a crash or an exhausted quota picks
+/// up where the last one stopped. Only replies that parse as JSON are
+/// recorded when a schema was asked for; anything else is asked again.
+///
+/// # Errors
+///
+/// `path` exists and cannot be read, or cannot be opened for appending.
+pub fn journaled<A: Ask>(inner: A, path: &Path) -> Result<impl Ask> {
+    journal::Journaled::open(inner, path)
 }
 
 /// What a provider's failure says about the call rate: a 429 is
