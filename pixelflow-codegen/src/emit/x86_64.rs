@@ -13,8 +13,8 @@ use super::asm::Encoding;
 use super::build::{Builder, Def, Spiller, defined};
 use super::regalloc::resource::FrameSlot;
 use super::{
-    Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label, Placed,
-    Pointer, Rebind, STACK_PAGE, Selected, Spill, Stage, Target, Value,
+    Bound, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label,
+    Pointer, Rebind, STACK_PAGE, Selected, Spill, Stage, Target, Value, frame_bytes, slot_disp,
 };
 use crate::error::CompileError;
 use alloc::vec::Vec;
@@ -259,18 +259,18 @@ impl Gp<Selected> {
     }
 }
 
-impl<S: Placed> Gp<S> {
+impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
     fn encode(&self) -> EncodedInst {
         let mut inst = EncodedInst::new();
         match self {
             Gp::Mov { dst, src } => {
-                inst.extend(&rr(0x89, S::write::<Pointer>(dst), S::read::<Pointer>(src)));
+                inst.extend(&rr(0x89, dst.number(), src.number()));
             }
             Gp::MovInt { dst, src } => {
-                inst.extend(&rr(0x89, S::write::<Integer>(dst), S::read::<Integer>(src)));
+                inst.extend(&rr(0x89, dst.number(), src.number()));
             }
             Gp::MovImm32 { dst, imm } => {
-                let dst = S::write::<Integer>(dst);
+                let dst = dst.number();
                 if dst >= 8 {
                     inst.push(0x41);
                 }
@@ -278,27 +278,23 @@ impl<S: Placed> Gp<S> {
                 inst.extend(&imm.to_le_bytes());
             }
             Gp::Movabs { dst, imm } => {
-                let dst = S::write::<Integer>(dst);
+                let dst = dst.number();
                 inst.push(0x48 | ((dst >> 3) & 1));
                 inst.push(0xB8 | (dst & 7));
                 inst.extend(&imm.to_le_bytes());
             }
             Gp::Imul { dst, src, .. } => {
-                let (dst, src) = (S::tie::<Integer>(dst), S::read::<Integer>(src));
+                let (dst, src) = (dst.number(), src.number());
                 inst.extend(&[rex_w(dst, src), 0x0F, 0xAF, modrm_rr(dst, src)]);
             }
             Gp::Add { dst, src, .. } => {
-                inst.extend(&rr(0x01, S::tie::<Integer>(dst), S::read::<Integer>(src)));
+                inst.extend(&rr(0x01, dst.number(), src.number()));
             }
             // `rbp`/`r13` have no `mod = 00` form as a SIB base (that
             // encoding means "no base"), so those two take `mod = 01` with a
             // zero `disp8`.
             Gp::Lea4 { dst, base, index } => {
-                let (dst, base, index) = (
-                    S::write::<Pointer>(dst),
-                    S::read::<Pointer>(base),
-                    S::read::<Integer>(index),
-                );
+                let (dst, base, index) = (dst.number(), base.number(), index.number());
                 debug_assert!(index & 7 != RM_SIB, "rsp/r12 cannot index a SIB");
                 let disp8_form = base & 7 == RM_RIP_AT_MOD0;
                 inst.push(
@@ -312,25 +308,25 @@ impl<S: Placed> Gp<S> {
                 }
             }
             Gp::MovLoad { dst, src } => {
-                let (dst, base) = (S::write::<Pointer>(dst), S::read::<Pointer>(&src.base));
+                let (dst, base) = (dst.number(), src.base.number());
                 inst.push(rex_w(dst, base));
                 inst.push(0x8B);
                 mem_operand_into(&mut inst, dst, base, src.disp);
             }
             Gp::SpillPtr { src, slot } => {
-                spill_into(&mut inst, S::read::<Pointer>(src), Imm32(S::slot(slot)));
+                spill_into(&mut inst, src.number(), Imm32(slot_disp(slot)));
             }
             Gp::SpillInt { src, slot } => {
-                spill_into(&mut inst, S::read::<Integer>(src), Imm32(S::slot(slot)));
+                spill_into(&mut inst, src.number(), Imm32(slot_disp(slot)));
             }
             Gp::ReloadPtr { dst, slot } => {
-                reload_into(&mut inst, S::write::<Pointer>(dst), Imm32(S::slot(slot)));
+                reload_into(&mut inst, dst.number(), Imm32(slot_disp(slot)));
             }
             Gp::ReloadInt { dst, slot } => {
-                reload_into(&mut inst, S::write::<Integer>(dst), Imm32(S::slot(slot)));
+                reload_into(&mut inst, dst.number(), Imm32(slot_disp(slot)));
             }
             Gp::Test { src, .. } => {
-                let src = S::read::<Integer>(src);
+                let src = src.number();
                 if src >= 8 {
                     inst.push(0x45);
                 }
@@ -338,7 +334,7 @@ impl<S: Placed> Gp<S> {
                 inst.push(modrm_rr(src, src));
             }
             Gp::CmpByte { src, imm, .. } => {
-                match S::read::<Integer>(src) {
+                match src.number() {
                     // The accumulator has a short form.
                     0 => inst.push(0x3C),
                     n => {
@@ -355,10 +351,10 @@ impl<S: Placed> Gp<S> {
             Gp::Jcc { cond, .. } => inst.extend(&[0x0F, 0x80 | *cond as u8, 0, 0, 0, 0]),
             Gp::Jmp { .. } => inst.extend(&[0xE9, 0, 0, 0, 0]),
             Gp::Fallthrough { .. } => {}
-            Gp::Enter { size, .. } => inst = sub_rsp(S::frame_size(size)),
+            Gp::Enter { size, .. } => inst = sub_rsp(frame_bytes(*size)),
             Gp::Ret { size, .. } => {
                 inst.extend(&[rex_w(0, gpr::RSP), 0x81, modrm_rr(0, gpr::RSP)]);
-                inst.extend(&S::frame_size(size).to_le_bytes());
+                inst.extend(&frame_bytes(*size).to_le_bytes());
                 // `vzeroupper`: `VEX.128.0F.WIG 77`, zeroing bits 128 and up of
                 // vector registers 0–15, the sixteen a legacy-SSE instruction
                 // can name. The same three bytes on every tier.
@@ -371,10 +367,10 @@ impl<S: Placed> Gp<S> {
 
     /// The label field the instruction carries: its offset in the bytes, and
     /// the target it reaches. The one statement of which instructions have one.
-    fn label_field(&self) -> Option<(usize, &S::Target)> {
+    fn label_field(&self) -> Option<(usize, Label)> {
         match self {
-            Gp::Jmp { to } => Some((JMP_DISP, to)),
-            Gp::Jcc { taken, .. } => Some((JCC_DISP, taken)),
+            Gp::Jmp { to } => Some((JMP_DISP, *to)),
+            Gp::Jcc { taken, .. } => Some((JCC_DISP, *taken)),
             _ => None,
         }
     }
@@ -382,15 +378,15 @@ impl<S: Placed> Gp<S> {
     /// The instruction's bytes, and the label fields in them.
     pub(super) fn assemble(&self, out: &mut Encoding<'_>) {
         if let Gp::Enter { size, .. } = self {
-            return enter_probing(S::frame_size(size), out);
+            return enter_probing(frame_bytes(*size), out);
         }
         out.bytes(self.encode().as_bytes());
         if let Some((at, to)) = self.label_field() {
-            out.field(at, S::target(to), patch_rel32);
+            out.field(at, to, patch_rel32);
         }
         match self {
-            Gp::Jcc { next, .. } => out.falls_through(S::target(next)),
-            Gp::Fallthrough { to } => out.falls_through(S::target(to)),
+            Gp::Jcc { next, .. } => out.falls_through(*next),
+            Gp::Fallthrough { to } => out.falls_through(*to),
             _ => {}
         }
     }

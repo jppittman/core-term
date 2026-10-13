@@ -33,8 +33,8 @@ use super::x86_64::{
     Alu, Direction, Disp, GENERAL, Imm8, Imm32, Lanewise, Mem, NoDisp, Pred, Rounding, X86,
 };
 use super::{
-    Bound, Class, ClassId, Edges, EncodedInst, Integer, IsaBackend, Label, LaneOp, Placed, Pointer,
-    Rebind, Selected, Spill, Stage, Store, Target, Test, Value, ValueName, Vector,
+    Bound, Class, ClassId, Edges, EncodedInst, Integer, IsaBackend, Label, LaneOp, Pointer, Rebind,
+    Selected, Spill, Stage, Store, Target, Test, Value, ValueName, Vector, slot_disp,
     unimplemented_op,
 };
 use crate::error::CompileError;
@@ -512,22 +512,20 @@ impl Inst<Selected> {
     }
 }
 
-impl<S: Placed> Inst<S> {
+impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
     fn encode(&self) -> EncodedInst {
-        let vector = |reg: &S::Read<Vector>| S::read::<Vector>(reg);
-        let write = |reg: &S::Write<Vector>| S::write::<Vector>(reg);
         match self {
-            Inst::Alu { op, dst, a, b } => op.vex().rrr(write(dst), vector(a), vector(b)),
+            Inst::Alu { op, dst, a, b } => op.vex().rrr(dst.number(), a.number(), b.number()),
             Inst::Cmp { pred, dst, a, b } => {
                 Vex::m0f(0xC2)
                     .imm(*pred as u8)
-                    .rrr(write(dst), vector(a), vector(b))
+                    .rrr(dst.number(), a.number(), b.number())
             }
-            Inst::Unary { op, dst, src } => op.vex().rrr(write(dst), UNUSED_VVVV, vector(src)),
+            Inst::Unary { op, dst, src } => op.vex().rrr(dst.number(), UNUSED_VVVV, src.number()),
             Inst::Round { mode, dst, src } => {
                 Vex::m0f3a_66(0x08)
                     .imm(*mode as u8)
-                    .rrr(write(dst), UNUSED_VVVV, vector(src))
+                    .rrr(dst.number(), UNUSED_VVVV, src.number())
             }
             // The destination is `vvvv` and the `/digit` is `reg`.
             Inst::Shift {
@@ -537,84 +535,77 @@ impl<S: Placed> Inst<S> {
                 amount,
             } => Vex::m0f_66(0x72)
                 .imm(*amount)
-                .rrr(*direction as u8, write(dst), vector(src)),
+                .rrr(*direction as u8, dst.number(), src.number()),
             Inst::Fma231 { acc, a, b } => {
-                Vex::m0f38_66(0xB8).rrr(S::tie::<Vector>(acc), vector(a), vector(b))
+                Vex::m0f38_66(0xB8).rrr(acc.number(), a.number(), b.number())
             }
             Inst::Ones { dst } => {
-                let dst = write(dst);
+                let dst = dst.number();
                 Vex::m0f_66(0x76).rrr(dst, dst, dst)
             }
             Inst::Zero { dst } => {
-                let dst = write(dst);
+                let dst = dst.number();
                 Alu::Xor.vex().rrr(dst, dst, dst)
             }
-            Inst::Mov { dst, src } => Vex::m0f(0x28).rrr(write(dst), UNUSED_VVVV, vector(src)),
-            Inst::LoadConst { dst, .. } => Vex::m0f38_66(0x18).rip(write(dst)),
+            Inst::Mov { dst, src } => Vex::m0f(0x28).rrr(dst.number(), UNUSED_VVVV, src.number()),
+            Inst::LoadConst { dst, .. } => Vex::m0f38_66(0x18).rip(dst.number()),
             Inst::SpillVector { src, slot } => {
-                Vex::m0f(0x11).rm(vector(src), x86_64::gpr::RSP, Imm32(S::slot(slot)))
+                Vex::m0f(0x11).rm(src.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
             }
             Inst::ReloadVector { dst, slot } => {
-                Vex::m0f(0x10).rm(write(dst), x86_64::gpr::RSP, Imm32(S::slot(slot)))
+                Vex::m0f(0x10).rm(dst.number(), x86_64::gpr::RSP, Imm32(slot_disp(slot)))
             }
             Inst::Cvtt { dst, src } => {
                 Vex::m0f_f3(0x2C)
                     .w1()
-                    .rrr(S::write::<Integer>(dst), UNUSED_VVVV, vector(src))
+                    .rrr(dst.number(), UNUSED_VVVV, src.number())
             }
             Inst::Movq { dst, src } => {
                 Vex::m0f_66(0x6E)
                     .w1()
                     .xmm()
-                    .rrr(write(dst), UNUSED_VVVV, S::read::<Integer>(src))
+                    .rrr(dst.number(), UNUSED_VVVV, src.number())
             }
             Inst::StoreBatch { dst, src } => {
-                Vex::m0f(0x11).rm(vector(src), S::read::<Pointer>(&dst.base), dst.disp)
+                Vex::m0f(0x11).rm(src.number(), dst.base.number(), dst.disp)
             }
             Inst::Broadcast { dst, src } => {
-                Vex::m0f38_66(0x18).rm(write(dst), S::read::<Pointer>(&src.base), src.disp)
+                Vex::m0f38_66(0x18).rm(dst.number(), src.base.number(), src.disp)
             }
-            Inst::BroadcastIndexed { dst, base, index } => Vex::m0f38_66(0x18).rm_scaled4(
-                write(dst),
-                S::read::<Pointer>(base),
-                S::read::<Integer>(index),
-            ),
+            Inst::BroadcastIndexed { dst, base, index } => {
+                Vex::m0f38_66(0x18).rm_scaled4(dst.number(), base.number(), index.number())
+            }
             Inst::Gather {
                 dst,
                 base,
                 index,
                 mask,
             } => {
-                let (dst, index, mask) = (
-                    S::early::<Vector>(dst),
-                    vector(index),
-                    S::tie::<Vector>(mask),
-                );
+                let (dst, index, mask) = (dst.number(), index.number(), mask.number());
                 debug_assert!(
                     dst != index && dst != mask && index != mask,
                     "vgatherdps: dst, index and mask must be three registers"
                 );
                 // `base` is never `rbp`/`r13` (`GENERAL` excludes them), so
                 // the SIB's no-base encoding is unreachable.
-                Vex::m0f38_66(0x92).vsib_scaled4(dst, mask, S::read::<Pointer>(base), index)
+                Vex::m0f38_66(0x92).vsib_scaled4(dst, mask, base.number(), index)
             }
             Inst::MoveMask { dst, src } => {
-                Vex::m0f(0x50).rrr(S::write::<Integer>(dst), UNUSED_VVVV, vector(src))
+                Vex::m0f(0x50).rrr(dst.number(), UNUSED_VVVV, src.number())
             }
             // The destination is the `rm` operand here, the reverse of the
             // usual direction.
             Inst::ExtractHigh { dst, src } => {
                 Vex::m0f3a_66(0x19)
                     .imm(1)
-                    .rrr(vector(src), UNUSED_VVVV, write(dst))
+                    .rrr(src.number(), UNUSED_VVVV, dst.number())
             }
             Inst::ExtractLane { dst, src, lane } => {
                 debug_assert!(*lane < 4, "vextractps reads the low 128 bits");
-                Vex::m0f3a_66(0x17).xmm().imm(*lane).rm(
-                    vector(src),
-                    S::read::<Pointer>(&dst.base),
-                    dst.disp,
-                )
+                Vex::m0f3a_66(0x17)
+                    .xmm()
+                    .imm(*lane)
+                    .rm(src.number(), dst.base.number(), dst.disp)
             }
         }
     }

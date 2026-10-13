@@ -581,8 +581,8 @@
   over a `Stage` and with named fields typed by `Class` (`emit/x86_64.rs`);
   `Inst<S>` in `emit/avx2.rs` and `emit/avx512.rs`, the VEX and EVEX
   instructions, over the same vocabulary, and `avx2::Op<S>`, the instruction
-  AVX2's selection puts in a block; `Inst` in `emit/aarch64.rs`. One encoder
-  serves the allocator's `Bound` stage, through `Placed` (`emit/mod.rs`).
+  AVX2's selection puts in a block; `Inst` in `emit/aarch64.rs`. The encoders are
+  written for the allocator's `Bound` stage, the only one with registers placed.
   ("Instructions: bytes written inline by ~236 functions, not values",
   denotational-diagnosis, described the legacy `LegacyBackend` verbs, deleted
   at D1.)

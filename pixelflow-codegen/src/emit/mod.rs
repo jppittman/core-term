@@ -299,20 +299,6 @@ trait Stage {
     type FrameSize;
 }
 
-/// A stage whose operands are placed: registers an encoder reads the number
-/// of, a frame slot it reads the offset of, and the position a branch goes
-/// to.
-trait Placed: Stage {
-    fn read<C: Class>(operand: &Self::Read<C>) -> u8;
-    fn write<C: Class>(operand: &Self::Write<C>) -> u8;
-    fn early<C: Class>(operand: &Self::Early<C>) -> u8;
-    fn tie<C: Class>(operand: &Self::Tie<C>) -> u8;
-    /// Bytes from the stack pointer: a `disp32`.
-    fn slot(slot: &Self::Slot) -> i32;
-    fn target(target: &Self::Target) -> Label;
-    fn frame_size(size: &Self::FrameSize) -> u32;
-}
-
 /// A name for something computed, of class `C`: one definition, any number
 /// of reads. A name, so `Copy`: names copy, resources move.
 ///
@@ -407,28 +393,14 @@ impl<'m, B: IsaBackend> Stage for Bound<'m, B> {
     type FrameSize = u64;
 }
 
-impl<'m, B: IsaBackend> Placed for Bound<'m, B> {
-    fn read<C: Class>(operand: &In<'m, B, C>) -> u8 {
-        operand.number()
-    }
-    fn write<C: Class>(operand: &Out<'m, B, C>) -> u8 {
-        operand.number()
-    }
-    fn early<C: Class>(operand: &Out<'m, B, C>) -> u8 {
-        operand.number()
-    }
-    fn tie<C: Class>(operand: &InOut<'m, B, C>) -> u8 {
-        operand.number()
-    }
-    fn slot(slot: &&'m FrameSlot) -> i32 {
-        i32::try_from(slot.offset()).expect("MAX_FRAME bounds every slot offset")
-    }
-    fn target(target: &Label) -> Label {
-        *target
-    }
-    fn frame_size(size: &u64) -> u32 {
-        u32::try_from(*size).expect("MAX_FRAME bounds the frame")
-    }
+/// Bytes from the stack pointer: a `disp32`.
+fn slot_disp(slot: &FrameSlot) -> i32 {
+    i32::try_from(slot.offset()).expect("MAX_FRAME bounds every slot offset")
+}
+
+/// The frame's size, as the encoding's immediate.
+fn frame_bytes(size: u64) -> u32 {
+    u32::try_from(size).expect("MAX_FRAME bounds the frame")
 }
 
 /// How an instruction is rebuilt at stage `T`, one operand at a time. Each
