@@ -25,7 +25,9 @@
 //! The generator is the same dependency-free pairwise routine used by the
 //! other two POCs, duplicated per the workspace's minimal-dependency policy.
 
-use crate::egraph::{EGraph, ENode, saturate_with_budget};
+use crate::egraph::{
+    EGraph, ENode, Extraction, choices_to_arena, extract_dag, saturate_with_budget,
+};
 use crate::math::all_rules;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
@@ -412,8 +414,9 @@ fn pict_rewrite_rules_preserve_semantics() {
         let canon_root = eg.find(root_class);
 
         for (model_name, costs) in adversarial_cost_models() {
-            let (opt_arena, opt_root, _cost) =
-                crate::egraph::extract::extract(&eg, canon_root, &costs);
+            let dag = extract_dag(&eg, canon_root, &costs);
+            let (opt_arena, opt_root) =
+                choices_to_arena(&Extraction::from_well_founded(&eg, canon_root, dag.choices));
             let opt_str = opt_arena.display(opt_root).to_string();
             if opt_str != orig_str {
                 changed += 1;

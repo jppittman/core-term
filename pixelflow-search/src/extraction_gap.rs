@@ -1,17 +1,20 @@
 //! How much extracted cost does the greedy DP leave on the table?
 //!
-//! `extract_dag` is not argmin under its own cost model, three ways over
-//! (issue #1111, and the `Optimizer::cost` doc comment says so outright):
+//! `extract_dag` was not argmin under its own cost model three ways over
+//! (issue #1111); defect 1 remains, and the `Optimizer::cost` doc comment
+//! says so outright:
 //!
 //! 1. **Unpriced sharing.** It sums each child's `best_cost`, which is a
 //!    TREE cost. A subexpression used five times is charged five times in
 //!    the objective and emitted once in the code, so the objective is not
 //!    the thing being minimized.
-//! 2. **Single DFS, not a fixpoint.** On the cyclic e-graphs saturation
-//!    always produces (commutativity alone makes cycles), a class whose
-//!    child is still `on_stack` is scored `CYCLE_COST` and never revisited.
+//! 2. ~~**Single DFS, not a fixpoint.**~~ **Fixed.** On the cyclic e-graphs
+//!    saturation always produces (commutativity alone makes cycles), a class
+//!    whose child was still on the DFS stack was scored at a cycle sentinel
+//!    and never revisited. Extraction now settles classes in cost order, so
+//!    nothing is priced at a sentinel.
 //! 3. ~~**Costed before repaired.**~~ **Fixed (#1111).** `total_cost` used to
-//!    be read before `repair_choices_well_founded` may change the choices, so
+//!    be read before a repair stage may change the choices, so
 //!    the reported number need not describe the returned term — this harness
 //!    measured that on 132 of 302 kernels. Both reported numbers are now
 //!    computed from the returned choices, and there are two:
@@ -45,8 +48,9 @@
 //!
 //! ```text
 //! cost(greedy) - cost(exact)
-//!   = [cost(greedy) - cost(tree-optimal)]   <- defects 2+3: the DP not
-//!                                              attaining its own objective
+//!   = [cost(greedy) - cost(tree-optimal)]   <- the DP not attaining its own
+//!                                              objective (defects 2+3, fixed:
+//!                                              expected 0)
 //!   + [cost(tree-optimal) - cost(exact)]    <- defect 1: optimizing tree
 //!                                              cost instead of DAG cost
 //! ```
@@ -69,7 +73,7 @@ use crate::egraph::and_or::{AndOrGraph, Candidate, Child, Live};
 use crate::egraph::extract::{
     ExtractedDAG, extract_dag_objectives, extract_dag_scoped, extract_dag_tree_arm,
 };
-use crate::egraph::{Budget, CostModel, EClassId, EGraph, ENode, Extraction, Optimizer};
+use crate::egraph::{Budget, CostModel, EClassId, EGraph, ENode, Optimizer};
 use crate::egraph::{Vocabulary, insert, reachable_count};
 
 // ---------------------------------------------------------------------------
@@ -195,10 +199,9 @@ impl Instance {
             let c = priced.graph.class(live).index();
             // A node that names its own class can never appear in a
             // well-founded selection. Excluding it from the search is the
-            // same judgement `extract_dag`'s `CYCLE_COST` makes, made once
-            // instead of as a sentinel that then has to be kept above every
-            // real cost. It stays priced so a chooser that picked it can
-            // still be re-costed.
+            // same judgement the extractor's settlement makes: a candidate
+            // naming its own class is never admitted. It stays priced so a
+            // chooser that picked it can still be re-costed.
             let live_nodes: Vec<usize> = priced
                 .graph
                 .candidates(live)
@@ -388,8 +391,8 @@ impl NodeCostU64 for CostModel {
 ///
 /// Finalizing classes in nondecreasing cost order makes the resulting choice
 /// function well-founded by construction — the finalization order IS a
-/// topological order — so unlike the DP this never needs a repair pass, and
-/// unlike the DP it is an exact argmin of the objective it names.
+/// topological order — so it never needs a repair pass, and it is an exact
+/// argmin of the objective it names, independently of the production arms.
 ///
 /// Returns the per-class choice vector, or `None` if the root is unreachable
 /// (every route to it passes through a class with no finite-cost node).
@@ -918,115 +921,6 @@ fn exact_dag_choices(
 }
 
 // ---------------------------------------------------------------------------
-// An instrumented mirror of `extract_dag_scoped`, pinned to the real thing
-// ---------------------------------------------------------------------------
-
-/// The greedy DP again, byte-identical in behavior, but recording which
-/// classes it priced at `CYCLE_COST` — the observation defect 2 needs and
-/// the public return type does not carry.
-///
-/// The caller asserts the mirror's choices equal `extract_dag_scoped`'s. A
-/// mirror that has drifted is a measurement reporting someone else's
-/// algorithm, so drift fails loudly rather than being averaged in.
-struct GreedyTrace {
-    choices: Vec<Option<usize>>,
-    /// Classes whose winning node was priced at the cycle sentinel.
-    cycle_priced: HashSet<u32>,
-}
-
-fn greedy_trace(egraph: &EGraph, root: EClassId, costs: &CostModel) -> GreedyTrace {
-    use std::collections::BTreeSet;
-    const CYCLE_COST: usize = usize::MAX / 4;
-
-    let num_classes = egraph.num_classes();
-    let mut best_cost: Vec<Option<usize>> = vec![None; num_classes];
-    let mut best_node: Vec<Option<usize>> = vec![None; num_classes];
-    let mut cycle_priced: HashSet<u32> = HashSet::new();
-
-    let mut stack: Vec<(EClassId, bool)> = vec![(root, false)];
-    let mut on_stack: BTreeSet<u32> = BTreeSet::new();
-
-    while let Some((class, children_done)) = stack.pop() {
-        let canonical = egraph.find(class);
-        if best_cost[canonical.0 as usize].is_some() {
-            continue;
-        }
-        if !children_done {
-            if !on_stack.insert(canonical.0) {
-                continue;
-            }
-            stack.push((canonical, true));
-            for node in egraph.nodes(canonical) {
-                {
-                    let children = (node).children_slice();
-                    for &child in children {
-                        let child_canonical = egraph.find(child);
-                        if best_cost[child_canonical.0 as usize].is_none() {
-                            stack.push((child, false));
-                        }
-                    }
-                }
-            }
-        } else {
-            on_stack.remove(&canonical.0);
-            let nodes = egraph.nodes(canonical);
-            let mut min_cost = usize::MAX;
-            let mut min_idx = 0;
-            let mut min_was_cycle = false;
-            for (idx, node) in nodes.iter().enumerate() {
-                let mut saw_cycle = false;
-                let this_node_cost = match node {
-                    ENode::Var(_)
-                    | ENode::Const(_)
-                    | ENode::Buffer(_)
-                    | ENode::Uniform(_)
-                    | ENode::Param(_)
-                    | ENode::Ref { .. } => costs.node_op_cost(node),
-                    ENode::Op { .. } | ENode::Reduce { .. } => {
-                        let children = node.children_slice();
-                        if children.iter().any(|&c| egraph.find(c) == canonical) {
-                            saw_cycle = true;
-                            CYCLE_COST
-                        } else {
-                            let op_cost = costs.node_op_cost(node);
-                            let children_cost: usize = children
-                                .iter()
-                                .map(|&child| {
-                                    let c = egraph.find(child);
-                                    match best_cost[c.0 as usize] {
-                                        Some(v) => v,
-                                        None => {
-                                            saw_cycle = true;
-                                            CYCLE_COST
-                                        }
-                                    }
-                                })
-                                .fold(0usize, usize::saturating_add);
-                            op_cost.saturating_add(children_cost)
-                        }
-                    }
-                };
-                if this_node_cost < min_cost {
-                    min_cost = this_node_cost;
-                    min_idx = idx;
-                    min_was_cycle = saw_cycle;
-                }
-            }
-            if min_was_cycle {
-                cycle_priced.insert(canonical.0);
-            }
-            best_cost[canonical.0 as usize] = Some(min_cost);
-            best_node[canonical.0 as usize] = Some(min_idx);
-        }
-    }
-
-    GreedyTrace {
-        choices: best_node,
-        cycle_priced,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // One kernel, measured
 // ---------------------------------------------------------------------------
 
@@ -1068,11 +962,6 @@ struct Row {
     /// (greedy_tree - treeopt_tree) / greedy_tree — how far the DP lands from
     /// the optimum of the objective it *names*, with no DAG argument at all.
     objective_miss_frac: f64,
-    /// Classes the greedy DP priced at `CYCLE_COST` that the best term found
-    /// by the exact search nevertheless uses. On an unsolved kernel that
-    /// term is the seed, so this is a floor, not a count of all of them.
-    cycle_priced_used_by_exact: usize,
-    cycle_priced_total: usize,
     /// Defect 3: does the reported cost describe the returned term?
     reported_matches_returned: bool,
     reported_delta: i64,
@@ -1170,20 +1059,11 @@ fn measure(subject: Subject<'_>, limits: SearchLimits) -> Measured {
     let (tree_arm, shared_arm): (ExtractedDAG, ExtractedDAG) =
         extract_dag_objectives(&egraph, root_class, &model, LatticeShape::POINT);
     let dag = tree_arm;
-    let trace = greedy_trace(&egraph, root_class, &model);
-    let mirrored = Extraction::from_dp(&egraph, root_class, trace.choices.clone());
-    assert_eq!(
-        mirrored.choices(),
-        dag.choices.as_slice(),
-        "{name}: the instrumented greedy mirror has drifted from the tree arm of \
-         extract_dag_objectives — the measurement would be describing a different \
-         algorithm than the one #1116 replaces"
-    );
     let greedy_choices = dag.choices.clone();
     let greedy_dag = inst.dag_cost(&greedy_choices).unwrap_or_else(|| {
         panic!(
             "{name}: extract_dag returned a choice function that is not a term — either \
-             cyclic after `repair_choices_well_founded`, or missing a choice for a class \
+             cyclic, or missing a choice for a class \
              the root reaches. That is a production bug, not a measurement outcome"
         )
     });
@@ -1195,7 +1075,7 @@ fn measure(subject: Subject<'_>, limits: SearchLimits) -> Measured {
     let sharing_dag = inst.dag_cost(&sharing_choices).unwrap_or_else(|| {
         panic!(
             "{name}: the sharing-aware DP returned a choice function that is not a term \
-             — either cyclic after `repair_choices_well_founded`, or missing a choice \
+             — either cyclic, or missing a choice \
              for a class the root reaches. That is a production bug, not a measurement \
              outcome"
         )
@@ -1264,12 +1144,6 @@ fn measure(subject: Subject<'_>, limits: SearchLimits) -> Measured {
     };
     let exact = exact_dag_choices(&inst, incumbent, limits);
 
-    let cycle_priced_used_by_exact = trace
-        .cycle_priced
-        .iter()
-        .filter(|&&c| exact.choices.get(c as usize).copied().flatten().is_some())
-        .count();
-
     let free_classes = inst
         .reachable
         .iter()
@@ -1326,8 +1200,6 @@ fn measure(subject: Subject<'_>, limits: SearchLimits) -> Measured {
         } else {
             0
         },
-        cycle_priced_used_by_exact,
-        cycle_priced_total: trace.cycle_priced.len(),
         reported_matches_returned: greedy_tree == dag.total_cost as u64,
         reported_delta: dag.total_cost as i64 - greedy_tree as i64,
         dominated_candidates: inst.dominated,
@@ -1637,10 +1509,6 @@ fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
     let total_loss_dp: i64 = solved.iter().map(|r| r.loss_dp).sum();
     let total_loss_sharing: i64 = solved.iter().map(|r| r.loss_sharing).sum();
     let reported_mismatch = rows.iter().filter(|r| !r.reported_matches_returned).count();
-    let cycle_used = rows
-        .iter()
-        .filter(|r| r.cycle_priced_used_by_exact > 0)
-        .count();
 
     eprintln!("=== extraction gap ===");
     eprintln!(
@@ -1682,10 +1550,6 @@ fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
         rows.len()
     );
     eprintln!(
-        "cycle-priced classes used by the exact term: {cycle_used}/{} kernels",
-        rows.len()
-    );
-    eprintln!(
         "certified floor over ALL kernels: median greedy/best-found {certified_med:.4}, \
          strictly improved on {certified_improved}"
     );
@@ -1702,12 +1566,12 @@ fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
         "name,category,budget,node_count,classes,reachable_classes,free_classes,branch_product_log10,\
          stop,greedy_dag,greedy_tree,greedy_reported,treeopt_dag,treeopt_tree,exact_status,exact_dag,\
          exact_lower_bound,exact_expansions,exact_ms,ratio,loss_dp,loss_sharing,\
-         cycle_priced_used_by_exact,cycle_priced_total,reported_matches_returned,reported_delta,\
+         reported_matches_returned,reported_delta,\
          dominated_candidates,dp_loss_frac,objective_miss_frac\n",
     );
     for r in rows.iter().chain(monotone.iter()) {
         csv.push_str(&format!(
-            "{},{},{},{},{},{},{},{:.3},{},{},{},{},{},{},{},{},{},{},{:.1},{:.6},{},{},{},{},{},{},{},{:.6},{:.6}\n",
+            "{},{},{},{},{},{},{},{:.3},{},{},{},{},{},{},{},{},{},{},{:.1},{:.6},{},{},{},{},{},{:.6},{:.6}\n",
             r.name,
             r.category,
             r.budget,
@@ -1730,8 +1594,6 @@ fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
             r.ratio,
             r.loss_dp,
             r.loss_sharing,
-            r.cycle_priced_used_by_exact,
-            r.cycle_priced_total,
             r.reported_matches_returned,
             r.reported_delta,
             r.dominated_candidates,
@@ -1750,8 +1612,8 @@ fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
              \"branch_product_log10\":{:.3},\"stop\":\"{}\",\"greedy_dag\":{},\"greedy_tree\":{},\
              \"greedy_reported\":{},\"treeopt_dag\":{},\"treeopt_tree\":{},\"exact_status\":\"{}\",\
              \"exact_dag\":{},\"exact_lower_bound\":{},\"exact_expansions\":{},\"exact_ms\":{:.1},\
-             \"ratio\":{},\"loss_dp\":{},\"loss_sharing\":{},\"cycle_priced_used_by_exact\":{},\
-             \"cycle_priced_total\":{},\"reported_matches_returned\":{},\"reported_delta\":{},\
+             \"ratio\":{},\"loss_dp\":{},\"loss_sharing\":{},\
+             \"reported_matches_returned\":{},\"reported_delta\":{},\
              \"dp_loss_frac\":{:.6},\"objective_miss_frac\":{:.6}}}",
             r.name,
             r.category,
@@ -1779,8 +1641,6 @@ fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
             },
             r.loss_dp,
             r.loss_sharing,
-            r.cycle_priced_used_by_exact,
-            r.cycle_priced_total,
             r.reported_matches_returned,
             r.reported_delta,
             r.dp_loss_frac,
@@ -1828,8 +1688,7 @@ fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
         jnum(obj_worst)
     ));
     json.push_str(&format!(
-        "    \"reported_cost_mismatch_kernels\": {reported_mismatch}, \
-         \"cycle_priced_used_kernels\": {cycle_used},\n"
+        "    \"reported_cost_mismatch_kernels\": {reported_mismatch},\n"
     ));
     json.push_str(&format!(
         "    \"certified_ratio_median_all_kernels\": {}, \
@@ -1945,10 +1804,11 @@ fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
          ```\n\n\
          `tree_optimal` is Knuth's algorithm — Dijkstra generalized to AND-OR graphs — which \
          computes the exact minimum TREE cost in polynomial time. That is the objective \
-         `extract_dag` *names*, so the first term is the DP failing its own objective \
-         (single DFS + `CYCLE_COST`, defects 2 and 3) and the second is that objective being \
-         the wrong one (sharing unpriced, defect 1). Both terms are measured as the true DAG \
-         cost of the term each chooser returns.\n"
+         `extract_dag` *names*, so the first term is the tree arm's distance from that optimum: \
+         settlement is exact on tree cost, so it is expected to be 0 and anything else is a \
+         regression. The second is that objective being the wrong one (sharing unpriced, \
+         defect 1). Both terms are measured as the true DAG cost of the term each chooser \
+         returns.\n"
     )
     .unwrap();
     writeln!(w, "| share | pooled cost units (solved kernels) |").unwrap();
@@ -1966,19 +1826,11 @@ fn write_report(measured: &KernelRows<'_>, limits: SearchLimits) {
     .unwrap();
     writeln!(
         w,
-        "\n(iii) **cost reported before repair** (issue #1111, fixed): `total_cost` fails to \
+        "\n(iii) **cost not describing the returned term** (issue #1111, fixed): `total_cost` fails to \
          describe the returned term on **{reported_mismatch} of {}** kernels. It was 132/302 \
-         when the number was read before `repair_choices_well_founded`; it is costed from the \
+         when the number was read before the choices were final; it is costed from the \
          returned choices now, so anything but 0 here is a regression. Per-kernel magnitudes \
          are in `reported_delta`.\n",
-        rows.len()
-    )
-    .unwrap();
-    writeln!(
-        w,
-        "Cycle handling, separately: the greedy DP priced at least one class at `CYCLE_COST` \
-         that the best term the exact search holds nevertheless uses, on **{cycle_used} of \
-         {}** kernels. On an unsolved kernel that term is the seed, so this is a floor.\n",
         rows.len()
     )
     .unwrap();
@@ -2809,7 +2661,7 @@ fn write_objective_report(rows: &[Row], real_count: usize, limits: SearchLimits)
         "No real kernel regresses in `dag_cost` — asserted above, and structural. Extraction \
          runs at {ratio_med:.2}x median: the second DP pass is not free, and the compacted \
          bitset only took it from 2.57x to {ratio_med:.2}x, because the sharing arm also pays \
-         a repair and a costing pass of its own. The trade is {units_all} cost units and \
+         a costing pass of its own. The trade is {units_all} cost units and \
          {:.1}% of the closable gap against {ratio_med:.2}x on a phase that runs once per \
          compile. What that costs at the two production shapes — a scene's compile against \
          its ~250 ms budget and a glyph warm's compile summed — is the shape A / shape B \

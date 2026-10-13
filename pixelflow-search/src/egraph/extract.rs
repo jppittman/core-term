@@ -22,10 +22,9 @@ use pixelflow_ir::{LatticeShape, Variance};
 /// are exactly what let a choice function be materialised at all — an
 /// unvalidated `Vec<Option<usize>>` can loop forever when walked (a real
 /// 2.7GB OOM, see `choices_to_arena`'s doc comment), and a call site that
-/// forgets to repair or backfill it produces that bug silently.
+/// forgets to backfill it produces that bug silently.
 ///
-/// `Extraction::from_dp` (wraps `repair_choices_well_founded`) and
-/// `Extraction::from_backfill` (wraps `backfill_well_founded`) establish
+/// `Extraction::from_backfill` (wraps `backfill_well_founded`) establishes
 /// well-foundedness as part of construction. `Extraction::from_well_founded`
 /// does not: it trusts a map whose producer already guaranteed it, and the
 /// backstop for a broken trust is [`choices_to_arena`]'s own refusal (it
@@ -48,12 +47,9 @@ impl<'g> Extraction<'g> {
     /// candidate it settles on, and the reranker's map is the choices of a
     /// [`Extraction::from_backfill`] value after its swap search. Either way
     /// `cost_of_choices` has already walked the map from the root and
-    /// panicked on a missing choice or a cycle. [`repair_choices_well_founded`]
-    /// changes no pick reachable from `root` in such a map
-    /// (`the_dp_map_is_well_founded_so_the_repair_is_a_no_op` pins this), and
-    /// running it anyway cost a walk of the whole downward closure per
-    /// extraction. A map nothing has vouched for belongs in
-    /// [`Extraction::from_dp`] or [`Extraction::from_backfill`].
+    /// panicked on a missing choice or a cycle
+    /// (`the_dp_map_is_well_founded` pins that for both DP passes). A map
+    /// nothing has vouched for belongs in [`Extraction::from_backfill`].
     ///
     /// Nothing is checked here, deliberately: a cyclic map handed to this
     /// constructor is its producer's bug, and [`choices_to_arena`] refuses it
@@ -66,28 +62,6 @@ impl<'g> Extraction<'g> {
         Self {
             egraph,
             root: egraph.find(root),
-            choices,
-        }
-    }
-
-    /// The research path's smart constructor, for a map nothing has vouched
-    /// for: the legacy tree DP [`extract`] (whose `CYCLE_COST` records
-    /// cycles; every map the repair ever rewrote came from it), the witness
-    /// passes and the extraction-gap harness. Makes `choices` well-founded via
-    /// [`repair_choices_well_founded`] (resolving any mutual cycles the
-    /// bottom-up DP recorded — `CYCLE_COST` penalizes only
-    /// self-references, so two merged classes can each cheapest-pick a
-    /// node through the other), then seals the result.
-    pub(crate) fn from_dp(
-        egraph: &'g EGraph,
-        root: EClassId,
-        mut choices: Vec<Option<usize>>,
-    ) -> Self {
-        let root = egraph.find(root);
-        repair_choices_well_founded(egraph, root, &mut choices);
-        Self {
-            egraph,
-            root,
             choices,
         }
     }
@@ -142,12 +116,6 @@ impl<'g> Extraction<'g> {
         self.choices.get(idx).copied().flatten()
     }
 
-    /// Read-only view of the raw choice vector, indexed by canonical
-    /// e-class id. Still only reachable through a sealed `Extraction`.
-    pub(crate) fn choices(&self) -> &[Option<usize>] {
-        &self.choices
-    }
-
     /// The choice vector [`choices_to_arena`] will actually materialise:
     /// every `Shl`/`Shr` count child re-pinned to a `Const` representative of
     /// its class ([`pin_shift_counts`]), because the emitter's shift lowering
@@ -156,11 +124,11 @@ impl<'g> Extraction<'g> {
     /// (e.g. `Y - Y` merged with `Const(0)`).
     ///
     /// Any consumer that walks an `Extraction` — not just
-    /// [`choices_to_arena`] itself — must walk this view, not [`Self::choices`]
-    /// directly: describing the raw (possibly non-`Const`) choice for a
-    /// count class would describe a DAG that is not the one actually
-    /// compiled. `ChoicesCostDag` in `crate::nnue::factored` takes this view
-    /// rather than re-deriving it (one definition, imported, not restated).
+    /// [`choices_to_arena`] itself — must walk this view, not the raw
+    /// choices: describing the raw (possibly non-`Const`) choice for a count
+    /// class would describe a DAG that is not the one actually compiled.
+    /// `ChoicesCostDag` in `crate::nnue::factored` takes this view rather
+    /// than re-deriving it (one definition, imported, not restated).
     pub(crate) fn pinned_choices(&self) -> Vec<Option<usize>> {
         pin_shift_counts(self.egraph, self.root, &self.choices)
     }
@@ -695,333 +663,6 @@ fn choices_have_cycle_through(
     false
 }
 
-/// Make an existing choice function well-founded, keeping every recorded
-/// choice that participates in no cycle.
-///
-/// The bottom-up DP can record mutual cycles (class 68 picks `neg(69)` while
-/// class 69 picks `neg(68)`): `CYCLE_COST` penalizes only SELF-references, so
-/// two merged classes can each cheapest-pick a node through the other. The
-/// previous repair (`break_choice_cycles`, a restart-DFS that broke one cycle
-/// per pass) did not terminate on saturated FULL-tier graphs — its Strategy-3
-/// fallback can leave the cycle intact, and the restart then rediscovers the
-/// same cycle forever (observed live on two DEV kernels, each pinning a core
-/// for minutes before the run was killed).
-///
-/// So, like [`backfill_well_founded`], the repair is a construction rather
-/// than a patch loop — Kahn admission in two interleaved phases:
-///
-/// 1. **Drain**: admit every class whose RECORDED node has all children
-///    admitted. Acyclic regions of the DP's choice graph are admitted here
-///    unchanged, so their cost-optimal selection is kept.
-/// 2. **Unstick**: when the drain stalls before every class is admitted, the
-///    remaining classes all sit on cycles (or behind them). Admit ONE ready
-///    class through its first admissible node — rewriting its choice — and
-///    return to draining. Each unstick admits a class, so the loop is bounded
-///    by the class count; total work is linear in e-graph edges.
-///
-/// # Panics
-///
-/// Panics if admission exhausts with classes left over — a class none of
-/// whose nodes has admissible children is a structurally corrupt e-graph
-/// (every well-formed class holds a creation-order witness node).
-pub(crate) fn repair_choices_well_founded(
-    egraph: &EGraph,
-    root: EClassId,
-    choices: &mut [Option<usize>],
-) {
-    let num_classes = choices.len();
-
-    // Scope: every canonical class reachable from `root` through ANY node —
-    // the repair may switch a class to a node whose children the recorded
-    // graph never visited, so the full downward closure is the safe scope.
-    let mut scope_pos: Vec<Option<usize>> = alloc::vec![None; num_classes];
-    let mut scope: Vec<u32> = Vec::new();
-    let mut stack = alloc::vec![egraph.find(root)];
-    while let Some(class) = stack.pop() {
-        let canonical = egraph.find(class);
-        let idx = canonical.0 as usize;
-        if idx >= num_classes || scope_pos[idx].is_some() {
-            continue;
-        }
-        scope_pos[idx] = Some(scope.len());
-        scope.push(canonical.0);
-        for node in egraph.nodes(canonical) {
-            {
-                let children = (node).children_slice();
-                for &child in children {
-                    stack.push(egraph.find(child));
-                }
-            }
-        }
-    }
-    if scope.is_empty() {
-        return;
-    }
-
-    // Pending child-admissions per (scope class, node); reverse edges say
-    // which counters an admission decrements. Duplicate children count per
-    // occurrence.
-    let mut pending: Vec<Vec<usize>> = Vec::with_capacity(scope.len());
-    let mut reverse: Vec<Vec<(usize, usize)>> = alloc::vec![Vec::new(); scope.len()];
-    for (pos, &cid) in scope.iter().enumerate() {
-        let nodes = egraph.nodes(EClassId(cid));
-        let mut per_node = Vec::with_capacity(nodes.len());
-        for (node_idx, node) in nodes.iter().enumerate() {
-            let mut count = 0usize;
-            {
-                let children = (node).children_slice();
-                for &child in children {
-                    let child_pos = scope_pos[egraph.find(child).0 as usize]
-                        .expect("child of a scope class is in scope");
-                    count += 1;
-                    reverse[child_pos].push((pos, node_idx));
-                }
-            }
-            per_node.push(count);
-        }
-        pending.push(per_node);
-    }
-
-    let mut admitted: Vec<bool> = alloc::vec![false; scope.len()];
-    let mut admitted_count = 0usize;
-    // Classes whose RECORDED node is ready (drain phase pulls from here).
-    let mut recorded_ready: Vec<usize> = Vec::new();
-    // Classes with ANY ready node (unstick phase pulls from here).
-    let mut any_ready: Vec<usize> = Vec::new();
-    for (pos, &cid) in scope.iter().enumerate() {
-        let recorded = choices[cid as usize];
-        for (node_idx, &count) in pending[pos].iter().enumerate() {
-            if count == 0 {
-                if recorded == Some(node_idx) {
-                    recorded_ready.push(pos);
-                }
-                any_ready.push(pos);
-            }
-        }
-    }
-
-    // Admit `pos` through `node_idx`, propagating readiness to parents.
-    let admit = |pos: usize,
-                 node_idx: usize,
-                 admitted: &mut Vec<bool>,
-                 admitted_count: &mut usize,
-                 recorded_ready: &mut Vec<usize>,
-                 any_ready: &mut Vec<usize>,
-                 pending: &mut Vec<Vec<usize>>,
-                 choices: &mut [Option<usize>]| {
-        admitted[pos] = true;
-        *admitted_count += 1;
-        choices[scope[pos] as usize] = Some(node_idx);
-        for &(parent_pos, parent_node) in &reverse[pos] {
-            pending[parent_pos][parent_node] -= 1;
-            if pending[parent_pos][parent_node] == 0 && !admitted[parent_pos] {
-                if choices[scope[parent_pos] as usize] == Some(parent_node) {
-                    recorded_ready.push(parent_pos);
-                }
-                any_ready.push(parent_pos);
-            }
-        }
-    };
-
-    while admitted_count < scope.len() {
-        // Phase 1 — drain: keep recorded choices wherever they admit.
-        let mut progressed = false;
-        while let Some(pos) = recorded_ready.pop() {
-            if admitted[pos] {
-                continue;
-            }
-            let node_idx = choices[scope[pos] as usize]
-                .expect("recorded_ready holds only classes with a recorded choice");
-            admit(
-                pos,
-                node_idx,
-                &mut admitted,
-                &mut admitted_count,
-                &mut recorded_ready,
-                &mut any_ready,
-                &mut pending,
-                choices,
-            );
-            progressed = true;
-        }
-        if admitted_count == scope.len() {
-            break;
-        }
-        // Phase 2 — unstick: everything left sits on or behind a cycle of
-        // recorded choices. Rewrite ONE class to its first admissible node.
-        while let Some(pos) = any_ready.pop() {
-            if admitted[pos] {
-                continue;
-            }
-            let node_idx = pending[pos]
-                .iter()
-                .position(|&count| count == 0)
-                .expect("any_ready holds only classes with a zero-pending node");
-            admit(
-                pos,
-                node_idx,
-                &mut admitted,
-                &mut admitted_count,
-                &mut recorded_ready,
-                &mut any_ready,
-                &mut pending,
-                choices,
-            );
-            progressed = true;
-            break;
-        }
-        assert!(
-            progressed,
-            "repair_choices_well_founded: {} of {} reachable e-classes cannot be admitted — \
-             the e-graph holds classes none of whose nodes has admissible children, which is \
-             structural corruption, not a rewrite outcome (root {})",
-            scope.len() - admitted_count,
-            scope.len(),
-            root.0
-        );
-    }
-}
-
-/// Extract the minimum-cost arena expression from an e-class.
-///
-/// Uses dynamic programming: cost(class) = min over all nodes in class.
-///
-/// The third return value is the **tree** cost of the arena returned
-/// alongside it — every child summed at every use, sharing never priced,
-/// which is the objective the DP minimizes. The arena itself is a DAG and
-/// the emitted kernel pays each distinct node once; for that number use
-/// [`extract_dag`] and read [`ExtractedDAG::dag_cost`].
-///
-/// # Type Parameter
-///
-/// The cost function can be any type implementing `CostFunction`:
-/// - `CostModel` for hardcoded costs
-/// - Custom domain-specific cost functions
-pub fn extract<C: CostFunction>(
-    egraph: &EGraph,
-    root: EClassId,
-    costs: &C,
-) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId, usize) {
-    // Cap for cycle/self-referential costs - high but not astronomical
-    const CYCLE_COST: usize = 1_000_000;
-
-    let num_classes = egraph.num_classes();
-    let mut best_cost: Vec<Option<usize>> = alloc::vec![None; num_classes];
-    let mut best_node: Vec<Option<usize>> = alloc::vec![None; num_classes];
-
-    // Phase 1: Iterative bottom-up cost computation using topological order
-    // We use a work stack to avoid recursion
-    let mut stack: Vec<(EClassId, bool)> = vec![(root, false)]; // (class, children_processed)
-    let mut on_stack: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
-
-    while let Some((class, children_done)) = stack.pop() {
-        let canonical = egraph.find(class);
-
-        // Already computed
-        if best_cost[canonical.0 as usize].is_some() {
-            continue;
-        }
-
-        if !children_done {
-            // First visit: push self back (to process after children), then push children
-            if on_stack[canonical.0 as usize] {
-                // Cycle detected - don't cache, parent will handle with high cost
-                continue;
-            }
-            on_stack[canonical.0 as usize] = true;
-
-            stack.push((canonical, true)); // Come back after children
-
-            // Push all children that need processing
-            for node in egraph.nodes(canonical) {
-                {
-                    let children = (node).children_slice();
-                    for &child in children {
-                        let child_canonical = egraph.find(child);
-                        if best_cost[child_canonical.0 as usize].is_none() {
-                            stack.push((child, false));
-                        }
-                    }
-                }
-            }
-        } else {
-            // Second visit: all children are computed, now compute this class
-            on_stack[canonical.0 as usize] = false;
-
-            let nodes = egraph.nodes(canonical);
-            let mut min_cost = usize::MAX;
-            let mut min_idx = 0;
-
-            for (idx, node) in nodes.iter().enumerate() {
-                let this_node_cost = match node {
-                    ENode::Var(_)
-                    | ENode::Const(_)
-                    | ENode::Buffer(_)
-                    | ENode::Uniform(_)
-                    | ENode::Param(_)
-                    | ENode::Ref { .. } => costs.node_cost(node, None),
-                    // A fold is, for costing, a node with one child: its
-                    // metadata is not an operand, so `children_slice` is the
-                    // whole of what this arm needs to know about either.
-                    ENode::Op { .. } | ENode::Reduce { .. } => {
-                        let children = node.children_slice();
-                        // Check for self-referential children
-                        if children.iter().any(|&c| egraph.find(c) == canonical) {
-                            CYCLE_COST
-                        } else {
-                            let op_cost = costs.node_cost(node, None);
-                            // Saturating fold, not `.sum()`: a child's own
-                            // `best_cost` can already sit at a prohibitive
-                            // sentinel (the `usize::MAX / 4`
-                            // `CostModel::node_op_cost` gives a fold whose
-                            // monoid has no combiner, or this function's own
-                            // `CYCLE_COST`), so a node with several such
-                            // children overflows a plain `usize` sum.
-                            let per_child = fold_body_multiple(node);
-                            let children_cost: usize = children
-                                .iter()
-                                .map(|&child| {
-                                    let c = egraph.find(child);
-                                    let sub = best_cost[c.0 as usize].unwrap_or(CYCLE_COST);
-                                    usize::try_from((sub as u64).saturating_mul(per_child))
-                                        .unwrap_or(usize::MAX)
-                                })
-                                .fold(0usize, usize::saturating_add);
-                            op_cost.saturating_add(children_cost)
-                        }
-                    }
-                };
-
-                if this_node_cost < min_cost {
-                    min_cost = this_node_cost;
-                    min_idx = idx;
-                }
-            }
-
-            best_cost[canonical.0 as usize] = Some(min_cost);
-            best_node[canonical.0 as usize] = Some(min_idx);
-        }
-    }
-
-    // Seals `best_node` into an `Extraction`, repairing any mutual cycles
-    // the DP recorded before the tree is built.
-    let extraction = Extraction::from_dp(egraph, root, best_node);
-    // Costed from the repaired choices, so the returned number is the cost of
-    // the returned arena. Reading `best_cost[root]` here (as this did before
-    // #1111) reports the pre-repair DP total, which names a different term
-    // whenever the repair rewrote a pick.
-    let total_cost = cost_of_choices(
-        egraph,
-        root,
-        extraction.choices(),
-        costs,
-        LatticeShape::POINT,
-    )
-    .tree;
-    let (arena, root_id) = choices_to_arena(&extraction);
-    (arena, root_id, total_cost)
-}
-
 // ============================================================================
 // DAG-Aware Reference Counting (for NNUE extraction)
 // ============================================================================
@@ -1547,9 +1188,10 @@ pub struct ExtractedDAG {
     /// will this kernel cost?" wants. On `shader:julia_set` the two are
     /// ~1.4e7 and 716 (`docs/results/2026-09-02-extraction-gap.md`).
     ///
-    /// Read from the *repaired* choices, so it describes the term this
-    /// struct returns (#1111). Before that fix it was the pre-repair DP
-    /// total, which named a different term on 132 of 302 measured kernels.
+    /// Read from the choices returned, so it describes the term this struct
+    /// returns (#1111). Before that fix it was the DP's own table total after
+    /// a repair had rewritten picks under it, which named a different term on
+    /// 132 of 302 measured kernels.
     pub total_cost: usize,
 
     /// **DAG** cost of the term in [`Self::choices`]: each distinct chosen
@@ -1755,7 +1397,7 @@ impl ExtractedDAG {
 /// `f` reads nothing but the index, and therefore hoistable out of the pixel
 /// loop.
 ///
-/// A node reading its own class (a cycle under repair) counts as fully
+/// A node reading its own class (a cycle) counts as fully
 /// varying — the conservative direction, since it can only make a form look
 /// more expensive, never less.
 fn node_variance(
@@ -1799,9 +1441,9 @@ pub struct ChoiceCost {
 /// Cost the term named by `choices`, under `costs`, weighted by `shape`.
 ///
 /// This costs *the choice function it is given* — nothing is minimized here,
-/// no node is reconsidered. Pass a settled, well-founded choice map (the
-/// output of `repair_choices_well_founded`, or `Extraction::choices`);
-/// costing the raw DP table instead is exactly the #1111 bug this exists to
+/// no node is reconsidered. Pass a settled, well-founded choice map (a
+/// DP pass's output, or a sealed `Extraction`'s); costing a table the
+/// returned term was not read from is exactly the #1111 bug this exists to
 /// close, so a cyclic map panics rather than returning a number for a term
 /// that cannot be materialized.
 ///
@@ -1830,7 +1472,7 @@ pub fn cost_of_choices<C: CostFunction>(
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or_else(|| {
             panic!(
                 "cost_of_choices: e-class {} is reachable from root {} but has no recorded \
-                 choice — cost a settled choice map (post-repair), never a partial one",
+                 choice — cost a settled choice map, never a partial one",
                 idx, root.0
             )
         });
@@ -1867,7 +1509,7 @@ pub fn cost_of_choices<C: CostFunction>(
                 color[idx] != 1,
                 "cost_of_choices: the choice graph is CYCLIC — e-class {} is reached again \
                  through its own chosen descendants (root {}). A cyclic map names no term, \
-                 so it has no cost; repair it before costing it",
+                 so it has no cost; settle it before costing it",
                 idx,
                 root.0
             );
@@ -1917,6 +1559,28 @@ pub fn cost_of_choices<C: CostFunction>(
 
 pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> ExtractedDAG {
     extract_dag_scoped(egraph, root, costs, LatticeShape::POINT)
+}
+
+/// The arena [`extract_dag`] selects, with the tree cost it reports: the
+/// production extractor's choices through the production seal.
+///
+/// Not a second extractor: it owns no extraction. It exists as the
+/// materializer for a caller holding a saturated graph and a
+/// [`CostFunction`] the [`CostModel`](super::cost::CostModel) table cannot
+/// express, which [`Optimized::to_arena`](super::optimizer::Optimized::to_arena)
+/// cannot take (`pixelflow-codegen`'s `halve_fold_jit` prices loops out).
+/// Its name and shape are pending the decision on a public materializer for
+/// an [`ExtractedDAG`]; in-crate callers use [`extract_dag`] and the
+/// production seal (`Extraction::from_well_founded`) directly.
+pub fn extract<C: CostFunction>(
+    egraph: &EGraph,
+    root: EClassId,
+    costs: &C,
+) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId, usize) {
+    let dag = extract_dag(egraph, root, costs);
+    let (arena, arena_root) =
+        choices_to_arena(&Extraction::from_well_founded(egraph, root, dag.choices));
+    (arena, arena_root, dag.total_cost)
 }
 
 /// [`extract_dag`], pricing each node by how often the lattice evaluates it.
@@ -2147,19 +1811,15 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
 
 /// Cost the term a settled DP choice map names.
 ///
-/// There is no repair stage here any more. A map out of
-/// [`settle_in_cost_order`] is well-founded by construction — a class is
-/// settled strictly after the children of the candidate it settles on — so
-/// [`repair_choices_well_founded`] had nothing left to do but relabel
-/// classes no term reaches, and every choice it used to make on the DP's
-/// behalf was a cost decision taken with no cost model. Production seals the
-/// map through [`Extraction::from_well_founded`]; the repair survives for
-/// [`Extraction::from_dp`], whose input is an arbitrary caller's map.
-/// `the_dp_map_is_well_founded_so_the_repair_is_a_no_op` is the gate.
+/// A map out of [`settle_in_cost_order`] is well-founded by construction — a
+/// class is settled strictly after the children of the candidate it settles
+/// on — so production seals it through [`Extraction::from_well_founded`] and
+/// no pick changes after the DP made it. `the_dp_map_is_well_founded` pins
+/// that.
 ///
-/// The cost is of the choices being RETURNED, not of the DP table that
-/// produced them — the distinction #1111 had to make when a repair could
-/// switch a class under it, kept because it costs one walk.
+/// The cost is of the choices being RETURNED, not of the DP's running table:
+/// the DP's claim and the returned term's price are separate numbers (#1111),
+/// and this walk is what keeps them from being confused.
 fn costed<C: CostFunction>(
     at: Rooted<'_>,
     dp: DpOutcome,
@@ -2432,11 +2092,11 @@ impl StageRecorder for () {
 /// class whose child was still on the stack got priced at a sentinel and was
 /// never revisited, so on a saturated graph — commutativity alone closes
 /// cycles — a large fraction of classes carried no opinion at all, and the
-/// pick fell out of [`repair_choices_well_founded`], whose job is
-/// well-foundedness, not cost. 29 % of the frontier classes holding the
-/// witnesses of `docs/results/2026-09-08-extraction-witnesses.md`, and 73 %
-/// of them on the shaders, were decided that way; the sentinel is gone with
-/// the traversal that needed it.
+/// pick fell to a repair whose job was well-foundedness, not cost. 29 % of
+/// the frontier classes holding the witnesses of
+/// `docs/results/2026-09-08-extraction-witnesses.md`, and 73 % of them on the
+/// shaders, were decided that way; the sentinel is gone with the traversal
+/// that needed it.
 ///
 /// Settling in cost order is exact whenever a candidate costs at least as
 /// much as each of its children, which both passes satisfy: the tree pass
@@ -3398,7 +3058,7 @@ mod tests {
 
     /// The defect the fixpoint exists to remove: the post-order DP priced a
     /// class in a cycle at the sentinel and expressed no preference, so the
-    /// pick fell to `repair_choices_well_founded`, which has no cost model.
+    /// pick fell to a repair that had no cost model.
     /// The fixpoint prices it — `neg(neg(x)) = x` means the `Neg` class's
     /// only child is the class that holds it, and settling in cost order
     /// reaches the child first.
@@ -3439,39 +3099,76 @@ mod tests {
         );
     }
 
-    /// The gate on deleting the repair stage from the extraction path: a
-    /// choice map out of either DP pass is already well-founded, so
-    /// `repair_choices_well_founded` has nothing to change.
+    /// Kahn admission over the chosen edges: a class is admitted once every
+    /// class its chosen node names is, and a well-founded map admits every
+    /// class that holds a pick.
+    ///
+    /// This is a different walk from `cost_of_choices`, which production runs
+    /// on every extraction and which follows only the picks reachable from
+    /// the root. It reads the whole map, so a pick off the chosen subgraph
+    /// (which the reranker's `try_swap` still reads) is covered too.
+    fn assert_every_pick_is_admitted(egraph: &EGraph, choices: &[Option<usize>], what: &str) {
+        let picks: Vec<(usize, Vec<usize>)> = choices
+            .iter()
+            .enumerate()
+            .filter_map(|(i, pick)| {
+                let class = EClassId(i as u32);
+                let node = &egraph.nodes(class)[(*pick)?];
+                let children = node
+                    .children_slice()
+                    .iter()
+                    .map(|&c| egraph.find(c).index());
+                Some((egraph.find(class).index(), children.collect()))
+            })
+            .collect();
+        let mut admitted = alloc::vec![false; egraph.num_classes()];
+        // A child with no pick is never admitted, so a pick that names one is
+        // reported by the final assertion rather than skipped.
+        loop {
+            let before = admitted.iter().filter(|&&a| a).count();
+            for (class, children) in &picks {
+                if children.iter().all(|&c| admitted[c]) {
+                    admitted[*class] = true;
+                }
+            }
+            if admitted.iter().filter(|&&a| a).count() == before {
+                break;
+            }
+        }
+        for (class, _) in &picks {
+            assert!(
+                admitted[*class],
+                "{what}: class {class} holds a pick that no admission order reaches"
+            );
+        }
+    }
+
+    /// A choice map out of either DP pass is well-founded, so production may
+    /// seal it with [`Extraction::from_well_founded`] and nothing rewrites a
+    /// pick after the DP made it.
     #[test]
-    fn the_dp_map_is_well_founded_so_the_repair_is_a_no_op() {
+    fn the_dp_map_is_well_founded() {
         let costs = CostModel::latency_prior();
         for (nodes, shape) in [
             (64, LatticeShape::POINT),
             (256, LatticeShape::new([32, 32])),
         ] {
             let (egraph, root) = saturated_sdf_egraph(nodes);
-            for raw in [
-                tree_dp_pass(
-                    Frozen::new(&egraph, root).problem(),
-                    &mut Dp::production(&costs, shape),
-                )
-                .choices,
-                shared_dag_dp_pass(
-                    Frozen::new(&egraph, root).problem(),
-                    &mut Dp::production(&costs, shape),
-                    usize::MAX,
-                )
-                .outcome
-                .expect("unbounded")
-                .choices,
-            ] {
-                let mut repaired = raw.clone();
-                repair_choices_well_founded(&egraph, root, &mut repaired);
-                assert_eq!(
-                    repaired, raw,
-                    "{nodes} nodes at {shape:?}: the repair moved a class the DP had settled"
-                );
-            }
+            let tree = tree_dp_pass(
+                Frozen::new(&egraph, root).problem(),
+                &mut Dp::production(&costs, shape),
+            )
+            .choices;
+            let shared = shared_dag_dp_pass(
+                Frozen::new(&egraph, root).problem(),
+                &mut Dp::production(&costs, shape),
+                usize::MAX,
+            )
+            .outcome
+            .expect("unbounded")
+            .choices;
+            assert_every_pick_is_admitted(&egraph, &tree, "tree arm");
+            assert_every_pick_is_admitted(&egraph, &shared, "shared arm");
         }
     }
 
@@ -3637,7 +3334,10 @@ mod tests {
         let x = egraph.add(ENode::Var(0));
 
         let costs = CostModel::default();
-        let (arena, root, cost) = extract(&egraph, x, &costs);
+        let dag = extract_dag(&egraph, x, &costs);
+        let cost = dag.total_cost;
+        let (arena, root) =
+            choices_to_arena(&Extraction::from_well_founded(&egraph, x, dag.choices));
 
         assert_eq!(arena.len(), 1);
         assert_eq!(root.0, 0);
@@ -3655,7 +3355,9 @@ mod tests {
         });
 
         let costs = CostModel::default();
-        let (arena, root, _cost) = extract(&egraph, sum, &costs);
+        let dag = extract_dag(&egraph, sum, &costs);
+        let (arena, root) =
+            choices_to_arena(&Extraction::from_well_founded(&egraph, sum, dag.choices));
 
         assert_eq!(arena.len(), 3); // Add + X + Y
         assert_eq!(root.0, 2);
@@ -3692,7 +3394,13 @@ mod tests {
             "test assumes Add is strictly cheaper than Mul in the latency prior"
         );
 
-        let (arena, root, cost) = extract(&egraph, egraph.find(x_plus_x), &costs);
+        let dag = extract_dag(&egraph, egraph.find(x_plus_x), &costs);
+        let cost = dag.total_cost;
+        let (arena, root) = choices_to_arena(&Extraction::from_well_founded(
+            &egraph,
+            egraph.find(x_plus_x),
+            dag.choices,
+        ));
 
         // Cheapest form is `x + x`: Add(4) + Var(0) + Var(0) = 4.
         assert_eq!(cost, costs.cost(pixelflow_ir::OpKind::Add));
@@ -3848,9 +3556,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "cyclic")]
     fn extraction_constructors_refuse_a_cyclic_choice_set() {
-        // `from_backfill` refuses a cyclic vector up front (`from_dp`
-        // repairs it); only `from_well_founded` defers to `choices_to_arena`
-        // (see `choices_to_arena_refuses_a_cyclic_choice_set`).
+        // `from_backfill` refuses a cyclic vector up front; only
+        // `from_well_founded` defers to `choices_to_arena` (see
+        // `choices_to_arena_refuses_a_cyclic_choice_set`).
         let (egraph, merged, n1) = cyclic_capable_egraph();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
         let m = egraph.find(merged).0 as usize;
@@ -3860,43 +3568,50 @@ mod tests {
         let _ = Extraction::from_backfill(&egraph, merged, choices);
     }
 
+    /// Prices `Var` above two `Neg`s, so on the cyclic-capable graph the
+    /// mutual pick (`merged` takes `Neg(n1)`, `n1` takes `Neg(merged)`) is
+    /// what a cost-greedy walk would prefer to the leaf.
+    struct VarAboveTwoNegs;
+
+    impl CostFunction for VarAboveTwoNegs {
+        fn node_cost(&self, node: &ENode, _parent: Option<pixelflow_ir::OpKind>) -> usize {
+            match node {
+                ENode::Var(_) => VAR_ABOVE_TWO_NEGS,
+                ENode::Op { .. } | ENode::Reduce { .. } => 1,
+                ENode::Const(_)
+                | ENode::Buffer(_)
+                | ENode::Uniform(_)
+                | ENode::Param(_)
+                | ENode::Ref { .. } => 0,
+            }
+        }
+    }
+
+    const VAR_ABOVE_TWO_NEGS: usize = 100;
+
+    /// The cyclic-capable graph (`neg(neg(x)) = x`) is the one shape a map
+    /// can go wrong on, and with `Var` dearer than the pair of `Neg`s the
+    /// mutual pick is the cheaper-looking one. Settlement admits `Neg(n1)`
+    /// only after `n1`, which needs the merged class, so the leaf is the pick
+    /// and its cost is the one reported.
     #[test]
-    fn repair_keeps_acyclic_choices_and_terminates_on_a_recorded_cycle() {
-        // The static DP's failure shape: a recorded mutual cycle (merged
-        // class picks Neg(n1), n1 picks Neg(merged)). The old restart-DFS
-        // breaker could rediscover the same cycle forever — two DEV kernels
-        // pinned a core for minutes. The repair must terminate, produce a
-        // well-founded set, and leave already-acyclic choices alone.
-        let (egraph, merged, n1) = cyclic_capable_egraph();
-        let m = egraph.find(merged).0 as usize;
-        let i = egraph.find(n1).0 as usize;
-        let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
-        choices[m] = Some(neg_index(&egraph, merged).expect("merged class holds Neg(n1)"));
-        choices[i] = Some(neg_index(&egraph, n1).expect("n1 holds Neg(x)"));
-
-        repair_choices_well_founded(&egraph, merged, &mut choices);
-        assert!(
-            !choices_have_cycle_from(&egraph, merged, &choices),
-            "repair must leave a well-founded choice set"
-        );
-        // Materialization is the proof of well-foundedness.
-        let extraction = Extraction {
-            egraph: &egraph,
-            root: egraph.find(merged),
-            choices,
-        };
-        let (arena, root) = choices_to_arena(&extraction);
-        assert!(root.0 < arena.len() as u32);
-
-        // And a set that is ALREADY acyclic passes through untouched.
-        let mut acyclic: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
-        backfill_well_founded(&egraph, merged, &mut acyclic);
-        let before = acyclic.clone();
-        repair_choices_well_founded(&egraph, merged, &mut acyclic);
-        assert_eq!(
-            before, acyclic,
-            "an acyclic choice function must be kept verbatim (drain phase only)"
-        );
+    fn production_extraction_of_a_cyclic_capable_graph_picks_the_leaf() {
+        let (egraph, merged, _n1) = cyclic_capable_egraph();
+        let var_idx = egraph
+            .nodes(merged)
+            .iter()
+            .position(|n| matches!(n, ENode::Var(_)))
+            .expect("merged class holds Var(0)");
+        let dag = extract_dag(&egraph, merged, &VarAboveTwoNegs);
+        assert_eq!(dag.choices[egraph.find(merged).index()], Some(var_idx));
+        assert_eq!(dag.total_cost, VAR_ABOVE_TWO_NEGS);
+        assert_eq!(dag.dag_cost, VAR_ABOVE_TWO_NEGS);
+        let (arena, root) =
+            choices_to_arena(&Extraction::from_well_founded(&egraph, merged, dag.choices));
+        assert!(matches!(
+            arena.node(root),
+            pixelflow_ir::arena::ExprNode::Var(_)
+        ));
     }
 
     // ========================================================================
@@ -4417,9 +4132,11 @@ mod tests {
         assert_eq!(root_id.0, 1, "root ExprId should be 1 (the Mul node)");
     }
 
-    /// Direct extraction and explicit `choices_to_arena` should agree for tree-shaped inputs.
+    /// A hand-built full choice map sealed by `from_backfill` materializes the
+    /// same arena as the production extractor's map sealed by
+    /// `from_well_founded`, for a tree-shaped input.
     #[test]
-    fn extract_matches_choices_to_arena() {
+    fn a_backfilled_hand_map_materializes_what_production_extracts() {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
         let y = egraph.add(ENode::Var(1));
@@ -4436,7 +4153,9 @@ mod tests {
 
         let extraction = Extraction::from_backfill(&egraph, add, choices);
         let (arena, root_id) = choices_to_arena(&extraction);
-        let (extracted_arena, extracted_root, _cost) = extract(&egraph, add, &CostModel::default());
+        let dag = extract_dag(&egraph, add, &CostModel::default());
+        let (extracted_arena, extracted_root) =
+            choices_to_arena(&Extraction::from_well_founded(&egraph, add, dag.choices));
         assert_eq!(arena.len(), extracted_arena.len());
         assert_eq!(root_id, extracted_root);
     }
@@ -4617,7 +4336,7 @@ mod tests {
         let costs = CostModel::latency_prior();
         let dag = extract_dag(&egraph, root, &costs);
 
-        let extraction = Extraction::from_dp(&egraph, root, dag.choices.clone());
+        let extraction = Extraction::from_well_founded(&egraph, root, dag.choices.clone());
         let (arena, arena_root) = choices_to_arena(&extraction);
 
         assert_eq!(
@@ -4655,13 +4374,12 @@ mod tests {
         );
     }
 
-    /// A cost function that prices `Sin` above `extract_dag_scoped`'s
-    /// `CYCLE_COST` sentinel (`usize::MAX / 4`), so a class holding a
-    /// self-referential node alongside a `Sin` records the *self-reference*
-    /// as its DP minimum. That is the state `repair_choices_well_founded`
-    /// exists to rewrite, and the only way to reach it with an off-the-shelf
-    /// table would be a lattice big enough to saturate the weighting — this
-    /// says the same thing in one line.
+    /// A cost function that prices `Sin` above `CYCLE_COST`, so a class
+    /// holding a self-referential node alongside a `Sin` has a self-reference
+    /// that a DP pricing cycles at that sentinel would prefer. The only way
+    /// to reach that with an off-the-shelf table would be a lattice big
+    /// enough to saturate the weighting — this says the same thing in one
+    /// line.
     struct SinAboveTheCycleSentinel;
 
     impl CostFunction for SinAboveTheCycleSentinel {
@@ -4713,34 +4431,31 @@ mod tests {
         (egraph, canonical, sin_idx, neg_idx)
     }
 
-    /// #1111, the regression this fix exists for: when the repair rewrites a
-    /// choice, the reported cost must be the cost of the term that comes
-    /// back — not the DP's pre-repair number for a term nobody receives.
+    /// #1111: the reported cost is the cost of the term that comes back.
     ///
-    /// Here the DP's minimum for the merged class is the self-referential
-    /// `Neg`, priced at `CYCLE_COST` (`usize::MAX / 4`); the repair rewrites
-    /// it to the only admissible node, `Sin`, priced at `usize::MAX / 2`.
-    /// Reading `best_cost[root]` (what this did before) reports
-    /// `usize::MAX / 4` for a returned term that costs twice that.
+    /// The merged class holds `Sin` (priced `usize::MAX / 2`) and a `Neg`
+    /// whose only child is the class itself. Settlement never admits a
+    /// candidate that names its own class, so `Sin` is picked outright and
+    /// both reported numbers are `Sin`'s — not `CYCLE_COST`, which names a
+    /// term nobody receives.
     #[test]
-    fn reported_cost_follows_the_choice_the_repair_rewrote() {
+    fn a_self_referential_candidate_is_never_the_pick_however_dear_the_alternative() {
         let (egraph, merged, sin_idx, neg_idx) = self_referential_pick_egraph();
         assert_ne!(sin_idx, neg_idx);
 
-        // What the DP records before the repair: the self-referential Neg,
-        // which names no term at all.
-        let mut pre_repair: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
-        pre_repair[merged.0 as usize] = Some(neg_idx);
+        let mut self_referential: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
+        self_referential[merged.0 as usize] = Some(neg_idx);
         assert!(
-            choices_have_cycle_from(&egraph, merged, &pre_repair),
-            "the fixture must actually put the DP in the state the repair fixes"
+            choices_have_cycle_from(&egraph, merged, &self_referential),
+            "the fixture's Neg must name its own class, or the test pins nothing"
         );
 
         let costs = SinAboveTheCycleSentinel;
         let sin_node = &egraph.nodes(merged)[sin_idx];
         assert!(
             costs.node_cost(sin_node, None) > usize::MAX / 4,
-            "the premise: only a Sin priced above CYCLE_COST makes the DP prefer the              self-reference, which is what puts the repair on the path at all"
+            "the premise: Sin is dearer than CYCLE_COST, so pricing the self-reference \
+             at it would have won"
         );
 
         let dag = extract_dag(&egraph, merged, &costs);
@@ -4748,7 +4463,7 @@ mod tests {
         assert_eq!(
             dag.choices[merged.0 as usize],
             Some(sin_idx),
-            "the repair must have rewritten the self-referential pick"
+            "the self-referential Neg must not be picked"
         );
         assert_eq!(
             dag.total_cost,
@@ -4760,14 +4475,9 @@ mod tests {
             usize::MAX / 2,
             "and so must the DAG cost — one op, reached once"
         );
-        assert_ne!(
-            dag.total_cost,
-            usize::MAX / 4,
-            "the pre-repair CYCLE_COST total describes a term that was thrown away"
-        );
 
-        // The whole term still materializes, and still costs what was said.
-        let extraction = Extraction::from_dp(&egraph, merged, dag.choices.clone());
+        // The whole term still materializes.
+        let extraction = Extraction::from_well_founded(&egraph, merged, dag.choices.clone());
         let (arena, arena_root) = choices_to_arena(&extraction);
         assert!(matches!(
             arena.node(arena_root),

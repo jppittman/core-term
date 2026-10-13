@@ -725,7 +725,7 @@ mod cost_model_accessors {
     /// form, `Σ_{j<40} |X − j|` is priced exactly `fold_cost(fold, − + |·|)`.
     #[test]
     fn the_extractor_prices_a_fold_at_fold_cost() {
-        use crate::egraph::extract::extract;
+        use crate::egraph::extract::extract_dag;
         use crate::egraph::{Vocabulary, insert};
         use pixelflow_ir::ExprArena;
         use pixelflow_ir::fold::{Binder, Fold, Monoid};
@@ -743,7 +743,8 @@ mod cost_model_accessors {
         let mut egraph = EGraph::new();
         let class = insert(&a, root, &mut egraph, Vocabulary::Runtime).expect("a fold inserts");
         let model = CostModel::latency_prior();
-        let (_, _, cost) = extract(&egraph, class, &model);
+        let dag = extract_dag(&egraph, class, &model);
+        let cost = dag.total_cost;
 
         let body_cost = model.cost(OpKind::Sub) + model.cost(OpKind::Abs);
         assert_eq!(cost, model.fold_cost(range, body_cost));

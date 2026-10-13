@@ -35,24 +35,26 @@ rationale, but it is not the live training path. See
 ExprArena
    │
    ▼
-EGraph::add_arena
+insert (into an Optimizer's EGraph, which carries its rule set)
    │
    ▼
 budgeted rewrite saturation
    │
    ▼
-CostModel / other CostFunction
+settlement in cost order under a CostModel
    │
    ▼
-extracted ExprArena
+Optimized::to_arena
 ```
 
-`EGraph::new()` deliberately contains no rules. Applications supply a rule set explicitly,
-usually `all_rules()`, so a test or compiler phase can constrain the algebra it permits.
+`EGraph::new()` deliberately contains no rules. `Optimizer::egraph()` returns an e-graph that
+carries the optimizer's rule set — `RuleSet::production()` for `Optimizer::production()` — so a
+test or compiler phase that wants to constrain the algebra supplies its own `RuleSet` with
+`Optimizer::rules`.
 
 ```rust
 use pixelflow_ir::{ExprArena, OpKind};
-use pixelflow_search::egraph::{CostModel, EGraph, all_rules, saturate_for_extraction};
+use pixelflow_search::egraph::{CostModel, Optimizer, Vocabulary, insert};
 
 let mut arena = ExprArena::new();
 let x = arena.push_var(0);
@@ -61,26 +63,27 @@ let root = arena.push_binary(OpKind::Add, x, zero);
 
 let node_count = arena.node_count_subtree(root);
 
-let mut egraph = EGraph::with_rules(all_rules());
-let root_class = egraph.add_arena(&arena, root);
-saturate_for_extraction(&mut egraph, node_count);
+let mut optimizer = Optimizer::production();
+let mut egraph = optimizer.egraph();
+let root_class = insert(&arena, root, &mut egraph, Vocabulary::Runtime)
+    .expect("every node of this term is modelled");
+let optimized = optimizer.run(&mut egraph, root_class, node_count);
+let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
 
-let costs = CostModel::default();
-let (optimized, optimized_root, estimated_cost) =
-    egraph.extract_best(root_class, &costs);
-
-assert!(optimized.node_count_subtree(optimized_root) > 0);
-assert!(estimated_cost <= costs.cost(OpKind::Add));
+assert!(extracted.node_count_subtree(extracted_root) > 0);
+assert!(optimized.cost.tree <= CostModel::default().cost(OpKind::Add));
 ```
 
-`saturate_for_extraction()` is the production entry point: it sizes the iteration, e-class,
-and wall-clock budget from `node_count`, so a three-node expression is not given a budget
-meant for a hundred-node one. It is the only entry point that decides a budget.
+`Optimizer::run` is the production entry point: it sizes the iteration, e-class, and rule
+application budget from `node_count`, so a three-node expression is not given a budget meant
+for a hundred-node one, and it extracts what it saturated. `Optimizer::saturate_term` and
+`Optimizer::extract` are its two halves, for a caller that saturates once and extracts at
+several lattice shapes (`Optimizer::for_lattice`).
 
-`EGraph::saturate_with_limits()` is the other one — the same loop with the three limits
-supplied by the caller, for tests and experiments that must pin an exact stopping policy
-rather than inherit the size-tiered one. Those call sites spell the budget as
-`SaturationConfig::compatibility(rounds)` instead of repeating literals.
+`EGraph::saturate_with_limits()` is the way to pin an exact stopping policy rather than inherit
+the size-tiered one, for tests and experiments. Those call sites spell the budget as
+`SaturationConfig::compatibility(rounds)` instead of repeating literals; to read a term back
+out of such a graph, use `Optimizer::extract` and `Optimized::to_arena`.
 
 ## Cost model
 
