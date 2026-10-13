@@ -592,9 +592,10 @@ const ISA_LEVELS: &[IsaLevel] = &[
         requires: &["avx2", "fma"],
     },
     IsaLevel {
-        // DQ, not just F: `avx512::emit_compare` materializes a mask with
-        // `vpmovm2d`, which is AVX-512DQ, and the EVEX float logicals are DQ
-        // too. An AVX-512F-only part (Knights Landing) would take an
+        // DQ, not just F: a comparison's mask lane read as bits is widened
+        // with `vpmovm2d`, which is AVX-512DQ, and the EVEX float logicals
+        // are DQ too. An
+        // AVX-512F-only part (Knights Landing) would take an
         // illegal-instruction fault on any kernel containing a comparison,
         // so probing for F alone would "support" a level that cannot run —
         // and `pixelflow_codegen::isa` would not select it either.
@@ -862,7 +863,8 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
             // itself refuses `PIXELFLOW_ISA` naming a tier the host cannot run,
             // so this check is what turns that refusal into a stated NOT RUN
             // rather than a failed test binary.
-            let skip_reason = match mode.test_commands() {
+            let commands = mode.test_commands();
+            let skip_reason = match commands {
                 None => Some("build-only mode: tests run in postsubmit".to_string()),
                 Some(_) => level
                     .requires
@@ -877,26 +879,23 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
                 continue;
             }
 
-            let commands = mode
-                .test_commands()
-                .expect("a mode with no test commands produced no skip reason");
+            let commands = commands.expect("a mode with no test commands produced no skip reason");
             let env = [("PIXELFLOW_ISA", level.isa)];
-            if !commands
+            // Every command runs: one run shows each failing suite of a leg,
+            // not only the first.
+            let passed = commands
                 .iter()
-                .all(|args| run_cargo(&workspace_root, &env, args))
-            {
+                .map(|args| run_cargo(&workspace_root, &env, args))
+                .fold(true, |all, ok| all & ok);
+            if !passed {
                 println!("isa-matrix: {} — cargo test FAILED", level.name);
                 results.push((level.name, LevelResult::Failed));
                 continue;
             }
-            println!("isa-matrix: {} — {} tests passed", level.name, mode.scope());
+            let scope = mode.scope();
+            println!("isa-matrix: {} — {scope} tests passed", level.name);
 
-            results.push((
-                level.name,
-                LevelResult::Passed {
-                    scope: mode.scope(),
-                },
-            ));
+            results.push((level.name, LevelResult::Passed { scope }));
         }
 
         println!("\n=== ISA matrix summary ===");

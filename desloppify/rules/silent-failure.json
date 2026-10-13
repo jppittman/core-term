@@ -1,0 +1,22 @@
+{
+  "unit": "functions",
+  "levels": {
+    "decide": 1,
+    "explain": 2
+  },
+  "exclude": [
+    "**/*_tests.rs",
+    "**/benches/**",
+    "**/examples/**",
+    "**/tests.rs",
+    "**/tests/**"
+  ],
+  "question": "Does this function swallow a failure, or replace it with a plausible value, where the caller needed to know?",
+  "fine": {
+    "fails_loud": "Every failure is returned or panics naming its cause, and any default stands for a normal outcome (a lookup that may miss, an optional setting)."
+  },
+  "violations": {
+    "swallowed": "`.ok()`, `.unwrap_or_default()`, `.unwrap_or(..)`, or `if let Ok(..)`/`Some(..)` with no else, on an operation whose failure mattered; or an error logged and then ignored.",
+    "silent_fallback": "A fallback taken silently where the rule is to fail loud: a degenerate extent, an unbound slot, a width mismatch."
+  }
+}

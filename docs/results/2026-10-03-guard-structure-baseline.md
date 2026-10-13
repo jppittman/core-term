@@ -65,15 +65,24 @@ on time as well as on bytes.
 
 ## Pinned in CI
 
+As of 2026-10-11. `EmitTraffic::branches`, `BranchTraffic` and
+`CompiledKernel::branches()` are deleted — nothing outside a test read them.
+The scene and glyph byte pins that replaced them
+(`render::packed::tests::the_scenes_emit_their_pinned_code` and
+`tests/glyph_branches.rs`: `(bytes, fnv1a64)` per tier) are deleted too: goldens
+are images, not binaries (docs/plans/2026-10-08-selection-is-a-phase.md §0.11).
+What remains:
+
 | pin | what it holds |
 |---|---|
-| `render::packed::tests::the_chrome_sphere_keeps_its_branches` | chrome, through `jit_cache::compile`: (3 guards, 6 arms) on every tier |
-| `render::packed::tests::the_sphere_silhouette_branches_over_its_one_costly_arm` | silhouette: (1 guard, 1 arm) since the layout switch; (0, 0, 0) before it |
-| `tests/glyph_branches.rs` | a glyph (in-tree fallback font): (0, 0) before the layout switch, **(3, 3) after** (the three arms that own a loop over its pieces) |
-| `emit::tests::a_chrome_shaped_kernel_keeps_its_branches` | the same shape at the scale of one channel: (3, 6, 70), with a silhouette-shaped control (0, 0, 0) |
+| `emit::tests::a_chrome_shaped_kernel_keeps_its_branches` | the guard structure itself, at the scale of one channel: (3, 6, 70), with a silhouette-shaped control (0, 0, 0) |
+| `render::packed::tests::four_channels_share_one_geometry` | four channels emit under twice the code of one |
 
-Entries are recorded here, not pinned: the count moves with every rewrite
-rule, while an arm gained or lost is the failure the pins exist to catch.
+Before 2026-10-08 the scene and glyph pins were the structure itself:
+`the_chrome_sphere_keeps_its_branches` (3 guards, 6 arms),
+`the_sphere_silhouette_branches_over_its_one_costly_arm` (1, 1), and
+`tests/glyph_branches.rs` (3, 3). Entries were recorded here, not pinned: the
+count moves with every rewrite rule.
 
 ## After the switch (layout in production, 2026-10-03)
 

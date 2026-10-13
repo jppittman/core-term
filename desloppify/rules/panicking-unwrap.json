@@ -1,0 +1,22 @@
+{
+  "unit": "functions",
+  "levels": {
+    "decide": 1,
+    "explain": 2
+  },
+  "exclude": [
+    "**/*_tests.rs",
+    "**/benches/**",
+    "**/examples/**",
+    "**/tests.rs",
+    "**/tests/**"
+  ],
+  "question": "Can an `unwrap`, `expect` or `panic!` in this function fire on valid input to the program?",
+  "fine": {
+    "cannot_fire": "Every one is ruled out by its own line or an invariant established just above it — or there are none."
+  },
+  "violations": {
+    "panics_on_valid_input": "Some valid input makes one fire, where the failure should be returned or the invariant carried by a type."
+  },
+  "guidance": "Name the input that makes it fire."
+}

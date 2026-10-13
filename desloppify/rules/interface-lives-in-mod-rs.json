@@ -1,0 +1,34 @@
+{
+  "unit": "outline",
+  "levels": {
+    "decide": 1,
+    "explain": 2
+  },
+  "exclude": [
+    "**/*_tests.rs",
+    "**/benches/**",
+    "**/build.rs",
+    "**/examples/**",
+    "**/lib.rs",
+    "**/main.rs",
+    "**/mod.rs",
+    "**/src/bin/**",
+    "**/tests.rs",
+    "**/tests/**"
+  ],
+  "context": "module_root",
+  "skills": [
+    "behavioral-contracts"
+  ],
+  "question": "This is an implementation file. Does it expose anything wider than `pub(super)` that its module root's contract does not declare?",
+  "fine": {
+    "private": "Everything is private or `pub(super)`, or the only wider items are `pub` types the module root re-exports with `pub use`, `pub` fields and methods of a `pub(super)` type, and `pub` methods the root's contract declares with the same signature."
+  },
+  "violations": {
+    "exposed_behavior": "A `pub` or `pub(crate)` function or trait that belongs in the module root, as or behind a trait.",
+    "unexported_type": "A `pub` type or `pub mod` the module root does not re-export.",
+    "contract_mismatch": "A `pub` method missing from the root's contract (its traits or documented trait shape), or with a different signature.",
+    "contractless_module": "The module root is `lib.rs` or `main.rs` and this file offers the crate public items: it is a module with no contract yet and should become a directory with a `mod.rs`."
+  },
+  "guidance": "Name each item and where it belongs."
+}

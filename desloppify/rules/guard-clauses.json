@@ -1,0 +1,24 @@
+{
+  "unit": "functions",
+  "levels": {
+    "decide": 1,
+    "explain": 2
+  },
+  "exclude": [
+    "**/*_tests.rs",
+    "**/benches/**",
+    "**/examples/**",
+    "**/tests.rs",
+    "**/tests/**"
+  ],
+  "question": "Reading this function top to bottom, does the number of open cases — inputs not yet handled, invariants not yet checked — only go down?",
+  "fine": {
+    "cases_go_down": "Each case is discharged by a guard that exits, and by the bottom one case is left and the main path is flat — or the function is straight-line."
+  },
+  "violations": {
+    "nested_main_path": "The main path is indented inside a branch whose other arm only bails out, or an `if let ... else { return }` that `let ... else` or `?` would flatten.",
+    "else_after_exit": "An `else` follows a branch that already returns, breaks or continues.",
+    "late_check": "A check that could be made first is made late, or a case already handled is reopened further down."
+  },
+  "guidance": "Name the line where the case should be discharged, and how."
+}

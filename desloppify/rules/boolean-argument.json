@@ -1,0 +1,23 @@
+{
+  "unit": "function_signatures",
+  "group": "file",
+  "levels": {
+    "decide": 1,
+    "explain": 1
+  },
+  "exclude": [
+    "**/*_tests.rs",
+    "**/benches/**",
+    "**/examples/**",
+    "**/tests.rs",
+    "**/tests/**"
+  ],
+  "question": "Does any function here take a `bool` parameter that selects between two behaviors?",
+  "fine": {
+    "no_mode_flags": "No `bool` parameter, or every one is data being stored or set rather than a switch between behaviors."
+  },
+  "violations": {
+    "mode_flag": "A `bool` parameter chooses which of two behaviors the function performs, so a call like `f(true)` says nothing at the call site."
+  },
+  "guidance": "For each, suggest the enum or the two functions that replace it."
+}

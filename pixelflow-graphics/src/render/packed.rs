@@ -152,15 +152,6 @@ impl PackedManifold {
         self.program.buffers()
     }
 
-    /// The compiled kernel's emitted bytes — what the scene will actually
-    /// run, for a harness that measures or disassembles it
-    /// ([`pixelflow_core::Manifold::code_bytes`] is the same hook one
-    /// layer down). Inspection only: nothing about rendering goes through it.
-    #[must_use]
-    pub fn code_bytes(&self) -> &[u8] {
-        self.program.code_bytes()
-    }
-
     /// The kernel's arguments, in the order the block holds them.
     #[must_use]
     pub fn uniforms(&self) -> &[UniformDecl] {
@@ -372,14 +363,18 @@ mod tests {
         );
     }
 
-    // -- What a scene's compile branches over -----------------------------
+    // -- The code a scene compiles to ---------------------------------------
     //
-    // A guarded `If` and a blended one produce the same picture, so no
-    // golden sees a scene lose its branches; it only gets slower. These pins
-    // read `EmitTraffic::branches`, the tables the emitter branches on.
+    // A guarded `If` and a blended one produce the same picture, so no golden
+    // sees a scene lose a branch; it only gets slower — the chrome sphere ran
+    // 3.5x slower on AVX-512 and 2.6x on AVX2 when its arms lost their
+    // contiguity (docs/results/2026-10-03-guard-structure-baseline.md). What
+    // the compile emits is the output that does see it, so the tests below
+    // read the code through `jit_cache::compile`, the entry a
+    // [`PackedManifold`] compiles by.
 
-    /// The frame the branch pins compile at: the size the throughput numbers
-    /// are quoted for.
+    /// The frame the scenes compile at: the size the throughput numbers are
+    /// quoted for.
     const FRAME: [u32; 2] = [1920, 1080];
 
     fn ray() -> crate::scene3d::Ray {
@@ -410,56 +405,43 @@ mod tests {
         sphere.select(&world(&mirrored), &world(&ray))
     }
 
-    /// The sphere's silhouette over the sky, and nothing else: one `If`
-    /// whose arms are cheaper than a mispredicted branch.
-    fn silhouette() -> Rgba {
-        let ray = ray();
-        sphere_hit(&ray).select(&Rgba::opaque_gray(0.5), &crate::scene3d::sky(&ray))
-    }
-
-    /// The branches of `color` as compiled for a frame — through
-    /// `jit_cache::compile`, the one entry a [`PackedManifold`] compiles by.
-    fn branches_of(color: &Rgba) -> (u64, u64, u64) {
-        let linked = pixelflow_codegen::jit_cache::compile(
+    /// `color`'s packed program as this host's tier emits it for a frame.
+    fn code_of(color: &Rgba) -> Vec<u8> {
+        pixelflow_codegen::jit_cache::compile(
             &packed_kernel(color, RGBA),
             pixelflow_ir::LatticeShape::new(FRAME),
         )
-        .expect("compile");
-        let b = linked.kernel.branches();
-        (b.guards, b.arms_branched, b.arm_entries)
+        .expect("compile")
+        .kernel
+        .as_bytes()
+        .to_vec()
     }
 
-    /// The chrome sphere keeps the branches it earns: three of its `If`s
-    /// guard both their arms. Pinned on guards and arms, not on entries — an
-    /// entry count moves with every rewrite rule, an arm lost does not.
+    /// The jet tier ran geometry once and carried colour as an opaque packed
+    /// `Discrete` because running the geometry once per channel cost 3x. Four
+    /// channel kernels are four separate expressions over the *same*
+    /// geometry, so that saving is now a property of the compiler rather than
+    /// of the scene's shape: the four copies hash-cons into one e-class and
+    /// the geometry is emitted once.
     ///
-    /// Without the clustering search that used to make arms contiguous, the
-    /// same scene still read three guards but only four arms, and runs 3.5x slower on AVX-512 and 2.6x on AVX2
-    /// with the same pixels, which is why the arms are counted.
+    /// Measured as emitted code size, which is exact and has no timing
+    /// variance: a four-channel chrome sphere against the same scene with one
+    /// channel live. Duplicated geometry would show up as a multiple, not a
+    /// margin.
     #[test]
-    fn the_chrome_sphere_keeps_its_branches() {
-        let (guards, arms, entries) = branches_of(&chrome());
-        assert_eq!(
-            (guards, arms),
-            (3, 6),
-            "chrome's branches moved ({entries} entries)"
-        );
-    }
-
-    /// The silhouette over the sky: one `If`, and one arm worth a branch.
-    ///
-    /// The arm is over the mispredict bound and was refused, before the layout
-    /// chose the order, because its values were not one run; the layout gives it
-    /// its branch. A spatially coherent mask earns one: the sphere's silhouette
-    /// is uniform in most batches. Pinned on guards and arms (entries are
-    /// recorded in `docs/results`).
-    #[test]
-    fn the_sphere_silhouette_branches_over_its_one_costly_arm() {
-        let (guards, arms, entries) = branches_of(&silhouette());
-        assert_eq!(
-            (guards, arms),
-            (1, 1),
-            "the silhouette's branches moved ({entries} entries)"
+    fn four_channels_share_one_geometry() {
+        let four = chrome();
+        // The same scene with one channel live: every leaf keeps its red and
+        // zeroes the rest, so the geometry and the choice are the same
+        // expression.
+        let k = Kernel::constant;
+        let one = four.map_channels(&|ch| [ch[0].clone(), k(0.0), k(0.0), k(1.0)]);
+        let (four, one) = (code_of(&four).len(), code_of(&one).len());
+        let ratio = four as f64 / one as f64;
+        assert!(
+            ratio < 2.0,
+            "four channels emitted {ratio:.2}x the code of one ({four} bytes against \
+             {one}), which is the geometry being emitted per channel rather than shared"
         );
     }
 }

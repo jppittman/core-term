@@ -1,0 +1,17 @@
+{
+  "unit": "outline",
+  "levels": {
+    "decide": 1,
+    "explain": 2
+  },
+  "paths": [
+    "pixelflow-*/**"
+  ],
+  "question": "This file is in a general-purpose graphics library. Does it contain anything specific to a terminal emulator?",
+  "fine": {
+    "general_purpose": "Nothing terminal-specific; generic text, glyph and font rendering is fine."
+  },
+  "violations": {
+    "terminal_logic": "PTYs, ANSI/VT escape sequences, terminal grids, cells, cursors or scrollback, shell or TTY handling, or terminal key encoding."
+  }
+}

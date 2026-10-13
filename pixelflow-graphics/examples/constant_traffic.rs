@@ -8,7 +8,7 @@
 //! them. `trips` is how many times one call runs the scope, so a count in a
 //! row with a large `trips` is the hot loop's. `remats` is constants brought
 //! into a register from outside the register file (from the pool, or before
-//! the pool, rebuilt inline); `loads_k` includes a root reloaded from its
+//! the pool, rebuilt inline); `loads` includes a root reloaded from its
 //! park at a scope's head.
 //!
 //! Fixtures:
@@ -16,8 +16,7 @@
 //!   tile, as `GlyphAtlas` bakes it.
 //! - The cell grid's red channel at one stripe of an 80×24 terminal frame:
 //!   what a worker runs per stripe, minus the packing of the other three
-//!   channels. The packed four-channel program's size follows, since that is
-//!   the kernel a frame actually runs.
+//!   channels.
 //!
 //! ```bash
 //! cargo run --release -p pixelflow-graphics --example constant_traffic
@@ -26,9 +25,6 @@
 use pixelflow_codegen::emit;
 use pixelflow_core::{CellGridShape, Kernel};
 use pixelflow_graphics::fonts::Font;
-use pixelflow_graphics::render::color::Rgba8;
-use pixelflow_graphics::render::scene::compile_packed_for;
-use pixelflow_graphics::scene3d::Rgba;
 use pixelflow_ir::LatticeShape;
 use pixelflow_search::runtime::optimize_runtime_arena;
 
@@ -48,16 +44,16 @@ fn report(label: &str, kernel: &Kernel, shape: LatticeShape) {
     let [w, h] = shape.extent();
     println!(
         "{label} at {w}x{h}: {} bytes, {} spill slots, {} parked roots, {} memory ops per call",
-        t.bytes(),
+        result.code.as_bytes().len(),
         result.spill_count,
         result.hoisted_values,
         t.dynamic_memory_ops()
     );
-    println!("  scope    trips  bytes  instr  remats  loads_t  loads_k  stores  writes");
+    println!("  scope    trips  bytes  instr  remats   loads  stores");
     for (i, (s, trips)) in t.scopes.iter().zip(&t.trips).enumerate() {
         println!(
-            "  {i:>5} {trips:>8} {:>6} {:>6} {:>7} {:>8} {:>8} {:>7} {:>7}",
-            s.bytes, s.instructions, s.remats, s.loads_transient, s.loads_kept, s.stores, s.writes
+            "  {i:>5} {trips:>8} {:>6} {:>6} {:>7} {:>7} {:>7}",
+            s.bytes, s.instructions, s.remats, s.loads, s.stores
         );
     }
 }
@@ -86,15 +82,5 @@ fn main() {
         "cell grid, red channel",
         &kernels.channels[0],
         LatticeShape::new([shape.frame_w, STRIPE_ROWS]),
-    );
-    let packed = compile_packed_for::<Rgba8>(
-        &Rgba::from(&kernels.channels),
-        [shape.frame_w, shape.frame_h],
-    );
-    println!(
-        "cell grid, four channels packed at {}x{}: {} bytes",
-        shape.frame_w,
-        shape.frame_h,
-        packed.code_bytes().len()
     );
 }

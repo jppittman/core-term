@@ -50,8 +50,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::vec::Vec;
 
-use crate::CompiledKernel;
 use crate::emit;
+use crate::emit::CompiledKernel;
 use crate::error::CompileError;
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::arena::{BufferDecl, ExprNode, UniformDecl};
@@ -76,7 +76,7 @@ pub struct Linked {
     pub uniforms: Vec<UniformDecl>,
 }
 
-/// Compile the kernel rooted at `root` to an executable [`CompiledKernel`] (2D collapse loop)
+/// Compile a [`Kernel`](pixelflow_ir::Kernel) to an executable [`CompiledKernel`]
 /// for a lattice of the given `shape`, sharing previously compiled code for
 /// canonically identical kernels at the same extents.
 ///
@@ -91,11 +91,10 @@ pub struct Linked {
 /// # Panics
 ///
 /// Panics if the arena — as handed in, or as saturation leaves it — names a
-/// retired coordinate axis (`Var(2)`/`Var(3)`, the old Z and W). The
-/// assertion itself lives one layer down, in
-/// [`emit::compile`](crate::emit::compile), because that is the boundary
-/// every route to machine code passes through and this is only one of them.
-/// Compile a [`Kernel`](pixelflow_ir::Kernel) for a lattice of the given `shape`.
+/// retired coordinate axis (`Var(2)`/`Var(3)`, the old Z and W), or if `shape`
+/// has a zero extent, which has no sample to compute. The assertions live one
+/// layer down, in [`emit::compile`], because that is the boundary every route
+/// to machine code passes through and this is only one of them.
 pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Linked, CompileError> {
     let (arena, root) = kernel.parts();
     // The link tables, and the key, are read off the kernel with every
@@ -179,11 +178,7 @@ pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Lin
     // don't serialize. A racing duplicate compile wastes work; the first
     // insertion wins so all callers share one region.
     let result = emit_fn()?;
-    let compiled = Arc::new(CompiledKernel::new(
-        result.code,
-        result.traffic.branches,
-        shape,
-    ));
+    let compiled = Arc::new(result.code);
     let mut guard = cache.lock().expect("jit_cache: lock poisoned");
     let kernel = guard.entry(key).or_insert(compiled).clone();
     Ok(Linked {
@@ -253,26 +248,6 @@ mod tests {
 
     fn kernel_of(kernel: &Kernel) -> Arc<CompiledKernel> {
         compile(kernel, TEST_SHAPE).expect("compile").kernel
-    }
-
-    /// The backstop, exercised through the route this module owns:
-    /// `Kernel::from_parts` refuses a caller's arena, but a rewrite rule
-    /// instantiating one of its own metavariables would arrive here already
-    /// past that. The assertion itself lives in `emit::compile`, so this
-    /// asserts the *route* reaches it rather than re-testing the check.
-    #[test]
-    #[should_panic(expected = "the arena names Var")]
-    fn an_arena_naming_a_retired_axis_never_reaches_the_emitter() {
-        let mut a = ExprArena::new();
-        let x = a.push_var(0);
-        // A constant no other test uses, so this arena misses the cache and
-        // the emit path actually runs.
-        let z = a.push_var(2);
-        let c = a.push_const(7.25);
-        let scaled = a.push_binary(OpKind::Mul, z, c);
-        let root = a.push_binary(OpKind::Add, x, scaled);
-        let k = Kernel::from_parts(a, root);
-        let _refused = compile(&k, TEST_SHAPE);
     }
 
     fn circle_arena(garbage: bool) -> Kernel {
@@ -516,8 +491,6 @@ mod tests {
             !Arc::ptr_eq(&frame, &wider),
             "one more column is a different lattice, hence a different kernel"
         );
-        assert_eq!(frame.shape(), TEST_SHAPE);
-        assert_eq!(wider.shape().extent(), [65, 64]);
     }
 
     // ─────────────────────── the link step ───────────────────────

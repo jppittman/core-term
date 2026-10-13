@@ -11,13 +11,15 @@ use alloc::vec::Vec;
 use pixelflow_ir::arena::UniformId;
 use pixelflow_ir::fold::Binder;
 use pixelflow_ir::kind::OpKind;
+use pixelflow_ir::variance::{Variance, compute_arena_variance};
 
 use super::{Def, ScheduledOp, ValueId};
 
 /// Mark nodes reachable from `root` via DFS.
 ///
 /// The arena may contain garbage nodes from junkify passes; only nodes
-/// transitively referenced by `root` should appear in the schedule.
+/// transitively referenced by `root` should appear in the schedule, except
+/// through an empty fold, whose body is never evaluated.
 fn mark_reachable(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
@@ -30,6 +32,11 @@ fn mark_reachable(
             continue;
         }
         reachable[idx] = true;
+        // An empty fold is its identity whatever its body says (see `arena_to_schedule`).
+        if matches!(arena.node(id), pixelflow_ir::arena::ExprNode::Reduce { fold, .. } if fold.is_empty())
+        {
+            continue;
+        }
         for child in arena.children(id) {
             if !reachable[child.0 as usize] {
                 stack.push(child);
@@ -56,7 +63,7 @@ fn shift_immediate(op: OpKind, count: f32) -> u8 {
     count as u8
 }
 
-/// Build a schedule directly from an [`ExprArena`].
+/// Build a schedule directly from an [`ExprArena`](pixelflow_ir::arena::ExprArena).
 ///
 /// The arena stores nodes in topological order (children before parents by
 /// construction). We filter to reachable nodes, remap `ExprId` to `ValueId`,
@@ -75,6 +82,10 @@ fn shift_immediate(op: OpKind, count: f32) -> u8 {
 ///   are two `Write` defs of different widths reading one value.
 /// - **The lane binder is a constant.** Its `Var` becomes
 ///   [`ScheduledOp::Lanes`], the iota every lane-varying value is built on.
+///
+/// Every def carries the variance of the node it was lowered from, which
+/// scoping places it by. A block's base pointer has no node: it is the call's,
+/// `CONST`.
 ///
 /// `origin` is the uniform slots of the two origin scalars, which read
 /// from the context entry after the link's block rather than from it.
@@ -110,24 +121,18 @@ pub(crate) fn arena_to_schedule(
         }
     }
 
-    // Which reads are the same in every lane. A `RawGather` whose index
-    // lacks the lane binder's bit is one load broadcast, not a gather; the
-    // bit is read here, where the two are split, because the schedule's
-    // own variance (`scopes::schedule_variance`) is computed after it is built. No
-    // lane fold — a schedule built from an arena `collapse` never wrapped,
-    // the emit tests' raw arenas — means nothing is known to be
-    // lane-uniform, and every read stays a gather.
-    let variance = lane.map(|_| pixelflow_ir::variance::compute_arena_variance(arena));
-    let lane_uniform = |idx: ExprId| -> bool {
-        match (lane, &variance) {
-            (Some(lane), Some(variance)) => variance[idx.0 as usize].is_invariant_in(lane.var()),
-            _ => false,
-        }
-    };
+    // What every value varies with, read once: each def carries its
+    // node's, and a `RawGather` whose index lacks the lane binder's bit is
+    // one load broadcast, not a gather. No lane fold (an arena `collapse`
+    // never wrapped, the emit tests' raw arenas) means nothing is known to
+    // be lane-uniform, and every read stays a gather.
+    let variance = compute_arena_variance(arena);
+    let lane_uniform =
+        |idx: ExprId| lane.is_some_and(|lane| variance[idx.0 as usize].is_invariant_in(lane.var()));
 
-    // ExprId to ValueId mapping. u32::MAX = unmapped (unreachable, or a
+    // ExprId to ValueId mapping. u64::MAX = unmapped (unreachable, or a
     // `Write` node, whose defs are its lane folds').
-    let mut id_map = alloc::vec![ValueId(u32::MAX); len];
+    let mut id_map = alloc::vec![ValueId(u64::MAX); len];
     let mut schedule = Vec::new();
     let mut next_id = 0;
 
@@ -152,7 +157,7 @@ pub(crate) fn arena_to_schedule(
         let map_child = |child: ExprId| -> ValueId {
             let mapped = id_map[child.0 as usize];
             assert!(
-                mapped.0 != u32::MAX,
+                mapped.0 != u64::MAX,
                 "arena_to_schedule: child ExprId({}) not yet mapped -- \
                  arena is not in topological order or child is unreachable",
                 child.0
@@ -167,8 +172,8 @@ pub(crate) fn arena_to_schedule(
                      passes::lattice::collapse substitutes away -- this schedule was \
                      built without the lowering pipeline"
                 ),
-                Some(b) if lane == Some(b) => ScheduledOp::Lanes(b),
-                Some(_) => ScheduledOp::Var(i),
+                Some(b) if lane == Some(b) => ScheduledOp::Lanes,
+                Some(b) => ScheduledOp::Var(b),
             },
             ExprNode::Const(v) => ScheduledOp::Const(v),
             ExprNode::Param(i) => panic!(
@@ -199,6 +204,8 @@ pub(crate) fn arena_to_schedule(
                     schedule.push(Def {
                         value: base,
                         op: ScheduledOp::Context(ctx_slot),
+                        // No node: the call's pointer, the same at every sample.
+                        variance: Variance::CONST,
                     });
                     base
                 });
@@ -266,6 +273,11 @@ pub(crate) fn arena_to_schedule(
                  the lowering pipeline."
             ),
             ExprNode::Nary(_, _) => panic!("Nary not supported in JIT arena compilation"),
+            // Its body was not reached (`mark_reachable`), and the arena's
+            // variance for it is `CONST` already: the identity's.
+            ExprNode::Reduce { fold, .. } if fold.is_empty() => {
+                ScheduledOp::Const(fold.monoid().identity())
+            }
             // The lane fold, executed by lanes: its body is the store, and
             // the store is this def, with the fold's trip count as its width.
             ExprNode::Reduce { fold, body } if matches!(arena.node(body), ExprNode::Write { lane, .. } if lane == fold.binder()) =>
@@ -301,6 +313,7 @@ pub(crate) fn arena_to_schedule(
         schedule.push(Def {
             value: vid,
             op: sched_op,
+            variance: variance[idx],
         });
     }
     // A `Write` whose lane fold nothing reached is a lane fold that is not
@@ -319,13 +332,13 @@ pub(crate) fn arena_to_schedule(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::schedule_for;
+    use crate::pipeline::tests::schedule_for;
     use pixelflow_ir::LatticeShape;
     use pixelflow_ir::arena::{ExprArena, ExprId};
 
     /// Lanes in one SIMD batch at the tier this host selected.
     fn lanes() -> usize {
-        crate::isa::jit_vector_bytes() / core::mem::size_of::<f32>()
+        crate::jit_vector_bytes() / core::mem::size_of::<f32>()
     }
 
     /// One sample, so the lattice's origin *is* the point the kernel is
