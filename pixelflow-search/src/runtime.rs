@@ -104,9 +104,9 @@
 //! `PIXELFLOW_SATURATION_TELEMETRY=/path/to/log.jsonl cargo run --features saturation-telemetry`,
 //! or leave it unset to see records on stderr.
 
+use crate::egraph::and_or::Frozen;
 use crate::egraph::{
-    Declined, EClassId, EGraph, Optimizer, OptimizerStats, RuleSet, Vocabulary, insert,
-    reachable_count,
+    Declined, EGraph, Optimizer, OptimizerStats, RuleSet, Vocabulary, insert, reachable_count,
 };
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
@@ -485,9 +485,9 @@ impl Job<'_> {
         optimizer: &Optimizer,
     ) -> (ExprArena, ExprId) {
         let saturated = &obtained.saturated;
-        let optimized =
-            optimizer.extract(&saturated.egraph, saturated.root, saturated.stats.clone());
-        let (extracted, extracted_root) = optimized.to_arena(&saturated.egraph, saturated.root);
+        let problem = saturated.frozen.problem();
+        let optimized = optimizer.extract_over(problem, saturated.stats.clone());
+        let (extracted, extracted_root) = optimized.to_arena(problem.egraph(), problem.root());
         #[cfg(feature = "saturation-telemetry")]
         if let Some(facts) = &obtained.ran_here {
             crate::telemetry::record(crate::telemetry::SaturationInvocation {
@@ -576,8 +576,11 @@ impl Run {
 
 /// A term saturated once, for every lattice it is later extracted at.
 struct Saturated {
-    egraph: EGraph,
-    root: EClassId,
+    /// The saturated graph beside what extraction needs of it that no lattice
+    /// changes — the classes the root reaches, their candidates and who
+    /// depends on whom — read off once here, so each shape's extraction adds
+    /// only its weights and its settlement.
+    frozen: Frozen<EGraph>,
     stats: OptimizerStats,
     /// The saturating composition's declarations in canonical slot order:
     /// what an extraction's leaves — which carry that composition's names —
@@ -718,8 +721,7 @@ fn saturate(
     SATURATIONS.fetch_add(1, Ordering::Relaxed);
 
     Ok(Saturated {
-        egraph,
-        root: root_class,
+        frozen: Frozen::new(egraph, root_class),
         stats,
         buffers: canon.buffers.clone(),
         uniforms: canon.uniforms.clone(),
@@ -1168,7 +1170,7 @@ mod congruence_gap_probe {
     use super::*;
     use crate::arena_corpus::{category_of, load_arena_dump, median, percentile};
     use crate::egraph::rule_order::{RuleOrder, build_rule_set};
-    use crate::egraph::{CostModel, ENode, RuleSet, SaturationStop, choices_to_arena};
+    use crate::egraph::{CostModel, EClassId, ENode, RuleSet, SaturationStop, choices_to_arena};
     use crate::nnue::{BwdGenConfig, BwdGenerator};
     use std::path::{Path, PathBuf};
 

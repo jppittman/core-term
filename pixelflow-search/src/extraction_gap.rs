@@ -59,11 +59,13 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
 use crate::arena_corpus::{category_of, load_arena_dump, median, percentile};
+use crate::egraph::and_or::{AndOrGraph, Candidate, Child, Live};
 use crate::egraph::extract::{
     ExtractedDAG, extract_dag_objectives, extract_dag_scoped, extract_dag_tree_arm,
 };
@@ -74,33 +76,75 @@ use crate::egraph::{Vocabulary, insert, reachable_count};
 // The instance: one saturated e-graph, reduced to what a chooser must decide
 // ---------------------------------------------------------------------------
 
-/// One candidate e-node for one e-class: its own op cost and the canonical
-/// classes it depends on, deduplicated (a DAG prices a child class once no
-/// matter how many of a node's slots point at it).
-#[derive(Clone, Debug)]
-struct Candidate {
-    /// Index into `egraph.nodes(class)` — the choice a chooser records.
-    node_idx: usize,
-    own: u64,
-    /// Distinct child classes: what a DAG pays for, once each.
-    children: Vec<u32>,
-    /// Parallel to `children`: how many of the node's operand slots name
-    /// that class. What a TREE pays for, and therefore what the DP sums.
-    /// `Mul(a, a)` is one entry in `children` with multiplicity 2.
-    mult: Vec<u32>,
+/// The extraction problem priced by a model: production's own
+/// [`AndOrGraph`] (the live classes, their candidates, their distinct
+/// children and multiplicities) with the model's price of each candidate.
+/// Shared by every copy of an [`Instance`], which differ only in how far
+/// they have pruned.
+struct Priced {
+    graph: AndOrGraph,
+    /// The model's price of each candidate's e-node, by [`AndOrGraph::slot`].
+    own: Vec<u64>,
+    /// Whether each candidate, by slot, is a fold.
+    ///
+    /// The model prices an op or a leaf and has no fold semantics: it never
+    /// charged a fold's body, and a fold's row is empty here as it was when
+    /// rows were built from `Op` operands alone. Production's tree objective
+    /// charges the body once per iteration (`fold_body_multiple`), so the
+    /// model's numbers on a graph with a fold are not production's tree
+    /// objective; closing that is a change to this harness's results and
+    /// not part of lifting its setup onto the shared problem.
+    folds: Vec<bool>,
+    /// Per canonical class id: its position in the reach, or `None` when the
+    /// root does not reach it. Choice maps are keyed by class id.
+    live_of: Vec<Option<Live>>,
 }
 
-/// The extraction problem, lifted off the e-graph so the search never touches
-/// `find` in its inner loop.
+impl Priced {
+    /// Candidate `idx` of canonical class `class`, or `None` when the class
+    /// is not reached or has no such e-node.
+    fn candidate(&self, class: u32, idx: usize) -> Option<Candidate> {
+        let live = self.live_of[class as usize]?;
+        self.graph.candidate(live, idx)
+    }
+
+    fn own(&self, candidate: Candidate) -> u64 {
+        self.own[self.graph.slot(candidate)]
+    }
+
+    /// The distinct classes the model says `candidate` needs, with how many
+    /// operand slots name each.
+    fn needs(&self, candidate: Candidate) -> &[Child] {
+        match self.folds[self.graph.slot(candidate)] {
+            true => &[],
+            false => self.graph.children(candidate),
+        }
+    }
+
+    /// The canonical class id of a child.
+    fn class_of(&self, child: Child) -> u32 {
+        self.graph.class(child.live).0
+    }
+
+    /// Classes in the e-graph: what a choice map is sized by.
+    fn num_classes(&self) -> usize {
+        self.live_of.len()
+    }
+}
+
+/// The extraction problem for a search: [`Priced`], and which candidates of
+/// each class are still worth choosing. Lifted off the e-graph so the search
+/// never touches `find` in its inner loop.
+#[derive(Clone)]
 struct Instance {
+    priced: Rc<Priced>,
     root: u32,
-    /// Per canonical class id, per e-node index: EVERY node, so that any
-    /// chooser's answer — including one that picked a node this instance
-    /// would never search — can be re-costed. `cands[c][i].node_idx == i`.
-    cands: Vec<Vec<Candidate>>,
     /// Per class: every node index that can appear in SOME well-founded
     /// selection — self-referential nodes removed, nothing else. This is the
     /// full feasible set, and it is what the tree-cost reference searches.
+    /// Every node of every reached class is in the search space, so that any
+    /// chooser's answer — including one that picked a node this instance
+    /// would never search — can be re-costed through [`Priced`].
     feasible: Vec<Vec<usize>>,
     /// Per class: the node indices the DAG search may choose — `feasible`
     /// minus the nodes dominance proves can never help. Dominance is sound
@@ -120,75 +164,49 @@ struct Instance {
 impl Instance {
     fn build(egraph: &EGraph, root: EClassId, model: &CostModel) -> Self {
         let n = egraph.num_classes();
-        let root = egraph.find(root).0;
-
-        // Reachable set over every node of every class: any of them could be
-        // chosen, so all of them are in the search space.
-        let mut reachable: Vec<u32> = Vec::new();
-        let mut seen = vec![false; n];
-        let mut stack = vec![root];
-        seen[root as usize] = true;
-        while let Some(c) = stack.pop() {
-            reachable.push(c);
-            for node in egraph.nodes(EClassId(c)) {
-                {
-                    let children = (node).children_slice();
-                    for &ch in children {
-                        let ch = egraph.find(ch).0;
-                        if !seen[ch as usize] {
-                            seen[ch as usize] = true;
-                            stack.push(ch);
-                        }
-                    }
-                }
-            }
-        }
+        let graph = AndOrGraph::of(egraph, root);
+        let root = graph.root().0;
+        let mut reachable: Vec<u32> = graph.classes().iter().map(|c| c.0).collect();
         reachable.sort_unstable();
 
-        let mut cands: Vec<Vec<Candidate>> = vec![Vec::new(); n];
+        let mut live_of = vec![None; n];
+        for live in graph.lives() {
+            live_of[graph.class(live).index()] = Some(live);
+        }
+        let mut own = vec![0; graph.slot_count()];
+        let mut folds = vec![false; graph.slot_count()];
+        for live in graph.lives() {
+            for at in graph.candidates(live) {
+                let node = &egraph.nodes(at.class())[at.idx()];
+                own[graph.slot(at)] = model.node_cost_of(node);
+                folds[graph.slot(at)] = matches!(node, ENode::Reduce { .. });
+            }
+        }
+        let priced = Priced {
+            graph,
+            own,
+            folds,
+            live_of,
+        };
+
         let mut alive: Vec<Vec<usize>> = vec![Vec::new(); n];
         let mut feasible: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for &c in &reachable {
-            let mut out: Vec<Candidate> = Vec::new();
-            let mut live: Vec<usize> = Vec::new();
-            for (node_idx, node) in egraph.nodes(EClassId(c)).iter().enumerate() {
-                let own = model.node_cost_of(node);
-                let mut slots: Vec<u32> = match node {
-                    ENode::Op { children, .. } => {
-                        children.iter().map(|&ch| egraph.find(ch).0).collect()
-                    }
-                    _ => Vec::new(),
-                };
-                slots.sort_unstable();
-                let mut children: Vec<u32> = Vec::new();
-                let mut mult: Vec<u32> = Vec::new();
-                for sl in slots {
-                    if children.last() == Some(&sl) {
-                        *mult.last_mut().expect("pushed with children") += 1;
-                    } else {
-                        children.push(sl);
-                        mult.push(1);
-                    }
-                }
-                // A node that names its own class can never appear in a
-                // well-founded selection. Excluding it from the search is
-                // the same judgement `extract_dag`'s `CYCLE_COST` makes,
-                // made once instead of as a sentinel that then has to be
-                // kept above every real cost. It stays in `cands` so a
-                // chooser that picked it can still be re-costed.
-                if !children.contains(&c) {
-                    live.push(node_idx);
-                }
-                out.push(Candidate {
-                    node_idx,
-                    own,
-                    children,
-                    mult,
-                });
-            }
-            cands[c as usize] = out;
-            feasible[c as usize] = live.clone();
-            alive[c as usize] = live;
+        for live in priced.graph.lives() {
+            let c = priced.graph.class(live).index();
+            // A node that names its own class can never appear in a
+            // well-founded selection. Excluding it from the search is the
+            // same judgement `extract_dag`'s `CYCLE_COST` makes, made once
+            // instead of as a sentinel that then has to be kept above every
+            // real cost. It stays priced so a chooser that picked it can
+            // still be re-costed.
+            let live_nodes: Vec<usize> = priced
+                .graph
+                .candidates(live)
+                .filter(|&at| priced.needs(at).iter().all(|child| child.live != live))
+                .map(|at| at.idx())
+                .collect();
+            feasible[c] = live_nodes.clone();
+            alive[c] = live_nodes;
         }
 
         // Dominance: candidate A makes candidate B useless when A costs no
@@ -198,25 +216,34 @@ impl Instance {
         // filter is deterministic and never empties a class.
         let mut dominated = 0usize;
         for &c in &reachable {
-            let live = std::mem::take(&mut alive[c as usize]);
-            let mut keep: Vec<bool> = vec![true; live.len()];
-            for i in 0..live.len() {
-                for j in 0..live.len() {
+            let live_nodes = std::mem::take(&mut alive[c as usize]);
+            let mut keep: Vec<bool> = vec![true; live_nodes.len()];
+            for i in 0..live_nodes.len() {
+                for j in 0..live_nodes.len() {
                     if i == j || !keep[i] || !keep[j] {
                         continue;
                     }
-                    let a = &cands[c as usize][live[j]];
-                    let b = &cands[c as usize][live[i]];
-                    let a_dominates_b = a.own <= b.own
-                        && a.children.iter().all(|ch| b.children.contains(ch))
-                        && (a.own < b.own || a.children.len() < b.children.len() || j < i);
+                    let a = priced
+                        .candidate(c, live_nodes[j])
+                        .expect("a feasible node is one of its class's");
+                    let b = priced
+                        .candidate(c, live_nodes[i])
+                        .expect("a feasible node is one of its class's");
+                    let (a_needs, b_needs) = (priced.needs(a), priced.needs(b));
+                    let a_dominates_b = priced.own(a) <= priced.own(b)
+                        && a_needs
+                            .iter()
+                            .all(|x| b_needs.iter().any(|y| y.live == x.live))
+                        && (priced.own(a) < priced.own(b)
+                            || a_needs.len() < b_needs.len()
+                            || j < i);
                     if a_dominates_b {
                         keep[i] = false;
                         dominated += 1;
                     }
                 }
             }
-            alive[c as usize] = live
+            alive[c as usize] = live_nodes
                 .into_iter()
                 .zip(keep)
                 .filter_map(|(idx, k)| k.then_some(idx))
@@ -227,14 +254,20 @@ impl Instance {
         for &c in &reachable {
             floor[c as usize] = alive[c as usize]
                 .iter()
-                .map(|&i| cands[c as usize][i].own)
+                .map(|&i| {
+                    priced.own(
+                        priced
+                            .candidate(c, i)
+                            .expect("a live node is one of its class's"),
+                    )
+                })
                 .min()
                 .unwrap_or(0);
         }
 
         Self {
+            priced: Rc::new(priced),
             root,
-            cands,
             feasible,
             alive,
             floor,
@@ -250,24 +283,25 @@ impl Instance {
     /// root, or leaves a reachable class unchosen — either way it does not
     /// describe a term, and a number for it would be a silent lie.
     fn dag_cost(&self, choice: &[Option<usize>]) -> Option<u64> {
+        let priced = &*self.priced;
         let mut total = 0u64;
-        let mut state = vec![0u8; self.cands.len()]; // 0 unseen, 1 on path, 2 done
+        let mut state = vec![0u8; priced.num_classes()]; // 0 unseen, 1 on path, 2 done
         let mut stack: Vec<(u32, usize)> = vec![(self.root, 0)];
         state[self.root as usize] = 1;
-        let node_of = |c: u32| -> Option<&Candidate> {
+        let node_of = |c: u32| -> Option<Candidate> {
             let idx = choice.get(c as usize).copied().flatten()?;
-            self.cands[c as usize].get(idx)
+            priced.candidate(c, idx)
         };
-        total += node_of(self.root)?.own;
+        total += priced.own(node_of(self.root)?);
         while let Some(&mut (c, ref mut next)) = stack.last_mut() {
-            let cand = node_of(c)?;
-            if *next < cand.children.len() {
-                let ch = cand.children[*next];
+            let needs = priced.needs(node_of(c)?);
+            if *next < needs.len() {
+                let ch = priced.class_of(needs[*next]);
                 *next += 1;
                 match state[ch as usize] {
                     0 => {
                         state[ch as usize] = 1;
-                        total = total.saturating_add(node_of(ch)?.own);
+                        total = total.saturating_add(priced.own(node_of(ch)?));
                         stack.push((ch, 0));
                     }
                     1 => return None, // cycle
@@ -290,20 +324,22 @@ impl Instance {
     /// its depth, so the obvious recursion would not return on a real
     /// kernel. `None` when the choice function is cyclic or incomplete.
     fn tree_cost(&self, choice: &[Option<usize>]) -> Option<u64> {
-        let n = self.cands.len();
+        let priced = &*self.priced;
+        let n = priced.num_classes();
         let mut memo: Vec<Option<u64>> = vec![None; n];
         let mut state = vec![0u8; n]; // 0 unseen, 1 on path, 2 done
         let mut stack: Vec<(u32, usize)> = vec![(self.root, 0)];
         state[self.root as usize] = 1;
-        let node_of = |c: u32| -> Option<&Candidate> {
+        let node_of = |c: u32| -> Option<Candidate> {
             let idx = choice.get(c as usize).copied().flatten()?;
-            self.cands[c as usize].get(idx)
+            priced.candidate(c, idx)
         };
         node_of(self.root)?;
         while let Some(&mut (c, ref mut next)) = stack.last_mut() {
             let cand = node_of(c)?;
-            if *next < cand.children.len() {
-                let ch = cand.children[*next];
+            let needs = priced.needs(cand);
+            if *next < needs.len() {
+                let ch = priced.class_of(needs[*next]);
                 *next += 1;
                 match state[ch as usize] {
                     0 => {
@@ -317,10 +353,10 @@ impl Instance {
             } else {
                 // Multiplied back out by slot count: the DP sums
                 // `children.iter()`, so `Mul(a, a)` charges `a` twice.
-                let mut total = cand.own;
-                for (i, &ch) in cand.children.iter().enumerate() {
-                    let child = memo[ch as usize].expect("child finished first");
-                    total = total.saturating_add(child.saturating_mul(cand.mult[i] as u64));
+                let mut total = priced.own(cand);
+                for &child in needs {
+                    let sub = memo[priced.class_of(child) as usize].expect("child finished first");
+                    total = total.saturating_add(sub.saturating_mul(child.uses as u64));
                 }
                 memo[c as usize] = Some(total);
                 state[c as usize] = 2;
@@ -361,29 +397,26 @@ fn tree_optimal_choices(inst: &Instance) -> Option<Vec<Option<usize>>> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
-    let n = inst.cands.len();
-    // Per (class, candidate): how many child *slots* are still unfinalized,
-    // and the accumulated cost of the finalized ones. Slots, not distinct
-    // classes: a tree cost charges each occurrence.
-    let mut remaining: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut acc: Vec<Vec<u64>> = vec![Vec::new(); n];
-    // Reverse index: class -> the (class, candidate) slots waiting on it.
-    let mut waiters: Vec<Vec<(u32, usize)>> = vec![Vec::new(); n];
+    let priced = &*inst.priced;
+    let graph = &priced.graph;
+    let n = priced.num_classes();
+    // Per candidate, by slot: how many child *classes* are still
+    // unfinalized, and the accumulated cost of the finalized ones. Each is
+    // charged by its occurrence count: a tree cost charges each occurrence.
+    let mut remaining = vec![0usize; graph.slot_count()];
+    let mut acc = vec![0u64; graph.slot_count()];
 
     let mut heap: BinaryHeap<Reverse<(u64, u32, usize)>> = BinaryHeap::new();
     for &c in &inst.reachable {
-        let list = &inst.cands[c as usize];
-        remaining[c as usize] = vec![0; list.len()];
-        acc[c as usize] = vec![0; list.len()];
         for &i in &inst.feasible[c as usize] {
-            let cd = &list[i];
-            remaining[c as usize][i] = cd.children.len();
-            acc[c as usize][i] = cd.own;
-            if cd.children.is_empty() {
-                heap.push(Reverse((cd.own, c, i)));
-            }
-            for &ch in &cd.children {
-                waiters[ch as usize].push((c, i));
+            let cand = priced
+                .candidate(c, i)
+                .expect("a feasible node is one of its class's");
+            let slot = graph.slot(cand);
+            remaining[slot] = priced.needs(cand).len();
+            acc[slot] = priced.own(cand);
+            if priced.needs(cand).is_empty() {
+                heap.push(Reverse((priced.own(cand), c, i)));
             }
         }
     }
@@ -394,23 +427,25 @@ fn tree_optimal_choices(inst: &Instance) -> Option<Vec<Option<usize>>> {
             continue;
         }
         best[c as usize] = Some((cost, cand_idx));
-        for (pc, pi) in waiters[c as usize].clone() {
-            if best[pc as usize].is_some() {
+        let live = priced.live_of[c as usize].expect("a settled class is reached");
+        for parent in graph.parents(live) {
+            if best[parent.class().index()].is_some() {
                 continue;
             }
-            let cand = &inst.cands[pc as usize][pi];
-            let Some(slot) = cand.children.iter().position(|&x| x == c) else {
+            // A parent whose row the model leaves empty (a fold) or that is
+            // not feasible waits on nothing and has no count to take down.
+            let Some(child) = priced.needs(parent).iter().find(|ch| ch.live == live) else {
                 continue;
             };
-            let r = &mut remaining[pc as usize][pi];
+            let slot = graph.slot(parent);
+            let r = &mut remaining[slot];
             if *r == 0 {
                 continue;
             }
             *r -= 1;
-            acc[pc as usize][pi] =
-                acc[pc as usize][pi].saturating_add(cost.saturating_mul(cand.mult[slot] as u64));
+            acc[slot] = acc[slot].saturating_add(cost.saturating_mul(child.uses as u64));
             if *r == 0 {
-                heap.push(Reverse((acc[pc as usize][pi], pc, pi)));
+                heap.push(Reverse((acc[slot], parent.class().0, parent.idx())));
             }
         }
     }
@@ -438,25 +473,21 @@ fn path_lower_bounds(inst: &Instance) -> Vec<u64> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
-    let n = inst.cands.len();
-    let mut remaining: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut acc: Vec<Vec<u64>> = vec![Vec::new(); n];
-    let mut waiters: Vec<Vec<(u32, usize)>> = vec![Vec::new(); n];
+    let priced = &*inst.priced;
+    let graph = &priced.graph;
+    let n = priced.num_classes();
+    let mut remaining = vec![0usize; graph.slot_count()];
+    let mut acc = vec![0u64; graph.slot_count()];
     let mut heap: BinaryHeap<Reverse<(u64, u32, usize)>> = BinaryHeap::new();
 
     for &c in &inst.reachable {
-        let list = &inst.cands[c as usize];
-        remaining[c as usize] = vec![0; list.len()];
-        acc[c as usize] = vec![0; list.len()];
         for &i in &inst.alive[c as usize] {
-            let cd = &list[i];
-            remaining[c as usize][i] = cd.children.len();
-            acc[c as usize][i] = 0;
-            if cd.children.is_empty() {
-                heap.push(Reverse((cd.own, c, i)));
-            }
-            for &ch in &cd.children {
-                waiters[ch as usize].push((c, i));
+            let cand = priced
+                .candidate(c, i)
+                .expect("a live node is one of its class's");
+            remaining[graph.slot(cand)] = priced.needs(cand).len();
+            if priced.needs(cand).is_empty() {
+                heap.push(Reverse((priced.own(cand), c, i)));
             }
         }
     }
@@ -469,19 +500,27 @@ fn path_lower_bounds(inst: &Instance) -> Vec<u64> {
         }
         done[c as usize] = true;
         lb[c as usize] = cost;
-        for (pc, pi) in waiters[c as usize].clone() {
-            if done[pc as usize] {
+        let live = priced.live_of[c as usize].expect("a settled class is reached");
+        for parent in graph.parents(live) {
+            if done[parent.class().index()] {
                 continue;
             }
-            let r = &mut remaining[pc as usize][pi];
+            if priced.needs(parent).iter().all(|ch| ch.live != live) {
+                continue;
+            }
+            let slot = graph.slot(parent);
+            let r = &mut remaining[slot];
             if *r == 0 {
                 continue;
             }
             *r -= 1;
-            acc[pc as usize][pi] = acc[pc as usize][pi].max(cost);
+            acc[slot] = acc[slot].max(cost);
             if *r == 0 {
-                let own = inst.cands[pc as usize][pi].own;
-                heap.push(Reverse((own.saturating_add(acc[pc as usize][pi]), pc, pi)));
+                heap.push(Reverse((
+                    priced.own(parent).saturating_add(acc[slot]),
+                    parent.class().0,
+                    parent.idx(),
+                )));
             }
         }
     }
@@ -501,8 +540,8 @@ fn chain_upper_bounds(inst: &Instance) -> Vec<u64> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
-    let n = inst.cands.len();
-    let mut dist: Vec<u64> = vec![u64::MAX; n];
+    let priced = &*inst.priced;
+    let mut dist: Vec<u64> = vec![u64::MAX; priced.num_classes()];
     let mut heap: BinaryHeap<Reverse<(u64, u32)>> = BinaryHeap::new();
     dist[inst.root as usize] = 0;
     heap.push(Reverse((0, inst.root)));
@@ -511,9 +550,12 @@ fn chain_upper_bounds(inst: &Instance) -> Vec<u64> {
             continue;
         }
         for &i in &inst.alive[c as usize] {
-            let cd = &inst.cands[c as usize][i];
-            let through = d.saturating_add(cd.own);
-            for &ch in &cd.children {
+            let cand = priced
+                .candidate(c, i)
+                .expect("a live node is one of its class's");
+            let through = d.saturating_add(priced.own(cand));
+            for &child in priced.needs(cand) {
+                let ch = priced.class_of(child);
                 if through < dist[ch as usize] {
                     dist[ch as usize] = through;
                     heap.push(Reverse((through, ch)));
@@ -543,6 +585,7 @@ fn chain_upper_bounds(inst: &Instance) -> Vec<u64> {
 /// already optimal.
 fn prune_to_incumbent(inst: &mut Instance, ub: u64) -> (Vec<u64>, bool) {
     const MAX_ROUNDS: usize = 8;
+    let priced = Rc::clone(&inst.priced);
     let mut below = path_lower_bounds(inst);
     for _ in 0..MAX_ROUNDS {
         below = path_lower_bounds(inst);
@@ -555,22 +598,23 @@ fn prune_to_incumbent(inst: &mut Instance, ub: u64) -> (Vec<u64>, bool) {
                 .iter()
                 .copied()
                 .filter(|&i| {
-                    let cd = &inst.cands[c as usize][i];
-                    if cd
-                        .children
+                    let cand = priced
+                        .candidate(c, i)
+                        .expect("a live node is one of its class's");
+                    let needs = priced.needs(cand);
+                    if needs
                         .iter()
-                        .any(|&ch| inst.alive[ch as usize].is_empty())
+                        .any(|&ch| inst.alive[priced.class_of(ch) as usize].is_empty())
                     {
                         return false;
                     }
-                    let deepest = cd
-                        .children
+                    let deepest = needs
                         .iter()
-                        .map(|&ch| below[ch as usize])
+                        .map(|&ch| below[priced.class_of(ch) as usize])
                         .max()
                         .unwrap_or(0);
                     above[c as usize]
-                        .saturating_add(cd.own)
+                        .saturating_add(priced.own(cand))
                         .saturating_add(deepest)
                         < ub
                 })
@@ -590,7 +634,13 @@ fn prune_to_incumbent(inst: &mut Instance, ub: u64) -> (Vec<u64>, bool) {
     for &c in &inst.reachable {
         inst.floor[c as usize] = inst.alive[c as usize]
             .iter()
-            .map(|&i| inst.cands[c as usize][i].own)
+            .map(|&i| {
+                priced.own(
+                    priced
+                        .candidate(c, i)
+                        .expect("a live node is one of its class's"),
+                )
+            })
             .min()
             .unwrap_or(0);
     }
@@ -627,7 +677,7 @@ struct Search<'a> {
     /// Per class, an admissible lower bound on the DAG cost of its subtree.
     path_lb: &'a [u64],
     assign: Vec<Option<usize>>,
-    /// Class -> index into `inst.cands[class]` of the assigned candidate.
+    /// Class -> index of the assigned candidate among its class's e-nodes.
     cand_of: Vec<Option<usize>>,
     pending: Vec<u32>,
     cost: u64,
@@ -679,8 +729,17 @@ impl<'a> Search<'a> {
     fn creates_cycle(&self, c: u32) -> bool {
         let mut seen: HashSet<u32> = HashSet::new();
         let mut stack: Vec<u32> = Vec::new();
-        let cand = &self.inst.cands[c as usize][self.cand_of[c as usize].expect("just assigned")];
-        stack.extend(cand.children.iter().copied());
+        let priced = &*self.inst.priced;
+        let needs_of = |class: u32, ci: usize| {
+            let cand = priced
+                .candidate(class, ci)
+                .expect("an assigned node is one of its class's");
+            priced.needs(cand).iter().map(|&ch| priced.class_of(ch))
+        };
+        stack.extend(needs_of(
+            c,
+            self.cand_of[c as usize].expect("just assigned"),
+        ));
         while let Some(x) = stack.pop() {
             if x == c {
                 return true;
@@ -689,7 +748,7 @@ impl<'a> Search<'a> {
                 continue;
             }
             if let Some(ci) = self.cand_of[x as usize] {
-                stack.extend(self.inst.cands[x as usize][ci].children.iter().copied());
+                stack.extend(needs_of(x, ci));
             }
         }
         false
@@ -723,16 +782,22 @@ impl<'a> Search<'a> {
         // Cheapest own cost first: finds good incumbents early, which is what
         // makes the bound bite.
         let mut order: Vec<usize> = self.inst.alive[c as usize].clone();
+        let priced = &*self.inst.priced;
         order.sort_by_key(|&i| {
-            let cd = &self.inst.cands[c as usize][i];
-            (cd.own, cd.children.len(), cd.node_idx)
+            let cand = priced
+                .candidate(c, i)
+                .expect("a live node is one of its class's");
+            (priced.own(cand), priced.needs(cand).len(), i)
         });
 
         for ci in order {
             if self.timed_out {
                 return;
             }
-            let own = self.inst.cands[c as usize][ci].own;
+            let cand = priced
+                .candidate(c, ci)
+                .expect("a live node is one of its class's");
+            let own = priced.own(cand);
             self.assign[c as usize] = Some(ci);
             self.cand_of[c as usize] = Some(ci);
             self.cost = self.cost.saturating_add(own);
@@ -740,8 +805,8 @@ impl<'a> Search<'a> {
             let ok = !self.creates_cycle(c);
             if ok {
                 let saved = self.pending.len();
-                for k in 0..self.inst.cands[c as usize][ci].children.len() {
-                    let ch = self.inst.cands[c as usize][ci].children[k];
+                for &child in priced.needs(cand) {
+                    let ch = priced.class_of(child);
                     if self.assign[ch as usize].is_none() {
                         self.pending.push(ch);
                     }
@@ -783,19 +848,11 @@ fn exact_dag_choices(
         time_limit,
         max_expansions,
     } = limits;
-    let n = inst.cands.len();
+    let n = inst.priced.num_classes();
     let started = Instant::now();
     // The search runs on a pruned copy; the caller's instance keeps every
     // node, so a chooser's answer can still be re-costed afterwards.
-    let mut inst = Instance {
-        root: inst.root,
-        cands: inst.cands.clone(),
-        feasible: inst.feasible.clone(),
-        alive: inst.alive.clone(),
-        floor: inst.floor.clone(),
-        reachable: inst.reachable.clone(),
-        dominated: inst.dominated,
-    };
+    let mut inst = inst.clone();
     let (path_lb, root_alive) = prune_to_incumbent(&mut inst, seed_cost);
     let root_chain_lb = path_lb[inst.root as usize];
     if !root_alive {
@@ -2886,7 +2943,7 @@ mod self_check {
         let mut counter = vec![0usize; free.len()];
         let mut best: Option<u64> = None;
         loop {
-            let mut choice: Vec<Option<usize>> = vec![None; inst.cands.len()];
+            let mut choice: Vec<Option<usize>> = vec![None; inst.priced.num_classes()];
             for (k, &c) in free.iter().enumerate() {
                 let feasible = &inst.feasible[c as usize];
                 if !feasible.is_empty() {

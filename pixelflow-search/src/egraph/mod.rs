@@ -26,6 +26,7 @@
 //! front door — insert an [`pixelflow_ir::arena::ExprArena`] directly, no AST
 //! involved.
 
+pub(crate) mod and_or;
 pub mod anytime;
 pub mod candidate;
 pub(crate) mod cost;

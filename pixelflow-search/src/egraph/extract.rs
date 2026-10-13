@@ -4,6 +4,7 @@
 //! the "best" one according to a cost model and materialises it as an
 //! [`pixelflow_ir::ExprArena`].
 
+use super::and_or::{Candidate, Child, Frozen, Live, LiveTable, Problem};
 use super::cost::CostFunction;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
@@ -1974,17 +1975,31 @@ pub fn extract_dag_scoped<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> ExtractedDAG {
-    let pricing = Pricing { costs, shape };
+    extract_dag_over(
+        Frozen::new(egraph, root).problem(),
+        &Pricing { costs, shape },
+    )
+}
+
+/// [`extract_dag_scoped`] over a problem already read from its e-graph: what
+/// a caller that extracts the same saturated graph at several shapes calls,
+/// so the live set, the candidates and the parent index are built once and
+/// each shape adds its weights and its settlement.
+pub(crate) fn extract_dag_over<C: CostFunction>(
+    problem: Problem<'_>,
+    pricing: &Pricing<'_, C>,
+) -> ExtractedDAG {
+    let (egraph, root) = (problem.egraph(), problem.root());
+    let Pricing { costs, shape } = *pricing;
     let at = Rooted { egraph, root };
     let tree = costed(
         at,
-        tree_dp_pass(egraph, root, &mut Dp::production(costs, shape)),
+        tree_dp_pass(problem, &mut Dp::production(costs, shape)),
         CostScale::Tree,
-        &pricing,
+        pricing,
     );
     let pass = shared_dag_dp_pass(
-        egraph,
-        root,
+        problem,
         &mut Dp::production(costs, shape),
         SHARED_DAG_PASS_BYTE_BUDGET,
     );
@@ -1992,7 +2007,7 @@ pub fn extract_dag_scoped<C: CostFunction>(
     let Some(dp) = pass.outcome else {
         return assemble(egraph, root, tree, ExtractionObjective::TreeOnly, stats);
     };
-    let shared = costed(at, dp, CostScale::Dag, &pricing);
+    let shared = costed(at, dp, CostScale::Dag, pricing);
     // The comparison is between two *re-costed* terms, never between the two
     // DPs' own tables: those are on different scales (`CostScale`). Both sides
     // here are `cost_of_choices` of a settled map under the same `costs` and
@@ -2083,9 +2098,10 @@ pub(crate) fn extract_dag_tree_arm<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> ExtractedDAG {
+    let frozen = Frozen::new(egraph, root);
     let term = costed(
         Rooted { egraph, root },
-        tree_dp_pass(egraph, root, &mut Dp::production(costs, shape)),
+        tree_dp_pass(frozen.problem(), &mut Dp::production(costs, shape)),
         CostScale::Tree,
         &Pricing { costs, shape },
     );
@@ -2106,7 +2122,11 @@ pub(crate) fn extract_dag_shared_arm<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> ExtractedDAG {
-    let pass = shared_dag_dp_pass(egraph, root, &mut Dp::production(costs, shape), usize::MAX);
+    let pass = shared_dag_dp_pass(
+        Frozen::new(egraph, root).problem(),
+        &mut Dp::production(costs, shape),
+        usize::MAX,
+    );
     let choices = pass
         .outcome
         .expect("an unbounded shared pass cannot run out of budget");
@@ -2427,75 +2447,140 @@ impl StageRecorder for () {
 /// well-founded term reaches — [`settle_in_cost_order`] refuses to return
 /// with the root in that state rather than inventing a choice for it.
 trait Settling {
-    /// Price candidate `idx` of `class`. Every child class is settled, and
-    /// none of them is `class` itself.
-    fn price(&mut self, class: EClassId, idx: usize, node: &ENode) -> usize;
+    /// Price `candidate`, whose e-node is `node`. Every child class is
+    /// settled, and none of them is the candidate's own.
+    fn price(&mut self, candidate: Candidate, node: &ENode) -> usize;
 
     /// Which of two candidates priced **equally** the class keeps.
     fn prefer(&self, class: EClassId, incumbent: usize, challenger: usize) -> bool;
 
-    /// Settle `class` on candidate `idx`, priced at `cost`. Returning
-    /// `false` abandons the pass.
-    fn settle(&mut self, class: EClassId, idx: usize, node: &ENode, cost: usize) -> bool;
+    /// Settle the candidate's class on `candidate`, whose e-node is `node`,
+    /// priced at `cost`. Returning `false` abandons the pass.
+    fn settle(&mut self, candidate: Candidate, node: &ENode, cost: usize) -> bool;
 }
 
-/// A candidate that mentions its own class: no decrement ever takes this
-/// counter to zero, so the candidate is never priced.
-const NEVER_ADMISSIBLE: u32 = u32::MAX;
-
-/// Compact ids for the live classes — `u32::MAX` for a class the root does
-/// not reach.
-///
-/// The compact ids are what the shared pass indexes its reach sets by: they
-/// only ever hold classes the root reaches, and on a saturated glyph that is
-/// a third of the e-graph, so sizing them by `num_classes` would pay for the
-/// rest of the graph in every union.
-fn compact_ids(num_classes: usize, live: &[EClassId]) -> Vec<u32> {
-    let mut compact: Vec<u32> = alloc::vec![u32::MAX; num_classes];
-    for (i, c) in live.iter().enumerate() {
-        compact[c.0 as usize] = i as u32;
-    }
-    compact
+/// What a settlement tracks beside the problem it settles: the candidates it
+/// is still waiting on, the cheapest priced so far for each class, and the
+/// classes ready to be settled, cheapest first.
+struct Settlement<'a, S> {
+    problem: Problem<'a>,
+    pricer: &'a mut S,
+    /// Unsettled distinct child classes per candidate, by
+    /// [`AndOrGraph::slot`](super::and_or::AndOrGraph::slot).
+    waiting: Vec<usize>,
+    /// The cheapest candidate priced so far for each live class: its cost
+    /// and index.
+    best: LiveTable<Option<(usize, usize)>>,
+    /// Ordered by cost, then by the class's **e-graph id** (the live index
+    /// rides along and decides nothing, the id being unique). Equal-cost
+    /// classes settle in id order, and under `Insertion` that settle order is
+    /// what picks the incumbent, so the key must stay the id the e-graph
+    /// gave and not the position the class holds in the root's reach.
+    heap: BinaryHeap<Reverse<(usize, u32, Live)>>,
 }
 
-/// The cheapest candidate priced so far for each class — its cost and index —
-/// and the classes waiting to be settled, cheapest first.
-struct Frontier {
-    best: Vec<Option<(usize, usize)>>,
-    heap: BinaryHeap<Reverse<(usize, u32)>>,
-}
-
-/// One node of a class, by position: what a [`Frontier`] prices.
-#[derive(Clone, Copy)]
-struct Candidate {
-    class: EClassId,
-    idx: usize,
-}
-
-impl Frontier {
-    fn new(num_classes: usize) -> Self {
+impl<'a, S: Settling> Settlement<'a, S> {
+    fn new(problem: Problem<'a>, pricer: &'a mut S) -> Self {
+        let graph = problem.graph();
         Self {
-            best: alloc::vec![None; num_classes],
+            problem,
+            pricer,
+            waiting: graph.child_counts(),
+            best: graph.table(None),
             heap: BinaryHeap::new(),
         }
     }
 
     /// Price one candidate and let it take its class's incumbent if it is
     /// cheaper, or equal and preferred.
-    fn relax<S: Settling>(&mut self, egraph: &EGraph, candidate: Candidate, s: &mut S) {
-        let Candidate { class, idx } = candidate;
-        let cost = s.price(class, idx, &egraph.nodes(class)[idx]);
-        let takes = match self.best[class.0 as usize] {
+    fn relax(&mut self, candidate: Candidate) {
+        let (class, live, idx) = (candidate.class(), candidate.live(), candidate.idx());
+        let cost = self
+            .pricer
+            .price(candidate, &self.problem.egraph().nodes(class)[idx]);
+        let takes = match self.best[live] {
             None => true,
             Some((incumbent_cost, incumbent)) => {
-                cost < incumbent_cost || (cost == incumbent_cost && s.prefer(class, incumbent, idx))
+                cost < incumbent_cost
+                    || (cost == incumbent_cost && self.pricer.prefer(class, incumbent, idx))
             }
         };
         if !takes {
             return;
         }
-        self.best[class.0 as usize] = Some((cost, idx));
-        self.heap.push(Reverse((cost, class.0)));
+        self.best[live] = Some((cost, idx));
+        self.heap.push(Reverse((cost, class.0, live)));
+    }
+
+    fn run(mut self) -> Option<DpOutcome> {
+        let (egraph, graph) = (self.problem.egraph(), self.problem.graph());
+        let mut settled = graph.table(false);
+        let mut choice: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
+
+        for live in graph.lives() {
+            for candidate in graph.candidates(live) {
+                if self.waiting[graph.slot(candidate)] == 0 {
+                    self.relax(candidate);
+                }
+            }
+        }
+
+        while let Some(Reverse((cost, _, live))) = self.heap.pop() {
+            if settled[live] {
+                continue;
+            }
+            let (incumbent_cost, incumbent) =
+                self.best[live].expect("a class in the heap has been priced at least once");
+            if incumbent_cost != cost {
+                // A superseded entry: the class has since been priced cheaper,
+                // and that entry is still in the heap.
+                continue;
+            }
+            let chosen = graph
+                .candidate(live, incumbent)
+                .expect("a priced candidate is one of its class's e-nodes");
+            if !self.pricer.settle(
+                chosen,
+                &egraph.nodes(chosen.class())[incumbent],
+                incumbent_cost,
+            ) {
+                return None;
+            }
+            settled[live] = true;
+            choice[chosen.class().index()] = Some(incumbent);
+
+            for parent in graph.parents(live) {
+                if settled[parent.live()] {
+                    continue;
+                }
+                let w = &mut self.waiting[graph.slot(parent)];
+                assert!(
+                    *w != 0,
+                    "settle_in_cost_order: candidate {} of e-class {} was decremented past its \
+                     child count — the parent index and the child counts disagree",
+                    parent.idx(),
+                    parent.class().0
+                );
+                *w -= 1;
+                if *w == 0 {
+                    self.relax(parent);
+                }
+            }
+        }
+
+        let root = graph.root_live();
+        assert!(
+            settled[root],
+            "settle_in_cost_order: root e-class {} has no well-founded term — every candidate of \
+             every class it reaches sits behind a cycle, which is structural corruption rather than \
+             a rewrite outcome",
+            graph.root().0
+        );
+        let root_cost = self.best[root].expect("a settled class has been priced").0;
+        Some(DpOutcome {
+            choices: choice,
+            root_cost,
+        })
     }
 }
 
@@ -2507,133 +2592,15 @@ impl Frontier {
 /// strictly after the children of the candidate it settles on, so no repair
 /// stage is required to make the result materialisable.
 ///
+/// A candidate that names its own class waits on a child that settles only
+/// after the class does, and a settled class's parent entries are skipped,
+/// so such a candidate is never priced and needs no case of its own.
+///
 /// The [`DpOutcome`] carries the root's settled cost beside the map: that is
 /// the value this driver *minimized*, and it is the only number that can be
 /// checked against the price of the term the map names.
-fn settle_in_cost_order<S: Settling>(
-    egraph: &EGraph,
-    root: EClassId,
-    order: &[EClassId],
-    s: &mut S,
-) -> Option<DpOutcome> {
-    let num_classes = egraph.num_classes();
-    let compact = compact_ids(num_classes, order);
-    let mut choice: Vec<Option<usize>> = alloc::vec![None; num_classes];
-    let mut settled: Vec<bool> = alloc::vec![false; num_classes];
-    let mut frontier = Frontier::new(num_classes);
-    // Unsettled distinct child classes per candidate, and — per live class —
-    // the candidates waiting on it.
-    let mut waiting: Vec<Vec<u32>> = alloc::vec![Vec::new(); num_classes];
-    let mut parents: Vec<Vec<(EClassId, usize)>> = alloc::vec![Vec::new(); order.len()];
-
-    let mut distinct: Vec<EClassId> = Vec::new();
-    for &class in order {
-        let nodes = egraph.nodes(class);
-        let mut per_node: Vec<u32> = Vec::with_capacity(nodes.len());
-        for (idx, node) in nodes.iter().enumerate() {
-            distinct.clear();
-            let mut self_referential = false;
-            {
-                let children = (node).children_slice();
-                for &child in children.iter() {
-                    let c = egraph.find(child);
-                    if c == class {
-                        self_referential = true;
-                        break;
-                    }
-                    if !distinct.contains(&c) {
-                        distinct.push(c);
-                    }
-                }
-            }
-            if self_referential {
-                per_node.push(NEVER_ADMISSIBLE);
-                continue;
-            }
-            for &c in &distinct {
-                let ci = compact[c.0 as usize];
-                assert!(
-                    ci != u32::MAX,
-                    "settle_in_cost_order: e-class {} is a child of live class {} but was not \
-                     enumerated as live — the two traversals have drifted",
-                    c.0,
-                    class.0
-                );
-                parents[ci as usize].push((class, idx));
-            }
-            per_node.push(distinct.len() as u32);
-        }
-        waiting[class.0 as usize] = per_node;
-    }
-
-    for &class in order {
-        for (idx, &pending) in waiting[class.0 as usize].iter().enumerate() {
-            if pending == 0 {
-                frontier.relax(egraph, Candidate { class, idx }, s);
-            }
-        }
-    }
-
-    while let Some(Reverse((cost, cid))) = frontier.heap.pop() {
-        let ci = cid as usize;
-        if settled[ci] {
-            continue;
-        }
-        let (incumbent_cost, incumbent) =
-            frontier.best[ci].expect("a class in the heap has been priced at least once");
-        if incumbent_cost != cost {
-            // A superseded entry: the class has since been priced cheaper,
-            // and that entry is still in the heap.
-            continue;
-        }
-        let class = EClassId(cid);
-        if !s.settle(
-            class,
-            incumbent,
-            &egraph.nodes(class)[incumbent],
-            incumbent_cost,
-        ) {
-            return None;
-        }
-        settled[ci] = true;
-        choice[ci] = Some(incumbent);
-
-        // Taken, not borrowed: a class settles once, so nothing reads its
-        // parent list again, and the memory goes back as the pass proceeds.
-        let ps = core::mem::take(&mut parents[compact[ci] as usize]);
-        for (parent, idx) in ps {
-            let pi = parent.0 as usize;
-            if settled[pi] {
-                continue;
-            }
-            let w = &mut waiting[pi][idx];
-            assert!(
-                *w != 0 && *w != NEVER_ADMISSIBLE,
-                "settle_in_cost_order: candidate {idx} of e-class {} was decremented past its \
-                 child count — the parent index and the waiting counts disagree",
-                parent.0
-            );
-            *w -= 1;
-            if *w == 0 {
-                frontier.relax(egraph, Candidate { class: parent, idx }, s);
-            }
-        }
-    }
-
-    assert!(
-        settled[egraph.find(root).0 as usize],
-        "settle_in_cost_order: root e-class {} has no well-founded term — every candidate of \
-         every class it reaches sits behind a cycle, which is structural corruption rather than \
-         a rewrite outcome",
-        root.0
-    );
-    let root_cost = frontier.best[egraph.find(root).0 as usize]
-        .expect("a settled class has been priced")
-        .0;
-    Some(DpOutcome {
-        choices: choice,
-        root_cost,
-    })
+fn settle_in_cost_order<S: Settling>(problem: Problem<'_>, pricer: &mut S) -> Option<DpOutcome> {
+    Settlement::new(problem, pricer).run()
 }
 
 /// A DP pass's choice map beside the value its own table holds at the root —
@@ -2649,39 +2616,38 @@ pub(crate) struct DpOutcome {
 /// subtree, at every use. The control arm of the objective A/B, and the
 /// floor [`extract_dag_scoped`] never returns worse than.
 pub(crate) fn tree_dp_pass<C: CostFunction, T: TieBreak, R: StageRecorder>(
-    egraph: &EGraph,
-    root: EClassId,
+    problem: Problem<'_>,
     dp: &mut Dp<'_, C, T, R>,
 ) -> DpOutcome {
-    let order = post_order(egraph, root);
-    let num_classes = egraph.num_classes();
     let mut pricer = TreePricer {
-        egraph,
+        problem,
         dp,
-        cost: alloc::vec![None; num_classes],
+        cost: problem.graph().table(None),
         // The variance of the form chosen for each class, which is what its
         // scope — and so its weight — is read from. Carried in the same DP
         // as the cost because the two determine each other: a child's
         // variance sets its parent's weight, and a parent's weight is part
         // of what makes one child's form worth choosing over another's.
-        var: alloc::vec![Variance::CONST; num_classes],
+        var: alloc::vec![Variance::CONST; problem.egraph().num_classes()],
     };
-    settle_in_cost_order(egraph, root, &order, &mut pricer)
+    settle_in_cost_order(problem, &mut pricer)
         .expect("the tree pass has no budget and never abandons")
 }
 
 /// [`tree_dp_pass`]'s pricing: a candidate costs its own weighted cost plus
 /// each child's settled cost, summed at every use.
 struct TreePricer<'a, 'c, C, T, R> {
-    egraph: &'a EGraph,
+    problem: Problem<'a>,
     dp: &'a mut Dp<'c, C, T, R>,
-    cost: Vec<Option<usize>>,
+    /// The settled cost of each live class.
+    cost: LiveTable<Option<usize>>,
+    /// By e-class id, the table `node_variance` reads.
     var: Vec<Variance>,
 }
 
 impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_, '_, C, T, R> {
-    fn price(&mut self, class: EClassId, idx: usize, node: &ENode) -> usize {
-        let node_var = node_variance(self.egraph, node, &self.var, class);
+    fn price(&mut self, candidate: Candidate, node: &ENode) -> usize {
+        let node_var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
         let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
         let cost = match node {
             ENode::Var(_)
@@ -2698,35 +2664,40 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_,
             ENode::Op { .. } | ENode::Reduce { .. } => {
                 let per_child = fold_body_multiple(node);
                 own.saturating_add(
-                    node.children_slice()
+                    self.problem
+                        .graph()
+                        .children(candidate)
                         .iter()
-                        .map(|&child| {
-                            let sub = self.cost[self.egraph.find(child).0 as usize]
+                        .map(|child| {
+                            let sub = self.cost[child.live]
                                 .expect("a priced candidate's children are settled");
                             usize::try_from((sub as u64).saturating_mul(per_child))
                                 .unwrap_or(usize::MAX)
+                                .saturating_mul(child.uses)
                         })
                         .fold(0usize, usize::saturating_add),
                 )
             }
         };
-        self.dp.rec.candidate(class, idx, cost, own);
+        self.dp
+            .rec
+            .candidate(candidate.class(), candidate.idx(), cost, own);
         cost
     }
 
     fn prefer(&self, class: EClassId, incumbent: usize, challenger: usize) -> bool {
         self.dp
             .ties
-            .prefer(self.egraph, class, incumbent, challenger)
+            .prefer(self.problem.egraph(), class, incumbent, challenger)
     }
 
-    fn settle(&mut self, class: EClassId, idx: usize, node: &ENode, cost: usize) -> bool {
+    fn settle(&mut self, candidate: Candidate, node: &ENode, cost: usize) -> bool {
         // Read the children's variances before writing this class's, which
         // `node_variance` never consults for an admissible candidate.
-        let node_var = node_variance(self.egraph, node, &self.var, class);
-        self.cost[class.0 as usize] = Some(cost);
-        self.var[class.0 as usize] = node_var;
-        self.dp.rec.settled(class, idx);
+        let node_var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
+        self.cost[candidate.live()] = Some(cost);
+        self.var[candidate.class().index()] = node_var;
+        self.dp.rec.settled(candidate.class(), candidate.idx());
         true
     }
 }
@@ -2755,22 +2726,20 @@ impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for TreePricer<'_,
 /// measured quadratic); real kernels hold a small fraction of that because
 /// most live classes are variants deep inside one sub-DAG.
 pub(crate) fn shared_dag_dp_pass<C: CostFunction, T: TieBreak, R: StageRecorder>(
-    egraph: &EGraph,
-    root: EClassId,
+    problem: Problem<'_>,
     dp: &mut Dp<'_, C, T, R>,
     budget: usize,
 ) -> SharedPassOutcome {
-    let order = post_order(egraph, root);
-    let live = order.len();
+    let graph = problem.graph();
+    let live = graph.len();
     let mut pricer = SharedPricer {
-        egraph,
+        problem,
         dp,
-        var: alloc::vec![Variance::CONST; egraph.num_classes()],
+        var: alloc::vec![Variance::CONST; problem.egraph().num_classes()],
         sets: ReachSets {
-            compact: compact_ids(egraph.num_classes(), &order),
-            reach: (0..live).map(|_| None).collect(),
-            own: alloc::vec![0; live],
-            stamp: alloc::vec![0; live],
+            reach: graph.table_from_fn(|_| None),
+            own: graph.table(0),
+            stamp: graph.table(0),
             epoch: 0,
             scratch: Vec::new(),
             words: live.div_ceil(REACH_WORD_BITS),
@@ -2778,7 +2747,7 @@ pub(crate) fn shared_dag_dp_pass<C: CostFunction, T: TieBreak, R: StageRecorder>
             budget,
         },
     };
-    let outcome = settle_in_cost_order(egraph, root, &order, &mut pricer);
+    let outcome = settle_in_cost_order(problem, &mut pricer);
     SharedPassOutcome {
         outcome,
         stats: SharedPassStats {
@@ -2788,20 +2757,19 @@ pub(crate) fn shared_dag_dp_pass<C: CostFunction, T: TieBreak, R: StageRecorder>
     }
 }
 
-/// The reach sets, indexed by compact live id, and the budget they are held
+/// The reach sets, indexed by [`Live`], and the budget they are held
 /// under.
 struct ReachSets {
-    compact: Vec<u32>,
     /// `reach[i]` is the set of classes the chosen sub-DAG at live class `i`
     /// contains, itself included — `None` until the class settles.
-    reach: Vec<Option<Reach>>,
+    reach: LiveTable<Option<Reach>>,
     /// The weighted own cost of each live class's chosen node: what a union
     /// pays when that class first enters it.
-    own: Vec<usize>,
+    own: LiveTable<usize>,
     /// `stamp[i] == epoch` iff live class `i` has entered the union being
     /// taken for the current candidate. One epoch per candidate; never
     /// cleared, so a union costs its members and nothing else.
-    stamp: Vec<usize>,
+    stamp: LiveTable<usize>,
     epoch: usize,
     scratch: Vec<u32>,
     words: usize,
@@ -2812,28 +2780,21 @@ struct ReachSets {
 impl ReachSets {
     /// Union the children's reach sets into `scratch`, returning what those
     /// classes cost with each member paid once.
-    fn union_below(&mut self, egraph: &EGraph, node: &ENode) -> usize {
+    ///
+    /// `children` is a candidate's row in the [`AndOrGraph`](super::and_or::AndOrGraph).
+    /// A leaf's row is empty, so it reaches nothing without a case of its own.
+    fn union_below(&mut self, children: &[Child]) -> usize {
         self.epoch += 1;
         self.scratch.clear();
-        // `children_slice`, not a `let ENode::Op { children, .. } = node else
-        // { return 0 }`. That pattern read as "leaves reach nothing", which is
-        // true, but it also silently swallowed `ENode::Reduce`: a fold's body
-        // never entered the union, so the Dag arm priced a fold as its
-        // combiner chain and nothing else, while `cost_of_choices` — which
-        // walks `children_slice` — charged for the body too. The DP then
-        // settled on a claim below the price of the term it named, and the
-        // claim/price audit fired. `children_slice` is empty for a leaf, so
-        // the early return bought nothing the general path does not give.
         let mut below = 0usize;
-        for &child in node.children_slice() {
-            let ci = self.compact[egraph.find(child).0 as usize] as usize;
+        for &Child { live: ci, .. } in children {
             // Taken and put back: the closure below needs `self` mutably
             // while the set is read, and a set is never its own member's.
             let set = self.reach[ci]
                 .take()
                 .expect("a priced candidate's children are settled");
             set.for_each(|member| {
-                let m = member as usize;
+                let m = Live::from_index(member as usize);
                 if self.stamp[m] != self.epoch {
                     self.stamp[m] = self.epoch;
                     below = below.saturating_add(self.own[m]);
@@ -2848,47 +2809,55 @@ impl ReachSets {
 
 /// [`shared_dag_dp_pass`]'s pricing.
 struct SharedPricer<'a, 'c, C, T, R> {
-    egraph: &'a EGraph,
+    problem: Problem<'a>,
     dp: &'a mut Dp<'c, C, T, R>,
     var: Vec<Variance>,
     sets: ReachSets,
 }
 
 impl<C: CostFunction, T: TieBreak, R: StageRecorder> Settling for SharedPricer<'_, '_, C, T, R> {
-    fn price(&mut self, class: EClassId, idx: usize, node: &ENode) -> usize {
-        let node_var = node_variance(self.egraph, node, &self.var, class);
+    fn price(&mut self, candidate: Candidate, node: &ENode) -> usize {
+        let node_var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
         let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
-        let below = self.sets.union_below(self.egraph, node);
+        let below = self
+            .sets
+            .union_below(self.problem.graph().children(candidate));
         let cost = own.saturating_add(below);
-        self.dp.rec.candidate(class, idx, cost, own);
+        self.dp
+            .rec
+            .candidate(candidate.class(), candidate.idx(), cost, own);
         cost
     }
 
     fn prefer(&self, class: EClassId, incumbent: usize, challenger: usize) -> bool {
         self.dp
             .ties
-            .prefer(self.egraph, class, incumbent, challenger)
+            .prefer(self.problem.egraph(), class, incumbent, challenger)
     }
 
-    fn settle(&mut self, class: EClassId, idx: usize, node: &ENode, _cost: usize) -> bool {
-        let node_var = node_variance(self.egraph, node, &self.var, class);
+    fn settle(&mut self, candidate: Candidate, node: &ENode, _cost: usize) -> bool {
+        let node_var = node_variance(self.problem.egraph(), node, &self.var, candidate.class());
         let own = weighted_own(self.dp.costs, node, self.dp.shape.evals(node_var));
         // Rebuild the winner's union rather than carrying one per class in
         // flight: the driver prices candidates for many unsettled classes
         // before any of them settles, so a stored winner set would be a
         // second copy of the frontier's reach.
-        let _ = self.sets.union_below(self.egraph, node);
-        let me = self.sets.compact[class.0 as usize];
-        self.sets.scratch.push(me);
+        let _ = self
+            .sets
+            .union_below(self.problem.graph().children(candidate));
+        let me = candidate.live();
+        self.sets.scratch.push(
+            u32::try_from(me.index()).expect("a live index is below the e-graph's u32 class count"),
+        );
         let set = Reach::smaller_of(&self.sets.scratch, self.sets.words);
         self.sets.bytes = self.sets.bytes.saturating_add(set.bytes());
         if self.sets.bytes > self.sets.budget {
             return false;
         }
-        self.sets.reach[me as usize] = Some(set);
-        self.sets.own[me as usize] = own;
-        self.var[class.0 as usize] = node_var;
-        self.dp.rec.settled(class, idx);
+        self.sets.reach[me] = Some(set);
+        self.sets.own[me] = own;
+        self.var[candidate.class().index()] = node_var;
+        self.dp.rec.settled(candidate.class(), candidate.idx());
         true
     }
 }
@@ -2904,7 +2873,7 @@ pub(crate) struct SharedPassOutcome {
 
 const REACH_WORD_BITS: usize = u64::BITS as usize;
 
-/// One live class's reach set — the compact ids of the classes its chosen
+/// One live class's reach set — the live indices of the classes its chosen
 /// sub-DAG contains — in whichever of two forms is smaller.
 ///
 /// The sparse form is the members themselves, four bytes each; the dense
@@ -2958,65 +2927,6 @@ impl Reach {
     }
 }
 
-/// The classes reachable from `root`.
-///
-/// The order is a DFS post-order, which no longer decides anything: the DP
-/// passes settle in **cost** order ([`settle_in_cost_order`]), and this is
-/// the live set and the compact numbering the shared pass's reach sets are
-/// indexed by. It used to be the DP's evaluation order, which is why a class
-/// whose descendants reached it back — commutativity alone is enough on a
-/// saturated graph — appeared before them and got priced at a sentinel.
-fn post_order(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
-    // Dense bitset over canonical class ids, not `BTreeSet<u32>`: every id
-    // here is already bounded by `egraph.num_classes()`, so a `Vec<bool>`
-    // index is O(1) and allocation-free per probe, versus an O(log n)
-    // tree-node alloc per insert on a set this file already indexes by plain
-    // `Vec` elsewhere (`cost_of_choices`'s `color: Vec<u8>`). `post_order`
-    // runs twice per extraction (once per DP pass), so this is on the same
-    // hot path as `shared_dag_dp_pass`.
-    let num_classes = egraph.num_classes();
-    let mut order: Vec<EClassId> = Vec::new();
-    let mut settled: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
-    let mut on_stack: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
-    let mut stack: Vec<(EClassId, bool)> = vec![(root, false)];
-
-    while let Some((class, children_done)) = stack.pop() {
-        let canonical = egraph.find(class);
-        let idx = canonical.0 as usize;
-
-        if settled[idx] {
-            continue;
-        }
-
-        if !children_done {
-            if on_stack[idx] {
-                continue;
-            }
-            on_stack[idx] = true;
-
-            stack.push((canonical, true));
-
-            for node in egraph.nodes(canonical) {
-                {
-                    let children = (node).children_slice();
-                    for &child in children {
-                        let child_canonical = egraph.find(child);
-                        if !settled[child_canonical.0 as usize] {
-                            stack.push((child, false));
-                        }
-                    }
-                }
-            }
-        } else {
-            on_stack[idx] = false;
-            settled[idx] = true;
-            order.push(canonical);
-        }
-    }
-
-    order
-}
-
 /// Count references to each e-class in the extracted expression.
 ///
 /// Uses iterative traversal with explicit stack to avoid thread stack overflow.
@@ -3059,9 +2969,10 @@ fn toposort_dag(
     best_node: &[Option<usize>],
     shared: &[(EClassId, usize)],
 ) -> Vec<EClassId> {
-    // Dense bitsets over canonical class ids (bounded by `best_node.len()`,
-    // itself sized to `egraph.num_classes()` by the DP pass that built it) —
-    // see `post_order`'s doc comment for why this beats `BTreeSet<u32>` here.
+    // Dense bitsets over canonical class ids, bounded by `best_node.len()`,
+    // itself sized to `egraph.num_classes()` by the DP pass that built it:
+    // a plain `Vec` index is O(1) and allocation-free per probe, where a
+    // `BTreeSet<u32>` allocates a tree node per insert.
     let num_classes = best_node.len();
     let mut shared_set: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
     for (id, _) in shared {
@@ -3117,6 +3028,7 @@ fn toposort_dag(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::and_or::AndOrGraph;
     use crate::egraph::cost::CostModel;
 
     /// Scope-weighted extraction un-fuses an FMA to move work out of the loop.
@@ -3215,8 +3127,7 @@ mod tests {
         let costs = CostModel::latency_prior();
 
         let full = shared_dag_dp_pass(
-            &egraph,
-            root,
+            Frozen::new(&egraph, root).problem(),
             &mut Dp::production(&costs, LatticeShape::POINT),
             usize::MAX,
         );
@@ -3238,8 +3149,7 @@ mod tests {
 
         let budget = full.stats.reach_bytes / 2;
         let cut = shared_dag_dp_pass(
-            &egraph,
-            root,
+            Frozen::new(&egraph, root).problem(),
             &mut Dp::production(&costs, LatticeShape::POINT),
             budget,
         );
@@ -3316,7 +3226,7 @@ mod tests {
     ) -> (Vec<Option<usize>>, usize) {
         const BITS: usize = usize::BITS as usize;
         let num_classes = egraph.num_classes();
-        let order = post_order(egraph, root);
+        let order = AndOrGraph::of(egraph, root).classes().to_vec();
         let live = order.len();
         let words = live.div_ceil(BITS);
         let mut compact: Vec<u32> = alloc::vec![u32::MAX; num_classes];
@@ -3468,7 +3378,7 @@ mod tests {
     /// class every one of whose candidates mentions itself or a class the
     /// single DFS post-order had not yet priced.
     fn sentinel_priced(egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
-        let order = post_order(egraph, root);
+        let order = AndOrGraph::of(egraph, root).classes().to_vec();
         let mut priced: Vec<bool> = alloc::vec![false; egraph.num_classes()];
         let mut sentinel = Vec::new();
         for &class in &order {
@@ -3512,7 +3422,7 @@ mod tests {
 
         let costs = CostModel::latency_prior();
         let mut dp = Dp::new(&costs, LatticeShape::POINT, Insertion, Prices::default());
-        let choices = tree_dp_pass(&egraph, merged, &mut dp).choices;
+        let choices = tree_dp_pass(Frozen::new(&egraph, merged).problem(), &mut dp).choices;
         let priced = dp.into_recorder().0;
 
         assert!(
@@ -3541,10 +3451,13 @@ mod tests {
         ] {
             let (egraph, root) = saturated_sdf_egraph(nodes);
             for raw in [
-                tree_dp_pass(&egraph, root, &mut Dp::production(&costs, shape)).choices,
+                tree_dp_pass(
+                    Frozen::new(&egraph, root).problem(),
+                    &mut Dp::production(&costs, shape),
+                )
+                .choices,
                 shared_dag_dp_pass(
-                    &egraph,
-                    root,
+                    Frozen::new(&egraph, root).problem(),
                     &mut Dp::production(&costs, shape),
                     usize::MAX,
                 )
@@ -3596,6 +3509,76 @@ mod tests {
         }
     }
 
+    /// FNV-1a over the choices as a stream of words: a class with no choice
+    /// is `0`, a choice of node `i` is `i + 1`.
+    fn choice_digest(choices: &[Option<usize>]) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        choices.iter().fold(FNV_OFFSET, |hash, choice| {
+            let word = choice.map_or(0, |i| i as u64 + 1);
+            word.to_le_bytes()
+                .iter()
+                .fold(hash, |h, &b| (h ^ u64::from(b)).wrapping_mul(FNV_PRIME))
+        })
+    }
+
+    /// **Settlement order is pinned, not only compared.** Equal-cost classes
+    /// settle in `EClassId` order and, under `Insertion`, the settle order is
+    /// what picks the incumbent, so a change to how the passes are set up
+    /// (their live set, candidate rows, parent index) that reorders
+    /// settlement moves a choice on a tie-dense graph without moving any
+    /// cost. Every other test here compares two paths that share that setup,
+    /// so they move together; these digests were taken before the setup was
+    /// lifted into [`AndOrGraph`] and do not.
+    ///
+    /// One digest per (graph, shape) and per arm: the tree arm, the shared
+    /// arm, and the arm production returns.
+    #[test]
+    fn settlement_order_is_pinned() {
+        let costs = CostModel::latency_prior();
+        let observed: Vec<(usize, LatticeShape, [u64; 3])> = [
+            (64, LatticeShape::POINT),
+            (256, LatticeShape::POINT),
+            (256, LatticeShape::new([32, 32])),
+        ]
+        .into_iter()
+        .map(|(nodes, shape)| {
+            let (egraph, root) = saturated_sdf_egraph(nodes);
+            let (tree, shared) = extract_dag_objectives(&egraph, root, &costs, shape);
+            let scoped = extract_dag_scoped(&egraph, root, &costs, shape);
+            let digests = [&tree, &shared, &scoped].map(|dag| choice_digest(&dag.choices));
+            (nodes, shape, digests)
+        })
+        .collect();
+        let recorded: [[u64; 3]; 3] = SETTLEMENT_DIGESTS;
+        for ((nodes, shape, digests), expected) in observed.iter().zip(recorded) {
+            assert_eq!(
+                *digests, expected,
+                "{nodes} nodes at {shape:?}: settlement picked other nodes than it did when the \
+                 digests were recorded (tree, shared, production)"
+            );
+        }
+    }
+
+    /// Recorded at the commit before the passes shared an [`AndOrGraph`].
+    const SETTLEMENT_DIGESTS: [[u64; 3]; 3] = [
+        [
+            0x0126_79f9_2714_6ff2,
+            0xf9c8_412f_a72c_3fe0,
+            0xf9c8_412f_a72c_3fe0,
+        ],
+        [
+            0xf9d6_e836_a077_a4e6,
+            0xf9d6_e836_a077_a4e6,
+            0xf9d6_e836_a077_a4e6,
+        ],
+        [
+            0xf142_5de0_5476_17e6,
+            0x4cc2_eca9_a5d6_21e4,
+            0xf142_5de0_5476_17e6,
+        ],
+    ];
+
     /// The budgeted hybrid-set pass and the dense pass it replaced choose
     /// the same node in every class of a saturated graph — same objective,
     /// same tie-breaking, priced through sparse and dense sets alike —
@@ -3619,8 +3602,7 @@ mod tests {
             let (reference_choices, reference_cost) =
                 dense_reference_pass(&egraph, root, &costs, shape);
             let pass = shared_dag_dp_pass(
-                &egraph,
-                root,
+                Frozen::new(&egraph, root).problem(),
                 &mut Dp::production(&costs, shape),
                 usize::MAX,
             );
@@ -4946,8 +4928,7 @@ mod tests {
         let costs = CostModel::latency_prior();
         let shape = LatticeShape::POINT;
         let dp = shared_dag_dp_pass(
-            &egraph,
-            root,
+            Frozen::new(&egraph, root).problem(),
             &mut Dp::production(&costs, shape),
             usize::MAX,
         )
@@ -4967,7 +4948,10 @@ mod tests {
             "the shared class must enter the sum once"
         );
         // The tree objective is the same sum with `sin(X)` charged twice.
-        let tree = tree_dp_pass(&egraph, root, &mut Dp::production(&costs, shape));
+        let tree = tree_dp_pass(
+            Frozen::new(&egraph, root).problem(),
+            &mut Dp::production(&costs, shape),
+        );
         assert_eq!(tree.root_cost, own(root) + 2 * (own(s) + own(x)));
     }
 
@@ -4981,16 +4965,19 @@ mod tests {
         let costs = CostModel::latency_prior();
         let shape = LatticeShape::POINT;
         let full = shared_dag_dp_pass(
-            &egraph,
-            root,
+            Frozen::new(&egraph, root).problem(),
             &mut Dp::production(&costs, shape),
             usize::MAX,
         );
         let budget = full.stats.reach_bytes / 2;
         assert!(
-            shared_dag_dp_pass(&egraph, root, &mut Dp::production(&costs, shape), budget)
-                .outcome
-                .is_none()
+            shared_dag_dp_pass(
+                Frozen::new(&egraph, root).problem(),
+                &mut Dp::production(&costs, shape),
+                budget
+            )
+            .outcome
+            .is_none()
         );
 
         let tree = extract_dag_tree_arm(&egraph, root, &costs, shape);
@@ -5061,7 +5048,7 @@ mod tests {
         // DFS post-order settles before it.
         let mut settled = alloc::vec![false; egraph.num_classes()];
         let mut blind = 0usize;
-        for class in post_order(&egraph, root) {
+        for &class in AndOrGraph::of(&egraph, root).classes() {
             let has_form = egraph.nodes(class).iter().any(|node| match node {
                 ENode::Op { children, .. } => {
                     children.iter().all(|&c| settled[egraph.find(c).0 as usize])
