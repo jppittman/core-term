@@ -887,13 +887,22 @@ branch pins and `glyph_branches` did not move.
 
 **CL9: one price for every fold (A10, M14).**
 - **Gates:**
-  - Production extraction on an unrollable fold is pinned. Today
-    `a_table_reading_fold_unrolls` (`fold_rules.rs:1701-1718`) asserts
-    through the tree-only `extract`, so no test pins what production does.
+  - Production extraction on an unrollable fold is pinned.
+    `production_keeps_the_loop_over_a_table_fold` (`fold_rules.rs`) pins the
+    latency prior's choice (the loop); `a_table_reading_fold_unrolls` goes
+    through the same production extractor with loops priced out, so it pins
+    the graph's content (it can unroll), not production's choice.
   - `glyph_is_closed`.
   - The arbiter never chooses a term with an open integral.
-- The tree arm is what finds the unrolled term, so its doc stops calling it
-  a control (`extract.rs:2011-2015`).
+- The premise that the tree arm finds the unrolled term does not hold.
+  Measured by the CL that deleted the DFS extractor: under the latency prior
+  the production tree arm keeps the loop over a 40-term table fold (tree cost
+  721 against 933 for the best unrolled form). The DFS returned the unrolled
+  term only because its cycle sentinel mispriced the loop. So whether the
+  tree arm's doc (`extract.rs:2011-2015`) stops calling it a control is
+  decided by this CL's own measurement, not assumed; docs/BACKLOG.md E6
+  describes the tie for a loop and its unrolling in general, and for a
+  table-reading body the prior already separates them.
 - The CL records every production kernel whose extraction changes.
 - It is glyph-neutral (measured): the production graph does not yet hold the
   unrolled term.

@@ -1447,7 +1447,7 @@ mod congruence_gap_probe {
             &model,
             LatticeShape::POINT,
         );
-        let extraction_after = crate::egraph::Extraction::from_dp(
+        let extraction_after = crate::egraph::Extraction::from_well_founded(
             &closure_graph,
             root_class_closed,
             dag_after.choices,

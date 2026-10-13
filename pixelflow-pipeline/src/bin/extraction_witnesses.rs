@@ -688,7 +688,6 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
                 rule_greedy: rule_g,
                 stage: match trace.stage_of(c, w) {
                     Stage::Dp => "dp",
-                    Stage::Repair => "repair",
                     Stage::MinOfTwo => "min-of-two",
                 }
                 .into(),

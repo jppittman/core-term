@@ -26,8 +26,8 @@ use super::and_or::Frozen;
 use super::cost::CostFunction;
 use super::extract::{
     CYCLE_COST, Canonical, ChoiceCost, Dp, ExtractionObjective, Insertion, Pricing, Rooted,
-    SHARED_DAG_PASS_BYTE_BUDGET, StageRecorder, TieBreak, cost_of_choices,
-    repair_choices_well_founded, shared_dag_dp_pass, tree_dp_pass,
+    SHARED_DAG_PASS_BYTE_BUDGET, StageRecorder, TieBreak, cost_of_choices, shared_dag_dp_pass,
+    tree_dp_pass,
 };
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
@@ -104,14 +104,12 @@ impl StageRecorder for CandidateTable {
 // ---------------------------------------------------------------------------
 
 /// One DP pass, traced: what it priced, what it picked, and what the term it
-/// picked costs after repair.
+/// picked costs.
 #[derive(Clone, Debug)]
 pub struct PassTrace {
-    /// The pass's own choice table, before `repair_choices_well_founded`.
-    pub raw: Vec<Option<usize>>,
     /// The map production would return from this arm.
-    pub repaired: Vec<Option<usize>>,
-    /// The cost of `repaired`.
+    pub choices: Vec<Option<usize>>,
+    /// The cost of `choices`.
     pub cost: ChoiceCost,
     /// Per-candidate costs the pass computed.
     pub table: CandidateTable,
@@ -138,11 +136,8 @@ pub struct StageTrace {
 /// map — the answer to "who lost the witness here".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
-    /// The winning arm's raw DP chose it.
+    /// The winning arm's DP chose it.
     Dp,
-    /// The winning arm's raw DP chose something else and the repair pass
-    /// rewrote it.
-    Repair,
     /// Both arms were computed and the *losing* arm held the witness's node
     /// here: min-of-two threw it away.
     MinOfTwo,
@@ -173,13 +168,9 @@ impl StageTrace {
     #[must_use]
     pub fn stage_of(&self, class: EClassId, wanted: usize) -> Stage {
         let i = class.index();
-        let win = self.winner();
-        if win.raw.get(i).copied().flatten() != self.choices.get(i).copied().flatten() {
-            return Stage::Repair;
-        }
         if self
             .loser()
-            .and_then(|l| l.repaired.get(i).copied().flatten())
+            .and_then(|l| l.choices.get(i).copied().flatten())
             == Some(wanted)
         {
             return Stage::MinOfTwo;
@@ -202,23 +193,20 @@ pub fn trace<C: CostFunction>(
     let frozen = Frozen::new(egraph, root);
 
     let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
-    let tree_raw = tree_dp_pass(frozen.problem(), &mut dp).choices;
+    let tree_choices = tree_dp_pass(frozen.problem(), &mut dp).choices;
     let pricing = Pricing { costs, shape };
     let at = Rooted { egraph, root };
-    let tree = finish(
-        at,
-        RawPass {
-            choices: tree_raw,
-            table: dp.into_recorder(),
-        },
-        &pricing,
-    );
+    let tree = PassTrace {
+        cost: pricing.of_choices(at, &tree_choices),
+        choices: tree_choices,
+        table: dp.into_recorder(),
+    };
 
     let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
     let pass = shared_dag_dp_pass(frozen.problem(), &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
     let table = dp.into_recorder();
-    let Some(raw) = pass.outcome.map(|o| o.choices) else {
-        let (choices, cost) = (tree.repaired.clone(), tree.cost);
+    let Some(shared_choices) = pass.outcome.map(|o| o.choices) else {
+        let (choices, cost) = (tree.choices.clone(), tree.cost);
         return StageTrace {
             tree,
             shared: None,
@@ -227,50 +215,24 @@ pub fn trace<C: CostFunction>(
             cost,
         };
     };
-    let shared = finish(
-        at,
-        RawPass {
-            choices: raw,
-            table,
-        },
-        &pricing,
-    );
+    let shared = PassTrace {
+        cost: pricing.of_choices(at, &shared_choices),
+        choices: shared_choices,
+        table,
+    };
 
     let (objective, winner) = if shared.cost.dag < tree.cost.dag {
         (ExtractionObjective::Shared, &shared)
     } else {
         (ExtractionObjective::TreeCheaper, &tree)
     };
-    let (choices, cost) = (winner.repaired.clone(), winner.cost);
+    let (choices, cost) = (winner.choices.clone(), winner.cost);
     StageTrace {
         tree,
         shared: Some(shared),
         objective,
         choices,
         cost,
-    }
-}
-
-/// What a DP pass produced before repair: its choice map and the candidate
-/// table it recorded.
-struct RawPass {
-    choices: Vec<Option<usize>>,
-    table: CandidateTable,
-}
-
-fn finish<C: CostFunction>(at: Rooted<'_>, pass: RawPass, pricing: &Pricing<'_, C>) -> PassTrace {
-    let RawPass {
-        choices: raw,
-        table,
-    } = pass;
-    let mut repaired = raw.clone();
-    repair_choices_well_founded(at.egraph, at.root, &mut repaired);
-    let cost = pricing.of_choices(at, &repaired);
-    PassTrace {
-        raw,
-        repaired,
-        cost,
-        table,
     }
 }
 
@@ -313,16 +275,14 @@ fn run_arms<C: CostFunction, T: TieBreak + Copy>(
 ) -> (Vec<Option<usize>>, ChoiceCost) {
     let frozen = Frozen::new(egraph, root);
     let mut dp = Dp::new(costs, shape, ties, ());
-    let mut tree = tree_dp_pass(frozen.problem(), &mut dp).choices;
-    repair_choices_well_founded(egraph, root, &mut tree);
+    let tree = tree_dp_pass(frozen.problem(), &mut dp).choices;
     let tree_cost = cost_of_choices(egraph, root, &tree, costs, shape);
 
     let mut dp = Dp::new(costs, shape, ties, ());
     let pass = shared_dag_dp_pass(frozen.problem(), &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
-    let Some(mut shared) = pass.outcome.map(|o| o.choices) else {
+    let Some(shared) = pass.outcome.map(|o| o.choices) else {
         return (tree, tree_cost);
     };
-    repair_choices_well_founded(egraph, root, &mut shared);
     let shared_cost = cost_of_choices(egraph, root, &shared, costs, shape);
     if shared_cost.dag < tree_cost.dag {
         return (shared, shared_cost);
@@ -626,12 +586,14 @@ pub fn arena_of(
     root: EClassId,
     choices: Vec<Option<usize>>,
 ) -> (pixelflow_ir::arena::ExprArena, pixelflow_ir::arena::ExprId) {
-    super::extract::choices_to_arena(&super::extract::Extraction::from_dp(egraph, root, choices))
+    super::extract::choices_to_arena(&super::extract::Extraction::from_well_founded(
+        egraph, root, choices,
+    ))
 }
 
-/// The cycle sentinel both DP passes price an unresolved child at, exported
-/// so a harness can say "the DP never priced this node" rather than "this
-/// node was expensive".
+/// The sentinel `dense_reference_pass` prices an unresolved child at.
+/// Settlement never admits a candidate before its children, so a production
+/// cost at or above it is a genuinely enormous cost, not an unpriced child.
 #[must_use]
 pub fn cycle_cost() -> usize {
     CYCLE_COST

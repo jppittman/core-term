@@ -2,7 +2,6 @@
 
 use rustc_hash::FxHashMap as HashMap;
 
-use super::cost::{CostFunction, CostModel};
 use super::live::LiveClasses;
 use super::node::{EClassId, ENode};
 use super::ops::{self, Op};
@@ -2405,28 +2404,6 @@ impl EGraph {
             }
         }
     }
-
-    /// Extract the minimum-cost expression from an e-class.
-    pub fn extract_expr_with_costs(
-        &self,
-        root: EClassId,
-        costs: &CostModel,
-    ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
-        let (arena, arena_root, _cost) = super::extract::extract(self, root, costs);
-        (arena, arena_root)
-    }
-
-    /// Extract the best expression and its cost.
-    ///
-    /// The cost function can be any `CostFunction` implementor —
-    /// `CostModel` is the hardcoded latency prior.
-    pub fn extract_best<C: CostFunction>(
-        &self,
-        root: EClassId,
-        costs: &C,
-    ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId, usize) {
-        super::extract::extract(self, root, costs)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3293,6 +3270,8 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::cost::CostModel;
+    use crate::egraph::extract::{Extraction, choices_to_arena, extract_dag};
     use crate::egraph::ops;
     use crate::egraph::provenance::ApplicationId;
     use crate::egraph::saturate::SaturationConfig;
@@ -3382,7 +3361,8 @@ mod tests {
         egraph.rebuild();
 
         let costs = CostModel::default();
-        let (_, _, cost) = crate::egraph::extract::extract(&egraph, egraph.find(sum), &costs);
+        let dag = extract_dag(&egraph, egraph.find(sum), &costs);
+        let cost = dag.total_cost;
         assert_eq!(
             cost, 0,
             "sum's class must now also contain Const(1.0), cost 0"
@@ -3745,7 +3725,9 @@ mod tests {
 
         // Extract and verify structure
         let costs = CostModel::default();
-        let (arena, root) = eg.extract_expr_with_costs(result, &costs);
+        let dag = extract_dag(&eg, result, &costs);
+        let (arena, root) =
+            choices_to_arena(&Extraction::from_well_founded(&eg, result, dag.choices));
         eprintln!("Extracted arena: root={:?} len={}", root, arena.len());
         assert!(arena.node_count_subtree(root) > 0);
     }
@@ -3775,7 +3757,9 @@ mod tests {
         SaturationConfig::compatibility(100).run(&mut eg);
 
         let costs = CostModel::default();
-        let (arena, root) = eg.extract_expr_with_costs(result, &costs);
+        let dag = extract_dag(&eg, result, &costs);
+        let (arena, root) =
+            choices_to_arena(&Extraction::from_well_founded(&eg, result, dag.choices));
         eprintln!("Extracted arena: root={:?} len={}", root, arena.len());
         assert!(arena.node_count_subtree(root) > 0);
     }
@@ -3804,7 +3788,9 @@ mod tests {
         SaturationConfig::compatibility(100).run(&mut eg);
 
         let costs = CostModel::default();
-        let (arena, root) = eg.extract_expr_with_costs(result, &costs);
+        let dag = extract_dag(&eg, result, &costs);
+        let (arena, root) =
+            choices_to_arena(&Extraction::from_well_founded(&eg, result, dag.choices));
         eprintln!(
             "Extracted arena with vars: root={:?} len={}",
             root,
@@ -3838,7 +3824,9 @@ mod tests {
 
         // Use default costs like the kernel! macro does
         let costs = CostModel::new();
-        let (arena, root) = eg.extract_expr_with_costs(result, &costs);
+        let dag = extract_dag(&eg, result, &costs);
+        let (arena, root) =
+            choices_to_arena(&Extraction::from_well_founded(&eg, result, dag.choices));
         eprintln!(
             "Extracted arena with FMA costs: root={:?} len={}",
             root,
@@ -3889,7 +3877,9 @@ mod tests {
         SaturationConfig::compatibility(100).run(&mut eg);
 
         let costs = CostModel::new();
-        let (arena, root) = eg.extract_expr_with_costs(result, &costs);
+        let dag = extract_dag(&eg, result, &costs);
+        let (arena, root) =
+            choices_to_arena(&Extraction::from_well_founded(&eg, result, dag.choices));
         eprintln!("Discriminant arena: root={:?} len={}", root, arena.len());
         assert!(arena.node_count_subtree(root) > 0);
     }
@@ -3938,14 +3928,18 @@ mod tests {
 
         // Extract with default costs (high threshold)
         let default_costs = CostModel::default();
-        let (arena, root) = eg.extract_expr_with_costs(current, &default_costs);
+        let dag = extract_dag(&eg, current, &default_costs);
+        let (arena, root) =
+            choices_to_arena(&Extraction::from_well_founded(&eg, current, dag.choices));
         assert!(arena.node_count_subtree(root) > 0);
 
         // Extract with shallow costs (low threshold)
         let mut shallow_costs = CostModel::new();
         shallow_costs.depth_threshold = 3;
         shallow_costs.depth_penalty = 1000;
-        let (arena2, root2) = eg.extract_expr_with_costs(current, &shallow_costs);
+        let dag = extract_dag(&eg, current, &shallow_costs);
+        let (arena2, root2) =
+            choices_to_arena(&Extraction::from_well_founded(&eg, current, dag.choices));
         assert!(arena2.node_count_subtree(root2) > 0);
     }
 

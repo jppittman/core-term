@@ -1209,14 +1209,43 @@ mod tests {
 #[cfg(test)]
 mod production_shape_tests {
     use super::*;
-    use crate::egraph::extract::extract;
+    use crate::egraph::extract::{Extraction, choices_to_arena, extract_dag};
     use crate::egraph::saturate::SaturationConfig;
-    use crate::egraph::{CostModel, Vocabulary, insert};
+    use crate::egraph::{CostFunction, CostModel, ENode, Vocabulary, insert};
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
     use pixelflow_ir::{ExprArena, ExprNode, OpKind};
 
     fn binder(slot: u8) -> Binder {
         Binder::from_slot(slot).expect("a live binder")
+    }
+
+    /// What a loop costs [`LoopsCostMore`] beyond the latency prior: more than
+    /// any unrolling these tests build.
+    const LOOP_PENALTY: usize = 1 << 24;
+
+    /// The latency prior with every `Reduce` priced out, so extraction takes
+    /// an unrolled form whenever the class holds one.
+    ///
+    /// Under the plain prior this crate's table-reading fold is cheaper as a
+    /// loop than unrolled (the unrolled form pays the gather and the multiply
+    /// at every term), so whether the graph *can* unroll the fold cannot be
+    /// asked of the production prior: its answer is the loop, which
+    /// `production_keeps_the_loop_over_a_table_fold` pins. Pricing loops out
+    /// is how extraction is made to report the graph's content. It mirrors
+    /// `pixelflow-codegen/tests/halve_fold_jit.rs`'s device of the same name,
+    /// which cannot share this one while `CostModel` has no loop price and no
+    /// public materializer takes a `CostFunction`; they fold together when
+    /// that is decided. See also docs/BACKLOG.md E6.
+    struct LoopsCostMore(CostModel);
+
+    impl CostFunction for LoopsCostMore {
+        fn node_cost(&self, node: &ENode, parent: Option<OpKind>) -> usize {
+            let own = self.0.node_cost(node, parent);
+            match node {
+                ENode::Reduce { .. } => own.saturating_add(LOOP_PENALTY),
+                _ => own,
+            }
+        }
     }
 
     fn has_fold(arena: &ExprArena) -> bool {
@@ -1231,8 +1260,9 @@ mod production_shape_tests {
     ///
     /// Extent 40 rather than 4, too: a fold long enough that peeling it is
     /// real work is where "the graph unrolls it" stops being obvious.
-    #[test]
-    fn a_table_reading_fold_unrolls() {
+    /// Returns the saturated graph, the fold's class, and the saturation
+    /// stats.
+    fn saturated_table_fold() -> (EGraph, crate::egraph::EClassId, impl core::fmt::Debug) {
         let mut a = ExprArena::new();
         let buf = a.declare_buffer(BufferDecl {
             id: BufferIdentity::mint(),
@@ -1249,15 +1279,45 @@ mod production_shape_tests {
         let mut eg = EGraph::with_rules(fold_rules());
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         let stats = SaturationConfig::compatibility(200).run(&mut eg);
-        let (out, _out_root, _cost) = extract(&eg, class, &CostModel::latency_prior());
+        (eg, class, stats)
+    }
+
+    /// The saturated graph holds a `Reduce`-free form of the 40-term table
+    /// fold: with loops priced out, extraction returns it. This pins the
+    /// graph's content, not what production extracts.
+    #[test]
+    fn a_table_reading_fold_unrolls() {
+        let (eg, class, stats) = saturated_table_fold();
+        let dag = extract_dag(&eg, class, &LoopsCostMore(CostModel::latency_prior()));
+        let (out, _out_root) =
+            choices_to_arena(&Extraction::from_well_founded(&eg, class, dag.choices));
 
         assert!(
             !has_fold(&out),
-            "40 terms over a bound table must unroll, not survive \
+            "with loops priced out, the 40-term table fold must unroll \
              (saturation {stats:?}); extracted: {} nodes",
             out.len()
         );
         assert!(out.len() > 40, "and the unrolled form is 40 terms wide");
+    }
+
+    /// What production does with the same graph: under the latency prior the
+    /// loop is the cheaper term, so the extractor keeps it. A prior change
+    /// that makes production unroll table folds (the glyph's shape) fails
+    /// here rather than moving every kernel's bytes unannounced.
+    #[test]
+    fn production_keeps_the_loop_over_a_table_fold() {
+        let (eg, class, stats) = saturated_table_fold();
+        let dag = extract_dag(&eg, class, &CostModel::latency_prior());
+        let (out, _out_root) =
+            choices_to_arena(&Extraction::from_well_founded(&eg, class, dag.choices));
+
+        assert!(
+            has_fold(&out),
+            "under the latency prior the loop is cheaper than its unrolling \
+             (saturation {stats:?}); extracted: {} nodes",
+            out.len()
+        );
     }
 
     /// **The same fold, priced at a real lattice.**

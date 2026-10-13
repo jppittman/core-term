@@ -84,16 +84,14 @@ const MIN_SAMPLES: usize = 300;
 const BASE_SAFETY_TIMEOUT: Duration = Duration::from_secs(300);
 const SWEEP_SAFETY_CEILING: usize = 10_000;
 
-/// `pixelflow_search::egraph::extract::extract_dag`'s `CYCLE_COST` sentinel
-/// (1_000_000, private to that module — restated here as a threshold, not a
-/// definition: a class that is genuinely self-referential post-saturation
-/// gets this cost rather than a real one, on ANY rule set). A curve's
-/// `quiescence_cost` at or above this is a sentinel, not a measured quality
-/// number — verified pre-existing in `all_rules()` alone on large classical
-/// expressions (an 863-node DEV/TRAIN expression already hits it under the
-/// unmodified 62-rule set), not introduced by `experimental_rules()`; the
-/// per-tier reporting below tracks how much MORE often it fires as `|R|`
-/// grows, which is the on-topic measurement, not a defect to hide.
+/// The 1_000_000 cycle sentinel of the DFS extractor this harness was written
+/// against, restated as a threshold, not a definition: that extractor priced a
+/// genuinely self-referential post-saturation class at the sentinel rather
+/// than a real cost, on ANY rule set. Production extraction settles classes in
+/// cost order and never prices at it, so the per-tier hit count below is
+/// expected to be 0 and the instrument is vestigial until the sentinel's
+/// removal. A curve's `quiescence_cost` at or above this was a sentinel, not a
+/// measured quality number.
 const CYCLE_COST_THRESHOLD: usize = 900_000;
 
 fn tier_name(node_count: usize) -> &'static str {
