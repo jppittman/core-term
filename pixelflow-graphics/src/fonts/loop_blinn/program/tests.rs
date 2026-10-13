@@ -240,3 +240,101 @@ fn arithmetic_bound(size: usize, [i, j]: [usize; 2]) -> f64 {
     let (x, y) = (i as f64 + 0.5, j as f64 + 0.5);
     ARC_TOLERANCE_UNIT * (1.0 + x + y + 2.0 * size as f64)
 }
+
+/// FNV-1a over every node of `arena` in arena order, then `root`: the
+/// optimized program as a sequence, not as a canonical key. The key is
+/// order-free, so two selections that differ only in a commutative
+/// operand's position share one and emit different bytes; this digest does
+/// not.
+///
+/// A node is hashed as what it *is* (its variant, operator, payload and
+/// child ids) and not as its `Debug` text, so the pin moves when the
+/// selection does and not when a field is added to a node's `Debug` output.
+/// The match is exhaustive on purpose: a new kind of node fails the build
+/// here until someone decides what distinguishes it.
+fn program_digest(arena: &ExprArena, root: ExprId) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            hash = (hash ^ u64::from(b)).wrapping_mul(FNV_PRIME);
+        }
+    };
+    for (id, node) in arena.nodes() {
+        let (variant, op, payload): (u8, Option<OpKind>, u128) = match node {
+            ExprNode::Var(i) => (0, None, u128::from(i)),
+            ExprNode::Const(v) => (1, None, u128::from(v.to_bits())),
+            ExprNode::Param(i) => (2, None, u128::from(i)),
+            ExprNode::Buffer(b) => (3, None, u128::from(b.0)),
+            ExprNode::Uniform(u) => (4, None, u128::from(u.0)),
+            ExprNode::Ref(key) => (5, None, u128::from(key.bits())),
+            ExprNode::Unary(op, _)
+            | ExprNode::Binary(op, ..)
+            | ExprNode::Ternary(op, ..)
+            | ExprNode::Nary(op, _) => (6, Some(op), 0),
+            ExprNode::Reduce { fold, .. } => (7, None, fold.to_bits()),
+            ExprNode::Write { row, col, lane, .. } => (
+                8,
+                None,
+                u128::from(row.var()) | u128::from(col.var()) << 8 | u128::from(lane.var()) << 16,
+            ),
+        };
+        feed(&[variant]);
+        feed(&op.map_or(0, |op| op as u64).to_le_bytes());
+        feed(&payload.to_le_bytes());
+        for child in arena.children(id) {
+            feed(&child.0.to_le_bytes());
+        }
+    }
+    feed(&root.0.to_le_bytes());
+    hash
+}
+
+/// **What the optimizer selects for the font's programs is pinned.** The
+/// runtime tier saturates a structure once and extracts it at every shape
+/// asked, so this runs each count at three: the second and third extractions
+/// reuse what the first built. Past a side of four the selection stops
+/// moving, so the three are the ones that tell shapes apart: a point, a
+/// 2 px tile, and the size glyphs are drawn at.
+///
+/// It pins the arena the choices materialize to, through the runtime tier's
+/// cache, rather than a choice vector: that is the path extraction's
+/// shared setup is read through, and an arena digest is order-sensitive where
+/// the canonical key is not. The digests were recorded at the commit before
+/// the setup was lifted off the e-graph and cached beside it; a settlement
+/// that reorders equal-cost classes picks another term, and another term is
+/// another kernel.
+///
+/// A small program and a large one: forty pieces saturates to a graph of
+/// ~10,000 live classes.
+#[test]
+fn the_optimizer_selects_what_it_selected() {
+    const SHAPES: [u32; 3] = [1, 2, 16];
+    let observed: Vec<(usize, u32, u64)> = [2usize, 40]
+        .into_iter()
+        .flat_map(|count| SHAPES.map(|side| (count, side)))
+        .map(|(count, side)| {
+            let (arena, root) = program(count).linked_parts();
+            let optimized = optimize_runtime_arena(&arena, root, LatticeShape::new([side, side]))
+                .unwrap_or_else(|| panic!("{count} pieces at {side} px: the program declined"));
+            let (out, out_root) = &*optimized;
+            (count, side, program_digest(out, *out_root))
+        })
+        .collect();
+    assert_eq!(
+        observed, SELECTED_PROGRAM_DIGESTS,
+        "(pieces, side, digest): the optimizer selected other programs than the ones recorded"
+    );
+}
+
+/// `(pieces, side, digest)`, recorded at the commit before extraction's
+/// setup was shared.
+const SELECTED_PROGRAM_DIGESTS: [(usize, u32, u64); 6] = [
+    (2, 1, 0x3ca5_a4e1_9eb8_0b09),
+    (2, 2, 0xe91d_3bf3_3c80_3ac0),
+    (2, 16, 0x22ad_8819_7984_61a6),
+    (40, 1, 0x43f2_b8d9_85a2_0ab3),
+    (40, 2, 0xba96_1387_b292_5647),
+    (40, 16, 0xe951_37a9_d464_391e),
+];

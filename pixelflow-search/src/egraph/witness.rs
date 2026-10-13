@@ -22,6 +22,7 @@ use std::collections::HashMap;
 
 use pixelflow_ir::{Ir, LatticeShape, Shape};
 
+use super::and_or::Frozen;
 use super::cost::CostFunction;
 use super::extract::{
     CYCLE_COST, Canonical, ChoiceCost, Dp, ExtractionObjective, Insertion, Pricing, Rooted,
@@ -198,9 +199,10 @@ pub fn trace<C: CostFunction>(
     shape: LatticeShape,
 ) -> StageTrace {
     let n = egraph.num_classes();
+    let frozen = Frozen::new(egraph, root);
 
     let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
-    let tree_raw = tree_dp_pass(egraph, root, &mut dp).choices;
+    let tree_raw = tree_dp_pass(frozen.problem(), &mut dp).choices;
     let pricing = Pricing { costs, shape };
     let at = Rooted { egraph, root };
     let tree = finish(
@@ -213,7 +215,7 @@ pub fn trace<C: CostFunction>(
     );
 
     let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
-    let pass = shared_dag_dp_pass(egraph, root, &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
+    let pass = shared_dag_dp_pass(frozen.problem(), &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
     let table = dp.into_recorder();
     let Some(raw) = pass.outcome.map(|o| o.choices) else {
         let (choices, cost) = (tree.repaired.clone(), tree.cost);
@@ -309,13 +311,14 @@ fn run_arms<C: CostFunction, T: TieBreak + Copy>(
     shape: LatticeShape,
     ties: T,
 ) -> (Vec<Option<usize>>, ChoiceCost) {
+    let frozen = Frozen::new(egraph, root);
     let mut dp = Dp::new(costs, shape, ties, ());
-    let mut tree = tree_dp_pass(egraph, root, &mut dp).choices;
+    let mut tree = tree_dp_pass(frozen.problem(), &mut dp).choices;
     repair_choices_well_founded(egraph, root, &mut tree);
     let tree_cost = cost_of_choices(egraph, root, &tree, costs, shape);
 
     let mut dp = Dp::new(costs, shape, ties, ());
-    let pass = shared_dag_dp_pass(egraph, root, &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
+    let pass = shared_dag_dp_pass(frozen.problem(), &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
     let Some(mut shared) = pass.outcome.map(|o| o.choices) else {
         return (tree, tree_cost);
     };

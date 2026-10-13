@@ -48,9 +48,11 @@ use alloc::vec::Vec;
 
 use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 
+use super::and_or::{Frozen, Problem};
 use super::cost::CostModel;
 use super::extract::{
-    ChoiceCost, Extraction, ExtractionReport, IncrementalExtractor, Reranker, choices_to_arena,
+    ChoiceCost, Extraction, ExtractionReport, IncrementalExtractor, Pricing, Reranker,
+    choices_to_arena,
 };
 use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
 use super::guided::GuidedEpisode;
@@ -656,34 +658,64 @@ impl Optimizer {
     /// through so an [`Optimized`] reads the same whichever way it was made.
     #[must_use]
     pub fn extract(&self, egraph: &EGraph, root: EClassId, stats: OptimizerStats) -> Optimized {
-        // Both arms report the cost of the choices they RETURN — the DP's
-        // table is costed after settlement rather than read off the DP
-        // (#1111), and the reranker's search score is on its own scale
-        // entirely. Both also return a well-founded map (settled in cost
-        // order, or the choices of a sealed `Extraction`) and both are walked
-        // from the root by `cost_of_choices`, which panics on a cycle: that is
-        // what lets `Optimized::to_arena` seal it without a repair.
-        let (choices, cost, extraction) = match self.rerank.as_ref() {
-            Some(reranker) => {
-                let choices = IncrementalExtractor::new(reranker.as_ref(), RERANK_TOP_K)
-                    .extract_choices_only(egraph, root)
-                    .1
-                    .into_choices();
-                let cost =
-                    super::extract::cost_of_choices(egraph, root, &choices, &self.cost, self.shape);
-                (choices, cost, ExtractionReport::external())
-            }
-            None => {
-                let dag = super::extract::extract_dag_scoped(egraph, root, &self.cost, self.shape);
-                let cost = dag.cost();
-                (dag.choices, cost, dag.report)
-            }
-        };
+        // A reranked extraction reads the e-graph and no extraction problem,
+        // so none is built for it.
+        match self.rerank.as_ref() {
+            Some(reranker) => self.reranked(reranker.as_ref(), egraph, root, stats),
+            None => self.extract_over(Frozen::new(egraph, root).problem(), stats),
+        }
+    }
 
+    /// [`Self::extract`] over an extraction problem already read from its
+    /// e-graph: a cache that holds one saturated graph for many shapes holds
+    /// the problem beside it ([`Frozen`]), so each shape adds its weights and
+    /// its settlement and nothing else.
+    #[must_use]
+    pub(crate) fn extract_over(&self, problem: Problem<'_>, stats: OptimizerStats) -> Optimized {
+        if let Some(reranker) = self.rerank.as_ref() {
+            return self.reranked(reranker.as_ref(), problem.egraph(), problem.root(), stats);
+        }
+        // Both the cost and the choices are those of the settled map — the
+        // DP's table is costed after settlement rather than read off the DP
+        // (#1111) — and the map is well-founded (settled in cost order), and
+        // walked from the root by `cost_of_choices`, which panics on a cycle:
+        // that is what lets `Optimized::to_arena` seal it without a repair.
+        let dag = super::extract::extract_dag_over(
+            problem,
+            &Pricing {
+                costs: &self.cost,
+                shape: self.shape,
+            },
+        );
+        let cost = dag.cost();
+        Optimized {
+            choices: dag.choices,
+            cost,
+            extraction: dag.report,
+            stats,
+        }
+    }
+
+    /// The reranker's extraction. Its search has its own scale entirely, so
+    /// its cost is read from the choices it returns, as the DP's is (#1111);
+    /// the map is a sealed [`Extraction`]'s, well-founded, and walked from the
+    /// root by `cost_of_choices` like the DP's.
+    fn reranked(
+        &self,
+        reranker: &dyn Reranker,
+        egraph: &EGraph,
+        root: EClassId,
+        stats: OptimizerStats,
+    ) -> Optimized {
+        let choices = IncrementalExtractor::new(reranker, RERANK_TOP_K)
+            .extract_choices_only(egraph, root)
+            .1
+            .into_choices();
+        let cost = super::extract::cost_of_choices(egraph, root, &choices, &self.cost, self.shape);
         Optimized {
             choices,
             cost,
-            extraction,
+            extraction: ExtractionReport::external(),
             stats,
         }
     }
