@@ -562,8 +562,11 @@
   split below: `program::operands()` yields only vector reads, and the base
   comes from a separate `pointer_operand()` (both in
   `pixelflow-codegen/src/program/mod.rs`); selection joins them
-  (`all_operands`). A shift's count in the e-graph lives in
-  `pixelflow-search/src/egraph/shift.rs`.
+  (`all_operands`). A shift's count is `ShiftCount` in
+  `pixelflow-ir/src/shift.rs`, the one definition of a valid count that the
+  constant folder, the e-graph's `ENode::Shift` (`pixelflow-search/src/egraph/node.rs`)
+  and `shift_immediate` all ask; the e-graph's direction tag and its reading of
+  the arena's spelling are in `pixelflow-search/src/egraph/shift.rs`.
 
 ### Instruction
 

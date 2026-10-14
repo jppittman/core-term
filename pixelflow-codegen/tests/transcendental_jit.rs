@@ -383,8 +383,9 @@ fn out_of_range_shift_counts_are_platform_specific() {
                 "{op:?} by {count} must not fold"
             );
         }
-        // In-range integral counts agree on every target and still fold.
-        for count in [0.0, 1.0, 8.0, 23.0, 31.0] {
+        // In-range integral counts agree on every target and still fold,
+        // `-0.0` among them: it is the integer 0.
+        for count in [0.0, -0.0, 1.0, 8.0, 23.0, 31.0] {
             assert!(
                 !op.fold_is_platform_specific(&[1.0, count]),
                 "{op:?} by {count} should still fold"
@@ -393,11 +394,20 @@ fn out_of_range_shift_counts_are_platform_specific() {
     }
 }
 
-fn compile_shift(op: pixelflow_ir::OpKind, count: f32) -> bool {
+/// `X` shifted by a `Const` of `count`, as the arena spells it.
+fn shift_of_x(
+    op: pixelflow_ir::OpKind,
+    count: f32,
+) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
     let mut a = pixelflow_ir::ExprArena::new();
     let x = a.push_var(0);
     let c = a.push_const(count);
     let root = a.push_binary(op, x, c);
+    (a, root)
+}
+
+fn compile_shift(op: pixelflow_ir::OpKind, count: f32) -> bool {
+    let (a, root) = shift_of_x(op, count);
     pixelflow_codegen::emit::compile(&a, root, pixelflow_ir::LatticeShape::POINT).is_ok()
 }
 
@@ -405,14 +415,69 @@ fn compile_shift(op: pixelflow_ir::OpKind, count: f32) -> bool {
 /// not after — `256.0 as u32 as u8` is `0`, so a downstream check would see a
 /// legal identity shift where the kernel asked for something no target can do.
 #[test]
-#[should_panic(expected = "is not an integer in 0..32")]
+#[should_panic(expected = "is not a ShiftCount (an integer literal in 0..32")]
 fn a_shift_count_that_aliases_to_zero_is_still_refused() {
     let _ = compile_shift(pixelflow_ir::OpKind::Shl, 256.0);
 }
 
+/// `-0.0` is the integer 0, which the folder folds and every target shifts
+/// by, so the emitter takes it as the count 0. Proved on the code's output,
+/// not on the compile succeeding: through the emitter's own entry and the
+/// optimizing one, the lane comes back unchanged, which is what the folder's
+/// oracle gives. A shift by 1 is the control that the harness reads a shift
+/// at all.
+#[test]
+fn a_negative_zero_shift_count_is_the_count_zero() {
+    use pixelflow_ir::{LatticeShape, OpKind};
+
+    let lanes = [1.0f32, -2.5, f32::from_bits(0xDEAD_BEEF), f32::MAX];
+    let assert_unmoved =
+        |route: &str, op: OpKind, jit: &pixelflow_codegen::emit::CompiledKernel| {
+            for x in lanes {
+                let got = eval_point(jit, x, 0.0);
+                let oracle = op
+                    .eval_binary(x, -0.0)
+                    .expect("the oracle covers the shifts");
+                assert_eq!(
+                    got.to_bits(),
+                    x.to_bits(),
+                    "{route}: {op:?} by -0.0 moved {x}"
+                );
+                assert_eq!(
+                    got.to_bits(),
+                    oracle.to_bits(),
+                    "{route}: {op:?} by -0.0 on {x}: JIT and oracle disagree"
+                );
+            }
+        };
+
+    for op in [OpKind::Shl, OpKind::Shr] {
+        let (a, root) = shift_of_x(op, -0.0);
+        let emitted = pixelflow_codegen::emit::compile(&a, root, LatticeShape::POINT)
+            .expect("a count of -0.0 compiles")
+            .code;
+        assert_unmoved("emit::compile", op, &emitted);
+
+        let optimized = jit_cache::compile(&Kernel::from_parts(a, root), LatticeShape::POINT)
+            .expect("a count of -0.0 compiles")
+            .kernel;
+        assert_unmoved("jit_cache::compile", op, &optimized);
+    }
+
+    let (a, root) = shift_of_x(OpKind::Shl, 1.0);
+    let by_one = pixelflow_codegen::emit::compile(&a, root, LatticeShape::POINT)
+        .expect("a count of 1 compiles")
+        .code;
+    assert_eq!(
+        eval_point(&by_one, 1.0, 0.0).to_bits(),
+        1.0f32.to_bits() << 1,
+        "the control shift moved the lane"
+    );
+}
+
 /// The same guard covers the counts that do not alias.
 #[test]
-#[should_panic(expected = "is not an integer in 0..32")]
+#[should_panic(expected = "is not a ShiftCount (an integer literal in 0..32")]
 fn a_lane_crossing_shift_count_is_refused() {
     let _ = compile_shift(pixelflow_ir::OpKind::Shl, 32.0);
 }
@@ -431,13 +496,13 @@ fn jit_compile_shift(count: impl FnOnce(&mut pixelflow_ir::ExprArena) -> pixelfl
 }
 
 #[test]
-#[should_panic(expected = "is not an integer in 0..32")]
+#[should_panic(expected = "is not a ShiftCount (an integer literal in 0..32")]
 fn the_optimizing_entry_still_refuses_a_lane_crossing_count() {
     jit_compile_shift(|a| a.push_const(32.0));
 }
 
 #[test]
-#[should_panic(expected = "is not an integer in 0..32")]
+#[should_panic(expected = "is not a ShiftCount (an integer literal in 0..32")]
 fn the_optimizing_entry_still_refuses_a_fractional_count() {
     jit_compile_shift(|a| a.push_const(0.5));
 }

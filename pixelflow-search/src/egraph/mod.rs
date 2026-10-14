@@ -107,7 +107,7 @@ pub use saturate::{
     CLASSICAL_CLASSES_PER_INSERTED_CLASS, InputSize, SaturationConfig, SaturationResult,
     config_for_input, config_for_node_count, saturate_with_budget, saturate_with_full_budget,
 };
-pub use shift::{ShiftCount, ShiftDirection};
+pub use shift::ShiftDirection;
 pub use template::TemplateRewrite;
 
 // Re-export rule types from math module for backward compatibility

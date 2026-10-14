@@ -119,6 +119,9 @@ pub use kernel::{Bits, Kernel, Uniform};
 pub use kind::OpKind;
 pub use kind::known_method_names;
 
+mod shift;
+pub use shift::ShiftCount;
+
 /// Fixture builders for this crate's own `benches/`/`tests/` binaries and
 /// one `pixelflow-search` unit test — the only callers still allowed to
 /// know a `Dag` is built at all. `pub` only because Cargo compiles a

@@ -1132,7 +1132,8 @@ mod platform_specific_fold_tests {
     /// a constant leaves nothing to fold.
     #[test]
     fn a_shift_folds_by_the_count_its_node_carries() {
-        use crate::egraph::{ShiftCount, ShiftDirection};
+        use crate::egraph::ShiftDirection;
+        use pixelflow_ir::ShiftCount;
 
         let operand = 1.5f32;
         for direction in [ShiftDirection::Left, ShiftDirection::Right] {

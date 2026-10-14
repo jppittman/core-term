@@ -4,9 +4,9 @@ use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use pixelflow_ir::arena::{BufferDecl, UniformDecl};
 use pixelflow_ir::fold::Fold;
-use pixelflow_ir::{KernelKey, OpKind, Variance};
+use pixelflow_ir::{KernelKey, OpKind, ShiftCount, Variance};
 
-use super::shift::{ShiftCount, ShiftDirection};
+use super::shift::ShiftDirection;
 
 /// Identifier for an equivalence class in the e-graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -30,9 +30,12 @@ pub(crate) const MAX_OPERANDS: usize = 3;
 ///
 /// The live operands are a prefix of a fixed array whose tail is always the
 /// zero class, so two operand lists are equal exactly when their live
-/// prefixes are, and the derived `Eq` and `Hash` need no hand-written case
-/// for the tail. The fields are private and the one constructor takes the
-/// operation it is for, so the tail cannot be written and the length is
+/// prefixes are, and the derived `Eq`, `Hash` and `Ord` need no hand-written
+/// case for the tail. The derived order is by length, then by the ids; it
+/// reads the tail too, which is sound because the tail is always zero: it
+/// compares equal and decides nothing, so among lists of one length the order
+/// is the live prefix's. The fields are private and the one constructor takes
+/// the operation it is for, so the tail cannot be written and the length is
 /// checked against that operation's arity. The slice view, and `Debug`, are
 /// the live prefix only.
 ///
@@ -47,7 +50,7 @@ pub(crate) const MAX_OPERANDS: usize = 3;
 /// `len` counts slots of an inline array, not anything a program can say: its
 /// range is `MAX_OPERANDS` whatever its width, so a wider count would let no
 /// program express more.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Operands {
     len: u8,
     ids: [EClassId; MAX_OPERANDS],
@@ -111,7 +114,9 @@ impl DerefMut for Operands {
 /// A plain value. Operands point to e-classes (not other nodes), enabling
 /// compact representation of equivalent expressions, and equality and
 /// hashing are structural, which is what hash-consing the graph's memo needs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// The order is structural too: variant in declaration order, then fields. It
+/// is a total order to sort and key by, not a measure of the node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ENode {
     /// Variable with index (0=X, 1=Y, 2=Z, 3=W, etc.)
     Var(u8),
@@ -156,8 +161,8 @@ pub enum ENode {
     /// fold is, and for the same reason: as a child class it would be an
     /// e-class like any other, and the `Const(8.0)` naming a count would be
     /// the same class as every literal `8.0` in the kernel. Every arithmetic
-    /// rule could then rewrite it into something that is not an integer in
-    /// `0..32`, and extraction would have to repair the count afterwards.
+    /// rule could then rewrite it into something that is not a [`ShiftCount`],
+    /// and extraction would have to repair the count afterwards.
     /// Here no rule reaches it, no class holds it, and a value of
     /// [`ShiftCount`] is already valid.
     ///
@@ -193,18 +198,19 @@ pub enum ENode {
     /// this graph, so no rewrite can reach inside it, and extraction hands
     /// back the name.
     ///
-    /// It carries `variance`, its referent's, because that is the one fact a
-    /// rule reads off a leaf — `FactorFold`'s side condition, and the binder
-    /// substitution `PeelFold`/`HalveFold` skip a binder-free class by — and
-    /// the one fact extraction prices a leaf's evaluations by. A unit is
-    /// closed (its variance names no binder), so every rewrite conditioned
-    /// on binder-invariance is the one it would be with the body inlined.
-    /// The key is the referent and the variance a function of it, so
-    /// comparing both is comparing the key, checked.
+    /// The node is the key and nothing else. Its variance — its referent's,
+    /// the one fact a rule reads off a leaf (`FactorFold`'s side condition,
+    /// and the binder substitution `PeelFold`/`HalveFold` skip a binder-free
+    /// class by) and the one fact extraction prices a leaf's evaluations by —
+    /// is a function of the key that the graph holds
+    /// (`EGraph::unit_variance`), not a second copy the node could disagree
+    /// with. A unit is closed (its variance names no binder), so every
+    /// rewrite conditioned on binder-invariance is the one it would be with
+    /// the body inlined.
     /// Only the runtime tier's unit walk admits one (`EGraph::admit_unit`);
     /// [`insert`](fn@super::insert) declines a reference the graph was not told
-    /// is a unit.
-    Ref { key: KernelKey, variance: Variance },
+    /// is a unit, and [`EGraph::add`](super::EGraph::add) refuses one.
+    Ref { key: KernelKey },
 }
 
 impl ENode {
@@ -322,7 +328,14 @@ impl ENode {
     /// Monotone in `child`: a larger answer for a child can only give a
     /// larger answer here, so an over-approximation in gives an
     /// over-approximation out.
-    pub(crate) fn variance(&self, mut child: impl FnMut(EClassId) -> Variance) -> Variance {
+    ///
+    /// A unit's body is not in the graph, so `unit` is where its variance
+    /// comes from: the graph's record of what it was admitted as.
+    pub(crate) fn variance(
+        &self,
+        mut unit: impl FnMut(KernelKey) -> Variance,
+        mut child: impl FnMut(EClassId) -> Variance,
+    ) -> Variance {
         match self {
             ENode::Var(v) => var_variance(*v),
             // A buffer's contents are fixed for the kernel's lifetime — a
@@ -332,9 +345,9 @@ impl ENode {
             ENode::Const(_) | ENode::Buffer(_) | ENode::Uniform(_) | ENode::Param(_) => {
                 Variance::CONST
             }
-            // A unit varies as its referent does, which the leaf carries
-            // because its body is not here to ask.
-            ENode::Ref { variance, .. } => *variance,
+            // A unit varies as its referent does, which the graph recorded
+            // because the body is not here to ask.
+            ENode::Ref { key } => unit(*key),
             ENode::Op { children, .. } => children
                 .iter()
                 .fold(Variance::CONST, |acc, &c| acc.union(child(c))),
@@ -368,6 +381,11 @@ mod tests {
 
     fn classes(n: u32) -> Vec<EClassId> {
         (1..=n).map(EClassId).collect()
+    }
+
+    /// The unit lookup for a node that reads none.
+    fn no_unit(key: KernelKey) -> Variance {
+        panic!("this node names no unit, but asked for {key:?}")
     }
 
     /// An operand count that is not the op's arity is a bug in whoever built
@@ -405,7 +423,7 @@ mod tests {
         };
         assert_eq!(node.children_slice(), [EClassId(3)]);
         assert_eq!(node.op(), Some(OpKind::Shr));
-        assert_eq!(node.variance(|_| Variance::X), Variance::X);
+        assert_eq!(node.variance(no_unit, |_| Variance::X), Variance::X);
         assert_ne!(
             node,
             ENode::Shift {
@@ -461,7 +479,7 @@ mod tests {
     /// word the analysis gives up and says everything.
     #[test]
     fn a_var_leaf_names_its_own_bit() {
-        let leaf = |v: u8| ENode::Var(v).variance(|_| Variance::ALL);
+        let leaf = |v: u8| ENode::Var(v).variance(no_unit, |_| Variance::ALL);
         assert_eq!(leaf(0), Variance::X);
         assert_eq!(leaf(1), Variance::Y);
         // Above the axes: the retired Z/W indices and every binder slot, one

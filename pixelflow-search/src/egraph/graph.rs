@@ -95,8 +95,10 @@ pub struct EGraph {
     var_fact: Vec<Variance>,
     /// The units this graph may hold as leaves, with the variance each
     /// carries — told to it by the runtime tier's unit walk
-    /// ([`EGraph::admit_unit`]) before the term is inserted. A unit's body is
-    /// not in this graph, so its variance cannot be computed here; and a
+    /// ([`EGraph::admit_unit`]) before the term is inserted. A
+    /// [`ENode::Ref`] is only its key, so this is where its variance is read
+    /// from. A unit's body is not in this graph, so its variance cannot be
+    /// computed here; and a
     /// reference the graph was not told about is one [`insert`](super::insert)
     /// declines, which is what keeps every other path — the macro tier,
     /// research tools — exactly as it was (docs/plans/2026-09-25-the-language-is-kernel.md
@@ -253,10 +255,17 @@ impl EGraph {
         current
     }
 
-    fn canonicalize_node(&self, node: &mut ENode) {
+    /// `node` with every operand class replaced by its canonical class: the
+    /// form the memo keys on, and the form two nodes are compared in.
+    ///
+    /// Every operand, a fold's body included. A graph between a `union` and
+    /// the `rebuild` that follows it holds nodes naming merged-away classes,
+    /// and only this copy can be compared with another.
+    pub(crate) fn canonical_node(&self, mut node: ENode) -> ENode {
         for child in node.children_slice_mut() {
             *child = self.find(*child);
         }
+        node
     }
 
     /// Tell this graph that `key` names a **unit** varying as `variance` says,
@@ -273,7 +282,10 @@ impl EGraph {
     /// Panics if `variance` names a binder or a retired axis — a unit is a
     /// closed term over the coordinates and uniforms, and nothing else can be
     /// optimized out of its context, because no rewrite outside it can reach
-    /// a binder inside it.
+    /// a binder inside it. Panics too if `key` was admitted before with a
+    /// different variance: a key names one referent, so its variance is one
+    /// value, and two `Ref` nodes for one key would otherwise differ only in
+    /// what they claim about it.
     pub(crate) fn admit_unit(&mut self, key: KernelKey, variance: Variance) {
         assert!(
             variance.without(Variance::COORDS).is_const(),
@@ -281,13 +293,31 @@ impl EGraph {
              closed over the coordinates, and this one reads a binder no \
              rewrite outside it could substitute"
         );
-        self.units.insert(key, variance);
+        if let Some(admitted) = self.units.insert(key, variance) {
+            assert_eq!(
+                admitted, variance,
+                "EGraph::admit_unit: {key:?} was admitted as varying as {admitted:?} and is \
+                 admitted again as {variance:?}"
+            );
+        }
     }
 
     /// The variance a unit admitted by [`Self::admit_unit`] carries, or
     /// `None` if `key` was never admitted.
     pub(crate) fn unit_variance(&self, key: KernelKey) -> Option<Variance> {
         self.units.get(&key).copied()
+    }
+
+    /// The variance of the unit a [`ENode::Ref`] to `key` names: what
+    /// [`Self::unit_variance`] answers, for a node the graph holds.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` was never admitted. [`Self::add`] refuses a `Ref` to
+    /// such a unit, so no node in the graph names one.
+    pub(crate) fn ref_variance(&self, key: KernelKey) -> Variance {
+        self.unit_variance(key)
+            .unwrap_or_else(|| panic!("EGraph: a Ref to {key:?}, which no unit walk admitted"))
     }
 
     /// Insert `node`, returning the e-class that contains it.
@@ -307,11 +337,23 @@ impl EGraph {
     /// before it calls `add`. A driver that stops early leaves a graph
     /// holding fewer equalities than an exhaustive run would; every one it
     /// does hold is still true.
-    pub fn add(&mut self, mut node: ENode) -> EClassId {
-        self.canonicalize_node(&mut node);
+    ///
+    /// # Panics
+    ///
+    /// Panics on an [`ENode::Ref`] to a unit no walk has admitted
+    /// (`EGraph::admit_unit`): the node is only a key, and the graph holds
+    /// nothing to say what it varies as.
+    pub fn add(&mut self, node: ENode) -> EClassId {
+        let node = self.canonical_node(node);
         if let Some(&id) = self.memo.get(&node) {
             return self.find(id);
         }
+        // `node` is canonical, so every child indexes its class's live fact.
+        // Read before the graph changes: a refusal leaves it as it was.
+        let variance = node.variance(
+            |key| self.ref_variance(key),
+            |child| self.var_fact[child.index()],
+        );
         let id = EClassId(self.classes.len() as u32);
         let enode_id = ENodeId(self.next_enode_id);
         self.next_enode_id += 1;
@@ -320,8 +362,6 @@ impl EGraph {
             journal.record_birth(enode_id);
         }
         self.const_fact.push(node.as_f32().map(f32::to_bits));
-        // `node` is canonical, so every child indexes its class's live fact.
-        let variance = node.variance(|child| self.var_fact[child.index()]);
         self.var_fact.push(variance);
         self.classes.push(EClass {
             nodes: vec![node],
@@ -487,8 +527,8 @@ impl EGraph {
             );
             let mut new_nodes = Vec::new();
             let mut new_tags = Vec::new();
-            for (mut node, tag) in nodes.into_iter().zip(tags) {
-                self.canonicalize_node(&mut node);
+            for (node, tag) in nodes.into_iter().zip(tags) {
+                let node = self.canonical_node(node);
                 if let Some(&existing) = self.memo.get(&node) {
                     let existing = self.find(existing);
                     if existing != id {
@@ -1139,11 +1179,18 @@ impl EGraph {
 /// ([`EGraph::predicted_growth`]) run the exact same code.
 trait NodeSink {
     fn make(&mut self, node: ENode) -> EClassId;
+
+    /// The graph the nodes land in, for the facts a shape is conditioned on.
+    fn graph(&self) -> &EGraph;
 }
 
 impl NodeSink for EGraph {
     fn make(&mut self, node: ENode) -> EClassId {
         self.add(node)
+    }
+
+    fn graph(&self) -> &EGraph {
+        self
     }
 }
 
@@ -1165,7 +1212,7 @@ struct GrowthPredictor<'a> {
 }
 
 impl GrowthPredictor<'_> {
-    /// [`EGraph::canonicalize_node`], except a child may be a `pending` id
+    /// [`EGraph::canonical_node`], except a child may be a `pending` id
     /// — an id this same prediction minted for a node earlier in the same
     /// shape walk, one that does not exist in the real graph
     /// (`id.index() >= egraph.classes.len()`) and so is not in `egraph.parent`
@@ -1195,6 +1242,10 @@ impl NodeSink for GrowthPredictor<'_> {
         let id = EClassId((self.egraph.classes.len() + self.pending.len()) as u32);
         self.pending.insert(node, id);
         id
+    }
+
+    fn graph(&self) -> &EGraph {
+        self.egraph
     }
 }
 
@@ -1554,8 +1605,8 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
         // can only come of rewriting a class it shares, and one extraction
         // keeps is lowered by `lower_dwrt` on the linked body, after the
         // link, like any other `Dwrt` the rules did not reach.
-        ENode::Ref { variance, .. } => {
-            if !variance.depends_on(var) {
+        ENode::Ref { key } => {
+            if !sink.graph().ref_variance(*key).depends_on(var) {
                 return sink.make(ENode::constant(0.0));
             }
             let var_const = sink.make(ENode::constant(var as f32));
@@ -1833,6 +1884,48 @@ mod tests {
         AddNeg, Annihilator, Cancellation, Canonicalize, Commutative, Distributive, Identity,
         InverseAnnihilation, Involution, MulRecip,
     };
+
+    /// The canonical copy of a node names the surviving class of every operand
+    /// the node has, whichever variant holds it: an operation's operands, a
+    /// shift's operand and a fold's body. The graph is not rebuilt between
+    /// the union and the reads, which is the state an observer can find it in.
+    #[test]
+    fn a_canonical_node_reads_every_operand_through_find() {
+        use pixelflow_ir::ShiftCount;
+        use pixelflow_ir::fold::{Binder, Fold, Monoid};
+
+        let mut eg = EGraph::new();
+        let kept = eg.add(ENode::Var(0));
+        let merged = eg.add(ENode::Var(1));
+        let survivor = eg.union(kept, merged);
+        let fold = Fold::new(
+            Monoid::SUM,
+            Binder::from_slot(0).expect("a live binder"),
+            0..4,
+        );
+        let shift = |operand| ENode::Shift {
+            direction: crate::egraph::ShiftDirection::Right,
+            count: ShiftCount::from_literal(8.0).expect("in range"),
+            operand,
+        };
+        let stale_and_canonical = [
+            (
+                ENode::apply(OpKind::Add, &[merged, kept]),
+                ENode::apply(OpKind::Add, &[survivor, survivor]),
+            ),
+            (shift(merged), shift(survivor)),
+            (
+                ENode::Reduce { fold, body: merged },
+                ENode::Reduce {
+                    fold,
+                    body: survivor,
+                },
+            ),
+        ];
+        for (stale, canonical) in stale_and_canonical {
+            assert_eq!(eg.canonical_node(stale), canonical);
+        }
+    }
 
     /// Regression test for a `rebuild_budgeted` bug: when canonicalizing the
     /// worklist item `id`'s nodes triggers a union whose surviving parent is

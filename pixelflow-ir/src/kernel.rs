@@ -30,6 +30,7 @@ use crate::expr::{
 use crate::fold::{Binder, Chain, Fold, Monoid, Placeholder};
 use crate::kind::OpKind;
 use crate::library::{self, Terms};
+use crate::shift::ShiftCount;
 
 /// One bit per placeholder index, set while that index is claimed by a binder
 /// under construction. Claims are taken and released in any order, so this is a
@@ -1162,13 +1163,16 @@ impl Bits {
     ///
     /// # Panics
     ///
-    /// Panics if `bits >= 32` — a 32-bit lane has no bits there.
+    /// Panics if `bits` is not below [`ShiftCount::WORD_BITS`] — a 32-bit lane
+    /// has no bits there.
     #[must_use]
     pub fn shl(&self, bits: u32) -> Self {
-        assert!(bits < 32, "Bits::shl: shift of {bits} on a 32-bit lane");
+        let Some(shift) = ShiftCount::from_literal(bits as f32) else {
+            panic!("Bits::shl: shift of {bits} on a 32-bit lane");
+        };
         let mut b = Builder::new();
         let r = copy_subgraph(&mut b, self.inner.root());
-        let count = b.push_const(bits as f32);
+        let count = b.push_const(shift.literal());
         let root = b.push_binary(OpKind::Shl, r, count);
         Self {
             inner: Kernel::wrap(

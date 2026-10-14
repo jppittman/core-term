@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use pixelflow_ir::{Ir, LatticeShape, Shape};
+use pixelflow_ir::{Ir, LatticeShape, Shape, ShiftCount};
 
 use super::and_or::Frozen;
 use super::cost::CostFunction;
@@ -32,7 +32,7 @@ use super::extract::{
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::ops::Vocabulary;
-use super::shift::{self, ShiftCount, ShiftDirection};
+use super::shift::{self, ShiftDirection};
 
 // ---------------------------------------------------------------------------
 // Recording a pass
@@ -320,10 +320,10 @@ pub struct InducedChoices {
 
 /// Look `term` up in `egraph`, node by node, without inserting anything.
 ///
-/// The table is built read-only from `class_ids()` × `nodes()` with children
-/// canonicalized by `find` — the memo's content, reached without touching
-/// the memo. A subterm that is absent is returned as a [`TermMiss`], never
-/// silently skipped.
+/// The table is built read-only from `class_ids()` × `nodes()` with operands
+/// canonicalized by `find`, a fold's body excepted — the memo's content,
+/// reached without touching the memo. A subterm that is absent is returned as
+/// a [`TermMiss`], never silently skipped.
 ///
 /// # Errors
 ///
@@ -341,9 +341,16 @@ pub fn induce<I: Ir>(
             continue;
         }
         for (idx, node) in egraph.nodes(canonical).iter().enumerate() {
-            table
-                .entry(canonicalized(egraph, node))
-                .or_insert((canonical, idx));
+            // A fold's body is keyed as stored. This walk has never read it
+            // through `find`, and the miss counts in
+            // docs/results/2026-09-08-extraction-witnesses.md were measured
+            // that way; reading it would change what the bin reports, which
+            // is a decision of its own.
+            let key = match node {
+                ENode::Reduce { .. } => *node,
+                _ => egraph.canonical_node(*node),
+            };
+            table.entry(key).or_insert((canonical, idx));
         }
     }
 
@@ -451,20 +458,6 @@ pub fn induce<I: Ir>(
         merges,
         occupied,
     })
-}
-
-fn canonicalized(egraph: &EGraph, node: &ENode) -> ENode {
-    let mut canonical = *node;
-    match &mut canonical {
-        ENode::Op { children, .. } => {
-            for class in children.iter_mut() {
-                *class = egraph.find(*class);
-            }
-        }
-        ENode::Shift { operand, .. } => *operand = egraph.find(*operand),
-        _ => {}
-    }
-    canonical
 }
 
 /// The term's nodes, children before parents, each once.

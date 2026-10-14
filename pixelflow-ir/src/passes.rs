@@ -1184,7 +1184,7 @@ fn expand_exp2(arena: &mut ExprArena, arg_x: ExprId) -> ExprId {
     let xi_int = arena.push_unary(OpKind::TruncToInt, xi);
     let bias = arena.push_const(f32::from_bits(127)); // integer 127 as lane bits
     let biased = arena.push_binary(OpKind::IAdd, xi_int, bias);
-    // Shift amount is read by value (`v as u32 as u8`), so it is a plain 23.0.
+    // A literal `ShiftCount::from_literal` accepts, so the emitter takes it as written.
     let shift = arena.push_const(23.0);
     let pow2i = arena.push_binary(OpKind::Shl, biased, shift); // bitcast result
 

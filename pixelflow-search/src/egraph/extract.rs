@@ -945,7 +945,7 @@ impl Selection {
                 // A unit comes back as its name: its body is optimized by
                 // itself and linked after extraction
                 // (`pixelflow_ir::passes::link`).
-                ENode::Ref { key, .. } => Shape::Ref(*key),
+                ENode::Ref { key } => Shape::Ref(*key),
                 ENode::Op { op, .. } => Shape::Op(*op, Children::Many(&operand_ids)),
                 ENode::Shift {
                     direction, count, ..
@@ -985,14 +985,17 @@ impl Selection {
         for position in 0..self.len() {
             let node = self.node(egraph, position);
             let operands = self.operands_of(position);
-            let node_variance = node.variance(|child| {
-                let child = egraph.find(child);
-                let at = operands
-                    .iter()
-                    .find(|&&operand| self.picks[operand].class == child)
-                    .expect("a chosen node's operands are picks");
-                variance[*at]
-            });
+            let node_variance = node.variance(
+                |key| egraph.ref_variance(key),
+                |child| {
+                    let child = egraph.find(child);
+                    let at = operands
+                        .iter()
+                        .find(|&&operand| self.picks[operand].class == child)
+                        .expect("a chosen node's operands are picks");
+                    variance[*at]
+                },
+            );
             let own = weighted_own(costs, node, shape.evals(node_variance));
             // A fold evaluates its body once per index — see `fold_body_multiple`.
             let per_child = fold_body_multiple(node);
@@ -1265,7 +1268,10 @@ fn node_variance(
     {
         return Variance::ALL;
     }
-    node.variance(|child| best_var[egraph.find(child).index()])
+    node.variance(
+        |key| egraph.ref_variance(key),
+        |child| best_var[egraph.find(child).index()],
+    )
 }
 
 /// The cost of one *settled* extraction, in both of the shapes that matter.
@@ -1725,45 +1731,20 @@ impl TieBreak for Insertion {
     }
 }
 
-/// The research arm: a total order on the node's own content, so a tie is
-/// broken by what the node *is* rather than by when it was inserted.
+/// The research arm: a total order on the node, so a tie is broken by what
+/// the node *is* rather than by when it was inserted into its class.
 ///
-/// Key, ascending: leaf/op tag, then the leaf's payload or the `OpKind`
-/// ordinal, then arity, then the canonical child ids. Two distinct nodes in
-/// one class always differ somewhere in that key (a class holds no
-/// duplicates after `rebuild`), so the order is total and the result is
-/// independent of insertion order.
+/// `ENode`'s own order over the node with its operands canonicalized: the
+/// variant, then its payload, then the canonical operand ids. Two distinct
+/// nodes in one class always differ somewhere in that order (a class holds no
+/// duplicates after `rebuild`), so it is total and the result does not
+/// depend on the order a class's nodes were inserted in. It is a stable
+/// order, not a content order: operand ids follow allocation order, and a
+/// `Buffer` or `Uniform` is ordered by its minted identity, which follows
+/// mint order across the process.
 #[derive(Clone, Copy)]
 #[cfg(any(test, feature = "provenance-journal"))]
 pub(crate) struct Canonical;
-
-/// `node`'s position in [`Canonical`]'s order.
-#[cfg(any(test, feature = "provenance-journal"))]
-fn canonical_key(egraph: &EGraph, node: &ENode) -> (u8, u128, usize, Vec<u32>) {
-    let children: Vec<u32> = node
-        .children_slice()
-        .iter()
-        .map(|&c| egraph.find(c).0)
-        .collect();
-    match node {
-        ENode::Var(i) => (0, u128::from(*i), 0, children),
-        ENode::Const(bits) => (1, u128::from(*bits), 0, children),
-        ENode::Buffer(_) => (2, 0, 0, children),
-        ENode::Uniform(_) => (3, 0, 0, children),
-        ENode::Param(i) => (4, u128::from(*i), 0, children),
-        ENode::Op { op, .. } => (5, *op as u128, children.len(), children),
-        // The fold *is* the discriminating part: two folds over one body
-        // differ only in their metadata, so that is what orders them.
-        ENode::Reduce { fold, .. } => (6, fold.to_bits(), children.len(), children),
-        ENode::Ref { key, .. } => (7, u128::from(key.bits()), 0, children),
-        // A shift orders among the operations by its op, as it did when it
-        // was one; its count, which tells two shifts of one operand apart,
-        // takes the arity's place (a shift has one operand).
-        ENode::Shift {
-            direction, count, ..
-        } => (5, direction.op() as u128, count.bits() as usize, children),
-    }
-}
 
 #[cfg(any(test, feature = "provenance-journal"))]
 impl TieBreak for Canonical {
@@ -1775,7 +1756,7 @@ impl TieBreak for Canonical {
         challenger: usize,
     ) -> bool {
         let nodes = egraph.nodes(class);
-        canonical_key(egraph, &nodes[challenger]) < canonical_key(egraph, &nodes[incumbent])
+        egraph.canonical_node(nodes[challenger]) < egraph.canonical_node(nodes[incumbent])
     }
 }
 
@@ -2313,8 +2294,9 @@ mod tests {
 
     use crate::egraph::and_or::AndOrGraph;
     use crate::egraph::cost::CostModel;
-    use crate::egraph::shift::{ShiftCount, ShiftDirection};
+    use crate::egraph::shift::ShiftDirection;
     use pixelflow_ir::OpKind;
+    use pixelflow_ir::ShiftCount;
 
     /// What the reference pass prices an unresolved child at — above any
     /// weighted cost a real program can reach (a flat 1_000_000 was safely
@@ -2822,6 +2804,39 @@ mod tests {
                 (cost.tree, cost.dag),
                 (production.total_cost, production.dag_cost),
                 "{nodes} nodes at {shape:?}: the Insertion tie-break moved production's cost"
+            );
+        }
+    }
+
+    /// The research tie-break chooses by what a node is: of two equal-cost
+    /// nodes in one class it keeps the one `ENode` orders first, whichever
+    /// was inserted first, where `Insertion` keeps the first inserted.
+    #[cfg(feature = "provenance-journal")]
+    #[test]
+    fn canonical_tie_break_is_independent_of_insertion_order() {
+        use crate::egraph::witness::{Ties, extract_under};
+        let costs = CostModel::latency_prior();
+        for order in [[(0, 1), (1, 0)], [(1, 0), (0, 1)]] {
+            let mut eg = EGraph::new();
+            let vars = [eg.add(ENode::Var(0)), eg.add(ENode::Var(1))];
+            let [first, second] = order
+                .map(|(left, right)| eg.add(ENode::apply(OpKind::Add, &[vars[left], vars[right]])));
+            let root = eg.union(first, second);
+            eg.rebuild();
+            let root = eg.find(root);
+            let picked = |ties| {
+                let (choices, _) = extract_under(&eg, root, &costs, LatticeShape::POINT, ties);
+                eg.nodes(root)[choices[root.index()].expect("the root is chosen")]
+            };
+            assert_eq!(
+                picked(Ties::Canonical),
+                ENode::apply(OpKind::Add, &[vars[0], vars[1]]),
+                "inserted as {order:?}"
+            );
+            assert_eq!(
+                picked(Ties::Insertion),
+                eg.nodes(root)[0],
+                "inserted as {order:?}"
             );
         }
     }
