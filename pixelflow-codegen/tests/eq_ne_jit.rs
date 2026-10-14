@@ -354,22 +354,3 @@ fn generated_pairs_match_rust_equality_bit_for_bit_on_the_jit() {
     all_kernels(Path::Emitted, &pairs, &[]);
     all_kernels(Path::Optimized, &pairs, &[]);
 }
-
-/// Determinism of the one contract the mask stands on: the same kernel gives
-/// the same bits on every run — the optimized and the emitted paths agree.
-#[test]
-fn the_optimized_and_emitted_paths_select_the_same_bits() {
-    let pairs = generated_pairs();
-    for cmp in [Cmp::Eq, Cmp::Ne] {
-        let emitted = run(Path::Emitted, cmp, Arms::Direct, &pairs);
-        let optimized = run(Path::Optimized, cmp, Arms::Direct, &pairs);
-        for (i, (e, o)) in emitted.iter().zip(&optimized).enumerate().take(pairs.len()) {
-            assert!(
-                e.to_bits() == o.to_bits(),
-                "{cmp:?} lane {i}: emitted {e:e} ({:#010x}) vs optimized {o:e} ({:#010x})",
-                e.to_bits(),
-                o.to_bits()
-            );
-        }
-    }
-}

@@ -1157,8 +1157,8 @@ fn expand_atan2(arena: &mut ExprArena, y: ExprId, x: ExprId) -> ExprId {
 
 /// `2^x` as a primitive subgraph.
 ///
-/// Split `x = xi + xf` (xi integer, xf ∈ [0,1)); approximate `2^xf` by a
-/// degree-5 minimax polynomial; reconstruct `2^xi` by writing the IEEE-754
+/// Split `x = xi + xf` (xi integer, xf ∈ [0,1)); approximate `2^xf` by the
+/// degree-5 Taylor polynomial [`EXP2_POLY`]; reconstruct `2^xi` by writing the IEEE-754
 /// exponent field directly: `2^xi = bitcast((int(xi) + 127) << 23)`. Built from
 /// the bit-manip primitives (`TruncToInt`/`IntToFloat`/`IAdd`/`Shl`) — these are
 /// the float↔int conversions a backend cannot avoid for exp/log.
@@ -1310,14 +1310,11 @@ pub const SIN_CHEB: [f32; 6] = [
     -0.005_990_654,
 ];
 
-/// `2^f` on `f ∈ [0, 1)`, degree-5 minimax, ascending degree.
+/// `2^f` on `f ∈ [0, 1)`: the degree-5 Taylor polynomial about 0, whose
+/// coefficients are `ln(2)^k / k!`, ascending degree. Its truncation error on
+/// `[0, 1)` is below `ln(2)^6 / 6!` ≈ 1.6e-4 relative.
 ///
-/// THE definition of the exp2 polynomial. `pixelflow-core`'s backends evaluate
-/// this same table so the JIT tier, the `eval_scalar` oracle and the combinator
-/// tier cannot disagree about what `exp2` is — the divergence this replaced had
-/// the backends on a degree-4 fit with different coefficients entirely, which
-/// made `exp`, `ln`, `log10` and `pow` compute measurably different functions
-/// depending on which tier ran them.
+/// THE definition of the exp2 polynomial; nothing else restates it.
 pub const EXP2_POLY: [f32; 6] = [
     1.0,
     core::f32::consts::LN_2,
