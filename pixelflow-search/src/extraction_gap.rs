@@ -107,8 +107,8 @@ struct Priced {
 impl Priced {
     /// Candidate `idx` of canonical class `class`, or `None` when the class
     /// is not reached or has no such e-node.
-    fn candidate(&self, class: u32, idx: usize) -> Option<Candidate> {
-        let live = self.live_of[class as usize]?;
+    fn candidate(&self, class: EClassId, idx: usize) -> Option<Candidate> {
+        let live = self.live_of[class.index()]?;
         self.graph.candidate(live, idx)
     }
 
@@ -126,8 +126,8 @@ impl Priced {
     }
 
     /// The canonical class id of a child.
-    fn class_of(&self, child: Child) -> u32 {
-        self.graph.class(child.live).0
+    fn class_of(&self, child: Child) -> EClassId {
+        self.graph.class(child.live)
     }
 
     /// Classes in the e-graph: what a choice map is sized by.
@@ -142,7 +142,7 @@ impl Priced {
 #[derive(Clone)]
 struct Instance {
     priced: Rc<Priced>,
-    root: u32,
+    root: EClassId,
     /// Per class: every node index that can appear in SOME well-founded
     /// selection — self-referential nodes removed, nothing else. This is the
     /// full feasible set, and it is what the tree-cost reference searches.
@@ -160,7 +160,7 @@ struct Instance {
     /// per-class floor the bound sums over.
     floor: Vec<u64>,
     /// Classes reachable from the root over ALL nodes (the search space).
-    reachable: Vec<u32>,
+    reachable: Vec<EClassId>,
     /// Candidates dropped by dominance, for the report.
     dominated: usize,
 }
@@ -169,8 +169,8 @@ impl Instance {
     fn build(egraph: &EGraph, root: EClassId, model: &CostModel) -> Self {
         let n = egraph.num_classes();
         let graph = AndOrGraph::of(egraph, root);
-        let root = graph.root().0;
-        let mut reachable: Vec<u32> = graph.classes().iter().map(|c| c.0).collect();
+        let root = graph.root();
+        let mut reachable: Vec<EClassId> = graph.classes().to_vec();
         reachable.sort_unstable();
 
         let mut live_of = vec![None; n];
@@ -219,7 +219,7 @@ impl Instance {
         // filter is deterministic and never empties a class.
         let mut dominated = 0usize;
         for &c in &reachable {
-            let live_nodes = std::mem::take(&mut alive[c as usize]);
+            let live_nodes = std::mem::take(&mut alive[c.index()]);
             let mut keep: Vec<bool> = vec![true; live_nodes.len()];
             for i in 0..live_nodes.len() {
                 for j in 0..live_nodes.len() {
@@ -246,7 +246,7 @@ impl Instance {
                     }
                 }
             }
-            alive[c as usize] = live_nodes
+            alive[c.index()] = live_nodes
                 .into_iter()
                 .zip(keep)
                 .filter_map(|(idx, k)| k.then_some(idx))
@@ -255,7 +255,7 @@ impl Instance {
 
         let mut floor = vec![0u64; n];
         for &c in &reachable {
-            floor[c as usize] = alive[c as usize]
+            floor[c.index()] = alive[c.index()]
                 .iter()
                 .map(|&i| {
                     priced.own(
@@ -289,10 +289,10 @@ impl Instance {
         let priced = &*self.priced;
         let mut total = 0u64;
         let mut state = vec![0u8; priced.num_classes()]; // 0 unseen, 1 on path, 2 done
-        let mut stack: Vec<(u32, usize)> = vec![(self.root, 0)];
-        state[self.root as usize] = 1;
-        let node_of = |c: u32| -> Option<Candidate> {
-            let idx = choice.get(c as usize).copied().flatten()?;
+        let mut stack: Vec<(EClassId, usize)> = vec![(self.root, 0)];
+        state[self.root.index()] = 1;
+        let node_of = |c: EClassId| -> Option<Candidate> {
+            let idx = choice.get(c.index()).copied().flatten()?;
             priced.candidate(c, idx)
         };
         total += priced.own(node_of(self.root)?);
@@ -301,9 +301,9 @@ impl Instance {
             if *next < needs.len() {
                 let ch = priced.class_of(needs[*next]);
                 *next += 1;
-                match state[ch as usize] {
+                match state[ch.index()] {
                     0 => {
-                        state[ch as usize] = 1;
+                        state[ch.index()] = 1;
                         total = total.saturating_add(priced.own(node_of(ch)?));
                         stack.push((ch, 0));
                     }
@@ -311,7 +311,7 @@ impl Instance {
                     _ => {}
                 }
             } else {
-                state[c as usize] = 2;
+                state[c.index()] = 2;
                 stack.pop();
             }
         }
@@ -331,10 +331,10 @@ impl Instance {
         let n = priced.num_classes();
         let mut memo: Vec<Option<u64>> = vec![None; n];
         let mut state = vec![0u8; n]; // 0 unseen, 1 on path, 2 done
-        let mut stack: Vec<(u32, usize)> = vec![(self.root, 0)];
-        state[self.root as usize] = 1;
-        let node_of = |c: u32| -> Option<Candidate> {
-            let idx = choice.get(c as usize).copied().flatten()?;
+        let mut stack: Vec<(EClassId, usize)> = vec![(self.root, 0)];
+        state[self.root.index()] = 1;
+        let node_of = |c: EClassId| -> Option<Candidate> {
+            let idx = choice.get(c.index()).copied().flatten()?;
             priced.candidate(c, idx)
         };
         node_of(self.root)?;
@@ -344,10 +344,10 @@ impl Instance {
             if *next < needs.len() {
                 let ch = priced.class_of(needs[*next]);
                 *next += 1;
-                match state[ch as usize] {
+                match state[ch.index()] {
                     0 => {
                         node_of(ch)?;
-                        state[ch as usize] = 1;
+                        state[ch.index()] = 1;
                         stack.push((ch, 0));
                     }
                     1 => return None, // cycle
@@ -358,15 +358,15 @@ impl Instance {
                 // `children.iter()`, so `Mul(a, a)` charges `a` twice.
                 let mut total = priced.own(cand);
                 for &child in needs {
-                    let sub = memo[priced.class_of(child) as usize].expect("child finished first");
+                    let sub = memo[priced.class_of(child).index()].expect("child finished first");
                     total = total.saturating_add(sub.saturating_mul(child.uses as u64));
                 }
-                memo[c as usize] = Some(total);
-                state[c as usize] = 2;
+                memo[c.index()] = Some(total);
+                state[c.index()] = 2;
                 stack.pop();
             }
         }
-        memo[self.root as usize]
+        memo[self.root.index()]
     }
 }
 
@@ -409,9 +409,9 @@ fn tree_optimal_choices(inst: &Instance) -> Option<Vec<Option<usize>>> {
     let mut remaining = vec![0usize; graph.slot_count()];
     let mut acc = vec![0u64; graph.slot_count()];
 
-    let mut heap: BinaryHeap<Reverse<(u64, u32, usize)>> = BinaryHeap::new();
+    let mut heap: BinaryHeap<Reverse<(u64, EClassId, usize)>> = BinaryHeap::new();
     for &c in &inst.reachable {
-        for &i in &inst.feasible[c as usize] {
+        for &i in &inst.feasible[c.index()] {
             let cand = priced
                 .candidate(c, i)
                 .expect("a feasible node is one of its class's");
@@ -426,11 +426,11 @@ fn tree_optimal_choices(inst: &Instance) -> Option<Vec<Option<usize>>> {
 
     let mut best: Vec<Option<(u64, usize)>> = vec![None; n];
     while let Some(Reverse((cost, c, cand_idx))) = heap.pop() {
-        if best[c as usize].is_some() {
+        if best[c.index()].is_some() {
             continue;
         }
-        best[c as usize] = Some((cost, cand_idx));
-        let live = priced.live_of[c as usize].expect("a settled class is reached");
+        best[c.index()] = Some((cost, cand_idx));
+        let live = priced.live_of[c.index()].expect("a settled class is reached");
         for parent in graph.parents(live) {
             if best[parent.class().index()].is_some() {
                 continue;
@@ -448,15 +448,15 @@ fn tree_optimal_choices(inst: &Instance) -> Option<Vec<Option<usize>>> {
             *r -= 1;
             acc[slot] = acc[slot].saturating_add(cost.saturating_mul(child.uses as u64));
             if *r == 0 {
-                heap.push(Reverse((acc[slot], parent.class().0, parent.idx())));
+                heap.push(Reverse((acc[slot], parent.class(), parent.idx())));
             }
         }
     }
 
-    best[inst.root as usize]?;
+    best[inst.root.index()]?;
     let mut choices: Vec<Option<usize>> = vec![None; n];
     for &c in &inst.reachable {
-        choices[c as usize] = best[c as usize].map(|(_, idx)| idx);
+        choices[c.index()] = best[c.index()].map(|(_, idx)| idx);
     }
     Some(choices)
 }
@@ -481,10 +481,10 @@ fn path_lower_bounds(inst: &Instance) -> Vec<u64> {
     let n = priced.num_classes();
     let mut remaining = vec![0usize; graph.slot_count()];
     let mut acc = vec![0u64; graph.slot_count()];
-    let mut heap: BinaryHeap<Reverse<(u64, u32, usize)>> = BinaryHeap::new();
+    let mut heap: BinaryHeap<Reverse<(u64, EClassId, usize)>> = BinaryHeap::new();
 
     for &c in &inst.reachable {
-        for &i in &inst.alive[c as usize] {
+        for &i in &inst.alive[c.index()] {
             let cand = priced
                 .candidate(c, i)
                 .expect("a live node is one of its class's");
@@ -498,12 +498,12 @@ fn path_lower_bounds(inst: &Instance) -> Vec<u64> {
     let mut lb: Vec<u64> = vec![0; n];
     let mut done: Vec<bool> = vec![false; n];
     while let Some(Reverse((cost, c, _))) = heap.pop() {
-        if done[c as usize] {
+        if done[c.index()] {
             continue;
         }
-        done[c as usize] = true;
-        lb[c as usize] = cost;
-        let live = priced.live_of[c as usize].expect("a settled class is reached");
+        done[c.index()] = true;
+        lb[c.index()] = cost;
+        let live = priced.live_of[c.index()].expect("a settled class is reached");
         for parent in graph.parents(live) {
             if done[parent.class().index()] {
                 continue;
@@ -521,7 +521,7 @@ fn path_lower_bounds(inst: &Instance) -> Vec<u64> {
             if *r == 0 {
                 heap.push(Reverse((
                     priced.own(parent).saturating_add(acc[slot]),
-                    parent.class().0,
+                    parent.class(),
                     parent.idx(),
                 )));
             }
@@ -545,22 +545,22 @@ fn chain_upper_bounds(inst: &Instance) -> Vec<u64> {
 
     let priced = &*inst.priced;
     let mut dist: Vec<u64> = vec![u64::MAX; priced.num_classes()];
-    let mut heap: BinaryHeap<Reverse<(u64, u32)>> = BinaryHeap::new();
-    dist[inst.root as usize] = 0;
+    let mut heap: BinaryHeap<Reverse<(u64, EClassId)>> = BinaryHeap::new();
+    dist[inst.root.index()] = 0;
     heap.push(Reverse((0, inst.root)));
     while let Some(Reverse((d, c))) = heap.pop() {
-        if d > dist[c as usize] {
+        if d > dist[c.index()] {
             continue;
         }
-        for &i in &inst.alive[c as usize] {
+        for &i in &inst.alive[c.index()] {
             let cand = priced
                 .candidate(c, i)
                 .expect("a live node is one of its class's");
             let through = d.saturating_add(priced.own(cand));
             for &child in priced.needs(cand) {
                 let ch = priced.class_of(child);
-                if through < dist[ch as usize] {
-                    dist[ch as usize] = through;
+                if through < dist[ch.index()] {
+                    dist[ch.index()] = through;
                     heap.push(Reverse((through, ch)));
                 }
             }
@@ -596,8 +596,8 @@ fn prune_to_incumbent(inst: &mut Instance, ub: u64) -> (Vec<u64>, bool) {
         let mut changed = false;
         for idx in 0..inst.reachable.len() {
             let c = inst.reachable[idx];
-            let before = inst.alive[c as usize].len();
-            let kept: Vec<usize> = inst.alive[c as usize]
+            let before = inst.alive[c.index()].len();
+            let kept: Vec<usize> = inst.alive[c.index()]
                 .iter()
                 .copied()
                 .filter(|&i| {
@@ -607,16 +607,16 @@ fn prune_to_incumbent(inst: &mut Instance, ub: u64) -> (Vec<u64>, bool) {
                     let needs = priced.needs(cand);
                     if needs
                         .iter()
-                        .any(|&ch| inst.alive[priced.class_of(ch) as usize].is_empty())
+                        .any(|&ch| inst.alive[priced.class_of(ch).index()].is_empty())
                     {
                         return false;
                     }
                     let deepest = needs
                         .iter()
-                        .map(|&ch| below[priced.class_of(ch) as usize])
+                        .map(|&ch| below[priced.class_of(ch).index()])
                         .max()
                         .unwrap_or(0);
-                    above[c as usize]
+                    above[c.index()]
                         .saturating_add(priced.own(cand))
                         .saturating_add(deepest)
                         < ub
@@ -625,17 +625,17 @@ fn prune_to_incumbent(inst: &mut Instance, ub: u64) -> (Vec<u64>, bool) {
             if kept.len() != before {
                 changed = true;
             }
-            inst.alive[c as usize] = kept;
+            inst.alive[c.index()] = kept;
         }
         if !changed {
             break;
         }
-        if inst.alive[inst.root as usize].is_empty() {
+        if inst.alive[inst.root.index()].is_empty() {
             return (below, false);
         }
     }
     for &c in &inst.reachable {
-        inst.floor[c as usize] = inst.alive[c as usize]
+        inst.floor[c.index()] = inst.alive[c.index()]
             .iter()
             .map(|&i| {
                 priced.own(
@@ -647,7 +647,7 @@ fn prune_to_incumbent(inst: &mut Instance, ub: u64) -> (Vec<u64>, bool) {
             .min()
             .unwrap_or(0);
     }
-    let alive_root = !inst.alive[inst.root as usize].is_empty();
+    let alive_root = !inst.alive[inst.root.index()].is_empty();
     (below, alive_root)
 }
 
@@ -682,7 +682,7 @@ struct Search<'a> {
     assign: Vec<Option<usize>>,
     /// Class -> index of the assigned candidate among its class's e-nodes.
     cand_of: Vec<Option<usize>>,
-    pending: Vec<u32>,
+    pending: Vec<EClassId>,
     cost: u64,
     best: u64,
     best_assign: Vec<Option<usize>>,
@@ -710,12 +710,12 @@ impl<'a> Search<'a> {
         let mut max_chain = 0u64;
         for i in from..self.pending.len() {
             let c = self.pending[i];
-            if self.assign[c as usize].is_some() || self.stamp[c as usize] == e {
+            if self.assign[c.index()].is_some() || self.stamp[c.index()] == e {
                 continue;
             }
-            self.stamp[c as usize] = e;
-            sum_floors = sum_floors.saturating_add(self.inst.floor[c as usize]);
-            max_chain = max_chain.max(self.path_lb[c as usize]);
+            self.stamp[c.index()] = e;
+            sum_floors = sum_floors.saturating_add(self.inst.floor[c.index()]);
+            max_chain = max_chain.max(self.path_lb[c.index()]);
         }
         // Both are lower bounds on the same remaining cost; the larger is
         // the better one. They are not additive — a chain under one pending
@@ -729,20 +729,17 @@ impl<'a> Search<'a> {
     /// A cycle can only form entirely among assigned classes, because an
     /// unassigned class has no outgoing edges yet — so this check at the
     /// moment of assignment is complete.
-    fn creates_cycle(&self, c: u32) -> bool {
-        let mut seen: HashSet<u32> = HashSet::new();
-        let mut stack: Vec<u32> = Vec::new();
+    fn creates_cycle(&self, c: EClassId) -> bool {
+        let mut seen: HashSet<EClassId> = HashSet::new();
+        let mut stack: Vec<EClassId> = Vec::new();
         let priced = &*self.inst.priced;
-        let needs_of = |class: u32, ci: usize| {
+        let needs_of = |class: EClassId, ci: usize| {
             let cand = priced
                 .candidate(class, ci)
                 .expect("an assigned node is one of its class's");
             priced.needs(cand).iter().map(|&ch| priced.class_of(ch))
         };
-        stack.extend(needs_of(
-            c,
-            self.cand_of[c as usize].expect("just assigned"),
-        ));
+        stack.extend(needs_of(c, self.cand_of[c.index()].expect("just assigned")));
         while let Some(x) = stack.pop() {
             if x == c {
                 return true;
@@ -750,7 +747,7 @@ impl<'a> Search<'a> {
             if !seen.insert(x) {
                 continue;
             }
-            if let Some(ci) = self.cand_of[x as usize] {
+            if let Some(ci) = self.cand_of[x.index()] {
                 stack.extend(needs_of(x, ci));
             }
         }
@@ -770,7 +767,7 @@ impl<'a> Search<'a> {
         }
 
         let mut pos = pos;
-        while pos < self.pending.len() && self.assign[self.pending[pos] as usize].is_some() {
+        while pos < self.pending.len() && self.assign[self.pending[pos].index()].is_some() {
             pos += 1;
         }
         if pos == self.pending.len() {
@@ -784,7 +781,7 @@ impl<'a> Search<'a> {
         let c = self.pending[pos];
         // Cheapest own cost first: finds good incumbents early, which is what
         // makes the bound bite.
-        let mut order: Vec<usize> = self.inst.alive[c as usize].clone();
+        let mut order: Vec<usize> = self.inst.alive[c.index()].clone();
         let priced = &*self.inst.priced;
         order.sort_by_key(|&i| {
             let cand = priced
@@ -801,8 +798,8 @@ impl<'a> Search<'a> {
                 .candidate(c, ci)
                 .expect("a live node is one of its class's");
             let own = priced.own(cand);
-            self.assign[c as usize] = Some(ci);
-            self.cand_of[c as usize] = Some(ci);
+            self.assign[c.index()] = Some(ci);
+            self.cand_of[c.index()] = Some(ci);
             self.cost = self.cost.saturating_add(own);
 
             let ok = !self.creates_cycle(c);
@@ -810,7 +807,7 @@ impl<'a> Search<'a> {
                 let saved = self.pending.len();
                 for &child in priced.needs(cand) {
                     let ch = priced.class_of(child);
-                    if self.assign[ch as usize].is_none() {
+                    if self.assign[ch.index()].is_none() {
                         self.pending.push(ch);
                     }
                 }
@@ -822,8 +819,8 @@ impl<'a> Search<'a> {
             }
 
             self.cost -= own;
-            self.assign[c as usize] = None;
-            self.cand_of[c as usize] = None;
+            self.assign[c.index()] = None;
+            self.cand_of[c.index()] = None;
         }
     }
 }
@@ -857,7 +854,7 @@ fn exact_dag_choices(
     // node, so a chooser's answer can still be re-costed afterwards.
     let mut inst = inst.clone();
     let (path_lb, root_alive) = prune_to_incumbent(&mut inst, seed_cost);
-    let root_chain_lb = path_lb[inst.root as usize];
+    let root_chain_lb = path_lb[inst.root.index()];
     if !root_alive {
         // Reduced-cost fixing removed every way of beating the incumbent, so
         // the incumbent IS the optimum — proved without expanding a node.
@@ -1147,12 +1144,12 @@ fn measure(subject: Subject<'_>, limits: SearchLimits) -> Measured {
     let free_classes = inst
         .reachable
         .iter()
-        .filter(|&&c| inst.alive[c as usize].len() > 1)
+        .filter(|&&c| inst.alive[c.index()].len() > 1)
         .count();
     let branch_product_log10: f64 = inst
         .reachable
         .iter()
-        .map(|&c| (inst.alive[c as usize].len().max(1) as f64).log10())
+        .map(|&c| (inst.alive[c.index()].len().max(1) as f64).log10())
         .sum();
 
     let solved = exact.status == ExactStatus::Optimal;
@@ -2780,10 +2777,10 @@ mod self_check {
     /// enough to enumerate. The only way to know a branch-and-bound is
     /// exact is to check it against something that cannot be wrong.
     fn brute_force(inst: &Instance) -> Option<u64> {
-        let free: Vec<u32> = inst.reachable.to_vec();
+        let free: Vec<EClassId> = inst.reachable.to_vec();
         let sizes: Vec<usize> = free
             .iter()
-            .map(|&c| inst.feasible[c as usize].len().max(1))
+            .map(|&c| inst.feasible[c.index()].len().max(1))
             .collect();
         let total: u128 = sizes.iter().map(|&s| s as u128).product();
         if total > 4_000_000 {
@@ -2794,9 +2791,9 @@ mod self_check {
         loop {
             let mut choice: Vec<Option<usize>> = vec![None; inst.priced.num_classes()];
             for (k, &c) in free.iter().enumerate() {
-                let feasible = &inst.feasible[c as usize];
+                let feasible = &inst.feasible[c.index()];
                 if !feasible.is_empty() {
-                    choice[c as usize] = Some(feasible[counter[k] % feasible.len()]);
+                    choice[c.index()] = Some(feasible[counter[k] % feasible.len()]);
                 }
             }
             if let Some(cost) = inst.dag_cost(&choice) {

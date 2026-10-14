@@ -50,7 +50,7 @@ impl LiveClasses {
                 }
                 let bit = remaining.trailing_zeros() as usize;
                 remaining &= remaining - 1;
-                Some(EClassId((word * WORD_BITS + bit) as u32))
+                Some(EClassId::from_index(word * WORD_BITS + bit))
             })
         })
     }

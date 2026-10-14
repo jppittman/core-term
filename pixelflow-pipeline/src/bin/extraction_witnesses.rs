@@ -339,7 +339,7 @@ struct WitnessRow {
 
 #[derive(Serialize, Clone, Debug)]
 struct FirstDivergence {
-    class: u32,
+    class: usize,
     node_greedy: String,
     node_witness: String,
     dp_cost_greedy: String,
@@ -582,14 +582,14 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
     let base = sat.optimized.cost.dag;
     let mut best_single = base;
     let mut best_single_class = None;
-    let mut swap_delta: HashMap<u32, i64> = HashMap::new();
+    let mut swap_delta: HashMap<EClassId, i64> = HashMap::new();
     for &c in &frontier {
         let mut m = c_g.clone();
         m[c.index()] = c_t[c.index()];
         let Some(cost) = witness::cost_if_well_founded(egraph, sat.root, &m, costs, shape) else {
             continue;
         };
-        swap_delta.insert(c.index() as u32, cost.dag as i64 - base as i64);
+        swap_delta.insert(c, cost.dag as i64 - base as i64);
         if cost.dag < best_single {
             best_single = cost.dag;
             best_single_class = Some(c);
@@ -653,7 +653,7 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
         let g = c_g[c.index()].expect("greedy is total on root-reachable classes");
         let dp_w = win.table.cost_of(c, w);
         let dp_g = win.table.cost_of(c, g);
-        let delta = swap_delta.get(&(c.index() as u32)).copied();
+        let delta = swap_delta.get(&c).copied();
         let rule_g = minting_rule(sat, c, g);
         let label = match (dp_w, dp_g, delta) {
             (Some(a), Some(b), _) if a == b => "TIE",
@@ -669,7 +669,7 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
         }
         if first.is_none() {
             first = Some(FirstDivergence {
-                class: c.index() as u32,
+                class: c.index(),
                 node_greedy: node_label(egraph, c, g),
                 node_witness: node_label(egraph, c, w),
                 dp_cost_greedy: show(dp_g),

@@ -9,6 +9,41 @@ use pixelflow_ir::{KernelKey, OpKind, ShiftCount, Variance};
 use super::shift::ShiftDirection;
 
 /// Identifier for an equivalence class in the e-graph.
+///
+/// 32 bits wide, against the control plane's 64-bit rule, for a measured
+/// reason (2026-10-14). The field was widened to `u64` and measured on a
+/// native release build: the cold compile of the 29 programs ASCII needs, and
+/// of the n=40 program (a per-count program of n pieces,
+/// docs/plans/2026-09-25-the-language-is-kernel.md), in interleaved
+/// before/after pairs, each in its own process, peak RSS read from the parent
+/// (`ru_maxrss`, KiB, shown here divided by 1000). The harness is out of tree.
+///
+/// - Peak RSS, this field alone widened, 3 pairs: 132.8 to 156.7 MB (+18%) on
+///   the 29 programs, 19.2 to 20.8 MB (+8%) on n=40. Also widening the sparse
+///   reach members, as a first attempt did, gave 158.3 MB (+19%, 6 pairs) and
+///   22.2 MB (+16%).
+/// - Cold time on the 29 programs, field alone: 1000 to 1058 ms (+6%), inside
+///   the unchanged binary's own spread (946 to 1083 ms over 9 runs). Time on
+///   n=40 is not resolved: the unchanged binary alone ran 67 to 98 ms. RSS is
+///   the deterministic signal.
+///
+/// The cause is the node: [`ENode`] grew from 24 to 40 bytes because
+/// `Operands` grew from 16 to 32, and an e-graph is mostly e-nodes.
+///
+/// The width does not bind. Ids number the classes a graph holds: one per
+/// distinct node the input inserts (`insert` has no cap, and the input
+/// arena's `ExprId` is `u32`), plus what saturation adds, which stops near
+/// [`HARD_MINTED_LIMIT`](super::HARD_MINTED_LIMIT) (100,000, approximately:
+/// the runner holds it to its prediction's slack). That is saturation's
+/// growth cap, not a cap on ids. The largest program seen inlined, Noto's
+/// ASCII, holds 169,263 classes before any rule fires, about 25,000 times
+/// below 2^32.
+///
+/// Every class id in the crate is an `EClassId`, and every container of them
+/// holds one, so widening is this field plus `index` and `from_index`. The
+/// sparse reach members in `extract.rs` are live positions, not ids, and stay
+/// `u32` on purpose (a budget question, a separate change); they are the next
+/// cap after this one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EClassId(pub(crate) u32);
 
@@ -17,7 +52,18 @@ impl EClassId {
     ///
     /// This is useful for using EClassId as a key in external data structures.
     pub fn index(self) -> usize {
+        // Lossless: `usize` is 64 bits on both supported targets.
         self.0 as usize
+    }
+
+    /// The class id at `index`: the inverse of [`EClassId::index`].
+    ///
+    /// # Panics
+    ///
+    /// If `index` does not fit 32 bits (2^32 classes), refused here and never
+    /// wrapped to a small id.
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self(u32::try_from(index).expect("a class id past u32::MAX: more than 2^32 e-classes"))
     }
 }
 
@@ -379,13 +425,27 @@ fn var_variance(v: u8) -> Variance {
 mod tests {
     use super::*;
 
-    fn classes(n: u32) -> Vec<EClassId> {
-        (1..=n).map(EClassId).collect()
+    fn classes(n: usize) -> Vec<EClassId> {
+        (1..=n).map(EClassId::from_index).collect()
     }
 
     /// The unit lookup for a node that reads none.
     fn no_unit(key: KernelKey) -> Variance {
         panic!("this node names no unit, but asked for {key:?}")
+    }
+
+    /// An index at `u32::MAX` round-trips through a class id.
+    #[test]
+    fn a_class_id_at_u32_max_round_trips() {
+        let top = u32::MAX as usize;
+        assert_eq!(EClassId::from_index(top).index(), top);
+    }
+
+    /// An index one past `u32::MAX` is refused, never wrapped to a small id.
+    #[test]
+    #[should_panic(expected = "a class id past u32::MAX")]
+    fn a_class_id_past_u32_max_is_refused() {
+        let _ = EClassId::from_index(u32::MAX as usize + 1);
     }
 
     /// An operand count that is not the op's arity is a bug in whoever built
@@ -446,8 +506,8 @@ mod tests {
     #[test]
     fn operands_are_exactly_the_live_prefix() {
         for op in [OpKind::Neg, OpKind::Add, OpKind::MulAdd] {
-            let mut node = ENode::apply(op, &classes(op.arity() as u32));
-            assert_eq!(node.children_slice(), classes(op.arity() as u32));
+            let mut node = ENode::apply(op, &classes(op.arity()));
+            assert_eq!(node.children_slice(), classes(op.arity()));
             for class in node.children_slice_mut() {
                 *class = EClassId(9);
             }

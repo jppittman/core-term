@@ -184,7 +184,8 @@
 - **Lives:** `pixelflow-search/src/egraph/{node,graph,insert}.rs`;
   `pixelflow-ir/src/term.rs` (`trait Ir`, `Shape`); the 2026-09-04
   ir-as-a-trait plan; a-fold-is-a-node §6. `EClassId(pub(crate) u32)` is
-  narrower than the 64-bit rule.
+  narrower than the 64-bit rule, with a measured reason in its own doc
+  (`egraph/node.rs`).
 
 ### Hash-consing
 

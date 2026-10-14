@@ -1244,7 +1244,7 @@ mod congruence_gap_probe {
     /// `self.classes.len() > max_minted`).
     fn live_class_count(egraph: &EGraph) -> usize {
         (0..egraph.classes.len())
-            .filter(|&i| egraph.find(EClassId(i as u32)) == EClassId(i as u32))
+            .filter(|&i| egraph.find(EClassId::from_index(i)) == EClassId::from_index(i))
             .count()
     }
 
@@ -1268,7 +1268,7 @@ mod congruence_gap_probe {
             let mut local_memo: HashMap<ENode, EClassId> = HashMap::new();
             let mut pending: Vec<(EClassId, EClassId)> = Vec::new();
             for idx in 0..n {
-                let id = EClassId(idx as u32);
+                let id = EClassId::from_index(idx);
                 let canon = egraph.find(id);
                 if canon != id {
                     // Merged-away class: `union`'s mem::take already moved
@@ -1798,7 +1798,7 @@ mod congruence_gap_probe {
     /// canonical — which is exactly the `rebuild_budgeted` write-back bug.
     fn orphaned_node_count(egraph: &EGraph) -> usize {
         (0..egraph.classes.len())
-            .filter(|&i| egraph.find(EClassId(i as u32)) != EClassId(i as u32))
+            .filter(|&i| egraph.find(EClassId::from_index(i)) != EClassId::from_index(i))
             .map(|i| egraph.classes[i].nodes.len())
             .sum()
     }
@@ -1807,7 +1807,7 @@ mod congruence_gap_probe {
     /// through the public `nodes()`/`tags()` API.
     fn reachable_node_count(egraph: &EGraph) -> usize {
         (0..egraph.classes.len())
-            .filter(|&i| egraph.find(EClassId(i as u32)) == EClassId(i as u32))
+            .filter(|&i| egraph.find(EClassId::from_index(i)) == EClassId::from_index(i))
             .map(|i| egraph.classes[i].nodes.len())
             .sum()
     }

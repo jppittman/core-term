@@ -354,7 +354,7 @@ impl EGraph {
             |key| self.ref_variance(key),
             |child| self.var_fact[child.index()],
         );
-        let id = EClassId(self.classes.len() as u32);
+        let id = EClassId::from_index(self.classes.len());
         let enode_id = ENodeId(self.next_enode_id);
         self.next_enode_id += 1;
         #[cfg(feature = "provenance-journal")]
@@ -744,7 +744,7 @@ impl EGraph {
     /// of their union-find tree) and have at least one node.
     pub fn class_ids(&self) -> impl Iterator<Item = EClassId> + '_ {
         (0..self.classes.len())
-            .map(|idx| EClassId(idx as u32))
+            .map(EClassId::from_index)
             .filter(|&id| self.is_live(id))
     }
 
@@ -1239,7 +1239,7 @@ impl NodeSink for GrowthPredictor<'_> {
         if let Some(&id) = self.pending.get(&node) {
             return id;
         }
-        let id = EClassId((self.egraph.classes.len() + self.pending.len()) as u32);
+        let id = EClassId::from_index(self.egraph.classes.len() + self.pending.len());
         self.pending.insert(node, id);
         id
     }
