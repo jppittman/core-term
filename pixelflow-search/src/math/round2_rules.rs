@@ -1442,8 +1442,7 @@ mod tests {
     #[test]
     fn experimental_rules_saturate_without_panicking() {
         use crate::egraph::{
-            CostModel, EGraph, ENode, Extraction, choices_to_arena, config_for_node_count,
-            extract_dag, saturate_with_full_budget,
+            CostModel, EGraph, ENode, config_for_node_count, extract_dag, saturate_with_full_budget,
         };
         use std::time::Duration;
 
@@ -1517,11 +1516,7 @@ mod tests {
             // absorption reducing the whole expression to a bare Var, whose
             // latency_prior cost is 0), not a failure.
             let dag = extract_dag(&eg, eg.find(root), &costs);
-            let (arena, id) = choices_to_arena(&Extraction::from_well_founded(
-                &eg,
-                eg.find(root),
-                dag.choices,
-            ));
+            let (arena, id) = dag.to_arena(&eg);
             assert!(
                 !format!("{}", arena.display(id)).is_empty(),
                 "{case_name}: extraction produced an empty expression"

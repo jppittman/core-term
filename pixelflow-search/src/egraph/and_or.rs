@@ -181,7 +181,7 @@ impl AndOrGraph {
                 // `children_slice`, not an `Op`'s operands: a `Reduce`'s body
                 // is a child too. A row that skipped it once swallowed a
                 // fold's body, so the shared pass priced a fold as its
-                // combiner chain alone while `cost_of_choices` charged for the
+                // combiner chain alone while the term's price charged for the
                 // body, the DP settled on a claim below the price of the term
                 // it named, and the claim/price audit fired.
                 for &child in node.children_slice() {
@@ -275,7 +275,6 @@ impl AndOrGraph {
     }
 
     /// The e-graph class at position `live`.
-    #[cfg(test)]
     pub(crate) fn class(&self, live: Live) -> EClassId {
         self.classes[live.0]
     }

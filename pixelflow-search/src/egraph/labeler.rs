@@ -65,7 +65,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::cost::CostModel;
-use super::extract::{self, ExtractedDAG};
+use super::extract::{self, ExtractedDAG, Selection};
 use super::graph::EGraph;
 use super::node::EClassId;
 use super::provenance::{ApplicationId, ENodeId, Origin};
@@ -146,7 +146,7 @@ impl EpisodeLabels {
     ///
     /// Panics if `choices` is missing an entry (or has an out-of-range node
     /// index) for a class actually reachable from `root` via the chosen
-    /// nodes — the same invariant `choices_to_arena` enforces, and for the
+    /// nodes, or is cyclic — the invariant `Selection::of_map` enforces, and for the
     /// same reason: silently defaulting to node 0 here would fabricate a
     /// label for a node that was never really "chosen," corrupting the
     /// training signal instead of surfacing the extractor bug that produced
@@ -299,56 +299,29 @@ fn strict_load_bearing(
     result
 }
 
-/// Walk the chosen extraction from `root`, following only the chosen node's
-/// children at each class (unlike blindly reading every `Some` entry out of
-/// `choices` — the DP that fills `choices` computes costs for every class
-/// reachable via *any* candidate node while scoring alternatives, so most
-/// `choices` vectors have many `Some` entries for classes never actually
-/// used by the winning extraction). Returns the `(EClassId, ENodeId)` pairs
-/// [`EGraph::derivation_ancestors`] expects.
+/// The `(EClassId, ENodeId)` pairs [`EGraph::derivation_ancestors`] expects:
+/// the node chosen for each class the extraction's term reaches from `root`.
+///
+/// Reading every `Some` entry out of `choices` would be wrong — the DP that
+/// fills it computes costs for every class reachable via *any* candidate
+/// while scoring alternatives, so most `choices` vectors have many `Some`
+/// entries for classes the winning extraction never uses. The term's own
+/// reach is the [`Selection`]. The ancestry walks consume the pairs as a set,
+/// so the selection's order is immaterial.
 fn chosen_tagged_nodes(
     egraph: &EGraph,
     root: EClassId,
     choices: &[Option<usize>],
 ) -> Vec<(EClassId, ENodeId)> {
-    let mut visited: BTreeSet<EClassId> = BTreeSet::new();
-    let mut stack: Vec<EClassId> = vec![root];
-    let mut result = Vec::new();
-
-    while let Some(class) = stack.pop() {
-        let canonical = egraph.find(class);
-        if !visited.insert(canonical) {
-            continue;
-        }
-
-        let idx = canonical.index();
-        let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or_else(|| {
-            panic!(
-                "chosen_tagged_nodes: e-class {} is reachable from root {} via the chosen \
-                 extraction but has no recorded choice — `choices` must guarantee every \
-                 class reachable via chosen nodes has Some(idx)",
-                idx,
-                root.index()
-            )
-        });
-
-        let nodes = egraph.nodes(canonical);
-        assert!(
-            node_idx < nodes.len(),
-            "chosen_tagged_nodes: node_idx {} out of bounds ({}) for e-class {}",
-            node_idx,
-            nodes.len(),
-            idx
-        );
-        let tags = egraph.tags(canonical);
-        result.push((canonical, tags[node_idx]));
-
-        for &child in nodes[node_idx].children_slice() {
-            stack.push(child);
-        }
-    }
-
-    result
+    let term = Selection::of_map(egraph, root, choices).unwrap_or_else(|refused| {
+        panic!(
+            "chosen_tagged_nodes: `choices` names no term from root {}: {refused}",
+            root.index()
+        )
+    });
+    term.picks()
+        .map(|(class, idx)| (class, egraph.tags(class)[idx]))
+        .collect()
 }
 
 /// Result of running the full episode pipeline once: the extraction the

@@ -449,7 +449,6 @@ fn node_label(egraph: &EGraph, class: EClassId, idx: usize) -> String {
 fn show(cost: Option<usize>) -> String {
     match cost {
         None => "-".into(),
-        Some(c) if c >= witness::cycle_cost() => "CYCLE".into(),
         Some(c) => c.to_string(),
     }
 }
@@ -646,9 +645,7 @@ fn analyse(p: &Pair<'_>, distractors: &mut BTreeMap<String, usize>) -> Option<Wi
         let dp_g = win.table.cost_of(c, g);
         let delta = swap_delta.get(&(c.index() as u32)).copied();
         let rule_g = minting_rule(sat, c, g);
-        let cyc = witness::cycle_cost();
         let label = match (dp_w, dp_g, delta) {
-            (Some(a), _, _) if a >= cyc => "CYCLE-PRICED",
             (Some(a), Some(b), _) if a == b => "TIE",
             (Some(a), Some(b), _) if a < b => "LOCAL-MISS",
             (_, _, Some(d)) if d < 0 && rule_g != "seed" => "DISTRACTOR",
@@ -757,7 +754,7 @@ fn main() {
                 witness::reachable_under(&sat.egraph, sat.root, &sat.optimized.choices).len();
             let (canon_choices, canon) =
                 witness::extract_under(&sat.egraph, sat.root, &costs, shape, Ties::Canonical);
-            let canon_arena = witness::arena_of(&sat.egraph, sat.root, canon_choices);
+            let canon_arena = witness::arena_of(&sat.egraph, sat.root, &canon_choices);
             let trace = witness::trace(&sat.egraph, sat.root, &costs, shape);
             let tied = witness::reachable_under(&sat.egraph, sat.root, &sat.optimized.choices)
                 .iter()

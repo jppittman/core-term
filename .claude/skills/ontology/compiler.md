@@ -281,9 +281,16 @@
   equivalent forms will be made at extraction." That includes a fold
   against its unrolling. "Extraction reads `s`. It prices every fold by its
   trips."
-  - The result is "a witnessed selection: (egraph, root, choices) where
-    choices is a well-founded … function from reachable e-class to chosen
-    node".
+  - The result is a `Selection`: the well-founded picks, one per distinct
+    class the root reaches through the nodes chosen, in the DFS post-order
+    the term materializes in (children before parents). The settlement
+    makes it once; pricing and materializing are each one fold over it, and
+    a missing choice or a cycle is not representable in it. Settle order is
+    not that order: it is cost-first and interleaves subtrees, and
+    `ExprArena` numbers nodes and slots in embed order.
+  - `ExtractedDAG.choices` and `Optimized.choices` are the settlement's
+    record, a superset of the term, kept beside the selection for the
+    pipeline readers. Editing one does not change what materializes.
   - There are two DP arms, tree (a child priced at every use) and shared
     (each class priced once), plus an arbiter.
   - Two costs are always reported and never confused. `dag_cost` is the
@@ -294,7 +301,9 @@
   - A stage followed by repair or reranking.
   - Monotone in graph richness: chrome's dag_cost was +42% at a 100k cap.
   - Argmin: "The witnesses say the failure is **argmin**, not cost."
-  - A bare `Vec<Option<usize>>`.
+  - A bare `Vec<Option<usize>>`: that is the settlement's record, or a
+    hand-built map that `Selection::of_map` either turns into a `Selection`
+    or refuses by name (`Refused::{Missing, OutOfBounds, Cyclic}`).
   - Where guard against blend is decided (#1313).
   - Merely a form once schedules are choices: then it is "a form plus a
     schedule".
@@ -308,7 +317,8 @@
     of swaps, so a swap-neighbourhood search provably misses the answer.
   - A learned component "emits a decision, not a number" and sits inside
     the DP as a residual (extraction-judge, unbuilt).
-- **Lives:** `pixelflow-search/src/egraph/extract.rs` (`Extraction`,
+- **Lives:** `pixelflow-search/src/egraph/extract.rs` (`Selection`,
+  `Selection::of_map`, `Extraction` (the reranker's map state only),
   `tree_dp_pass`, `shared_dag_dp_pass`, `settle_in_cost_order`),
   `pixelflow-search/src/egraph/witness.rs`. Decided in 2026-08-17
   cost-model-domain J2, `2026-09-08-extraction-witnesses.md`, and

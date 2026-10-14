@@ -1209,7 +1209,7 @@ mod tests {
 #[cfg(test)]
 mod production_shape_tests {
     use super::*;
-    use crate::egraph::extract::{Extraction, choices_to_arena, extract_dag};
+    use crate::egraph::extract::extract_dag;
     use crate::egraph::saturate::SaturationConfig;
     use crate::egraph::{CostFunction, CostModel, ENode, Vocabulary, insert};
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
@@ -1289,8 +1289,7 @@ mod production_shape_tests {
     fn a_table_reading_fold_unrolls() {
         let (eg, class, stats) = saturated_table_fold();
         let dag = extract_dag(&eg, class, &LoopsCostMore(CostModel::latency_prior()));
-        let (out, _out_root) =
-            choices_to_arena(&Extraction::from_well_founded(&eg, class, dag.choices));
+        let (out, _out_root) = dag.to_arena(&eg);
 
         assert!(
             !has_fold(&out),
@@ -1309,8 +1308,7 @@ mod production_shape_tests {
     fn production_keeps_the_loop_over_a_table_fold() {
         let (eg, class, stats) = saturated_table_fold();
         let dag = extract_dag(&eg, class, &CostModel::latency_prior());
-        let (out, _out_root) =
-            choices_to_arena(&Extraction::from_well_founded(&eg, class, dag.choices));
+        let (out, _out_root) = dag.to_arena(&eg);
 
         assert!(
             has_fold(&out),

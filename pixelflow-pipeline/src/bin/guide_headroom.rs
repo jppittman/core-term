@@ -194,7 +194,7 @@ struct RuleAgg {
 }
 
 /// Walk the extraction's *chosen* nodes only — root plus, recursively, each
-/// chosen child — mirroring `labeler::chosen_tagged_nodes` exactly (same
+/// chosen child — mirroring `labeler::chosen_tagged_nodes` (same
 /// panics-on-missing-choice contract, since a missing choice for a class
 /// reachable via the chosen extraction is an extractor bug, not something to
 /// paper over). Returns the `ENodeId` tag of every node actually used by the

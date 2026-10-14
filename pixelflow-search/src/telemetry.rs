@@ -232,7 +232,7 @@ fn escape_json(s: &str) -> String {
 
 /// Sum of `CostModel::latency_prior()` over every node reachable from
 /// `root`. Computed independently here rather than threaded out of
-/// extraction because neither `Extraction` nor `choices_to_arena`'s output
+/// extraction because neither `Extraction` nor a materialized arena
 /// carries a total cost of its own (extraction tracks per-e-class best cost
 /// internally, not on the materialized arena) — this mirrors
 /// `crate::runtime`'s own `reachable_count` traversal shape.
