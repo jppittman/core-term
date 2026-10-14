@@ -75,7 +75,7 @@ pub enum Declined {
 ///
 /// **Reachable-only.** A term representation may hold nodes no longer reached
 /// from `root` — an arena accumulates construction garbage — and inserting
-/// those would spend `max_classes`, a budget dimension, on nodes the budget's
+/// those would spend `max_minted`, a budget dimension, on nodes the budget's
 /// own `node_count` never counted.
 pub fn insert<I: Ir>(
     term: &I,

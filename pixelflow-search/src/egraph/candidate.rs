@@ -213,7 +213,7 @@ pub struct CandidateKey {
 #[derive(Clone, Copy, Debug)]
 pub struct Firing {
     /// Which rewrite rule fired, by stable identity
-    /// (`ApplicationRecord::rule`, or `EGraph::rule_id(idx)` for a caller
+    /// (`ApplicationRecord::rule`, or `RuleSet::id(idx)` for a caller
     /// holding a positional index).
     pub rule: RuleId,
     /// The e-class the rule matched against (`ApplicationRecord::match_root`).
@@ -317,18 +317,22 @@ mod tests {
     use super::*;
     use crate::egraph::ops;
     use crate::egraph::rewrite::Rewrite;
+    use crate::egraph::{Limits, RuleSet, Saturation};
     use crate::math::algebra::Commutative;
 
-    fn egraph_with_commutative() -> EGraph {
+    fn egraph_with_commutative() -> Saturation {
         let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
-        EGraph::with_rules(rules)
+        Saturation::over(RuleSet::new(rules))
     }
 
     /// The id of the rule at `idx` in `eg`'s own table — the translation
     /// every caller holding a positional match makes.
-    fn rule_id_at(eg: &EGraph, idx: usize) -> RuleId {
-        eg.rule_id(idx)
-            .expect("rule index within the graph's table")
+    fn rule_id_at(eg: &Saturation, idx: usize) -> RuleId {
+        let rules = eg.rules();
+        rules.id(rules
+            .indices()
+            .nth(idx)
+            .expect("rule index within the graph's table"))
     }
 
     #[test]
@@ -453,7 +457,7 @@ mod tests {
         let sum = arena.push_binary(pixelflow_ir::OpKind::Add, x, y);
         let root = arena.push_binary(pixelflow_ir::OpKind::Mul, sum, sum);
 
-        let mut egraph = EGraph::with_rules(crate::egraph::all_rules());
+        let mut egraph = Saturation::over(RuleSet::new(crate::egraph::all_rules()));
         let root_class = crate::egraph::insert(
             &arena,
             root,
@@ -461,7 +465,11 @@ mod tests {
             crate::egraph::Vocabulary::Templates,
         )
         .expect("insert into e-graph");
-        egraph.saturate_budgeted(30, 5_000, None);
+        egraph.saturate_budgeted(Limits {
+            iterations: 30,
+            minted: 5_000,
+            applications: None,
+        });
 
         // The denominator is the run's own application count, read off the
         // unconditional budget counter rather than the journal — the two
@@ -471,12 +479,10 @@ mod tests {
         let mut seen: std::collections::HashSet<CandidateKey> = std::collections::HashSet::new();
         let mut repeats = 0usize;
         let firings: Vec<Firing> = egraph
-            .provenance()
+            .journal()
             .applications()
             .map(|(app_id, record)| Firing {
-                rule: record
-                    .rule
-                    .expect("a recorded application names the rule that fired"),
+                rule: record.rule,
                 match_root: record.match_root,
                 application_ordinal: app_id.as_u64(),
                 registered_budget,

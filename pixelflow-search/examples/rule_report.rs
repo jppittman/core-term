@@ -112,13 +112,10 @@ fn main() {
             ep.labels.labels.len(),
             ep.labels.load_bearing.len(),
         );
-        println!("{}", ep.labels.format_rule_report(&ep.egraph));
+        println!("{}", ep.labels.format_rule_report(ep.egraph.rules()));
 
         for (rule_idx, stats) in &ep.labels.rule_stats {
-            let rname = match ep.egraph.rule(*rule_idx) {
-                Some(r) => r.name().to_string(),
-                None => format!("<rule {rule_idx}>"),
-            };
+            let rname = ep.egraph.rules().rule(*rule_idx).name().to_string();
             let e = agg.entry(rname).or_insert((0, 0));
             e.0 += stats.fired;
             e.1 += stats.load_bearing;

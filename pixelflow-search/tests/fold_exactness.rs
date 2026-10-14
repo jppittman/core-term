@@ -69,11 +69,11 @@ fn cancellation_extracts_one_consistent_constant() {
 /// The refusal is journaled: the collision is loud, not silent.
 #[test]
 fn refused_union_is_journaled() {
-    use pixelflow_search::egraph::{EGraph, SaturationConfig, all_rules};
+    use pixelflow_search::egraph::{RuleSet, Saturation, SaturationConfig, all_rules};
 
     let mut a = ExprArena::new();
     let d = cancel(&mut a);
-    let mut eg = EGraph::with_rules(all_rules());
+    let mut eg = Saturation::over(RuleSet::new(all_rules()));
     let root = pixelflow_search::egraph::insert(
         &a,
         d,
@@ -117,9 +117,9 @@ fn exact_and_ordinary_folds_still_fold() {
 /// their classes — which would assert 1 = 2.
 #[test]
 fn refusal_survives_rebuild_congruence() {
-    use pixelflow_search::egraph::{EGraph, ENode, all_rules};
+    use pixelflow_search::egraph::{EGraph, ENode, RuleSet, Saturation, all_rules};
 
-    let mut eg = EGraph::with_rules(all_rules());
+    let mut eg = Saturation::over(RuleSet::new(all_rules()));
     let x = eg.add(ENode::Var(0));
     let a = eg.add(ENode::Var(1));
     let b = eg.add(ENode::Var(2));

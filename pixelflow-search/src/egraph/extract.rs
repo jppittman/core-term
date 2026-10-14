@@ -2712,21 +2712,20 @@ mod tests {
         let mut optimizer =
             super::super::Optimizer::production().budget(super::super::Budget::Explicit {
                 iterations: 4,
-                classes: 3_000,
+                minted: 3_000,
                 applications: Some(20_000),
             });
         let mut egraph = optimizer.egraph();
         let root =
             super::super::insert(&arena, cur, &mut egraph, super::super::Vocabulary::Runtime)
                 .expect("the SDF arena is representable");
-        let node_count = super::super::reachable_count(&arena, cur);
-        let optimized = optimizer.run(&mut egraph, root, node_count);
+        let optimized = optimizer.run(&mut egraph, root);
         assert!(
             optimized.stats.classes > 500,
             "fixture must saturate into a real graph ({} classes)",
             optimized.stats.classes
         );
-        (egraph, root)
+        (egraph.into_graph(), root)
     }
 
     /// How many classes the pre-fixpoint DP left at the cycle sentinel: a

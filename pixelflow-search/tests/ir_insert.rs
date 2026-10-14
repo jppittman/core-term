@@ -95,7 +95,7 @@ fn gather_is_holdable_everywhere_and_nameable_nowhere() {
 /// happens to hold.
 ///
 /// An append-only arena rewritten in place carries abandoned nodes. Inserting
-/// those spends `max_classes` — a budget dimension — on an expression nobody
+/// those spends `max_minted` — a budget dimension — on an expression nobody
 /// asked about, making saturation a function of allocation history. Callers
 /// used to compact first to avoid it; now they do not have to.
 #[test]
@@ -338,4 +338,37 @@ fn projection_reports_arity() {
 
 fn alloc_vec(ids: &[pixelflow_ir::ExprId]) -> Vec<pixelflow_ir::ExprId> {
     ids.to_vec()
+}
+
+/// The size a budget is read from is the class count the term inserts to, and
+/// for an arena built by `push_*` that is the count of nodes the root reaches:
+/// `push_*` interns, so a subterm spelled twice is one node, and insertion
+/// hash-conses to the same classes. This is the premise of
+/// `docs/results/2026-10-14-the-tier-is-the-class-count.md` (808 shipped
+/// kernels, no band moved); it is pinned here so insertion starting to fold, or
+/// an arena starting not to intern, fails a test instead of moving a tier.
+#[test]
+fn a_pushed_arena_inserts_to_as_many_classes_as_it_reaches() {
+    let mut arena = ExprArena::new();
+    let x = arena.push_var(0);
+    let y = arena.push_var(1);
+    let mut acc = arena.push_const(0.0);
+    for k in 0..15 {
+        let c = arena.push_const(1.0 + k as f32 * 0.37);
+        let xc = arena.push_binary(OpKind::Mul, x, c);
+        let yc = arena.push_binary(OpKind::Mul, y, c);
+        // The same sum spelled twice, in both operand orders: one node each.
+        let sum = arena.push_binary(OpKind::Add, xc, yc);
+        let again = arena.push_binary(OpKind::Add, xc, yc);
+        let swapped = arena.push_binary(OpKind::Add, yc, xc);
+        assert_eq!(sum, again, "push_* interns a repeated spelling");
+        let both = arena.push_binary(OpKind::Mul, sum, swapped);
+        acc = arena.push_binary(OpKind::Add, acc, both);
+    }
+    // A node nothing reaches is neither reached nor inserted.
+    let _unreached = arena.push_binary(OpKind::Sub, x, y);
+
+    let mut eg = EGraph::new();
+    insert(&arena, acc, &mut eg, Vocabulary::Runtime).expect("every op is modelled");
+    assert_eq!(eg.num_classes(), reachable_count(&arena, acc));
 }

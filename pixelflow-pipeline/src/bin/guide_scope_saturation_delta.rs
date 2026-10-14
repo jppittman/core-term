@@ -22,15 +22,14 @@
 //! # Method
 //!
 //! **Iteration-level driving uses the real production algorithm, not a
-//! reimplementation.** Each round calls `EGraph::saturate_with_limits(1,
-//! max_classes, big_timeout)` — literally one outer round of the exact
-//! batched algorithm `EGraph::saturate()`/`saturate_with_budget` drive in
-//! production, just interrupted after every round instead of running all of
-//! them in one call. `match_counts` (the "journal machinery" the task names)
-//! is cleared and re-read every round for the exact per-iteration candidate
-//! count. `big_timeout` is a generous, never-hit backstop (this binary times
-//! nothing and reports nothing time-based); the real stopping conditions are
-//! `stats.total_unions == 0` (quiescence — see the phrasing note below),
+//! reimplementation.** Each round calls `Saturation::saturate_budgeted`
+//! with `Limits { iterations: 1, minted: max_minted, .. }` — literally one
+//! outer round of the exact batched algorithm production drives, just
+//! interrupted after every round instead of running all of them in one call.
+//! `match_counts` (the "journal machinery" the task names) is taken and
+//! re-read every round for the exact per-iteration candidate count. There is
+//! no clock (this binary times nothing and reports nothing time-based); the
+//! real stopping conditions are `stats.total_unions == 0` (quiescence — see the phrasing note below),
 //! `--max-iterations`, and `--max-classes`.
 //!
 //! An earlier version of this harness drove single applications directly via
@@ -120,7 +119,7 @@ use clap::Parser;
 
 use pixelflow_ir::ExprArena;
 use pixelflow_pipeline::training::corpus::read_corpus;
-use pixelflow_search::egraph::{EGraph, ENodeId, Origin};
+use pixelflow_search::egraph::{EGraph, ENodeId, Limits, Origin, RuleSet, Saturation};
 use pixelflow_search::math::all_rules;
 
 #[derive(Parser)]
@@ -145,16 +144,16 @@ struct Args {
     limit: usize,
 
     /// Per-expression saturation budget: max batched rounds (each round is
-    /// one `EGraph::saturate_with_limits(1, ..)` call, matching production
+    /// one `Saturation::saturate_budgeted` call of one iteration, matching production
     /// semantics exactly).
     #[arg(long, default_value_t = 100)]
     max_iterations: usize,
 
     /// Per-expression e-graph size budget (canonical class count) — the same
-    /// role `SaturationConfig::max_classes` plays in production, just a
+    /// role `SaturationConfig::max_minted` plays in production, just a
     /// harness-chosen value bounding the O(graph size) snapshot walk cost.
-    #[arg(long, default_value_t = 3000)]
-    max_classes: usize,
+    #[arg(long = "max-classes", default_value_t = 3000)]
+    max_minted: usize,
 
     /// Write the full structured result as JSON to this path.
     #[arg(long)]
@@ -185,7 +184,7 @@ impl ApplicationSample {
     }
 }
 
-/// One `saturate_with_limits(1, ..)` round: how many candidates a Guide
+/// One single-iteration `saturate_budgeted` round: how many candidates a Guide
 /// scoring this round's matches would have had to evaluate, and how the
 /// graph grew as a result.
 #[derive(Clone, Copy)]
@@ -270,46 +269,44 @@ fn quantile(mut xs: Vec<f64>, p: f64) -> f64 {
 /// at the first of: quiescence (`stats.total_unions == 0` for a round that
 /// actually ran — a diagnostic condition, not a certified fixpoint; this
 /// optimizer is budget-only by design), the `max_iterations` round cap, or
-/// the `max_classes` class cap.
+/// the `max_minted` class cap.
 ///
 /// The class cap needs checking twice, at two different granularities, and
 /// conflating them mislabels a truncated run as converged: this function's
-/// own pre-round guard (`canon > max_classes`, `canon` from `snapshot_graph`)
-/// counts *canonical* (live-root) classes, while `saturate_with_limits`'s
-/// own internal check (`self.classes.len() > max_classes`) counts every
+/// own pre-round guard (`canon > max_minted`, `canon` from `snapshot_graph`)
+/// counts *canonical* (live-root) classes, while `saturate_budgeted`'s
+/// own internal check (`self.classes.len() > max_minted`) counts every
 /// *allocated* class slot, including ones already unioned away and excluded
 /// from canonical iteration. Allocated count is always >= canonical count,
-/// so `saturate_with_limits` can hit its cap and return `stats.iterations ==
+/// so `saturate_budgeted` can hit its cap and return `stats.iterations ==
 /// 0, total_unions == 0` (did zero work this round) even when this
 /// function's own pre-check just passed. `stats.total_unions == 0` alone
 /// cannot tell that apart from "the round ran and genuinely found nothing to
 /// union" — only `stats.iterations == 0` can, since `iterations` increments
-/// only after both of `saturate_with_limits`'s own cap checks pass.
+/// only after both of `saturate_budgeted`'s own cap checks pass.
 fn run_saturation_instrumented(
-    egraph: &mut EGraph,
+    egraph: &mut Saturation,
     max_iterations: usize,
-    max_classes: usize,
+    max_minted: usize,
 ) -> (Vec<IterationSample>, bool) {
     let mut iters: Vec<IterationSample> = Vec::new();
     let mut reached_quiescence = false;
-    // Generous backstop, never the intended stopping condition — this
-    // harness times nothing and reports nothing time-based. Matches the
-    // same convention `guide_headroom` documents for `EGraph::saturate()`'s
-    // internal deadline.
-    let big_timeout = std::time::Duration::from_secs(3600);
-
     let (mut canon, mut edges) = snapshot_graph(egraph);
 
     for _round in 0..max_iterations {
-        if canon > max_classes {
+        if canon > max_minted {
             break;
         }
-        egraph.match_counts.clear();
-        let unions_before_round = egraph.provenance().union_count();
+        drop(egraph.take_match_counts());
+        let unions_before_round = egraph.journal().union_count();
 
-        let stats = egraph.saturate_with_limits(1, max_classes, big_timeout);
+        let stats = egraph.saturate_budgeted(Limits {
+            iterations: 1,
+            minted: max_minted,
+            applications: None,
+        });
 
-        // `stats.iterations == 0` means `saturate_with_limits`'s own
+        // `stats.iterations == 0` means `saturate_budgeted`'s own
         // allocated-class-count cap tripped before this round could run at
         // all (see this function's doc comment) -- budget-exhausted, same
         // disposition as the canonical-count pre-check above, NOT
@@ -320,10 +317,10 @@ fn run_saturation_instrumented(
             break;
         }
 
-        let eval_count: usize = egraph.match_counts.values().sum();
+        let eval_count: usize = egraph.take_match_counts().values().sum();
 
         let (new_canon, new_edges) = snapshot_graph(egraph);
-        let unions_after_round = egraph.provenance().union_count();
+        let unions_after_round = egraph.journal().union_count();
 
         iters.push(IterationSample {
             eval_count,
@@ -396,7 +393,7 @@ fn reconstruct_applications(
     // approximation's scope instead of leaving it silent.
     let mut nodes_by_app: HashMap<u64, Vec<ENodeId>> = HashMap::new();
     let mut dropped_origins = 0usize;
-    for (enode_id, origin) in egraph.provenance().origins() {
+    for (enode_id, origin) in egraph.journal().origins() {
         if let Origin::Rule(app_id) = origin {
             if arity_of.contains_key(&enode_id) {
                 nodes_by_app
@@ -413,9 +410,9 @@ fn reconstruct_applications(
     let mut running_nodes = seed_nodes;
     let mut running_edges = seed_edges;
     let mut apps: Vec<ApplicationSample> = Vec::new();
-    let total_applications = egraph.provenance().recorded_count();
+    let total_applications = egraph.journal().recorded_count();
 
-    for (app_id, record) in egraph.provenance().applications() {
+    for (app_id, record) in egraph.journal().applications() {
         let created = nodes_by_app.get(&app_id.as_u64());
         let nodes_added = created.map(Vec::len).unwrap_or(0);
         let edges_added: usize = created
@@ -435,7 +432,7 @@ fn reconstruct_applications(
             .unwrap_or(0);
 
         apps.push(ApplicationSample {
-            rule_idx: record.rule_idx,
+            rule_idx: record.rule_idx.get(),
             order_in_run: apps.len(),
             total_in_run: total_applications,
             edges_before: running_edges,
@@ -497,19 +494,15 @@ fn main() {
     let n = entries.len();
     eprintln!(
         "guide_scope_saturation_delta: measuring {n} expressions (of {total_available} \
-         available in corpus_dev.bin), max_iterations={}, max_classes={}",
-        args.max_iterations, args.max_classes
+         available in corpus_dev.bin), max_iterations={}, max_minted={}",
+        args.max_iterations, args.max_minted
     );
 
     let rule_names: Vec<String> = {
-        let probe = EGraph::with_rules(all_rules());
-        (0..all_rules().len())
-            .map(|i| {
-                probe
-                    .rule(i)
-                    .map(|r| r.name().to_string())
-                    .unwrap_or_else(|| format!("<rule {i}>"))
-            })
+        let rules = RuleSet::new(all_rules());
+        rules
+            .indices()
+            .map(|i| rules.rule(i).name().to_string())
             .collect()
     };
 
@@ -530,7 +523,7 @@ fn main() {
     let mut total_refused_const_unions = 0usize;
 
     for (i, (_name, arena, root)) in entries.iter().enumerate() {
-        let mut egraph = EGraph::with_rules(all_rules());
+        let mut egraph = Saturation::over(RuleSet::new(all_rules()));
         let root_class = pixelflow_search::egraph::insert(
             arena,
             *root,
@@ -541,11 +534,11 @@ fn main() {
         let _ = root_class; // root only needed to seed the graph; saturation is whole-graph.
 
         let (seed_canon, seed_edges) = snapshot_graph(&egraph);
-        let seed_nodes = egraph.provenance().origin_count();
+        let seed_nodes = egraph.journal().origin_count();
         let _ = seed_canon;
 
         let (iters, reached_quiescence) =
-            run_saturation_instrumented(&mut egraph, args.max_iterations, args.max_classes);
+            run_saturation_instrumented(&mut egraph, args.max_iterations, args.max_minted);
         if !reached_quiescence {
             truncated_by_budget += 1;
         }

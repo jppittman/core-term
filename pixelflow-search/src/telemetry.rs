@@ -65,11 +65,8 @@ impl Tier {
 pub struct SaturationInvocation<'a> {
     /// Which tier invoked saturation.
     pub tier: Tier,
-    /// Size of the input, as passed to `config_for_input` to select the
-    /// tier.
-    pub node_count: usize,
-    /// E-classes the input inserted to before any rewrite — what sized the
-    /// classical class cap.
+    /// E-classes the input inserted to before any rewrite — what picked the
+    /// tier and sized the classical cap (`config_for_input`).
     pub inserted_classes: usize,
     /// Which objective chose the extracted term, and what the sharing-aware
     /// pass cost — so a record above any budget can never be read as if it
@@ -118,9 +115,9 @@ pub struct SaturationInvocation<'a> {
 pub fn record(inv: SaturationInvocation<'_>) {
     let cost = latency_prior_cost(inv.extracted_arena, inv.extracted_root);
     let line = format!(
-        "{{\"tier\":\"{tier}\",\"node_count\":{node_count},\"inserted_classes\":{inserted_classes},\
+        "{{\"tier\":\"{tier}\",\"inserted_classes\":{inserted_classes},\
          \"max_iterations\":{max_iterations},\
-         \"max_classes\":{max_classes},\"max_applications\":{max_applications},\
+         \"max_classes\":{max_minted},\"max_applications\":{max_applications},\
          \"stop_reason\":\"{stop_reason}\",\"iterations\":{iterations},\
          \"classes_at_stop\":{classes_at_stop},\"application_count\":{application_count},\
          \"union_count\":{union_count},\"extracted_latency_prior_cost\":{cost},\
@@ -128,10 +125,9 @@ pub fn record(inv: SaturationInvocation<'_>) {
          \"shared_pass_bytes\":{shared_pass_bytes},\
          \"wall_clock_us\":{wall_clock_us},\"kernel_label\":{kernel_label}}}",
         tier = inv.tier.as_json_str(),
-        node_count = inv.node_count,
         inserted_classes = inv.inserted_classes,
         max_iterations = inv.stats.limits.iterations,
-        max_classes = inv.stats.limits.classes,
+        max_minted = inv.stats.limits.minted,
         max_applications = json_opt_u64(inv.stats.limits.applications),
         stop_reason = stop_str(inv.stats.stop),
         iterations = inv.stats.iterations,
@@ -170,7 +166,7 @@ pub(crate) fn record_decline(tier: Tier, declined: Declined) {
 fn stop_str(stop: SaturationStop) -> &'static str {
     match stop {
         SaturationStop::Quiesced => "quiesced",
-        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::MintedCap => "class_cap",
         SaturationStop::IterationCeiling => "iteration_ceiling",
         SaturationStop::Timeout => "timeout",
         SaturationStop::ApplicationBudget => "application_budget",

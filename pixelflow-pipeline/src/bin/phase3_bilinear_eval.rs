@@ -354,7 +354,7 @@ fn stop_name(stop: SaturationStop) -> &'static str {
     match stop {
         SaturationStop::Quiesced => "quiesced",
         SaturationStop::ApplicationBudget => "app_budget",
-        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::MintedCap => "class_cap",
         SaturationStop::IterationCeiling => "iteration_ceiling",
         SaturationStop::Timeout => "timeout",
     }
@@ -396,16 +396,11 @@ fn prefix_diag(
 ) -> PrefixDiag {
     let mut strict_positive = 0usize;
     let mut by_rule: BTreeMap<String, RuleFiring> = BTreeMap::new();
-    for (id, rec) in out.egraph.provenance().applications() {
+    for (id, rec) in out.egraph.journal().applications() {
         if id.as_u64() as usize >= applications {
             continue;
         }
-        let rule = rec.rule.unwrap_or_else(|| {
-            panic!(
-                "phase3_bilinear_eval: an application carries no RuleId — the graph was built \
-                 without rule ids, and every table here is keyed by identity"
-            )
-        });
+        let rule = rec.rule;
         let positive = positives.contains(&id);
         if positive {
             strict_positive += 1;
@@ -558,7 +553,7 @@ fn arm_optimizer(input: &CurveInput<'_>, guide: Option<Box<dyn SaturationGuide>>
         .observe(Some(Box::new(KeepJournal)))
         .budget(Budget::Explicit {
             iterations: SWEEP_SAFETY_CEILING,
-            classes: input.class_cap,
+            minted: input.class_cap,
             applications: None,
         })
         .hard_ceiling(SAFETY_TIMEOUT)
@@ -634,7 +629,7 @@ fn evaluate_expression(
                 prefix_diag(out, arm.apps_at(b), arm.rounds_at(b), &positives, rules),
             );
         }
-        let total = out.egraph.provenance().applications().count();
+        let total = out.egraph.journal().applications().count();
         let last_rounds = *arm.rounds.last().expect("non-empty curve");
         full_run.insert(
             arm_name.to_string(),
@@ -1214,7 +1209,7 @@ fn main() {
             let input = CurveInput {
                 arena,
                 root: *root,
-                class_cap: config_for_node_count(arena.len()).max_classes,
+                class_cap: config_for_node_count(arena.len()).max_minted,
                 costs: &costs,
             };
             let mut row = evaluate_expression(&args.set, name, &input, &guides, &rules);

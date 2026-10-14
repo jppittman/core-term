@@ -57,7 +57,7 @@
 //! spent, and the existing code already detects that case. This binary
 //! reports, per expression, a `quiesced_before_cap` diagnostic derived from
 //! `SaturationStats` alone (`iterations < max_iters` and the e-graph did not
-//! reach `max_classes`) — both deterministic counts, not timing reads. With
+//! reach `max_minted`) — both deterministic counts, not timing reads. With
 //! [`SATURATE_TIMEOUT`] now generous rather than production's 500ms (see
 //! above), the one remaining ambiguity this proxy can't resolve without
 //! `SaturationStats` growing an explicit stop-reason field (out of scope —
@@ -82,7 +82,7 @@ use clap::Parser;
 use pixelflow_ir::ExprArena;
 use pixelflow_pipeline::training::corpus::read_corpus;
 use pixelflow_search::egraph::{
-    CostModel, EGraph, EpisodeLabels, Origin, SaturationConfig, extract_dag,
+    CostModel, EGraph, EpisodeLabels, Origin, RuleSet, Saturation, SaturationConfig, extract_dag,
 };
 use pixelflow_search::math::all_rules;
 
@@ -125,7 +125,8 @@ const SATURATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60)
 
 /// This binary's saturation budget: the named compatibility budget
 /// ([`SaturationConfig::compatibility`], 100 rounds / 10,000 classes) with
-/// the wall clock swapped for [`SATURATE_TIMEOUT`].
+/// its `safety_ceiling` set to [`SATURATE_TIMEOUT`]. The run itself reads no
+/// clock; the bin asserts on its own elapsed time against that ceiling.
 ///
 /// Naming it rather than re-spelling the round and class caps is what keeps
 /// this binary's headroom numbers comparable with the other non-production
@@ -312,14 +313,10 @@ fn main() {
 
     let costs = CostModel::latency_prior();
     let rule_names: Vec<String> = {
-        let probe = EGraph::with_rules(all_rules());
-        (0..all_rules().len())
-            .map(|i| {
-                probe
-                    .rule(i)
-                    .map(|r| r.name().to_string())
-                    .unwrap_or_else(|| format!("<rule {i}>"))
-            })
+        let rules = RuleSet::new(all_rules());
+        rules
+            .indices()
+            .map(|i| rules.rule(i).name().to_string())
             .collect()
     };
 
@@ -330,7 +327,7 @@ fn main() {
     let mut total_strict_lb_all: u64 = 0;
 
     for (i, (name, arena, root)) in entries.iter().enumerate() {
-        let mut egraph = EGraph::with_rules(all_rules());
+        let mut egraph = Saturation::over(RuleSet::new(all_rules()));
         let root_class = pixelflow_search::egraph::insert(
             arena,
             *root,
@@ -343,7 +340,7 @@ fn main() {
         let sat_stats = budget.run(&mut egraph);
         let saturate_elapsed = saturate_started.elapsed();
         let hit_iteration_cap = sat_stats.iterations >= budget.max_iterations;
-        let hit_class_cap = egraph.num_classes() > budget.max_classes;
+        let hit_class_cap = egraph.num_classes() > budget.max_minted;
         let hit_safety_timeout = saturate_elapsed >= budget.safety_ceiling;
         assert!(
             !hit_safety_timeout,
@@ -362,12 +359,12 @@ fn main() {
         let mut strict_set: std::collections::BTreeSet<pixelflow_search::egraph::ApplicationId> =
             std::collections::BTreeSet::new();
         for tag in &chosen_tags {
-            if let Some(Origin::Rule(app_id)) = egraph.provenance().origin(*tag) {
+            if let Some(Origin::Rule(app_id)) = egraph.journal().origin(*tag) {
                 strict_set.insert(app_id);
             }
         }
 
-        let total_applications = egraph.provenance().recorded_count();
+        let total_applications = egraph.journal().recorded_count();
         let labeler_lb = labels.load_bearing.len();
         let strict_lb = strict_set.len();
 
@@ -379,8 +376,8 @@ fn main() {
              `labeler::chosen_tagged_nodes`, fail loud rather than report a bogus gap"
         );
 
-        for (app_id, record) in egraph.provenance().applications() {
-            let agg = rule_agg.entry(record.rule_idx).or_default();
+        for (app_id, record) in egraph.journal().applications() {
+            let agg = rule_agg.entry(record.rule_idx.get()).or_default();
             agg.fired += 1;
             if labels.load_bearing.contains(&app_id) {
                 agg.labeler_load_bearing += 1;

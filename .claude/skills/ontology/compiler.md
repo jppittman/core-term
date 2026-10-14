@@ -214,7 +214,7 @@
   shape-free, ISA-free, and cached by structure. The proposed phases are
   subsets of R run in sequence: `saturate_R = folds_R ∘ main_(R∖folds)`
   (M15). The fold phase admits whole folds, smallest predicted growth first,
-  under `HARD_CLASS_LIMIT`.
+  under `HARD_MINTED_LIMIT`.
 - **Is not:**
   - A fixpoint search ("quiescence … is a diagnostic condition, never a
     certified closure").
@@ -230,14 +230,14 @@
     extractor's defect (E5).
   - Truncating early can never make the graph unsound.
   - The currency is the **rule application**: one recorded rewrite,
-    idempotent re-fires included. `EGraph::application_count()` is
+    idempotent re-fires included. `Saturation::application_count()` is
     unconditional, "the budget must not depend on whether anyone is
     watching". It is not `Provenance::recorded_count`.
   - Zero rounds is silent today, so C1's gate requires that the largest
     saturation run at least one round.
 - **Lives:** `pixelflow-search/src/egraph/{saturate,graph,optimizer}.rs`
-  (`saturate_bounded` is in `graph.rs` and `optimizer.rs`),
-  `pixelflow-search/src/saturate_pass.rs`; `HARD_CLASS_LIMIT` (`graph.rs`);
+  (the sweep loop is `Saturation::saturate` in `graph/runner.rs`; the store it sweeps is `EGraph` in `graph.rs`),
+  `pixelflow-search/src/saturate_pass.rs`; `HARD_MINTED_LIMIT` (`graph/runner.rs`);
   the 2026-08-31 guide-design-revision §0 and §4.2; one-pipeline §1.1, §1.4,
   M15.
 
@@ -245,9 +245,9 @@
 
 - **Is:** what stops saturation: rule applications, e-classes and iterations,
   "all three deterministic functions of the input". It is tiered
-  blitz/rapid/classical by size: 20,000 and 80,000 applications; classical
+  blitz/rapid/classical by the class count the input inserts to: 20,000 and 80,000 applications; classical
   200,000, rising to 2,000,000 past 625 inserted classes. The classical
-  class cap is `clamp(8 × inserted, floor, ceiling)`. `HARD_CLASS_LIMIT`
+  class cap (`max_minted`, ids ever minted) is `clamp(8 × inserted, floor, ceiling)`. `HARD_MINTED_LIMIT`
   guards memory, not meaning.
 - **Is not:**
   - Wall clock. `safety_ceiling` (30 s/120 s, classical 300–3,000 s) panics
@@ -263,7 +263,7 @@
   investigated, not raised. `PIXELFLOW_SATURATION_CEILING_MS` can change
   whether the build panics, never which kernel is emitted. "If a tier is too
   slow for a user, the lever is `max_applications` … never the ceiling."
-- **Lives:** `SaturationConfig { max_iterations, max_classes,
+- **Lives:** `SaturationConfig { max_iterations, max_minted,
   max_applications, safety_ceiling }` and `CLASSICAL_CLASSES_PER_INSERTED_CLASS`,
   `CLASSICAL_CLASS_FLOOR`, `CLASSICAL_CLASS_CEILING`
   (`pixelflow-search/src/egraph/saturate.rs`); `Budget`

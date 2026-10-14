@@ -48,7 +48,7 @@ fn optimize(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
         pixelflow_search::egraph::Vocabulary::Templates,
     )
     .expect("insert into e-graph");
-    let optimized = optimizer.run(&mut eg, root_class, arena.len());
+    let optimized = optimizer.run(&mut eg, root_class);
     optimized.to_arena(&eg, root_class)
 }
 

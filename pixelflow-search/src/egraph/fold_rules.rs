@@ -619,6 +619,7 @@ fn rebuild(node: &ENode, kids: &[Done]) -> Option<HeadNode> {
 mod tests {
     use super::*;
     use crate::egraph::saturate::SaturationConfig;
+    use crate::egraph::{RuleSet, Saturation};
     use crate::egraph::{Vocabulary, insert};
     use pixelflow_ir::{ExprArena, OpKind};
 
@@ -637,7 +638,7 @@ mod tests {
         let x = a.push_var(0);
         let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..3), x);
 
-        let mut eg = EGraph::with_rules(fold_rules());
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         let body_class = match eg.nodes(class).first() {
             Some(ENode::Reduce { body, .. }) => eg.find(*body),
@@ -695,7 +696,7 @@ mod tests {
         let x = a.push_var(0);
 
         let even = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..8), x);
-        let mut eg = EGraph::with_rules(fold_rules());
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, even, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         let ENode::Reduce { fold, body } = eg.nodes(class).first().cloned().expect("a fold") else {
             panic!("expected a fold");
@@ -708,7 +709,7 @@ mod tests {
         );
 
         let odd = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..7), x);
-        let mut eg2 = EGraph::with_rules(fold_rules());
+        let mut eg2 = Saturation::over(RuleSet::new(fold_rules()));
         let class2 = insert(&a, odd, &mut eg2, Vocabulary::Runtime).expect("a fold inserts");
         let ENode::Reduce {
             fold: fold2,
@@ -742,7 +743,7 @@ mod tests {
         let x = a.push_var(0);
         let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..8), x);
 
-        let mut eg = EGraph::with_rules(fold_rules());
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         let body_class = match eg.nodes(class).first() {
             Some(ENode::Reduce { body, .. }) => eg.find(*body),
@@ -818,7 +819,7 @@ mod tests {
     /// The pieces of a factoring test, built directly as e-nodes so the
     /// body's shape is exactly the one written.
     struct Factorable {
-        eg: EGraph,
+        eg: Saturation,
         /// The fold's class.
         class: EClassId,
         /// The fold node itself, as a rule is handed it.
@@ -859,7 +860,7 @@ mod tests {
         fold: Fold,
         body: impl FnOnce(&mut EGraph, EClassId) -> EClassId,
     ) -> Factorable {
-        let mut eg = EGraph::with_rules(rules);
+        let mut eg = Saturation::over(RuleSet::new(rules));
         let i = eg.add(ENode::Var(fold.binder().var()));
         let body = body(&mut eg, i);
         let node = ENode::Reduce { fold, body };
@@ -1212,6 +1213,7 @@ mod production_shape_tests {
     use crate::egraph::extract::extract_dag;
     use crate::egraph::saturate::SaturationConfig;
     use crate::egraph::{CostFunction, CostModel, ENode, Vocabulary, insert};
+    use crate::egraph::{RuleSet, Saturation};
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
     use pixelflow_ir::{ExprArena, ExprNode, OpKind};
 
@@ -1262,7 +1264,7 @@ mod production_shape_tests {
     /// real work is where "the graph unrolls it" stops being obvious.
     /// Returns the saturated graph, the fold's class, and the saturation
     /// stats.
-    fn saturated_table_fold() -> (EGraph, crate::egraph::EClassId, impl core::fmt::Debug) {
+    fn saturated_table_fold() -> (Saturation, crate::egraph::EClassId, impl core::fmt::Debug) {
         let mut a = ExprArena::new();
         let buf = a.declare_buffer(BufferDecl {
             id: BufferIdentity::mint(),
@@ -1276,7 +1278,7 @@ mod production_shape_tests {
         let body = a.push_binary(OpKind::Mul, read, x);
         let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..40), body);
 
-        let mut eg = EGraph::with_rules(fold_rules());
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         let stats = SaturationConfig::compatibility(200).run(&mut eg);
         (eg, class, stats)
@@ -1349,7 +1351,7 @@ mod production_shape_tests {
         let body = a.push_binary(OpKind::Mul, read, x);
         let root = a.push_reduce(Fold::new(Monoid::SUM, binder(0), 0..40), body);
 
-        let mut eg = EGraph::with_rules(fold_rules());
+        let mut eg = Saturation::over(RuleSet::new(fold_rules()));
         let class = insert(&a, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
         SaturationConfig::compatibility(200).run(&mut eg);
 

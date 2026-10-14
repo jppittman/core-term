@@ -61,13 +61,11 @@ let x = arena.push_var(0);
 let zero = arena.push_const(0.0);
 let root = arena.push_binary(OpKind::Add, x, zero);
 
-let node_count = arena.node_count_subtree(root);
-
 let mut optimizer = Optimizer::production();
 let mut egraph = optimizer.egraph();
 let root_class = insert(&arena, root, &mut egraph, Vocabulary::Runtime)
     .expect("every node of this term is modelled");
-let optimized = optimizer.run(&mut egraph, root_class, node_count);
+let optimized = optimizer.run(&mut egraph, root_class);
 let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
 
 assert!(extracted.node_count_subtree(extracted_root) > 0);
@@ -75,12 +73,12 @@ assert!(optimized.cost.tree <= CostModel::default().cost(OpKind::Add));
 ```
 
 `Optimizer::run` is the production entry point: it sizes the iteration, e-class, and rule
-application budget from `node_count`, so a three-node expression is not given a budget meant
-for a hundred-node one, and it extracts what it saturated. `Optimizer::saturate_term` and
-`Optimizer::extract` are its two halves, for a caller that saturates once and extracts at
+application budget from the class count the term inserted to, so a three-node expression is not
+given a budget meant for a hundred-node one, and it extracts what it saturated.
+`Optimizer::saturate_term` and `Optimizer::extract` are its two halves, for a caller that saturates once and extracts at
 several lattice shapes (`Optimizer::for_lattice`).
 
-`EGraph::saturate_with_limits()` is the way to pin an exact stopping policy rather than inherit
+`Saturation::saturate_with_limits()` is the way to pin an exact stopping policy rather than inherit
 the size-tiered one, for tests and experiments. Those call sites spell the budget as
 `SaturationConfig::compatibility(rounds)` instead of repeating literals; to read a term back
 out of such a graph, use `Optimizer::extract` and `Optimized::to_arena`.

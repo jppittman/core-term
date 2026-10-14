@@ -1417,6 +1417,7 @@ pub fn experimental_rules() -> Vec<Box<dyn Rewrite>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::{RuleSet, Saturation};
 
     /// Sanity: the batch is harness-only, and its count matches the doc
     /// comment on [`experimental_rules`] (guards against silent drift if a
@@ -1506,9 +1507,9 @@ mod tests {
         for (case_name, build) in cases {
             let mut rules = crate::math::all_rules();
             rules.extend(experimental_rules());
-            let mut eg = EGraph::with_rules(rules);
+            let mut eg = Saturation::over(RuleSet::new(rules));
             let root = build(&mut eg);
-            let class_cap = config_for_node_count(8).max_classes;
+            let class_cap = config_for_node_count(8).max_minted;
             let _ = saturate_with_full_budget(&mut eg, 200, class_cap, Duration::from_secs(10));
             // The point of this test is that saturate+extract complete
             // without panicking under the full 62+experimental rule set; a

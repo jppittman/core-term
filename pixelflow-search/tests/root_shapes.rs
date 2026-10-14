@@ -17,8 +17,8 @@ use std::time::Duration;
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity, ExprArena, ExprId};
 use pixelflow_ir::{Binder, Fold, Monoid, OpKind};
 use pixelflow_search::egraph::{
-    EGraph, Rewrite, Vocabulary, all_rules, derivative_rules, fold_rules, insert,
-    saturate_with_full_budget,
+    Rewrite, RuleIdx, RuleSet, Saturation, Vocabulary, all_rules, derivative_rules, fold_rules,
+    insert, saturate_with_full_budget,
 };
 use pixelflow_search::math::round2_rules::experimental_rules;
 
@@ -227,19 +227,19 @@ fn no_rule_matches_a_node_outside_its_root_shapes() {
     let mut arena = ExprArena::new();
     let roots = terms(&mut arena);
 
-    let mut eg = EGraph::with_rules(every_rule());
+    let mut eg = Saturation::over(RuleSet::new(every_rule()));
     for root in roots {
         insert(&arena, root, &mut eg, Vocabulary::Runtime).expect("every term inserts");
     }
 
-    let mut fired: BTreeSet<usize> = BTreeSet::new();
+    let mut fired: BTreeSet<RuleIdx> = BTreeSet::new();
     for iteration in 0..ITERATIONS {
         saturate_with_full_budget(&mut eg, 1, CLASS_CAP, GENEROUS);
         let mut nodes_checked = 0usize;
         for class in eg.class_ids().collect::<Vec<_>>() {
             for node in eg.nodes(class) {
-                for idx in 0..eg.num_rules() {
-                    let rule = eg.rule(idx).expect("an index below the rule count");
+                for idx in eg.rules().indices() {
+                    let rule = eg.rules().rule(idx);
                     nodes_checked += 1;
                     if rule.apply(&eg, class, node).is_none() {
                         continue;
@@ -260,10 +260,12 @@ fn no_rule_matches_a_node_outside_its_root_shapes() {
     }
 
     // The check above is vacuous for a rule that never fires, so name them.
-    let silent: Vec<String> = (0..eg.num_rules())
+    let silent: Vec<String> = eg
+        .rules()
+        .indices()
         .filter(|idx| !fired.contains(idx))
         .map(|idx| {
-            let rule = eg.rule(idx).expect("an index below the rule count");
+            let rule = eg.rules().rule(idx);
             format!("{idx}:{}({:?})", rule.name(), rule.specialization())
         })
         .collect();

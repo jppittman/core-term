@@ -45,8 +45,8 @@
 use pixelflow_codegen::emit::compile;
 use pixelflow_ir::{ExprArena, ExprId, ExprNode, Kernel, LatticeShape, OpKind};
 use pixelflow_search::egraph::{
-    CostFunction, CostModel, EGraph, ENode, SaturationConfig, Vocabulary, extract, fold_rules,
-    insert,
+    CostFunction, CostModel, ENode, RuleSet, Saturation, SaturationConfig, Vocabulary, extract,
+    fold_rules, insert,
 };
 
 /// What a loop costs [`LoopsCostMore`] beyond the latency prior: more than any
@@ -132,7 +132,7 @@ fn unroll_by_halving(
     root: ExprId,
     iterations: usize,
 ) -> (ExprArena, ExprId, u64) {
-    let mut eg = EGraph::with_rules(fold_rules());
+    let mut eg = Saturation::over(RuleSet::new(fold_rules()));
     let class = insert(arena, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
     SaturationConfig::compatibility(iterations).run(&mut eg);
     let (extracted, extracted_root, _cost) =
@@ -211,7 +211,7 @@ fn halving_a_glyph_scale_fold_costs_far_fewer_than_n_applications() {
     let kernel = sum_kernel(n);
     let (arena, root) = kernel.parts();
 
-    let mut eg = EGraph::with_rules(fold_rules());
+    let mut eg = Saturation::over(RuleSet::new(fold_rules()));
     insert(arena, root, &mut eg, Vocabulary::Runtime).expect("a fold inserts");
     // Peeling one term at a time would need on the order of `n` rounds;
     // halving needs `O(log n)` — comfortable headroom either way, and this

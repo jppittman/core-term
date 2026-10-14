@@ -205,20 +205,15 @@ fn rule_name(rules: &RuleSet, id: RuleId) -> String {
 
 /// The [`RuleId`] a recorded application carries, or a loud failure.
 fn rule_of(rec: &pixelflow_search::egraph::ApplicationRecord) -> RuleId {
-    rec.rule.unwrap_or_else(|| {
-        panic!(
-            "strict_label_output_class_recount: an application carries no RuleId — the graph \
-             was built without rule ids, and every table here is keyed by identity"
-        )
-    })
+    rec.rule
 }
 
 fn origin_label(eg: &EGraph, rules: &RuleSet, tag: ENodeId) -> String {
-    match eg.provenance().origin(tag) {
+    match eg.journal().origin(tag) {
         Some(Origin::Seed) => "seed".to_string(),
         Some(Origin::Rule(app)) => {
             let rec = eg
-                .provenance()
+                .journal()
                 .application(app)
                 .unwrap_or_else(|| panic!("no record for {app:?}"));
             rule_name(rules, rule_of(rec))
@@ -273,7 +268,7 @@ fn tally_expression(
     by_rule: &mut BTreeMap<RuleId, RuleTally>,
 ) -> Option<PythagoreanRow> {
     let eg = &out.egraph;
-    let prov = eg.provenance();
+    let prov = eg.journal();
     let labels = labels_of(out);
     let path = chosen_path(out);
 
@@ -445,7 +440,7 @@ fn main() {
     let started = Instant::now();
 
     for (i, (name, arena, root)) in selected.iter().enumerate() {
-        let class_cap = config_for_node_count(arena.len()).max_classes;
+        let class_cap = config_for_node_count(arena.len()).max_minted;
         let t0 = Instant::now();
         let mut optimizer = Optimizer::production()
             .cost(costs.clone())
@@ -455,7 +450,7 @@ fn main() {
             .observe(Some(Box::new(KeepJournal)))
             .budget(Budget::Explicit {
                 iterations: SWEEP_SAFETY_CEILING,
-                classes: class_cap,
+                minted: class_cap,
                 applications: None,
             })
             .hard_ceiling(SAFETY_TIMEOUT);

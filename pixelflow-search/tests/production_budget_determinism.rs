@@ -7,8 +7,8 @@ use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_search::egraph::{
     APPLICATIONS_PER_CLASS, Budget, CLASSICAL_CLASS_CEILING, CLASSICAL_CLASS_FLOOR,
-    CLASSICAL_CLASSES_PER_INSERTED_CLASS, HARD_CLASS_LIMIT, InputSize, Optimizer, SaturationConfig,
-    config_for_node_count,
+    CLASSICAL_CLASSES_PER_INSERTED_CLASS, HARD_MINTED_LIMIT, InputSize, Optimizer,
+    SaturationConfig, config_for_node_count,
 };
 
 /// A mid-sized expression with sharing and several rule families in reach —
@@ -83,7 +83,7 @@ const CALIBRATION: &[CalibrationRow] = &[
     },
     CalibrationRow {
         tier: "classical",
-        corpus: "#1087 real, ref (no clock, ClassCap)",
+        corpus: "#1087 real, ref (no clock, MintedCap)",
         p100_applications: 55_242,
     },
     CalibrationRow {
@@ -134,10 +134,10 @@ fn class_and_iteration_caps_are_pinned() {
     let rapid = SaturationConfig::rapid();
     let classical = SaturationConfig::classical();
 
-    assert_eq!((blitz.max_iterations, blitz.max_classes), (20, 500));
-    assert_eq!((rapid.max_iterations, rapid.max_classes), (50, 2_000));
+    assert_eq!((blitz.max_iterations, blitz.max_minted), (20, 500));
+    assert_eq!((rapid.max_iterations, rapid.max_minted), (50, 2_000));
     assert_eq!(
-        (classical.max_iterations, classical.max_classes),
+        (classical.max_iterations, classical.max_minted),
         (100, CLASSICAL_CLASS_FLOOR)
     );
     assert_eq!(CLASSICAL_CLASS_FLOOR, 5_000);
@@ -159,7 +159,7 @@ fn the_classical_cap_grows_with_the_inserted_input() {
     let small = SaturationConfig::classical_for(floor_input);
     assert_eq!(small, SaturationConfig::classical());
     assert_eq!(
-        SaturationConfig::classical_for(floor_input + 1).max_classes,
+        SaturationConfig::classical_for(floor_input + 1).max_minted,
         CLASSICAL_CLASS_FLOOR + per_class
     );
     // Between the floor and the ceiling, 8 per inserted class:
@@ -167,11 +167,11 @@ fn the_classical_cap_grows_with_the_inserted_input() {
     // gets 27,240.
     let inserted = 3_405;
     let mid = SaturationConfig::classical_for(inserted);
-    assert_eq!(mid.max_classes, 27_240);
+    assert_eq!(mid.max_minted, 27_240);
     assert_eq!(mid.max_iterations, 100);
     assert_eq!(
         mid.max_applications,
-        mid.max_classes as u64 * APPLICATIONS_PER_CLASS
+        mid.max_minted as u64 * APPLICATIONS_PER_CLASS
     );
     assert_eq!(
         mid.safety_ceiling,
@@ -181,7 +181,7 @@ fn the_classical_cap_grows_with_the_inserted_input() {
     // ceiling — which is under the hard limit the saturation loop clamps
     // every cap to.
     let big = SaturationConfig::classical_for(usize::MAX);
-    assert_eq!(big.max_classes, CLASSICAL_CLASS_CEILING);
+    assert_eq!(big.max_minted, CLASSICAL_CLASS_CEILING);
     assert_eq!(CLASSICAL_CLASS_CEILING, 50_000);
     assert_eq!(
         SaturationConfig::classical_for(CLASSICAL_CLASS_CEILING / per_class),
@@ -189,10 +189,10 @@ fn the_classical_cap_grows_with_the_inserted_input() {
     );
     assert_eq!(big.max_applications, 2_000_000);
     assert_eq!(big.safety_ceiling, std::time::Duration::from_secs(3_000));
-    // `CLASSICAL_CLASS_CEILING <= HARD_CLASS_LIMIT` is asserted at compile
+    // `CLASSICAL_CLASS_CEILING <= HARD_MINTED_LIMIT` is asserted at compile
     // time beside the constants; what a run can check is that the clamp
     // honours the hard limit at the top.
-    assert!(big.max_classes <= HARD_CLASS_LIMIT);
+    assert!(big.max_minted <= HARD_MINTED_LIMIT);
     // The three named presets are the same derivation at their caps.
     for preset in [
         SaturationConfig::blitz(),
@@ -201,7 +201,7 @@ fn the_classical_cap_grows_with_the_inserted_input() {
     ] {
         assert_eq!(
             preset.max_applications,
-            preset.max_classes as u64 * APPLICATIONS_PER_CLASS
+            preset.max_minted as u64 * APPLICATIONS_PER_CLASS
         );
     }
     assert_eq!(
@@ -214,41 +214,72 @@ fn the_classical_cap_grows_with_the_inserted_input() {
     );
 }
 
-/// Production keys the tier on the node count and the classical cap on the
-/// inserted class count; the tier's floor preset ignores the latter.
+/// Production keys the tier and the classical cap on one number, the
+/// inserted class count: the hash-consed size of the term, which is a
+/// function of the term and not of how an arena happened to spell it.
 #[test]
-fn production_limits_key_on_both_sizes() {
-    let big_input = InputSize {
-        nodes: 8_000,
-        classes: 3_405,
-    };
+fn production_limits_key_on_the_inserted_class_count() {
+    let big_input = InputSize { classes: 3_405 };
     let limits = Budget::Production.limits(big_input);
-    assert_eq!(limits.classes, 3_405 * CLASSICAL_CLASSES_PER_INSERTED_CLASS);
+    assert_eq!(limits.minted, 3_405 * CLASSICAL_CLASSES_PER_INSERTED_CLASS);
     assert_eq!(
         limits.applications,
-        Some(limits.classes as u64 * APPLICATIONS_PER_CLASS)
+        Some(limits.minted as u64 * APPLICATIONS_PER_CLASS)
     );
     // The chrome scene: a 390,815-node tree that inserts to 465 classes
     // keeps the floor.
-    let chrome = InputSize {
-        nodes: 390_815,
-        classes: 465,
-    };
+    let chrome = InputSize { classes: 465 };
     assert_eq!(
-        Budget::Production.limits(chrome).classes,
+        Budget::Production.limits(chrome).minted,
         CLASSICAL_CLASS_FLOOR
     );
     // A rapid-tier kernel is not touched by the classical rule.
-    let rapid = InputSize {
-        nodes: 40,
-        classes: 10_000,
-    };
-    assert_eq!(Budget::Production.limits(rapid).classes, 2_000);
-    // The node-count-only lookup is the floor.
+    let rapid = InputSize { classes: 40 };
+    assert_eq!(Budget::Production.limits(rapid).minted, 2_000);
+    // The tier follows the class count: a term that inserts to 10,000
+    // classes is classical, and sized past the floor to the ceiling.
+    let huge = InputSize { classes: 10_000 };
     assert_eq!(
-        config_for_node_count(8_000).max_classes,
+        Budget::Production.limits(huge).minted,
+        CLASSICAL_CLASS_CEILING
+    );
+    // The count-only lookup is the floor.
+    assert_eq!(
+        config_for_node_count(8_000).max_minted,
         CLASSICAL_CLASS_FLOOR
     );
+}
+
+/// The optimizer reads the tier off the graph it is handed: the class count
+/// the input inserted to, which is a function of the term and so of the
+/// saturation cache's key — not of a size its caller measured on whichever
+/// arena it happened to build.
+#[test]
+fn the_tier_is_read_off_the_graph() {
+    use pixelflow_search::egraph::{ENode, ops};
+
+    // A left-leaning sum of `terms` distinct variables: `2 * terms - 1`
+    // classes. Returns the classes inserted and the minted-id cap the
+    // production optimizer then holds the run to.
+    fn run_sum_of(terms: u8) -> (usize, usize) {
+        let mut optimizer = Optimizer::production().no_ceiling();
+        let mut eg = optimizer.egraph();
+        let mut acc = eg.add(ENode::Var(0));
+        for var in 1..terms {
+            let next = eg.add(ENode::Var(var));
+            acc = eg.add(ENode::Op {
+                op: &ops::Add,
+                children: vec![acc, next],
+            });
+        }
+        let classes = eg.num_classes();
+        let optimized = optimizer.run(&mut eg, acc);
+        (classes, optimized.stats.limits.minted)
+    }
+
+    assert_eq!(run_sum_of(4), (7, 500), "blitz");
+    assert_eq!(run_sum_of(12), (23, 2_000), "rapid");
+    assert_eq!(run_sum_of(40), (79, CLASSICAL_CLASS_FLOOR), "classical");
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +329,7 @@ fn saturation_is_deterministic_under_cpu_contention() {
             pixelflow_search::egraph::Vocabulary::Templates,
         )
         .expect("insert into e-graph");
-        let optimized = optimizer.run(&mut eg, root_class, arena.len());
+        let optimized = optimizer.run(&mut eg, root_class);
         let stop_reason = optimized.stats.stop;
         let (out, out_root) = optimized.to_arena(&eg, root_class);
         runs.push((stop_reason, arena_shape(&out, out_root)));
@@ -320,4 +351,25 @@ fn saturation_is_deterministic_under_cpu_contention() {
             "run {i} extracted a different term under CPU contention than run 0"
         );
     }
+}
+
+/// A budget keyed on the input's size reads it off the graph, so it refuses a
+/// graph already rewritten: its class count is then the grown graph's, and the
+/// tier would drift upward on every call.
+#[test]
+#[should_panic(expected = "already been rewritten")]
+fn a_size_keyed_budget_refuses_a_graph_already_rewritten() {
+    use pixelflow_search::egraph::{ENode, ops};
+
+    let mut optimizer = Optimizer::production().no_ceiling();
+    let mut eg = optimizer.egraph();
+    let x = eg.add(ENode::Var(0));
+    let zero = eg.add(ENode::Const(0.0f32.to_bits()));
+    let root = eg.add(ENode::Op {
+        op: &ops::Add,
+        children: vec![x, zero],
+    });
+    let _first = optimizer.run(&mut eg, root);
+    assert!(eg.application_count() > 0, "x + 0 must have been rewritten");
+    let _second = optimizer.run(&mut eg, root);
 }

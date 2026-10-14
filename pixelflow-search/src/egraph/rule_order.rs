@@ -1,7 +1,7 @@
 //! Sweep order for the base-62 production rule set
 //! (docs/results/2026-09-01-rule-order-real-kernels.md).
 //!
-//! `all_rules()` is a `Vec`, and `EGraph::with_rules` sweeps it in order —
+//! `all_rules()` is a `Vec`, and a `Saturation` sweeps it in order —
 //! every saturation round applies rule 0, then rule 1, ..., then rule 61.
 //! Which rule fires *first* inside a round, when several match the same
 //! e-class, changes what an early-terminated sweep (an iteration cap, a

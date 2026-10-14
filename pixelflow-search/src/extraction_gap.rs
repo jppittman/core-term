@@ -73,7 +73,7 @@ use crate::egraph::and_or::{AndOrGraph, Candidate, Child, Live};
 use crate::egraph::extract::{
     ExtractedDAG, extract_dag_objectives, extract_dag_scoped, extract_dag_tree_arm,
 };
-use crate::egraph::{Budget, CostModel, EClassId, EGraph, ENode, Optimizer};
+use crate::egraph::{Budget, CostModel, EClassId, EGraph, ENode, Limits, Optimizer};
 use crate::egraph::{Vocabulary, insert, reachable_count};
 
 // ---------------------------------------------------------------------------
@@ -1047,7 +1047,7 @@ fn measure(subject: Subject<'_>, limits: SearchLimits) -> Measured {
     let root_class = insert(&arena, root, &mut egraph, Vocabulary::Runtime)
         .ok()
         .unwrap_or_else(|| panic!("{name}: arena_to_egraph returned None (unsupported node)"));
-    let optimized = optimizer.run(&mut egraph, root_class, node_count);
+    let optimized = optimizer.run(&mut egraph, root_class);
 
     let model = CostModel::latency_prior();
     let inst = Instance::build(&egraph, root_class, &model);
@@ -1361,7 +1361,7 @@ fn extraction_gap_measurement() {
             (
                 Budget::Explicit {
                     iterations: 100,
-                    classes: 20_000,
+                    minted: 20_000,
                     applications: None,
                 },
                 "roomier",
@@ -2736,7 +2736,11 @@ mod self_check {
             op: op_from_kind(OpKind::Add).expect("Add is a known op"),
             children: vec![sq, sq],
         });
-        egraph.saturate_budgeted(6, 400, None);
+        egraph.saturate_budgeted(Limits {
+            iterations: 6,
+            minted: 400,
+            applications: None,
+        });
 
         let inst = Instance::build(&egraph, sum, &model);
         let greedy = extract_dag_scoped(&egraph, sum, &model, LatticeShape::POINT);
@@ -2847,7 +2851,11 @@ mod self_check {
             };
             // Deliberately tiny budget: the point is an instance small
             // enough that enumeration is a reference, not a second heuristic.
-            egraph.saturate_budgeted(2, 60, Some(40));
+            egraph.saturate_budgeted(Limits {
+                iterations: 2,
+                minted: 60,
+                applications: Some(40),
+            });
             let inst = Instance::build(&egraph, root, &model);
             let Some(truth) = brute_force(&inst) else {
                 continue;

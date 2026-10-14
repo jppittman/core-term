@@ -94,7 +94,7 @@ use pixelflow_pipeline::training::structural::FenceKey;
 use pixelflow_search::egraph::{
     ApplicationId, Budget, CandidateFeatures, CostModel, EGraph, EpisodeLabels, Firing,
     KeepJournal, Label, Optimizer, Origin, REGISTERED_PRIMARY_BUDGET_APPLICATIONS, RuleSet,
-    SaturationStop, config_for_node_count, extract_dag,
+    Saturation, SaturationStop, config_for_node_count, extract_dag,
 };
 use pixelflow_search::nnue::guide::diversity::{UniformRandomGuide, uniform_unit_score};
 use pixelflow_search::nnue::guide::linear::{LinearCandidateGuide, PerRuleRateGuide};
@@ -204,8 +204,8 @@ struct Args {
     /// literal that could silently drift out of step. Pass a value
     /// explicitly to override (e.g. to reproduce round 1/2's
     /// `--max-classes 2000`).
-    #[arg(long)]
-    max_classes: Option<usize>,
+    #[arg(long = "max-classes")]
+    max_minted: Option<usize>,
 
     /// Comma-separated application-count checkpoints to extract and label
     /// at, in ascending order — round 3's task: `100,200,400,800,1600,3200`.
@@ -518,7 +518,7 @@ struct RawCheckpoint {
 /// its per-[`BUDGET_LADDER`]-checkpoint costs, and the hindsight strict
 /// labels computed against the LAST (ceiling) extraction.
 struct RawTrajectory {
-    egraph: EGraph,
+    egraph: Saturation,
     checkpoints: Vec<RawCheckpoint>,
     /// `true` iff saturation had already stopped for a reason other than
     /// the application budget (quiesced / class-capped / iteration-
@@ -541,7 +541,7 @@ fn run_trajectory(
     cache: &GuideCache,
     arena: &ExprArena,
     root: ExprId,
-    max_classes: usize,
+    max_minted: usize,
     costs: &CostModel,
     budgets: &[usize],
 ) -> RawTrajectory {
@@ -573,7 +573,6 @@ fn run_trajectory(
         pixelflow_search::egraph::Vocabulary::Templates,
     )
     .expect("insert into e-graph");
-    let node_count = arena.len();
     let mut checkpoints = Vec::with_capacity(budgets.len());
     let mut last_stop = SaturationStop::ApplicationBudget;
     let mut last_ext = None;
@@ -586,10 +585,10 @@ fn run_trajectory(
         let delta = (budget as u64).saturating_sub(already);
         optimizer = optimizer.budget(Budget::Explicit {
             iterations: SATURATE_MAX_ITERS,
-            classes: max_classes,
+            minted: max_minted,
             applications: Some(delta),
         });
-        let out = optimizer.run(&mut egraph, root_class, node_count);
+        let out = optimizer.run(&mut egraph, root_class);
         let ext = extract_dag(&egraph, root_class, costs);
         checkpoints.push(RawCheckpoint {
             budget,
@@ -624,14 +623,14 @@ fn run_trajectory(
 /// `apply_action_from_rule`'s executor can report `> 0`.
 fn changed_application_ids(egraph: &EGraph) -> HashSet<ApplicationId> {
     let mut ids: HashSet<ApplicationId> = egraph
-        .provenance()
+        .journal()
         .origins()
         .filter_map(|(_, origin)| match origin {
             Origin::Rule(id) => Some(id),
             Origin::Seed => None,
         })
         .collect();
-    for event in egraph.provenance().union_events() {
+    for event in egraph.journal().union_events() {
         if let Some(id) = event.application_id {
             ids.insert(id);
         }
@@ -679,7 +678,7 @@ fn mint_expression(
     tier_label: &str,
     policies: &[OrderingPolicy],
     cache: &GuideCache,
-    max_classes: usize,
+    max_minted: usize,
     costs: &CostModel,
     rules: &RuleSet,
     budgets: &[usize],
@@ -688,7 +687,7 @@ fn mint_expression(
     let expr_node_count = arena.len();
     let raw: Vec<RawTrajectory> = policies
         .iter()
-        .map(|p| run_trajectory(p, cache, arena, root, max_classes, costs, budgets))
+        .map(|p| run_trajectory(p, cache, arena, root, max_minted, costs, budgets))
         .collect();
 
     // Empirical best (§1.2's `c*_e`): the minimum extraction cost seen at
@@ -788,14 +787,8 @@ fn mint_expression(
         // stops being the same record.
         let mut seen_keys: std::collections::HashSet<pixelflow_search::egraph::CandidateKey> =
             std::collections::HashSet::new();
-        for (app_id, record) in traj.egraph.provenance().applications() {
-            let rule = record.rule.unwrap_or_else(|| {
-                panic!(
-                    "gen_r2g_trajectories: application {app_id:?} carries no RuleId — the \
-                     graph was built without rule ids, and every table here is keyed by \
-                     identity"
-                )
-            });
+        for (app_id, record) in traj.egraph.journal().applications() {
+            let rule = record.rule;
             let firing = Firing {
                 rule,
                 match_root: record.match_root,
@@ -1021,7 +1014,7 @@ fn mint_split(
     policies: &[OrderingPolicy],
     cache: &GuideCache,
     max_expr_nodes: usize,
-    max_classes: usize,
+    max_minted: usize,
     rules: &RuleSet,
     budgets: &[usize],
     family_of: impl Fn(&str) -> (u32, u64),
@@ -1079,7 +1072,7 @@ fn mint_split(
             tier_label,
             policies,
             cache,
-            max_classes,
+            max_minted,
             &costs,
             rules,
             budgets,
@@ -1333,8 +1326,8 @@ fn main() {
     // branch, so a future rebalancing of `config_for_node_count`'s
     // thresholds still resolves correctly without touching this file.
     let resolved_max_classes = args
-        .max_classes
-        .unwrap_or_else(|| config_for_node_count(usize::MAX).max_classes);
+        .max_minted
+        .unwrap_or_else(|| config_for_node_count(usize::MAX).max_minted);
     eprintln!(
         "gen_r2g_trajectories: budgets={budgets:?} max_expr_nodes={} ({}) max_classes={resolved_max_classes}{}",
         args.max_expr_nodes,
@@ -1343,7 +1336,7 @@ fn main() {
         } else {
             "filtered"
         },
-        if args.max_classes.is_none() {
+        if args.max_minted.is_none() {
             " (resolved from config_for_node_count)"
         } else {
             " (explicit --max-classes)"
@@ -1622,7 +1615,7 @@ mod tests {
             .cost(costs.clone())
             .budget(Budget::Explicit {
                 iterations: 10_000,
-                classes: 2_000,
+                minted: 2_000,
                 applications: None,
             })
             .hard_ceiling(Duration::from_secs(30));

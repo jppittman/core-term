@@ -7,7 +7,7 @@
 //! (see the `#[cfg]` on its declaration in `super::mod`) and there is
 //! nothing in the binary that could pay for it. Even with the feature on, an
 //! [`EGraph`](super::graph::EGraph) records nothing until
-//! [`EGraph::enable_growth_telemetry`](super::graph::EGraph::enable_growth_telemetry)
+//! [`Saturation::enable_growth_telemetry`](super::graph::Saturation::enable_growth_telemetry)
 //! is called: the per-application hook checks `self.growth.is_some()` before
 //! doing any work. **It must cost nothing when off**, and this module's only
 //! paid work when off is that one `Option::is_some()` check per committed
@@ -29,7 +29,7 @@
 //! builds — literally the same code, via the crate-private `NodeSink`
 //! abstraction in `graph.rs` — against the memo instead of against a real
 //! insert, so it never becomes the second, drifting spelling this doc used to
-//! warn against. `EGraph::apply_action_measured` asserts the two agree,
+//! warn against. The runner's `apply_measured` asserts the two agree,
 //! unconditionally, on every application recorded while telemetry is on —
 //! not `debug_assert!`, because a divergence here is exactly the finding this
 //! module exists to surface.
@@ -46,7 +46,7 @@
 //! recovers `nodes_added` and `classes_added` as the same number by
 //! construction, not by coincidence of this measurement. [`RuleGrowth`]
 //! therefore keeps one histogram and exposes it under both names; the
-//! recording site (`EGraph::apply_action_measured`) pins the invariant with
+//! recording site (the runner's `apply_measured`) pins the invariant with
 //! a `debug_assert_eq!`, so a representation change that broke it would fail
 //! loudly there before it silently mis-scored anything built on this module.
 //!
@@ -68,8 +68,8 @@ use super::rules::RuleId;
 #[derive(Clone, Debug, Default)]
 pub struct RuleGrowth {
     /// Applications recorded for this rule — committed applications, not
-    /// match attempts (see [`super::graph::ApplyResult::evals`] for the
-    /// attempt count).
+    /// match attempts (see [`Saturation::total_evals`](super::graph::Saturation::total_evals)
+    /// for the attempt count).
     applications: u64,
     /// Applications that changed nothing at all: zero nodes created AND the
     /// closing union did not merge two previously-distinct classes. This is
@@ -195,29 +195,21 @@ impl RuleGrowth {
     }
 }
 
-/// Per-rule growth, accumulated across one [`EGraph`](super::graph::EGraph)'s
-/// applications. See the module doc for what "on" means and what it costs.
+/// Per-rule growth, accumulated across one
+/// [`Saturation`](super::graph::Saturation)'s applications. See the module doc
+/// for what "on" means and what it costs.
 #[derive(Clone, Debug, Default)]
 pub struct GrowthTelemetry {
     by_rule: BTreeMap<RuleId, RuleGrowth>,
-    /// Applications whose `rule_idx` had no [`RuleId`] in the graph's rule
-    /// table. Should not happen against a graph built by
-    /// [`EGraph::with_rules`](super::graph::EGraph::with_rules) or
-    /// [`super::rules::RuleSet`] (every rule gets an id at construction) —
-    /// kept anyway so a growth run degrades to "one bucket short a name"
-    /// rather than panicking or silently dropping the record.
-    unlabeled: RuleGrowth,
 }
 
 impl GrowthTelemetry {
-    /// Record one committed application. `rule` is `None` only when the
-    /// firing rule has no id in the graph's table — see [`Self::unlabeled`].
-    pub(super) fn record(&mut self, rule: Option<RuleId>, nodes_added: usize, changed: bool) {
-        let bucket = match rule {
-            Some(id) => self.by_rule.entry(id).or_default(),
-            None => &mut self.unlabeled,
-        };
-        bucket.record(nodes_added, changed);
+    /// Record one committed application.
+    pub(super) fn record(&mut self, rule: RuleId, nodes_added: usize, changed: bool) {
+        self.by_rule
+            .entry(rule)
+            .or_default()
+            .record(nodes_added, changed);
     }
 
     /// Per-rule growth, in [`RuleId`] order (stable across runs, though not
@@ -227,21 +219,13 @@ impl GrowthTelemetry {
         self.by_rule.iter().map(|(&id, g)| (id, g))
     }
 
-    /// Applications whose rule had no [`RuleId`] on the graph — see
-    /// [`Self`]'s `unlabeled` field doc. Zero on every production graph.
-    #[must_use]
-    pub fn unlabeled(&self) -> &RuleGrowth {
-        &self.unlabeled
-    }
-
     /// Fold `other`'s per-rule recordings into `self`, rule by rule (see
     /// [`RuleGrowth::merge`]) — combines growth telemetry collected on
-    /// separate [`EGraph`](super::graph::EGraph)s (e.g. one per expression
+    /// separate [`Saturation`](super::graph::Saturation)s (e.g. one per expression
     /// in a corpus sweep) into one distribution per rule.
     pub fn merge(&mut self, other: &Self) {
         for (id, g) in &other.by_rule {
             self.by_rule.entry(*id).or_default().merge(g);
         }
-        self.unlabeled.merge(&other.unlabeled);
     }
 }
