@@ -88,8 +88,8 @@ pub use growth::{GrowthTelemetry, RuleGrowth};
 pub use insert::{Declined, insert, reachable_count};
 #[cfg(feature = "provenance-journal")]
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
-pub use node::{EClassId, ENode};
-pub use ops::{Op, Vocabulary};
+pub use node::{EClassId, ENode, Operands};
+pub use ops::Vocabulary;
 pub use optimizer::{Budget, Optimized, Optimizer, OptimizerStats, SaturationKey};
 #[cfg(feature = "provenance-journal")]
 pub use optimizer::{KeepJournal, Observer};

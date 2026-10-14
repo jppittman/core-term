@@ -256,7 +256,7 @@ fn production_limits_key_on_the_inserted_class_count() {
 /// arena it happened to build.
 #[test]
 fn the_tier_is_read_off_the_graph() {
-    use pixelflow_search::egraph::{ENode, ops};
+    use pixelflow_search::egraph::ENode;
 
     // A left-leaning sum of `terms` distinct variables: `2 * terms - 1`
     // classes. Returns the classes inserted and the minted-id cap the
@@ -267,10 +267,7 @@ fn the_tier_is_read_off_the_graph() {
         let mut acc = eg.add(ENode::Var(0));
         for var in 1..terms {
             let next = eg.add(ENode::Var(var));
-            acc = eg.add(ENode::Op {
-                op: &ops::Add,
-                children: vec![acc, next],
-            });
+            acc = eg.add(ENode::apply(OpKind::Add, &[acc, next]));
         }
         let classes = eg.num_classes();
         let optimized = optimizer.run(&mut eg, acc);
@@ -359,16 +356,13 @@ fn saturation_is_deterministic_under_cpu_contention() {
 #[test]
 #[should_panic(expected = "already been rewritten")]
 fn a_size_keyed_budget_refuses_a_graph_already_rewritten() {
-    use pixelflow_search::egraph::{ENode, ops};
+    use pixelflow_search::egraph::ENode;
 
     let mut optimizer = Optimizer::production().no_ceiling();
     let mut eg = optimizer.egraph();
     let x = eg.add(ENode::Var(0));
     let zero = eg.add(ENode::Const(0.0f32.to_bits()));
-    let root = eg.add(ENode::Op {
-        op: &ops::Add,
-        children: vec![x, zero],
-    });
+    let root = eg.add(ENode::apply(OpKind::Add, &[x, zero]));
     let _first = optimizer.run(&mut eg, root);
     assert!(eg.application_count() > 0, "x + 0 must have been rewritten");
     let _second = optimizer.run(&mut eg, root);

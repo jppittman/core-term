@@ -30,8 +30,8 @@
 //! rather than an `ExprArena` template because a rebuilt body is a copy
 //! of a term the graph holds, and may contain any op the graph holds (a
 //! `Gather`, a mask),
-//! while a template resolves its ops through [`ops::op_from_kind`], which
-//! deliberately admits only what a *rule* may name. One action, replayed by
+//! while a template may name only what [`template_may_name`](super::ops::template_may_name) admits,
+//! which is deliberately what a *rule* may name. One action, replayed by
 //! one function in the graph, so predicting a rule's growth and applying it
 //! run the same code.
 //!
@@ -70,7 +70,6 @@ use pixelflow_ir::{Binder, Fold, Monoid, OpKind};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::ops;
 use super::rewrite::{Rewrite, RewriteAction, RootShapes};
 
 /// What a [`HeadNode`]'s child is: an earlier entry in the same plan, or an
@@ -86,14 +85,14 @@ pub enum HeadRef {
 
 /// One node of a [`Plan`], in build order.
 ///
-/// Carrying the `&'static dyn Op` from the node it was copied from needs no
-/// resolver at all, and cannot disagree with the one `insert` used.
+/// Carries the `OpKind` of the node it was copied from, so a plan can hold any
+/// op the graph holds (`Gather`, the masks), not only those a template may name.
 #[derive(Clone, Debug)]
 pub enum HeadNode {
     /// A literal, by bit pattern.
     Const(u32),
     Op {
-        op: &'static dyn ops::Op,
+        op: OpKind,
         children: Vec<HeadRef>,
     },
     Reduce {
@@ -141,7 +140,7 @@ impl PlanBuilder {
     }
 
     /// An operation over earlier entries or existing classes.
-    fn op(&mut self, op: &'static dyn ops::Op, children: Vec<HeadRef>) -> HeadRef {
+    fn op(&mut self, op: OpKind, children: Vec<HeadRef>) -> HeadRef {
         self.push(HeadNode::Op { op, children })
     }
 
@@ -234,7 +233,7 @@ impl PlanBuilder {
                     }
                 }
                 Task::Build(class) => {
-                    let node = representative(egraph, class)?.clone();
+                    let node = *representative(egraph, class)?;
                     let arity = node.children_slice().len();
                     let start = built.len().checked_sub(arity)?;
                     let kids: Vec<Done> = built.drain(start..).collect();
@@ -383,9 +382,9 @@ impl Rewrite for PeelFold {
             return None;
         }
         let (rest, last) = fold.peel_back()?;
-        // The combiner must be nameable as an `Op` before any work is done:
-        // declining early costs one lookup, declining late costs a walk of
-        // the whole body.
+        // The fold must have a combiner before any work is done: declining
+        // early costs one lookup, declining late costs a walk of the whole
+        // body.
         let combiner = combiner_op(fold.monoid())?;
         let mut plan = PlanBuilder::default();
         let head = plan.substitute(
@@ -435,7 +434,7 @@ impl Rewrite for HalveFold {
                 binder: fold.binder(),
                 leaf: |plan: &mut PlanBuilder, class| {
                     let amount = plan.constant(stride as f32);
-                    plan.op(&ops::Add, alloc::vec![HeadRef::Class(class), amount])
+                    plan.op(OpKind::Add, alloc::vec![HeadRef::Class(class), amount])
                 },
             },
         )?;
@@ -501,7 +500,7 @@ impl Rewrite for FactorFold {
 fn factored(
     egraph: &EGraph,
     spelling: &ENode,
-    distributor: &'static dyn ops::Op,
+    distributor: OpKind,
     binder: Binder,
 ) -> Option<[EClassId; 2]> {
     let [left, right] = binary(spelling, distributor)?.map(|class| egraph.find(class));
@@ -514,14 +513,14 @@ fn factored(
 }
 
 /// `node`'s two operands, when it is a binary `op`.
-fn binary(node: &ENode, op: &'static dyn ops::Op) -> Option<[EClassId; 2]> {
-    let ENode::Op { op: own, children } = node else {
+fn binary(node: &ENode, op: OpKind) -> Option<[EClassId; 2]> {
+    let &ENode::Op { op: own, children } = node else {
         return None;
     };
-    if own.kind() != op.kind() {
+    if own != op {
         return None;
     }
-    let &[left, right] = children.as_slice() else {
+    let [left, right] = children[..] else {
         return None;
     };
     Some([left, right])
@@ -533,10 +532,10 @@ fn binary(node: &ENode, op: &'static dyn ops::Op) -> Option<[EClassId; 2]> {
 /// `PRODUCT` has no distributor that holds everywhere (`Π_i f^c = (Π_i f)^c`
 /// fails for a negative base). The mask quantifiers have theirs — `BitAnd`
 /// over `ANY`, `BitOr` over `ALL` — and wait on a kernel that needs them.
-fn distributor(monoid: Monoid) -> Option<&'static dyn ops::Op> {
+fn distributor(monoid: Monoid) -> Option<OpKind> {
     match monoid {
-        Monoid::SUM => Some(&ops::Mul),
-        Monoid::MIN | Monoid::MAX => Some(&ops::Add),
+        Monoid::SUM => Some(OpKind::Mul),
+        Monoid::MIN | Monoid::MAX => Some(OpKind::Add),
         _ => None,
     }
 }
@@ -556,21 +555,20 @@ pub fn fold_rules() -> Vec<Box<dyn Rewrite>> {
     ]
 }
 
-/// The `Op` that combines a fold's terms.
+/// The op that combines a fold's terms, the mask algebras (`ANY`, `ALL`)
+/// included.
 ///
-/// Local rather than [`ops::op_from_kind`] because it must cover the two mask
-/// algebras, whose ops are deliberately *not* globally registered: doing that
-/// would hand them to the AOT macro tier, where a `Dwrt` travelling with a
-/// mask resolves before composition and miscompiles under a warp. Here the
-/// caller has already named an algebra, so there is no opcode to leak.
-pub(crate) fn combiner_op(monoid: Monoid) -> Option<&'static dyn ops::Op> {
+/// `None` for an algebra with no value-level combiner, `SEQ` among them: its
+/// combine is "then", not a value operation. Pricing reads the `None` as the
+/// unpriceable sentinel, and `PeelFold` and `HalveFold` decline on it.
+pub(crate) fn combiner_op(monoid: Monoid) -> Option<OpKind> {
     match monoid {
-        Monoid::SUM => Some(&ops::Add),
-        Monoid::PRODUCT => Some(&ops::Mul),
-        Monoid::MIN => Some(&ops::Min),
-        Monoid::MAX => Some(&ops::Max),
-        Monoid::ANY => Some(ops::mask_or()),
-        Monoid::ALL => Some(ops::mask_and()),
+        Monoid::SUM => Some(OpKind::Add),
+        Monoid::PRODUCT => Some(OpKind::Mul),
+        Monoid::MIN => Some(OpKind::Min),
+        Monoid::MAX => Some(OpKind::Max),
+        Monoid::ANY => Some(OpKind::BitOr),
+        Monoid::ALL => Some(OpKind::BitAnd),
         _ => None,
     }
 }
@@ -652,7 +650,7 @@ mod tests {
             .nodes(class)
             .iter()
             .find_map(|n| match n {
-                ENode::Op { op, children } if op.kind() == OpKind::Add => Some(children.clone()),
+                ENode::Op { op, children } if *op == OpKind::Add => Some(*children),
                 _ => None,
             })
             .expect("the class must now also hold the peeled sum");
@@ -777,7 +775,7 @@ mod tests {
             .nodes(new_body_class)
             .iter()
             .find_map(|n| match n {
-                ENode::Op { op, children } if op.kind() == OpKind::Add => Some(children.clone()),
+                ENode::Op { op, children } if *op == OpKind::Add => Some(*children),
                 _ => None,
             })
             .expect("the doubled body's class must hold the Add combining it with its shift");
@@ -826,27 +824,13 @@ mod tests {
         node: ENode,
     }
 
-    fn op1(op: &'static dyn ops::Op, a: EClassId) -> ENode {
-        ENode::Op {
-            op,
-            children: alloc::vec![a],
-        }
-    }
-
-    fn op2(op: &'static dyn ops::Op, a: EClassId, b: EClassId) -> ENode {
-        ENode::Op {
-            op,
-            children: alloc::vec![a, b],
-        }
-    }
-
     /// `sin(X·0.1 + i)`: reads both the lattice and the binder.
     fn wave(eg: &mut EGraph, i: EClassId) -> EClassId {
         let x = eg.add(ENode::Var(0));
         let tenth = eg.add(ENode::constant(0.1));
-        let x_scaled = eg.add(op2(&ops::Mul, x, tenth));
-        let phase = eg.add(op2(&ops::Add, x_scaled, i));
-        eg.add(op1(&ops::Sin, phase))
+        let x_scaled = eg.add(ENode::apply(OpKind::Mul, &[x, tenth]));
+        let phase = eg.add(ENode::apply(OpKind::Add, &[x_scaled, i]));
+        eg.add(ENode::apply(OpKind::Sin, &[phase]))
     }
 
     /// A fold over slot 0.
@@ -864,7 +848,7 @@ mod tests {
         let i = eg.add(ENode::Var(fold.binder().var()));
         let body = body(&mut eg, i);
         let node = ENode::Reduce { fold, body };
-        let class = eg.add(node.clone());
+        let class = eg.add(node);
         Factorable { eg, class, node }
     }
 
@@ -904,7 +888,7 @@ mod tests {
             panic!("the distributor's right operand is the fold: {plan:?}")
         };
         Factoring {
-            distributor: op.kind(),
+            distributor: op,
             factor: class(*factor),
             fold,
             rest: class(body),
@@ -936,11 +920,11 @@ mod tests {
             })
         };
         eg.nodes(class).iter().any(|n| match n {
-            ENode::Op { op, children } if op.kind() == factoring.distributor => {
-                let [factor, folded] = children.as_slice() else {
+            ENode::Op { op, children } if *op == factoring.distributor => {
+                let [factor, folded] = children[..] else {
                     return false;
                 };
-                eg.find(*factor) == eg.find(factoring.factor) && folds_rest(*folded)
+                eg.find(factor) == eg.find(factoring.factor) && folds_rest(folded)
             }
             _ => false,
         })
@@ -957,7 +941,7 @@ mod tests {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
             built = Some((y, w));
-            eg.add(op2(&ops::Mul, y, w))
+            eg.add(ENode::apply(OpKind::Mul, &[y, w]))
         });
         assert_eq!(operands(&f), built);
 
@@ -988,7 +972,7 @@ mod tests {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
             built = Some((y, w));
-            eg.add(op2(&ops::Mul, w, y))
+            eg.add(ENode::apply(OpKind::Mul, &[w, y]))
         });
         assert_eq!(operands(&f), built);
     }
@@ -1002,12 +986,12 @@ mod tests {
             let mut f = folded(factor_only(), over(monoid, 0..5), |eg, i| {
                 let y = eg.add(ENode::Var(1));
                 let half = eg.add(ENode::constant(0.5));
-                let offset = eg.add(op2(&ops::Mul, y, half));
+                let offset = eg.add(ENode::apply(OpKind::Mul, &[y, half]));
                 let x = eg.add(ENode::Var(0));
-                let phase = eg.add(op2(&ops::Add, x, i));
-                let cos = eg.add(op1(&ops::Cos, phase));
+                let phase = eg.add(ENode::apply(OpKind::Add, &[x, i]));
+                let cos = eg.add(ENode::apply(OpKind::Cos, &[phase]));
                 built = Some((offset, cos));
-                eg.add(op2(&ops::Add, offset, cos))
+                eg.add(ENode::apply(OpKind::Add, &[offset, cos]))
             });
             assert_eq!(operands(&f), built, "{monoid:?}");
             let fired = factoring(&f).expect("Y·0.5 is invariant");
@@ -1026,7 +1010,7 @@ mod tests {
     fn factor_fold_declines_when_both_operands_read_the_binder() {
         let f = folded(factor_only(), over(Monoid::SUM, 0..8), |eg, i| {
             let w = wave(eg, i);
-            eg.add(op2(&ops::Mul, i, w))
+            eg.add(ENode::apply(OpKind::Mul, &[i, w]))
         });
         assert_eq!(operands(&f), None);
     }
@@ -1040,7 +1024,7 @@ mod tests {
         let f = folded(factor_only(), empty, |eg, i| {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
-            eg.add(op2(&ops::Mul, y, w))
+            eg.add(ENode::apply(OpKind::Mul, &[y, w]))
         });
         assert_eq!(operands(&f), None);
     }
@@ -1052,14 +1036,14 @@ mod tests {
         let product = folded(factor_only(), over(Monoid::PRODUCT, 0..8), |eg, i| {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
-            eg.add(op2(&ops::Mul, y, w))
+            eg.add(ENode::apply(OpKind::Mul, &[y, w]))
         });
         assert_eq!(operands(&product), None, "Mul does not distribute over Π");
 
         let sum_of_sums = folded(factor_only(), over(Monoid::SUM, 0..8), |eg, i| {
             let y = eg.add(ENode::Var(1));
             let w = wave(eg, i);
-            eg.add(op2(&ops::Add, y, w))
+            eg.add(ENode::apply(OpKind::Add, &[y, w]))
         });
         assert_eq!(
             operands(&sum_of_sums),
@@ -1075,10 +1059,10 @@ mod tests {
     fn factor_fold_reads_the_class_fact_not_the_representative() {
         let mut zeroish = None;
         let mut f = folded(factor_only(), over(Monoid::SUM, 0..8), |eg, i| {
-            let i_minus_i = eg.add(op2(&ops::Sub, i, i));
+            let i_minus_i = eg.add(ENode::apply(OpKind::Sub, &[i, i]));
             let w = wave(eg, i);
             zeroish = Some(i_minus_i);
-            eg.add(op2(&ops::Mul, i_minus_i, w))
+            eg.add(ENode::apply(OpKind::Mul, &[i_minus_i, w]))
         });
         assert_eq!(operands(&f), None, "before the graph knows, it declines");
 
@@ -1098,10 +1082,10 @@ mod tests {
     fn a_peel_names_a_class_the_fact_clears() {
         let mut zeroish = None;
         let mut f = folded(fold_rules(), over(Monoid::SUM, 0..3), |eg, i| {
-            let i_minus_i = eg.add(op2(&ops::Sub, i, i));
+            let i_minus_i = eg.add(ENode::apply(OpKind::Sub, &[i, i]));
             let x = eg.add(ENode::Var(0));
             zeroish = Some(i_minus_i);
-            eg.add(op2(&ops::Add, i_minus_i, x))
+            eg.add(ENode::apply(OpKind::Add, &[i_minus_i, x]))
         });
         let zero = f.eg.add(ENode::constant(0.0));
         f.eg.union(zeroish.expect("built"), zero);
@@ -1139,13 +1123,13 @@ mod tests {
         let inner = Fold::new(Monoid::MAX, binder(0), 0..5);
         let f = folded(fold_rules(), over(Monoid::SUM, 0..3), |eg, i| {
             let x = eg.add(ENode::Var(0));
-            let ix = eg.add(op2(&ops::Mul, i, x));
+            let ix = eg.add(ENode::apply(OpKind::Mul, &[i, x]));
             let max = eg.add(ENode::Reduce {
                 fold: inner,
                 body: ix,
             });
             shadowing = Some(max);
-            eg.add(op2(&ops::Add, max, i))
+            eg.add(ENode::apply(OpKind::Add, &[max, i]))
         });
         let shadowing = f.eg.find(shadowing.expect("built"));
         match PeelFold.apply(&f.eg, f.class, &f.node) {
@@ -1186,9 +1170,9 @@ mod tests {
         let f = folded(factor_only(), over(Monoid::SUM, 0..8), |eg, i| {
             let (x, y) = (eg.add(ENode::Var(0)), eg.add(ENode::Var(1)));
             let w = wave(eg, i);
-            let xw = eg.add(op2(&ops::Mul, x, w));
+            let xw = eg.add(ENode::apply(OpKind::Mul, &[x, w]));
             built = Some((y, xw));
-            eg.add(op2(&ops::Mul, y, xw))
+            eg.add(ENode::apply(OpKind::Mul, &[y, xw]))
         });
         assert_eq!(operands(&f), built);
     }
@@ -1201,7 +1185,7 @@ mod tests {
         let f = folded(factor_only(), over(Monoid::SUM, 0..8), |eg, _i| {
             let (x, y) = (eg.add(ENode::Var(0)), eg.add(ENode::Var(1)));
             parts = Some((y, x));
-            eg.add(op2(&ops::Mul, y, x))
+            eg.add(ENode::apply(OpKind::Mul, &[y, x]))
         });
         assert_eq!(operands(&f), parts);
     }

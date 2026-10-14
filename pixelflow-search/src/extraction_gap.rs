@@ -2713,7 +2713,6 @@ fn write_objective_report(rows: &[Row], real_count: usize, limits: SearchLimits)
 #[cfg(test)]
 mod self_check {
     use super::*;
-    use crate::egraph::ops::op_from_kind;
     use pixelflow_ir::OpKind;
 
     /// A hand-built e-graph where sharing and tree cost disagree, so the two
@@ -2728,14 +2727,8 @@ mod self_check {
         let mut egraph = Optimizer::production().egraph();
         let x = egraph.add(ENode::Var(0));
         let _y = egraph.add(ENode::Var(1));
-        let sq = egraph.add(ENode::Op {
-            op: op_from_kind(OpKind::Mul).expect("Mul is a known op"),
-            children: vec![x, x],
-        });
-        let sum = egraph.add(ENode::Op {
-            op: op_from_kind(OpKind::Add).expect("Add is a known op"),
-            children: vec![sq, sq],
-        });
+        let sq = egraph.add(ENode::apply(OpKind::Mul, &[x, x]));
+        let sum = egraph.add(ENode::apply(OpKind::Add, &[sq, sq]));
         egraph.saturate_budgeted(Limits {
             iterations: 6,
             minted: 400,
@@ -2900,10 +2893,7 @@ mod self_check {
         let mut egraph = Optimizer::production().egraph();
         let x = egraph.add(ENode::Var(0));
         let one = egraph.add(ENode::constant(1.0));
-        let add = egraph.add(ENode::Op {
-            op: op_from_kind(OpKind::Add).expect("Add is a known op"),
-            children: vec![x, one],
-        });
+        let add = egraph.add(ENode::apply(OpKind::Add, &[x, one]));
         let inst = Instance::build(&egraph, add, &model);
         let treeopt = tree_optimal_choices(&inst).expect("root reachable");
         let dp = extract_dag_scoped(&egraph, add, &model, LatticeShape::POINT);

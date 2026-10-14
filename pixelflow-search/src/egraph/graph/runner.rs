@@ -1226,7 +1226,6 @@ mod tests {
     use crate::egraph::cost::CostModel;
     use crate::egraph::extract::extract_dag;
     use crate::egraph::node::ENode;
-    use crate::egraph::ops;
     use crate::egraph::optimizer::{Budget, Optimizer};
 
     /// Soundness regression for saturation's dirty-class tracking
@@ -1252,36 +1251,17 @@ mod tests {
 
         let mut egraph = Saturation::over(RuleSet::new(vec![Pythagorean::new()]));
         let rule = egraph.rules().indices().next().expect("one rule");
-        let op = |kind| ops::op_from_kind(kind).expect("op is modelled");
 
         let x = egraph.add(ENode::Var(0));
-        let sin_x = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Sin),
-            children: vec![x],
-        });
-        let cos_x = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Cos),
-            children: vec![x],
-        });
-        let cos_sq = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Mul),
-            children: vec![cos_x, cos_x],
-        });
+        let sin_x = egraph.add(ENode::apply(pixelflow_ir::OpKind::Sin, &[x]));
+        let cos_x = egraph.add(ENode::apply(pixelflow_ir::OpKind::Cos, &[x]));
+        let cos_sq = egraph.add(ENode::apply(pixelflow_ir::OpKind::Mul, &[cos_x, cos_x]));
 
         // `p` starts life indistinguishable from any other opaque unary
         // node — NOT unioned with `sin_x` yet.
-        let p = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Neg),
-            children: vec![x],
-        });
-        let p_sq = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Mul),
-            children: vec![p, p],
-        });
-        let sum = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Add),
-            children: vec![p_sq, cos_sq],
-        });
+        let p = egraph.add(ENode::apply(pixelflow_ir::OpKind::Neg, &[x]));
+        let p_sq = egraph.add(ENode::apply(pixelflow_ir::OpKind::Mul, &[p, p]));
+        let sum = egraph.add(ENode::apply(pixelflow_ir::OpKind::Add, &[p_sq, cos_sq]));
 
         // First scan: nothing to find (`p` isn't known to be `sin(x)`).
         let result = egraph.sweep_rule(rule, &Ceilings::minted(10_000));

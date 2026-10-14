@@ -371,14 +371,14 @@ mod tests {
     use super::*;
     use crate::egraph::graph::Limits;
     use crate::egraph::node::ENode;
-    use crate::egraph::ops;
     use crate::egraph::provenance::Origin;
     use crate::math::algebra::Commutative;
+    use pixelflow_ir::OpKind;
 
     /// Minimal rule set for hand-derivable tests: just commutativity of Add,
     /// so every application in these tests is unambiguous.
     fn egraph_with_commutative() -> Saturation {
-        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
+        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(OpKind::Add)];
         Saturation::over(RuleSet::new(rules))
     }
 
@@ -403,10 +403,7 @@ mod tests {
         // Chosen side: x + y, then commute to y + x — this IS the extraction.
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let target = eg
             .find_rewrite_matches()
             .into_iter()
@@ -419,10 +416,7 @@ mod tests {
         // chosen root (`sum`) or any of its (transitive) children.
         let z = eg.add(ENode::Var(2));
         let w = eg.add(ENode::Var(3));
-        let other_sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![z, w],
-        });
+        let other_sum = eg.add(ENode::apply(OpKind::Add, &[z, w]));
         let other_target = eg
             .find_rewrite_matches()
             .into_iter()
@@ -479,14 +473,8 @@ mod tests {
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
-        let inner = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        }); // x + y
-        let outer = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![inner, z],
-        }); // (x + y) + z
+        let inner = eg.add(ENode::apply(OpKind::Add, &[x, y])); // x + y
+        let outer = eg.add(ENode::apply(OpKind::Add, &[inner, z])); // (x + y) + z
 
         // Rule A: commute the inner sum.
         let target_a = eg
@@ -608,10 +596,7 @@ mod tests {
 
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let target = eg
             .find_rewrite_matches()
             .into_iter()

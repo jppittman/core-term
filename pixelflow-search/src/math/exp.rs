@@ -23,7 +23,7 @@
 use std::marker::PhantomData;
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, RootShapes, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -38,9 +38,9 @@ use pixelflow_ir::arena::{ExprArena, ExprId};
 /// - f⁻¹(f(x)) → x
 pub trait FunctionInverse: Send + Sync {
     /// The forward function (e.g., exp).
-    fn forward() -> &'static dyn Op;
+    fn forward() -> OpKind;
     /// The backward/inverse function (e.g., ln).
-    fn backward() -> &'static dyn Op;
+    fn backward() -> OpKind;
 }
 
 // ============================================================================
@@ -51,11 +51,11 @@ pub trait FunctionInverse: Send + Sync {
 pub struct ExpLn;
 
 impl FunctionInverse for ExpLn {
-    fn forward() -> &'static dyn Op {
-        &ops::Exp
+    fn forward() -> OpKind {
+        OpKind::Exp
     }
-    fn backward() -> &'static dyn Op {
-        &ops::Ln
+    fn backward() -> OpKind {
+        OpKind::Ln
     }
 }
 
@@ -63,27 +63,12 @@ impl FunctionInverse for ExpLn {
 pub struct Exp2Log2;
 
 impl FunctionInverse for Exp2Log2 {
-    fn forward() -> &'static dyn Op {
-        &ops::Exp2
+    fn forward() -> OpKind {
+        OpKind::Exp2
     }
-    fn backward() -> &'static dyn Op {
-        &ops::Log2
+    fn backward() -> OpKind {
+        OpKind::Log2
     }
-}
-
-/// sqrt and square (mul self) are partial inverses.
-/// Note: sqrt(x²) = |x|, not x (domain restriction).
-/// We only implement (√x)² = x for now.
-pub struct SqrtSquare;
-
-impl FunctionInverse for SqrtSquare {
-    fn forward() -> &'static dyn Op {
-        &ops::Sqrt
-    }
-    // Square isn't a unary op, so we handle this specially
-    fn backward() -> &'static dyn Op {
-        &ops::Mul
-    } // Placeholder
 }
 
 // ============================================================================
@@ -109,7 +94,7 @@ impl<T: FunctionInverse> Default for ForwardBackward<T> {
 
 impl<T: FunctionInverse> Rewrite for ForwardBackward<T> {
     fn name(&self) -> &str {
-        match T::forward().kind() {
+        match T::forward() {
             OpKind::Exp => "exp-ln-cancel",
             OpKind::Exp2 => "exp2-log2-cancel",
             _ => "forward-backward-cancel",
@@ -117,15 +102,15 @@ impl<T: FunctionInverse> Rewrite for ForwardBackward<T> {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(T::forward().kind())
+        RootShapes::kind(T::forward())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: forward(backward(x))
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != T::forward().kind() {
+        if op != T::forward() {
             return None;
         }
         if children.len() != 1 {
@@ -136,11 +121,11 @@ impl<T: FunctionInverse> Rewrite for ForwardBackward<T> {
 
         // Check if argument is backward(x)
         for arg_node in egraph.nodes(arg) {
-            if let ENode::Op {
+            if let &ENode::Op {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
-                && arg_op.kind() == T::backward().kind()
+                && arg_op == T::backward()
                 && arg_children.len() == 1
             {
                 let x = arg_children[0];
@@ -152,7 +137,7 @@ impl<T: FunctionInverse> Rewrite for ForwardBackward<T> {
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, un T::forward().kind(), (un T::backward().kind(), (var 0))))
+        Some(arena_pat!(__a, un T::forward(), (un T::backward(), (var 0))))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -179,7 +164,7 @@ impl<T: FunctionInverse> Default for BackwardForward<T> {
 
 impl<T: FunctionInverse> Rewrite for BackwardForward<T> {
     fn name(&self) -> &str {
-        match T::backward().kind() {
+        match T::backward() {
             OpKind::Ln => "ln-exp-cancel",
             OpKind::Log2 => "log2-exp2-cancel",
             _ => "backward-forward-cancel",
@@ -187,15 +172,15 @@ impl<T: FunctionInverse> Rewrite for BackwardForward<T> {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(T::backward().kind())
+        RootShapes::kind(T::backward())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: backward(forward(x))
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != T::backward().kind() {
+        if op != T::backward() {
             return None;
         }
         if children.len() != 1 {
@@ -206,11 +191,11 @@ impl<T: FunctionInverse> Rewrite for BackwardForward<T> {
 
         // Check if argument is forward(x)
         for arg_node in egraph.nodes(arg) {
-            if let ENode::Op {
+            if let &ENode::Op {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
-                && arg_op.kind() == T::forward().kind()
+                && arg_op == T::forward()
                 && arg_children.len() == 1
             {
                 let x = arg_children[0];
@@ -222,7 +207,7 @@ impl<T: FunctionInverse> Rewrite for BackwardForward<T> {
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, un T::backward().kind(), (un T::forward().kind(), (var 0))))
+        Some(arena_pat!(__a, un T::backward(), (un T::forward(), (var 0))))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -240,11 +225,11 @@ impl<T: FunctionInverse> Rewrite for BackwardForward<T> {
 /// f(source_op(a, b)) → target_op(f(a), f(b))
 pub trait Homomorphism: Send + Sync {
     /// The function (e.g., exp, ln).
-    fn func() -> &'static dyn Op;
+    fn func() -> OpKind;
     /// The source operation (e.g., Add for exp).
-    fn source_op() -> &'static dyn Op;
+    fn source_op() -> OpKind;
     /// The target operation (e.g., Mul for exp).
-    fn target_op() -> &'static dyn Op;
+    fn target_op() -> OpKind;
 }
 
 // ============================================================================
@@ -256,14 +241,14 @@ pub trait Homomorphism: Send + Sync {
 pub struct ExpHomomorphism;
 
 impl Homomorphism for ExpHomomorphism {
-    fn func() -> &'static dyn Op {
-        &ops::Exp
+    fn func() -> OpKind {
+        OpKind::Exp
     }
-    fn source_op() -> &'static dyn Op {
-        &ops::Add
+    fn source_op() -> OpKind {
+        OpKind::Add
     }
-    fn target_op() -> &'static dyn Op {
-        &ops::Mul
+    fn target_op() -> OpKind {
+        OpKind::Mul
     }
 }
 
@@ -272,14 +257,14 @@ impl Homomorphism for ExpHomomorphism {
 pub struct LnHomomorphism;
 
 impl Homomorphism for LnHomomorphism {
-    fn func() -> &'static dyn Op {
-        &ops::Ln
+    fn func() -> OpKind {
+        OpKind::Ln
     }
-    fn source_op() -> &'static dyn Op {
-        &ops::Mul
+    fn source_op() -> OpKind {
+        OpKind::Mul
     }
-    fn target_op() -> &'static dyn Op {
-        &ops::Add
+    fn target_op() -> OpKind {
+        OpKind::Add
     }
 }
 
@@ -306,7 +291,7 @@ impl<T: Homomorphism> Default for HomomorphismRule<T> {
 
 impl<T: Homomorphism> Rewrite for HomomorphismRule<T> {
     fn name(&self) -> &str {
-        match T::func().kind() {
+        match T::func() {
             OpKind::Exp => "exp-homomorphism",
             OpKind::Ln => "ln-homomorphism",
             _ => "homomorphism",
@@ -314,15 +299,15 @@ impl<T: Homomorphism> Rewrite for HomomorphismRule<T> {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(T::func().kind())
+        RootShapes::kind(T::func())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: func(source_op(a, b))
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != T::func().kind() {
+        if op != T::func() {
             return None;
         }
         if children.len() != 1 {
@@ -333,11 +318,11 @@ impl<T: Homomorphism> Rewrite for HomomorphismRule<T> {
 
         // Check if argument is source_op(a, b)
         for arg_node in egraph.nodes(arg) {
-            if let ENode::Op {
+            if let &ENode::Op {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
-                && arg_op.kind() == T::source_op().kind()
+                && arg_op == T::source_op()
                 && arg_children.len() == 2
             {
                 let a = arg_children[0];
@@ -355,13 +340,13 @@ impl<T: Homomorphism> Rewrite for HomomorphismRule<T> {
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, un T::func().kind(), (bin T::source_op().kind(), (var 0), (var 1))))
+        Some(arena_pat!(__a, un T::func(), (bin T::source_op(), (var 0), (var 1))))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         // TargetOp(Func(V0), Func(V1))
-        let fk = T::func().kind();
-        Some(arena_pat!(__a, bin T::target_op().kind(), (un fk, (var 0)), (un fk, (var 1))))
+        let fk = T::func();
+        Some(arena_pat!(__a, bin T::target_op(), (un fk, (var 0)), (un fk, (var 1))))
     }
 }
 
@@ -392,10 +377,10 @@ impl Rewrite for PowerCombine {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Mul(Pow(x, a), Pow(y, b)) where x == y
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul {
+        if op != OpKind::Mul {
             return None;
         }
         if children.len() != 2 {
@@ -436,8 +421,8 @@ impl Rewrite for PowerCombine {
 impl PowerCombine {
     fn extract_pow(&self, egraph: &EGraph, class: EClassId) -> Option<(EClassId, EClassId)> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node
-                && op.kind() == OpKind::Pow
+            if let &ENode::Op { op, children } = node
+                && op == OpKind::Pow
                 && children.len() == 2
             {
                 return Some((children[0], children[1]));

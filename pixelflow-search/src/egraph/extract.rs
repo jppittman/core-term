@@ -612,9 +612,7 @@ fn choices_have_cycle_through(
         // costs a rejected swap and never a wrong term.
         let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
         if let Some(ENode::Op { children, .. }) = egraph.nodes(c).get(node_idx) {
-            for &child in children {
-                stack.push(child);
-            }
+            stack.extend_from_slice(children);
         }
     }
 
@@ -940,7 +938,7 @@ impl Selection {
             let ENode::Op { op, .. } = self.node(egraph, position) else {
                 continue;
             };
-            if !matches!(op.kind(), OpKind::Shl | OpKind::Shr) {
+            if !matches!(op, OpKind::Shl | OpKind::Shr) {
                 continue;
             }
             let Some(&count) = self.operands_of(position).get(1) else {
@@ -1023,7 +1021,7 @@ impl Selection {
                 // itself and linked after extraction
                 // (`pixelflow_ir::passes::link`).
                 ENode::Ref { key, .. } => Shape::Ref(*key),
-                ENode::Op { op, .. } => Shape::Op(op.kind(), Children::Many(&operand_ids)),
+                ENode::Op { op, .. } => Shape::Op(*op, Children::Many(&operand_ids)),
                 ENode::Reduce { fold, .. } => Shape::Reduce {
                     fold: *fold,
                     body: operand_ids[0],
@@ -1822,7 +1820,7 @@ fn canonical_key(egraph: &EGraph, node: &ENode) -> (u8, u128, usize, Vec<u32>) {
         ENode::Buffer(_) => (2, 0, 0, children),
         ENode::Uniform(_) => (3, 0, 0, children),
         ENode::Param(i) => (4, u128::from(*i), 0, children),
-        ENode::Op { op, .. } => (5, op.kind() as u128, children.len(), children),
+        ENode::Op { op, .. } => (5, *op as u128, children.len(), children),
         // The fold *is* the discriminating part: two folds over one body
         // differ only in their metadata, so that is what orders them.
         ENode::Reduce { fold, .. } => (6, fold.to_bits(), children.len(), children),
@@ -2403,27 +2401,16 @@ mod tests {
     /// per-sample expression.
     #[test]
     fn scope_weighting_unfuses_an_fma_to_hoist_the_z_term() {
-        use crate::egraph::ops::op_from_kind;
         use pixelflow_ir::OpKind;
 
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
         let z = egraph.add(ENode::Var(2));
         let two = egraph.add(ENode::Const(2.0f32.to_bits()));
-        let op = |kind| op_from_kind(kind).expect("op is modelled");
 
-        let fused = egraph.add(ENode::Op {
-            op: op(OpKind::MulAdd),
-            children: vec![two, z, x],
-        });
-        let z_plus_z = egraph.add(ENode::Op {
-            op: op(OpKind::Add),
-            children: vec![z, z],
-        });
-        let unfused = egraph.add(ENode::Op {
-            op: op(OpKind::Add),
-            children: vec![x, z_plus_z],
-        });
+        let fused = egraph.add(ENode::apply(OpKind::MulAdd, &[two, z, x]));
+        let z_plus_z = egraph.add(ENode::apply(OpKind::Add, &[z, z]));
+        let unfused = egraph.add(ENode::apply(OpKind::Add, &[x, z_plus_z]));
         let root = egraph.union(fused, unfused);
         egraph.rebuild();
 
@@ -2432,7 +2419,7 @@ mod tests {
             let dag = extract_dag_scoped(&egraph, root, &costs, shape);
             let idx = dag.choices[egraph.find(root).0 as usize].expect("root is chosen");
             match &egraph.nodes(egraph.find(root))[idx] {
-                ENode::Op { op, .. } => op.kind(),
+                ENode::Op { op, .. } => *op,
                 other => panic!("root should be an op, got {other:?}"),
             }
         };
@@ -2460,11 +2447,7 @@ mod tests {
         let mut cur = egraph.add(ENode::Var(0));
         for i in 0..n {
             let c = egraph.add(ENode::constant(i as f32 + 1.0));
-            cur = egraph.add(ENode::Op {
-                op: crate::egraph::ops::op_from_kind(pixelflow_ir::OpKind::Add)
-                    .expect("Add is modelled"),
-                children: vec![cur, c],
-            });
+            cur = egraph.add(ENode::apply(pixelflow_ir::OpKind::Add, &[cur, c]));
         }
         egraph.rebuild();
         (egraph, cur)
@@ -3046,10 +3029,7 @@ mod tests {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
         let y = egraph.add(ENode::Var(1));
-        let sum = egraph.add(ENode::Op {
-            op: &super::super::ops::Add,
-            children: alloc::vec![x, y],
-        });
+        let sum = egraph.add(ENode::apply(OpKind::Add, &[x, y]));
 
         let costs = CostModel::default();
         let dag = extract_dag(&egraph, sum, &costs);
@@ -3073,14 +3053,8 @@ mod tests {
         let x = egraph.add(ENode::Var(0));
         let two = egraph.add(ENode::constant(2.0));
 
-        let x_plus_x = egraph.add(ENode::Op {
-            op: &super::super::ops::Add,
-            children: alloc::vec![x, x],
-        });
-        let x_times_2 = egraph.add(ENode::Op {
-            op: &super::super::ops::Mul,
-            children: alloc::vec![x, two],
-        });
+        let x_plus_x = egraph.add(ENode::apply(OpKind::Add, &[x, x]));
+        let x_times_2 = egraph.add(ENode::apply(OpKind::Mul, &[x, two]));
 
         egraph.union(x_plus_x, x_times_2);
 
@@ -3144,14 +3118,8 @@ mod tests {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
         let two = egraph.add(ENode::constant(2.0));
-        let x_plus_x = egraph.add(ENode::Op {
-            op: &super::super::ops::Add,
-            children: alloc::vec![x, x],
-        });
-        let x_times_2 = egraph.add(ENode::Op {
-            op: &super::super::ops::Mul,
-            children: alloc::vec![x, two],
-        });
+        let x_plus_x = egraph.add(ENode::apply(OpKind::Add, &[x, x]));
+        let x_times_2 = egraph.add(ENode::apply(OpKind::Mul, &[x, two]));
         let merged = egraph.union(x_plus_x, x_times_2);
         egraph.rebuild();
 
@@ -3206,14 +3174,8 @@ mod tests {
     fn cyclic_capable_egraph() -> (EGraph, EClassId, EClassId) {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
-        let n1 = egraph.add(ENode::Op {
-            op: &super::super::ops::Neg,
-            children: alloc::vec![x],
-        });
-        let n2 = egraph.add(ENode::Op {
-            op: &super::super::ops::Neg,
-            children: alloc::vec![n1],
-        });
+        let n1 = egraph.add(ENode::apply(OpKind::Neg, &[x]));
+        let n2 = egraph.add(ENode::apply(OpKind::Neg, &[n1]));
         let merged = egraph.union(x, n2); // neg(neg(x)) = x
         egraph.rebuild();
         (egraph, merged, n1)
@@ -3348,33 +3310,17 @@ mod tests {
     /// price: the sharing an emitted kernel's let-bindings come from.
     #[test]
     fn a_class_used_many_times_is_one_node_of_the_term() {
-        use super::super::ops;
         let costs = CostModel::default();
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
         let y = egraph.add(ENode::Var(1));
-        let sum = egraph.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![x, y],
-        });
+        let sum = egraph.add(ENode::apply(OpKind::Add, &[x, y]));
         // (X + Y) * (X + Y)
-        let product = egraph.add(ENode::Op {
-            op: &ops::Mul,
-            children: alloc::vec![sum, sum],
-        });
+        let product = egraph.add(ENode::apply(OpKind::Mul, &[sum, sum]));
         // sqrt(X) * sqrt(X) + sqrt(X): used three times
-        let sqrt_x = egraph.add(ENode::Op {
-            op: &ops::Sqrt,
-            children: alloc::vec![x],
-        });
-        let sqrt_squared = egraph.add(ENode::Op {
-            op: &ops::Mul,
-            children: alloc::vec![sqrt_x, sqrt_x],
-        });
-        let triple = egraph.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![sqrt_squared, sqrt_x],
-        });
+        let sqrt_x = egraph.add(ENode::apply(OpKind::Sqrt, &[x]));
+        let sqrt_squared = egraph.add(ENode::apply(OpKind::Mul, &[sqrt_x, sqrt_x]));
+        let triple = egraph.add(ENode::apply(OpKind::Add, &[sqrt_squared, sqrt_x]));
 
         // (root, distinct classes the term holds)
         for (root, distinct) in [(sum, 3), (product, 4), (sqrt_squared, 3), (triple, 4)] {
@@ -3404,14 +3350,8 @@ mod tests {
         // sqrt(X) * sqrt(X): tree has 2x sqrt edges, DAG has 1x sqrt + 1x reload
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
-        let sqrt_x = egraph.add(ENode::Op {
-            op: &super::super::ops::Sqrt,
-            children: alloc::vec![x],
-        });
-        let product = egraph.add(ENode::Op {
-            op: &super::super::ops::Mul,
-            children: alloc::vec![sqrt_x, sqrt_x],
-        });
+        let sqrt_x = egraph.add(ENode::apply(OpKind::Sqrt, &[x]));
+        let product = egraph.add(ENode::apply(OpKind::Mul, &[sqrt_x, sqrt_x]));
 
         let num_classes = egraph.num_classes();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
@@ -3470,40 +3410,18 @@ mod tests {
         let root = arena.push_binary(OpKind::Add, a, yc);
 
         // The SAME DAG as an e-graph (sharing preserved node for node).
-        use crate::egraph::ops;
         let mut eg = EGraph::new();
         let ez = eg.add(ENode::Var(2));
         let ec = eg.add(ENode::constant(0.3));
-        let ezm = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: alloc::vec![ez, ec],
-        });
-        let esin = eg.add(ENode::Op {
-            op: &ops::Sin,
-            children: alloc::vec![ezm],
-        });
+        let ezm = eg.add(ENode::apply(OpKind::Mul, &[ez, ec]));
+        let esin = eg.add(ENode::apply(OpKind::Sin, &[ezm]));
         let ex = eg.add(ENode::Var(0));
         let ey = eg.add(ENode::Var(1));
-        let exy = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![ex, ey],
-        });
-        let em = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: alloc::vec![esin, exy],
-        });
-        let ea = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![em, esin],
-        });
-        let eyc = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: alloc::vec![ey, ec],
-        });
-        let eroot = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![ea, eyc],
-        });
+        let exy = eg.add(ENode::apply(OpKind::Add, &[ex, ey]));
+        let em = eg.add(ENode::apply(OpKind::Mul, &[esin, exy]));
+        let ea = eg.add(ENode::apply(OpKind::Add, &[em, esin]));
+        let eyc = eg.add(ENode::apply(OpKind::Mul, &[ey, ec]));
+        let eroot = eg.add(ENode::apply(OpKind::Add, &[ea, eyc]));
 
         let choices: Vec<Option<usize>> = alloc::vec![None; eg.num_classes()];
         let extraction = Extraction::from_backfill(&eg, eroot, choices);
@@ -3529,13 +3447,6 @@ mod tests {
         // the PINNED arena, not the raw choice — otherwise it carries nodes
         // the compiled form never has.
         // ---------------------------------------------------------------
-        struct ShlOp;
-        impl crate::egraph::ops::Op for ShlOp {
-            fn kind(&self) -> OpKind {
-                OpKind::Shl
-            }
-        }
-
         // The arena the term will actually materialise as: pinning
         // always wins, so the compiled form is `Shl(X, Const(0))` no matter
         // which node the count class's extraction chose.
@@ -3548,17 +3459,11 @@ mod tests {
         let mut eg3 = EGraph::new();
         let ex3 = eg3.add(ENode::Var(0));
         let ey3 = eg3.add(ENode::Var(1));
-        let esub3 = eg3.add(ENode::Op {
-            op: &ops::Sub,
-            children: alloc::vec![ey3, ey3],
-        });
+        let esub3 = eg3.add(ENode::apply(OpKind::Sub, &[ey3, ey3]));
         let econst3 = eg3.add(ENode::constant(0.0));
         let count3 = eg3.union(esub3, econst3); // Sub(Y, Y) = 0, same class as Const(0)
         eg3.rebuild();
-        let eshl3 = eg3.add(ENode::Op {
-            op: &ShlOp,
-            children: alloc::vec![ex3, count3],
-        });
+        let eshl3 = eg3.add(ENode::apply(OpKind::Shl, &[ex3, count3]));
 
         // Choose the varying Sub(Y, Y) node for the count class, not the
         // Const — exactly the scenario `Selection::pinned` exists to correct
@@ -3620,24 +3525,14 @@ mod tests {
         let xy = arena.push_binary(OpKind::Add, y, x);
         let root = arena.push_binary(OpKind::Add, frame_sum, xy);
 
-        use crate::egraph::ops;
         let mut eg = EGraph::new();
         let ec = eg.add(ENode::constant(2.0));
         let ew = eg.add(ENode::Var(3));
-        let efs = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![ec, ew],
-        });
+        let efs = eg.add(ENode::apply(OpKind::Add, &[ec, ew]));
         let ey = eg.add(ENode::Var(1));
         let ex = eg.add(ENode::Var(0));
-        let exy = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![ey, ex],
-        });
-        let eroot = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![efs, exy],
-        });
+        let exy = eg.add(ENode::apply(OpKind::Add, &[ey, ex]));
+        let eroot = eg.add(ENode::apply(OpKind::Add, &[efs, exy]));
 
         let choices: Vec<Option<usize>> = alloc::vec![None; eg.num_classes()];
         let extraction = Extraction::from_backfill(&eg, eroot, choices);
@@ -3667,10 +3562,7 @@ mod tests {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
         let y = egraph.add(ENode::Var(1));
-        let add = egraph.add(ENode::Op {
-            op: &super::super::ops::Add,
-            children: alloc::vec![x, y],
-        });
+        let add = egraph.add(ENode::apply(OpKind::Add, &[x, y]));
 
         let num_classes = egraph.num_classes();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
@@ -3693,15 +3585,7 @@ mod tests {
     /// unpinned walk met it.
     #[test]
     fn a_pinned_shift_count_drops_what_only_it_reached_and_reorders_what_it_shared() {
-        use crate::egraph::ops;
         use pixelflow_ir::{ExprArena, OpKind};
-
-        struct ShlOp;
-        impl crate::egraph::ops::Op for ShlOp {
-            fn kind(&self) -> OpKind {
-                OpKind::Shl
-            }
-        }
 
         // root = Add(Shl(x, count), Sub(d, y)), count = {Const(3), Mul(d, d)},
         // d = Add(y, w): `d` is reached under `count` first, and under the
@@ -3710,29 +3594,14 @@ mod tests {
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let w = eg.add(ENode::Var(2));
-        let d = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![y, w],
-        });
-        let arithmetic = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: alloc::vec![d, d],
-        });
+        let d = eg.add(ENode::apply(OpKind::Add, &[y, w]));
+        let arithmetic = eg.add(ENode::apply(OpKind::Mul, &[d, d]));
         let three = eg.add(ENode::constant(3.0));
         let count = eg.union(arithmetic, three);
         eg.rebuild();
-        let shl = eg.add(ENode::Op {
-            op: &ShlOp,
-            children: alloc::vec![x, count],
-        });
-        let sub = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: alloc::vec![d, y],
-        });
-        let root = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![shl, sub],
-        });
+        let shl = eg.add(ENode::apply(OpKind::Shl, &[x, count]));
+        let sub = eg.add(ENode::apply(OpKind::Sub, &[d, y]));
+        let root = eg.add(ENode::apply(OpKind::Add, &[shl, sub]));
 
         // Choose the arithmetic for the count, not the Const.
         let count = eg.find(count);
@@ -3770,16 +3639,8 @@ mod tests {
     /// ordinary operand outside the fold is that `Const` there as well.
     #[test]
     fn a_shift_count_under_a_fold_body_is_pinned() {
-        use crate::egraph::ops;
         use pixelflow_ir::fold::{Binder, Fold, Monoid};
         use pixelflow_ir::{ExprArena, OpKind};
-
-        struct ShlOp;
-        impl crate::egraph::ops::Op for ShlOp {
-            fn kind(&self) -> OpKind {
-                OpKind::Shl
-            }
-        }
 
         let binder = Binder::from_slot(0).expect("a live binder");
         let fold = Fold::new(Monoid::SUM, binder, 0..4);
@@ -3788,22 +3649,13 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let arithmetic = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: alloc::vec![y, y],
-        });
+        let arithmetic = eg.add(ENode::apply(OpKind::Mul, &[y, y]));
         let three = eg.add(ENode::constant(3.0));
         let count = eg.union(arithmetic, three);
         eg.rebuild();
-        let shl = eg.add(ENode::Op {
-            op: &ShlOp,
-            children: alloc::vec![x, count],
-        });
+        let shl = eg.add(ENode::apply(OpKind::Shl, &[x, count]));
         let reduce = eg.add(ENode::Reduce { fold, body: shl });
-        let root = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![reduce, count],
-        });
+        let root = eg.add(ENode::apply(OpKind::Add, &[reduce, count]));
 
         // Choose the arithmetic for the count, not the Const.
         let count = eg.find(count);
@@ -3840,10 +3692,7 @@ mod tests {
     fn a_shared_class_materializes_once() {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
-        let mul = egraph.add(ENode::Op {
-            op: &super::super::ops::Mul,
-            children: alloc::vec![x, x],
-        });
+        let mul = egraph.add(ENode::apply(OpKind::Mul, &[x, x]));
 
         let num_classes = egraph.num_classes();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
@@ -3869,10 +3718,7 @@ mod tests {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
         let y = egraph.add(ENode::Var(1));
-        let add = egraph.add(ENode::Op {
-            op: &super::super::ops::Add,
-            children: alloc::vec![x, y],
-        });
+        let add = egraph.add(ENode::apply(OpKind::Add, &[x, y]));
 
         let num_classes = egraph.num_classes();
         let mut choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
@@ -3940,18 +3786,9 @@ mod tests {
     fn sharing_vs_flat_egraph() -> (EGraph, EClassId) {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
-        let s = egraph.add(ENode::Op {
-            op: &super::super::ops::Sin,
-            children: alloc::vec![x],
-        });
-        let squared = egraph.add(ENode::Op {
-            op: &super::super::ops::Mul,
-            children: alloc::vec![s, s],
-        });
-        let flat = egraph.add(ENode::Op {
-            op: &super::super::ops::Ln,
-            children: alloc::vec![x],
-        });
+        let s = egraph.add(ENode::apply(OpKind::Sin, &[x]));
+        let squared = egraph.add(ENode::apply(OpKind::Mul, &[s, s]));
+        let flat = egraph.add(ENode::apply(OpKind::Ln, &[x]));
         egraph.union(squared, flat);
         egraph.rebuild();
         let root = egraph.find(squared);
@@ -4018,14 +3855,8 @@ mod tests {
     fn the_two_objectives_agree_when_nothing_is_shared() {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
-        let a = egraph.add(ENode::Op {
-            op: &super::super::ops::Sin,
-            children: alloc::vec![x],
-        });
-        let b = egraph.add(ENode::Op {
-            op: &super::super::ops::Sqrt,
-            children: alloc::vec![a],
-        });
+        let a = egraph.add(ENode::apply(OpKind::Sin, &[x]));
+        let b = egraph.add(ENode::apply(OpKind::Sqrt, &[a]));
         egraph.rebuild();
         let costs = CostModel::latency_prior();
         let (tree, shared) = extract_dag_objectives(&egraph, b, &costs, LatticeShape::POINT);
@@ -4037,18 +3868,9 @@ mod tests {
     fn shared_sin_egraph() -> (EGraph, EClassId) {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
-        let s = egraph.add(ENode::Op {
-            op: &super::super::ops::Sin,
-            children: alloc::vec![x],
-        });
-        let sq = egraph.add(ENode::Op {
-            op: &super::super::ops::Mul,
-            children: alloc::vec![s, s],
-        });
-        let root = egraph.add(ENode::Op {
-            op: &super::super::ops::Add,
-            children: alloc::vec![sq, s],
-        });
+        let s = egraph.add(ENode::apply(OpKind::Sin, &[x]));
+        let sq = egraph.add(ENode::apply(OpKind::Mul, &[s, s]));
+        let root = egraph.add(ENode::apply(OpKind::Add, &[sq, s]));
         egraph.rebuild();
         (egraph, root)
     }
@@ -4112,7 +3934,7 @@ mod tests {
     impl CostFunction for SinAboveTheCycleSentinel {
         fn node_cost(&self, node: &ENode, _parent: Option<pixelflow_ir::OpKind>) -> usize {
             match node {
-                ENode::Op { op, .. } if op.kind() == pixelflow_ir::OpKind::Sin => usize::MAX / 2,
+                ENode::Op { op, .. } if *op == pixelflow_ir::OpKind::Sin => usize::MAX / 2,
                 ENode::Op { .. } | ENode::Reduce { .. } => 1,
                 ENode::Var(_)
                 | ENode::Const(_)
@@ -4130,14 +3952,8 @@ mod tests {
     fn self_referential_pick_egraph() -> (EGraph, EClassId, usize, usize) {
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
-        let s = egraph.add(ENode::Op {
-            op: &super::super::ops::Sin,
-            children: alloc::vec![x],
-        });
-        let n = egraph.add(ENode::Op {
-            op: &super::super::ops::Neg,
-            children: alloc::vec![s],
-        });
+        let s = egraph.add(ENode::apply(OpKind::Sin, &[x]));
+        let n = egraph.add(ENode::apply(OpKind::Neg, &[s]));
         let merged = egraph.union(s, n);
         egraph.rebuild();
 
@@ -4145,15 +3961,11 @@ mod tests {
         let nodes = egraph.nodes(canonical);
         let sin_idx = nodes
             .iter()
-            .position(
-                |nd| matches!(nd, ENode::Op { op, .. } if op.kind() == pixelflow_ir::OpKind::Sin),
-            )
+            .position(|nd| matches!(nd, ENode::Op { op, .. } if *op == pixelflow_ir::OpKind::Sin))
             .expect("merged class holds Sin(x)");
         let neg_idx = nodes
             .iter()
-            .position(
-                |nd| matches!(nd, ENode::Op { op, .. } if op.kind() == pixelflow_ir::OpKind::Neg),
-            )
+            .position(|nd| matches!(nd, ENode::Op { op, .. } if *op == pixelflow_ir::OpKind::Neg))
             .expect("merged class holds Neg(merged)");
         (egraph, canonical, sin_idx, neg_idx)
     }
@@ -4348,14 +4160,8 @@ mod tests {
         // sin(X) * sin(X): the `sin` class is reached by both children.
         let mut egraph = EGraph::new();
         let x = egraph.add(ENode::Var(0));
-        let s = egraph.add(ENode::Op {
-            op: &super::super::ops::Sin,
-            children: alloc::vec![x],
-        });
-        let root = egraph.add(ENode::Op {
-            op: &super::super::ops::Mul,
-            children: alloc::vec![s, s],
-        });
+        let s = egraph.add(ENode::apply(OpKind::Sin, &[x]));
+        let root = egraph.add(ENode::apply(OpKind::Mul, &[s, s]));
         egraph.rebuild();
         let costs = CostModel::latency_prior();
         let shape = LatticeShape::POINT;
@@ -4438,31 +4244,13 @@ mod tests {
         let mut egraph = EGraph::new();
         let d = egraph.add(ENode::Var(1));
         let w = egraph.add(ENode::Var(2));
-        let c0 = egraph.add(ENode::Op {
-            op: &super::super::ops::Cos,
-            children: alloc::vec![d],
-        });
-        let p = egraph.add(ENode::Op {
-            op: &super::super::ops::Sqrt,
-            children: alloc::vec![c0],
-        });
-        let c1 = egraph.add(ENode::Op {
-            op: &super::super::ops::Sin,
-            children: alloc::vec![p],
-        });
+        let c0 = egraph.add(ENode::apply(OpKind::Cos, &[d]));
+        let p = egraph.add(ENode::apply(OpKind::Sqrt, &[c0]));
+        let c1 = egraph.add(ENode::apply(OpKind::Sin, &[p]));
         let c = egraph.union(c0, c1);
-        let z = egraph.add(ENode::Op {
-            op: &super::super::ops::Neg,
-            children: alloc::vec![p],
-        });
-        let r0 = egraph.add(ENode::Op {
-            op: &super::super::ops::Mul,
-            children: alloc::vec![z, w],
-        });
-        let r1 = egraph.add(ENode::Op {
-            op: &super::super::ops::Cos,
-            children: alloc::vec![c],
-        });
+        let z = egraph.add(ENode::apply(OpKind::Neg, &[p]));
+        let r0 = egraph.add(ENode::apply(OpKind::Mul, &[z, w]));
+        let r1 = egraph.add(ENode::apply(OpKind::Cos, &[c]));
         let root = egraph.union(r0, r1);
         egraph.rebuild();
         (egraph, root)

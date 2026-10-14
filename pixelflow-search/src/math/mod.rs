@@ -25,9 +25,9 @@
 //! ```text
 //! // One trait declaration...
 //! impl InversePair for AddNeg {
-//!     fn base() -> &'static dyn Op { &ops::Add }
-//!     fn inverse() -> &'static dyn Op { &ops::Neg }
-//!     fn derived() -> &'static dyn Op { &ops::Sub }
+//!     fn base() -> OpKind { OpKind::Add }
+//!     fn inverse() -> OpKind { OpKind::Neg }
+//!     fn derived() -> OpKind { OpKind::Sub }
 //!     fn identity() -> f32 { 0.0 }
 //! }
 //!
@@ -131,14 +131,15 @@ pub fn all_rules() -> Vec<Box<dyn Rewrite>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixelflow_ir::OpKind;
     use pixelflow_ir::arena::ExprArena;
 
     #[test]
     fn associativity_templates() {
         // Verify all associativity rules have valid lhs/rhs templates and that
         // Associative LHS == ReverseAssociative RHS (and vice versa) structurally.
-        let assoc = Associative::new(&crate::egraph::ops::Add);
-        let rev = ReverseAssociative::new(&crate::egraph::ops::Add);
+        let assoc = Associative::new(OpKind::Add);
+        let rev = ReverseAssociative::new(OpKind::Add);
 
         let mut a = ExprArena::new();
         let assoc_lhs = assoc

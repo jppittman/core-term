@@ -47,10 +47,10 @@ impl Rewrite for ChainRule {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match `Dwrt(expr, var)`.
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Dwrt || children.len() != 2 {
+        if op != OpKind::Dwrt || children.len() != 2 {
             return None;
         }
         let expr_class = children[0];
@@ -74,7 +74,7 @@ impl Rewrite for ChainRule {
 }
 
 fn is_dwrt(node: &ENode) -> bool {
-    matches!(node, ENode::Op { op, .. } if op.kind() == OpKind::Dwrt)
+    matches!(node, ENode::Op { op, .. } if *op == OpKind::Dwrt)
 }
 
 /// The differentiation rule set: just the chain rule. It only matches `Dwrt`

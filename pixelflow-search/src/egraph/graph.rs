@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap as HashMap;
 
 use super::live::LiveClasses;
 use super::node::{EClassId, ENode};
-use super::ops::{self, Op};
+use super::ops;
 use super::provenance::{ENodeId, Provenance};
 use super::rewrite::RewriteAction;
 use alloc::collections::BTreeMap;
@@ -324,7 +324,7 @@ impl EGraph {
         let variance = node.variance(|child| self.var_fact[child.index()]);
         self.var_fact.push(variance);
         self.classes.push(EClass {
-            nodes: vec![node.clone()],
+            nodes: vec![node],
             tags: vec![enode_id],
         });
         self.parent.push(id);
@@ -528,7 +528,7 @@ impl EGraph {
                         }
                     }
                 } else {
-                    self.memo.insert(node.clone(), id);
+                    self.memo.insert(node, id);
                 }
                 new_nodes.push(node);
                 new_tags.push(tag);
@@ -823,7 +823,7 @@ impl EGraph {
         match action {
             RewriteAction::Union(_) => 0,
             RewriteAction::Create(node) => self.predict(|s| {
-                s.make(node.clone());
+                s.make(*node);
             }),
             RewriteAction::Instantiate {
                 template,
@@ -1204,8 +1204,8 @@ impl NodeSink for GrowthPredictor<'_> {
 /// the match, not by which operator is which.
 #[derive(Clone, Copy)]
 struct Distributive {
-    outer: &'static dyn Op,
-    inner: &'static dyn Op,
+    outer: OpKind,
+    inner: OpKind,
 }
 
 /// `Distribute`: `A * (B + C) -> A*B + A*C`, with `ops` = (outer `*`, inner
@@ -1216,105 +1216,66 @@ fn distribute_shape<S: NodeSink>(
     operands: [EClassId; 3],
 ) -> EClassId {
     let [a, b, c] = operands;
-    let ab_id = sink.make(ENode::Op {
-        op: ops.outer,
-        children: vec![a, b],
-    });
-    let ac_id = sink.make(ENode::Op {
-        op: ops.outer,
-        children: vec![a, c],
-    });
-    sink.make(ENode::Op {
-        op: ops.inner,
-        children: vec![ab_id, ac_id],
-    })
+    let ab_id = sink.make(ENode::apply(ops.outer, &[a, b]));
+    let ac_id = sink.make(ENode::apply(ops.outer, &[a, c]));
+    sink.make(ENode::apply(ops.inner, &[ab_id, ac_id]))
 }
 
 /// `Factor`: `A*B + A*C -> A * (B + C)`, with `ops` = (outer `+`, inner `*`)
 /// and `operands` = `[A, B, C]`.
 fn factor_shape<S: NodeSink>(sink: &mut S, ops: Distributive, operands: [EClassId; 3]) -> EClassId {
     let [common, unique_l, unique_r] = operands;
-    let sum_id = sink.make(ENode::Op {
-        op: ops.outer,
-        children: vec![unique_l, unique_r],
-    });
-    sink.make(ENode::Op {
-        op: ops.inner,
-        children: vec![common, sum_id],
-    })
+    let sum_id = sink.make(ENode::apply(ops.outer, &[unique_l, unique_r]));
+    sink.make(ENode::apply(ops.inner, &[common, sum_id]))
 }
 
 /// `Canonicalize`: `Sub(a,b) -> Add(a, Neg(b))`.
 fn canonicalize_shape<S: NodeSink>(
     sink: &mut S,
-    target: &'static dyn Op,
-    inverse: &'static dyn Op,
+    target: OpKind,
+    inverse: OpKind,
     a: EClassId,
     b: EClassId,
 ) -> EClassId {
-    let inv_id = sink.make(ENode::Op {
-        op: inverse,
-        children: vec![b],
-    });
-    sink.make(ENode::Op {
-        op: target,
-        children: vec![a, inv_id],
-    })
+    let inv_id = sink.make(ENode::apply(inverse, &[b]));
+    sink.make(ENode::apply(target, &[a, inv_id]))
 }
 
 /// `Associate`: `(a op b) op c -> a op (b op c)`.
 fn associate_shape<S: NodeSink>(
     sink: &mut S,
-    op: &'static dyn Op,
+    op: OpKind,
     a: EClassId,
     b: EClassId,
     c: EClassId,
 ) -> EClassId {
-    let bc_id = sink.make(ENode::Op {
-        op,
-        children: vec![b, c],
-    });
-    sink.make(ENode::Op {
-        op,
-        children: vec![a, bc_id],
-    })
+    let bc_id = sink.make(ENode::apply(op, &[b, c]));
+    sink.make(ENode::apply(op, &[a, bc_id]))
 }
 
 /// `ReverseAssociate`: `a op (b op c) -> (a op b) op c`.
 fn reverse_associate_shape<S: NodeSink>(
     sink: &mut S,
-    op: &'static dyn Op,
+    op: OpKind,
     a: EClassId,
     b: EClassId,
     c: EClassId,
 ) -> EClassId {
-    let ab_id = sink.make(ENode::Op {
-        op,
-        children: vec![a, b],
-    });
-    sink.make(ENode::Op {
-        op,
-        children: vec![ab_id, c],
-    })
+    let ab_id = sink.make(ENode::apply(op, &[a, b]));
+    sink.make(ENode::apply(op, &[ab_id, c]))
 }
 
 /// `OddParity`: `Op(neg(x)) -> neg(Op(x))`.
-fn odd_parity_shape<S: NodeSink>(sink: &mut S, func: &'static dyn Op, inner: EClassId) -> EClassId {
-    let func_id = sink.make(ENode::Op {
-        op: func,
-        children: vec![inner],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Neg,
-        children: vec![func_id],
-    })
+fn odd_parity_shape<S: NodeSink>(sink: &mut S, func: OpKind, inner: EClassId) -> EClassId {
+    let func_id = sink.make(ENode::apply(func, &[inner]));
+    sink.make(ENode::apply(OpKind::Neg, &[func_id]))
 }
 
 /// `on_a(a) * on_b(b)`: one term of an angle-addition identity.
 #[derive(Clone, Copy)]
 struct Product {
-    on_a: &'static dyn Op,
-    on_b: &'static dyn Op,
+    on_a: OpKind,
+    on_b: OpKind,
 }
 
 /// The shape of an angle-addition identity: two products of single-argument
@@ -1342,64 +1303,31 @@ fn angle_addition_shape<S: NodeSink>(
         term2_sign,
     } = terms;
 
-    let t1_left_id = sink.make(ENode::Op {
-        op: term1.on_a,
-        children: vec![a],
-    });
-    let t1_right_id = sink.make(ENode::Op {
-        op: term1.on_b,
-        children: vec![b],
-    });
-    let term1_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![t1_left_id, t1_right_id],
-    });
+    let t1_left_id = sink.make(ENode::apply(term1.on_a, &[a]));
+    let t1_right_id = sink.make(ENode::apply(term1.on_b, &[b]));
+    let term1_id = sink.make(ENode::apply(OpKind::Mul, &[t1_left_id, t1_right_id]));
 
-    let t2_left_id = sink.make(ENode::Op {
-        op: term2.on_a,
-        children: vec![a],
-    });
-    let t2_right_id = sink.make(ENode::Op {
-        op: term2.on_b,
-        children: vec![b],
-    });
-    let term2_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![t2_left_id, t2_right_id],
-    });
+    let t2_left_id = sink.make(ENode::apply(term2.on_a, &[a]));
+    let t2_right_id = sink.make(ENode::apply(term2.on_b, &[b]));
+    let term2_id = sink.make(ENode::apply(OpKind::Mul, &[t2_left_id, t2_right_id]));
 
     match term2_sign {
-        Sign::Plus => sink.make(ENode::Op {
-            op: &ops::Add,
-            children: vec![term1_id, term2_id],
-        }),
-        Sign::Minus => sink.make(ENode::Op {
-            op: &ops::Sub,
-            children: vec![term1_id, term2_id],
-        }),
+        Sign::Plus => sink.make(ENode::apply(OpKind::Add, &[term1_id, term2_id])),
+        Sign::Minus => sink.make(ENode::apply(OpKind::Sub, &[term1_id, term2_id])),
     }
 }
 
 /// `Homomorphism`: `f(a ⊕ b) -> f(a) ⊗ f(b)`.
 fn homomorphism_shape<S: NodeSink>(
     sink: &mut S,
-    func: &'static dyn Op,
-    target_op: &'static dyn Op,
+    func: OpKind,
+    target_op: OpKind,
     a: EClassId,
     b: EClassId,
 ) -> EClassId {
-    let func_a_id = sink.make(ENode::Op {
-        op: func,
-        children: vec![a],
-    });
-    let func_b_id = sink.make(ENode::Op {
-        op: func,
-        children: vec![b],
-    });
-    sink.make(ENode::Op {
-        op: target_op,
-        children: vec![func_a_id, func_b_id],
-    })
+    let func_a_id = sink.make(ENode::apply(func, &[a]));
+    let func_b_id = sink.make(ENode::apply(func, &[b]));
+    sink.make(ENode::apply(target_op, &[func_a_id, func_b_id]))
 }
 
 /// `PowerCombine`: `x^a * x^b -> x^(a+b)`.
@@ -1409,141 +1337,75 @@ fn power_combine_shape<S: NodeSink>(
     exp_a: EClassId,
     exp_b: EClassId,
 ) -> EClassId {
-    let sum_id = sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![exp_a, exp_b],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Pow,
-        children: vec![base, sum_id],
-    })
+    let sum_id = sink.make(ENode::apply(OpKind::Add, &[exp_a, exp_b]));
+    sink.make(ENode::apply(OpKind::Pow, &[base, sum_id]))
 }
 
 /// `ReverseAngleAddition`: `sin(a)cos(b) + cos(a)sin(b) -> sin(a + b)` (or
 /// the `cos` case).
 fn reverse_angle_addition_shape<S: NodeSink>(
     sink: &mut S,
-    trig_op: &'static dyn Op,
+    trig_op: OpKind,
     a: EClassId,
     b: EClassId,
 ) -> EClassId {
-    let sum_id = sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![a, b],
-    });
-    sink.make(ENode::Op {
-        op: trig_op,
-        children: vec![sum_id],
-    })
+    let sum_id = sink.make(ENode::apply(OpKind::Add, &[a, b]));
+    sink.make(ENode::apply(trig_op, &[sum_id]))
 }
 
 /// `HalfAngleProduct`: `sin(x) * cos(x) -> sin(x + x) / 2`.
 fn half_angle_product_shape<S: NodeSink>(sink: &mut S, x: EClassId) -> EClassId {
-    let two_x_id = sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![x, x],
-    });
-    let sin_2x_id = sink.make(ENode::Op {
-        op: &ops::Sin,
-        children: vec![two_x_id],
-    });
+    let two_x_id = sink.make(ENode::apply(OpKind::Add, &[x, x]));
+    let sin_2x_id = sink.make(ENode::apply(OpKind::Sin, &[two_x_id]));
     let two_id = sink.make(ENode::Const(2.0_f32.to_bits()));
-    sink.make(ENode::Op {
-        op: &ops::Div,
-        children: vec![sin_2x_id, two_id],
-    })
+    sink.make(ENode::apply(OpKind::Div, &[sin_2x_id, two_id]))
 }
 
 /// `Doubling`: `a + a -> 2 * a`.
 fn doubling_shape<S: NodeSink>(sink: &mut S, a: EClassId) -> EClassId {
     let two_id = sink.make(ENode::Const(2.0_f32.to_bits()));
-    sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![two_id, a],
-    })
+    sink.make(ENode::apply(OpKind::Mul, &[two_id, a]))
 }
 
 /// `Halving`: `2 * a -> a + a`.
 fn halving_shape<S: NodeSink>(sink: &mut S, a: EClassId) -> EClassId {
-    sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![a, a],
-    })
+    sink.make(ENode::apply(OpKind::Add, &[a, a]))
 }
 
 /// `PowerRecurrence`: `pow(x, n) -> x * pow(x, n-1)` for integer `n >= 3`.
 fn power_recurrence_shape<S: NodeSink>(sink: &mut S, base: EClassId, exponent: i32) -> EClassId {
     let n_minus_1_id = sink.make(ENode::constant((exponent - 1) as f32));
-    let pow_id = sink.make(ENode::Op {
-        op: &ops::Pow,
-        children: vec![base, n_minus_1_id],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![base, pow_id],
-    })
+    let pow_id = sink.make(ENode::apply(OpKind::Pow, &[base, n_minus_1_id]));
+    sink.make(ENode::apply(OpKind::Mul, &[base, pow_id]))
 }
 
 /// `LogPower`: `log(pow(x, n)) -> n * log(x)`.
 fn log_power_shape<S: NodeSink>(
     sink: &mut S,
-    log_op: &'static dyn Op,
+    log_op: OpKind,
     base: EClassId,
     exponent: EClassId,
 ) -> EClassId {
-    let log_x_id = sink.make(ENode::Op {
-        op: log_op,
-        children: vec![base],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![exponent, log_x_id],
-    })
+    let log_x_id = sink.make(ENode::apply(log_op, &[base]));
+    sink.make(ENode::apply(OpKind::Mul, &[exponent, log_x_id]))
 }
 
 /// `ExpandSquare`: `(a+b)² -> a² + 2ab + b²`.
 fn expand_square_shape<S: NodeSink>(sink: &mut S, a: EClassId, b: EClassId) -> EClassId {
-    let a2_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![a, a],
-    });
-    let b2_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![b, b],
-    });
-    let ab_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![a, b],
-    });
+    let a2_id = sink.make(ENode::apply(OpKind::Mul, &[a, a]));
+    let b2_id = sink.make(ENode::apply(OpKind::Mul, &[b, b]));
+    let ab_id = sink.make(ENode::apply(OpKind::Mul, &[a, b]));
     let two_id = sink.make(ENode::constant(2.0));
-    let two_ab_id = sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![two_id, ab_id],
-    });
-    let sum1_id = sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![a2_id, two_ab_id],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![sum1_id, b2_id],
-    })
+    let two_ab_id = sink.make(ENode::apply(OpKind::Mul, &[two_id, ab_id]));
+    let sum1_id = sink.make(ENode::apply(OpKind::Add, &[a2_id, two_ab_id]));
+    sink.make(ENode::apply(OpKind::Add, &[sum1_id, b2_id]))
 }
 
 /// `DiffOfSquares`: `a² - b² -> (a+b)(a-b)`.
 fn diff_of_squares_shape<S: NodeSink>(sink: &mut S, a: EClassId, b: EClassId) -> EClassId {
-    let sum_id = sink.make(ENode::Op {
-        op: &ops::Add,
-        children: vec![a, b],
-    });
-    let diff_id = sink.make(ENode::Op {
-        op: &ops::Sub,
-        children: vec![a, b],
-    });
-    sink.make(ENode::Op {
-        op: &ops::Mul,
-        children: vec![sum_id, diff_id],
-    })
+    let sum_id = sink.make(ENode::apply(OpKind::Add, &[a, b]));
+    let diff_id = sink.make(ENode::apply(OpKind::Sub, &[a, b]));
+    sink.make(ENode::apply(OpKind::Mul, &[sum_id, diff_id]))
 }
 
 /// Materialize `template`'s subtree at `id`, bottom-up, reading each
@@ -1554,8 +1416,10 @@ fn diff_of_squares_shape<S: NodeSink>(sink: &mut S, a: EClassId, b: EClassId) ->
 /// # Panics
 ///
 /// On a `Param`/`Buffer` node (a rewrite RHS template must never contain
-/// either), on an `OpKind` with no static [`Op`] (an arena/op-table drift,
-/// not a runtime condition), or on a metavariable with no binding.
+/// either), on an `OpKind` that `ops::template_may_name` refuses (a template
+/// naming something no rule may name is a bug in the rule, not a runtime
+/// condition), on a template node whose child count is not its op's arity
+/// (`Operands::new`), or on a metavariable with no binding.
 fn instantiate_template<S: NodeSink>(
     sink: &mut S,
     node: pixelflow_ir::Node<'_, pixelflow_ir::expr::ExprData>,
@@ -1603,17 +1467,15 @@ fn instantiate_template<S: NodeSink>(
             sink.make(ENode::Reduce { fold, body })
         }
         ExprData::Op(kind) => {
-            let static_op = ops::op_from_kind(kind).unwrap_or_else(|| {
-                panic!("instantiate_template: no static Op for OpKind {kind:?}")
-            });
+            assert!(
+                ops::template_may_name(kind),
+                "instantiate_template: a template cannot name {kind:?}"
+            );
             let children: Vec<EClassId> = node
                 .children()
                 .map(|c| instantiate_template(sink, c, bindings))
                 .collect();
-            sink.make(ENode::Op {
-                op: static_op,
-                children,
-            })
+            sink.make(ENode::apply(kind, &children))
         }
     }
 }
@@ -1635,10 +1497,11 @@ fn plan_shape<S: NodeSink>(sink: &mut S, plan: &super::fold_rules::Plan) -> ECla
     for entry in &plan.nodes {
         let id = match entry {
             HeadNode::Const(bits) => sink.make(ENode::Const(*bits)),
-            HeadNode::Op { op, children } => sink.make(ENode::Op {
-                op: *op,
-                children: children.iter().map(|c| resolve(*c, &planned)).collect(),
-            }),
+            HeadNode::Op { op, children } => {
+                let operands: Vec<EClassId> =
+                    children.iter().map(|c| resolve(*c, &planned)).collect();
+                sink.make(ENode::apply(*op, &operands))
+            }
             HeadNode::Reduce { fold, body } => sink.make(ENode::Reduce {
                 fold: *fold,
                 body: resolve(*body, &planned),
@@ -1687,13 +1550,10 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
                 return sink.make(ENode::constant(0.0));
             }
             let var_const = sink.make(ENode::constant(var as f32));
-            let inner = sink.make(inner.clone());
-            return sink.make(ENode::Op {
-                op: &ops::Dwrt,
-                children: vec![inner, var_const],
-            });
+            let inner = sink.make(*inner);
+            return sink.make(ENode::apply(OpKind::Dwrt, &[inner, var_const]));
         }
-        ENode::Op { op, children } => (*op, children.clone()),
+        ENode::Op { op, children } => (*op, *children),
         // `d(⊕_k f) = ⊕_k d(f)` is linearity, which holds for `Σ` and for
         // nothing else in the monoid set — `Π` wants the product rule, and
         // `min`/`max` are selections. It is a rule this table does not have,
@@ -1701,56 +1561,37 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
         // exactly as `Gather` does.
         ENode::Reduce { .. } => {
             let var_const = sink.make(ENode::constant(var as f32));
-            let inner = sink.make(inner.clone());
-            return sink.make(ENode::Op {
-                op: &ops::Dwrt,
-                children: vec![inner, var_const],
-            });
+            let inner = sink.make(*inner);
+            return sink.make(ENode::apply(OpKind::Dwrt, &[inner, var_const]));
         }
     };
 
     let var_const = sink.make(ENode::constant(var as f32));
     // d(child)/dvar as a fresh Dwrt node (saturation expands it later).
-    let dwrt = |s: &mut S, c: EClassId| {
-        s.make(ENode::Op {
-            op: &ops::Dwrt,
-            children: vec![c, var_const],
-        })
-    };
-    let op2 = |s: &mut S, o: &'static dyn Op, a: EClassId, b: EClassId| {
-        s.make(ENode::Op {
-            op: o,
-            children: vec![a, b],
-        })
-    };
-    let un = |s: &mut S, o: &'static dyn Op, a: EClassId| {
-        s.make(ENode::Op {
-            op: o,
-            children: vec![a],
-        })
-    };
+    let dwrt = |s: &mut S, c: EClassId| s.make(ENode::apply(OpKind::Dwrt, &[c, var_const]));
+    let op2 = |s: &mut S, o: OpKind, a: EClassId, b: EClassId| s.make(ENode::apply(o, &[a, b]));
+    let un = |s: &mut S, o: OpKind, a: EClassId| s.make(ENode::apply(o, &[a]));
     let cst = |s: &mut S, v: f32| s.make(ENode::constant(v));
 
-    match op.kind() {
+    match op {
         // Linearity: D(a + b) = D(a) + D(b); D(a - b) = D(a) - D(b).
         OpKind::Add | OpKind::Sub => {
             let da = dwrt(sink, children[0]);
             let db = dwrt(sink, children[1]);
-            let same = ops::op_from_kind(op.kind()).expect("add/sub op");
-            op2(sink, same, da, db)
+            op2(sink, op, da, db)
         }
         OpKind::Neg => {
             let da = dwrt(sink, children[0]);
-            un(sink, &ops::Neg, da)
+            un(sink, OpKind::Neg, da)
         }
         // Product rule: D(a*b) = D(a)*b + a*D(b).
         OpKind::Mul => {
             let (a, b) = (children[0], children[1]);
             let da = dwrt(sink, a);
             let db = dwrt(sink, b);
-            let t1 = op2(sink, &ops::Mul, da, b);
-            let t2 = op2(sink, &ops::Mul, a, db);
-            op2(sink, &ops::Add, t1, t2)
+            let t1 = op2(sink, OpKind::Mul, da, b);
+            let t2 = op2(sink, OpKind::Mul, a, db);
+            op2(sink, OpKind::Add, t1, t2)
         }
         // Fused multiply-add a*b + c: D = D(a)*b + a*D(b) + D(c).
         OpKind::MulAdd => {
@@ -1758,57 +1599,57 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
             let da = dwrt(sink, a);
             let db = dwrt(sink, b);
             let dc = dwrt(sink, c);
-            let t1 = op2(sink, &ops::Mul, da, b);
-            let t2 = op2(sink, &ops::Mul, a, db);
-            let prod = op2(sink, &ops::Add, t1, t2);
-            op2(sink, &ops::Add, prod, dc)
+            let t1 = op2(sink, OpKind::Mul, da, b);
+            let t2 = op2(sink, OpKind::Mul, a, db);
+            let prod = op2(sink, OpKind::Add, t1, t2);
+            op2(sink, OpKind::Add, prod, dc)
         }
         // Quotient rule: D(a/b) = (D(a)*b - a*D(b)) / (b*b).
         OpKind::Div => {
             let (a, b) = (children[0], children[1]);
             let da = dwrt(sink, a);
             let db = dwrt(sink, b);
-            let t1 = op2(sink, &ops::Mul, da, b);
-            let t2 = op2(sink, &ops::Mul, a, db);
-            let num = op2(sink, &ops::Sub, t1, t2);
-            let den = op2(sink, &ops::Mul, b, b);
-            op2(sink, &ops::Div, num, den)
+            let t1 = op2(sink, OpKind::Mul, da, b);
+            let t2 = op2(sink, OpKind::Mul, a, db);
+            let num = op2(sink, OpKind::Sub, t1, t2);
+            let den = op2(sink, OpKind::Mul, b, b);
+            op2(sink, OpKind::Div, num, den)
         }
         // d(sqrt u) = 0.5 * rsqrt(u) * u'.
         OpKind::Sqrt => {
             let u = children[0];
             let du = dwrt(sink, u);
             let half = cst(sink, 0.5);
-            let rs = un(sink, &ops::Rsqrt, u);
-            let factor = op2(sink, &ops::Mul, half, rs);
-            op2(sink, &ops::Mul, factor, du)
+            let rs = un(sink, OpKind::Rsqrt, u);
+            let factor = op2(sink, OpKind::Mul, half, rs);
+            op2(sink, OpKind::Mul, factor, du)
         }
         // d(recip u) = -u' / (u*u).
         OpKind::Recip => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let ndu = un(sink, &ops::Neg, du);
-            let u2 = op2(sink, &ops::Mul, u, u);
-            op2(sink, &ops::Div, ndu, u2)
+            let ndu = un(sink, OpKind::Neg, du);
+            let u2 = op2(sink, OpKind::Mul, u, u);
+            op2(sink, OpKind::Div, ndu, u2)
         }
         // d(|u|) = (u / |u|) * u'.
         OpKind::Abs => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let au = un(sink, &ops::Abs, u);
-            let sign = op2(sink, &ops::Div, u, au);
-            op2(sink, &ops::Mul, sign, du)
+            let au = un(sink, OpKind::Abs, u);
+            let sign = op2(sink, OpKind::Div, u, au);
+            op2(sink, OpKind::Mul, sign, du)
         }
         // d(rsqrt u) = -0.5 * rsqrt(u) * recip(u) * u'.
         OpKind::Rsqrt => {
             let u = children[0];
             let du = dwrt(sink, u);
             let neg_half = cst(sink, -0.5);
-            let rs = un(sink, &ops::Rsqrt, u);
-            let rc = un(sink, &ops::Recip, u);
-            let t = op2(sink, &ops::Mul, rs, rc);
-            let factor = op2(sink, &ops::Mul, neg_half, t);
-            op2(sink, &ops::Mul, factor, du)
+            let rs = un(sink, OpKind::Rsqrt, u);
+            let rc = un(sink, OpKind::Recip, u);
+            let t = op2(sink, OpKind::Mul, rs, rc);
+            let factor = op2(sink, OpKind::Mul, neg_half, t);
+            op2(sink, OpKind::Mul, factor, du)
         }
         // Piecewise: derivative of the branch the primal takes. Masks and
         // tie behavior mirror Jet2 (and the runtime `lower_dwrt` pass).
@@ -1816,21 +1657,15 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
             let (a, b) = (children[0], children[1]);
             let da = dwrt(sink, a);
             let db = dwrt(sink, b);
-            let mask = op2(sink, &ops::Lt, a, b);
-            sink.make(ENode::Op {
-                op: &ops::If,
-                children: vec![mask, da, db],
-            })
+            let mask = op2(sink, OpKind::Lt, a, b);
+            sink.make(ENode::apply(OpKind::If, &[mask, da, db]))
         }
         OpKind::Max => {
             let (a, b) = (children[0], children[1]);
             let da = dwrt(sink, a);
             let db = dwrt(sink, b);
-            let mask = op2(sink, &ops::Gt, a, b);
-            sink.make(ENode::Op {
-                op: &ops::If,
-                children: vec![mask, da, db],
-            })
+            let mask = op2(sink, OpKind::Gt, a, b);
+            sink.make(ENode::apply(OpKind::If, &[mask, da, db]))
         }
         // Blend the branch derivatives on the primal mask; the mask itself
         // is not differentiated.
@@ -1838,10 +1673,7 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
             let (m, t, f) = (children[0], children[1], children[2]);
             let dt = dwrt(sink, t);
             let df = dwrt(sink, f);
-            sink.make(ENode::Op {
-                op: &ops::If,
-                children: vec![m, dt, df],
-            })
+            sink.make(ENode::apply(OpKind::If, &[m, dt, df]))
         }
         // Masks and rounding are step functions: zero almost everywhere.
         OpKind::Lt
@@ -1857,122 +1689,122 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
         OpKind::Sin => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let c = un(sink, &ops::Cos, u);
-            op2(sink, &ops::Mul, c, du)
+            let c = un(sink, OpKind::Cos, u);
+            op2(sink, OpKind::Mul, c, du)
         }
         // d(cos u) = -sin(u) * u'.
         OpKind::Cos => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let s = un(sink, &ops::Sin, u);
-            let ns = un(sink, &ops::Neg, s);
-            op2(sink, &ops::Mul, ns, du)
+            let s = un(sink, OpKind::Sin, u);
+            let ns = un(sink, OpKind::Neg, s);
+            op2(sink, OpKind::Mul, ns, du)
         }
         // d(tan u) = u' / cos(u)^2.
         OpKind::Tan => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let c = un(sink, &ops::Cos, u);
-            let c2 = op2(sink, &ops::Mul, c, c);
-            op2(sink, &ops::Div, du, c2)
+            let c = un(sink, OpKind::Cos, u);
+            let c2 = op2(sink, OpKind::Mul, c, c);
+            op2(sink, OpKind::Div, du, c2)
         }
         // d(atan u) = u' / (1 + u*u).
         OpKind::Atan => {
             let u = children[0];
             let du = dwrt(sink, u);
             let one = cst(sink, 1.0);
-            let u2 = op2(sink, &ops::Mul, u, u);
-            let den = op2(sink, &ops::Add, one, u2);
-            op2(sink, &ops::Div, du, den)
+            let u2 = op2(sink, OpKind::Mul, u, u);
+            let den = op2(sink, OpKind::Add, one, u2);
+            op2(sink, OpKind::Div, du, den)
         }
         // d(asin u) = u' / sqrt(1 - u*u).
         OpKind::Asin => {
             let u = children[0];
             let du = dwrt(sink, u);
             let one = cst(sink, 1.0);
-            let u2 = op2(sink, &ops::Mul, u, u);
-            let diff = op2(sink, &ops::Sub, one, u2);
-            let s = un(sink, &ops::Sqrt, diff);
-            op2(sink, &ops::Div, du, s)
+            let u2 = op2(sink, OpKind::Mul, u, u);
+            let diff = op2(sink, OpKind::Sub, one, u2);
+            let s = un(sink, OpKind::Sqrt, diff);
+            op2(sink, OpKind::Div, du, s)
         }
         // d(acos u) = -u' / sqrt(1 - u*u).
         OpKind::Acos => {
             let u = children[0];
             let du = dwrt(sink, u);
             let one = cst(sink, 1.0);
-            let u2 = op2(sink, &ops::Mul, u, u);
-            let diff = op2(sink, &ops::Sub, one, u2);
-            let s = un(sink, &ops::Sqrt, diff);
-            let q = op2(sink, &ops::Div, du, s);
-            un(sink, &ops::Neg, q)
+            let u2 = op2(sink, OpKind::Mul, u, u);
+            let diff = op2(sink, OpKind::Sub, one, u2);
+            let s = un(sink, OpKind::Sqrt, diff);
+            let q = op2(sink, OpKind::Div, du, s);
+            un(sink, OpKind::Neg, q)
         }
         // d(exp u) = exp(u) * u'.
         OpKind::Exp => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let e = un(sink, &ops::Exp, u);
-            op2(sink, &ops::Mul, e, du)
+            let e = un(sink, OpKind::Exp, u);
+            op2(sink, OpKind::Mul, e, du)
         }
         // d(2^u) = 2^u * ln2 * u'.
         OpKind::Exp2 => {
             let u = children[0];
             let du = dwrt(sink, u);
-            let e = un(sink, &ops::Exp2, u);
+            let e = un(sink, OpKind::Exp2, u);
             let ln2 = cst(sink, core::f32::consts::LN_2);
-            let factor = op2(sink, &ops::Mul, e, ln2);
-            op2(sink, &ops::Mul, factor, du)
+            let factor = op2(sink, OpKind::Mul, e, ln2);
+            op2(sink, OpKind::Mul, factor, du)
         }
         // d(ln u) = u' / u.
         OpKind::Ln => {
             let u = children[0];
             let du = dwrt(sink, u);
-            op2(sink, &ops::Div, du, u)
+            op2(sink, OpKind::Div, du, u)
         }
         // d(log2 u) = u' / (u * ln2).
         OpKind::Log2 => {
             let u = children[0];
             let du = dwrt(sink, u);
             let ln2 = cst(sink, core::f32::consts::LN_2);
-            let den = op2(sink, &ops::Mul, u, ln2);
-            op2(sink, &ops::Div, du, den)
+            let den = op2(sink, OpKind::Mul, u, ln2);
+            op2(sink, OpKind::Div, du, den)
         }
         // d(log10 u) = u' / (u * ln10).
         OpKind::Log10 => {
             let u = children[0];
             let du = dwrt(sink, u);
             let ln10 = cst(sink, core::f32::consts::LN_10);
-            let den = op2(sink, &ops::Mul, u, ln10);
-            op2(sink, &ops::Div, du, den)
+            let den = op2(sink, OpKind::Mul, u, ln10);
+            op2(sink, OpKind::Div, du, den)
         }
         // d(atan2(y, x)) = (x*y' - y*x') / (x² + y²).
         OpKind::Atan2 => {
             let (y, x) = (children[0], children[1]);
             let dy = dwrt(sink, y);
             let dx = dwrt(sink, x);
-            let t1 = op2(sink, &ops::Mul, x, dy);
-            let t2 = op2(sink, &ops::Mul, y, dx);
-            let num = op2(sink, &ops::Sub, t1, t2);
-            let x2 = op2(sink, &ops::Mul, x, x);
-            let y2 = op2(sink, &ops::Mul, y, y);
-            let den = op2(sink, &ops::Add, x2, y2);
-            op2(sink, &ops::Div, num, den)
+            let t1 = op2(sink, OpKind::Mul, x, dy);
+            let t2 = op2(sink, OpKind::Mul, y, dx);
+            let num = op2(sink, OpKind::Sub, t1, t2);
+            let x2 = op2(sink, OpKind::Mul, x, x);
+            let y2 = op2(sink, OpKind::Mul, y, y);
+            let den = op2(sink, OpKind::Add, x2, y2);
+            op2(sink, OpKind::Div, num, den)
         }
         // d(f^g) = f^g * (g'*ln f + g*f'/f)  (Jet2's rule).
         OpKind::Pow => {
             let (f, g) = (children[0], children[1]);
             let df = dwrt(sink, f);
             let dg = dwrt(sink, g);
-            let lnf = un(sink, &ops::Ln, f);
-            let t1 = op2(sink, &ops::Mul, dg, lnf);
-            let g_over_f = op2(sink, &ops::Div, g, f);
-            let t2 = op2(sink, &ops::Mul, g_over_f, df);
-            let inner = op2(sink, &ops::Add, t1, t2);
-            let p = op2(sink, &ops::Pow, f, g);
-            op2(sink, &ops::Mul, p, inner)
+            let lnf = un(sink, OpKind::Ln, f);
+            let t1 = op2(sink, OpKind::Mul, dg, lnf);
+            let g_over_f = op2(sink, OpKind::Div, g, f);
+            let t2 = op2(sink, OpKind::Mul, g_over_f, df);
+            let inner = op2(sink, OpKind::Add, t1, t2);
+            let p = op2(sink, OpKind::Pow, f, g);
+            op2(sink, OpKind::Mul, p, inner)
         }
         // Unknown derivative: reconstruct the Dwrt and let it survive.
         _ => {
-            let reconstructed = sink.make(inner.clone());
+            let reconstructed = sink.make(*inner);
             dwrt(sink, reconstructed)
         }
     }
@@ -1983,7 +1815,6 @@ mod tests {
     use super::*;
     use crate::egraph::cost::CostModel;
     use crate::egraph::extract::extract_dag;
-    use crate::egraph::ops;
     use crate::egraph::provenance::{ApplicationId, Origin};
     use crate::egraph::rewrite::Rewrite;
     use crate::egraph::rules::RuleSet;
@@ -2022,14 +1853,8 @@ mod tests {
         let _a = eg.add(ENode::Var(0)); // class 0 (unused, keeps ids spaced out)
         let b = eg.add(ENode::Var(1)); // class 1
         let c = eg.add(ENode::Var(2)); // class 2
-        let nc = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![c],
-        }); // class 3: memo Neg([2]) -> 3
-        let nb = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![b],
-        }); // class 4: memo Neg([1]) -> 4
+        let nc = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 3: memo Neg([2]) -> 3
+        let nb = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 4: memo Neg([1]) -> 4
         let d = eg.add(ENode::Var(3)); // class 5, dummy used only to enqueue `nc`
         let marker = eg.add(ENode::Var(9)); // class 6: a node unique to nb's class
 
@@ -2140,14 +1965,8 @@ mod tests {
         let a = eg.add(ENode::Var(0)); // class 0 (keeps the ids spaced out)
         let b = eg.add(ENode::Var(1)); // class 1
         let c = eg.add(ENode::Var(2)); // class 2
-        let nb = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![b],
-        }); // class 3: memo Neg([1]) -> 3
-        let nc = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![c],
-        }); // class 4: memo Neg([2]) -> 4
+        let nb = eg.add(ENode::apply(OpKind::Neg, &[b])); // class 3: memo Neg([1]) -> 3
+        let nc = eg.add(ENode::apply(OpKind::Neg, &[c])); // class 4: memo Neg([2]) -> 4
         let marker = eg.add(ENode::Var(9)); // class 5: a node unique to nc's class
 
         assert_eq!(nb.index(), 3, "test assumes nb is class 3");
@@ -2209,17 +2028,14 @@ mod tests {
         let holds = |eg: &EGraph, id: EClassId, want: &ENode| -> bool {
             eg.nodes(eg.find(id)).iter().any(|n| n == want)
         };
-        let neg_b = ENode::Op {
-            op: &ops::Neg,
-            children: vec![eg.find(b)],
-        };
+        let neg_b = ENode::apply(OpKind::Neg, &[eg.find(b)]);
         for (id, want) in [
             (a, ENode::Var(0)),
             (b, ENode::Var(1)),
             (c, ENode::Var(2)),
             (marker, ENode::Var(9)),
-            (nb, neg_b.clone()),
-            (nc, neg_b.clone()),
+            (nb, neg_b),
+            (nc, neg_b),
         ] {
             assert!(
                 holds(&eg, id, &want),
@@ -2259,18 +2075,18 @@ mod tests {
             Cancellation::<MulRecip>::new(),
             InverseAnnihilation::<MulRecip>::new(),
             // Commutativity
-            Commutative::new(&ops::Add),
-            Commutative::new(&ops::Mul),
-            Commutative::new(&ops::Min),
-            Commutative::new(&ops::Max),
+            Commutative::new(OpKind::Add),
+            Commutative::new(OpKind::Mul),
+            Commutative::new(OpKind::Min),
+            Commutative::new(OpKind::Max),
             // Distributivity
-            Distributive::new(&ops::Mul, &ops::Add),
-            Distributive::new(&ops::Mul, &ops::Sub),
+            Distributive::new(OpKind::Mul, OpKind::Add),
+            Distributive::new(OpKind::Mul, OpKind::Sub),
             // Identity
-            Identity::new(&ops::Add),
-            Identity::new(&ops::Mul),
+            Identity::new(OpKind::Add),
+            Identity::new(OpKind::Mul),
             // Annihilator
-            Annihilator::new(&ops::Mul),
+            Annihilator::new(OpKind::Mul),
         ];
         Saturation::over(RuleSet::new(rules))
     }
@@ -2279,14 +2095,8 @@ mod tests {
     fn inverse_add() {
         let mut eg = egraph_with_rules();
         let x = eg.add(ENode::Var(0));
-        let neg_x = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![x],
-        });
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, neg_x],
-        });
+        let neg_x = eg.add(ENode::apply(OpKind::Neg, &[x]));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, neg_x]));
         SaturationConfig::compatibility(100).run(&mut eg);
         let zero = eg.add(ENode::constant(0.0));
         assert_eq!(eg.find(sum), eg.find(zero));
@@ -2296,14 +2106,8 @@ mod tests {
     fn inverse_mul() {
         let mut eg = egraph_with_rules();
         let x = eg.add(ENode::Var(0));
-        let recip_x = eg.add(ENode::Op {
-            op: &ops::Recip,
-            children: vec![x],
-        });
-        let product = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, recip_x],
-        });
+        let recip_x = eg.add(ENode::apply(OpKind::Recip, &[x]));
+        let product = eg.add(ENode::apply(OpKind::Mul, &[x, recip_x]));
         SaturationConfig::compatibility(100).run(&mut eg);
         let one = eg.add(ENode::constant(1.0));
         assert_eq!(eg.find(product), eg.find(one));
@@ -2314,14 +2118,8 @@ mod tests {
         let mut eg = egraph_with_rules();
         let x = eg.add(ENode::Var(0));
         let five = eg.add(ENode::constant(5.0));
-        let prod = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, five],
-        });
-        let div = eg.add(ENode::Op {
-            op: &ops::Div,
-            children: vec![prod, x],
-        });
+        let prod = eg.add(ENode::apply(OpKind::Mul, &[x, five]));
+        let div = eg.add(ENode::apply(OpKind::Div, &[prod, x]));
         SaturationConfig::compatibility(100).run(&mut eg);
         assert_eq!(eg.find(div), eg.find(five));
     }
@@ -2336,14 +2134,8 @@ mod tests {
         let c = eg.add(ENode::constant(2.0)); // c = 2
 
         // Build a - (b - c)
-        let b_minus_c = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![b, c],
-        }); // 6 - 2 = 4
-        let result = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![a, b_minus_c],
-        }); // 10 - 4 = 6
+        let b_minus_c = eg.add(ENode::apply(OpKind::Sub, &[b, c])); // 6 - 2 = 4
+        let result = eg.add(ENode::apply(OpKind::Sub, &[a, b_minus_c])); // 10 - 4 = 6
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
@@ -2364,18 +2156,9 @@ mod tests {
         let c_sq = eg.add(ENode::constant(16.0));
         let r_sq = eg.add(ENode::constant(1.0));
 
-        let d_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![d, d],
-        });
-        let inner_sub = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![c_sq, r_sq],
-        });
-        let result = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![d_sq, inner_sub],
-        });
+        let d_sq = eg.add(ENode::apply(OpKind::Mul, &[d, d]));
+        let inner_sub = eg.add(ENode::apply(OpKind::Sub, &[c_sq, r_sq]));
+        let result = eg.add(ENode::apply(OpKind::Sub, &[d_sq, inner_sub]));
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
@@ -2394,18 +2177,9 @@ mod tests {
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
 
-        let x_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, x],
-        });
-        let inner_sub = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![y, z],
-        });
-        let result = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![x_sq, inner_sub],
-        });
+        let x_sq = eg.add(ENode::apply(OpKind::Mul, &[x, x]));
+        let inner_sub = eg.add(ENode::apply(OpKind::Sub, &[y, z]));
+        let result = eg.add(ENode::apply(OpKind::Sub, &[x_sq, inner_sub]));
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
@@ -2428,18 +2202,9 @@ mod tests {
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
 
-        let x_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, x],
-        });
-        let inner_sub = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![y, z],
-        });
-        let result = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![x_sq, inner_sub],
-        });
+        let x_sq = eg.add(ENode::apply(OpKind::Mul, &[x, x]));
+        let inner_sub = eg.add(ENode::apply(OpKind::Sub, &[y, z]));
+        let result = eg.add(ENode::apply(OpKind::Sub, &[x_sq, inner_sub]));
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
@@ -2465,34 +2230,13 @@ mod tests {
         let b = eg.add(ENode::Var(2));
         let r = eg.add(ENode::Var(3));
 
-        let d_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![d, d],
-        });
-        let a_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![a, a],
-        });
-        let b_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![b, b],
-        });
-        let c_sq = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![a_sq, b_sq],
-        });
-        let r_sq = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![r, r],
-        });
-        let inner = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![c_sq, r_sq],
-        });
-        let result = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![d_sq, inner],
-        });
+        let d_sq = eg.add(ENode::apply(OpKind::Mul, &[d, d]));
+        let a_sq = eg.add(ENode::apply(OpKind::Mul, &[a, a]));
+        let b_sq = eg.add(ENode::apply(OpKind::Mul, &[b, b]));
+        let c_sq = eg.add(ENode::apply(OpKind::Add, &[a_sq, b_sq]));
+        let r_sq = eg.add(ENode::apply(OpKind::Mul, &[r, r]));
+        let inner = eg.add(ENode::apply(OpKind::Sub, &[c_sq, r_sq]));
+        let result = eg.add(ENode::apply(OpKind::Sub, &[d_sq, inner]));
 
         SaturationConfig::compatibility(100).run(&mut eg);
 
@@ -2537,10 +2281,7 @@ mod tests {
 
         let mut current = x;
         for _ in 0..10 {
-            current = eg.add(ENode::Op {
-                op: &ops::Add,
-                children: vec![current, one],
-            });
+            current = eg.add(ENode::apply(OpKind::Add, &[current, one]));
         }
 
         SaturationConfig::compatibility(100).run(&mut eg);
@@ -2592,10 +2333,7 @@ mod tests {
         let mut eg = egraph_with_rules();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
 
         // Hand-derivation: x, y, and sum are all seeds.
         for &(class, _) in &[(x, "x"), (y, "y"), (sum, "sum")] {
@@ -2662,14 +2400,8 @@ mod tests {
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
-        let inner = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        }); // x + y
-        let outer = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![inner, z],
-        }); // (x + y) + z
+        let inner = eg.add(ENode::apply(OpKind::Add, &[x, y])); // x + y
+        let outer = eg.add(ENode::apply(OpKind::Add, &[inner, z])); // (x + y) + z
 
         // Rule A: commute the inner sum (x + y) -> (y + x).
         let target_a = find_target_in_class(&eg, "commutative", eg.find(inner));
@@ -2732,14 +2464,8 @@ mod tests {
         let mut eg = egraph_with_rules();
         let b = eg.add(ENode::Var(1));
         let c = eg.add(ENode::Var(2));
-        let nb = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![b],
-        });
-        let nc = eg.add(ENode::Op {
-            op: &ops::Neg,
-            children: vec![c],
-        });
+        let nb = eg.add(ENode::apply(OpKind::Neg, &[b]));
+        let nc = eg.add(ENode::apply(OpKind::Neg, &[c]));
         let marker = eg.add(ENode::Var(9));
 
         assert_eq!(eg.journal().union_count(), 0);
@@ -2785,15 +2511,12 @@ mod tests {
         // A reasonably deep expression: alternating +/-/* chain over x, y.
         let mut current = x;
         for i in 0..40 {
-            let op: &'static dyn Op = match i % 3 {
-                0 => &ops::Add,
-                1 => &ops::Mul,
-                _ => &ops::Sub,
+            let op: OpKind = match i % 3 {
+                0 => OpKind::Add,
+                1 => OpKind::Mul,
+                _ => OpKind::Sub,
             };
-            current = eg.add(ENode::Op {
-                op,
-                children: vec![current, y],
-            });
+            current = eg.add(ENode::apply(op, &[current, y]));
         }
 
         let start = std::time::Instant::now();
@@ -2825,22 +2548,10 @@ mod tests {
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
-        let diff = eg.add(ENode::Op {
-            op: &ops::Sub,
-            children: vec![x, y],
-        });
-        let prod = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![sum, z],
-        });
-        let scaled = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![diff, z],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
+        let diff = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
+        let prod = eg.add(ENode::apply(OpKind::Mul, &[sum, z]));
+        let scaled = eg.add(ENode::apply(OpKind::Mul, &[diff, z]));
         vec![x, y, z, sum, diff, prod, scaled]
     }
 
@@ -2945,29 +2656,14 @@ mod tests {
         let one = eg.add(ENode::constant(1.0));
 
         // x + 0 = x, one Identity firing away.
-        let x_plus_zero = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, zero],
-        });
+        let x_plus_zero = eg.add(ENode::apply(OpKind::Add, &[x, zero]));
         // (x + 0) * 1 = x, two firings away.
-        let scaled = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x_plus_zero, one],
-        });
+        let scaled = eg.add(ENode::apply(OpKind::Mul, &[x_plus_zero, one]));
         // x * 0 = 0, via Annihilator.
-        let annihilated = eg.add(ENode::Op {
-            op: &ops::Mul,
-            children: vec![x, zero],
-        });
+        let annihilated = eg.add(ENode::apply(OpKind::Mul, &[x, zero]));
         // x + y = y + x, via Commutative.
-        let xy = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
-        let yx = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![y, x],
-        });
+        let xy = eg.add(ENode::apply(OpKind::Add, &[x, y]));
+        let yx = eg.add(ENode::apply(OpKind::Add, &[y, x]));
 
         vec![x, y, zero, one, x_plus_zero, scaled, annihilated, xy, yx]
     }
@@ -3053,13 +2749,6 @@ mod variance_fact_tests {
     use super::*;
     use pixelflow_ir::{Binder, Fold, Monoid};
 
-    fn op2(op: &'static dyn Op, a: EClassId, b: EClassId) -> ENode {
-        ENode::Op {
-            op,
-            children: vec![a, b],
-        }
-    }
-
     /// **Free of what any member is free of.** `X − X` is seeded `{X}` from
     /// its children; the graph then learns it equals `0`, and the class is
     /// `{X} ∩ ∅ = ∅`. A parent seeded before the union keeps its larger fact
@@ -3070,8 +2759,8 @@ mod variance_fact_tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let x_minus_x = eg.add(op2(&ops::Sub, x, x));
-        let parent = eg.add(op2(&ops::Mul, x_minus_x, y));
+        let x_minus_x = eg.add(ENode::apply(OpKind::Sub, &[x, x]));
+        let parent = eg.add(ENode::apply(OpKind::Mul, &[x_minus_x, y]));
         assert_eq!(eg.variance(x_minus_x), Variance::X, "seeded from X and X");
         assert_eq!(eg.variance(parent), Variance::COORDS);
 
@@ -3099,14 +2788,8 @@ mod variance_fact_tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sin_x = eg.add(ENode::Op {
-            op: &ops::Sin,
-            children: vec![x],
-        });
-        let sin_y = eg.add(ENode::Op {
-            op: &ops::Sin,
-            children: vec![y],
-        });
+        let sin_x = eg.add(ENode::apply(OpKind::Sin, &[x]));
+        let sin_y = eg.add(ENode::apply(OpKind::Sin, &[y]));
         eg.union(sin_x, sin_y);
         eg.rebuild();
         assert_eq!(eg.variance(sin_x), Variance::CONST);
@@ -3120,7 +2803,7 @@ mod variance_fact_tests {
         let binder = Binder::from_slot(0).expect("a live binder");
         let i = eg.add(ENode::Var(binder.var()));
         let x = eg.add(ENode::Var(0));
-        let body = eg.add(op2(&ops::Mul, i, x));
+        let body = eg.add(ENode::apply(OpKind::Mul, &[i, x]));
         let fold = eg.add(ENode::Reduce {
             fold: Fold::new(Monoid::SUM, binder, 0..8),
             body,
@@ -3144,7 +2827,7 @@ mod variance_fact_tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let zero = eg.add(ENode::constant(0.0));
-        let x_plus_0 = eg.add(op2(&ops::Add, x, zero));
+        let x_plus_0 = eg.add(ENode::apply(OpKind::Add, &[x, zero]));
         eg.union(x_plus_0, x);
         eg.rebuild();
 
@@ -3175,7 +2858,7 @@ mod variance_fact_tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(op2(&ops::Add, x, y));
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let copy = eg.clone();
         assert_eq!(copy.variance(sum), Variance::COORDS);
     }

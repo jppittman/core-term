@@ -190,7 +190,7 @@ fn a_glyph_is_one_body_and_a_fixed_budget_per_piece() {
 /// Every op a glyph kernel contains must be representable in the e-graph —
 /// a gap here silently turns the whole runtime optimization tier into a
 /// no-op for glyphs (exactly what happened when `BitAnd`, the mask
-/// combinator, was missing from `op_from_kind`).
+/// combinator, was missing from the runtime vocabulary).
 #[test]
 fn lowered_glyph_ops_are_all_egraph_representable() {
     let font = Font::parse(FONT_DATA).unwrap();

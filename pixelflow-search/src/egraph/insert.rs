@@ -26,6 +26,17 @@ use super::ops::Vocabulary;
 pub enum Declined {
     /// An op this [`Vocabulary`] may not hold.
     Op(pixelflow_ir::OpKind),
+    /// An op applied to a number of operands other than its arity.
+    ///
+    /// An arena's n-ary builder (`push_nary`) checks no arity, so a term can
+    /// carry one; a node cannot, and building it would abort the build for a
+    /// term the caller could have compiled unoptimized.
+    Arity {
+        /// The operation.
+        op: pixelflow_ir::OpKind,
+        /// How many operands the term gave it.
+        operands: usize,
+    },
     /// A macro-parameter slot, under a [`Vocabulary`] that may not hold one.
     ///
     /// Only [`Vocabulary::Runtime`] declines it: a `Param` at bake time means
@@ -118,10 +129,16 @@ pub fn insert<I: Ir>(
                     Shape::Buffer(decl) => egraph.add(ENode::Buffer(decl)),
                     Shape::Uniform(decl) => egraph.add(ENode::Uniform(decl)),
                     Shape::Op(kind, children) => {
-                        // Resolve before descending so an unrepresentable op
+                        // Check before descending so an unrepresentable op
                         // is reported at the node that carries it.
-                        if vocab.resolve(kind).is_none() {
+                        if !vocab.admits(kind) {
                             return Err(Declined::Op(kind));
+                        }
+                        if children.len() != kind.arity() {
+                            return Err(Declined::Arity {
+                                op: kind,
+                                operands: children.len(),
+                            });
                         }
                         tasks.push(Task::Complete(r));
                         // Reverse, so children pop in operand order.
@@ -132,8 +149,8 @@ pub fn insert<I: Ir>(
                         continue;
                     }
                     // No vocabulary check: a fold is not an op, so there is
-                    // no `Op` for a rule to name and nothing for a vocabulary
-                    // to admit or refuse. It enters as itself, under either.
+                    // nothing for a vocabulary to admit or refuse. It enters
+                    // as itself, under either.
                     Shape::Reduce { body, .. } => {
                         tasks.push(Task::Complete(r));
                         tasks.push(Task::Visit(body));
@@ -150,15 +167,10 @@ pub fn insert<I: Ir>(
                 }
                 let class = match term.project(r) {
                     Shape::Op(kind, children) => {
-                        let op = vocab
-                            .resolve(kind)
-                            .expect("vocabulary already checked in Visit");
                         let start = built.len() - children.len();
-                        let operands: Vec<EClassId> = built.drain(start..).collect();
-                        egraph.add(ENode::Op {
-                            op,
-                            children: operands,
-                        })
+                        let node = ENode::apply(kind, &built[start..]);
+                        built.truncate(start);
+                        egraph.add(node)
                     }
                     Shape::Reduce { fold, .. } => {
                         let body = built.pop().expect("the body was visited first");
@@ -257,6 +269,44 @@ mod tests {
             insert(&arena, root, &mut untold, Vocabulary::Runtime),
             Err(Declined::Ref(key))
         );
+    }
+
+    /// `push_nary` takes any op and any count. A term that gives an op the
+    /// wrong number of operands is declined, naming both, and leaves the
+    /// graph untouched, where building the node would abort.
+    #[test]
+    fn an_op_with_the_wrong_operand_count_is_declined_not_built() {
+        for (op, operands) in [
+            (OpKind::Add, 1),
+            (OpKind::Add, 3),
+            (OpKind::Neg, 2),
+            (OpKind::MulAdd, 4),
+        ] {
+            let mut arena = ExprArena::new();
+            let x = arena.push_var(0);
+            let root = arena.push_nary(op, &alloc::vec![x; operands]);
+            let mut eg = EGraph::new();
+            assert_eq!(
+                insert(&arena, root, &mut eg, Vocabulary::Runtime),
+                Err(Declined::Arity { op, operands }),
+            );
+            assert_eq!(eg.num_classes(), 0, "{op:?}: nothing was built");
+        }
+    }
+
+    /// A `Tuple` has no fixed arity, so no vocabulary holds one: it is
+    /// declined as an op before its operand count is asked about.
+    #[test]
+    fn a_tuple_is_declined_by_every_vocabulary() {
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        let root = arena.push_nary(OpKind::Tuple, &[x, x]);
+        for vocabulary in [Vocabulary::Templates, Vocabulary::Runtime] {
+            assert_eq!(
+                insert(&arena, root, &mut EGraph::new(), vocabulary),
+                Err(Declined::Op(OpKind::Tuple)),
+            );
+        }
     }
 
     /// A unit is optimized out of its context, which is sound only for a

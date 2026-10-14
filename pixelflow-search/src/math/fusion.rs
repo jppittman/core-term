@@ -12,7 +12,7 @@
 //!
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -49,10 +49,10 @@ impl Rewrite for FmaFusion {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Add(Mul(a, b), c)
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Add {
+        if op != OpKind::Add {
             return None;
         }
         if children.len() != 2 {
@@ -64,18 +64,14 @@ impl Rewrite for FmaFusion {
 
         // Try left = Mul(a, b), right = c
         if let Some((a, b)) = extract_mul(egraph, left) {
-            return Some(RewriteAction::Create(ENode::Op {
-                op: &ops::MulAdd,
-                children: vec![a, b, right],
-            }));
+            let node = ENode::apply(OpKind::MulAdd, &[a, b, right]);
+            return Some(RewriteAction::Create(node));
         }
 
         // Try left = c, right = Mul(a, b)
         if let Some((a, b)) = extract_mul(egraph, right) {
-            return Some(RewriteAction::Create(ENode::Op {
-                op: &ops::MulAdd,
-                children: vec![a, b, left],
-            }));
+            let node = ENode::apply(OpKind::MulAdd, &[a, b, left]);
+            return Some(RewriteAction::Create(node));
         }
 
         None
@@ -123,11 +119,11 @@ impl Rewrite for RecipSqrt {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Div(1, Sqrt(x)) or Recip(Sqrt(x))
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
 
-        match op.kind() {
+        match op {
             OpKind::Div if children.len() == 2 => {
                 // Check if numerator is 1
                 let num = children[0];
@@ -139,19 +135,13 @@ impl Rewrite for RecipSqrt {
 
                 // Check if denominator is sqrt(x)
                 if let Some(x) = extract_sqrt(egraph, denom) {
-                    return Some(RewriteAction::Create(ENode::Op {
-                        op: &ops::Rsqrt,
-                        children: vec![x],
-                    }));
+                    return Some(RewriteAction::Create(ENode::apply(OpKind::Rsqrt, &[x])));
                 }
             }
             OpKind::Recip if children.len() == 1 => {
                 // Check if argument is sqrt(x)
                 if let Some(x) = extract_sqrt(egraph, children[0]) {
-                    return Some(RewriteAction::Create(ENode::Op {
-                        op: &ops::Rsqrt,
-                        children: vec![x],
-                    }));
+                    return Some(RewriteAction::Create(ENode::apply(OpKind::Rsqrt, &[x])));
                 }
             }
             _ => {}
@@ -175,8 +165,8 @@ impl Rewrite for RecipSqrt {
 
 fn extract_mul(egraph: &EGraph, class: EClassId) -> Option<(EClassId, EClassId)> {
     for node in egraph.nodes(class) {
-        if let ENode::Op { op, children } = node
-            && op.kind() == OpKind::Mul
+        if let &ENode::Op { op, children } = node
+            && op == OpKind::Mul
             && children.len() == 2
         {
             return Some((children[0], children[1]));
@@ -199,8 +189,8 @@ fn is_one(egraph: &EGraph, class: EClassId) -> bool {
 
 fn extract_sqrt(egraph: &EGraph, class: EClassId) -> Option<EClassId> {
     for node in egraph.nodes(class) {
-        if let ENode::Op { op, children } = node
-            && op.kind() == OpKind::Sqrt
+        if let &ENode::Op { op, children } = node
+            && op == OpKind::Sqrt
             && children.len() == 1
         {
             return Some(children[0]);

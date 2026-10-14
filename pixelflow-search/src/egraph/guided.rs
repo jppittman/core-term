@@ -320,14 +320,15 @@ impl GuidedEpisode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::ENode;
     use crate::egraph::rewrite::Rewrite;
-    use crate::egraph::{ENode, ops};
     use crate::egraph::{RuleSet, Saturation};
     use crate::math::algebra::Commutative;
     use crate::nnue::factored::OpEmbeddings;
     use crate::nnue::guide::Guide;
     use alloc::boxed::Box;
     use alloc::vec::Vec;
+    use pixelflow_ir::OpKind;
 
     /// Scores every candidate zero — ordering therefore falls back to the
     /// stable sort's tie-break, i.e. match-enumeration order.
@@ -351,14 +352,11 @@ mod tests {
     }
 
     fn commutative_only_egraph() -> Saturation {
-        let rules: Vec<Box<dyn Rewrite>> = alloc::vec![Commutative::new(&ops::Add)];
+        let rules: Vec<Box<dyn Rewrite>> = alloc::vec![Commutative::new(OpKind::Add)];
         let mut eg = Saturation::over(RuleSet::new(rules));
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![x, y],
-        });
+        eg.add(ENode::apply(OpKind::Add, &[x, y]));
         eg
     }
 
@@ -368,26 +366,17 @@ mod tests {
     /// in the graph yet, so it is the one productive target — and it is last
     /// in enumeration order.
     fn one_class_three_matching_nodes_egraph() -> Saturation {
-        let rules: Vec<Box<dyn Rewrite>> = alloc::vec![Commutative::new(&ops::Add)];
+        let rules: Vec<Box<dyn Rewrite>> = alloc::vec![Commutative::new(OpKind::Add)];
         let mut eg = Saturation::over(RuleSet::new(rules));
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let z = eg.add(ENode::Var(2));
         let w = eg.add(ENode::Var(3));
-        let xy = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![x, y],
-        });
+        let xy = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         // Pre-existing commuted form: applying Commutative at `x+y` (or at
         // `y+x`) can only re-derive a node that is already here.
-        eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![y, x],
-        });
-        let zw = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: alloc::vec![z, w],
-        });
+        eg.add(ENode::apply(OpKind::Add, &[y, x]));
+        let zw = eg.add(ENode::apply(OpKind::Add, &[z, w]));
         eg.union(xy, zw);
         eg.rebuild();
         eg

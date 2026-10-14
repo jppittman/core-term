@@ -363,22 +363,25 @@ pub fn induce<I: Ir>(
             Shape::Buffer(d) => ENode::Buffer(d),
             Shape::Uniform(d) => ENode::Uniform(d),
             Shape::Op(kind, children) => {
-                let Some(op) = vocab.resolve(kind) else {
+                if !vocab.admits(kind) {
                     return Err(TermMiss {
                         node: format!("{kind:?} (not in vocabulary)"),
                         mapped: memo.len(),
                     });
-                };
+                }
+                if children.len() != kind.arity() {
+                    return Err(TermMiss {
+                        node: format!("{kind:?} (applied to {} operands)", children.len()),
+                        mapped: memo.len(),
+                    });
+                }
                 let mut operands = Vec::with_capacity(children.len());
                 for i in 0..children.len() {
                     let c = children.get(i).expect("index < len");
                     let class = *memo.get(&c).expect("post-order maps children first");
                     operands.push(class);
                 }
-                ENode::Op {
-                    op,
-                    children: operands,
-                }
+                ENode::apply(kind, &operands)
             }
             Shape::Reduce { fold, body } => {
                 let class = *memo.get(&body).expect("post-order maps children first");
@@ -429,13 +432,13 @@ pub fn induce<I: Ir>(
 }
 
 fn canonicalized(egraph: &EGraph, node: &ENode) -> ENode {
-    match node {
-        ENode::Op { op, children } => ENode::Op {
-            op: *op,
-            children: children.iter().map(|&c| egraph.find(c)).collect(),
-        },
-        other => other.clone(),
+    let mut canonical = *node;
+    if let ENode::Op { children, .. } = &mut canonical {
+        for class in children.iter_mut() {
+            *class = egraph.find(*class);
+        }
     }
+    canonical
 }
 
 /// The term's nodes, children before parents, each once.

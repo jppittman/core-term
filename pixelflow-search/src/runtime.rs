@@ -142,7 +142,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 ///
 /// - `RawGather` — produced by lowering, after the e-graph's place in the
 ///   pipeline; reaching one here means the arena is already lowered.
-/// - `Nary` other than `Reduce` (`Tuple`) — not modelled.
+/// - `Tuple` — no vocabulary admits an op of no fixed arity
+///   (`Declined::Op`).
+/// - An admitted op applied to other than its arity's worth of operands,
+///   which `push_nary` permits — a node holds exactly that many inline
+///   (`Declined::Arity`).
 /// - `Param` — a `pixelflow-compiler` macro-parameter slot that should never
 ///   reach a runtime-built `Kernel` in the first place.
 ///
@@ -747,7 +751,7 @@ fn saturate(
 /// [`Vocabulary::Runtime`](crate::egraph::Vocabulary).
 #[must_use]
 pub fn is_egraph_representable(kind: OpKind) -> bool {
-    crate::egraph::Vocabulary::Runtime.resolve(kind).is_some()
+    crate::egraph::Vocabulary::Runtime.admits(kind)
 }
 
 #[cfg(test)]
@@ -1223,13 +1227,12 @@ mod congruence_gap_probe {
                 }
                 let nodes = egraph.classes[idx].nodes.clone();
                 for node in nodes {
-                    let cnode = match &node {
-                        ENode::Op { op, children } => ENode::Op {
-                            op: *op,
-                            children: children.iter().map(|c| egraph.find(*c)).collect(),
-                        },
-                        other => other.clone(),
-                    };
+                    let mut cnode = node;
+                    if let ENode::Op { children, .. } = &mut cnode {
+                        for class in children.iter_mut() {
+                            *class = egraph.find(*class);
+                        }
+                    }
                     match local_memo.get(&cnode) {
                         Some(&existing) => {
                             let existing_canon = egraph.find(existing);

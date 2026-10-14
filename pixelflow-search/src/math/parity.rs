@@ -10,7 +10,7 @@
 use std::marker::PhantomData;
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, RootShapes, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -34,7 +34,7 @@ pub enum ParityKind {
 /// - For Even: `Op(neg(x)) → Op(x)`
 pub trait Parity: Send + Sync {
     /// The operation this parity applies to.
-    fn op() -> &'static dyn Op;
+    fn op() -> OpKind;
     /// Whether the function is odd or even.
     fn parity() -> ParityKind;
 }
@@ -46,8 +46,8 @@ pub trait Parity: Send + Sync {
 /// Sin is odd: sin(-x) = -sin(x)
 pub struct SinParity;
 impl Parity for SinParity {
-    fn op() -> &'static dyn Op {
-        &ops::Sin
+    fn op() -> OpKind {
+        OpKind::Sin
     }
     fn parity() -> ParityKind {
         ParityKind::Odd
@@ -57,8 +57,8 @@ impl Parity for SinParity {
 /// Cos is even: cos(-x) = cos(x)
 pub struct CosParity;
 impl Parity for CosParity {
-    fn op() -> &'static dyn Op {
-        &ops::Cos
+    fn op() -> OpKind {
+        OpKind::Cos
     }
     fn parity() -> ParityKind {
         ParityKind::Even
@@ -68,8 +68,8 @@ impl Parity for CosParity {
 /// Tan is odd: tan(-x) = -tan(x)
 pub struct TanParity;
 impl Parity for TanParity {
-    fn op() -> &'static dyn Op {
-        &ops::Tan
+    fn op() -> OpKind {
+        OpKind::Tan
     }
     fn parity() -> ParityKind {
         ParityKind::Odd
@@ -79,8 +79,8 @@ impl Parity for TanParity {
 /// Asin is odd: asin(-x) = -asin(x)
 pub struct AsinParity;
 impl Parity for AsinParity {
-    fn op() -> &'static dyn Op {
-        &ops::Asin
+    fn op() -> OpKind {
+        OpKind::Asin
     }
     fn parity() -> ParityKind {
         ParityKind::Odd
@@ -90,8 +90,8 @@ impl Parity for AsinParity {
 /// Atan is odd: atan(-x) = -atan(x)
 pub struct AtanParity;
 impl Parity for AtanParity {
-    fn op() -> &'static dyn Op {
-        &ops::Atan
+    fn op() -> OpKind {
+        OpKind::Atan
     }
     fn parity() -> ParityKind {
         ParityKind::Odd
@@ -101,8 +101,8 @@ impl Parity for AtanParity {
 /// Abs is even: abs(-x) = abs(x)
 pub struct AbsParity;
 impl Parity for AbsParity {
-    fn op() -> &'static dyn Op {
-        &ops::Abs
+    fn op() -> OpKind {
+        OpKind::Abs
     }
     fn parity() -> ParityKind {
         ParityKind::Even
@@ -140,19 +140,19 @@ impl<T: Parity> Rewrite for ParityNegation<T> {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(T::op().kind())
+        RootShapes::kind(T::op())
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
-        Some(T::op().kind())
+        Some(T::op())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Op(neg(x))
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != T::op().kind() {
+        if op != T::op() {
             return None;
         }
         if children.len() != 1 {
@@ -163,11 +163,11 @@ impl<T: Parity> Rewrite for ParityNegation<T> {
 
         // Check if argument is neg(x)
         for arg_node in egraph.nodes(arg) {
-            if let ENode::Op {
+            if let &ENode::Op {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
-                && arg_op.kind() == OpKind::Neg
+                && arg_op == OpKind::Neg
                 && arg_children.len() == 1
             {
                 let x = arg_children[0];
@@ -175,10 +175,7 @@ impl<T: Parity> Rewrite for ParityNegation<T> {
                 match T::parity() {
                     ParityKind::Even => {
                         // Op(neg(x)) → Op(x)
-                        return Some(RewriteAction::Create(ENode::Op {
-                            op: T::op(),
-                            children: vec![x],
-                        }));
+                        return Some(RewriteAction::Create(ENode::apply(T::op(), &[x])));
                     }
                     ParityKind::Odd => {
                         // Op(neg(x)) → neg(Op(x))
@@ -195,15 +192,15 @@ impl<T: Parity> Rewrite for ParityNegation<T> {
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, un T::op().kind(), (un OpKind::Neg, (var 0))))
+        Some(arena_pat!(__a, un T::op(), (un OpKind::Neg, (var 0))))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         match T::parity() {
             // Neg(Op(V0))
-            ParityKind::Odd => Some(arena_pat!(__a, un OpKind::Neg, (un T::op().kind(), (var 0)))),
+            ParityKind::Odd => Some(arena_pat!(__a, un OpKind::Neg, (un T::op(), (var 0)))),
             // Op(V0)
-            ParityKind::Even => Some(arena_pat!(__a, un T::op().kind(), (var 0))),
+            ParityKind::Even => Some(arena_pat!(__a, un T::op(), (var 0))),
         }
     }
 }
