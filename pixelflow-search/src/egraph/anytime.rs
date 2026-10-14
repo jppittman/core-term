@@ -24,7 +24,7 @@
 //! # Budget semantics (binding)
 //!
 //! - The x-axis counts **applications** exactly as
-//!   [`EGraph::application_count`] counts them — one per action commit,
+//!   [`Saturation::application_count`] counts them — one per action commit,
 //!   including idempotent re-fires (91% of the total). That is deliberate: a
 //!   Guide pays for scoring and scanning a candidate whether or not it
 //!   commits, so the honest work axis counts them. It is also the budget's
@@ -32,11 +32,11 @@
 //!   recording provenance.
 //! - The per-checkpoint budget is a **delta, not an absolute target**.
 //!   [`Budget::Applications`] resolves to `current + n`, and
-//!   [`EGraph::application_count`] is cumulative, so a stepper passes the
+//!   [`Saturation::application_count`] is cumulative, so a stepper passes the
 //!   *gap* to the next grid point. Reading it the other way silently makes
 //!   the x-axis a prefix sum of itself.
 //! - Checkpoint targets are crossed **mid-scan**, at the moment an
-//!   application is about to commit ([`ScanStop::ApplicationBudget`](super::graph::ScanStop::ApplicationBudget)),
+//!   application is about to commit (the scan's `ApplicationBudget` stop),
 //!   so `app_actual == app_target` exactly. **This is an instrument change
 //!   from Round 1**, where the target was crossed at rule-sweep granularity
 //!   and [`AnytimeCheckpoint::app_actual`] recorded an overshoot of up to one
@@ -61,9 +61,9 @@ use alloc::vec::Vec;
 use pixelflow_ir::{ExprArena, ExprId};
 
 use super::extract::ChoiceCost;
-use super::graph::{EGraph, SaturationStop};
+use super::graph::{Limits, Saturation, SaturationStop};
 use super::node::EClassId;
-use super::optimizer::{Budget, Limits, Optimizer};
+use super::optimizer::{Budget, Optimizer};
 
 /// Geometric application-count checkpoint grid: resolves the median-~195
 /// regime (25/50/100/200/400) and the heavy tail (…/204800), with the
@@ -85,7 +85,7 @@ pub struct AnytimeCheckpoint {
     /// Cumulative completed sweeps at the sample (diagnostic only).
     pub sweeps: usize,
     /// Cumulative rule-match ATTEMPTS at the sample
-    /// ([`EGraph::total_evals`]) — `apply` calls, the denominator Round 2's
+    /// ([`Saturation::total_evals`]) — `apply` calls, the denominator Round 2's
     /// Guide-overhead-flatness precondition needs
     /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1). A node
     /// outside a rule's [`super::Rewrite::root_shapes`] is not a call, so curves
@@ -131,32 +131,11 @@ pub struct AnytimeCurveOutput {
     /// The curve.
     pub curve: AnytimeCurve,
     /// The e-graph as the last checkpoint left it.
-    pub egraph: EGraph,
+    pub egraph: Saturation,
     /// The root e-class in [`Self::egraph`].
     pub root: EClassId,
     /// The final extraction's choices and cost.
     pub extraction: super::optimizer::Optimized,
-}
-
-/// Number of DISTINCT arena nodes reachable from `root`.
-///
-/// Not `ExprArena::node_count_subtree`, which is documented to count a shared
-/// subtree once per reference (tree size, not DAG size) and so would not
-/// equal `ExprArena::len()` for any expression with sharing.
-fn reachable_node_count(arena: &ExprArena, root: ExprId) -> usize {
-    let mut seen = alloc::vec![false; arena.len()];
-    let mut stack = alloc::vec![root];
-    let mut count = 0usize;
-    while let Some(id) = stack.pop() {
-        let slot = &mut seen[id.0 as usize];
-        if *slot {
-            continue;
-        }
-        *slot = true;
-        count += 1;
-        stack.extend(arena.children(id));
-    }
-    count
 }
 
 /// Run one incremental saturation of `(arena, root)` under `optimizer`,
@@ -202,8 +181,6 @@ pub fn run_anytime_curve(
     // every node of `arena` rather than the subtree reachable from `root`.
     // `egraph::insert` is reachable-only, so the property now holds by
     // construction and the budget is keyed on exactly what was inserted.
-    let node_count = reachable_node_count(arena, root);
-
     let mut egraph = optimizer.egraph();
     let root_class = crate::egraph::insert(
         arena,
@@ -215,7 +192,6 @@ pub fn run_anytime_curve(
     // Sized after insertion and before any rewrite, as `Optimizer::run`
     // sizes it: the class count here is the hash-consed input.
     let input = super::saturate::InputSize {
-        nodes: node_count,
         classes: egraph.num_classes(),
     };
     let env = optimizer.limits_for(input);
@@ -250,7 +226,7 @@ pub fn run_anytime_curve(
             root_class,
             Limits {
                 iterations: sweeps_left,
-                classes: env.classes,
+                minted: env.minted,
                 applications: Some(delta),
             },
             input,
@@ -308,7 +284,7 @@ pub fn run_anytime_curve(
 pub fn registered_curve_budget() -> Budget {
     Budget::Explicit {
         iterations: 10_000,
-        classes: 2_000,
+        minted: 2_000,
         applications: None,
     }
 }

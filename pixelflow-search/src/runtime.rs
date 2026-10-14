@@ -28,11 +28,11 @@
 //! **unit**: it is saturated and extracted by itself, held in the term that
 //! reads it as an opaque leaf, and linked back in after extraction. That is
 //! how a program too big for one e-graph — a font, about 160k classes
-//! inserted before any rule fires, over [`HARD_CLASS_LIMIT`] — is optimized
+//! inserted before any rule fires, over [`HARD_MINTED_LIMIT`] — is optimized
 //! a glyph at a time (docs/plans/2026-09-25-the-language-is-kernel.md §1.8,
 //! §4 O1).
 //!
-//! [`HARD_CLASS_LIMIT`]: crate::egraph::HARD_CLASS_LIMIT
+//! [`HARD_MINTED_LIMIT`]: crate::egraph::HARD_MINTED_LIMIT
 //!
 //! ```text
 //! P(k, s, t) = emit_t ∘ legalize_t ∘ lower_dwrt ∘ L_s (k)
@@ -106,7 +106,7 @@
 
 use crate::egraph::and_or::Frozen;
 use crate::egraph::{
-    Declined, EGraph, Optimizer, OptimizerStats, RuleSet, Vocabulary, insert, reachable_count,
+    Declined, EGraph, Optimizer, OptimizerStats, RuleSet, SaturationKey, Vocabulary, insert,
 };
 use pixelflow_ir::LatticeShape;
 use pixelflow_ir::OpKind;
@@ -492,7 +492,6 @@ impl Job<'_> {
         if let Some(facts) = &obtained.ran_here {
             crate::telemetry::record(crate::telemetry::SaturationInvocation {
                 tier: crate::tier::Tier::Runtime,
-                node_count: facts.node_count,
                 inserted_classes: facts.inserted_classes,
                 extraction: optimized.extraction,
                 stats: &optimized.stats,
@@ -625,7 +624,6 @@ impl Obtained {
 #[cfg(feature = "saturation-telemetry")]
 #[derive(Clone, Copy)]
 struct SaturationFacts {
-    node_count: usize,
     inserted_classes: usize,
     started: std::time::Instant,
 }
@@ -642,6 +640,10 @@ fn runtime_optimizer(shape: LatticeShape) -> Optimizer {
 /// asks for it.
 type Slot = Arc<OnceLock<Result<Arc<Saturated>, Declined>>>;
 
+/// What the saturation cache keys on: a term's canonical structure and the
+/// configuration that saturated it.
+type CacheKey = (Vec<u8>, SaturationKey);
+
 /// The saturated graph for `canon`'s structure, saturating `job`'s term if
 /// this process has not seen the structure before. The decline is memoized
 /// like a result.
@@ -655,17 +657,24 @@ fn saturated_for(
     canon: &Canonical,
     optimizer: &mut Optimizer,
 ) -> Result<Obtained, Declined> {
-    static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Slot>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<HashMap<CacheKey, Slot>>> = OnceLock::new();
 
-    let mut key = canon.key.clone();
     // Saturation is a deterministic function of the structure and the
     // *optimizer configuration* — and the second term was once missing, so
     // the claim that the first suffices became false the moment two
     // configurations coexisted in a process (a warm-up at one budget and
-    // steady state at another, some kernels reranked and some not). It is a
-    // constant today because production names exactly one configuration;
-    // keying on it is what keeps that from being load-bearing.
-    key.extend_from_slice(&optimizer.fingerprint().to_bytes());
+    // steady state at another). It is a constant today because production
+    // names exactly one configuration; keying on it is what keeps that from
+    // being load-bearing. The tier is cacheable because it asks for nothing
+    // a key cannot name: no guide, no mask.
+    // A pair, not a concatenation: the canonical key is variable length, so
+    // appending to it would leave the two parts' boundary to luck.
+    let key = (
+        canon.key.clone(),
+        optimizer
+            .saturation_key()
+            .expect("the runtime tier's optimizer is cacheable: it sets no guide and no mask"),
+    );
 
     let slot: Slot = Arc::clone(
         CACHE
@@ -712,22 +721,20 @@ fn saturate(
         egraph.admit_unit(key, variance);
     }
     let root_class = insert(job.arena, job.root, &mut egraph, Vocabulary::Runtime)?;
-    let node_count = reachable_count(job.arena, job.root);
     #[cfg(feature = "saturation-telemetry")]
     let inserted_classes = egraph.num_classes();
     #[cfg(feature = "saturation-telemetry")]
     let started = std::time::Instant::now();
-    let stats = optimizer.saturate_term(&mut egraph, node_count);
+    let stats = optimizer.saturate_term(&mut egraph);
     SATURATIONS.fetch_add(1, Ordering::Relaxed);
 
     Ok(Saturated {
-        frozen: Frozen::new(egraph, root_class),
+        frozen: Frozen::new(egraph.into_graph(), root_class),
         stats,
         buffers: canon.buffers.clone(),
         uniforms: canon.uniforms.clone(),
         #[cfg(feature = "saturation-telemetry")]
         facts: SaturationFacts {
-            node_count,
             inserted_classes,
             started,
         },
@@ -1178,8 +1185,8 @@ mod congruence_gap_probe {
     /// `SaturationResult::classes_after`, which is `EGraph::classes.len()` —
     /// the raw allocation count, which never shrinks on `union` (the
     /// production 5,000-class cap is checked against THIS raw count, not the
-    /// live count — see `EGraph::saturate_with_limits`,
-    /// `self.classes.len() > max_classes`).
+    /// live count — see `Saturation::saturate_with_limits`,
+    /// `self.classes.len() > max_minted`).
     fn live_class_count(egraph: &EGraph) -> usize {
         (0..egraph.classes.len())
             .filter(|&i| egraph.find(EClassId(i as u32)) == EClassId(i as u32))
@@ -1292,7 +1299,7 @@ mod congruence_gap_probe {
         category: &'static str,
         rule_order: String,
         node_count: usize,
-        max_classes: usize,
+        max_minted: usize,
         stop: String,
         hit_class_cap: bool,
         live_before: usize,
@@ -1335,7 +1342,7 @@ mod congruence_gap_probe {
         egraph: EGraph,
         root_class: EClassId,
         node_count: usize,
-        max_classes: usize,
+        max_minted: usize,
         stop: SaturationStop,
         /// `arena_static_cost` of the extraction production would actually
         /// emit for this kernel.
@@ -1393,8 +1400,8 @@ mod congruence_gap_probe {
         )
         .unwrap_or_else(|e| panic!("{name}: insert declined ({e:?})"));
 
-        let optimized = optimizer.run(&mut egraph, root_class, node_count);
-        let max_classes = optimized.stats.limits.classes;
+        let optimized = optimizer.run(&mut egraph, root_class);
+        let max_minted = optimized.stats.limits.minted;
 
         let model = CostModel::latency_prior();
         let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
@@ -1402,10 +1409,10 @@ mod congruence_gap_probe {
         let extracted_nodes = crate::egraph::reachable_count(&extracted, extracted_root);
 
         ProductionRun {
-            egraph,
+            egraph: egraph.into_graph(),
             root_class,
             node_count,
-            max_classes,
+            max_minted,
             stop: optimized.stats.stop,
             cost,
             extracted_nodes,
@@ -1425,12 +1432,12 @@ mod congruence_gap_probe {
             egraph,
             root_class,
             node_count,
-            max_classes,
+            max_minted,
             stop,
             cost: cost_before,
             ..
         } = run_production(name, order, arena, root);
-        let hit_class_cap = stop == SaturationStop::ClassCap;
+        let hit_class_cap = stop == SaturationStop::MintedCap;
         let live_before = live_class_count(&egraph);
         let model = CostModel::latency_prior();
 
@@ -1460,14 +1467,14 @@ mod congruence_gap_probe {
         } else {
             0.0
         };
-        let would_avoid_cap = hit_class_cap && live_after < max_classes;
+        let would_avoid_cap = hit_class_cap && live_after < max_minted;
 
         CongruenceRow {
             name: name.to_string(),
             category,
             rule_order: order.to_string(),
             node_count,
-            max_classes,
+            max_minted,
             stop: format!("{stop:?}"),
             hit_class_cap,
             live_before,
@@ -1632,13 +1639,13 @@ mod congruence_gap_probe {
             rows.len()
         );
         eprintln!(
-            "(5a) ClassCap-stopped: median class reduction {:.2}%, median cost change {:.3}% (n={})",
+            "(5a) MintedCap-stopped: median class reduction {:.2}%, median cost change {:.3}% (n={})",
             median(&mut capped_reduction) * 100.0,
             median(&mut capped_cost_change) * 100.0,
             cap_hit_count
         );
         eprintln!(
-            "(5b) not ClassCap-stopped: median class reduction {:.2}%, median cost change {:.3}% (n={})",
+            "(5b) not MintedCap-stopped: median class reduction {:.2}%, median cost change {:.3}% (n={})",
             median(&mut uncapped_reduction) * 100.0,
             median(&mut uncapped_cost_change) * 100.0,
             rows.len() - cap_hit_count
@@ -1875,7 +1882,7 @@ mod congruence_gap_probe {
                 r.category,
                 r.rule_order,
                 r.node_count,
-                r.max_classes,
+                r.max_minted,
                 r.stop,
                 r.hit_class_cap,
                 r.live_before,
@@ -1915,7 +1922,7 @@ mod congruence_gap_probe {
             r.category,
             r.rule_order,
             r.node_count,
-            r.max_classes,
+            r.max_minted,
             r.stop,
             r.hit_class_cap,
             r.live_before,
@@ -2040,7 +2047,7 @@ mod congruence_gap_probe {
         )
         .unwrap();
 
-        writeln!(out, "\n## Split by ClassCap-stopped\n").unwrap();
+        writeln!(out, "\n## Split by MintedCap-stopped\n").unwrap();
         writeln!(out, "| | n | median class reduction | median cost change |").unwrap();
         writeln!(out, "|---|---|---|---|").unwrap();
         let cap_rows: Vec<&CongruenceRow> = rows.iter().filter(|r| r.hit_class_cap).collect();
@@ -2051,7 +2058,7 @@ mod congruence_gap_probe {
         let mut noncap_cost: Vec<f64> = noncap_rows.iter().map(|r| r.cost_change_frac).collect();
         writeln!(
             out,
-            "| ClassCap-stopped | {} | {:.2}% | {:.3}% |",
+            "| MintedCap-stopped | {} | {:.2}% | {:.3}% |",
             cap_rows.len(),
             median(&mut cap_red) * 100.0,
             median(&mut cap_cost) * 100.0
@@ -2059,7 +2066,7 @@ mod congruence_gap_probe {
         .unwrap();
         writeln!(
             out,
-            "| not ClassCap-stopped | {} | {:.2}% | {:.3}% |",
+            "| not MintedCap-stopped | {} | {:.2}% | {:.3}% |",
             noncap_rows.len(),
             median(&mut noncap_red) * 100.0,
             median(&mut noncap_cost) * 100.0
@@ -2339,7 +2346,7 @@ pub(crate) mod production_telemetry {
         arena: &ExprArena,
         root: ExprId,
         max_iterations: usize,
-        max_classes: usize,
+        max_minted: usize,
         timeout: Duration,
     ) -> Run {
         // Driven through `Optimizer` — the one entry point production itself
@@ -2355,9 +2362,12 @@ pub(crate) mod production_telemetry {
         let mut optimizer = Optimizer::production()
             .budget(Budget::Explicit {
                 iterations: max_iterations,
-                classes: max_classes,
+                minted: max_minted,
                 applications: None,
             })
+            // The journal is chosen when the graph is built, and this harness
+            // reports its union count: it asks for one.
+            .observe(Some(Box::new(crate::egraph::KeepJournal)))
             .hard_ceiling(timeout);
 
         let mut egraph = optimizer.egraph();
@@ -2366,11 +2376,7 @@ pub(crate) mod production_telemetry {
                 .expect("production arena must be e-graph representable (no Param/Nary)");
 
         let started = Instant::now();
-        let optimized = optimizer.run(
-            &mut egraph,
-            root_class,
-            crate::egraph::reachable_count(arena, root),
-        );
+        let optimized = optimizer.run(&mut egraph, root_class);
         let elapsed = started.elapsed();
 
         let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
@@ -2391,7 +2397,7 @@ pub(crate) mod production_telemetry {
             total_unions: optimized.stats.unions,
             classes_after: optimized.stats.classes,
             applications: optimized.stats.applications as usize,
-            journal_unions: egraph.provenance().union_count(),
+            journal_unions: egraph.journal().union_count(),
             elapsed,
             cost: arena_cost(&extracted, extracted_root, &costs),
             dp_cost,
@@ -2530,7 +2536,7 @@ pub(crate) mod production_telemetry {
                 &arena,
                 root,
                 config.max_iterations,
-                config.max_classes,
+                config.max_minted,
                 config.safety_ceiling,
             );
 
@@ -2539,8 +2545,8 @@ pub(crate) mod production_telemetry {
             // clock (so its loss is the clock's bite alone); `lifted` lifts
             // the class cap too (the whole budget's bite).
             let ref_iters = config.max_iterations * mult;
-            let lifted_classes = config.max_classes * mult;
-            let refr = run(&arena, root, ref_iters, config.max_classes, ceiling);
+            let lifted_classes = config.max_minted * mult;
+            let refr = run(&arena, root, ref_iters, config.max_minted, ceiling);
             let remaining = ceiling.saturating_sub(refr.elapsed);
             let lifted = run(&arena, root, ref_iters, lifted_classes, remaining);
 
@@ -2552,7 +2558,7 @@ pub(crate) mod production_telemetry {
             let mut fatal = false;
             let clock_did_not_decide = matches!(
                 prod.stop,
-                SaturationStop::Quiesced | SaturationStop::ClassCap
+                SaturationStop::Quiesced | SaturationStop::MintedCap
             );
             if clock_did_not_decide
                 && refr.stop != SaturationStop::Timeout
@@ -2613,7 +2619,7 @@ pub(crate) mod production_telemetry {
                 prod.iterations,
                 config.max_iterations,
                 prod.classes_after,
-                config.max_classes,
+                config.max_minted,
                 prod.applications,
                 prod.total_unions,
                 prod.journal_unions,
@@ -2710,13 +2716,13 @@ pub(crate) mod production_telemetry {
                 sel.len(),
                 count(SaturationStop::Quiesced),
                 count(SaturationStop::IterationCeiling),
-                count(SaturationStop::ClassCap),
+                count(SaturationStop::MintedCap),
                 count(SaturationStop::Timeout),
                 sel.iter()
-                    .filter(|r| r.ref_stop == SaturationStop::ClassCap)
+                    .filter(|r| r.ref_stop == SaturationStop::MintedCap)
                     .count(),
                 sel.iter()
-                    .filter(|r| r.lifted_stop == SaturationStop::ClassCap)
+                    .filter(|r| r.lifted_stop == SaturationStop::MintedCap)
                     .count(),
                 lr.len(),
                 q(&lr),

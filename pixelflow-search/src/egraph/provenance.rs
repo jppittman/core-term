@@ -29,6 +29,18 @@
 //!   every class-level merge, whether rule-driven or congruence-closure
 //!   (rebuild-driven, `rule_idx: None`).
 //!
+//! The store lives on the graph and is **chosen when the graph is built**: a
+//! graph made [`without_journal`](super::graph::EGraph::without_journal)
+//! records nothing and has no store to query
+//! ([`EGraph::provenance`](super::graph::EGraph::provenance) is `None`).
+//! Production builds its graphs that way unless an observer is attached. The
+//! choice cannot be made per call, because a record written without the
+//! application that caused it is a wrong one — a rule's own product reads as
+//! a seed, its union as a congruence merge — and wrong labels are worse than
+//! missing ones. The runner brackets each application with
+//! `Provenance::open_application` and `Provenance::close_application`;
+//! that bracket is the one place the graph learns who is mutating it.
+//!
 //! [`derivation_ancestors`] walks these records backward from a set of chosen
 //! e-nodes to the [`ApplicationId`]s that caused them to exist or to become
 //! reachable from the root. It is a **conservative over-approximation**: it
@@ -51,7 +63,7 @@
 //! creation/union events regardless of e-graph size or shape.
 //!
 //! Every rule match is recorded as an `ApplicationRecord` unconditionally in
-//! `apply_action_from_rule` — including matches that ultimately produce no
+//! `Saturation::commit` — including matches that ultimately produce no
 //! net change (e.g. `Union` against an already-equal target) — trading a
 //! larger provenance log for simpler, drift-proof bookkeeping (see that
 //! function's doc comment).
@@ -63,6 +75,8 @@ use std::collections::BTreeSet;
 
 #[cfg(feature = "provenance-journal")]
 use super::node::EClassId;
+#[cfg(feature = "provenance-journal")]
+use super::rules::{RuleId, RuleIdx};
 
 /// Stable, process-wide identity for an e-node, independent of its current
 /// `(EClassId, node_idx)` position.
@@ -81,7 +95,7 @@ impl ENodeId {
 }
 
 /// Identifies one firing of a rewrite rule (one call to
-/// `apply_action_from_rule`).
+/// `Saturation::commit`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ApplicationId(pub(crate) u64);
 
@@ -115,13 +129,14 @@ pub struct ApplicationRecord {
     /// Which rule fired, by stable identity.
     ///
     /// This is the field a consumer should key a table on. `rule_idx` names
-    /// a *position* in one particular rule vector, and both a reordering and
-    /// an insertion move every position in it — silently, for a
-    /// same-length reorder. `None` only for a graph built without ids.
-    pub rule: Option<super::rules::RuleId>,
-    /// Index into `EGraph`'s rule list. In-memory only: correct for the run
-    /// that produced it, meaningless across rule-set changes.
-    pub rule_idx: usize,
+    /// a *position* in one particular rule set, and both a reordering and an
+    /// insertion move every position in it — silently, for a same-length
+    /// reorder.
+    pub rule: RuleId,
+    /// The rule's position in the [`RuleSet`](super::rules::RuleSet) that
+    /// ran. In-memory only: correct for the run that produced it,
+    /// meaningless across rule-set changes.
+    pub rule_idx: RuleIdx,
     /// Saturation-iteration counter at the time of firing — the round.
     pub step: usize,
     /// The e-class the rule matched against (the match root). Recorded
@@ -171,10 +186,10 @@ impl ApplicationRecord {
 pub struct UnionEvent {
     /// The rule that caused this union, if any (`None` for congruence
     /// closure unions found during rebuild).
-    pub rule_idx: Option<usize>,
+    pub rule_idx: Option<RuleIdx>,
     /// The exact firing that caused this union, if any — `Some` iff
-    /// `rule_idx` is `Some` (both come from the same `active_application`
-    /// read at the `EGraph::union` call site; `None` for congruence-closure
+    /// `rule_idx` is `Some` (both come from the journal's open-application
+    /// bracket, read in `Provenance::record_union`; `None` for congruence-closure
     /// unions found during rebuild, which have no active rule application).
     ///
     /// Purely additive: recorded because the information is already in hand
@@ -209,6 +224,48 @@ pub struct Provenance {
     /// Append-only journal of class merges (rule-driven and congruence).
     #[cfg(feature = "provenance-journal")]
     unions: Vec<UnionEvent>,
+    /// The generation every record is stamped with: the saturation round,
+    /// or, under a guided loop, the matched application. Advanced only by
+    /// the runner, through [`Self::begin_step`].
+    #[cfg(feature = "provenance-journal")]
+    step: usize,
+    /// The application whose actions are being executed right now, or `None`
+    /// for a seed insertion, a congruence union found by rebuild, or any
+    /// edit a caller makes directly. Written only by the runner, through
+    /// [`Self::open_application`] and [`Self::close_application`] — the one
+    /// place the store learns who is mutating it, because a rule reaches
+    /// `add` and `union` only through its action's shape and no context can
+    /// be threaded down that path.
+    #[cfg(feature = "provenance-journal")]
+    active: Option<ActiveApplication>,
+}
+
+/// Which application is executing, as `add` and `union` attribute to it.
+#[cfg(feature = "provenance-journal")]
+#[derive(Clone, Copy, Debug)]
+struct ActiveApplication {
+    rule_idx: RuleIdx,
+    application_id: ApplicationId,
+}
+
+/// What a runner knows about an application before it runs.
+#[cfg(feature = "provenance-journal")]
+pub(crate) struct Opening {
+    pub(crate) rule: RuleId,
+    pub(crate) rule_idx: RuleIdx,
+    /// The class the rule matched against.
+    pub(crate) match_root: EClassId,
+    /// The next [`ENodeId`] the graph will mint.
+    pub(crate) minted_from: u64,
+}
+
+/// An application whose record is open: handed back to
+/// [`Provenance::close_application`] once the action has run.
+#[cfg(feature = "provenance-journal")]
+#[must_use]
+pub(crate) struct OpenApplication {
+    id: ApplicationId,
+    enclosing: Option<ActiveApplication>,
 }
 
 impl Provenance {
@@ -224,6 +281,17 @@ impl Provenance {
         self.origins.insert(id, origin);
     }
 
+    /// Record a freshly created e-node, attributed to the application being
+    /// executed, or to no application (a seed) outside one.
+    #[cfg(feature = "provenance-journal")]
+    pub(crate) fn record_birth(&mut self, id: ENodeId) {
+        let origin = match self.active {
+            Some(active) => Origin::Rule(active.application_id),
+            None => Origin::Seed,
+        };
+        self.record_origin(id, origin);
+    }
+
     /// Record a rewrite firing, returning its `ApplicationId`.
     #[cfg(feature = "provenance-journal")]
     pub(crate) fn record_application(&mut self, record: ApplicationRecord) -> ApplicationId {
@@ -232,27 +300,63 @@ impl Provenance {
         id
     }
 
-    /// Close a record opened by [`Self::record_application`], now that the
+    /// Advance the generation every later record is stamped with.
+    #[cfg(feature = "provenance-journal")]
+    pub(crate) fn begin_step(&mut self) {
+        self.step += 1;
+    }
+
+    /// Record a firing before its action runs, and attribute everything the
+    /// action does to it until [`Self::close_application`].
+    ///
+    /// The record is opened first and closed after because that is the only
+    /// order in which both "who made this node" and "what did this
+    /// application make" are answerable.
+    #[cfg(feature = "provenance-journal")]
+    pub(crate) fn open_application(&mut self, opening: Opening) -> OpenApplication {
+        let id = self.record_application(ApplicationRecord {
+            rule: opening.rule,
+            rule_idx: opening.rule_idx,
+            step: self.step,
+            match_root: opening.match_root,
+            minted: opening.minted_from..opening.minted_from,
+            unions: 0,
+        });
+        let enclosing = self.active.replace(ActiveApplication {
+            rule_idx: opening.rule_idx,
+            application_id: id,
+        });
+        OpenApplication { id, enclosing }
+    }
+
+    /// Close a record opened by [`Self::open_application`], now that the
     /// action has run and what it minted and merged is known.
     #[cfg(feature = "provenance-journal")]
-    pub(crate) fn complete_application(
+    pub(crate) fn close_application(
         &mut self,
-        id: ApplicationId,
+        open: OpenApplication,
         minted: core::ops::Range<u64>,
         unions: usize,
     ) {
-        let record = self.applications.get_mut(id.0 as usize).expect(
-            "complete_application: no such application — the id must come from \
-                     this store's own record_application",
+        self.active = open.enclosing;
+        let record = self.applications.get_mut(open.id.0 as usize).expect(
+            "close_application: no such application — the id must come from \
+                     this store's own open_application",
         );
         record.minted = minted;
         record.unions = unions;
     }
 
-    /// Record a class-level merge.
+    /// Record a class-level merge, attributed like a birth.
     #[cfg(feature = "provenance-journal")]
-    pub(crate) fn record_union(&mut self, event: UnionEvent) {
-        self.unions.push(event);
+    pub(crate) fn record_union(&mut self, class_a: EClassId, class_b: EClassId) {
+        self.unions.push(UnionEvent {
+            rule_idx: self.active.map(|a| a.rule_idx),
+            application_id: self.active.map(|a| a.application_id),
+            step: self.step,
+            class_a,
+            class_b,
+        });
     }
 
     /// Look up the origin of a node, if known.
@@ -270,7 +374,7 @@ impl Provenance {
     /// Number of application records (rewrite firings) recorded — the
     /// journal's *length*.
     ///
-    /// Distinct from [`super::graph::EGraph::application_count`] (identical
+    /// Distinct from [`super::graph::Saturation::application_count`] (identical
     /// name, different type, unconditional): the two agree only because the
     /// journal records every application when it is being kept at all. This
     /// one is named `recorded_count` rather than `application_count` so the
@@ -511,9 +615,9 @@ pub struct TightWalk<'a> {
 ///    same "every tagged node" behavior `derivation_ancestors` always uses —
 ///    still safe, just not tightened for that class.
 /// 2. **The exact firing, not every same-rule firing.** A [`UnionEvent`]'s
-///    `application_id` (recorded for real at `EGraph::union`'s
-///    call site, from the same `active_application` state that already
-///    supplies `rule_idx` — see the field's doc comment) names the *one*
+///    `application_id` (recorded for real in `Provenance::record_union`,
+///    from the same open-application bracket that already supplies
+///    `rule_idx` — see the field's doc comment) names the *one*
 ///    application that caused that merge. This walk credits exactly that
 ///    application; `derivation_ancestors` still credits every application
 ///    sharing the event's `rule_idx` with `step <= event.step`, unchanged.
@@ -723,7 +827,7 @@ pub fn derivation_ancestors_tight(
 pub fn format_derivation_trace(
     provenance: &Provenance,
     ancestors: &BTreeSet<ApplicationId>,
-    rule_name: &impl Fn(usize) -> Option<String>,
+    rule_name: &impl Fn(RuleIdx) -> Option<String>,
 ) -> String {
     use std::fmt::Write;
 
@@ -736,12 +840,12 @@ pub fn format_derivation_trace(
     let mut out = String::new();
     for (id, record) in records {
         let name = rule_name(record.rule_idx)
-            .unwrap_or_else(|| format!("<unknown rule {}>", record.rule_idx));
+            .unwrap_or_else(|| format!("<unknown rule {}>", record.rule_idx.get()));
         writeln!(
             &mut out,
             "step {}: rule[{}] {:?} (match root e{}) -> application #{}",
             record.step,
-            record.rule_idx,
+            record.rule_idx.get(),
             name,
             record.match_root.index(),
             id.as_u64(),
@@ -756,8 +860,13 @@ mod tests {
     use super::*;
 
     fn app(rule_idx: usize, step: usize, match_root: EClassId) -> ApplicationRecord {
+        let rules = crate::egraph::RuleSet::production();
+        let rule_idx = rules
+            .indices()
+            .nth(rule_idx)
+            .expect("a production rule at this position");
         ApplicationRecord {
-            rule: None,
+            rule: rules.id(rule_idx),
             rule_idx,
             step,
             match_root,
@@ -834,8 +943,8 @@ mod tests {
         let a1 = p.record_application(app(5, 3, EClassId(9)));
         let a0 = p.record_application(app(2, 1, EClassId(4)));
         let ancestors = BTreeSet::from([a0, a1]);
-        let rule_name = |idx: usize| -> Option<String> {
-            match idx {
+        let rule_name = |idx: RuleIdx| -> Option<String> {
+            match idx.get() {
                 2 => Some("identity".to_string()),
                 5 => Some("commute".to_string()),
                 _ => None,
@@ -855,7 +964,7 @@ mod tests {
         let mut p = Provenance::new();
         let a0 = p.record_application(app(42, 0, EClassId(0)));
         let ancestors = BTreeSet::from([a0]);
-        let rule_name = |_: usize| -> Option<String> { None };
+        let rule_name = |_: RuleIdx| -> Option<String> { None };
         let trace = format_derivation_trace(&p, &ancestors, &rule_name);
         assert!(trace.contains("<unknown rule 42>"));
     }

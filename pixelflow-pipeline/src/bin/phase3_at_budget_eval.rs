@@ -615,7 +615,7 @@ fn stop_name(stop: SaturationStop) -> &'static str {
     match stop {
         SaturationStop::Quiesced => "quiesced",
         SaturationStop::ApplicationBudget => "app_budget",
-        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::MintedCap => "class_cap",
         SaturationStop::IterationCeiling => "iteration_ceiling",
         SaturationStop::Timeout => "timeout",
     }
@@ -742,7 +742,8 @@ struct ProductionRow {
     node_count_reachable: usize,
     config_tier: String,
     max_iterations: usize,
-    max_classes: usize,
+    #[serde(rename = "max_classes")]
+    max_minted: usize,
     /// The production budget's application cap (#1118). Replaces the old
     /// `hard_timeout_ms`: wall clock is a panicking safety ceiling now, not
     /// a stop reason, so it is not a budget dimension to report.
@@ -836,12 +837,7 @@ fn rule_label_of(rules: &RuleSet, id: RuleId) -> String {
 
 /// The [`RuleId`] a recorded application carries, or a loud failure.
 fn rule_of(rec: &pixelflow_search::egraph::ApplicationRecord) -> RuleId {
-    rec.rule.unwrap_or_else(|| {
-        panic!(
-            "phase3_at_budget_eval: an application carries no RuleId — the graph was built \
-             without rule ids, and every table here is keyed by identity"
-        )
-    })
+    rec.rule
 }
 
 /// Strict hindsight labels for a finished curve (its own final extraction).
@@ -867,7 +863,7 @@ fn full_run_diag(
     positives: &BTreeSet<ApplicationId>,
     rules: &RuleSet,
 ) -> AtBudgetDiag {
-    let total = out.egraph.provenance().applications().count();
+    let total = out.egraph.journal().applications().count();
     let rounds = *arm.rounds.last().expect("non-empty curve");
     prefix_diag(out, total, rounds, positives, rules)
 }
@@ -885,7 +881,7 @@ fn prefix_diag(
     let mut strict_positive = 0usize;
     let mut rule_hist: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_rule: BTreeMap<String, RuleFiring> = BTreeMap::new();
-    for (id, rec) in out.egraph.provenance().applications() {
+    for (id, rec) in out.egraph.journal().applications() {
         if id.as_u64() as usize >= applications {
             continue;
         }
@@ -1012,7 +1008,7 @@ fn enabler_diag(
     rules: &RuleSet,
 ) -> EnablerDiag {
     let eg = &unguided.egraph;
-    let prov = eg.provenance();
+    let prov = eg.journal();
     let choices = &unguided.extraction.choices;
 
     // Output nodes of every application (a rule RHS may create several),
@@ -1195,7 +1191,7 @@ fn arm_optimizer(input: &CurveInput<'_>, guide: Option<Box<dyn SaturationGuide>>
         .observe(Some(Box::new(KeepJournal)))
         .budget(Budget::Explicit {
             iterations: SWEEP_SAFETY_CEILING,
-            classes: input.class_cap,
+            minted: input.class_cap,
             applications: None,
         })
         .hard_ceiling(SAFETY_TIMEOUT)
@@ -1231,10 +1227,9 @@ fn production_probe(arena: &ExprArena, root: ExprId, costs: &CostModel) -> Produ
     )
     .expect("insert into e-graph");
     let limits = optimizer.limits_for(pixelflow_search::egraph::InputSize {
-        nodes: node_count,
         classes: egraph.num_classes(),
     });
-    let out = optimizer.run(&mut egraph, root_class, node_count);
+    let out = optimizer.run(&mut egraph, root_class);
     ProductionRow {
         node_count_reachable: node_count,
         config_tier: match limits.iterations {
@@ -1245,7 +1240,7 @@ fn production_probe(arena: &ExprArena, root: ExprId, costs: &CostModel) -> Produ
         }
         .to_string(),
         max_iterations: limits.iterations,
-        max_classes: limits.classes,
+        max_minted: limits.minted,
         // The production budget's application dimension (#1118). The
         // wall-clock `hard_timeout` this field used to carry is gone: it is
         // a panicking safety ceiling now, never a stop reason, so reporting
@@ -2952,7 +2947,7 @@ fn main() {
             let input = CurveInput {
                 arena,
                 root: *root,
-                class_cap: config_for_node_count(arena.len()).max_classes,
+                class_cap: config_for_node_count(arena.len()).max_minted,
                 costs: &costs,
                 guided_grid: &guided_grid,
             };

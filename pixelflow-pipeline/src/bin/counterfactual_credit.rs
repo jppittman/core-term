@@ -112,7 +112,7 @@ use pixelflow_search::egraph::provenance::{ApplicationId, ENodeId, Origin};
 use pixelflow_search::egraph::{
     ApplicationMask, Budget, CandidateFeatures, CostModel, EClassId, EGraph, EpisodeLabels, Firing,
     KeepJournal, Label, MaskScope, Optimizer, REGISTERED_PRIMARY_BUDGET_APPLICATIONS, RuleId,
-    RuleSet, config_for_node_count, extract_dag,
+    RuleSet, Saturation, config_for_node_count, extract_dag,
 };
 use pixelflow_search::nnue::factored::EMBED_DIM;
 use pixelflow_search::nnue::guide::linear::{
@@ -368,8 +368,8 @@ struct ExprContext {
     name: String,
     arena: ExprArena,
     root: pixelflow_ir::ExprId,
-    max_classes: usize,
-    egraph: EGraph,
+    max_minted: usize,
+    egraph: Saturation,
     cost_original: usize,
     loose: EpisodeLabels,
     tight: EpisodeLabels,
@@ -450,7 +450,7 @@ fn build_expr_context(
     budget: usize,
     proxies: &Proxies,
 ) -> ExprContext {
-    let max_classes = config_for_node_count(arena.len()).max_classes;
+    let max_minted = config_for_node_count(arena.len()).max_minted;
     let costs = CostModel::latency_prior();
     // The replay reads the journal afterwards, so recording is asked for
     // with an observer (#1118). `hard_ceiling` panics on the ceiling rather
@@ -461,7 +461,7 @@ fn build_expr_context(
         .observe(Some(Box::new(KeepJournal)))
         .budget(Budget::Explicit {
             iterations: SATURATE_MAX_ITERS,
-            classes: max_classes,
+            minted: max_minted,
             applications: Some(budget as u64),
         })
         .hard_ceiling(SATURATE_TIMEOUT);
@@ -473,7 +473,7 @@ fn build_expr_context(
         pixelflow_search::egraph::Vocabulary::Templates,
     )
     .expect("insert into e-graph");
-    let _ = optimizer.run(&mut egraph, root_class, arena.len());
+    let _ = optimizer.run(&mut egraph, root_class);
 
     let extraction = extract_dag(&egraph, root_class, &costs);
     // DAG cost — what the emitted kernel pays (#1117).
@@ -484,13 +484,13 @@ fn build_expr_context(
     let strict = EpisodeLabels::compute_strict(&egraph, extraction.root, &extraction.choices);
 
     let mut created_by: HashMap<ApplicationId, Vec<ENodeId>> = HashMap::new();
-    for (node, origin) in egraph.provenance().origins() {
+    for (node, origin) in egraph.journal().origins() {
         if let Origin::Rule(app_id) = origin {
             created_by.entry(app_id).or_default().push(node);
         }
     }
     let mut unions_by: HashMap<ApplicationId, Vec<(EClassId, EClassId)>> = HashMap::new();
-    for event in egraph.provenance().union_events() {
+    for event in egraph.journal().union_events() {
         if let Some(app_id) = event.application_id {
             unions_by
                 .entry(app_id)
@@ -518,16 +518,11 @@ fn build_expr_context(
     let mut step_of: HashMap<ApplicationId, usize> = HashMap::new();
     let mut keys: Vec<(ApplicationId, usize)> = Vec::new();
     let mut summaries: Vec<CandidateSummary> = Vec::new();
-    for (app_id, record) in egraph.provenance().applications() {
+    for (app_id, record) in egraph.journal().applications() {
         if app_id.as_u64() >= bound {
             continue;
         }
-        let rule = record.rule.unwrap_or_else(|| {
-            panic!(
-                "counterfactual_credit: application {app_id:?} carries no RuleId — the graph \
-                 was built without rule ids, and every table here is keyed by identity"
-            )
-        });
+        let rule = record.rule;
         if unions_by.contains_key(&app_id) {
             candidates.push((app_id, rule));
         }
@@ -570,7 +565,7 @@ fn build_expr_context(
         name,
         arena,
         root,
-        max_classes,
+        max_minted,
         egraph,
         cost_original,
         loose,
@@ -655,7 +650,7 @@ fn masked_replay(
         .mask(Some(mask))
         .budget(Budget::Explicit {
             iterations: SATURATE_MAX_ITERS,
-            classes: ctx.max_classes,
+            minted: ctx.max_minted,
             applications: Some(budget as u64),
         })
         .hard_ceiling(SATURATE_TIMEOUT);
@@ -667,7 +662,7 @@ fn masked_replay(
         pixelflow_search::egraph::Vocabulary::Templates,
     )
     .expect("insert into e-graph");
-    let _ = optimizer.run(&mut egraph, root_class, ctx.arena.len());
+    let _ = optimizer.run(&mut egraph, root_class);
     let skips = egraph.last_replay_mask_skips();
     assert!(
         skips >= 1,

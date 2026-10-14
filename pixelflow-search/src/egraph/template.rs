@@ -594,6 +594,7 @@ impl TemplateRewrite {
 mod tests {
     use super::*;
     use crate::egraph::EGraph;
+    use crate::egraph::{RuleSet, Saturation};
     use pixelflow_ir::OpKind;
 
     /// `a - b -> a + neg(b)`, hand-built as a template — should behave
@@ -612,7 +613,7 @@ mod tests {
 
     #[test]
     fn matches_and_instantiates_a_two_level_pattern() {
-        let mut eg = EGraph::with_rules(vec![Box::new(sub_to_add_neg())]);
+        let mut eg = Saturation::over(RuleSet::new(vec![Box::new(sub_to_add_neg())]));
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let sub = eg.add(ENode::Op {

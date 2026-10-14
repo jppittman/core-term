@@ -767,11 +767,10 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
     let root_class = insert(&lowered, lowered_root, &mut egraph, Vocabulary::Runtime)
         .unwrap_or_else(|_| panic!("{}: not e-graph representable", k.name));
     let limits = Budget::Production.limits(InputSize {
-        nodes: node_count,
         classes: egraph.num_classes(),
     });
     let started = Instant::now();
-    let optimized = optimizer.run(&mut egraph, root_class, node_count);
+    let optimized = optimizer.run(&mut egraph, root_class);
     let opt_ms = started.elapsed().as_secs_f64() * 1e3;
     let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
     let s = &optimized.stats;
@@ -779,7 +778,7 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
         row,
         ",{node_count},{nodes_lowered_hc},{input_dag_cost},{input_tree_cost},{:.3},{},{},{:?},{},{},{},{},{:.1}",
         if input_dag_cost == 0 { 1.0 } else { input_tree_cost as f64 / input_dag_cost as f64 },
-        limits.iterations, limits.classes, s.stop, s.iterations, s.applications, s.unions, s.classes, opt_ms
+        limits.iterations, limits.minted, s.stop, s.iterations, s.applications, s.unions, s.classes, opt_ms
     )
     .expect("fmt");
 
@@ -818,8 +817,8 @@ fn measure(k: &Kernel, rules: &RuleSet) -> String {
 
     // Per-rule firing histogram from the provenance journal.
     let mut fires: HashMap<usize, u64> = HashMap::new();
-    for (_, rec) in egraph.provenance().applications() {
-        *fires.entry(rec.rule_idx).or_default() += 1;
+    for (_, rec) in egraph.journal().applications() {
+        *fires.entry(rec.rule_idx.get()).or_default() += 1;
     }
     let mut fires: Vec<(usize, u64)> = fires.into_iter().collect();
     fires.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));

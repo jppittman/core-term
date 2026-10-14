@@ -53,7 +53,7 @@ use super::cost::CostModel;
 use super::extract::{
     ChoiceCost, ExtractionReport, IncrementalExtractor, Pricing, Reranker, Selection,
 };
-use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
+use super::graph::{ApplicationMask, EGraph, Limits, Saturation, SaturationStats, SaturationStop};
 use super::guided::GuidedEpisode;
 use super::node::EClassId;
 #[cfg(feature = "provenance-journal")]
@@ -111,6 +111,56 @@ impl Observer for KeepJournal {
     fn on_application(&mut self, _record: &ApplicationRecord) {}
 }
 
+/// A saturation configuration, as a value a cache can key on: the rule set's
+/// [`Fingerprint`] and the [`Budget`], and nothing else — see
+/// [`Optimizer::saturation_key`] for what is in and why.
+///
+/// A second type beside [`Fingerprint`], not a wider one: a `Fingerprint`
+/// names a rule vocabulary and is written into checkpoints, where a guide
+/// records which vocabulary it was trained against, so it must keep meaning
+/// that. Built only by [`Optimizer::saturation_key`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SaturationKey(Vec<u8>);
+
+impl SaturationKey {
+    const PRODUCTION: u8 = 0;
+    const APPLICATIONS: u8 = 1;
+    const EXPLICIT: u8 = 2;
+    const UNCAPPED: u8 = 0;
+    const CAPPED: u8 = 1;
+
+    fn of(rules: Fingerprint, budget: Budget) -> Self {
+        fn push_count(bytes: &mut Vec<u8>, count: u64) {
+            bytes.extend_from_slice(&count.to_le_bytes());
+        }
+        let mut bytes = rules.to_bytes().to_vec();
+        match budget {
+            Budget::Production => bytes.push(Self::PRODUCTION),
+            Budget::Applications(n) => {
+                bytes.push(Self::APPLICATIONS);
+                push_count(&mut bytes, n);
+            }
+            Budget::Explicit {
+                iterations,
+                minted,
+                applications,
+            } => {
+                bytes.push(Self::EXPLICIT);
+                push_count(&mut bytes, iterations as u64);
+                push_count(&mut bytes, minted as u64);
+                match applications {
+                    None => bytes.push(Self::UNCAPPED),
+                    Some(n) => {
+                        bytes.push(Self::CAPPED);
+                        push_count(&mut bytes, n);
+                    }
+                }
+            }
+        }
+        Self(bytes)
+    }
+}
+
 /// What stops saturation.
 ///
 /// Every variant is deterministic: the same arena under the same budget
@@ -129,7 +179,7 @@ pub enum Budget {
     /// What production does: iteration and class caps chosen from the
     /// input's sizes, exactly as
     /// [`config_for_input`](super::saturate::config_for_input) picks them
-    /// (≤10 nodes → 20 rounds / 500 classes; 11–50 → 50 / 2 000; 51+ →
+    /// (≤10 classes → 20 rounds / 500 ids; 11–50 → 50 / 2 000; 51+ →
     /// 100 rounds and a class cap of
     /// [`CLASSICAL_CLASSES_PER_INSERTED_CLASS`](super::saturate::CLASSICAL_CLASSES_PER_INSERTED_CLASS)
     /// per inserted class, clamped to 5 000..=50 000).
@@ -143,38 +193,25 @@ pub enum Budget {
     Explicit {
         /// Rewrite rounds.
         iterations: usize,
-        /// E-class ceiling.
-        classes: usize,
+        /// The most e-class ids the graph may mint.
+        minted: usize,
         /// Rule applications, if capped.
         applications: Option<u64>,
     },
 }
 
-/// The limits [`Budget`] resolves to for a given input size.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Limits {
-    /// Rewrite rounds.
-    pub iterations: usize,
-    /// E-class ceiling.
-    pub classes: usize,
-    /// Rule applications, if capped.
-    pub applications: Option<u64>,
-}
-
 impl Budget {
     /// Resolve to concrete limits.
     ///
-    /// `input` is the same rough size measure the presets have always keyed
-    /// on — AST node count for the macro tier, reachable-arena node count
-    /// for the runtime tier — with the inserted class count beside it for
-    /// the classical cap; ignored by the variants that name their limits.
+    /// `input` is the class count the term inserted to, which picks the tier
+    /// and sizes the classical cap; [`Budget::Explicit`] ignores it.
     #[must_use]
     pub fn limits(self, input: InputSize) -> Limits {
         let preset = super::saturate::config_for_input(input);
         match self {
             Self::Production => Limits {
                 iterations: preset.max_iterations,
-                classes: preset.max_classes,
+                minted: preset.max_minted,
                 // Deterministic replacement for the wall clock this used to
                 // carry (docs/plans/2026-09-01-production-budget-determinism.md):
                 // calibrated per tier so it binds strictly after the class
@@ -183,16 +220,16 @@ impl Budget {
             },
             Self::Applications(n) => Limits {
                 iterations: preset.max_iterations,
-                classes: preset.max_classes,
+                minted: preset.max_minted,
                 applications: Some(n),
             },
             Self::Explicit {
                 iterations,
-                classes,
+                minted,
                 applications,
             } => Limits {
                 iterations,
-                classes,
+                minted,
                 applications,
             },
         }
@@ -276,7 +313,7 @@ impl Optimized {
 /// ```ignore
 /// let mut egraph = optimizer.egraph();          // carries the rule set
 /// let root = /* insert your term */;
-/// let out = optimizer.run(&mut egraph, root, node_count);
+/// let out = optimizer.run(&mut egraph, root);
 /// let (arena, arena_root) = out.to_arena(&egraph, root);
 /// ```
 ///
@@ -309,8 +346,8 @@ pub struct Optimizer {
 /// A fixed [`core::time::Duration`] isn't enough on its own:
 /// [`Optimizer::production`]'s default ceiling must scale with the tier
 /// [`Budget::Production`] resolves to (blitz/rapid/classical carry different
-/// `safety_ceiling`s), which is only known once `node_count` reaches
-/// [`Optimizer::run`] — not at construction time, when
+/// `safety_ceiling`s), which is only known once the input has been inserted and
+/// [`Optimizer::run`] sizes it — not at construction time, when
 /// `.hard_ceiling(d)`'s fixed override *is* already known. `None` stays a
 /// third state (rather than `Fixed` with a sentinel) for non-production
 /// configurations that want no assertion at all.
@@ -324,7 +361,7 @@ enum HardCeiling {
     /// for a specific ceiling gets exactly that ceiling.
     Fixed(core::time::Duration),
     /// [`SaturationConfig::safety_ceiling`](super::saturate::SaturationConfig::safety_ceiling)
-    /// for the tier `node_count` resolves to, subject to
+    /// for the tier the input's size resolves to, subject to
     /// `PIXELFLOW_SATURATION_CEILING_MS`. [`Optimizer::production`]'s
     /// default.
     Tiered,
@@ -403,7 +440,7 @@ impl Optimizer {
             #[cfg(feature = "provenance-journal")]
             observer: None,
             // The tier's own `SaturationConfig::safety_ceiling`, resolved
-            // from `node_count` at `run()` time — every production call site
+            // from the inserted size at `run()` time — every production call site
             // gets a fail-loud ceiling without having to remember to ask for
             // one. See `HardCeiling::Tiered`.
             hard_ceiling: HardCeiling::Tiered,
@@ -492,7 +529,7 @@ impl Optimizer {
     /// covered by L4 — a withheld application can only leave the graph
     /// holding fewer equalities, never different ones.
     ///
-    /// Read [`EGraph::last_replay_mask_skips`] afterwards rather than
+    /// Read [`Saturation::last_replay_mask_skips`] afterwards rather than
     /// assuming the mask fired: under the confluence-aware scope it can fire
     /// many times, and if its ordinal was never reached it fires not at all.
     #[must_use]
@@ -516,8 +553,8 @@ impl Optimizer {
     /// the old `hard_timeout` did.
     ///
     /// [`Optimizer::production`]'s default is *not* "none" — it is
-    /// [`config_for_node_count`](super::saturate::config_for_node_count)'s
-    /// tier-appropriate `safety_ceiling`, resolved once `node_count` is
+    /// [`config_for_input`](super::saturate::config_for_input)'s
+    /// tier-appropriate `safety_ceiling`, resolved once the input's size is
     /// known. Call this only to override that with a fixed value regardless
     /// of tier (measurement harnesses that vary the budget independently of
     /// input size); the override is exempt from
@@ -553,16 +590,37 @@ impl Optimizer {
         self
     }
 
-    /// The digest of this configuration: today the rule set's content and
-    /// order.
+    /// Everything about this configuration that decides the graph a
+    /// saturation leaves behind, or `None` when the configuration cannot be
+    /// named.
     ///
     /// A cache that keys on the input expression alone would serve one
-    /// configuration's code to another the moment two configurations coexist
-    /// in a process — a warm-up compiled at one budget and steady state at
-    /// another, or some kernels reranked and some not.
+    /// configuration's graph to another the moment two configurations coexist
+    /// in a process — a warm-up at one budget and steady state at another.
+    /// The key covers the rule set (content and order: the sweep is
+    /// order-sensitive under a budget) and the [`Budget`]; the budget's
+    /// limits then follow from the class count the input inserts to. That
+    /// count is a function of the term as inserted, which the cache's
+    /// canonical key fixes only up to commutative spelling: the key is
+    /// order-free and the e-graph memo is not, so `(X + Y) * (Y + X)` keys
+    /// one subterm and inserts two classes. It leaves out what only the extraction reads — the cost model,
+    /// the lattice, the reranker — and what changes no result: the observer
+    /// and the wall-clock ceiling.
+    ///
+    /// It does not cover the [`Vocabulary`](super::Vocabulary): which terms
+    /// `insert` declines is a property of the call site's tier, not of the
+    /// optimizer, and the one cache keyed on this (the runtime tier's) always
+    /// inserts under `Vocabulary::Runtime`. A second tier sharing a cache
+    /// would have to add it.
+    ///
+    /// `None` for a guided or masked run. A [`SaturationGuide`] has no
+    /// identity to key on and reorders the sweep, and a replay mask withholds
+    /// an application: neither run is a function of the input and the rules,
+    /// so no graph it leaves may be served to another caller.
     #[must_use]
-    pub fn fingerprint(&self) -> Fingerprint {
-        self.rules.fingerprint()
+    pub fn saturation_key(&self) -> Option<SaturationKey> {
+        (self.guide.is_none() && self.mask.is_none())
+            .then(|| SaturationKey::of(self.rules.fingerprint(), self.budget))
     }
 
     /// The limits this optimizer's budget resolves to for an input of these
@@ -592,33 +650,49 @@ impl Optimizer {
         &self.rules
     }
 
-    /// An empty e-graph carrying this optimizer's rule set. Insert your term
+    /// An empty e-graph under this optimizer's rule set. Insert your term
     /// into it and hand it to [`Optimizer::run`].
+    ///
+    /// The graph keeps a mutation journal exactly when an
+    /// [`Observer`] is attached: the journal is chosen here, when the graph
+    /// is built, because a log cannot be turned on halfway through a run
+    /// without misattributing what happened before it. Production attaches
+    /// none, so a production graph records nothing.
     #[must_use]
-    pub fn egraph(&self) -> EGraph {
-        let (rules, ids) = self.rules.shared();
-        EGraph::with_shared_rules(rules, ids)
+    pub fn egraph(&self) -> Saturation {
+        let saturation = Saturation::over(self.rules.clone());
+        if self.has_observer() {
+            return saturation;
+        }
+        saturation.without_journal()
+    }
+
+    /// Whether anything is attached to hear what saturation did.
+    fn has_observer(&self) -> bool {
+        #[cfg(feature = "provenance-journal")]
+        return self.observer.is_some();
+        #[cfg(not(feature = "provenance-journal"))]
+        return false;
     }
 
     /// Saturate `egraph` from `root` under this configuration, and extract.
     ///
-    /// `node_count` is the rough size measure [`Budget::Production`] picks
-    /// its tier from — the same one the presets have always keyed on. The
-    /// classical class cap is sized from `egraph`'s class count on entry:
-    /// the input has been inserted and nothing rewritten yet, so that count
-    /// is the hash-consed input ([`InputSize::classes`]).
+    /// [`Budget::Production`] picks its tier, and sizes the classical cap,
+    /// from `egraph`'s class count on entry: the input has been inserted and
+    /// nothing rewritten yet, so that count is the hash-consed input
+    /// ([`InputSize::classes`]). To resume a graph already rewritten, name the
+    /// limits outright with [`Budget::Explicit`].
     ///
     /// # Panics
     ///
-    /// Panics if a [`hard_ceiling`](Optimizer::hard_ceiling) was set and the
-    /// run exceeded it. That is the intended behavior: a ceiling is an
+    /// Panics if a budget keyed on the input's size meets a graph that has
+    /// already been rewritten (its class count is then the grown graph's, not
+    /// the input's), or if a [`hard_ceiling`](Optimizer::hard_ceiling) was set
+    /// and the run exceeded it. That is the intended behavior: a ceiling is an
     /// assertion about the budget, and a silently truncated optimization that
     /// reports success is the failure mode this API exists to remove.
-    pub fn run(&mut self, egraph: &mut EGraph, root: EClassId, node_count: usize) -> Optimized {
-        let input = InputSize {
-            nodes: node_count,
-            classes: egraph.num_classes(),
-        };
+    pub fn run(&mut self, egraph: &mut Saturation, root: EClassId) -> Optimized {
+        let input = self.inserted_size(egraph);
         self.run_bounded(egraph, root, self.budget.limits(input), input)
     }
 
@@ -628,7 +702,7 @@ impl Optimizer {
     /// name the tier the ceiling belongs to.
     pub(crate) fn run_bounded(
         &mut self,
-        egraph: &mut EGraph,
+        egraph: &mut Saturation,
         root: EClassId,
         limits: Limits,
         input: InputSize,
@@ -646,13 +720,11 @@ impl Optimizer {
     ///
     /// # Panics
     ///
-    /// As [`Self::run`]: if a [`hard_ceiling`](Optimizer::hard_ceiling) was
-    /// set and the saturation exceeded it.
-    pub fn saturate_term(&mut self, egraph: &mut EGraph, node_count: usize) -> OptimizerStats {
-        let input = InputSize {
-            nodes: node_count,
-            classes: egraph.num_classes(),
-        };
+    /// As [`Self::run`]: if the graph was already rewritten under a budget
+    /// keyed on the input's size, or a [`hard_ceiling`](Optimizer::hard_ceiling)
+    /// was set and the saturation exceeded it.
+    pub fn saturate_term(&mut self, egraph: &mut Saturation) -> OptimizerStats {
+        let input = self.inserted_size(egraph);
         self.saturate_bounded(egraph, self.budget.limits(input), input)
     }
 
@@ -733,16 +805,41 @@ impl Optimizer {
         }
     }
 
+    /// The size of the input `egraph` was handed, read off its class count.
+    ///
+    /// Only the first call on a graph can read it: once rules have fired the
+    /// count includes what they minted. A budget that keys on the size
+    /// therefore refuses a graph already rewritten, rather than drift to a
+    /// larger tier on each call.
+    fn inserted_size(&self, egraph: &Saturation) -> InputSize {
+        let keyed_on_size = matches!(self.budget, Budget::Production | Budget::Applications(_));
+        assert!(
+            !(keyed_on_size && egraph.application_count() > 0),
+            "this budget is keyed on the inserted class count, and this graph has already been \
+             rewritten ({} applications): resume it under `Budget::Explicit`",
+            egraph.application_count(),
+        );
+        InputSize {
+            classes: egraph.num_classes(),
+        }
+    }
+
     fn saturate_bounded(
         &mut self,
-        egraph: &mut EGraph,
+        egraph: &mut Saturation,
         limits: Limits,
         input: InputSize,
     ) -> OptimizerStats {
+        // Before the run, so a long research run does not discover at its end
+        // that its graph never kept the journal the observer was to hear.
+        #[cfg(feature = "provenance-journal")]
+        assert!(
+            self.observer.is_none() || egraph.provenance().is_some(),
+            "an observer needs a graph that keeps a journal: build it with \
+             `Optimizer::egraph` on the optimizer that observes",
+        );
         let started = std::time::Instant::now();
 
-        #[cfg(feature = "provenance-journal")]
-        egraph.set_provenance_recording(self.observer.is_some());
         // A fresh clone per run: the confluence-aware scope mutates its
         // captured key as the run goes, and one optimizer replaying two
         // expressions must not carry the first one's capture into the
@@ -768,7 +865,7 @@ impl Optimizer {
             assert!(
                 elapsed <= ceiling,
                 "Optimizer::run exceeded its safety ceiling: {elapsed:?} > {ceiling:?} \
-                 (tier {tier}, {nodes} nodes / {classes} inserted classes, {applications} \
+                 (tier {tier}, {classes} inserted classes, {applications} \
                  applications reached, \
                  stop: {stop:?}). A ceiling is an assertion about the budget, not a budget \
                  dimension — either the budget is wrong for this input or the machine is \
@@ -776,14 +873,16 @@ impl Optimizer {
                  `0` or `off` disables it) only for diagnosis — it can change whether this \
                  panics, never which kernel is emitted.",
                 stop = saturation.stop,
-                nodes = input.nodes,
                 classes = input.classes,
             );
         }
 
         #[cfg(feature = "provenance-journal")]
         if let Some(observer) = self.observer.as_mut() {
-            for (_id, record) in egraph.provenance().applications() {
+            let journal = egraph
+                .provenance()
+                .expect("checked on entry: the graph keeps a journal");
+            for (_id, record) in journal.applications() {
                 observer.on_application(record);
             }
         }
@@ -808,16 +907,12 @@ impl Optimizer {
     /// [`SaturationStats`], and neither can report
     /// [`SaturationStop::Timeout`] — the guided loop takes no clock either.
     /// Every mutation the guided arm makes goes through
-    /// `EGraph::apply_single_rule`, i.e. through the same
-    /// `apply_action_from_rule` the sweep uses, which is what keeps the
+    /// `Saturation::apply_single_rule`, i.e. through the same
+    /// `commit` the sweep uses, which is what keeps the
     /// application counter (the budget's denominator) meaning one thing.
-    fn saturate(&mut self, egraph: &mut EGraph, limits: Limits) -> SaturationStats {
+    fn saturate(&mut self, egraph: &mut Saturation, limits: Limits) -> SaturationStats {
         let Some(guide) = self.guide.as_ref() else {
-            return egraph.saturate_budgeted(
-                limits.iterations,
-                limits.classes,
-                limits.applications,
-            );
+            return egraph.saturate_budgeted(limits);
         };
         self.episode
             .get_or_insert_with(GuidedEpisode::default)
@@ -828,5 +923,106 @@ impl Optimizer {
 impl Default for Optimizer {
     fn default() -> Self {
         Self::production()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nnue::guide::CandidateSummary;
+
+    struct Flat;
+
+    impl SaturationGuide for Flat {
+        fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
+            vec![0.0; candidates.len()]
+        }
+    }
+
+    fn key_of(optimizer: &Optimizer) -> SaturationKey {
+        optimizer
+            .saturation_key()
+            .expect("an unguided, unmasked optimizer is cacheable")
+    }
+
+    /// The key distinguishes exactly what decides the saturated graph, and
+    /// nothing that only the extraction reads.
+    #[test]
+    fn the_saturation_key_covers_the_rules_and_the_budget() {
+        let production = key_of(&Optimizer::production());
+        assert_eq!(production, key_of(&Optimizer::production()));
+
+        let reordered = {
+            let mut rules = crate::egraph::all_rules();
+            rules.reverse();
+            Optimizer::production().rules(RuleSet::new(rules))
+        };
+        assert_ne!(production, key_of(&reordered), "rule order is part of it");
+
+        let budgets = [
+            Budget::Production,
+            Budget::Applications(100),
+            Budget::Applications(101),
+            Budget::Explicit {
+                iterations: 5,
+                minted: 500,
+                applications: None,
+            },
+            Budget::Explicit {
+                iterations: 5,
+                minted: 500,
+                applications: Some(100),
+            },
+            Budget::Explicit {
+                iterations: 5,
+                minted: 501,
+                applications: Some(100),
+            },
+        ];
+        let keys: Vec<_> = budgets
+            .iter()
+            .map(|&budget| key_of(&Optimizer::production().budget(budget)))
+            .collect();
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                assert_ne!(a, b, "two budgets must not share a key");
+            }
+        }
+
+        let priced_elsewhere = Optimizer::production()
+            .for_lattice(LatticeShape::new([16, 16]))
+            .cost(CostModel::default())
+            .no_ceiling();
+        assert_eq!(
+            production,
+            key_of(&priced_elsewhere),
+            "extraction's pricing is not saturation's"
+        );
+    }
+
+    /// A guided run reorders the sweep and a masked one withholds an
+    /// application: neither is a function of the input and the rules, so
+    /// neither has a key.
+    #[test]
+    fn a_guided_or_masked_run_has_no_key() {
+        let guided = Optimizer::production().guide(Some(Box::new(Flat)));
+        assert!(guided.saturation_key().is_none());
+        let masked = Optimizer::production().mask(Some(ApplicationMask::leave_one_out(0)));
+        assert!(masked.saturation_key().is_none());
+    }
+
+    /// The journal is chosen when the graph is built, so an observer cannot be
+    /// attached to a graph built without one — and is refused before the run,
+    /// not after it.
+    #[cfg(feature = "provenance-journal")]
+    #[test]
+    #[should_panic(expected = "needs a graph that keeps a journal")]
+    fn an_observer_needs_a_graph_that_keeps_a_journal() {
+        let mut egraph = Optimizer::production().egraph();
+        let root = egraph.add(crate::egraph::ENode::Var(0));
+        let mut observed = Optimizer::production()
+            .observe(Some(Box::new(KeepJournal)))
+            .no_ceiling();
+        let _optimized = observed.run(&mut egraph, root);
     }
 }

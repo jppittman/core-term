@@ -649,7 +649,7 @@ pub struct CheckpointRow {
     pub app_actual: u64,
     pub cost: u64,
     /// `format!("{:?}", SaturationStop)` — `"Quiesced"`, `"ApplicationBudget"`,
-    /// `"ClassCap"`, `"IterationCeiling"`, or `"Timeout"`.
+    /// `"MintedCap"`, `"IterationCeiling"`, or `"Timeout"`.
     pub stop: String,
     /// `R(τ, budget)` (§1.2) — `None` when `expr_best_cost == 0` for this
     /// expression (the registration's zero-best exclusion convention).

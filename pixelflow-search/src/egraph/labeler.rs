@@ -66,10 +66,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::cost::CostModel;
 use super::extract::{self, ExtractedDAG, Selection};
-use super::graph::EGraph;
+use super::graph::{EGraph, Saturation};
 use super::node::EClassId;
 use super::provenance::{ApplicationId, ENodeId, Origin};
 use super::rewrite::Rewrite;
+use super::rules::{RuleIdx, RuleSet};
 use super::saturate::SaturationConfig;
 
 /// Binary hindsight label for one recorded rewrite application.
@@ -133,7 +134,7 @@ pub struct EpisodeLabels {
     pub labels: BTreeMap<ApplicationId, Label>,
     /// Per-rule aggregates, keyed by `rule_idx` (index into the e-graph's
     /// rule list at episode time).
-    pub rule_stats: BTreeMap<usize, RuleStats>,
+    pub rule_stats: BTreeMap<RuleIdx, RuleStats>,
 }
 
 impl EpisodeLabels {
@@ -197,9 +198,9 @@ impl EpisodeLabels {
     /// anything except which applications they credit.
     fn from_load_bearing(egraph: &EGraph, load_bearing: BTreeSet<ApplicationId>) -> Self {
         let mut labels = BTreeMap::new();
-        let mut rule_stats: BTreeMap<usize, RuleStats> = BTreeMap::new();
+        let mut rule_stats: BTreeMap<RuleIdx, RuleStats> = BTreeMap::new();
 
-        for (app_id, record) in egraph.provenance().applications() {
+        for (app_id, record) in egraph.journal().applications() {
             let label = if load_bearing.contains(&app_id) {
                 Label::LoadBearing
             } else {
@@ -225,24 +226,14 @@ impl EpisodeLabels {
     /// one row per rule that fired at least once, ordered by descending
     /// `load_bearing_ratio` (ties broken by `rule_idx` for determinism).
     ///
-    /// Rule names are resolved via `egraph.rule(idx).name()`. If a rule
-    /// index has no resolvable name against the given e-graph (e.g. the
-    /// rule list changed since the episode ran), the row falls back to
-    /// printing the raw index in `<rule N>` form rather than panicking or
-    /// silently dropping the row.
-    pub fn format_rule_report(&self, egraph: &EGraph) -> String {
+    /// Rule names are resolved through the rule set the episode ran under.
+    pub fn format_rule_report(&self, rules: &RuleSet) -> String {
         use std::fmt::Write;
 
-        let mut rows: Vec<(usize, String, RuleStats)> = self
+        let mut rows: Vec<(RuleIdx, String, RuleStats)> = self
             .rule_stats
             .iter()
-            .map(|(&rule_idx, &stats)| {
-                let name = egraph
-                    .rule(rule_idx)
-                    .map(|r| r.name().to_string())
-                    .unwrap_or_else(|| format!("<rule {rule_idx}>"));
-                (rule_idx, name, stats)
-            })
+            .map(|(&rule_idx, &stats)| (rule_idx, rules.rule(rule_idx).name().to_string(), stats))
             .collect();
 
         rows.sort_by(|a, b| {
@@ -292,7 +283,7 @@ fn strict_load_bearing(
 ) -> BTreeSet<ApplicationId> {
     let mut result = BTreeSet::new();
     for &(_, tag) in chosen_nodes {
-        if let Some(Origin::Rule(app_id)) = egraph.provenance().origin(tag) {
+        if let Some(Origin::Rule(app_id)) = egraph.journal().origin(tag) {
             result.insert(app_id);
         }
     }
@@ -329,14 +320,13 @@ fn chosen_tagged_nodes(
 /// itself (kept around so callers can further inspect provenance — e.g.
 /// `format_derivation_trace` on specific nodes of interest — after the fact).
 ///
-/// No `Debug` derive: [`EGraph`] itself does not implement `Debug` (it holds
+/// No `Debug` derive: [`Saturation`] does not implement `Debug` (its [`RuleSet`] holds
 /// `dyn Rewrite` trait objects), so this type can't either without a manual
 /// impl that skips `egraph` — not worth it for a struct callers can already
 /// inspect field-by-field.
-#[derive(Clone)]
 pub struct EpisodeResult {
     /// The saturated, provenance-tracked e-graph.
-    pub egraph: EGraph,
+    pub egraph: Saturation,
     /// The extraction chosen from it (latency-prior cost model).
     pub extraction: ExtractedDAG,
     /// Hindsight labels derived from `extraction` over `egraph`.
@@ -348,14 +338,14 @@ pub struct EpisodeResult {
 ///
 /// Kept deliberately simple and synchronous — this is the seed of the
 /// future episode collector, not the collector itself. Callers supply the
-/// rule set explicitly (mirroring [`EGraph::with_rules`] everywhere else in
+/// rule set explicitly (mirroring [`RuleSet::new`] everywhere else in
 /// this crate); use [`super::all_rules`] for the full library.
 pub fn run_episode(
     arena: &pixelflow_ir::ExprArena,
     root: pixelflow_ir::ExprId,
     rules: Vec<Box<dyn Rewrite>>,
 ) -> EpisodeResult {
-    let mut egraph = EGraph::with_rules(rules);
+    let mut egraph = Saturation::over(RuleSet::new(rules));
     let root_class = crate::egraph::insert(
         arena,
         root,
@@ -379,6 +369,7 @@ pub fn run_episode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::graph::Limits;
     use crate::egraph::node::ENode;
     use crate::egraph::ops;
     use crate::egraph::provenance::Origin;
@@ -386,9 +377,9 @@ mod tests {
 
     /// Minimal rule set for hand-derivable tests: just commutativity of Add,
     /// so every application in these tests is unambiguous.
-    fn egraph_with_commutative() -> EGraph {
+    fn egraph_with_commutative() -> Saturation {
         let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
-        EGraph::with_rules(rules)
+        Saturation::over(RuleSet::new(rules))
     }
 
     /// Find the tag (within `class`) whose origin is `Origin::Rule(app_id)`.
@@ -397,7 +388,7 @@ mod tests {
             .tags(class)
             .iter()
             .copied()
-            .find(|&t| egraph.provenance().origin(t) == Some(Origin::Rule(app_id)))
+            .find(|&t| egraph.journal().origin(t) == Some(Origin::Rule(app_id)))
             .unwrap_or_else(|| panic!("no node in class {class:?} was created by {app_id:?}"))
     }
 
@@ -443,7 +434,7 @@ mod tests {
             other_target.tag
         ));
         let app_wasted = ApplicationId(1);
-        assert_eq!(eg.provenance().recorded_count(), 2);
+        assert_eq!(eg.journal().recorded_count(), 2);
 
         // Build the chosen extraction by hand: root = sum's class, choosing
         // the rule-created (commuted) node for `sum`, and node 0 (the only
@@ -474,7 +465,7 @@ mod tests {
         assert_eq!(stats.load_bearing, 1);
         assert_eq!(stats.wasted(), 1);
 
-        let report = labels.format_rule_report(&eg);
+        let report = labels.format_rule_report(eg.rules());
         assert!(report.contains("commutative"));
     }
 
@@ -516,7 +507,7 @@ mod tests {
             .expect("commutative should match (x + y) + z");
         assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.tag));
         let app_b = ApplicationId(1);
-        assert_eq!(eg.provenance().recorded_count(), 2);
+        assert_eq!(eg.journal().recorded_count(), 2);
 
         let outer_class = eg.find(outer);
         let inner_class = eg.find(inner);
@@ -582,7 +573,7 @@ mod tests {
             .map(|s| s.load_bearing)
             .sum();
 
-        assert_eq!(total_fired, result.egraph.provenance().recorded_count());
+        assert_eq!(total_fired, result.egraph.journal().recorded_count());
         assert_eq!(total_fired, result.labels.labels.len());
         assert_eq!(
             total_load_bearing,
@@ -603,7 +594,7 @@ mod tests {
         }
 
         // Report renders without panicking and lists every rule that fired.
-        let report = result.labels.format_rule_report(&result.egraph);
+        let report = result.labels.format_rule_report(result.egraph.rules());
         assert_eq!(report.lines().count(), 1 + result.labels.rule_stats.len());
     }
 
@@ -665,7 +656,7 @@ mod tests {
         let doubled = arena.push_binary(pixelflow_ir::OpKind::Mul, sum, sum);
         let root = arena.push_binary(pixelflow_ir::OpKind::Sub, doubled, doubled);
 
-        let mut egraph = EGraph::with_rules(crate::egraph::all_rules());
+        let mut egraph = Saturation::over(RuleSet::new(crate::egraph::all_rules()));
         let root_class = crate::egraph::insert(
             &arena,
             root,
@@ -673,7 +664,11 @@ mod tests {
             crate::egraph::Vocabulary::Templates,
         )
         .expect("insert into e-graph");
-        egraph.saturate_budgeted(30, 2_000, None);
+        egraph.saturate_budgeted(Limits {
+            iterations: 30,
+            minted: 2_000,
+            applications: None,
+        });
 
         let costs = CostModel::latency_prior();
         let extraction = extract::extract_dag(&egraph, root_class, &costs);
@@ -684,7 +679,7 @@ mod tests {
         for (name, labels) in [("loose", &loose), ("tight", &tight), ("strict", &strict)] {
             let total_fired: usize = labels.rule_stats.values().map(|s| s.fired).sum();
             let total_lb: usize = labels.rule_stats.values().map(|s| s.load_bearing).sum();
-            assert_eq!(total_fired, egraph.provenance().recorded_count(), "{name}");
+            assert_eq!(total_fired, egraph.journal().recorded_count(), "{name}");
             assert_eq!(total_fired, labels.labels.len(), "{name}");
             assert_eq!(
                 total_lb,

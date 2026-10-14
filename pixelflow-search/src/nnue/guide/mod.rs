@@ -306,6 +306,7 @@ impl SaturationGuide for Guide {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::egraph::{RuleSet, Saturation};
 
     // ========================================================================
     // shift_by / shift1
@@ -445,11 +446,11 @@ mod tests {
     fn candidate_summary_new_should_round_trip_features_and_rule_embed() {
         use crate::egraph::candidate::Firing;
         use crate::egraph::ops;
-        use crate::egraph::{EGraph, ENode, Rewrite};
+        use crate::egraph::{ENode, Rewrite};
         use crate::math::algebra::Commutative;
 
         let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
-        let mut eg = EGraph::with_rules(rules);
+        let mut eg = Saturation::over(RuleSet::new(rules));
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
         let sum = eg.add(ENode::Op {
@@ -458,7 +459,9 @@ mod tests {
         });
 
         let firing = Firing {
-            rule: eg.rule_id(0).expect("the graph's only rule"),
+            rule: eg
+                .rules()
+                .id(eg.rules().indices().next().expect("the graph's only rule")),
             match_root: eg.find(sum),
             application_ordinal: 5,
             registered_budget: 20,

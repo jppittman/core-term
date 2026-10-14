@@ -199,20 +199,19 @@ fn rule_concats(
     BTreeMap<RuleId, [f32; RULE_CONCAT_DIM]>,
     Vec<alloc::string::String>,
 ) {
-    let (shared, ids) = rules.shared();
     let mut map = BTreeMap::new();
     let mut templateless = Vec::new();
-    for (idx, rule) in shared.iter().enumerate() {
-        let template = ArenaRuleTemplate::from_rule(rule.as_ref());
+    for idx in rules.indices() {
+        let template = ArenaRuleTemplate::from_rule(rules.rule(idx));
         if template.lhs.is_none()
             && template.rhs.is_none()
-            && let Some(label) = rules.label_of(idx)
+            && let Some(label) = rules.label_of(idx.get())
         {
             templateless.push(label);
         }
         let z_lhs = pool_template_side(embeddings, &template.arena, template.lhs);
         let z_rhs = pool_template_side(embeddings, &template.arena, template.rhs);
-        map.insert(ids[idx], rule_concat(&z_lhs, &z_rhs));
+        map.insert(rules.id(idx), rule_concat(&z_lhs, &z_rhs));
     }
     (map, templateless)
 }

@@ -5,7 +5,7 @@
 //! nothing here changes production behavior: `all_rules()` still returns
 //! exactly 62 rules (pinned by `super::tests::all_rules_count`). Every
 //! inflated set built here is a `Vec<Box<dyn Rewrite>>` a research binary
-//! hands to `EGraph::with_rules` directly.
+//! hands to `Saturation::over` directly.
 //!
 //! All three of the design's inflation modes live here — (i) exact
 //! duplicates, the "learnable overhead" control; (ii) mechanical

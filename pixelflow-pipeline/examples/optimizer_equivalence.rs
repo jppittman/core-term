@@ -71,7 +71,7 @@ fn main() {
             pixelflow_search::egraph::Vocabulary::Templates,
         )
         .expect("insert into e-graph");
-        let stats = optimizer.run(&mut eg, root_class, arena.len()).stats;
+        let stats = optimizer.run(&mut eg, root_class).stats;
 
         println!(
             "{name:<22} {input_nodes:>5} {:>5} {d:>18x} {:>8.1}ms {:>9} {:>7} {:>20}",

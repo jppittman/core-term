@@ -80,8 +80,8 @@ pub use extract::{
 };
 pub use fold_rules::{EmptyFold, FactorFold, HalveFold, PeelFold, fold_rules};
 pub use graph::{
-    ApplicationMask, ApplyResult, EGraph, EGraphBatch, HARD_CLASS_LIMIT, MaskScope, RewriteTarget,
-    SaturationStats, SaturationStop, ScanStop,
+    ApplicationMask, EGraph, HARD_MINTED_LIMIT, Limits, MaskScope, RewriteTarget, Saturation,
+    SaturationStats, SaturationStop,
 };
 #[cfg(feature = "saturation-telemetry")]
 pub use growth::{GrowthTelemetry, RuleGrowth};
@@ -90,7 +90,7 @@ pub use insert::{Declined, insert, reachable_count};
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode};
 pub use ops::{Op, Vocabulary};
-pub use optimizer::{Budget, Limits, Optimized, Optimizer, OptimizerStats};
+pub use optimizer::{Budget, Optimized, Optimizer, OptimizerStats, SaturationKey};
 #[cfg(feature = "provenance-journal")]
 pub use optimizer::{KeepJournal, Observer};
 pub use provenance::{ApplicationId, ENodeId, Provenance};
@@ -99,7 +99,7 @@ pub use provenance::{
     ApplicationRecord, Origin, UnionEvent, derivation_ancestors, format_derivation_trace,
 };
 pub use rewrite::{Rewrite, RewriteAction, RootShapes, TemplateArena, TemplatePattern};
-pub use rules::{Fingerprint, RuleId, RuleSet, rule_label};
+pub use rules::{Fingerprint, RuleId, RuleIdx, RuleSet, rule_label};
 pub use saturate::{
     APPLICATIONS_PER_CLASS, CLASSICAL_CLASS_CEILING, CLASSICAL_CLASS_FLOOR,
     CLASSICAL_CLASSES_PER_INSERTED_CLASS, InputSize, SaturationConfig, SaturationResult,

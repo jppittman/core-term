@@ -386,7 +386,7 @@ fn saturate_at(
         .for_lattice(shape)
         .budget(Budget::Explicit {
             iterations: tier.max_iterations,
-            classes: class_cap,
+            minted: class_cap,
             applications: Some(class_cap as u64 * APPLICATIONS_PER_CLASS),
         })
         // The ladder deliberately runs past production's own caps; the
@@ -398,22 +398,22 @@ fn saturate_at(
     let root_class = insert(arena, root, &mut egraph, Vocabulary::Runtime)
         .unwrap_or_else(|d| panic!("kernel not representable: {d:?}"));
     let inserted = egraph.num_classes();
-    let optimized = optimizer.run(&mut egraph, root_class, node_count);
+    let optimized = optimizer.run(&mut egraph, root_class);
     let rules = optimizer.rule_set();
     let rule_of: HashMap<ApplicationId, String> = egraph
-        .provenance()
+        .journal()
         .applications()
         .map(|(id, rec)| {
             (
                 id,
                 rules
-                    .label_of(rec.rule_idx)
+                    .label_of(rec.rule_idx.get())
                     .unwrap_or_else(|| format!("#{}", rec.rule_idx)),
             )
         })
         .collect();
     Saturated {
-        egraph,
+        egraph: egraph.into_graph(),
         optimized,
         root: root_class,
         inserted,
@@ -459,7 +459,7 @@ fn minting_rule(sat: &Saturated, class: EClassId, idx: usize) -> String {
     let Some(&tag) = tags.get(idx) else {
         return "unknown".into();
     };
-    match sat.egraph.provenance().origin(tag) {
+    match sat.egraph.journal().origin(tag) {
         None => "unknown".into(),
         Some(Origin::Seed) => "seed".into(),
         Some(Origin::Rule(app)) => sat

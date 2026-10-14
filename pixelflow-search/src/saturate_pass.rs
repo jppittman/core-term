@@ -10,7 +10,7 @@ use pixelflow_ir::LatticeShape;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::optimize::{Optimize, Rewritten};
 
-use crate::egraph::{Optimizer, RuleSet, Vocabulary, insert, reachable_count};
+use crate::egraph::{Optimizer, RuleSet, Vocabulary, insert};
 #[cfg(feature = "saturation-telemetry")]
 use crate::tier::Tier;
 
@@ -75,18 +75,16 @@ impl Optimize for Saturate {
             return Rewritten::Declined;
         };
 
-        let node_count = reachable_count(arena, root);
         #[cfg(feature = "saturation-telemetry")]
         let inserted_classes = egraph.num_classes();
         #[cfg(feature = "saturation-telemetry")]
         let telemetry_start = std::time::Instant::now();
-        let optimized = self.optimizer.run(&mut egraph, root_class, node_count);
+        let optimized = self.optimizer.run(&mut egraph, root_class);
         let (extracted, extracted_root) = optimized.to_arena(&egraph, root_class);
 
         #[cfg(feature = "saturation-telemetry")]
         crate::telemetry::record(crate::telemetry::SaturationInvocation {
             tier: self.tier,
-            node_count,
             inserted_classes,
             extraction: optimized.extraction,
             stats: &optimized.stats,

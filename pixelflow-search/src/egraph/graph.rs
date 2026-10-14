@@ -5,34 +5,17 @@ use rustc_hash::FxHashMap as HashMap;
 use super::live::LiveClasses;
 use super::node::{EClassId, ENode};
 use super::ops::{self, Op};
-#[cfg(feature = "provenance-journal")]
-use super::provenance::{ApplicationRecord, Origin, UnionEvent};
 use super::provenance::{ENodeId, Provenance};
-use super::rewrite::{Rewrite, RewriteAction};
-use super::rules::RuleId;
+use super::rewrite::RewriteAction;
 use alloc::collections::BTreeMap;
 use pixelflow_ir::kind::OpKind;
 use pixelflow_ir::{KernelKey, Variance};
 
-/// A potential rewrite target: (rule, e-class, node within class).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RewriteTarget {
-    /// Index into the e-graph's rule list
-    pub rule_idx: usize,
-    /// The e-class to apply the rule to
-    pub class_id: EClassId,
-    /// The node the rule should try to match, named by its stable
-    /// [`ENodeId`] rather than by a position in the class's node vector.
-    ///
-    /// A position goes stale: a caller that enumerates a round's matches
-    /// and then applies them one at a time can rebuild the class between
-    /// enumeration and application, and `rebuild`'s take/canonicalize/extend
-    /// cycle renumbers it. Re-fetching a stale *index* silently applies the
-    /// rule to whichever node inherited that slot, credited to the original
-    /// candidate's score and dedup key. Re-resolving a stale *tag* finds
-    /// either the same node or nothing at all.
-    pub tag: ENodeId,
-}
+mod runner;
+pub use runner::{
+    ApplicationMask, HARD_MINTED_LIMIT, Limits, MaskScope, RewriteTarget, Saturation,
+    SaturationStats, SaturationStop,
+};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EClass {
@@ -44,17 +27,15 @@ pub(crate) struct EClass {
     pub(crate) tags: Vec<ENodeId>,
 }
 
-/// Context describing which rewrite application (if any) is currently
-/// responsible for e-nodes/unions created by `add()`/`union()`. Set for the
-/// duration of `apply_action_from_rule`, `None` otherwise (e.g. during
-/// `rebuild_budgeted`'s congruence-closure unions, or seed insertion).
-#[cfg(feature = "provenance-journal")]
-#[derive(Clone, Copy, Debug)]
-struct ActiveApplication {
-    rule_idx: usize,
-    application_id: super::provenance::ApplicationId,
-}
-
+/// The store: classes, the union-find over them, the memo that hash-conses
+/// their nodes, the per-class facts, and the graph's own mutation log.
+///
+/// It holds no rules and counts no applications — those belong to the runner
+/// that sweeps it ([`Saturation`]). What a store does know about rewriting is
+/// the change log the runner's dirty tracking reads
+/// (`mutation_counter`, `last_changed`) and, when one is
+/// kept, the journal that attributes its mutations.
+#[derive(Clone)]
 pub struct EGraph {
     pub(crate) classes: Vec<EClass>,
     pub(crate) parent: Vec<EClassId>,
@@ -76,42 +57,8 @@ pub struct EGraph {
     /// only the state after the *last* union in the round matters. Parallel
     /// to `classes`/`parent`, grown alongside them in `add`.
     queued: Vec<bool>,
-    /// Rules are shared via Arc so EGraph can be cloned for search branching.
-    rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
-    /// Stable id per rule, parallel to `rules`. Kept so the graph can name a
-    /// rule by something that survives a reordering; see [`super::rules`].
-    rule_ids: std::sync::Arc<Vec<RuleId>>,
-    /// Matches found per rule, keyed by identity rather than by family name.
-    /// A name-keyed map collapsed all four `Commutative` instances into one
-    /// bucket, so every per-rule report built on it was wrong by aggregation.
-    pub match_counts: HashMap<RuleId, usize>,
-    /// Cumulative rule-match ATTEMPTS across this e-graph's whole lifetime —
-    /// every node a rule's [`Rewrite::apply`] was called on, matched or not
-    /// (a node outside the rule's [`Rewrite::root_shapes`] is not an
-    /// attempt: the rule is never asked), summed from
-    /// [`ApplyResult::evals`] at the one site every rule-application path
-    /// funnels through.
-    ///
-    /// This is the matches enumerated
-    /// (docs/plans/2026-09-01-phase3-round2-registration-v2.md §7.1), counted
-    /// as `apply` calls: a node outside a rule's root shapes is not one, so
-    /// figures recorded before root shapes existed counted more. The
-    /// Guide-cost-flatness precondition needs it denominated per
-    /// application, and per application needs it cumulative across the
-    /// resumed budget calls an anytime curve makes, the same way
-    /// [`Self::application_count`] is.
-    total_evals: usize,
     /// Global monotonic counter minting `ENodeId`s in `add()`.
     next_enode_id: u64,
-    /// Saturation-iteration counter, advanced once per `saturate_with_limits`
-    /// loop iteration. Recorded on every `ApplicationRecord`/`UnionEvent`.
-    step: usize,
-    /// Rule provenance: origins, application log, union journal.
-    provenance: Provenance,
-    /// Which rewrite application (if any) is currently executing — read by
-    /// `add()`/`union()` to attribute newly created nodes/unions.
-    #[cfg(feature = "provenance-journal")]
-    active_application: Option<ActiveApplication>,
     /// The constant each class is known to equal, as f32 bits, indexed by
     /// class id — maintained independently of `EClass::nodes` on purpose.
     /// `rebuild` drains a class's nodes with `mem::take` and only THEN
@@ -160,49 +107,6 @@ pub struct EGraph {
     /// Distinct (bits, bits) pairs, kept for reporting and tests; see
     /// [`EGraph::union`].
     refused_const_unions: Vec<(u32, u32)>,
-    /// Rule applications this graph has performed, counted unconditionally.
-    ///
-    /// Independent of the provenance log on purpose: an application budget
-    /// must be enforceable whether or not anyone is observing, and reading
-    /// the budget off `provenance().recorded_count()` would make
-    /// recording a load-bearing part of saturation rather than an
-    /// observation of it.
-    applications: u64,
-    /// Whether to record provenance. Recording had no production consumer
-    /// (2026-09-01 integration audit) and a production compile discarded a
-    /// median 8 446 records per kernel;
-    /// [`super::optimizer::Optimizer`] turns it on exactly when an
-    /// [`Observer`](super::optimizer::Observer) is attached. Defaults to
-    /// `true`, so every direct `EGraph` caller keeps what it had.
-    #[cfg(feature = "provenance-journal")]
-    record_provenance: bool,
-    /// Application ceiling for the current run, or `None`. Set for the
-    /// duration of [`EGraph::saturate_budgeted`].
-    application_cap: Option<u64>,
-    /// Counterfactual-replay mask (docs/plans/2026-09-01-guide-return-to-go.md
-    /// §4.1): when `Some`, the application that would otherwise be assigned
-    /// this ordinal is skipped entirely by `apply_action_from_rule` — not
-    /// counted, not recorded, not applied — and the ordinal it would have
-    /// consumed is left for whatever candidate comes next in the same scan
-    /// order. Installed only by
-    /// [`Optimizer::mask`](super::optimizer::Optimizer::mask), so every
-    /// other path is unaffected.
-    replay_mask: Option<ApplicationMask>,
-    /// How many applications the most recent masked run actually skipped.
-    /// Reset when a mask is installed and read back by
-    /// [`EGraph::last_replay_mask_skips`] — a caller reporting a
-    /// confluence-aware Δ must be able to distinguish "the mask matched
-    /// once" from "the mask matched eleven times", and must never have to
-    /// infer that a mask fired at all.
-    replay_mask_skips: usize,
-    /// Per-application growth telemetry (`docs/plans/2026-08-31-guide-design-revision.md`
-    /// §4.1): `None` until [`EGraph::enable_growth_telemetry`] turns it on.
-    /// Compiled in only under `saturation-telemetry`, and checked with a bare
-    /// `is_some()` on every committed application even then — see
-    /// [`super::growth`]'s module doc for the "costs nothing when off"
-    /// contract this field exists to keep.
-    #[cfg(feature = "saturation-telemetry")]
-    growth: Option<super::growth::GrowthTelemetry>,
     /// Global monotonic counter, bumped once per class-content mutation
     /// (`add`'s memo miss, `union`'s merge) — never reset, never bumped by
     /// anything that only re-canonicalizes existing content (`nodes()`
@@ -216,13 +120,22 @@ pub struct EGraph {
     /// survives as the merge's parent. Parallel to `classes`, grown
     /// alongside it.
     last_changed: Vec<u64>,
-    /// `rule_last_swept[rule_idx]` is the [`Self::mutation_counter`] value
-    /// captured just BEFORE that rule's most recent *complete* scan of
-    /// `class_ids()` began. Parallel to `rules`. See
-    /// [`Self::class_is_dirty`] for how it is used and why the value is
-    /// taken from the scan's start, not its end.
-    rule_last_swept: Vec<u64>,
+    /// The graph's mutation log, or `None` when the graph was built without
+    /// one ([`Self::without_journal`]).
+    ///
+    /// Origins and merges are recorded as they happen — `add` and `union` are
+    /// the only writers — so the log cannot be switched on after the fact,
+    /// and a graph built without it has nothing to query rather than an
+    /// empty or misattributed answer. The runner writes its cursor (the
+    /// current step and the application being executed); see
+    /// [`Provenance::open_application`].
+    journal: Option<Provenance>,
 }
+
+/// Why a research walk over the journal refused a graph that keeps none.
+#[cfg(feature = "provenance-journal")]
+const NO_JOURNAL: &str = "this graph was built without a journal (Saturation::without_journal, or \
+     an Optimizer with no observer attached) — a derivation walk has nothing to read";
 
 /// [`EGraph::class_is_dirty`] checks this many hops of a class's forward
 /// neighborhood (the class itself, its direct children, and their
@@ -259,264 +172,18 @@ pub struct EGraph {
 /// audit above.
 const DIRTY_TRACKING_MAX_DEPTH: u8 = 2;
 
-/// How far a counterfactual replay's mask reaches: one application, or
-/// every application that would re-derive the same thing.
-///
-/// Leave-one-out ([`MaskScope::Single`]) answers "what did THIS firing
-/// contribute", but an e-graph is confluent enough that a masked node is
-/// often re-derived a few applications later by the same rule matching the
-/// same class content again — so a `Δ = 0` under `Single` can mean either
-/// "this application did not matter" or "this application mattered and
-/// something else silently restored it". [`MaskScope::AllMatchingCandidate`]
-/// separates those two: it masks the seed AND every later application
-/// sharing its [`CandidateKey`](super::candidate::CandidateKey) — the same
-/// key the guided loop dedups on — so no re-derivation by that route can put
-/// the node back. The gap between the two Δs is this program's measurement
-/// of leave-one-out's confluence blindness
-/// (docs/plans/2026-09-01-guide-return-to-go.md §4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MaskScope {
-    /// Skip only the application that would be assigned `skip_ordinal`.
-    Single,
-    /// Skip that application and every later one with the same
-    /// [`CandidateKey`](super::candidate::CandidateKey), for the rest of the
-    /// run.
-    AllMatchingCandidate,
-}
-
-/// Names the application to skip in a counterfactual replay, and how far the
-/// skip reaches — see [`Optimizer::mask`](super::optimizer::Optimizer::mask)
-/// and docs/plans/2026-09-01-guide-return-to-go.md §4.1.
-///
-/// `skip_ordinal` counts in [`EGraph::application_count`]'s currency, the
-/// unconditional budget denominator — the same numbering
-/// [`ApplicationId`](super::provenance::ApplicationId) uses for a run that
-/// recorded from the start, so a harness can take an ordinal off the journal
-/// and hand it straight back. Replay is deterministic and identical to the
-/// original run up to the point of divergence, so replaying the same
-/// expression through the same configuration and masking the ordinal that
-/// was `a` in the original trajectory reproduces `τ \ a` exactly (§4.1's
-/// `Δ_a = R(τ\a,B) − R(τ,B)`).
-///
-/// Under [`MaskScope::AllMatchingCandidate`] the key to keep masking is not
-/// supplied by the caller — it is READ off the live graph at the moment the
-/// seed ordinal comes up, which is the only moment it is exactly the key the
-/// original trajectory's application `a` matched. A caller-supplied key
-/// would be a second computation of the same thing against a different graph
-/// state, i.e. the drift this codebase's one-constructor rule exists to
-/// prevent.
-#[derive(Clone, Debug)]
-pub struct ApplicationMask {
-    /// Ordinal of the seed application to skip.
-    pub skip_ordinal: u64,
-    /// How far the skip reaches.
-    pub scope: MaskScope,
-    /// The seed's `(rule, class content)`, captured when `skip_ordinal` came
-    /// up. `None` until then, and always `None` under [`MaskScope::Single`],
-    /// which never needs it.
-    captured: Option<super::candidate::CandidateKey>,
-}
-
-impl ApplicationMask {
-    /// §4.1's leave-one-out mask: skip exactly this ordinal.
-    #[must_use]
-    pub fn leave_one_out(skip_ordinal: u64) -> Self {
-        Self {
-            skip_ordinal,
-            scope: MaskScope::Single,
-            captured: None,
-        }
-    }
-
-    /// The confluence-aware mask: skip this ordinal and every later
-    /// application sharing its
-    /// [`CandidateKey`](super::candidate::CandidateKey).
-    #[must_use]
-    pub fn all_matching_candidate(skip_ordinal: u64) -> Self {
-        Self {
-            skip_ordinal,
-            scope: MaskScope::AllMatchingCandidate,
-            captured: None,
-        }
-    }
-}
-
-/// What [`EGraph::mask_decision`] concluded about the application about to
-/// be committed. Three distinct skips, not one boolean: the leave-one-out
-/// mask must be consumed after it fires, the confluence-aware seed must
-/// capture its key as it fires, and a later re-derivation must do neither.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MaskDecision {
-    Proceed,
-    Skip,
-    SkipAndCapture,
-    SkipAndConsume,
-}
-
 impl Default for EGraph {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Clone for EGraph {
-    fn clone(&self) -> Self {
-        Self {
-            classes: self.classes.clone(),
-            parent: self.parent.clone(),
-            memo: self.memo.clone(),
-            live: self.live.clone(),
-            worklist: self.worklist.clone(),
-            queued: self.queued.clone(),
-            rules: self.rules.clone(), // Arc clone - cheap, shares rules
-            rule_ids: self.rule_ids.clone(),
-            match_counts: self.match_counts.clone(),
-            total_evals: self.total_evals,
-            next_enode_id: self.next_enode_id,
-            step: self.step,
-            provenance: self.provenance.clone(),
-            #[cfg(feature = "provenance-journal")]
-            active_application: self.active_application,
-            const_fact: self.const_fact.clone(),
-            var_fact: self.var_fact.clone(),
-            units: self.units.clone(),
-            refused_const_unions: self.refused_const_unions.clone(),
-            applications: self.applications,
-            #[cfg(feature = "provenance-journal")]
-            record_provenance: self.record_provenance,
-            application_cap: self.application_cap,
-            replay_mask: self.replay_mask.clone(),
-            replay_mask_skips: self.replay_mask_skips,
-            #[cfg(feature = "saturation-telemetry")]
-            growth: self.growth.clone(),
-            mutation_counter: self.mutation_counter,
-            last_changed: self.last_changed.clone(),
-            rule_last_swept: self.rule_last_swept.clone(),
-        }
-    }
-}
-
-/// Result of applying a single rule: changes made and evaluations consumed.
-///
-/// `changes` counts union/create actions. `evals` counts rule match
-/// attempts (one per node the rule's `apply` is called on, which excludes a
-/// node outside its [`Rewrite::root_shapes`]). Evals model compute cost — the
-/// Guide learns to stay within an eval budget just as it learns to
-/// stay within a node budget.
-pub struct ApplyResult {
-    pub changes: usize,
-    pub evals: usize,
-    /// How the scan ended. `changes == 0` is quiescence only when this is
-    /// [`ScanStop::Completed`]; under either budget the rest of the graph
-    /// was never looked at, so nothing is known about it.
-    pub scan: ScanStop,
-}
-
-/// How a single rule's scan over the e-graph ended.
-///
-/// Two budgets can cut a scan short and they are *different facts*, so this
-/// is a three-valued type rather than a `truncated: bool` the caller has to
-/// disambiguate afterwards by asking which budget looks closer — that
-/// inference is exactly what a stop reason exists to replace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScanStop {
-    /// Every e-class was visited and every match committed.
-    Completed,
-    /// The class budget `max_nodes` stopped the scan: the graph (plus the
-    /// nodes the pending actions would create) reached the cap.
-    ClassCap,
-    /// The wall-clock deadline elapsed before the scan finished — either it
-    /// cut the walk short, or it passed while a rule's `apply` (or the
-    /// commit that follows) was running. Both mean the same thing: this
-    /// scan did not finish inside the ceiling.
-    Deadline,
-    /// The rule-application budget was reached mid-scan.
-    ApplicationBudget,
-}
-
-/// Why an [`EGraph::saturate_with_limits`] call stopped — an explicit stop
-/// reason instead of the `SaturationStats` proxy game every measurement
-/// harness had to play (`iterations < max_iters && classes <= cap` ≈
-/// "probably quiesced"; `pixelflow-pipeline/src/bin/guide_headroom.rs` names
-/// it as the one ambiguity that proxy can't resolve). Read off the loop that
-/// decides when to stop, never inferred from the counts afterwards.
-/// Budget-only framing: none of these certify a fixpoint;
-/// [`SaturationStop::Quiesced`] is a diagnostic condition (one full rule
-/// sweep ran to completion and produced zero unions), never a closure claim.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SaturationStop {
-    /// A full rule sweep completed with zero unions. Diagnostic, not a
-    /// certified fixpoint.
-    Quiesced,
-    /// The class budget `max_classes` stopped the run (memory protection) —
-    /// either the count exceeded it outright, or a sweep produced zero
-    /// unions only because every remaining action was discarded for budget.
-    ClassCap,
-    /// `max_iters` sweeps completed without any other condition firing.
-    IterationCeiling,
-    /// The wall-clock safety ceiling elapsed. Offline measurement callers
-    /// should treat this as a hard error (fail loud), never as data.
-    ///
-    /// [`EGraph::saturate_budgeted`] can never report this: it takes no
-    /// clock, which is what makes it deterministic.
-    Timeout,
-    /// The rule-application budget ran out. The one budget dimension that
-    /// means the same thing to every ordering policy, and so the one a
-    /// research arm can hold two policies to.
-    ApplicationBudget,
-}
-
-/// Result of one [`EGraph::saturate_with_limits`] run: how many rounds it
-/// took and how many rule applications fired in total, whichever limit
-/// (iteration count, class count, timeout, or convergence) ended the run.
-///
-/// Deliberately not `Default`: a defaulted `stop` would be an invented
-/// stop reason, and nothing constructs an empty stats value.
-#[derive(Clone, Copy, Debug)]
-pub struct SaturationStats {
-    /// Number of rewrite rounds completed before the run stopped.
-    pub iterations: usize,
-    /// Sum of `ApplyResult::changes` across every round.
-    pub total_unions: usize,
-    /// Which condition ended the run — READ from the loop that stopped, so a
-    /// caller never has to infer "quiesced" from `iterations < max_iters`
-    /// (which conflates a timeout or class cap with quiescence).
-    pub stop: SaturationStop,
-}
-
-/// The ceiling on every class budget: no saturation driver grows the graph
-/// past this many e-classes, whatever cap its caller asks for.
-///
-/// This is memory protection for call sites that pass no meaningful cap
-/// (`usize::MAX`, or a number derived from an unbounded input). It lives
-/// here — at the growth decision — and NOT inside [`EGraph::add`], because
-/// `add` is the homomorphism onto the semantic quotient (law L1,
-/// `docs/plans/2026-09-02-optimizer-api.md` §1): a budget that stops `add`
-/// must hand the caller something that is not the class of the node it
-/// asked for, and there is no such thing. A budget that stops the *driver*
-/// leaves every class the graph does hold correct, which is what
-/// truncation has always meant here.
-///
-/// Twice the classical cap's ceiling (`CLASSICAL_CLASS_CEILING`, 50,000),
-/// and two orders of magnitude above the floors every shipped kernel keeps
-/// (500/2,000/5,000, see `SaturationConfig`), so no shipping configuration
-/// meets it.
-///
-/// It bounds the graph *approximately*: a sweep estimates the classes a
-/// pending action will mint (`RewriteAction::Union` 0, `Create` 1, every
-/// other variant 3) and then commits the batch it accepted, so a
-/// multi-node action can overshoot by the difference. That is precisely
-/// why the limit can live at the driver — it guards memory, not meaning,
-/// and a bounded overshoot of a 100 000-class ceiling costs memory nobody
-/// was going to miss. The old in-`add` limit bought exactness by returning
-/// `EClassId(0)`, a false class id that the `Create` handler then unioned
-/// against the match — asserting an equality that does not hold (#1105).
-pub const HARD_CLASS_LIMIT: usize = 100_000;
-
 impl EGraph {
-    /// Create an empty e-graph with no rewrite rules.
+    /// Create an empty store.
     ///
-    /// Rules are application-defined. Use `with_rules()` or `add_rule()` to add them.
+    /// With `provenance-journal` the mutation log is kept, so every direct
+    /// caller keeps what it had. Rules are the runner's: see
+    /// [`Saturation::over`].
     pub fn new() -> Self {
         Self {
             classes: Vec::new(),
@@ -525,168 +192,44 @@ impl EGraph {
             live: LiveClasses::default(),
             worklist: Vec::new(),
             queued: Vec::new(),
-            rules: std::sync::Arc::new(Vec::new()),
-            rule_ids: std::sync::Arc::new(Vec::new()),
-            match_counts: HashMap::default(),
-            total_evals: 0,
             next_enode_id: 0,
-            step: 0,
-            provenance: Provenance::new(),
-            #[cfg(feature = "provenance-journal")]
-            active_application: None,
             const_fact: Vec::new(),
             var_fact: Vec::new(),
             units: BTreeMap::new(),
             refused_const_unions: Vec::new(),
-            applications: 0,
-            #[cfg(feature = "provenance-journal")]
-            record_provenance: true,
-            application_cap: None,
-            replay_mask: None,
-            replay_mask_skips: 0,
-            #[cfg(feature = "saturation-telemetry")]
-            growth: None,
             mutation_counter: 0,
             last_changed: Vec::new(),
-            rule_last_swept: Vec::new(),
+            journal: Some(Provenance::new()),
         }
     }
 
-    /// Create an e-graph with the given rewrite rules.
+    /// The same store with its mutation log turned off.
     ///
-    /// Rules are owned by the e-graph and shared via Arc when cloned.
-    pub fn with_rules(rules: Vec<Box<dyn Rewrite>>) -> Self {
-        let ids: Vec<RuleId> = rules.iter().map(|r| RuleId::of(r.as_ref())).collect();
-        let rule_last_swept = vec![0u64; rules.len()];
-        Self {
-            classes: Vec::new(),
-            parent: Vec::new(),
-            memo: HashMap::default(),
-            live: LiveClasses::default(),
-            worklist: Vec::new(),
-            queued: Vec::new(),
-            rules: std::sync::Arc::new(rules),
-            rule_ids: std::sync::Arc::new(ids),
-            match_counts: HashMap::default(),
-            total_evals: 0,
-            next_enode_id: 0,
-            step: 0,
-            provenance: Provenance::new(),
-            #[cfg(feature = "provenance-journal")]
-            active_application: None,
-            const_fact: Vec::new(),
-            var_fact: Vec::new(),
-            units: BTreeMap::new(),
-            refused_const_unions: Vec::new(),
-            applications: 0,
-            #[cfg(feature = "provenance-journal")]
-            record_provenance: true,
-            application_cap: None,
-            replay_mask: None,
-            replay_mask_skips: 0,
-            #[cfg(feature = "saturation-telemetry")]
-            growth: None,
-            mutation_counter: 0,
-            last_changed: Vec::new(),
-            rule_last_swept,
-        }
-    }
-
-    /// Add a rule to this e-graph.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the e-graph has been cloned (rules are shared via Arc).
-    pub fn add_rule(&mut self, rule: Box<dyn Rewrite>) {
-        let id = RuleId::of(rule.as_ref());
-        std::sync::Arc::get_mut(&mut self.rules)
-            .expect("Cannot add rules after EGraph has been cloned")
-            .push(rule);
-        std::sync::Arc::get_mut(&mut self.rule_ids)
-            .expect("Cannot add rules after EGraph has been cloned")
-            .push(id);
-        self.rule_last_swept.push(0);
-    }
-
-    /// An e-graph over a rule vector that is already shared.
-    ///
-    /// [`super::RuleSet`] holds its rules behind an `Arc` so an
-    /// [`super::optimizer::Optimizer`] can hand the same vocabulary to as
-    /// many graphs as it likes without rebuilding it, and so the ids it
-    /// computed once stay in agreement with the rules the graph applies.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the two vectors disagree in length — an id vector that does
-    /// not name exactly the rules the graph will apply is a
-    /// silently-wrong-answer generator, not a recoverable input.
+    /// A choice made when the graph is built: an origin or a merge recorded
+    /// without the application that caused it reads as a seed or a congruence
+    /// union, so a log that could be flipped mid-run would hand out wrong
+    /// answers rather than missing ones. Production builds its graphs this
+    /// way, and a cached graph then carries no log at all.
     #[must_use]
-    pub fn with_shared_rules(
-        rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
-        rule_ids: std::sync::Arc<Vec<RuleId>>,
-    ) -> Self {
-        assert_eq!(
-            rules.len(),
-            rule_ids.len(),
-            "EGraph::with_shared_rules: {} rules but {} ids",
-            rules.len(),
-            rule_ids.len()
+    pub fn without_journal(mut self) -> Self {
+        assert!(
+            self.classes.is_empty(),
+            "a journal is chosen when the graph is built: this graph already holds {} classes, \
+             whose births it would have to forget",
+            self.classes.len(),
         );
-        let mut eg = Self::new();
-        eg.rule_last_swept = vec![0; rules.len()];
-        eg.rules = rules;
-        eg.rule_ids = rule_ids;
-        eg
+        self.journal = None;
+        self
     }
 
-    /// The stable id of the rule at `idx`, if there is one.
-    #[must_use]
-    pub fn rule_id(&self, idx: usize) -> Option<RuleId> {
-        self.rule_ids.get(idx).copied()
-    }
-
-    /// Rule applications performed since this graph was created.
-    ///
-    /// Counted whether or not provenance is being recorded — the budget and
-    /// the observation are separate concerns, and conflating them is what
-    /// made recording impossible to turn off.
-    #[must_use]
-    pub fn application_count(&self) -> u64 {
-        self.applications
-    }
-
-    /// Turn provenance recording on or off. On by default.
-    ///
-    /// Off, the graph still counts applications and still enforces an
-    /// application budget; it just does not build the log. Turning recording
-    /// off does not erase what is already recorded.
-    #[cfg(feature = "provenance-journal")]
-    pub fn set_provenance_recording(&mut self, on: bool) {
-        self.record_provenance = on;
-    }
-
-    /// Whether provenance is being recorded.
-    #[cfg(feature = "provenance-journal")]
-    #[must_use]
-    pub fn provenance_recording(&self) -> bool {
-        self.record_provenance
-    }
-
-    /// Turn on per-application growth telemetry: how many e-nodes/e-classes
-    /// each committed rewrite application actually adds, per rule (see
-    /// `super::growth`). Off by default and free to leave off — this is
-    /// the one call that starts paying for it.
-    #[cfg(feature = "saturation-telemetry")]
-    pub fn enable_growth_telemetry(&mut self) {
-        self.growth = Some(super::growth::GrowthTelemetry::default());
-    }
-
-    /// The growth telemetry collected so far, if
-    /// [`Self::enable_growth_telemetry`] was called on this graph.
-    #[cfg(feature = "saturation-telemetry")]
-    #[must_use]
-    pub fn growth_telemetry(&self) -> Option<&super::growth::GrowthTelemetry> {
-        self.growth.as_ref()
+    /// Advance the journal's step, if one is kept. The runner's cursor: the
+    /// one place the store is told something about the sweep that is
+    /// mutating it.
+    fn begin_step(&mut self) {
+        #[cfg(feature = "provenance-journal")]
+        if let Some(journal) = &mut self.journal {
+            journal.begin_step();
+        }
     }
 
     pub fn find(&self, id: EClassId) -> EClassId {
@@ -760,7 +303,7 @@ impl EGraph {
     ///
     /// The class budget therefore is not enforced here. It is enforced
     /// where growth is *decided* — the saturation drivers, each of which
-    /// clamps its caller's cap to [`HARD_CLASS_LIMIT`] and stops scanning
+    /// clamps its caller's cap to [`HARD_MINTED_LIMIT`] and stops scanning
     /// before it calls `add`. A driver that stops early leaves a graph
     /// holding fewer equalities than an exhaustive run would; every one it
     /// does hold is still true.
@@ -773,12 +316,8 @@ impl EGraph {
         let enode_id = ENodeId(self.next_enode_id);
         self.next_enode_id += 1;
         #[cfg(feature = "provenance-journal")]
-        {
-            let origin = match self.active_application {
-                Some(active) => Origin::Rule(active.application_id),
-                None => Origin::Seed,
-            };
-            self.provenance.record_origin(enode_id, origin);
+        if let Some(journal) = &mut self.journal {
+            journal.record_birth(enode_id);
         }
         self.const_fact.push(node.as_f32().map(f32::to_bits));
         // `node` is canonical, so every child indexes its class's live fact.
@@ -902,49 +441,10 @@ impl EGraph {
             self.worklist.push(parent);
         }
         #[cfg(feature = "provenance-journal")]
-        self.provenance.record_union(UnionEvent {
-            rule_idx: self.active_application.map(|a| a.rule_idx),
-            application_id: self.active_application.map(|a| a.application_id),
-            step: self.step,
-            class_a: parent,
-            class_b: child,
-        });
+        if let Some(journal) = &mut self.journal {
+            journal.record_union(parent, child);
+        }
         parent
-    }
-
-    /// Begin a batch of rule applications. Returns a guard that rebuilds
-    /// the e-graph when dropped (RAII). Rules applied through the guard
-    /// skip per-rule rebuilds; the single rebuild on drop amortizes the cost.
-    ///
-    /// ```ignore
-    /// {
-    ///     let mut batch = egraph.batch();
-    ///     batch.apply_rule(0, 500);
-    ///     batch.apply_rule(1, 500);
-    ///     // rebuild happens here on drop
-    /// }
-    /// ```
-    /// Begin a batch of rule applications with interleaved partial rebuild.
-    ///
-    /// `rebuild_chunk`: max worklist items to process after each rule.
-    /// Higher = more deduplication, slower per rule.
-    /// Lower = less deduplication, faster per rule but classes grow.
-    /// Default of 256 balances the two.
-    pub fn batch(&mut self) -> EGraphBatch<'_> {
-        EGraphBatch {
-            graph: self,
-            any_changes: false,
-            rebuild_chunk: 256,
-        }
-    }
-
-    /// Begin a batch with a custom rebuild chunk size.
-    pub fn batch_with_chunk(&mut self, rebuild_chunk: usize) -> EGraphBatch<'_> {
-        EGraphBatch {
-            graph: self,
-            any_changes: false,
-            rebuild_chunk,
-        }
     }
 
     /// Rebuild the e-graph completely. Processes the entire worklist.
@@ -1008,8 +508,7 @@ impl EGraph {
                         // This is a rebuild-time
                         // congruence-closure union, not a rule firing, so it
                         // carries no rule_idx in the provenance journal
-                        // (`active_application` is whatever the caller left
-                        // it as — normally `None` outside rule application).
+                        // (no application bracket is open during `rebuild`).
                         self.union(id, existing);
 
                         // `union` REFUSES a merge that would assert two
@@ -1081,10 +580,23 @@ impl EGraph {
         &self.classes[id.index()].tags
     }
 
-    /// Access the rule-provenance side tables (origins, application log,
-    /// union journal). See the `provenance` module for details.
-    pub fn provenance(&self) -> &Provenance {
-        &self.provenance
+    /// The mutation log (origins, application log, union journal), or `None`
+    /// for a graph built [`without_journal`](Self::without_journal). See the
+    /// `provenance` module for details.
+    pub fn provenance(&self) -> Option<&Provenance> {
+        self.journal.as_ref()
+    }
+
+    /// The mutation log of a graph that keeps one: for a walk that has
+    /// nothing to compute without it (the hindsight labeler, the research
+    /// harnesses). [`Self::provenance`] is the question to ask first.
+    ///
+    /// # Panics
+    ///
+    /// On a graph built without a journal.
+    #[cfg(feature = "provenance-journal")]
+    pub fn journal(&self) -> &Provenance {
+        self.journal.as_ref().expect(NO_JOURNAL)
     }
 
     /// Look up the `ENode` for a given stable tag within a class, if it's
@@ -1121,7 +633,7 @@ impl EGraph {
         super::provenance::derivation_ancestors(
             &tags_of,
             &children_of,
-            &self.provenance,
+            self.journal(),
             chosen_nodes,
         )
     }
@@ -1169,7 +681,7 @@ impl EGraph {
                 children_of: &children_of,
                 canonical_of: &canonical_of,
             },
-            &self.provenance,
+            self.journal(),
             super::provenance::TightWalk {
                 seeds,
                 chosen_nodes,
@@ -1177,25 +689,11 @@ impl EGraph {
         )
     }
 
-    /// Render a human-readable derivation trace for the given ancestry set
-    /// (from [`EGraph::derivation_ancestors`]), resolving rule names via
-    /// this e-graph's rule list.
-    #[cfg(feature = "provenance-journal")]
-    pub fn format_derivation_trace(
-        &self,
-        ancestors: &std::collections::BTreeSet<super::provenance::ApplicationId>,
-    ) -> String {
-        let rule_name =
-            |idx: usize| -> Option<String> { self.rule(idx).map(|r| r.name().to_string()) };
-        super::provenance::format_derivation_trace(&self.provenance, ancestors, &rule_name)
-    }
-
-    /// Get the number of registered rewrite rules.
-    pub fn num_rules(&self) -> usize {
-        self.rules.len()
-    }
-
-    /// Get the number of e-classes.
+    /// Get the number of e-class ids minted.
+    ///
+    /// Ids are never reclaimed — a union repoints a slot rather than freeing
+    /// it — so this is the count [`Limits::minted`] bounds, not the number of
+    /// live classes ([`Self::class_ids`] yields those).
     pub fn num_classes(&self) -> usize {
         self.classes.len()
     }
@@ -1235,341 +733,8 @@ impl EGraph {
         self.classes.iter().map(|c| c.nodes.len()).sum()
     }
 
-    /// Get the OpKind of the canonical representative of an e-class.
-    ///
-    /// Resolves through union-find to the canonical class, then returns
-    /// the OpKind of the first node in that class.
-    pub fn canonical_op(&self, id: EClassId) -> pixelflow_ir::OpKind {
-        let id = self.find(id);
-        let class = &self.classes[id.index()];
-        match &class.nodes[0] {
-            ENode::Var(_) => pixelflow_ir::OpKind::Var,
-            ENode::Const(_) => pixelflow_ir::OpKind::Const,
-            ENode::Buffer(_) => pixelflow_ir::OpKind::Buffer,
-            ENode::Uniform(_) => pixelflow_ir::OpKind::Uniform,
-            ENode::Param(_) => pixelflow_ir::OpKind::Param,
-            ENode::Op { op, .. } => op.kind(),
-            ENode::Reduce { .. } => pixelflow_ir::OpKind::Reduce,
-            // No op names a whole kernel, and a unit is the one leaf a
-            // research walk cannot meet: only the runtime tier admits one.
-            ENode::Ref { key, .. } => panic!(
-                "canonical_op: {key:?} is a unit — a leaf only the runtime tier's \
-                 unit walk admits, and it has no OpKind"
-            ),
-        }
-    }
-
-    /// Debug: dump the entire e-graph structure.
-    #[allow(dead_code)]
-    pub fn dump(&self) -> String {
-        use std::fmt::Write;
-        let mut out = String::new();
-        for (idx, class) in self.classes.iter().enumerate() {
-            let id = EClassId(idx as u32);
-            let canonical = self.find(id);
-            if canonical == id && !class.nodes.is_empty() {
-                writeln!(&mut out, "e{}: {:?}", idx, class.nodes).unwrap();
-            }
-        }
-        out
-    }
-
-    /// Get a rule by index.
-    pub fn rule(&self, idx: usize) -> Option<&dyn Rewrite> {
-        self.rules.get(idx).map(|r| r.as_ref())
-    }
-
-    /// Find all actual rewrite matches in the E-graph.
-    ///
-    /// Returns only targets where the rule actually matches (produces an action).
-    /// Much more efficient than enumerating all combinations - only scores real matches.
-    pub fn find_rewrite_matches(&self) -> Vec<RewriteTarget> {
-        let mut matches = Vec::new();
-
-        for (rule_idx, rule) in self.rules.iter().enumerate() {
-            for class_id in self.class_ids() {
-                let nodes = &self.classes[class_id.index()].nodes;
-
-                let tags = &self.classes[class_id.index()].tags;
-                for (node_idx, node) in nodes.iter().enumerate() {
-                    // Check if rule matches this node
-                    if rule.apply(self, class_id, node).is_some() {
-                        matches.push(RewriteTarget {
-                            rule_idx,
-                            class_id,
-                            tag: tags[node_idx],
-                        });
-                    }
-                }
-            }
-        }
-
-        matches
-    }
-
-    /// Apply a single rule to a specific (class, node) pair.
-    ///
-    /// Returns true if the rule matched and produced a change.
-    /// This is used by guided search to apply rules one at a time.
-    ///
-    /// Unlike the sweeps, this takes no class budget: one call applies at
-    /// most one action, so it cannot itself grow the graph without bound —
-    /// the loop that calls it can, and that loop owns the budget. Reaching
-    /// [`HARD_CLASS_LIMIT`] here therefore means a caller is driving
-    /// rewrites with no budget at all, and it **panics** rather than
-    /// returning `false`: `false` already means "the rule did not fire",
-    /// and a budget exhaustion that is indistinguishable from a non-match
-    /// is the silent failure this ceiling exists to prevent. No production
-    /// path calls this, and the production caps stay below the limit (the
-    /// classical ceiling is half of it).
-    pub fn apply_single_rule(&mut self, rule_idx: usize, class_id: EClassId, tag: ENodeId) -> bool {
-        assert!(
-            self.classes.len() < HARD_CLASS_LIMIT,
-            "apply_single_rule: e-graph is at the hard class limit \
-             ({} classes, limit {HARD_CLASS_LIMIT}) — this entry point applies \
-             one action per call and carries no budget, so the caller's \
-             rewrite loop must impose one (see `saturate_with_limits`)",
-            self.classes.len(),
-        );
-        let Some(rule) = self.rules.get(rule_idx) else {
-            return false;
-        };
-
-        let class_id = self.find(class_id);
-        // Resolve the stable tag against the class as it stands NOW — a
-        // rebuild since the caller enumerated this target either left the
-        // node in place or removed it, and `None` is the honest answer for
-        // the second case. See `RewriteTarget::tag`.
-        let Some(node) = self.node_for_tag(class_id, tag).cloned() else {
-            return false;
-        };
-
-        let Some(action) = rule.apply(self, class_id, &node) else {
-            return false;
-        };
-
-        // Guided search calls this once per discrete rewrite decision — the
-        // step counter's granularity here is "one apply_single_rule call",
-        // mirroring "one saturate_with_limits iteration" for the batched path.
-        self.step += 1;
-
-        // The batched path already knows how to execute every action; reuse
-        // it so the single-step path can't drift out of sync.
-        let changed = self.apply_action_from_rule(rule_idx, class_id, action) > 0;
-
-        if changed {
-            self.rebuild();
-        }
-        changed
-    }
-
     pub fn contains_const(&self, id: EClassId, val: f32) -> bool {
         self.nodes(id).iter().any(|n| n.is_const(val))
-    }
-
-    /// The one rewrite-until-budget-exhausted loop.
-    ///
-    /// Every saturation in the workspace bottoms out here, and nothing else
-    /// re-decides when a run stops. Callers reach it through one of two
-    /// entry points:
-    ///
-    /// - [`Optimizer::run`](super::optimizer::Optimizer::run) — the
-    ///   production path, through [`Self::saturate_budgeted`]. It picks its
-    ///   limits from a [`Budget`](super::optimizer::Budget), so the budget
-    ///   scales with the input and carries no clock. All three production
-    ///   tiers use it.
-    /// - This method, called directly only where a budget must be pinned
-    ///   rather than inherited — tests, the hindsight labeler, and
-    ///   measurement harnesses, which spell it
-    ///   [`SaturationConfig::compatibility`](super::saturate::SaturationConfig::compatibility).
-    ///
-    /// The three arguments are independent stopping conditions, checked
-    /// between rewrite rounds; the run returns as soon as any one of them —
-    /// or saturation itself — is reached, whichever comes first:
-    ///
-    /// - `max_iters` — how many rewrite rounds may run. One round applies
-    ///   every rule once and rebuilds once.
-    /// - `max_classes` — e-class ceiling. Bounds memory against e-graph
-    ///   blowup, and is the only limit also checked *between rules within* a
-    ///   round.
-    /// - `timeout` — wall-clock ceiling measured from entry. It is the only
-    ///   limit pushed down into a single rule's matching, as a deadline, so
-    ///   it is what bounds a round that would otherwise run long.
-    ///
-    /// Returns the [`SaturationStats`] the run actually achieved;
-    /// `stats.iterations < max_iters` is how a caller tells convergence from
-    /// an exhausted round budget.
-    pub fn saturate_with_limits(
-        &mut self,
-        max_iters: usize,
-        max_classes: usize,
-        timeout: std::time::Duration,
-    ) -> SaturationStats {
-        self.saturate_bounded(max_iters, max_classes, None, Some(timeout))
-    }
-
-    /// Saturate under deterministic limits only — rounds, classes, and
-    /// optionally rule applications — with no clock.
-    ///
-    /// This is what [`super::optimizer::Optimizer`] drives, and the
-    /// difference from [`Self::saturate_with_limits`] is the whole point:
-    /// every limit here is a property of the input and the configuration, so
-    /// the same term under the same limits produces the same graph on any
-    /// machine at any load. `saturate_with_limits`'s `timeout` is not — it
-    /// stops the run at a wall-clock boundary and the result then depends on
-    /// what else the machine was doing. A wall-clock ceiling is still
-    /// available, on the optimizer, where exceeding it panics instead of
-    /// quietly changing the answer.
-    ///
-    /// `SaturationStop::Timeout` is unreachable from here.
-    pub fn saturate_budgeted(
-        &mut self,
-        max_iters: usize,
-        max_classes: usize,
-        max_applications: Option<u64>,
-    ) -> SaturationStats {
-        self.saturate_bounded(max_iters, max_classes, max_applications, None)
-    }
-
-    /// The one rewrite-until-budget-exhausted loop. Every saturation entry
-    /// point in this crate funnels here rather than re-deciding, in a second
-    /// copy, when to stop.
-    fn saturate_bounded(
-        &mut self,
-        max_iters: usize,
-        max_classes: usize,
-        max_applications: Option<u64>,
-        timeout: Option<std::time::Duration>,
-    ) -> SaturationStats {
-        // Growth is decided here and in `apply_rule_at_index_timed`, so the
-        // ceiling is applied here: a caller asking for `usize::MAX` classes
-        // gets `HARD_CLASS_LIMIT` and a truthful `ClassCap` stop, not a
-        // graph that grows until `add` starts refusing to insert. Applied in
-        // the shared loop rather than in `saturate_with_limits`, so
-        // `saturate_budgeted` — and therefore every production tier — is
-        // held to it too.
-        let max_classes = max_classes.min(HARD_CLASS_LIMIT);
-        let start = std::time::Instant::now();
-        // `Instant + Duration::MAX` panics, so the deadline is optional
-        // rather than "infinitely far away".
-        let deadline = timeout.map(|t| start + t);
-        // The cap is enforced deep inside the scan, where an application is
-        // about to commit — the only place that can stop mid-round without
-        // letting the round decide how far past the budget to go.
-        let previous_cap = self.application_cap;
-        self.application_cap = max_applications.map(|n| self.applications.saturating_add(n));
-        let mut iterations = 0;
-        let mut total_unions = 0;
-        // Recorded at the point the loop decides to stop — never inferred
-        // afterwards from the counters.
-        let mut stop = SaturationStop::IterationCeiling;
-
-        for _ in 0..max_iters {
-            if let Some(t) = timeout
-                && start.elapsed() >= t
-            {
-                stop = SaturationStop::Timeout;
-                break;
-            }
-            if self.classes.len() > max_classes {
-                stop = SaturationStop::ClassCap;
-                break;
-            }
-            if self
-                .application_cap
-                .is_some_and(|cap| self.applications >= cap)
-            {
-                stop = SaturationStop::ApplicationBudget;
-                break;
-            }
-            iterations += 1;
-
-            // Advance the provenance step counter once per saturation
-            // iteration — every ApplicationRecord/UnionEvent produced by
-            // this iteration's rule applications shares this step.
-            self.step += 1;
-
-            // Apply all rules in a single batch — one rebuild per iteration
-            let (unions, sweep) = {
-                let mut batch = self.batch();
-                let n_rules = batch.graph.rules.len();
-                let mut total = 0;
-                let mut sweep = ScanStop::Completed;
-                for rule_idx in 0..n_rules {
-                    if batch.node_count() > max_classes {
-                        sweep = ScanStop::ClassCap;
-                        break;
-                    }
-                    let result = batch.apply_rule(rule_idx, max_classes, deadline);
-                    total += result.changes;
-                    match result.scan {
-                        ScanStop::Completed => {}
-                        // The class budget cut this rule short. A later rule
-                        // may still fit inside the cap, so the sweep goes on
-                        // — but it is no longer a full sweep, and can never
-                        // read as quiescence.
-                        ScanStop::ClassCap => sweep = ScanStop::ClassCap,
-                        // The wall-clock ceiling is hard: do not start
-                        // another rule's scan on the far side of it.
-                        ScanStop::Deadline => {
-                            sweep = ScanStop::Deadline;
-                            break;
-                        }
-                        // The application budget is spent for the whole run,
-                        // not just this rule: no later rule can commit
-                        // anything either.
-                        ScanStop::ApplicationBudget => {
-                            sweep = ScanStop::ApplicationBudget;
-                            break;
-                        }
-                    }
-                }
-                (total, sweep)
-                // rebuild happens here on drop
-            };
-            total_unions += unions;
-            // The union count and the stop reason are independent facts: a
-            // sweep that a budget cut short classifies as that budget whether
-            // or not it also committed unions. Consulting `truncated` only on
-            // the `unions == 0` path missed every truncated-but-productive
-            // sweep, and if that was the last allowed iteration the run fell
-            // through to this loop's default `IterationCeiling`.
-            //
-            // `apply_rule` holds `classes.len()` at or under `max_classes` by
-            // truncating its own scan, so the cheap check at the top of this
-            // loop almost never sees a capped run — the sweep's own report is
-            // what makes `ClassCap` observable at all.
-            match sweep {
-                ScanStop::ClassCap => {
-                    stop = SaturationStop::ClassCap;
-                    break;
-                }
-                ScanStop::Deadline => {
-                    stop = SaturationStop::Timeout;
-                    break;
-                }
-                ScanStop::ApplicationBudget => {
-                    stop = SaturationStop::ApplicationBudget;
-                    break;
-                }
-                // A full sweep that changed nothing is the one diagnostic
-                // fixed point this loop can report.
-                ScanStop::Completed => {
-                    if unions == 0 {
-                        stop = SaturationStop::Quiesced;
-                        break;
-                    }
-                }
-            }
-        }
-
-        self.application_cap = previous_cap;
-
-        SaturationStats {
-            iterations,
-            total_unions,
-            stop,
-        }
     }
 
     /// Whether `canonical`'s forward neighborhood — itself, its direct
@@ -1579,7 +744,7 @@ impl EGraph {
     ///
     /// Reads only `EClassId`s and `last_changed` entries, never clones a
     /// node vector or calls a rule's `apply` — this is the cheap check
-    /// [`Self::apply_rule_at_index_timed`] uses to decide whether the
+    /// the runner's rule scan uses to decide whether the
     /// expensive path (clone the class's nodes, run every rule against
     /// every one) is worth paying for at all. Canonicalizes every id it
     /// follows: `parent`/`child` fields on a stored node can lag a union
@@ -1611,466 +776,6 @@ impl EGraph {
         false
     }
 
-    /// Apply a single rule with node budget AND optional wall-clock deadline.
-    /// Stops if either budget or deadline is exceeded.
-    pub fn apply_rule_at_index_timed(
-        &mut self,
-        rule_idx: usize,
-        max_nodes: usize,
-        deadline: Option<std::time::Instant>,
-    ) -> ApplyResult {
-        // See `HARD_CLASS_LIMIT`: the scan below is one of the two places
-        // the graph decides to grow, so it is one of the two places the
-        // ceiling is applied.
-        let max_nodes = max_nodes.min(HARD_CLASS_LIMIT);
-        if rule_idx >= self.rules.len() {
-            return ApplyResult {
-                changes: 0,
-                evals: 0,
-                scan: ScanStop::Completed,
-            };
-        }
-
-        // `Instant::now()` costs tens of nanoseconds — the same order as the
-        // cheapest rule's `apply` — so polling it once per node would be a
-        // measurable tax on every scan. It is polled instead at the three
-        // places that make the ceiling hard without that tax: once per
-        // e-class (a clock read is lost in a class's worth of rule
-        // evaluations), every `DEADLINE_POLL_NODES` nodes
-        // within a class (so one enormous e-class cannot run unbounded), and
-        // once after the scan and its commit (so a deadline that elapsed
-        // inside an opaque `apply` is still seen). The bound that buys is an
-        // overrun of at most `DEADLINE_POLL_NODES` rule evaluations plus one
-        // `apply`; the timeout is a fail-loud safety ceiling, not a
-        // scheduling knob, so shrinking that bound further buys nothing worth
-        // a clock read per node.
-        const DEADLINE_POLL_NODES: usize = 256;
-        let expired = |deadline: Option<std::time::Instant>| match deadline {
-            Some(dl) => std::time::Instant::now() > dl,
-            None => false,
-        };
-
-        let mut unions = 0;
-        let mut evals = 0usize;
-        let mut updates: Vec<(EClassId, RewriteAction)> = Vec::new();
-        let mut estimated_new_nodes: usize = 0;
-        let mut scan = ScanStop::Completed;
-
-        // An application budget is spent by *applications*, so the scan stops
-        // once it has queued its whole allowance. Checked here and not only
-        // between rounds: a round is 62 rules over every e-class, so a
-        // between-rounds check alone overshoots a small budget by orders of
-        // magnitude — the budget has to bound the work, not describe it
-        // afterwards.
-        let allowance_spent = |graph: &Self, queued: usize| {
-            graph
-                .application_cap
-                .is_some_and(|cap| graph.applications + queued as u64 >= cap)
-        };
-
-        // Captured before the scan touches anything: `class_is_dirty` below
-        // compares every candidate class against `swept` (this rule's OWN
-        // last complete-scan baseline, from a previous call), and — only if
-        // this scan itself runs to completion — `rule_last_swept[rule_idx]`
-        // is advanced to `sweep_start` at the end. Taking the *start* value
-        // rather than the counter's value after the scan means a mutation
-        // this very call makes (via the commit loop's unions below) is
-        // correctly seen as new next time this rule runs, without needing
-        // to re-examine it against itself right now.
-        let sweep_start = self.mutation_counter;
-        let swept = self.rule_last_swept[rule_idx];
-
-        // What the rule can match at a root, asked once: the node loop below
-        // never hands it a node it would have declined, and the class loop
-        // never pays the dirtiness walk for a class holding no such node.
-        let roots = self.rules[rule_idx].root_shapes();
-
-        // The scan only reads the graph (every write waits for the commit
-        // below), so nothing can add or merge a class under the iterator.
-        debug_assert!(
-            !self.live_has_drifted(),
-            "the live-class set has drifted from the graph's canonical classes"
-        );
-        'scan: for canonical in self.live.iter() {
-            // Budget check: current graph + pending creates must stay under limit
-            if self.classes.len() + estimated_new_nodes > max_nodes {
-                scan = ScanStop::ClassCap;
-                break;
-            }
-            if expired(deadline) {
-                scan = ScanStop::Deadline;
-                break;
-            }
-            if allowance_spent(self, updates.len()) {
-                scan = ScanStop::ApplicationBudget;
-                break;
-            }
-            // Only a node in the rule's root shapes can produce an action, so
-            // a class with none is skipped exactly as a clean class is.
-            if !self.classes[canonical.index()]
-                .nodes
-                .iter()
-                .any(|node| roots.admits(node))
-            {
-                continue;
-            }
-            // Nothing within DIRTY_TRACKING_MAX_DEPTH hops of `canonical`
-            // has changed since this rule last swept the whole graph, so
-            // this rule's answer on `canonical` cannot have changed either
-            // — skip straight past the clone and every `apply` call below.
-            if !self.class_is_dirty(canonical, swept) {
-                continue;
-            }
-
-            // Borrowed, not cloned: the scan only reads the graph (a rule's
-            // `apply` takes `&EGraph`, and every write waits for the commit
-            // below), so nothing can move the class's nodes under the loop.
-            for node in &self.classes[canonical.index()].nodes {
-                if !roots.admits(node) {
-                    continue;
-                }
-                evals += 1;
-                if evals.is_multiple_of(DEADLINE_POLL_NODES) && expired(deadline) {
-                    scan = ScanStop::Deadline;
-                    break 'scan;
-                }
-                if let Some(action) = self.rules[rule_idx].apply(self, canonical, node) {
-                    // Exactly how many e-classes this action would add,
-                    // against the graph as it stands right now — see
-                    // `predicted_growth`, whose exactness is asserted on
-                    // every application under growth telemetry. This
-                    // replaced a flat 0/1/3 guess that was so conservative
-                    // saturation stopped ~40% short of its own class budget
-                    // (circle_sdf 1218 of 2000, redundant 428 of 500).
-                    //
-                    // Spending the whole budget moved extraction *both* ways
-                    // on the shipped corpus: four kernels better, four worse
-                    // (mandelbrot_distance +7.3%, smooth_min_scene +6.0%).
-                    // That is not a reason to saturate less. A richer
-                    // equivalence class cannot make the true optimum worse;
-                    // only an extractor that is not monotone in what it is
-                    // given can be led to a worse answer by more choices.
-                    // So the estimator tells the truth and the extractor
-                    // owns the regression — decision JP, 2026-09-09; see
-                    // docs/plans/2026-08-31-guide-design-revision.md §4.2.
-                    //
-                    // Sound as an upper bound on the whole scan's real
-                    // growth even though sibling actions found later in this
-                    // same scan (still uncommitted, so invisible to this
-                    // call) may end up sharing some of the same nodes: real
-                    // growth can only come in lower.
-                    let action_cost = self.predicted_growth(&action);
-                    estimated_new_nodes += action_cost;
-
-                    // If this action would push us over budget, stop scanning
-                    if self.classes.len() + estimated_new_nodes > max_nodes {
-                        // Don't add this action — discard it and stop
-                        scan = ScanStop::ClassCap;
-                        break 'scan;
-                    }
-
-                    updates.push((canonical, action));
-                    if allowance_spent(self, updates.len()) {
-                        scan = ScanStop::ApplicationBudget;
-                        break 'scan;
-                    }
-                }
-            }
-        }
-
-        // Only a scan that reached every canonical id without a budget/
-        // deadline break actually looked at everything — advancing the
-        // baseline after a cut-short scan would let a class this call never
-        // got to sit unswept-but-marked-swept, which is exactly the
-        // under-saturation `class_is_dirty` exists to never cause. A
-        // cut-short scan leaves `rule_last_swept[rule_idx]` at its old
-        // value, so next call simply sees more as dirty than strictly
-        // necessary — safe, just less tight.
-        if scan == ScanStop::Completed {
-            self.rule_last_swept[rule_idx] = sweep_start;
-        }
-
-        // Every queued action is one match, so this scan's matches are
-        // `updates`' length — counted once, after the scan, which is what
-        // lets the scan borrow the graph rather than clone each class.
-        if !updates.is_empty() {
-            *self
-                .match_counts
-                .entry(RuleId::of(self.rules[rule_idx].as_ref()))
-                .or_insert(0) += updates.len();
-        }
-
-        // Commit: all actions in the log are within budget.
-        // Do NOT rebuild here — caller is responsible for calling rebuild()
-        // after all rules for the epoch are applied (lazy/batched rebuild).
-        for (class_id, action) in updates {
-            if allowance_spent(self, 0) {
-                scan = ScanStop::ApplicationBudget;
-                break;
-            }
-            unions += self.apply_action_from_rule(rule_idx, class_id, action);
-        }
-
-        // A deadline that elapsed inside a rule's `apply` or inside the commit
-        // above reached none of the checks in the walk. Left as `Completed`,
-        // a sweep that blew the hard ceiling would be recorded as quiescence.
-        if scan == ScanStop::Completed && expired(deadline) {
-            scan = ScanStop::Deadline;
-        }
-
-        self.total_evals += evals;
-        ApplyResult {
-            changes: unions,
-            evals,
-            scan,
-        }
-    }
-
-    /// Cumulative rule-match attempts across this e-graph's whole lifetime
-    /// (see the `total_evals` field doc) — the `apply`-calls counter §7.1's
-    /// Guide-overhead-flatness measurement denominates. It excludes nodes
-    /// outside a rule's [`Rewrite::root_shapes`], so curves recorded before
-    /// root shapes existed do not compare with it directly.
-    #[must_use]
-    pub const fn total_evals(&self) -> usize {
-        self.total_evals
-    }
-
-    /// How many applications the most recent installed mask skipped. `0`
-    /// when no mask was installed, or when the mask's ordinal was never
-    /// reached — a caller reporting Δ reads this rather than assuming.
-    #[must_use]
-    pub const fn last_replay_mask_skips(&self) -> usize {
-        self.replay_mask_skips
-    }
-
-    /// Install (or clear) the counterfactual-replay mask, resetting the skip
-    /// counter. Crate-private on purpose: the mask is a *policy*, in exactly
-    /// the sense a `Reranker` and an `Observer` are, and it reaches the graph
-    /// through [`Optimizer::mask`](super::optimizer::Optimizer::mask) rather
-    /// than through a second public saturation entry point.
-    pub(crate) fn set_replay_mask(&mut self, mask: Option<ApplicationMask>) {
-        self.replay_mask = mask;
-        self.replay_mask_skips = 0;
-    }
-
-    /// Decide what the installed replay mask (if any) says about the
-    /// application about to be committed. Split out of
-    /// `apply_action_from_rule` because the `AllMatchingCandidate` arm needs
-    /// to READ the graph (`ClassContentKey::of`) while the mask is borrowed,
-    /// and then WRITE the mask — two borrows that cannot overlap.
-    fn mask_decision(&self, rule_idx: usize, class_id: EClassId) -> MaskDecision {
-        let Some(mask) = &self.replay_mask else {
-            return MaskDecision::Proceed;
-        };
-        // The counter is incremented right after this returns `Proceed`, so
-        // its value right now IS the ordinal about to be consumed.
-        let at_seed = mask.skip_ordinal == self.applications;
-        match (mask.scope, &mask.captured) {
-            // Leave-one-out: fire exactly once, then consume the mask.
-            (MaskScope::Single, _) => {
-                if at_seed {
-                    MaskDecision::SkipAndConsume
-                } else {
-                    MaskDecision::Proceed
-                }
-            }
-            // Confluence-aware, before the seed: nothing to compare against
-            // yet, so only the seed ordinal itself is masked — and masking
-            // it is what captures the key.
-            (MaskScope::AllMatchingCandidate, None) => {
-                if at_seed {
-                    MaskDecision::SkipAndCapture
-                } else {
-                    MaskDecision::Proceed
-                }
-            }
-            // Confluence-aware, after the seed: mask every re-derivation by
-            // the same (rule, canonical matched-class content).
-            (MaskScope::AllMatchingCandidate, Some(key)) => {
-                let same_rule = self.rule_ids.get(rule_idx).copied() == Some(key.rule);
-                if same_rule
-                    && key.content
-                        == super::candidate::ClassContentKey::of(self, self.find(class_id))
-                {
-                    MaskDecision::Skip
-                } else {
-                    MaskDecision::Proceed
-                }
-            }
-        }
-    }
-
-    /// Apply a rewrite action on behalf of a specific rule, attributing
-    /// every e-node created and every union performed while executing it to
-    /// one [`super::provenance::ApplicationId`].
-    ///
-    /// This is the sole entry point into `apply_action` from rule-driven
-    /// call sites (`apply_single_rule`, `apply_rule_at_index_timed`) — it
-    /// exists so provenance attribution can't drift out of sync with the
-    /// actual rewrite dispatch: every caller that knows a `rule_idx` funnels
-    /// through here instead of calling `apply_action` directly.
-    ///
-    /// Records one [`ApplicationRecord`] up front (even if the action turns
-    /// out to produce no net change, e.g. a `Union` with an already-equal
-    /// target) — the record's cost is a single `Vec::push`, and recording
-    /// unconditionally keeps `step` bookkeeping simple. `match_root` is the
-    /// class the rule matched against, i.e. `class_id` as passed in (cheap:
-    /// already in hand at the call site).
-    fn apply_action_from_rule(
-        &mut self,
-        rule_idx: usize,
-        class_id: EClassId,
-        action: RewriteAction,
-    ) -> usize {
-        // Counterfactual replay (docs/plans/2026-09-01-guide-return-to-go.md
-        // §4.1): a masked application is not counted, not recorded and not
-        // applied, so everything downstream — the rest of this scan, the
-        // rest of this sweep, later sweeps — proceeds exactly as it would
-        // against a graph that simply never received it, and the ordinal it
-        // would have consumed goes to the next candidate. Checked BEFORE the
-        // counter, which is what makes that last clause true. Which
-        // applications are masked is `mask_decision`'s call; see
-        // [`MaskScope`].
-        match self.mask_decision(rule_idx, class_id) {
-            MaskDecision::Proceed => {}
-            MaskDecision::Skip => {
-                self.replay_mask_skips += 1;
-                return 0;
-            }
-            MaskDecision::SkipAndCapture => {
-                let key = super::candidate::CandidateKey {
-                    rule: self.rule_ids.get(rule_idx).copied().unwrap_or_else(|| {
-                        panic!(
-                            "replay mask: rule_idx {rule_idx} has no id in this graph's rule \
-                             table — a mask names an application, and an application names a rule"
-                        )
-                    }),
-                    content: super::candidate::ClassContentKey::of(self, self.find(class_id)),
-                };
-                let mask = self
-                    .replay_mask
-                    .as_mut()
-                    .expect("mask_decision returned SkipAndCapture with no mask installed");
-                mask.captured = Some(key);
-                self.replay_mask_skips += 1;
-                return 0;
-            }
-            MaskDecision::SkipAndConsume => {
-                self.replay_mask = None;
-                self.replay_mask_skips += 1;
-                return 0;
-            }
-        }
-
-        // Counted unconditionally: the budget must not depend on whether
-        // anyone is watching.
-        self.applications += 1;
-
-        #[cfg(feature = "provenance-journal")]
-        {
-            if !self.record_provenance {
-                return self.apply_action_measured(rule_idx, class_id, action);
-            }
-
-            let minted_from = self.next_enode_id;
-            let application_id = self.provenance.record_application(ApplicationRecord {
-                rule: self.rule_ids.get(rule_idx).copied(),
-                rule_idx,
-                step: self.step,
-                match_root: class_id,
-                minted: minted_from..minted_from,
-                unions: 0,
-            });
-            let previous = self.active_application.replace(ActiveApplication {
-                rule_idx,
-                application_id,
-            });
-            let result = self.apply_action_measured(rule_idx, class_id, action);
-            self.active_application = previous;
-            // The record is opened before the action runs (so `add`/`union`
-            // can attribute to it) and closed after, which is the only order
-            // in which "what did this application mint" is answerable.
-            self.provenance.complete_application(
-                application_id,
-                minted_from..self.next_enode_id,
-                result,
-            );
-            result
-        }
-
-        #[cfg(not(feature = "provenance-journal"))]
-        {
-            self.apply_action_measured(rule_idx, class_id, action)
-        }
-    }
-
-    /// Apply a rewrite action on behalf of `rule_idx`, threading through
-    /// per-application growth telemetry when it is compiled in and switched
-    /// on ([`Self::enable_growth_telemetry`]). Behaviorally identical to a
-    /// bare `self.apply_action(class_id, action)` call in every other case —
-    /// with `saturation-telemetry` off this compiles to exactly that call,
-    /// and with it on but unused the only added cost is one
-    /// `Option::is_some()` check. See [`super::growth`]'s module doc.
-    ///
-    /// `rule_idx` is unused when `saturation-telemetry` is off (the journal
-    /// path already keeps its own use of it under `provenance-journal`, a
-    /// separate feature).
-    #[cfg_attr(not(feature = "saturation-telemetry"), allow(unused_variables))]
-    fn apply_action_measured(
-        &mut self,
-        rule_idx: usize,
-        class_id: EClassId,
-        action: RewriteAction,
-    ) -> usize {
-        #[cfg(feature = "saturation-telemetry")]
-        if self.growth.is_some() {
-            // The exactness oracle for `predicted_growth`: computed against
-            // the graph exactly as it stands right now, immediately before
-            // the same action executes for real, so there is no window in
-            // which some other commit could move the memo out from under
-            // the comparison. An always-on `assert_eq!`, not `debug_assert!`
-            // — this is a measurement path (telemetry is opt-in), not a hot
-            // one, and a divergence here is exactly the "most important
-            // finding" a mispredicted budget estimator could produce.
-            let predicted = self.predicted_growth(&action);
-            let nodes_before = self.next_enode_id;
-            let unions = self.apply_action(class_id, action);
-            let nodes_added = (self.next_enode_id - nodes_before) as usize;
-            // See `super::growth`'s module doc: `add()` mints exactly one
-            // new class per new node, always, so this equality is an
-            // invariant of the representation, not an assumption of the
-            // measurement — pinned here rather than merely relied upon.
-            debug_assert_eq!(
-                self.classes.len() as u64,
-                self.next_enode_id,
-                "EGraph::add's one-class-per-node invariant broke; growth's \
-                 nodes_added/classes_added equivalence depends on it"
-            );
-            let rule = self.rule_ids.get(rule_idx).copied();
-            assert_eq!(
-                predicted, nodes_added,
-                "predicted_growth mismatch on rule {rule_idx} ({rule:?}): \
-                 predicted {predicted} new e-classes, the commit actually \
-                 added {nodes_added} — predicted_growth must walk exactly \
-                 the same shape apply_action does"
-            );
-            self.growth.as_mut().expect("checked Some above").record(
-                rule,
-                nodes_added,
-                unions > 0 || nodes_added > 0,
-            );
-            return unions;
-        }
-        self.apply_action(class_id, action)
-    }
-
-    /// Apply a rewrite action and return 1 if a union was made, 0 otherwise.
-    ///
-    /// Internal executor. Rule-driven callers must go through
-    /// `apply_action_from_rule` so provenance attribution stays correct;
-    /// this function itself has no notion of "which rule" — it only knows
-    /// how to execute the `RewriteAction` variants.
     /// Union `a` and `b`, reporting whether the graph actually changed.
     ///
     /// [`EGraph::union`] REFUSES merges that would assert two numerically
@@ -2109,10 +814,10 @@ impl EGraph {
     /// build overlapping nodes, each one's prediction is exact in isolation
     /// but their sum over-counts the batch's real total — safely: the sum is
     /// still an upper bound on real growth, never an under-count, so a
-    /// caller budgeting against it (`apply_rule_at_index_timed`) never
+    /// caller budgeting against it (the runner's `sweep_rule`) never
     /// overshoots. Pinned exact per single application — the sense that
     /// matters for a budget decided one application at a time — by the
-    /// `assert_eq!` in [`EGraph::apply_action_measured`], which calls this
+    /// `assert_eq!` in the runner's `apply_measured`, which calls this
     /// immediately before executing the same action for real.
     pub(crate) fn predicted_growth(&self, action: &RewriteAction) -> usize {
         match action {
@@ -2261,6 +966,12 @@ impl EGraph {
         sink.pending.len()
     }
 
+    /// Apply a rewrite action and return 1 if a union was made, 0 otherwise.
+    ///
+    /// Internal executor. Rule-driven callers must go through the runner's
+    /// `commit` so the journal's attribution stays correct; this function
+    /// itself has no notion of "which rule" — it only knows how to execute
+    /// the `RewriteAction` variants.
     fn apply_action(&mut self, class_id: EClassId, action: RewriteAction) -> usize {
         match action {
             RewriteAction::Union(target_id) => self.union_counted(class_id, target_id),
@@ -3273,101 +1984,14 @@ mod tests {
     use crate::egraph::cost::CostModel;
     use crate::egraph::extract::extract_dag;
     use crate::egraph::ops;
-    use crate::egraph::provenance::ApplicationId;
+    use crate::egraph::provenance::{ApplicationId, Origin};
+    use crate::egraph::rewrite::Rewrite;
+    use crate::egraph::rules::RuleSet;
     use crate::egraph::saturate::SaturationConfig;
     use crate::math::algebra::{
         AddNeg, Annihilator, Cancellation, Canonicalize, Commutative, Distributive, Identity,
         InverseAnnihilation, Involution, MulRecip,
     };
-
-    /// Soundness regression for saturation's dirty-class tracking
-    /// (`class_is_dirty`, `DIRTY_TRACKING_MAX_DEPTH`). `Pythagorean` is one
-    /// of exactly two production rules that inspects a GRANDCHILD e-class
-    /// (`math/trig.rs`'s `extract_trig_arg`, reached through
-    /// `extract_squared_trig`): `sin²(x) + cos²(x) → 1` only matches once
-    /// the argument of `Mul(p, p)` is *itself* known to be `Sin(x)`, two
-    /// hops below the `Add` node the rule is handed.
-    ///
-    /// Builds `Add(Mul(p, p), Mul(Cos(x), Cos(x)))` where `p` starts as an
-    /// unrelated `Neg(x)` node in its own class — nothing marks it as
-    /// `Sin(x)` yet, so `Pythagorean` cannot fire on the first scan. A later
-    /// `union(p, sin_x)` (standing in for whatever upstream rewrite would
-    /// normally prove `p == sin(x)`) changes `p`'s class content without
-    /// touching `sum`'s or `p_sq`'s own node lists — exactly the shape a
-    /// 1-hop dirty-tracking scheme would miss, and exactly
-    /// `DIRTY_TRACKING_MAX_DEPTH`'s boundary. Asserts a further scan of
-    /// `Pythagorean` still finds and fires the identity.
-    #[test]
-    fn dirty_tracking_still_finds_a_rewrite_two_hops_below_a_changed_grandchild() {
-        use crate::math::trig::Pythagorean;
-
-        let mut egraph = EGraph::with_rules(vec![Pythagorean::new()]);
-        let op = |kind| ops::op_from_kind(kind).expect("op is modelled");
-
-        let x = egraph.add(ENode::Var(0));
-        let sin_x = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Sin),
-            children: vec![x],
-        });
-        let cos_x = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Cos),
-            children: vec![x],
-        });
-        let cos_sq = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Mul),
-            children: vec![cos_x, cos_x],
-        });
-
-        // `p` starts life indistinguishable from any other opaque unary
-        // node — NOT unioned with `sin_x` yet.
-        let p = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Neg),
-            children: vec![x],
-        });
-        let p_sq = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Mul),
-            children: vec![p, p],
-        });
-        let sum = egraph.add(ENode::Op {
-            op: op(pixelflow_ir::OpKind::Add),
-            children: vec![p_sq, cos_sq],
-        });
-
-        // First scan: nothing to find (`p` isn't known to be `sin(x)`).
-        let result = egraph.apply_rule_at_index_timed(0, 10_000, None);
-        assert_eq!(
-            result.changes, 0,
-            "the identity cannot match before p == sin(x) is known"
-        );
-        egraph.rebuild();
-
-        // Now prove p == sin(x) — the grandchild change the rule needs, two
-        // hops below `sum`, with `sum`'s and `p_sq`'s own node lists
-        // untouched.
-        egraph.union(p, sin_x);
-        egraph.rebuild();
-
-        // Second scan of the SAME rule must still see `sum` as worth
-        // checking, even though neither `sum` nor `p_sq` (only their
-        // grandchild `p`) changed.
-        let result = egraph.apply_rule_at_index_timed(0, 10_000, None);
-        assert_eq!(
-            result.changes, 1,
-            "dirty-class tracking must not skip `sum` just because its own \
-             node list (and its direct child p_sq's) never changed — only \
-             the grandchild `p` did, which is exactly Pythagorean's \
-             matching depth"
-        );
-        egraph.rebuild();
-
-        let costs = CostModel::default();
-        let dag = extract_dag(&egraph, egraph.find(sum), &costs);
-        let cost = dag.total_cost;
-        assert_eq!(
-            cost, 0,
-            "sum's class must now also contain Const(1.0), cost 0"
-        );
-    }
 
     /// Regression test for a `rebuild_budgeted` bug: when canonicalizing the
     /// worklist item `id`'s nodes triggers a union whose surviving parent is
@@ -3623,7 +2247,7 @@ mod tests {
     }
 
     /// Create an e-graph with standard algebraic rules for testing.
-    fn egraph_with_rules() -> EGraph {
+    fn egraph_with_rules() -> Saturation {
         let rules: Vec<Box<dyn Rewrite>> = vec![
             // InversePair rules
             Canonicalize::<AddNeg>::new(),
@@ -3648,7 +2272,7 @@ mod tests {
             // Annihilator
             Annihilator::new(&ops::Mul),
         ];
-        EGraph::with_rules(rules)
+        Saturation::over(RuleSet::new(rules))
     }
 
     #[test]
@@ -3943,20 +2567,20 @@ mod tests {
     /// Find the `RewriteTarget` for a given rule name, failing loudly (not
     /// silently) if it isn't present — a missing match means the test setup
     /// is wrong, not that provenance has nothing to check.
-    fn find_target(eg: &EGraph, rule_name: &str) -> RewriteTarget {
+    fn find_target(eg: &Saturation, rule_name: &str) -> RewriteTarget {
         eg.find_rewrite_matches()
             .into_iter()
-            .find(|t| eg.rule(t.rule_idx).unwrap().name() == rule_name)
+            .find(|t| eg.rules().rule(t.rule_idx).name() == rule_name)
             .unwrap_or_else(|| panic!("no rewrite match found for rule {rule_name:?}"))
     }
 
     /// Like `find_target`, but further restricted to matches against a
     /// specific (already-canonical) class — needed once a class holds
     /// multiple nodes that all match the same rule name.
-    fn find_target_in_class(eg: &EGraph, rule_name: &str, class: EClassId) -> RewriteTarget {
+    fn find_target_in_class(eg: &Saturation, rule_name: &str, class: EClassId) -> RewriteTarget {
         eg.find_rewrite_matches()
             .into_iter()
-            .find(|t| eg.rule(t.rule_idx).unwrap().name() == rule_name && t.class_id == class)
+            .find(|t| eg.rules().rule(t.rule_idx).name() == rule_name && t.class_id == class)
             .unwrap_or_else(|| {
                 panic!("no rewrite match found for rule {rule_name:?} in class {class:?}")
             })
@@ -3977,14 +2601,14 @@ mod tests {
         for &(class, _) in &[(x, "x"), (y, "y"), (sum, "sum")] {
             for &tag in eg.tags(class) {
                 assert_eq!(
-                    eg.provenance().origin(tag),
+                    eg.journal().origin(tag),
                     Some(Origin::Seed),
                     "seed node in class {class:?} should be Origin::Seed"
                 );
             }
         }
-        assert_eq!(eg.provenance().recorded_count(), 0);
-        assert_eq!(eg.provenance().union_count(), 0);
+        assert_eq!(eg.journal().recorded_count(), 0);
+        assert_eq!(eg.journal().union_count(), 0);
 
         let target = find_target(&eg, "commutative");
         assert_eq!(target.class_id, eg.find(sum));
@@ -3994,11 +2618,11 @@ mod tests {
 
         // Hand-derivation: exactly one application recorded, for the
         // "commutative" rule, matched against `sum`'s class.
-        assert_eq!(eg.provenance().recorded_count(), 1);
-        let record = eg.provenance().application(ApplicationId(0)).unwrap();
+        assert_eq!(eg.journal().recorded_count(), 1);
+        let record = eg.journal().application(ApplicationId(0)).unwrap();
         assert_eq!(record.rule_idx, target.rule_idx);
         assert_eq!(record.match_root, eg.find(sum));
-        assert_eq!(eg.rule(record.rule_idx).unwrap().name(), "commutative");
+        assert_eq!(eg.rules().rule(record.rule_idx).name(), "commutative");
 
         // Hand-derivation: the new commuted node (y + x) has Origin::Rule
         // pointing at that one application; it lives in the same class as
@@ -4008,7 +2632,7 @@ mod tests {
             .tags(commuted_class)
             .iter()
             .copied()
-            .filter(|&t| matches!(eg.provenance().origin(t), Some(Origin::Rule(_))))
+            .filter(|&t| matches!(eg.journal().origin(t), Some(Origin::Rule(_))))
             .collect();
         assert_eq!(
             rule_origin_tags.len(),
@@ -4016,14 +2640,14 @@ mod tests {
             "expected exactly one rule-created node in the merged class"
         );
         assert_eq!(
-            eg.provenance().origin(rule_origin_tags[0]),
+            eg.journal().origin(rule_origin_tags[0]),
             Some(Origin::Rule(ApplicationId(0)))
         );
 
         // Hand-derivation: exactly one union event, attributed to the
         // commutative rule's index, at the step apply_single_rule ran on.
-        assert_eq!(eg.provenance().union_count(), 1);
-        let union_event = eg.provenance().union_events()[0];
+        assert_eq!(eg.journal().union_count(), 1);
+        let union_event = eg.journal().union_events()[0];
         assert_eq!(union_event.rule_idx, Some(target.rule_idx));
     }
 
@@ -4059,7 +2683,7 @@ mod tests {
         let target_b = find_target_in_class(&eg, "commutative", eg.find(outer));
         assert!(eg.apply_single_rule(target_b.rule_idx, target_b.class_id, target_b.tag));
         let app_b = ApplicationId(1);
-        assert_eq!(eg.provenance().recorded_count(), 2);
+        assert_eq!(eg.journal().recorded_count(), 2);
 
         // Find B's produced node: the rule-created node in outer's class
         // whose origin is app_b.
@@ -4068,7 +2692,7 @@ mod tests {
             .tags(outer_class)
             .iter()
             .copied()
-            .find(|&t| eg.provenance().origin(t) == Some(Origin::Rule(app_b)))
+            .find(|&t| eg.journal().origin(t) == Some(Origin::Rule(app_b)))
             .expect("expected a node created by application B in outer's class");
 
         let ancestors = eg.derivation_ancestors(&[(outer_class, b_product_tag)]);
@@ -4118,7 +2742,7 @@ mod tests {
         });
         let marker = eg.add(ENode::Var(9));
 
-        assert_eq!(eg.provenance().union_count(), 0);
+        assert_eq!(eg.journal().union_count(), 0);
 
         // Enqueue nc on the worklist without disturbing its semantics.
         eg.union(nc, marker);
@@ -4137,7 +2761,7 @@ mod tests {
         // (the direct union(b, c) and/or the congruence-closure union that
         // merged nb/nc during rebuild).
         assert!(
-            eg.provenance()
+            eg.journal()
                 .union_events()
                 .iter()
                 .any(|e| e.rule_idx.is_none()),
@@ -4179,9 +2803,9 @@ mod tests {
         eprintln!(
             "provenance overhead: saturation took {:?}; origins={} applications={} unions={} classes={}",
             elapsed,
-            eg.provenance().origin_count(),
-            eg.provenance().recorded_count(),
-            eg.provenance().union_count(),
+            eg.journal().origin_count(),
+            eg.journal().recorded_count(),
+            eg.journal().union_count(),
             eg.num_classes(),
         );
     }
@@ -4271,7 +2895,7 @@ mod tests {
         // keeps the saturation run below inside the sweep rather than
         // bailing at `saturate_with_limits`'s own pre-sweep check.
         let mut pad = 0.0f32;
-        while eg.classes.len() < HARD_CLASS_LIMIT - 1 {
+        while eg.classes.len() < HARD_MINTED_LIMIT - 1 {
             let _ = eg.add(ENode::constant(pad));
             pad += 1.0;
         }
@@ -4279,7 +2903,7 @@ mod tests {
         // `add` is still total at the ceiling: the class it returns holds
         // the node, and it is not class 0's term.
         let fresh = eg.add(ENode::Var(200));
-        assert_eq!(eg.classes.len(), HARD_CLASS_LIMIT);
+        assert_eq!(eg.classes.len(), HARD_MINTED_LIMIT);
         assert!(
             matches!(eg.nodes(eg.find(fresh)).first(), Some(ENode::Var(200))),
             "add past the limit returned a class that does not hold the node"
@@ -4374,11 +2998,11 @@ mod tests {
     fn saturation_at_any_budget_never_removes_an_equality() {
         // Strictly increasing, spanning "cannot even finish one rule" to the
         // ceiling itself.
-        let ladder = [1usize, 2, 8, 64, 512, 4096, HARD_CLASS_LIMIT];
+        let ladder = [1usize, 2, 8, 64, 512, 4096, HARD_MINTED_LIMIT];
         let mut previous: Option<(usize, Vec<(usize, usize)>)> = None;
         let mut ever_found = 0usize;
 
-        for max_classes in ladder {
+        for max_minted in ladder {
             let mut eg = egraph_with_rules();
             let probes = seed_derivable_probes(&mut eg);
 
@@ -4390,12 +3014,12 @@ mod tests {
             eg.rebuild();
             assert_eq!(eg.find(a), eg.find(b), "union did not take");
 
-            eg.saturate_with_limits(20, max_classes, std::time::Duration::from_secs(30));
+            eg.saturate_with_limits(20, max_minted, std::time::Duration::from_secs(30));
 
             assert_eq!(
                 eg.find(a),
                 eg.find(b),
-                "budget {max_classes} retracted a hand-made equality"
+                "budget {max_minted} retracted a hand-made equality"
             );
 
             // Refinement: every pair equal at a smaller budget is still
@@ -4405,13 +3029,13 @@ mod tests {
                 for pair in before {
                     assert!(
                         pairs.contains(pair),
-                        "budget {max_classes} lost probe pair {pair:?} that budget \
+                        "budget {max_minted} lost probe pair {pair:?} that budget \
                          {smaller} had found — saturation is not monotone"
                     );
                 }
             }
             ever_found = ever_found.max(pairs.len());
-            previous = Some((max_classes, pairs));
+            previous = Some((max_minted, pairs));
         }
 
         // Guard against the ladder asserting nothing: if no budget ever
@@ -4424,205 +3048,6 @@ mod tests {
     }
 }
 
-// ============================================================================
-// EGraphBatch — RAII batched rule application with lazy rebuild
-// ============================================================================
-
-/// RAII batch for rule application with budgeted interleaved rebuild.
-///
-/// Applies rules without per-rule rebuilds. After each rule, processes
-/// a chunk of the rebuild worklist to keep classes deduplicated without
-/// doing a full rebuild. On drop, drains the remaining worklist.
-///
-/// The rebuild budget per rule is proportional to the changes made,
-/// keeping total work bounded.
-///
-/// ```ignore
-/// {
-///     let mut batch = egraph.batch();
-///     for rule in approved_rules {
-///         batch.apply_rule(rule, 500, Some(deadline));
-///     }
-/// } // final rebuild on drop
-/// ```
-pub struct EGraphBatch<'a> {
-    graph: &'a mut EGraph,
-    any_changes: bool,
-    /// Max worklist items to process per rule application.
-    /// Keeps class sizes bounded during the batch.
-    rebuild_chunk: usize,
-}
-
-impl<'a> EGraphBatch<'a> {
-    /// Apply a single rule, then process a chunk of pending rebuilds.
-    ///
-    /// The interleaved rebuild keeps classes from ballooning between rules.
-    /// Each rule application is followed by processing up to `rebuild_chunk`
-    /// worklist items, so the graph stays approximately deduplicated.
-    pub fn apply_rule(
-        &mut self,
-        rule_idx: usize,
-        max_nodes: usize,
-        deadline: Option<std::time::Instant>,
-    ) -> ApplyResult {
-        let result = self
-            .graph
-            .apply_rule_at_index_timed(rule_idx, max_nodes, deadline);
-        if result.changes > 0 {
-            self.any_changes = true;
-            // Interleaved partial rebuild: process some worklist items to keep
-            // classes small. The chunk size bounds work per rule.
-            self.graph.rebuild_budgeted(self.rebuild_chunk);
-        }
-        result
-    }
-
-    /// Current number of e-classes.
-    pub fn node_count(&self) -> usize {
-        self.graph.classes.len()
-    }
-
-    /// Whether any rule in this batch produced changes.
-    pub fn has_changes(&self) -> bool {
-        self.any_changes
-    }
-
-    /// Pending rebuild worklist items.
-    pub fn pending_rebuilds(&self) -> usize {
-        self.graph.pending_rebuilds()
-    }
-}
-
-impl Drop for EGraphBatch<'_> {
-    fn drop(&mut self) {
-        // Drain any remaining worklist items
-        if self.any_changes {
-            self.graph.rebuild();
-        }
-    }
-}
-
-#[cfg(test)]
-mod mask_tests {
-    use super::*;
-    use crate::egraph::optimizer::{Budget, Optimizer};
-
-    /// A `(x*x + y*y).sqrt()`-shaped arena under the full rule set — a real
-    /// sweep where idempotent re-fires (`commutative`/`associative`)
-    /// dominate, which is exactly the regime
-    /// [`MaskScope::AllMatchingCandidate`] exists to see through.
-    fn mask_fixture() -> (Optimizer, EGraph, EClassId) {
-        let mut arena = pixelflow_ir::ExprArena::new();
-        let x = arena.push_var(0);
-        let y = arena.push_var(1);
-        let xx = arena.push_binary(pixelflow_ir::OpKind::Mul, x, x);
-        let yy = arena.push_binary(pixelflow_ir::OpKind::Mul, y, y);
-        let sum = arena.push_binary(pixelflow_ir::OpKind::Add, xx, yy);
-        let dist = arena.push_unary(pixelflow_ir::OpKind::Sqrt, sum);
-        let doubled = arena.push_binary(pixelflow_ir::OpKind::Add, dist, dist);
-        let root = arena.push_binary(pixelflow_ir::OpKind::Sub, doubled, doubled);
-        let opt = Optimizer::production()
-            .budget(Budget::Applications(MASK_BUDGET))
-            .no_ceiling();
-        let mut eg = opt.egraph();
-        let root_class =
-            crate::egraph::insert(&arena, root, &mut eg, crate::egraph::Vocabulary::Templates)
-                .expect("insert into e-graph");
-        (opt, eg, root_class)
-    }
-
-    const MASK_BUDGET: u64 = 60;
-    const NODES: usize = 8;
-
-    /// The leave-one-out mask is consumed after it fires: exactly one skip,
-    /// no matter how many later applications look like it.
-    #[test]
-    fn leave_one_out_mask_skips_exactly_one_application() {
-        let (opt, mut eg, root) = mask_fixture();
-        let mut opt = opt.mask(Some(ApplicationMask::leave_one_out(0)));
-        opt.run(&mut eg, root, NODES);
-        assert_eq!(
-            eg.last_replay_mask_skips(),
-            1,
-            "MaskScope::Single must fire exactly once"
-        );
-    }
-
-    /// The confluence-aware mask keeps firing: it skips the seed and every
-    /// later application of the same (rule, canonical matched-class
-    /// content). Under rules that re-match their own installed output, that
-    /// is strictly more than one.
-    #[test]
-    fn all_matching_candidate_mask_skips_every_re_derivation() {
-        let (opt, mut eg, root) = mask_fixture();
-        let mut opt = opt.mask(Some(ApplicationMask::all_matching_candidate(0)));
-        opt.run(&mut eg, root, NODES);
-        assert!(
-            eg.last_replay_mask_skips() > 1,
-            "MaskScope::AllMatchingCandidate must keep masking re-derivations of the seed \
-             candidate, got {} skip(s)",
-            eg.last_replay_mask_skips()
-        );
-    }
-
-    /// A mask whose ordinal is never reached leaves no trace: zero skips,
-    /// and — because nothing was withheld — the same run an unmasked
-    /// optimizer produces, down to the extracted term.
-    #[test]
-    fn a_mask_whose_ordinal_never_fires_changes_nothing() {
-        let (mut plain_opt, mut plain_eg, plain_root) = mask_fixture();
-        let plain = plain_opt.run(&mut plain_eg, plain_root, NODES);
-
-        let (opt, mut eg, root) = mask_fixture();
-        let mut opt = opt.mask(Some(ApplicationMask::leave_one_out(u64::MAX)));
-        let masked = opt.run(&mut eg, root, NODES);
-
-        assert_eq!(eg.last_replay_mask_skips(), 0);
-        assert_eq!(plain.stats.applications, masked.stats.applications);
-        assert_eq!(plain.stats.unions, masked.stats.unions);
-        assert_eq!(plain.choices, masked.choices);
-    }
-
-    /// The whole point of a counterfactual: withholding a real application
-    /// must actually withhold it, and the run must be a different run.
-    ///
-    /// A skipped ordinal is not *burned* — it is left for the next candidate
-    /// in the same scan order — so the mask does not by itself shorten the
-    /// budget. It can still end the run sooner, and on this fixture it does:
-    /// withholding a whole candidate class removes the work that would have
-    /// kept the sweep productive, and the masked run quiesces well inside
-    /// the 60-application budget while the unmasked one spends all of it.
-    /// That is the counterfactual working, so the assertion is the honest
-    /// one — the graphs differ — not an equality that happens to hold on a
-    /// luckier fixture.
-    #[test]
-    fn withholding_a_real_application_changes_the_run() {
-        let (mut plain_opt, mut plain_eg, plain_root) = mask_fixture();
-        let plain = plain_opt.run(&mut plain_eg, plain_root, NODES);
-
-        let (opt, mut eg, root) = mask_fixture();
-        let mut opt = opt.mask(Some(ApplicationMask::all_matching_candidate(0)));
-        let masked = opt.run(&mut eg, root, NODES);
-
-        assert!(eg.last_replay_mask_skips() > 0, "the seed must have fired");
-        assert!(
-            masked.stats.applications <= plain.stats.applications,
-            "a mask can only withhold work, never manufacture it: {} vs {}",
-            masked.stats.applications,
-            plain.stats.applications
-        );
-        assert_ne!(
-            (plain.stats.unions, plain.stats.classes),
-            (masked.stats.unions, masked.stats.classes),
-            "withholding a candidate and every re-derivation of it must change what the \
-             run built — otherwise Δ is measuring nothing"
-        );
-    }
-}
-
-/// The per-class variance fact (`var_fact`): seeded by the transfer function,
-/// merged by intersection, and a superset of the truth whatever the graph did
-/// to reach it.
 #[cfg(test)]
 mod variance_fact_tests {
     use super::*;
@@ -4731,6 +3156,16 @@ mod variance_fact_tests {
             "precondition: the class reaches itself"
         );
         assert_eq!(eg.variance(class), Variance::X);
+    }
+
+    /// A journal is chosen when the graph is built: dropping it from a graph
+    /// that already holds classes would forget their births.
+    #[test]
+    #[should_panic(expected = "already holds")]
+    fn a_journal_cannot_be_dropped_from_a_populated_graph() {
+        let mut egraph = EGraph::new();
+        let _x = egraph.add(ENode::Var(0));
+        let _journalless = egraph.without_journal();
     }
 
     /// The fact survives a clone — a search branch reads the same facts its

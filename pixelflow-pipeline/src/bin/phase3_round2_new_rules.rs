@@ -98,7 +98,7 @@ fn stop_name(stop: SaturationStop) -> &'static str {
     match stop {
         SaturationStop::Quiesced => "quiesced",
         SaturationStop::ApplicationBudget => "app_budget",
-        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::MintedCap => "class_cap",
         SaturationStop::IterationCeiling => "sweep_ceiling",
         SaturationStop::Timeout => "timeout",
     }
@@ -164,7 +164,7 @@ fn run_curves(
 
     for (i, (origin, name, arena, root)) in sampled.iter().enumerate() {
         let node_count = arena.len();
-        let class_cap = config_for_node_count(node_count).max_classes;
+        let class_cap = config_for_node_count(node_count).max_minted;
         // This arm's rule set names the arm: `Optimizer::rules` is the one
         // place a non-production vocabulary enters.
         let mut optimizer = Optimizer::production()
@@ -172,7 +172,7 @@ fn run_curves(
             .cost(costs.clone())
             .budget(Budget::Explicit {
                 iterations: SWEEP_SAFETY_CEILING,
-                classes: class_cap,
+                minted: class_cap,
                 applications: None,
             })
             .hard_ceiling(safety_timeout);
@@ -253,7 +253,7 @@ fn arm_rows(curves: &[&ExprCurve], grid: &[usize]) -> Vec<ArmRow> {
             ),
             class_cap_hits: curves
                 .iter()
-                .filter(|c| c.ended == SaturationStop::ClassCap)
+                .filter(|c| c.ended == SaturationStop::MintedCap)
                 .count(),
             quiesced: curves
                 .iter()
@@ -513,7 +513,7 @@ fn main() {
                 "- ended ({label}, n={n}): quiesced={} class_cap={} grid_exhausted={} \
                  sweep_ceiling={} timeout={} | ended_at_apps median={:.0} p90={:.0}\n",
                 count(SaturationStop::Quiesced),
-                count(SaturationStop::ClassCap),
+                count(SaturationStop::MintedCap),
                 count(SaturationStop::ApplicationBudget),
                 count(SaturationStop::IterationCeiling),
                 count(SaturationStop::Timeout),
@@ -531,7 +531,7 @@ fn main() {
         md.push_str(&format!(
             "| {label} | {} | {} | {} | {} | {} |\n",
             count(SaturationStop::Quiesced),
-            count(SaturationStop::ClassCap),
+            count(SaturationStop::MintedCap),
             count(SaturationStop::ApplicationBudget),
             count(SaturationStop::IterationCeiling),
             count(SaturationStop::Timeout),
@@ -549,7 +549,7 @@ fn main() {
 
     md.push_str(&format!(
         "_Grid: `{grid:?}`. Stop-name legend: `quiesced` = saturation reached a fixpoint before any \
-         budget bound; `class_cap` = hit the tier's `max_classes` memory-protection cap; \
+         budget bound; `class_cap` = hit the tier's `max_minted` memory-protection cap; \
          `grid_exhausted` = still finding unions when the grid's top checkpoint (204800 applications) \
          was reached; `sweep_ceiling`/`timeout` = safety ceilings (would panic if actually hit — \
          listed for completeness, expected 0 in both columns)._\n"

@@ -104,7 +104,7 @@ fn stop_name(stop: SaturationStop) -> &'static str {
     match stop {
         SaturationStop::Quiesced => "quiesced",
         SaturationStop::ApplicationBudget => "app_budget",
-        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::MintedCap => "class_cap",
         SaturationStop::IterationCeiling => "sweep_ceiling",
         SaturationStop::Timeout => "timeout",
     }
@@ -282,7 +282,7 @@ fn main() {
 
     for (i, (origin, name, arena, root)) in sampled.iter().enumerate() {
         let node_count = arena.len();
-        let class_cap = config_for_node_count(node_count).max_classes;
+        let class_cap = config_for_node_count(node_count).max_minted;
         // The curve's environment, named outright: this expression's own
         // production class cap, a generous sweep ceiling, and no application
         // cap of the optimizer's own — `run_anytime_curve` supplies the
@@ -293,7 +293,7 @@ fn main() {
             .cost(costs.clone())
             .budget(Budget::Explicit {
                 iterations: SWEEP_SAFETY_CEILING,
-                classes: class_cap,
+                minted: class_cap,
                 applications: None,
             })
             .hard_ceiling(SAFETY_TIMEOUT);
@@ -380,7 +380,7 @@ fn main() {
             "  {scope:<10} n={n:<4} quiesced={} class_cap={} grid_exhausted={} sweep_ceiling={} | \
              ended_at_apps: p25={:.0} median={:.0} p75={:.0} p95={:.0} max={:.0}",
             count(SaturationStop::Quiesced),
-            count(SaturationStop::ClassCap),
+            count(SaturationStop::MintedCap),
             count(SaturationStop::ApplicationBudget),
             count(SaturationStop::IterationCeiling),
             percentile(&apps, 0.25),

@@ -25,7 +25,7 @@
 //! The generator is the same dependency-free pairwise routine used by the
 //! other two POCs, duplicated per the workspace's minimal-dependency policy.
 
-use crate::egraph::{EGraph, ENode, extract_dag, saturate_with_budget};
+use crate::egraph::{EGraph, ENode, RuleSet, Saturation, extract_dag, saturate_with_budget};
 use crate::math::all_rules;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
@@ -406,7 +406,7 @@ fn pict_rewrite_rules_preserve_semantics() {
         // Optimize the way the compiler does: build e-graph, saturate once,
         // then extract under several cost models — each pulls out a different
         // rewritten form from the same saturated graph.
-        let mut eg = EGraph::with_rules(all_rules());
+        let mut eg = Saturation::over(RuleSet::new(all_rules()));
         let root_class = expr_to_egraph(&arena, root, &mut eg);
         let _ = saturate_with_budget(&mut eg, 25);
         let canon_root = eg.find(root_class);
