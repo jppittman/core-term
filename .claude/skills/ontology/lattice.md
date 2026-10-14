@@ -153,7 +153,8 @@
 
 - **Is:** an implementation detail of codegen. "pixelflow-core holds no
   vector type and no width. The one width in the workspace is the JIT's."
-  The width is a function of the ISA tier (`Isa::vector_bytes`). A batch is
+  The width is the chosen backend's register file
+  (`B::FILE.vector_bytes()`), read through `jit_vector_bytes()`. A batch is
   one trip of the column fold, which is one vector. "Lanes are a scope: the
   fold a Write names as its lane binder is executed by lanes." That fold has
   no counter and no back edge, and its binder materialises as

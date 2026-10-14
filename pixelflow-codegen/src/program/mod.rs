@@ -7,7 +7,6 @@
 //! produces and what allocation and emission consume, which is why it lives
 //! under neither. The stages that build it are [`Nest`], [`Own`] and [`Layout`].
 
-mod guards;
 mod layout;
 mod lower;
 mod ownership;
@@ -92,8 +91,7 @@ pub(crate) enum ScheduledOp {
     /// pointer value; no operands, variance `CONST`,
     /// so it is placed in the per-call scope and carried into the loops
     /// inside by `plan_carries` on the strength of its reads there — one
-    /// load per call where every gather used to reload it
-    /// (docs/plans/2026-09-22-a-pointer-is-a-value.md).
+    /// load per call (docs/plans/2026-09-22-a-pointer-is-a-value.md).
     Context(u16),
     /// The lane fold's binder: the constant `[0, 1, …, L−1]`. The fold
     /// whose binder this is executes by lanes (its body is inlined into its
@@ -124,32 +122,27 @@ pub(crate) enum ScheduledOp {
     Seq(ValueId, ValueId),
     /// A surviving bounded fold: `⊕` over `fold`'s visited indices, whose
     /// body is the value named by the second field — in *this schedule's*
-    /// numbering (`lower::arena_to_schedule` maps it like any other child), before
-    /// `scopes::extract_folds` carves the body out into its own
-    /// [`ScopeFold`]. Kept so `scopes::extract_folds` can find
-    /// the body's closure; the emitter never resolves it as an operand —
-    /// the loop's result comes from the loop selection opens for the
-    /// [`Scope::Fold`] this def opens, not from this `ValueId`.
+    /// numbering (`lower::arena_to_schedule` maps it like any other child).
+    /// `scopes::extract_folds` carves the body's closure out into its own
+    /// [`ScopeFold`]; the field is then the root of that scope's schedule, the
+    /// value each trip accumulates, which selection reads when it opens the
+    /// loop for the [`Scope::Fold`] this def opens. It is never an operand of
+    /// the scope this def sits in.
     Reduce(Fold, ValueId),
 }
 
 /// Which scope of a loop nest: the body the call runs once, or one of the
 /// folds nested in it.
 ///
-/// A **name**, not a coordinate. It used to be half of one — `Point` was
-/// `(scope, index)` ordered lexicographically — and that only worked while
-/// the nest was a *chain*: scopes totally ordered by nesting, and all of an
-/// outer scope's code preceding all of an inner scope's. The second stops
-/// being true the moment a scope opens in the *middle* of another, which is
-/// what a surviving `Reduce` is: the parent's own defs sit on both sides of
-/// the fold's. So the ordering moved to where it is always meaningful —
-/// within one scope — and this is now only the key that says which one.
+/// A **name**, not a coordinate: nesting is not a total order of scopes, since
+/// a scope opens in the *middle* of another, which is what a surviving
+/// `Reduce` is — the parent's own defs sit on both sides of the fold's. Order
+/// is meaningful only within one scope; this is the key that says which one.
 ///
 /// The nest is a **tree**: every fold hangs off whichever scope holds its
 /// def. The lattice's own rows and columns are folds too
-/// (docs/plans/2026-09-16-collapse-is-a-fold.md), so there is no spine of
-/// regions any more — there is the body, run once per call, and folds all
-/// the way down. The derived `Ord` is therefore **not** nesting order — it
+/// (docs/plans/2026-09-16-collapse-is-a-fold.md), so there is the body, run
+/// once per call, and folds all the way down. The derived `Ord` is therefore **not** nesting order — it
 /// is a total order over names, for deterministic keying.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Scope {
@@ -311,10 +304,10 @@ pub(crate) struct ArmBlock {
 /// A `Reduce` is a leaf here, the same as `Uniform` — by the time one reaches
 /// a schedule this function walks, `scopes::extract_folds` has already carved its
 /// body out into its own `ScopeFold`; the `ValueId` `ScheduledOp::Reduce`
-/// still carries is `scopes::extract_folds`'s own concern, never an operand
+/// still carries names that scope's root, never an operand
 /// this scope's allocation resolves. What the
 /// loop it opens reads from this scope is a dependency all the same, and the
-/// guard analysis has it as one (`guards::FoldReads`). A `Seq`
+/// ownership has it as one (`ownership::FoldReads`). A `Seq`
 /// sequences two effects and reads no register; a `Write` reads the one
 /// value it stores — its row and column are binders, found where their
 /// folds keep them, not operands.

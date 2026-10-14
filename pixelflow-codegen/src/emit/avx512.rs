@@ -15,14 +15,14 @@
 //! form. Note `vpmovm2d` is AVX-512**DQ**, not F: an
 //! F-only part would fault on any kernel containing a comparison.
 //!
-//! Transcendentals themselves are still a separate lowering stage; ops with no
-//! rule here are refused up front rather than mis-emitted.
+//! Transcendentals are expanded by `legalize` before any backend sees them;
+//! ops with no rule here are refused up front rather than mis-emitted.
 //!
 //! Spills use a real stack frame (a `zmm` is 64 bytes — far past the 128-byte
 //! red zone).
 
 use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller, defined};
+use super::build::{Builder, Def, Spiller};
 use super::regalloc::resource::FrameSlot;
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::x86_64;
@@ -31,7 +31,7 @@ use super::x86_64::{
 };
 use super::{
     Bound, Class, ClassId, Edges, EncodedInst, Flags, Integer, IsaBackend, Label, LaneOp, Opmask,
-    Placed, Pointer, Rebind, Selected, Spill, Stage, Store, Target, Test, Value, ValueName, Vector,
+    Pointer, Rebind, Selected, Stage, Store, Target, Test, Value, ValueName, Vector, slot_disp,
     unimplemented_op,
 };
 use crate::error::CompileError;
@@ -169,14 +169,12 @@ impl Evex {
     }
 
     /// `op zmmREG, [addr]` — the memory form used for spills, reloads,
-    /// constant broadcast and the collapse loop's output store.
+    /// constant broadcast and the output store.
     ///
     /// EVEX.R/B are stored INVERTED, and X likewise: there is no index
     /// register in any of these forms, so X is always the encoded 1.
-    /// (Encoding B = 0 for an `rsp` base was the spill-path bug: it set the
-    /// base's bit 3, addressing r12 and faulting on a garbage pointer.)
     /// The ModRM/SIB/displacement tail is the architecture's, not EVEX's, so
-    /// it comes from `x86_64::mem_operand`.
+    /// it comes from `x86_64::mem_operand_into`.
     fn rm<D: Disp>(self, reg: u8, base: u8, disp: D) -> EncodedInst {
         let mut inst = EncodedInst::new();
         let r = ((reg >> 3) & 1) ^ 1;
@@ -707,21 +705,15 @@ impl Inst<Selected> {
     }
 }
 
-impl<S: Placed> Inst<S> {
+impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
     fn encode(&self) -> EncodedInst {
-        let vector = |reg: &S::Read<Vector>| S::read::<Vector>(reg);
-        let write = |reg: &S::Write<Vector>| S::write::<Vector>(reg);
-        let mask = |reg: &S::Read<Opmask>| S::read::<Opmask>(reg);
-        let write_mask = |reg: &S::Write<Opmask>| S::write::<Opmask>(reg);
-        let pointer = |reg: &S::Read<Pointer>| S::read::<Pointer>(reg);
-        let slot = |slot: &S::Slot| Imm32(S::slot(slot));
         match self {
-            Inst::Alu { op, dst, a, b } => op.evex().rrr(write(dst), vector(a), vector(b)),
-            Inst::Unary { op, dst, src } => op.evex().rrr(write(dst), UNUSED_VVVV, vector(src)),
+            Inst::Alu { op, dst, a, b } => op.evex().rrr(dst.number(), a.number(), b.number()),
+            Inst::Unary { op, dst, src } => op.evex().rrr(dst.number(), UNUSED_VVVV, src.number()),
             Inst::Round { mode, dst, src } => {
                 Evex::m0f3a_66(0x08)
                     .imm(*mode as u8)
-                    .rrr(write(dst), UNUSED_VVVV, vector(src))
+                    .rrr(dst.number(), UNUSED_VVVV, src.number())
             }
             // The destination is `vvvv` and the `/digit` is `reg`.
             Inst::Shift {
@@ -731,59 +723,61 @@ impl<S: Placed> Inst<S> {
                 amount,
             } => Evex::m0f_66(0x72)
                 .imm(*amount)
-                .rrr(*direction as u8, write(dst), vector(src)),
+                .rrr(*direction as u8, dst.number(), src.number()),
             Inst::Fma231 { acc, a, b } => {
-                Evex::m0f38_66(0xB8).rrr(S::tie::<Vector>(acc), vector(a), vector(b))
+                Evex::m0f38_66(0xB8).rrr(acc.number(), a.number(), b.number())
             }
             Inst::Blend {
                 dst,
                 if_true,
                 if_false,
             } => Evex::m0f3a_66(0x25).imm(TERNLOG_SELECT).rrr(
-                S::tie::<Vector>(dst),
-                vector(if_true),
-                vector(if_false),
+                dst.number(),
+                if_true.number(),
+                if_false.number(),
             ),
-            Inst::Mov { dst, src } => Evex::m0f(0x28).rrr(write(dst), UNUSED_VVVV, vector(src)),
+            Inst::Mov { dst, src } => Evex::m0f(0x28).rrr(dst.number(), UNUSED_VVVV, src.number()),
             Inst::Cvtt { dst, src } => {
                 Evex::m0f_f3(0x2C)
                     .w1()
-                    .rrr(S::write::<Integer>(dst), UNUSED_VVVV, vector(src))
+                    .rrr(dst.number(), UNUSED_VVVV, src.number())
             }
             Inst::Movq { dst, src } => {
                 Evex::m0f_66(0x6E)
                     .w1()
                     .xmm()
-                    .rrr(write(dst), UNUSED_VVVV, S::read::<Integer>(src))
+                    .rrr(dst.number(), UNUSED_VVVV, src.number())
             }
             Inst::InsertHigh { dst, src } => {
-                let dst = S::tie::<Vector>(dst);
+                let dst = dst.number();
                 Evex::m0f3a_66(0x22)
                     .w1()
                     .xmm()
                     .imm(1)
-                    .rrr(dst, dst, S::read::<Integer>(src))
+                    .rrr(dst, dst, src.number())
             }
             Inst::CmpK { pred, dst, a, b } => {
                 Evex::m0f(0xC2)
                     .imm(*pred as u8)
-                    .rrr(write_mask(dst), vector(a), vector(b))
+                    .rrr(dst.number(), a.number(), b.number())
             }
-            Inst::Movm2d { dst, k } => Evex::m0f38_f3(0x38).rrr(write(dst), UNUSED_VVVV, mask(k)),
+            Inst::Movm2d { dst, k } => {
+                Evex::m0f38_f3(0x38).rrr(dst.number(), UNUSED_VVVV, k.number())
+            }
             Inst::Ptestm { dst, a, b } => {
-                Evex::m0f38_66(0x27).rrr(write_mask(dst), vector(a), vector(b))
+                Evex::m0f38_66(0x27).rrr(dst.number(), a.number(), b.number())
             }
             // `VEX.L0.0F.W0 98 /r`, both operands the one mask register.
             Inst::KorTest { k, .. } => {
-                let k = mask(k);
+                let k = k.number();
                 EncodedInst::from_slice(&[0xC5, 0xF8, 0x98, 0xC0 | (k << 3) | k])
             }
             // `VEX.L0.0F.W0 92 /r`, in the three-byte prefix.
             Inst::KFromGpr { dst, src } => {
-                let src = S::read::<Integer>(src);
+                let src = src.number();
                 // B̄ is inverted: set when the source needs no extension bit.
                 let no_extension = if src < 8 { 0x20 } else { 0x00 };
-                let modrm = 0xC0 | ((write_mask(dst) & 7) << 3) | (src & 7);
+                let modrm = 0xC0 | ((dst.number() & 7) << 3) | (src & 7);
                 EncodedInst::from_slice(&[0xC4, 0xC1 | no_extension, 0x78, 0x92, modrm])
             }
             Inst::Gather {
@@ -792,44 +786,42 @@ impl<S: Placed> Inst<S> {
                 index,
                 mask,
             } => {
-                let (dst, index) = (S::early::<Vector>(dst), vector(index));
+                let (dst, index) = (dst.number(), index.number());
                 debug_assert!(dst != index, "vgatherdps: dst and index must differ");
                 // `base` is never `rbp`/`r13` (`GENERAL` excludes them), so
                 // the SIB's no-base encoding is unreachable.
                 Evex::m0f38_66(0x92)
-                    .masked(S::tie::<Opmask>(mask))
-                    .vsib_scaled4(dst, pointer(base), index)
+                    .masked(mask.number())
+                    .vsib_scaled4(dst, base.number(), index)
             }
             Inst::StoreMasked { dst, src, mask: k } => {
                 Evex::m0f(0x11)
-                    .masked(mask(k))
-                    .rm(vector(src), pointer(&dst.base), dst.disp)
+                    .masked(k.number())
+                    .rm(src.number(), dst.base.number(), dst.disp)
             }
             Inst::StoreBatch { dst, src } => {
-                Evex::m0f(0x11).rm(vector(src), pointer(&dst.base), dst.disp)
+                Evex::m0f(0x11).rm(src.number(), dst.base.number(), dst.disp)
             }
             Inst::Broadcast { dst, src } => {
-                Evex::m0f38_66(0x18).rm(write(dst), pointer(&src.base), src.disp)
+                Evex::m0f38_66(0x18).rm(dst.number(), src.base.number(), src.disp)
             }
-            Inst::BroadcastIndexed { dst, base, index } => Evex::m0f38_66(0x18).rm_scaled4(
-                write(dst),
-                pointer(base),
-                S::read::<Integer>(index),
-            ),
+            Inst::BroadcastIndexed { dst, base, index } => {
+                Evex::m0f38_66(0x18).rm_scaled4(dst.number(), base.number(), index.number())
+            }
             Inst::Zero { dst } => {
-                let dst = write(dst);
+                let dst = dst.number();
                 Alu::Xor.evex().rrr(dst, dst, dst)
             }
             Inst::Ones { dst } => {
-                let dst = write(dst);
+                let dst = dst.number();
                 Evex::m0f3a_66(0x25).imm(TERNLOG_ONES).rrr(dst, dst, dst)
             }
-            Inst::LoadConst { dst, .. } => Evex::m0f38_66(0x18).rip(write(dst)),
+            Inst::LoadConst { dst, .. } => Evex::m0f38_66(0x18).rip(dst.number()),
             Inst::SpillVector { src: v, slot: s } => {
-                Evex::m0f(0x11).rm(vector(v), x86_64::gpr::RSP, slot(s))
+                Evex::m0f(0x11).rm(v.number(), x86_64::gpr::RSP, Imm32(slot_disp(s)))
             }
             Inst::ReloadVector { dst, slot: s } => {
-                Evex::m0f(0x10).rm(write(dst), x86_64::gpr::RSP, slot(s))
+                Evex::m0f(0x10).rm(dst.number(), x86_64::gpr::RSP, Imm32(slot_disp(s)))
             }
             // `vvvv` is the lanes the mask leaves, and `rm` the ones it takes.
             Inst::BlendK {
@@ -837,21 +829,21 @@ impl<S: Placed> Inst<S> {
                 k,
                 if_true,
                 if_false,
-            } => Evex::m0f38_66(0x65).masked(mask(k)).rrr(
-                write(dst),
-                vector(if_false),
-                vector(if_true),
+            } => Evex::m0f38_66(0x65).masked(k.number()).rrr(
+                dst.number(),
+                if_false.number(),
+                if_true.number(),
             ),
-            Inst::KLogic { op, dst, a, b } => kop(*op as u8, write_mask(dst), mask(a), mask(b)),
-            Inst::KOnes { dst } => kop(KXNOR, write_mask(dst), K0, K0),
+            Inst::KLogic { op, dst, a, b } => kop(*op as u8, dst.number(), a.number(), b.number()),
+            Inst::KOnes { dst } => kop(KXNOR, dst.number(), K0, K0),
             Inst::KMov { dst, src } => EncodedInst::from_slice(&[
                 0xC5,
                 0xF8,
                 0x90,
-                0xC0 | (write_mask(dst) << 3) | mask(src),
+                0xC0 | (dst.number() << 3) | src.number(),
             ]),
-            Inst::SpillMask { src, slot: s } => kmem(0x91, mask(src), slot(s)),
-            Inst::ReloadMask { dst, slot: s } => kmem(0x90, write_mask(dst), slot(s)),
+            Inst::SpillMask { src, slot: s } => kmem(0x91, src.number(), Imm32(slot_disp(s))),
+            Inst::ReloadMask { dst, slot: s } => kmem(0x90, dst.number(), Imm32(slot_disp(s))),
         }
     }
 
@@ -895,7 +887,7 @@ impl<'m> Op<Bound<'m, Avx512>> {
 
 /// Sentinel for the EVEX `vvvv`/`V'` source field on instructions that have no
 /// second source (2-operand forms): the field must read as *unused*, which the
-/// hardware encodes as `vvvv = 1111` AND `V' = 1`. In `evex_rrr` both are
+/// hardware encodes as `vvvv = 1111` AND `V' = 1`. In [`Evex::rrr`] both are
 /// derived from the `src1` index by inversion, so the index that yields
 /// `vvvv=1111, V'=1` is **0** (not 0x1F — that has bit4 set, giving `V'=0` and a
 /// `#UD` / SIGILL).
@@ -1323,37 +1315,33 @@ impl IsaBackend for Avx512 {
         x86_64::ret(b);
     }
 
-    fn copy<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>) -> Value<C> {
-        match C::ID {
-            ClassId::Vector => {
-                let (dst, copy) = defined::<C, Vector>(b);
-                b.push(Op::Vector(Inst::Mov {
+    fn copy(b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
+        match src.class {
+            ClassId::Vector => b.define::<Vector>(|dst| {
+                Op::Vector(Inst::Mov {
                     dst,
-                    src: src.name().typed(),
-                }));
-                copy
-            }
-            ClassId::Opmask => {
-                let (dst, copy) = defined::<C, Opmask>(b);
-                b.push(Op::Vector(Inst::KMov {
+                    src: src.typed(),
+                })
+            }),
+            ClassId::Opmask => b.define::<Opmask>(|dst| {
+                Op::Vector(Inst::KMov {
                     dst,
-                    src: src.name().typed(),
-                }));
-                copy
-            }
+                    src: src.typed(),
+                })
+            }),
             ClassId::Pointer | ClassId::Integer => x86_64::copy_general(b, src),
             ClassId::Flags => unreachable!("the flags are not copied"),
         }
     }
 
-    fn spill<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>, slot: &FrameSlot) {
-        match C::ID {
+    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
+        match src.class {
             ClassId::Vector => b.push(Op::Vector(Inst::SpillVector {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: slot.name(),
             })),
             ClassId::Opmask => b.push(Op::Vector(Inst::SpillMask {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: slot.name(),
             })),
             ClassId::Pointer | ClassId::Integer => x86_64::spill_general(b, src, slot),
@@ -1361,25 +1349,21 @@ impl IsaBackend for Avx512 {
         }
     }
 
-    fn reload<C: Spill>(b: &mut Spiller<'_, Self>, slot: &FrameSlot) -> Value<C> {
-        match C::ID {
-            ClassId::Vector => {
-                let (dst, reloaded) = defined::<C, Vector>(b);
-                b.push(Op::Vector(Inst::ReloadVector {
+    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
+        match class {
+            ClassId::Vector => b.define::<Vector>(|dst| {
+                Op::Vector(Inst::ReloadVector {
                     dst,
                     slot: slot.name(),
-                }));
-                reloaded
-            }
-            ClassId::Opmask => {
-                let (dst, reloaded) = defined::<C, Opmask>(b);
-                b.push(Op::Vector(Inst::ReloadMask {
+                })
+            }),
+            ClassId::Opmask => b.define::<Opmask>(|dst| {
+                Op::Vector(Inst::ReloadMask {
                     dst,
                     slot: slot.name(),
-                }));
-                reloaded
-            }
-            ClassId::Pointer | ClassId::Integer => x86_64::reload_general(b, slot),
+                })
+            }),
+            ClassId::Pointer | ClassId::Integer => x86_64::reload_general(b, class, slot),
             ClassId::Flags => unreachable!("the flags are not reloaded"),
         }
     }

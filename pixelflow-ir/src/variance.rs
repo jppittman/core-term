@@ -462,24 +462,6 @@ impl LatticeShape {
         }
         count
     }
-
-    /// The extents serialized little-endian, for cache keys.
-    #[inline]
-    #[must_use]
-    pub const fn key_bytes(self) -> [u8; 4 * crate::arena::COORD_AXES] {
-        let mut out = [0u8; 4 * crate::arena::COORD_AXES];
-        let mut axis = 0;
-        while axis < crate::arena::COORD_AXES {
-            let b = self.0[axis].to_le_bytes();
-            let mut k = 0;
-            while k < 4 {
-                out[axis * 4 + k] = b[k];
-                k += 1;
-            }
-            axis += 1;
-        }
-        out
-    }
 }
 
 #[cfg(test)]
@@ -855,15 +837,5 @@ mod lattice_shape_tests {
         // A reduction binder sits inside the coordinate nest, and this type
         // does not carry its extent: count it as the innermost scope.
         assert_eq!(frame.evals(Variance::from_var(4)), 1920 * 1080);
-    }
-
-    #[test]
-    fn key_bytes_are_the_extents_and_distinguish_sizes() {
-        let a = LatticeShape::new([8, 8]);
-        let b = LatticeShape::new([9, 8]);
-        assert_eq!(a.key_bytes()[..4], 8u32.to_le_bytes());
-        assert_eq!(a.key_bytes()[4..8], 8u32.to_le_bytes());
-        assert_ne!(a.key_bytes(), b.key_bytes());
-        assert_eq!(a.extent(), [8, 8]);
     }
 }

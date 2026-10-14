@@ -8,13 +8,13 @@
 //! values and leaves the registers to the allocator.
 
 use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller, defined};
+use super::build::{Builder, Def, Spiller};
 use super::regalloc::resource::FrameSlot;
 use super::register_file::{EntryRegisters, Members, RegisterFile};
 use super::{
     Bound, Class, ClassId, Edges, FrameSize, IfArm, Integer, IsaBackend, Label, LaneOp, Patch,
-    Placed, Pointer, Rebind, STACK_PAGE, Selected, Spill, Stage, Store, Target, Test, Value,
-    ValueName, Vector, unimplemented_op,
+    Pointer, Rebind, STACK_PAGE, Selected, Stage, Store, Target, Test, Value, ValueName, Vector,
+    frame_bytes, slot_disp, unimplemented_op,
 };
 use crate::error::CompileError;
 use alloc::vec::Vec;
@@ -303,17 +303,9 @@ pub(super) enum Inst<S: Stage> {
     /// depends on where every instruction ahead of it landed; and this
     /// instruction's own size is one of those — so choosing the short form is
     /// branch relaxation, and resolving it needs layout iterated to a fixed
-    /// point to save four bytes once per compiled function. The alternative
-    /// this replaced tried to dodge that fixed point instead of running it:
-    /// emit `ADR` optimistically, *estimate* the distance to the not-yet-emitted
-    /// pool with a magic margin, and — when the estimate crossed it — splice
-    /// four bytes into the middle of already-emitted code to widen it to
-    /// `ADRP`+`ADD` after the fact. That splice was sound only because the
-    /// anchor sits above the whole loop nest, so every branch in the body had
-    /// both endpoints on the same side of it; a branch spanning it would have
-    /// broken silently. `AdrpAdd` has no estimate and nothing to splice — its
-    /// size is fixed before a single byte is laid out, like every other
-    /// instruction here.
+    /// point to save four bytes once per compiled function. `AdrpAdd`'s size is
+    /// fixed before a single byte is laid out, like every other instruction
+    /// here.
     ///
     /// # Alignment invariant
     ///
@@ -535,7 +527,7 @@ impl Inst<Selected> {
     }
 }
 
-impl<S: Placed> Inst<S> {
+impl<'m, B: IsaBackend> Inst<Bound<'m, B>> {
     /// The instruction's word; for a sequence, [`Inst::words`] has the rest.
     ///
     /// # Panics
@@ -544,22 +536,19 @@ impl<S: Placed> Inst<S> {
     /// encoding's limits, and a wrapped one would be some other instruction.
     #[must_use]
     fn encode(&self) -> u32 {
-        let (rv, wv) = (S::read::<Vector>, S::write::<Vector>);
-        let (rp, wp) = (S::read::<Pointer>, S::write::<Pointer>);
-        let (ri, wi) = (S::read::<Integer>, S::write::<Integer>);
         // `opcode | imm12 | Rn | Rt`: the scaled-immediate transfers.
-        let transfer = |opcode: u32, rt: u8, addr: &Mem<S>, access: u32| {
+        let transfer = |opcode: u32, rt: u8, addr: &Mem<Bound<'m, B>>, access: u32| {
             let imm12 = addr.scaled(access);
             assert!(
                 imm12 <= MAX_IMM12,
                 "offset {} exceeds the 12-bit scaled immediate",
                 addr.offset
             );
-            opcode | (imm12 << 10) | rn(rp(&addr.base)) | rd(rt)
+            opcode | (imm12 << 10) | rn(addr.base.number()) | rd(rt)
         };
         // The same, from the stack pointer, at the slot's offset.
-        let frame = |opcode: u32, rt: u8, slot: &S::Slot, access: u32| {
-            let offset = u32::try_from(S::slot(slot)).expect("a slot is above the stack pointer");
+        let frame = |opcode: u32, rt: u8, slot: &FrameSlot, access: u32| {
+            let offset = u32::try_from(slot_disp(slot)).expect("a slot is above the stack pointer");
             let imm12 = scaled(offset, access);
             assert!(
                 imm12 <= MAX_IMM12,
@@ -568,16 +557,18 @@ impl<S: Placed> Inst<S> {
             opcode | (imm12 << 10) | rn(abi::SP) | rd(rt)
         };
         match self {
-            Inst::Alu { op, dst, a, b } => *op as u32 | rd(wv(dst)) | rn(rv(a)) | rm(rv(b)),
-            Inst::Fmla { acc, a, b } => {
-                0x4E20_CC00 | rd(S::tie::<Vector>(acc)) | rn(rv(a)) | rm(rv(b))
+            Inst::Alu { op, dst, a, b } => {
+                *op as u32 | rd(dst.number()) | rn(a.number()) | rm(b.number())
             }
-            Inst::Unary { op, dst, src } => *op as u32 | rd(wv(dst)) | rn(rv(src)),
+            Inst::Fmla { acc, a, b } => {
+                0x4E20_CC00 | rd(acc.number()) | rn(a.number()) | rm(b.number())
+            }
+            Inst::Unary { op, dst, src } => *op as u32 | rd(dst.number()) | rn(src.number()),
             Inst::Bsl {
                 mask,
                 if_true,
                 if_false,
-            } => 0x6E60_1C00 | rd(S::tie::<Vector>(mask)) | rn(rv(if_true)) | rm(rv(if_false)),
+            } => 0x6E60_1C00 | rd(mask.number()) | rn(if_true.number()) | rm(if_false.number()),
             // `immh:immb` is `32 + amount` for `.4S`. At amount >= 32 that
             // carries into `immh`, making it 1xxx, which the ARM ARM decodes
             // as `.2D`: a 64-bit element shift that leaks bits across the
@@ -589,7 +580,10 @@ impl<S: Placed> Inst<S> {
                     "aarch64 SHL .4S: shift {amount} is out of range for a 32-bit lane — \
                      the immediate would encode .2D and cross lane boundaries"
                 );
-                0x4F00_5400 | rd(wv(dst)) | rn(rv(src)) | ((u32::from(*amount) + 32) << 16)
+                0x4F00_5400
+                    | rd(dst.number())
+                    | rn(src.number())
+                    | ((u32::from(*amount) + 32) << 16)
             }
             // `immh:immb` is `64 - amount`. Only counts in 1..=32 keep it
             // inside 01xx, so anything else silently encodes a DIFFERENT
@@ -600,33 +594,42 @@ impl<S: Placed> Inst<S> {
                     "aarch64 USHR .4S: shift {amount} is outside 1..=32 — the immediate would \
                      encode a different element size, not a 32-bit lane shift"
                 );
-                0x6F20_0400 | rd(wv(dst)) | rn(rv(src)) | ((64 - u32::from(*amount)) << 16)
+                0x6F20_0400
+                    | rd(dst.number())
+                    | rn(src.number())
+                    | ((64 - u32::from(*amount)) << 16)
             }
-            Inst::Mov { dst, src } => Alu::Orr as u32 | rd(wv(dst)) | rn(rv(src)) | rm(rv(src)),
-            Inst::DupLane0 { dst, src } => 0x4E04_0400 | rd(wv(dst)) | rn(rv(src)),
+            Inst::Mov { dst, src } => {
+                Alu::Orr as u32 | rd(dst.number()) | rn(src.number()) | rm(src.number())
+            }
+            Inst::DupLane0 { dst, src } => 0x4E04_0400 | rd(dst.number()) | rn(src.number()),
             Inst::UmovW { dst, src, lane } => {
-                0x0E00_3C00 | (imm5_lane(*lane) << 16) | rn(rv(src)) | rd(wi(dst))
+                0x0E00_3C00 | (imm5_lane(*lane) << 16) | rn(src.number()) | rd(dst.number())
             }
             Inst::InsFirst { dst, src } => {
-                0x4E00_1C00 | (imm5_lane(0) << 16) | rn(ri(src)) | rd(wv(dst))
+                0x4E00_1C00 | (imm5_lane(0) << 16) | rn(src.number()) | rd(dst.number())
             }
             Inst::InsLane { v, lane, src } => {
-                0x4E00_1C00 | (imm5_lane(*lane) << 16) | rn(ri(src)) | rd(S::tie::<Vector>(v))
+                0x4E00_1C00 | (imm5_lane(*lane) << 16) | rn(src.number()) | rd(v.number())
             }
             Inst::MvnW { dst } => {
-                let dst = S::tie::<Integer>(dst);
+                let dst = dst.number();
                 0x2A20_03E0 | rm(dst) | rd(dst)
             }
-            Inst::Zero { dst } => 0x4F00_0400 | rd(wv(dst)),
+            Inst::Zero { dst } => 0x4F00_0400 | rd(dst.number()),
             Inst::FmovImm { dst, imm8 } => {
                 let (abc, defgh) = (u32::from(*imm8 >> 5), u32::from(*imm8 & 0x1F));
-                0x4F00_F400 | (abc << 16) | (defgh << 5) | rd(wv(dst))
+                0x4F00_F400 | (abc << 16) | (defgh << 5) | rd(dst.number())
             }
             Inst::Madd { dst, a, b, addend } => {
-                0x9B00_0000 | rm(ri(b)) | ra(ri(addend)) | rn(ri(a)) | rd(wi(dst))
+                0x9B00_0000
+                    | rm(b.number())
+                    | ra(addend.number())
+                    | rn(a.number())
+                    | rd(dst.number())
             }
             Inst::AddLsl2 { dst, base, index } => {
-                0x8B00_0000 | rm(ri(index)) | (2 << 10) | rn(rp(base)) | rd(wp(dst))
+                0x8B00_0000 | rm(index.number()) | (2 << 10) | rn(base.number()) | rd(dst.number())
             }
             // The lane is `Q:S`, the high bit in the instruction's `Q` and the
             // low bit in `S`.
@@ -636,44 +639,44 @@ impl<S: Placed> Inst<S> {
                     "ST1 {{Vt.S}}[{lane}]: a 128-bit register has four 32-bit lanes"
                 );
                 let (q, s) = (u32::from(lane >> 1), u32::from(lane & 1));
-                0x0D9F_8000 | (q << 30) | (s << 12) | rn(S::tie::<Pointer>(base)) | rd(rv(src))
+                0x0D9F_8000 | (q << 30) | (s << 12) | rn(base.number()) | rd(src.number())
             }
-            Inst::FcvtzsX { dst, src } => 0x9E38_0000 | rn(rv(src)) | rd(wi(dst)),
-            Inst::FmovToGp { dst, src } => 0x1E26_0000 | rn(rv(src)) | rd(wi(dst)),
-            Inst::MovX { dst, src } => 0xAA00_03E0 | rm(rp(src)) | rd(wp(dst)),
-            Inst::MovInt { dst, src } => 0xAA00_03E0 | rm(ri(src)) | rd(wi(dst)),
+            Inst::FcvtzsX { dst, src } => 0x9E38_0000 | rn(src.number()) | rd(dst.number()),
+            Inst::FmovToGp { dst, src } => 0x1E26_0000 | rn(src.number()) | rd(dst.number()),
+            Inst::MovX { dst, src } => 0xAA00_03E0 | rm(src.number()) | rd(dst.number()),
+            Inst::MovInt { dst, src } => 0xAA00_03E0 | rm(src.number()) | rd(dst.number()),
             Inst::AddImmHi { dst, src, imm } => {
-                0x9140_0000 | (imm.bits() << 10) | rn(rp(src)) | rd(wp(dst))
+                0x9140_0000 | (imm.bits() << 10) | rn(src.number()) | rd(dst.number())
             }
             Inst::AddSpHi { dst, imm } => {
-                0x9140_0000 | (imm.bits() << 10) | rn(abi::SP) | rd(wp(dst))
+                0x9140_0000 | (imm.bits() << 10) | rn(abi::SP) | rd(dst.number())
             }
             Inst::LdrQ { dst, addr } | Inst::LoadConst { dst, addr } => {
-                transfer(0x3DC0_0000, wv(dst), addr, Q_BYTES)
+                transfer(0x3DC0_0000, dst.number(), addr, Q_BYTES)
             }
-            Inst::StrQ { src, addr } => transfer(0x3D80_0000, rv(src), addr, Q_BYTES),
-            Inst::SpillQ { src, slot } => frame(0x3D80_0000, rv(src), slot, Q_BYTES),
-            Inst::ReloadQ { dst, slot } => frame(0x3DC0_0000, wv(dst), slot, Q_BYTES),
-            Inst::SpillPtr { src, slot } => frame(0xF900_0000, rp(src), slot, X_BYTES),
-            Inst::ReloadPtr { dst, slot } => frame(0xF940_0000, wp(dst), slot, X_BYTES),
-            Inst::SpillInt { src, slot } => frame(0xF900_0000, ri(src), slot, X_BYTES),
-            Inst::ReloadInt { dst, slot } => frame(0xF940_0000, wi(dst), slot, X_BYTES),
-            Inst::LdrX { dst, addr } => transfer(0xF940_0000, wp(dst), addr, X_BYTES),
-            Inst::LdrS { dst, addr } => transfer(0xBD40_0000, wv(dst), addr, S_BYTES),
+            Inst::StrQ { src, addr } => transfer(0x3D80_0000, src.number(), addr, Q_BYTES),
+            Inst::SpillQ { src, slot } => frame(0x3D80_0000, src.number(), slot, Q_BYTES),
+            Inst::ReloadQ { dst, slot } => frame(0x3DC0_0000, dst.number(), slot, Q_BYTES),
+            Inst::SpillPtr { src, slot } => frame(0xF900_0000, src.number(), slot, X_BYTES),
+            Inst::ReloadPtr { dst, slot } => frame(0xF940_0000, dst.number(), slot, X_BYTES),
+            Inst::SpillInt { src, slot } => frame(0xF900_0000, src.number(), slot, X_BYTES),
+            Inst::ReloadInt { dst, slot } => frame(0xF940_0000, dst.number(), slot, X_BYTES),
+            Inst::LdrX { dst, addr } => transfer(0xF940_0000, dst.number(), addr, X_BYTES),
+            Inst::LdrS { dst, addr } => transfer(0xBD40_0000, dst.number(), addr, S_BYTES),
             Inst::LdrW { dst, addr } => {
-                0xB860_5800 | rm(ri(&addr.index)) | rn(rp(&addr.base)) | rd(wi(dst))
+                0xB860_5800 | rm(addr.index.number()) | rn(addr.base.number()) | rd(dst.number())
             }
             Inst::LdrSIndexed { dst, addr } => {
-                0xBC60_5800 | rm(ri(&addr.index)) | rn(rp(&addr.base)) | rd(wv(dst))
+                0xBC60_5800 | rm(addr.index.number()) | rn(addr.base.number()) | rd(dst.number())
             }
             Inst::B { .. } => B_OPCODE,
             Inst::CbzFar { test, .. } => {
                 CBZ_W_OPCODE
                     | CB_OP_NONZERO
                     | (CBNZ_SKIPS_B << DispField::IMM19.shift)
-                    | rd(ri(test))
+                    | rd(test.number())
             }
-            Inst::AdrpAdd { dst, .. } => 0x9000_0000 | rd(wp(dst)),
+            Inst::AdrpAdd { dst, .. } => 0x9000_0000 | rd(dst.number()),
             Inst::ProbePage => SUB_SP_PAGE,
             Inst::Enter { .. } | Inst::Ret { .. } | Inst::Fallthrough { .. } => {
                 unreachable!("this instruction is a run of words, not a word")
@@ -692,7 +695,7 @@ impl<S: Placed> Inst<S> {
             }
             // `add dst, dst, #0`, whose immediate `patch_adrp_add` fills in.
             Inst::AdrpAdd { dst, .. } => {
-                let dst = S::write::<Pointer>(dst);
+                let dst = dst.number();
                 put(self.encode());
                 put(0x9100_0000 | rn(dst) | rd(dst));
             }
@@ -701,15 +704,15 @@ impl<S: Placed> Inst<S> {
                 put(STR_XZR_SP);
             }
             Inst::Enter { size } => {
-                let mut left = S::frame_size(size);
+                let mut left = frame_bytes(*size);
                 while left > STACK_PAGE {
-                    Inst::<S>::ProbePage.words(put);
+                    Self::ProbePage.words(put);
                     left -= STACK_PAGE;
                 }
                 step_sp(SUB_SP, left, put);
             }
             Inst::Ret { size } => {
-                step_sp(ADD_SP, S::frame_size(size), put);
+                step_sp(ADD_SP, frame_bytes(*size), put);
                 put(0xD65F_03C0);
             }
             _ => put(self.encode()),
@@ -720,11 +723,11 @@ impl<S: Placed> Inst<S> {
     /// how it is filled.
     fn label_field(&self) -> Option<(usize, Label, Patch)> {
         match self {
-            Inst::B { to } => Some((0, S::target(to), patch_imm26)),
+            Inst::B { to } => Some((0, *to, patch_imm26)),
             // The `CBNZ` is the first word; the `B` it steps over sits one
             // word later, and a displacement is measured from the branch's
             // own address.
-            Inst::CbzFar { taken, .. } => Some((WORD_BYTES, S::target(taken), patch_imm26)),
+            Inst::CbzFar { taken, .. } => Some((WORD_BYTES, *taken, patch_imm26)),
             Inst::AdrpAdd { to, .. } => Some((0, *to, patch_adrp_add)),
             _ => None,
         }
@@ -737,8 +740,8 @@ impl<S: Placed> Inst<S> {
             out.field(at, label, patch);
         }
         match self {
-            Inst::CbzFar { next, .. } => out.falls_through(S::target(next)),
-            Inst::Fallthrough { to } => out.falls_through(S::target(to)),
+            Inst::CbzFar { next, .. } => out.falls_through(*next),
+            Inst::Fallthrough { to } => out.falls_through(*to),
             _ => {}
         }
     }
@@ -1290,87 +1293,67 @@ impl IsaBackend for Neon {
         b.push(Inst::Ret { size: FrameSize });
     }
 
-    fn copy<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>) -> Value<C> {
-        match C::ID {
-            ClassId::Vector => {
-                let (dst, copy) = defined::<C, Vector>(b);
-                b.push(Inst::Mov {
-                    dst,
-                    src: src.name().typed(),
-                });
-                copy
+    fn copy(b: &mut Spiller<'_, Self>, src: ValueName) -> ValueName {
+        match src.class {
+            ClassId::Vector => b.define::<Vector>(|dst| Inst::Mov {
+                dst,
+                src: src.typed(),
+            }),
+            ClassId::Pointer => b.define::<Pointer>(|dst| Inst::MovX {
+                dst,
+                src: src.typed(),
+            }),
+            ClassId::Integer => b.define::<Integer>(|dst| Inst::MovInt {
+                dst,
+                src: src.typed(),
+            }),
+            ClassId::Opmask | ClassId::Flags => {
+                unreachable!("NEON has no {:?} to copy", src.class)
             }
-            ClassId::Pointer => {
-                let (dst, copy) = defined::<C, Pointer>(b);
-                b.push(Inst::MovX {
-                    dst,
-                    src: src.name().typed(),
-                });
-                copy
-            }
-            ClassId::Integer => {
-                let (dst, copy) = defined::<C, Integer>(b);
-                b.push(Inst::MovInt {
-                    dst,
-                    src: src.name().typed(),
-                });
-                copy
-            }
-            ClassId::Opmask | ClassId::Flags => unreachable!("NEON has no {:?} to copy", C::ID),
         }
     }
 
-    fn spill<C: Spill>(b: &mut Spiller<'_, Self>, src: Value<C>, slot: &FrameSlot) {
+    fn spill(b: &mut Spiller<'_, Self>, src: ValueName, slot: &FrameSlot) {
         let name = slot.name();
-        match C::ID {
+        match src.class {
             ClassId::Vector if reaches(slot.offset()) => b.push(Inst::SpillQ {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: name,
             }),
             ClassId::Vector => {
                 let addr = deep(b, slot.offset());
                 b.push(Inst::StrQ {
-                    src: src.name().typed(),
+                    src: src.typed(),
                     addr,
                 });
             }
             ClassId::Pointer => b.push(Inst::SpillPtr {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: name,
             }),
             ClassId::Integer => b.push(Inst::SpillInt {
-                src: src.name().typed(),
+                src: src.typed(),
                 slot: name,
             }),
-            ClassId::Opmask | ClassId::Flags => unreachable!("NEON has no {:?} to spill", C::ID),
+            ClassId::Opmask | ClassId::Flags => {
+                unreachable!("NEON has no {:?} to spill", src.class)
+            }
         }
     }
 
-    fn reload<C: Spill>(b: &mut Spiller<'_, Self>, slot: &FrameSlot) -> Value<C> {
+    fn reload(b: &mut Spiller<'_, Self>, class: ClassId, slot: &FrameSlot) -> ValueName {
         let name = slot.name();
-        match C::ID {
+        match class {
             ClassId::Vector if reaches(slot.offset()) => {
-                let (dst, reloaded) = defined::<C, Vector>(b);
-                b.push(Inst::ReloadQ { dst, slot: name });
-                reloaded
+                b.define::<Vector>(|dst| Inst::ReloadQ { dst, slot: name })
             }
             ClassId::Vector => {
                 let addr = deep(b, slot.offset());
-                let (dst, reloaded) = defined::<C, Vector>(b);
-                b.push(Inst::LdrQ { dst, addr });
-                reloaded
+                b.define::<Vector>(|dst| Inst::LdrQ { dst, addr })
             }
-            ClassId::Pointer => {
-                let (dst, reloaded) = defined::<C, Pointer>(b);
-                b.push(Inst::ReloadPtr { dst, slot: name });
-                reloaded
-            }
-            ClassId::Integer => {
-                let (dst, reloaded) = defined::<C, Integer>(b);
-                b.push(Inst::ReloadInt { dst, slot: name });
-                reloaded
-            }
-            ClassId::Opmask | ClassId::Flags => unreachable!("NEON has no {:?} to reload", C::ID),
+            ClassId::Pointer => b.define::<Pointer>(|dst| Inst::ReloadPtr { dst, slot: name }),
+            ClassId::Integer => b.define::<Integer>(|dst| Inst::ReloadInt { dst, slot: name }),
+            ClassId::Opmask | ClassId::Flags => unreachable!("NEON has no {class:?} to reload"),
         }
     }
 
@@ -1514,9 +1497,8 @@ impl DispField {
     ///
     /// If the displacement is not a whole number of instructions, or does not
     /// fit. The first is a bug in this crate; the second is a real limit of the
-    /// encoding. A guard no longer meets it: [`Inst::CbzFar`] jumps with a
-    /// `B`, ±128 MiB (2026-10-05; before that an arm past `CBZ`'s 262,144
-    /// words panicked here), and no emitter verb branches with a `B.cond`.
+    /// encoding. A guard does not meet it: [`Inst::CbzFar`] jumps with a `B`,
+    /// ±128 MiB, and no emitter verb branches with a `B.cond`.
     fn write(self, code: &mut [u8], at: usize, target: usize) {
         let bytes = target as i64 - at as i64;
         assert!(
@@ -1556,107 +1538,8 @@ const CB_OP_NONZERO: u32 = 1 << 24;
 const CBNZ_SKIPS_B: u32 = 2;
 
 #[cfg(test)]
-mod label_tests {
+mod disp_field_tests {
     use super::*;
-    use crate::emit::asm::{AsmProgram, Item, Labels, assemble};
-
-    /// A word and the label field in it, as the assembler is handed it.
-    type Word = (u32, Option<Label>);
-
-    /// `nop`: one known word, so a test can measure distances in
-    /// instructions.
-    const NOP: Word = (0xD503_201F, None);
-
-    fn b(to: Label) -> Word {
-        (B_OPCODE, Some(to))
-    }
-
-    fn assembled(text: Vec<Item<Word>>, labels: Labels) -> Vec<u8> {
-        assemble(
-            &AsmProgram {
-                text,
-                data: Vec::new(),
-                labels,
-            },
-            |(word, label), out| {
-                out.bytes(&word.to_le_bytes());
-                if let Some(label) = *label {
-                    out.field(0, label, patch_imm26);
-                }
-            },
-        )
-        .code
-    }
-
-    fn word_at(code: &[u8], at: usize) -> u32 {
-        u32::from_le_bytes([code[at], code[at + 1], code[at + 2], code[at + 3]])
-    }
-
-    #[test]
-    fn forward_branch_counts_instructions_not_bytes() {
-        let mut labels = Labels::default();
-        let end = labels.mint();
-        let code = assembled(
-            vec![
-                Item::Inst(b(end)),
-                Item::Inst(NOP),
-                Item::Inst(NOP),
-                Item::Bind(end),
-            ],
-            labels,
-        );
-        // Three instructions ahead of the branch's own address.
-        assert_eq!(word_at(&code, 0) & 0x03FF_FFFF, 3);
-    }
-
-    #[test]
-    fn a_back_edge_is_negative() {
-        let mut labels = Labels::default();
-        let top = labels.mint();
-        let code = assembled(
-            vec![
-                Item::Bind(top),
-                Item::Inst(NOP),
-                Item::Inst(NOP),
-                Item::Inst(b(top)),
-            ],
-            labels,
-        );
-        // The branch sits two instructions past the label, so -2 words, in
-        // imm26's two's complement.
-        assert_eq!(
-            word_at(&code, 8) & 0x03FF_FFFF,
-            (-2i32 as u32) & 0x03FF_FFFF
-        );
-    }
-
-    /// A label may name a position no instruction occupies — the end of the
-    /// program. That is why binding a label is a step of its own rather than
-    /// a field on an instruction: there is nothing here to hang it on.
-    #[test]
-    fn a_label_can_end_the_program() {
-        let mut labels = Labels::default();
-        let end = labels.mint();
-        let code = assembled(vec![Item::Inst(b(end)), Item::Bind(end)], labels);
-        assert_eq!(code.len(), 4);
-        assert_eq!(word_at(&code, 0) & 0x03FF_FFFF, 1);
-    }
-
-    #[test]
-    fn a_program_is_position_independent() {
-        let program = |prefix: &[u8]| {
-            let mut labels = Labels::default();
-            let end = labels.mint();
-            let mut text = Vec::new();
-            if !prefix.is_empty() {
-                text.push(Item::Bytes(prefix.to_vec()));
-            }
-            text.extend([Item::Inst(b(end)), Item::Inst(NOP), Item::Bind(end)]);
-            assembled(text, labels)
-        };
-        let offset = program(&[0xAA; 4]);
-        assert_eq!(&program(&[])[..], &offset[4..]);
-    }
 
     #[test]
     #[should_panic(expected = "does not fit 19 bits")]

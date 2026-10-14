@@ -57,7 +57,7 @@ use pixelflow_ir::LatticeShape;
 use pixelflow_ir::arena::{BufferDecl, ExprNode, UniformDecl};
 use pixelflow_ir::key::{Canonical, canonical};
 
-static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Arc<CompiledKernel>>>> = OnceLock::new();
+static CACHE: OnceLock<Mutex<HashMap<CacheKey, Arc<CompiledKernel>>>> = OnceLock::new();
 
 /// Compiled code plus the link: which identity each slot the code was
 /// compiled against binds.
@@ -120,11 +120,8 @@ pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Lin
     } = canonical(linked_arena, linked_root);
 
     // Optimize, link, then emit. This is not a step callers get to sequence:
-    // an arena reaching a backend unoptimized is never what anyone wanted,
-    // and when the choice was on offer, two of the three production call
-    // sites took the wrong one and compiled the terminal's cell-grid kernels
-    // with no CSE and no FMA fusion. It is inside the compile entry because
-    // that is the only place it cannot be forgotten.
+    // an arena reaching a backend unoptimized is never what anyone wanted, so
+    // it is inside the compile entry, the one place it cannot be forgotten.
     //
     // The optimizer is handed the arena *as written*, references and all: a
     // reference is a unit, optimized by itself and linked back in after
@@ -160,11 +157,11 @@ pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Lin
     // Keyed on the arena *as handed in*, before optimization, plus the shape.
     // Optimization is a deterministic function of those two, so equal inputs
     // yield equal output and a hit skips the saturation as well as the codegen.
-    let key = cache_key(
-        expanded_key,
+    let key = CacheKey {
+        expanded: expanded_key,
         shape,
-        holds_a_ref.then(|| canonical(arena, root).key),
-    );
+        as_written: holds_a_ref.then(|| canonical(arena, root).key),
+    };
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache.lock().expect("jit_cache: lock poisoned").get(&key) {
         return Ok(Linked {
@@ -188,23 +185,16 @@ pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Lin
     })
 }
 
-/// The first byte of a key whose kernel names units. No node encoding
-/// starts with it (`pixelflow_ir::key`'s tags are small), so such a key never
-/// equals the key of a kernel without one.
-const UNIT_PROGRAM_TAG: u8 = 0xff;
-
 /// The compile cache's key: what the code is a function of.
 ///
-/// Without units that is the expanded kernel's structure and the shape —
-/// unchanged from before units existed. **With units it is also where they
-/// are.** The expanded structure cannot say: `body` and `body.by_ref()`
-/// expand alike and are different programs, since a unit is optimized by
-/// itself, so on that key whichever compiled first would answer for both and
-/// the bytes would depend on compile order. `as_written` — the kernel's own
-/// canonical bytes, in which a `Ref` is its referent's identity — says it.
-/// Laid out tag, the expanded key's length, the expanded key, the shape (a
-/// fixed width), then `as_written`, so two unit keys are equal only when all
-/// three are.
+/// Without units that is the expanded kernel's structure and the shape.
+/// **With units it is also where they are.** The expanded structure cannot
+/// say: `body` and `body.by_ref()` expand alike and are different programs,
+/// since a unit is optimized by itself, so on that key whichever compiled
+/// first would answer for both and the bytes would depend on compile order.
+/// `as_written` — the kernel's own canonical bytes, in which a `Ref` is its
+/// referent's identity — says it, and is `None` for a kernel that names no
+/// unit.
 ///
 /// The cost of keying on identity, recorded in
 /// docs/plans/2026-09-25-the-language-is-kernel.md §4 O1: a unit's identity
@@ -212,19 +202,11 @@ const UNIT_PROGRAM_TAG: u8 = 0xff;
 /// uniforms is a new entry here, where the same structure without units
 /// would hit. A structural key that walks through the units is the caching
 /// JP has deferred.
-fn cache_key(expanded: Vec<u8>, shape: LatticeShape, as_written: Option<Vec<u8>>) -> Vec<u8> {
-    let Some(as_written) = as_written else {
-        let mut key = expanded;
-        key.extend_from_slice(&shape.key_bytes());
-        return key;
-    };
-    let mut key = Vec::new();
-    key.push(UNIT_PROGRAM_TAG);
-    key.extend_from_slice(&(expanded.len() as u64).to_le_bytes());
-    key.extend_from_slice(&expanded);
-    key.extend_from_slice(&shape.key_bytes());
-    key.extend_from_slice(&as_written);
-    key
+#[derive(PartialEq, Eq, Hash)]
+struct CacheKey {
+    expanded: Vec<u8>,
+    shape: LatticeShape,
+    as_written: Option<Vec<u8>>,
 }
 
 /// Number of distinct kernels interned so far (test/telemetry hook).
@@ -320,12 +302,7 @@ mod tests {
     #[test]
     fn a_folds_range_is_part_of_its_kernel_identity() {
         // Two kernels alike but for one fold's extent must not share a cache
-        // entry. The hazard this began as — a `Reduce`'s children living at
-        // an offset into the flat nary slab, where an off-by-slicing bug
-        // dropped them from the key — is gone with the encoding: a fold's
-        // range is a field of the node now. What it *tested* is still the
-        // property that matters, and it is about `Fold::to_bits` being in
-        // the key rather than about slicing.
+        // entry: the property is that `Fold::to_bits` is in the key.
         let slot = |s: u8| Binder::from_slot(s).expect("a live binder");
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -629,7 +606,7 @@ mod tests {
         assert_eq!(canon(&k).key, canon(&kb).key);
     }
 
-    /// The compile key, spelled out.
+    /// The canonical key, spelled out.
     ///
     /// `canonical` moved to `pixelflow-ir` so a `Ref` could name into the same
     /// identity this cache keys on
@@ -651,7 +628,7 @@ mod tests {
     /// never persisted, so the encoding moving is a fact to pin, not a
     /// migration.
     #[test]
-    fn the_compile_key_is_the_canonical_bytes_plus_the_shape() {
+    fn the_canonical_key_is_the_documented_encoding() {
         let buffer = BufferDecl {
             id: BufferIdentity::mint(),
             width: 4,
@@ -706,11 +683,6 @@ mod tests {
         assert_eq!(got.key, want, "the canonical encoding moved");
         assert_eq!(got.buffers, [buffer], "and its link table with it");
         assert_eq!(got.uniforms, [uniform]);
-
-        // What `compile` keys the cache on: those bytes, then the shape's.
-        let mut with_shape = want.clone();
-        with_shape.extend_from_slice(&TEST_SHAPE.key_bytes());
-        assert_ne!(with_shape, want, "the shape must be part of the key");
     }
 
     /// A table naming an instance the graph never reads — what `Kernel::at`
@@ -718,7 +690,7 @@ mod tests {
     /// The link omits it; the relink drops it with the garbage. Forced down
     /// the optimizer's bail path (`RawGather` is post-lowering, so the
     /// e-graph declines and the input arena, table and all, is what gets
-    /// linked), which is where an unreachable declaration used to panic.
+    /// linked).
     #[test]
     fn a_declared_but_unread_uniform_links_on_the_bail_path() {
         let decl = |default| UniformDecl {

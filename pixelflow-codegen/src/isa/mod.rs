@@ -3,14 +3,10 @@
 //!
 //! Every backend in [`crate::emit`] compiles on every host — emission is a
 //! pure function into bytes — so the target never decided which backends
-//! *exist*, only which one is *instantiated*. Until this module that choice
-//! was `cfg(target_feature)`: the build's flags, which a plain `cargo build`
-//! never sets, so every x86-64 host ran 128-bit SSE2 kernels however wide the
-//! machine was, and each wider tier was a separate build of the whole
-//! workspace that only `xtask isa-matrix` ever made. Now the choice is
-//! CPUID's: the widest tier this host can execute, with a floor of AVX2+FMA on
-//! x86-64 (there is no SSE2 tier any more) and NEON on aarch64. A host below
-//! the floor is refused, loudly, with the feature it lacks named.
+//! *exist*, only which one is *instantiated*. The choice is CPUID's, not the
+//! build's flags: the widest tier this host can execute, with a floor of
+//! AVX2+FMA on x86-64 (there is no SSE2 tier) and NEON on aarch64. A host
+//! below the floor is refused, loudly, with the feature it lacks named.
 //!
 //! The width follows the tier ([`jit_vector_bytes`](crate::jit_vector_bytes)),
 //! and nothing else in the workspace holds one: `pixelflow-core` asks for it
@@ -57,22 +53,6 @@ pub enum Isa {
 impl Isa {
     /// Every tier, in the order `PIXELFLOW_ISA`'s error message lists them.
     const ALL: [Self; 3] = [Self::Avx2, Self::Avx512, Self::Neon];
-
-    /// Bytes in one vector register of this tier: the batch the lattice's
-    /// lane fold is executed by. An ISA-defined width, which is why it is a
-    /// table here rather than something read off a backend — a `zmm` is 64
-    /// bytes by definition. This module's tests pin the table and `emit`'s
-    /// pin each backend's register file to the same widths, which is what
-    /// ties [`jit_vector_bytes`](crate::jit_vector_bytes) to the backend a
-    /// compile instantiates.
-    #[must_use]
-    pub(crate) const fn vector_bytes(self) -> usize {
-        match self {
-            Self::Avx2 => 32,
-            Self::Avx512 => 64,
-            Self::Neon => 16,
-        }
-    }
 
     /// The name `PIXELFLOW_ISA` spells this tier as, and a summary prints.
     #[must_use]
@@ -169,19 +149,6 @@ mod tests {
         assert!(tiers.contains(&detect()));
     }
 
-    /// A `ymm` is 32 bytes, a `zmm` 64 and a NEON `q` register 16, by
-    /// definition — the same table `emit`'s
-    /// `every_backends_vector_width_is_its_tiers` pins each backend's register
-    /// file to.
-    #[test]
-    fn each_tiers_width_is_its_registers() {
-        let widths = Isa::ALL.map(|isa| (isa, isa.vector_bytes()));
-        assert_eq!(
-            widths,
-            [(Isa::Avx2, 32), (Isa::Avx512, 64), (Isa::Neon, 16)]
-        );
-    }
-
     #[test]
     fn a_name_round_trips_and_is_case_insensitive() {
         for isa in Isa::ALL {
@@ -196,7 +163,10 @@ mod tests {
     #[test]
     fn the_widest_runnable_tier_is_first() {
         let tiers = runnable().expect("this host runs the tests, so it is above the floor");
-        let widest = tiers.iter().map(|isa| isa.vector_bytes()).max();
-        assert_eq!(Some(tiers[0].vector_bytes()), widest);
+        let widest = tiers
+            .iter()
+            .map(|&isa| crate::emit::vector_bytes(isa))
+            .max();
+        assert_eq!(Some(crate::emit::vector_bytes(tiers[0])), widest);
     }
 }

@@ -29,15 +29,14 @@ struct Feature {
 ///   `vroundps`, `vinsertf128`/`vextractf128`, `vmovmskps`,
 ///   `vcvttps2dq`/`vcvtdq2ps`, and the OS having enabled `ymm` state, which
 ///   `is_x86_feature_detected!` checks with the bit.
-/// - `fma` — `vfmadd231ps` (`emit_fmadd_c_in_dst`), the one-rounding
-///   `MulAdd`. Not implied by `avx2` in CPUID any more than in rustc's feature
-///   model, and no shipping CPU has ever offered one without the other
-///   (Intel: both since Haswell; AMD: FMA3 predates AVX2 by a generation —
-///   x86-64-v3 codifies the pairing). So AVX2-without-FMA is not a narrower
-///   tier but a paper configuration; it once forked `emit_fmadd_c_in_dst`
-///   into a two-rounding variant no real machine exercised, and that fork
-///   put two materially different kernels under one environment fingerprint
-///   (`pixelflow-pipeline/src/journal.rs`). A host lacking `fma` is refused.
+/// - `fma` — `vfmadd231ps`, the one-rounding `MulAdd`. Not implied by `avx2`
+///   in CPUID any more than in rustc's feature model, and no shipping CPU has
+///   ever offered one without the other (Intel: both since Haswell; AMD: FMA3
+///   predates AVX2 by a generation — x86-64-v3 codifies the pairing). So
+///   AVX2-without-FMA is not a narrower tier but a paper configuration, and a
+///   two-rounding `MulAdd` for it would put two materially different kernels
+///   under one environment fingerprint (`pixelflow-pipeline/src/journal.rs`).
+///   A host lacking `fma` is refused.
 const AVX2_FLOOR: &[Feature] = &[
     Feature {
         name: "avx2",
@@ -53,11 +52,11 @@ const AVX2_FLOOR: &[Feature] = &[
 ///
 /// - `avx512f` — the `zmm` register file (`zmm16..31` included) and the EVEX
 ///   encoding of everything arithmetic; `vcmpps` into a `k` register and the
-///   `kmovw`/`kortestw` that read it (`emit_compare`, a guard's all-lanes
-///   test); `vptestmd`; `vpternlogd` (`If`'s blend); `vrndscaleps`
-///   (`Floor`/`Round`); `vrcp14ps`/`vrsqrt14ps`; the writemasked `vmovups`
-///   store of a remainder (`emit_write`); `vgatherdps zmm`; `vpmovzxbd zmm`;
-///   and `vcvttss2si`/`vmovq` in their EVEX forms.
+///   `kmovw`/`kortestw` that read it (an arm's all-lanes test); `vptestmd`;
+///   `vpternlogd` (`If`'s blend); `vrndscaleps` (`Floor`/`Round`);
+///   `vrcp14ps`/`vrsqrt14ps`; the writemasked `vmovups` store of a remainder;
+///   `vgatherdps zmm`; `vpmovzxbd zmm`; and `vcvttss2si`/`vmovq` in their
+///   EVEX forms.
 /// - `avx512dq` — `vpmovm2d`, which widens every comparison's `k` mask back
 ///   into a per-lane vector (the file's header says why F alone would fault
 ///   on any kernel with a comparison); the EVEX forms of the float logicals

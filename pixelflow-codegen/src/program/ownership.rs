@@ -13,7 +13,7 @@
 //! **lowest common ancestor** of the regions that read it: if only one arm
 //! reads it, it is that arm's; if both arms, or the mask, or anything outside
 //! the `If`, read it, it belongs to the region around the `If`. A loop reads
-//! what it reads at its `Reduce` (`FoldReads`), so a value only the loops in
+//! what it reads at its `Reduce` ([`FoldReads`]), so a value only the loops in
 //! one arm read is that arm's, and a batch that skips them skips it too.
 //!
 //! That is the whole relation. It is computed in one reverse pass over the
@@ -23,24 +23,16 @@
 //! One pass, O(reads × log depth): the lowest common ancestor is a climb on
 //! skip pointers, so a ladder of `else if`s a thousand deep costs what a flat
 //! scope does.
-//!
-//! This replaced a search. The old analysis recovered the same sets per `If`
-//! by closing a cone under "every consumer is in the set", which is a walk of
-//! the whole scope for every `If`. The two were asserted equal on every compile
-//! (and on 300 random DAGs) until the search was deleted; what keeps this pass
-//! honest now is its own tests, which pin the relation case by case, and the
-//! layout built on it, whose every branch is checked to be exactly the run of
-//! the values its arm owns, ahead of its `If`.
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use pixelflow_ir::kind::OpKind;
 
 use crate::error::CompileError;
 use crate::pass::Pass;
-use crate::program::guards::FoldReads;
 use crate::program::tree::Tree;
-use crate::program::{Def, IfArm, ScheduledOp, ScopedSchedule, ValueId};
+use crate::program::{Def, IfArm, ScheduledOp, ScopedSchedule, ValueId, all_operands};
 
 /// A region of one scope: the scope itself, or one arm of one `If` in it.
 ///
@@ -92,10 +84,40 @@ impl Pass for Own {
                 .folds
                 .iter()
                 .filter(|fold| fold.parent == scope)
-                .map(|fold| (fold.reduce, fold.reads()));
-            Ownership::of(schedule, &FoldReads::new(schedule, opened))
+                .map(|fold| (fold.reduce, fold.reads().collect()))
+                .collect();
+            Ownership::of(schedule, &opened)
         }))
     }
+}
+
+/// What each loop a scope opens reads, keyed by the loop's `Reduce` def: the
+/// ids its body names, which the scope's own schedule holds or an enclosing
+/// scope does (`ScopeFold::reads`).
+///
+/// To [`operands`](crate::program::operands) a `Reduce` def is a leaf: once
+/// `scopes::extract_folds` has carved a fold's body into a scope of its own,
+/// the def is only where the loop opens. But the loop *runs* there, and its
+/// body reads this scope: a sibling fold's result from its accumulator slot, a
+/// value invariant in the fold from the park this scope leaves it in. Without
+/// these edges a guard could skip a fold whose result a sibling fold's body
+/// still reads, or a value a fold reads, which the fold then finds unwritten
+/// (`pixelflow-core/tests/guard_sibling_fold.rs` pins both).
+///
+/// They take no walk of a body: a fold's schedule keeps its parent's `ValueId`s,
+/// so what it reads from its parent is among the ids it names, and a fold
+/// nested in it reads nothing its parent does not name
+/// (`ScopedSchedule::assert_closed`, run before this). Every named id is an
+/// edge, a leaf the body rebuilds for itself included, which over-approximates
+/// (such a leaf is kept out of an arm the fold does not run in); one this scope
+/// does not define is not a position here and is ignored.
+pub(super) type FoldReads = BTreeMap<ValueId, Vec<ValueId>>;
+
+/// Everything the def `def` reads: its operands of both register classes, and,
+/// for a `Reduce` that opens a fold, what the fold reads.
+pub(super) fn reads<'a>(folds: &'a FoldReads, def: &'a Def) -> impl Iterator<Item = ValueId> + 'a {
+    let fold = folds.get(&def.value).into_iter().flatten().copied();
+    all_operands(&def.op).chain(fold)
 }
 
 /// Ownership of one scope's schedule.
@@ -136,7 +158,7 @@ impl Ownership {
     /// The ownership of `schedule`.
     ///
     /// `folds` is what each loop the scope opens reads from it, which makes
-    /// the loop's `Reduce` def a reader of each of those values (`FoldReads`).
+    /// the loop's `Reduce` def a reader of each of those values.
     pub(super) fn of(schedule: &[Def], folds: &FoldReads) -> Self {
         let positions = Positions::of(schedule);
         let mut me = Self {
@@ -185,8 +207,8 @@ impl Ownership {
                     read(&mut me, *if_true, on_true);
                     read(&mut me, *if_false, on_false);
                 }
-                op => {
-                    for value in folds.reads(def.value, op) {
+                _ => {
+                    for value in reads(folds, def) {
                         read(&mut me, value, here);
                     }
                 }
@@ -277,7 +299,7 @@ mod tests {
             def(2, ScheduledOp::Unary(OpKind::Rsqrt, ValueId(1))),
             if_of(3, 0, 2, 0),
         ];
-        let own = Ownership::of(&schedule, &FoldReads::default());
+        let own = Ownership::of(&schedule, &FoldReads::new());
         let [on_true, on_false] = own.arms() else {
             panic!("one If is two arms");
         };
@@ -298,7 +320,7 @@ mod tests {
             def(4, ScheduledOp::Unary(OpKind::Sqrt, ValueId(2))),
             if_of(5, 0, 3, 4),
         ];
-        let own = Ownership::of(&schedule, &FoldReads::default());
+        let own = Ownership::of(&schedule, &FoldReads::new());
         let [on_true, on_false] = own.arms() else {
             panic!("one If is two arms");
         };
@@ -309,7 +331,7 @@ mod tests {
 
     /// A value whose readers are all loops one arm runs is the arm's, through
     /// production scoping (`Nest`, `Own`, `Layout`): a loop reads what
-    /// it reads at its `Reduce` (`FoldReads`), so a batch that skips the arm
+    /// it reads at its `Reduce` ([`FoldReads`]), so a batch that skips the arm
     /// skips the loops and what only they read. A reader outside the arm keeps
     /// the value outside (`layout`'s
     /// `an_arm_does_not_own_what_a_sibling_fold_reads`).
@@ -438,7 +460,7 @@ mod tests {
             def(5, ScheduledOp::Unary(OpKind::Recip, ValueId(1))),
             if_of(6, 0, 4, 5),
         ];
-        let own = Ownership::of(&schedule, &FoldReads::default());
+        let own = Ownership::of(&schedule, &FoldReads::new());
         let [inner_true, inner_false, outer_true, outer_false] = own.arms() else {
             panic!("two Ifs are four arms, in schedule order");
         };
@@ -474,7 +496,7 @@ mod tests {
             ops[5].clone(),
         ];
         let by_value = |schedule: &[Def]| {
-            let own = Ownership::of(schedule, &FoldReads::default());
+            let own = Ownership::of(schedule, &FoldReads::new());
             own.arms()
                 .iter()
                 .map(|arm| {

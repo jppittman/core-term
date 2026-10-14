@@ -493,8 +493,7 @@
   recompiles "by decision". The saturated graph is cached per structure. The
   cache never evicts; caching was put "later". A unit's key digests minted
   identities, so a program of units needs a structural key before E1.
-- **Lives:** `pixelflow-codegen/src/jit_cache.rs` (`cache_key`,
-  `UNIT_PROGRAM_TAG`), `pixelflow-ir/src/key.rs` (`canonical`);
+- **Lives:** `pixelflow-codegen/src/jit_cache.rs` (`CacheKey`), `pixelflow-ir/src/key.rs` (`canonical`);
   uniform-slot-identity "Link order"; composition-is-linking §2.1;
   one-pipeline §1.1.
 

@@ -436,7 +436,7 @@ docs/plans/2026-09-22-the-isa-is-decided-at-startup.md.
   bitwise blend is the fallback for exactly that case. Blend is the
   lane-varying path, not the definition.
 
-  Getting that default backwards is what produced `emit/guards.rs`: with
+  Getting that default backwards is what produced `emit/guards.rs` (since deleted): with
   blend as the definition, a branch has to be *bought* per `If`
   (`MISPREDICT_PENALTY_CYCLES`) and, worse, an arm is only eligible when the
   values it owns happen to be one contiguous run of a flat schedule — so

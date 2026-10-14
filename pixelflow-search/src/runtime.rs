@@ -2893,12 +2893,10 @@ mod production_equivalence {
             writeln!(text, "{idx} {:?}", arena.node(ExprId(idx as u32))).expect("fmt");
         }
         writeln!(text, "root {}", root.0).expect("fmt");
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in text.as_bytes() {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        format!("{h:016x}\t{nodes}")
+        format!(
+            "{:016x}\t{nodes}",
+            pixelflow_ir::key::fnv1a64(text.as_bytes())
+        )
     }
 
     #[test]

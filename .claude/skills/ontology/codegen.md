@@ -147,7 +147,7 @@
   there — which `Own` asserts of every scope (`assert_closed`).
 - **Lives:** `ScopeFold::outer` (`pixelflow-codegen/src/program/mod.rs`),
   `place_roots` and `assert_closed` (`program/scopes.rs`), `FoldReads`
-  (`program/guards.rs`). Selection has no root or park of its own: a value
+  (`program/ownership.rs`). Selection has no root or park of its own: a value
   live into a loop's head is carried in a register or stored and dropped
   there (`plan_carries`, `emit/regalloc/local.rs`). The `roots` fields were
   deleted with ownership's "no arm owns a root" pin, their one reader.
@@ -436,7 +436,7 @@
   An arm owns a root when it owns every scope that reads it (see Root).
 - **Lives:** `pixelflow-codegen/src/program/ownership.rs` (#1311; `Own`, the
   backward pass), `program/layout.rs` (#1312, #1313; `Layout`, `Flow::of`: an
-  `If`'s arms go immediately before it), `program/guards.rs` (`FoldReads`);
+  `If`'s arms go immediately before it);
   CLAUDE.md "`If` contains an if".
 
 ### Guard. Homonym
@@ -581,8 +581,8 @@
   over a `Stage` and with named fields typed by `Class` (`emit/x86_64.rs`);
   `Inst<S>` in `emit/avx2.rs` and `emit/avx512.rs`, the VEX and EVEX
   instructions, over the same vocabulary, and `avx2::Op<S>`, the instruction
-  AVX2's selection puts in a block; `Inst` in `emit/aarch64.rs`. One encoder
-  serves the allocator's `Bound` stage, through `Placed` (`emit/mod.rs`).
+  AVX2's selection puts in a block; `Inst` in `emit/aarch64.rs`. The encoders are
+  written for the allocator's `Bound` stage, the only one with registers placed.
   ("Instructions: bytes written inline by ~236 functions, not values",
   denotational-diagnosis, described the legacy `LegacyBackend` verbs, deleted
   at D1.)
@@ -678,7 +678,8 @@
 - **Is:** "The ISA tier is a property of the process, not of the build: a
   fact the CPU reports, read once." `Isa` has three inhabitants: `Avx2`
   (AVX2+FMA, the floor), `Avx512` (needs avx512f+dq) and `Neon`. The backend
-  is a function of the tier, and the width is `Isa::vector_bytes`.
+  is a function of the tier, and the width is that backend's register file
+  (`B::FILE.vector_bytes()`), read publicly through `jit_vector_bytes()`.
 - **Is not:** a build flag (`RUSTFLAGS`/`target-cpu` change nothing). Not
   SSE2: "It was the default only because the build flag was unset". Not a
   ladder of fallbacks: a host below the floor is refused, naming the missing

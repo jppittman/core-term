@@ -1,11 +1,8 @@
 //! The op-coverage completeness contract every [`super::IsaBackend`] must satisfy.
 //!
 //! This is test-only infrastructure (see `emit/mod.rs`'s `backend_op_coverage`
-//! tests), not a production API. It exists because nothing previously enumerated "the ops a
-//! backend must support" anywhere: AVX-512's binary-op dispatch implemented 6
-//! of the 15 required ops and nothing caught the gap until 36 tests failed by
-//! accident the first time someone actually compiled with
-//! `-C target-feature=+avx512f`. These lists turn that into a named, itemized
+//! tests), not a production API. It exists so that "the ops a backend must
+//! support" is enumerated somewhere: a backend missing one is a named, itemized
 //! test failure instead of a silent hole.
 //!
 //! Every `OpKind` a backend might see falls into exactly one bucket:
@@ -19,10 +16,9 @@
 //!   [`REQUIRED_TERNARY_OPS`]. Not swept generically like the arrays above
 //!   (each has its own operand shape), so the per-backend tests construct
 //!   these two explicitly instead of looping.
-//! - Is eliminated by a `lowering` pass before any backend sees it
-//!   (transcendentals by `expand_transcendentals`, `Dwrt` by `lower_dwrt`,
-//!   the ternary `Gather` op by `expand_gather` — see `lowering.rs`) — absent
-//!   from every list here on purpose.
+//! - Is eliminated by `legalize` before any backend sees it (transcendentals
+//!   are expanded, `Dwrt` differentiated, the ternary `Gather` op rewritten to
+//!   index arithmetic) — absent from every list here on purpose.
 //! - Is a loop, not an op: a `Reduce` survives `legalize` and opens a
 //!   `Scope::Fold` — likewise absent.
 //! - Is structural and never becomes a `ScheduledOp` at all (`Var`, `Const`,
@@ -89,7 +85,7 @@ pub(super) const REQUIRED_TERNARY_OPS: &[OpKind] = &[OpKind::MulAdd, OpKind::If]
 /// below is the only reader.
 const NOT_REQUIRED: &[OpKind] = &[
     // Lowered away by `legalize`, so no backend ever sees one: the
-    // transcendentals by `expand_transcendentals`,
+    // transcendentals are expanded,
     OpKind::Sin,
     OpKind::Cos,
     OpKind::Tan,
@@ -103,9 +99,9 @@ const NOT_REQUIRED: &[OpKind] = &[
     OpKind::Log2,
     OpKind::Log10,
     OpKind::Pow,
-    // `Dwrt` by `lower_dwrt`,
+    // `Dwrt` is differentiated,
     OpKind::Dwrt,
-    // and `Gather` by `expand_gather`, into index arithmetic plus `RawGather`.
+    // and `Gather` is rewritten into index arithmetic plus `RawGather`.
     OpKind::Gather,
     // Leaves and memory: each reaches a backend, if at all, as a `LaneOp`
     // of its own shape, covered by its own test rather than swept.

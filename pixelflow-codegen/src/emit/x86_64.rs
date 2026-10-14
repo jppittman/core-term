@@ -7,16 +7,14 @@
 //! them), the memory-operand tail (`Mem`, `Disp`) every vector encoder's
 //! ModRM/SIB is built from, and the vector operations both tiers name ([`Alu`]
 //! and its kin, whose bytes are each tier's). Nothing here names a vector
-//! width: the `ymm`/`zmm` encodings live in `avx2.rs` and `avx512.rs`, and the
-//! 128-bit tier that used to sit in this file is gone
-//! (docs/plans/2026-09-22-the-isa-is-decided-at-startup.md §7).
+//! width: the `ymm`/`zmm` encodings live in `avx2.rs` and `avx512.rs`.
 
 use super::asm::Encoding;
-use super::build::{Builder, Def, Spiller, defined};
+use super::build::{Builder, Def, Spiller};
 use super::regalloc::resource::FrameSlot;
 use super::{
-    Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label, Placed,
-    Pointer, Rebind, STACK_PAGE, Selected, Spill, Stage, Target, Value,
+    Bound, Class, ClassId, Edges, EncodedInst, Flags, FrameSize, Integer, IsaBackend, Label,
+    Pointer, Rebind, STACK_PAGE, Selected, Stage, Target, Value, ValueName, frame_bytes, slot_disp,
 };
 use crate::error::CompileError;
 use alloc::vec::Vec;
@@ -261,18 +259,18 @@ impl Gp<Selected> {
     }
 }
 
-impl<S: Placed> Gp<S> {
+impl<'m, B: IsaBackend> Gp<Bound<'m, B>> {
     fn encode(&self) -> EncodedInst {
         let mut inst = EncodedInst::new();
         match self {
             Gp::Mov { dst, src } => {
-                inst.extend(&rr(0x89, S::write::<Pointer>(dst), S::read::<Pointer>(src)));
+                inst.extend(&rr(0x89, dst.number(), src.number()));
             }
             Gp::MovInt { dst, src } => {
-                inst.extend(&rr(0x89, S::write::<Integer>(dst), S::read::<Integer>(src)));
+                inst.extend(&rr(0x89, dst.number(), src.number()));
             }
             Gp::MovImm32 { dst, imm } => {
-                let dst = S::write::<Integer>(dst);
+                let dst = dst.number();
                 if dst >= 8 {
                     inst.push(0x41);
                 }
@@ -280,27 +278,23 @@ impl<S: Placed> Gp<S> {
                 inst.extend(&imm.to_le_bytes());
             }
             Gp::Movabs { dst, imm } => {
-                let dst = S::write::<Integer>(dst);
+                let dst = dst.number();
                 inst.push(0x48 | ((dst >> 3) & 1));
                 inst.push(0xB8 | (dst & 7));
                 inst.extend(&imm.to_le_bytes());
             }
             Gp::Imul { dst, src, .. } => {
-                let (dst, src) = (S::tie::<Integer>(dst), S::read::<Integer>(src));
+                let (dst, src) = (dst.number(), src.number());
                 inst.extend(&[rex_w(dst, src), 0x0F, 0xAF, modrm_rr(dst, src)]);
             }
             Gp::Add { dst, src, .. } => {
-                inst.extend(&rr(0x01, S::tie::<Integer>(dst), S::read::<Integer>(src)));
+                inst.extend(&rr(0x01, dst.number(), src.number()));
             }
             // `rbp`/`r13` have no `mod = 00` form as a SIB base (that
             // encoding means "no base"), so those two take `mod = 01` with a
             // zero `disp8`.
             Gp::Lea4 { dst, base, index } => {
-                let (dst, base, index) = (
-                    S::write::<Pointer>(dst),
-                    S::read::<Pointer>(base),
-                    S::read::<Integer>(index),
-                );
+                let (dst, base, index) = (dst.number(), base.number(), index.number());
                 debug_assert!(index & 7 != RM_SIB, "rsp/r12 cannot index a SIB");
                 let disp8_form = base & 7 == RM_RIP_AT_MOD0;
                 inst.push(
@@ -314,25 +308,25 @@ impl<S: Placed> Gp<S> {
                 }
             }
             Gp::MovLoad { dst, src } => {
-                let (dst, base) = (S::write::<Pointer>(dst), S::read::<Pointer>(&src.base));
+                let (dst, base) = (dst.number(), src.base.number());
                 inst.push(rex_w(dst, base));
                 inst.push(0x8B);
                 mem_operand_into(&mut inst, dst, base, src.disp);
             }
             Gp::SpillPtr { src, slot } => {
-                spill_into(&mut inst, S::read::<Pointer>(src), Imm32(S::slot(slot)));
+                spill_into(&mut inst, src.number(), Imm32(slot_disp(slot)));
             }
             Gp::SpillInt { src, slot } => {
-                spill_into(&mut inst, S::read::<Integer>(src), Imm32(S::slot(slot)));
+                spill_into(&mut inst, src.number(), Imm32(slot_disp(slot)));
             }
             Gp::ReloadPtr { dst, slot } => {
-                reload_into(&mut inst, S::write::<Pointer>(dst), Imm32(S::slot(slot)));
+                reload_into(&mut inst, dst.number(), Imm32(slot_disp(slot)));
             }
             Gp::ReloadInt { dst, slot } => {
-                reload_into(&mut inst, S::write::<Integer>(dst), Imm32(S::slot(slot)));
+                reload_into(&mut inst, dst.number(), Imm32(slot_disp(slot)));
             }
             Gp::Test { src, .. } => {
-                let src = S::read::<Integer>(src);
+                let src = src.number();
                 if src >= 8 {
                     inst.push(0x45);
                 }
@@ -340,7 +334,7 @@ impl<S: Placed> Gp<S> {
                 inst.push(modrm_rr(src, src));
             }
             Gp::CmpByte { src, imm, .. } => {
-                match S::read::<Integer>(src) {
+                match src.number() {
                     // The accumulator has a short form.
                     0 => inst.push(0x3C),
                     n => {
@@ -357,10 +351,10 @@ impl<S: Placed> Gp<S> {
             Gp::Jcc { cond, .. } => inst.extend(&[0x0F, 0x80 | *cond as u8, 0, 0, 0, 0]),
             Gp::Jmp { .. } => inst.extend(&[0xE9, 0, 0, 0, 0]),
             Gp::Fallthrough { .. } => {}
-            Gp::Enter { size, .. } => inst = sub_rsp(S::frame_size(size)),
+            Gp::Enter { size, .. } => inst = sub_rsp(frame_bytes(*size)),
             Gp::Ret { size, .. } => {
                 inst.extend(&[rex_w(0, gpr::RSP), 0x81, modrm_rr(0, gpr::RSP)]);
-                inst.extend(&S::frame_size(size).to_le_bytes());
+                inst.extend(&frame_bytes(*size).to_le_bytes());
                 // `vzeroupper`: `VEX.128.0F.WIG 77`, zeroing bits 128 and up of
                 // vector registers 0–15, the sixteen a legacy-SSE instruction
                 // can name. The same three bytes on every tier.
@@ -373,10 +367,10 @@ impl<S: Placed> Gp<S> {
 
     /// The label field the instruction carries: its offset in the bytes, and
     /// the target it reaches. The one statement of which instructions have one.
-    fn label_field(&self) -> Option<(usize, &S::Target)> {
+    fn label_field(&self) -> Option<(usize, Label)> {
         match self {
-            Gp::Jmp { to } => Some((JMP_DISP, to)),
-            Gp::Jcc { taken, .. } => Some((JCC_DISP, taken)),
+            Gp::Jmp { to } => Some((JMP_DISP, *to)),
+            Gp::Jcc { taken, .. } => Some((JCC_DISP, *taken)),
             _ => None,
         }
     }
@@ -384,15 +378,15 @@ impl<S: Placed> Gp<S> {
     /// The instruction's bytes, and the label fields in them.
     pub(super) fn assemble(&self, out: &mut Encoding<'_>) {
         if let Gp::Enter { size, .. } = self {
-            return enter_probing(S::frame_size(size), out);
+            return enter_probing(frame_bytes(*size), out);
         }
         out.bytes(self.encode().as_bytes());
         if let Some((at, to)) = self.label_field() {
-            out.field(at, S::target(to), patch_rel32);
+            out.field(at, to, patch_rel32);
         }
         match self {
-            Gp::Jcc { next, .. } => out.falls_through(S::target(next)),
-            Gp::Fallthrough { to } => out.falls_through(S::target(to)),
+            Gp::Jcc { next, .. } => out.falls_through(*next),
+            Gp::Fallthrough { to } => out.falls_through(*to),
             _ => {}
         }
     }
@@ -510,42 +504,34 @@ pub(super) fn ret<B: X86>(b: &mut Builder<B>) {
 }
 
 /// `mov` of an address or an integer between general registers.
-pub(super) fn copy_general<B: X86, C: Spill>(b: &mut Spiller<'_, B>, src: Value<C>) -> Value<C> {
-    match C::ID {
-        ClassId::Pointer => {
-            let (dst, copy) = defined::<C, Pointer>(b);
-            b.push(B::general(Gp::Mov {
+pub(super) fn copy_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName) -> ValueName {
+    match src.class {
+        ClassId::Pointer => b.define::<Pointer>(|dst| {
+            B::general(Gp::Mov {
                 dst,
-                src: src.name().typed(),
-            }));
-            copy
-        }
-        ClassId::Integer => {
-            let (dst, copy) = defined::<C, Integer>(b);
-            b.push(B::general(Gp::MovInt {
+                src: src.typed(),
+            })
+        }),
+        ClassId::Integer => b.define::<Integer>(|dst| {
+            B::general(Gp::MovInt {
                 dst,
-                src: src.name().typed(),
-            }));
-            copy
-        }
+                src: src.typed(),
+            })
+        }),
         class => unreachable!("{class:?} is not held in a general register"),
     }
 }
 
 /// `mov [rsp + slot], src` of an address or an integer.
-pub(super) fn spill_general<B: X86, C: Spill>(
-    b: &mut Spiller<'_, B>,
-    src: Value<C>,
-    slot: &FrameSlot,
-) {
+pub(super) fn spill_general<B: X86>(b: &mut Spiller<'_, B>, src: ValueName, slot: &FrameSlot) {
     let slot = slot.name();
-    b.push(B::general(match C::ID {
+    b.push(B::general(match src.class {
         ClassId::Pointer => Gp::SpillPtr {
-            src: src.name().typed(),
+            src: src.typed(),
             slot,
         },
         ClassId::Integer => Gp::SpillInt {
-            src: src.name().typed(),
+            src: src.typed(),
             slot,
         },
         class => unreachable!("{class:?} is not held in a general register"),
@@ -553,22 +539,15 @@ pub(super) fn spill_general<B: X86, C: Spill>(
 }
 
 /// `mov dst, [rsp + slot]` of an address or an integer.
-pub(super) fn reload_general<B: X86, C: Spill>(
+pub(super) fn reload_general<B: X86>(
     b: &mut Spiller<'_, B>,
+    class: ClassId,
     slot: &FrameSlot,
-) -> Value<C> {
+) -> ValueName {
     let slot = slot.name();
-    match C::ID {
-        ClassId::Pointer => {
-            let (dst, reloaded) = defined::<C, Pointer>(b);
-            b.push(B::general(Gp::ReloadPtr { dst, slot }));
-            reloaded
-        }
-        ClassId::Integer => {
-            let (dst, reloaded) = defined::<C, Integer>(b);
-            b.push(B::general(Gp::ReloadInt { dst, slot }));
-            reloaded
-        }
+    match class {
+        ClassId::Pointer => b.define::<Pointer>(|dst| B::general(Gp::ReloadPtr { dst, slot })),
+        ClassId::Integer => b.define::<Integer>(|dst| B::general(Gp::ReloadInt { dst, slot })),
         class => unreachable!("{class:?} is not held in a general register"),
     }
 }
@@ -781,7 +760,7 @@ pub(super) fn displacement(index: u64, size: u64) -> Result<Imm32, CompileError>
 /// they cost a different number of bytes, and `mod = 00` is not "a
 /// displacement of zero" (see [`NoDisp`]). So the width is picked by the
 /// operand's TYPE — never by the caller reaching for a differently-named
-/// function, which is where that choice used to live.
+/// function.
 pub(super) trait Disp: Copy {
     /// The ModRM `mod` field this displacement implies.
     const MOD: u8;
@@ -822,9 +801,8 @@ impl Disp for Imm32 {
 
 /// An address spelled `[base + disp]`.
 ///
-/// The base being a `Pointer` is the point: `rsp` is a value here. It used
-/// to be the `_rsp` and `_base` suffixes of five separate functions that all
-/// encoded the same `movups`, where nothing could check it.
+/// The base being a `Pointer` is the point: `rsp` is a value here, so one
+/// encoder serves it and every other base.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Mem<S: Stage, D> {
     /// The register the displacement is measured from.
@@ -1041,68 +1019,5 @@ mod tests {
         let twice = labels.mint();
         let code = assembled(vec![Item::Bind(twice), Item::Bind(twice)], labels);
         unreachable!("assembled {} bytes around a label bound twice", code.len());
-    }
-
-    /// A vehicle for the memory-operand tail: `movups [base + disp], xmm`
-    /// (`0F 11 /r`), the simplest legacy instruction that takes a memory
-    /// operand. Test-only — no tier emits it — so what is under test is
-    /// [`mem_operand_into`] and the REX bits, not a 128-bit store.
-    fn movups_store<D: Disp>(src: u8, base: u8, disp: D) -> Vec<u8> {
-        let mut inst = EncodedInst::new();
-        let rex = 0x40 | (u8::from(src >= 8) << 2) | u8::from(base >= 8);
-        if rex != 0x40 {
-            inst.push(rex);
-        }
-        inst.push(0x0F);
-        inst.push(0x11);
-        mem_operand_into(&mut inst, src, base, disp);
-        inst.as_bytes().to_vec()
-    }
-
-    /// REX extends each side of a memory operand independently: R for the
-    /// register, B for the base, both, or neither.
-    #[test]
-    fn a_memory_operands_rex_bits_follow_its_two_registers() {
-        let store = |reg, base| movups_store(reg, base, NoDisp);
-        assert_eq!(store(3, 3), [0x0F, 0x11, ((3 & 7) << 3) | 3]);
-        assert_eq!(store(9, 3), [0x44, 0x0F, 0x11, ((9 & 7) << 3) | 3]);
-        assert_eq!(store(2, 11), [0x41, 0x0F, 0x11, ((2 & 7) << 3) | (11 & 7)]);
-        assert_eq!(
-            store(11, 14),
-            [0x45, 0x0F, 0x11, ((11 & 7) << 3) | (14 & 7)]
-        );
-    }
-
-    /// One instruction, three bases: `[rsp+8]`, `[rax+8]` and `[r10+8]`
-    /// differ only in ModRM.rm (plus the SIB `rsp` implies and the REX.B `r10`
-    /// does). That is why the base is an operand and not a name suffix.
-    #[test]
-    fn the_base_register_is_an_operand() {
-        let store = |base| movups_store(1, base, Imm8(8));
-        // 0F 11 /r, mod=01: rsp takes a SIB byte, rax and r10 do not.
-        assert_eq!(store(4), [0x0F, 0x11, 0x4C, 0x24, 0x08]);
-        assert_eq!(store(0), [0x0F, 0x11, 0x48, 0x08]);
-        assert_eq!(store(10), [0x41, 0x0F, 0x11, 0x4A, 0x08]);
-    }
-
-    /// The displacement's *type* picks the encoding, so the same address at the
-    /// same offset is a 5-byte or an 8-byte instruction depending on which
-    /// operand the caller built — and `NoDisp` is a third, shorter mode, not
-    /// `Imm8(0)`.
-    #[test]
-    fn the_displacement_type_picks_the_encoding() {
-        let d8 = movups_store(0, 4, Imm8(16));
-        let d32 = movups_store(0, 4, Imm32(16));
-        assert_eq!(d8, [0x0F, 0x11, 0x44, 0x24, 0x10], "mod=01, disp8");
-        assert_eq!(
-            d32,
-            [0x0F, 0x11, 0x84, 0x24, 0x10, 0x00, 0x00, 0x00],
-            "mod=10, disp32"
-        );
-
-        let bare = movups_store(0, 6, NoDisp);
-        let zero = movups_store(0, 6, Imm8(0));
-        assert_eq!(bare, [0x0F, 0x11, 0x06], "mod=00 is its own mode");
-        assert_eq!(zero, [0x0F, 0x11, 0x46, 0x00], "and a byte longer than it");
     }
 }

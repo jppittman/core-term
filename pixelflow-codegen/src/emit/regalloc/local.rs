@@ -60,8 +60,7 @@ use crate::emit::asm::{AsmProgram, Item, Label, Labels};
 use crate::emit::build::{self, Spiller};
 use crate::emit::{
     Access, Block, Bound, CONST_POOL_ALIGN, Class, ClassId, Constants, File, FileId, FrameSlot,
-    Function, Integer, IsaBackend, Loop, Operand, Opmask, Pointer, Pushed, Rebind, Selected,
-    Target, Value, ValueName, Vector,
+    Function, IsaBackend, Loop, Operand, Pushed, Rebind, Selected, Target, Value, ValueName,
 };
 use crate::error::CompileError;
 use crate::pass::Pass;
@@ -94,7 +93,7 @@ pub(in crate::emit) struct Emitted<'m, B: IsaBackend> {
 
 /// An allocated kernel: every register a borrowed token, every slot a
 /// borrowed slot, every block argument a placed move. A block has no
-/// parameters any more: they are slots.
+/// parameters: they are slots.
 pub(in crate::emit) struct Allocated<'m, B: IsaBackend> {
     pub(in crate::emit) blocks: Vec<Block<Emitted<'m, B>>>,
     pub(in crate::emit) loops: Vec<Loop>,
@@ -865,31 +864,6 @@ struct Scan<'f, 'm, B: IsaBackend> {
     position: usize,
 }
 
-/// `$body` with `$class` standing for the spillable class `$id` names.
-macro_rules! of_class {
-    ($id:expr, $class:ident => $body:expr) => {
-        match $id {
-            ClassId::Vector => {
-                type $class = Vector;
-                $body
-            }
-            ClassId::Pointer => {
-                type $class = Pointer;
-                $body
-            }
-            ClassId::Integer => {
-                type $class = Integer;
-                $body
-            }
-            ClassId::Opmask => {
-                type $class = Opmask;
-                $body
-            }
-            ClassId::Flags => unreachable!("the flags are not stored"),
-        }
-    };
-}
-
 impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     /// One selected instruction: its reads in registers, the loops it enters
     /// carrying theirs, its branch arguments passed, itself, and the registers
@@ -1353,7 +1327,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     fn move_register(&mut self, m: &Move) {
         let mut insts = Vec::new();
         let mut spiller = Spiller::<B>::new(&mut self.next, &mut insts);
-        of_class!(m.value.class, C => B::copy::<C>(&mut spiller, m.value.typed()).name());
+        B::copy(&mut spiller, m.value);
         for pushed in insts {
             let regs = self.numbers.len();
             for operand in &pushed.operands {
@@ -1412,7 +1386,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         let mut insts = Vec::new();
         let mut spiller = Spiller::<B>::new(&mut self.next, &mut insts);
         let slot = self.frame.slot(slot);
-        let fresh = of_class!(value.class, C => B::reload::<C>(&mut spiller, slot).name());
+        let fresh = B::reload(&mut spiller, value.class, slot);
         for pushed in insts {
             self.emit(pushed, Origin::Reload)?;
         }
@@ -1426,7 +1400,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
         let mut insts = Vec::new();
         let mut spiller = Spiller::<B>::new(&mut self.next, &mut insts);
         let slot = self.frame.slot(slot);
-        of_class!(value.class, C => B::spill::<C>(&mut spiller, value.typed(), slot));
+        B::spill(&mut spiller, value, slot);
         insts
     }
 
@@ -1784,7 +1758,7 @@ impl<'m, B: IsaBackend> Scan<'_, 'm, B> {
     fn copy_of(&mut self, value: ValueName) -> Result<Lent<'m, B>, CompileError> {
         let mut insts = Vec::new();
         let mut spiller = Spiller::<B>::new(&mut self.next, &mut insts);
-        let copy = of_class!(value.class, C => B::copy::<C>(&mut spiller, value.typed()).name());
+        let copy = B::copy(&mut spiller, value);
         for pushed in insts {
             self.emit(pushed, Origin::Copy)?;
         }

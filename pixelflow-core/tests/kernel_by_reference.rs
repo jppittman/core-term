@@ -138,7 +138,7 @@ fn nested_references_over_one_tabulation_bind_one_slot() {
 /// is content, and a name changes how a kernel is built and where the
 /// optimizer's boundaries fall, never which function it is. (Not the same
 /// compiled *region*: a name is a unit, optimized by itself, so the compile
-/// cache keys a named kernel apart from its body — `jit_cache::cache_key`.)
+/// cache keys a named kernel apart from its body — `jit_cache::CacheKey`.)
 #[test]
 fn a_named_kernel_renders_what_the_kernel_renders() {
     let body = Kernel::x()
