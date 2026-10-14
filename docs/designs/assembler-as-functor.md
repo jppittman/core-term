@@ -74,7 +74,7 @@ a law. The optimizer lives on the source AST for historical reasons only:
 
 - `optimize`'s input/output is `AnalyzedKernel.def.body: Expr` (syn AST).
 - But e-graph extraction *already builds an arena internally*
-  (`choices_to_arena` / `ExtractedDAG` in `pixelflow-search`), then
+  (`Selection::to_arena` / `ExtractedDAG` in `pixelflow-search`), then
   `dag_to_expr` (`optimize.rs`) converts it **back** to syn `Expr` — purely so
   the proc-macro `codegen::emit(AnalyzedKernel)` can consume it.
 

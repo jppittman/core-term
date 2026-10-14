@@ -25,8 +25,8 @@ use pixelflow_ir::{Ir, LatticeShape, Shape};
 use super::and_or::Frozen;
 use super::cost::CostFunction;
 use super::extract::{
-    CYCLE_COST, Canonical, ChoiceCost, Dp, ExtractionObjective, Insertion, Pricing, Rooted,
-    SHARED_DAG_PASS_BYTE_BUDGET, StageRecorder, TieBreak, cost_of_choices, shared_dag_dp_pass,
+    Canonical, ChoiceCost, Dp, DpOutcome, ExtractionObjective, Insertion, Pricing,
+    SHARED_DAG_PASS_BYTE_BUDGET, Selection, StageRecorder, TieBreak, shared_dag_dp_pass,
     tree_dp_pass,
 };
 use super::graph::EGraph;
@@ -192,20 +192,19 @@ pub fn trace<C: CostFunction>(
     let n = egraph.num_classes();
     let frozen = Frozen::new(egraph, root);
 
-    let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
-    let tree_choices = tree_dp_pass(frozen.problem(), &mut dp).choices;
-    let pricing = Pricing { costs, shape };
-    let at = Rooted { egraph, root };
-    let tree = PassTrace {
-        cost: pricing.of_choices(at, &tree_choices),
-        choices: tree_choices,
-        table: dp.into_recorder(),
+    let pass_trace = |outcome: DpOutcome, table: CandidateTable| PassTrace {
+        cost: outcome.selection.price(egraph, &Pricing { costs, shape }),
+        choices: outcome.choices,
+        table,
     };
+
+    let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
+    let tree = pass_trace(tree_dp_pass(frozen.problem(), &mut dp), dp.into_recorder());
 
     let mut dp = Dp::new(costs, shape, Insertion, CandidateTable::with_classes(n));
     let pass = shared_dag_dp_pass(frozen.problem(), &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
     let table = dp.into_recorder();
-    let Some(shared_choices) = pass.outcome.map(|o| o.choices) else {
+    let Some(shared_outcome) = pass.outcome else {
         let (choices, cost) = (tree.choices.clone(), tree.cost);
         return StageTrace {
             tree,
@@ -215,11 +214,7 @@ pub fn trace<C: CostFunction>(
             cost,
         };
     };
-    let shared = PassTrace {
-        cost: pricing.of_choices(at, &shared_choices),
-        choices: shared_choices,
-        table,
-    };
+    let shared = pass_trace(shared_outcome, table);
 
     let (objective, winner) = if shared.cost.dag < tree.cost.dag {
         (ExtractionObjective::Shared, &shared)
@@ -275,19 +270,19 @@ fn run_arms<C: CostFunction, T: TieBreak + Copy>(
 ) -> (Vec<Option<usize>>, ChoiceCost) {
     let frozen = Frozen::new(egraph, root);
     let mut dp = Dp::new(costs, shape, ties, ());
-    let tree = tree_dp_pass(frozen.problem(), &mut dp).choices;
-    let tree_cost = cost_of_choices(egraph, root, &tree, costs, shape);
+    let tree = tree_dp_pass(frozen.problem(), &mut dp);
+    let tree_cost = tree.selection.price(egraph, &Pricing { costs, shape });
 
     let mut dp = Dp::new(costs, shape, ties, ());
     let pass = shared_dag_dp_pass(frozen.problem(), &mut dp, SHARED_DAG_PASS_BYTE_BUDGET);
-    let Some(shared) = pass.outcome.map(|o| o.choices) else {
-        return (tree, tree_cost);
+    let Some(shared) = pass.outcome else {
+        return (tree.choices, tree_cost);
     };
-    let shared_cost = cost_of_choices(egraph, root, &shared, costs, shape);
+    let shared_cost = shared.selection.price(egraph, &Pricing { costs, shape });
     if shared_cost.dag < tree_cost.dag {
-        return (shared, shared_cost);
+        return (shared.choices, shared_cost);
     }
-    (tree, tree_cost)
+    (tree.choices, tree_cost)
 }
 
 // ---------------------------------------------------------------------------
@@ -486,8 +481,8 @@ fn post_order_term<I: Ir>(term: &I, root: I::Ref) -> Vec<I::Ref> {
 // Costing a hypothetical map
 // ---------------------------------------------------------------------------
 
-/// `cost_of_choices`, returning `None` instead of panicking when the map is
-/// cyclic or incomplete.
+/// The price of the term `choices` names, or `None` when it names none
+/// (a cyclic or incomplete map).
 ///
 /// A single swap can make a choice graph cyclic — that is a fact about the
 /// swap, not a broken invariant, so this is the form the swap search needs.
@@ -499,79 +494,25 @@ pub fn cost_if_well_founded<C: CostFunction>(
     costs: &C,
     shape: LatticeShape,
 ) -> Option<ChoiceCost> {
-    if !well_founded(egraph, root, choices) {
-        return None;
-    }
-    Some(cost_of_choices(egraph, root, choices, costs, shape))
+    let term = Selection::of_map(egraph, root, choices).ok()?;
+    Some(term.price(egraph, &Pricing { costs, shape }))
 }
 
-/// True iff every class reachable from `root` under `choices` has a choice
-/// and no class reaches itself.
-#[must_use]
-pub fn well_founded(egraph: &EGraph, root: EClassId, choices: &[Option<usize>]) -> bool {
-    let mut color = vec![0u8; egraph.num_classes()];
-    let mut stack = vec![(egraph.find(root), false)];
-    while let Some((class, done)) = stack.pop() {
-        let i = class.index();
-        if done {
-            color[i] = 2;
-            continue;
-        }
-        match color[i] {
-            2 => continue,
-            1 => return false,
-            _ => {}
-        }
-        let Some(idx) = choices.get(i).copied().flatten() else {
-            return false;
-        };
-        let nodes = egraph.nodes(class);
-        if idx >= nodes.len() {
-            return false;
-        }
-        color[i] = 1;
-        stack.push((class, true));
-        for &c in nodes[idx].children_slice() {
-            stack.push((egraph.find(c), false));
-        }
-    }
-    true
-}
-
-/// The classes `choices` reaches from `root`, in the order a post-order walk
-/// emits them (children before parents).
+/// The classes `choices` reaches from `root`, children before parents.
+///
+/// # Panics
+///
+/// If `choices` is not well-founded from `root`.
 #[must_use]
 pub fn reachable_under(
     egraph: &EGraph,
     root: EClassId,
     choices: &[Option<usize>],
 ) -> Vec<EClassId> {
-    let mut out = Vec::new();
-    let mut seen = vec![false; egraph.num_classes()];
-    let mut stack = vec![(egraph.find(root), false)];
-    while let Some((class, done)) = stack.pop() {
-        let i = class.index();
-        if done {
-            out.push(class);
-            continue;
-        }
-        if seen[i] {
-            continue;
-        }
-        seen[i] = true;
-        stack.push((class, true));
-        let Some(idx) = choices.get(i).copied().flatten() else {
-            continue;
-        };
-        let nodes = egraph.nodes(class);
-        if idx >= nodes.len() {
-            continue;
-        }
-        for &c in nodes[idx].children_slice() {
-            stack.push((egraph.find(c), false));
-        }
-    }
-    out
+    well_founded_term(egraph, root, choices)
+        .picks()
+        .map(|(class, _)| class)
+        .collect()
 }
 
 /// Materialize a choice map as an arena — `Optimized::to_arena` for a map
@@ -584,17 +525,16 @@ pub fn reachable_under(
 pub fn arena_of(
     egraph: &EGraph,
     root: EClassId,
-    choices: Vec<Option<usize>>,
+    choices: &[Option<usize>],
 ) -> (pixelflow_ir::arena::ExprArena, pixelflow_ir::arena::ExprId) {
-    super::extract::choices_to_arena(&super::extract::Extraction::from_well_founded(
-        egraph, root, choices,
-    ))
+    well_founded_term(egraph, root, choices).to_arena(egraph)
 }
 
-/// The sentinel `dense_reference_pass` prices an unresolved child at.
-/// Settlement never admits a candidate before its children, so a production
-/// cost at or above it is a genuinely enormous cost, not an unpriced child.
-#[must_use]
-pub fn cycle_cost() -> usize {
-    CYCLE_COST
+fn well_founded_term(egraph: &EGraph, root: EClassId, choices: &[Option<usize>]) -> Selection {
+    Selection::of_map(egraph, root, choices).unwrap_or_else(|refused| {
+        panic!(
+            "witness: the choice map is not well-founded from root {}: {refused}",
+            root.0
+        )
+    })
 }

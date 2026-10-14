@@ -3271,7 +3271,7 @@ fn derivative_shape<S: NodeSink>(sink: &mut S, inner: &ENode, var: u8) -> EClass
 mod tests {
     use super::*;
     use crate::egraph::cost::CostModel;
-    use crate::egraph::extract::{Extraction, choices_to_arena, extract_dag};
+    use crate::egraph::extract::extract_dag;
     use crate::egraph::ops;
     use crate::egraph::provenance::ApplicationId;
     use crate::egraph::saturate::SaturationConfig;
@@ -3726,8 +3726,7 @@ mod tests {
         // Extract and verify structure
         let costs = CostModel::default();
         let dag = extract_dag(&eg, result, &costs);
-        let (arena, root) =
-            choices_to_arena(&Extraction::from_well_founded(&eg, result, dag.choices));
+        let (arena, root) = dag.to_arena(&eg);
         eprintln!("Extracted arena: root={:?} len={}", root, arena.len());
         assert!(arena.node_count_subtree(root) > 0);
     }
@@ -3758,8 +3757,7 @@ mod tests {
 
         let costs = CostModel::default();
         let dag = extract_dag(&eg, result, &costs);
-        let (arena, root) =
-            choices_to_arena(&Extraction::from_well_founded(&eg, result, dag.choices));
+        let (arena, root) = dag.to_arena(&eg);
         eprintln!("Extracted arena: root={:?} len={}", root, arena.len());
         assert!(arena.node_count_subtree(root) > 0);
     }
@@ -3789,8 +3787,7 @@ mod tests {
 
         let costs = CostModel::default();
         let dag = extract_dag(&eg, result, &costs);
-        let (arena, root) =
-            choices_to_arena(&Extraction::from_well_founded(&eg, result, dag.choices));
+        let (arena, root) = dag.to_arena(&eg);
         eprintln!(
             "Extracted arena with vars: root={:?} len={}",
             root,
@@ -3825,8 +3822,7 @@ mod tests {
         // Use default costs like the kernel! macro does
         let costs = CostModel::new();
         let dag = extract_dag(&eg, result, &costs);
-        let (arena, root) =
-            choices_to_arena(&Extraction::from_well_founded(&eg, result, dag.choices));
+        let (arena, root) = dag.to_arena(&eg);
         eprintln!(
             "Extracted arena with FMA costs: root={:?} len={}",
             root,
@@ -3878,8 +3874,7 @@ mod tests {
 
         let costs = CostModel::new();
         let dag = extract_dag(&eg, result, &costs);
-        let (arena, root) =
-            choices_to_arena(&Extraction::from_well_founded(&eg, result, dag.choices));
+        let (arena, root) = dag.to_arena(&eg);
         eprintln!("Discriminant arena: root={:?} len={}", root, arena.len());
         assert!(arena.node_count_subtree(root) > 0);
     }
@@ -3929,8 +3924,7 @@ mod tests {
         // Extract with default costs (high threshold)
         let default_costs = CostModel::default();
         let dag = extract_dag(&eg, current, &default_costs);
-        let (arena, root) =
-            choices_to_arena(&Extraction::from_well_founded(&eg, current, dag.choices));
+        let (arena, root) = dag.to_arena(&eg);
         assert!(arena.node_count_subtree(root) > 0);
 
         // Extract with shallow costs (low threshold)
@@ -3938,8 +3932,7 @@ mod tests {
         shallow_costs.depth_threshold = 3;
         shallow_costs.depth_penalty = 1000;
         let dag = extract_dag(&eg, current, &shallow_costs);
-        let (arena2, root2) =
-            choices_to_arena(&Extraction::from_well_founded(&eg, current, dag.choices));
+        let (arena2, root2) = dag.to_arena(&eg);
         assert!(arena2.node_count_subtree(root2) > 0);
     }
 

@@ -84,16 +84,6 @@ const MIN_SAMPLES: usize = 300;
 const BASE_SAFETY_TIMEOUT: Duration = Duration::from_secs(300);
 const SWEEP_SAFETY_CEILING: usize = 10_000;
 
-/// The 1_000_000 cycle sentinel of the DFS extractor this harness was written
-/// against, restated as a threshold, not a definition: that extractor priced a
-/// genuinely self-referential post-saturation class at the sentinel rather
-/// than a real cost, on ANY rule set. Production extraction settles classes in
-/// cost order and never prices at it, so the per-tier hit count below is
-/// expected to be 0 and the instrument is vestigial until the sentinel's
-/// removal. A curve's `quiescence_cost` at or above this was a sentinel, not a
-/// measured quality number.
-const CYCLE_COST_THRESHOLD: usize = 900_000;
-
 fn tier_name(node_count: usize) -> &'static str {
     match node_count {
         0..=10 => "blitz",
@@ -223,11 +213,6 @@ struct ArmRow {
     n: usize,
     median_cost_b: f64,
     median_quiescence_cost: f64,
-    /// Median `quiescence_cost` over only the curves that did NOT hit the
-    /// `CYCLE_COST` sentinel — the reliable half of `median_quiescence_cost`
-    /// when `cycle_hits > 0`.
-    median_quiescence_cost_excl_cycle: f64,
-    cycle_hits: usize,
     median_loss_pct: f64,
     median_apps_to_quiescence: f64,
     class_cap_hits: usize,
@@ -249,12 +234,6 @@ fn arm_rows(curves: &[&ExprCurve], grid: &[usize]) -> Vec<ArmRow> {
             .map(|c| loss_pct(c.cost_at[bi], c.cost_at[fi]))
             .filter(|l| l.is_finite())
             .collect();
-        let quiescence_excl_cycle: Vec<f64> = curves
-            .iter()
-            .map(|c| c.quiescence_cost)
-            .filter(|&c| c < CYCLE_COST_THRESHOLD)
-            .map(|c| c as f64)
-            .collect();
         rows.push(ArmRow {
             b,
             n: curves.len(),
@@ -265,15 +244,6 @@ fn arm_rows(curves: &[&ExprCurve], grid: &[usize]) -> Vec<ArmRow> {
                     .map(|c| c.quiescence_cost as f64)
                     .collect::<Vec<_>>(),
             ),
-            median_quiescence_cost_excl_cycle: if quiescence_excl_cycle.is_empty() {
-                0.0
-            } else {
-                median(&quiescence_excl_cycle)
-            },
-            cycle_hits: curves
-                .iter()
-                .filter(|c| c.quiescence_cost >= CYCLE_COST_THRESHOLD)
-                .count(),
             median_loss_pct: if loss.is_empty() { 0.0 } else { median(&loss) },
             median_apps_to_quiescence: median(
                 &curves
@@ -469,34 +439,30 @@ fn main() {
         }
         md.push_str(&format!("### Tier: {tier} (n={})\n\n", base_sub.len()));
         md.push_str(
-            "| B | arm |R| | n | median cost@B | median cost@quiescence | quiescence excl. cycle-cost | \
-             cycle-cost hits | median trunc-loss% | median apps-to-quiescence | class_cap hits | quiesced |\n\
-             |---|---|---|---|---|---|---|---|---|---|---|\n",
+            "| B | arm |R| | n | median cost@B | median cost@quiescence | \
+             median trunc-loss% | median apps-to-quiescence | class_cap hits | quiesced |\n\
+             |---|---|---|---|---|---|---|---|---|\n",
         );
         let base_rows = arm_rows(&base_sub, grid);
         let batch_rows = arm_rows(&batch_sub, grid);
         for (br, kr) in base_rows.iter().zip(batch_rows.iter()) {
             md.push_str(&format!(
-                "| {} | {base_count} (base) | {} | {:.2} | {:.2} | {:.2} | {} | {:.3} | {:.1} | {} | {} |\n",
+                "| {} | {base_count} (base) | {} | {:.2} | {:.2} | {:.3} | {:.1} | {} | {} |\n",
                 br.b,
                 br.n,
                 br.median_cost_b,
                 br.median_quiescence_cost,
-                br.median_quiescence_cost_excl_cycle,
-                br.cycle_hits,
                 br.median_loss_pct,
                 br.median_apps_to_quiescence,
                 br.class_cap_hits,
                 br.quiesced,
             ));
             md.push_str(&format!(
-                "| {} | {total_count} (+batch) | {} | {:.2} | {:.2} | {:.2} | {} | {:.3} | {:.1} | {} | {} |\n",
+                "| {} | {total_count} (+batch) | {} | {:.2} | {:.2} | {:.3} | {:.1} | {} | {} |\n",
                 kr.b,
                 kr.n,
                 kr.median_cost_b,
                 kr.median_quiescence_cost,
-                kr.median_quiescence_cost_excl_cycle,
-                kr.cycle_hits,
                 kr.median_loss_pct,
                 kr.median_apps_to_quiescence,
                 kr.class_cap_hits,
@@ -504,24 +470,10 @@ fn main() {
             ));
         }
         md.push('\n');
-        md.push_str(
-            "_\"cycle-cost hits\" = curves whose quiescence cost hit `extract_dag`'s CYCLE_COST \
-             sentinel (>= 900,000) — a genuinely self-referential e-class post-saturation, a \
-             pre-existing extraction-algorithm behavior verified present under UNCHANGED \
-             `all_rules()` alone on large classical expressions (not introduced by \
-             `experimental_rules()`; see \"quiescence excl. cycle-cost\" for the reliable median \
-             over the non-cyclic curves only). `median cost@B` (the B=100/200 regret-relevant \
-             number) is unaffected: cyclic e-classes only arise at very high application counts, \
-             past where B or 4B falls._\n\n",
-        );
 
         // Fidelity gain: per-expression, the closure-aware improvement the
         // batch buys at quiescence (§4.2's fid(e), restricted to this tier).
-        // Expressions where EITHER arm hit the CYCLE_COST sentinel are
-        // excluded (a sentinel is not a measured cost, so no ratio against
-        // it is a fidelity number) and counted separately.
         let mut fid_vals: Vec<f64> = Vec::new();
-        let mut fid_excluded_cyclic = 0usize;
         for (bc, kc) in base_sub.iter().zip(batch_sub.iter()) {
             assert_eq!(
                 bc.name, kc.name,
@@ -529,10 +481,6 @@ fn main() {
             );
             let base_q = bc.quiescence_cost.min(bc.cost_at[grid.len() - 1]);
             let batch_q = kc.quiescence_cost.min(kc.cost_at[grid.len() - 1]);
-            if base_q >= CYCLE_COST_THRESHOLD || batch_q >= CYCLE_COST_THRESHOLD {
-                fid_excluded_cyclic += 1;
-                continue;
-            }
             if base_q == 0 {
                 continue; // zero-cost reference: skip (matches the established regret convention's
                 // spirit — a ratio against 0 is not a finite fidelity gain to average)
@@ -547,8 +495,7 @@ fn main() {
         let fid_positive = fid_vals.iter().filter(|v| **v > 1e-9).count();
         md.push_str(&format!(
             "Closure-gain at quiescence (`fid(e) = (cost@62 - cost@62+batch)/cost@62` at curve-end, \
-             median over the {} tier expressions with a nonzero, non-cyclic base cost; \
-             {fid_excluded_cyclic} excluded for a CYCLE_COST sentinel on either arm): **{:.3}%**, \
+             median over the {} tier expressions with a nonzero base cost): **{:.3}%**, \
              positive for {}/{}.\n\n",
             tier,
             fid_median,

@@ -1170,7 +1170,7 @@ mod congruence_gap_probe {
     use super::*;
     use crate::arena_corpus::{category_of, load_arena_dump, median, percentile};
     use crate::egraph::rule_order::{RuleOrder, build_rule_set};
-    use crate::egraph::{CostModel, EClassId, ENode, RuleSet, SaturationStop, choices_to_arena};
+    use crate::egraph::{CostModel, EClassId, ENode, RuleSet, SaturationStop};
     use crate::nnue::{BwdGenConfig, BwdGenerator};
     use std::path::{Path, PathBuf};
 
@@ -1447,12 +1447,7 @@ mod congruence_gap_probe {
             &model,
             LatticeShape::POINT,
         );
-        let extraction_after = crate::egraph::Extraction::from_well_founded(
-            &closure_graph,
-            root_class_closed,
-            dag_after.choices,
-        );
-        let (extracted_after, extracted_after_root) = choices_to_arena(&extraction_after);
+        let (extracted_after, extracted_after_root) = dag_after.to_arena(&closure_graph);
         let cost_after = arena_static_cost(&model, &extracted_after, extracted_after_root);
 
         let reduction_frac = if live_before > 0 {
@@ -2384,10 +2379,10 @@ pub(crate) mod production_telemetry {
         // The DP's own objective value for the term it returned: a TREE cost,
         // so sharing is not priced and the number is not comparable with
         // `arena_cost` below (which is the DAG cost the kernel pays). Since
-        // #1111 the optimizer reports it directly from the settled choices,
+        // #1111 the optimizer reports it directly from the settled term,
         // so this column no longer needs a second extraction to recover it —
-        // and no longer carries the pre-repair/`CYCLE_COST` inflation that
-        // made it describe a term other than the one extracted.
+        // and no longer carries the pre-repair inflation that made it
+        // describe a term other than the one extracted.
         let dp_cost = optimized.cost.tree;
 
         Run {

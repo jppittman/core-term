@@ -51,8 +51,7 @@ use pixelflow_ir::{ExprArena, ExprId, LatticeShape};
 use super::and_or::{Frozen, Problem};
 use super::cost::CostModel;
 use super::extract::{
-    ChoiceCost, Extraction, ExtractionReport, IncrementalExtractor, Pricing, Reranker,
-    choices_to_arena,
+    ChoiceCost, ExtractionReport, IncrementalExtractor, Pricing, Reranker, Selection,
 };
 use super::graph::{ApplicationMask, EGraph, SaturationStats, SaturationStop};
 use super::guided::GuidedEpisode;
@@ -218,24 +217,29 @@ pub struct OptimizerStats {
     pub limits: Limits,
 }
 
-/// The result of [`Optimizer::run`]: the per-e-class extraction choices, and
-/// what the run did to get them.
+/// The result of [`Optimizer::run`]: the term the extraction selected, and
+/// what the run did to get it.
 ///
-/// Choices rather than an arena because the three tiers materialise
-/// differently — the macro tier needs `ExtractedDAG` ref counts to place
-/// let-bindings, the arena tiers need an [`ExprArena`]. [`Optimized::to_arena`]
-/// is the arena half.
+/// The term rather than an arena because the saturated graph is what a tier
+/// materializes it against ([`Optimized::to_arena`]), and the macro tier and
+/// the runtime tier link what comes out differently.
 #[derive(Clone, Debug)]
 pub struct Optimized {
-    /// One node index per canonical e-class, well-founded from the root.
-    /// [`Self::to_arena`] trusts this and does not repair it.
+    /// The node index chosen for each canonical e-class, by class id. Under
+    /// the DP it is the settlement's record, a superset of the term (every
+    /// class the settlement drained, not only those the root reaches);
+    /// under a `Reranker`, where no settlement ran, it is the term's own
+    /// reach. [`Self::to_arena`] materializes the term, not this field;
+    /// editing it does not change what comes out.
     pub choices: Vec<Option<usize>>,
-    /// What [`Self::choices`] costs, in both the shape the extraction DP
-    /// minimizes ([`ChoiceCost::tree`]) and the shape the emitted kernel pays
-    /// ([`ChoiceCost::dag`]). Read from the settled choices, so it describes
-    /// the term [`Self::to_arena`] materializes — including under a
-    /// `Reranker`, whose search has its own scale and never produced this
-    /// number before.
+    /// The term: the classes the root reaches through [`Self::choices`],
+    /// well-founded and in the order it materializes in.
+    selection: Selection,
+    /// What the term costs, in both the shape the extraction DP minimizes
+    /// ([`ChoiceCost::tree`]) and the shape the emitted kernel pays
+    /// ([`ChoiceCost::dag`]): the price of the selected term, so it holds
+    /// under a `Reranker` too, whose search has its own scale and never
+    /// produced this number before.
     pub cost: ChoiceCost,
     /// Which objective chose [`Self::choices`], and what the sharing-aware
     /// pass cost — `ExtractionObjective::External` under a `Reranker`.
@@ -248,18 +252,21 @@ pub struct Optimized {
 impl Optimized {
     /// Materialise the extracted DAG as an arena.
     ///
-    /// `egraph` and `root` must be the ones [`Optimizer::run`] was given;
-    /// the choices index that graph's classes. They are sealed as they are,
-    /// with no repair: [`Optimizer::extract`] returns a well-founded map from
-    /// either extractor, and [`choices_to_arena`] panics if a hand-edited
-    /// [`Self::choices`] is not.
+    /// `egraph` and `root` must be the ones [`Optimizer::run`] was given: the
+    /// term indexes that graph's classes and nodes.
+    ///
+    /// # Panics
+    ///
+    /// If `root` is not the class the term was extracted from, or `egraph`
+    /// no longer holds the nodes it chose.
     #[must_use]
     pub fn to_arena(&self, egraph: &EGraph, root: EClassId) -> (ExprArena, ExprId) {
-        choices_to_arena(&Extraction::from_well_founded(
-            egraph,
-            root,
-            self.choices.clone(),
-        ))
+        assert_eq!(
+            egraph.find(root),
+            self.selection.root(),
+            "Optimized::to_arena: the term was extracted from another class than `root`"
+        );
+        self.selection.to_arena(egraph)
     }
 }
 
@@ -675,11 +682,10 @@ impl Optimizer {
         if let Some(reranker) = self.rerank.as_ref() {
             return self.reranked(reranker.as_ref(), problem.egraph(), problem.root(), stats);
         }
-        // Both the cost and the choices are those of the settled map — the
-        // DP's table is costed after settlement rather than read off the DP
-        // (#1111) — and the map is well-founded (settled in cost order), and
-        // walked from the root by `cost_of_choices`, which panics on a cycle:
-        // that is what lets `Optimized::to_arena` seal it without a repair.
+        // Both the cost and the term are those of the settlement — the DP's
+        // table is priced after settlement rather than read off the DP
+        // (#1111) — and the term is well-founded by construction (settled in
+        // cost order).
         let dag = super::extract::extract_dag_over(
             problem,
             &Pricing {
@@ -690,6 +696,7 @@ impl Optimizer {
         let cost = dag.cost();
         Optimized {
             choices: dag.choices,
+            selection: dag.selection,
             cost,
             extraction: dag.report,
             stats,
@@ -697,9 +704,9 @@ impl Optimizer {
     }
 
     /// The reranker's extraction. Its search has its own scale entirely, so
-    /// its cost is read from the choices it returns, as the DP's is (#1111);
-    /// the map is a sealed [`Extraction`]'s, well-founded, and walked from the
-    /// root by `cost_of_choices` like the DP's.
+    /// its cost is read from the term it returns, as the DP's is (#1111); the
+    /// term is its [`Extraction`](super::extract::Extraction)'s, well-founded
+    /// by construction.
     fn reranked(
         &self,
         reranker: &dyn Reranker,
@@ -707,13 +714,19 @@ impl Optimizer {
         root: EClassId,
         stats: OptimizerStats,
     ) -> Optimized {
-        let choices = IncrementalExtractor::new(reranker, RERANK_TOP_K)
-            .extract_choices_only(egraph, root)
-            .1
-            .into_choices();
-        let cost = super::extract::cost_of_choices(egraph, root, &choices, &self.cost, self.shape);
+        let (_, extraction) =
+            IncrementalExtractor::new(reranker, RERANK_TOP_K).extract_choices_only(egraph, root);
+        let selection = extraction.to_selection();
+        let cost = selection.price(
+            egraph,
+            &Pricing {
+                costs: &self.cost,
+                shape: self.shape,
+            },
+        );
         Optimized {
-            choices,
+            choices: selection.to_map(egraph.num_classes()),
+            selection,
             cost,
             extraction: ExtractionReport::external(),
             stats,
