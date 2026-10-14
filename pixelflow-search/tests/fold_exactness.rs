@@ -124,12 +124,7 @@ fn refusal_survives_rebuild_congruence() {
     let a = eg.add(ENode::Var(1));
     let b = eg.add(ENode::Var(2));
 
-    let add = |eg: &mut EGraph, l, r| {
-        eg.add(ENode::Op {
-            op: pixelflow_search::egraph::ops::op_from_kind(OpKind::Add).expect("Add op"),
-            children: vec![l, r],
-        })
-    };
+    let add = |eg: &mut EGraph, l, r| eg.add(ENode::apply(OpKind::Add, &[l, r]));
     let add_a = add(&mut eg, x, a);
     let add_b = add(&mut eg, x, b);
 

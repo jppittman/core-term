@@ -318,8 +318,6 @@ impl CostModel {
     }
 
     /// Get cost for an ENode.
-    ///
-    /// Uses `op.kind()` to convert at the boundary from `&dyn Op` to `OpKind`.
     pub fn node_op_cost(&self, node: &ENode) -> usize {
         match node {
             // Buffer is a leaf like Var/Const: the cost of the read lives on
@@ -361,7 +359,7 @@ impl CostModel {
             //
             // Expensive, not infinite, is the distinction. The same one the
             // fold arm below makes, for the same reason.
-            ENode::Op { op, .. } => self.cost(op.kind()),
+            ENode::Op { op, .. } => self.cost(*op),
             // **A fold's own work is its combiner chain**: `len - 1`
             // applications of the monoid's operation. The body's `len`
             // evaluations are not here — a node's cost cannot see its
@@ -577,7 +575,6 @@ mod every_op_is_priceable {
 #[cfg(test)]
 mod cost_model_accessors {
     use super::{CostFunction, CostModel};
-    use crate::egraph::ops::op_from_kind;
     use crate::egraph::{EGraph, ENode};
     use pixelflow_ir::OpKind;
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
@@ -688,12 +685,11 @@ mod cost_model_accessors {
     /// fires on the difference.
     #[test]
     fn node_op_cost_prices_a_dwrt_node_dearly_but_finitely() {
+        let mut egraph = EGraph::new();
+        let inner = egraph.add(ENode::Var(0));
+        let axis = egraph.add(ENode::constant(0.0));
         let model = CostModel::latency_prior();
-        let op = op_from_kind(OpKind::Dwrt).expect("Dwrt has an Op impl");
-        let node = ENode::Op {
-            op,
-            children: vec![],
-        };
+        let node = ENode::apply(OpKind::Dwrt, &[inner, axis]);
         let cost = model.node_op_cost(&node);
         assert_eq!(cost, model.cost(OpKind::Dwrt), "priced from the table");
         assert!(cost < usize::MAX / 4, "finite, not a sentinel: {cost}");
@@ -711,11 +707,7 @@ mod cost_model_accessors {
         let lhs = egraph.add(ENode::constant(1.0));
         let rhs = egraph.add(ENode::constant(2.0));
         let model = CostModel::latency_prior();
-        let op = op_from_kind(OpKind::Add).expect("Add has an Op impl");
-        let node = ENode::Op {
-            op,
-            children: vec![lhs, rhs],
-        };
+        let node = ENode::apply(OpKind::Add, &[lhs, rhs]);
         assert_eq!(model.node_op_cost(&node), model.cost(OpKind::Add));
     }
 
@@ -765,11 +757,7 @@ mod cost_model_accessors {
         let mut egraph = EGraph::new();
         let lhs = egraph.add(ENode::constant(1.0));
         let rhs = egraph.add(ENode::constant(2.0));
-        let op = op_from_kind(OpKind::Add).expect("Add has an Op impl");
-        let node = ENode::Op {
-            op,
-            children: vec![lhs, rhs],
-        };
+        let node = ENode::apply(OpKind::Add, &[lhs, rhs]);
 
         let model = CostModel::latency_prior();
         assert_eq!(

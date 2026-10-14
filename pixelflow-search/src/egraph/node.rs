@@ -1,10 +1,10 @@
 //! Core e-graph data structures: EClassId and ENode.
 
-use super::ops::Op;
 use alloc::vec::Vec;
+use core::ops::{Deref, DerefMut};
 use pixelflow_ir::arena::{BufferDecl, UniformDecl};
 use pixelflow_ir::fold::Fold;
-use pixelflow_ir::{KernelKey, Variance};
+use pixelflow_ir::{KernelKey, OpKind, Variance};
 
 /// Identifier for an equivalence class in the e-graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -19,11 +19,89 @@ impl EClassId {
     }
 }
 
-/// An expression node in the e-graph.
+/// The most operands any operation takes: the widest [`OpKind::arity`]
+/// (`MulAdd`, `If`, `Gather`).
+pub(crate) const MAX_OPERANDS: usize = 3;
+
+/// The e-classes an operation is applied to: exactly [`OpKind::arity`] of
+/// them, held inline.
 ///
-/// Children point to e-classes (not other nodes), enabling compact
-/// representation of equivalent expressions.
-#[derive(Clone, Debug)]
+/// The live operands are a prefix of a fixed array whose tail is always the
+/// zero class, so two operand lists are equal exactly when their live
+/// prefixes are, and the derived `Eq` and `Hash` need no hand-written case
+/// for the tail. The fields are private and the one constructor takes the
+/// operation it is for, so the tail cannot be written and the length is
+/// checked against that operation's arity. The slice view, and `Debug`, are
+/// the live prefix only.
+///
+/// The operation is not stored here, so the pairing is checked when the
+/// operands are built and not afterwards: a variant's fields are public, and
+/// `ENode::Op` can be written with another node's operands under a different
+/// `op`. [`ENode::apply`] is the constructor that keeps them together.
+///
+/// `len` counts slots of an inline array, not anything a program can say: its
+/// range is `MAX_OPERANDS` whatever its width, so a wider count would let no
+/// program express more.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Operands {
+    len: u8,
+    ids: [EClassId; MAX_OPERANDS],
+}
+
+impl core::fmt::Debug for Operands {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl Operands {
+    /// The operands of `op`, one class per operand.
+    ///
+    /// # Panics
+    ///
+    /// If `classes` is not exactly `op.arity()` long, or `op` is not an
+    /// operation over one to `MAX_OPERANDS` operands (a leaf kind, or a
+    /// `Tuple`, has none to hold). An operation applied to the wrong number
+    /// of operands is not a node, and a rule that builds one has a bug to
+    /// find, not a graph to carry it.
+    #[must_use]
+    pub(crate) fn new(op: OpKind, classes: &[EClassId]) -> Self {
+        assert!(
+            (1..=MAX_OPERANDS).contains(&op.arity()) && classes.len() == op.arity(),
+            "{op:?} takes {} operands (an operation takes 1 to {MAX_OPERANDS}), got {}",
+            op.arity(),
+            classes.len(),
+        );
+        let mut ids = [EClassId(0); MAX_OPERANDS];
+        ids[..classes.len()].copy_from_slice(classes);
+        Self {
+            len: classes.len() as u8,
+            ids,
+        }
+    }
+}
+
+impl Deref for Operands {
+    type Target = [EClassId];
+
+    fn deref(&self) -> &[EClassId] {
+        &self.ids[..usize::from(self.len)]
+    }
+}
+
+impl DerefMut for Operands {
+    fn deref_mut(&mut self) -> &mut [EClassId] {
+        &mut self.ids[..usize::from(self.len)]
+    }
+}
+
+/// An expression node in the e-graph: an operator with its static
+/// parameters, plus the e-classes of its dynamic operands.
+///
+/// A plain value. Operands point to e-classes (not other nodes), enabling
+/// compact representation of equivalent expressions, and equality and
+/// hashing are structural, which is what hash-consing the graph's memo needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ENode {
     /// Variable with index (0=X, 1=Y, 2=Z, 3=W, etc.)
     Var(u8),
@@ -35,8 +113,11 @@ pub enum ENode {
     /// because e-classes outlive any one arena: `BufferIdentity` is
     /// process-unique, so two `Buffer` leaves are the same e-class iff they
     /// name the same memory with the same extents — which is exactly the
-    /// hash-consing CSE this leaf exists for. Extraction redeclares the decl
-    /// into the output arena.
+    /// hash-consing CSE this leaf exists for. Equality is on the whole decl,
+    /// not the identity alone: two decls that disagree on extents must not
+    /// hash-cons, or extraction would redeclare only one of them and corrupt
+    /// the other's extent. Extraction redeclares the decl into the output
+    /// arena.
     Buffer(BufferDecl),
     /// Per-call scalar leaf: a uniform declaration, hash-consed by identity
     /// for the same reason as [`ENode::Buffer`]. No rule matches it as a
@@ -57,11 +138,8 @@ pub enum ENode {
     /// identifier in its AST optimizer. Two encodings of one idea, next to
     /// two worked examples of it.
     Param(u8),
-    /// Operation with children
-    Op {
-        op: &'static dyn Op,
-        children: Vec<EClassId>,
-    },
+    /// An operation applied to the classes of its operands.
+    Op { op: OpKind, children: Operands },
     /// A bounded fold: `⊕_{k} body[fold.binder() := k]`, `k` ranging over
     /// `fold`'s own visited indices (see `Fold`'s doc, in `pixelflow-ir`).
     ///
@@ -89,6 +167,8 @@ pub enum ENode {
     /// the one fact extraction prices a leaf's evaluations by. A unit is
     /// closed (its variance names no binder), so every rewrite conditioned
     /// on binder-invariance is the one it would be with the body inlined.
+    /// The key is the referent and the variance a function of it, so
+    /// comparing both is comparing the key, checked.
     /// Only the runtime tier's unit walk admits one (`EGraph::admit_unit`);
     /// [`insert`](fn@super::insert) declines a reference the graph was not told
     /// is a unit.
@@ -114,8 +194,23 @@ impl ENode {
         self.as_f32() == Some(val)
     }
 
+    /// `op` applied to `operands`, one class per operand.
+    ///
+    /// # Panics
+    ///
+    /// If `operands.len()` is not `op.arity()`, or `op` is not an operation
+    /// over one to `MAX_OPERANDS` operands (a leaf kind, or a `Tuple`, has
+    /// none to hold).
+    #[must_use]
+    pub fn apply(op: OpKind, operands: &[EClassId]) -> Self {
+        ENode::Op {
+            op,
+            children: Operands::new(op, operands),
+        }
+    }
+
     /// Get the operation if this is an Op node.
-    pub fn op(&self) -> Option<&'static dyn Op> {
+    pub fn op(&self) -> Option<OpKind> {
         match self {
             ENode::Op { op, .. } => Some(*op),
             _ => None,
@@ -229,104 +324,68 @@ fn var_variance(v: u8) -> Variance {
     }
 }
 
-// Implement PartialEq and Eq manually since we can't derive for dyn Op.
-// We use OpKind for comparison since ZST pointer addresses are unreliable.
-impl PartialEq for ENode {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (ENode::Var(a), ENode::Var(b)) => a == b,
-            (ENode::Const(a), ENode::Const(b)) => a == b,
-            // Full-decl equality: same identity AND same extents. Identity
-            // alone would hash-cons two decls that disagree on extents, and
-            // extraction would then redeclare only one of them — a silent
-            // extent corruption. Splice already asserts decls agree, so in a
-            // well-formed graph this is equivalent to identity equality.
-            (ENode::Buffer(a), ENode::Buffer(b)) => a == b,
-            // Identity and default, bitwise (`UniformDecl`'s own equality).
-            (ENode::Uniform(a), ENode::Uniform(b)) => a == b,
-            (ENode::Param(a), ENode::Param(b)) => a == b,
-            // The key is the referent; its variance is a function of it, so
-            // comparing both is comparing the key, checked.
-            (
-                ENode::Ref {
-                    key: k1,
-                    variance: v1,
-                },
-                ENode::Ref {
-                    key: k2,
-                    variance: v2,
-                },
-            ) => k1 == k2 && v1 == v2,
-            (
-                ENode::Op {
-                    op: op1,
-                    children: c1,
-                },
-                ENode::Op {
-                    op: op2,
-                    children: c2,
-                },
-            ) => {
-                // Compare by OpKind - ZST pointer addresses are unreliable
-                op1.kind() == op2.kind() && c1 == c2
-            }
-            (ENode::Reduce { fold: f1, body: b1 }, ENode::Reduce { fold: f2, body: b2 }) => {
-                f1 == f2 && b1 == b2
-            }
-            _ => false,
-        }
-    }
-}
-
-impl Eq for ENode {}
-
-// Implement Hash manually using OpKind for ops.
-impl core::hash::Hash for ENode {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            ENode::Var(idx) => {
-                0u8.hash(state);
-                idx.hash(state);
-            }
-            ENode::Const(bits) => {
-                1u8.hash(state);
-                bits.hash(state);
-            }
-            ENode::Buffer(decl) => {
-                3u8.hash(state);
-                decl.hash(state);
-            }
-            ENode::Uniform(decl) => {
-                4u8.hash(state);
-                decl.hash(state);
-            }
-            ENode::Param(i) => {
-                5u8.hash(state);
-                i.hash(state);
-            }
-            ENode::Op { op, children } => {
-                2u8.hash(state);
-                // Hash by OpKind - ZST pointer addresses are unreliable
-                op.kind().hash(state);
-                children.hash(state);
-            }
-            ENode::Reduce { fold, body } => {
-                6u8.hash(state);
-                fold.hash(state);
-                body.hash(state);
-            }
-            ENode::Ref { key, variance } => {
-                7u8.hash(state);
-                key.hash(state);
-                variance.hash(state);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn classes(n: u32) -> Vec<EClassId> {
+        (1..=n).map(EClassId).collect()
+    }
+
+    /// An operand count that is not the op's arity is a bug in whoever built
+    /// the node, named with the op and the count.
+    #[test]
+    #[should_panic(expected = "Add takes 2 operands")]
+    fn an_operation_applied_to_too_few_operands_is_refused() {
+        let _ = ENode::apply(OpKind::Add, &classes(1));
+    }
+
+    /// A leaf kind has no operands to apply, so it is not an operation node.
+    #[test]
+    #[should_panic(expected = "Const takes 0 operands")]
+    fn a_leaf_kind_is_not_an_operation() {
+        let _ = ENode::apply(OpKind::Const, &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "got 4")]
+    fn an_operation_applied_to_too_many_operands_is_refused() {
+        let _ = ENode::apply(OpKind::MulAdd, &classes(4));
+    }
+
+    /// The operands are the live prefix and nothing else: the slice view
+    /// has exactly `arity` classes, and writing through it reaches those.
+    #[test]
+    fn operands_are_exactly_the_live_prefix() {
+        for op in [OpKind::Neg, OpKind::Add, OpKind::MulAdd] {
+            let mut node = ENode::apply(op, &classes(op.arity() as u32));
+            assert_eq!(node.children_slice(), classes(op.arity() as u32));
+            for class in node.children_slice_mut() {
+                *class = EClassId(9);
+            }
+            assert_eq!(node.children_slice(), vec![EClassId(9); op.arity()]);
+        }
+    }
+
+    /// Equality and hashing are structural over the live operands: the same
+    /// op on the same classes is one node, and a different class, a
+    /// different op, or a different order is another.
+    #[test]
+    fn nodes_are_equal_exactly_when_op_and_operands_are() {
+        use core::hash::{BuildHasher, BuildHasherDefault};
+        let hash =
+            |node: &ENode| BuildHasherDefault::<rustc_hash::FxHasher>::default().hash_one(node);
+        let a = ENode::apply(OpKind::Sub, &classes(2));
+        let same = ENode::apply(OpKind::Sub, &classes(2));
+        assert_eq!(a, same);
+        assert_eq!(hash(&a), hash(&same));
+        assert_ne!(a, ENode::apply(OpKind::Add, &classes(2)));
+        assert_ne!(a, ENode::apply(OpKind::Sub, &[EClassId(2), EClassId(1)]));
+        assert_ne!(
+            ENode::apply(OpKind::Neg, &classes(1)),
+            ENode::apply(OpKind::Neg, &[EClassId(2)])
+        );
+    }
 
     /// The coordinates and every reduction slot get a bit each; past the
     /// word the analysis gives up and says everything.

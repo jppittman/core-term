@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::ops::{Op, Vocabulary};
+use super::ops::Vocabulary;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
 use pixelflow_ir::OpKind;
@@ -66,54 +66,51 @@ pub enum RewriteAction {
     Create(ENode),
     /// Distribute: A * (B + C) -> A*B + A*C
     Distribute {
-        outer: &'static dyn Op,
-        inner: &'static dyn Op,
+        outer: OpKind,
+        inner: OpKind,
         a: EClassId,
         b: EClassId,
         c: EClassId,
     },
     /// Factor: A*B + A*C -> A * (B + C)
     Factor {
-        outer: &'static dyn Op,
-        inner: &'static dyn Op,
+        outer: OpKind,
+        inner: OpKind,
         common: EClassId,
         unique_l: EClassId,
         unique_r: EClassId,
     },
     /// Canonicalize: Sub(a,b) -> Add(a, Neg(b))
     Canonicalize {
-        target: &'static dyn Op,
-        inverse: &'static dyn Op,
+        target: OpKind,
+        inverse: OpKind,
         a: EClassId,
         b: EClassId,
     },
     /// Associate: (a op b) op c -> a op (b op c)
     Associate {
-        op: &'static dyn Op,
+        op: OpKind,
         a: EClassId,
         b: EClassId,
         c: EClassId,
     },
     /// ReverseAssociate: a op (b op c) -> (a op b) op c
     ReverseAssociate {
-        op: &'static dyn Op,
+        op: OpKind,
         a: EClassId,
         b: EClassId,
         c: EClassId,
     },
     /// OddParity: Op(neg(x)) -> neg(Op(x))
     /// Creates Op(inner), then wraps in Neg.
-    OddParity {
-        func: &'static dyn Op,
-        inner: EClassId,
-    },
+    OddParity { func: OpKind, inner: EClassId },
     /// AngleAddition: sin(a+b) -> sin(a)cos(b) + cos(a)sin(b)
     /// or cos(a+b) -> cos(a)cos(b) - sin(a)sin(b)
     AngleAddition {
-        term1_op1: &'static dyn Op,
-        term1_op2: &'static dyn Op,
-        term2_op1: &'static dyn Op,
-        term2_op2: &'static dyn Op,
+        term1_op1: OpKind,
+        term1_op2: OpKind,
+        term2_op1: OpKind,
+        term2_op2: OpKind,
         term2_sign: crate::math::trig::Sign,
         a: EClassId,
         b: EClassId,
@@ -121,8 +118,8 @@ pub enum RewriteAction {
     /// Homomorphism: f(a ⊕ b) -> f(a) ⊗ f(b)
     /// e.g., exp(a + b) -> exp(a) * exp(b)
     Homomorphism {
-        func: &'static dyn Op,
-        target_op: &'static dyn Op,
+        func: OpKind,
+        target_op: OpKind,
         a: EClassId,
         b: EClassId,
     },
@@ -135,7 +132,7 @@ pub enum RewriteAction {
     /// ReverseAngleAddition: sin(a)cos(b) + cos(a)sin(b) -> sin(a + b)
     /// (The inverse of angle addition, enables double angle discovery)
     ReverseAngleAddition {
-        trig_op: &'static dyn Op,
+        trig_op: OpKind,
         a: EClassId,
         b: EClassId,
     },
@@ -150,7 +147,7 @@ pub enum RewriteAction {
     PowerRecurrence { base: EClassId, exponent: i32 },
     /// LogPower: log(pow(x, n)) -> n * log(x)
     LogPower {
-        log_op: &'static dyn Op,
+        log_op: OpKind,
         base: EClassId,
         exponent: EClassId,
     },
@@ -162,11 +159,11 @@ pub enum RewriteAction {
     /// matched class: every fold rule's action (`PeelFold`, `HalveFold`,
     /// `FactorFold`).
     ///
-    /// A plan of nodes carrying their own resolved `Op`s rather than an
-    /// arena template, because what these rules build is, in part, a copy of
-    /// a term the graph already holds — a substituted body — and may contain
-    /// any op the graph holds, while the arena-template path resolves
-    /// through `op_from_kind`, which deliberately admits only what a
+    /// A plan of nodes carrying their own `OpKind`s rather than an arena
+    /// template, because what these rules build is, in part, a copy of a
+    /// term the graph already holds — a substituted body — and may contain
+    /// any op the graph holds, while the arena-template path instantiates
+    /// only what `template_may_name` admits, which deliberately is what a
     /// *rewrite rule* may name and so refuses a `Gather` or a mask. One
     /// variant for all of them, replayed by one function, so predicting a
     /// rule's growth and committing it cannot drift apart per rule. See
@@ -281,9 +278,7 @@ impl RootShapes {
     /// can hold as an op, which [`Vocabulary::Runtime`] already states.
     #[must_use]
     pub fn every_op() -> Self {
-        Self::Kinds(OpMap::from_fn(|kind| {
-            Vocabulary::Runtime.resolve(kind).is_some()
-        }))
+        Self::Kinds(OpMap::from_fn(|kind| Vocabulary::Runtime.admits(kind)))
     }
 
     /// Whether `node` is in the set.
@@ -304,7 +299,7 @@ impl RootShapes {
             ENode::Uniform(_) => Some(OpKind::Uniform),
             ENode::Param(_) => Some(OpKind::Param),
             ENode::Reduce { .. } => Some(OpKind::Reduce),
-            ENode::Op { op, .. } => Some(op.kind()),
+            ENode::Op { op, .. } => Some(*op),
             ENode::Ref { .. } => None,
         }
     }

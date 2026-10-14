@@ -445,18 +445,14 @@ mod tests {
     #[test]
     fn candidate_summary_new_should_round_trip_features_and_rule_embed() {
         use crate::egraph::candidate::Firing;
-        use crate::egraph::ops;
         use crate::egraph::{ENode, Rewrite};
         use crate::math::algebra::Commutative;
 
-        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
+        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(OpKind::Add)];
         let mut eg = Saturation::over(RuleSet::new(rules));
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
 
         let firing = Firing {
             rule: eg

@@ -133,7 +133,7 @@ pub fn compile(kernel: &pixelflow_ir::Kernel, shape: LatticeShape) -> Result<Lin
     //
     // It bails for constructs the e-graph does not model
     // (`egraph::insert`'s `Declined`: a `Param`, an op
-    // `Vocabulary::Runtime` does not resolve, such as a `RawGather`) in a
+    // `Vocabulary::Runtime` does not admit, such as a `RawGather`) in a
     // term with no unit; those still compile — from the *expanded* arena, so
     // a reference never reaches the emitter — just without the extra fusion,
     // and saturation telemetry records the decline. A `Reduce` is modelled —

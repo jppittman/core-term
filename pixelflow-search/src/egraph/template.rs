@@ -138,7 +138,7 @@ fn match_op(
     let ExprData::Op(kind) = *pat else {
         return false;
     };
-    if node_op.kind() != kind {
+    if node_op != kind {
         return false;
     }
     let pat_children: Vec<Node<'_, ExprData>> = pat.children().collect();
@@ -616,12 +616,9 @@ mod tests {
         let mut eg = Saturation::over(RuleSet::new(vec![Box::new(sub_to_add_neg())]));
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sub = eg.add(ENode::Op {
-            op: &crate::egraph::ops::Sub,
-            children: vec![x, y],
-        });
+        let sub = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
         let root = eg.find(sub);
-        let node = eg.nodes(root)[0].clone();
+        let node = eg.nodes(root)[0];
         let rule = sub_to_add_neg();
         let action = rule
             .apply(&eg, root, &node)
@@ -643,21 +640,15 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let self_sub = eg.add(ENode::Op {
-            op: &crate::egraph::ops::Sub,
-            children: vec![x, x],
-        });
-        let other_sub = eg.add(ENode::Op {
-            op: &crate::egraph::ops::Sub,
-            children: vec![x, y],
-        });
+        let self_sub = eg.add(ENode::apply(OpKind::Sub, &[x, x]));
+        let other_sub = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
 
         let self_root = eg.find(self_sub);
-        let self_node = eg.nodes(self_root)[0].clone();
+        let self_node = eg.nodes(self_root)[0];
         assert!(rule.apply(&eg, self_root, &self_node).is_some());
 
         let other_root = eg.find(other_sub);
-        let other_node = eg.nodes(other_root)[0].clone();
+        let other_node = eg.nodes(other_root)[0];
         assert!(
             rule.apply(&eg, other_root, &other_node).is_none(),
             "repeated metavariable must refuse two different classes"
@@ -680,12 +671,9 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sub = eg.add(ENode::Op {
-            op: &crate::egraph::ops::Sub,
-            children: vec![x, y],
-        });
+        let sub = eg.add(ENode::apply(OpKind::Sub, &[x, y]));
         let sub_root = eg.find(sub);
-        let sub_node = eg.nodes(sub_root)[0].clone();
+        let sub_node = eg.nodes(sub_root)[0];
         let action = rule.apply(&eg, sub_root, &sub_node).expect("must match");
         matches!(action, RewriteAction::Instantiate { .. });
     }

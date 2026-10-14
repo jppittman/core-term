@@ -8,7 +8,7 @@
 use std::marker::PhantomData;
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, RootShapes, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -31,11 +31,11 @@ use pixelflow_ir::arena::{ExprArena, ExprId};
 /// - InverseAnnihilation: x ⊕ inv(x) → identity
 pub trait InversePair: Send + Sync {
     /// The base operation (Add, Mul)
-    fn base() -> &'static dyn Op;
+    fn base() -> OpKind;
     /// The inverse operation (Neg, Recip)
-    fn inverse() -> &'static dyn Op;
+    fn inverse() -> OpKind;
     /// The derived operation (Sub, Div)
-    fn derived() -> &'static dyn Op;
+    fn derived() -> OpKind;
     /// The identity element (0.0 for Add, 1.0 for Mul)
     fn identity() -> f32;
 }
@@ -47,14 +47,14 @@ pub trait InversePair: Send + Sync {
 /// - (x + a) - a = x
 pub struct AddNeg;
 impl InversePair for AddNeg {
-    fn base() -> &'static dyn Op {
-        &ops::Add
+    fn base() -> OpKind {
+        OpKind::Add
     }
-    fn inverse() -> &'static dyn Op {
-        &ops::Neg
+    fn inverse() -> OpKind {
+        OpKind::Neg
     }
-    fn derived() -> &'static dyn Op {
-        &ops::Sub
+    fn derived() -> OpKind {
+        OpKind::Sub
     }
     fn identity() -> f32 {
         0.0
@@ -68,28 +68,17 @@ impl InversePair for AddNeg {
 /// - (x * a) / a = x
 pub struct MulRecip;
 impl InversePair for MulRecip {
-    fn base() -> &'static dyn Op {
-        &ops::Mul
+    fn base() -> OpKind {
+        OpKind::Mul
     }
-    fn inverse() -> &'static dyn Op {
-        &ops::Recip
+    fn inverse() -> OpKind {
+        OpKind::Recip
     }
-    fn derived() -> &'static dyn Op {
-        &ops::Div
+    fn derived() -> OpKind {
+        OpKind::Div
     }
     fn identity() -> f32 {
         1.0
-    }
-}
-
-// ============================================================================
-// Helper: Check if node matches an operation by kind
-// ============================================================================
-
-fn node_matches_op(node: &ENode, op: &dyn Op) -> bool {
-    match node {
-        ENode::Op { op: node_op, .. } => node_op.kind() == op.kind(),
-        _ => false,
     }
 }
 
@@ -122,15 +111,15 @@ impl<T: InversePair> Rewrite for Canonicalize<T> {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(T::derived().kind())
+        RootShapes::kind(T::derived())
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
-        Some(T::derived().kind())
+        Some(T::derived())
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if !node_matches_op(node, T::derived()) {
+        if node.op() != Some(T::derived()) {
             return None;
         }
         let (a, b) = node.binary_operands()?;
@@ -144,11 +133,11 @@ impl<T: InversePair> Rewrite for Canonicalize<T> {
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, bin T::derived().kind(), (var 0), (var 1)))
+        Some(arena_pat!(__a, bin T::derived(), (var 0), (var 1)))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, bin T::base().kind(), (var 0), (un T::inverse().kind(), (var 1))))
+        Some(arena_pat!(__a, bin T::base(), (var 0), (un T::inverse(), (var 1))))
     }
 }
 
@@ -177,15 +166,15 @@ impl<T: InversePair> Rewrite for Involution<T> {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(T::inverse().kind())
+        RootShapes::kind(T::inverse())
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
-        Some(T::derived().kind())
+        Some(T::derived())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if !node_matches_op(node, T::inverse()) {
+        if node.op() != Some(T::inverse()) {
             return None;
         }
 
@@ -196,7 +185,7 @@ impl<T: InversePair> Rewrite for Involution<T> {
         let inner_id = children[0];
 
         for inner_node in egraph.nodes(inner_id) {
-            if node_matches_op(inner_node, T::inverse()) {
+            if inner_node.op() == Some(T::inverse()) {
                 let inner_children = inner_node.children();
                 if inner_children.len() == 1 {
                     return Some(RewriteAction::Union(inner_children[0]));
@@ -208,7 +197,7 @@ impl<T: InversePair> Rewrite for Involution<T> {
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         // Inverse(Inverse(V0))
-        let inv = T::inverse().kind();
+        let inv = T::inverse();
         Some(arena_pat!(__a, un inv, (un inv, (var 0))))
     }
 
@@ -242,21 +231,21 @@ impl<T: InversePair> Rewrite for Cancellation<T> {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(T::derived().kind())
+        RootShapes::kind(T::derived())
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
-        Some(T::derived().kind())
+        Some(T::derived())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if !node_matches_op(node, T::derived()) {
+        if node.op() != Some(T::derived()) {
             return None;
         }
         let (numerator, canceller) = node.binary_operands()?;
 
         for inner_node in egraph.nodes(numerator) {
-            if node_matches_op(inner_node, T::base())
+            if inner_node.op() == Some(T::base())
                 && let Some((a, b)) = inner_node.binary_operands()
             {
                 // (a ⊕ b) ⊖ b → a
@@ -273,9 +262,7 @@ impl<T: InversePair> Rewrite for Cancellation<T> {
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(
-            arena_pat!(__a, bin T::derived().kind(), (bin T::base().kind(), (var 0), (var 1)), (var 1)),
-        )
+        Some(arena_pat!(__a, bin T::derived(), (bin T::base(), (var 0), (var 1)), (var 1)))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -308,22 +295,22 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(T::base().kind())
+        RootShapes::kind(T::base())
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
-        Some(T::derived().kind())
+        Some(T::derived())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if !node_matches_op(node, T::base()) {
+        if node.op() != Some(T::base()) {
             return None;
         }
         let (a, b) = node.binary_operands()?;
 
         // x ⊕ inv(x) → identity
         for node_b in egraph.nodes(b) {
-            if node_matches_op(node_b, T::inverse())
+            if node_b.op() == Some(T::inverse())
                 && let Some(&inner) = node_b.children().first()
                 && egraph.find(inner) == egraph.find(a)
             {
@@ -333,7 +320,7 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
 
         // inv(x) ⊕ x → identity
         for node_a in egraph.nodes(a) {
-            if node_matches_op(node_a, T::inverse())
+            if node_a.op() == Some(T::inverse())
                 && let Some(&inner) = node_a.children().first()
                 && egraph.find(inner) == egraph.find(b)
             {
@@ -345,7 +332,7 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, bin T::base().kind(), (var 0), (un T::inverse().kind(), (var 0))))
+        Some(arena_pat!(__a, bin T::base(), (var 0), (un T::inverse(), (var 0))))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -359,11 +346,11 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
 
 /// Associativity: (a op b) op c → a op (b op c)
 pub struct Associative {
-    op: &'static dyn Op,
+    op: OpKind,
 }
 
 impl Associative {
-    pub fn new(op: &'static dyn Op) -> Box<Self> {
+    pub fn new(op: OpKind) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -374,16 +361,16 @@ impl Rewrite for Associative {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(self.op.kind())
+        RootShapes::kind(self.op)
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
-        Some(self.op.kind())
+        Some(self.op)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
-        if node_op.kind() != self.op.kind() {
+        if node_op != self.op {
             return None;
         }
 
@@ -391,7 +378,7 @@ impl Rewrite for Associative {
 
         for child in egraph.nodes(left) {
             let Some(child_op) = child.op() else { continue };
-            if child_op.kind() != self.op.kind() {
+            if child_op != self.op {
                 continue;
             }
             let Some((a, b)) = child.binary_operands() else {
@@ -410,24 +397,24 @@ impl Rewrite for Associative {
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         // Op(Op(V0, V1), V2)
-        let k = self.op.kind();
+        let k = self.op;
         Some(arena_pat!(__a, bin k, (bin k, (var 0), (var 1)), (var 2)))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         // Op(V0, Op(V1, V2))
-        let k = self.op.kind();
+        let k = self.op;
         Some(arena_pat!(__a, bin k, (var 0), (bin k, (var 1), (var 2))))
     }
 }
 
 /// Reverse associativity: a op (b op c) → (a op b) op c
 pub struct ReverseAssociative {
-    op: &'static dyn Op,
+    op: OpKind,
 }
 
 impl ReverseAssociative {
-    pub fn new(op: &'static dyn Op) -> Box<Self> {
+    pub fn new(op: OpKind) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -438,16 +425,16 @@ impl Rewrite for ReverseAssociative {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(self.op.kind())
+        RootShapes::kind(self.op)
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
-        Some(self.op.kind())
+        Some(self.op)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
-        if node_op.kind() != self.op.kind() {
+        if node_op != self.op {
             return None;
         }
 
@@ -456,7 +443,7 @@ impl Rewrite for ReverseAssociative {
         // Check if the right child has a node with the same op
         for child in egraph.nodes(right) {
             let Some(child_op) = child.op() else { continue };
-            if child_op.kind() != self.op.kind() {
+            if child_op != self.op {
                 continue;
             }
             let Some((b, c)) = child.binary_operands() else {
@@ -475,24 +462,24 @@ impl Rewrite for ReverseAssociative {
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         // Op(V0, Op(V1, V2))
-        let k = self.op.kind();
+        let k = self.op;
         Some(arena_pat!(__a, bin k, (var 0), (bin k, (var 1), (var 2))))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         // Op(Op(V0, V1), V2)
-        let k = self.op.kind();
+        let k = self.op;
         Some(arena_pat!(__a, bin k, (bin k, (var 0), (var 1)), (var 2)))
     }
 }
 
 /// Commutativity: a op b → b op a
 pub struct Commutative {
-    op: &'static dyn Op,
+    op: OpKind,
 }
 
 impl Commutative {
-    pub fn new(op: &'static dyn Op) -> Box<Self> {
+    pub fn new(op: OpKind) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -503,16 +490,16 @@ impl Rewrite for Commutative {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(self.op.kind())
+        RootShapes::kind(self.op)
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
-        Some(self.op.kind())
+        Some(self.op)
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
-        if node_op.kind() != self.op.kind() {
+        if node_op != self.op {
             return None;
         }
 
@@ -521,30 +508,27 @@ impl Rewrite for Commutative {
             return None;
         }
 
-        let swapped = ENode::Op {
-            op: self.op,
-            children: vec![b, a],
-        };
+        let swapped = ENode::apply(self.op, &[b, a]);
         Some(RewriteAction::Create(swapped))
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, bin self.op.kind(), (var 0), (var 1)))
+        Some(arena_pat!(__a, bin self.op, (var 0), (var 1)))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, bin self.op.kind(), (var 1), (var 0)))
+        Some(arena_pat!(__a, bin self.op, (var 1), (var 0)))
     }
 }
 
 /// Distributivity: A * (B + C) → A*B + A*C
 pub struct Distributive {
-    outer: &'static dyn Op,
-    inner: &'static dyn Op,
+    outer: OpKind,
+    inner: OpKind,
 }
 
 impl Distributive {
-    pub fn new(outer: &'static dyn Op, inner: &'static dyn Op) -> Box<Self> {
+    pub fn new(outer: OpKind, inner: OpKind) -> Box<Self> {
         Box::new(Self { outer, inner })
     }
 }
@@ -555,12 +539,12 @@ impl Rewrite for Distributive {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(self.outer.kind())
+        RootShapes::kind(self.outer)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
-        if node_op.kind() != self.outer.kind() {
+        if node_op != self.outer {
             return None;
         }
 
@@ -570,7 +554,7 @@ impl Rewrite for Distributive {
             let Some(child_op) = child_node.op() else {
                 continue;
             };
-            if child_op.kind() != self.inner.kind() {
+            if child_op != self.inner {
                 continue;
             }
             let Some((b, c)) = child_node.binary_operands() else {
@@ -589,27 +573,25 @@ impl Rewrite for Distributive {
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(
-            arena_pat!(__a, bin self.outer.kind(), (var 0), (bin self.inner.kind(), (var 1), (var 2))),
-        )
+        Some(arena_pat!(__a, bin self.outer, (var 0), (bin self.inner, (var 1), (var 2))))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         // Inner(Outer(V0, V1), Outer(V0, V2))
-        let ok = self.outer.kind();
-        let ik = self.inner.kind();
+        let ok = self.outer;
+        let ik = self.inner;
         Some(arena_pat!(__a, bin ik, (bin ok, (var 0), (var 1)), (bin ok, (var 0), (var 2))))
     }
 }
 
 /// Factoring: A*B + A*C → A * (B + C)
 pub struct Factor {
-    outer: &'static dyn Op,
-    inner: &'static dyn Op,
+    outer: OpKind,
+    inner: OpKind,
 }
 
 impl Factor {
-    pub fn new(outer: &'static dyn Op, inner: &'static dyn Op) -> Box<Self> {
+    pub fn new(outer: OpKind, inner: OpKind) -> Box<Self> {
         Box::new(Self { outer, inner })
     }
 }
@@ -620,12 +602,12 @@ impl Rewrite for Factor {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(self.outer.kind())
+        RootShapes::kind(self.outer)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
-        if node_op.kind() != self.outer.kind() {
+        if node_op != self.outer {
             return None;
         }
 
@@ -633,14 +615,14 @@ impl Rewrite for Factor {
 
         for l_node in egraph.nodes(left) {
             let l_op = l_node.op()?;
-            if l_op.kind() != self.inner.kind() {
+            if l_op != self.inner {
                 continue;
             }
             let (la, lb) = l_node.binary_operands()?;
 
             for r_node in egraph.nodes(right) {
                 let r_op = r_node.op()?;
-                if r_op.kind() != self.inner.kind() {
+                if r_op != self.inner {
                     continue;
                 }
                 let (ra, rb) = r_node.binary_operands()?;
@@ -671,25 +653,23 @@ impl Rewrite for Factor {
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         // Outer(Inner(V0, V1), Inner(V0, V2))
-        let ok = self.outer.kind();
-        let ik = self.inner.kind();
+        let ok = self.outer;
+        let ik = self.inner;
         Some(arena_pat!(__a, bin ok, (bin ik, (var 0), (var 1)), (bin ik, (var 0), (var 2))))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(
-            arena_pat!(__a, bin self.inner.kind(), (var 0), (bin self.outer.kind(), (var 1), (var 2))),
-        )
+        Some(arena_pat!(__a, bin self.inner, (var 0), (bin self.outer, (var 1), (var 2))))
     }
 }
 
 /// Identity: x op identity → x
 pub struct Identity {
-    op: &'static dyn Op,
+    op: OpKind,
 }
 
 impl Identity {
-    pub fn new(op: &'static dyn Op) -> Box<Self> {
+    pub fn new(op: OpKind) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -703,16 +683,16 @@ impl Rewrite for Identity {
         if self.op.identity().is_none() {
             return RootShapes::nothing();
         }
-        RootShapes::kind(self.op.kind())
+        RootShapes::kind(self.op)
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
-        Some(self.op.kind())
+        Some(self.op)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
-        if node_op.kind() != self.op.kind() {
+        if node_op != self.op {
             return None;
         }
 
@@ -731,7 +711,7 @@ impl Rewrite for Identity {
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         // Op(V0, Const(identity))
         let id_val = self.op.identity()?;
-        Some(arena_pat!(__a, bin self.op.kind(), (var 0), (cst id_val)))
+        Some(arena_pat!(__a, bin self.op, (var 0), (cst id_val)))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -741,11 +721,11 @@ impl Rewrite for Identity {
 
 /// Annihilator: x op annihilator → annihilator
 pub struct Annihilator {
-    op: &'static dyn Op,
+    op: OpKind,
 }
 
 impl Annihilator {
-    pub fn new(op: &'static dyn Op) -> Box<Self> {
+    pub fn new(op: OpKind) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -759,12 +739,12 @@ impl Rewrite for Annihilator {
         if self.op.annihilator().is_none() {
             return RootShapes::nothing();
         }
-        RootShapes::kind(self.op.kind())
+        RootShapes::kind(self.op)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
-        if node_op.kind() != self.op.kind() {
+        if node_op != self.op {
             return None;
         }
 
@@ -780,7 +760,7 @@ impl Rewrite for Annihilator {
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
         // Op(V0, Const(annihilator))
         let ann = self.op.annihilator()?;
-        Some(arena_pat!(__a, bin self.op.kind(), (var 0), (cst ann)))
+        Some(arena_pat!(__a, bin self.op, (var 0), (cst ann)))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -792,11 +772,11 @@ impl Rewrite for Annihilator {
 
 /// Idempotence: x op x → x
 pub struct Idempotent {
-    op: &'static dyn Op,
+    op: OpKind,
 }
 
 impl Idempotent {
-    pub fn new(op: &'static dyn Op) -> Box<Self> {
+    pub fn new(op: OpKind) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -810,16 +790,16 @@ impl Rewrite for Idempotent {
         if !self.op.is_idempotent() {
             return RootShapes::nothing();
         }
-        RootShapes::kind(self.op.kind())
+        RootShapes::kind(self.op)
     }
 
     fn specialization(&self) -> Option<pixelflow_ir::OpKind> {
-        Some(self.op.kind())
+        Some(self.op)
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         let node_op = node.op()?;
-        if node_op.kind() != self.op.kind() {
+        if node_op != self.op {
             return None;
         }
         if !self.op.is_idempotent() {
@@ -835,7 +815,7 @@ impl Rewrite for Idempotent {
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, bin self.op.kind(), (var 0), (var 0)))
+        Some(arena_pat!(__a, bin self.op, (var 0), (var 0)))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -874,10 +854,10 @@ impl Rewrite for Doubling {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Add(a, b) where a == b
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != ops::Add.kind() {
+        if op != OpKind::Add {
             return None;
         }
         if children.len() != 2 {
@@ -927,10 +907,10 @@ impl Rewrite for Halving {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Mul(2, a) or Mul(a, 2)
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != ops::Mul.kind() {
+        if op != OpKind::Mul {
             return None;
         }
         if children.len() != 2 {
@@ -988,15 +968,13 @@ impl Rewrite for ConstantFold {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
 
-        let kind = op.kind();
-
         // Collect constant values from all children
         let mut args = Vec::with_capacity(children.len());
-        for &child_id in children {
+        for &child_id in children.iter() {
             // Check if this e-class contains a constant
             let mut found_const = None;
             for child_node in egraph.nodes(child_id) {
@@ -1025,15 +1003,15 @@ impl Rewrite for ConstantFold {
         // installs commutativity for them, so a commuted form can still be
         // folded. That is permitted, since the result is unspecified, but this
         // removes the direct path.
-        if kind.fold_is_platform_specific(&args) {
+        if op.fold_is_platform_specific(&args) {
             return None;
         }
 
         // Evaluate based on arity
         let result = match args.len() {
-            1 => kind.eval_unary(args[0])?,
-            2 => kind.eval_binary(args[0], args[1])?,
-            3 => kind.eval_ternary(args[0], args[1], args[2])?,
+            1 => op.eval_unary(args[0])?,
+            2 => op.eval_binary(args[0], args[1])?,
+            3 => op.eval_ternary(args[0], args[1], args[2])?,
             _ => return None,
         };
 
@@ -1046,7 +1024,7 @@ impl Rewrite for ConstantFold {
         // exp/log lower to build exponents out of raw bit patterns. Without the
         // exemption this guard silently switches off comparison and exp/log
         // folding while looking like a safety check.
-        if !result.is_finite() && !kind.is_bitwise_domain() {
+        if !result.is_finite() && !op.is_bitwise_domain() {
             return None;
         }
 
@@ -1081,35 +1059,35 @@ pub fn basic_algebra_rules() -> Vec<Box<dyn Rewrite>> {
         // MUST come first to enable other rules to work fully
         ConstantFold::new(),
         // Commutativity
-        Commutative::new(&ops::Add),
-        Commutative::new(&ops::Mul),
-        Commutative::new(&ops::Min),
-        Commutative::new(&ops::Max),
+        Commutative::new(OpKind::Add),
+        Commutative::new(OpKind::Mul),
+        Commutative::new(OpKind::Min),
+        Commutative::new(OpKind::Max),
         // Identity elements: x + 0 → x, x * 1 → x
-        Identity::new(&ops::Add),
-        Identity::new(&ops::Mul),
+        Identity::new(OpKind::Add),
+        Identity::new(OpKind::Mul),
         // Annihilators: x * 0 → 0
-        Annihilator::new(&ops::Mul),
+        Annihilator::new(OpKind::Mul),
         // Idempotent: min(x,x) → x, max(x,x) → x
-        Idempotent::new(&ops::Min),
-        Idempotent::new(&ops::Max),
+        Idempotent::new(OpKind::Min),
+        Idempotent::new(OpKind::Max),
         // Distributivity: a * (b + c) → a*b + a*c
-        Distributive::new(&ops::Mul, &ops::Add),
+        Distributive::new(OpKind::Mul, OpKind::Add),
         // Factoring: a*b + a*c → a * (b + c)
-        Factor::new(&ops::Add, &ops::Mul),
+        Factor::new(OpKind::Add, OpKind::Mul),
         // Doubling/Halving: a + a ↔ 2 * a
         Doubling::new(),
         Halving::new(),
         // Associativity (L→R): (a op b) op c → a op (b op c)
-        Associative::new(&ops::Add),
-        Associative::new(&ops::Mul),
-        Associative::new(&ops::Min),
-        Associative::new(&ops::Max),
+        Associative::new(OpKind::Add),
+        Associative::new(OpKind::Mul),
+        Associative::new(OpKind::Min),
+        Associative::new(OpKind::Max),
         // Reverse associativity (R→L): a op (b op c) → (a op b) op c
-        ReverseAssociative::new(&ops::Add),
-        ReverseAssociative::new(&ops::Mul),
-        ReverseAssociative::new(&ops::Min),
-        ReverseAssociative::new(&ops::Max),
+        ReverseAssociative::new(OpKind::Add),
+        ReverseAssociative::new(OpKind::Mul),
+        ReverseAssociative::new(OpKind::Min),
+        ReverseAssociative::new(OpKind::Max),
     ]
 }
 
@@ -1128,11 +1106,11 @@ mod platform_specific_fold_tests {
 
     /// Drive `ConstantFold::apply` directly on `op(consts...)` and report
     /// whether it produced a folded constant.
-    fn folds(op: &'static dyn Op, args: &[f32]) -> Option<f32> {
+    fn folds(op: OpKind, args: &[f32]) -> Option<f32> {
         let mut eg = EGraph::new();
         let children: Vec<_> = args.iter().map(|&v| eg.add(ENode::constant(v))).collect();
-        let node = ENode::Op { op, children };
-        let id = eg.add(node.clone());
+        let node = ENode::apply(op, &children);
+        let id = eg.add(node);
         match ConstantFold.apply(&eg, id, &node) {
             Some(RewriteAction::Create(ENode::Const(bits))) => Some(f32::from_bits(bits)),
             _ => None,
@@ -1145,12 +1123,12 @@ mod platform_specific_fold_tests {
     #[test]
     fn declines_platform_specific_rounding_ties() {
         // x86 nearest-even says 2, aarch64 FRINTA says 3 — so neither.
-        assert_eq!(folds(&ops::Round, &[2.5]), None);
-        assert_eq!(folds(&ops::Round, &[-1.5]), None);
-        assert_eq!(folds(&ops::Round, &[0.5]), None);
+        assert_eq!(folds(OpKind::Round, &[2.5]), None);
+        assert_eq!(folds(OpKind::Round, &[-1.5]), None);
+        assert_eq!(folds(OpKind::Round, &[0.5]), None);
         // Away from a tie every target agrees, so folding is still allowed.
-        assert_eq!(folds(&ops::Round, &[2.4]), Some(2.0));
-        assert_eq!(folds(&ops::Round, &[2.6]), Some(3.0));
+        assert_eq!(folds(OpKind::Round, &[2.4]), Some(2.0));
+        assert_eq!(folds(OpKind::Round, &[2.6]), Some(3.0));
     }
 
     /// Non-tie inputs in `[-0.5, -0.0]` round to `-0.0` in both JIT tiers but
@@ -1159,14 +1137,14 @@ mod platform_specific_fold_tests {
     /// versus `+inf`.
     #[test]
     fn declines_round_folds_that_lose_the_sign_of_zero() {
-        assert_eq!(folds(&ops::Round, &[-0.2]), None);
-        assert_eq!(folds(&ops::Round, &[-0.4]), None);
-        assert_eq!(folds(&ops::Round, &[-0.0]), None);
+        assert_eq!(folds(OpKind::Round, &[-0.2]), None);
+        assert_eq!(folds(OpKind::Round, &[-0.4]), None);
+        assert_eq!(folds(OpKind::Round, &[-0.0]), None);
         // Past -0.5 the result is -1.0 in every tier, so folding is fine again.
-        assert_eq!(folds(&ops::Round, &[-0.6]), Some(-1.0));
+        assert_eq!(folds(OpKind::Round, &[-0.6]), Some(-1.0));
         // And positive inputs never had the ambiguity.
         assert_eq!(
-            folds(&ops::Round, &[0.2]).map(f32::to_bits),
+            folds(OpKind::Round, &[0.2]).map(f32::to_bits),
             Some(0.0f32.to_bits())
         );
     }
@@ -1175,12 +1153,12 @@ mod platform_specific_fold_tests {
     fn declines_platform_specific_nan_min_max() {
         let nan = f32::NAN;
         // x86 yields the second operand, aarch64 propagates the NaN.
-        assert_eq!(folds(&ops::Min, &[nan, 1.0]), None);
-        assert_eq!(folds(&ops::Min, &[1.0, nan]), None);
-        assert_eq!(folds(&ops::Max, &[nan, 1.0]), None);
+        assert_eq!(folds(OpKind::Min, &[nan, 1.0]), None);
+        assert_eq!(folds(OpKind::Min, &[1.0, nan]), None);
+        assert_eq!(folds(OpKind::Max, &[nan, 1.0]), None);
         // Without a NaN the targets agree and folding proceeds.
-        assert_eq!(folds(&ops::Min, &[1.0, 2.0]), Some(1.0));
-        assert_eq!(folds(&ops::Max, &[1.0, 2.0]), Some(2.0));
+        assert_eq!(folds(OpKind::Min, &[1.0, 2.0]), Some(1.0));
+        assert_eq!(folds(OpKind::Max, &[1.0, 2.0]), Some(2.0));
     }
 
     /// Opposite-signed zeros are the non-NaN case where Min/Max still diverge:
@@ -1189,12 +1167,12 @@ mod platform_specific_fold_tests {
     /// them apart, but `1.0 / x` makes it `+inf` versus `-inf`.
     #[test]
     fn declines_signed_zero_min_max() {
-        assert_eq!(folds(&ops::Min, &[-0.0, 0.0]), None);
-        assert_eq!(folds(&ops::Min, &[0.0, -0.0]), None);
-        assert_eq!(folds(&ops::Max, &[-0.0, 0.0]), None);
+        assert_eq!(folds(OpKind::Min, &[-0.0, 0.0]), None);
+        assert_eq!(folds(OpKind::Min, &[0.0, -0.0]), None);
+        assert_eq!(folds(OpKind::Max, &[-0.0, 0.0]), None);
         // Same-signed zeros are indistinguishable, so folding is fine.
         assert_eq!(
-            folds(&ops::Min, &[0.0, 0.0]).map(f32::to_bits),
+            folds(OpKind::Min, &[0.0, 0.0]).map(f32::to_bits),
             Some(0.0f32.to_bits())
         );
     }
@@ -1207,8 +1185,16 @@ mod platform_specific_fold_tests {
     #[test]
     fn never_folds_reciprocal_estimates() {
         for x in [3.0f32, 2.0, 1.0, 0.5, 16.0] {
-            assert_eq!(folds(&ops::Recip, &[x]), None, "recip({x}) is an estimate");
-            assert_eq!(folds(&ops::Rsqrt, &[x]), None, "rsqrt({x}) is an estimate");
+            assert_eq!(
+                folds(OpKind::Recip, &[x]),
+                None,
+                "recip({x}) is an estimate"
+            );
+            assert_eq!(
+                folds(OpKind::Rsqrt, &[x]),
+                None,
+                "rsqrt({x}) is an estimate"
+            );
         }
     }
 
@@ -1220,10 +1206,10 @@ mod platform_specific_fold_tests {
     fn folds_muladd_unconditionally_with_one_rounding() {
         // One rounding gives 8194.001, two give 8194.0: the fold is the former.
         assert_eq!(
-            folds(&ops::MulAdd, &[1.000_000_1, 4097.0, 4097.0]).map(f32::to_bits),
+            folds(OpKind::MulAdd, &[1.000_000_1, 4097.0, 4097.0]).map(f32::to_bits),
             Some(libm::fmaf(1.000_000_1, 4097.0, 4097.0).to_bits())
         );
-        assert_eq!(folds(&ops::MulAdd, &[2.0, 3.0, 4.0]), Some(10.0));
+        assert_eq!(folds(OpKind::MulAdd, &[2.0, 3.0, 4.0]), Some(10.0));
     }
 
     /// A folded comparison and an executed one have to be the same operand.
@@ -1233,16 +1219,15 @@ mod platform_specific_fold_tests {
     fn comparison_folds_produce_mask_bit_patterns() {
         let t = pixelflow_ir::OpKind::mask(true).to_bits();
         let f = pixelflow_ir::OpKind::mask(false).to_bits();
-        assert_eq!(folds(&ops::Lt, &[1.0, 2.0]).map(f32::to_bits), Some(t));
-        assert_eq!(folds(&ops::Lt, &[2.0, 1.0]).map(f32::to_bits), Some(f));
-        assert_eq!(folds(&ops::Eq, &[2.0, 2.0]).map(f32::to_bits), Some(t));
-        assert_eq!(folds(&ops::Ne, &[2.0, 2.0]).map(f32::to_bits), Some(f));
+        assert_eq!(folds(OpKind::Lt, &[1.0, 2.0]).map(f32::to_bits), Some(t));
+        assert_eq!(folds(OpKind::Lt, &[2.0, 1.0]).map(f32::to_bits), Some(f));
+        assert_eq!(folds(OpKind::Eq, &[2.0, 2.0]).map(f32::to_bits), Some(t));
+        assert_eq!(folds(OpKind::Ne, &[2.0, 2.0]).map(f32::to_bits), Some(f));
         // And such a mask blends exactly, through the same bitwise formula the
-        // backends emit. (`BitAnd`/`BitOr` have no e-graph `Op` — they appear
-        // only after lowering — so `If` is the folder-visible consumer; the
+        // backends emit. (`If` is the consumer this test folds; the
         // end-to-end path through a real `and` is covered by
         // `pixelflow-ir/tests/transcendental_jit.rs`.)
-        assert_eq!(folds(&ops::If, &[f32::from_bits(t), 7.0, 9.0]), Some(7.0));
-        assert_eq!(folds(&ops::If, &[f32::from_bits(f), 7.0, 9.0]), Some(9.0));
+        assert_eq!(folds(OpKind::If, &[f32::from_bits(t), 7.0, 9.0]), Some(7.0));
+        assert_eq!(folds(OpKind::If, &[f32::from_bits(f), 7.0, 9.0]), Some(9.0));
     }
 }

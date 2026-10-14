@@ -914,10 +914,7 @@ fn prefix_diag(
 /// looked up in ANOTHER e-graph (class ids do not transfer; structure does).
 enum Term {
     Leaf(ENode),
-    Op {
-        op: &'static dyn pixelflow_search::egraph::Op,
-        children: Vec<Term>,
-    },
+    Op { op: OpKind, children: Vec<Term> },
 }
 
 fn term_of_chosen(
@@ -944,7 +941,7 @@ fn term_of_chosen(
                 })
                 .collect(),
         },
-        leaf => Term::Leaf(leaf.clone()),
+        leaf => Term::Leaf(*leaf),
     }
 }
 
@@ -978,7 +975,6 @@ impl<'a> NodeIndex<'a> {
                 for ch in children {
                     child_classes.push(self.lookup(ch)?);
                 }
-                let kind = op.kind();
                 self.entries
                     .iter()
                     .find(|(_, n)| match n {
@@ -986,7 +982,7 @@ impl<'a> NodeIndex<'a> {
                             op: o,
                             children: cs,
                         } => {
-                            o.kind() == kind
+                            o == op
                                 && cs.len() == child_classes.len()
                                 && cs
                                     .iter()

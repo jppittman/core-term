@@ -101,6 +101,17 @@ fn pairwise(level_counts: &[usize]) -> Vec<Vec<usize>> {
 // E-graph plumbing (mirrors the harness in `math::tests`).
 // ============================================================================
 
+/// `kind`, once it is known to be an op a rewrite template may name: the
+/// harness covers what the rule set can rewrite, and a kind outside it is a
+/// generator bug to hear about.
+fn named_op(kind: OpKind) -> OpKind {
+    assert!(
+        crate::egraph::ops::template_may_name(kind),
+        "{kind:?} is not an op a rewrite template may name"
+    );
+    kind
+}
+
 fn expr_to_egraph(arena: &ExprArena, id: ExprId, egraph: &mut EGraph) -> crate::egraph::EClassId {
     match arena.node(id) {
         ExprNode::Var(idx) => egraph.add(ENode::Var(idx)),
@@ -110,30 +121,18 @@ fn expr_to_egraph(arena: &ExprArena, id: ExprId, egraph: &mut EGraph) -> crate::
         ExprNode::Write { .. } => panic!("a Write reached the pict rewrite tests"),
         ExprNode::Unary(kind, a) => {
             let ca = expr_to_egraph(arena, a, egraph);
-            let op = crate::egraph::ops::op_from_kind(kind).expect("op");
-            egraph.add(ENode::Op {
-                op,
-                children: vec![ca],
-            })
+            egraph.add(ENode::apply(named_op(kind), &[ca]))
         }
         ExprNode::Binary(kind, a, b) => {
             let ca = expr_to_egraph(arena, a, egraph);
             let cb = expr_to_egraph(arena, b, egraph);
-            let op = crate::egraph::ops::op_from_kind(kind).expect("op");
-            egraph.add(ENode::Op {
-                op,
-                children: vec![ca, cb],
-            })
+            egraph.add(ENode::apply(named_op(kind), &[ca, cb]))
         }
         ExprNode::Ternary(kind, a, b, c) => {
             let ca = expr_to_egraph(arena, a, egraph);
             let cb = expr_to_egraph(arena, b, egraph);
             let cc = expr_to_egraph(arena, c, egraph);
-            let op = crate::egraph::ops::op_from_kind(kind).expect("op");
-            egraph.add(ENode::Op {
-                op,
-                children: vec![ca, cb, cc],
-            })
+            egraph.add(ENode::apply(named_op(kind), &[ca, cb, cc]))
         }
         ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Uniform(_) | ExprNode::Nary(..) => {
             panic!("unsupported node in rewrite POC")

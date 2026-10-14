@@ -2,7 +2,7 @@
 //! lanes (gather → scale → `TruncToInt` → `Shl` → or-fold) share their
 //! coordinate geometry only if the integer-domain ops are representable in
 //! the runtime e-graph. This bailed silently before the int ops joined
-//! `runtime_op_from_kind` — and the frame benchmark read 1.01x against the
+//! `Vocabulary::Runtime` — and the frame benchmark read 1.01x against the
 //! four-plane path because BOTH compiled unoptimized.
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, BufferIdentity, ExprArena, ExprId};

@@ -797,9 +797,7 @@ mod tests {
         let trainer = BilinearTrainer::new_cold(&rules, 3);
         let mut weights = trainer.weights();
 
-        let other = RuleSet::new(vec![crate::math::algebra::Commutative::new(
-            &crate::egraph::ops::Add,
-        )]);
+        let other = RuleSet::new(vec![crate::math::algebra::Commutative::new(OpKind::Add)]);
         assert_ne!(other.fingerprint(), rules.fingerprint());
         weights.fingerprint = other.fingerprint();
 

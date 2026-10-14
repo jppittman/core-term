@@ -19,7 +19,7 @@
 use std::marker::PhantomData;
 
 use crate::arena_pat;
-use crate::egraph::{EClassId, EGraph, ENode, Op, Rewrite, RewriteAction, RootShapes, ops};
+use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 
@@ -40,11 +40,11 @@ pub enum Sign {
 #[derive(Debug, Clone, Copy)]
 pub struct AngleExpansion {
     /// First term: op1(a) * op2(b)
-    pub term1_op1: &'static dyn Op,
-    pub term1_op2: &'static dyn Op,
+    pub term1_op1: OpKind,
+    pub term1_op2: OpKind,
     /// Second term: sign * op1(a) * op2(b)
-    pub term2_op1: &'static dyn Op,
-    pub term2_op2: &'static dyn Op,
+    pub term2_op1: OpKind,
+    pub term2_op2: OpKind,
     pub term2_sign: Sign,
 }
 
@@ -54,7 +54,7 @@ pub struct AngleExpansion {
 /// f(a + b) → term1_op1(a)*term1_op2(b) + sign*term2_op1(a)*term2_op2(b)
 pub trait AngleAddition: Send + Sync {
     /// The trig operation (sin or cos).
-    fn op() -> &'static dyn Op;
+    fn op() -> OpKind;
     /// The expansion formula.
     fn expansion() -> AngleExpansion;
 }
@@ -67,15 +67,15 @@ pub trait AngleAddition: Send + Sync {
 pub struct SinAngleAddition;
 
 impl AngleAddition for SinAngleAddition {
-    fn op() -> &'static dyn Op {
-        &ops::Sin
+    fn op() -> OpKind {
+        OpKind::Sin
     }
     fn expansion() -> AngleExpansion {
         AngleExpansion {
-            term1_op1: &ops::Sin,
-            term1_op2: &ops::Cos,
-            term2_op1: &ops::Cos,
-            term2_op2: &ops::Sin,
+            term1_op1: OpKind::Sin,
+            term1_op2: OpKind::Cos,
+            term2_op1: OpKind::Cos,
+            term2_op2: OpKind::Sin,
             term2_sign: Sign::Plus,
         }
     }
@@ -85,15 +85,15 @@ impl AngleAddition for SinAngleAddition {
 pub struct CosAngleAddition;
 
 impl AngleAddition for CosAngleAddition {
-    fn op() -> &'static dyn Op {
-        &ops::Cos
+    fn op() -> OpKind {
+        OpKind::Cos
     }
     fn expansion() -> AngleExpansion {
         AngleExpansion {
-            term1_op1: &ops::Cos,
-            term1_op2: &ops::Cos,
-            term2_op1: &ops::Sin,
-            term2_op2: &ops::Sin,
+            term1_op1: OpKind::Cos,
+            term1_op2: OpKind::Cos,
+            term2_op1: OpKind::Sin,
+            term2_op2: OpKind::Sin,
             term2_sign: Sign::Minus,
         }
     }
@@ -124,7 +124,7 @@ impl<T: AngleAddition> Default for AngleAdditionRule<T> {
 impl<T: AngleAddition> Rewrite for AngleAdditionRule<T> {
     fn name(&self) -> &str {
         // Use a static string based on the op kind
-        match T::op().kind() {
+        match T::op() {
             OpKind::Sin => "sin-angle-addition",
             OpKind::Cos => "cos-angle-addition",
             _ => "angle-addition",
@@ -132,15 +132,15 @@ impl<T: AngleAddition> Rewrite for AngleAdditionRule<T> {
     }
 
     fn root_shapes(&self) -> RootShapes {
-        RootShapes::kind(T::op().kind())
+        RootShapes::kind(T::op())
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Op(Add(a, b))
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != T::op().kind() {
+        if op != T::op() {
             return None;
         }
         if children.len() != 1 {
@@ -151,11 +151,11 @@ impl<T: AngleAddition> Rewrite for AngleAdditionRule<T> {
 
         // Check if argument is Add(a, b)
         for arg_node in egraph.nodes(arg) {
-            if let ENode::Op {
+            if let &ENode::Op {
                 op: arg_op,
                 children: arg_children,
             } = arg_node
-                && arg_op.kind() == OpKind::Add
+                && arg_op == OpKind::Add
                 && arg_children.len() == 2
             {
                 let a = arg_children[0];
@@ -179,7 +179,7 @@ impl<T: AngleAddition> Rewrite for AngleAdditionRule<T> {
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
-        Some(arena_pat!(__a, un T::op().kind(), (bin OpKind::Add, (var 0), (var 1))))
+        Some(arena_pat!(__a, un T::op(), (bin OpKind::Add, (var 0), (var 1))))
     }
 
     fn rhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -188,15 +188,15 @@ impl<T: AngleAddition> Rewrite for AngleAdditionRule<T> {
         let term1 = arena_pat!(
             __a,
             bin OpKind::Mul,
-            (un exp.term1_op1.kind(), (var 0)),
-            (un exp.term1_op2.kind(), (var 1))
+            (un exp.term1_op1, (var 0)),
+            (un exp.term1_op2, (var 1))
         );
         // term2: Mul(term2_op1(V0), term2_op2(V1))
         let term2 = arena_pat!(
             __a,
             bin OpKind::Mul,
-            (un exp.term2_op1.kind(), (var 0)),
-            (un exp.term2_op2.kind(), (var 1))
+            (un exp.term2_op1, (var 0)),
+            (un exp.term2_op2, (var 1))
         );
         // Combine: Plus -> Add(term1, term2), Minus -> Sub(term1, term2)
         let combiner = match exp.term2_sign {
@@ -234,10 +234,10 @@ impl Rewrite for Pythagorean {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Add(A, B) where A = sin²(x), B = cos²(y), x == y
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Add {
+        if op != OpKind::Add {
             return None;
         }
         if children.len() != 2 {
@@ -308,9 +308,9 @@ impl Pythagorean {
         trig_op: OpKind,
     ) -> Option<EClassId> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node {
+            if let &ENode::Op { op, children } = node {
                 // Pattern 1: Mul(trig(x), trig(x))
-                if op.kind() == OpKind::Mul && children.len() == 2 {
+                if op == OpKind::Mul && children.len() == 2 {
                     let a = children[0];
                     let b = children[1];
                     if egraph.find(a) == egraph.find(b) {
@@ -336,8 +336,8 @@ impl Pythagorean {
         trig_op: OpKind,
     ) -> Option<EClassId> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node
-                && op.kind() == trig_op
+            if let &ENode::Op { op, children } = node
+                && op == trig_op
                 && children.len() == 1
             {
                 return Some(children[0]);
@@ -378,10 +378,10 @@ impl Rewrite for ReverseAngleAddition {
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Add(Mul(sin(a), cos(b)), Mul(cos(a), sin(b)))
         // → sin(a + b)
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Add {
+        if op != OpKind::Add {
             return None;
         }
         if children.len() != 2 {
@@ -395,7 +395,7 @@ impl Rewrite for ReverseAngleAddition {
         if let Some((a, b)) = self.match_sin_angle_sum(egraph, left, right) {
             // Create sin(a + b)
             return Some(RewriteAction::ReverseAngleAddition {
-                trig_op: &ops::Sin,
+                trig_op: OpKind::Sin,
                 a,
                 b,
             });
@@ -450,8 +450,8 @@ impl ReverseAngleAddition {
         class: EClassId,
     ) -> Option<(EClassId, EClassId)> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node {
-                if op.kind() != OpKind::Mul || children.len() != 2 {
+            if let &ENode::Op { op, children } = node {
+                if op != OpKind::Mul || children.len() != 2 {
                     continue;
                 }
                 let l = children[0];
@@ -484,8 +484,8 @@ impl ReverseAngleAddition {
         class: EClassId,
     ) -> Option<(EClassId, EClassId)> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node {
-                if op.kind() != OpKind::Mul || children.len() != 2 {
+            if let &ENode::Op { op, children } = node {
+                if op != OpKind::Mul || children.len() != 2 {
                     continue;
                 }
                 let l = children[0];
@@ -518,8 +518,8 @@ impl ReverseAngleAddition {
         trig_op: OpKind,
     ) -> Option<EClassId> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node
-                && op.kind() == trig_op
+            if let &ENode::Op { op, children } = node
+                && op == trig_op
                 && children.len() == 1
             {
                 return Some(children[0]);
@@ -561,10 +561,10 @@ impl Rewrite for HalfAngleProduct {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match: Mul(sin(x), cos(y)) or Mul(cos(x), sin(y)) where x == y
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul {
+        if op != OpKind::Mul {
             return None;
         }
         if children.len() != 2 {
@@ -624,8 +624,8 @@ impl HalfAngleProduct {
         trig_op: OpKind,
     ) -> Option<EClassId> {
         for node in egraph.nodes(class) {
-            if let ENode::Op { op, children } = node
-                && op.kind() == trig_op
+            if let &ENode::Op { op, children } = node
+                && op == trig_op
                 && children.len() == 1
             {
                 return Some(children[0]);

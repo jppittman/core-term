@@ -89,10 +89,8 @@ pub const REGISTERED_PRIMARY_BUDGET_APPLICATIONS: usize = 100;
 /// structurally-equal nodes compare equal regardless of which class holds
 /// them or where they sit in that class's node vector.
 ///
-/// Deliberately NOT `ENode` itself: `ENode::Op` carries a `&'static dyn Op`
-/// pointer, which has no `Hash`/`Ord` impl (`node.rs`'s own `PartialEq`
-/// impl already compares by `OpKind` for the same reason — see its comment).
-/// `NodeShape` is the same content, compared the same way, made hashable.
+/// Not `ENode` itself: its children are canonicalized at observation time,
+/// and a `Ref`'s variance (a function of its key) is dropped.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum NodeShape {
     Var(u8),
@@ -117,7 +115,7 @@ impl NodeShape {
             ENode::Uniform(decl) => NodeShape::Uniform(*decl),
             ENode::Param(i) => NodeShape::Param(*i),
             ENode::Op { op, children } => NodeShape::Op(
-                op.kind(),
+                *op,
                 children
                     .iter()
                     .map(|&c| egraph.find(c).index() as u32)
@@ -303,7 +301,7 @@ fn neighborhood_ops(egraph: &EGraph, canonical: EClassId) -> Vec<OpKind> {
             let child_canonical = egraph.find(child);
             for child_node in egraph.nodes(child_canonical) {
                 if let ENode::Op { op, .. } = child_node {
-                    ops.push(op.kind());
+                    ops.push(*op);
                 }
             }
         }
@@ -315,13 +313,12 @@ fn neighborhood_ops(egraph: &EGraph, canonical: EClassId) -> Vec<OpKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egraph::ops;
     use crate::egraph::rewrite::Rewrite;
     use crate::egraph::{Limits, RuleSet, Saturation};
     use crate::math::algebra::Commutative;
 
     fn egraph_with_commutative() -> Saturation {
-        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
+        let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(OpKind::Add)];
         Saturation::over(RuleSet::new(rules))
     }
 
@@ -340,10 +337,7 @@ mod tests {
         let mut eg = egraph_with_commutative();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let a = ClassContentKey::of(&eg, eg.find(sum));
         let b = ClassContentKey::of(&eg, eg.find(sum));
         assert_eq!(
@@ -358,10 +352,7 @@ mod tests {
         let mut eg = egraph_with_commutative();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let before = ClassContentKey::of(&eg, eg.find(sum));
 
         let target = eg
@@ -384,10 +375,7 @@ mod tests {
         let mut eg = egraph_with_commutative();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let sum_class = eg.find(sum);
         let rule = RuleId::from_label("some-rule(Add)");
         let firing = Firing {
@@ -410,10 +398,7 @@ mod tests {
         let mut eg = egraph_with_commutative();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let firing = Firing {
             rule: rule_id_at(&eg, 0),
             match_root: eg.find(sum),
@@ -429,10 +414,7 @@ mod tests {
         let mut eg = egraph_with_commutative();
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let sum = eg.add(ENode::Op {
-            op: &ops::Add,
-            children: vec![x, y],
-        });
+        let sum = eg.add(ENode::apply(OpKind::Add, &[x, y]));
         let firing = Firing {
             rule: rule_id_at(&eg, 0),
             match_root: eg.find(sum),

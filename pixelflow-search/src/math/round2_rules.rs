@@ -39,9 +39,7 @@
 use alloc::sync::Arc;
 
 use crate::arena_pat;
-use crate::egraph::{
-    EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes, TemplatePattern, ops,
-};
+use crate::egraph::{EClassId, EGraph, ENode, Rewrite, RewriteAction, RootShapes, TemplatePattern};
 use core::f32::consts::{LN_2, LOG2_E, LOG10_2};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
@@ -91,8 +89,8 @@ fn eclass_const(egraph: &EGraph, id: EClassId) -> Option<f32> {
 /// If any node in `class` is `Op(kind)` with exactly one child, return it.
 fn extract_unary(egraph: &EGraph, class: EClassId, kind: OpKind) -> Option<EClassId> {
     for node in egraph.nodes(class) {
-        if let ENode::Op { op, children } = node
-            && op.kind() == kind
+        if let &ENode::Op { op, children } = node
+            && op == kind
             && children.len() == 1
         {
             return Some(children[0]);
@@ -104,8 +102,8 @@ fn extract_unary(egraph: &EGraph, class: EClassId, kind: OpKind) -> Option<EClas
 /// If any node in `class` is `Op(kind)` with exactly two children, return them.
 fn extract_binary(egraph: &EGraph, class: EClassId, kind: OpKind) -> Option<(EClassId, EClassId)> {
     for node in egraph.nodes(class) {
-        if let ENode::Op { op, children } = node
-            && op.kind() == kind
+        if let &ENode::Op { op, children } = node
+            && op == kind
             && children.len() == 2
         {
             return Some((children[0], children[1]));
@@ -141,10 +139,10 @@ impl Rewrite for MinMaxDuality {
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != self.from || children.len() != 2 {
+        if op != self.from || children.len() != 2 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0], children[1]]))
@@ -197,10 +195,10 @@ impl Rewrite for MinMaxAbsorption {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != self.outer || children.len() != 2 {
+        if op != self.outer || children.len() != 2 {
             return None;
         }
         for (candidate_a, other) in [(children[0], children[1]), (children[1], children[0])] {
@@ -259,22 +257,20 @@ impl Rewrite for MinMaxTranslate {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Add || children.len() != 2 {
+        if op != OpKind::Add || children.len() != 2 {
             return None;
         }
         for (inner_cand, c) in [(children[0], children[1]), (children[1], children[0])] {
             if let Some((a, b)) = extract_binary(egraph, inner_cand, self.minmax) {
-                let minmax_op = ops::op_from_kind(self.minmax)
-                    .unwrap_or_else(|| panic!("MinMaxTranslate: {:?} has no Op", self.minmax));
                 // Distribute{outer=Add, inner=minmax, a=c, b=a, c=b} builds
                 // minmax(Add(c,a), Add(c,b)) = minmax(a+c, b+c) up to Add's
                 // commutativity (which the e-graph already carries).
                 return Some(RewriteAction::Distribute {
-                    outer: &ops::Add,
-                    inner: minmax_op,
+                    outer: OpKind::Add,
+                    inner: self.minmax,
                     a: c,
                     b: a,
                     c: b,
@@ -329,10 +325,10 @@ impl Rewrite for MinScaledByNonnegLiteral {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         for (k_cand, other) in [(children[0], children[1]), (children[1], children[0])] {
@@ -344,8 +340,8 @@ impl Rewrite for MinScaledByNonnegLiteral {
             }
             if let Some((a, b)) = extract_binary(egraph, other, OpKind::Min) {
                 return Some(RewriteAction::Distribute {
-                    outer: &ops::Mul,
-                    inner: &ops::Min,
+                    outer: OpKind::Mul,
+                    inner: OpKind::Min,
                     a: k_cand,
                     b: a,
                     c: b,
@@ -383,17 +379,17 @@ impl Rewrite for MinMaxDistributive {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Min || children.len() != 2 {
+        if op != OpKind::Min || children.len() != 2 {
             return None;
         }
         for (a, other) in [(children[0], children[1]), (children[1], children[0])] {
             if let Some((b, c)) = extract_binary(egraph, other, OpKind::Max) {
                 return Some(RewriteAction::Distribute {
-                    outer: &ops::Min,
-                    inner: &ops::Max,
+                    outer: OpKind::Min,
+                    inner: OpKind::Max,
                     a,
                     b,
                     c,
@@ -431,10 +427,10 @@ impl Rewrite for AbsAsMax {
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Abs || children.len() != 1 {
+        if op != OpKind::Abs || children.len() != 1 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0]]))
@@ -462,20 +458,17 @@ impl Rewrite for MaxSelfNegAsAbs {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Max || children.len() != 2 {
+        if op != OpKind::Max || children.len() != 2 {
             return None;
         }
         for (x, other) in [(children[0], children[1]), (children[1], children[0])] {
             if let Some(negated) = extract_unary(egraph, other, OpKind::Neg)
                 && egraph.find(negated) == egraph.find(x)
             {
-                return Some(RewriteAction::Create(ENode::Op {
-                    op: &ops::Abs,
-                    children: vec![x],
-                }));
+                return Some(RewriteAction::Create(ENode::apply(OpKind::Abs, &[x])));
             }
         }
         None
@@ -513,10 +506,10 @@ impl Rewrite for IfSameBranch {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::If || children.len() != 3 {
+        if op != OpKind::If || children.len() != 3 {
             return None;
         }
         let (a, b) = (children[1], children[2]);
@@ -555,19 +548,16 @@ impl Rewrite for IfLtToMin {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::If || children.len() != 3 {
+        if op != OpKind::If || children.len() != 3 {
             return None;
         }
         let (m, x, y) = (children[0], children[1], children[2]);
         let (a, b) = extract_binary(egraph, m, OpKind::Lt)?;
         if egraph.find(a) == egraph.find(x) && egraph.find(b) == egraph.find(y) {
-            return Some(RewriteAction::Create(ENode::Op {
-                op: &ops::Min,
-                children: vec![x, y],
-            }));
+            return Some(RewriteAction::Create(ENode::apply(OpKind::Min, &[x, y])));
         }
         None
     }
@@ -594,20 +584,17 @@ impl Rewrite for IfLtToMax {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::If || children.len() != 3 {
+        if op != OpKind::If || children.len() != 3 {
             return None;
         }
         let (m, x, y) = (children[0], children[1], children[2]);
         let (a, b) = extract_binary(egraph, m, OpKind::Lt)?;
         // select(lt(a,b), b, a): x should be b, y should be a.
         if egraph.find(a) == egraph.find(y) && egraph.find(b) == egraph.find(x) {
-            return Some(RewriteAction::Create(ENode::Op {
-                op: &ops::Max,
-                children: vec![x, y],
-            }));
+            return Some(RewriteAction::Create(ENode::apply(OpKind::Max, &[x, y])));
         }
         None
     }
@@ -644,10 +631,10 @@ impl Rewrite for IfHoistUnary {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::If || children.len() != 3 {
+        if op != OpKind::If || children.len() != 3 {
             return None;
         }
         let (m, x, y) = (children[0], children[1], children[2]);
@@ -704,16 +691,14 @@ impl Rewrite for CompareFlipLt {
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Lt || children.len() != 2 {
+        if op != OpKind::Lt || children.len() != 2 {
             return None;
         }
-        Some(RewriteAction::Create(ENode::Op {
-            op: &ops::Gt,
-            children: vec![children[1], children[0]],
-        }))
+        let node = ENode::apply(OpKind::Gt, &[children[1], children[0]]);
+        Some(RewriteAction::Create(node))
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -744,10 +729,10 @@ impl Rewrite for TanDefinition {
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Tan || children.len() != 1 {
+        if op != OpKind::Tan || children.len() != 1 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0]]))
@@ -776,10 +761,10 @@ impl Rewrite for TanFusion {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         for (sin_side, recip_side) in [(children[0], children[1]), (children[1], children[0])] {
@@ -793,10 +778,7 @@ impl Rewrite for TanFusion {
                 continue;
             };
             if egraph.find(x1) == egraph.find(x2) {
-                return Some(RewriteAction::Create(ENode::Op {
-                    op: &ops::Tan,
-                    children: vec![x1],
-                }));
+                return Some(RewriteAction::Create(ENode::apply(OpKind::Tan, &[x1])));
             }
         }
         None
@@ -834,10 +816,10 @@ impl Rewrite for ExpAsExp2 {
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Exp || children.len() != 1 {
+        if op != OpKind::Exp || children.len() != 1 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0]]))
@@ -865,10 +847,10 @@ impl Rewrite for LnAsLog2 {
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Ln || children.len() != 1 {
+        if op != OpKind::Ln || children.len() != 1 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0]]))
@@ -896,10 +878,10 @@ impl Rewrite for Log10AsLog2 {
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Log10 || children.len() != 1 {
+        if op != OpKind::Log10 || children.len() != 1 {
             return None;
         }
         Some(instantiate_rhs(self, vec![children[0]]))
@@ -934,10 +916,10 @@ impl Rewrite for SqrtProduct {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         let x = extract_unary(egraph, children[0], OpKind::Sqrt)?;
@@ -975,10 +957,10 @@ impl Rewrite for RsqrtSquareAsRecip {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         let a = extract_unary(egraph, children[0], OpKind::Rsqrt)?;
@@ -986,10 +968,7 @@ impl Rewrite for RsqrtSquareAsRecip {
         if egraph.find(a) != egraph.find(b) {
             return None;
         }
-        Some(RewriteAction::Create(ENode::Op {
-            op: &ops::Recip,
-            children: vec![a],
-        }))
+        Some(RewriteAction::Create(ENode::apply(OpKind::Recip, &[a])))
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -1018,20 +997,17 @@ impl Rewrite for NormalizeAsSqrt {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         for (x_cand, rsqrt_side) in [(children[0], children[1]), (children[1], children[0])] {
             if let Some(x2) = extract_unary(egraph, rsqrt_side, OpKind::Rsqrt)
                 && egraph.find(x_cand) == egraph.find(x2)
             {
-                return Some(RewriteAction::Create(ENode::Op {
-                    op: &ops::Sqrt,
-                    children: vec![x_cand],
-                }));
+                return Some(RewriteAction::Create(ENode::apply(OpKind::Sqrt, &[x_cand])));
             }
         }
         None
@@ -1064,10 +1040,10 @@ impl Rewrite for RecipProduct {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Mul || children.len() != 2 {
+        if op != OpKind::Mul || children.len() != 2 {
             return None;
         }
         let x = extract_unary(egraph, children[0], OpKind::Recip)?;
@@ -1102,10 +1078,10 @@ impl Rewrite for RecipOfProduct {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Recip || children.len() != 1 {
+        if op != OpKind::Recip || children.len() != 1 {
             return None;
         }
         let (a, b) = extract_binary(egraph, children[0], OpKind::Mul)?;
@@ -1143,10 +1119,10 @@ impl Rewrite for FmaUnfuse {
     }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::MulAdd || children.len() != 3 {
+        if op != OpKind::MulAdd || children.len() != 3 {
             return None;
         }
         Some(instantiate_rhs(
@@ -1177,20 +1153,18 @@ impl Rewrite for FmaMulIdentity {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::MulAdd || children.len() != 3 {
+        if op != OpKind::MulAdd || children.len() != 3 {
             return None;
         }
         let b_val = eclass_const(egraph, children[1])?;
         if b_val != 1.0 {
             return None;
         }
-        Some(RewriteAction::Create(ENode::Op {
-            op: &ops::Add,
-            children: vec![children[0], children[2]],
-        }))
+        let node = ENode::apply(OpKind::Add, &[children[0], children[2]]);
+        Some(RewriteAction::Create(node))
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -1215,20 +1189,18 @@ impl Rewrite for FmaAddIdentity {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::MulAdd || children.len() != 3 {
+        if op != OpKind::MulAdd || children.len() != 3 {
             return None;
         }
         let c_val = eclass_const(egraph, children[2])?;
         if c_val != 0.0 {
             return None;
         }
-        Some(RewriteAction::Create(ENode::Op {
-            op: &ops::Mul,
-            children: vec![children[0], children[1]],
-        }))
+        let node = ENode::apply(OpKind::Mul, &[children[0], children[1]]);
+        Some(RewriteAction::Create(node))
     }
 
     fn lhs_template(&self, __a: &mut ExprArena) -> Option<ExprId> {
@@ -1257,10 +1229,10 @@ impl Rewrite for NegDistributesAdd {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Neg || children.len() != 1 {
+        if op != OpKind::Neg || children.len() != 1 {
             return None;
         }
         let (a, b) = extract_binary(egraph, children[0], OpKind::Add)?;
@@ -1289,10 +1261,10 @@ impl Rewrite for NegDistributesMul {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Neg || children.len() != 1 {
+        if op != OpKind::Neg || children.len() != 1 {
             return None;
         }
         let (a, b) = extract_binary(egraph, children[0], OpKind::Mul)?;
@@ -1333,10 +1305,10 @@ impl Rewrite for DivByLiteral {
     }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let ENode::Op { op, children } = node else {
+        let &ENode::Op { op, children } = node else {
             return None;
         };
-        if op.kind() != OpKind::Div || children.len() != 2 {
+        if op != OpKind::Div || children.len() != 2 {
             return None;
         }
         let k = eclass_const(egraph, children[1])?;
@@ -1453,31 +1425,16 @@ mod tests {
         let build_min_max = |eg: &mut EGraph| {
             let x = eg.add(ENode::Var(0));
             let y = eg.add(ENode::Var(1));
-            let max_xy = eg.add(ENode::Op {
-                op: &ops::Max,
-                children: vec![x, y],
-            });
-            eg.add(ENode::Op {
-                op: &ops::Min,
-                children: vec![x, max_xy],
-            })
+            let max_xy = eg.add(ENode::apply(OpKind::Max, &[x, y]));
+            eg.add(ENode::apply(OpKind::Min, &[x, max_xy]))
         };
 
         // tan(x) * cos(x) — tan/exp/log rules all apply somewhere in here.
         let build_tan_cos = |eg: &mut EGraph| {
             let x = eg.add(ENode::Var(0));
-            let tan_x = eg.add(ENode::Op {
-                op: &ops::Tan,
-                children: vec![x],
-            });
-            let cos_x = eg.add(ENode::Op {
-                op: &ops::Cos,
-                children: vec![x],
-            });
-            eg.add(ENode::Op {
-                op: &ops::Mul,
-                children: vec![tan_x, cos_x],
-            })
+            let tan_x = eg.add(ENode::apply(OpKind::Tan, &[x]));
+            let cos_x = eg.add(ENode::apply(OpKind::Cos, &[x]));
+            eg.add(ENode::apply(OpKind::Mul, &[tan_x, cos_x]))
         };
 
         // fma(x, y, x/2) — fma unfuse/identities + div-by-literal.
@@ -1485,14 +1442,8 @@ mod tests {
             let x = eg.add(ENode::Var(0));
             let y = eg.add(ENode::Var(1));
             let two = eg.add(ENode::constant(2.0));
-            let x_half = eg.add(ENode::Op {
-                op: &ops::Div,
-                children: vec![x, two],
-            });
-            eg.add(ENode::Op {
-                op: &ops::MulAdd,
-                children: vec![x, y, x_half],
-            })
+            let x_half = eg.add(ENode::apply(OpKind::Div, &[x, two]));
+            eg.add(ENode::apply(OpKind::MulAdd, &[x, y, x_half]))
         };
 
         // EGraph::with_rules takes ownership, so build one egraph per case

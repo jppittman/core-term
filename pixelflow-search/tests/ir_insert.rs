@@ -67,12 +67,12 @@ fn templates_vocabulary_refuses_the_runtime_only_ops() {
         OpKind::Shr,
     ] {
         assert!(
-            Vocabulary::Templates.resolve(kind).is_none(),
+            !Vocabulary::Templates.admits(kind),
             "{kind:?} must not be holdable by a macro-tier e-graph — it is \
              unsound before composition"
         );
         assert!(
-            Vocabulary::Runtime.resolve(kind).is_some(),
+            Vocabulary::Runtime.admits(kind),
             "{kind:?} must be holdable by a runtime-tier e-graph, or the \
              production frame kernel loses CSE across its channels"
         );
@@ -83,10 +83,10 @@ fn templates_vocabulary_refuses_the_runtime_only_ops() {
 /// its whole participation is hash-consing CSE.
 #[test]
 fn gather_is_holdable_everywhere_and_nameable_nowhere() {
-    assert!(Vocabulary::Templates.resolve(OpKind::Gather).is_some());
-    assert!(Vocabulary::Runtime.resolve(OpKind::Gather).is_some());
+    assert!(Vocabulary::Templates.admits(OpKind::Gather));
+    assert!(Vocabulary::Runtime.admits(OpKind::Gather));
     assert!(
-        pixelflow_search::egraph::ops::op_from_kind(OpKind::Gather).is_none(),
+        !pixelflow_search::egraph::ops::template_may_name(OpKind::Gather),
         "a rewrite template must not be able to name Gather"
     );
 }
