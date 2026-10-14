@@ -143,7 +143,6 @@ conventional commits) is already a CI job or a lint, and stays there.
 | Rule | Levels | Unit | Source |
 |---|---|---|---|
 | `boolean-argument` | 1→1 | a file's function signatures | STYLE: boolean arguments |
-| `no-tests-inside-the-implementation` | 1→2 | outline | behavioral contracts: no test code or test-only API in the source tree |
 | `test-names-it-should` | 1→1 | outline | STYLE: "it should" names |
 | `actor-lane-choice` | 1→2 | file | CLAUDE.md: actor lanes |
 | `behavior-through-the-trait` | 1→2 | outline + module root | behavioral contracts |
@@ -162,7 +161,7 @@ conventional commits) is already a CI job or a lint, and stays there.
 | `registers-come-from-the-allocator` | 1→2 | each of functions | register-allocation escape hatches plan |
 | `silent-failure` | 1→2 | each of functions | CLAUDE.md: fail loud |
 | `simd-is-codegens` | 1→2 | file | CLAUDE.md: SIMD is an implementation detail |
-| `tests-target-the-contract` | 1→2 | file | behavioral contracts: tests observe the production API's output |
+| `tests-target-the-contract` | 1→2 | file | tests assert the as-if contract (values, refusals, determinism, documented laws), never mechanism |
 | `effects-are-returned` | 2→3 | file | behavioral contracts |
 | `function-shapes` | 2→3 | a crate's function signatures | names vs namespaces, argument structs, denotation, extraction |
 | `invariant-in-comment` | 2→3 | file | CLAUDE.md: denote before you build |

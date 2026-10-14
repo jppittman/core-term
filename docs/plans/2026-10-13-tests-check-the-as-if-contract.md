@@ -31,8 +31,15 @@ that keeps the promise, and it fails when the promise breaks.
 2. **Refusals.** What is rejected is rejected by name, never miscompiled.
 3. **No crash.** Big frames, register pressure, deep nesting: observed as
    correct output, not as a count of what the allocator did.
-4. **Determinism.** The same kernel on the same target compiles to the same
-   kernel (compile twice, compare), never to a pinned byte string.
+4. **Determinism of output.** The same kernel on the same tier, with the
+   same compiler, produces bit-identical output in any process on any
+   machine: compile in two processes and compare the outputs bit for bit.
+   JP, 2026-10-14: "I'm happy to promise that for output." The machine code
+   itself is not promised. That it is the same today (budgets are counted
+   in rule applications, never wall clock) is an engineering intent, not a
+   contract, and no test compares code. Output determinism still implies the
+   optimizer's choice is reproducible, because two codes can round
+   differently; this test is what notices when it stops being so.
 5. **The ABI and the public API.** `fn(ctx, out, pitch)`; what `compile`,
    `CompiledKernel` and `jit_cache` document.
 
@@ -100,7 +107,7 @@ for **range** (no NaN inside a domain, no `sin` of 8e8). The filter is on
 the oracle's conditioning, never on the output's magnitude: a `> 1e30`
 output filter is what once admitted garbage as training labels (CLAUDE.md,
 "Precision is on the table; range is not"). Determinism, item 4 above, stays
-exact: one kernel on one tier.
+exact: one kernel on one tier, output bit for bit.
 
 Generated kernels come from a small hand-written generator over the arena
 builder, not a new dependency (subtract before you add).
