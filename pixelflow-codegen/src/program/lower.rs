@@ -8,6 +8,7 @@
 
 use alloc::vec::Vec;
 
+use pixelflow_ir::ShiftCount;
 use pixelflow_ir::arena::UniformId;
 use pixelflow_ir::fold::Binder;
 use pixelflow_ir::kind::OpKind;
@@ -54,13 +55,17 @@ fn mark_reachable(
 /// the identity shift. Any later validation is checking the alias, not the
 /// operand the kernel actually asked for.
 fn shift_immediate(op: OpKind, count: f32) -> u8 {
-    assert!(
-        (0.0..32.0).contains(&count) && (count as u32) as f32 == count,
-        "{op:?} shift count {count} is not an integer in 0..32 — a 32-bit lane \
-         has no bits there, and the targets disagree about what to do (x86 \
-         zeroes the whole destination, aarch64 re-encodes the element size)"
-    );
-    count as u8
+    let Some(count) = ShiftCount::from_literal(count) else {
+        panic!(
+            "{op:?} shift count {count:?} is not a ShiftCount (an integer literal in \
+             0..{}) — a 32-bit lane has no bits there, and the targets disagree \
+             about what to do (x86 zeroes the whole destination, aarch64 \
+             re-encodes the element size)",
+            ShiftCount::WORD_BITS
+        );
+    };
+    // Below `WORD_BITS`, so it fits.
+    count.bits() as u8
 }
 
 /// Build a schedule directly from an [`ExprArena`](pixelflow_ir::arena::ExprArena).

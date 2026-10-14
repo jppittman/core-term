@@ -137,11 +137,11 @@ impl Vocabulary {
     ///
     /// `Shl`/`Shr` are held as `ENode::Shift`, whose count is a `ShiftCount`:
     /// [`insert`](fn@super::insert) declines a shift whose count is not a
-    /// literal integer in `0..32`, and extraction writes the count back as
-    /// the `Const` the emitter's immediate-only contract needs. The emitter
-    /// still checks the range where the `Const` narrows to an immediate
-    /// (`shift_immediate` in `program/lower.rs`), for a term that reaches it
-    /// without passing through a graph.
+    /// literal [`ShiftCount`](pixelflow_ir::ShiftCount), and extraction
+    /// writes the count back as the `Const` the emitter's immediate-only
+    /// contract needs. The emitter still checks the range where the `Const`
+    /// narrows to an immediate (`shift_immediate` in `program/lower.rs`), for
+    /// a term that reaches it without passing through a graph.
     #[must_use]
     pub fn admits(self, kind: OpKind) -> bool {
         let runtime_extra = self == Self::Runtime

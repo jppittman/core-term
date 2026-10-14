@@ -90,7 +90,7 @@ use std::time::Duration;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
+use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind, ShiftCount};
 use pixelflow_pipeline::journal::append_record;
 use pixelflow_pipeline::schema::fnv1a64_hex;
 use pixelflow_pipeline::training::corpus::read_corpus;
@@ -102,7 +102,7 @@ use pixelflow_pipeline::training::structural::FenceKey;
 use pixelflow_search::egraph::{
     APP_CHECKPOINT_GRID, AnytimeCurveOutput, ApplicationId, Budget, CostModel, EClassId, EGraph,
     ENode, ENodeId, EpisodeLabels, KeepJournal, Optimizer, Origin, RuleId, RuleSet, SaturationStop,
-    ShiftCount, ShiftDirection, config_for_node_count, run_anytime_curve,
+    ShiftDirection, config_for_node_count, run_anytime_curve,
 };
 use pixelflow_search::nnue::guide::linear::{
     LinearCandidateGuide, LinearReturnGuide, PerRuleRateGuide,

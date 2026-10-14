@@ -66,12 +66,12 @@ use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use pixelflow_ir::{Binder, Fold, Monoid, OpKind};
+use pixelflow_ir::{Binder, Fold, Monoid, OpKind, ShiftCount};
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::rewrite::{Rewrite, RewriteAction, RootShapes};
-use super::shift::{ShiftCount, ShiftDirection};
+use super::shift::ShiftDirection;
 
 /// What a [`HeadNode`]'s child is: an earlier entry in the same plan, or an
 /// e-class that already exists.

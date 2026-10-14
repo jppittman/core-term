@@ -263,7 +263,9 @@ union is already made. Separately, `sort_by_key(NodeShape::sort_key)`
 (:125-130) uses a `DefaultHasher`, so a hash tie leaves order to
 `egraph.nodes()`, which `rebuild` permutes — two structurally identical
 classes can key unequal. **That costs work, never meaning.** Both belong in a
-Guide PR's *cost* discussion, never its correctness one.
+Guide PR's *cost* discussion, never its correctness one. *(CL8c: the hash sort
+is gone. `ClassContentKey` now holds the canonical `ENode`s sorted by their
+derived `Ord`, so equal content keys equal.)*
 
 **The test that should pin L4, and it is cheap:** one arena, N guides
 (including a deliberately adversarial random one and a "reverse the sensible

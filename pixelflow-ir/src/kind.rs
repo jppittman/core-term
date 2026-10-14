@@ -9,6 +9,8 @@
 
 use core::ops::{Index, IndexMut};
 
+use crate::shift::ShiftCount;
+
 /// The op table: the single place an operation is declared.
 ///
 /// The enum, the roster, the count and both directions of the numbering are
@@ -358,23 +360,19 @@ impl OpKind {
                 _ => false,
             },
 
-            // A shift count outside `0..32` has three answers. The folder
-            // reduces it mod 32 (`y as u32 & 31`, below); x86
+            // A count outside `0..WORD_BITS`, or a non-integral one, has
+            // three answers. The folder reduces it mod `WORD_BITS` (below); x86
             // (V)PSLLD/(V)PSRLD zero the whole destination for any count > 31
             // (Intel SDM); and aarch64's immediate encoding silently changes
             // ELEMENT SIZE — `emit_shl` computes `immh:immb = shift + 32`, so
             // at shift >= 32 `immh` becomes `1xxx`, which decodes as `.2D`
             // and shifts bits across the 32-bit lane boundary. A non-integral
             // count is refused for the same reason: the tiers disagree on how
-            // to narrow it. The emitters now assert this range, so a refused
-            // fold cannot be laundered into a bad encoding either.
+            // to narrow it. The emitters assert the same range, so a refused
+            // fold cannot be laundered into a bad encoding either. The arm
+            // declines exactly what `ShiftCount::from_literal` refuses.
             Self::Shl | Self::Shr => match args {
-                // The range test comes first and `||` short-circuits, so the
-                // cast below only runs on a value already known to be in
-                // `0..32` — where `as u32` is exact and total. (`f32::fract`
-                // would be the obvious spelling but is std-only; this crate
-                // is `no_std`.)
-                [_, count] => !(0.0..32.0).contains(count) || (*count as u32) as f32 != *count,
+                [_, count] => ShiftCount::from_literal(*count).is_none(),
                 _ => false,
             },
             _ => false,
@@ -922,14 +920,18 @@ impl OpKind {
             // `FCMEQ`. Same epsilon bug as `Eq` above.
             Self::Ne => Some(Self::mask(x != y)),
             // Integer-domain binaries on lane bit patterns. The shift count is
-            // the RHS `Const`'s numeric value (the schedule reads it as
-            // `*v as u32 as u8`), and both shifts are logical — `vpslld` /
-            // `vpsrld`, zero-filling.
+            // the RHS `Const`'s numeric value (the schedule reads it through
+            // `ShiftCount::from_literal`), and both shifts are logical —
+            // `vpslld` / `vpsrld`, zero-filling.
             Self::IAdd => Some(f32::from_bits(
                 (x.to_bits() as i32).wrapping_add(y.to_bits() as i32) as u32,
             )),
-            Self::Shl => Some(f32::from_bits(x.to_bits() << (y as u32 & 31))),
-            Self::Shr => Some(f32::from_bits(x.to_bits() >> (y as u32 & 31))),
+            Self::Shl => Some(f32::from_bits(
+                x.to_bits() << (y as u32 & (ShiftCount::WORD_BITS - 1)),
+            )),
+            Self::Shr => Some(f32::from_bits(
+                x.to_bits() >> (y as u32 & (ShiftCount::WORD_BITS - 1)),
+            )),
             // Bitwise on lane bit patterns, matching the SIMD backends. On
             // canonical masks (1.0/0.0 here, all-ones/zero in the JIT) this
             // is logical AND/OR in both representations.
@@ -1896,6 +1898,7 @@ mod eval_ternary_arms {
 #[cfg(test)]
 mod fold_is_platform_specific {
     use super::OpKind;
+    use crate::ShiftCount;
 
     #[test]
     fn decline_to_fold_min_and_max_on_nan_or_a_signed_zero_mismatch() {
@@ -1947,6 +1950,37 @@ mod fold_is_platform_specific {
         assert!(OpKind::Shl.fold_is_platform_specific(&[1.0, 1.5]));
         assert!(!OpKind::Shl.fold_is_platform_specific(&[1.0, 5.0]));
         assert!(!OpKind::Shr.fold_is_platform_specific(&[1.0, 0.0]));
+        // `-0.0` is the integer 0, which every target shifts by: it folds.
+        assert!(!OpKind::Shl.fold_is_platform_specific(&[1.0, -0.0]));
+        assert!(!OpKind::Shr.fold_is_platform_specific(&[1.0, -0.0]));
+    }
+
+    /// The folder declines exactly the counts that are not a `ShiftCount`:
+    /// one definition of a valid count, so no value is a count to one reader
+    /// and not to another.
+    #[test]
+    fn the_folder_declines_a_shift_exactly_when_its_count_is_not_a_shift_count() {
+        for count in [
+            0.0,
+            -0.0,
+            1.0,
+            31.0,
+            32.0,
+            -1.0,
+            0.5,
+            2.5,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ] {
+            for op in [OpKind::Shl, OpKind::Shr] {
+                assert_eq!(
+                    op.fold_is_platform_specific(&[1.0, count]),
+                    ShiftCount::from_literal(count).is_none(),
+                    "{op:?} by {count}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -149,10 +149,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 ///   (`Declined::Arity`).
 /// - `Param` — a `pixelflow-compiler` macro-parameter slot that should never
 ///   reach a runtime-built `Kernel` in the first place.
-/// - A `Shl`/`Shr` whose count is not a `Const` holding an integer in
-///   `0..32` (`Declined::ShiftCount`). The count is a parameter of the
-///   shift's node, so the graph cannot hold anything else; the emitter
-///   refuses the term as written, as it always has.
+/// - A `Shl`/`Shr` whose count is not a `Const` holding a
+///   [`ShiftCount`](pixelflow_ir::ShiftCount) (`Declined::ShiftCount`). The
+///   count is a parameter of the shift's node, so the graph cannot hold
+///   anything else; the emitter refuses the term as written.
 ///
 /// `Reduce` itself *is* modelled (`ENode::Reduce`) — the graph reasons about
 /// the monoidal form directly (`egraph::fold_rules`: peeling, halving), and
@@ -887,7 +887,7 @@ mod tests {
         assert_eq!(input, output, "slot order must survive optimization");
     }
 
-    /// **A shift by anything but a literal count in `0..32` is declined here,
+    /// **A shift by anything but a literal `ShiftCount` is declined here,
     /// not optimized.** The graph holds a count as the shift's parameter, so
     /// it cannot hold the rest; the caller compiles the arena as written and
     /// the emitter refuses it there. A valid count beside them is the control:
@@ -1154,8 +1154,8 @@ mod tests {
             })
     }
 
-    /// **A unit is hoisted out of a fold it does not read**, because its
-    /// leaf carries its referent's variance: `Σ_{i<8} u·i`, with `u` a named
+    /// **A unit is hoisted out of a fold it does not read**, because the
+    /// graph knows its referent's variance: `Σ_{i<8} u·i`, with `u` a named
     /// kernel of `X`, factors to `u·Σ i` and the fold no longer reads `X`.
     /// The leaf is priced 0 (`CostModel::node_op_cost`), so the hoist is
     /// chosen for the multiplications it saves, not for the unit's own
@@ -1278,6 +1278,9 @@ mod congruence_gap_probe {
                 }
                 let nodes = egraph.classes[idx].nodes.clone();
                 for node in nodes {
+                    // Not `EGraph::canonical_node`: this probe has always left
+                    // a fold's body as stored, and the gap it counted in
+                    // docs/results was measured that way.
                     let mut cnode = node;
                     match &mut cnode {
                         ENode::Op { children, .. } => {

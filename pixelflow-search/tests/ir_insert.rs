@@ -176,7 +176,7 @@ fn a_param_is_held_by_the_macro_vocabulary_and_declined_by_the_runtime_one() {
 /// A reference the graph was not told is a unit is declined, not mishandled.
 /// The runtime tier's unit walk admits each unit it holds the body of
 /// (`EGraph::admit_unit`, crate-private — its own test is in `insert.rs`), and
-/// only then does a `Ref` insert, as a leaf carrying its referent's variance.
+/// only then does a `Ref` insert, as a leaf varying as its referent does.
 /// A graph nobody told — any vocabulary, any caller outside that walk — has no
 /// variance to give the leaf, and must say so rather than insert one it
 /// cannot reason about.

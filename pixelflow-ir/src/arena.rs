@@ -248,7 +248,7 @@ fn mint_identity(counter: &core::sync::atomic::AtomicU64, what: &str) -> u64 {
 /// clamps, and unroll reduction loops.
 ///
 /// Layout is row-major with `stride == width`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct BufferDecl {
     /// Which memory this names. Two declarations of the same buffer must carry
     /// the same identity — that is what lets a merge collapse them into one
@@ -328,6 +328,23 @@ impl core::hash::Hash for UniformDecl {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state);
         self.default.to_bits().hash(state);
+    }
+}
+
+// By the default's bits, as `Eq` and `Hash` are: an order on the `f32` itself
+// would not be total (NaN) and would tie `-0.0` with `0.0`, two declarations
+// this type distinguishes.
+impl PartialOrd for UniformDecl {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for UniformDecl {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.id
+            .cmp(&other.id)
+            .then_with(|| self.default.to_bits().cmp(&other.default.to_bits()))
     }
 }
 
@@ -2615,6 +2632,31 @@ mod composition_tests {
             id: UniformIdentity::mint(),
             default,
         }
+    }
+
+    /// The order agrees with `Eq` on the default's bits: `-0.0` and `0.0` are
+    /// two declarations and order apart, and a NaN default orders against
+    /// itself as equal.
+    #[test]
+    fn a_uniform_declaration_orders_by_the_defaults_bits() {
+        use core::cmp::Ordering;
+        let id = UniformIdentity::mint();
+        let at = |default: f32| UniformDecl { id, default };
+        assert_eq!(at(f32::NAN).cmp(&at(f32::NAN)), Ordering::Equal);
+        assert_ne!(at(-0.0).cmp(&at(0.0)), Ordering::Equal);
+        assert_eq!(
+            at(-0.0).cmp(&at(0.0)),
+            (-0.0f32).to_bits().cmp(&0.0f32.to_bits())
+        );
+        let later = UniformIdentity::mint();
+        assert_eq!(
+            at(5.0).cmp(&UniformDecl {
+                id: later,
+                default: 1.0
+            }),
+            Ordering::Less,
+            "the identity orders before the default"
+        );
     }
 
     #[test]

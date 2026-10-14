@@ -38,14 +38,15 @@ pub enum Declined {
         /// How many operands the term gave it.
         operands: usize,
     },
-    /// A shift whose count is not a `Const` holding an integer in `0..32`.
+    /// A shift whose count is not a `Const` holding a
+    /// [`ShiftCount`](pixelflow_ir::ShiftCount).
     ///
     /// A count outside that range has a different answer on each target, and
     /// a count that is not a literal is not a parameter of the shift but an
     /// operand, which a shift node cannot hold. The term compiles
-    /// unoptimized, and the emitter refuses it there as it always has: a
-    /// literal out of range as "not an integer in 0..32", a count that is not
-    /// a literal as "must be a Const".
+    /// unoptimized, and the emitter refuses it there: a literal that is not a
+    /// `ShiftCount` as such, a count that is not a literal as "must be a
+    /// Const".
     ShiftCount(ShiftDirection),
     /// A macro-parameter slot, under a [`Vocabulary`] that may not hold one.
     ///
@@ -130,9 +131,7 @@ pub fn insert<I: Ir>(
                         Vocabulary::Runtime => return Err(Declined::Param(i)),
                     },
                     Shape::Ref(key) => match (vocab, egraph.unit_variance(key)) {
-                        (Vocabulary::Runtime, Some(variance)) => {
-                            egraph.add(ENode::Ref { key, variance })
-                        }
+                        (Vocabulary::Runtime, Some(_)) => egraph.add(ENode::Ref { key }),
                         _ => return Err(Declined::Ref(key)),
                     },
                     Shape::Write { .. } => return Err(Declined::Write),
@@ -273,24 +272,35 @@ mod tests {
         (arena, root, reference, key)
     }
 
-    /// A unit the graph admitted inserts as one opaque leaf, carrying the
-    /// variance it was admitted with — so the product over it varies with X
-    /// as well as Y, which nothing could have learned from the name.
+    /// A unit the graph admitted inserts as one opaque leaf, its key and
+    /// nothing else, and varies as it was admitted — so the product over it
+    /// varies with X as well as Y, which nothing could have learned from the
+    /// name.
     #[test]
-    fn an_admitted_unit_is_a_leaf_carrying_its_variance() {
+    fn an_admitted_unit_is_a_leaf_varying_as_it_was_admitted() {
         let (arena, root, reference, key) = named_times_y();
         let mut eg = EGraph::new();
         eg.admit_unit(key, Variance::X);
         let product = insert(&arena, root, &mut eg, Vocabulary::Runtime).expect("admitted");
         let leaf = insert(&arena, reference, &mut eg, Vocabulary::Runtime).expect("admitted");
         assert!(
-            eg.nodes(leaf).iter().any(|n| matches!(
-                n,
-                ENode::Ref { key: k, variance } if *k == key && *variance == Variance::X
-            )),
-            "the leaf names the unit and carries its variance"
+            eg.nodes(leaf)
+                .iter()
+                .any(|n| matches!(n, ENode::Ref { key: k } if *k == key)),
+            "the leaf names the unit"
         );
+        assert_eq!(eg.variance(leaf), Variance::X);
         assert_eq!(eg.variance(product), Variance::X.union(Variance::Y));
+    }
+
+    /// A `Ref` is only a key, so a graph that was never told what the key
+    /// varies as has nothing to give it: adding one is refused rather than
+    /// answered with a guess.
+    #[test]
+    #[should_panic(expected = "which no unit walk admitted")]
+    fn a_ref_to_an_unadmitted_unit_is_refused() {
+        let (_, _, _, key) = named_times_y();
+        EGraph::new().add(ENode::Ref { key });
     }
 
     /// Admission is the runtime tier's: under the macro tier's vocabulary a
@@ -385,14 +395,43 @@ mod tests {
         assert_eq!(eg.num_classes(), 4, "x, two shifts, the sum");
     }
 
-    /// A count that is not a `Const` holding an integer in `0..32` is
+    /// `-0.0` is the integer 0, so a shift by it is a shift by the count 0:
+    /// the same node as a shift by `+0.0`, not a declined one.
+    #[test]
+    fn a_shift_by_negative_zero_is_a_shift_by_the_count_zero() {
+        for op in [OpKind::Shl, OpKind::Shr] {
+            let mut arena = ExprArena::new();
+            let x = arena.push_var(0);
+            let (negative, positive) = (arena.push_const(-0.0), arena.push_const(0.0));
+            let by_negative = arena.push_binary(op, x, negative);
+            let by_positive = arena.push_binary(op, x, positive);
+            let mut eg = EGraph::new();
+            let class =
+                insert(&arena, by_negative, &mut eg, Vocabulary::Runtime).expect("-0.0 is a count");
+            assert_eq!(
+                eg.num_classes(),
+                2,
+                "x and the shift, no class for the count"
+            );
+            assert!(matches!(
+                eg.nodes(class),
+                [ENode::Shift { count, .. }] if count.bits() == 0
+            ));
+            let same =
+                insert(&arena, by_positive, &mut eg, Vocabulary::Runtime).expect("+0.0 is a count");
+            assert_eq!(same, class, "{op:?}: one node, whichever zero spelled it");
+            assert_eq!(eg.num_classes(), 2);
+        }
+    }
+
+    /// A count that is not a `Const` holding a `ShiftCount` is
     /// declined, naming the direction, before anything is built: a graph cannot
     /// hold what the emitter would refuse, and the term compiles unoptimized.
     #[test]
     fn a_shift_by_anything_but_a_valid_literal_is_declined() {
         for op in [OpKind::Shl, OpKind::Shr] {
             let direction = ShiftDirection::of(op).expect("a shift");
-            for count in [-1.0, -0.0, 0.5, 32.0, 33.0, 256.0, f32::NAN, f32::INFINITY] {
+            for count in [-1.0, 0.5, 32.0, 33.0, 256.0, f32::NAN, f32::INFINITY] {
                 let mut arena = ExprArena::new();
                 let x = arena.push_var(0);
                 let count_node = arena.push_const(count);
@@ -457,5 +496,26 @@ mod tests {
     fn an_open_unit_is_refused() {
         let key = KernelStore::intern(&Kernel::y().add(&Kernel::constant(0.75)));
         EGraph::new().admit_unit(key, Variance::Y.union(Variance::BINDERS));
+    }
+
+    /// A key names one referent, so it has one variance: admitting it again
+    /// as the same is idempotent, and as another is refused rather than left
+    /// to give the graph two `Ref` nodes that disagree about one unit.
+    #[test]
+    fn a_unit_is_admitted_with_one_variance() {
+        let key = KernelStore::intern(&Kernel::x().add(&Kernel::constant(0.75)));
+        let mut eg = EGraph::new();
+        eg.admit_unit(key, Variance::X);
+        eg.admit_unit(key, Variance::X);
+        assert_eq!(eg.unit_variance(key), Some(Variance::X));
+    }
+
+    #[test]
+    #[should_panic(expected = "is admitted again as")]
+    fn a_unit_admitted_with_two_variances_is_refused() {
+        let key = KernelStore::intern(&Kernel::x().add(&Kernel::constant(0.75)));
+        let mut eg = EGraph::new();
+        eg.admit_unit(key, Variance::X);
+        eg.admit_unit(key, Variance::Y);
     }
 }

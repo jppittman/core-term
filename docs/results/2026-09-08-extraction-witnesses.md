@@ -247,6 +247,12 @@ inserted. It is the same DP otherwise, and `Ties::Insertion` is pinned
 byte-identical to production by
 `insertion_tie_break_is_productions_extraction`.
 
+*Note (CL8c).* The A/B below was measured under that key. `Canonical` now
+orders by `ENode`'s derived `Ord` over the canonicalized node, so its ties
+fall differently (a fold by field order, `Buffer` and `Uniform` by declaration
+rather than all tied, a shift as its own variant), and re-running the bin
+measures that order, not this one. `Insertion`, production, is unchanged.
+
 The A/B, per family × cap, Σ `dag_cost` over every kernel in the family
 (`n` kernels; `better` / `worse` count kernels, not classes):
 
