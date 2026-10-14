@@ -1,6 +1,6 @@
 # Tests check the as-if contract
 
-**Status:** proposed (from JP's rulings of 2026-10-13). Would supersede the location rule of
+**Status:** accepted (JP, 2026-10-14). Supersedes the location rule of
 `docs/plans/2026-10-08-selection-is-a-phase.md` §0.6.
 
 ## What a compiler promises
