@@ -69,7 +69,7 @@ pub(in crate::emit) enum Lanewise {
     Fsqrt = 0x6EA1_F800,
     Fabs = 0x4EA0_F800,
     Fneg = 0x6EA0_F800,
-    Not = 0x2E20_5800,
+    Not = 0x6E20_5800,
     /// Floor.
     Frintm = 0x4E21_9800,
     /// Ceil.

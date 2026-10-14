@@ -520,3 +520,167 @@ fn a_zero_shift_count_compiles_as_the_identity() {
         );
     }
 }
+
+// ── exp / exp2 saturation (CLAUDE.md, "Floating point at the edges") ─────────
+//
+// The contract: exp and exp2 saturate past ±126 exponents rather than
+// overflowing to inf. The expansion (`expand_exp2`, pixelflow-ir passes) clamps
+// the base-2 argument to [-EXP2_CLAMP, EXP2_CLAMP] = [-126, 126] before building
+// 2^n from the exponent field, so the saturated values are exact:
+//   high side  2^126  = bits 0x7E80_0000 (exponent field 253)
+//   low side   2^-126 = bits 0x0080_0000 (exponent field 1, f32::MIN_POSITIVE)
+// The low side saturates to the smallest normal, not to 0.
+// `exp(x)` is `exp2(x·log2 e)`, so its saturation point is the same clamp on
+// the base-2 exponent: x ≈ ±87.34 in natural units.
+
+const TWO_POW_126: f32 = f32::from_bits(253 << 23);
+const TWO_POW_NEG_126: f32 = f32::from_bits(1 << 23);
+
+/// Relative tolerance for in-range exp/exp2 against `f32::exp`/`f32::exp2`.
+///
+/// This is the implementation's precision, not an IEEE claim. `EXP2_POLY` holds
+/// the Taylor coefficients of 2^f (1/k!·ln2^k), not the minimax its rustdoc
+/// names, so the degree-5 truncation error is the Lagrange remainder
+/// t^6/6! ≈ 1.54e-4 relative at t = ln2 (the top of the fractional range). A
+/// full-domain sweep measured the worst case at 8.9e-5 (exp, where `x·log2 e`
+/// adds one f32 rounding at |exponent| ≤ 126). 2e-4 bounds that with margin,
+/// and is far below any coefficient or clamp error, which move results by ≥1e-2.
+const EXP_REL_TOL: f32 = 2e-4;
+
+/// Compile `k` once at a point lattice and evaluate it at each `x`.
+fn eval_at(name: &str, k: &Kernel, xs: &[f32]) -> Vec<f32> {
+    let jit = jit_cache::compile(k, pixelflow_ir::LatticeShape::POINT)
+        .unwrap_or_else(|e| panic!("{name}: kernel failed to compile on this backend: {e}"))
+        .kernel;
+    xs.iter().map(|&x| eval_point(&jit, x, 0.0)).collect()
+}
+
+#[test]
+fn exp2_saturates_to_two_to_the_126_past_the_clamp() {
+    // 126.0 is the clamp itself: in range and saturated agree on 2^126.
+    let xs = [126.0, 126.5, 127.0, 150.0, 1000.0, f32::MAX, f32::INFINITY];
+    for (&x, got) in xs.iter().zip(eval_at("exp2", &Kernel::x().exp2(), &xs)) {
+        assert_eq!(
+            got.to_bits(),
+            TWO_POW_126.to_bits(),
+            "exp2({x}) must saturate to 2^126, got {got}"
+        );
+    }
+}
+
+#[test]
+fn exp2_saturates_to_two_to_the_minus_126_past_the_clamp() {
+    // The low side saturates to the smallest normal, not to 0.
+    let xs = [
+        -126.0,
+        -126.5,
+        -127.0,
+        -150.0,
+        -1000.0,
+        f32::MIN,
+        f32::NEG_INFINITY,
+    ];
+    for (&x, got) in xs.iter().zip(eval_at("exp2", &Kernel::x().exp2(), &xs)) {
+        assert_eq!(
+            got.to_bits(),
+            TWO_POW_NEG_126.to_bits(),
+            "exp2({x}) must saturate to 2^-126, got {got}"
+        );
+    }
+}
+
+#[test]
+fn exp_saturates_past_the_clamp_on_its_base_two_exponent() {
+    // exp(k·ln 2) = 2^k, so these are the exp2 boundaries in natural units.
+    let ks = [127.0f64, 150.0, 1000.0];
+    let high: Vec<f32> = ks
+        .iter()
+        .map(|k| (k * core::f64::consts::LN_2) as f32)
+        .chain([1000.0, f32::INFINITY])
+        .collect();
+    for (&x, got) in high.iter().zip(eval_at("exp", &Kernel::x().exp(), &high)) {
+        assert_eq!(
+            got.to_bits(),
+            TWO_POW_126.to_bits(),
+            "exp({x}) must saturate to 2^126, got {got}"
+        );
+    }
+
+    let low: Vec<f32> = ks
+        .iter()
+        .map(|k| (-k * core::f64::consts::LN_2) as f32)
+        .chain([-1000.0, f32::NEG_INFINITY])
+        .collect();
+    for (&x, got) in low.iter().zip(eval_at("exp", &Kernel::x().exp(), &low)) {
+        assert_eq!(
+            got.to_bits(),
+            TWO_POW_NEG_126.to_bits(),
+            "exp({x}) must saturate to 2^-126, got {got}"
+        );
+    }
+}
+
+/// Saturation is range, not precision: the outputs are finite and positive
+/// everywhere the input is not NaN, and a NaN input stays NaN (the expansion's
+/// documented domain guard).
+#[test]
+fn exp_and_exp2_stay_in_range_and_pass_nan_through() {
+    let xs = [
+        f32::NAN,
+        f32::MIN,
+        -1e30,
+        -1000.0,
+        -88.0,
+        0.0,
+        88.0,
+        1000.0,
+        f32::MAX,
+        f32::INFINITY,
+    ];
+    for (name, k) in [("exp", Kernel::x().exp()), ("exp2", Kernel::x().exp2())] {
+        for (&x, got) in xs.iter().zip(eval_at(name, &k, &xs)) {
+            if x.is_nan() {
+                assert!(got.is_nan(), "{name}(NaN) must be NaN, got {got}");
+            } else {
+                assert!(
+                    got.is_finite() && got > 0.0,
+                    "{name}({x}) left the range (0, inf): got {got}"
+                );
+            }
+        }
+    }
+}
+
+/// Inside the clamp, the saturating kernels still agree with the Rust oracle,
+/// right up to the boundary on both sides.
+#[test]
+fn exp2_agrees_with_std_up_to_the_clamp() {
+    let xs = [
+        -126.0f32, -125.9, -125.0, -64.5, -1.0, -0.0, 0.5, 64.5, 124.9, 125.0, 125.9, 126.0,
+    ];
+    for (&x, got) in xs.iter().zip(eval_at("exp2", &Kernel::x().exp2(), &xs)) {
+        let want = x.exp2();
+        let rel = ((got - want) / want).abs();
+        assert!(
+            rel <= EXP_REL_TOL,
+            "exp2({x}): got {got}, want {want} (rel {rel:.2e})"
+        );
+    }
+}
+
+/// Same boundary for `exp`, with the argument chosen so `x·log2 e` lands at and
+/// just inside ±125 and ±126 (x = 86.0 gives ~124.07; x = 87.3 gives ~125.95).
+#[test]
+fn exp_agrees_with_std_up_to_the_clamp() {
+    let xs = [
+        -87.3f32, -86.0, -40.0, -1.0, 0.0, 0.25, 1.0, 40.0, 86.0, 87.3,
+    ];
+    for (&x, got) in xs.iter().zip(eval_at("exp", &Kernel::x().exp(), &xs)) {
+        let want = x.exp();
+        let rel = ((got - want) / want).abs();
+        assert!(
+            rel <= EXP_REL_TOL,
+            "exp({x}): got {got}, want {want} (rel {rel:.2e})"
+        );
+    }
+}
